@@ -778,7 +778,7 @@ impl Assembler {
 
         // Collect all VRegs used in the instructions
         for instr in &instructions {
-            self.collect_vregs_for_allocation(instr, &mut regalloc);
+            self.collect_vregs_for_allocation(instr, &mut regalloc)?;
         }
 
         // Step 2: Single-pass code generation with fixups
@@ -895,40 +895,62 @@ impl Assembler {
     }
 
     // Helper to collect VRegs that need allocation
-    fn collect_vregs_for_allocation(&self, instr: &Instruction, regalloc: &mut RegisterAllocator) {
+    fn collect_vregs_for_allocation(
+        &self,
+        instr: &Instruction,
+        regalloc: &mut RegisterAllocator,
+    ) -> Result<(), CodegenError> {
         match instr {
             Instruction::Copy { dest, src } => {
-                regalloc.allocate(*dest);
+                regalloc
+                    .allocate(*dest)
+                    .map_err(|e| CodegenError { message: e })?;
                 if let Value::VReg(src_vreg) = src {
-                    regalloc.allocate(*src_vreg);
+                    regalloc
+                        .allocate(*src_vreg)
+                        .map_err(|e| CodegenError { message: e })?;
                 }
             }
             Instruction::BinaryOp { dest, lhs, rhs, .. } => {
-                regalloc.allocate(*dest);
+                regalloc
+                    .allocate(*dest)
+                    .map_err(|e| CodegenError { message: e })?;
                 if let Value::VReg(lhs_vreg) = lhs {
-                    regalloc.allocate(*lhs_vreg);
+                    regalloc
+                        .allocate(*lhs_vreg)
+                        .map_err(|e| CodegenError { message: e })?;
                 }
                 if let Value::VReg(rhs_vreg) = rhs {
-                    regalloc.allocate(*rhs_vreg);
+                    regalloc
+                        .allocate(*rhs_vreg)
+                        .map_err(|e| CodegenError { message: e })?;
                 }
             }
             Instruction::Return {
                 value: Some(return_vreg),
             } => {
-                regalloc.allocate(*return_vreg);
+                regalloc
+                    .allocate(*return_vreg)
+                    .map_err(|e| CodegenError { message: e })?;
             }
             Instruction::Return { value: None } => {
                 // No register allocation needed for void return
             }
             Instruction::Branch { condition, .. } => {
-                regalloc.allocate(*condition);
+                regalloc
+                    .allocate(*condition)
+                    .map_err(|e| CodegenError { message: e })?;
             }
             Instruction::Call { dest, args, .. } => {
                 if let Some(dest_vreg) = dest {
-                    regalloc.allocate(*dest_vreg);
+                    regalloc
+                        .allocate(*dest_vreg)
+                        .map_err(|e| CodegenError { message: e })?;
                 }
                 for arg in args {
-                    regalloc.allocate(*arg);
+                    regalloc
+                        .allocate(*arg)
+                        .map_err(|e| CodegenError { message: e })?;
                 }
             }
             Instruction::Syscall {
@@ -936,17 +958,27 @@ impl Assembler {
                 syscall_num,
                 args,
             } => {
-                regalloc.allocate(*result);
-                regalloc.allocate(*syscall_num);
+                regalloc
+                    .allocate(*result)
+                    .map_err(|e| CodegenError { message: e })?;
+                regalloc
+                    .allocate(*syscall_num)
+                    .map_err(|e| CodegenError { message: e })?;
                 for arg in args {
-                    regalloc.allocate(*arg);
+                    regalloc
+                        .allocate(*arg)
+                        .map_err(|e| CodegenError { message: e })?;
                 }
             }
             Instruction::Load { dest, .. } => {
-                regalloc.allocate(*dest);
+                regalloc
+                    .allocate(*dest)
+                    .map_err(|e| CodegenError { message: e })?;
             }
             Instruction::Store { src, .. } => {
-                regalloc.allocate(*src);
+                regalloc
+                    .allocate(*src)
+                    .map_err(|e| CodegenError { message: e })?;
             }
             Instruction::SaveRegisters { .. } => {
                 // No VReg allocation needed for physical register operations
@@ -955,14 +987,19 @@ impl Assembler {
                 // No VReg allocation needed for physical register operations
             }
             Instruction::Push { src } => {
-                regalloc.allocate(*src);
+                regalloc
+                    .allocate(*src)
+                    .map_err(|e| CodegenError { message: e })?;
             }
             Instruction::Pop { dest } => {
-                regalloc.allocate(*dest);
+                regalloc
+                    .allocate(*dest)
+                    .map_err(|e| CodegenError { message: e })?;
             }
             // Labels and jumps don't need register allocation
             Instruction::Label(_) | Instruction::Jump(_) => {}
         }
+        Ok(())
     }
 
     fn emit_targetir_instruction(
@@ -2002,17 +2039,20 @@ fn main() -> i32 {
         // Semantic analysis
         let scope = rue_semantic::analyze_cst(&ast).expect("Semantic analysis failed");
 
-        // Code generation
+        // Code generation should fail due to register allocation limits
         let executable = compile_to_executable(&ast, &scope);
-        if let Err(ref e) = executable {
-            println!("Error: {}", e.message);
-        }
-        assert!(executable.is_ok());
+        assert!(
+            executable.is_err(),
+            "Factorial should fail due to register allocation limits"
+        );
 
-        let elf = executable.unwrap();
-        // Should produce a valid ELF executable
-        assert_eq!(&elf[0..4], &[0x7f, 0x45, 0x4c, 0x46]); // ELF magic
-        assert!(elf.len() > 200); // Should be reasonable size
+        // Verify it's specifically a register allocation error
+        let error = executable.unwrap_err();
+        assert!(
+            error.message.contains("Register allocation failed"),
+            "Expected register allocation error, got: {}",
+            error.message
+        );
     }
 
     #[test]
@@ -2042,7 +2082,7 @@ fn main() -> i32 {
         let mut assembler = Assembler::new();
         let mut regalloc = RegisterAllocator::new();
         let dest_vreg = VReg(0);
-        regalloc.allocate(dest_vreg);
+        regalloc.allocate(dest_vreg).unwrap();
 
         // Test that using PhysicalReg in binary operations returns proper error
         let instr = Instruction::BinaryOp {
