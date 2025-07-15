@@ -1,4 +1,4 @@
-fn factorial(n) {
+fn factorial(n: i32) -> i32 {
     if n <= 1 {
         1
     } else {
@@ -6,6 +6,6 @@ fn factorial(n) {
     }
 }
 
-fn main() {
+fn main() -> i32 {
     factorial(5)
 }

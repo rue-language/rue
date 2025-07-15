@@ -277,17 +277,27 @@ impl Codegen {
             self.function_labels.insert(name.clone(), func_label);
         }
 
-        // Handle parameter if exists
-        if let Some(param) = func.param_list.params.first() {
-            if let rue_lexer::TokenKind::Ident(param_name) = &param.kind {
+        // Handle parameters - use System V AMD64 ABI calling convention
+        let param_registers = [Register::Rdi, Register::Rsi, Register::Rdx, Register::Rcx];
+        for (i, param) in func.param_list.params.iter().enumerate() {
+            if i >= param_registers.len() {
+                return Err(CodegenError {
+                    message: format!(
+                        "Too many parameters (max {} supported)",
+                        param_registers.len()
+                    ),
+                });
+            }
+
+            if let rue_lexer::TokenKind::Ident(param_name) = &param.name.kind {
                 // Assign parameter to a new VReg
                 let param_vreg = self.next_vreg();
                 self.variables.insert(param_name.clone(), param_vreg);
 
-                // Move first parameter from RDI (calling convention) to parameter VReg
+                // Move parameter from register to parameter VReg
                 self.emit(Instruction::Copy {
                     dest: param_vreg,
-                    src: Value::PhysicalReg(Register::Rdi),
+                    src: Value::PhysicalReg(param_registers[i]),
                 });
             }
         }
@@ -427,17 +437,32 @@ impl Codegen {
     ) -> Result<VReg, CodegenError> {
         match expr {
             ExpressionNode::Literal(token) => {
-                if let rue_lexer::TokenKind::Integer(value) = &token.kind {
-                    let dest = self.next_vreg();
-                    self.emit(Instruction::Copy {
-                        dest,
-                        src: Value::Immediate(*value),
-                    });
-                    Ok(dest)
-                } else {
-                    Err(CodegenError {
+                let dest = self.next_vreg();
+                match &token.kind {
+                    rue_lexer::TokenKind::Integer(value) => {
+                        self.emit(Instruction::Copy {
+                            dest,
+                            src: Value::Immediate(*value),
+                        });
+                        Ok(dest)
+                    }
+                    rue_lexer::TokenKind::True => {
+                        self.emit(Instruction::Copy {
+                            dest,
+                            src: Value::Immediate(1),
+                        });
+                        Ok(dest)
+                    }
+                    rue_lexer::TokenKind::False => {
+                        self.emit(Instruction::Copy {
+                            dest,
+                            src: Value::Immediate(0),
+                        });
+                        Ok(dest)
+                    }
+                    _ => Err(CodegenError {
                         message: "Invalid literal token".to_string(),
-                    })
+                    }),
                 }
             }
             ExpressionNode::Identifier(token) => {
@@ -469,8 +494,12 @@ impl Codegen {
                     rue_lexer::TokenKind::Minus => BinOp::Sub,
                     rue_lexer::TokenKind::Star => BinOp::Mul,
                     rue_lexer::TokenKind::Slash => BinOp::Div,
+                    rue_lexer::TokenKind::Less => BinOp::Lt,
                     rue_lexer::TokenKind::LessEqual => BinOp::Le,
                     rue_lexer::TokenKind::Greater => BinOp::Gt,
+                    rue_lexer::TokenKind::GreaterEqual => BinOp::Ge,
+                    rue_lexer::TokenKind::Equal => BinOp::Eq,
+                    rue_lexer::TokenKind::NotEqual => BinOp::Ne,
                     _ => {
                         return Err(CodegenError {
                             message: format!(
@@ -1176,6 +1205,52 @@ impl Assembler {
                             }
                         }
                     }
+                    BinOp::Lt => {
+                        // Less than comparison
+                        match rhs {
+                            Value::VReg(rhs_vreg) => {
+                                let rhs_reg =
+                                    regalloc.get_register(*rhs_vreg).ok_or_else(|| {
+                                        CodegenError {
+                                            message: format!(
+                                                "No register allocated for {rhs_vreg:?}"
+                                            ),
+                                        }
+                                    })?;
+
+                                // cmp lhs, rhs (note: lhs is already in dest)
+                                self.code.push(0x48);
+                                self.code.push(0x39);
+                                self.code.push(
+                                    0xc0 | (self.register_code(&rhs_reg) << 3)
+                                        | self.register_code(&dest_reg),
+                                );
+
+                                // setl al (set if less)
+                                self.code.push(0x0f);
+                                self.code.push(0x9c);
+                                self.code.push(0xc0); // al register
+
+                                // movzx dest, al (zero extend to full register)
+                                self.code.push(0x48);
+                                self.code.push(0x0f);
+                                self.code.push(0xb6);
+                                self.code.push(0xc0 | (self.register_code(&dest_reg) << 3));
+                            }
+                            Value::Immediate(_) => {
+                                return Err(CodegenError {
+                                    message: "Immediate operands not yet supported for comparisons"
+                                        .to_string(),
+                                });
+                            }
+                            Value::PhysicalReg(_) => {
+                                return Err(CodegenError {
+                                    message: "PhysicalReg not supported in binary operations"
+                                        .to_string(),
+                                });
+                            }
+                        }
+                    }
                     BinOp::Gt => {
                         // Greater than comparison
                         match rhs {
@@ -1222,10 +1297,143 @@ impl Assembler {
                             }
                         }
                     }
-                    _ => {
-                        return Err(CodegenError {
-                            message: format!("Binary operation {op:?} not yet implemented"),
-                        });
+                    BinOp::Ge => {
+                        // Greater than or equal comparison
+                        match rhs {
+                            Value::VReg(rhs_vreg) => {
+                                let rhs_reg =
+                                    regalloc.get_register(*rhs_vreg).ok_or_else(|| {
+                                        CodegenError {
+                                            message: format!(
+                                                "No register allocated for {rhs_vreg:?}"
+                                            ),
+                                        }
+                                    })?;
+
+                                // cmp lhs, rhs (note: lhs is already in dest)
+                                self.code.push(0x48);
+                                self.code.push(0x39);
+                                self.code.push(
+                                    0xc0 | (self.register_code(&rhs_reg) << 3)
+                                        | self.register_code(&dest_reg),
+                                );
+
+                                // setge al (set if greater or equal)
+                                self.code.push(0x0f);
+                                self.code.push(0x9d);
+                                self.code.push(0xc0); // al register
+
+                                // movzx dest, al (zero extend to full register)
+                                self.code.push(0x48);
+                                self.code.push(0x0f);
+                                self.code.push(0xb6);
+                                self.code.push(0xc0 | (self.register_code(&dest_reg) << 3));
+                            }
+                            Value::Immediate(_) => {
+                                return Err(CodegenError {
+                                    message: "Immediate operands not yet supported for comparisons"
+                                        .to_string(),
+                                });
+                            }
+                            Value::PhysicalReg(_) => {
+                                return Err(CodegenError {
+                                    message: "PhysicalReg not supported in binary operations"
+                                        .to_string(),
+                                });
+                            }
+                        }
+                    }
+                    BinOp::Eq => {
+                        // Equal comparison
+                        match rhs {
+                            Value::VReg(rhs_vreg) => {
+                                let rhs_reg =
+                                    regalloc.get_register(*rhs_vreg).ok_or_else(|| {
+                                        CodegenError {
+                                            message: format!(
+                                                "No register allocated for {rhs_vreg:?}"
+                                            ),
+                                        }
+                                    })?;
+
+                                // cmp lhs, rhs (note: lhs is already in dest)
+                                self.code.push(0x48);
+                                self.code.push(0x39);
+                                self.code.push(
+                                    0xc0 | (self.register_code(&rhs_reg) << 3)
+                                        | self.register_code(&dest_reg),
+                                );
+
+                                // sete al (set if equal)
+                                self.code.push(0x0f);
+                                self.code.push(0x94);
+                                self.code.push(0xc0); // al register
+
+                                // movzx dest, al (zero extend to full register)
+                                self.code.push(0x48);
+                                self.code.push(0x0f);
+                                self.code.push(0xb6);
+                                self.code.push(0xc0 | (self.register_code(&dest_reg) << 3));
+                            }
+                            Value::Immediate(_) => {
+                                return Err(CodegenError {
+                                    message: "Immediate operands not yet supported for comparisons"
+                                        .to_string(),
+                                });
+                            }
+                            Value::PhysicalReg(_) => {
+                                return Err(CodegenError {
+                                    message: "PhysicalReg not supported in binary operations"
+                                        .to_string(),
+                                });
+                            }
+                        }
+                    }
+                    BinOp::Ne => {
+                        // Not equal comparison
+                        match rhs {
+                            Value::VReg(rhs_vreg) => {
+                                let rhs_reg =
+                                    regalloc.get_register(*rhs_vreg).ok_or_else(|| {
+                                        CodegenError {
+                                            message: format!(
+                                                "No register allocated for {rhs_vreg:?}"
+                                            ),
+                                        }
+                                    })?;
+
+                                // cmp lhs, rhs (note: lhs is already in dest)
+                                self.code.push(0x48);
+                                self.code.push(0x39);
+                                self.code.push(
+                                    0xc0 | (self.register_code(&rhs_reg) << 3)
+                                        | self.register_code(&dest_reg),
+                                );
+
+                                // setne al (set if not equal)
+                                self.code.push(0x0f);
+                                self.code.push(0x95);
+                                self.code.push(0xc0); // al register
+
+                                // movzx dest, al (zero extend to full register)
+                                self.code.push(0x48);
+                                self.code.push(0x0f);
+                                self.code.push(0xb6);
+                                self.code.push(0xc0 | (self.register_code(&dest_reg) << 3));
+                            }
+                            Value::Immediate(_) => {
+                                return Err(CodegenError {
+                                    message: "Immediate operands not yet supported for comparisons"
+                                        .to_string(),
+                                });
+                            }
+                            Value::PhysicalReg(_) => {
+                                return Err(CodegenError {
+                                    message: "PhysicalReg not supported in binary operations"
+                                        .to_string(),
+                                });
+                            }
+                        }
                     }
                 }
             }
@@ -1285,6 +1493,12 @@ impl Assembler {
                                 | self.register_code(&Register::Rax),
                         );
                     }
+                } else {
+                    // Unit type return - set rax to 0
+                    // xor rax, rax (more efficient than mov rax, 0)
+                    self.code.push(0x48); // REX.W
+                    self.code.push(0x31); // xor
+                    self.code.push(0xc0); // rax, rax
                 }
 
                 // ret instruction
@@ -1649,7 +1863,7 @@ mod tests {
     fn test_simple_main() {
         let instructions = compile_program(
             r#"
-fn main() {
+fn main() -> i32 {
     42
 }
 "#,
@@ -1678,7 +1892,7 @@ fn main() {
     fn test_arithmetic() {
         let instructions = compile_program(
             r#"
-fn main() {
+fn main() -> i32 {
     2 + 3
 }
 "#,
@@ -1698,11 +1912,11 @@ fn main() {
     fn test_function_with_parameter() {
         let instructions = compile_program(
             r#"
-fn test(x) {
+fn test(x: i32) -> i32 {
     x
 }
 
-fn main() {
+fn main() -> i32 {
     test(5)
 }
 "#,
@@ -1767,7 +1981,7 @@ fn main() {
     #[test]
     fn test_factorial_compilation() {
         let factorial_source = r#"
-fn factorial(n) {
+fn factorial(n: i32) -> i32 {
     if n <= 1 {
         1
     } else {
@@ -1775,7 +1989,7 @@ fn factorial(n) {
     }
 }
 
-fn main() {
+fn main() -> i32 {
     factorial(5)
 }
 "#;
@@ -1805,8 +2019,8 @@ fn main() {
     fn test_assignment_compilation() {
         let instructions = compile_program(
             r#"
-fn main() {
-    let x = 42;
+fn main() -> i32 {
+    let x: i32 = 42;
     x = 100;
     x
 }
@@ -1846,5 +2060,134 @@ fn main() {
                 .message
                 .contains("PhysicalReg not supported in binary operations")
         );
+    }
+
+    #[test]
+    fn test_boolean_literals() {
+        let instructions = compile_program(
+            r#"
+fn main() -> bool {
+    true
+}
+"#,
+        );
+        assert!(instructions.is_ok());
+        let instrs = instructions.unwrap();
+
+        // Should have a Copy instruction with immediate value 1 for true
+        assert!(instrs.iter().any(|i| matches!(
+            i,
+            Instruction::Copy {
+                src: Value::Immediate(1),
+                ..
+            }
+        )));
+    }
+
+    #[test]
+    fn test_boolean_false_literal() {
+        let instructions = compile_program(
+            r#"
+fn main() -> bool {
+    false
+}
+"#,
+        );
+        assert!(instructions.is_ok());
+        let instrs = instructions.unwrap();
+
+        // Should have a Copy instruction with immediate value 0 for false
+        assert!(instrs.iter().any(|i| matches!(
+            i,
+            Instruction::Copy {
+                src: Value::Immediate(0),
+                ..
+            }
+        )));
+    }
+
+    #[test]
+    fn test_comparison_operators() {
+        let instructions = compile_program(
+            r#"
+fn main() -> bool {
+    5 < 10
+}
+"#,
+        );
+        assert!(instructions.is_ok());
+        let instrs = instructions.unwrap();
+
+        // Should contain a less than comparison
+        assert!(
+            instrs
+                .iter()
+                .any(|i| matches!(i, Instruction::BinaryOp { op: BinOp::Lt, .. }))
+        );
+    }
+
+    #[test]
+    fn test_unit_return() {
+        let instructions = compile_program(
+            r#"
+fn helper() {
+}
+
+fn main() -> i32 {
+    helper();
+    42
+}
+"#,
+        );
+        assert!(instructions.is_ok());
+        let instrs = instructions.unwrap();
+
+        // Should have return instructions - one with None (unit) and one with Some (i32)
+        let return_count = instrs
+            .iter()
+            .filter(|i| matches!(i, Instruction::Return { .. }))
+            .count();
+        assert!(return_count >= 2);
+
+        // Check for unit return
+        assert!(
+            instrs
+                .iter()
+                .any(|i| matches!(i, Instruction::Return { value: None }))
+        );
+    }
+
+    #[test]
+    fn test_all_comparison_ops() {
+        // Test that all comparison operators are properly mapped
+        let test_cases = vec![
+            ("1 < 2", BinOp::Lt),
+            ("1 <= 2", BinOp::Le),
+            ("1 > 2", BinOp::Gt),
+            ("1 >= 2", BinOp::Ge),
+            ("1 == 2", BinOp::Eq),
+            ("1 != 2", BinOp::Ne),
+        ];
+
+        for (expr, expected_op) in test_cases {
+            let program = format!(
+                r#"
+fn main() -> bool {{
+    {expr}
+}}
+"#
+            );
+            let instructions = compile_program(&program);
+            assert!(instructions.is_ok(), "Failed to compile: {expr}");
+            let instrs = instructions.unwrap();
+
+            assert!(
+                instrs.iter().any(|i| matches!(
+                    i,
+                    Instruction::BinaryOp { op, .. } if *op == expected_op
+                )),
+                "Expected {expected_op:?} operation for expression: {expr}"
+            );
+        }
     }
 }

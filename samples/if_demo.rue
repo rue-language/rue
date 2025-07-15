@@ -1,1 +1,1 @@
-fn main() { if 1 <= 2 { 5 } else { 10 } }
+fn main() -> i32 { if 1 <= 2 { 5 } else { 10 } }

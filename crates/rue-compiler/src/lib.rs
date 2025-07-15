@@ -65,14 +65,19 @@ mod tests {
         let mut db = RueDatabase::default();
 
         // Create a source file
-        let file = SourceFile::new(&db, "test.rue".to_string(), "fn main() { 42 }".to_string());
+        let file = SourceFile::new(
+            &db,
+            "test.rue".to_string(),
+            "fn main() -> i32 { 42 }".to_string(),
+        );
 
         // Parse it
         let result = parse_file(&db, file);
         assert!(result.is_ok());
 
         // Modify the file
-        file.set_text(&mut db).to("fn main() { 2 + 3 }".to_string());
+        file.set_text(&mut db)
+            .to("fn main() -> i32 { 2 + 3 }".to_string());
 
         // Parse again (Salsa will recompute)
         let result = parse_file(&db, file);
@@ -88,7 +93,7 @@ mod tests {
             &db,
             "factorial.rue".to_string(),
             r#"
-fn factorial(n) {
+fn factorial(n: i32) -> i32 {
     if n <= 1 {
         1
     } else {
@@ -116,7 +121,7 @@ fn factorial(n) {
             &db,
             "test.rue".to_string(),
             r#"
-fn main() {
+fn main() -> i32 {
     42
 }
 "#
@@ -128,10 +133,10 @@ fn main() {
 
         let scope = result.unwrap();
         assert!(scope.functions.contains_key("main"));
-        assert_eq!(scope.functions["main"].param_count, 0);
+        assert_eq!(scope.functions["main"].param_types.len(), 0);
         assert_eq!(
             scope.functions["main"].return_type,
-            rue_semantic::RueType::I64
+            rue_semantic::RueType::I32
         );
     }
 
@@ -143,7 +148,7 @@ fn main() {
             &db,
             "test.rue".to_string(),
             r#"
-fn factorial(n) {
+fn factorial(n: i32) -> i32 {
     if n <= 1 {
         1
     } else {
@@ -159,7 +164,7 @@ fn factorial(n) {
 
         let scope = result.unwrap();
         assert!(scope.functions.contains_key("factorial"));
-        assert_eq!(scope.functions["factorial"].param_count, 1);
+        assert_eq!(scope.functions["factorial"].param_types.len(), 1);
     }
 
     #[test]
@@ -170,7 +175,7 @@ fn factorial(n) {
             &db,
             "test.rue".to_string(),
             r#"
-fn main() {
+fn main() -> i32 {
     undefined_var
 }
 "#
@@ -192,7 +197,7 @@ fn main() {
             &db,
             "test.rue".to_string(),
             r#"
-fn main() {
+fn main() -> i32 {
     undefined_func(42)
 }
 "#
@@ -214,11 +219,11 @@ fn main() {
             &db,
             "test.rue".to_string(),
             r#"
-fn factorial(n) {
+fn factorial(n: i32) -> i32 {
     n
 }
 
-fn main() {
+fn main() -> i32 {
     factorial()
 }
 "#
@@ -229,7 +234,7 @@ fn main() {
         assert!(result.is_err());
 
         let error = result.unwrap_err();
-        assert!(error.message.contains("expects 1 arguments, got 0"));
+        assert!(error.message.contains("Expected 1 arguments, got 0"));
     }
 
     #[test]
@@ -240,8 +245,8 @@ fn main() {
             &db,
             "test.rue".to_string(),
             r#"
-fn main() {
-    let x = 42;
+fn main() -> i32 {
+    let x: i32 = 42;
     x + 1
 }
 "#
@@ -260,7 +265,7 @@ fn main() {
             &db,
             "test.rue".to_string(),
             r#"
-fn main() {
+fn main() -> i32 {
     42
 }
 "#
@@ -283,7 +288,7 @@ fn main() {
             &db,
             "factorial.rue".to_string(),
             r#"
-fn factorial(n) {
+fn factorial(n: i32) -> i32 {
     if n <= 1 {
         1
     } else {
@@ -291,7 +296,7 @@ fn factorial(n) {
     }
 }
 
-fn main() {
+fn main() -> i32 {
     factorial(5)
 }
 "#
@@ -315,8 +320,8 @@ fn main() {
             &db,
             "assignment.rue".to_string(),
             r#"
-fn main() {
-    let x = 42;
+fn main() -> i32 {
+    let x: i32 = 42;
     x = 100;
     x
 }

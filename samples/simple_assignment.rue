@@ -1,5 +1,5 @@
-fn main() {
-    let x = 42;
+fn main() -> i32 {
+    let x: i32 = 42;
     x = 100;
     x
 }

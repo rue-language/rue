@@ -51,13 +51,37 @@ impl Parser {
         let fn_token = self.expect_kind(&TokenKind::Fn)?;
         let name = self.expect_ident()?;
         let param_list = self.parse_param_list()?;
+
+        // Parse optional return type
+        let return_type = if self.check_kind(&TokenKind::Arrow) {
+            Some(self.parse_return_type()?)
+        } else {
+            None
+        };
+
         let body = self.parse_block()?;
 
         Ok(FunctionNode {
             fn_token,
             name,
             param_list,
+            return_type,
             body,
+            trivia: Trivia {
+                leading: leading_trivia,
+                trailing: self.consume_trivia(),
+            },
+        })
+    }
+
+    fn parse_return_type(&mut self) -> ParseResult<ReturnTypeNode> {
+        let leading_trivia = self.consume_trivia();
+        let arrow = self.expect_kind(&TokenKind::Arrow)?;
+        let ty = self.parse_type()?;
+
+        Ok(ReturnTypeNode {
+            arrow,
+            ty,
             trivia: Trivia {
                 leading: leading_trivia,
                 trailing: self.consume_trivia(),
@@ -71,8 +95,13 @@ impl Parser {
 
         let mut params = Vec::new();
         if !self.check_kind(&TokenKind::RightParen) {
-            params.push(self.expect_ident()?);
-            // TODO: Handle multiple parameters with commas
+            params.push(self.parse_parameter()?);
+
+            // Handle multiple parameters with commas
+            while self.check_kind(&TokenKind::Comma) {
+                self.advance(); // consume comma
+                params.push(self.parse_parameter()?);
+            }
         }
 
         let close_paren = self.expect_kind(&TokenKind::RightParen)?;
@@ -81,6 +110,27 @@ impl Parser {
             open_paren,
             params,
             close_paren,
+            trivia: Trivia {
+                leading: leading_trivia,
+                trailing: self.consume_trivia(),
+            },
+        })
+    }
+
+    fn parse_parameter(&mut self) -> ParseResult<ParameterNode> {
+        let leading_trivia = self.consume_trivia();
+        let name = self.expect_ident()?;
+
+        // Parse optional type annotation
+        let type_annotation = if self.check_kind(&TokenKind::Colon) {
+            Some(self.parse_type_annotation()?)
+        } else {
+            None
+        };
+
+        Ok(ParameterNode {
+            name,
+            type_annotation,
             trivia: Trivia {
                 leading: leading_trivia,
                 trailing: self.consume_trivia(),
@@ -202,6 +252,14 @@ impl Parser {
         let leading_trivia = self.consume_trivia();
         let let_token = self.expect_kind(&TokenKind::Let)?;
         let name = self.expect_ident()?;
+
+        // Parse optional type annotation
+        let type_annotation = if self.check_kind(&TokenKind::Colon) {
+            Some(self.parse_type_annotation()?)
+        } else {
+            None
+        };
+
         let equals = self.expect_kind(&TokenKind::Assign)?;
         let value = self.parse_expression()?;
         let semicolon = self.expect_kind(&TokenKind::Semicolon)?;
@@ -209,6 +267,7 @@ impl Parser {
         Ok(LetStatementNode {
             let_token,
             name,
+            type_annotation,
             equals,
             value,
             semicolon,
@@ -385,7 +444,12 @@ impl Parser {
             let mut args = Vec::new();
             if !self.check_kind(&TokenKind::RightParen) {
                 args.push(self.parse_expression()?);
-                // TODO: Handle multiple arguments with commas
+
+                // Handle multiple arguments with commas
+                while self.check_kind(&TokenKind::Comma) {
+                    self.advance(); // consume comma
+                    args.push(self.parse_expression()?);
+                }
             }
 
             let close_paren = self.expect_kind(&TokenKind::RightParen)?;
@@ -408,6 +472,7 @@ impl Parser {
     fn parse_primary(&mut self) -> ParseResult<ExpressionNode> {
         match &self.peek().kind {
             TokenKind::Integer(_) => Ok(ExpressionNode::Literal(self.advance())),
+            TokenKind::True | TokenKind::False => Ok(ExpressionNode::Literal(self.advance())),
             TokenKind::Ident(_) => Ok(ExpressionNode::Identifier(self.advance())),
             TokenKind::If => Ok(ExpressionNode::If(Box::new(self.parse_if_statement()?))),
             TokenKind::While => Ok(ExpressionNode::While(Box::new(
@@ -474,6 +539,39 @@ impl Parser {
         // Note: lexer already skips whitespace, so no trivia to consume for now
         // TODO: Handle comments when lexer supports them
         Vec::new()
+    }
+
+    fn parse_type(&mut self) -> ParseResult<TypeNode> {
+        match &self.peek().kind {
+            TokenKind::I32 => Ok(TypeNode::I32(self.advance())),
+            TokenKind::I64 => Ok(TypeNode::I64(self.advance())),
+            TokenKind::Bool => Ok(TypeNode::Bool(self.advance())),
+            TokenKind::LeftParen => {
+                // Unit type: ()
+                self.advance(); // consume '('
+                self.expect_kind(&TokenKind::RightParen)?;
+                Ok(TypeNode::Unit)
+            }
+            _ => Err(ParseError {
+                message: format!("Expected type, found {:?}", self.peek().kind),
+                span: self.peek().span,
+            }),
+        }
+    }
+
+    fn parse_type_annotation(&mut self) -> ParseResult<TypeAnnotationNode> {
+        let leading_trivia = self.consume_trivia();
+        let colon = self.expect_kind(&TokenKind::Colon)?;
+        let ty = self.parse_type()?;
+
+        Ok(TypeAnnotationNode {
+            colon,
+            ty,
+            trivia: Trivia {
+                leading: leading_trivia,
+                trailing: self.consume_trivia(),
+            },
+        })
     }
 }
 
@@ -647,7 +745,7 @@ mod tests {
 
     #[test]
     fn test_simple_function() {
-        let result = lex_and_parse("fn test(x) { x }");
+        let result = lex_and_parse("fn test(x: i32) -> i32 { x }");
         assert!(result.is_ok());
         let cst = result.unwrap();
         assert_eq!(cst.items.len(), 1);
@@ -662,9 +760,24 @@ mod tests {
 
                 // Check parameter
                 assert_eq!(func.param_list.params.len(), 1);
-                match &func.param_list.params[0].kind {
+                let param = &func.param_list.params[0];
+                match &param.name.kind {
                     TokenKind::Ident(name) => assert_eq!(name, "x"),
-                    _ => panic!("Expected identifier token for parameter"),
+                    _ => panic!("Expected identifier for parameter"),
+                }
+                assert!(param.type_annotation.is_some());
+                let type_ann = param.type_annotation.as_ref().unwrap();
+                match &type_ann.ty {
+                    TypeNode::I32(_) => {} // Success
+                    _ => panic!("Expected i32 type for parameter"),
+                }
+
+                // Check return type
+                assert!(func.return_type.is_some());
+                let return_type = func.return_type.as_ref().unwrap();
+                match &return_type.ty {
+                    TypeNode::I32(_) => {} // Success
+                    _ => panic!("Expected i32 return type"),
                 }
 
                 // Check body has a final expression
@@ -677,7 +790,7 @@ mod tests {
     #[test]
     fn test_factorial_example() {
         let source = r#"
-fn factorial(n) {
+fn factorial(n: i32) -> i32 {
     if n <= 1 {
         1
     } else {
@@ -685,7 +798,7 @@ fn factorial(n) {
     }
 }
 
-fn main() {
+fn main() -> i32 {
     factorial(5)
 }
         "#;
@@ -816,6 +929,286 @@ fn main() {
                 _ => panic!("Expected assign statement"),
             },
             _ => panic!("Expected statement"),
+        }
+    }
+
+    #[test]
+    fn test_typed_let_statement() {
+        let result = lex_and_parse("let x: i32 = 42;");
+        assert!(result.is_ok());
+        let cst = result.unwrap();
+        assert_eq!(cst.items.len(), 1);
+
+        match &cst.items[0] {
+            CstNode::Statement(stmt) => match &**stmt {
+                StatementNode::Let(let_stmt) => {
+                    // Check variable name
+                    match &let_stmt.name.kind {
+                        TokenKind::Ident(name) => assert_eq!(name, "x"),
+                        _ => panic!("Expected identifier token for variable name"),
+                    }
+
+                    // Check type annotation
+                    assert!(let_stmt.type_annotation.is_some());
+                    let type_ann = let_stmt.type_annotation.as_ref().unwrap();
+                    match &type_ann.ty {
+                        TypeNode::I32(_) => {} // Success
+                        _ => panic!("Expected i32 type"),
+                    }
+
+                    // Check value
+                    match &let_stmt.value {
+                        ExpressionNode::Literal(token) => match &token.kind {
+                            TokenKind::Integer(value) => assert_eq!(*value, 42),
+                            _ => panic!("Expected integer token for value"),
+                        },
+                        _ => panic!("Expected literal for value"),
+                    }
+                }
+                _ => panic!("Expected let statement"),
+            },
+            _ => panic!("Expected statement"),
+        }
+    }
+
+    #[test]
+    fn test_bool_type_let_statement() {
+        let result = lex_and_parse("let flag: bool = true;");
+        assert!(result.is_ok());
+        let cst = result.unwrap();
+        assert_eq!(cst.items.len(), 1);
+
+        match &cst.items[0] {
+            CstNode::Statement(stmt) => match &**stmt {
+                StatementNode::Let(let_stmt) => {
+                    // Check variable name
+                    match &let_stmt.name.kind {
+                        TokenKind::Ident(name) => assert_eq!(name, "flag"),
+                        _ => panic!("Expected identifier token for variable name"),
+                    }
+
+                    // Check type annotation
+                    assert!(let_stmt.type_annotation.is_some());
+                    let type_ann = let_stmt.type_annotation.as_ref().unwrap();
+                    match &type_ann.ty {
+                        TypeNode::Bool(_) => {} // Success
+                        _ => panic!("Expected bool type"),
+                    }
+
+                    // Check value
+                    match &let_stmt.value {
+                        ExpressionNode::Literal(token) => match &token.kind {
+                            TokenKind::True => {} // Success
+                            _ => panic!("Expected true token for value"),
+                        },
+                        _ => panic!("Expected literal for value"),
+                    }
+                }
+                _ => panic!("Expected let statement"),
+            },
+            _ => panic!("Expected statement"),
+        }
+    }
+
+    #[test]
+    fn test_untyped_let_statement() {
+        // Parser should still accept untyped let statements
+        let result = lex_and_parse("let x = 42;");
+        assert!(result.is_ok());
+        let cst = result.unwrap();
+        assert_eq!(cst.items.len(), 1);
+
+        match &cst.items[0] {
+            CstNode::Statement(stmt) => match &**stmt {
+                StatementNode::Let(let_stmt) => {
+                    // Check variable name
+                    match &let_stmt.name.kind {
+                        TokenKind::Ident(name) => assert_eq!(name, "x"),
+                        _ => panic!("Expected identifier token for variable name"),
+                    }
+
+                    // Check type annotation is None
+                    assert!(let_stmt.type_annotation.is_none());
+
+                    // Check value
+                    match &let_stmt.value {
+                        ExpressionNode::Literal(token) => match &token.kind {
+                            TokenKind::Integer(value) => assert_eq!(*value, 42),
+                            _ => panic!("Expected integer token for value"),
+                        },
+                        _ => panic!("Expected literal for value"),
+                    }
+                }
+                _ => panic!("Expected let statement"),
+            },
+            _ => panic!("Expected statement"),
+        }
+    }
+
+    #[test]
+    fn test_typed_function() {
+        let result = lex_and_parse("fn add(a: i32, b: i32) -> i32 { a + b }");
+        assert!(result.is_ok());
+        let cst = result.unwrap();
+        assert_eq!(cst.items.len(), 1);
+
+        match &cst.items[0] {
+            CstNode::Function(func) => {
+                // Check function name
+                match &func.name.kind {
+                    TokenKind::Ident(name) => assert_eq!(name, "add"),
+                    _ => panic!("Expected identifier token for function name"),
+                }
+
+                // Check parameters
+                assert_eq!(func.param_list.params.len(), 2);
+
+                // Check first parameter
+                let param0 = &func.param_list.params[0];
+                match &param0.name.kind {
+                    TokenKind::Ident(name) => assert_eq!(name, "a"),
+                    _ => panic!("Expected identifier for first parameter"),
+                }
+                assert!(param0.type_annotation.is_some());
+                let type_ann0 = param0.type_annotation.as_ref().unwrap();
+                match &type_ann0.ty {
+                    TypeNode::I32(_) => {} // Success
+                    _ => panic!("Expected i32 type for first parameter"),
+                }
+
+                // Check second parameter
+                let param1 = &func.param_list.params[1];
+                match &param1.name.kind {
+                    TokenKind::Ident(name) => assert_eq!(name, "b"),
+                    _ => panic!("Expected identifier for second parameter"),
+                }
+                assert!(param1.type_annotation.is_some());
+                let type_ann1 = param1.type_annotation.as_ref().unwrap();
+                match &type_ann1.ty {
+                    TypeNode::I32(_) => {} // Success
+                    _ => panic!("Expected i32 type for second parameter"),
+                }
+
+                // Check return type
+                assert!(func.return_type.is_some());
+                let return_type = func.return_type.as_ref().unwrap();
+                match &return_type.ty {
+                    TypeNode::I32(_) => {} // Success
+                    _ => panic!("Expected i32 return type"),
+                }
+
+                // Check body has a final expression
+                assert!(func.body.final_expr.is_some());
+            }
+            _ => panic!("Expected function"),
+        }
+    }
+
+    #[test]
+    fn test_unit_return_function() {
+        let result = lex_and_parse("fn print(x: i32) { x; }");
+        assert!(result.is_ok());
+        let cst = result.unwrap();
+        assert_eq!(cst.items.len(), 1);
+
+        match &cst.items[0] {
+            CstNode::Function(func) => {
+                // Check function name
+                match &func.name.kind {
+                    TokenKind::Ident(name) => assert_eq!(name, "print"),
+                    _ => panic!("Expected identifier token for function name"),
+                }
+
+                // Check parameter
+                assert_eq!(func.param_list.params.len(), 1);
+                let param = &func.param_list.params[0];
+                match &param.name.kind {
+                    TokenKind::Ident(name) => assert_eq!(name, "x"),
+                    _ => panic!("Expected identifier for parameter"),
+                }
+                assert!(param.type_annotation.is_some());
+                let type_ann = param.type_annotation.as_ref().unwrap();
+                match &type_ann.ty {
+                    TypeNode::I32(_) => {} // Success
+                    _ => panic!("Expected i32 type for parameter"),
+                }
+
+                // Check no return type (defaults to unit)
+                assert!(func.return_type.is_none());
+
+                // Check body has no final expression (statements only)
+                assert!(func.body.final_expr.is_none());
+                assert_eq!(func.body.statements.len(), 1);
+            }
+            _ => panic!("Expected function"),
+        }
+    }
+
+    #[test]
+    fn test_explicit_unit_return() {
+        let result = lex_and_parse("fn noop() -> () { }");
+        assert!(result.is_ok());
+        let cst = result.unwrap();
+        assert_eq!(cst.items.len(), 1);
+
+        match &cst.items[0] {
+            CstNode::Function(func) => {
+                // Check function name
+                match &func.name.kind {
+                    TokenKind::Ident(name) => assert_eq!(name, "noop"),
+                    _ => panic!("Expected identifier token for function name"),
+                }
+
+                // Check no parameters
+                assert_eq!(func.param_list.params.len(), 0);
+
+                // Check explicit unit return type
+                assert!(func.return_type.is_some());
+                let return_type = func.return_type.as_ref().unwrap();
+                match &return_type.ty {
+                    TypeNode::Unit => {} // Success
+                    _ => panic!("Expected unit return type"),
+                }
+
+                // Check empty body
+                assert!(func.body.final_expr.is_none());
+                assert_eq!(func.body.statements.len(), 0);
+            }
+            _ => panic!("Expected function"),
+        }
+    }
+
+    #[test]
+    fn test_untyped_parameters() {
+        let result = lex_and_parse("fn factorial(n) { n }");
+        assert!(result.is_ok());
+        let cst = result.unwrap();
+        assert_eq!(cst.items.len(), 1);
+
+        match &cst.items[0] {
+            CstNode::Function(func) => {
+                // Check function name
+                match &func.name.kind {
+                    TokenKind::Ident(name) => assert_eq!(name, "factorial"),
+                    _ => panic!("Expected identifier token for function name"),
+                }
+
+                // Check parameter without type annotation
+                assert_eq!(func.param_list.params.len(), 1);
+                let param = &func.param_list.params[0];
+                match &param.name.kind {
+                    TokenKind::Ident(name) => assert_eq!(name, "n"),
+                    _ => panic!("Expected identifier for parameter"),
+                }
+                assert!(param.type_annotation.is_none()); // No type annotation
+
+                // Check no return type
+                assert!(func.return_type.is_none());
+
+                // Check body has a final expression
+                assert!(func.body.final_expr.is_some());
+            }
+            _ => panic!("Expected function"),
         }
     }
 }
