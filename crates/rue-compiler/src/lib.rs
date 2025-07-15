@@ -305,15 +305,9 @@ fn main() -> i32 {
 
         let result = compile_file(&db, file);
         assert!(
-            result.is_err(),
-            "Factorial should fail due to register allocation limits"
-        );
-
-        let error = result.unwrap_err();
-        assert!(
-            error.message.contains("Register allocation failed"),
-            "Expected register allocation error, got: {}",
-            error.message
+            result.is_ok(),
+            "Factorial should now compile successfully with working spill support: {:?}",
+            result.err()
         );
     }
 

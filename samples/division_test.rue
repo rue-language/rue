@@ -1,0 +1,9 @@
+fn test_division() -> i32 {
+    let a = 100;
+    let b = 10;
+    a / b
+}
+
+fn main() -> i32 {
+    test_division()
+}

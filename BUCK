@@ -335,6 +335,10 @@ cargo.rust_library(
     crate = "either",
     crate_root = "either-1.15.0.crate/src/lib.rs",
     edition = "2021",
+    features = [
+        "std",
+        "use_std",
+    ],
     visibility = [],
 )
 
@@ -922,6 +926,12 @@ cargo.rust_library(
         ":icu_normalizer-2.0.0",
         ":icu_properties-2.0.1",
     ],
+)
+
+alias(
+    name = "indexmap",
+    actual = ":indexmap-2.9.0",
+    visibility = ["PUBLIC"],
 )
 
 http_archive(
@@ -2621,8 +2631,10 @@ cargo.rust_library(
         "Win32_Storage",
         "Win32_Storage_FileSystem",
         "Win32_System",
+        "Win32_System_Console",
         "Win32_System_IO",
         "Win32_System_Pipes",
+        "Win32_System_SystemInformation",
         "Win32_System_WindowsProgramming",
         "default",
     ],
