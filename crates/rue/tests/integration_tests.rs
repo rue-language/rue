@@ -127,47 +127,6 @@ fn test_rue_program(sample_name: &str, expected_exit_code: i32) {
     fs::remove_file(&executable_path).expect("Failed to remove executable after test");
 }
 
-/// Test that a program fails compilation with a register allocation error
-fn test_rue_program_compilation_failure(sample_name: &str) {
-    let project_root = get_project_root();
-
-    let sample_path = project_root
-        .join("samples")
-        .join(format!("{sample_name}.rue"));
-
-    if !sample_path.exists() {
-        panic!("Sample file {sample_path:?} does not exist");
-    }
-
-    // Compile the program - expect this to fail
-    let compile_output = Command::new("cargo")
-        .arg("run")
-        .arg("--bin")
-        .arg("rue")
-        .arg("--")
-        .arg(&sample_path)
-        .current_dir(project_root)
-        .output()
-        .expect("Failed to execute command");
-
-    // Compilation should fail
-    if compile_output.status.success() {
-        panic!(
-            "Expected compilation failure for {}.rue but it succeeded:\nstdout: {}\nstderr: {}",
-            sample_name,
-            String::from_utf8_lossy(&compile_output.stdout),
-            String::from_utf8_lossy(&compile_output.stderr)
-        );
-    }
-
-    // Verify it failed with a register allocation error
-    let stderr = String::from_utf8_lossy(&compile_output.stderr);
-    assert!(
-        stderr.contains("Register allocation failed"),
-        "Expected register allocation failure for {sample_name}.rue, got: {stderr}"
-    );
-}
-
 #[test]
 fn test_simple_program() {
     test_rue_program("simple", 42);
@@ -175,27 +134,55 @@ fn test_simple_program() {
 
 #[test]
 fn test_factorial_program() {
-    test_rue_program_compilation_failure("factorial");
+    test_rue_program("factorial", 120); // factorial(5) = 120
+}
+
+#[test]
+#[ignore] // for now, we don't compile this correctly yet
+fn test_fibonacci_program() {
+    test_rue_program("fibonacci", 55); // fibonacci(10) = 55
 }
 
 #[test]
 fn test_while_loop_program() {
-    test_rue_program_compilation_failure("countdown");
+    test_rue_program("countdown", 42); // simple_while(10) returns 42 since 10 > 3
+}
+
+#[test]
+fn test_assignment_demo_program() {
+    test_rue_program("assignment_demo", 6); // test_assignment_in_while() returns 6
+}
+
+#[test]
+fn test_division_program() {
+    test_rue_program("division_test", 10); // 100 / 10 = 10
+}
+
+#[test]
+fn test_large_immediate_program() {
+    test_rue_program("large_immediate", 0); // Tests 64-bit immediate handling
+}
+
+#[test]
+fn test_large_div_immediate_program() {
+    test_rue_program("large_div_immediate", 1); // 100 / 2^31 = 0, then + 1 = 1
 }
 
 #[test]
 fn test_all_samples_compile() {
     // Test samples that should compile successfully
-    let successful_samples = ["simple"];
+    let successful_samples = [
+        ("simple", 42),
+        ("factorial", 120),
+        ("countdown", 42),          // simple_while(10) returns 42 since 10 > 3
+        ("if_demo", 5),             // if 1 <= 2 { 5 } else { 10 } returns 5
+        ("assignment_demo", 6),     // test_assignment_in_while() returns sum of 0+1+2+3 = 6
+        ("division_test", 10),      // 100 / 10 = 10
+        ("large_immediate", 0),     // Tests 64-bit immediate handling
+        ("large_div_immediate", 1), // Tests division by large immediate
+    ];
 
-    for sample_name in successful_samples {
-        test_rue_program(sample_name, 42); // Simple programs return 42
-    }
-
-    // Test samples that should fail compilation due to register limits
-    let failing_samples = ["factorial", "countdown", "if_demo"];
-
-    for sample_name in failing_samples {
-        test_rue_program_compilation_failure(sample_name);
+    for (sample_name, expected_exit_code) in successful_samples {
+        test_rue_program(sample_name, expected_exit_code);
     }
 }
