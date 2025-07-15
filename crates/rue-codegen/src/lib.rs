@@ -351,7 +351,7 @@ impl Codegen {
                         self.variables.insert(var_name.clone(), value_vreg);
                     } else {
                         return Err(CodegenError {
-                            message: format!("Undefined variable in assignment: {}", var_name),
+                            message: format!("Undefined variable in assignment: {var_name}"),
                         });
                     }
                 } else {
@@ -451,7 +451,7 @@ impl Codegen {
                         Ok(dest)
                     } else {
                         Err(CodegenError {
-                            message: format!("Undefined variable: {}", name),
+                            message: format!("Undefined variable: {name}"),
                         })
                     }
                 } else {
@@ -810,8 +810,7 @@ impl Assembler {
                             .get_register(*condition)
                             .ok_or_else(|| CodegenError {
                                 message: format!(
-                                    "No register allocated for condition {:?}",
-                                    condition
+                                    "No register allocated for condition {condition:?}"
                                 ),
                             })?;
 
@@ -855,7 +854,7 @@ impl Assembler {
                 }
             } else {
                 return Err(CodegenError {
-                    message: format!("Undefined label: {:?}", target_label),
+                    message: format!("Undefined label: {target_label:?}"),
                 });
             }
         }
@@ -945,7 +944,7 @@ impl Assembler {
         match instr {
             Instruction::Copy { dest, src } => {
                 let dest_reg = regalloc.get_register(*dest).ok_or_else(|| CodegenError {
-                    message: format!("No register allocated for {:?}", dest),
+                    message: format!("No register allocated for {dest:?}"),
                 })?;
 
                 match src {
@@ -960,7 +959,7 @@ impl Assembler {
                             regalloc
                                 .get_register(*src_vreg)
                                 .ok_or_else(|| CodegenError {
-                                    message: format!("No register allocated for {:?}", src_vreg),
+                                    message: format!("No register allocated for {src_vreg:?}"),
                                 })?;
 
                         // mov dst, src = 48 89 ModR/M
@@ -984,7 +983,7 @@ impl Assembler {
             }
             Instruction::BinaryOp { dest, lhs, rhs, op } => {
                 let dest_reg = regalloc.get_register(*dest).ok_or_else(|| CodegenError {
-                    message: format!("No register allocated for {:?}", dest),
+                    message: format!("No register allocated for {dest:?}"),
                 })?;
 
                 // For simplicity, we'll use a two-instruction approach:
@@ -1004,7 +1003,7 @@ impl Assembler {
                             regalloc
                                 .get_register(*lhs_vreg)
                                 .ok_or_else(|| CodegenError {
-                                    message: format!("No register allocated for {:?}", lhs_vreg),
+                                    message: format!("No register allocated for {lhs_vreg:?}"),
                                 })?;
                         // mov dest, lhs
                         self.code.push(0x48);
@@ -1030,8 +1029,7 @@ impl Assembler {
                                     regalloc.get_register(*rhs_vreg).ok_or_else(|| {
                                         CodegenError {
                                             message: format!(
-                                                "No register allocated for {:?}",
-                                                rhs_vreg
+                                                "No register allocated for {rhs_vreg:?}"
                                             ),
                                         }
                                     })?;
@@ -1065,8 +1063,7 @@ impl Assembler {
                                     regalloc.get_register(*rhs_vreg).ok_or_else(|| {
                                         CodegenError {
                                             message: format!(
-                                                "No register allocated for {:?}",
-                                                rhs_vreg
+                                                "No register allocated for {rhs_vreg:?}"
                                             ),
                                         }
                                     })?;
@@ -1099,8 +1096,7 @@ impl Assembler {
                                     regalloc.get_register(*rhs_vreg).ok_or_else(|| {
                                         CodegenError {
                                             message: format!(
-                                                "No register allocated for {:?}",
-                                                rhs_vreg
+                                                "No register allocated for {rhs_vreg:?}"
                                             ),
                                         }
                                     })?;
@@ -1142,8 +1138,7 @@ impl Assembler {
                                     regalloc.get_register(*rhs_vreg).ok_or_else(|| {
                                         CodegenError {
                                             message: format!(
-                                                "No register allocated for {:?}",
-                                                rhs_vreg
+                                                "No register allocated for {rhs_vreg:?}"
                                             ),
                                         }
                                     })?;
@@ -1189,8 +1184,7 @@ impl Assembler {
                                     regalloc.get_register(*rhs_vreg).ok_or_else(|| {
                                         CodegenError {
                                             message: format!(
-                                                "No register allocated for {:?}",
-                                                rhs_vreg
+                                                "No register allocated for {rhs_vreg:?}"
                                             ),
                                         }
                                     })?;
@@ -1230,7 +1224,7 @@ impl Assembler {
                     }
                     _ => {
                         return Err(CodegenError {
-                            message: format!("Binary operation {:?} not yet implemented", op),
+                            message: format!("Binary operation {op:?} not yet implemented"),
                         });
                     }
                 }
@@ -1244,7 +1238,7 @@ impl Assembler {
                     regalloc
                         .get_register(*condition)
                         .ok_or_else(|| CodegenError {
-                            message: format!("No register allocated for condition {:?}", condition),
+                            message: format!("No register allocated for condition {condition:?}"),
                         })?;
 
                 // cmp condition_reg, 0
@@ -1278,8 +1272,7 @@ impl Assembler {
                             .get_register(*return_vreg)
                             .ok_or_else(|| CodegenError {
                                 message: format!(
-                                    "No register allocated for return value {:?}",
-                                    return_vreg
+                                    "No register allocated for return value {return_vreg:?}"
                                 ),
                             })?;
 
@@ -1318,7 +1311,7 @@ impl Assembler {
                     let src_reg = regalloc
                         .get_register(*arg_vreg)
                         .ok_or_else(|| CodegenError {
-                            message: format!("No register allocated for argument {:?}", arg_vreg),
+                            message: format!("No register allocated for argument {arg_vreg:?}"),
                         })?;
                     let dest_reg = &arg_registers[i];
 
@@ -1345,8 +1338,7 @@ impl Assembler {
                             .get_register(*dest_vreg)
                             .ok_or_else(|| CodegenError {
                                 message: format!(
-                                    "No register allocated for call result {:?}",
-                                    dest_vreg
+                                    "No register allocated for call result {dest_vreg:?}"
                                 ),
                             })?;
 
@@ -1372,8 +1364,7 @@ impl Assembler {
                         .get_register(*syscall_num)
                         .ok_or_else(|| CodegenError {
                             message: format!(
-                                "No register allocated for syscall number {:?}",
-                                syscall_num
+                                "No register allocated for syscall number {syscall_num:?}"
                             ),
                         })?;
 
@@ -1410,7 +1401,7 @@ impl Assembler {
 
                 // Move result from rax to result register if different
                 let result_reg = regalloc.get_register(*result).ok_or_else(|| CodegenError {
-                    message: format!("No register allocated for syscall result {:?}", result),
+                    message: format!("No register allocated for syscall result {result:?}"),
                 })?;
 
                 if result_reg != Register::Rax {
@@ -1426,7 +1417,7 @@ impl Assembler {
             Instruction::Load { dest, offset } => {
                 // Load from stack: mov dest, [rsp + offset]
                 let dest_reg = regalloc.get_register(*dest).ok_or_else(|| CodegenError {
-                    message: format!("No register allocated for load dest {:?}", dest),
+                    message: format!("No register allocated for load dest {dest:?}"),
                 })?;
 
                 // mov dest_reg, [rsp + offset]
@@ -1444,7 +1435,7 @@ impl Assembler {
             Instruction::Store { src, offset } => {
                 // Store to stack: mov [rsp + offset], src
                 let src_reg = regalloc.get_register(*src).ok_or_else(|| CodegenError {
-                    message: format!("No register allocated for store src {:?}", src),
+                    message: format!("No register allocated for store src {src:?}"),
                 })?;
 
                 // mov [rsp + offset], src_reg
@@ -1476,7 +1467,7 @@ impl Assembler {
             Instruction::Push { src } => {
                 // Push VReg to stack
                 let src_reg = regalloc.get_register(*src).ok_or_else(|| CodegenError {
-                    message: format!("No register allocated for push src {:?}", src),
+                    message: format!("No register allocated for push src {src:?}"),
                 })?;
 
                 // push src_reg (64-bit)
@@ -1485,7 +1476,7 @@ impl Assembler {
             Instruction::Pop { dest } => {
                 // Pop from stack to VReg
                 let dest_reg = regalloc.get_register(*dest).ok_or_else(|| CodegenError {
-                    message: format!("No register allocated for pop dest {:?}", dest),
+                    message: format!("No register allocated for pop dest {dest:?}"),
                 })?;
 
                 // pop dest_reg (64-bit)

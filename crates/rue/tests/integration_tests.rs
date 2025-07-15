@@ -55,14 +55,13 @@ fn test_rue_program(sample_name: &str, expected_exit_code: i32) {
 
     let sample_path = project_root
         .join("samples")
-        .join(format!("{}.rue", sample_name));
+        .join(format!("{sample_name}.rue"));
     let executable_path = project_root.join("samples").join(sample_name);
 
     // Ensure the sample file exists
     assert!(
         sample_path.exists(),
-        "Sample file {:?} does not exist",
-        sample_path
+        "Sample file {sample_path:?} does not exist"
     );
 
     // Clean up any existing executable
@@ -102,8 +101,7 @@ fn test_rue_program(sample_name: &str, expected_exit_code: i32) {
     // Verify the executable was created
     assert!(
         executable_path.exists(),
-        "Executable {:?} was not created",
-        executable_path
+        "Executable {executable_path:?} was not created"
     );
 
     // Run the compiled executable
@@ -171,7 +169,7 @@ fn test_all_samples_compile() {
 
     // Test that each .rue file compiles successfully
     for sample_name in rue_files {
-        let sample_path = samples_dir.join(format!("{}.rue", sample_name));
+        let sample_path = samples_dir.join(format!("{sample_name}.rue"));
         let executable_path = project_root.join("samples").join(&sample_name);
 
         // Clean up any existing executable
@@ -209,9 +207,7 @@ fn test_all_samples_compile() {
         // Verify executable was created
         assert!(
             executable_path.exists(),
-            "Executable {:?} was not created for {}.rue",
-            executable_path,
-            sample_name
+            "Executable {executable_path:?} was not created for {sample_name}.rue"
         );
 
         // Clean up

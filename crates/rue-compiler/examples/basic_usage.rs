@@ -13,7 +13,7 @@ fn main() {
         "main.rue".to_string(),
         r#"
 fn main() {
-    let x = 42
+    let x = 42;
     if x <= 1 {
         1
     } else {
@@ -51,7 +51,10 @@ fn main() {
     let result2 = parse_file(&db, file);
 
     match result2 {
-        Ok(_) => println!("Successfully re-parsed updated file"),
+        Ok(ast) => {
+            println!("Successfully re-parsed updated file");
+            println!("AST contains {} top-level items", ast.items.len());
+        }
         Err(error) => println!("Re-parse error: {}", error.message),
     }
 }

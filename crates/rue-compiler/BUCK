@@ -30,3 +30,13 @@ rust_test(
         "//:salsa",
     ],
 )
+
+rust_binary(
+    name = "basic_usage",
+    srcs = ["examples/basic_usage.rs"],
+    edition = "2024",
+    deps = [
+        ":rue-compiler",
+        "//:salsa",
+    ],
+)
