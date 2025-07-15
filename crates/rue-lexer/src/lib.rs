@@ -172,12 +172,12 @@ impl<'a> Lexer<'a> {
                         },
                     }
                 } else {
-                    panic!("Unexpected character '!' at position {}", start);
+                    panic!("Unexpected character '!' at position {start}");
                 }
             }
             '0'..='9' => self.lex_number(start),
             'a'..='z' | 'A'..='Z' | '_' => self.lex_ident_or_keyword(start),
-            c => panic!("Unexpected character '{}' at position {}", c, start),
+            c => panic!("Unexpected character '{c}' at position {start}"),
         }
     }
 

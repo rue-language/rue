@@ -120,7 +120,7 @@ fn analyze_statement(scope: &mut Scope, stmt: &StatementNode) -> Result<(), Sema
             if let rue_lexer::TokenKind::Ident(var_name) = &assign_stmt.name.kind {
                 if !scope.variables.contains_key(var_name) {
                     return Err(SemanticError {
-                        message: format!("Cannot assign to undefined variable: {}", var_name),
+                        message: format!("Cannot assign to undefined variable: {var_name}"),
                         span: assign_stmt.name.span,
                     });
                 }
@@ -143,7 +143,7 @@ fn analyze_expression(scope: &mut Scope, expr: &ExpressionNode) -> Result<RueTyp
                     Ok(RueType::I64)
                 } else {
                     Err(SemanticError {
-                        message: format!("Undefined variable: {}", name),
+                        message: format!("Undefined variable: {name}"),
                         span: token.span,
                     })
                 }
@@ -196,7 +196,7 @@ fn analyze_expression(scope: &mut Scope, expr: &ExpressionNode) -> Result<RueTyp
                         Ok(signature.return_type)
                     } else {
                         Err(SemanticError {
-                            message: format!("Undefined function: {}", func_name),
+                            message: format!("Undefined function: {func_name}"),
                             span: func_token.span,
                         })
                     }

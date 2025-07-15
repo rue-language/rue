@@ -85,8 +85,11 @@ jobs:
     - name: Buck2 test
       run: buck2 test //crates/...
     
-    - name: Buck2 run
+    - name: Buck2 run simple.rue
       run: buck2 run //crates/rue:rue samples/simple.rue
+
+    - name: Buck2 run compiler-example
+      run: buck2 run //crates/rue-compiler:basic_usage
 
   # Integration tests
   integration:
