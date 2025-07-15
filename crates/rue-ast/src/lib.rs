@@ -3,6 +3,14 @@ use rue_lexer::Token;
 pub type TokenNode = Token;
 
 #[derive(Debug, Clone, PartialEq)]
+pub enum TypeNode {
+    I32(TokenNode),
+    I64(TokenNode),
+    Bool(TokenNode),
+    Unit,
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub struct CstRoot {
     pub items: Vec<CstNode>,
     pub trivia: Trivia,
@@ -22,15 +30,30 @@ pub struct FunctionNode {
     pub fn_token: TokenNode,
     pub name: TokenNode,
     pub param_list: ParamListNode,
+    pub return_type: Option<ReturnTypeNode>,
     pub body: BlockNode,
+    pub trivia: Trivia,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ReturnTypeNode {
+    pub arrow: TokenNode,
+    pub ty: TypeNode,
     pub trivia: Trivia,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ParamListNode {
     pub open_paren: TokenNode,
-    pub params: Vec<TokenNode>, // Just identifiers for now
+    pub params: Vec<ParameterNode>,
     pub close_paren: TokenNode,
+    pub trivia: Trivia,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ParameterNode {
+    pub name: TokenNode,
+    pub type_annotation: Option<TypeAnnotationNode>,
     pub trivia: Trivia,
 }
 
@@ -54,9 +77,17 @@ pub enum StatementNode {
 pub struct LetStatementNode {
     pub let_token: TokenNode,
     pub name: TokenNode,
+    pub type_annotation: Option<TypeAnnotationNode>,
     pub equals: TokenNode,
     pub value: ExpressionNode,
     pub semicolon: TokenNode,
+    pub trivia: Trivia,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct TypeAnnotationNode {
+    pub colon: TokenNode,
+    pub ty: TypeNode,
     pub trivia: Trivia,
 }
 

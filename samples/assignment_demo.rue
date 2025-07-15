@@ -1,19 +1,19 @@
-fn test_basic_assignment() {
-    let x = 10;
+fn test_basic_assignment() -> i32 {
+    let x: i32 = 10;
     x = 20;
     x
 }
 
-fn test_assignment_with_expression() {
-    let a = 5;
-    let b = 3;
+fn test_assignment_with_expression() -> i32 {
+    let a: i32 = 5;
+    let b: i32 = 3;
     a = a + b * 2;
     a
 }
 
-fn test_assignment_in_while() {
-    let counter = 0;
-    let sum = 0;
+fn test_assignment_in_while() -> i32 {
+    let counter: i32 = 0;
+    let sum: i32 = 0;
     while counter <= 3 {
         sum = sum + counter;
         counter = counter + 1;
@@ -21,6 +21,6 @@ fn test_assignment_in_while() {
     sum
 }
 
-fn main() {
+fn main() -> i32 {
     test_assignment_in_while()
 }

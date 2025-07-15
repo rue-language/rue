@@ -9,6 +9,11 @@ pub enum TokenKind {
     If,
     Else,
     While,
+    I32,
+    I64,
+    Bool,
+    True,
+    False,
 
     // Identifiers
     Ident(String),
@@ -26,6 +31,8 @@ pub enum TokenKind {
     GreaterEqual,
     Equal,
     NotEqual,
+    Arrow,
+    Colon,
 
     // Delimiters
     LeftParen,
@@ -87,10 +94,31 @@ impl<'a> Lexer<'a> {
 
         match self.current_char() {
             '+' => self.make_token(TokenKind::Plus, start),
-            '-' => self.make_token(TokenKind::Minus, start),
+            '-' => {
+                self.advance();
+                if self.current_char() == '>' {
+                    self.advance();
+                    Token {
+                        kind: TokenKind::Arrow,
+                        span: Span {
+                            start,
+                            end: self.position,
+                        },
+                    }
+                } else {
+                    Token {
+                        kind: TokenKind::Minus,
+                        span: Span {
+                            start,
+                            end: self.position,
+                        },
+                    }
+                }
+            }
             '*' => self.make_token(TokenKind::Star, start),
             '/' => self.make_token(TokenKind::Slash, start),
             '%' => self.make_token(TokenKind::Percent, start),
+            ':' => self.make_token(TokenKind::Colon, start),
             '(' => self.make_token(TokenKind::LeftParen, start),
             ')' => self.make_token(TokenKind::RightParen, start),
             '{' => self.make_token(TokenKind::LeftBrace, start),
@@ -210,6 +238,11 @@ impl<'a> Lexer<'a> {
             "if" => TokenKind::If,
             "else" => TokenKind::Else,
             "while" => TokenKind::While,
+            "i32" => TokenKind::I32,
+            "i64" => TokenKind::I64,
+            "bool" => TokenKind::Bool,
+            "true" => TokenKind::True,
+            "false" => TokenKind::False,
             _ => TokenKind::Ident(text.to_string()),
         };
 
@@ -298,5 +331,51 @@ fn factorial(n) {
 
         assert_eq!(tokens[0].kind, TokenKind::While);
         assert_eq!(tokens[1].kind, TokenKind::Eof);
+    }
+
+    #[test]
+    fn test_type_keywords() {
+        let mut lexer = Lexer::new("i32 i64 bool true false");
+        let tokens = lexer.tokenize();
+
+        assert_eq!(tokens[0].kind, TokenKind::I32);
+        assert_eq!(tokens[1].kind, TokenKind::I64);
+        assert_eq!(tokens[2].kind, TokenKind::Bool);
+        assert_eq!(tokens[3].kind, TokenKind::True);
+        assert_eq!(tokens[4].kind, TokenKind::False);
+        assert_eq!(tokens[5].kind, TokenKind::Eof);
+    }
+
+    #[test]
+    fn test_arrow_and_colon() {
+        let mut lexer = Lexer::new("-> : - >");
+        let tokens = lexer.tokenize();
+
+        assert_eq!(tokens[0].kind, TokenKind::Arrow);
+        assert_eq!(tokens[1].kind, TokenKind::Colon);
+        assert_eq!(tokens[2].kind, TokenKind::Minus);
+        assert_eq!(tokens[3].kind, TokenKind::Greater);
+        assert_eq!(tokens[4].kind, TokenKind::Eof);
+    }
+
+    #[test]
+    fn test_typed_function() {
+        let mut lexer = Lexer::new("fn add(a: i32, b: i32) -> i32");
+        let tokens = lexer.tokenize();
+
+        assert_eq!(tokens[0].kind, TokenKind::Fn);
+        assert_eq!(tokens[1].kind, TokenKind::Ident("add".to_string()));
+        assert_eq!(tokens[2].kind, TokenKind::LeftParen);
+        assert_eq!(tokens[3].kind, TokenKind::Ident("a".to_string()));
+        assert_eq!(tokens[4].kind, TokenKind::Colon);
+        assert_eq!(tokens[5].kind, TokenKind::I32);
+        assert_eq!(tokens[6].kind, TokenKind::Comma);
+        assert_eq!(tokens[7].kind, TokenKind::Ident("b".to_string()));
+        assert_eq!(tokens[8].kind, TokenKind::Colon);
+        assert_eq!(tokens[9].kind, TokenKind::I32);
+        assert_eq!(tokens[10].kind, TokenKind::RightParen);
+        assert_eq!(tokens[11].kind, TokenKind::Arrow);
+        assert_eq!(tokens[12].kind, TokenKind::I32);
+        assert_eq!(tokens[13].kind, TokenKind::Eof);
     }
 }

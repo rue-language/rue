@@ -34,12 +34,14 @@ Current language support:
 - Arithmetic operations (+, -, *, /, %)
 - Control flow (if/else, while loops)
 - Functions with optional parameters
-- All values are 64-bit signed integers
+- Static type system with type annotations
+- Type checking and inference for literals
+- Supported types: i32, i64, bool, and unit (())
 
 ### Example Program
 
 ```rue
-fn factorial(n) {
+fn factorial(n: i32) -> i32 {
     if n <= 1 {
         1
     } else {
@@ -47,10 +49,38 @@ fn factorial(n) {
     }
 }
 
-fn main() {
+fn main() -> i32 {
     factorial(5)  // Returns 120 as the exit code
 }
 ```
+
+### Type Annotations
+
+Rue requires explicit type annotations for all variable declarations and function signatures:
+
+```rue
+// Variable declarations
+let x: i32 = 42;
+let y: i64 = 1000;
+let flag: bool = true;
+
+// Function signatures
+fn add(a: i32, b: i32) -> i32 {
+    a + b
+}
+
+// Functions returning unit type
+fn print_value(x: i32) -> () {
+    // ... implementation ...
+}
+
+// Functions can omit -> () for unit return
+fn do_something(x: i32) {
+    // Implicitly returns unit type
+}
+```
+
+Numeric literals default to `i32` unless the context requires a different type.
 
 ## Building and Running
 

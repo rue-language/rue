@@ -1,11 +1,11 @@
-fn test_while_false(x) {
+fn test_while_false(x: i32) -> i32 {
     while x > 100 {
         42
     };
     10
 }
 
-fn test_while_nested(a) {
+fn test_while_nested(a: i32) -> i32 {
     if a > 5 {
         while a <= 3 {
             a + 1
@@ -19,6 +19,6 @@ fn test_while_nested(a) {
     }
 }
 
-fn main() {
+fn main() -> i32 {
     test_while_false(5) + test_while_nested(7)
 }
