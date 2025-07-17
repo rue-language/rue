@@ -2263,6 +2263,7 @@ cargo.rust_library(
         "signal-hook-registry",
         "socket2",
         "sync",
+        "test-util",
         "time",
         "tokio-macros",
         "windows-sys",

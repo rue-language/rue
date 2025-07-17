@@ -11,6 +11,7 @@ cargo.rust_library(
         "//crates/rue-compiler:rue-compiler", 
         "//crates/rue-lexer:rue-lexer",
         "//crates/rue-parser:rue-parser",
+        "//crates/rue-semantic:rue-semantic",
         "//:tokio",
         "//:tower-lsp",
         "//:serde_json",
@@ -28,4 +29,21 @@ cargo.rust_binary(
         "//:tokio",
     ],
     visibility = ["PUBLIC"],
+)
+
+rust_test(
+    name = "test",
+    srcs = glob(["src/**/*.rs"]),
+    crate_root = "src/lib.rs",
+    edition = "2024",
+    deps = [
+        "//crates/rue-ast:rue-ast",
+        "//crates/rue-compiler:rue-compiler", 
+        "//crates/rue-lexer:rue-lexer",
+        "//crates/rue-parser:rue-parser",
+        "//crates/rue-semantic:rue-semantic",
+        "//:tokio",
+        "//:tower-lsp",
+        "//:serde_json",
+    ],
 )
