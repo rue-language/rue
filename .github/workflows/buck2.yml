@@ -34,14 +34,9 @@ jobs:
         buck2 audit providers toolchains//:python_bootstrap --target-platforms=prelude//platforms:default
         buck2 audit providers toolchains//:cxx --target-platforms=prelude//platforms:default
     
-    - name: Build all crates individually
+    - name: Build all crates
       run: |
-        buck2 build //crates/rue-ast:rue-ast
-        buck2 build //crates/rue-lexer:rue-lexer
-        buck2 build //crates/rue-parser:rue-parser
-        buck2 build //crates/rue-compiler:rue-compiler
-        buck2 build //crates/rue-codegen:rue-codegen
-        buck2 build //crates/rue:rue
+        buck2 build //crates/...
     
     - name: Test reindeer buckify
       run: |
