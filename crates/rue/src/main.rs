@@ -7,12 +7,21 @@ fn main() {
     let args: Vec<String> = env::args().collect();
 
     if args.len() < 2 {
-        eprintln!("Usage: {} <input.rue> [output]", args[0]);
+        eprintln!("Usage: {} <input.rue> [-o output]", args[0]);
         std::process::exit(1);
     }
 
     let input_path = PathBuf::from(&args[1]);
-    let output_path = if args.len() > 2 {
+    let output_path = if args.len() > 2 && args[2] == "-o" {
+        if args.len() > 3 {
+            PathBuf::from(&args[3])
+        } else {
+            eprintln!("Error: -o flag requires an output filename");
+            eprintln!("Usage: {} <input.rue> [-o output]", args[0]);
+            std::process::exit(1);
+        }
+    } else if args.len() > 2 {
+        // Support old positional argument style for backwards compatibility
         PathBuf::from(&args[2])
     } else {
         input_path.with_extension("")
