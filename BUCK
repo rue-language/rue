@@ -119,6 +119,29 @@ cargo.rust_library(
     visibility = [],
 )
 
+alias(
+    name = "bpaf",
+    actual = ":bpaf-0.9.20",
+    visibility = ["PUBLIC"],
+)
+
+http_archive(
+    name = "bpaf-0.9.20.crate",
+    sha256 = "473976d7a8620bb1e06dcdd184407c2363fe4fec8e983ee03ed9197222634a31",
+    strip_prefix = "bpaf-0.9.20",
+    urls = ["https://static.crates.io/crates/bpaf/0.9.20/download"],
+    visibility = [],
+)
+
+cargo.rust_library(
+    name = "bpaf-0.9.20",
+    srcs = [":bpaf-0.9.20.crate"],
+    crate = "bpaf",
+    crate_root = "bpaf-0.9.20.crate/src/lib.rs",
+    edition = "2021",
+    visibility = [],
+)
+
 http_archive(
     name = "bytes-1.10.1.crate",
     sha256 = "d71b6127be86fdcfddb610f7182ac57211d4b18a3e9c82eb2d17662f2227ad6a",
@@ -2123,6 +2146,57 @@ cargo.rust_library(
         "std",
     ],
     visibility = [],
+)
+
+alias(
+    name = "thiserror",
+    actual = ":thiserror-2.0.12",
+    visibility = ["PUBLIC"],
+)
+
+http_archive(
+    name = "thiserror-2.0.12.crate",
+    sha256 = "567b8a2dae586314f7be2a752ec7474332959c6460e02bde30d702a66d488708",
+    strip_prefix = "thiserror-2.0.12",
+    urls = ["https://static.crates.io/crates/thiserror/2.0.12/download"],
+    visibility = [],
+)
+
+cargo.rust_library(
+    name = "thiserror-2.0.12",
+    srcs = [":thiserror-2.0.12.crate"],
+    crate = "thiserror",
+    crate_root = "thiserror-2.0.12.crate/src/lib.rs",
+    edition = "2021",
+    features = [
+        "default",
+        "std",
+    ],
+    visibility = [],
+    deps = [":thiserror-impl-2.0.12"],
+)
+
+http_archive(
+    name = "thiserror-impl-2.0.12.crate",
+    sha256 = "7f7cf42b4507d8ea322120659672cf1b9dbb93f8f2d4ecfd6e51350ff5b17a1d",
+    strip_prefix = "thiserror-impl-2.0.12",
+    urls = ["https://static.crates.io/crates/thiserror-impl/2.0.12/download"],
+    visibility = [],
+)
+
+cargo.rust_library(
+    name = "thiserror-impl-2.0.12",
+    srcs = [":thiserror-impl-2.0.12.crate"],
+    crate = "thiserror_impl",
+    crate_root = "thiserror-impl-2.0.12.crate/src/lib.rs",
+    edition = "2021",
+    proc_macro = True,
+    visibility = [],
+    deps = [
+        ":proc-macro2-1.0.95",
+        ":quote-1.0.40",
+        ":syn-2.0.102",
+    ],
 )
 
 http_archive(
