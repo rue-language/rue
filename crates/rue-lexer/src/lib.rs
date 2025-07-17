@@ -116,7 +116,11 @@ impl<'a> Lexer<'a> {
                 }
             }
             '*' => self.make_token(TokenKind::Star, start),
-            '/' => self.make_token(TokenKind::Slash, start),
+            '/' => {
+                // Check if it's a comment start, but since comments are handled
+                // in skip_whitespace, if we get here it's a division operator
+                self.make_token(TokenKind::Slash, start)
+            }
             '%' => self.make_token(TokenKind::Percent, start),
             ':' => self.make_token(TokenKind::Colon, start),
             '(' => self.make_token(TokenKind::LeftParen, start),
@@ -267,9 +271,56 @@ impl<'a> Lexer<'a> {
     }
 
     fn skip_whitespace(&mut self) {
-        while self.current_char().is_whitespace() {
+        loop {
+            if self.current_char().is_whitespace() {
+                self.advance();
+            } else if self.current_char() == '/' && self.peek_char() == '/' {
+                self.skip_single_line_comment();
+            } else if self.current_char() == '/' && self.peek_char() == '*' {
+                self.skip_multi_line_comment();
+            } else {
+                break;
+            }
+        }
+    }
+
+    fn skip_single_line_comment(&mut self) {
+        self.advance(); // Skip first '/'
+        self.advance(); // Skip second '/'
+
+        while !self.is_at_end() && self.current_char() != '\n' {
             self.advance();
         }
+    }
+
+    fn skip_multi_line_comment(&mut self) {
+        let start = self.position;
+        self.advance(); // Skip '/'
+        self.advance(); // Skip '*'
+
+        let mut depth = 1;
+
+        while !self.is_at_end() && depth > 0 {
+            if self.current_char() == '/' && self.peek_char() == '*' {
+                depth += 1;
+                self.advance();
+                self.advance();
+            } else if self.current_char() == '*' && self.peek_char() == '/' {
+                depth -= 1;
+                self.advance();
+                self.advance();
+            } else {
+                self.advance();
+            }
+        }
+
+        if depth > 0 {
+            panic!("Unterminated comment starting at position {start}");
+        }
+    }
+
+    fn peek_char(&self) -> char {
+        self.input.chars().nth(self.position + 1).unwrap_or('\0')
     }
 
     fn current_char(&self) -> char {
@@ -377,5 +428,153 @@ fn factorial(n) {
         assert_eq!(tokens[11].kind, TokenKind::Arrow);
         assert_eq!(tokens[12].kind, TokenKind::I32);
         assert_eq!(tokens[13].kind, TokenKind::Eof);
+    }
+
+    #[test]
+    fn test_single_line_comment() {
+        let mut lexer = Lexer::new("// This is a comment\n42");
+        let tokens = lexer.tokenize();
+
+        assert_eq!(tokens[0].kind, TokenKind::Integer(42));
+        assert_eq!(tokens[1].kind, TokenKind::Eof);
+    }
+
+    #[test]
+    fn test_single_line_comment_at_eof() {
+        let mut lexer = Lexer::new("42 // Comment at EOF");
+        let tokens = lexer.tokenize();
+
+        assert_eq!(tokens[0].kind, TokenKind::Integer(42));
+        assert_eq!(tokens[1].kind, TokenKind::Eof);
+    }
+
+    #[test]
+    fn test_multiple_single_line_comments() {
+        let mut lexer = Lexer::new("// Comment 1\n42\n// Comment 2\n+ 3");
+        let tokens = lexer.tokenize();
+
+        assert_eq!(tokens[0].kind, TokenKind::Integer(42));
+        assert_eq!(tokens[1].kind, TokenKind::Plus);
+        assert_eq!(tokens[2].kind, TokenKind::Integer(3));
+        assert_eq!(tokens[3].kind, TokenKind::Eof);
+    }
+
+    #[test]
+    fn test_empty_single_line_comment() {
+        let mut lexer = Lexer::new("//\n42");
+        let tokens = lexer.tokenize();
+
+        assert_eq!(tokens[0].kind, TokenKind::Integer(42));
+        assert_eq!(tokens[1].kind, TokenKind::Eof);
+    }
+
+    #[test]
+    fn test_basic_multi_line_comment() {
+        let mut lexer = Lexer::new("/* comment */ 42");
+        let tokens = lexer.tokenize();
+
+        assert_eq!(tokens[0].kind, TokenKind::Integer(42));
+        assert_eq!(tokens[1].kind, TokenKind::Eof);
+    }
+
+    #[test]
+    fn test_multi_line_comment_spanning_lines() {
+        let mut lexer = Lexer::new("42 /* comment\nspanning\nmultiple lines */ + 3");
+        let tokens = lexer.tokenize();
+
+        assert_eq!(tokens[0].kind, TokenKind::Integer(42));
+        assert_eq!(tokens[1].kind, TokenKind::Plus);
+        assert_eq!(tokens[2].kind, TokenKind::Integer(3));
+        assert_eq!(tokens[3].kind, TokenKind::Eof);
+    }
+
+    #[test]
+    fn test_empty_multi_line_comment() {
+        let mut lexer = Lexer::new("/**/ 42");
+        let tokens = lexer.tokenize();
+
+        assert_eq!(tokens[0].kind, TokenKind::Integer(42));
+        assert_eq!(tokens[1].kind, TokenKind::Eof);
+    }
+
+    #[test]
+    fn test_nested_multi_line_comments() {
+        let mut lexer = Lexer::new("/* outer /* inner */ still comment */ 42");
+        let tokens = lexer.tokenize();
+
+        assert_eq!(tokens[0].kind, TokenKind::Integer(42));
+        assert_eq!(tokens[1].kind, TokenKind::Eof);
+    }
+
+    #[test]
+    fn test_deeply_nested_comments() {
+        let mut lexer = Lexer::new("/* a /* b /* c */ b */ a */ 42");
+        let tokens = lexer.tokenize();
+
+        assert_eq!(tokens[0].kind, TokenKind::Integer(42));
+        assert_eq!(tokens[1].kind, TokenKind::Eof);
+    }
+
+    #[test]
+    #[should_panic(expected = "Unterminated comment")]
+    fn test_unterminated_comment() {
+        let mut lexer = Lexer::new("/* unterminated");
+        lexer.tokenize();
+    }
+
+    #[test]
+    #[should_panic(expected = "Unterminated comment")]
+    fn test_unterminated_nested_comment() {
+        let mut lexer = Lexer::new("/* outer /* inner */");
+        lexer.tokenize();
+    }
+
+    #[test]
+    fn test_mixed_comments() {
+        let mut lexer = Lexer::new("// single\n/* multi */ 42 // end");
+        let tokens = lexer.tokenize();
+
+        assert_eq!(tokens[0].kind, TokenKind::Integer(42));
+        assert_eq!(tokens[1].kind, TokenKind::Eof);
+    }
+
+    #[test]
+    fn test_comments_between_tokens() {
+        let mut lexer = Lexer::new("42 /* comment */ + /* another */ 3");
+        let tokens = lexer.tokenize();
+
+        assert_eq!(tokens[0].kind, TokenKind::Integer(42));
+        assert_eq!(tokens[1].kind, TokenKind::Plus);
+        assert_eq!(tokens[2].kind, TokenKind::Integer(3));
+        assert_eq!(tokens[3].kind, TokenKind::Eof);
+    }
+
+    #[test]
+    fn test_single_line_in_multi_line() {
+        let mut lexer = Lexer::new("/* // this is still a comment */ 42");
+        let tokens = lexer.tokenize();
+
+        assert_eq!(tokens[0].kind, TokenKind::Integer(42));
+        assert_eq!(tokens[1].kind, TokenKind::Eof);
+    }
+
+    #[test]
+    fn test_multi_line_markers_in_single_line() {
+        let mut lexer = Lexer::new("// /* */ still a comment\n42");
+        let tokens = lexer.tokenize();
+
+        assert_eq!(tokens[0].kind, TokenKind::Integer(42));
+        assert_eq!(tokens[1].kind, TokenKind::Eof);
+    }
+
+    #[test]
+    fn test_division_not_comment() {
+        let mut lexer = Lexer::new("42 / 6");
+        let tokens = lexer.tokenize();
+
+        assert_eq!(tokens[0].kind, TokenKind::Integer(42));
+        assert_eq!(tokens[1].kind, TokenKind::Slash);
+        assert_eq!(tokens[2].kind, TokenKind::Integer(6));
+        assert_eq!(tokens[3].kind, TokenKind::Eof);
     }
 }

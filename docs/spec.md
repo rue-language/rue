@@ -47,7 +47,23 @@ boolean_literal ::= "true" | "false"
 Whitespace consists of spaces, tabs, and newlines. Whitespace is ignored except as a token separator.
 
 #### 2.2.7 Comments
-Currently, Rue does not support comments.
+Rue supports two styles of comments:
+
+**Single-line comments** begin with `//` and extend to the end of the line:
+```
+// This is a single-line comment
+let x: i32 = 42; // Comments can appear after code
+```
+
+**Multi-line comments** begin with `/*` and end with `*/`. Multi-line comments can be nested:
+```
+/* This is a multi-line comment
+   that spans multiple lines */
+
+/* Nested /* comments are */ supported */
+```
+
+Comments are treated as whitespace and can appear anywhere whitespace is allowed.
 
 ## 3. Syntax
 
