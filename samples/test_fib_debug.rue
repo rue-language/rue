@@ -1,0 +1,19 @@
+fn print_and_return(label: i32, value: i32) -> i32 {
+    // In a real implementation this would print, but for now just return
+    value
+}
+
+fn fib(n: i32) -> i32 {
+    if n <= 1 {
+        n
+    } else {
+        let a = fib(n - 1);
+        let b = fib(n - 2);
+        let result = a + b;
+        print_and_return(n, result)
+    }
+}
+
+fn main() -> i32 {
+    fib(3)
+}

@@ -1,0 +1,20 @@
+fn fib_direct(n: i32) -> i32 {
+    if n <= 1 {
+        n
+    } else {
+        fib_direct(n - 1) + fib_direct(n - 2)
+    }
+}
+
+fn fib_with_let(n: i32) -> i32 {
+    if n <= 1 {
+        n  
+    } else {
+        let result = fib_with_let(n - 1) + fib_with_let(n - 2);
+        result
+    }
+}
+
+fn main() -> i32 {
+    fib_with_let(3)  // Expecting 2 (correct)
+}

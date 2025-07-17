@@ -1,0 +1,8 @@
+// Test print order issue
+fn main() {
+    let a: i64 = 42;
+    let b: i64 = 17;
+    let c = a + b;
+    println_i64(2);  // Marker
+    println_i64(b);  // This might not print correctly
+}

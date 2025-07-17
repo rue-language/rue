@@ -1,0 +1,22 @@
+load("@prelude//rust:cargo_package.bzl", "cargo")
+
+cargo.rust_library(
+    name = "rue-runtime",
+    srcs = glob(["src/**/*.rs"]),
+    crate_root = "src/lib.rs",
+    edition = "2021",
+    visibility = ["PUBLIC"],
+    deps = [
+        "//crates/rue-ir:rue-ir",
+    ],
+)
+
+rust_test(
+    name = "test",
+    srcs = glob(["src/**/*.rs"]),
+    crate_root = "src/lib.rs",
+    edition = "2021",
+    deps = [
+        "//crates/rue-ir:rue-ir",
+    ],
+)

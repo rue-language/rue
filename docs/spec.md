@@ -165,7 +165,7 @@ Rue supports the following primitive types:
 
 ### 5.1 Program Execution
 - Program execution begins with a call to the `main` function
-- The `main` function must be defined and take either zero or one parameter
+- The `main` function must be defined with no parameters
 - The return type of `main` determines the exit code behavior:
   - `fn main() -> ()`: Always exits with code 0
   - `fn main() -> i32` or `fn main() -> i64`: The returned value becomes the exit code
@@ -233,13 +233,56 @@ Blocks execute their statements in order, then evaluate their final expression (
 ## 6. Standard Library
 
 ### 6.1 Built-in Functions
-Currently, Rue has no built-in functions.
+
+Rue provides the following built-in functions for I/O and program control:
+
+#### 6.1.1 exit
+```
+exit(code: i64) -> ()
+```
+Terminates the program immediately with the specified exit code. The exit code is truncated to fit the system's exit code range (typically 0-255).
+
+#### 6.1.2 println_i64
+```
+println_i64(value: i64) -> ()
+```
+Prints the given 64-bit integer to standard output followed by a newline.
+
+#### 6.1.3 println_i32
+```
+println_i32(value: i32) -> ()
+```
+Prints the given 32-bit integer to standard output followed by a newline.
+
+#### 6.1.4 println_bool
+```
+println_bool(value: bool) -> ()
+```
+Prints the given boolean value as "true" or "false" to standard output followed by a newline.
+
+#### 6.1.5 println_unit
+```
+println_unit(value: ()) -> ()
+```
+Prints "()" to standard output followed by a newline.
+
+#### 6.1.6 input
+```
+input() -> i64
+```
+Reads a line from standard input and attempts to parse it as a 64-bit integer. Returns:
+- The parsed integer value if successful
+- 0 if parsing fails or on EOF
+- Leading and trailing whitespace is ignored
+- Parsing stops at the first non-digit character after optional sign
 
 ### 6.2 Runtime Behavior
 - Integer overflow wraps using two's complement arithmetic for both `i32` and `i64`
-- Division by zero causes program termination
+- Division by zero causes program termination with exit code 250
+- Modulo by zero causes program termination with exit code 250
 - Boolean values are represented as 0 (`false`) and 1 (`true`) at runtime
 - All memory management is handled by the runtime
+- Stack overflow causes program termination with exit code 251 (when implemented)
 
 ## 7. Examples
 
@@ -314,6 +357,64 @@ fn print_value(n: i32) -> () {
 
 fn main() -> i32 {
     print_value(42);
+    0
+}
+```
+
+### 7.7 Using Built-in I/O Functions
+```rue
+fn print_unit() -> () {
+    // Function that returns unit
+}
+
+fn main() -> i64 {
+    let forty_two: i64 = 42;
+    println_i64(forty_two);
+    println_bool(true);
+    println_i32(100);
+    
+    let unit_val = print_unit();
+    println_unit(unit_val);
+    
+    0
+}
+```
+
+### 7.8 Interactive Input Program
+```rue
+fn main() -> i64 {
+    let prompt: i64 = 1234;
+    println_i64(prompt);  // Print a prompt
+    
+    let x: i64 = input();
+    let y: i64 = input();
+    
+    let sum: i64 = x + y;
+    println_i64(sum);
+    
+    if x > y {
+        println_bool(true);
+        x - y
+    } else {
+        println_bool(false);
+        y - x
+    }
+}
+```
+
+### 7.9 Error Handling Example
+```rue
+fn divide(a: i64, b: i64) -> i64 {
+    a / b  // Will exit with code 250 if b is 0
+}
+
+fn main() -> i64 {
+    let result: i64 = divide(10, 2);
+    println_i64(result);  // Prints 5
+    
+    // This would cause program termination:
+    // let bad: i64 = divide(10, 0);
+    
     0
 }
 ```

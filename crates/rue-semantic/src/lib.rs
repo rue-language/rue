@@ -52,9 +52,69 @@ fn convert_type_node(type_node: &rue_ast::TypeNode) -> RueType {
     }
 }
 
+// Add built-in functions to the scope
+fn add_builtin_functions(scope: &mut Scope) {
+    // exit(code: i64) -> ()
+    scope.functions.insert(
+        "exit".to_string(),
+        FunctionSignature {
+            param_types: vec![RueType::I64],
+            return_type: RueType::Unit,
+        },
+    );
+
+    // println_i32(value: i32) -> ()
+    scope.functions.insert(
+        "println_i32".to_string(),
+        FunctionSignature {
+            param_types: vec![RueType::I32],
+            return_type: RueType::Unit,
+        },
+    );
+
+    // println_i64(value: i64) -> ()
+    scope.functions.insert(
+        "println_i64".to_string(),
+        FunctionSignature {
+            param_types: vec![RueType::I64],
+            return_type: RueType::Unit,
+        },
+    );
+
+    // println_bool(value: bool) -> ()
+    scope.functions.insert(
+        "println_bool".to_string(),
+        FunctionSignature {
+            param_types: vec![RueType::Bool],
+            return_type: RueType::Unit,
+        },
+    );
+
+    // println_unit(value: ()) -> ()
+    scope.functions.insert(
+        "println_unit".to_string(),
+        FunctionSignature {
+            param_types: vec![RueType::Unit],
+            return_type: RueType::Unit,
+        },
+    );
+
+    // input() -> i64
+    scope.functions.insert(
+        "input".to_string(),
+        FunctionSignature {
+            param_types: vec![],
+            return_type: RueType::I64,
+        },
+    );
+}
+
 // Semantic analysis functions
 pub fn analyze_cst(ast: &CstRoot) -> Result<Scope, SemanticError> {
     let mut scope = Scope::default();
+
+    // Add built-in functions
+    add_builtin_functions(&mut scope);
 
     for item in &ast.items {
         match item {
@@ -381,8 +441,14 @@ fn analyze_expression(scope: &mut Scope, expr: &ExpressionNode) -> Result<RueTyp
 
                         // Analyze and check types of all arguments
                         for (i, arg) in call_expr.args.iter().enumerate() {
-                            let arg_type = analyze_expression(scope, arg)?;
                             let expected_type = &signature.param_types[i];
+
+                            // Try to analyze with expected type for better inference
+                            let arg_type = if let ExpressionNode::Literal(_) = arg {
+                                analyze_literal_with_expected_type(scope, arg, expected_type)?
+                            } else {
+                                analyze_expression(scope, arg)?
+                            };
 
                             if arg_type != *expected_type {
                                 return Err(SemanticError {

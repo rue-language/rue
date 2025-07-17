@@ -1,0 +1,11 @@
+fn add_recursive(a: i32, b: i32) -> i32 {
+    if a == 0 {
+        5
+    } else {
+        5
+    }
+}
+
+fn main() -> i32 {
+    add_recursive(1, 2) + add_recursive(3, 4)  // Should return 10
+}

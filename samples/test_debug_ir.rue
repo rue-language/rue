@@ -1,0 +1,7 @@
+fn add(a: i32, b: i32) -> i32 {
+    a + b
+}
+
+fn main() -> i32 {
+    add(2, 3) + add(4, 5)  // Should be 5 + 9 = 14
+}

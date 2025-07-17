@@ -88,6 +88,12 @@ impl LanguageServer for RueLanguageServer {
                 text_document_sync: Some(TextDocumentSyncCapability::Kind(
                     TextDocumentSyncKind::FULL,
                 )),
+                completion_provider: Some(CompletionOptions {
+                    resolve_provider: Some(false),
+                    trigger_characters: None,
+                    ..Default::default()
+                }),
+                hover_provider: Some(HoverProviderCapability::Simple(true)),
                 ..Default::default()
             },
             server_info: Some(ServerInfo {
@@ -154,6 +160,160 @@ impl LanguageServer for RueLanguageServer {
         self.client
             .publish_diagnostics(params.text_document.uri, Vec::new(), None)
             .await;
+    }
+
+    async fn completion(&self, _params: CompletionParams) -> Result<Option<CompletionResponse>> {
+        let mut items = vec![CompletionItem {
+            label: "exit".to_string(),
+            kind: Some(CompletionItemKind::FUNCTION),
+            detail: Some("exit(code: i64) -> ()".to_string()),
+            documentation: Some(Documentation::String(
+                "Terminates the program with the specified exit code.".to_string(),
+            )),
+            insert_text: Some("exit($1)".to_string()),
+            insert_text_format: Some(InsertTextFormat::SNIPPET),
+            ..Default::default()
+        }];
+
+        items.push(CompletionItem {
+            label: "println_i64".to_string(),
+            kind: Some(CompletionItemKind::FUNCTION),
+            detail: Some("println_i64(value: i64) -> ()".to_string()),
+            documentation: Some(Documentation::String(
+                "Prints a 64-bit integer to stdout followed by a newline.".to_string(),
+            )),
+            insert_text: Some("println_i64($1)".to_string()),
+            insert_text_format: Some(InsertTextFormat::SNIPPET),
+            ..Default::default()
+        });
+
+        items.push(CompletionItem {
+            label: "println_i32".to_string(),
+            kind: Some(CompletionItemKind::FUNCTION),
+            detail: Some("println_i32(value: i32) -> ()".to_string()),
+            documentation: Some(Documentation::String(
+                "Prints a 32-bit integer to stdout followed by a newline.".to_string(),
+            )),
+            insert_text: Some("println_i32($1)".to_string()),
+            insert_text_format: Some(InsertTextFormat::SNIPPET),
+            ..Default::default()
+        });
+
+        items.push(CompletionItem {
+            label: "println_bool".to_string(),
+            kind: Some(CompletionItemKind::FUNCTION),
+            detail: Some("println_bool(value: bool) -> ()".to_string()),
+            documentation: Some(Documentation::String(
+                "Prints a boolean value as \"true\" or \"false\" followed by a newline."
+                    .to_string(),
+            )),
+            insert_text: Some("println_bool($1)".to_string()),
+            insert_text_format: Some(InsertTextFormat::SNIPPET),
+            ..Default::default()
+        });
+
+        items.push(CompletionItem {
+            label: "println_unit".to_string(),
+            kind: Some(CompletionItemKind::FUNCTION),
+            detail: Some("println_unit(value: ()) -> ()".to_string()),
+            documentation: Some(Documentation::String(
+                "Prints \"()\" to stdout followed by a newline.".to_string(),
+            )),
+            insert_text: Some("println_unit($1)".to_string()),
+            insert_text_format: Some(InsertTextFormat::SNIPPET),
+            ..Default::default()
+        });
+
+        items.push(CompletionItem {
+            label: "input".to_string(),
+            kind: Some(CompletionItemKind::FUNCTION),
+            detail: Some("input() -> i64".to_string()),
+            documentation: Some(Documentation::String(
+                "Reads a line from stdin and parses it as an i64. Returns 0 on parse error."
+                    .to_string(),
+            )),
+            insert_text: Some("input()".to_string()),
+            insert_text_format: Some(InsertTextFormat::PLAIN_TEXT),
+            ..Default::default()
+        });
+
+        // Add keywords
+        for keyword in &[
+            "fn", "let", "if", "else", "while", "true", "false", "i32", "i64", "bool",
+        ] {
+            items.push(CompletionItem {
+                label: keyword.to_string(),
+                kind: Some(CompletionItemKind::KEYWORD),
+                ..Default::default()
+            });
+        }
+
+        Ok(Some(CompletionResponse::Array(items)))
+    }
+
+    async fn hover(&self, params: HoverParams) -> Result<Option<Hover>> {
+        let uri = params.text_document_position_params.text_document.uri;
+        let position = params.text_document_position_params.position;
+
+        // Get the document text
+        let documents = self.documents.read().await;
+        let text = match documents.get(&uri) {
+            Some(text) => text,
+            None => return Ok(None),
+        };
+
+        // Simple check for built-in functions
+        let line = match text.lines().nth(position.line as usize) {
+            Some(line) => line,
+            None => return Ok(None),
+        };
+
+        // Check if cursor is on a built-in function
+        let hover_info = if line.contains("exit") && position.character < line.len() as u32 {
+            Some((
+                "exit(code: i64) -> ()",
+                "Terminates the program with the specified exit code.",
+            ))
+        } else if line.contains("println_i64") {
+            Some((
+                "println_i64(value: i64) -> ()",
+                "Prints a 64-bit integer to stdout followed by a newline.",
+            ))
+        } else if line.contains("println_i32") {
+            Some((
+                "println_i32(value: i32) -> ()",
+                "Prints a 32-bit integer to stdout followed by a newline.",
+            ))
+        } else if line.contains("println_bool") {
+            Some((
+                "println_bool(value: bool) -> ()",
+                "Prints a boolean value as \"true\" or \"false\" followed by a newline.",
+            ))
+        } else if line.contains("println_unit") {
+            Some((
+                "println_unit(value: ()) -> ()",
+                "Prints \"()\" to stdout followed by a newline.",
+            ))
+        } else if line.contains("input") {
+            Some((
+                "input() -> i64",
+                "Reads a line from stdin and parses it as an i64. Returns 0 on parse error.",
+            ))
+        } else {
+            None
+        };
+
+        if let Some((signature, docs)) = hover_info {
+            Ok(Some(Hover {
+                contents: HoverContents::Markup(MarkupContent {
+                    kind: MarkupKind::Markdown,
+                    value: format!("```rue\n{signature}\n```\n\n{docs}"),
+                }),
+                range: None,
+            }))
+        } else {
+            Ok(None)
+        }
     }
 }
 

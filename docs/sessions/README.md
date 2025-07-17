@@ -47,7 +47,7 @@ After session 1, we started keeping actual logs.
 * [006 - While Loops](./006-while-loops/README.md): Implemented while loop support, achieving Turing completeness
 * [007 - Assignment](./007-assignment/README.md): Added assignment statements enabling variable reassignment
 * [008 - Expressions and Statements](./008-expressions-and-statements/README.md): Fixed if/while expression compilation and proper semicolon handling
-* [009 - TargetIR](./009-target-ir/README.md): Replaced direct AST→x86 pipeline with AST→TargetIR→x86 for multiple backend support
+* [009 - TargetIR](./009-target-ir/README.md): Replaced direct AST→x86 pipeline with AST→IR→x86 (introduced Instruction enum and MachineInstr)
 * [010 - Type System](./010-type-system/README.md): Transformed Rue from single-type to multi-typed language with explicit annotations
 * [011 - Register Spilling](./011-register-spilling/README.md): Implemented stack spilling to handle programs requiring more than 11 registers
 * [012 - Comments](./012-comments/README.md): Added single-line (//) and nested multi-line (/* */) comment support

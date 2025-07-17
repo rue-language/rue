@@ -11,3 +11,6 @@ path = "src/main.rs"
 rue-compiler = { path = "../rue-compiler" }
 rue-codegen = { path = "../rue-codegen" }
 bpaf = "0.9.20"
+
+[dev-dependencies]
+tempfile = "3.8"

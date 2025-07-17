@@ -1,4 +1,45 @@
-use crate::Register;
+//! Target-level IR (machine instructions)
+//!
+//! This module defines the low-level IR that maps directly to machine instructions.
+
+/// x86-64 registers
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Register {
+    Rax, // Accumulator, return value
+    Rbx, // Base
+    Rcx, // Counter
+    Rdx, // Data
+    Rsp, // Stack pointer
+    Rbp, // Base pointer
+    Rsi, // Source index
+    Rdi, // Destination index
+    R8,  // Extended registers
+    R9,
+    R10,
+    R11,
+    R12,
+    R13,
+    R14,
+    R15,
+}
+
+impl Register {
+    /// Check if register requires REX prefix (R8-R15)
+    #[inline]
+    pub fn needs_rex(&self) -> bool {
+        matches!(
+            self,
+            Register::R8
+                | Register::R9
+                | Register::R10
+                | Register::R11
+                | Register::R12
+                | Register::R13
+                | Register::R14
+                | Register::R15
+        )
+    }
+}
 
 /// x86-64 specific machine instructions
 /// These map directly to x86 opcodes with concrete registers
@@ -27,6 +68,20 @@ pub enum MachineInstr {
         src: Register,
     },
 
+    /// mov byte ptr [base + offset], src (store byte to memory)
+    MovMR8 {
+        base: Register,
+        offset: i32,
+        src: Register,
+    },
+
+    /// mov dest, byte ptr [base + offset] (load byte from memory)
+    MovRM8 {
+        dest: Register,
+        base: Register,
+        offset: i32,
+    },
+
     /// add dest, src
     AddRR { dest: Register, src: Register },
 
@@ -44,6 +99,15 @@ pub enum MachineInstr {
 
     /// imul dest, dest, imm32
     ImulRI { dest: Register, imm: i32 },
+
+    /// and dest, src
+    AndRR { dest: Register, src: Register },
+
+    /// shl dest, cl (shift left)
+    Shl { dest: Register, count: Register },
+
+    /// sar dest, cl (arithmetic shift right)
+    Sar { dest: Register, count: Register },
 
     /// idiv divisor (signed division, dividend in RAX, quotient in RAX, remainder in RDX)
     Idiv { divisor: Register },
@@ -83,6 +147,15 @@ pub enum MachineInstr {
 
     /// label definition
     Label { id: u32 },
+
+    /// lea dest, [rip + label] - Load effective address of label
+    LeaLabel { dest: Register, label: String },
+
+    /// cld - Clear direction flag
+    Cld,
+
+    /// rep stosb - Repeat store byte (fill memory)
+    RepStosb,
 
     /// syscall
     Syscall,

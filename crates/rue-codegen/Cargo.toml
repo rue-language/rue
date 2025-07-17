@@ -8,6 +8,8 @@ rue-ast = { path = "../rue-ast" }
 rue-lexer = { path = "../rue-lexer" }
 rue-parser = { path = "../rue-parser" }
 rue-semantic = { path = "../rue-semantic" }
+rue-runtime = { path = "../rue-runtime" }
+rue-ir = { path = "../rue-ir" }
 indexmap = "2"
 thiserror = "2.0.12"
 

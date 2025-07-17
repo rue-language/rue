@@ -1,0 +1,5 @@
+// Test input function twice - simplified
+fn main() {
+    println_i64(input());
+    println_i64(input());
+}

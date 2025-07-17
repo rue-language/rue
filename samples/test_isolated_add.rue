@@ -1,0 +1,15 @@
+fn get_two() -> i32 {
+    2
+}
+
+fn get_three() -> i32 {
+    3
+}
+
+fn test_add() -> i32 {
+    get_two() + get_three()
+}
+
+fn main() -> i32 {
+    test_add()  // Should be 5
+}

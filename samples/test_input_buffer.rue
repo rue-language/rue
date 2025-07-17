@@ -1,0 +1,10 @@
+// Test what happens with buffer
+fn main() {
+    println_i64(1);     // Marker
+    let a = input();
+    println_i64(a);
+    println_i64(2);     // Marker
+    let b = input();
+    println_i64(b);
+    println_i64(3);     // Marker
+}

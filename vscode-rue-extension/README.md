@@ -82,7 +82,9 @@ A VS Code extension that provides language support for Rue through the Rue Langu
 - **Real-time error detection** with both syntax and type error reporting
 - **Semantic token highlighting** for enhanced code coloring
 - **Comment support** with proper highlighting for single-line (`//`) and multi-line (`/* */`) comments
-- **Auto-completion** for brackets and quotes
+- **Auto-completion** for brackets, quotes, built-in functions, and keywords
+- **Code completion** for all built-in functions (exit, println_i64, println_i32, println_bool, println_unit, input)
+- **Hover information** showing function signatures and documentation
 - **Automatic language server startup** when opening .rue files
 - **Accurate error positioning** with line/column information
 

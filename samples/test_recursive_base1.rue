@@ -1,0 +1,11 @@
+fn test(n: i32) -> i32 {
+    if n <= 1 {
+        1
+    } else {
+        test(n - 1) + test(n - 2)
+    }
+}
+
+fn main() -> i32 {
+    test(3)  // Should be 3
+}

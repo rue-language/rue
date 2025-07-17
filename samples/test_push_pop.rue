@@ -1,0 +1,13 @@
+fn id(x: i32) -> i32 {
+    x
+}
+
+fn test_push_pop() -> i32 {
+    let a = 5;
+    let b = id(3);  // This might corrupt 'a' if not preserved
+    a + b
+}
+
+fn main() -> i32 {
+    test_push_pop()  // Should be 8
+}

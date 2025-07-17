@@ -1,8 +1,8 @@
 use crate::{
-    BinOp, Instruction, LabelId, Register, VReg, Value,
-    machine_instr::{ConditionCode, LabelRef, MachineInstr},
+    BinOp, Instruction, LabelId, VReg, Value,
     regalloc::{RegisterAllocator, SpillReloadOp},
 };
+use rue_ir::target::{ConditionCode, LabelRef, MachineInstr, Register};
 use std::collections::HashMap;
 
 /// The Lowering pass converts high-level IR instructions with virtual registers
@@ -183,8 +183,13 @@ impl<'a> Lowering<'a> {
                 // Apply operation with rhs
                 match (op, rhs) {
                     (BinOp::Add, Value::VReg(rhs_vreg)) => {
+                        // Ensure RHS gets a different register than the destination
+                        // This prevents the "add rax, rax" issue when both operands
+                        // happen to be in the same register
                         let rhs_reg = self.allocator.ensure_reg(*rhs_vreg, &[dest_reg])?;
                         self.emit_spill_reload_ops();
+
+                        // Emit the addition
                         self.emit(MachineInstr::AddRR {
                             dest: dest_reg,
                             src: rhs_reg,
@@ -334,6 +339,33 @@ impl<'a> Lowering<'a> {
             Value::PhysicalReg(_) => return Err("PhysicalReg not supported in modulo".to_string()),
         };
 
+        // Check for division by zero (modulo by zero)
+        self.emit(MachineInstr::CmpRI {
+            reg: divisor_reg,
+            imm: 0,
+        });
+
+        // Jump if not zero
+        let mod_ok_label = self.next_label_id();
+        self.emit(MachineInstr::JmpCC {
+            cc: ConditionCode::NotEqual,
+            target: LabelRef::Local(mod_ok_label),
+        });
+
+        // Modulo by zero - exit with code 250
+        self.emit(MachineInstr::MovRI64 {
+            dest: Register::Rdi,
+            imm: 250, // Exit code for divide by zero
+        });
+        self.emit(MachineInstr::MovRI64 {
+            dest: Register::Rax,
+            imm: 60, // sys_exit
+        });
+        self.emit(MachineInstr::Syscall);
+
+        // Continue with division
+        self.emit(MachineInstr::Label { id: mod_ok_label });
+
         // Perform division
         self.emit(MachineInstr::Idiv {
             divisor: divisor_reg,
@@ -416,6 +448,33 @@ impl<'a> Lowering<'a> {
                 return Err("PhysicalReg not supported in division".to_string());
             }
         };
+
+        // Check for division by zero
+        self.emit(MachineInstr::CmpRI {
+            reg: divisor_reg,
+            imm: 0,
+        });
+
+        // Jump if not zero
+        let div_ok_label = self.next_label_id();
+        self.emit(MachineInstr::JmpCC {
+            cc: ConditionCode::NotEqual,
+            target: LabelRef::Local(div_ok_label),
+        });
+
+        // Division by zero - exit with code 250
+        self.emit(MachineInstr::MovRI64 {
+            dest: Register::Rdi,
+            imm: 250, // Exit code for divide by zero
+        });
+        self.emit(MachineInstr::MovRI64 {
+            dest: Register::Rax,
+            imm: 60, // sys_exit
+        });
+        self.emit(MachineInstr::Syscall);
+
+        // Continue with division
+        self.emit(MachineInstr::Label { id: div_ok_label });
 
         // Perform division
         self.emit(MachineInstr::Idiv {
@@ -552,6 +611,7 @@ impl<'a> Lowering<'a> {
         let src_reg = self.allocator.ensure_reg(src, &[])?;
         self.emit_spill_reload_ops();
         self.emit(MachineInstr::Push { reg: src_reg });
+        self.push_count += 1;
         Ok(())
     }
 
@@ -559,6 +619,7 @@ impl<'a> Lowering<'a> {
         let dest_reg = self.allocator.ensure_reg(dest, &[])?;
         self.emit_spill_reload_ops();
         self.emit(MachineInstr::Pop { reg: dest_reg });
+        self.push_count -= 1;
         Ok(())
     }
 
@@ -607,6 +668,17 @@ impl<'a> Lowering<'a> {
         function: &str,
         args: &[VReg],
     ) -> Result<(), String> {
+        // Map built-in functions to runtime names
+        let runtime_function = match function {
+            "exit" => "__rue_exit",
+            "println_i32" => "__rue_println_i32",
+            "println_i64" => "__rue_println_i64",
+            "println_bool" => "__rue_println_bool",
+            "println_unit" => "__rue_println_unit",
+            "input" => "__rue_input",
+            _ => function, // User-defined functions keep their names
+        };
+
         // System V ABI: arguments in RDI, RSI, RDX, RCX, R8, R9
         let arg_regs = [
             Register::Rdi,
@@ -617,13 +689,32 @@ impl<'a> Lowering<'a> {
             Register::R9,
         ];
 
-        // Don't save caller-saved registers here. The caller is responsible
-        // for preserving any values it needs across the call (e.g., using push/pop).
-        let regs_to_save = Vec::new();
+        // Save caller-saved registers that contain live values
+        // We need to save any caller-saved registers that are currently allocated
+        let mut regs_to_save = Vec::new();
+        let caller_saved_regs = [
+            Register::Rax,
+            Register::Rcx,
+            Register::Rdx,
+            Register::Rsi,
+            Register::Rdi,
+            Register::R8,
+            Register::R9,
+            Register::R10,
+            Register::R11,
+        ];
+
+        // Check which caller-saved registers are currently in use
+        for &reg in &caller_saved_regs {
+            if self.allocator.is_register_allocated(reg) {
+                regs_to_save.push(reg);
+            }
+        }
 
         // Save caller-saved registers
         for &reg in &regs_to_save {
             self.emit(MachineInstr::Push { reg });
+            self.push_count += 1;
         }
 
         // Check if we need alignment padding before the call
@@ -646,10 +737,27 @@ impl<'a> Lowering<'a> {
         }
 
         // Move arguments to their designated registers
-        for (i, &arg_vreg) in args.iter().enumerate() {
+        // First, we need to check if any of the argument registers contain live values
+        // that need to be preserved
+        for (i, &_arg_vreg) in args.iter().enumerate() {
             if i >= arg_regs.len() {
                 return Err("Too many arguments for function call".to_string());
             }
+
+            // Check if the target argument register contains a live value
+            if self.allocator.is_register_allocated(arg_regs[i])
+                && !regs_to_save.contains(&arg_regs[i])
+            {
+                // This argument register contains a live value that we haven't saved yet
+                // We need to save it before overwriting
+                self.emit(MachineInstr::Push { reg: arg_regs[i] });
+                self.push_count += 1;
+                regs_to_save.push(arg_regs[i]);
+            }
+        }
+
+        // Now move arguments to their designated registers
+        for (i, &arg_vreg) in args.iter().enumerate() {
             let arg_reg = self.allocator.ensure_reg(arg_vreg, &[])?;
             self.emit_spill_reload_ops();
             if arg_reg != arg_regs[i] {
@@ -662,16 +770,16 @@ impl<'a> Lowering<'a> {
 
         // Call the function
         self.emit(MachineInstr::Call {
-            target: function.to_string(),
+            target: runtime_function.to_string(),
         });
 
         // Move result from RAX if needed
-        if let Some(dest_vreg) = dest {
-            let dest_reg = self.allocator.ensure_reg(*dest_vreg, &[])?;
-            self.emit_spill_reload_ops();
-            if dest_reg != Register::Rax {
+        if dest.is_some() {
+            // Check if RAX is in the list of registers to restore
+            if regs_to_save.contains(&Register::Rax) {
+                // RAX will be overwritten when we restore, so save to R15 first
                 self.emit(MachineInstr::MovRR {
-                    dest: dest_reg,
+                    dest: Register::R15,
                     src: Register::Rax,
                 });
             }
@@ -679,9 +787,6 @@ impl<'a> Lowering<'a> {
 
         // Restore alignment padding if we added it
         if needs_padding {
-            // add rsp, 8 to remove alignment padding
-            // Note: We only need to add 8 even though AllocStack might align to 16,
-            // because we're just removing the padding we added for alignment
             self.emit(MachineInstr::AddRI {
                 dest: Register::Rsp,
                 imm: 8,
@@ -691,6 +796,27 @@ impl<'a> Lowering<'a> {
         // Restore caller-saved registers in reverse order
         for &reg in regs_to_save.iter().rev() {
             self.emit(MachineInstr::Pop { reg });
+            self.push_count -= 1;
+        }
+
+        // Now move the return value to its destination
+        if let Some(dest_vreg) = dest {
+            let dest_reg = self.allocator.ensure_reg(*dest_vreg, &[])?;
+            self.emit_spill_reload_ops();
+
+            // Determine where the return value is
+            let source_reg = if regs_to_save.contains(&Register::Rax) {
+                Register::R15 // We saved it here
+            } else {
+                Register::Rax // Still in RAX
+            };
+
+            if dest_reg != source_reg {
+                self.emit(MachineInstr::MovRR {
+                    dest: dest_reg,
+                    src: source_reg,
+                });
+            }
         }
 
         Ok(())
@@ -707,6 +833,12 @@ impl<'a> Lowering<'a> {
                     src: value_reg,
                 });
             }
+        } else {
+            // No explicit return value - return 0 (unit type)
+            self.emit(MachineInstr::MovRI64 {
+                dest: Register::Rax,
+                imm: 0,
+            });
         }
 
         // Standard SysV epilogue

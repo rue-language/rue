@@ -10,6 +10,8 @@ cargo.rust_library(
         "//crates/rue-lexer:rue-lexer",
         "//crates/rue-parser:rue-parser",
         "//crates/rue-semantic:rue-semantic",
+        "//crates/rue-runtime:rue-runtime",
+        "//crates/rue-ir:rue-ir",
         "//:indexmap",
     ],
     visibility = ["PUBLIC"],
@@ -25,6 +27,8 @@ rust_test(
         "//crates/rue-lexer:rue-lexer",
         "//crates/rue-parser:rue-parser",
         "//crates/rue-semantic:rue-semantic",
+        "//crates/rue-runtime:rue-runtime",
+        "//crates/rue-ir:rue-ir",
         "//:indexmap",
     ],
 )

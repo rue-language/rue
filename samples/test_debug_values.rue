@@ -1,0 +1,17 @@
+// Debug variable values
+fn main() {
+    let a: i64 = 42;
+    println_i64(a);  // Should print 42
+    
+    let b: i64 = 17;
+    println_i64(b);  // Should print 17
+    
+    println_i64(1);  // Marker
+    
+    let c = a + b;   // Should be 59
+    
+    println_i64(2);  // Marker
+    println_i64(a);  // Should still be 42
+    println_i64(b);  // Should still be 17
+    println_i64(c);  // Should be 59
+}

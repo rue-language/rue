@@ -1,0 +1,4 @@
+// Test zero
+fn main() {
+    println_i64(0);
+}

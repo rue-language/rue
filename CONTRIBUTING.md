@@ -12,8 +12,9 @@ Key features:
 - Compiles to x86-64 native code (ELF executables)
 - Incremental compilation using Salsa
 - ECS-inspired flat AST with integer indices
-- All variables are 64-bit integers
-- Supports functions, arithmetic, if/else, while loops, and assignments
+- Static typing with i32, i64, bool, and unit types
+- Supports functions, arithmetic, if/else, while loops, assignments, and built-in I/O
+- Runtime library providing println_i64, println_i32, println_bool, println_unit, input, and exit functions
 
 For complete language specification, see [docs/spec.md](./docs/spec.md).
 For implementation details, see [docs/implementation.md](./docs/implementation.md).
@@ -23,35 +24,51 @@ For implementation details, see [docs/implementation.md](./docs/implementation.m
 ### Building
 - `buck2 build //crates/rue:rue` - Build the main rue compiler
 - `buck2 build //crates/...` - Build all crates
+- `cargo build -p rue` - Build the compiler with Cargo
+- `cargo build --workspace` - Build all workspace crates
 
 ### Testing  
 - `buck2 test //crates/rue-lexer:test` - Run lexer tests
 - `buck2 test //crates/rue-parser:test` - Run parser tests
 - `buck2 test //crates/rue-semantic:test` - Run semantic analysis tests
 - `buck2 test //crates/rue-codegen:test` - Run code generation tests
-- `buck2 test //crates/rue:test` - Run basic sample validation tests
-- `cargo test -p rue` - Run end-to-end integration tests (compile and execute samples)
+- `buck2 test //crates/rue-compiler:test` - Run compiler tests
+- `buck2 test //crates/rue:integration_tests` - Run integration tests
+- `buck2 test //crates/rue:type_system_tests` - Run type system tests
+- `buck2 test //crates/rue:` - Run all rue tests (integration + type system)
+- `buck2 test //crates/rue-runtime:test` - Run runtime tests
+- `cargo test -p rue` - Run integration and type system tests (compile and execute samples)
 - `cargo test -p rue-lsp` - Run LSP server tests (Buck2 has third-party dependency compilation issues)
 - `cargo test` - Run all tests across all packages
+- `buck2 test //crates/rue-runtime:test` - Run runtime tests
 
 **Running Specific Test Subsets:**
 - `cargo test -p rue-lexer test_name` - Run specific lexer test
 - `cargo test -p rue-parser parse_` - Run all parser tests matching pattern
 - `buck2 test //crates/rue-lexer:test -- --filter keyword` - Filter Buck2 tests by keyword
-- `cargo test integration_tests` - Run only integration tests
+- `cargo test -p rue integration_tests` - Run only integration tests
+- `cargo test -p rue type_system_tests` - Run only type system tests
+- `cargo test -p rue runtime_tests` - Run only runtime tests
 - `cargo test -- --nocapture` - Show println! output during tests
 
 ### Compiling and Running Programs
 - `buck2 run //crates/rue:rue samples/simple.rue` - Compile simple.rue to executable
+- `cargo run -p rue samples/simple.rue` - Compile with Cargo
 - `buck2 run //crates/rue:rue <source.rue>` - Compile any rue source file
-- `./simple` - Run the compiled executable (after compilation)
+- `./samples/simple` - Run the compiled executable (created in same directory as source)
+- `echo $?` - Check the exit code of the last program
 
 ### Example Programs
 - `samples/simple.rue` - Basic program that returns 42
 - `samples/factorial.rue` - Recursive factorial function (returns 120 for factorial(5))
+- `samples/fibonacci.rue` - Fibonacci sequence calculation
 - `samples/simple_assignment.rue` - Basic assignment demonstration (returns 100)
+- `samples/assignment_demo.rue` - More complex assignment and mutation examples
 - `samples/countdown.rue` - While loop demonstration counting down from 10
-- Test compilation: `buck2 run //crates/rue:rue samples/simple.rue; ./simple; echo "Exit code: $?"`
+- `samples/while_demo.rue` - Advanced while loop patterns including nested control flow
+- `samples/if_demo.rue` - Conditional expression examples
+- `examples/comments.rue` - Demonstrates single-line and nested multi-line comments
+- Test compilation: `buck2 run //crates/rue:rue samples/simple.rue; ./samples/simple; echo "Exit code: $?"`
 
 ### LSP and IDE Support
 - `cargo run -p rue-lsp` - Start the Language Server Protocol server
@@ -84,6 +101,8 @@ When compiled programs crash or behave unexpectedly:
 - Segmentation faults often indicate incorrect instruction sizes in assembler
 - Wrong exit codes suggest incorrect System V ABI implementation
 - Use `echo $?` after running to check exit code
+- Division by zero returns exit code 250
+- Stack overflow/segfault returns exit code 251
 
 ### Debugging the Compiler Itself
 When the rue compiler crashes, fails to compile, or produces incorrect output:

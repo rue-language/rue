@@ -1,0 +1,5 @@
+// Test with hardcoded values
+fn main() {
+    println_i64(0);  
+    println_i64(100);
+}

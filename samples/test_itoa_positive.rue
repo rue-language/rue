@@ -1,0 +1,14 @@
+// Test the complete __rue_itoa implementation with positive numbers
+fn main() {
+    // Test positive numbers
+    println_i64(0);
+    println_i64(1);
+    println_i64(9);
+    println_i64(10);
+    println_i64(42);
+    println_i64(100);
+    println_i64(999);
+    println_i64(1000);
+    println_i64(12345);
+    println_i64(999999999999999999);
+}

@@ -1,0 +1,5 @@
+// Test simple assignment from input
+fn main() {
+    let x = input();
+    println_i64(x);
+}

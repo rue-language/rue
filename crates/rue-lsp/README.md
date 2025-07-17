@@ -10,6 +10,8 @@ A Language Server Protocol implementation for the Rue programming language.
 - **Multi-Error Reporting**: Shows all syntax and type errors simultaneously
 - **Complete LSP Lifecycle**: Initialize, shutdown, and document management
 - **File Watching**: Responds to document open, change, and close events
+- **Code Completion**: Auto-completion for built-in functions and keywords
+- **Hover Information**: Function signatures and documentation on hover
 
 ## Usage
 
@@ -66,7 +68,8 @@ A complete VS Code extension is provided in `vscode-rue-extension/`. To set it u
 - **Real-time error detection** with red squiggly underlines showing exact error locations
 - **Type error reporting** with helpful error messages
 - **Semantic token highlighting** for enhanced code coloring
-- **Auto-completion** for brackets and quotes
+- **Auto-completion** for brackets, quotes, built-in functions, and keywords
+- **Hover documentation** for built-in functions showing signatures and descriptions
 - **Automatic language server startup** when opening .rue files
 
 ## Implementation Details
@@ -81,8 +84,8 @@ A complete VS Code extension is provided in `vscode-rue-extension/`. To set it u
 
 ## Current Limitations
 
-- No code completion beyond auto-closing brackets
-- No hover information or documentation
+- Code completion limited to built-in functions and keywords
+- Hover information only for built-in functions
 - No go-to-definition or find-references yet
 - No code formatting or refactoring support
 
