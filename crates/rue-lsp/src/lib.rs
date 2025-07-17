@@ -1,5 +1,9 @@
+mod position;
+
+use position::PositionCalculator;
 use rue_lexer::Lexer;
 use rue_parser::{parse, ParseError};
+use rue_semantic::{analyze_cst, SemanticError};
 use std::collections::HashMap;
 use tokio::sync::RwLock;
 use tower_lsp::jsonrpc::Result;
@@ -21,27 +25,46 @@ impl RueLanguageServer {
     }
 
     async fn parse_document(&self, _uri: &Url, text: &str) -> Vec<Diagnostic> {
+        let mut diagnostics = Vec::new();
         let mut lexer = Lexer::new(text);
         let tokens = lexer.tokenize();
 
         match parse(tokens) {
-            Ok(_) => Vec::new(), // No errors
-            Err(error) => vec![self.parse_error_to_diagnostic(error)],
+            Ok(ast) => {
+                // Parse succeeded, now run semantic analysis
+                if let Err(error) = analyze_cst(&ast) {
+                    diagnostics.push(self.semantic_error_to_diagnostic(error, text));
+                }
+            }
+            Err(error) => {
+                // Parse failed, report syntax error
+                diagnostics.push(self.parse_error_to_diagnostic(error, text));
+            }
+        }
+
+        diagnostics
+    }
+
+    fn parse_error_to_diagnostic(&self, error: ParseError, text: &str) -> Diagnostic {
+        let calc = PositionCalculator::new(text);
+        let range = calc.span_to_range(error.span);
+
+        Diagnostic {
+            range,
+            severity: Some(DiagnosticSeverity::ERROR),
+            code: None,
+            code_description: None,
+            source: Some("rue-lsp".to_string()),
+            message: error.message,
+            related_information: None,
+            tags: None,
+            data: None,
         }
     }
 
-    fn parse_error_to_diagnostic(&self, error: ParseError) -> Diagnostic {
-        // For now, just use character offsets. We could convert to line/column later.
-        let range = Range {
-            start: Position {
-                line: 0,
-                character: error.span.start as u32,
-            },
-            end: Position {
-                line: 0,
-                character: error.span.end as u32,
-            },
-        };
+    fn semantic_error_to_diagnostic(&self, error: SemanticError, text: &str) -> Diagnostic {
+        let calc = PositionCalculator::new(text);
+        let range = calc.span_to_range(error.span);
 
         Diagnostic {
             range,
@@ -146,6 +169,7 @@ pub async fn run_server() {
 mod tests {
     use rue_lexer::Lexer;
     use rue_parser::parse;
+    use rue_semantic::analyze_cst;
 
     #[test]
     fn test_while_loop_parsing() {
@@ -208,5 +232,81 @@ fn main() {
         let result = parse(tokens);
 
         assert!(result.is_ok(), "Assignment should parse without errors");
+    }
+
+    #[test]
+    fn test_semantic_undefined_variable_detection() {
+        let text = r#"
+fn test_undefined() {
+    x + 5
+}
+"#;
+
+        let mut lexer = Lexer::new(text);
+        let tokens = lexer.tokenize();
+        let ast = parse(tokens).expect("Should parse");
+        let result = analyze_cst(&ast);
+
+        assert!(result.is_err(), "Should detect undefined variable");
+        if let Err(err) = result {
+            assert!(err.message.contains("Undefined variable"));
+        }
+    }
+
+    #[test]
+    fn test_semantic_type_mismatch_detection() {
+        let text = r#"
+fn test_type_error() {
+    let x = 42;
+    let y = true;
+    x + y
+}
+"#;
+
+        let mut lexer = Lexer::new(text);
+        let tokens = lexer.tokenize();
+        let ast = parse(tokens).expect("Should parse");
+        let result = analyze_cst(&ast);
+
+        assert!(result.is_err(), "Should detect type mismatch");
+        if let Err(err) = result {
+            assert!(err.message.contains("Type mismatch") || err.message.contains("Cannot add"));
+        }
+    }
+
+    #[test]
+    fn test_comments_are_ignored() {
+        let text = r#"
+// Single line comment
+fn test_comments() {
+    /* Multi
+       line
+       comment */
+    let x = 42; // inline comment
+    /* Nested /* comments */ work */
+    x
+}
+"#;
+
+        let mut lexer = Lexer::new(text);
+        let tokens = lexer.tokenize();
+        let result = parse(tokens);
+
+        assert!(result.is_ok(), "Comments should not affect parsing");
+    }
+
+    #[test]
+    fn test_position_conversion() {
+        use crate::position::PositionCalculator;
+
+        let text = "fn test(): i32 {\n    undefined_var\n}";
+        let calc = PositionCalculator::new(text);
+
+        // Test various positions
+        let (line, col) = calc.offset_to_position(0);
+        assert_eq!((line, col), (0, 0));
+
+        let (line, col) = calc.offset_to_position(17); // Start of second line
+        assert_eq!((line, col), (1, 0));
     }
 }

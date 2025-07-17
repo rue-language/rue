@@ -12,6 +12,7 @@ rue-compiler = { path = "../rue-compiler" }
 rue-parser = { path = "../rue-parser" }
 rue-lexer = { path = "../rue-lexer" }
 rue-ast = { path = "../rue-ast" }
+rue-semantic = { path = "../rue-semantic" }
 tokio = { version = "1.0", features = ["full"] }
 tower-lsp = "0.20"
 serde_json = "1.0"

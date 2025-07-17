@@ -43,6 +43,16 @@
         {
           "name": "comment.line.double-slash.rue",
           "match": "//.*$"
+        },
+        {
+          "name": "comment.block.rue",
+          "begin": "/\\*",
+          "end": "\\*/",
+          "patterns": [
+            {
+              "include": "#comments"
+            }
+          ]
         }
       ]
     },
