@@ -1,0 +1,4 @@
+fn main() -> i64 {
+    println_i64(42);
+    0
+}

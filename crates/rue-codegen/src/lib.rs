@@ -4,7 +4,6 @@ use std::collections::HashMap;
 
 mod elf_writer;
 mod lowering;
-mod machine_instr;
 mod regalloc;
 mod util;
 mod x86_emitter;
@@ -13,6 +12,9 @@ use elf_writer::ElfWriter;
 pub use lowering::Lowering;
 pub use regalloc::RegisterAllocator;
 pub use x86_emitter::X86Emitter;
+
+// Import types from rue-ir
+use rue_ir::target::{LabelRef, MachineInstr, Register};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct CodegenError {
@@ -128,44 +130,6 @@ pub enum Instruction {
     // Stack frame management
     EnterFrame,
     LeaveFrame,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum Register {
-    Rax, // Accumulator, return value
-    Rbx, // Base
-    Rcx, // Counter
-    Rdx, // Data
-    Rsp, // Stack pointer
-    Rbp, // Base pointer
-    Rsi, // Source index
-    Rdi, // Destination index
-    R8,  // Extended registers
-    R9,
-    R10,
-    R11,
-    R12,
-    R13,
-    R14,
-    R15,
-}
-
-impl Register {
-    /// Check if register requires REX prefix (R8-R15)
-    #[inline]
-    pub fn needs_rex(&self) -> bool {
-        matches!(
-            self,
-            Register::R8
-                | Register::R9
-                | Register::R10
-                | Register::R11
-                | Register::R12
-                | Register::R13
-                | Register::R14
-                | Register::R15
-        )
-    }
 }
 
 // Code generator state
@@ -546,21 +510,18 @@ impl Codegen {
 
                 if lhs_has_call && rhs_has_call {
                     // Special case: both sides have function calls
-                    // We need to be extra careful about preserving values
+                    // Use the same preservation strategy as single-sided case
 
-                    // If both sides reference variables, we need to load them before any calls
-                    // For now, let's handle the common case of f(expr) + g(expr)
-                    // by evaluating in a way that preserves intermediate values
-
+                    // Evaluate LHS first
                     let lhs_vreg = self.generate_expression(&binary_expr.left, _scope)?;
 
-                    // The left side made calls, so any shared variables might be corrupted
-                    // We must preserve the LHS result before evaluating RHS
+                    // Preserve LHS on stack before evaluating RHS (same as single case)
                     self.emit(Instruction::Push { src: lhs_vreg });
 
+                    // Evaluate RHS
                     let rhs_vreg = self.generate_expression(&binary_expr.right, _scope)?;
 
-                    // Restore LHS
+                    // Restore LHS from stack (same logic as single case)
                     let preserved_lhs = self.next_vreg();
                     self.emit(Instruction::Pop {
                         dest: preserved_lhs,
@@ -819,6 +780,9 @@ impl Default for Codegen {
 
 // High-level compilation function using the proper lowering pipeline
 pub fn compile_to_executable(ast: &CstRoot, scope: &Scope) -> Result<Vec<u8>, CodegenError> {
+    // Phase 0: Generate runtime code from rue-runtime crate
+    let (runtime_instructions, runtime_labels) =
+        rue_runtime::generate_runtime().map_err(|e| CodegenError { message: e })?;
     // Phase 1: Generate high-level IR instructions
     let mut codegen = Codegen::new();
     let instructions = codegen.generate(ast, scope)?;
@@ -893,7 +857,7 @@ pub fn compile_to_executable(ast: &CstRoot, scope: &Scope) -> Result<Vec<u8>, Co
 
                         // Then emit the label
                         let machine_label_id = ir_to_machine_labels[label_id];
-                        function_machine_instrs.push(crate::machine_instr::MachineInstr::Label {
+                        function_machine_instrs.push(MachineInstr::Label {
                             id: machine_label_id,
                         });
                     }
@@ -924,21 +888,71 @@ pub fn compile_to_executable(ast: &CstRoot, scope: &Scope) -> Result<Vec<u8>, Co
         label_id_counter = next_label_id;
     }
 
-    // Phase 4: Emit machine code
-    let mut x86_emitter = X86Emitter::new();
+    // Phase 4: Combine runtime and user code
+    let mut final_instructions = Vec::new();
 
-    // Convert function_labels to use machine label IDs instead of IR label IDs
-    let mut machine_function_labels = HashMap::new();
-    for (name, ir_label_id) in &function_labels {
-        if let Some(&machine_label_id) = ir_to_machine_labels.get(ir_label_id) {
-            machine_function_labels.insert(name.clone(), crate::LabelId(machine_label_id));
+    // Add runtime instructions first
+    final_instructions.extend(runtime_instructions);
+
+    // Adjust user code labels to account for runtime labels
+    let runtime_label_count = runtime_labels.values().max().copied().unwrap_or(0) + 1;
+
+    // Adjust all label IDs in user code
+    for instr in all_machine_instructions {
+        match instr {
+            MachineInstr::Label { id } => {
+                final_instructions.push(MachineInstr::Label {
+                    id: id + runtime_label_count,
+                });
+            }
+            MachineInstr::Jmp { target } => {
+                let adjusted_target = match target {
+                    LabelRef::Local(id) => LabelRef::Local(id + runtime_label_count),
+                    global => global,
+                };
+                final_instructions.push(MachineInstr::Jmp {
+                    target: adjusted_target,
+                });
+            }
+            MachineInstr::JmpCC { cc, target } => {
+                let adjusted_target = match target {
+                    LabelRef::Local(id) => LabelRef::Local(id + runtime_label_count),
+                    global => global,
+                };
+                final_instructions.push(MachineInstr::JmpCC {
+                    cc,
+                    target: adjusted_target,
+                });
+            }
+            other => final_instructions.push(other),
         }
     }
 
-    x86_emitter.set_function_labels(machine_function_labels.clone());
+    // Phase 5: Emit machine code
+    let mut x86_emitter = X86Emitter::new();
+
+    // Set up all labels (runtime + user)
+    let mut all_function_labels = HashMap::new();
+
+    // Add runtime labels
+    for (name, &id) in &runtime_labels {
+        all_function_labels.insert(name.clone(), crate::LabelId(id));
+    }
+
+    // Add user function labels (adjusted)
+    for (name, ir_label_id) in &function_labels {
+        if let Some(&machine_label_id) = ir_to_machine_labels.get(ir_label_id) {
+            all_function_labels.insert(
+                name.clone(),
+                crate::LabelId(machine_label_id + runtime_label_count),
+            );
+        }
+    }
+
+    x86_emitter.set_function_labels(all_function_labels);
 
     let code = x86_emitter
-        .emit_all(&all_machine_instructions)
+        .emit_all(&final_instructions)
         .map_err(|e| CodegenError { message: e })?;
 
     let (_, symbols) = x86_emitter.get_output();

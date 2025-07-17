@@ -1,0 +1,14 @@
+fn deep_recursion(n: i32) -> i32 {
+    if n == 0 {
+        0
+    } else {
+        1 + deep_recursion(n - 1)
+    }
+}
+
+fn main() -> i32 {
+    // This should cause stack overflow
+    let result = deep_recursion(1000000);
+    println_i32(result);
+    0
+}

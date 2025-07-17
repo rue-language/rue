@@ -1,0 +1,8 @@
+// Test input function - sum two numbers
+fn main() {
+    println_i64(999);  // Prompt indicator
+    let a = input();
+    let b = input();
+    let sum = a + b;
+    println_i64(sum);
+}

@@ -1,0 +1,6 @@
+fn main() -> i32 {
+    let a = 10;
+    let b = 0;
+    println_i32(a % b);  // Should trigger modulo by zero
+    99  // Should not reach here
+}

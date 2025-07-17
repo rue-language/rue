@@ -33,12 +33,20 @@ The Rue compiler is written in Rust and implements a complete compilation pipeli
 - **Single-line**: `// comment`
 - **Multi-line**: `/* comment */` with nesting support
 
+### Built-in Functions
+- **I/O operations**: `println_i64()`, `println_i32()`, `println_bool()`, `println_unit()`, `input()`
+- **Program control**: `exit()`
+
 ## Compilation Pipeline
 
 The compiler follows this pipeline:
-**Lexer** → **Parser** → **Semantic Analysis** → **TargetIR Generation** → **Code Generation** → **ELF Generation**
+**Lexer** → **Parser** → **Semantic Analysis** → **IR Generation** → **x86-64 Emission** → **ELF Generation**
 
-The TargetIR (Target Intermediate Representation) layer provides platform-independent code generation and enables future support for multiple backends.
+The compilation uses an intermediate representation:
+- **Instruction enum**: Platform-independent instructions with virtual registers (in `rue-codegen`)
+- **MachineInstr**: Low-level x86-64 instructions with physical registers (in `rue-ir`)
+
+Note: The documentation sometimes refers to "TargetIR", but the actual implementation uses the `Instruction` enum in the codegen crate as the high-level IR, which is then lowered directly to `MachineInstr`. The MachineInstr type serves as the actual target-specific IR.
 
 ## Implementation Language & Build System
 
@@ -55,7 +63,9 @@ The Rue compiler is organized into multiple crates for modularity and clean sepa
 - **`rue-ast`**: Abstract syntax tree definitions
 - **`rue-parser`**: Parsing source code into CST
 - **`rue-semantic`**: Type checking and semantic analysis
-- **`rue-codegen`**: TargetIR generation and x86-64 code emission
+- **`rue-ir`**: Target-specific intermediate representation (MachineInstr for x86-64)
+- **`rue-codegen`**: Code generation using IR definitions from rue-ir
+- **`rue-runtime`**: Runtime library embedded in executables
 - **`rue-compiler`**: High-level compiler API orchestrating all phases
 - **`rue-lsp`**: Language Server Protocol implementation
 
@@ -111,26 +121,43 @@ The Rue compiler is organized into multiple crates for modularity and clean sepa
 4. **Call Graph**: Build function dependency graph
 5. **Type Inference**: Deduce types for expressions from context
 
-### TargetIR Generation (`rue-codegen`)
+### Intermediate Representations (`rue-ir` and `rue-codegen`)
 
-#### Intermediate Representation
-- **Platform-independent**: TargetIR abstracts away x86-64 specifics
-- **Virtual registers**: Unlimited VReg type for values
-- **Type-aware**: Instructions carry type information
+#### Overview
+The compiler uses intermediate representations at two levels:
+- **Instruction enum (in `rue-codegen`)**: High-level, platform-independent instructions with virtual registers
+- **MachineInstr (in `rue-ir`)**: Low-level x86-64 machine instructions with physical registers
+
+#### High-Level IR: Instruction enum (Platform-Independent)
+Located in `rue-codegen`, this serves as the platform-independent IR:
+- **Virtual registers**: Unlimited VReg type for values, allocated later
+- **Type-aware**: Instructions carry type information implicitly
 - **SSA-friendly**: Design supports future SSA conversion
-- **Instruction set**: Copy, BinaryOp, Call, Jump, ConditionalJump, Return, Push, Pop, EnterFrame, LeaveFrame
+- **Instruction set**: Copy, BinaryOp, Call, Jump, Branch, Return, Push, Pop, Load, Store, Syscall, EnterFrame, LeaveFrame
+- **Control flow**: Labels and conditional branches for structured control
+
+#### Low-Level IR: MachineInstr (x86-64 Specific)
+Located in `rue-ir::target`, this represents actual x86-64 instructions:
+- **Physical registers**: Direct mapping to x86-64 registers (RAX, RBX, etc.)
+- **Machine opcodes**: MovRR, MovRI32, MovRI64, AddRR, SubRR, ImulRR, Idiv, CmpRR, SetCC, Push, Pop, Call, Ret, Jmp, JmpCC, Syscall
+- **Memory operations**: Stack-relative addressing with RBP offsets
+- **Direct encoding**: Each instruction maps to specific x86-64 opcodes
+
+#### Architecture Note
+While the original design documents refer to "TargetIR", the actual implementation evolved differently. The `Instruction` enum in `rue-codegen` serves as the high-level IR, and `MachineInstr` in `rue-ir::target` serves as the low-level, target-specific IR. This provides the same benefits of separation but with a simpler implementation.
 
 #### Benefits
-- **Multiple backends**: Foundation for LLVM, Cranelift, or other backends
-- **Optimization passes**: Can implement optimizations on TargetIR
-- **Debugging**: Easier to debug at TargetIR level than raw assembly
-- **Testing**: Can test code generation independently from machine code emission
+- **Clean separation**: Platform-independent and platform-specific code clearly separated
+- **Multiple backends**: The Instruction enum can be lowered to different architectures
+- **Optimization passes**: Can implement optimizations at either IR level
+- **Testing**: Each IR level can be tested independently
 
 ### Code Generation (`rue-codegen`)
 
 #### Strategy
+- **Two-phase generation**: AST → Instruction enum → MachineInstr → machine code bytes
 - **Register allocation**: Linear scan allocator with automatic spilling
-- **x86-64 target**: Direct native code generation from TargetIR
+- **x86-64 target**: Uses MachineInstr definitions from rue-ir
 - **System V ABI**: Compatible with C calling conventions
 - **Single-pass assembler**: Direct machine code emission with post-processing fixups
 
@@ -142,7 +169,9 @@ The Rue compiler is organized into multiple crates for modularity and clean sepa
 - **Smart preservation**: Detects function calls and preserves registers across calls
 
 #### Instruction Generation
-- TargetIR instructions lowered to x86-64 machine code
+- AST expressions generate platform-independent Instructions with virtual registers
+- Instructions are then lowered to MachineInstr with physical registers
+- MachineInstr emitted as x86-64 machine code bytes
 - Type-specific code generation (i32 vs i64 operations)
 - Function calls use System V AMD64 ABI (RDI, RSI, RDX, RCX, R8, R9 for parameters)
 - Control flow with labels and conditional jumps
@@ -158,6 +187,36 @@ The Rue compiler is organized into multiple crates for modularity and clean sepa
 - **Minimal ELF**: Only essential sections (text, data, symbol table)
 - **Static linking**: Self-contained executables
 - **Linux-specific**: Uses Linux system call ABI
+
+### Runtime System (`rue-runtime`)
+
+#### Architecture
+The runtime is embedded directly into each compiled executable, providing essential services without external dependencies.
+
+#### Components
+- **Syscall wrappers**: Direct Linux system calls for I/O
+- **Built-in functions**: I/O primitives (print, input) and program control (exit)
+- **Type conversions**: Integer-to-string and string-to-integer for I/O
+- **Error handling**: Division-by-zero detection with controlled termination
+
+#### Implementation Strategy
+- **No external dependencies**: Uses only Linux syscalls
+- **Minimal footprint**: Adds < 2KB to executable size
+- **Direct syscalls**: No libc dependency
+- **Machine code generation**: Runtime functions generated using MachineInstr from rue-ir
+- **Assembly fallback**: Complex operations use inline assembly strings when needed
+
+#### Built-in Functions
+- `exit(code: i64) -> ()`: Terminate with exit code
+- `println_i64(value: i64) -> ()`: Print 64-bit integer
+- `println_i32(value: i32) -> ()`: Print 32-bit integer  
+- `println_bool(value: bool) -> ()`: Print boolean as "true"/"false"
+- `println_unit(value: ()) -> ()`: Print "()"
+- `input() -> i64`: Read integer from stdin
+
+#### Error Codes
+- **250**: Division or modulo by zero
+- **251**: Stack overflow (planned)
 
 ## Design Priorities
 
@@ -185,11 +244,23 @@ The Rue compiler is organized into multiple crates for modularity and clean sepa
 - Each compiler phase has comprehensive unit tests
 - Property-based testing for core algorithms
 - Error condition testing
+- Runtime function testing with I/O capture
 
 ### Integration Tests
 - End-to-end compilation of sample programs
 - Executable correctness verification
+- Type system tests for all type features
+- Runtime tests for built-in functions
 - Performance regression detection
+
+### Test Organization
+- **Unit tests**: In each crate's `src/test.rs` or inline
+- **Integration tests**: In `crates/rue/tests/`
+  - `integration_tests.rs`: General compiler tests
+  - `type_system_tests.rs`: Type checking scenarios
+  - `runtime_tests.rs`: Built-in function tests
+  - `comprehensive_sample_tests.rs`: All sample programs
+  - `dual_function_call_tests.rs`: Complex call scenarios
 
 ### Continuous Integration
 - Buck2 and Cargo build verification
@@ -217,6 +288,53 @@ The Rue compiler is organized into multiple crates for modularity and clean sepa
 - Designed for jj (Jujutsu) workflow
 - Commit hooks for code quality
 - Branching strategy for experimental features
+
+## Building the Compiler
+
+### Cargo Build
+The standard Rust build system works out of the box:
+```bash
+# Build the compiler
+cargo build
+
+# Run the compiler
+cargo run -p rue samples/simple.rue
+
+# Run all tests
+cargo test
+
+# Run specific test suite
+cargo test -p rue-lexer
+cargo test -p rue-parser
+cargo test -p rue-semantic
+cargo test -p rue-codegen
+cargo test -p rue-compiler
+cargo test -p rue-runtime
+cargo test -p rue
+```
+
+### Buck2 Build
+Buck2 provides faster incremental builds:
+```bash
+# Build the compiler
+buck2 build //crates/rue:rue
+
+# Run the compiler
+buck2 run //crates/rue:rue samples/simple.rue
+
+# Run all tests
+buck2 test //crates/...
+
+# Run specific test suite
+buck2 test //crates/rue-lexer:test
+buck2 test //crates/rue-parser:test
+buck2 test //crates/rue-semantic:test
+buck2 test //crates/rue-codegen:test
+buck2 test //crates/rue-compiler:test
+buck2 test //crates/rue-runtime:test
+buck2 test //crates/rue:integration_tests
+buck2 test //crates/rue:type_system_tests
+```
 
 ## Build System Integration
 

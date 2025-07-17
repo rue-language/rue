@@ -1,0 +1,11 @@
+fn return_ten() -> i32 {
+    10
+}
+
+fn return_twenty() -> i32 {
+    20
+}
+
+fn main() -> i32 {
+    return_ten() + return_twenty()  // Should return 30
+}

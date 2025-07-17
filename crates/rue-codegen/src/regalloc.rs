@@ -1,4 +1,5 @@
-use crate::{Register, VReg};
+use crate::VReg;
+use rue_ir::target::Register;
 use std::collections::HashMap;
 
 /// Location where a virtual register is stored
@@ -128,6 +129,42 @@ impl RegisterAllocator {
         self.allocation
             .values()
             .any(|loc| matches!(loc, Location::Register(r) if *r == reg))
+    }
+
+    /// Invalidate a register - mark any vreg in this register as spilled
+    pub fn invalidate_register(&mut self, reg: Register) {
+        // Find any vreg that thinks it's in this register
+        let vregs_to_spill: Vec<VReg> = self
+            .allocation
+            .iter()
+            .filter_map(|(vreg, loc)| match loc {
+                Location::Register(r) if *r == reg => Some(*vreg),
+                _ => None,
+            })
+            .collect();
+
+        // Mark those vregs as needing to be reloaded from their home slots
+        for vreg in vregs_to_spill {
+            // Get or allocate a home slot
+            let home_slot = if let Some(&slot) = self.home_slots.get(&vreg) {
+                slot
+            } else {
+                let new_slot = self.allocate_stack_slot();
+                self.home_slots.insert(vreg, new_slot);
+                new_slot
+            };
+
+            // Update the allocation to indicate it's on the stack
+            self.allocation.insert(vreg, Location::StackSlot(home_slot));
+
+            // Remove from LRU order since it's no longer in a register
+            self.lru_order.retain(|&v| v != vreg);
+
+            // The register is now free
+            if !self.free_registers.contains(&reg) {
+                self.free_registers.push(reg);
+            }
+        }
     }
 
     /// Spill the least recently used register to stack and return the freed register

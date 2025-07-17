@@ -1,0 +1,17 @@
+fn fib(n: i32) -> i32 {
+    if n <= 1 {
+        n
+    } else {
+        let a = fib(n - 1);
+        println_i32(a);  // Print first result
+        let b = fib(n - 2);
+        println_i32(b);  // Print second result
+        let result = a + b;
+        println_i32(result);  // Print sum
+        result
+    }
+}
+
+fn main() -> i32 {
+    fib(5)  // Should return 5
+}

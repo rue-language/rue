@@ -9,6 +9,8 @@ members = [
     "crates/rue-codegen",
     "crates/rue",
     "crates/rue-lsp",
+    "crates/rue-runtime",
+    "crates/rue-ir",
 ]
 
 [workspace.package]

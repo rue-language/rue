@@ -1,0 +1,7 @@
+// Test two variables
+fn main() {
+    let a: i64 = 42;
+    let b: i64 = 17;
+    println_i64(a);
+    println_i64(b);
+}

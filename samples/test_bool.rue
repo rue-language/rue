@@ -1,0 +1,5 @@
+// Test boolean printing
+fn main() {
+    println_bool(true);
+    println_bool(false);
+}

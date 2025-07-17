@@ -1,0 +1,11 @@
+fn id(x: i32) -> i32 {
+    x
+}
+
+fn add_calls(a: i32, b: i32) -> i32 {
+    id(a) + id(b)
+}
+
+fn main() -> i32 {
+    add_calls(2, 3)  // Should be 5
+}

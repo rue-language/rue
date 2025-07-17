@@ -32,6 +32,7 @@ Rue is a fully functional compiler with a complete implementation pipeline:
 - **Semantic Analysis**: Type checking and validation
 - **Code Generation**: Direct x86-64 assembly via custom IR
 - **Executable Output**: Native ELF binaries (no external linker)
+- **Runtime**: Built-in functions for I/O, program control, and error handling
 - **IDE Support**: LSP server with diagnostics and VS Code extension
 - **Build Systems**: Both Cargo and Buck2 supported
 
@@ -49,7 +50,10 @@ Current language support:
 - **Type system**: Static typing with mandatory annotations
 - **Supported types**: i32, i64, bool, and unit (())
 - **Comments**: Single-line (//) and nested multi-line (/* */)
+- **Runtime Error Handling**: Division by zero (exit code 250), stack overflow (exit code 251)
 - **Expressions**: Everything is an expression (including if/while)
+- **I/O functions**: println_i64, println_i32, println_bool, println_unit, input
+- **Program control**: exit function for controlled termination
 
 ### Example Program
 
@@ -89,6 +93,44 @@ fn main() -> i32 {
         0
     }
 }
+```
+
+### I/O Example
+
+```rue
+fn main() -> i64 {
+    // Print various types
+    println_i64(42);
+    println_bool(true);
+    println_unit(());  // Prints "()"
+    
+    // Read input from user
+    println_i64(999);  // Prompt
+    let x: i64 = input();
+    
+    // Process and output
+    println_i64(x * 2);
+    
+    // Early exit with custom code
+    if x > 100 {
+        exit(1);
+    };
+    
+    0
+}
+```
+
+Running this program:
+```bash
+$ ./my_program
+42
+true
+()
+999
+10    # User input
+20    # Output: 10 * 2
+$ echo $?
+0
 ```
 
 ### Type Annotations
@@ -135,6 +177,8 @@ cargo run -p rue samples/factorial.rue && ./samples/factorial; echo $?
 cargo run -p rue samples/fibonacci.rue && ./samples/fibonacci; echo $?
 cargo run -p rue samples/while_demo.rue && ./samples/while_demo; echo $?
 cargo run -p rue examples/comments.rue && ./examples/comments; echo $?
+cargo run -p rue samples/countdown.rue && ./samples/countdown; echo $?
+cargo run -p rue samples/assignment_demo.rue && ./samples/assignment_demo; echo $?
 ```
 
 ### With Buck2
@@ -153,7 +197,7 @@ cargo test -p rue-lexer       # Lexer tests
 cargo test -p rue-parser      # Parser tests
 cargo test -p rue-semantic    # Type checking tests
 cargo test -p rue-codegen     # Code generation tests
-cargo test -p rue             # Integration tests
+cargo test -p rue             # Integration and type system tests
 
 # With Buck2
 buck2 test //crates/...       # All tests
@@ -162,6 +206,8 @@ buck2 test //crates/rue-parser:test   # Parser tests
 buck2 test //crates/rue-semantic:test # Type checking tests
 buck2 test //crates/rue-codegen:test  # Code generation tests
 buck2 test //crates/rue:integration_tests # Integration tests
+buck2 test //crates/rue:type_system_tests # Type system tests
+buck2 test //crates/rue:              # All rue tests (integration + type system)
 ```
 
 ## IDE Support
@@ -171,6 +217,8 @@ Rue includes a Language Server Protocol (LSP) implementation providing:
 - Real-time error diagnostics
 - Type checking feedback
 - Semantic analysis
+- Code completion for built-in functions and keywords
+- Hover information with function signatures
 
 ```bash
 # Install VS Code extension
@@ -186,6 +234,8 @@ The VS Code extension provides:
 - Real-time diagnostics as you type
 - Comment highlighting (single-line and multi-line)
 - Automatic error reporting with precise locations
+- Auto-completion for built-in functions (exit, println_i64, println_i32, println_bool, println_unit, input)
+- Hover documentation for function signatures
 
 See `crates/rue-lsp/README.md` for editor integration details.
 

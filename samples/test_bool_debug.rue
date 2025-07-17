@@ -1,0 +1,6 @@
+// Debug boolean printing
+fn main() {
+    exit(1); // Should exit with 1
+    println_bool(true); // Should not reach here
+    exit(2);
+}

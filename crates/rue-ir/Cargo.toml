@@ -1,0 +1,6 @@
+[package]
+name = "rue-ir"
+edition.workspace = true
+version.workspace = true
+
+[dependencies]

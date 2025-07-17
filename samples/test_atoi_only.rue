@@ -1,0 +1,11 @@
+// Test just the number parsing
+fn main() {
+    println_i64(100);  // Expected output
+    let n = input();
+    let expected: i64 = 100;
+    if n == expected {
+        println_i64(1111); // Success marker
+    } else {
+        println_i64(n);    // Show what we got
+    }
+}

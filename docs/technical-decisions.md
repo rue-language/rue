@@ -114,13 +114,17 @@
 
 ## Intermediate Representation (Session 009)
 
-### TargetIR Design
+### IR Architecture Design
 **Decision:** Introduce platform-independent IR between AST and assembly  
 **Rationale:**
 - Foundation for multi-target support
 - Separates platform logic from code generation
 - Enables future optimizations
 - Simplifies backend implementations
+
+**Implementation Note:** While design docs refer to "TargetIR", the actual implementation uses:
+- `Instruction` enum (in `rue-codegen`) as the platform-independent IR
+- `MachineInstr` (in `rue-ir::target`) as the target-specific IR for x86-64
 
 ### Simple Virtual Registers
 **Decision:** Use `VReg(u32)` for virtual registers  
@@ -133,8 +137,8 @@
 ### Linear Control Flow
 **Decision:** Use linear instruction sequence with labels and jumps  
 **Rationale:**
-- Optimizations will happen in future MidIR, not TargetIR
-- TargetIR is purely for codegen, no analysis needed
+- Optimizations will happen in future MidIR, not in the target-specific IR
+- The IR is purely for codegen, no analysis needed
 - Labels/jumps are close to assembly representation
 - Simple to generate and consume
 

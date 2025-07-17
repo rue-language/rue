@@ -1,0 +1,21 @@
+fn return_n(n: i32) -> i32 {
+    n
+}
+
+fn test_addition() -> i32 {
+    return_n(10) + return_n(20)  // Should return 30
+}
+
+fn test_recursive(n: i32) -> i32 {
+    if n <= 1 {
+        n
+    } else {
+        test_recursive(n - 1) + test_recursive(n - 2)
+    }
+}
+
+fn main() -> i32 {
+    println_i32(test_addition());  // Should print 30
+    println_i32(test_recursive(5)); // Should print 5
+    0
+}

@@ -1,0 +1,8 @@
+// Test boolean values with exit codes
+fn main() {
+    if true {
+        exit(1);
+    } else {
+        exit(2);
+    }
+}

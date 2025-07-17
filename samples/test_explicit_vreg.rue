@@ -1,0 +1,15 @@
+fn returns_five() -> i32 {
+    5
+}
+
+fn returns_three() -> i32 {
+    3
+}
+
+fn test_explicit() -> i32 {
+    returns_five() + returns_three()  // Should be 8
+}
+
+fn main() -> i32 {
+    test_explicit()
+}

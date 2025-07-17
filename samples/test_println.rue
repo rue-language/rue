@@ -1,0 +1,10 @@
+fn foo() {}
+
+fn main() -> i64 {
+    println_i64(42);
+    println_i32(100);
+    println_bool(true);
+    println_bool(false);
+    println_unit(foo());
+    0
+}

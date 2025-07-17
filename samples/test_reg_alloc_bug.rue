@@ -1,0 +1,7 @@
+// Minimal test to reproduce register allocation bug
+fn main() {
+    println_i64(1);     // Marker 1
+    let a = input();    // This should read a number
+    println_i64(2);     // Marker 2 - this call might corrupt 'a'
+    println_i64(a);     // This prints garbage instead of input
+}
