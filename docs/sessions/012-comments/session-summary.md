@@ -1,4 +1,4 @@
-# Session 11: Comments
+# Session 12: Comments
 
 ## Session Overview
 Add comment support to the Rue programming language.
