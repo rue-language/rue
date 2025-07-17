@@ -40,23 +40,51 @@ A VS Code extension that provides language support for Rue through the Rue Langu
 2. **Create a test file** with a `.rue` extension
 3. **Try valid syntax**:
    ```rue
-   fn main() {
-       42
+   // A simple Rue program with comments
+   fn main() -> i32 {
+       let x: i32 = 42;
+       /* This is a multi-line comment
+          that can span multiple lines */
+       x
    }
    ```
-4. **Try invalid syntax** to see error reporting:
+4. **Try various features**:
    ```rue
-   fn main( {
-       42
+   fn factorial(n: i64) -> i64 {
+       let result: i64 = 1;
+       let i: i64 = 1;
+       while i <= n {
+           result = result * i;
+           i = i + 1;
+       }
+       result
+   }
+   
+   fn main() -> i32 {
+       if factorial(5) == 120 {
+           1  // Success!
+       } else {
+           0  // Failed
+       }
+   }
+   ```
+5. **Try invalid syntax** to see error reporting:
+   ```rue
+   fn main( {  // Missing closing paren
+       let x = 42;  // Missing type annotation
+       y + 1  // Undefined variable
    }
    ```
 
 ## Features
 
-- **Syntax highlighting** for Rue keywords, numbers, operators
-- **Real-time error detection** via LSP integration  
+- **Syntax highlighting** for Rue keywords, numbers, operators, types, and comments
+- **Real-time error detection** with both syntax and type error reporting
+- **Semantic token highlighting** for enhanced code coloring
+- **Comment support** with proper highlighting for single-line (`//`) and multi-line (`/* */`) comments
 - **Auto-completion** for brackets and quotes
 - **Automatic language server startup** when opening .rue files
+- **Accurate error positioning** with line/column information
 
 ## Configuration
 

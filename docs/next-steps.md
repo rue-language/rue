@@ -11,76 +11,116 @@
 - ✅ End-to-end compilation pipeline (rue source → native executable)
 - ✅ Multi-crate workspace with dual build systems (Cargo + Buck2)
 
+### Language Features
+- ✅ Arithmetic operators: `+`, `-`, `*`, `/`, `%`
+- ✅ Comparison operators: `<`, `<=`, `>`, `>=`, `==`, `!=`
+- ✅ Control flow: `if`/`else` statements, `while` loops
+- ✅ Variable declarations: `let` with type annotations
+- ✅ Variable assignment: `variable = expression`
+- ✅ Type system: `i32`, `i64`, `bool`, `()` (unit)
+- ✅ Comments: Single-line (`//`) and multi-line (`/* */`) with nesting
+- ✅ Multiple function parameters with type annotations
+- ✅ Function return types with `->` syntax
+
 ### Developer Experience
-- ✅ LSP server implementation with real-time error detection
-- ✅ VS Code extension with syntax highlighting and diagnostics
+- ✅ LSP server with semantic analysis and real-time diagnostics
+- ✅ VS Code extension with syntax highlighting for all features
+- ✅ Line/column position reporting in diagnostics
 - ✅ Installation scripts and comprehensive documentation
 - ✅ Professional IDE integration comparable to major languages
 
 ## Immediate Priorities (Next Session)
 
-### 1. Language Feature Completion
-- [ ] **Complete missing comparison operators in codegen**: `<`, `>=`, `==`, `!=`
-- [ ] **Fix division operation bugs in codegen**: Register swap errors
-- [ ] **Add modulo (%) operation support in codegen**: Currently parsed but not generated
-- [ ] **Multiple function parameters**: `fn add(a, b) { a + b }`
-- [ ] **Better error messages**: Source spans with line/column information
+### 1. Core Language Improvements
+- [ ] **Error recovery in parser**: Continue parsing after errors for better IDE experience
+- [ ] **Source spans in error messages**: Track start/end positions for better error reporting
+- [ ] **Function name validation**: Enforce naming conventions (e.g., main function requirements)
+- [ ] **Dead code detection**: Warn about unreachable code after returns
+- [ ] **Unused variable warnings**: Detect and warn about unused variables and parameters
 
-### 2. Language Specification Fixes
-- [ ] **Fix semicolon inconsistency in spec**: Update while loop example to match grammar
-- [ ] **Add comprehensive integration tests**: For if/while expressions in various contexts
+### 2. Runtime and I/O
+- [ ] **Print function**: Basic stdout output for debugging (`print(value)`)
+- [ ] **Input function**: Basic stdin input (`input() -> i32`)
+- [ ] **Runtime error handling**: Divide by zero, stack overflow detection
+- [ ] **Exit function**: Allow early program termination with custom exit code
 
-### 2. LSP Server Improvements  
-- [ ] **Line/column diagnostics**: Convert from character offsets
-- [ ] **Semantic diagnostics**: Undefined variables, type mismatches
-- [ ] **Code completion**: Function names, keywords, variables in scope
-- [ ] **Hover information**: Show variable types and function signatures
-
-### 3. Code Generation Enhancements
-- [ ] **Basic optimizations**: Constant folding, dead code elimination
-- [ ] **Better calling convention**: Multiple parameters, local variables
-- [ ] **Debug information**: DWARF generation for debugger support
-- [ ] **Better error handling**: Improved compilation error messages
+### 3. Code Quality and Diagnostics
+- [ ] **Better error recovery**: Multiple errors reported in single compilation
+- [ ] **Warning system**: Configurable warning levels (warn, error, allow)
+- [ ] **Diagnostic hints**: Suggest fixes for common errors
+- [ ] **Span-based error messages**: Show problematic code with underlines
 
 ## Medium-term Goals
 
-### 4. Advanced Language Features
-- [ ] **Structs and data types**: Basic aggregate types
-- [ ] **Arrays and collections**: Fixed-size arrays to start
-- [ ] **String support**: Basic string literals and operations
-- [ ] **Pattern matching**: Simple match expressions
+### 4. Data Structures and Collections
+- [ ] **String literals**: Basic string support with escape sequences
+- [ ] **Arrays**: Fixed-size arrays with compile-time bounds checking
+- [ ] **Tuples**: Simple product types for multiple return values
+- [ ] **Structs**: Named aggregate types with field access
+- [ ] **Enums**: Sum types for error handling and state machines
 
-### 5. Performance and Tooling
-- [ ] **Optimization passes**: More sophisticated code optimization
-- [ ] **Incremental compilation**: File-level and module-level caching
-- [ ] **Multi-platform targets**: ARM64, WASM support
-- [ ] **Package manager**: Basic dependency management
+### 5. Advanced Control Flow
+- [ ] **For loops**: Iterate over ranges and arrays
+- [ ] **Break and continue**: Loop control statements  
+- [ ] **Match expressions**: Pattern matching for enums
+- [ ] **Early returns**: Return from any point in a function
+- [ ] **Labeled breaks**: Break out of nested loops
 
-### 6. Advanced IDE Features
-- [ ] **Go-to-definition**: Navigate to function/variable definitions
-- [ ] **Find references**: Show all uses of a symbol
-- [ ] **Refactoring**: Rename symbol, extract function
-- [ ] **Code formatting**: Automatic code formatting
+### 6. Performance and Optimization
+- [ ] **SSA form IR**: Static Single Assignment for better optimization
+- [ ] **Dead code elimination**: Remove unreachable code
+- [ ] **Constant folding**: Evaluate compile-time constants
+- [ ] **Inlining**: Inline small functions
+- [ ] **Register allocation improvements**: Better register usage
 
-## Future Enhancements
+### 7. Developer Tools
+- [ ] **Debugger support**: DWARF debug information generation
+- [ ] **Code formatter**: Automatic code formatting tool
+- [ ] **Linter**: Additional static analysis beyond type checking
+- [ ] **REPL**: Interactive Rue interpreter for experimentation
+- [ ] **Playground**: Web-based Rue compiler and runner
+
+### 8. Advanced IDE Features
+- [ ] **Code completion**: Context-aware completions
+- [ ] **Hover information**: Show types and documentation
+- [ ] **Go-to-definition**: Navigate to declarations
+- [ ] **Find references**: Find all uses of a symbol
+- [ ] **Rename refactoring**: Safely rename symbols across files
+
+## Long-term Vision
 
 ### Language Evolution
-- [ ] **Advanced type system**: Generics, traits, type inference
-- [ ] **Memory management**: Ownership and borrowing concepts
-- [ ] **Macros and metaprogramming**: Code generation facilities
-- [ ] **Async/await**: Asynchronous programming support
+- [ ] **Module system**: Organize code into reusable modules
+- [ ] **Generics**: Parametric polymorphism for reusable code
+- [ ] **Traits/Interfaces**: Define shared behavior
+- [ ] **Type inference**: Reduce type annotation burden
+- [ ] **Closures**: First-class functions with captured variables
+
+### Platform Support
+- [ ] **Cross-compilation**: Build for different targets
+- [ ] **ARM64 support**: Native ARM code generation
+- [ ] **WASM target**: Compile to WebAssembly
+- [ ] **Windows support**: PE executable generation
+- [ ] **macOS support**: Mach-O executable generation
 
 ### Ecosystem Development  
-- [ ] **Standard library**: Core data structures and algorithms
-- [ ] **Package registry**: Central package repository
-- [ ] **Documentation generator**: Automatic API documentation
-- [ ] **Testing framework**: Built-in unit testing support
+- [ ] **Standard library**: Core functionality (math, I/O, collections)
+- [ ] **Package manager**: Dependency management and distribution
+- [ ] **Documentation generator**: Extract docs from code comments
+- [ ] **Testing framework**: Built-in unit and integration testing
+- [ ] **Build system integration**: First-class Rue support in build tools
 
-## Testing Strategy
+## Testing and Quality
 
-- ✅ Unit tests for each compiler phase (lexer, parser, semantic, codegen)
-- ✅ Integration tests with example rue programs
-- [ ] Performance benchmarks for incremental compilation
-- [ ] Cross-platform validation (Linux, macOS, Windows)
-- [ ] LSP integration tests with various editors
-- [ ] Regression test suite for language features
+### Current Testing ✅
+- ✅ Unit tests for each compiler phase
+- ✅ Integration tests with example programs
+- ✅ Type system tests with comprehensive coverage
+- ✅ LSP tests for all diagnostics
+
+### Future Testing Goals
+- [ ] **Property-based testing**: Generate test cases automatically
+- [ ] **Fuzzing**: Find edge cases and crashes
+- [ ] **Performance benchmarks**: Track compilation speed
+- [ ] **Regression test suite**: Prevent feature regressions
+- [ ] **Cross-platform CI**: Test on multiple operating systems

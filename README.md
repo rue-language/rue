@@ -13,34 +13,48 @@ explore cutting-edge compiler implementation techniques.
 ## About
 
 Rue is an experimental programming language with Rust-like syntax that compiles
-to native code. It focuses on modern compiler architecture including incremental
-compilation using Salsa, IDE-first design with concrete syntax trees, and direct
-ELF executable generation without external tooling.
+to native code. It serves as a testbed for modern compiler implementation
+techniques while maintaining a simple, understandable codebase.
+
+Key architectural decisions:
+- **Incremental compilation** via Salsa for efficient recompilation
+- **IDE-first design** with concrete syntax trees preserving all source details
+- **Self-contained toolchain** generating ELF executables without external dependencies
+- **Multi-stage pipeline**: Lexer → Parser → Semantic Analysis → IR → x86-64 → ELF
 
 The compiler supports both Cargo and Buck2 build systems.
 
 ## Current Status
 
-The compiler is fully functional with a complete implementation pipeline from
-lexing through native code generation. It includes an LSP server for IDE
-integration and VS Code extension.
+Rue is a fully functional compiler with a complete implementation pipeline:
+- **Lexer**: Full tokenization with span tracking
+- **Parser**: CST-based parser preserving all syntax details
+- **Semantic Analysis**: Type checking and validation
+- **Code Generation**: Direct x86-64 assembly via custom IR
+- **Executable Output**: Native ELF binaries (no external linker)
+- **IDE Support**: LSP server with diagnostics and VS Code extension
+- **Build Systems**: Both Cargo and Buck2 supported
 
-**Platform Support**: Linux x86-64 only
+**Platform Support**: Linux x86-64 only (generates ELF executables)
 
 ## Language Features
 
 Current language support:
-- Variables and assignment (let statements)
-- Arithmetic operations (+, -, *, /, %)
-- Control flow (if/else, while loops)
-- Functions with optional parameters
-- Static type system with type annotations
-- Type checking and inference for literals
-- Supported types: i32, i64, bool, and unit (())
+- **Variables**: Let bindings with explicit type annotations
+- **Assignment**: Reassignment of variables after declaration
+- **Arithmetic**: Integer operations (+, -, *, /, %)
+- **Comparison**: Relational operators (<=, >=, <, >, ==, !=)
+- **Control flow**: if/else expressions and while loops
+- **Functions**: Named functions with parameters and return types
+- **Type system**: Static typing with mandatory annotations
+- **Supported types**: i32, i64, bool, and unit (())
+- **Comments**: Single-line (//) and nested multi-line (/* */)
+- **Expressions**: Everything is an expression (including if/while)
 
 ### Example Program
 
 ```rue
+// Calculate factorial using recursion
 fn factorial(n: i32) -> i32 {
     if n <= 1 {
         1
@@ -49,8 +63,31 @@ fn factorial(n: i32) -> i32 {
     }
 }
 
+// Calculate sum of numbers from 1 to n using a while loop
+fn sum_to_n(n: i32) -> i32 {
+    let sum: i32 = 0;
+    let i: i32 = 1;
+    
+    while i <= n {
+        sum = sum + i;
+        i = i + 1;
+    };
+    
+    sum
+}
+
+/* The main function returns an exit code
+   - On Linux, you can see it with: echo $?
+   - Exit codes are limited to 0-255 */
 fn main() -> i32 {
-    factorial(5)  // Returns 120 as the exit code
+    let result: i32 = factorial(5);  // 120
+    let sum: i32 = sum_to_n(10);     // 55
+    
+    if result > sum {
+        result - sum  // Returns 65 as exit code
+    } else {
+        0
+    }
 }
 ```
 
@@ -92,6 +129,12 @@ cargo run -p rue samples/simple.rue
 
 # Run the compiled program (executable created in same directory as source)
 ./samples/simple; echo $?  # Shows the program's return value
+
+# Try other example programs
+cargo run -p rue samples/factorial.rue && ./samples/factorial; echo $?
+cargo run -p rue samples/fibonacci.rue && ./samples/fibonacci; echo $?
+cargo run -p rue samples/while_demo.rue && ./samples/while_demo; echo $?
+cargo run -p rue examples/comments.rue && ./examples/comments; echo $?
 ```
 
 ### With Buck2
@@ -106,18 +149,28 @@ buck2 run //crates/rue:rue samples/simple.rue
 ```bash
 # With Cargo
 cargo test                    # All tests
-cargo test -p rue-lexer       # Just lexer tests
-cargo test -p rue-parser      # Just parser tests
+cargo test -p rue-lexer       # Lexer tests
+cargo test -p rue-parser      # Parser tests
+cargo test -p rue-semantic    # Type checking tests
+cargo test -p rue-codegen     # Code generation tests
+cargo test -p rue             # Integration tests
 
 # With Buck2
 buck2 test //crates/...       # All tests
-buck2 test //crates/rue-lexer:test    # Just lexer tests
-buck2 test //crates/rue-parser:test   # Just parser tests
+buck2 test //crates/rue-lexer:test    # Lexer tests
+buck2 test //crates/rue-parser:test   # Parser tests
+buck2 test //crates/rue-semantic:test # Type checking tests
+buck2 test //crates/rue-codegen:test  # Code generation tests
+buck2 test //crates/rue:integration_tests # Integration tests
 ```
 
 ## IDE Support
 
-The language server provides syntax highlighting and error detection:
+Rue includes a Language Server Protocol (LSP) implementation providing:
+- Syntax highlighting (including comments)
+- Real-time error diagnostics
+- Type checking feedback
+- Semantic analysis
 
 ```bash
 # Install VS Code extension
@@ -127,6 +180,12 @@ The language server provides syntax highlighting and error detection:
 cargo run -p rue-lsp          # With Cargo
 buck2 run //crates/rue-lsp    # With Buck2
 ```
+
+The VS Code extension provides:
+- Syntax highlighting for `.rue` files
+- Real-time diagnostics as you type
+- Comment highlighting (single-line and multi-line)
+- Automatic error reporting with precise locations
 
 See `crates/rue-lsp/README.md` for editor integration details.
 

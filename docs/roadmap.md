@@ -1,6 +1,8 @@
 # Rue Language Roadmap
 
-## Current Status (v0.1)
+## Current Status (v0.1.0-dev)
+
+**Note**: Most v0.1.0 planned features are now complete. The remaining work involves local variable scoping improvements and basic I/O operations before the v0.1.0 release.
 
 ✅ **Completed Features**:
 - 64-bit integer variables with `let` declarations
@@ -10,17 +12,20 @@
 - Control flow: if/else statements and while loops
 - Functions with single parameter and return value
 - Native x86-64 compilation to ELF executables
-- Language Server Protocol (LSP) support
+- Language Server Protocol (LSP) support with semantic analysis
 - VS Code extension with syntax highlighting
+- Comments: Single-line `//` and multi-line nested `/* */` comments
+- Multiple function parameters with type annotations
+- Type system with multiple data types (i32, i64, bool, unit)
+- Type annotations for variables and functions
+- Type checking and inference for literals
+- Improved error messages with clear diagnostics
+- Boolean literals: `true` and `false` keywords
 
-## Near-Term Goals (v0.2-0.3)
+## Near-Term Goals (v0.1.0)
 
 ### Language Features
-- **Multiple function parameters**: `fn add(a, b, c) { a + b + c }`
 - **Local variable scoping improvements**: Better nested scope handling
-- **Comments**: Single-line `//` and multi-line `/* */` comments
-- **Boolean literals**: `true` and `false` keywords
-- **Improved error messages**: Better source location reporting
 
 ### Standard Library Expansion
 - **I/O operations**: Basic print/input functionality
@@ -30,18 +35,15 @@
 ### Tooling Improvements
 - **Formatter**: Automatic code formatting (`rue fmt`)
 - **Documentation generator**: Extract docs from comments
-- **Package manager**: Basic dependency management
 
 ## Medium-Term Goals (v0.4-0.6)
 
 ### Type System Evolution
-- **Multiple data types**: 
-  - Integers: i8, i16, i32, i64, u8, u16, u32, u64
-  - Floating point: f32, f64
-  - Boolean: bool
-  - Strings: String type
-- **Type annotations**: Optional explicit typing
-- **Type inference**: Automatic type deduction
+- **Additional integer types**: 
+  - Signed: i8, i16
+  - Unsigned: u8, u16, u32, u64
+- **Floating point**: f32, f64
+- **Strings**: String type
 - **Arrays**: Fixed-size and dynamic arrays
 
 ### Advanced Language Features
@@ -55,6 +57,9 @@
 - **for loops**: Iterator-based iteration
 - **loop/break/continue**: Infinite loops with early exit
 - **return statements**: Early function return
+
+### Tooling improvements
+- **Package manager**: Basic dependency management
 
 ## Long-Term Vision (v1.0+)
 
@@ -70,10 +75,8 @@
 - **Threads**: Low-level threading primitives
 
 ### Advanced Features
-- **Macros**: Compile-time metaprogramming
 - **Unsafe code**: Low-level system programming
 - **Foreign Function Interface (FFI)**: C library integration
-- **Inline assembly**: Direct assembly code embedding
 
 ## Compiler Infrastructure Roadmap
 
@@ -93,7 +96,6 @@
 - **Incremental compilation**: File-level and module-level caching
 - **Parallel compilation**: Multi-threaded compilation pipeline
 - **IDE improvements**: Better autocomplete, refactoring, debugging
-- **Package registry**: Central package repository
 
 ### Debug and Profiling
 - **DWARF debug info**: GDB/LLDB integration
@@ -110,21 +112,17 @@
 - **Incremental linking**: Fast executable regeneration
 
 ### Language Design Experiments
-- **Effect systems**: Tracking side effects in the type system
-- **Dependent types**: Types that depend on values
 - **Linear types**: Resource management through the type system
-- **Capability-based security**: Fine-grained permission systems
 
 ### Integration Experiments
 - **Build system integration**: Treating functions as build targets
 - **Hot reloading**: Live code updates during development
-- **Distributed compilation**: Network-based compilation clusters
 - **IDE-compiler fusion**: Deeper editor integration
 
 ## Timeline Estimates
 
-- **v0.2**: Multiple parameters, comments, basic I/O (2-3 months)
-- **v0.3**: Multiple data types, arrays, better tooling (3-4 months)
+- **v0.2**: Local scoping improvements, basic I/O (1-2 months)
+- **v0.3**: Additional integer types, arrays, formatter (2-3 months)
 - **v0.4**: Structs, enums, pattern matching (4-6 months)
 - **v0.5**: Generics, traits, advanced features (6-8 months)
 - **v1.0**: Ownership system, full language (12-18 months)
@@ -132,10 +130,7 @@
 ## Success Metrics
 
 ### Language Adoption
-- **Developer satisfaction**: Easy learning curve and good ergonomics
-- **Performance competitiveness**: Comparable to C/Rust for systems programming
-- **Ecosystem growth**: Package ecosystem and community contributions
-- **Production usage**: Real-world applications built with Rue
+- **Not being pursued at this time** because this is an experiment
 
 ### Technical Excellence
 - **Compilation speed**: Sub-second compilation for medium projects
@@ -146,22 +141,12 @@
 ## Open Questions
 
 ### Language Design
-- How aggressive should type inference be?
-- Should Rue have garbage collection or ownership?
+- Should Rue have affine or linear types?
 - What memory model should concurrent Rue use?
-- How should Rue handle errors (exceptions, Result types, etc.)?
 
 ### Implementation Strategy  
-- When to introduce LLVM vs. continue custom backend?
 - How to balance compilation speed vs. runtime performance?
-- Should Rue target existing packaging ecosystems (cargo, npm)?
 - How to maintain incremental compilation with advanced features?
-
-### Community and Ecosystem
-- What governance model for language evolution?
-- How to bootstrap a package ecosystem?
-- What industries/domains to target first?
-- How to balance innovation with stability?
 
 ---
 

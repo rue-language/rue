@@ -4,8 +4,11 @@ A Language Server Protocol implementation for the Rue programming language.
 
 ## Features
 
-- **Syntax Error Diagnostics**: Real-time syntax error reporting as you type
-- **Basic LSP Lifecycle**: Initialize, shutdown, and document management
+- **Syntax Error Diagnostics**: Real-time syntax error reporting with accurate line/column positions
+- **Type Error Diagnostics**: Full semantic analysis including type checking and inference
+- **Semantic Token Highlighting**: Proper highlighting for all language constructs including comments
+- **Multi-Error Reporting**: Shows all syntax and type errors simultaneously
+- **Complete LSP Lifecycle**: Initialize, shutdown, and document management
 - **File Watching**: Responds to document open, change, and close events
 
 ## Usage
@@ -59,28 +62,36 @@ A complete VS Code extension is provided in `vscode-rue-extension/`. To set it u
    - You should see real-time syntax error highlighting!
 
 ### Features in VS Code
-- **Syntax highlighting** for keywords, numbers, operators
-- **Real-time error detection** with red squiggly underlines
+- **Syntax highlighting** for keywords, numbers, operators, comments, and all language constructs
+- **Real-time error detection** with red squiggly underlines showing exact error locations
+- **Type error reporting** with helpful error messages
+- **Semantic token highlighting** for enhanced code coloring
 - **Auto-completion** for brackets and quotes
 - **Automatic language server startup** when opening .rue files
 
 ## Implementation Details
 
 - Built on `tower-lsp` for robust LSP protocol handling
-- Uses Rue's existing lexer and parser for syntax analysis
+- Uses Rue's complete compiler pipeline including lexer, parser, and semantic analyzer
+- Provides both syntax and semantic error diagnostics
+- Accurate line/column position reporting with proper UTF-16 handling
+- Semantic token support for enhanced syntax highlighting
 - Async/await architecture with Tokio runtime
 - Maintains document state in memory for fast responses
 
 ## Current Limitations
 
-- Diagnostics show character offsets rather than line/column (can be improved)
-- No semantic analysis beyond syntax errors
-- No completion, hover, or other advanced features yet
+- No code completion beyond auto-closing brackets
+- No hover information or documentation
+- No go-to-definition or find-references yet
+- No code formatting or refactoring support
 
 ## Future Enhancements
 
-- Line/column-based error positioning
-- Semantic diagnostics (type errors, undefined variables)
-- Code completion and hover information
-- Go-to-definition and references
-- Code formatting and refactoring
+- Code completion with type-aware suggestions
+- Hover information showing types and documentation
+- Go-to-definition and find-references
+- Code formatting (rue fmt integration)
+- Refactoring support (rename, extract function)
+- Inlay hints for type annotations
+- Code actions and quick fixes

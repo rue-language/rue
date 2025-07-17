@@ -4,10 +4,41 @@
 
 The Rue compiler is written in Rust and implements a complete compilation pipeline from source code to native x86-64 ELF executables. This document describes the implementation architecture and design decisions.
 
+## Supported Language Features
+
+### Types
+- **Primitive types**: `i32`, `i64`, `bool`, `()` (unit)
+- **Type annotations**: Required for all variables and function parameters
+- **Type inference**: Context-sensitive for literals
+
+### Expressions
+- **Arithmetic**: `+`, `-`, `*`, `/`, `%`
+- **Comparison**: `<`, `<=`, `>`, `>=`, `==`, `!=`
+- **Boolean literals**: `true`, `false`
+- **If expressions**: `if condition { expr } else { expr }`
+- **While expressions**: `while condition { expr }`
+- **Function calls**: `function(arg1, arg2, ...)`
+
+### Statements
+- **Variable declarations**: `let name: Type = value`
+- **Assignments**: `variable = expression`
+- **Expression statements**: Any expression followed by `;`
+
+### Functions
+- **Function declarations**: `fn name(param: Type, ...) -> ReturnType { body }`
+- **Multiple parameters**: Full support with type annotations
+- **Main function**: Flexible return types with appropriate exit codes
+
+### Comments
+- **Single-line**: `// comment`
+- **Multi-line**: `/* comment */` with nesting support
+
 ## Compilation Pipeline
 
 The compiler follows this pipeline:
-**Lexer** → **Parser** → **Semantic Analysis** → **Code Generation** → **Assembly** → **ELF Generation**
+**Lexer** → **Parser** → **Semantic Analysis** → **TargetIR Generation** → **Code Generation** → **ELF Generation**
+
+The TargetIR (Target Intermediate Representation) layer provides platform-independent code generation and enables future support for multiple backends.
 
 ## Implementation Language & Build System
 
@@ -15,18 +46,33 @@ The compiler follows this pipeline:
 - **Build System**: Buck2 (with Cargo support for LSP and some tests)
 - **Platform Support**: Linux x86-64 only (generates ELF executables)
 
+## Crate Architecture
+
+The Rue compiler is organized into multiple crates for modularity and clean separation of concerns:
+
+- **`rue`**: Main CLI binary and integration tests
+- **`rue-lexer`**: Tokenization and lexical analysis
+- **`rue-ast`**: Abstract syntax tree definitions
+- **`rue-parser`**: Parsing source code into CST
+- **`rue-semantic`**: Type checking and semantic analysis
+- **`rue-codegen`**: TargetIR generation and x86-64 code emission
+- **`rue-compiler`**: High-level compiler API orchestrating all phases
+- **`rue-lsp`**: Language Server Protocol implementation
+
 ## Architecture Components
 
 ### Lexer (`rue-lexer`)
 - Hand-written lexical analyzer
 - Converts source text into tokens
 - Preserves source location information for error reporting
+- Support for single-line (`//`) and multi-line (`/* */`) comments with nesting
 
 ### Parser (`rue-parser`)
 - Hand-written recursive descent parser
 - Produces IDE-friendly concrete syntax tree (CST)
 - Preserves all tokens and whitespace for LSP features
 - Error recovery for better IDE experience
+- Support for all language features: functions with multiple typed parameters, let statements, if/else expressions, while loops, assignments, binary operators with proper precedence
 
 ### Abstract Syntax Tree (`rue-ast`)
 
@@ -50,30 +96,62 @@ The compiler follows this pipeline:
 - **IDE-first design**: Optimized for interactive development
 - Similar to rust-analyzer's incremental approach
 
+#### Type System
+- **Multiple primitive types**: i32, i64, bool, and unit (())
+- **Explicit type annotations**: Required for all variable declarations and function parameters
+- **Type inference**: Automatic type deduction for literals (defaults to i32 for numbers)
+- **Context-sensitive literals**: Numeric literals adapt to expected type (e.g., `let x: i64 = 42` works)
+- **No implicit conversions**: Strict type checking with clear error messages
+- **Error recovery**: Continues analysis even with type errors for better IDE experience
+
 #### Analysis Phases
 1. **Name Resolution**: Resolve all identifiers to their declarations
-2. **Type Checking**: Verify all expressions are well-typed (trivial since everything is i64)
+2. **Type Checking**: Verify all expressions are properly typed with explicit annotations
 3. **Scope Analysis**: Validate variable scoping rules
 4. **Call Graph**: Build function dependency graph
+5. **Type Inference**: Deduce types for expressions from context
+
+### TargetIR Generation (`rue-codegen`)
+
+#### Intermediate Representation
+- **Platform-independent**: TargetIR abstracts away x86-64 specifics
+- **Virtual registers**: Unlimited VReg type for values
+- **Type-aware**: Instructions carry type information
+- **SSA-friendly**: Design supports future SSA conversion
+- **Instruction set**: Copy, BinaryOp, Call, Jump, ConditionalJump, Return, Push, Pop, EnterFrame, LeaveFrame
+
+#### Benefits
+- **Multiple backends**: Foundation for LLVM, Cranelift, or other backends
+- **Optimization passes**: Can implement optimizations on TargetIR
+- **Debugging**: Easier to debug at TargetIR level than raw assembly
+- **Testing**: Can test code generation independently from machine code emission
 
 ### Code Generation (`rue-codegen`)
 
 #### Strategy
-- **Stack-based evaluation**: Simple, correct code generation
-- **x86-64 target**: Direct native code generation
+- **Register allocation**: Linear scan allocator with automatic spilling
+- **x86-64 target**: Direct native code generation from TargetIR
 - **System V ABI**: Compatible with C calling conventions
-- **Two-pass assembler**: Symbol resolution and machine code generation
+- **Single-pass assembler**: Direct machine code emission with post-processing fixups
+
+#### Register Allocation
+- **Virtual registers**: Unlimited virtual registers mapped to 11 physical registers
+- **Physical registers**: RBX, RCX, RDX, RSI, RDI, R8-R15 (RAX reserved for special use)
+- **Stack spilling**: Automatic push/pop when registers exhausted
+- **LRU eviction**: Least recently used registers are spilled first
+- **Smart preservation**: Detects function calls and preserves registers across calls
 
 #### Instruction Generation
-- Expressions compiled to stack operations
-- Function calls use standard calling conventions
-- Control flow implemented with conditional jumps
+- TargetIR instructions lowered to x86-64 machine code
+- Type-specific code generation (i32 vs i64 operations)
+- Function calls use System V AMD64 ABI (RDI, RSI, RDX, RCX, R8, R9 for parameters)
+- Control flow with labels and conditional jumps
 - Direct machine code emission (no external assembler)
 
 #### Assembly Process
-1. **First Pass**: Collect symbols and calculate addresses
-2. **Second Pass**: Generate machine code with resolved addresses
-3. **Relocation**: Handle forward references and jumps
+1. **Code Generation**: Direct emission of machine code bytes
+2. **Symbol Collection**: Track labels and forward references
+3. **Fixup Pass**: Patch jump targets with resolved addresses
 
 ### ELF Generation
 - **Direct binary output**: No external linker required
@@ -121,9 +199,13 @@ The compiler follows this pipeline:
 ## Development Infrastructure
 
 ### Language Server Protocol (LSP)
-- Real-time syntax and semantic analysis
+- Real-time syntax and semantic analysis with full type checking
 - IDE integration for VS Code and other editors
 - Incremental compilation for responsive experience
+- Accurate line/column position reporting via PositionCalculator
+- Support for all language features including comments, while loops, and assignments
+- Comprehensive error diagnostics including type errors and undefined variables
+- VS Code extension with complete syntax highlighting for all comment styles
 - **Current limitation**: LSP only works with Cargo due to Buck2 dependency issues
 
 ### Debugging Support
@@ -159,10 +241,11 @@ The compiler follows this pipeline:
 - **I/O**: Minimal file system interaction
 
 ### Runtime Performance
-- **Code Quality**: Stack-based code is simple but unoptimized
+- **Code Quality**: Register-allocated code with automatic spilling
 - **Binary Size**: Minimal ELF overhead
 - **Startup**: Direct native execution, no runtime
 - **Memory**: Static allocation only (no heap)
+- **Register Usage**: Efficient use of 11 registers with LRU spilling
 
 ## Future Architecture Considerations
 
