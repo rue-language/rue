@@ -1,31 +1,34 @@
+use bpaf::{Parser, construct};
 use rue_compiler::{RueDatabase, SourceFile, compile_file};
-use std::env;
 use std::fs;
 use std::path::PathBuf;
 
+#[derive(Debug, Clone)]
+struct Args {
+    output: Option<PathBuf>,
+    input: PathBuf,
+}
+
+fn parser() -> impl Parser<Args> {
+    let output = bpaf::short('o')
+        .long("output")
+        .help("Output binary filename")
+        .argument::<PathBuf>("OUTPUT")
+        .optional();
+
+    let input = bpaf::positional::<PathBuf>("INPUT").help("Input Rue source file");
+
+    construct!(Args { output, input })
+}
+
 fn main() {
-    let args: Vec<String> = env::args().collect();
+    let opts = parser()
+        .to_options()
+        .descr("The Rue programming language compiler")
+        .run();
 
-    if args.len() < 2 {
-        eprintln!("Usage: {} <input.rue> [-o output]", args[0]);
-        std::process::exit(1);
-    }
-
-    let input_path = PathBuf::from(&args[1]);
-    let output_path = if args.len() > 2 && args[2] == "-o" {
-        if args.len() > 3 {
-            PathBuf::from(&args[3])
-        } else {
-            eprintln!("Error: -o flag requires an output filename");
-            eprintln!("Usage: {} <input.rue> [-o output]", args[0]);
-            std::process::exit(1);
-        }
-    } else if args.len() > 2 {
-        // Support old positional argument style for backwards compatibility
-        PathBuf::from(&args[2])
-    } else {
-        input_path.with_extension("")
-    };
+    let input_path = opts.input;
+    let output_path = opts.output.unwrap_or_else(|| input_path.with_extension(""));
 
     // Read source file
     let source = match fs::read_to_string(&input_path) {
