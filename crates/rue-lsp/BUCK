@@ -1,9 +1,10 @@
 load("@prelude//rust:cargo_package.bzl", "cargo")
 
-cargo.rust_binary(
-    name = "rue-lsp",
+cargo.rust_library(
+    name = "rue-lsp-lib",
     srcs = glob(["src/**/*.rs"]),
-    crate_root = "src/main.rs",
+    crate = "rue_lsp",
+    crate_root = "src/lib.rs",
     edition = "2024",
     deps = [
         "//crates/rue-ast:rue-ast",
@@ -13,6 +14,18 @@ cargo.rust_binary(
         "//:tokio",
         "//:tower-lsp",
         "//:serde_json",
+    ],
+    visibility = ["PUBLIC"],
+)
+
+cargo.rust_binary(
+    name = "rue-lsp",
+    srcs = glob(["src/**/*.rs"]),
+    crate_root = "src/main.rs",
+    edition = "2024",
+    deps = [
+        ":rue-lsp-lib",
+        "//:tokio",
     ],
     visibility = ["PUBLIC"],
 )
