@@ -311,6 +311,7 @@ fn analyze_literal_with_expected_type(
                     }
                 }
                 rue_lexer::TokenKind::True | rue_lexer::TokenKind::False => Ok(RueType::Bool),
+                rue_lexer::TokenKind::Unit => Ok(RueType::Unit),
                 _ => Err(SemanticError {
                     message: "Unexpected literal type".to_string(),
                     span: token.span,
@@ -339,6 +340,7 @@ fn analyze_expression(scope: &mut Scope, expr: &ExpressionNode) -> Result<RueTyp
             match &token.kind {
                 rue_lexer::TokenKind::Integer(_) => Ok(RueType::I32), // Numeric literals default to i32
                 rue_lexer::TokenKind::True | rue_lexer::TokenKind::False => Ok(RueType::Bool),
+                rue_lexer::TokenKind::Unit => Ok(RueType::Unit),
                 _ => Err(SemanticError {
                     message: "Unexpected literal type".to_string(),
                     span: token.span,

@@ -128,6 +128,11 @@ fn test_negative_literals_program() {
 }
 
 #[test]
+fn test_unit_literal_program() {
+    test_rue_program("unit_literal", 0); // Unit literal test
+}
+
+#[test]
 fn test_all_samples_compile() {
     // Test samples that should compile successfully
     let successful_samples = [
@@ -140,6 +145,7 @@ fn test_all_samples_compile() {
         ("negative_literals", 256 - 47), // -5 + -42 = -47
         ("large_immediate", 0),          // Tests 64-bit immediate handling
         ("large_div_immediate", 1),      // Tests division by large immediate
+        ("unit_literal", 0),             // Unit literal test
     ];
 
     for (sample_name, expected_exit_code) in successful_samples {

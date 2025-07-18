@@ -26,11 +26,12 @@ digit      ::= '0'..'9'
 ```
 
 #### 2.2.3 Literals
-Integer literals are sequences of decimal digits. Boolean literals are the keywords `true` and `false`.
+Integer literals are sequences of decimal digits. Boolean literals are the keywords `true` and `false`. Unit literals are empty parentheses `()`.
 
 ```
 integer_literal ::= digit+
 boolean_literal ::= "true" | "false"
+unit_literal    ::= "()"
 ```
 
 #### 2.2.4 Operators
@@ -105,7 +106,7 @@ call_expression ::= identifier "(" arguments? ")"
 
 arguments ::= expression ("," expression)*
 
-primary_expression ::= identifier | integer_literal | boolean_literal | "(" expression ")"
+primary_expression ::= identifier | integer_literal | boolean_literal | unit_literal | "(" expression ")"
 
 binary_operator ::= "+" | "-" | "*" | "/" | "%" | "<=" | ">=" | "<" | ">" | "==" | "!="
 ```
@@ -174,7 +175,7 @@ Rue supports the following primitive types:
 ### 5.2 Expression Evaluation
 
 #### 5.2.1 Literals
-Integer literals evaluate to their numeric value.
+Integer literals evaluate to their numeric value. Boolean literals evaluate to their boolean value. Unit literals evaluate to the unit value.
 
 #### 5.2.2 Variables
 Variable references evaluate to the current value of the variable.
@@ -356,6 +357,7 @@ fn print_value(n: i32) -> () {
 }
 
 fn main() -> i32 {
+    let x: () = ();  // Unit literal
     print_value(42);
     0
 }
