@@ -12,6 +12,7 @@ rue-runtime = { path = "../rue-runtime" }
 rue-ir = { path = "../rue-ir" }
 indexmap = "2"
 thiserror = "2.0.12"
+object = { version = "0.37.1", features = ["write"] }
 
 [dev-dependencies]
 criterion = "0.5"
