@@ -613,6 +613,59 @@ mod tests {
     }
 
     #[test]
+    fn test_negative_number() {
+        let result = lex_and_parse("-42;");
+        assert!(result.is_ok());
+        let cst = result.unwrap();
+        assert_eq!(cst.items.len(), 1);
+
+        match &cst.items[0] {
+            CstNode::Statement(stmt) => match &**stmt {
+                StatementNode::Expression(expr_stmt) => match &expr_stmt.expression {
+                    ExpressionNode::Literal(token) => match &token.kind {
+                        TokenKind::Integer(value) => assert_eq!(*value, -42),
+                        _ => panic!("Expected integer token"),
+                    },
+                    _ => panic!("Expected literal expression"),
+                },
+                _ => panic!("Expected expression statement with literal"),
+            },
+            _ => panic!("Expected statement"),
+        }
+    }
+
+    #[test]
+    fn test_negative_number_in_let() {
+        let result = lex_and_parse("let x = -5;");
+        assert!(result.is_ok());
+        let cst = result.unwrap();
+        assert_eq!(cst.items.len(), 1);
+
+        match &cst.items[0] {
+            CstNode::Statement(stmt) => match &**stmt {
+                StatementNode::Let(let_stmt) => {
+                    // Check variable name
+                    match &let_stmt.name.kind {
+                        TokenKind::Ident(name) => assert_eq!(name, "x"),
+                        _ => panic!("Expected identifier token for variable name"),
+                    }
+
+                    // Check value
+                    match &let_stmt.value {
+                        ExpressionNode::Literal(token) => match &token.kind {
+                            TokenKind::Integer(value) => assert_eq!(*value, -5),
+                            _ => panic!("Expected integer token for value"),
+                        },
+                        _ => panic!("Expected literal for value"),
+                    }
+                }
+                _ => panic!("Expected let statement"),
+            },
+            _ => panic!("Expected statement"),
+        }
+    }
+
+    #[test]
     fn test_simple_identifier() {
         let result = lex_and_parse("foo;");
         assert!(result.is_ok());
