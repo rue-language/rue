@@ -105,6 +105,9 @@ impl<'a> Lexer<'a> {
                             end: self.position,
                         },
                     }
+                } else if self.current_char().is_ascii_digit() {
+                    // Handle negative number literal
+                    self.lex_number(start)
                 } else {
                     Token {
                         kind: TokenKind::Minus,
@@ -576,5 +579,48 @@ fn factorial(n) {
         assert_eq!(tokens[1].kind, TokenKind::Slash);
         assert_eq!(tokens[2].kind, TokenKind::Integer(6));
         assert_eq!(tokens[3].kind, TokenKind::Eof);
+    }
+
+    #[test]
+    fn test_negative_number_literal() {
+        let mut lexer = Lexer::new("-5");
+        let tokens = lexer.tokenize();
+
+        assert_eq!(tokens[0].kind, TokenKind::Integer(-5));
+        assert_eq!(tokens[1].kind, TokenKind::Eof);
+    }
+
+    #[test]
+    fn test_negative_number_in_expression() {
+        let mut lexer = Lexer::new("let x = -42;");
+        let tokens = lexer.tokenize();
+
+        assert_eq!(tokens[0].kind, TokenKind::Let);
+        assert_eq!(tokens[1].kind, TokenKind::Ident("x".to_string()));
+        assert_eq!(tokens[2].kind, TokenKind::Assign);
+        assert_eq!(tokens[3].kind, TokenKind::Integer(-42));
+        assert_eq!(tokens[4].kind, TokenKind::Semicolon);
+        assert_eq!(tokens[5].kind, TokenKind::Eof);
+    }
+
+    #[test]
+    fn test_subtraction_vs_negative() {
+        let mut lexer = Lexer::new("5 - 3");
+        let tokens = lexer.tokenize();
+
+        assert_eq!(tokens[0].kind, TokenKind::Integer(5));
+        assert_eq!(tokens[1].kind, TokenKind::Minus);
+        assert_eq!(tokens[2].kind, TokenKind::Integer(3));
+        assert_eq!(tokens[3].kind, TokenKind::Eof);
+    }
+
+    #[test]
+    fn test_negative_with_spaces() {
+        let mut lexer = Lexer::new("- 5");
+        let tokens = lexer.tokenize();
+
+        assert_eq!(tokens[0].kind, TokenKind::Minus);
+        assert_eq!(tokens[1].kind, TokenKind::Integer(5));
+        assert_eq!(tokens[2].kind, TokenKind::Eof);
     }
 }

@@ -123,17 +123,23 @@ fn test_large_div_immediate_program() {
 }
 
 #[test]
+fn test_negative_literals_program() {
+    test_rue_program("negative_literals", 256 - 47); // -5 + -42 = -47, exit code wraps to 209
+}
+
+#[test]
 fn test_all_samples_compile() {
     // Test samples that should compile successfully
     let successful_samples = [
         ("simple", 42),
         ("factorial", 120),
-        ("countdown", 42),          // simple_while(10) returns 42 since 10 > 3
-        ("if_demo", 5),             // if 1 <= 2 { 5 } else { 10 } returns 5
-        ("assignment_demo", 6),     // test_assignment_in_while() returns sum of 0+1+2+3 = 6
-        ("division_test", 10),      // 100 / 10 = 10
-        ("large_immediate", 0),     // Tests 64-bit immediate handling
-        ("large_div_immediate", 1), // Tests division by large immediate
+        ("countdown", 42),               // simple_while(10) returns 42 since 10 > 3
+        ("if_demo", 5),                  // if 1 <= 2 { 5 } else { 10 } returns 5
+        ("assignment_demo", 6),          // test_assignment_in_while() returns sum of 0+1+2+3 = 6
+        ("division_test", 10),           // 100 / 10 = 10
+        ("negative_literals", 256 - 47), // -5 + -42 = -47
+        ("large_immediate", 0),          // Tests 64-bit immediate handling
+        ("large_div_immediate", 1),      // Tests division by large immediate
     ];
 
     for (sample_name, expected_exit_code) in successful_samples {
