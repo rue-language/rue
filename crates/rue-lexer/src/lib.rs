@@ -2,6 +2,7 @@
 pub enum TokenKind {
     // Literals
     Integer(i64),
+    Unit,
 
     // Keywords
     Fn,
@@ -622,5 +623,39 @@ fn factorial(n) {
         assert_eq!(tokens[0].kind, TokenKind::Minus);
         assert_eq!(tokens[1].kind, TokenKind::Integer(5));
         assert_eq!(tokens[2].kind, TokenKind::Eof);
+    }
+
+    #[test]
+    fn test_unit_literal_tokenization() {
+        let mut lexer = Lexer::new("()");
+        let tokens = lexer.tokenize();
+
+        assert_eq!(tokens[0].kind, TokenKind::LeftParen);
+        assert_eq!(tokens[1].kind, TokenKind::RightParen);
+        assert_eq!(tokens[2].kind, TokenKind::Eof);
+    }
+
+    #[test]
+    fn test_unit_literal_with_spaces() {
+        let mut lexer = Lexer::new("( )");
+        let tokens = lexer.tokenize();
+
+        assert_eq!(tokens[0].kind, TokenKind::LeftParen);
+        assert_eq!(tokens[1].kind, TokenKind::RightParen);
+        assert_eq!(tokens[2].kind, TokenKind::Eof);
+    }
+
+    #[test]
+    fn test_unit_literal_in_expression() {
+        let mut lexer = Lexer::new("let x = ();");
+        let tokens = lexer.tokenize();
+
+        assert_eq!(tokens[0].kind, TokenKind::Let);
+        assert_eq!(tokens[1].kind, TokenKind::Ident("x".to_string()));
+        assert_eq!(tokens[2].kind, TokenKind::Assign);
+        assert_eq!(tokens[3].kind, TokenKind::LeftParen);
+        assert_eq!(tokens[4].kind, TokenKind::RightParen);
+        assert_eq!(tokens[5].kind, TokenKind::Semicolon);
+        assert_eq!(tokens[6].kind, TokenKind::Eof);
     }
 }

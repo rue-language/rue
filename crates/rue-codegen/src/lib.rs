@@ -453,6 +453,14 @@ impl Codegen {
                         });
                         Ok(dest)
                     }
+                    rue_lexer::TokenKind::Unit => {
+                        // Unit values are represented as 0
+                        self.emit(Instruction::Copy {
+                            dest,
+                            src: Value::Immediate(0),
+                        });
+                        Ok(dest)
+                    }
                     _ => Err(CodegenError {
                         message: "Invalid literal token".to_string(),
                     }),
@@ -574,6 +582,7 @@ impl Codegen {
                             rue_lexer::TokenKind::Integer(value) => Some(Value::Immediate(*value)),
                             rue_lexer::TokenKind::True => Some(Value::Immediate(1)),
                             rue_lexer::TokenKind::False => Some(Value::Immediate(0)),
+                            rue_lexer::TokenKind::Unit => Some(Value::Immediate(0)),
                             _ => None,
                         },
                         _ => None,

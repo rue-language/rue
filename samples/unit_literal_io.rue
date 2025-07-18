@@ -1,0 +1,6 @@
+fn main() -> i32 {
+    let x: () = ();
+    println_unit(x);
+    println_unit(());
+    0
+}

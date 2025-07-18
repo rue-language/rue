@@ -479,10 +479,27 @@ impl Parser {
                 self.parse_while_statement()?,
             ))),
             TokenKind::LeftParen => {
-                self.advance(); // consume '('
-                let expr = self.parse_expression()?;
-                self.expect_kind(&TokenKind::RightParen)?;
-                Ok(expr)
+                // Check if this is a unit literal or a parenthesized expression
+                if self.peek_ahead(1).kind == TokenKind::RightParen {
+                    // Unit literal: ()
+                    let start_token = self.advance(); // consume '('
+                    let end_token = self.advance(); // consume ')'
+                    // Create a synthetic Unit token
+                    let unit_token = TokenNode {
+                        kind: TokenKind::Unit,
+                        span: rue_lexer::Span {
+                            start: start_token.span.start,
+                            end: end_token.span.end,
+                        },
+                    };
+                    Ok(ExpressionNode::Literal(unit_token))
+                } else {
+                    // Parenthesized expression
+                    self.advance(); // consume '('
+                    let expr = self.parse_expression()?;
+                    self.expect_kind(&TokenKind::RightParen)?;
+                    Ok(expr)
+                }
             }
             _ => Err(ParseError {
                 message: format!("Unexpected token: {:?}", self.peek().kind),
@@ -494,6 +511,13 @@ impl Parser {
     // Helper methods
     fn peek(&self) -> &TokenNode {
         self.tokens.get(self.current).unwrap_or(&TokenNode {
+            kind: TokenKind::Eof,
+            span: rue_lexer::Span { start: 0, end: 0 },
+        })
+    }
+
+    fn peek_ahead(&self, n: usize) -> &TokenNode {
+        self.tokens.get(self.current + n).unwrap_or(&TokenNode {
             kind: TokenKind::Eof,
             span: rue_lexer::Span { start: 0, end: 0 },
         })
@@ -1200,6 +1224,9 @@ fn main() -> i32 {
     #[test]
     fn test_explicit_unit_return() {
         let result = lex_and_parse("fn noop() -> () { }");
+        if let Err(e) = &result {
+            eprintln!("Parse error: {e:?}");
+        }
         assert!(result.is_ok());
         let cst = result.unwrap();
         assert_eq!(cst.items.len(), 1);
@@ -1262,6 +1289,70 @@ fn main() -> i32 {
                 assert!(func.body.final_expr.is_some());
             }
             _ => panic!("Expected function"),
+        }
+    }
+
+    #[test]
+    fn test_unit_literal() {
+        let result = lex_and_parse("let x: () = ();");
+        if let Err(e) = &result {
+            eprintln!("Parse error: {e:?}");
+        }
+        assert!(result.is_ok());
+        let cst = result.unwrap();
+        assert_eq!(cst.items.len(), 1);
+
+        match &cst.items[0] {
+            CstNode::Statement(stmt) => match &**stmt {
+                StatementNode::Let(let_stmt) => {
+                    // Check variable name
+                    match &let_stmt.name.kind {
+                        TokenKind::Ident(name) => assert_eq!(name, "x"),
+                        _ => panic!("Expected identifier token for variable name"),
+                    }
+
+                    // Check type annotation
+                    assert!(let_stmt.type_annotation.is_some());
+                    let type_ann = let_stmt.type_annotation.as_ref().unwrap();
+                    match &type_ann.ty {
+                        TypeNode::Unit => {} // Success
+                        _ => panic!("Expected unit type"),
+                    }
+
+                    // Check value
+                    match &let_stmt.value {
+                        ExpressionNode::Literal(token) => match &token.kind {
+                            TokenKind::Unit => {} // Success
+                            _ => panic!("Expected unit literal for value"),
+                        },
+                        _ => panic!("Expected literal for value"),
+                    }
+                }
+                _ => panic!("Expected let statement"),
+            },
+            _ => panic!("Expected statement"),
+        }
+    }
+
+    #[test]
+    fn test_unit_literal_in_expression() {
+        let result = lex_and_parse("();");
+        assert!(result.is_ok());
+        let cst = result.unwrap();
+        assert_eq!(cst.items.len(), 1);
+
+        match &cst.items[0] {
+            CstNode::Statement(stmt) => match &**stmt {
+                StatementNode::Expression(expr_stmt) => match &expr_stmt.expression {
+                    ExpressionNode::Literal(token) => match &token.kind {
+                        TokenKind::Unit => {} // Success
+                        _ => panic!("Expected unit literal"),
+                    },
+                    _ => panic!("Expected literal expression"),
+                },
+                _ => panic!("Expected expression statement"),
+            },
+            _ => panic!("Expected statement"),
         }
     }
 }
