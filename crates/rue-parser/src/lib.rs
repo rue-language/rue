@@ -1,5 +1,5 @@
 use rue_ast::*;
-use rue_lexer::{Span, TokenKind};
+use rue_lexer::{Span, TokenKind, format_error_with_context};
 
 pub struct Parser {
     tokens: Vec<TokenNode>,
@@ -12,6 +12,12 @@ pub type ParseResult<T> = Result<T, ParseError>;
 pub struct ParseError {
     pub message: String,
     pub span: Span,
+}
+
+impl ParseError {
+    pub fn format_with_source(&self, source: &str) -> String {
+        format_error_with_context(source, self.span, &self.message, "parse error")
+    }
 }
 
 impl Parser {

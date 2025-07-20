@@ -79,6 +79,67 @@ pub struct Span {
     pub end: usize,
 }
 
+/// Formats an error message with source context
+pub fn format_error_with_context(
+    source: &str,
+    span: Span,
+    message: &str,
+    error_type: &str,
+) -> String {
+    let lines: Vec<&str> = source.lines().collect();
+    let mut line_start = 0;
+    let mut line_num = 0;
+    let mut col_num = 0;
+
+    // Find line and column for the error position
+    for (idx, line) in lines.iter().enumerate() {
+        let line_end = line_start + line.len();
+        if span.start >= line_start && span.start <= line_end {
+            line_num = idx + 1;
+            col_num = span.start - line_start + 1;
+            break;
+        }
+        line_start = line_end + 1; // +1 for newline
+    }
+
+    // Build the error message
+    let mut result = format!("{error_type}: {message}\n");
+
+    // Add location info
+    result.push_str(&format!(" --> {}:{}:{}\n", "input", line_num, col_num));
+
+    // Add source context
+    if line_num > 0 && line_num <= lines.len() {
+        let line_idx = line_num - 1;
+        let line = lines[line_idx];
+
+        // Line number padding
+        let line_num_str = line_num.to_string();
+        let padding = " ".repeat(line_num_str.len());
+
+        result.push_str(&format!("  {padding} |\n"));
+        result.push_str(&format!("{line_num_str} | {line}\n"));
+
+        // Add underline
+        let underline_start = col_num - 1;
+        let underline_len = (span.end - span.start).max(1);
+
+        result.push_str(&format!(
+            "  {} |{}{}",
+            padding,
+            " ".repeat(underline_start),
+            "^".repeat(underline_len)
+        ));
+
+        // Add label on same line as carets
+        if !message.is_empty() {
+            result.push_str(&format!(" {message}"));
+        }
+    }
+
+    result
+}
+
 pub struct Lexer<'a> {
     input: &'a str,
     position: usize,
