@@ -4,7 +4,9 @@ use rue_lexer::Lexer;
 fn compile_program(source: &str) -> Result<Vec<Instruction>, CodegenError> {
     // Parse
     let mut lexer = Lexer::new(source);
-    let tokens = lexer.tokenize();
+    let tokens = lexer.tokenize().map_err(|e| CodegenError {
+        message: format!("Lexical error: {}", e.message),
+    })?;
     let ast = rue_parser::parse(tokens).map_err(|e| CodegenError {
         message: format!("Parse error: {}", e.message),
     })?;

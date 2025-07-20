@@ -1,5 +1,6 @@
 use rue_ast::CstRoot;
 use rue_codegen::compile_to_executable;
+use rue_lexer::Span;
 use rue_parser::ParseError;
 use rue_semantic::{SemanticError, analyze_cst};
 use std::sync::Arc;
@@ -21,7 +22,18 @@ pub fn parse_file(
 ) -> Result<Arc<CstRoot>, Arc<ParseError>> {
     let text = file.text(db);
     let mut lexer = rue_lexer::Lexer::new(text.as_str());
-    let tokens = lexer.tokenize();
+    let tokens = match lexer.tokenize() {
+        Ok(tokens) => tokens,
+        Err(e) => {
+            return Err(Arc::new(ParseError {
+                message: format!("Lexical error: {}", e.message),
+                span: Span {
+                    start: e.position,
+                    end: e.position + 1,
+                },
+            }));
+        }
+    };
 
     match rue_parser::parse(tokens) {
         Ok(cst) => Ok(Arc::new(cst)),

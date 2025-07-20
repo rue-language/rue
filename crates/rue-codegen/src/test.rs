@@ -4,7 +4,9 @@ use rue_lexer::Lexer;
 fn compile_program(source: &str) -> Result<Vec<Instruction>, CodegenError> {
     // Parse
     let mut lexer = Lexer::new(source);
-    let tokens = lexer.tokenize();
+    let tokens = lexer.tokenize().map_err(|e| CodegenError {
+        message: format!("Lexical error: {}", e.message),
+    })?;
     let ast = rue_parser::parse(tokens).map_err(|e| CodegenError {
         message: format!("Parse error: {}", e.message),
     })?;
@@ -168,7 +170,7 @@ factorial(5)
 
     // Parse
     let mut lexer = Lexer::new(factorial_source);
-    let tokens = lexer.tokenize();
+    let tokens = lexer.tokenize().expect("Lexer failed");
     let ast = rue_parser::parse(tokens).expect("Parse failed");
 
     // Semantic analysis
@@ -368,7 +370,7 @@ fn main() -> i32 {
 
     // Parse
     let mut lexer = Lexer::new(source);
-    let tokens = lexer.tokenize();
+    let tokens = lexer.tokenize().expect("Lexer failed");
     let ast = rue_parser::parse(tokens).expect("Parse failed");
 
     // Semantic analysis
@@ -393,7 +395,7 @@ x / 5 + 10 / 2
 
     // Parse
     let mut lexer = Lexer::new(source);
-    let tokens = lexer.tokenize();
+    let tokens = lexer.tokenize().expect("Lexer failed");
     let ast = rue_parser::parse(tokens).expect("Parse failed");
 
     // Semantic analysis
