@@ -16,6 +16,31 @@ impl std::fmt::Display for LexError {
 
 impl std::error::Error for LexError {}
 
+impl LexError {
+    pub fn format_with_source(&self, source: &str) -> String {
+        let lines: Vec<&str> = source.lines().collect();
+        let mut line_start = 0;
+        let mut line_num = 0;
+        let mut col_num = 0;
+
+        // Find line and column for the error position
+        for (idx, line) in lines.iter().enumerate() {
+            let line_end = line_start + line.len();
+            if self.position >= line_start && self.position <= line_end {
+                line_num = idx + 1;
+                col_num = self.position - line_start + 1;
+                break;
+            }
+            line_start = line_end + 1; // +1 for newline
+        }
+
+        format!(
+            "lexical error: {}\n --> input:{}:{}",
+            self.message, line_num, col_num
+        )
+    }
+}
+
 pub type LexResult<T> = Result<T, LexError>;
 
 #[derive(Debug, Clone, PartialEq, Eq)]

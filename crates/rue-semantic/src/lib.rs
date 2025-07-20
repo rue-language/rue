@@ -12,7 +12,15 @@ pub struct SemanticError {
 
 impl SemanticError {
     pub fn format_with_source(&self, source: &str) -> String {
-        format_error_with_context(source, self.span, &self.message, "error")
+        format_error_with_context(source, self.span, &self.message, "type error")
+    }
+}
+
+impl std::error::Error for SemanticError {}
+
+impl std::fmt::Display for SemanticError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.message)
     }
 }
 

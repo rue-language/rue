@@ -20,17 +20,68 @@ impl ParseError {
     }
 }
 
+impl std::error::Error for ParseError {}
+
+impl std::fmt::Display for ParseError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.message)
+    }
+}
+
 impl Parser {
     pub fn new(tokens: Vec<TokenNode>) -> Self {
         Self { tokens, current: 0 }
     }
 
+    /// Try to recover from a missing semicolon
+    fn recover_missing_semicolon(&mut self) -> ParseResult<TokenNode> {
+        // If the next token could start a new statement, insert a synthetic semicolon
+        match self.peek().kind {
+            TokenKind::RightBrace
+            | TokenKind::Fn
+            | TokenKind::Let
+            | TokenKind::If
+            | TokenKind::While
+            | TokenKind::Eof => {
+                // Create a synthetic semicolon at the current position
+                let span = if self.current > 0 {
+                    let prev = &self.tokens[self.current - 1];
+                    Span {
+                        start: prev.span.end,
+                        end: prev.span.end,
+                    }
+                } else {
+                    Span { start: 0, end: 0 }
+                };
+
+                Ok(TokenNode {
+                    kind: TokenKind::Semicolon,
+                    span,
+                })
+            }
+            _ => Err(ParseError {
+                message: "Expected ';'".to_string(),
+                span: self.peek().span,
+            }),
+        }
+    }
+
     pub fn parse(mut self) -> ParseResult<CstRoot> {
         let mut items = Vec::new();
         let leading_trivia = self.consume_trivia();
+        let mut _errors: Vec<ParseError> = Vec::new();
 
         while !self.is_at_end() {
-            items.push(self.parse_item()?);
+            match self.parse_item() {
+                Ok(item) => items.push(item),
+                Err(e) => {
+                    // For now, return the first error immediately
+                    // In a full implementation, we'd collect errors and continue
+                    return Err(e);
+                    // TODO: Implement full error recovery
+                    // errors.push(e);
+                }
+            }
         }
 
         Ok(CstRoot {
@@ -220,7 +271,10 @@ impl Parser {
                         _ => {
                             // This is an expression statement - parse expression + semicolon
                             let expr = self.parse_expression()?;
-                            let semicolon = self.expect_kind(&TokenKind::Semicolon)?;
+                            let semicolon = match self.expect_kind(&TokenKind::Semicolon) {
+                                Ok(semi) => semi,
+                                Err(_) => self.recover_missing_semicolon()?,
+                            };
                             Ok(StatementNode::Expression(ExpressionStatementNode {
                                 expression: expr,
                                 semicolon,
@@ -241,7 +295,10 @@ impl Parser {
             _ => {
                 // Expression statement
                 let expr = self.parse_expression()?;
-                let semicolon = self.expect_kind(&TokenKind::Semicolon)?;
+                let semicolon = match self.expect_kind(&TokenKind::Semicolon) {
+                    Ok(semi) => semi,
+                    Err(_) => self.recover_missing_semicolon()?,
+                };
                 Ok(StatementNode::Expression(ExpressionStatementNode {
                     expression: expr,
                     semicolon,
@@ -268,7 +325,10 @@ impl Parser {
 
         let equals = self.expect_kind(&TokenKind::Assign)?;
         let value = self.parse_expression()?;
-        let semicolon = self.expect_kind(&TokenKind::Semicolon)?;
+        let semicolon = match self.expect_kind(&TokenKind::Semicolon) {
+            Ok(semi) => semi,
+            Err(_) => self.recover_missing_semicolon()?,
+        };
 
         Ok(LetStatementNode {
             let_token,
@@ -289,7 +349,10 @@ impl Parser {
         let name = self.expect_ident()?;
         let equals = self.expect_kind(&TokenKind::Assign)?;
         let value = self.parse_expression()?;
-        let semicolon = self.expect_kind(&TokenKind::Semicolon)?;
+        let semicolon = match self.expect_kind(&TokenKind::Semicolon) {
+            Ok(semi) => semi,
+            Err(_) => self.recover_missing_semicolon()?,
+        };
 
         Ok(AssignStatementNode {
             name,

@@ -21,6 +21,14 @@ pub struct CodegenError {
     pub message: String,
 }
 
+impl std::fmt::Display for CodegenError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.message)
+    }
+}
+
+impl std::error::Error for CodegenError {}
+
 /// Virtual register - will be allocated to a physical register or stack slot
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct VReg(pub u32);
