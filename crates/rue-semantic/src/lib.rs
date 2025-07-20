@@ -1,4 +1,5 @@
 use rue_ast::{CstRoot, ExpressionNode, FunctionNode, StatementNode};
+use rue_lexer::format_error_with_context;
 use std::collections::HashMap;
 use std::fmt;
 
@@ -7,6 +8,12 @@ use std::fmt;
 pub struct SemanticError {
     pub message: String,
     pub span: rue_lexer::Span,
+}
+
+impl SemanticError {
+    pub fn format_with_source(&self, source: &str) -> String {
+        format_error_with_context(source, self.span, &self.message, "error")
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -199,7 +206,7 @@ fn analyze_function(scope: &mut Scope, func: &FunctionNode) -> Result<(), Semant
     if actual_return_type != return_type {
         return Err(SemanticError {
             message: format!(
-                "Type mismatch: Function '{func_name}' declared to return {return_type} but returns {actual_return_type}"
+                "Type mismatch: function '{func_name}' is declared to return '{return_type}' but returns '{actual_return_type}'"
             ),
             span: func.body.close_brace.span,
         });
@@ -240,7 +247,7 @@ fn analyze_statement(scope: &mut Scope, stmt: &StatementNode) -> Result<(), Sema
                     if !is_valid {
                         return Err(SemanticError {
                             message: format!(
-                                "Type mismatch: variable declared as {decl_type} but initialized with {value_type}"
+                                "Type mismatch: variable declared as '{decl_type}' but initialized with expression of type '{value_type}'"
                             ),
                             span: let_stmt.equals.span,
                         });
@@ -263,7 +270,7 @@ fn analyze_statement(scope: &mut Scope, stmt: &StatementNode) -> Result<(), Sema
                     if *var_type != value_type {
                         return Err(SemanticError {
                             message: format!(
-                                "Type mismatch: cannot assign {value_type} to variable of type {var_type}"
+                                "Type mismatch: cannot assign value of type '{value_type}' to variable of type '{var_type}'"
                             ),
                             span: assign_stmt.equals.span,
                         });
@@ -380,7 +387,7 @@ fn analyze_expression(scope: &mut Scope, expr: &ExpressionNode) -> Result<RueTyp
                     if left_type != right_type {
                         return Err(SemanticError {
                             message: format!(
-                                "Type mismatch: cannot apply operator to {left_type} and {right_type}"
+                                "Type mismatch: binary operator cannot be applied to types '{left_type}' and '{right_type}'"
                             ),
                             span: binary_expr.operator.span,
                         });
@@ -408,7 +415,7 @@ fn analyze_expression(scope: &mut Scope, expr: &ExpressionNode) -> Result<RueTyp
                     if left_type != right_type {
                         return Err(SemanticError {
                             message: format!(
-                                "Type mismatch: cannot compare {left_type} and {right_type}"
+                                "Type mismatch: cannot compare values of types '{left_type}' and '{right_type}'"
                             ),
                             span: binary_expr.operator.span,
                         });
@@ -455,7 +462,7 @@ fn analyze_expression(scope: &mut Scope, expr: &ExpressionNode) -> Result<RueTyp
                             if arg_type != *expected_type {
                                 return Err(SemanticError {
                                     message: format!(
-                                        "Type mismatch in argument {} of function '{}': expected {}, found {}",
+                                        "Type mismatch in argument {} of function '{}': expected '{}', found '{}'",
                                         i + 1,
                                         func_name,
                                         expected_type,
@@ -861,7 +868,7 @@ fn get_number() -> i32 {
         assert!(
             error
                 .message
-                .contains("declared to return i32 but returns bool")
+                .contains("declared to return 'i32' but returns 'bool'")
         );
     }
 
