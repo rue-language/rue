@@ -610,7 +610,13 @@ mod tests {
 
     fn lex_and_parse(source: &str) -> ParseResult<CstRoot> {
         let mut lexer = Lexer::new(source);
-        let tokens = lexer.tokenize();
+        let tokens = lexer.tokenize().map_err(|e| ParseError {
+            message: format!("Lexical error: {}", e.message),
+            span: Span {
+                start: e.position,
+                end: e.position + 1,
+            },
+        })?;
         parse(tokens)
     }
 

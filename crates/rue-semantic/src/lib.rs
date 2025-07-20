@@ -564,11 +564,17 @@ fn analyze_expression(scope: &mut Scope, expr: &ExpressionNode) -> Result<RueTyp
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rue_lexer::Lexer;
+    use rue_lexer::{Lexer, Span};
 
     fn parse_and_analyze(source: &str) -> Result<Scope, SemanticError> {
         let mut lexer = Lexer::new(source);
-        let tokens = lexer.tokenize();
+        let tokens = lexer.tokenize().map_err(|e| SemanticError {
+            message: format!("Lexical error: {}", e.message),
+            span: Span {
+                start: e.position,
+                end: e.position + 1,
+            },
+        })?;
         let ast = rue_parser::parse(tokens).map_err(|e| SemanticError {
             message: format!("Parse error: {}", e.message),
             span: e.span,

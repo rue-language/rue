@@ -27,7 +27,34 @@ impl RueLanguageServer {
     async fn parse_document(&self, _uri: &Url, text: &str) -> Vec<Diagnostic> {
         let mut diagnostics = Vec::new();
         let mut lexer = Lexer::new(text);
-        let tokens = lexer.tokenize();
+        let tokens = match lexer.tokenize() {
+            Ok(tokens) => tokens,
+            Err(e) => {
+                let calc = PositionCalculator::new(text);
+                let (line, col) = calc.offset_to_position(e.position);
+                diagnostics.push(Diagnostic {
+                    range: Range {
+                        start: Position {
+                            line,
+                            character: col,
+                        },
+                        end: Position {
+                            line,
+                            character: col + 1,
+                        },
+                    },
+                    severity: Some(DiagnosticSeverity::ERROR),
+                    code: None,
+                    code_description: None,
+                    source: Some("rue".to_string()),
+                    message: e.message,
+                    related_information: None,
+                    tags: None,
+                    data: None,
+                });
+                return diagnostics;
+            }
+        };
 
         match parse(tokens) {
             Ok(ast) => {
@@ -347,7 +374,7 @@ fn main() {
 "#;
 
         let mut lexer = Lexer::new(text);
-        let tokens = lexer.tokenize();
+        let tokens = lexer.tokenize().unwrap();
         let result = parse(tokens);
 
         assert!(result.is_ok(), "While loop should parse without errors");
@@ -364,7 +391,7 @@ fn test_invalid() {
 "#;
 
         let mut lexer = Lexer::new(text);
-        let tokens = lexer.tokenize();
+        let tokens = lexer.tokenize().unwrap();
         let result = parse(tokens);
 
         assert!(
@@ -388,7 +415,7 @@ fn main() {
 "#;
 
         let mut lexer = Lexer::new(text);
-        let tokens = lexer.tokenize();
+        let tokens = lexer.tokenize().unwrap();
         let result = parse(tokens);
 
         assert!(result.is_ok(), "Assignment should parse without errors");
@@ -403,7 +430,7 @@ fn test_undefined() {
 "#;
 
         let mut lexer = Lexer::new(text);
-        let tokens = lexer.tokenize();
+        let tokens = lexer.tokenize().unwrap();
         let ast = parse(tokens).expect("Should parse");
         let result = analyze_cst(&ast);
 
@@ -424,7 +451,7 @@ fn test_type_error() {
 "#;
 
         let mut lexer = Lexer::new(text);
-        let tokens = lexer.tokenize();
+        let tokens = lexer.tokenize().unwrap();
         let ast = parse(tokens).expect("Should parse");
         let result = analyze_cst(&ast);
 
@@ -449,7 +476,7 @@ fn test_comments() {
 "#;
 
         let mut lexer = Lexer::new(text);
-        let tokens = lexer.tokenize();
+        let tokens = lexer.tokenize().unwrap();
         let result = parse(tokens);
 
         assert!(result.is_ok(), "Comments should not affect parsing");

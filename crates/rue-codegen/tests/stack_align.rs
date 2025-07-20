@@ -14,7 +14,7 @@ fn main() -> i32 {
 "#;
     // compile_to_executable returns Vec<u8> ELF; we just need it not to panic
     let mut lexer = rue_lexer::Lexer::new(source);
-    let tokens = lexer.tokenize();
+    let tokens = lexer.tokenize().unwrap();
     let ast = rue_parser::parse(tokens).unwrap();
     let scope = rue_semantic::analyze_cst(&ast).unwrap();
     rue_codegen::compile_to_executable(&ast, &scope).unwrap();

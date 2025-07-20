@@ -20,7 +20,7 @@ fn main() -> i32 {
     c.bench_function("factorial_compile", |b| {
         b.iter(|| {
             let mut lexer = Lexer::new(factorial_source);
-            let tokens = lexer.tokenize();
+            let tokens = lexer.tokenize().unwrap();
             let ast = rue_parser::parse(tokens).unwrap();
             let scope = rue_semantic::analyze_cst(&ast).unwrap();
 
@@ -41,7 +41,7 @@ fn benchmark_large_program(c: &mut Criterion) {
     c.bench_function("large_program_compile", |b| {
         b.iter(|| {
             let mut lexer = Lexer::new(&large_program);
-            let tokens = lexer.tokenize();
+            let tokens = lexer.tokenize().unwrap();
             let ast = rue_parser::parse(tokens).unwrap();
             let scope = rue_semantic::analyze_cst(&ast).unwrap();
 
@@ -63,7 +63,7 @@ fn main() -> bool {
     c.bench_function("comparison_ops_compile", |b| {
         b.iter(|| {
             let mut lexer = Lexer::new(comparison_source);
-            let tokens = lexer.tokenize();
+            let tokens = lexer.tokenize().unwrap();
             let ast = rue_parser::parse(tokens).unwrap();
             let scope = rue_semantic::analyze_cst(&ast).unwrap();
 
