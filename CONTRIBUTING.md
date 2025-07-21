@@ -58,6 +58,14 @@ For implementation details, see [docs/implementation.md](./docs/implementation.m
 - `./samples/simple` - Run the compiled executable (created in same directory as source)
 - `echo $?` - Check the exit code of the last program
 
+**Command-line Options:**
+- `-o <output>` - Specify output file name (defaults to input name without extension)
+- `--emit-asm` - Generate assembly file (.s) instead of executable
+- Examples:
+  - `cargo run -p rue samples/simple.rue -- --emit-asm` - Creates samples/simple.s
+  - `cargo run -p rue samples/simple.rue -- -o myprogram` - Creates executable named myprogram
+  - `cargo run -p rue samples/simple.rue -- --emit-asm -o output.s` - Creates assembly file output.s
+
 ### Example Programs
 - `samples/simple.rue` - Basic program that returns 42
 - `samples/factorial.rue` - Recursive factorial function (returns 120 for factorial(5))
