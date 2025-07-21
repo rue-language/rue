@@ -358,6 +358,13 @@ impl X86Emitter {
                 self.code.push(modrm);
             }
 
+            MachineInstr::Movsxd { dest, src } => {
+                self.emit_rex_if_needed(true, Some(dest), Some(src));
+                self.code.push(0x63); // MOVSXD r64, r/m32
+                let modrm = 0xc0 | (self.register_code(dest) << 3) | self.register_code(src);
+                self.code.push(modrm);
+            }
+
             MachineInstr::Push { reg } => {
                 if self.needs_rex_b(reg) {
                     self.code.push(0x41); // REX.B

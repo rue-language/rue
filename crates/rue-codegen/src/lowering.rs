@@ -676,6 +676,8 @@ impl<'a> Lowering<'a> {
             "println_bool" => "__rue_println_bool",
             "println_unit" => "__rue_println_unit",
             "input" => "__rue_input",
+            "to_i32" => "__rue_to_i32",
+            "to_i64" => "__rue_to_i64",
             _ => function, // User-defined functions keep their names
         };
 

@@ -1,5 +1,6 @@
 //! Runtime function modules
 
+pub mod cast;
 pub mod data_section;
 pub mod exit;
 pub mod input;

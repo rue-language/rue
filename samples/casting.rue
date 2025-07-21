@@ -1,0 +1,21 @@
+// Demonstration of type casting functions in Rue
+
+fn main() -> i32 {
+    // Cast i64 to i32 (truncation)
+    let big_number: i64 = 4294967338;  // 2^32 + 42
+    let truncated: i32 = to_i32(big_number);
+    println_i32(truncated);  // Prints 42
+    
+    // Cast i32 to i64 (sign extension)
+    let small_negative: i32 = -100;
+    let extended: i64 = to_i64(small_negative);
+    println_i64(extended);  // Prints -100
+    
+    // Mix types in calculations
+    let a: i32 = 50;
+    let b: i64 = 100;
+    let sum: i64 = to_i64(a) + b;
+    println_i64(sum);  // Prints 150
+    
+    0
+}

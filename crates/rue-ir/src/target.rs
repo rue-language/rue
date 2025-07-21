@@ -127,6 +127,9 @@ pub enum MachineInstr {
     /// movzx dest, src (zero extend byte to qword)
     Movzx { dest: Register, src: Register },
 
+    /// movsxd dest, src (sign extend dword to qword)
+    Movsxd { dest: Register, src: Register },
+
     /// push reg
     Push { reg: Register },
 

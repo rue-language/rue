@@ -114,6 +114,24 @@ fn add_builtin_functions(scope: &mut Scope) {
             return_type: RueType::I64,
         },
     );
+
+    // to_i32(value: i64) -> i32
+    scope.functions.insert(
+        "to_i32".to_string(),
+        FunctionSignature {
+            param_types: vec![RueType::I64],
+            return_type: RueType::I32,
+        },
+    );
+
+    // to_i64(value: i32) -> i64
+    scope.functions.insert(
+        "to_i64".to_string(),
+        FunctionSignature {
+            param_types: vec![RueType::I32],
+            return_type: RueType::I64,
+        },
+    );
 }
 
 // Semantic analysis functions
