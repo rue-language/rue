@@ -386,3 +386,34 @@ pub fn compile_file(
         Err(e) => Err(Arc::new(CompileError { message: e.message })),
     }
 }
+
+#[salsa::tracked]
+pub fn compile_file_to_assembly(
+    db: &dyn salsa::Database,
+    file: SourceFile,
+) -> Result<Arc<String>, Arc<CompileError>> {
+    // Parse and analyze the file first
+    let scope = match analyze_file(db, file) {
+        Ok(scope) => scope,
+        Err(semantic_error) => {
+            return Err(Arc::new(CompileError {
+                message: format!("Semantic error: {}", semantic_error.message),
+            }));
+        }
+    };
+
+    let ast = match parse_file(db, file) {
+        Ok(ast) => ast,
+        Err(parse_error) => {
+            return Err(Arc::new(CompileError {
+                message: format!("Parse error: {}", parse_error.message),
+            }));
+        }
+    };
+
+    // Generate assembly
+    match rue_codegen::compile_to_assembly(&ast, &scope) {
+        Ok(assembly) => Ok(Arc::new(assembly)),
+        Err(e) => Err(Arc::new(CompileError { message: e.message })),
+    }
+}

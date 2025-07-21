@@ -21,6 +21,7 @@
 - Type checking and inference for literals
 - Improved error messages with clear diagnostics
 - Boolean literals: `true` and `false` keywords
+- Assembly output: `--emit-asm` flag for debugging and inspection
 
 ## Near-Term Goals (v0.1.0)
 

@@ -172,6 +172,14 @@ cargo run -p rue samples/simple.rue
 # Run the compiled program (executable created in same directory as source)
 ./samples/simple; echo $?  # Shows the program's return value
 
+# Generate assembly instead of executable
+cargo run -p rue samples/simple.rue -- --emit-asm
+# This creates samples/simple.s with x86-64 assembly
+
+# Specify output file
+cargo run -p rue samples/simple.rue -- -o myprogram
+cargo run -p rue samples/simple.rue -- --emit-asm -o myprogram.s
+
 # Try other example programs
 cargo run -p rue samples/factorial.rue && ./samples/factorial; echo $?
 cargo run -p rue samples/fibonacci.rue && ./samples/fibonacci; echo $?
@@ -184,8 +192,13 @@ cargo run -p rue samples/assignment_demo.rue && ./samples/assignment_demo; echo 
 ### With Buck2
 
 ```bash
+# Compile to executable
 buck2 run //crates/rue:rue samples/simple.rue
 ./samples/simple; echo $?
+
+# Generate assembly
+buck2 run //crates/rue:rue samples/simple.rue -- --emit-asm
+# Creates samples/simple.s
 ```
 
 ### Running Tests
