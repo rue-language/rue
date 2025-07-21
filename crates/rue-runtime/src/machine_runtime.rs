@@ -4,6 +4,7 @@ use rue_ir::target::MachineInstr;
 use std::collections::HashMap;
 
 use crate::functions::{
+    cast::{generate_to_i32_function, generate_to_i64_function},
     data_section::generate_data_section,
     exit::generate_exit_function,
     input::generate_input_function,
@@ -66,6 +67,8 @@ pub fn generate_runtime() -> Result<(Vec<MachineInstr>, HashMap<String, u32>), S
     generate_println_unit_function(&mut ctx);
     generate_atoi_function(&mut ctx);
     generate_input_function(&mut ctx);
+    generate_to_i32_function(&mut ctx);
+    generate_to_i64_function(&mut ctx);
     generate_signal_handlers(&mut ctx);
     generate_setup_signal_handlers(&mut ctx);
 

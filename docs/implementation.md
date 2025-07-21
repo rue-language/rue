@@ -213,6 +213,8 @@ The runtime is embedded directly into each compiled executable, providing essent
 - `println_bool(value: bool) -> ()`: Print boolean as "true"/"false"
 - `println_unit(value: ()) -> ()`: Print "()"
 - `input() -> i64`: Read integer from stdin
+- `to_i32(value: i64) -> i32`: Truncate 64-bit integer to 32 bits
+- `to_i64(value: i32) -> i64`: Sign-extend 32-bit integer to 64 bits
 
 #### Error Codes
 - **250**: Division or modulo by zero

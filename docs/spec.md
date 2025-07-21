@@ -277,6 +277,18 @@ Reads a line from standard input and attempts to parse it as a 64-bit integer. R
 - Leading and trailing whitespace is ignored
 - Parsing stops at the first non-digit character after optional sign
 
+#### 6.1.7 to_i32
+```
+to_i32(value: i64) -> i32
+```
+Casts a 64-bit integer to a 32-bit integer by truncating the upper 32 bits. The lower 32 bits are preserved unchanged.
+
+#### 6.1.8 to_i64
+```
+to_i64(value: i32) -> i64
+```
+Casts a 32-bit integer to a 64-bit integer by sign extension. The sign bit of the 32-bit value is extended to fill the upper 32 bits, preserving the numeric value for both positive and negative numbers.
+
 ### 6.2 Runtime Behavior
 - Integer overflow wraps using two's complement arithmetic for both `i32` and `i64`
 - Division by zero causes program termination with exit code 250
@@ -416,6 +428,29 @@ fn main() -> i64 {
     
     // This would cause program termination:
     // let bad: i64 = divide(10, 0);
+    
+    0
+}
+```
+
+### 7.10 Type Casting Example
+```rue
+fn main() -> i64 {
+    // Casting from i64 to i32 (truncation)
+    let big: i64 = 4294967296;  // 2^32
+    let small: i32 = to_i32(big);
+    println_i32(small);  // Prints 0 (lower 32 bits)
+    
+    // Casting from i32 to i64 (sign extension)
+    let negative: i32 = -42;
+    let extended: i64 = to_i64(negative);
+    println_i64(extended);  // Prints -42
+    
+    // Practical use: mixing i32 and i64 operations
+    let a: i32 = 100;
+    let b: i64 = 200;
+    let sum: i64 = to_i64(a) + b;
+    println_i64(sum);  // Prints 300
     
     0
 }
