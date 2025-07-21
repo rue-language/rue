@@ -777,4 +777,73 @@ fn factorial(n) {
         assert!(err.message.contains("Unexpected character '!'"));
         assert!(err.message.contains("Did you mean '!='?"));
     }
+
+    #[test]
+    fn test_i64_max_literal() {
+        let mut lexer = Lexer::new("9223372036854775807");
+        let tokens = lexer.tokenize().unwrap();
+        assert_eq!(tokens[0].kind, TokenKind::Integer(9223372036854775807));
+        assert_eq!(tokens[1].kind, TokenKind::Eof);
+    }
+
+    #[test]
+    fn test_i64_min_literal() {
+        // i64::MIN is -9223372036854775808
+        let mut lexer = Lexer::new("-9223372036854775808");
+        let tokens = lexer.tokenize().unwrap();
+        assert_eq!(tokens[0].kind, TokenKind::Integer(-9223372036854775808));
+        assert_eq!(tokens[1].kind, TokenKind::Eof);
+    }
+
+    #[test]
+    fn test_literal_overflow_positive() {
+        // Number larger than i64::MAX
+        let mut lexer = Lexer::new("9223372036854775808");
+        let result = lexer.tokenize();
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.message.contains("Invalid number"));
+    }
+
+    #[test]
+    fn test_literal_overflow_negative() {
+        // Number smaller than i64::MIN
+        let mut lexer = Lexer::new("-9223372036854775809");
+        let result = lexer.tokenize();
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.message.contains("Invalid number"));
+    }
+
+    #[test]
+    fn test_literal_overflow_very_large() {
+        // Very large number
+        let mut lexer = Lexer::new("99999999999999999999999999");
+        let result = lexer.tokenize();
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.message.contains("Invalid number"));
+    }
+
+    #[test]
+    fn test_literal_edge_cases() {
+        // Test various edge cases
+        let mut lexer = Lexer::new("0");
+        let tokens = lexer.tokenize().unwrap();
+        assert_eq!(tokens[0].kind, TokenKind::Integer(0));
+
+        let mut lexer = Lexer::new("-0");
+        let tokens = lexer.tokenize().unwrap();
+        assert_eq!(tokens[0].kind, TokenKind::Integer(0));
+
+        // i32::MAX
+        let mut lexer = Lexer::new("2147483647");
+        let tokens = lexer.tokenize().unwrap();
+        assert_eq!(tokens[0].kind, TokenKind::Integer(2147483647));
+
+        // i32::MIN
+        let mut lexer = Lexer::new("-2147483648");
+        let tokens = lexer.tokenize().unwrap();
+        assert_eq!(tokens[0].kind, TokenKind::Integer(-2147483648));
+    }
 }
