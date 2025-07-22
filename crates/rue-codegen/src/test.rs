@@ -451,3 +451,257 @@ fn test_pre_allocation_no_panic() {
         "Large program should compile without allocation panics"
     );
 }
+
+#[test]
+fn test_deeply_nested_function_calls() {
+    // Test that deeply nested function calls don't cause stack overflow or other issues
+    let mut program = String::from("fn f0() -> i32 { 42 }\n");
+
+    // Create a chain of functions, each calling the previous
+    for i in 1..50 {
+        program.push_str(&format!("fn f{i}() -> i32 {{ f{}() }}\n", i - 1));
+    }
+
+    program.push_str("fn main() -> i32 { f49() }");
+
+    let result = compile_program(&program);
+    assert!(result.is_ok(), "Deep function call chain should compile");
+}
+
+#[test]
+fn test_maximum_function_parameters() {
+    // Test that functions with too many parameters fail gracefully
+    let mut params = String::new();
+    let mut args = String::new();
+    let mut body = String::new();
+
+    // Create a function with more than 6 parameters (the current limit)
+    for i in 0..10 {
+        if i > 0 {
+            params.push_str(", ");
+            args.push_str(", ");
+            body.push_str(" + ");
+        }
+        params.push_str(&format!("x{i}: i32"));
+        args.push_str(&format!("{i}"));
+        body.push_str(&format!("x{i}"));
+    }
+
+    let program = format!(
+        "fn many_params({params}) -> i32 {{\n    {body}\n}}\n\nfn main() -> i32 {{\n    many_params({args})\n}}"
+    );
+
+    let result = compile_program(&program);
+    assert!(
+        result.is_err(),
+        "Function with more than 6 parameters should fail"
+    );
+    assert!(
+        result.unwrap_err().message.contains("Too many parameters"),
+        "Error should mention parameter limit"
+    );
+}
+
+#[test]
+fn test_function_with_six_parameters() {
+    // Test that functions with exactly 6 parameters work
+    let program = r#"
+fn six_params(a: i32, b: i32, c: i32, d: i32, e: i32, f: i32) -> i32 {
+    a + b + c + d + e + f
+}
+
+fn main() -> i32 {
+    six_params(1, 2, 3, 4, 5, 6)
+}
+"#;
+
+    let result = compile_program(program);
+    assert!(result.is_ok(), "Function with 6 parameters should compile");
+}
+
+#[test]
+fn test_deeply_nested_expressions() {
+    // Test deeply nested arithmetic expressions
+    let mut expr = String::from("1");
+    for _ in 0..30 {
+        expr = format!("({expr} + 1)");
+    }
+
+    let program = format!(
+        r#"
+fn main() -> i32 {{
+    {expr}
+}}
+"#
+    );
+
+    let result = compile_program(&program);
+    assert!(result.is_ok(), "Deeply nested expressions should compile");
+}
+
+#[test]
+fn test_register_spilling_stress() {
+    // Test that forces register spilling by using more values than available registers
+    let program = r#"
+fn spill_test() -> i32 {
+    let a1: i32 = 1;
+    let a2: i32 = 2;
+    let a3: i32 = 3;
+    let a4: i32 = 4;
+    let a5: i32 = 5;
+    let a6: i32 = 6;
+    let a7: i32 = 7;
+    let a8: i32 = 8;
+    let a9: i32 = 9;
+    let a10: i32 = 10;
+    let a11: i32 = 11;
+    let a12: i32 = 12;
+    let a13: i32 = 13;
+    let a14: i32 = 14;
+    let a15: i32 = 15;
+    let a16: i32 = 16;
+    
+    // Use all variables in a single expression to force them to be live simultaneously
+    a1 + a2 + a3 + a4 + a5 + a6 + a7 + a8 + a9 + a10 + a11 + a12 + a13 + a14 + a15 + a16
+}
+
+fn main() -> i32 {
+    spill_test()
+}
+"#;
+
+    let result = compile_program(program);
+    assert!(
+        result.is_ok(),
+        "Register spilling should be handled correctly"
+    );
+}
+
+#[test]
+fn test_complex_control_flow() {
+    // Test complex nested control flow
+    let program = r#"
+fn complex_flow(a: i32, b: i32, c: i32) -> i32 {
+    if a > 0 {
+        if b > 0 {
+            if c > 0 {
+                a + b + c
+            } else {
+                if a > b {
+                    a - b
+                } else {
+                    b - a
+                }
+            }
+        } else {
+            if c > a {
+                c - a
+            } else {
+                a - c
+            }
+        }
+    } else {
+        if b < 0 {
+            if c < 0 {
+                0 - a - b - c
+            } else {
+                c
+            }
+        } else {
+            b
+        }
+    }
+}
+
+fn main() -> i32 {
+    complex_flow(10, 20, 30)
+}
+"#;
+
+    let result = compile_program(program);
+    assert!(result.is_ok(), "Complex control flow should compile");
+}
+
+#[test]
+fn test_large_immediate_values() {
+    // Test handling of large immediate values
+    let program = r#"
+fn main() -> i32 {
+    let big1: i32 = 2147483647;  // i32::MAX
+    let big2: i32 = -2147483648; // i32::MIN
+    let result: i32 = big1 + big2;
+    result
+}
+"#;
+
+    let result = compile_program(program);
+    assert!(result.is_ok(), "Large immediate values should compile");
+}
+
+#[test]
+fn test_assignment_chains() {
+    // Test chained assignments
+    let program = r#"
+fn main() -> i32 {
+    let x: i32 = 1;
+    let y: i32 = 2;
+    let z: i32 = 3;
+    
+    x = y;
+    y = z;
+    z = x;
+    
+    x + y + z
+}
+"#;
+
+    let result = compile_program(program);
+    assert!(result.is_ok(), "Assignment chains should compile");
+}
+
+#[test]
+fn test_function_calls_in_expressions() {
+    // Test function calls within complex expressions
+    let program = r#"
+fn add(a: i32, b: i32) -> i32 {
+    a + b
+}
+
+fn mul(a: i32, b: i32) -> i32 {
+    a * b
+}
+
+fn main() -> i32 {
+    add(mul(2, 3), add(4, 5))
+}
+"#;
+
+    let result = compile_program(program);
+    assert!(
+        result.is_ok(),
+        "Function calls in expressions should compile"
+    );
+}
+
+#[test]
+fn test_mixed_type_operations() {
+    // Test operations with mixed i32 and bool types
+    let program = r#"
+fn mixed_types(x: i32, flag: bool) -> i32 {
+    if flag {
+        x + 10
+    } else {
+        x - 10
+    }
+}
+
+fn main() -> i32 {
+    let result1: i32 = mixed_types(42, true);
+    let result2: i32 = mixed_types(result1, false);
+    result2
+}
+"#;
+
+    let result = compile_program(program);
+    assert!(result.is_ok(), "Mixed type operations should compile");
+}
