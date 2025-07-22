@@ -132,13 +132,64 @@ pub enum Instruction {
     LeaveFrame,
 }
 
+/// Stack-based variable scope management for code generation
+#[derive(Debug, Clone)]
+struct VarScopeStack {
+    scopes: Vec<HashMap<String, VReg>>,
+}
+
+impl VarScopeStack {
+    /// Create a new scope stack with an initial empty scope
+    fn new() -> Self {
+        Self {
+            scopes: vec![HashMap::new()],
+        }
+    }
+
+    /// Push a new scope onto the stack
+    fn push_scope(&mut self) {
+        self.scopes.push(HashMap::new());
+    }
+
+    /// Pop the innermost scope from the stack
+    fn pop_scope(&mut self) {
+        if self.scopes.len() > 1 {
+            self.scopes.pop();
+        }
+    }
+
+    /// Declare a variable in the current (innermost) scope
+    fn declare_variable(&mut self, name: String, vreg: VReg) {
+        if let Some(current_scope) = self.scopes.last_mut() {
+            current_scope.insert(name, vreg);
+        }
+    }
+
+    /// Look up a variable, searching from innermost to outermost scope
+    fn lookup_variable(&self, name: &str) -> Option<&VReg> {
+        // Search from innermost (last) to outermost (first) scope
+        for scope in self.scopes.iter().rev() {
+            if let Some(vreg) = scope.get(name) {
+                return Some(vreg);
+            }
+        }
+        None
+    }
+
+    /// Clear all scopes (used when starting a new function)
+    fn clear(&mut self) {
+        self.scopes.clear();
+        self.scopes.push(HashMap::new());
+    }
+}
+
 // Code generator state
 pub struct Codegen {
     instructions: Vec<Instruction>,
     vreg_counter: u32,
     label_counter: u32,
     stack_offset: i64,
-    variables: HashMap<String, VReg>, // Variable -> virtual register
+    variables: VarScopeStack, // Hierarchical variable -> virtual register mapping
     function_labels: HashMap<String, LabelId>, // Function name -> label ID
 }
 
@@ -149,7 +200,7 @@ impl Codegen {
             vreg_counter: 0,
             label_counter: 0,
             stack_offset: 0,
-            variables: HashMap::new(),
+            variables: VarScopeStack::new(),
             function_labels: HashMap::new(),
         }
     }
@@ -281,7 +332,8 @@ impl Codegen {
             if let rue_lexer::TokenKind::Ident(param_name) = &param.name.kind {
                 // Assign parameter to a new VReg
                 let param_vreg = self.next_vreg();
-                self.variables.insert(param_name.clone(), param_vreg);
+                self.variables
+                    .declare_variable(param_name.clone(), param_vreg);
 
                 // Move parameter from register to parameter VReg
                 self.emit(Instruction::Copy {
@@ -332,7 +384,8 @@ impl Codegen {
 
                 // Store in variable mapping
                 if let rue_lexer::TokenKind::Ident(var_name) = &let_stmt.name.kind {
-                    self.variables.insert(var_name.clone(), value_vreg);
+                    self.variables
+                        .declare_variable(var_name.clone(), value_vreg);
                 } else {
                     return Err(CodegenError {
                         message: "Invalid variable name in let statement".to_string(),
@@ -346,7 +399,7 @@ impl Codegen {
 
                 // Update existing variable
                 if let rue_lexer::TokenKind::Ident(var_name) = &assign_stmt.name.kind {
-                    if let Some(&existing_vreg) = self.variables.get(var_name) {
+                    if let Some(&existing_vreg) = self.variables.lookup_variable(var_name) {
                         // Copy the new value to the existing variable's location
                         self.emit(Instruction::Copy {
                             dest: existing_vreg,
@@ -469,7 +522,7 @@ impl Codegen {
             }
             ExpressionNode::Identifier(token) => {
                 if let rue_lexer::TokenKind::Ident(name) = &token.kind {
-                    if let Some(&var_vreg) = self.variables.get(name) {
+                    if let Some(&var_vreg) = self.variables.lookup_variable(name) {
                         let dest = self.next_vreg();
                         self.emit(Instruction::Copy {
                             dest,
@@ -664,6 +717,9 @@ impl Codegen {
                 // Generate then block
                 self.emit(Instruction::Label(then_label));
 
+                // Push new scope for then block
+                self.variables.push_scope();
+
                 // Generate then block statements
                 for stmt in &if_stmt.then_block.statements {
                     self.generate_statement(stmt, _scope)?;
@@ -681,6 +737,9 @@ impl Codegen {
                     zero_vreg
                 };
 
+                // Pop then block scope
+                self.variables.pop_scope();
+
                 // Copy then result to shared result register
                 self.emit(Instruction::Copy {
                     dest: result_vreg,
@@ -694,10 +753,13 @@ impl Codegen {
                 let else_result = if let Some(else_clause) = &if_stmt.else_clause {
                     match &else_clause.body {
                         rue_ast::ElseBodyNode::Block(block) => {
+                            // Push new scope for else block
+                            self.variables.push_scope();
+
                             for stmt in &block.statements {
                                 self.generate_statement(stmt, _scope)?;
                             }
-                            if let Some(final_expr) = &block.final_expr {
+                            let result = if let Some(final_expr) = &block.final_expr {
                                 self.generate_expression(final_expr, _scope)?
                             } else {
                                 let zero_vreg = self.next_vreg();
@@ -706,7 +768,11 @@ impl Codegen {
                                     src: Value::Immediate(0),
                                 });
                                 zero_vreg
-                            }
+                            };
+
+                            // Pop else block scope
+                            self.variables.pop_scope();
+                            result
                         }
                         rue_ast::ElseBodyNode::If(nested_if) => self
                             .generate_expression(&ExpressionNode::If(nested_if.clone()), _scope)?,
@@ -754,6 +820,9 @@ impl Codegen {
                 // Generate loop body
                 self.emit(Instruction::Label(body_label));
 
+                // Push new scope for loop body
+                self.variables.push_scope();
+
                 // Generate loop body statements
                 for stmt in &while_stmt.body.statements {
                     self.generate_statement(stmt, _scope)?;
@@ -762,6 +831,9 @@ impl Codegen {
                 if let Some(final_expr) = &while_stmt.body.final_expr {
                     let _result = self.generate_expression(final_expr, _scope)?;
                 }
+
+                // Pop loop body scope
+                self.variables.pop_scope();
 
                 // Jump back to condition check
                 self.emit(Instruction::Jump(loop_start));

@@ -121,6 +121,30 @@ The Rue compiler is organized into multiple crates for modularity and clean sepa
 4. **Call Graph**: Build function dependency graph
 5. **Type Inference**: Deduce types for expressions from context
 
+#### Variable Scoping Implementation
+
+The semantic analyzer implements block-level scoping using a hierarchical scope stack:
+
+**ScopeStack Structure**:
+- Maintains a stack of HashMap<String, RueType> for variable lookups
+- Each block (function body, if/else branches, while loops) creates a new scope
+- Variable declarations add to the innermost scope
+- Variable lookups search from innermost to outermost scope
+
+**Scope Management**:
+1. **Function entry**: Creates new scope, adds parameters
+2. **Block entry** (if/else/while): Pushes new scope onto stack
+3. **Block exit**: Pops scope from stack
+4. **Variable declaration**: Adds to current (innermost) scope
+5. **Variable reference**: Searches scopes from inner to outer
+
+**Variable Shadowing**:
+- Variables in inner scopes can shadow outer scope variables
+- Each scope maintains its own variable-to-type mapping
+- Shadowed variables remain accessible when inner scope exits
+
+The code generator mirrors this structure with a VarScopeStack that maps variables to virtual registers (VRegs), ensuring consistent scoping behavior throughout compilation.
+
 ### Intermediate Representations (`rue-ir` and `rue-codegen`)
 
 #### Overview

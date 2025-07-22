@@ -43,6 +43,51 @@ pub struct Scope {
     pub functions: HashMap<String, FunctionSignature>,
 }
 
+/// Stack-based scope management for block-level scoping
+#[derive(Debug, Clone)]
+pub struct ScopeStack {
+    scopes: Vec<HashMap<String, RueType>>,
+}
+
+impl ScopeStack {
+    /// Create a new scope stack with an initial empty scope
+    fn new() -> Self {
+        Self {
+            scopes: vec![HashMap::new()],
+        }
+    }
+
+    /// Push a new scope onto the stack
+    fn push_scope(&mut self) {
+        self.scopes.push(HashMap::new());
+    }
+
+    /// Pop the innermost scope from the stack
+    fn pop_scope(&mut self) {
+        if self.scopes.len() > 1 {
+            self.scopes.pop();
+        }
+    }
+
+    /// Declare a variable in the current (innermost) scope
+    fn declare_variable(&mut self, name: String, var_type: RueType) {
+        if let Some(current_scope) = self.scopes.last_mut() {
+            current_scope.insert(name, var_type);
+        }
+    }
+
+    /// Look up a variable, searching from innermost to outermost scope
+    fn lookup_variable(&self, name: &str) -> Option<&RueType> {
+        // Search from innermost (last) to outermost (first) scope
+        for scope in self.scopes.iter().rev() {
+            if let Some(var_type) = scope.get(name) {
+                return Some(var_type);
+            }
+        }
+        None
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct FunctionSignature {
     pub param_types: Vec<RueType>,
@@ -136,28 +181,30 @@ fn add_builtin_functions(scope: &mut Scope) {
 
 // Semantic analysis functions
 pub fn analyze_cst(ast: &CstRoot) -> Result<Scope, SemanticError> {
-    let mut scope = Scope::default();
+    let mut global_scope = Scope::default();
 
     // Add built-in functions
-    add_builtin_functions(&mut scope);
+    add_builtin_functions(&mut global_scope);
 
     for item in &ast.items {
         match item {
             rue_ast::CstNode::Function(func) => {
-                analyze_function(&mut scope, func)?;
+                analyze_function(&mut global_scope, func)?;
             }
             rue_ast::CstNode::Statement(stmt) => {
-                analyze_statement(&mut scope, stmt)?;
+                // Top-level statements use an empty variable scope
+                let mut var_scope = ScopeStack::new();
+                analyze_statement(&mut var_scope, &global_scope.functions, stmt)?;
             }
             _ => {} // Skip other node types for now
         }
     }
 
-    Ok(scope)
+    Ok(global_scope)
 }
 
 // Helper functions for semantic analysis
-fn analyze_function(scope: &mut Scope, func: &FunctionNode) -> Result<(), SemanticError> {
+fn analyze_function(global_scope: &mut Scope, func: &FunctionNode) -> Result<(), SemanticError> {
     // Extract function name
     let func_name = match &func.name.kind {
         rue_lexer::TokenKind::Ident(name) => name.clone(),
@@ -187,8 +234,8 @@ fn analyze_function(scope: &mut Scope, func: &FunctionNode) -> Result<(), Semant
         RueType::Unit // Default to unit if no return type specified
     };
 
-    // Register function in scope
-    scope.functions.insert(
+    // Register function in global scope
+    global_scope.functions.insert(
         func_name.clone(),
         FunctionSignature {
             param_types: param_types.clone(),
@@ -196,26 +243,29 @@ fn analyze_function(scope: &mut Scope, func: &FunctionNode) -> Result<(), Semant
         },
     );
 
-    // Create local scope for function body
-    let mut local_scope = scope.clone();
+    // Create variable scope stack for function body
+    let mut var_scope = ScopeStack::new();
 
-    // Add parameters to local scope
+    // Add parameters to function scope
     for (i, param) in func.param_list.params.iter().enumerate() {
         if let rue_lexer::TokenKind::Ident(param_name) = &param.name.kind {
-            local_scope
-                .variables
-                .insert(param_name.clone(), param_types[i].clone());
+            var_scope.declare_variable(param_name.clone(), param_types[i].clone());
         }
     }
 
     // Analyze function body statements
     for stmt in &func.body.statements {
-        analyze_statement(&mut local_scope, stmt)?;
+        analyze_statement(&mut var_scope, &global_scope.functions, stmt)?;
     }
 
     // Analyze final expression and check return type
     let actual_return_type = if let Some(final_expr) = &func.body.final_expr {
-        analyze_literal_with_expected_type(&mut local_scope, final_expr, &return_type)?
+        analyze_literal_with_expected_type(
+            &mut var_scope,
+            &global_scope.functions,
+            final_expr,
+            &return_type,
+        )?
     } else {
         RueType::Unit // No final expression means unit return
     };
@@ -233,7 +283,11 @@ fn analyze_function(scope: &mut Scope, func: &FunctionNode) -> Result<(), Semant
     Ok(())
 }
 
-fn analyze_statement(scope: &mut Scope, stmt: &StatementNode) -> Result<(), SemanticError> {
+fn analyze_statement(
+    var_scope: &mut ScopeStack,
+    functions: &HashMap<String, FunctionSignature>,
+    stmt: &StatementNode,
+) -> Result<(), SemanticError> {
     match stmt {
         StatementNode::Let(let_stmt) => {
             // Get declared type if present
@@ -244,9 +298,14 @@ fn analyze_statement(scope: &mut Scope, stmt: &StatementNode) -> Result<(), Sema
 
             // Analyze the value expression with type context
             let value_type = if let Some(expected_type) = &declared_type {
-                analyze_literal_with_expected_type(scope, &let_stmt.value, expected_type)?
+                analyze_literal_with_expected_type(
+                    var_scope,
+                    functions,
+                    &let_stmt.value,
+                    expected_type,
+                )?
             } else {
-                analyze_expression(scope, &let_stmt.value)?
+                analyze_expression(var_scope, functions, &let_stmt.value)?
             };
 
             // Determine final type
@@ -273,18 +332,18 @@ fn analyze_statement(scope: &mut Scope, stmt: &StatementNode) -> Result<(), Sema
                 }
             }
 
-            // Add variable to scope
+            // Add variable to current scope
             if let rue_lexer::TokenKind::Ident(var_name) = &let_stmt.name.kind {
-                scope.variables.insert(var_name.clone(), final_type);
+                var_scope.declare_variable(var_name.clone(), final_type);
             }
         }
         StatementNode::Assign(assign_stmt) => {
             // Analyze the value expression
-            let value_type = analyze_expression(scope, &assign_stmt.value)?;
+            let value_type = analyze_expression(var_scope, functions, &assign_stmt.value)?;
 
             // Check that variable exists in scope and types match
             if let rue_lexer::TokenKind::Ident(var_name) = &assign_stmt.name.kind {
-                if let Some(var_type) = scope.variables.get(var_name) {
+                if let Some(var_type) = var_scope.lookup_variable(var_name) {
                     if *var_type != value_type {
                         return Err(SemanticError {
                             message: format!(
@@ -302,7 +361,7 @@ fn analyze_statement(scope: &mut Scope, stmt: &StatementNode) -> Result<(), Sema
             }
         }
         StatementNode::Expression(expr_stmt) => {
-            analyze_expression(scope, &expr_stmt.expression)?;
+            analyze_expression(var_scope, functions, &expr_stmt.expression)?;
         }
     }
     Ok(())
@@ -321,7 +380,8 @@ fn analyze_statement(scope: &mut Scope, stmt: &StatementNode) -> Result<(), Sema
 /// For non-literal expressions, this delegates to `analyze_expression` since they
 /// have fixed types that don't depend on context.
 fn analyze_literal_with_expected_type(
-    scope: &mut Scope,
+    var_scope: &mut ScopeStack,
+    functions: &HashMap<String, FunctionSignature>,
     expr: &ExpressionNode,
     expected_type: &RueType,
 ) -> Result<RueType, SemanticError> {
@@ -343,7 +403,7 @@ fn analyze_literal_with_expected_type(
                 }),
             }
         }
-        _ => analyze_expression(scope, expr), // For non-literals, use regular analysis
+        _ => analyze_expression(var_scope, functions, expr), // For non-literals, use regular analysis
     }
 }
 
@@ -359,7 +419,11 @@ fn analyze_literal_with_expected_type(
 /// Note: This function always infers integer literals as i32. When type context
 /// is available (e.g., from type annotations), use `analyze_literal_with_expected_type`
 /// instead to allow integer literals to be inferred as i64 when needed.
-fn analyze_expression(scope: &mut Scope, expr: &ExpressionNode) -> Result<RueType, SemanticError> {
+fn analyze_expression(
+    var_scope: &mut ScopeStack,
+    functions: &HashMap<String, FunctionSignature>,
+    expr: &ExpressionNode,
+) -> Result<RueType, SemanticError> {
     match expr {
         ExpressionNode::Literal(token) => {
             match &token.kind {
@@ -374,7 +438,7 @@ fn analyze_expression(scope: &mut Scope, expr: &ExpressionNode) -> Result<RueTyp
         }
         ExpressionNode::Identifier(token) => {
             if let rue_lexer::TokenKind::Ident(name) = &token.kind {
-                if let Some(var_type) = scope.variables.get(name) {
+                if let Some(var_type) = var_scope.lookup_variable(name) {
                     Ok(var_type.clone())
                 } else {
                     Err(SemanticError {
@@ -391,8 +455,8 @@ fn analyze_expression(scope: &mut Scope, expr: &ExpressionNode) -> Result<RueTyp
         }
         ExpressionNode::Binary(binary_expr) => {
             // Analyze both operands
-            let left_type = analyze_expression(scope, &binary_expr.left)?;
-            let right_type = analyze_expression(scope, &binary_expr.right)?;
+            let left_type = analyze_expression(var_scope, functions, &binary_expr.left)?;
+            let right_type = analyze_expression(var_scope, functions, &binary_expr.right)?;
 
             // Check operator type
             match &binary_expr.operator.kind {
@@ -452,7 +516,7 @@ fn analyze_expression(scope: &mut Scope, expr: &ExpressionNode) -> Result<RueTyp
             if let ExpressionNode::Identifier(func_token) = &*call_expr.function {
                 if let rue_lexer::TokenKind::Ident(func_name) = &func_token.kind {
                     // Check if function exists
-                    if let Some(signature) = scope.functions.get(func_name).cloned() {
+                    if let Some(signature) = functions.get(func_name).cloned() {
                         // Check argument count
                         if call_expr.args.len() != signature.param_types.len() {
                             return Err(SemanticError {
@@ -472,9 +536,14 @@ fn analyze_expression(scope: &mut Scope, expr: &ExpressionNode) -> Result<RueTyp
 
                             // Try to analyze with expected type for better inference
                             let arg_type = if let ExpressionNode::Literal(_) = arg {
-                                analyze_literal_with_expected_type(scope, arg, expected_type)?
+                                analyze_literal_with_expected_type(
+                                    var_scope,
+                                    functions,
+                                    arg,
+                                    expected_type,
+                                )?
                             } else {
-                                analyze_expression(scope, arg)?
+                                analyze_expression(var_scope, functions, arg)?
                             };
 
                             if arg_type != *expected_type {
@@ -513,7 +582,7 @@ fn analyze_expression(scope: &mut Scope, expr: &ExpressionNode) -> Result<RueTyp
         }
         ExpressionNode::If(if_stmt) => {
             // Analyze condition - must be bool
-            let condition_type = analyze_expression(scope, &if_stmt.condition)?;
+            let condition_type = analyze_expression(var_scope, functions, &if_stmt.condition)?;
             if condition_type != RueType::Bool {
                 return Err(SemanticError {
                     message: format!("If condition must be bool, found {condition_type}"),
@@ -521,32 +590,39 @@ fn analyze_expression(scope: &mut Scope, expr: &ExpressionNode) -> Result<RueTyp
                 });
             }
 
-            // Analyze then block
+            // Analyze then block with new scope
+            var_scope.push_scope();
             for stmt in &if_stmt.then_block.statements {
-                analyze_statement(scope, stmt)?;
+                analyze_statement(var_scope, functions, stmt)?;
             }
             let then_type = if let Some(final_expr) = &if_stmt.then_block.final_expr {
-                analyze_expression(scope, final_expr)?
+                analyze_expression(var_scope, functions, final_expr)?
             } else {
                 RueType::Unit // blocks without final expression return unit
             };
+            var_scope.pop_scope();
 
             // Analyze else block if it exists
             let else_type = if let Some(else_clause) = &if_stmt.else_clause {
                 match &else_clause.body {
                     rue_ast::ElseBodyNode::Block(block) => {
+                        var_scope.push_scope();
                         for stmt in &block.statements {
-                            analyze_statement(scope, stmt)?;
+                            analyze_statement(var_scope, functions, stmt)?;
                         }
-                        if let Some(final_expr) = &block.final_expr {
-                            analyze_expression(scope, final_expr)?
+                        let result_type = if let Some(final_expr) = &block.final_expr {
+                            analyze_expression(var_scope, functions, final_expr)?
                         } else {
                             RueType::Unit
-                        }
+                        };
+                        var_scope.pop_scope();
+                        result_type
                     }
-                    rue_ast::ElseBodyNode::If(nested_if) => {
-                        analyze_expression(scope, &ExpressionNode::If(nested_if.clone()))?
-                    }
+                    rue_ast::ElseBodyNode::If(nested_if) => analyze_expression(
+                        var_scope,
+                        functions,
+                        &ExpressionNode::If(nested_if.clone()),
+                    )?,
                 }
             } else {
                 RueType::Unit // missing else defaults to unit
@@ -564,7 +640,7 @@ fn analyze_expression(scope: &mut Scope, expr: &ExpressionNode) -> Result<RueTyp
         }
         ExpressionNode::While(while_stmt) => {
             // Analyze condition - must be bool
-            let condition_type = analyze_expression(scope, &while_stmt.condition)?;
+            let condition_type = analyze_expression(var_scope, functions, &while_stmt.condition)?;
             if condition_type != RueType::Bool {
                 return Err(SemanticError {
                     message: format!("While condition must be bool, found {condition_type}"),
@@ -572,20 +648,22 @@ fn analyze_expression(scope: &mut Scope, expr: &ExpressionNode) -> Result<RueTyp
                 });
             }
 
-            // Analyze body
+            // Analyze body with new scope
+            var_scope.push_scope();
             for stmt in &while_stmt.body.statements {
-                analyze_statement(scope, stmt)?;
+                analyze_statement(var_scope, functions, stmt)?;
             }
             if let Some(final_expr) = &while_stmt.body.final_expr {
-                analyze_expression(scope, final_expr)?;
+                analyze_expression(var_scope, functions, final_expr)?;
             }
+            var_scope.pop_scope();
 
             // While expressions always return unit
             Ok(RueType::Unit)
         }
         ExpressionNode::Unary(unary_expr) => {
             // Analyze operand
-            let operand_type = analyze_expression(scope, &unary_expr.operand)?;
+            let operand_type = analyze_expression(var_scope, functions, &unary_expr.operand)?;
 
             // Check operator type
             match &unary_expr.operator.kind {
