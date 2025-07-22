@@ -758,16 +758,80 @@ impl<'a> Lowering<'a> {
             }
         }
 
-        // Now move arguments to their designated registers
-        for (i, &arg_vreg) in args.iter().enumerate() {
-            let arg_reg = self.allocator.ensure_reg(arg_vreg, &[])?;
-            self.emit_spill_reload_ops();
-            if arg_reg != arg_regs[i] {
+        // Collect where arguments currently are
+        let mut arg_locations = Vec::new();
+        for &arg_vreg in args.iter() {
+            if let Some(reg) = self.allocator.get_register(arg_vreg) {
+                arg_locations.push(reg);
+            } else {
+                // Not in a register yet, allocate one
+                let reg = self.allocator.ensure_reg(arg_vreg, &[])?;
+                self.emit_spill_reload_ops();
+                arg_locations.push(reg);
+            }
+        }
+
+        // Now we need to move arguments to ABI positions
+        // Handle potential cycles by using a temporary register if needed
+        let temp_reg = Register::R15; // Use R15 as temporary
+
+        // First pass: direct moves where target is free
+        let mut moved = vec![false; args.len()];
+        for i in 0..args.len() {
+            if moved[i] || arg_locations[i] == arg_regs[i] {
+                continue;
+            }
+
+            // Check if target is free (not used by another argument)
+            let target_free = !arg_locations
+                .iter()
+                .enumerate()
+                .any(|(j, &reg)| j != i && !moved[j] && reg == arg_regs[i]);
+
+            if target_free {
+                if arg_locations[i] != arg_regs[i] {
+                    self.emit(MachineInstr::MovRR {
+                        dest: arg_regs[i],
+                        src: arg_locations[i],
+                    });
+                }
+                moved[i] = true;
+            }
+        }
+
+        // Second pass: handle cycles using temporary register
+        for i in 0..args.len() {
+            if moved[i] || arg_locations[i] == arg_regs[i] {
+                continue;
+            }
+
+            // Save current value to temp
+            self.emit(MachineInstr::MovRR {
+                dest: temp_reg,
+                src: arg_locations[i],
+            });
+
+            // Find what's in our target position
+            let blocking_idx = arg_locations
+                .iter()
+                .position(|&reg| reg == arg_regs[i])
+                .expect("Target must be occupied");
+
+            // Move the blocking value to its destination
+            if arg_regs[blocking_idx] != arg_locations[blocking_idx] {
                 self.emit(MachineInstr::MovRR {
-                    dest: arg_regs[i],
-                    src: arg_reg,
+                    dest: arg_regs[blocking_idx],
+                    src: arg_locations[blocking_idx],
                 });
             }
+            moved[blocking_idx] = true;
+
+            // Now move our value from temp to its destination
+            self.emit(MachineInstr::MovRR {
+                dest: arg_regs[i],
+                src: temp_reg,
+            });
+            moved[i] = true;
         }
 
         // Call the function
