@@ -14,3 +14,11 @@ rust_test(
     crate_root = "src/lib.rs",
     edition = "2021",
 )
+
+rust_test(
+    name = "lexer_error_tests",
+    srcs = glob(["tests/**/*.rs"]),
+    crate_root = "tests/lexer_error_tests.rs",
+    edition = "2021",
+    deps = [":rue-lexer"],
+)
