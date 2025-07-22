@@ -124,10 +124,181 @@ Operators of the same precedence are left-associative.
 ## 4. Static Semantics
 
 ### 4.1 Scoping Rules
+
+#### 4.1.1 Basic Scoping Principles
 - Function parameters are scoped to their function body
 - Variables declared with `let` are scoped to the block in which they are declared
-- Functions are globally scoped
-- Variable shadowing is not permitted within the same scope
+- Functions are globally scoped and visible throughout the program
+- Variable shadowing is permitted both within the same scope and across nested scopes
+
+#### 4.1.2 Block Scopes
+A new scope is created when entering:
+- Function bodies
+- If expression blocks (both `then` and `else` branches)
+- While expression bodies
+
+When a block is exited, all variables declared within that block become inaccessible.
+
+#### 4.1.3 Variable Shadowing
+Variable shadowing occurs when a new variable declaration has the same name as an existing variable:
+- Variables can shadow other variables in the same scope or in outer scopes
+- The new variable "hides" all previous variables with the same name
+- The previous variables become permanently inaccessible (they cannot be "unshadowed")
+- Each `let` declaration creates a new variable, even if the name already exists
+
+Example of cross-scope shadowing:
+```rue
+fn main() -> i32 {
+    let x: i32 = 10;      // Outer x
+    if true {
+        let x: i32 = 20;  // Inner x shadows outer x
+        x                 // Returns 20
+    } else {
+        x                 // Would return 10 (outer x)
+    }
+}
+```
+
+Example of same-scope shadowing:
+```rue
+fn main() -> i32 {
+    let x: i32 = 10;      // First x
+    let x: i32 = 20;      // Second x shadows first x
+    x                     // Returns 20 (first x is no longer accessible)
+}
+```
+
+Shadowing with different types:
+```rue
+fn main() -> i32 {
+    let x: i32 = 42;      // x is i32
+    let x: bool = true;   // x is now bool, previous x is shadowed
+    if x {                // Uses the bool x
+        let x: i32 = 100; // x is i32 again in this scope
+        x                 // Returns 100
+    } else {
+        0
+    }
+}
+
+#### 4.1.4 Scope Resolution
+When resolving a variable reference:
+1. Search starts in the current (innermost) scope
+2. If not found, search proceeds to the next outer scope
+3. Continue until the variable is found or all scopes are exhausted
+4. If the variable is not found in any accessible scope, a compile error occurs
+
+#### 4.1.5 If Expression Scopes
+Each branch of an if expression creates its own scope:
+```rue
+fn main() -> i32 {
+    let x: i32 = 1;
+    if condition {
+        let y: i32 = 2;   // y is only accessible in this branch
+        x + y             // Can access outer x and inner y
+    } else {
+        let z: i32 = 3;   // z is only accessible in this branch
+        x + z             // Can access outer x and inner z
+    }
+    // Neither y nor z are accessible here
+}
+```
+
+Nested if expressions (else if) each create their own scope:
+```rue
+fn main() -> i32 {
+    let x: i32 = 1;
+    if condition1 {
+        let a: i32 = 10;
+        a
+    } else if condition2 {
+        let b: i32 = 20;  // b is only accessible in this branch
+        b
+    } else {
+        let c: i32 = 30;  // c is only accessible in this branch
+        c
+    }
+    // None of a, b, or c are accessible here
+}
+```
+
+#### 4.1.6 While Expression Scopes
+The body of a while expression creates a new scope for each iteration:
+```rue
+fn main() -> i32 {
+    let x: i32 = 0;
+    while x < 10 {
+        let y: i32 = x * 2;  // y is created fresh each iteration
+        x = x + 1;           // Modifies outer x
+    };
+    // y is not accessible here
+    x
+}
+```
+
+#### 4.1.7 Function Parameter Shadowing
+Function parameters can be shadowed within the function body:
+```rue
+fn process(x: i32) -> i32 {
+    if x > 10 {
+        let x: i32 = 10;  // Shadows the parameter x
+        x                 // Returns 10
+    } else {
+        x                 // Returns the parameter value
+    }
+}
+```
+
+#### 4.1.8 Assignment and Scoping
+Assignment statements always modify the variable in the scope where it was declared:
+```rue
+fn main() -> i32 {
+    let x: i32 = 10;
+    if true {
+        x = 20;           // Modifies the outer x
+        let x: i32 = 30;  // Creates a new inner x
+        x = 40;           // Modifies the inner x
+    };
+    x                     // Returns 20 (outer x was modified)
+}
+```
+
+Note that assignment requires the variable to already exist - you cannot create a new variable with assignment:
+```rue
+fn main() -> i32 {
+    y = 10;  // Error: undefined variable y
+    0
+}
+```
+
+#### 4.1.9 Comprehensive Scoping Example
+This example demonstrates multiple scoping concepts:
+```rue
+fn calculate(n: i32) -> i32 {
+    let result: i32 = 0;        // Function scope
+    let multiplier: i32 = 2;    // Function scope
+    
+    if n > 0 {
+        let temp: i32 = n * multiplier;  // If-block scope
+        result = temp;                    // Modifies function-scope result
+        
+        if n > 10 {
+            let multiplier: i32 = 3;      // Shadows function-scope multiplier
+            let temp: i32 = n * multiplier;  // Shadows if-block temp
+            result = temp;                // Still modifies function-scope result
+        };                                // Inner multiplier and temp go out of scope
+        
+        // Here, temp refers to the if-block temp, not the inner one
+        result = result + temp;
+    } else {
+        let temp: i32 = -1;              // Different temp in else-block
+        result = temp;
+    };
+    // No temp variable is accessible here
+    
+    result * multiplier  // Uses function-scope multiplier (2)
+}
+```
 
 ### 4.2 Name Resolution
 - All identifiers must be declared before use

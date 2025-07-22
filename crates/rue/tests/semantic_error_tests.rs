@@ -275,10 +275,6 @@ fn main() -> i32 {
         "Undefined variable",
     );
 
-    // TODO: This test is commented out due to a bug in Rue's scoping rules
-    // Variables defined in if/else branches should not be accessible outside
-    // the branch, but currently they are.
-    /*
     // Using variable only defined in else branch
     test_compile_error(
         "variable_only_in_else",
@@ -295,7 +291,59 @@ fn main() -> i32 {
 "#,
         "Undefined variable",
     );
-    */
+
+    // Using variable only defined in then branch
+    test_compile_error(
+        "variable_only_in_then",
+        r#"
+fn main() -> i32 {
+    if false {
+        let y: i32 = 10;
+        0
+    } else {
+        0
+    };
+    y  // y not defined outside if block
+}
+"#,
+        "Undefined variable",
+    );
+
+    // Variable defined in nested if block not accessible outside
+    test_compile_error(
+        "variable_in_nested_if",
+        r#"
+fn main() -> i32 {
+    if true {
+        if true {
+            let z: i32 = 15;
+            z
+        } else {
+            0
+        }
+    } else {
+        0
+    };
+    z  // z not defined outside nested if
+}
+"#,
+        "Undefined variable",
+    );
+
+    // Variable defined in while loop not accessible outside
+    test_compile_error(
+        "variable_in_while_loop",
+        r#"
+fn main() -> i32 {
+    while false {
+        let w: i32 = 20;
+        w;
+    };
+    w  // w not defined outside while loop
+}
+"#,
+        "Undefined variable",
+    );
 
     // Variable defined in both branches but different types
     test_compile_error(
