@@ -166,7 +166,7 @@ impl<'a> Lowering<'a> {
                 let dest_reg = match lhs {
                     Value::VReg(vreg) => {
                         let lhs_reg = self.allocator.ensure_reg(*vreg, &[])?;
-                        let dest_reg = self.allocator.ensure_reg(dest, &[])?;
+                        let dest_reg = self.allocator.ensure_reg(dest, &[lhs_reg])?;
                         // Emit any pending spill/reload operations before moving
                         self.emit_spill_reload_ops();
                         if lhs_reg != dest_reg {
@@ -591,7 +591,7 @@ impl<'a> Lowering<'a> {
             _ => unreachable!(),
         };
 
-        let dest_reg = self.allocator.ensure_reg(dest, &[])?;
+        let dest_reg = self.allocator.ensure_reg(dest, &[lhs_reg])?;
         self.emit_spill_reload_ops();
         self.emit(MachineInstr::SetCC { dest: dest_reg, cc });
         self.emit(MachineInstr::Movzx {
