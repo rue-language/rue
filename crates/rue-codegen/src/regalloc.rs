@@ -132,6 +132,7 @@ impl RegisterAllocator {
     }
 
     /// Invalidate a register - mark any vreg in this register as spilled
+    /// and generate spill operations to preserve their values
     pub fn invalidate_register(&mut self, reg: Register) {
         // Find any vreg that thinks it's in this register
         let vregs_to_spill: Vec<VReg> = self
@@ -143,7 +144,7 @@ impl RegisterAllocator {
             })
             .collect();
 
-        // Mark those vregs as needing to be reloaded from their home slots
+        // Spill those vregs and generate spill operations
         for vreg in vregs_to_spill {
             // Get or allocate a home slot
             let home_slot = if let Some(&slot) = self.home_slots.get(&vreg) {
@@ -153,6 +154,12 @@ impl RegisterAllocator {
                 self.home_slots.insert(vreg, new_slot);
                 new_slot
             };
+
+            // Generate spill operation to save the current value in the register
+            self.pending_ops.push(SpillReloadOp::Spill {
+                reg,
+                stack_offset: home_slot,
+            });
 
             // Update the allocation to indicate it's on the stack
             self.allocation.insert(vreg, Location::StackSlot(home_slot));
@@ -372,6 +379,12 @@ impl RegisterAllocator {
     /// Get pending spill/reload operations and clear the buffer
     pub fn take_pending_ops(&mut self) -> Vec<SpillReloadOp> {
         std::mem::take(&mut self.pending_ops)
+    }
+
+    /// Get the total stack space needed for spill slots
+    pub fn get_stack_size(&self) -> i32 {
+        // Stack grows downward, so negate the offset
+        -self.stack_offset
     }
 }
 

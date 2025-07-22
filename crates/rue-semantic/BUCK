@@ -7,6 +7,7 @@ cargo.rust_library(
     edition = "2024",
     deps = [
         "//crates/rue-ast:rue-ast",
+        "//crates/rue-ir:rue-ir",
         "//crates/rue-lexer:rue-lexer",
         "//crates/rue-parser:rue-parser",
         "//:salsa",
@@ -21,6 +22,7 @@ rust_test(
     edition = "2024",
     deps = [
         "//crates/rue-ast:rue-ast",
+        "//crates/rue-ir:rue-ir",
         "//crates/rue-lexer:rue-lexer",
         "//crates/rue-parser:rue-parser",
         "//:salsa",

@@ -1,5 +1,5 @@
 use rue_ast::CstRoot;
-use rue_codegen::compile_to_executable;
+use rue_codegen::{compile_hir_to_assembly, compile_hir_to_executable};
 use rue_lexer::Span;
 use rue_parser::ParseError;
 use rue_semantic::{SemanticError, analyze_cst};
@@ -45,7 +45,7 @@ pub fn parse_file(
 pub fn analyze_file(
     db: &dyn salsa::Database,
     file: SourceFile,
-) -> Result<Arc<rue_semantic::Scope>, Arc<SemanticError>> {
+) -> Result<Arc<rue_semantic::AnalysisResult>, Arc<SemanticError>> {
     // Parse the file first
     let ast = match parse_file(db, file) {
         Ok(ast) => ast,
@@ -59,7 +59,7 @@ pub fn analyze_file(
 
     // Analyze the AST
     match analyze_cst(&ast) {
-        Ok(scope) => Ok(Arc::new(scope)),
+        Ok(result) => Ok(Arc::new(result)),
         Err(e) => Err(Arc::new(e)),
     }
 }
@@ -143,12 +143,12 @@ fn main() -> i32 {
         let result = analyze_file(&db, file);
         assert!(result.is_ok());
 
-        let scope = result.unwrap();
-        assert!(scope.functions.contains_key("main"));
-        assert_eq!(scope.functions["main"].param_types.len(), 0);
+        let analysis = result.unwrap();
+        assert!(analysis.scope.functions.contains_key("main"));
+        assert_eq!(analysis.scope.functions["main"].param_types.len(), 0);
         assert_eq!(
-            scope.functions["main"].return_type,
-            rue_semantic::RueType::I32
+            analysis.scope.functions["main"].return_type,
+            rue_ir::types::RueType::I32
         );
     }
 
@@ -174,9 +174,9 @@ fn factorial(n: i32) -> i32 {
         let result = analyze_file(&db, file);
         assert!(result.is_ok());
 
-        let scope = result.unwrap();
-        assert!(scope.functions.contains_key("factorial"));
-        assert_eq!(scope.functions["factorial"].param_types.len(), 1);
+        let analysis = result.unwrap();
+        assert!(analysis.scope.functions.contains_key("factorial"));
+        assert_eq!(analysis.scope.functions["factorial"].param_types.len(), 1);
     }
 
     #[test]
@@ -362,8 +362,8 @@ pub fn compile_file(
     file: SourceFile,
 ) -> Result<Arc<Vec<u8>>, Arc<CompileError>> {
     // Parse and analyze the file first
-    let scope = match analyze_file(db, file) {
-        Ok(scope) => scope,
+    let analysis = match analyze_file(db, file) {
+        Ok(analysis) => analysis,
         Err(semantic_error) => {
             return Err(Arc::new(CompileError {
                 message: format!("Semantic error: {}", semantic_error.message),
@@ -371,17 +371,8 @@ pub fn compile_file(
         }
     };
 
-    let ast = match parse_file(db, file) {
-        Ok(ast) => ast,
-        Err(parse_error) => {
-            return Err(Arc::new(CompileError {
-                message: format!("Parse error: {}", parse_error.message),
-            }));
-        }
-    };
-
-    // Generate executable
-    match compile_to_executable(&ast, &scope) {
+    // Generate executable from HIR
+    match compile_hir_to_executable(&analysis.hir) {
         Ok(executable) => Ok(Arc::new(executable)),
         Err(e) => Err(Arc::new(CompileError { message: e.message })),
     }
@@ -393,8 +384,8 @@ pub fn compile_file_to_assembly(
     file: SourceFile,
 ) -> Result<Arc<String>, Arc<CompileError>> {
     // Parse and analyze the file first
-    let scope = match analyze_file(db, file) {
-        Ok(scope) => scope,
+    let analysis = match analyze_file(db, file) {
+        Ok(analysis) => analysis,
         Err(semantic_error) => {
             return Err(Arc::new(CompileError {
                 message: format!("Semantic error: {}", semantic_error.message),
@@ -402,17 +393,8 @@ pub fn compile_file_to_assembly(
         }
     };
 
-    let ast = match parse_file(db, file) {
-        Ok(ast) => ast,
-        Err(parse_error) => {
-            return Err(Arc::new(CompileError {
-                message: format!("Parse error: {}", parse_error.message),
-            }));
-        }
-    };
-
-    // Generate assembly
-    match rue_codegen::compile_to_assembly(&ast, &scope) {
+    // Generate assembly from HIR
+    match compile_hir_to_assembly(&analysis.hir) {
         Ok(assembly) => Ok(Arc::new(assembly)),
         Err(e) => Err(Arc::new(CompileError { message: e.message })),
     }

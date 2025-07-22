@@ -25,8 +25,8 @@ fn parser() -> impl Parser<Args> {
 
     construct!(Args {
         output,
+        emit_asm,
         input,
-        emit_asm
     })
 }
 

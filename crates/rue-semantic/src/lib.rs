@@ -1,7 +1,25 @@
 use rue_ast::{CstRoot, ExpressionNode, FunctionNode, StatementNode};
+use rue_ir::types::RueType;
 use rue_lexer::format_error_with_context;
 use std::collections::HashMap;
-use std::fmt;
+
+// Re-export HIR types from rue-ir for convenience
+pub use rue_ir::hir;
+
+mod hir_validator;
+mod type_checker;
+
+#[cfg(test)]
+mod hir_control_flow_test;
+
+#[cfg(test)]
+mod type_preservation_test;
+
+#[cfg(test)]
+mod hir_validation_integration_test;
+
+#[cfg(test)]
+mod hir_roundtrip_test;
 
 // Semantic analysis types
 #[derive(Debug, Clone, PartialEq)]
@@ -13,27 +31,6 @@ pub struct SemanticError {
 impl SemanticError {
     pub fn format_with_source(&self, source: &str) -> String {
         format_error_with_context(source, self.span, &self.message, "error")
-    }
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub enum RueType {
-    I32,
-    I64,
-    Bool,
-    Unit,
-    Unknown,
-}
-
-impl fmt::Display for RueType {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            RueType::I32 => write!(f, "i32"),
-            RueType::I64 => write!(f, "i64"),
-            RueType::Bool => write!(f, "bool"),
-            RueType::Unit => write!(f, "()"),
-            RueType::Unknown => write!(f, "unknown"),
-        }
     }
 }
 
@@ -95,7 +92,7 @@ pub struct FunctionSignature {
 }
 
 // Helper function to convert AST type to semantic type
-fn convert_type_node(type_node: &rue_ast::TypeNode) -> RueType {
+pub(crate) fn convert_type_node(type_node: &rue_ast::TypeNode) -> RueType {
     match type_node {
         rue_ast::TypeNode::I32(_) => RueType::I32,
         rue_ast::TypeNode::I64(_) => RueType::I64,
@@ -179,13 +176,21 @@ fn add_builtin_functions(scope: &mut Scope) {
     );
 }
 
+/// Result of semantic analysis including both scope and HIR
+#[derive(Debug, PartialEq)]
+pub struct AnalysisResult {
+    pub scope: Scope,
+    pub hir: hir::HirProgram,
+}
+
 // Semantic analysis functions
-pub fn analyze_cst(ast: &CstRoot) -> Result<Scope, SemanticError> {
+pub fn analyze_cst(ast: &CstRoot) -> Result<AnalysisResult, SemanticError> {
     let mut global_scope = Scope::default();
 
     // Add built-in functions
     add_builtin_functions(&mut global_scope);
 
+    // First pass: collect all function signatures using existing analysis
     for item in &ast.items {
         match item {
             rue_ast::CstNode::Function(func) => {
@@ -200,7 +205,24 @@ pub fn analyze_cst(ast: &CstRoot) -> Result<Scope, SemanticError> {
         }
     }
 
-    Ok(global_scope)
+    // Second pass: build HIR with type checking using the new type checker
+    let mut type_checker = type_checker::TypeChecker::new(global_scope.functions.clone());
+    let hir = type_checker.check_program(ast)?;
+
+    // Third pass: validate the generated HIR
+    let mut validator = hir_validator::HirValidator::new();
+    if let Err(validation_errors) = validator.validate_program(&hir) {
+        // Return the first validation error
+        // In a real compiler, we might want to collect all errors
+        if let Some(error) = validation_errors.into_iter().next() {
+            return Err(error);
+        }
+    }
+
+    Ok(AnalysisResult {
+        scope: global_scope,
+        hir,
+    })
 }
 
 // Helper functions for semantic analysis
@@ -692,7 +714,7 @@ mod tests {
     use super::*;
     use rue_lexer::{Lexer, Span};
 
-    fn parse_and_analyze(source: &str) -> Result<Scope, SemanticError> {
+    fn parse_and_analyze(source: &str) -> Result<AnalysisResult, SemanticError> {
         let mut lexer = Lexer::new(source);
         let tokens = lexer.tokenize().map_err(|e| SemanticError {
             message: format!("Lexical error: {}", e.message),
@@ -719,10 +741,10 @@ fn main() -> i32 {
         );
         assert!(result.is_ok());
 
-        let scope = result.unwrap();
-        assert!(scope.functions.contains_key("main"));
-        assert_eq!(scope.functions["main"].param_types.len(), 0);
-        assert_eq!(scope.functions["main"].return_type, RueType::I32);
+        let analysis = result.unwrap();
+        assert!(analysis.scope.functions.contains_key("main"));
+        assert_eq!(analysis.scope.functions["main"].param_types.len(), 0);
+        assert_eq!(analysis.scope.functions["main"].return_type, RueType::I32);
     }
 
     #[test]
@@ -738,13 +760,22 @@ fn factorial(n: i32) -> i32 {
 }
 "#,
         );
+        if let Err(e) = &result {
+            eprintln!("Error: {} at span {:?}", e.message, e.span);
+        }
         assert!(result.is_ok());
 
-        let scope = result.unwrap();
-        assert!(scope.functions.contains_key("factorial"));
-        assert_eq!(scope.functions["factorial"].param_types.len(), 1);
-        assert_eq!(scope.functions["factorial"].param_types[0], RueType::I32);
-        assert_eq!(scope.functions["factorial"].return_type, RueType::I32);
+        let analysis = result.unwrap();
+        assert!(analysis.scope.functions.contains_key("factorial"));
+        assert_eq!(analysis.scope.functions["factorial"].param_types.len(), 1);
+        assert_eq!(
+            analysis.scope.functions["factorial"].param_types[0],
+            RueType::I32
+        );
+        assert_eq!(
+            analysis.scope.functions["factorial"].return_type,
+            RueType::I32
+        );
     }
 
     #[test]
@@ -1046,9 +1077,9 @@ fn main() -> i32 {
         );
         assert!(result.is_ok());
 
-        let scope = result.unwrap();
-        assert_eq!(scope.functions["add"].param_types.len(), 2);
-        assert_eq!(scope.functions["add"].param_types[0], RueType::I32);
-        assert_eq!(scope.functions["add"].param_types[1], RueType::I32);
+        let analysis = result.unwrap();
+        assert_eq!(analysis.scope.functions["add"].param_types.len(), 2);
+        assert_eq!(analysis.scope.functions["add"].param_types[0], RueType::I32);
+        assert_eq!(analysis.scope.functions["add"].param_types[1], RueType::I32);
     }
 }
