@@ -40,13 +40,14 @@ The Rue compiler is written in Rust and implements a complete compilation pipeli
 ## Compilation Pipeline
 
 The compiler follows this pipeline:
-**Lexer** → **Parser** → **Semantic Analysis** → **IR Generation** → **x86-64 Emission** → **ELF Generation**
+**Lexer** → **Parser** → **Semantic Analysis** → **HIR Generation** → **Instruction Generation** → **x86-64 Emission** → **ELF Generation**
 
-The compilation uses an intermediate representation:
-- **Instruction enum**: Platform-independent instructions with virtual registers (in `rue-codegen`)
+The compilation uses a multi-level intermediate representation:
+- **HIR (High-level IR)**: Typed, desugared representation after semantic analysis (in `rue-ir`)
+- **Instruction enum**: Platform-independent instructions with virtual registers (in `rue-codegen`)  
 - **MachineInstr**: Low-level x86-64 instructions with physical registers (in `rue-ir`)
 
-Note: The documentation sometimes refers to "TargetIR", but the actual implementation uses the `Instruction` enum in the codegen crate as the high-level IR, which is then lowered directly to `MachineInstr`. The MachineInstr type serves as the actual target-specific IR.
+The HIR serves as a clean abstraction layer between semantic analysis and code generation, containing only essential semantic information with all syntactic details removed.
 
 ## Implementation Language & Build System
 
@@ -63,7 +64,7 @@ The Rue compiler is organized into multiple crates for modularity and clean sepa
 - **`rue-ast`**: Abstract syntax tree definitions
 - **`rue-parser`**: Parsing source code into CST
 - **`rue-semantic`**: Type checking and semantic analysis
-- **`rue-ir`**: Target-specific intermediate representation (MachineInstr for x86-64)
+- **`rue-ir`**: High-level IR (HIR) definitions and target-specific representations (MachineInstr for x86-64)
 - **`rue-codegen`**: Code generation using IR definitions from rue-ir
 - **`rue-runtime`**: Runtime library embedded in executables
 - **`rue-compiler`**: High-level compiler API orchestrating all phases
@@ -120,6 +121,7 @@ The Rue compiler is organized into multiple crates for modularity and clean sepa
 3. **Scope Analysis**: Validate variable scoping rules
 4. **Call Graph**: Build function dependency graph
 5. **Type Inference**: Deduce types for expressions from context
+6. **HIR Generation**: Lower typed AST to simplified intermediate representation
 
 #### Variable Scoping Implementation
 
@@ -148,11 +150,94 @@ The code generator mirrors this structure with a VarScopeStack that maps variabl
 ### Intermediate Representations (`rue-ir` and `rue-codegen`)
 
 #### Overview
-The compiler uses intermediate representations at two levels:
-- **Instruction enum (in `rue-codegen`)**: High-level, platform-independent instructions with virtual registers
+The compiler uses intermediate representations at three levels:
+- **HIR (in `rue-ir`)**: High-level, language-specific representation after semantic analysis
+- **Instruction enum (in `rue-codegen`)**: Platform-independent instructions with virtual registers
 - **MachineInstr (in `rue-ir`)**: Low-level x86-64 machine instructions with physical registers
 
-#### High-Level IR: Instruction enum (Platform-Independent)
+#### High-level IR: HIR (Language-Specific)
+Located in `rue-ir/src/hir.rs`, HIR is the typed, desugared representation after semantic analysis:
+- **Type preservation**: All expressions carry complete type information from semantic analysis
+- **Desugared syntax**: Removes syntactic details like parentheses, semicolons, and brackets
+- **Structured representation**: Functions, blocks, statements, and expressions with clear hierarchy
+- **Source tracking**: Maintains source location information for error reporting
+- **Core constructs**: HirProgram, HirFunction, HirBlock, HirStatement, HirExpr with variants for all language features
+- **Typed literals**: HirLiteral enum with concrete types (Int32, Int64, Bool, Unit)
+- **Control flow**: Native representation of if expressions and while loops
+- **Function calls**: Direct representation with typed arguments and return types
+
+HIR Benefits:
+- **Clean abstraction**: Separates semantic analysis concerns from code generation
+- **Future extensibility**: Enables optimization passes between semantic analysis and codegen
+- **Better testing**: HIR can be tested independently with round-trip validation
+- **Code clarity**: Simpler code generation logic working with desugared representation
+
+#### HIR Examples
+
+Here's how Rue source code is transformed to HIR:
+
+**Source Code:**
+```rue
+fn factorial(n: i32) -> i32 {
+    if n <= 1 {
+        1
+    } else {
+        n * factorial(n - 1)
+    }
+}
+```
+
+**HIR Representation:**
+```
+HirFunction {
+  name: "factorial",
+  params: [("n", I32)],
+  return_type: I32,
+  body: HirBlock {
+    statements: [],
+    expr: Some(HirExpr::If {
+      cond: HirExpr::Binary {
+        op: Le,
+        lhs: HirExpr::Var { name: "n", ty: I32 },
+        rhs: HirExpr::Literal { lit: Int32(1) },
+        ty: Bool
+      },
+      then_block: HirBlock {
+        statements: [],
+        expr: Some(HirExpr::Literal { lit: Int32(1) })
+      },
+      else_block: Some(HirBlock {
+        statements: [],
+        expr: Some(HirExpr::Binary {
+          op: Mul,
+          lhs: HirExpr::Var { name: "n", ty: I32 },
+          rhs: HirExpr::Call {
+            func: "factorial",
+            args: [HirExpr::Binary {
+              op: Sub,
+              lhs: HirExpr::Var { name: "n", ty: I32 },
+              rhs: HirExpr::Literal { lit: Int32(1) },
+              ty: I32
+            }],
+            ty: I32
+          },
+          ty: I32
+        })
+      }),
+      ty: I32
+    })
+  }
+}
+```
+
+**Key Transformations:**
+- All syntax tokens (braces, semicolons, parentheses) removed
+- Type information attached to every expression
+- Operator precedence made explicit through tree structure
+- Block structure represented explicitly with HirBlock
+- Source locations preserved but not shown here for clarity
+
+#### Platform-Independent IR: Instruction enum
 Located in `rue-codegen`, this serves as the platform-independent IR:
 - **Virtual registers**: Unlimited VReg type for values, allocated later
 - **Type-aware**: Instructions carry type information implicitly
@@ -178,8 +263,8 @@ While the original design documents refer to "TargetIR", the actual implementati
 
 ### Code Generation (`rue-codegen`)
 
-#### Strategy
-- **Two-phase generation**: AST → Instruction enum → MachineInstr → machine code bytes
+#### Strategy  
+- **Three-phase generation**: HIR → Instruction enum → MachineInstr → machine code bytes
 - **Register allocation**: Linear scan allocator with automatic spilling
 - **x86-64 target**: Uses MachineInstr definitions from rue-ir
 - **System V ABI**: Compatible with C calling conventions
@@ -193,7 +278,7 @@ While the original design documents refer to "TargetIR", the actual implementati
 - **Smart preservation**: Detects function calls and preserves registers across calls
 
 #### Instruction Generation
-- AST expressions generate platform-independent Instructions with virtual registers
+- HIR expressions generate platform-independent Instructions with virtual registers
 - Instructions are then lowered to MachineInstr with physical registers
 - MachineInstr emitted as x86-64 machine code bytes
 - Type-specific code generation (i32 vs i64 operations)

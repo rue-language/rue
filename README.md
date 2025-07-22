@@ -20,7 +20,7 @@ Key architectural decisions:
 - **Incremental compilation** via Salsa for efficient recompilation
 - **IDE-first design** with concrete syntax trees preserving all source details
 - **Self-contained toolchain** generating ELF executables without external dependencies
-- **Multi-stage pipeline**: Lexer → Parser → Semantic Analysis → IR → x86-64 → ELF
+- **Multi-stage pipeline**: Lexer → Parser → Semantic Analysis → HIR → IR → x86-64 → ELF
 
 The compiler supports both Cargo and Buck2 build systems.
 
@@ -30,6 +30,7 @@ Rue is a fully functional compiler with a complete implementation pipeline:
 - **Lexer**: Full tokenization with span tracking
 - **Parser**: CST-based parser preserving all syntax details
 - **Semantic Analysis**: Type checking and validation
+- **HIR Generation**: High-level intermediate representation
 - **Code Generation**: Direct x86-64 assembly via custom IR
 - **Executable Output**: Native ELF binaries (no external linker)
 - **Runtime**: Built-in functions for I/O, program control, and error handling

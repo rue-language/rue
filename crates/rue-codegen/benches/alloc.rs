@@ -1,5 +1,5 @@
 use criterion::{Criterion, black_box, criterion_group, criterion_main};
-use rue_codegen::compile_to_executable;
+use rue_codegen::compile_hir_to_executable;
 use rue_lexer::Lexer;
 
 fn benchmark_factorial_allocations(c: &mut Criterion) {
@@ -22,9 +22,9 @@ fn main() -> i32 {
             let mut lexer = Lexer::new(factorial_source);
             let tokens = lexer.tokenize().unwrap();
             let ast = rue_parser::parse(tokens).unwrap();
-            let scope = rue_semantic::analyze_cst(&ast).unwrap();
+            let analysis = rue_semantic::analyze_cst(&ast).unwrap();
 
-            let result = compile_to_executable(&ast, &scope);
+            let result = compile_hir_to_executable(&analysis.hir);
             let _ = black_box(result);
         });
     });
@@ -43,9 +43,9 @@ fn benchmark_large_program(c: &mut Criterion) {
             let mut lexer = Lexer::new(&large_program);
             let tokens = lexer.tokenize().unwrap();
             let ast = rue_parser::parse(tokens).unwrap();
-            let scope = rue_semantic::analyze_cst(&ast).unwrap();
+            let analysis = rue_semantic::analyze_cst(&ast).unwrap();
 
-            let result = compile_to_executable(&ast, &scope);
+            let result = compile_hir_to_executable(&analysis.hir);
             let _ = black_box(result);
         });
     });
@@ -65,9 +65,9 @@ fn main() -> bool {
             let mut lexer = Lexer::new(comparison_source);
             let tokens = lexer.tokenize().unwrap();
             let ast = rue_parser::parse(tokens).unwrap();
-            let scope = rue_semantic::analyze_cst(&ast).unwrap();
+            let analysis = rue_semantic::analyze_cst(&ast).unwrap();
 
-            let result = compile_to_executable(&ast, &scope);
+            let result = compile_hir_to_executable(&analysis.hir);
             let _ = black_box(result);
         });
     });

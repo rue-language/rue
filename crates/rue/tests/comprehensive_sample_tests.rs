@@ -122,6 +122,7 @@ fn analyze_expected_exit_code(content: &str, filename: &str) -> Option<i32> {
         "assignment_spec_example" => Some(15), // let x = 10; x = x + 5; x  =>  15
         "simple_assignment" => Some(100), // Need to check what this actually returns
         "negative_literals" => Some(209), // -47 as unsigned 8-bit = 209
+        "hir_demo" => Some(30),   // add(10, 20) = 30
         _ => None,
     }
 }
