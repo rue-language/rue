@@ -392,6 +392,7 @@ impl Codegen {
                 self.expression_contains_call(&while_expr.condition)
                     || self.block_contains_call(&while_expr.body)
             }
+            ExpressionNode::Unary(unary_expr) => self.expression_contains_call(&unary_expr.operand),
             ExpressionNode::Literal(_) | ExpressionNode::Identifier(_) => false,
         }
     }
@@ -776,6 +777,32 @@ impl Codegen {
                 });
 
                 Ok(zero_vreg)
+            }
+            ExpressionNode::Unary(unary_expr) => {
+                let operand_vreg = self.generate_expression(&unary_expr.operand, _scope)?;
+                let dest = self.next_vreg();
+
+                match &unary_expr.operator.kind {
+                    rue_lexer::TokenKind::Minus => {
+                        // Generate negation as 0 - operand
+                        self.emit(Instruction::BinaryOp {
+                            dest,
+                            op: BinOp::Sub,
+                            lhs: Value::Immediate(0),
+                            rhs: Value::VReg(operand_vreg),
+                        });
+                    }
+                    _ => {
+                        return Err(CodegenError {
+                            message: format!(
+                                "Unknown unary operator: {:?}",
+                                unary_expr.operator.kind
+                            ),
+                        });
+                    }
+                }
+
+                Ok(dest)
             }
         }
     }
