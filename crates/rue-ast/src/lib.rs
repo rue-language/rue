@@ -140,6 +140,7 @@ pub struct WhileStatementNode {
 #[derive(Debug, Clone, PartialEq)]
 pub enum ExpressionNode {
     Binary(BinaryExprNode),
+    Unary(UnaryExprNode),
     Call(CallExprNode),
     If(Box<IfStatementNode>),
     While(Box<WhileStatementNode>),
@@ -152,6 +153,13 @@ pub struct BinaryExprNode {
     pub left: Box<ExpressionNode>,
     pub operator: TokenNode,
     pub right: Box<ExpressionNode>,
+    pub trivia: Trivia,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct UnaryExprNode {
+    pub operator: TokenNode,
+    pub operand: Box<ExpressionNode>,
     pub trivia: Trivia,
 }
 

@@ -583,6 +583,29 @@ fn analyze_expression(scope: &mut Scope, expr: &ExpressionNode) -> Result<RueTyp
             // While expressions always return unit
             Ok(RueType::Unit)
         }
+        ExpressionNode::Unary(unary_expr) => {
+            // Analyze operand
+            let operand_type = analyze_expression(scope, &unary_expr.operand)?;
+
+            // Check operator type
+            match &unary_expr.operator.kind {
+                rue_lexer::TokenKind::Minus => {
+                    // Unary minus only works on numeric types
+                    if operand_type == RueType::I32 || operand_type == RueType::I64 {
+                        Ok(operand_type)
+                    } else {
+                        Err(SemanticError {
+                            message: format!("Cannot negate type {operand_type}"),
+                            span: unary_expr.operator.span,
+                        })
+                    }
+                }
+                _ => Err(SemanticError {
+                    message: format!("Unknown unary operator: {:?}", unary_expr.operator.kind),
+                    span: unary_expr.operator.span,
+                }),
+            }
+        }
     }
 }
 

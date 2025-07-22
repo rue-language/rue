@@ -417,7 +417,7 @@ impl Parser {
     }
 
     fn parse_multiplication(&mut self) -> ParseResult<ExpressionNode> {
-        let mut expr = self.parse_call()?;
+        let mut expr = self.parse_unary()?;
 
         while self.check_kind(&TokenKind::Star)
             || self.check_kind(&TokenKind::Slash)
@@ -425,7 +425,7 @@ impl Parser {
         {
             let leading_trivia = self.consume_trivia();
             let operator = self.advance();
-            let right = self.parse_call()?;
+            let right = self.parse_unary()?;
             expr = ExpressionNode::Binary(BinaryExprNode {
                 left: Box::new(expr),
                 operator,
@@ -438,6 +438,24 @@ impl Parser {
         }
 
         Ok(expr)
+    }
+
+    fn parse_unary(&mut self) -> ParseResult<ExpressionNode> {
+        if self.check_kind(&TokenKind::Minus) {
+            let leading_trivia = self.consume_trivia();
+            let operator = self.advance();
+            let operand = self.parse_unary()?;
+            Ok(ExpressionNode::Unary(UnaryExprNode {
+                operator,
+                operand: Box::new(operand),
+                trivia: Trivia {
+                    leading: leading_trivia,
+                    trailing: self.consume_trivia(),
+                },
+            }))
+        } else {
+            self.parse_call()
+        }
     }
 
     fn parse_call(&mut self) -> ParseResult<ExpressionNode> {
@@ -1448,10 +1466,6 @@ if true {
         assert!(result.is_ok());
 
         // Test complex mixed nesting
-        // TODO: This test currently fails with "Unexpected token: Minus"
-        // The parser has trouble distinguishing between negative numbers and
-        // subtraction in certain contexts like "-factorial(-x)"
-        /*
         let complex = r#"
 fn complex(x: i32) -> i32 {
     if x > 0 {
@@ -1466,10 +1480,9 @@ fn complex(x: i32) -> i32 {
 }"#;
         let result = lex_and_parse(complex);
         if let Err(e) = &result {
-            eprintln!("Error parsing complex mixed nesting: {:?}", e);
+            eprintln!("Error parsing complex mixed nesting: {e:?}");
         }
         assert!(result.is_ok());
-        */
     }
 
     #[test]
