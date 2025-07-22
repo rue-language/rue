@@ -419,11 +419,29 @@ impl<'a> Lexer<'a> {
     }
 
     fn peek_char(&self) -> char {
-        self.input.chars().nth(self.position + 1).unwrap_or('\0')
+        let bytes = self.input.as_bytes();
+        if self.position >= bytes.len() {
+            return '\0';
+        }
+
+        // Get the current character to find its byte length
+        let current_char = self.current_char();
+        let next_pos = self.position + current_char.len_utf8();
+
+        if next_pos >= bytes.len() {
+            return '\0';
+        }
+
+        // Safe because we know this is a valid UTF-8 boundary
+        self.input[next_pos..].chars().next().unwrap_or('\0')
     }
 
     fn current_char(&self) -> char {
-        self.input.chars().nth(self.position).unwrap_or('\0')
+        if self.position >= self.input.len() {
+            return '\0';
+        }
+        // Safe because position is always at a valid UTF-8 boundary
+        self.input[self.position..].chars().next().unwrap_or('\0')
     }
 
     fn advance(&mut self) {
@@ -845,5 +863,96 @@ fn factorial(n) {
         let mut lexer = Lexer::new("-2147483648");
         let tokens = lexer.tokenize().unwrap();
         assert_eq!(tokens[0].kind, TokenKind::Integer(-2147483648));
+    }
+
+    #[test]
+    fn test_unicode_in_single_line_comments() {
+        // Test Japanese characters
+        let mut lexer = Lexer::new("// こんにちは世界\n42;");
+        let tokens = lexer.tokenize().unwrap();
+        assert_eq!(tokens.len(), 3); // 42, ;, EOF
+        assert_eq!(tokens[0].kind, TokenKind::Integer(42));
+        assert_eq!(tokens[1].kind, TokenKind::Semicolon);
+        assert_eq!(tokens[2].kind, TokenKind::Eof);
+
+        // Test Chinese characters
+        let mut lexer = Lexer::new("// 你好世界\n100;");
+        let tokens = lexer.tokenize().unwrap();
+        assert_eq!(tokens.len(), 3);
+        assert_eq!(tokens[0].kind, TokenKind::Integer(100));
+
+        // Test Arabic characters
+        let mut lexer = Lexer::new("// مرحبا بالعالم\n200;");
+        let tokens = lexer.tokenize().unwrap();
+        assert_eq!(tokens.len(), 3);
+        assert_eq!(tokens[0].kind, TokenKind::Integer(200));
+
+        // Test emojis
+        let mut lexer = Lexer::new("// 🚀🎉🎊🎈🎁🎂\n300;");
+        let tokens = lexer.tokenize().unwrap();
+        assert_eq!(tokens.len(), 3);
+        assert_eq!(tokens[0].kind, TokenKind::Integer(300));
+
+        // Test box drawing characters
+        let mut lexer = Lexer::new("// ┌─────────┐\n400;");
+        let tokens = lexer.tokenize().unwrap();
+        assert_eq!(tokens.len(), 3);
+        assert_eq!(tokens[0].kind, TokenKind::Integer(400));
+
+        // Test accented characters
+        let mut lexer = Lexer::new("// café, naïve, résumé\n500;");
+        let tokens = lexer.tokenize().unwrap();
+        assert_eq!(tokens.len(), 3);
+        assert_eq!(tokens[0].kind, TokenKind::Integer(500));
+    }
+
+    #[test]
+    fn test_unicode_in_multi_line_comments() {
+        // Test various unicode in multi-line comments
+        let input = r#"/* 
+        日本語のコメント
+        中文注释
+        تعليق عربي
+        🎯🎪🎨
+        */ 
+        42;"#;
+
+        let mut lexer = Lexer::new(input);
+        let tokens = lexer.tokenize().unwrap();
+        assert_eq!(tokens.len(), 3); // 42, ;, EOF
+        assert_eq!(tokens[0].kind, TokenKind::Integer(42));
+        assert_eq!(tokens[1].kind, TokenKind::Semicolon);
+        assert_eq!(tokens[2].kind, TokenKind::Eof);
+
+        // Test nested comments with unicode
+        let input2 = r#"/* outer /* inner with unicode: 你好 */ back to outer */ 100;"#;
+        let mut lexer = Lexer::new(input2);
+        let tokens = lexer.tokenize().unwrap();
+        assert_eq!(tokens.len(), 3);
+        assert_eq!(tokens[0].kind, TokenKind::Integer(100));
+    }
+
+    #[test]
+    fn test_unicode_mixed_with_code() {
+        // Test unicode in comments mixed with regular code
+        let input = r#"
+        let x = 10; // 设置x的值
+        let y = 20; /* مجموع */
+        let z = x + y; // 計算する
+        z; // النتيجة
+        "#;
+
+        let mut lexer = Lexer::new(input);
+        let tokens = lexer.tokenize().unwrap();
+
+        // Verify we get the expected tokens (ignoring comments)
+        let non_eof_tokens: Vec<_> = tokens.iter().filter(|t| t.kind != TokenKind::Eof).collect();
+
+        assert_eq!(non_eof_tokens.len(), 19); // let x = 10 ; let y = 20 ; let z = x + y ; z ;
+
+        // Check a few key tokens
+        assert_eq!(non_eof_tokens[0].kind, TokenKind::Let);
+        assert_eq!(non_eof_tokens[1].kind, TokenKind::Ident("x".to_string()));
+        assert_eq!(non_eof_tokens[3].kind, TokenKind::Integer(10));
     }
 }

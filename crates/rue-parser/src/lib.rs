@@ -1530,16 +1530,37 @@ fn complex(x: i32) -> i32 {
         let result = lex_and_parse("// Comment with cafe, naive, resume\n42;");
         assert!(result.is_ok());
 
-        // TODO: The lexer currently has issues with unicode characters in comments
-        // due to byte offset vs character offset mismatch. When the lexer is fixed
-        // to properly handle unicode, add these tests:
+        // Test Japanese characters
+        let result = lex_and_parse("// こんにちは世界\n42;");
+        assert!(result.is_ok());
 
-        // - Japanese: こんにちは世界
-        // - Chinese: 你好世界
-        // - Arabic: مرحبا بالعالم
-        // - Emojis: 🚀🎉🎊🎈🎁🎂
-        // - Box drawing: ┌─────────┐
-        // - Accented chars: café, naïve, résumé
+        // Test Chinese characters
+        let result = lex_and_parse("// 你好世界\n42;");
+        assert!(result.is_ok());
+
+        // Test Arabic characters
+        let result = lex_and_parse("// مرحبا بالعالم\n42;");
+        assert!(result.is_ok());
+
+        // Test emojis
+        let result = lex_and_parse("// 🚀🎉🎊🎈🎁🎂\n42;");
+        assert!(result.is_ok());
+
+        // Test box drawing characters
+        let result = lex_and_parse("// ┌─────────┐\n42;");
+        assert!(result.is_ok());
+
+        // Test accented characters
+        let result = lex_and_parse("// café, naïve, résumé\n42;");
+        assert!(result.is_ok());
+
+        // Test unicode in multi-line comments
+        let result = lex_and_parse("/* 日本語のコメント */\n42;");
+        assert!(result.is_ok());
+
+        // Test mixed unicode and code
+        let result = lex_and_parse("let x = 10; // 设置x的值\nx + 5;");
+        assert!(result.is_ok());
     }
 
     #[test]
