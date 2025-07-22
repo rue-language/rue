@@ -1,8 +1,12 @@
 use rue_ast::CstRoot;
-use rue_codegen::{compile_hir_to_assembly, compile_hir_to_executable};
+use rue_codegen::{
+    compile_hir_to_assembly, compile_hir_to_executable, compile_hir_via_mir_to_assembly,
+    compile_hir_via_mir_to_executable,
+};
 use rue_lexer::Span;
 use rue_parser::ParseError;
 use rue_semantic::{SemanticError, analyze_cst};
+use std::path::Path;
 use std::sync::Arc;
 
 // Input structs
@@ -395,6 +399,51 @@ pub fn compile_file_to_assembly(
 
     // Generate assembly from HIR
     match compile_hir_to_assembly(&analysis.hir) {
+        Ok(assembly) => Ok(Arc::new(assembly)),
+        Err(e) => Err(Arc::new(CompileError { message: e.message })),
+    }
+}
+
+#[salsa::tracked]
+pub fn compile_file_via_mir(
+    db: &dyn salsa::Database,
+    file: SourceFile,
+) -> Result<Arc<Vec<u8>>, Arc<CompileError>> {
+    // Parse and analyze the file first
+    let analysis = match analyze_file(db, file) {
+        Ok(analysis) => analysis,
+        Err(semantic_error) => {
+            return Err(Arc::new(CompileError {
+                message: format!("Semantic error: {}", semantic_error.message),
+            }));
+        }
+    };
+
+    // Generate executable from HIR via MIR
+    let dummy_path = Path::new("dummy");
+    match compile_hir_via_mir_to_executable(&analysis.hir, dummy_path) {
+        Ok(executable) => Ok(Arc::new(executable)),
+        Err(e) => Err(Arc::new(CompileError { message: e.message })),
+    }
+}
+
+#[salsa::tracked]
+pub fn compile_file_via_mir_to_assembly(
+    db: &dyn salsa::Database,
+    file: SourceFile,
+) -> Result<Arc<String>, Arc<CompileError>> {
+    // Parse and analyze the file first
+    let analysis = match analyze_file(db, file) {
+        Ok(analysis) => analysis,
+        Err(semantic_error) => {
+            return Err(Arc::new(CompileError {
+                message: format!("Semantic error: {}", semantic_error.message),
+            }));
+        }
+    };
+
+    // Generate assembly from HIR via MIR
+    match compile_hir_via_mir_to_assembly(&analysis.hir) {
         Ok(assembly) => Ok(Arc::new(assembly)),
         Err(e) => Err(Arc::new(CompileError { message: e.message })),
     }
