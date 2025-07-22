@@ -64,6 +64,7 @@ pub enum TokenKind {
     Comma,
 
     // Special
+    Comment(String),
     Eof,
 }
 
@@ -154,7 +155,10 @@ impl<'a> Lexer<'a> {
         let mut tokens = Vec::new();
 
         while !self.is_at_end() {
-            self.skip_whitespace()?;
+            // Handle whitespace and collect any comment tokens
+            let comment_tokens = self.skip_whitespace_and_collect_comments()?;
+            tokens.extend(comment_tokens);
+
             if !self.is_at_end() {
                 tokens.push(self.next_token()?);
             }
@@ -364,35 +368,52 @@ impl<'a> Lexer<'a> {
         })
     }
 
-    fn skip_whitespace(&mut self) -> LexResult<()> {
+    fn skip_whitespace_and_collect_comments(&mut self) -> LexResult<Vec<Token>> {
+        let mut comment_tokens = Vec::new();
+
         loop {
             if self.current_char().is_whitespace() {
                 self.advance();
             } else if self.current_char() == '/' && self.peek_char() == '/' {
-                self.skip_single_line_comment();
+                let token = self.lex_single_line_comment()?;
+                comment_tokens.push(token);
             } else if self.current_char() == '/' && self.peek_char() == '*' {
-                self.skip_multi_line_comment()?;
+                let token = self.lex_multi_line_comment()?;
+                comment_tokens.push(token);
             } else {
                 break;
             }
         }
-        Ok(())
+        Ok(comment_tokens)
     }
 
-    fn skip_single_line_comment(&mut self) {
+    fn lex_single_line_comment(&mut self) -> LexResult<Token> {
+        let start = self.position;
         self.advance(); // Skip first '/'
         self.advance(); // Skip second '/'
 
+        let content_start = self.position;
         while !self.is_at_end() && self.current_char() != '\n' {
             self.advance();
         }
+
+        let comment_content = self.input[content_start..self.position].to_string();
+
+        Ok(Token {
+            kind: TokenKind::Comment(comment_content),
+            span: Span {
+                start,
+                end: self.position,
+            },
+        })
     }
 
-    fn skip_multi_line_comment(&mut self) -> LexResult<()> {
+    fn lex_multi_line_comment(&mut self) -> LexResult<Token> {
         let start = self.position;
         self.advance(); // Skip '/'
         self.advance(); // Skip '*'
 
+        let content_start = self.position;
         let mut depth = 1;
 
         while !self.is_at_end() && depth > 0 {
@@ -415,7 +436,18 @@ impl<'a> Lexer<'a> {
                 position: start,
             });
         }
-        Ok(())
+
+        // Extract comment content, excluding the outer /* */
+        let content_end = self.position - 2; // before the closing */
+        let comment_content = self.input[content_start..content_end].to_string();
+
+        Ok(Token {
+            kind: TokenKind::Comment(comment_content),
+            span: Span {
+                start,
+                end: self.position,
+            },
+        })
     }
 
     fn peek_char(&self) -> char {
@@ -552,8 +584,12 @@ fn factorial(n) {
         let mut lexer = Lexer::new("// This is a comment\n42");
         let tokens = lexer.tokenize().unwrap();
 
-        assert_eq!(tokens[0].kind, TokenKind::Integer(42));
-        assert_eq!(tokens[1].kind, TokenKind::Eof);
+        assert_eq!(
+            tokens[0].kind,
+            TokenKind::Comment(" This is a comment".to_string())
+        );
+        assert_eq!(tokens[1].kind, TokenKind::Integer(42));
+        assert_eq!(tokens[2].kind, TokenKind::Eof);
     }
 
     #[test]
@@ -562,7 +598,11 @@ fn factorial(n) {
         let tokens = lexer.tokenize().unwrap();
 
         assert_eq!(tokens[0].kind, TokenKind::Integer(42));
-        assert_eq!(tokens[1].kind, TokenKind::Eof);
+        assert_eq!(
+            tokens[1].kind,
+            TokenKind::Comment(" Comment at EOF".to_string())
+        );
+        assert_eq!(tokens[2].kind, TokenKind::Eof);
     }
 
     #[test]
@@ -570,10 +610,12 @@ fn factorial(n) {
         let mut lexer = Lexer::new("// Comment 1\n42\n// Comment 2\n+ 3");
         let tokens = lexer.tokenize().unwrap();
 
-        assert_eq!(tokens[0].kind, TokenKind::Integer(42));
-        assert_eq!(tokens[1].kind, TokenKind::Plus);
-        assert_eq!(tokens[2].kind, TokenKind::Integer(3));
-        assert_eq!(tokens[3].kind, TokenKind::Eof);
+        assert_eq!(tokens[0].kind, TokenKind::Comment(" Comment 1".to_string()));
+        assert_eq!(tokens[1].kind, TokenKind::Integer(42));
+        assert_eq!(tokens[2].kind, TokenKind::Comment(" Comment 2".to_string()));
+        assert_eq!(tokens[3].kind, TokenKind::Plus);
+        assert_eq!(tokens[4].kind, TokenKind::Integer(3));
+        assert_eq!(tokens[5].kind, TokenKind::Eof);
     }
 
     #[test]
@@ -581,8 +623,9 @@ fn factorial(n) {
         let mut lexer = Lexer::new("//\n42");
         let tokens = lexer.tokenize().unwrap();
 
-        assert_eq!(tokens[0].kind, TokenKind::Integer(42));
-        assert_eq!(tokens[1].kind, TokenKind::Eof);
+        assert_eq!(tokens[0].kind, TokenKind::Comment("".to_string()));
+        assert_eq!(tokens[1].kind, TokenKind::Integer(42));
+        assert_eq!(tokens[2].kind, TokenKind::Eof);
     }
 
     #[test]
@@ -590,8 +633,9 @@ fn factorial(n) {
         let mut lexer = Lexer::new("/* comment */ 42");
         let tokens = lexer.tokenize().unwrap();
 
-        assert_eq!(tokens[0].kind, TokenKind::Integer(42));
-        assert_eq!(tokens[1].kind, TokenKind::Eof);
+        assert_eq!(tokens[0].kind, TokenKind::Comment(" comment ".to_string()));
+        assert_eq!(tokens[1].kind, TokenKind::Integer(42));
+        assert_eq!(tokens[2].kind, TokenKind::Eof);
     }
 
     #[test]
@@ -600,9 +644,13 @@ fn factorial(n) {
         let tokens = lexer.tokenize().unwrap();
 
         assert_eq!(tokens[0].kind, TokenKind::Integer(42));
-        assert_eq!(tokens[1].kind, TokenKind::Plus);
-        assert_eq!(tokens[2].kind, TokenKind::Integer(3));
-        assert_eq!(tokens[3].kind, TokenKind::Eof);
+        assert_eq!(
+            tokens[1].kind,
+            TokenKind::Comment(" comment\nspanning\nmultiple lines ".to_string())
+        );
+        assert_eq!(tokens[2].kind, TokenKind::Plus);
+        assert_eq!(tokens[3].kind, TokenKind::Integer(3));
+        assert_eq!(tokens[4].kind, TokenKind::Eof);
     }
 
     #[test]
@@ -610,8 +658,9 @@ fn factorial(n) {
         let mut lexer = Lexer::new("/**/ 42");
         let tokens = lexer.tokenize().unwrap();
 
-        assert_eq!(tokens[0].kind, TokenKind::Integer(42));
-        assert_eq!(tokens[1].kind, TokenKind::Eof);
+        assert_eq!(tokens[0].kind, TokenKind::Comment("".to_string()));
+        assert_eq!(tokens[1].kind, TokenKind::Integer(42));
+        assert_eq!(tokens[2].kind, TokenKind::Eof);
     }
 
     #[test]
@@ -619,8 +668,12 @@ fn factorial(n) {
         let mut lexer = Lexer::new("/* outer /* inner */ still comment */ 42");
         let tokens = lexer.tokenize().unwrap();
 
-        assert_eq!(tokens[0].kind, TokenKind::Integer(42));
-        assert_eq!(tokens[1].kind, TokenKind::Eof);
+        assert_eq!(
+            tokens[0].kind,
+            TokenKind::Comment(" outer /* inner */ still comment ".to_string())
+        );
+        assert_eq!(tokens[1].kind, TokenKind::Integer(42));
+        assert_eq!(tokens[2].kind, TokenKind::Eof);
     }
 
     #[test]
@@ -628,8 +681,12 @@ fn factorial(n) {
         let mut lexer = Lexer::new("/* a /* b /* c */ b */ a */ 42");
         let tokens = lexer.tokenize().unwrap();
 
-        assert_eq!(tokens[0].kind, TokenKind::Integer(42));
-        assert_eq!(tokens[1].kind, TokenKind::Eof);
+        assert_eq!(
+            tokens[0].kind,
+            TokenKind::Comment(" a /* b /* c */ b */ a ".to_string())
+        );
+        assert_eq!(tokens[1].kind, TokenKind::Integer(42));
+        assert_eq!(tokens[2].kind, TokenKind::Eof);
     }
 
     #[test]
@@ -655,8 +712,11 @@ fn factorial(n) {
         let mut lexer = Lexer::new("// single\n/* multi */ 42 // end");
         let tokens = lexer.tokenize().unwrap();
 
-        assert_eq!(tokens[0].kind, TokenKind::Integer(42));
-        assert_eq!(tokens[1].kind, TokenKind::Eof);
+        assert_eq!(tokens[0].kind, TokenKind::Comment(" single".to_string()));
+        assert_eq!(tokens[1].kind, TokenKind::Comment(" multi ".to_string()));
+        assert_eq!(tokens[2].kind, TokenKind::Integer(42));
+        assert_eq!(tokens[3].kind, TokenKind::Comment(" end".to_string()));
+        assert_eq!(tokens[4].kind, TokenKind::Eof);
     }
 
     #[test]
@@ -665,9 +725,11 @@ fn factorial(n) {
         let tokens = lexer.tokenize().unwrap();
 
         assert_eq!(tokens[0].kind, TokenKind::Integer(42));
-        assert_eq!(tokens[1].kind, TokenKind::Plus);
-        assert_eq!(tokens[2].kind, TokenKind::Integer(3));
-        assert_eq!(tokens[3].kind, TokenKind::Eof);
+        assert_eq!(tokens[1].kind, TokenKind::Comment(" comment ".to_string()));
+        assert_eq!(tokens[2].kind, TokenKind::Plus);
+        assert_eq!(tokens[3].kind, TokenKind::Comment(" another ".to_string()));
+        assert_eq!(tokens[4].kind, TokenKind::Integer(3));
+        assert_eq!(tokens[5].kind, TokenKind::Eof);
     }
 
     #[test]
@@ -675,8 +737,12 @@ fn factorial(n) {
         let mut lexer = Lexer::new("/* // this is still a comment */ 42");
         let tokens = lexer.tokenize().unwrap();
 
-        assert_eq!(tokens[0].kind, TokenKind::Integer(42));
-        assert_eq!(tokens[1].kind, TokenKind::Eof);
+        assert_eq!(
+            tokens[0].kind,
+            TokenKind::Comment(" // this is still a comment ".to_string())
+        );
+        assert_eq!(tokens[1].kind, TokenKind::Integer(42));
+        assert_eq!(tokens[2].kind, TokenKind::Eof);
     }
 
     #[test]
@@ -684,8 +750,12 @@ fn factorial(n) {
         let mut lexer = Lexer::new("// /* */ still a comment\n42");
         let tokens = lexer.tokenize().unwrap();
 
-        assert_eq!(tokens[0].kind, TokenKind::Integer(42));
-        assert_eq!(tokens[1].kind, TokenKind::Eof);
+        assert_eq!(
+            tokens[0].kind,
+            TokenKind::Comment(" /* */ still a comment".to_string())
+        );
+        assert_eq!(tokens[1].kind, TokenKind::Integer(42));
+        assert_eq!(tokens[2].kind, TokenKind::Eof);
     }
 
     #[test]
@@ -870,40 +940,61 @@ fn factorial(n) {
         // Test Japanese characters
         let mut lexer = Lexer::new("// こんにちは世界\n42;");
         let tokens = lexer.tokenize().unwrap();
-        assert_eq!(tokens.len(), 3); // 42, ;, EOF
-        assert_eq!(tokens[0].kind, TokenKind::Integer(42));
-        assert_eq!(tokens[1].kind, TokenKind::Semicolon);
-        assert_eq!(tokens[2].kind, TokenKind::Eof);
+        assert_eq!(tokens.len(), 4); // comment, 42, ;, EOF
+        assert_eq!(
+            tokens[0].kind,
+            TokenKind::Comment(" こんにちは世界".to_string())
+        );
+        assert_eq!(tokens[1].kind, TokenKind::Integer(42));
+        assert_eq!(tokens[2].kind, TokenKind::Semicolon);
+        assert_eq!(tokens[3].kind, TokenKind::Eof);
 
         // Test Chinese characters
         let mut lexer = Lexer::new("// 你好世界\n100;");
         let tokens = lexer.tokenize().unwrap();
-        assert_eq!(tokens.len(), 3);
-        assert_eq!(tokens[0].kind, TokenKind::Integer(100));
+        assert_eq!(tokens.len(), 4);
+        assert_eq!(tokens[0].kind, TokenKind::Comment(" 你好世界".to_string()));
+        assert_eq!(tokens[1].kind, TokenKind::Integer(100));
 
         // Test Arabic characters
         let mut lexer = Lexer::new("// مرحبا بالعالم\n200;");
         let tokens = lexer.tokenize().unwrap();
-        assert_eq!(tokens.len(), 3);
-        assert_eq!(tokens[0].kind, TokenKind::Integer(200));
+        assert_eq!(tokens.len(), 4);
+        assert_eq!(
+            tokens[0].kind,
+            TokenKind::Comment(" مرحبا بالعالم".to_string())
+        );
+        assert_eq!(tokens[1].kind, TokenKind::Integer(200));
 
         // Test emojis
         let mut lexer = Lexer::new("// 🚀🎉🎊🎈🎁🎂\n300;");
         let tokens = lexer.tokenize().unwrap();
-        assert_eq!(tokens.len(), 3);
-        assert_eq!(tokens[0].kind, TokenKind::Integer(300));
+        assert_eq!(tokens.len(), 4);
+        assert_eq!(
+            tokens[0].kind,
+            TokenKind::Comment(" 🚀🎉🎊🎈🎁🎂".to_string())
+        );
+        assert_eq!(tokens[1].kind, TokenKind::Integer(300));
 
         // Test box drawing characters
         let mut lexer = Lexer::new("// ┌─────────┐\n400;");
         let tokens = lexer.tokenize().unwrap();
-        assert_eq!(tokens.len(), 3);
-        assert_eq!(tokens[0].kind, TokenKind::Integer(400));
+        assert_eq!(tokens.len(), 4);
+        assert_eq!(
+            tokens[0].kind,
+            TokenKind::Comment(" ┌─────────┐".to_string())
+        );
+        assert_eq!(tokens[1].kind, TokenKind::Integer(400));
 
         // Test accented characters
         let mut lexer = Lexer::new("// café, naïve, résumé\n500;");
         let tokens = lexer.tokenize().unwrap();
-        assert_eq!(tokens.len(), 3);
-        assert_eq!(tokens[0].kind, TokenKind::Integer(500));
+        assert_eq!(tokens.len(), 4);
+        assert_eq!(
+            tokens[0].kind,
+            TokenKind::Comment(" café, naïve, résumé".to_string())
+        );
+        assert_eq!(tokens[1].kind, TokenKind::Integer(500));
     }
 
     #[test]
@@ -919,17 +1010,19 @@ fn factorial(n) {
 
         let mut lexer = Lexer::new(input);
         let tokens = lexer.tokenize().unwrap();
-        assert_eq!(tokens.len(), 3); // 42, ;, EOF
-        assert_eq!(tokens[0].kind, TokenKind::Integer(42));
-        assert_eq!(tokens[1].kind, TokenKind::Semicolon);
-        assert_eq!(tokens[2].kind, TokenKind::Eof);
+        assert_eq!(tokens.len(), 4); // comment, 42, ;, EOF
+        assert!(matches!(tokens[0].kind, TokenKind::Comment(_)));
+        assert_eq!(tokens[1].kind, TokenKind::Integer(42));
+        assert_eq!(tokens[2].kind, TokenKind::Semicolon);
+        assert_eq!(tokens[3].kind, TokenKind::Eof);
 
         // Test nested comments with unicode
         let input2 = r#"/* outer /* inner with unicode: 你好 */ back to outer */ 100;"#;
         let mut lexer = Lexer::new(input2);
         let tokens = lexer.tokenize().unwrap();
-        assert_eq!(tokens.len(), 3);
-        assert_eq!(tokens[0].kind, TokenKind::Integer(100));
+        assert_eq!(tokens.len(), 4);
+        assert!(matches!(tokens[0].kind, TokenKind::Comment(_)));
+        assert_eq!(tokens[1].kind, TokenKind::Integer(100));
     }
 
     #[test]
@@ -946,13 +1039,19 @@ fn factorial(n) {
         let tokens = lexer.tokenize().unwrap();
 
         // Verify we get the expected tokens (ignoring comments)
-        let non_eof_tokens: Vec<_> = tokens.iter().filter(|t| t.kind != TokenKind::Eof).collect();
+        let non_comment_non_eof_tokens: Vec<_> = tokens
+            .iter()
+            .filter(|t| !matches!(t.kind, TokenKind::Eof | TokenKind::Comment(_)))
+            .collect();
 
-        assert_eq!(non_eof_tokens.len(), 19); // let x = 10 ; let y = 20 ; let z = x + y ; z ;
+        assert_eq!(non_comment_non_eof_tokens.len(), 19); // let x = 10 ; let y = 20 ; let z = x + y ; z ;
 
         // Check a few key tokens
-        assert_eq!(non_eof_tokens[0].kind, TokenKind::Let);
-        assert_eq!(non_eof_tokens[1].kind, TokenKind::Ident("x".to_string()));
-        assert_eq!(non_eof_tokens[3].kind, TokenKind::Integer(10));
+        assert_eq!(non_comment_non_eof_tokens[0].kind, TokenKind::Let);
+        assert_eq!(
+            non_comment_non_eof_tokens[1].kind,
+            TokenKind::Ident("x".to_string())
+        );
+        assert_eq!(non_comment_non_eof_tokens[3].kind, TokenKind::Integer(10));
     }
 }

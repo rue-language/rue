@@ -110,6 +110,8 @@ impl Parser {
             }
         }
 
+        // Skip comments before close paren
+        self.skip_comments();
         let close_paren = self.expect_kind(&TokenKind::RightParen)?;
 
         Ok(ParamListNode {
@@ -152,6 +154,14 @@ impl Parser {
         let mut final_expr = None;
 
         while !self.check_kind(&TokenKind::RightBrace) && !self.is_at_end() {
+            // Skip any comments before checking what's next
+            self.skip_comments();
+
+            // Check again after skipping comments
+            if self.check_kind(&TokenKind::RightBrace) {
+                break;
+            }
+
             // Try to parse as statement first
             if self.is_statement_start() {
                 statements.push(self.parse_statement()?);
@@ -178,6 +188,8 @@ impl Parser {
             }
         }
 
+        // Skip comments before expecting closing brace
+        self.skip_comments();
         let close_brace = self.expect_kind(&TokenKind::RightBrace)?;
 
         Ok(BlockNode {
@@ -476,6 +488,8 @@ impl Parser {
                 }
             }
 
+            // Skip comments before close paren
+            self.skip_comments();
             let close_paren = self.expect_kind(&TokenKind::RightParen)?;
 
             expr = ExpressionNode::Call(CallExprNode {
@@ -521,6 +535,7 @@ impl Parser {
                     // Parenthesized expression
                     self.advance(); // consume '('
                     let expr = self.parse_expression()?;
+                    self.skip_comments(); // Skip comments before close paren
                     self.expect_kind(&TokenKind::RightParen)?;
                     Ok(expr)
                 }
@@ -584,9 +599,20 @@ impl Parser {
     }
 
     fn consume_trivia(&mut self) -> Vec<TokenNode> {
-        // Note: lexer already skips whitespace, so no trivia to consume for now
-        // TODO: Handle comments when lexer supports them
-        Vec::new()
+        let mut trivia = Vec::new();
+
+        // Consume any comment tokens
+        while self.check_kind(&TokenKind::Comment(String::new())) {
+            trivia.push(self.advance());
+        }
+
+        trivia
+    }
+
+    fn skip_comments(&mut self) {
+        while self.check_kind(&TokenKind::Comment(String::new())) {
+            self.advance();
+        }
     }
 
     fn parse_type(&mut self) -> ParseResult<TypeNode> {
@@ -597,6 +623,7 @@ impl Parser {
             TokenKind::LeftParen => {
                 // Unit type: ()
                 self.advance(); // consume '('
+                self.skip_comments(); // Skip comments before close paren
                 self.expect_kind(&TokenKind::RightParen)?;
                 Ok(TypeNode::Unit)
             }
@@ -1514,6 +1541,41 @@ fn complex(x: i32) -> i32 {
         // Test identifiers with keyword prefixes/suffixes
         let result = lex_and_parse("let function = 1; let my_fn = 2; let if_condition = 3;");
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_comment_preservation() {
+        // Test that comments are preserved in the CST
+        let result = lex_and_parse("// This is a comment\nlet x = 42;");
+        assert!(result.is_ok());
+        let cst = result.unwrap();
+        assert_eq!(cst.items.len(), 1);
+
+        // The comment should be in the root's leading trivia
+        assert!(!cst.trivia.leading.is_empty());
+        assert_eq!(cst.trivia.leading.len(), 1);
+        match &cst.trivia.leading[0].kind {
+            TokenKind::Comment(text) => {
+                assert_eq!(text, " This is a comment");
+            }
+            _ => panic!("Expected a comment token"),
+        }
+
+        // Test multi-line comment preservation
+        let result2 = lex_and_parse("/* This is a\nmulti-line comment */\nlet x = 42;");
+        assert!(result2.is_ok());
+        let cst2 = result2.unwrap();
+        assert_eq!(cst2.items.len(), 1);
+
+        // The multi-line comment should be in the root's leading trivia
+        assert!(!cst2.trivia.leading.is_empty());
+        assert_eq!(cst2.trivia.leading.len(), 1);
+        match &cst2.trivia.leading[0].kind {
+            TokenKind::Comment(text) => {
+                assert_eq!(text, " This is a\nmulti-line comment ");
+            }
+            _ => panic!("Expected a comment token"),
+        }
     }
 
     #[test]
