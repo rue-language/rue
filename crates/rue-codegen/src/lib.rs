@@ -7,14 +7,19 @@ use std::collections::HashMap;
 
 // Re-export HIR compilation functions - this is the current API
 mod compile_hir;
+mod compile_hir_with_mir;
 mod elf_writer;
 mod hir_codegen;
 mod lowering;
+mod mir_to_instructions;
 mod regalloc;
 mod util;
 mod x86_emitter;
 
 pub use compile_hir::{compile_hir_to_assembly, compile_hir_to_executable};
+pub use compile_hir_with_mir::{
+    compile_hir_via_mir_to_assembly, compile_hir_via_mir_to_executable,
+};
 // ElfWriter is used internally by compile_hir module
 pub use lowering::Lowering;
 pub use regalloc::RegisterAllocator;
@@ -469,3 +474,9 @@ fn reg_name_32(reg: &Register) -> &'static str {
 
 #[cfg(test)]
 mod hir_test;
+
+#[cfg(test)]
+mod mir_to_instructions_test;
+
+#[cfg(test)]
+mod mir_roundtrip_test;

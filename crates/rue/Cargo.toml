@@ -14,3 +14,8 @@ bpaf = "0.9.20"
 
 [dev-dependencies]
 tempfile = "3.8"
+criterion = "0.5"
+
+[[bench]]
+name = "mir_benchmarks"
+harness = false

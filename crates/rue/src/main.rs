@@ -1,5 +1,8 @@
 use bpaf::{Parser, construct};
-use rue_compiler::{RueDatabase, SourceFile, compile_file, compile_file_to_assembly};
+use rue_compiler::{
+    RueDatabase, SourceFile, compile_file, compile_file_to_assembly, compile_file_via_mir,
+    compile_file_via_mir_to_assembly,
+};
 use std::fs;
 use std::path::PathBuf;
 
@@ -8,6 +11,7 @@ struct Args {
     output: Option<PathBuf>,
     input: PathBuf,
     emit_asm: bool,
+    use_mir: bool,
 }
 
 fn parser() -> impl Parser<Args> {
@@ -21,11 +25,16 @@ fn parser() -> impl Parser<Args> {
         .help("Emit assembly instead of executable")
         .switch();
 
+    let use_mir = bpaf::long("use-mir")
+        .help("Use MIR (Mid-level Intermediate Representation) compilation path with optimizations")
+        .switch();
+
     let input = bpaf::positional::<PathBuf>("INPUT").help("Input Rue source file");
 
     construct!(Args {
         output,
         emit_asm,
+        use_mir,
         input,
     })
 }
@@ -60,7 +69,12 @@ fn main() {
     // Compile
     if opts.emit_asm {
         // Generate assembly
-        match compile_file_to_assembly(&db, file) {
+        let result = if opts.use_mir {
+            compile_file_via_mir_to_assembly(&db, file)
+        } else {
+            compile_file_to_assembly(&db, file)
+        };
+        match result {
             Ok(assembly) => match fs::write(&output_path, &*assembly) {
                 Ok(()) => {
                     println!(
@@ -84,7 +98,12 @@ fn main() {
         }
     } else {
         // Generate executable
-        match compile_file(&db, file) {
+        let result = if opts.use_mir {
+            compile_file_via_mir(&db, file)
+        } else {
+            compile_file(&db, file)
+        };
+        match result {
             Ok(executable) => {
                 match fs::write(&output_path, &*executable) {
                     Ok(()) => {

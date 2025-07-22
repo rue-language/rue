@@ -80,6 +80,13 @@ pub struct Span {
     pub end: usize,
 }
 
+impl Span {
+    /// Create a dummy span for testing
+    pub fn dummy() -> Self {
+        Span { start: 0, end: 0 }
+    }
+}
+
 /// Formats an error message with source context
 pub fn format_error_with_context(
     source: &str,
