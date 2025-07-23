@@ -1,7 +1,0 @@
-// Test input with variable
-fn main() {
-    let x: i64 = 42;
-    println_i64(x);
-    let y = input();
-    println_i64(y);
-}

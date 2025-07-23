@@ -367,7 +367,7 @@ The runtime is embedded directly into each compiled executable, providing essent
 ### Test Organization
 - **Unit tests**: In each crate's `src/test.rs` or inline
 - **Integration tests**: In `crates/rue/tests/`
-  - `integration_tests.rs`: General compiler tests
+  - `corpus_tests.rs`: Sample program tests
   - `type_system_tests.rs`: Type checking scenarios
   - `runtime_tests.rs`: Built-in function tests
   - `comprehensive_sample_tests.rs`: All sample programs
@@ -443,7 +443,7 @@ buck2 test //crates/rue-semantic:test
 buck2 test //crates/rue-codegen:test
 buck2 test //crates/rue-compiler:test
 buck2 test //crates/rue-runtime:test
-buck2 test //crates/rue:integration_tests
+buck2 test //crates/rue:corpus_tests
 buck2 test //crates/rue:type_system_tests
 ```
 

@@ -1,4 +1,4 @@
 // Test unit printing
 fn main() {
-    println_unit();
+    println_unit(());
 }

@@ -1,6 +1,0 @@
-fn main() -> i32 {
-    // fib(3) = fib(2) + fib(1) = 1 + 1 = 2
-    let fib_2 = 1;  // fib(2)
-    let fib_1 = 1;  // fib(1)
-    fib_2 + fib_1
-}

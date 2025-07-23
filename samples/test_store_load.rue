@@ -1,9 +1,0 @@
-fn test_store() -> i32 {
-    let a = 5;
-    let b = 3;
-    a + b
-}
-
-fn main() -> i32 {
-    test_store()  // Should be 8
-}

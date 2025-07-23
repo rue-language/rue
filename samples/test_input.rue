@@ -1,5 +1,0 @@
-fn main() -> i32 {
-    let n = input();
-    println_i64(n);
-    0
-}

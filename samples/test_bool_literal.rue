@@ -1,5 +1,0 @@
-// Test with literal boolean
-fn main() {
-    let x: bool = true;
-    println_bool(x);
-}
