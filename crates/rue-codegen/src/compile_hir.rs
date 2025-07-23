@@ -40,9 +40,14 @@ pub fn compile_hir_to_assembly(hir: &HirProgram) -> Result<String, CodegenError>
 
     // Phase 5: Generate assembly text
     let all_function_labels = driver.build_final_labels(&function_labels, &ir_to_machine_labels);
+    let runtime_label_count = driver.runtime_label_count();
 
     // Convert machine instructions to assembly text
-    let asm_text = format_instructions_as_assembly(&final_instructions, &all_function_labels);
+    let asm_text = format_instructions_as_assembly(
+        &final_instructions,
+        &all_function_labels,
+        runtime_label_count,
+    );
     Ok(asm_text)
 }
 
@@ -79,7 +84,8 @@ pub fn compile_hir_to_executable(hir: &HirProgram) -> Result<Vec<u8>, CodegenErr
 
     // Set up all labels (runtime + user)
     let all_function_labels = driver.build_final_labels(&function_labels, &ir_to_machine_labels);
-    x86_emitter.set_function_labels(all_function_labels);
+    let runtime_label_count = driver.runtime_label_count();
+    x86_emitter.set_function_labels(all_function_labels, runtime_label_count);
 
     let code = x86_emitter
         .emit_all(&final_instructions)

@@ -2,7 +2,7 @@
 //!
 //! This module generates platform-independent instructions from HIR.
 
-use crate::{BinOp, CodegenError, Instruction, LabelId, VReg, Value};
+use crate::{BinOp, CodegenError, Instruction, Label, VReg, Value};
 use rue_ir::hir::{
     BinOp as HirBinOp, HirBlock, HirExpr, HirFunction, HirLiteral, HirProgram, HirStatement,
     UnaryOp as HirUnaryOp,
@@ -16,7 +16,7 @@ pub struct HirCodegen {
     vreg_counter: u32,
     label_counter: u32,
     variables: HashMap<String, VReg>, // Variable name -> virtual register
-    function_labels: HashMap<String, LabelId>, // Function name -> label ID
+    function_labels: HashMap<String, Label>, // Function name -> label
 }
 
 impl HirCodegen {
@@ -38,8 +38,8 @@ impl HirCodegen {
     }
 
     // Generate a unique label
-    fn next_label(&mut self) -> LabelId {
-        let label = LabelId(self.label_counter);
+    fn next_label(&mut self) -> Label {
+        let label = Label::user(self.label_counter);
         self.label_counter += 1;
         label
     }
@@ -611,7 +611,7 @@ impl HirCodegen {
     }
 
     /// Get the generated instructions and function labels
-    pub fn get_output(self) -> (Vec<Instruction>, HashMap<String, LabelId>) {
+    pub fn get_output(self) -> (Vec<Instruction>, HashMap<String, Label>) {
         (self.instructions, self.function_labels)
     }
 }

@@ -90,11 +90,13 @@ pub fn compile_hir_via_mir_to_assembly(hir: &HirProgram) -> Result<String, Codeg
 
     // Step 9: Build final labels and generate assembly
     let all_function_labels = driver.build_final_labels(&function_labels, &ir_to_machine_labels);
+    let runtime_label_count = driver.runtime_label_count();
 
     // Generate assembly
     Ok(format_instructions_as_assembly(
         &final_instructions,
         &all_function_labels,
+        runtime_label_count,
     ))
 }
 
@@ -173,10 +175,11 @@ pub fn compile_hir_via_mir_to_executable(
 
     // Step 9: Build final labels
     let all_function_labels = driver.build_final_labels(&function_labels, &ir_to_machine_labels);
+    let runtime_label_count = driver.runtime_label_count();
 
     // Step 10: Generate x86 code
     let mut emitter = X86Emitter::new();
-    emitter.set_function_labels(all_function_labels);
+    emitter.set_function_labels(all_function_labels, runtime_label_count);
     let code = emitter
         .emit_all(&final_instructions)
         .map_err(|e| CodegenError { message: e })?;

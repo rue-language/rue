@@ -63,9 +63,76 @@ pub enum BinOp {
     Ne,
 }
 
-/// Label for control flow jumps
+/// Label space to distinguish between runtime and user labels
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum LabelSpace {
+    Runtime,
+    User,
+}
+
+/// Type-safe label that tracks which space it belongs to
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct Label {
+    id: u32,
+    space: LabelSpace,
+}
+
+impl Label {
+    /// Create a new runtime label
+    pub fn runtime(id: u32) -> Self {
+        Label {
+            id,
+            space: LabelSpace::Runtime,
+        }
+    }
+
+    /// Create a new user label
+    pub fn user(id: u32) -> Self {
+        Label {
+            id,
+            space: LabelSpace::User,
+        }
+    }
+
+    /// Get the raw ID without offset
+    pub fn id(&self) -> u32 {
+        self.id
+    }
+
+    /// Get the label space
+    pub fn space(&self) -> LabelSpace {
+        self.space
+    }
+
+    /// Convert to a machine label ID with proper offset
+    /// Runtime labels keep their IDs, user labels are offset by runtime_label_count
+    pub fn to_machine_id(&self, runtime_label_count: u32) -> u32 {
+        match self.space {
+            LabelSpace::Runtime => self.id,
+            LabelSpace::User => self.id + runtime_label_count,
+        }
+    }
+
+    /// Create a label from a machine ID, determining its space based on offset
+    pub fn from_machine_id(machine_id: u32, runtime_label_count: u32) -> Self {
+        if machine_id < runtime_label_count {
+            Label::runtime(machine_id)
+        } else {
+            Label::user(machine_id - runtime_label_count)
+        }
+    }
+}
+
+/// Label for control flow jumps (legacy compatibility)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct LabelId(pub u32);
+
+impl From<Label> for LabelId {
+    fn from(label: Label) -> Self {
+        // This conversion loses space information - use only for legacy code
+        LabelId(label.id)
+    }
+}
 
 /// Platform-independent instruction set
 ///
@@ -108,12 +175,12 @@ pub enum Instruction {
     }, // Pop from stack to register
 
     // Control flow
-    Label(LabelId),
-    Jump(LabelId),
+    Label(Label),
+    Jump(Label),
     Branch {
         condition: VReg,
-        true_label: LabelId,
-        false_label: LabelId,
+        true_label: Label,
+        false_label: Label,
     },
 
     // Function operations
@@ -149,7 +216,8 @@ pub enum Instruction {
 // Convert machine instructions to AT&T assembly syntax
 pub fn format_instructions_as_assembly(
     instructions: &[MachineInstr],
-    function_labels: &HashMap<String, LabelId>,
+    function_labels: &HashMap<String, Label>,
+    runtime_label_count: u32,
 ) -> String {
     use rue_ir::target::ConditionCode;
 
@@ -161,8 +229,8 @@ pub fn format_instructions_as_assembly(
 
     // Reverse map for labels
     let mut label_names: HashMap<u32, String> = HashMap::new();
-    for (name, LabelId(id)) in function_labels {
-        label_names.insert(*id, name.clone());
+    for (name, label) in function_labels {
+        label_names.insert(label.to_machine_id(runtime_label_count), name.clone());
     }
 
     for instr in instructions {
