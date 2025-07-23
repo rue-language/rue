@@ -6,6 +6,7 @@
 use std::collections::HashMap;
 
 // Re-export HIR compilation functions - this is the current API
+mod backend_driver;
 mod compile_hir;
 mod compile_hir_with_mir;
 mod elf_writer;

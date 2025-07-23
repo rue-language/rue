@@ -3,20 +3,16 @@
 //! This module demonstrates how to integrate MIR into the compilation pipeline.
 //! It's an alternative to compile_hir that uses MIR for potential optimizations.
 
+use crate::backend_driver::BackendDriver;
 use crate::elf_writer::ElfWriter;
-use crate::label_utils::adjust_label_ids;
 use crate::mir_to_instructions::MirToInstructions;
 use crate::x86_emitter::X86Emitter;
-use crate::{
-    CodegenError, Instruction, Lowering, RegisterAllocator, format_instructions_as_assembly,
-};
+use crate::{CodegenError, format_instructions_as_assembly};
 use rue_ir::hir::HirProgram;
 use rue_ir::mir_lowering::MirBuilder;
 use rue_ir::mir_passes::{CommonSubexpressionElimination, ConstProp, DeadCodeElimination};
 #[cfg(debug_assertions)]
 use rue_ir::mir_verifier::MirVerifier;
-use rue_ir::target::MachineInstr;
-use std::collections::HashMap;
 use std::path::Path;
 
 /// Compile HIR to assembly via MIR
@@ -73,135 +69,27 @@ pub fn compile_hir_via_mir_to_assembly(hir: &HirProgram) -> Result<String, Codeg
     let instructions = mir_lowerer.lower_program(&mir);
     let function_labels = mir_lowerer.get_function_labels();
 
-    // Step 5: Generate runtime code
-    let (runtime_instructions, _runtime_labels) =
-        rue_runtime::generate_runtime().map_err(|e| CodegenError { message: e })?;
+    // Step 5: Create backend driver with runtime code
+    let driver = BackendDriver::new()?;
 
-    // Step 6: Process functions with register allocation
-    // Identify function boundaries
-    let mut function_boundaries = Vec::new();
-    let mut current_start = 0;
+    // Step 6: Identify function boundaries
+    let function_boundaries = driver.discover_function_boundaries(&instructions, &function_labels);
 
-    for (i, instr) in instructions.iter().enumerate() {
-        if let Instruction::Label(label_id) = instr {
-            if function_labels.values().any(|&id| id == *label_id) {
-                if current_start < i {
-                    function_boundaries.push((current_start, i));
-                }
-                current_start = i;
-            }
-        }
-    }
-    if current_start < instructions.len() {
-        function_boundaries.push((current_start, instructions.len()));
-    }
+    // Step 7: Assign label IDs and lower functions
+    let (ir_to_machine_labels, label_id_counter) = driver.assign_label_ids(&instructions, 0);
+    let all_machine_instructions = driver.lower_functions(
+        &instructions,
+        function_labels.clone(),
+        function_boundaries,
+        ir_to_machine_labels.clone(),
+        label_id_counter,
+    )?;
 
-    // Lower each function separately with its own register allocator
-    let mut all_machine_instructions = Vec::new();
-    let mut label_id_counter = 0u32;
-    let mut ir_to_machine_labels = HashMap::new();
+    // Step 8: Combine runtime and user code
+    let final_instructions = driver.combine_runtime_and_user_code(all_machine_instructions);
 
-    // First pass: scan for labels and assign machine instruction label IDs
-    for instr in &instructions {
-        if let Instruction::Label(label_id) = instr {
-            ir_to_machine_labels.entry(*label_id).or_insert_with(|| {
-                let id = label_id_counter;
-                label_id_counter += 1;
-                id
-            });
-        }
-    }
-
-    // Second pass: lower each function with its own allocator
-    for (start, end) in function_boundaries {
-        let function_instrs = &instructions[start..end];
-
-        let mut function_allocator = RegisterAllocator::new();
-        let mut function_machine_instrs = Vec::new();
-        let next_label_id;
-
-        {
-            let mut lowering = Lowering::new(&mut function_allocator, label_id_counter);
-            lowering.set_function_labels(function_labels.clone());
-            lowering.set_label_map(ir_to_machine_labels.clone());
-
-            // Process all non-label instructions for this function
-            let mut function_instrs_without_labels = Vec::new();
-
-            for instr in function_instrs {
-                match instr {
-                    Instruction::Label(label_id) => {
-                        // First, lower any accumulated instructions
-                        if !function_instrs_without_labels.is_empty() {
-                            let machine_instrs = lowering
-                                .lower(&function_instrs_without_labels)
-                                .map_err(|e| CodegenError { message: e })?;
-                            function_machine_instrs.extend(machine_instrs);
-                            function_instrs_without_labels.clear();
-                        }
-
-                        // Then emit the label
-                        let machine_label_id = ir_to_machine_labels[label_id];
-                        function_machine_instrs.push(MachineInstr::Label {
-                            id: machine_label_id,
-                        });
-                    }
-                    _ => {
-                        function_instrs_without_labels.push(instr.clone());
-                    }
-                }
-            }
-
-            // Lower any remaining instructions
-            if !function_instrs_without_labels.is_empty() {
-                let machine_instrs = lowering
-                    .lower(&function_instrs_without_labels)
-                    .map_err(|e| CodegenError { message: e })?;
-                function_machine_instrs.extend(machine_instrs);
-            }
-
-            next_label_id = lowering.next_label_id();
-        }
-
-        // Patch stack allocation with actual required space
-        Lowering::patch_stack_allocation(&mut function_machine_instrs, &function_allocator);
-
-        // Add this function's instructions to the overall list
-        all_machine_instructions.extend(function_machine_instrs);
-
-        // Update the global label counter for the next function
-        label_id_counter = next_label_id;
-    }
-
-    // Combine runtime and user code
-    let mut final_instructions = Vec::new();
-    final_instructions.extend(runtime_instructions);
-
-    // Adjust user code labels to account for runtime labels
-    let runtime_label_count = _runtime_labels.values().max().copied().unwrap_or(0) + 1;
-
-    // Adjust all label IDs in user code
-    let adjusted_user_instructions =
-        adjust_label_ids(all_machine_instructions, runtime_label_count);
-    final_instructions.extend(adjusted_user_instructions);
-
-    // Build final function labels map
-    let mut all_function_labels = HashMap::new();
-
-    // Add runtime labels
-    for (name, label_id) in _runtime_labels {
-        all_function_labels.insert(name, crate::LabelId(label_id));
-    }
-
-    // Add user function labels (adjusted)
-    for (name, ir_label_id) in &function_labels {
-        if let Some(&machine_label_id) = ir_to_machine_labels.get(ir_label_id) {
-            all_function_labels.insert(
-                name.clone(),
-                crate::LabelId(machine_label_id + runtime_label_count),
-            );
-        }
-    }
+    // Step 9: Build final labels and generate assembly
+    let all_function_labels = driver.build_final_labels(&function_labels, &ir_to_machine_labels);
 
     // Generate assembly
     Ok(format_instructions_as_assembly(
@@ -264,135 +152,31 @@ pub fn compile_hir_via_mir_to_executable(
     let instructions = mir_lowerer.lower_program(&mir);
     let function_labels = mir_lowerer.get_function_labels();
 
-    // Step 5: Generate runtime code
-    let (_runtime_instructions, _runtime_labels) =
-        rue_runtime::generate_runtime().map_err(|e| CodegenError { message: e })?;
+    // Step 5: Create backend driver with runtime code
+    let driver = BackendDriver::new()?;
 
-    // Step 6-12: Same as compile_hir_via_mir_to_assembly
-    // Get assembly first
-    let _asm = compile_hir_via_mir_to_assembly(hir)?;
+    // Step 6: Identify function boundaries
+    let function_boundaries = driver.discover_function_boundaries(&instructions, &function_labels);
 
-    // Convert assembly to machine code and generate ELF
-    // This is a simplified approach - in production we'd want to share code better
-    let mut all_machine_instructions = Vec::new();
+    // Step 7: Assign label IDs and lower functions
+    let (ir_to_machine_labels, label_id_counter) = driver.assign_label_ids(&instructions, 0);
+    let all_machine_instructions = driver.lower_functions(
+        &instructions,
+        function_labels.clone(),
+        function_boundaries,
+        ir_to_machine_labels.clone(),
+        label_id_counter,
+    )?;
 
-    // Re-generate the machine instructions (this is inefficient but simple)
-    // In a real implementation, we'd refactor to share the lowering logic
+    // Step 8: Combine runtime and user code
+    let final_instructions = driver.combine_runtime_and_user_code(all_machine_instructions);
 
-    // For now, let's use the compile_hir_to_executable approach
-    // Generate runtime code again
-    let (runtime_instructions, runtime_labels) =
-        rue_runtime::generate_runtime().map_err(|e| CodegenError { message: e })?;
+    // Step 9: Build final labels
+    let all_function_labels = driver.build_final_labels(&function_labels, &ir_to_machine_labels);
 
-    // Process functions with register allocation (duplicated from above)
-    let mut function_boundaries = Vec::new();
-    let mut current_start = 0;
-
-    for (i, instr) in instructions.iter().enumerate() {
-        if let Instruction::Label(label_id) = instr {
-            if function_labels.values().any(|&id| id == *label_id) {
-                if current_start < i {
-                    function_boundaries.push((current_start, i));
-                }
-                current_start = i;
-            }
-        }
-    }
-    if current_start < instructions.len() {
-        function_boundaries.push((current_start, instructions.len()));
-    }
-
-    let mut label_id_counter = 0u32;
-    let mut ir_to_machine_labels = HashMap::new();
-
-    for instr in &instructions {
-        if let Instruction::Label(label_id) = instr {
-            ir_to_machine_labels.entry(*label_id).or_insert_with(|| {
-                let id = label_id_counter;
-                label_id_counter += 1;
-                id
-            });
-        }
-    }
-
-    for (start, end) in function_boundaries {
-        let function_instrs = &instructions[start..end];
-
-        let mut function_allocator = RegisterAllocator::new();
-        let mut function_machine_instrs = Vec::new();
-        let next_label_id;
-
-        {
-            let mut lowering = Lowering::new(&mut function_allocator, label_id_counter);
-            lowering.set_function_labels(function_labels.clone());
-            lowering.set_label_map(ir_to_machine_labels.clone());
-
-            let mut function_instrs_without_labels = Vec::new();
-
-            for instr in function_instrs {
-                match instr {
-                    Instruction::Label(label_id) => {
-                        if !function_instrs_without_labels.is_empty() {
-                            let machine_instrs = lowering
-                                .lower(&function_instrs_without_labels)
-                                .map_err(|e| CodegenError { message: e })?;
-                            function_machine_instrs.extend(machine_instrs);
-                            function_instrs_without_labels.clear();
-                        }
-
-                        let machine_label_id = ir_to_machine_labels[label_id];
-                        function_machine_instrs.push(MachineInstr::Label {
-                            id: machine_label_id,
-                        });
-                    }
-                    _ => {
-                        function_instrs_without_labels.push(instr.clone());
-                    }
-                }
-            }
-
-            if !function_instrs_without_labels.is_empty() {
-                let machine_instrs = lowering
-                    .lower(&function_instrs_without_labels)
-                    .map_err(|e| CodegenError { message: e })?;
-                function_machine_instrs.extend(machine_instrs);
-            }
-
-            next_label_id = lowering.next_label_id();
-        }
-
-        Lowering::patch_stack_allocation(&mut function_machine_instrs, &function_allocator);
-        all_machine_instructions.extend(function_machine_instrs);
-        label_id_counter = next_label_id;
-    }
-
-    let mut final_instructions = Vec::new();
-    final_instructions.extend(runtime_instructions);
-
-    let runtime_label_count = runtime_labels.values().max().copied().unwrap_or(0) + 1;
-
-    let adjusted_user_instructions =
-        adjust_label_ids(all_machine_instructions, runtime_label_count);
-    final_instructions.extend(adjusted_user_instructions);
-
-    let mut all_function_labels = HashMap::new();
-
-    for (name, label_id) in runtime_labels {
-        all_function_labels.insert(name.clone(), crate::LabelId(label_id));
-    }
-
-    for (name, ir_label_id) in &function_labels {
-        if let Some(&machine_label_id) = ir_to_machine_labels.get(ir_label_id) {
-            all_function_labels.insert(
-                name.clone(),
-                crate::LabelId(machine_label_id + runtime_label_count),
-            );
-        }
-    }
-
-    // Generate x86 code
+    // Step 10: Generate x86 code
     let mut emitter = X86Emitter::new();
-    emitter.set_function_labels(all_function_labels.clone());
+    emitter.set_function_labels(all_function_labels);
     let code = emitter
         .emit_all(&final_instructions)
         .map_err(|e| CodegenError { message: e })?;
@@ -400,7 +184,7 @@ pub fn compile_hir_via_mir_to_executable(
     // Extract symbol positions from emitter
     let (_, symbols) = emitter.get_output();
 
-    // Generate ELF executable
+    // Step 11: Generate ELF executable
     let elf_writer = ElfWriter::new();
     Ok(elf_writer.generate_elf(&code, &symbols))
 }
