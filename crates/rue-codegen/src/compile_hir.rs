@@ -5,10 +5,11 @@
 use crate::CodegenError;
 use crate::elf_writer::ElfWriter;
 use crate::hir_codegen::HirCodegen;
+use crate::label_utils::adjust_label_ids;
 use crate::x86_emitter::X86Emitter;
 use crate::{Instruction, Lowering, RegisterAllocator, format_instructions_as_assembly};
 use rue_ir::hir::HirProgram;
-use rue_ir::target::{LabelRef, MachineInstr};
+use rue_ir::target::MachineInstr;
 use std::collections::HashMap;
 
 /// Compile HIR to assembly text
@@ -130,35 +131,9 @@ pub fn compile_hir_to_assembly(hir: &HirProgram) -> Result<String, CodegenError>
     let runtime_label_count = runtime_labels.values().max().copied().unwrap_or(0) + 1;
 
     // Adjust all label IDs in user code
-    for instr in all_machine_instructions {
-        match instr {
-            MachineInstr::Label { id } => {
-                final_instructions.push(MachineInstr::Label {
-                    id: id + runtime_label_count,
-                });
-            }
-            MachineInstr::Jmp { target } => {
-                let adjusted_target = match target {
-                    LabelRef::Local(id) => LabelRef::Local(id + runtime_label_count),
-                    global => global,
-                };
-                final_instructions.push(MachineInstr::Jmp {
-                    target: adjusted_target,
-                });
-            }
-            MachineInstr::JmpCC { cc, target } => {
-                let adjusted_target = match target {
-                    LabelRef::Local(id) => LabelRef::Local(id + runtime_label_count),
-                    global => global,
-                };
-                final_instructions.push(MachineInstr::JmpCC {
-                    cc,
-                    target: adjusted_target,
-                });
-            }
-            other => final_instructions.push(other),
-        }
-    }
+    let adjusted_user_instructions =
+        adjust_label_ids(all_machine_instructions, runtime_label_count);
+    final_instructions.extend(adjusted_user_instructions);
 
     // Phase 5: Generate assembly text
     let mut all_function_labels = HashMap::new();
@@ -302,35 +277,9 @@ pub fn compile_hir_to_executable(hir: &HirProgram) -> Result<Vec<u8>, CodegenErr
     let runtime_label_count = runtime_labels.values().max().copied().unwrap_or(0) + 1;
 
     // Adjust all label IDs in user code
-    for instr in all_machine_instructions {
-        match instr {
-            MachineInstr::Label { id } => {
-                final_instructions.push(MachineInstr::Label {
-                    id: id + runtime_label_count,
-                });
-            }
-            MachineInstr::Jmp { target } => {
-                let adjusted_target = match target {
-                    LabelRef::Local(id) => LabelRef::Local(id + runtime_label_count),
-                    global => global,
-                };
-                final_instructions.push(MachineInstr::Jmp {
-                    target: adjusted_target,
-                });
-            }
-            MachineInstr::JmpCC { cc, target } => {
-                let adjusted_target = match target {
-                    LabelRef::Local(id) => LabelRef::Local(id + runtime_label_count),
-                    global => global,
-                };
-                final_instructions.push(MachineInstr::JmpCC {
-                    cc,
-                    target: adjusted_target,
-                });
-            }
-            other => final_instructions.push(other),
-        }
-    }
+    let adjusted_user_instructions =
+        adjust_label_ids(all_machine_instructions, runtime_label_count);
+    final_instructions.extend(adjusted_user_instructions);
 
     // Phase 5: Emit machine code
     let mut x86_emitter = X86Emitter::new();

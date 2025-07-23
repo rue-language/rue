@@ -4,6 +4,7 @@
 //! It's an alternative to compile_hir that uses MIR for potential optimizations.
 
 use crate::elf_writer::ElfWriter;
+use crate::label_utils::adjust_label_ids;
 use crate::mir_to_instructions::MirToInstructions;
 use crate::x86_emitter::X86Emitter;
 use crate::{
@@ -14,7 +15,7 @@ use rue_ir::mir_lowering::MirBuilder;
 use rue_ir::mir_passes::{CommonSubexpressionElimination, ConstProp, DeadCodeElimination};
 #[cfg(debug_assertions)]
 use rue_ir::mir_verifier::MirVerifier;
-use rue_ir::target::{LabelRef, MachineInstr};
+use rue_ir::target::MachineInstr;
 use std::collections::HashMap;
 use std::path::Path;
 
@@ -180,41 +181,9 @@ pub fn compile_hir_via_mir_to_assembly(hir: &HirProgram) -> Result<String, Codeg
     let runtime_label_count = _runtime_labels.values().max().copied().unwrap_or(0) + 1;
 
     // Adjust all label IDs in user code
-    for instr in all_machine_instructions {
-        match instr {
-            MachineInstr::Label { id } => {
-                final_instructions.push(MachineInstr::Label {
-                    id: id + runtime_label_count,
-                });
-            }
-            MachineInstr::Jmp { target } => {
-                let adjusted_target = match target {
-                    LabelRef::Local(id) => LabelRef::Local(id + runtime_label_count),
-                    global => global,
-                };
-                final_instructions.push(MachineInstr::Jmp {
-                    target: adjusted_target,
-                });
-            }
-            MachineInstr::JmpCC { cc, target } => {
-                let adjusted_target = match target {
-                    LabelRef::Local(id) => LabelRef::Local(id + runtime_label_count),
-                    global => global,
-                };
-                final_instructions.push(MachineInstr::JmpCC {
-                    cc,
-                    target: adjusted_target,
-                });
-            }
-            MachineInstr::Call { target } => {
-                // Call uses String, not LabelRef
-                final_instructions.push(MachineInstr::Call {
-                    target: target.clone(),
-                });
-            }
-            other => final_instructions.push(other),
-        }
-    }
+    let adjusted_user_instructions =
+        adjust_label_ids(all_machine_instructions, runtime_label_count);
+    final_instructions.extend(adjusted_user_instructions);
 
     // Build final function labels map
     let mut all_function_labels = HashMap::new();
@@ -402,41 +371,9 @@ pub fn compile_hir_via_mir_to_executable(
 
     let runtime_label_count = runtime_labels.values().max().copied().unwrap_or(0) + 1;
 
-    for instr in all_machine_instructions {
-        match instr {
-            MachineInstr::Label { id } => {
-                final_instructions.push(MachineInstr::Label {
-                    id: id + runtime_label_count,
-                });
-            }
-            MachineInstr::Jmp { target } => {
-                let adjusted_target = match target {
-                    LabelRef::Local(id) => LabelRef::Local(id + runtime_label_count),
-                    global => global,
-                };
-                final_instructions.push(MachineInstr::Jmp {
-                    target: adjusted_target,
-                });
-            }
-            MachineInstr::JmpCC { cc, target } => {
-                let adjusted_target = match target {
-                    LabelRef::Local(id) => LabelRef::Local(id + runtime_label_count),
-                    global => global,
-                };
-                final_instructions.push(MachineInstr::JmpCC {
-                    cc,
-                    target: adjusted_target,
-                });
-            }
-            MachineInstr::Call { target } => {
-                // Call uses String, not LabelRef
-                final_instructions.push(MachineInstr::Call {
-                    target: target.clone(),
-                });
-            }
-            other => final_instructions.push(other),
-        }
-    }
+    let adjusted_user_instructions =
+        adjust_label_ids(all_machine_instructions, runtime_label_count);
+    final_instructions.extend(adjusted_user_instructions);
 
     let mut all_function_labels = HashMap::new();
 

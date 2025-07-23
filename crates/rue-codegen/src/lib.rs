@@ -10,6 +10,7 @@ mod compile_hir;
 mod compile_hir_with_mir;
 mod elf_writer;
 mod hir_codegen;
+mod label_utils;
 mod lowering;
 mod mir_to_instructions;
 mod regalloc;
