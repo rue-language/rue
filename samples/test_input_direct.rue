@@ -1,4 +1,0 @@
-// Test input function directly
-fn main() {
-    println_i64(input());
-}

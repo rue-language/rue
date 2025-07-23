@@ -1,8 +1,0 @@
-// Test that exits based on boolean
-fn main() {
-    if true {
-        exit(0);
-    } else {
-        exit(1);
-    }
-}

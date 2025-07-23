@@ -1,6 +1,0 @@
-// Even simpler test
-fn main() {
-    let a = input();
-    println_i64(1);  // This call might corrupt 'a'
-    println_i64(a);
-}

@@ -33,7 +33,7 @@ For implementation details, see [docs/implementation.md](./docs/implementation.m
 - `buck2 test //crates/rue-semantic:test` - Run semantic analysis tests
 - `buck2 test //crates/rue-codegen:test` - Run code generation tests
 - `buck2 test //crates/rue-compiler:test` - Run compiler tests
-- `buck2 test //crates/rue:integration_tests` - Run integration tests
+- `buck2 test //crates/rue:corpus_tests` - Run corpus tests
 - `buck2 test //crates/rue:type_system_tests` - Run type system tests
 - `buck2 test //crates/rue:` - Run all rue tests (integration + type system)
 - `buck2 test //crates/rue-runtime:test` - Run runtime tests
@@ -46,7 +46,7 @@ For implementation details, see [docs/implementation.md](./docs/implementation.m
 - `cargo test -p rue-lexer test_name` - Run specific lexer test
 - `cargo test -p rue-parser parse_` - Run all parser tests matching pattern
 - `buck2 test //crates/rue-lexer:test -- --filter keyword` - Filter Buck2 tests by keyword
-- `cargo test -p rue integration_tests` - Run only integration tests
+- `cargo test -p rue corpus_tests` - Run only corpus tests
 - `cargo test -p rue type_system_tests` - Run only type system tests
 - `cargo test -p rue runtime_tests` - Run only runtime tests
 - `cargo test -- --nocapture` - Show println! output during tests

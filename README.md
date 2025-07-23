@@ -219,9 +219,9 @@ buck2 test //crates/rue-lexer:test    # Lexer tests
 buck2 test //crates/rue-parser:test   # Parser tests
 buck2 test //crates/rue-semantic:test # Type checking tests
 buck2 test //crates/rue-codegen:test  # Code generation tests
-buck2 test //crates/rue:integration_tests # Integration tests
+buck2 test //crates/rue:corpus_tests # Corpus tests
 buck2 test //crates/rue:type_system_tests # Type system tests
-buck2 test //crates/rue:              # All rue tests (integration + type system)
+buck2 test //crates/rue:              # All rue tests (corpus + type system)
 ```
 
 ## IDE Support

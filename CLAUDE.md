@@ -45,9 +45,9 @@ When working on features:
 - `buck2 test //crates/rue-semantic:test` - Semantic tests
 - `buck2 test //crates/rue-codegen:test` - Codegen tests
 - `buck2 test //crates/rue-compiler:test` - Compiler tests
-- `buck2 test //crates/rue:integration_tests` - Integration tests
+- `buck2 test //crates/rue:corpus_tests` - Corpus tests
 - `buck2 test //crates/rue:type_system_tests` - Type system tests
-- `buck2 test //crates/rue:` - All rue tests (integration + type system)
+- `buck2 test //crates/rue:` - All rue tests (corpus + type system)
 - `buck2 test //crates/...` - **All tests (equivalent to `cargo test`)**
 - `cargo test -p rue` - Integration tests
 - `cargo test` - All tests

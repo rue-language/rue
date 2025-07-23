@@ -1,7 +1,0 @@
-// Test b variable issue
-fn main() {
-    let a: i64 = 42;
-    let b: i64 = 17;
-    let c = a + b;
-    println_i64(b);  // This should print 17
-}

@@ -1,4 +1,0 @@
-fn main() -> i32 {
-    println_i64(42);  // Verify basic functionality works
-    0
-}
