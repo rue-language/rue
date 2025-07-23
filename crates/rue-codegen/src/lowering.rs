@@ -1,5 +1,5 @@
 use crate::{
-    BinOp, Instruction, LabelId, VReg, Value,
+    BinOp, Instruction, Label, VReg, Value,
     regalloc::{RegisterAllocator, SpillReloadOp},
 };
 use rue_ir::target::{ConditionCode, LabelRef, MachineInstr, Register};
@@ -11,11 +11,11 @@ use std::collections::HashMap;
 pub struct Lowering<'a> {
     allocator: &'a mut RegisterAllocator,
     instructions: Vec<MachineInstr>,
-    label_map: HashMap<LabelId, u32>,
+    label_map: HashMap<Label, u32>,
     next_label_id: u32,
-    function_labels: HashMap<String, LabelId>,
+    function_labels: HashMap<String, Label>,
     /// External label map to use (if provided)
-    external_label_map: Option<HashMap<LabelId, u32>>,
+    external_label_map: Option<HashMap<Label, u32>>,
     /// Track number of pushes since function entry for stack alignment
     push_count: u32,
 }
@@ -34,11 +34,11 @@ impl<'a> Lowering<'a> {
     }
 
     /// Set an external label map to use for label resolution
-    pub fn set_label_map(&mut self, label_map: HashMap<LabelId, u32>) {
+    pub fn set_label_map(&mut self, label_map: HashMap<Label, u32>) {
         self.external_label_map = Some(label_map);
     }
 
-    pub fn set_function_labels(&mut self, labels: HashMap<String, LabelId>) {
+    pub fn set_function_labels(&mut self, labels: HashMap<String, Label>) {
         self.function_labels = labels;
     }
 
@@ -642,7 +642,7 @@ impl<'a> Lowering<'a> {
         Ok(())
     }
 
-    fn lower_jump(&mut self, target: LabelId) -> Result<(), String> {
+    fn lower_jump(&mut self, target: Label) -> Result<(), String> {
         let machine_label_id = self.get_or_create_label(target);
         self.emit(MachineInstr::Jmp {
             target: LabelRef::Local(machine_label_id),
@@ -653,8 +653,8 @@ impl<'a> Lowering<'a> {
     fn lower_branch(
         &mut self,
         condition: VReg,
-        true_label: LabelId,
-        false_label: LabelId,
+        true_label: Label,
+        false_label: Label,
     ) -> Result<(), String> {
         let cond_reg = self.allocator.ensure_reg(condition, &[])?;
         self.emit_spill_reload_ops();
@@ -1042,7 +1042,7 @@ impl<'a> Lowering<'a> {
         Ok(())
     }
 
-    fn get_or_create_label(&mut self, label_id: LabelId) -> u32 {
+    fn get_or_create_label(&mut self, label_id: Label) -> u32 {
         // First check external label map if provided
         if let Some(ref external_map) = self.external_label_map {
             if let Some(&machine_id) = external_map.get(&label_id) {

@@ -3,7 +3,7 @@
 //! This module converts MIR (in SSA form with block parameters) to the
 //! platform-independent Instruction representation with virtual registers.
 
-use crate::{BinOp, Instruction, LabelId, VReg, Value};
+use crate::{BinOp, Instruction, Label, VReg, Value};
 use rue_ir::mir::{
     BasicBlock, BlockId, MirBinOp, MirConst, MirFunction, MirProgram, MirStatement, MirTerminator,
     MirUnaryOp, MirValue, Temp,
@@ -22,9 +22,9 @@ pub struct MirToInstructions {
     /// Mapping from MIR temps to virtual registers
     temp_to_vreg: HashMap<Temp, VReg>,
     /// Mapping from block IDs to labels
-    block_to_label: HashMap<BlockId, LabelId>,
+    block_to_label: HashMap<BlockId, Label>,
     /// Function labels for calls
-    function_labels: HashMap<String, LabelId>,
+    function_labels: HashMap<String, Label>,
     /// Current function blocks (needed for block parameter lookup)
     current_blocks: Vec<BasicBlock>,
 }
@@ -50,8 +50,8 @@ impl MirToInstructions {
     }
 
     /// Generate a fresh label
-    fn fresh_label(&mut self) -> LabelId {
-        let label = LabelId(self.label_counter);
+    fn fresh_label(&mut self) -> Label {
+        let label = Label::user(self.label_counter);
         self.label_counter += 1;
         label
     }
@@ -68,7 +68,7 @@ impl MirToInstructions {
     }
 
     /// Get or create a label for a block
-    fn get_label(&mut self, block: BlockId) -> LabelId {
+    fn get_label(&mut self, block: BlockId) -> Label {
         if let Some(&label) = self.block_to_label.get(&block) {
             label
         } else {
@@ -103,7 +103,7 @@ impl MirToInstructions {
     }
 
     /// Get the function labels mapping
-    pub fn get_function_labels(&self) -> HashMap<String, LabelId> {
+    pub fn get_function_labels(&self) -> HashMap<String, Label> {
         self.function_labels.clone()
     }
 

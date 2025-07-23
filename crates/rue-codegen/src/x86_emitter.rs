@@ -8,7 +8,8 @@ pub struct X86Emitter {
     code: Vec<u8>,
     label_positions: HashMap<u32, usize>,
     pending_fixups: Vec<(usize, LabelRef)>,
-    function_labels: HashMap<String, crate::LabelId>,
+    function_labels: HashMap<String, crate::Label>,
+    runtime_label_count: u32,
 }
 
 impl X86Emitter {
@@ -18,12 +19,18 @@ impl X86Emitter {
             label_positions: HashMap::new(),
             pending_fixups: Vec::new(),
             function_labels: HashMap::new(),
+            runtime_label_count: 0,
         }
     }
 
-    pub fn set_function_labels(&mut self, labels: HashMap<String, crate::LabelId>) {
+    pub fn set_function_labels(
+        &mut self,
+        labels: HashMap<String, crate::Label>,
+        runtime_label_count: u32,
+    ) {
         // We'll use this to map function names to their label IDs
         self.function_labels = labels;
+        self.runtime_label_count = runtime_label_count;
     }
 
     /// Emit machine instructions to bytes
@@ -506,8 +513,9 @@ impl X86Emitter {
                         .ok_or_else(|| format!("Unknown function: {name}"))?;
 
                     // Get the position of this label
+                    let machine_id = label_id.to_machine_id(self.runtime_label_count);
                     self.label_positions
-                        .get(&label_id.0)
+                        .get(&machine_id)
                         .copied()
                         .ok_or_else(|| format!("Undefined label for function: {name}"))?
                 }
@@ -599,7 +607,8 @@ impl X86Emitter {
 
         // Add function names to symbol table
         for (name, label_id) in &self.function_labels {
-            if let Some(&pos) = self.label_positions.get(&label_id.0) {
+            let machine_id = label_id.to_machine_id(self.runtime_label_count);
+            if let Some(&pos) = self.label_positions.get(&machine_id) {
                 symbols.insert(name.clone(), pos);
             }
         }

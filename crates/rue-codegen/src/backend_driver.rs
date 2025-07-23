@@ -1,5 +1,5 @@
 use crate::label_utils::adjust_label_ids;
-use crate::{CodegenError, Instruction, LabelId, Lowering, RegisterAllocator};
+use crate::{CodegenError, Instruction, Label, Lowering, RegisterAllocator};
 use rue_ir::target::MachineInstr;
 use std::collections::HashMap;
 
@@ -21,20 +21,25 @@ impl BackendDriver {
         })
     }
 
+    /// Get the runtime label count
+    pub fn runtime_label_count(&self) -> u32 {
+        self.runtime_labels.values().max().copied().unwrap_or(0) + 1
+    }
+
     /// Discover function boundaries by scanning for labels that correspond to function entry points
     pub fn discover_function_boundaries(
         &self,
         instructions: &[Instruction],
-        function_labels: &HashMap<String, LabelId>,
+        function_labels: &HashMap<String, Label>,
     ) -> Vec<(usize, usize)> {
         let mut function_boundaries = Vec::new();
         let mut current_start = 0;
 
         for (i, instr) in instructions.iter().enumerate() {
-            if let Instruction::Label(label_id) = instr {
+            if let Instruction::Label(label) = instr {
                 if function_labels
                     .values()
-                    .any(|&LabelId(id)| id == label_id.0)
+                    .any(|&func_label| func_label == *label)
                 {
                     if current_start < i {
                         function_boundaries.push((current_start, i));
@@ -55,13 +60,13 @@ impl BackendDriver {
         &self,
         instructions: &[Instruction],
         starting_id: u32,
-    ) -> (HashMap<LabelId, u32>, u32) {
+    ) -> (HashMap<Label, u32>, u32) {
         let mut ir_to_machine_labels = HashMap::new();
         let mut label_id_counter = starting_id;
 
         for instr in instructions {
-            if let Instruction::Label(label_id) = instr {
-                ir_to_machine_labels.entry(*label_id).or_insert_with(|| {
+            if let Instruction::Label(label) = instr {
+                ir_to_machine_labels.entry(*label).or_insert_with(|| {
                     let id = label_id_counter;
                     label_id_counter += 1;
                     id
@@ -76,9 +81,9 @@ impl BackendDriver {
     pub fn lower_functions(
         &self,
         instructions: &[Instruction],
-        function_labels: HashMap<String, LabelId>,
+        function_labels: HashMap<String, Label>,
         boundaries: Vec<(usize, usize)>,
-        ir_to_machine_labels: HashMap<LabelId, u32>,
+        ir_to_machine_labels: HashMap<Label, u32>,
         starting_label_id: u32,
     ) -> Result<Vec<MachineInstr>, CodegenError> {
         let mut all_machine_instructions = Vec::new();
@@ -101,7 +106,7 @@ impl BackendDriver {
 
                 for instr in function_instrs {
                     match instr {
-                        Instruction::Label(label_id) => {
+                        Instruction::Label(label) => {
                             // First, lower any accumulated instructions
                             if !function_instrs_without_labels.is_empty() {
                                 let machine_instrs = lowering
@@ -112,7 +117,7 @@ impl BackendDriver {
                             }
 
                             // Then emit the label
-                            let machine_label_id = ir_to_machine_labels[label_id];
+                            let machine_label_id = ir_to_machine_labels[label];
                             function_machine_instrs.push(MachineInstr::Label {
                                 id: machine_label_id,
                             });
@@ -170,24 +175,20 @@ impl BackendDriver {
     /// Build the final function labels map, combining runtime and user labels
     pub fn build_final_labels(
         &self,
-        function_labels: &HashMap<String, LabelId>,
-        ir_to_machine_labels: &HashMap<LabelId, u32>,
-    ) -> HashMap<String, LabelId> {
+        function_labels: &HashMap<String, Label>,
+        ir_to_machine_labels: &HashMap<Label, u32>,
+    ) -> HashMap<String, Label> {
         let mut all_function_labels = HashMap::new();
 
         // Add runtime labels
         for (name, &id) in &self.runtime_labels {
-            all_function_labels.insert(name.clone(), LabelId(id));
+            all_function_labels.insert(name.clone(), Label::runtime(id));
         }
 
-        // Add user function labels (adjusted)
-        let runtime_label_count = self.runtime_labels.values().max().copied().unwrap_or(0) + 1;
+        // Add user function labels
         for (name, ir_label_id) in function_labels {
             if let Some(&machine_label_id) = ir_to_machine_labels.get(ir_label_id) {
-                all_function_labels.insert(
-                    name.clone(),
-                    LabelId(machine_label_id + runtime_label_count),
-                );
+                all_function_labels.insert(name.clone(), Label::user(machine_label_id));
             }
         }
 
