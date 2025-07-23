@@ -96,7 +96,9 @@ expression_statement ::= expression ";"
 
 expression ::= if_expression | while_expression | binary_expression | call_expression | primary_expression
 
-if_expression ::= "if" expression block ("else" block)?
+if_expression ::= "if" expression block else_clause?
+
+else_clause ::= "else" (block | if_expression)
 
 while_expression ::= "while" expression block
 
