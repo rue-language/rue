@@ -12,7 +12,7 @@ cargo.rust_library(
         "//crates/rue-parser:rue-parser",
         "//crates/rue-semantic:rue-semantic",
         "//crates/rue-codegen:rue-codegen",
-        "//:salsa",
+        "//third-party/rust:salsa",
     ],
     visibility = ["PUBLIC"],
 )
@@ -29,7 +29,7 @@ rust_test(
         "//crates/rue-parser:rue-parser",
         "//crates/rue-semantic:rue-semantic",
         "//crates/rue-codegen:rue-codegen",
-        "//:salsa",
+        "//third-party/rust:salsa",
     ],
 )
 
@@ -39,6 +39,6 @@ rust_binary(
     edition = "2024",
     deps = [
         ":rue-compiler",
-        "//:salsa",
+        "//third-party/rust:salsa",
     ],
 )

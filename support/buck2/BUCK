@@ -1,0 +1,5 @@
+python_bootstrap_binary(
+    name = "sync-cargo-deps",
+    main = "buck2-sync-cargo-deps.py",
+    visibility = ["PUBLIC"],
+)

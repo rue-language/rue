@@ -1,0 +1,37 @@
+# Definitions of third-party libraries used for buck2 builds of rue
+#
+# Note: This file is **not** used by a regular Cargo build of rue
+
+[workspace]
+
+[package]
+# Pseudo-package whose dependencies are imported and buckified
+name = "third-party"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+# Do-nothing target to keep Cargo happy
+[[bin]]
+name = "top"
+path = "top/main.rs"
+
+# BEGIN: DEPENDENCIES
+
+[workspace.package]
+edition = "2024"
+version = "0.1.0"
+
+[dependencies]
+bpaf = "0.9.20"
+criterion = "0.5.0"
+indexmap = "2.0.0"
+object = { version = "0.37.1", features = ["write"] }
+regex = "1.0.0"
+salsa = "0.22"
+serde_json = "1.0.0"
+tempfile = "3.8.0"
+thiserror = "2.0.12"
+tokio = { version = "1.0", features = ["full"] }
+tower-lsp = "0.20"
+# END: DEPENDENCIES

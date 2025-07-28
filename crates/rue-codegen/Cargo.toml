@@ -10,13 +10,12 @@ rue-parser = { path = "../rue-parser" }
 rue-semantic = { path = "../rue-semantic" }
 rue-runtime = { path = "../rue-runtime" }
 rue-ir = { path = "../rue-ir" }
-indexmap = "2"
-thiserror = "2.0.12"
-object = { version = "0.37.1", features = ["write"] }
+rue-lowering = { path = "../rue-lowering" }
+rue-optimize = { path = "../rue-optimize" }
+indexmap.workspace = true
+thiserror.workspace = true
+object.workspace = true
 
 [dev-dependencies]
-criterion = "0.5"
-
-[[bench]]
-name = "alloc"
-harness = false
+criterion.workspace = true
+regex.workspace = true

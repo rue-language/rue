@@ -1,0 +1,24 @@
+load("@prelude//rust:cargo_package.bzl", "cargo")
+
+cargo.rust_library(
+    name = "rue-optimize",
+    srcs = glob(["src/**/*.rs"]),
+    crate_root = "src/lib.rs",
+    edition = "2024",
+    deps = [
+        "//crates/rue-lexer:rue-lexer",
+        "//crates/rue-ir:rue-ir",
+    ],
+    visibility = ["PUBLIC"],
+)
+
+rust_test(
+    name = "test",
+    srcs = glob(["src/**/*.rs"]),
+    crate_root = "src/lib.rs",
+    edition = "2024",
+    deps = [
+        "//crates/rue-lexer:rue-lexer",
+        "//crates/rue-ir:rue-ir",
+    ],
+)

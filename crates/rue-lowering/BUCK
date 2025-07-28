@@ -1,0 +1,24 @@
+load("@prelude//rust:cargo_package.bzl", "cargo")
+
+cargo.rust_library(
+    name = "rue-lowering",
+    srcs = glob(["src/**/*.rs"]),
+    crate_root = "src/lib.rs",
+    edition = "2024",
+    deps = [
+        "//crates/rue-ir:rue-ir",
+        "//crates/rue-lexer:rue-lexer",
+    ],
+    visibility = ["PUBLIC"],
+)
+
+rust_test(
+    name = "test",
+    srcs = glob(["src/**/*.rs"]),
+    crate_root = "src/lib.rs",
+    edition = "2024",
+    deps = [
+        "//crates/rue-ir:rue-ir",
+        "//crates/rue-lexer:rue-lexer",
+    ],
+)

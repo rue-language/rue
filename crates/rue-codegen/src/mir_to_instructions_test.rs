@@ -33,6 +33,7 @@ fn test_lower_constant() {
         }],
         terminator: MirTerminator::Return {
             value: Some(Temp(0)),
+            span: None,
         },
     }]);
 
@@ -47,7 +48,7 @@ fn test_lower_constant() {
         matches!(
             inst,
             Instruction::Copy {
-                src: Value::Immediate(42),
+                src: Value::SignedImm(42),
                 ..
             }
         )
@@ -84,6 +85,7 @@ fn test_lower_binary_op() {
         ],
         terminator: MirTerminator::Return {
             value: Some(Temp(2)),
+            span: None,
         },
     }]);
 
@@ -115,6 +117,7 @@ fn test_lower_branch() {
                 then_args: vec![],
                 else_block: BlockId(2),
                 else_args: vec![],
+                span: None,
             },
         },
         BasicBlock {
@@ -127,6 +130,7 @@ fn test_lower_branch() {
             }],
             terminator: MirTerminator::Return {
                 value: Some(Temp(1)),
+                span: None,
             },
         },
         BasicBlock {
@@ -139,6 +143,7 @@ fn test_lower_branch() {
             }],
             terminator: MirTerminator::Return {
                 value: Some(Temp(2)),
+                span: None,
             },
         },
     ]);
@@ -171,6 +176,7 @@ fn test_lower_goto() {
             terminator: MirTerminator::Goto {
                 target: BlockId(1),
                 args: vec![],
+                span: None,
             },
         },
         BasicBlock {
@@ -183,6 +189,7 @@ fn test_lower_goto() {
             }],
             terminator: MirTerminator::Return {
                 value: Some(Temp(0)),
+                span: None,
             },
         },
     ]);
@@ -214,13 +221,14 @@ fn test_lower_function_call() {
                 value: MirValue::Call {
                     func: "factorial".to_string(),
                     args: vec![Temp(0)],
-                    return_type: RueType::I32,
+                    kind: CallKind::Impure,
                 },
                 span: None,
             },
         ],
         terminator: MirTerminator::Return {
             value: Some(Temp(1)),
+            span: None,
         },
     }]);
 
@@ -256,6 +264,7 @@ fn test_lower_block_parameters() {
             terminator: MirTerminator::Goto {
                 target: BlockId(1),
                 args: vec![Temp(0), Temp(1)],
+                span: None,
             },
         },
         BasicBlock {
@@ -272,6 +281,7 @@ fn test_lower_block_parameters() {
             }],
             terminator: MirTerminator::Return {
                 value: Some(Temp(4)),
+                span: None,
             },
         },
     ]);
@@ -313,6 +323,7 @@ fn test_lower_unary_op() {
         ],
         terminator: MirTerminator::Return {
             value: Some(Temp(1)),
+            span: None,
         },
     }]);
 
@@ -344,12 +355,13 @@ fn test_lower_multiple_functions() {
                         value: MirValue::Call {
                             func: "helper".to_string(),
                             args: vec![],
-                            return_type: RueType::I32,
+                            kind: CallKind::Impure,
                         },
                         span: None,
                     }],
                     terminator: MirTerminator::Return {
                         value: Some(Temp(0)),
+                        span: None,
                     },
                 }],
                 span: Span::dummy(),
@@ -369,6 +381,7 @@ fn test_lower_multiple_functions() {
                     }],
                     terminator: MirTerminator::Return {
                         value: Some(Temp(0)),
+                        span: None,
                     },
                 }],
                 span: Span::dummy(),
@@ -419,6 +432,7 @@ fn test_lower_comparison() {
         ],
         terminator: MirTerminator::Return {
             value: Some(Temp(2)),
+            span: None,
         },
     }]);
 

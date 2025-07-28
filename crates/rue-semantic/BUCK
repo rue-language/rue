@@ -10,7 +10,7 @@ cargo.rust_library(
         "//crates/rue-ir:rue-ir",
         "//crates/rue-lexer:rue-lexer",
         "//crates/rue-parser:rue-parser",
-        "//:salsa",
+        "//third-party/rust:salsa",
     ],
     visibility = ["PUBLIC"],
 )
@@ -25,6 +25,6 @@ rust_test(
         "//crates/rue-ir:rue-ir",
         "//crates/rue-lexer:rue-lexer",
         "//crates/rue-parser:rue-parser",
-        "//:salsa",
+        "//third-party/rust:salsa",
     ],
 )

@@ -24,7 +24,6 @@ This directory contains sample Rue programs used for testing and demonstration. 
 | test_100.rue | Test printing 100 | 0 | 100 | |
 | test_add_order.rue | Addition order test | 30 | | |
 | test_all_runtime.rue | Runtime function tests | 0 | 1234567890<br>-1<br>42<br>true<br>false<br>true<br>()<br>5 | |
-| test_assign_simple.rue | Simple assignment | 0 | | |
 | test_bool_simple.rue | Boolean operations | 0 | | |
 | test_compare_fib.rue | Fibonacci comparison | 2 | | |
 | test_count_calls.rue | Function call counting | ? | | |
@@ -35,7 +34,6 @@ This directory contains sample Rue programs used for testing and demonstration. 
 | test_exit.rue | Exit function test | 42 | | |
 | test_fib_minimal.rue | Minimal fibonacci | 5 | | |
 | test_i32_bool.rue | i32 and bool operations | ? | | |
-| test_input_minimal.rue | Minimal input test | ? | (requires stdin) | |
 | test_io_demo.rue | I/O demonstration | ? | | |
 | test_isolated_add.rue | Isolated addition | ? | | |
 | test_minimal.rue | Minimal test | 0 | | |

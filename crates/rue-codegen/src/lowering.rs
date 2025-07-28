@@ -1,9 +1,51 @@
-use crate::{
-    BinOp, Instruction, Label, VReg, Value,
-    regalloc::{RegisterAllocator, SpillReloadOp},
-};
+use crate::regalloc::RegisterAllocator;
+use crate::{BinOp, Instruction, Label, VReg, Value};
 use rue_ir::target::{ConditionCode, LabelRef, MachineInstr, Register};
 use std::collections::HashMap;
+
+/// Errors that can occur during lowering
+#[derive(Debug, Clone, PartialEq)]
+pub enum LoweringError {
+    /// Register allocation failed
+    RegisterAllocation(String),
+    /// Too many arguments for function call
+    TooManyArguments,
+    /// Cannot pop from empty stack
+    StackUnderflow,
+    /// Unsupported value type in operation
+    UnsupportedValueType(&'static str),
+    /// No available scratch register
+    NoScratchRegister,
+}
+
+impl std::fmt::Display for LoweringError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            LoweringError::RegisterAllocation(msg) => {
+                write!(f, "Register allocation error: {msg}")
+            }
+            LoweringError::TooManyArguments => write!(f, "Too many arguments for function call"),
+            LoweringError::StackUnderflow => {
+                write!(f, "Cannot pop from empty stack: push_count would underflow")
+            }
+            LoweringError::UnsupportedValueType(op) => {
+                write!(f, "PhysicalReg not supported in {op}")
+            }
+            LoweringError::NoScratchRegister => write!(f, "No available scratch register"),
+        }
+    }
+}
+
+impl std::error::Error for LoweringError {}
+
+impl From<String> for LoweringError {
+    fn from(s: String) -> Self {
+        LoweringError::RegisterAllocation(s)
+    }
+}
+
+/// Exit code for division by zero
+const EXIT_DIV_ZERO: i64 = 250;
 
 /// The Lowering pass converts high-level IR instructions with virtual registers
 /// into x86-specific machine instructions with concrete registers.
@@ -13,11 +55,12 @@ pub struct Lowering<'a> {
     instructions: Vec<MachineInstr>,
     label_map: HashMap<Label, u32>,
     next_label_id: u32,
-    function_labels: HashMap<String, Label>,
     /// External label map to use (if provided)
-    external_label_map: Option<HashMap<Label, u32>>,
+    external_label_map: Option<&'a HashMap<Label, u32>>,
     /// Track number of pushes since function entry for stack alignment
-    push_count: u32,
+    push_count: i32,
+    /// Track which stack slots are for block parameters (set during Store instructions)
+    block_param_offsets: std::collections::HashSet<i64>,
 }
 
 impl<'a> Lowering<'a> {
@@ -27,32 +70,49 @@ impl<'a> Lowering<'a> {
             instructions: Vec::new(),
             label_map: HashMap::new(),
             next_label_id: first_label_id,
-            function_labels: HashMap::new(),
             external_label_map: None,
             push_count: 0,
+            block_param_offsets: std::collections::HashSet::new(),
+            // Block parameters handled via Load/Store with "always spill" approach
         }
     }
 
+    /// Mark a stack offset as being used for block parameters
+    pub fn mark_block_param_offset(&mut self, offset: i64) {
+        self.block_param_offsets.insert(offset);
+    }
+
     /// Set an external label map to use for label resolution
-    pub fn set_label_map(&mut self, label_map: HashMap<Label, u32>) {
+    pub fn set_label_map(&mut self, label_map: &'a HashMap<Label, u32>) {
         self.external_label_map = Some(label_map);
     }
 
-    pub fn set_function_labels(&mut self, labels: HashMap<String, Label>) {
-        self.function_labels = labels;
-    }
+    // Removed: mark_as_block_param and mark_as_return_param - no longer needed
 
     /// Get the next label ID that would be assigned
     pub fn next_label_id(&self) -> u32 {
         self.next_label_id
     }
 
+    /// Create a new label and increment the counter
+    pub fn new_label(&mut self) -> u32 {
+        let id = self.next_label_id;
+        self.next_label_id += 1;
+        id
+    }
+
     /// Lower a sequence of high-level instructions to machine instructions
-    pub fn lower(&mut self, ir_instructions: &[Instruction]) -> Result<Vec<MachineInstr>, String> {
+    pub fn lower(
+        &mut self,
+        ir_instructions: &[Instruction],
+    ) -> Result<Vec<MachineInstr>, LoweringError> {
         let start_len = self.instructions.len();
+
+        // Process instructions - BlockParamAssign is no longer used with "always spill" approach
         for instr in ir_instructions {
             self.lower_instruction(instr)?;
         }
+
         Ok(self.instructions[start_len..].to_vec())
     }
 
@@ -66,22 +126,35 @@ impl<'a> Lowering<'a> {
         // Find and patch AllocStack instructions
         for instr in instructions.iter_mut() {
             if let MachineInstr::AllocStack { size } = instr {
-                *size = stack_size as u32;
+                *size = stack_size;
             }
         }
     }
 
-    fn lower_instruction(&mut self, instr: &Instruction) -> Result<(), String> {
+    fn lower_instruction(&mut self, instr: &Instruction) -> Result<(), LoweringError> {
         match instr {
             Instruction::Copy { dest, src } => self.lower_copy(*dest, src),
+            Instruction::BlockParamAssign { .. } => {
+                // With "always spill" approach, block parameters are handled via Load/Store
+                // This instruction should not be generated anymore
+                Err(LoweringError::RegisterAllocation(
+                    "BlockParamAssign should not be generated with always-spill approach"
+                        .to_string(),
+                ))
+            }
             Instruction::BinaryOp { dest, lhs, rhs, op } => {
                 self.lower_binary_op(*dest, lhs, rhs, op)
             }
             Instruction::Load { dest, offset } => self.lower_load(*dest, *offset),
             Instruction::Store { src, offset } => self.lower_store(*src, *offset),
-            Instruction::Push { src } => self.lower_push(*src),
+            Instruction::Push { src } => self.lower_push(src),
             Instruction::Pop { dest } => self.lower_pop(*dest),
             Instruction::Label(_) => {
+                // We are about to start a fresh basic block, so flush
+                // all pending stores from the previous one.
+                self.allocator.flush_stores();
+                self.emit_spill_reload_ops();
+
                 // Labels are handled externally in compile_to_executable
                 // to ensure consistent numbering across functions
                 Ok(())
@@ -110,9 +183,13 @@ impl<'a> Lowering<'a> {
         }
     }
 
-    fn lower_copy(&mut self, dest: VReg, src: &Value) -> Result<(), String> {
+    // Removed: lower_block_param_assign - no longer needed with "always spill" approach
+
+    // Removed: lower_parallel_block_assigns - no longer needed with "always spill" approach
+
+    fn lower_copy(&mut self, dest: VReg, src: &Value) -> Result<(), LoweringError> {
         match src {
-            Value::Immediate(imm) => {
+            Value::SignedImm(imm) => {
                 let dest_reg = self.allocator.ensure_reg(dest, &[])?;
                 self.emit_spill_reload_ops();
                 if *imm >= i32::MIN as i64 && *imm <= i32::MAX as i64 {
@@ -126,21 +203,58 @@ impl<'a> Lowering<'a> {
                         imm: *imm,
                     });
                 }
+                // Mark the destination as dirty after writing to it
+                self.allocator.schedule_store(dest, dest_reg);
             }
             Value::VReg(src_vreg) => {
-                let src_reg = self.allocator.ensure_reg(*src_vreg, &[])?;
-                self.emit_spill_reload_ops();
-                let dest_reg = self.allocator.ensure_reg(dest, &[src_reg])?;
-                self.emit_spill_reload_ops();
-                if src_reg != dest_reg {
-                    self.emit(MachineInstr::MovRR {
-                        dest: dest_reg,
-                        src: src_reg,
-                    });
+                // Special case: self-copy (used after loading block parameters)
+                if *src_vreg == dest {
+                    // Self-copy is a semantic no-op: the value is already in a
+                    // register (and marked Dirty by the preceding `Load`) and
+                    // will be flushed correctly later. Do **nothing**.
+                    // IMPORTANT: The VReg retains its dirty state from the Load,
+                    // ensuring it will be stored back to memory when needed.
+                    return Ok(());
+                } else {
+                    // Normal copy between different VRegs
+                    let src_reg = self.allocator.ensure_reg(*src_vreg, &[])?;
+                    self.emit_spill_reload_ops();
+
+                    // With "always spill" approach, all copies are regular copies
+                    let dest_reg = self.allocator.ensure_reg(dest, &[src_reg])?;
+
+                    self.emit_spill_reload_ops();
+                    if src_reg != dest_reg {
+                        self.emit(MachineInstr::MovRR {
+                            dest: dest_reg,
+                            src: src_reg,
+                        });
+                    }
+                    // Mark the destination as dirty after writing to it
+                    self.allocator.schedule_store(dest, dest_reg);
                 }
             }
+            Value::UnsignedImm(imm) => {
+                let dest_reg = self.allocator.ensure_reg(dest, &[])?;
+                self.emit_spill_reload_ops();
+
+                // For unsigned immediates, we need to check the range
+                if *imm <= i32::MAX as u64 {
+                    self.emit(MachineInstr::MovRI32 {
+                        dest: dest_reg,
+                        imm: *imm as i32,
+                    });
+                } else {
+                    self.emit(MachineInstr::MovRI64 {
+                        dest: dest_reg,
+                        imm: *imm as i64,
+                    });
+                }
+                self.allocator.schedule_store(dest, dest_reg);
+            }
             Value::PhysicalReg(reg) => {
-                let dest_reg = self.allocator.ensure_reg(dest, &[*reg])?;
+                // Use assign_reg_for_def since we're defining a new value (not reading old one)
+                let dest_reg = self.allocator.assign_reg_for_def(dest, &[*reg])?;
                 self.emit_spill_reload_ops();
                 if *reg != dest_reg {
                     self.emit(MachineInstr::MovRR {
@@ -148,6 +262,7 @@ impl<'a> Lowering<'a> {
                         src: *reg,
                     });
                 }
+                // Note: assign_reg_for_def already marks the register as dirty
             }
         }
         Ok(())
@@ -159,14 +274,14 @@ impl<'a> Lowering<'a> {
         lhs: &Value,
         rhs: &Value,
         op: &BinOp,
-    ) -> Result<(), String> {
+    ) -> Result<(), LoweringError> {
         match op {
             BinOp::Add | BinOp::Sub | BinOp::Mul => {
                 // Get lhs into dest register first
                 let dest_reg = match lhs {
                     Value::VReg(vreg) => {
                         let lhs_reg = self.allocator.ensure_reg(*vreg, &[])?;
-                        let dest_reg = self.allocator.ensure_reg(dest, &[lhs_reg])?;
+                        let dest_reg = self.allocator.assign_reg_for_def(dest, &[lhs_reg])?;
                         // Emit any pending spill/reload operations before moving
                         self.emit_spill_reload_ops();
                         if lhs_reg != dest_reg {
@@ -175,10 +290,11 @@ impl<'a> Lowering<'a> {
                                 src: lhs_reg,
                             });
                         }
+                        // Note: assign_reg_for_def already marks the register as dirty
                         dest_reg
                     }
-                    Value::Immediate(imm) => {
-                        let dest_reg = self.allocator.ensure_reg(dest, &[])?;
+                    Value::SignedImm(imm) => {
+                        let dest_reg = self.allocator.assign_reg_for_def(dest, &[])?;
                         // Emit any pending spill/reload operations before moving
                         self.emit_spill_reload_ops();
                         if *imm >= i32::MIN as i64 && *imm <= i32::MAX as i64 {
@@ -192,10 +308,30 @@ impl<'a> Lowering<'a> {
                                 imm: *imm,
                             });
                         }
+                        // Note: assign_reg_for_def already marks the register as dirty
+                        dest_reg
+                    }
+                    Value::UnsignedImm(imm) => {
+                        let dest_reg = self.allocator.assign_reg_for_def(dest, &[])?;
+                        // Emit any pending spill/reload operations before moving
+                        self.emit_spill_reload_ops();
+
+                        if *imm <= i32::MAX as u64 {
+                            self.emit(MachineInstr::MovRI32 {
+                                dest: dest_reg,
+                                imm: *imm as i32,
+                            });
+                        } else {
+                            self.emit(MachineInstr::MovRI64 {
+                                dest: dest_reg,
+                                imm: *imm as i64,
+                            });
+                        }
+                        // Note: assign_reg_for_def already marks the register as dirty
                         dest_reg
                     }
                     Value::PhysicalReg(_) => {
-                        return Err("PhysicalReg not supported in binary operations".to_string());
+                        return Err(LoweringError::UnsupportedValueType("binary operations"));
                     }
                 };
 
@@ -213,8 +349,9 @@ impl<'a> Lowering<'a> {
                             dest: dest_reg,
                             src: rhs_reg,
                         });
+                        // Note: operations on already-dirty registers remain dirty
                     }
-                    (BinOp::Add, Value::Immediate(imm)) => {
+                    (BinOp::Add, Value::SignedImm(imm)) => {
                         if *imm >= i32::MIN as i64 && *imm <= i32::MAX as i64 {
                             self.emit(MachineInstr::AddRI {
                                 dest: dest_reg,
@@ -232,6 +369,7 @@ impl<'a> Lowering<'a> {
                                 src: scratch,
                             });
                         }
+                        // Note: operations on already-dirty registers remain dirty
                     }
                     (BinOp::Sub, Value::VReg(rhs_vreg)) => {
                         let rhs_reg = self.allocator.ensure_reg(*rhs_vreg, &[dest_reg])?;
@@ -240,8 +378,9 @@ impl<'a> Lowering<'a> {
                             dest: dest_reg,
                             src: rhs_reg,
                         });
+                        // Note: operations on already-dirty registers remain dirty
                     }
-                    (BinOp::Sub, Value::Immediate(imm)) => {
+                    (BinOp::Sub, Value::SignedImm(imm)) => {
                         if *imm >= i32::MIN as i64 && *imm <= i32::MAX as i64 {
                             self.emit(MachineInstr::SubRI {
                                 dest: dest_reg,
@@ -258,6 +397,7 @@ impl<'a> Lowering<'a> {
                                 src: scratch,
                             });
                         }
+                        // Note: operations on already-dirty registers remain dirty
                     }
                     (BinOp::Mul, Value::VReg(rhs_vreg)) => {
                         let rhs_reg = self.allocator.ensure_reg(*rhs_vreg, &[dest_reg])?;
@@ -266,8 +406,9 @@ impl<'a> Lowering<'a> {
                             dest: dest_reg,
                             src: rhs_reg,
                         });
+                        // Note: operations on already-dirty registers remain dirty
                     }
-                    (BinOp::Mul, Value::Immediate(imm)) => {
+                    (BinOp::Mul, Value::SignedImm(imm)) => {
                         if *imm >= i32::MIN as i64 && *imm <= i32::MAX as i64 {
                             self.emit(MachineInstr::ImulRI {
                                 dest: dest_reg,
@@ -284,6 +425,65 @@ impl<'a> Lowering<'a> {
                                 src: scratch,
                             });
                         }
+                        // Note: operations on already-dirty registers remain dirty
+                    }
+                    (BinOp::Add, Value::UnsignedImm(imm)) => {
+                        if *imm <= i32::MAX as u64 {
+                            self.emit(MachineInstr::AddRI {
+                                dest: dest_reg,
+                                imm: *imm as i32,
+                            });
+                        } else {
+                            // Load large immediate to scratch register
+                            let scratch = self.get_scratch_register(&[dest_reg])?;
+                            self.emit(MachineInstr::MovRI64 {
+                                dest: scratch,
+                                imm: *imm as i64,
+                            });
+                            self.emit(MachineInstr::AddRR {
+                                dest: dest_reg,
+                                src: scratch,
+                            });
+                        }
+                        // Note: operations on already-dirty registers remain dirty
+                    }
+                    (BinOp::Sub, Value::UnsignedImm(imm)) => {
+                        if *imm <= i32::MAX as u64 {
+                            self.emit(MachineInstr::SubRI {
+                                dest: dest_reg,
+                                imm: *imm as i32,
+                            });
+                        } else {
+                            let scratch = self.get_scratch_register(&[dest_reg])?;
+                            self.emit(MachineInstr::MovRI64 {
+                                dest: scratch,
+                                imm: *imm as i64,
+                            });
+                            self.emit(MachineInstr::SubRR {
+                                dest: dest_reg,
+                                src: scratch,
+                            });
+                        }
+                        // Note: operations on already-dirty registers remain dirty
+                    }
+                    (BinOp::Mul, Value::UnsignedImm(imm)) => {
+                        if *imm <= i32::MAX as u64 {
+                            self.emit(MachineInstr::ImulRI {
+                                dest: dest_reg,
+                                imm: *imm as i32,
+                            });
+                        } else {
+                            let scratch = self.get_scratch_register(&[dest_reg])?;
+                            self.emit(MachineInstr::MovRI64 {
+                                dest: scratch,
+                                imm: *imm as i64,
+                            });
+                            self.emit(MachineInstr::ImulRR {
+                                dest: dest_reg,
+                                src: scratch,
+                            });
+                        }
+                        // Note: operations on already-dirty registers remain dirty
                     }
                     _ => unreachable!(),
                 }
@@ -297,7 +497,7 @@ impl<'a> Lowering<'a> {
         }
     }
 
-    fn lower_modulo(&mut self, dest: VReg, lhs: &Value, rhs: &Value) -> Result<(), String> {
+    fn lower_modulo(&mut self, dest: VReg, lhs: &Value, rhs: &Value) -> Result<(), LoweringError> {
         // Modulo is like division but we want the remainder from RDX
         let rax = Register::Rax;
         let rdx = Register::Rdx;
@@ -314,7 +514,7 @@ impl<'a> Lowering<'a> {
                     });
                 }
             }
-            Value::Immediate(imm) => {
+            Value::SignedImm(imm) => {
                 if *imm >= i32::MIN as i64 && *imm <= i32::MAX as i64 {
                     self.emit(MachineInstr::MovRI32 {
                         dest: rax,
@@ -327,7 +527,20 @@ impl<'a> Lowering<'a> {
                     });
                 }
             }
-            Value::PhysicalReg(_) => return Err("PhysicalReg not supported in modulo".to_string()),
+            Value::UnsignedImm(imm) => {
+                if *imm <= i32::MAX as u64 {
+                    self.emit(MachineInstr::MovRI32 {
+                        dest: rax,
+                        imm: *imm as i32,
+                    });
+                } else {
+                    self.emit(MachineInstr::MovRI64 {
+                        dest: rax,
+                        imm: *imm as i64,
+                    });
+                }
+            }
+            Value::PhysicalReg(_) => return Err(LoweringError::UnsupportedValueType("modulo")),
         }
 
         // Sign extend RAX to RDX:RAX
@@ -340,7 +553,7 @@ impl<'a> Lowering<'a> {
                 self.emit_spill_reload_ops();
                 reg
             }
-            Value::Immediate(imm) => {
+            Value::SignedImm(imm) => {
                 let scratch = self.get_scratch_register(&[rax, rdx])?;
                 if *imm >= i32::MIN as i64 && *imm <= i32::MAX as i64 {
                     self.emit(MachineInstr::MovRI32 {
@@ -355,7 +568,24 @@ impl<'a> Lowering<'a> {
                 }
                 scratch
             }
-            Value::PhysicalReg(_) => return Err("PhysicalReg not supported in modulo".to_string()),
+            Value::UnsignedImm(imm) => {
+                let scratch = self.get_scratch_register(&[rax, rdx])?;
+                if *imm <= i32::MAX as u64 {
+                    self.emit(MachineInstr::MovRI32 {
+                        dest: scratch,
+                        imm: *imm as i32,
+                    });
+                } else {
+                    self.emit(MachineInstr::MovRI64 {
+                        dest: scratch,
+                        imm: *imm as i64,
+                    });
+                }
+                scratch
+            }
+            Value::PhysicalReg(_) => {
+                return Err(LoweringError::UnsupportedValueType("division"));
+            }
         };
 
         // Check for division by zero (modulo by zero)
@@ -365,22 +595,24 @@ impl<'a> Lowering<'a> {
         });
 
         // Jump if not zero
-        let mod_ok_label = self.next_label_id();
+        let mod_ok_label = self.new_label();
         self.emit(MachineInstr::JmpCC {
             cc: ConditionCode::NotEqual,
             target: LabelRef::Local(mod_ok_label),
         });
 
-        // Modulo by zero - exit with code 250
+        // Modulo by zero - exit with code EXIT_DIV_ZERO
         self.emit(MachineInstr::MovRI64 {
             dest: Register::Rdi,
-            imm: 250, // Exit code for divide by zero
+            imm: EXIT_DIV_ZERO,
         });
         self.emit(MachineInstr::MovRI64 {
             dest: Register::Rax,
             imm: 60, // sys_exit
         });
         self.emit(MachineInstr::Syscall);
+        // Mark unreachable - sys_exit never returns
+        self.emit(MachineInstr::Ud2);
 
         // Continue with division
         self.emit(MachineInstr::Label { id: mod_ok_label });
@@ -389,6 +621,10 @@ impl<'a> Lowering<'a> {
         self.emit(MachineInstr::Idiv {
             divisor: divisor_reg,
         });
+
+        // CRITICAL: Mark RDX as dirty since idiv writes remainder to it
+        // This prevents the allocator from thinking RDX is clean
+        self.allocator.invalidate_register(rdx); // Force spill of any value in RDX
 
         // Move remainder from RDX to dest (this is the key difference from division)
         let dest_reg = self.allocator.ensure_reg(dest, &[])?;
@@ -399,11 +635,18 @@ impl<'a> Lowering<'a> {
                 src: rdx,
             });
         }
+        // Mark the destination as dirty after writing to it
+        self.allocator.schedule_store(dest, dest_reg);
 
         Ok(())
     }
 
-    fn lower_division(&mut self, dest: VReg, lhs: &Value, rhs: &Value) -> Result<(), String> {
+    fn lower_division(
+        &mut self,
+        dest: VReg,
+        lhs: &Value,
+        rhs: &Value,
+    ) -> Result<(), LoweringError> {
         // Division requires dividend in RAX
         let rax = Register::Rax;
         let rdx = Register::Rdx;
@@ -420,7 +663,7 @@ impl<'a> Lowering<'a> {
                     });
                 }
             }
-            Value::Immediate(imm) => {
+            Value::SignedImm(imm) => {
                 if *imm >= i32::MIN as i64 && *imm <= i32::MAX as i64 {
                     self.emit(MachineInstr::MovRI32 {
                         dest: rax,
@@ -433,8 +676,21 @@ impl<'a> Lowering<'a> {
                     });
                 }
             }
+            Value::UnsignedImm(imm) => {
+                if *imm <= i32::MAX as u64 {
+                    self.emit(MachineInstr::MovRI32 {
+                        dest: rax,
+                        imm: *imm as i32,
+                    });
+                } else {
+                    self.emit(MachineInstr::MovRI64 {
+                        dest: rax,
+                        imm: *imm as i64,
+                    });
+                }
+            }
             Value::PhysicalReg(_) => {
-                return Err("PhysicalReg not supported in division".to_string());
+                return Err(LoweringError::UnsupportedValueType("division"));
             }
         }
 
@@ -448,7 +704,7 @@ impl<'a> Lowering<'a> {
                 self.emit_spill_reload_ops();
                 reg
             }
-            Value::Immediate(imm) => {
+            Value::SignedImm(imm) => {
                 let scratch = self.get_scratch_register(&[rax, rdx])?;
                 if *imm >= i32::MIN as i64 && *imm <= i32::MAX as i64 {
                     self.emit(MachineInstr::MovRI32 {
@@ -463,8 +719,23 @@ impl<'a> Lowering<'a> {
                 }
                 scratch
             }
+            Value::UnsignedImm(imm) => {
+                let scratch = self.get_scratch_register(&[rax, rdx])?;
+                if *imm <= i32::MAX as u64 {
+                    self.emit(MachineInstr::MovRI32 {
+                        dest: scratch,
+                        imm: *imm as i32,
+                    });
+                } else {
+                    self.emit(MachineInstr::MovRI64 {
+                        dest: scratch,
+                        imm: *imm as i64,
+                    });
+                }
+                scratch
+            }
             Value::PhysicalReg(_) => {
-                return Err("PhysicalReg not supported in division".to_string());
+                return Err(LoweringError::UnsupportedValueType("division"));
             }
         };
 
@@ -475,22 +746,24 @@ impl<'a> Lowering<'a> {
         });
 
         // Jump if not zero
-        let div_ok_label = self.next_label_id();
+        let div_ok_label = self.new_label();
         self.emit(MachineInstr::JmpCC {
             cc: ConditionCode::NotEqual,
             target: LabelRef::Local(div_ok_label),
         });
 
-        // Division by zero - exit with code 250
+        // Division by zero - exit with code EXIT_DIV_ZERO
         self.emit(MachineInstr::MovRI64 {
             dest: Register::Rdi,
-            imm: 250, // Exit code for divide by zero
+            imm: EXIT_DIV_ZERO,
         });
         self.emit(MachineInstr::MovRI64 {
             dest: Register::Rax,
             imm: 60, // sys_exit
         });
         self.emit(MachineInstr::Syscall);
+        // Mark unreachable - sys_exit never returns
+        self.emit(MachineInstr::Ud2);
 
         // Continue with division
         self.emit(MachineInstr::Label { id: div_ok_label });
@@ -499,6 +772,10 @@ impl<'a> Lowering<'a> {
         self.emit(MachineInstr::Idiv {
             divisor: divisor_reg,
         });
+
+        // CRITICAL: Mark RDX as dirty since idiv writes remainder to it
+        // This prevents the allocator from thinking RDX is clean
+        self.allocator.invalidate_register(rdx); // Force spill of any value in RDX
 
         // Move result from RAX to dest
         let dest_reg = self.allocator.ensure_reg(dest, &[])?;
@@ -509,6 +786,8 @@ impl<'a> Lowering<'a> {
                 src: rax,
             });
         }
+        // Mark the destination as dirty after writing to it
+        self.allocator.schedule_store(dest, dest_reg);
 
         Ok(())
     }
@@ -519,7 +798,7 @@ impl<'a> Lowering<'a> {
         lhs: &Value,
         rhs: &Value,
         op: &BinOp,
-    ) -> Result<(), String> {
+    ) -> Result<(), LoweringError> {
         // Get lhs into a register
         let lhs_reg = match lhs {
             Value::VReg(vreg) => {
@@ -527,7 +806,7 @@ impl<'a> Lowering<'a> {
                 self.emit_spill_reload_ops();
                 reg
             }
-            Value::Immediate(imm) => {
+            Value::SignedImm(imm) => {
                 let scratch = self.get_scratch_register(&[])?;
                 if *imm >= i32::MIN as i64 && *imm <= i32::MAX as i64 {
                     self.emit(MachineInstr::MovRI32 {
@@ -542,8 +821,23 @@ impl<'a> Lowering<'a> {
                 }
                 scratch
             }
+            Value::UnsignedImm(imm) => {
+                let scratch = self.get_scratch_register(&[])?;
+                if *imm <= i32::MAX as u64 {
+                    self.emit(MachineInstr::MovRI32 {
+                        dest: scratch,
+                        imm: *imm as i32,
+                    });
+                } else {
+                    self.emit(MachineInstr::MovRI64 {
+                        dest: scratch,
+                        imm: *imm as i64,
+                    });
+                }
+                scratch
+            }
             Value::PhysicalReg(_) => {
-                return Err("PhysicalReg not supported in comparison".to_string());
+                return Err(LoweringError::UnsupportedValueType("comparison"));
             }
         };
 
@@ -557,7 +851,7 @@ impl<'a> Lowering<'a> {
                     right: rhs_reg,
                 });
             }
-            Value::Immediate(imm) => {
+            Value::SignedImm(imm) => {
                 if *imm >= i32::MIN as i64 && *imm <= i32::MAX as i64 {
                     self.emit(MachineInstr::CmpRI {
                         reg: lhs_reg,
@@ -575,8 +869,26 @@ impl<'a> Lowering<'a> {
                     });
                 }
             }
+            Value::UnsignedImm(imm) => {
+                if *imm <= i32::MAX as u64 {
+                    self.emit(MachineInstr::CmpRI {
+                        reg: lhs_reg,
+                        imm: *imm as i32,
+                    });
+                } else {
+                    let scratch = self.get_scratch_register(&[lhs_reg])?;
+                    self.emit(MachineInstr::MovRI64 {
+                        dest: scratch,
+                        imm: *imm as i64,
+                    });
+                    self.emit(MachineInstr::CmpRR {
+                        left: lhs_reg,
+                        right: scratch,
+                    });
+                }
+            }
             Value::PhysicalReg(_) => {
-                return Err("PhysicalReg not supported in comparison".to_string());
+                return Err(LoweringError::UnsupportedValueType("comparison"));
             }
         }
 
@@ -591,19 +903,28 @@ impl<'a> Lowering<'a> {
             _ => unreachable!(),
         };
 
-        let dest_reg = self.allocator.ensure_reg(dest, &[lhs_reg])?;
+        // We are *defining* dest, so pick a fresh register that will not clobber
+        // any other live value. Use 8-bit constraint for SetCC operations.
+        let dest_reg = self.allocator.assign_reg_for_8bit_def(dest, &[lhs_reg])?;
         self.emit_spill_reload_ops();
         self.emit(MachineInstr::SetCC { dest: dest_reg, cc });
         self.emit(MachineInstr::Movzx {
             dest: dest_reg,
             src: dest_reg,
         });
+        // Mark the destination as dirty after writing to it
+        self.allocator.schedule_store(dest, dest_reg);
 
         Ok(())
     }
 
-    fn lower_load(&mut self, dest: VReg, offset: i64) -> Result<(), String> {
-        let dest_reg = self.allocator.ensure_reg(dest, &[])?;
+    fn lower_load(&mut self, dest: VReg, offset: i64) -> Result<(), LoweringError> {
+        // Use assign_reg_for_def since we're defining a new value in dest
+        let dest_reg = self.allocator.assign_reg_for_def(dest, &[])?;
+        debug_assert!(
+            dest_reg != Register::Rsp && dest_reg != Register::Rbp,
+            "Cannot use RSP/RBP as destination register"
+        );
         self.emit_spill_reload_ops();
         self.emit(MachineInstr::MovRM {
             // load from stack slot
@@ -611,12 +932,31 @@ impl<'a> Lowering<'a> {
             base: Register::Rbp, // <- use the frame-pointer
             offset: offset as i32,
         });
+        // Mark the destination as dirty after loading from memory
+        self.allocator.schedule_store(dest, dest_reg);
         Ok(())
     }
 
-    fn lower_store(&mut self, src: VReg, offset: i64) -> Result<(), String> {
+    fn lower_store(&mut self, src: VReg, offset: i64) -> Result<(), LoweringError> {
+        if std::env::var("RUE_DEBUG").is_ok() {
+            eprintln!("lower_store: storing vreg {src:?} to offset {offset}");
+        }
+
+        // Check if this is a block parameter store
+        let is_block_param = self.block_param_offsets.contains(&offset);
+
+        if is_block_param {
+            // For block parameter stores, clear all register state to force reload from memory
+            // This ensures correctness when storing arguments before a jump to a block
+            self.allocator.clear_all_registers();
+            self.emit_spill_reload_ops();
+        }
+
         let src_reg = self.allocator.ensure_reg(src, &[])?;
         self.emit_spill_reload_ops();
+        if std::env::var("RUE_DEBUG").is_ok() {
+            eprintln!("lower_store: vreg {src:?} is in register {src_reg:?}");
+        }
         self.emit(MachineInstr::MovMR {
             // store to stack slot
             base: Register::Rbp, // <- use the frame-pointer
@@ -626,23 +966,49 @@ impl<'a> Lowering<'a> {
         Ok(())
     }
 
-    fn lower_push(&mut self, src: VReg) -> Result<(), String> {
-        let src_reg = self.allocator.ensure_reg(src, &[])?;
-        self.emit_spill_reload_ops();
-        self.emit(MachineInstr::Push { reg: src_reg });
+    fn lower_push(&mut self, src: &Value) -> Result<(), LoweringError> {
+        match src {
+            Value::VReg(vreg) => {
+                let src_reg = self.allocator.ensure_reg(*vreg, &[])?;
+                self.emit_spill_reload_ops();
+                self.emit(MachineInstr::Push { reg: src_reg });
+            }
+            Value::PhysicalReg(reg) => {
+                // Physical register can be pushed directly
+                self.emit(MachineInstr::Push { reg: *reg });
+            }
+            Value::SignedImm(_) | Value::UnsignedImm(_) => {
+                return Err(LoweringError::RegisterAllocation(
+                    "Cannot push immediate values directly".to_string(),
+                ));
+            }
+        }
         self.push_count += 1;
         Ok(())
     }
 
-    fn lower_pop(&mut self, dest: VReg) -> Result<(), String> {
+    fn lower_pop(&mut self, dest: VReg) -> Result<(), LoweringError> {
+        if self.push_count <= 0 {
+            return Err(LoweringError::StackUnderflow);
+        }
+
         let dest_reg = self.allocator.ensure_reg(dest, &[])?;
+        debug_assert!(
+            dest_reg != Register::Rsp && dest_reg != Register::Rbp,
+            "Cannot use RSP/RBP as destination register"
+        );
         self.emit_spill_reload_ops();
         self.emit(MachineInstr::Pop { reg: dest_reg });
         self.push_count -= 1;
+        // Mark the destination as dirty after popping into it
+        self.allocator.schedule_store(dest, dest_reg);
         Ok(())
     }
 
-    fn lower_jump(&mut self, target: Label) -> Result<(), String> {
+    fn lower_jump(&mut self, target: Label) -> Result<(), LoweringError> {
+        // Write back all dirty VRegs before we leave this block.
+        self.flush_for_cf();
+
         let machine_label_id = self.get_or_create_label(target);
         self.emit(MachineInstr::Jmp {
             target: LabelRef::Local(machine_label_id),
@@ -655,7 +1021,7 @@ impl<'a> Lowering<'a> {
         condition: VReg,
         true_label: Label,
         false_label: Label,
-    ) -> Result<(), String> {
+    ) -> Result<(), LoweringError> {
         let cond_reg = self.allocator.ensure_reg(condition, &[])?;
         self.emit_spill_reload_ops();
 
@@ -664,6 +1030,10 @@ impl<'a> Lowering<'a> {
             reg: cond_reg,
             imm: 0,
         });
+
+        // After CMP the flags are set and `cond_reg` is no longer needed,
+        // so it is now safe to spill every dirty register.
+        self.flush_for_cf();
 
         // Jump to true label if not zero
         let true_id = self.get_or_create_label(true_label);
@@ -686,7 +1056,7 @@ impl<'a> Lowering<'a> {
         dest: Option<&VReg>,
         function: &str,
         args: &[VReg],
-    ) -> Result<(), String> {
+    ) -> Result<(), LoweringError> {
         // Map built-in functions to runtime names
         let runtime_function = match function {
             "exit" => "__rue_exit",
@@ -723,14 +1093,14 @@ impl<'a> Lowering<'a> {
             Register::R11,
         ];
 
-        // CRITICAL: Force all VRegs in caller-saved registers to be spilled first
-        // This fixes the bug where VRegs holding let variable values get corrupted
-        // when registers are reused after recursive function calls
+        // For user-defined functions, we use a simpler and more reliable approach:
+        // Force all VRegs to be spilled to memory, avoiding the complex push/pop dance
+        // that can lose track of VReg-to-register mappings
         let is_user_function = !runtime_function.starts_with("__rue_");
 
         if is_user_function {
-            // Force spill any VRegs currently in caller-saved registers
-            // This is safer than relying on push/pop which doesn't update VReg mappings
+            // CRITICAL: Force ALL VRegs in caller-saved registers to be spilled to memory
+            // This is the safest approach for recursive function calls
             for &reg in &caller_saved_regs {
                 if self.allocator.is_register_allocated(reg) {
                     self.allocator.invalidate_register(reg);
@@ -741,58 +1111,76 @@ impl<'a> Lowering<'a> {
             self.emit_spill_reload_ops();
         }
 
-        // Now save caller-saved registers (they should mostly be free now)
+        // For runtime functions, we still need to save/restore registers the traditional way
         let mut regs_to_save = Vec::new();
-        for &reg in &caller_saved_regs {
-            if self.allocator.is_register_allocated(reg) {
-                regs_to_save.push(reg);
+        if !is_user_function {
+            for &reg in &caller_saved_regs {
+                // Save registers that contain values for runtime function calls
+                if self.allocator.is_register_allocated(reg)
+                    || self.allocator.is_scratch_register(reg)
+                {
+                    regs_to_save.push(reg);
+                }
             }
-        }
-
-        // Save caller-saved registers
-        for &reg in &regs_to_save {
-            self.emit(MachineInstr::Push { reg });
-            self.push_count += 1;
-        }
-
-        // Check if we need alignment padding before the call
-        // The stack must be 16-byte aligned before a call instruction.
-        // We need to account for:
-        // - Return address pushed by original call (1 push)
-        // - RBP pushed by EnterFrame (tracked in push_count)
-        // - Any other pushes we've done (also in push_count)
-        // Total pushes = 1 (return addr) + push_count
-        // If total is odd, we need padding
-        let total_pushes = 1 + self.push_count;
-        let needs_padding = total_pushes % 2 == 1;
-        if needs_padding {
-            // sub rsp, 8 to maintain alignment
-            // Use SubRI directly to avoid AllocStack's 16-byte alignment
-            self.emit(MachineInstr::SubRI {
-                dest: Register::Rsp,
-                imm: 8,
-            });
         }
 
         // Move arguments to their designated registers
-        // First, we need to check if any of the argument registers contain live values
-        // that need to be preserved
-        for (i, &_arg_vreg) in args.iter().enumerate() {
-            if i >= arg_regs.len() {
-                return Err("Too many arguments for function call".to_string());
-            }
+        // For user functions, argument registers should be free after spilling
+        // For runtime functions, we need to save any argument registers that contain live values
+        if !is_user_function {
+            for (i, &_arg_vreg) in args.iter().enumerate() {
+                if i >= arg_regs.len() {
+                    return Err(LoweringError::TooManyArguments);
+                }
 
-            // Check if the target argument register contains a live value
-            if self.allocator.is_register_allocated(arg_regs[i])
-                && !regs_to_save.contains(&arg_regs[i])
-            {
-                // This argument register contains a live value that we haven't saved yet
-                // We need to save it before overwriting
-                self.emit(MachineInstr::Push { reg: arg_regs[i] });
-                self.push_count += 1;
-                regs_to_save.push(arg_regs[i]);
+                // Check if the target argument register contains a live value
+                if self.allocator.is_register_allocated(arg_regs[i])
+                    && !regs_to_save.contains(&arg_regs[i])
+                {
+                    // This argument register contains a live value that we haven't saved yet
+                    // We need to save it before overwriting
+                    regs_to_save.push(arg_regs[i]);
+                }
             }
         }
+
+        // Save caller-saved registers (only for runtime functions)
+        if !is_user_function {
+            for &reg in &regs_to_save {
+                self.emit(MachineInstr::Push { reg });
+                self.push_count += 1;
+            }
+        }
+
+        // Check if we need alignment padding before the call
+        // The stack must be 16-byte aligned before ANY call instruction (SysV ABI requirement)
+        let needs_padding = {
+            // We need to account for:
+            // - Return address pushed by original call (1 push)
+            // - RBP pushed by EnterFrame (tracked in push_count)
+            // - Any other pushes we've done (also in push_count)
+            // Total pushes = 1 (return addr) + push_count
+            // If total is odd, we need padding
+            let total_pushes = 1 + self.push_count;
+            let needs_padding = total_pushes % 2 == 1;
+
+            // Add debug assertion for stack alignment
+            debug_assert!(
+                !is_user_function || self.push_count == 1,
+                "User function calls should only have RBP pushed, but push_count = {}",
+                self.push_count
+            );
+
+            if needs_padding {
+                // sub rsp, 8 to maintain alignment
+                // Use SubRI directly to avoid AllocStack's 16-byte alignment
+                self.emit(MachineInstr::SubRI {
+                    dest: Register::Rsp,
+                    imm: 8,
+                });
+            }
+            needs_padding
+        };
 
         // Collect where arguments currently are
         let mut arg_locations = Vec::new();
@@ -809,7 +1197,11 @@ impl<'a> Lowering<'a> {
 
         // Now we need to move arguments to ABI positions
         // Handle potential cycles by using a temporary register if needed
-        let temp_reg = Register::R15; // Use R15 as temporary
+        // IMPORTANT: Include all arg_locations in the forbidden list to prevent
+        // the scratch register from conflicting with any argument registers
+        let mut forbidden = arg_regs[..args.len()].to_vec();
+        forbidden.extend(&arg_locations);
+        let temp_reg = self.get_scratch_register(&forbidden)?;
 
         // First pass: direct moves where target is free
         let mut moved = vec![false; args.len()];
@@ -875,40 +1267,56 @@ impl<'a> Lowering<'a> {
             target: runtime_function.to_string(),
         });
 
-        // Move result from RAX if needed
-        if dest.is_some() {
-            // Check if RAX is in the list of registers to restore
-            if regs_to_save.contains(&Register::Rax) {
-                // RAX will be overwritten when we restore, so save to R15 first
+        // Handle return value preservation (only for runtime functions)
+        let rax_temp_reg =
+            if !is_user_function && dest.is_some() && regs_to_save.contains(&Register::Rax) {
+                // RAX will be overwritten when we restore, so save to temporary register first
+                // IMPORTANT: Include all regs_to_save and the argument registers in forbidden list
+                // to ensure the scratch register doesn't conflict with any register we're about to restore
+                let mut forbidden = regs_to_save.clone();
+                forbidden.extend(&arg_regs[..args.len()]);
+                let temp_reg = self.get_scratch_register(&forbidden)?;
                 self.emit(MachineInstr::MovRR {
-                    dest: Register::R15,
+                    dest: temp_reg,
                     src: Register::Rax,
                 });
-            }
-        }
+                Some(temp_reg)
+            } else {
+                None
+            };
 
-        // Restore alignment padding if we added it
-        if needs_padding {
+        // Restore alignment padding if we added it (only for runtime functions)
+        if !is_user_function && needs_padding {
             self.emit(MachineInstr::AddRI {
                 dest: Register::Rsp,
                 imm: 8,
             });
         }
 
-        // Restore caller-saved registers in reverse order
-        for &reg in regs_to_save.iter().rev() {
-            self.emit(MachineInstr::Pop { reg });
-            self.push_count -= 1;
+        // Restore caller-saved registers in reverse order (only for runtime functions)
+        if !is_user_function {
+            for &reg in regs_to_save.iter().rev() {
+                if self.push_count <= 0 {
+                    return Err(LoweringError::StackUnderflow);
+                }
+                self.emit(MachineInstr::Pop { reg });
+                self.push_count -= 1;
+            }
         }
 
         // Now move the return value to its destination
         if let Some(dest_vreg) = dest {
-            let dest_reg = self.allocator.ensure_reg(*dest_vreg, &[])?;
+            // Use assign_reg_for_def since we're defining a new value (the return value)
+            let dest_reg = self.allocator.assign_reg_for_def(*dest_vreg, &[])?;
+            debug_assert!(
+                dest_reg != Register::Rsp && dest_reg != Register::Rbp,
+                "Cannot use RSP/RBP as destination register"
+            );
             self.emit_spill_reload_ops();
 
             // Determine where the return value is
-            let source_reg = if regs_to_save.contains(&Register::Rax) {
-                Register::R15 // We saved it here
+            let source_reg = if let Some(temp_reg) = rax_temp_reg {
+                temp_reg // We saved it to this temp register (runtime functions only)
             } else {
                 Register::Rax // Still in RAX
             };
@@ -919,16 +1327,29 @@ impl<'a> Lowering<'a> {
                     src: source_reg,
                 });
             }
+            // Note: assign_reg_for_def already marks the register as dirty, so no need to schedule_store
         }
 
         Ok(())
     }
 
-    fn lower_return(&mut self, value: Option<&VReg>) -> Result<(), String> {
+    fn lower_return(&mut self, value: Option<&VReg>) -> Result<(), LoweringError> {
+        // CRITICAL: Flush all dirty registers FIRST, then load return value
+        // This prevents the return value from being corrupted by flush operations
+        self.allocator.flush_stores();
+        self.emit_spill_reload_ops();
+
         if let Some(vreg) = value {
-            // Move return value to RAX
+            if std::env::var("RUE_DEBUG").is_ok() {
+                eprintln!("lower_return: returning vreg {vreg:?}");
+            }
+            // Now load the return value after all other values have been flushed
+            // This ensures the return value register won't be used as a scratch register
             let value_reg = self.allocator.ensure_reg(*vreg, &[])?;
             self.emit_spill_reload_ops();
+            if std::env::var("RUE_DEBUG").is_ok() {
+                eprintln!("lower_return: vreg {vreg:?} in register {value_reg:?}");
+            }
             if value_reg != Register::Rax {
                 self.emit(MachineInstr::MovRR {
                     dest: Register::Rax,
@@ -955,7 +1376,7 @@ impl<'a> Lowering<'a> {
         result: VReg,
         syscall_num: VReg,
         args: &[VReg],
-    ) -> Result<(), String> {
+    ) -> Result<(), LoweringError> {
         // System V ABI for syscalls: syscall number in RAX, args in RDI, RSI, RDX, R10, R8, R9
         let syscall_arg_regs = [
             Register::Rdi,
@@ -979,7 +1400,7 @@ impl<'a> Lowering<'a> {
         // Move arguments
         for (i, &arg_vreg) in args.iter().enumerate() {
             if i >= syscall_arg_regs.len() {
-                return Err("Too many arguments for syscall".to_string());
+                return Err(LoweringError::TooManyArguments);
             }
             let arg_reg = self.allocator.ensure_reg(arg_vreg, &[])?;
             self.emit_spill_reload_ops();
@@ -995,6 +1416,10 @@ impl<'a> Lowering<'a> {
 
         // Move result from RAX
         let result_reg = self.allocator.ensure_reg(result, &[])?;
+        debug_assert!(
+            result_reg != Register::Rsp && result_reg != Register::Rbp,
+            "Cannot use RSP/RBP as destination register"
+        );
         self.emit_spill_reload_ops();
         if result_reg != Register::Rax {
             self.emit(MachineInstr::MovRR {
@@ -1002,25 +1427,27 @@ impl<'a> Lowering<'a> {
                 src: Register::Rax,
             });
         }
+        // Mark the result as dirty after syscall
+        self.allocator.schedule_store(result, result_reg);
 
         Ok(())
     }
 
-    fn lower_save_registers(&mut self, registers: &[Register]) -> Result<(), String> {
+    fn lower_save_registers(&mut self, registers: &[Register]) -> Result<(), LoweringError> {
         for &reg in registers {
             self.emit(MachineInstr::Push { reg });
         }
         Ok(())
     }
 
-    fn lower_restore_registers(&mut self, registers: &[Register]) -> Result<(), String> {
+    fn lower_restore_registers(&mut self, registers: &[Register]) -> Result<(), LoweringError> {
         for &reg in registers.iter().rev() {
             self.emit(MachineInstr::Pop { reg });
         }
         Ok(())
     }
 
-    fn lower_enter_frame(&mut self) -> Result<(), String> {
+    fn lower_enter_frame(&mut self) -> Result<(), LoweringError> {
         // Standard x86-64 function prologue
         self.emit(MachineInstr::EnterFrame);
 
@@ -1036,7 +1463,14 @@ impl<'a> Lowering<'a> {
         Ok(())
     }
 
-    fn lower_leave_frame(&mut self) -> Result<(), String> {
+    fn lower_leave_frame(&mut self) -> Result<(), LoweringError> {
+        // Check that push_count is balanced (should only have RBP pushed)
+        debug_assert_eq!(
+            self.push_count, 1,
+            "Unbalanced pushes at function exit: push_count = {} (expected 1 for RBP)",
+            self.push_count
+        );
+
         // Standard x86-64 function epilogue
         self.emit(MachineInstr::LeaveFrame);
         Ok(())
@@ -1044,43 +1478,79 @@ impl<'a> Lowering<'a> {
 
     fn get_or_create_label(&mut self, label_id: Label) -> u32 {
         // First check external label map if provided
-        if let Some(ref external_map) = self.external_label_map {
+        if let Some(external_map) = self.external_label_map {
             if let Some(&machine_id) = external_map.get(&label_id) {
                 return machine_id;
             }
         }
 
-        // Fall back to creating a new label
-        *self.label_map.entry(label_id).or_insert_with(|| {
-            let id = self.next_label_id;
-            self.next_label_id += 1;
-            id
-        })
+        // Check if we already have this label
+        if let Some(&existing_id) = self.label_map.get(&label_id) {
+            return existing_id;
+        }
+
+        // Create a new label
+        let new_id = self.new_label();
+        self.label_map.insert(label_id, new_id);
+        new_id
     }
 
-    fn get_scratch_register(&self, forbidden: &[Register]) -> Result<Register, String> {
-        // Use R15 as scratch register, checking it's not forbidden
-        let scratch = Register::R15;
-        if forbidden.contains(&scratch) {
-            Err("Scratch register R15 is in use".to_string())
-        } else {
-            Ok(scratch)
-        }
+    /// Get the internal label map (for external synchronization)
+    pub fn get_label_map(&self) -> &HashMap<Label, u32> {
+        &self.label_map
+    }
+
+    /// Get the current next label ID (for external synchronization)
+    pub fn get_next_label_id(&self) -> u32 {
+        self.next_label_id
+    }
+
+    fn get_scratch_register(&mut self, forbidden: &[Register]) -> Result<Register, LoweringError> {
+        // Use the allocator to get an unreserved scratch register
+        let scratch = self
+            .allocator
+            .get_unreserved_scratch(forbidden)
+            .ok_or(LoweringError::NoScratchRegister)?;
+
+        // CRITICAL: Invalidate the register to ensure it's safe to use
+        // This will spill any dirty value it contains. We emit spill operations
+        // immediately to prevent any re-clobbering issues.
+        self.allocator.invalidate_register(scratch);
+        self.emit_spill_reload_ops();
+
+        // Verify that the scratch register is actually empty after spill operations
+        // This is a safety check to ensure no subsequent operations clobbered it
+        debug_assert!(
+            !self.allocator.is_register_allocated(scratch),
+            "Scratch register {scratch:?} was clobbered after invalidation"
+        );
+
+        Ok(scratch)
     }
 
     fn emit(&mut self, instr: MachineInstr) {
-        // Track push/pop instructions for stack alignment
-        match &instr {
-            MachineInstr::Push { .. } => {
-                self.push_count += 1;
-            }
-            MachineInstr::Pop { .. } => {
-                if self.push_count > 0 {
-                    self.push_count -= 1;
+        // Track VReg initialization when store instructions are actually emitted
+        if let MachineInstr::MovMR {
+            src: _,
+            base,
+            offset,
+        } = &instr
+        {
+            if *base == Register::Rbp {
+                // This is a store to stack - find which VReg this corresponds to
+                if let Some(vreg) = self.allocator.find_vreg_for_slot(*offset as i64) {
+                    self.allocator.mark_vreg_initialized(vreg);
+                    if std::env::var("RUE_DEBUG").is_ok() {
+                        eprintln!(
+                            "Marking VReg {vreg:?} as initialized (stored to offset {offset})"
+                        );
+                    }
                 }
             }
-            _ => {}
         }
+
+        // NOTE: Push/pop tracking is handled in lower_push/lower_pop
+        // to avoid double-counting. This method just emits instructions.
         self.instructions.push(instr);
     }
 
@@ -1088,28 +1558,19 @@ impl<'a> Lowering<'a> {
     fn emit_spill_reload_ops(&mut self) {
         let ops = self.allocator.take_pending_ops();
         for op in ops {
-            match op {
-                SpillReloadOp::Spill { reg, stack_offset } => {
-                    self.emit(MachineInstr::MovMR {
-                        base: Register::Rbp,
-                        offset: stack_offset,
-                        src: reg,
-                    });
-                }
-                SpillReloadOp::Reload { reg, stack_offset } => {
-                    self.emit(MachineInstr::MovRM {
-                        dest: reg,
-                        base: Register::Rbp,
-                        offset: stack_offset,
-                    });
-                }
-                SpillReloadOp::Move { from, to } => {
-                    self.emit(MachineInstr::MovRR {
-                        dest: to,
-                        src: from,
-                    });
-                }
-            }
+            self.emit(op);
         }
+    }
+
+    /// Flush all dirty registers before control flow transfers
+    /// This ensures that all values are written back to memory before jumping
+    fn flush_for_cf(&mut self) {
+        self.allocator.flush_stores();
+        self.emit_spill_reload_ops();
+
+        // After writing every live value to memory we must forget
+        // about the registers, because the forthcoming control-flow edge or
+        // call may clobber them.
+        self.allocator.clear_all_registers();
     }
 }

@@ -108,12 +108,12 @@ pub enum MirValue {
     Call {
         func: String,
         args: Vec<Temp>,
-        return_type: RueType,
+        kind: CallKind,
     },
 }
 
 /// Constant values in MIR
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum MirConst {
     /// 32-bit integer constant
     Int32(i32),
@@ -126,13 +126,27 @@ pub enum MirConst {
 }
 
 /// Binary operations in MIR
+///
+/// ## Overflow Semantics
+///
+/// Rue uses wrapping semantics for integer overflow:
+/// - `Add`, `Sub`, `Mul`: Use wrapping arithmetic (overflow wraps around)
+/// - `Div`, `Mod`: Use truncating division toward zero (Rust's default behavior)
+///   - Division by zero panics at runtime
+///   - For signed division: `MIN / -1` wraps to `MIN` (e.g., `i32::MIN / -1 = i32::MIN`)
+///   - For signed modulo: `MIN % -1` returns `0` (follows Rust's behavior)
+///
+/// This matches Rust's default integer behavior and provides predictable
+/// semantics across all target platforms.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum MirBinOp {
     // Arithmetic
     Add,
     Sub,
     Mul,
+    /// Division (truncates toward zero, panics on division by zero)
     Div,
+    /// Modulo/remainder (follows Rust semantics, panics on division by zero)
     Mod,
     // Comparison
     Lt,
@@ -146,15 +160,50 @@ pub enum MirBinOp {
 /// Unary operations in MIR
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum MirUnaryOp {
-    /// Negation
+    /// Negation (only valid for i32 and i64 types)
     Neg,
+}
+
+/// Function call kind for tracking side effects and optimization opportunities
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum CallKind {
+    /// Pure function call - no side effects, result only depends on arguments
+    /// Can be eliminated if result is unused, can be moved across other pure operations
+    Pure,
+    /// Impure function call - may have side effects or depend on global state
+    /// Cannot be eliminated even if result is unused, order must be preserved
+    Impure,
+}
+
+impl MirUnaryOp {
+    /// Check if this unary operation is valid for the given type
+    pub fn is_valid_for_type(&self, ty: &RueType) -> bool {
+        match self {
+            MirUnaryOp::Neg => matches!(ty, RueType::I32 | RueType::I64),
+        }
+    }
+
+    /// Get the result type of applying this unary operation to the given type
+    /// Returns None if the operation is not valid for the type
+    pub fn result_type(&self, operand_type: &RueType) -> Option<RueType> {
+        if self.is_valid_for_type(operand_type) {
+            Some(operand_type.clone())
+        } else {
+            None
+        }
+    }
 }
 
 /// Block terminators - instructions that end a basic block
 #[derive(Debug, Clone, PartialEq)]
 pub enum MirTerminator {
     /// Unconditional jump with arguments
-    Goto { target: BlockId, args: Vec<Temp> },
+    Goto {
+        target: BlockId,
+        args: Vec<Temp>,
+        /// Source span for debugging and error reporting
+        span: Option<Span>,
+    },
     /// Conditional branch with arguments for each target
     Branch {
         condition: Temp,
@@ -162,9 +211,35 @@ pub enum MirTerminator {
         then_args: Vec<Temp>,
         else_block: BlockId,
         else_args: Vec<Temp>,
+        /// Source span for debugging and error reporting
+        span: Option<Span>,
+    },
+    /// Multi-way branch based on integer value (enables jump table optimization)
+    Switch {
+        /// The value to switch on (must be integer type)
+        discriminant: Temp,
+        /// Mapping from integer values to target blocks with arguments
+        /// Values must be unique and fit in target integer type
+        targets: Vec<(i64, BlockId, Vec<Temp>)>,
+        /// Default case if no targets match
+        default: BlockId,
+        /// Arguments for default block
+        default_args: Vec<Temp>,
+        /// Source span for debugging and error reporting
+        span: Option<Span>,
+    },
+    /// Marks unreachable code (enables dead code analysis and optimization assumptions)
+    /// This terminator should never be reached during execution
+    Unreachable {
+        /// Source span for debugging and error reporting
+        span: Option<Span>,
     },
     /// Function return
-    Return { value: Option<Temp> },
+    Return {
+        value: Option<Temp>,
+        /// Source span for debugging and error reporting
+        span: Option<Span>,
+    },
 }
 
 // Helper methods
@@ -183,21 +258,30 @@ impl MirConst {
 
 impl MirValue {
     /// Get the type of this value (requires type information for temps)
-    pub fn ty(&self, temp_types: &impl Fn(Temp) -> RueType) -> RueType {
+    /// Note: For Call values, the type must be determined from the assignment context
+    /// since we no longer store return_type directly in the Call variant.
+    pub fn ty(&self, temp_types: &impl Fn(Temp) -> RueType) -> Option<RueType> {
         match self {
-            MirValue::Use(temp) => temp_types(*temp),
-            MirValue::Const(c) => c.ty(),
+            MirValue::Use(temp) => Some(temp_types(*temp)),
+            MirValue::Const(c) => Some(c.ty()),
             MirValue::BinaryOp { op, lhs, .. } => {
                 use MirBinOp::*;
                 match op {
                     // Arithmetic operations preserve type
-                    Add | Sub | Mul | Div | Mod => temp_types(*lhs),
+                    Add | Sub | Mul | Div | Mod => Some(temp_types(*lhs)),
                     // Comparison operations return bool
-                    Lt | Le | Gt | Ge | Eq | Ne => RueType::Bool,
+                    Lt | Le | Gt | Ge | Eq | Ne => Some(RueType::Bool),
                 }
             }
-            MirValue::UnaryOp { operand, .. } => temp_types(*operand),
-            MirValue::Call { return_type, .. } => return_type.clone(),
+            MirValue::UnaryOp { op, operand } => {
+                let operand_type = temp_types(*operand);
+                op.result_type(&operand_type)
+            }
+            MirValue::Call { .. } => {
+                // Call types must be determined from assignment context
+                // The destination temp of the assignment contains the type
+                None
+            }
         }
     }
 }
@@ -353,7 +437,7 @@ impl fmt::Display for MirUnaryOp {
 impl fmt::Display for MirTerminator {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            MirTerminator::Goto { target, args } => {
+            MirTerminator::Goto { target, args, .. } => {
                 write!(f, "goto {target}")?;
                 if !args.is_empty() {
                     write!(f, "(")?;
@@ -373,6 +457,7 @@ impl fmt::Display for MirTerminator {
                 then_args,
                 else_block,
                 else_args,
+                ..
             } => {
                 write!(f, "branch {condition}, {then_block}")?;
                 if !then_args.is_empty() {
@@ -398,7 +483,51 @@ impl fmt::Display for MirTerminator {
                 }
                 Ok(())
             }
-            MirTerminator::Return { value } => {
+            MirTerminator::Switch {
+                discriminant,
+                targets,
+                default,
+                default_args,
+                ..
+            } => {
+                write!(f, "switch {discriminant} ")?;
+                if !targets.is_empty() {
+                    write!(f, "[")?;
+                    for (i, (value, block, args)) in targets.iter().enumerate() {
+                        if i > 0 {
+                            write!(f, ", ")?;
+                        }
+                        write!(f, "{value}: {block}")?;
+                        if !args.is_empty() {
+                            write!(f, "(")?;
+                            for (j, arg) in args.iter().enumerate() {
+                                if j > 0 {
+                                    write!(f, ", ")?;
+                                }
+                                write!(f, "{arg}")?;
+                            }
+                            write!(f, ")")?;
+                        }
+                    }
+                    write!(f, "] ")?;
+                }
+                write!(f, "default {default}")?;
+                if !default_args.is_empty() {
+                    write!(f, "(")?;
+                    for (i, arg) in default_args.iter().enumerate() {
+                        if i > 0 {
+                            write!(f, ", ")?;
+                        }
+                        write!(f, "{arg}")?;
+                    }
+                    write!(f, ")")?;
+                }
+                Ok(())
+            }
+            MirTerminator::Unreachable { .. } => {
+                write!(f, "unreachable")
+            }
+            MirTerminator::Return { value, .. } => {
                 write!(f, "return")?;
                 if let Some(val) = value {
                     write!(f, " {val}")?;
@@ -439,11 +568,136 @@ mod tests {
                 }],
                 terminator: MirTerminator::Return {
                     value: Some(Temp(2)),
+                    span: None,
                 },
             }],
         };
 
         let expected = "fn add(a: i32, b: i32) -> i32:\n  B0(t0: i32, t1: i32):\n    t2 = t0 + t1\n    return t2\n";
         assert_eq!(format!("{func}"), expected);
+    }
+
+    #[test]
+    fn test_unaryop_type_validation() {
+        use crate::types::RueType;
+
+        // Test that negation is valid for numeric types
+        assert!(MirUnaryOp::Neg.is_valid_for_type(&RueType::I32));
+        assert!(MirUnaryOp::Neg.is_valid_for_type(&RueType::I64));
+
+        // Test that negation is invalid for non-numeric types
+        assert!(!MirUnaryOp::Neg.is_valid_for_type(&RueType::Bool));
+        assert!(!MirUnaryOp::Neg.is_valid_for_type(&RueType::Unit));
+
+        // Test result type computation
+        assert_eq!(
+            MirUnaryOp::Neg.result_type(&RueType::I32),
+            Some(RueType::I32)
+        );
+        assert_eq!(
+            MirUnaryOp::Neg.result_type(&RueType::I64),
+            Some(RueType::I64)
+        );
+        assert_eq!(MirUnaryOp::Neg.result_type(&RueType::Bool), None);
+        assert_eq!(MirUnaryOp::Neg.result_type(&RueType::Unit), None);
+    }
+
+    #[test]
+    fn test_switch_terminator_display() {
+        // Test Switch terminator display formatting
+        let switch_term = MirTerminator::Switch {
+            discriminant: Temp(0),
+            targets: vec![
+                (1, BlockId(1), vec![]),
+                (2, BlockId(2), vec![Temp(1)]),
+                (3, BlockId(3), vec![Temp(2), Temp(3)]),
+            ],
+            default: BlockId(4),
+            default_args: vec![Temp(4)],
+            span: None,
+        };
+
+        let expected = "switch t0 [1: B1, 2: B2(t1), 3: B3(t2, t3)] default B4(t4)";
+        assert_eq!(format!("{switch_term}"), expected);
+    }
+
+    #[test]
+    fn test_unreachable_terminator_display() {
+        // Test Unreachable terminator display formatting
+        let unreachable_term = MirTerminator::Unreachable { span: None };
+
+        let expected = "unreachable";
+        assert_eq!(format!("{unreachable_term}"), expected);
+    }
+
+    #[test]
+    fn test_mir_function_with_switch() {
+        // Create a MIR function with a switch statement
+        let func = MirFunction {
+            name: "test_switch".to_string(),
+            params: vec![("x".to_string(), RueType::I32)],
+            return_type: RueType::I32,
+            entry_block: BlockId(0),
+            span: Span::dummy(),
+            blocks: vec![
+                BasicBlock {
+                    id: BlockId(0),
+                    params: vec![(Temp(0), RueType::I32)],
+                    statements: vec![],
+                    terminator: MirTerminator::Switch {
+                        discriminant: Temp(0),
+                        targets: vec![(1, BlockId(1), vec![]), (2, BlockId(2), vec![])],
+                        default: BlockId(3),
+                        default_args: vec![],
+                        span: None,
+                    },
+                },
+                BasicBlock {
+                    id: BlockId(1),
+                    params: vec![],
+                    statements: vec![MirStatement::Assign {
+                        dest: Temp(1),
+                        value: MirValue::Const(MirConst::Int32(10)),
+                        span: None,
+                    }],
+                    terminator: MirTerminator::Return {
+                        value: Some(Temp(1)),
+                        span: None,
+                    },
+                },
+                BasicBlock {
+                    id: BlockId(2),
+                    params: vec![],
+                    statements: vec![MirStatement::Assign {
+                        dest: Temp(2),
+                        value: MirValue::Const(MirConst::Int32(20)),
+                        span: None,
+                    }],
+                    terminator: MirTerminator::Return {
+                        value: Some(Temp(2)),
+                        span: None,
+                    },
+                },
+                BasicBlock {
+                    id: BlockId(3),
+                    params: vec![],
+                    statements: vec![MirStatement::Assign {
+                        dest: Temp(3),
+                        value: MirValue::Const(MirConst::Int32(30)),
+                        span: None,
+                    }],
+                    terminator: MirTerminator::Return {
+                        value: Some(Temp(3)),
+                        span: None,
+                    },
+                },
+            ],
+        };
+
+        let output = format!("{func}");
+        assert!(output.contains("switch t0"));
+        assert!(output.contains("1: B1"));
+        assert!(output.contains("2: B2"));
+        assert!(output.contains("default B3"));
     }
 }

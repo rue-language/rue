@@ -188,6 +188,7 @@ mod tests {
                     ],
                     terminator: MirTerminator::Return {
                         value: Some(Temp(3)),
+                        span: None,
                     },
                 }],
             }],
@@ -258,6 +259,7 @@ mod tests {
                     ],
                     terminator: MirTerminator::Return {
                         value: Some(Temp(3)),
+                        span: None,
                     },
                 }],
             }],
@@ -308,6 +310,7 @@ mod tests {
                     ],
                     terminator: MirTerminator::Return {
                         value: Some(Temp(1)),
+                        span: None,
                     },
                 }],
             }],

@@ -8,11 +8,13 @@ cargo.rust_library(
     deps = [
         "//crates/rue-ast:rue-ast",
         "//crates/rue-lexer:rue-lexer",
+        "//crates/rue-lowering:rue-lowering",
+        "//crates/rue-optimize:rue-optimize",
         "//crates/rue-parser:rue-parser",
         "//crates/rue-semantic:rue-semantic",
         "//crates/rue-runtime:rue-runtime",
         "//crates/rue-ir:rue-ir",
-        "//:indexmap",
+        "//third-party/rust:indexmap",
     ],
     visibility = ["PUBLIC"],
 )
@@ -25,10 +27,13 @@ rust_test(
     deps = [
         "//crates/rue-ast:rue-ast",
         "//crates/rue-lexer:rue-lexer",
+        "//crates/rue-lowering:rue-lowering",
+        "//crates/rue-optimize:rue-optimize",
         "//crates/rue-parser:rue-parser",
         "//crates/rue-semantic:rue-semantic",
         "//crates/rue-runtime:rue-runtime",
         "//crates/rue-ir:rue-ir",
-        "//:indexmap",
+        "//third-party/rust:indexmap",
+        "//third-party/rust:regex",
     ],
 )

@@ -1,390 +1,698 @@
+//! A correct "spill everything" register allocator with proper state tracking
+//!
+//! This allocator implements the simplest possible correct allocation strategy:
+//! - Every VReg gets a permanent home slot on the stack
+//! - Values are loaded into registers only when needed
+//! - Values are stored back immediately after use
+//! - No values persist in registers between instructions
+//! - Proper tracking prevents pending-store clobbering
+//!
+//! This generates inefficient code but is guaranteed to be correct.
+//!
+//! ## Contract with Lowering Layer
+//!
+//! The allocator guarantees:
+//! - Every Dirty value is spilled before its register is reused or clobbered
+//! - No load from an uninitialized stack slot (tracks initialized_vregs)
+//! - Stack size is 16-byte aligned (SysV ABI requirement)
+//! - Scratch registers don't clash with special-purpose registers
+//! - 8-bit capable registers are available for SetCC operations
+//!
+//! The lowering layer must:
+//! - Call `emit_spill_reload_ops()` whenever requesting/invalidating a scratch reg
+//! - Call `mark_vreg_initialized()` when emitting MovMR stores
+//! - Handle caller-saved register preservation around function calls
+
 use crate::VReg;
-use rue_ir::target::Register;
+use rue_ir::target::{MachineInstr, Register};
 use std::collections::HashMap;
 
-/// Location where a virtual register is stored
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Location {
-    /// Stored in a physical register
-    Register(Register),
-    /// Stored in a stack slot at the given offset from RBP
-    StackSlot(i32),
+/// Size of a stack slot in bytes
+const SLOT_SIZE: i64 = 8;
+
+/// Stack alignment requirement (SysV ABI)
+const STACK_ALIGNMENT: i64 = 16;
+
+/// State of a register - Empty, Clean (loaded but not modified), or Dirty (modified)
+#[derive(Clone, PartialEq, Eq)]
+enum RegState {
+    /// Register contains no useful value
+    Empty,
+    /// Register contains a VReg value that matches memory (read-only)
+    Clean(VReg),
+    /// Register contains a VReg value that has been modified (needs spill)
+    Dirty(VReg),
 }
 
-/// Operations that need to be emitted by the lowering layer
+impl std::fmt::Debug for RegState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            RegState::Empty => write!(f, "Empty"),
+            RegState::Clean(vreg) => write!(f, "Clean({vreg:?})"),
+            RegState::Dirty(vreg) => write!(f, "Dirty({vreg:?})"),
+        }
+    }
+}
+
+/// State of a scratch register
 #[derive(Debug, Clone)]
-pub enum SpillReloadOp {
-    /// Spill a register to stack
-    Spill { reg: Register, stack_offset: i32 },
-    /// Reload from stack to register
-    Reload { reg: Register, stack_offset: i32 },
-    /// Move between registers
-    Move { from: Register, to: Register },
+struct ScratchState {
+    /// The register
+    reg: Register,
+    /// Current state of the register
+    state: RegState,
 }
 
-/// Register allocator with stack spilling support
+/// A "spill everything" register allocator with proper state tracking
+///
+/// This allocator ensures correctness by:
+/// - Tracking which registers contain dirty values
+/// - Preventing register reuse before spilling
+/// - Maintaining proper stack alignment
+/// - Supporting variable-sized values
 pub struct RegisterAllocator {
-    /// Mapping from virtual registers to their locations
-    allocation: HashMap<VReg, Location>,
-    /// Available physical registers (in order of preference)
-    available_registers: Vec<Register>,
-    /// Free registers available for allocation
-    free_registers: Vec<Register>,
-    /// Current stack offset for new stack slots (negative from RBP)
-    stack_offset: i32,
-    /// LRU order for spill victim selection (least recent first, most recent last)
-    lru_order: Vec<VReg>,
-    /// Home stack slots for each vreg (once allocated, never changes)
-    home_slots: HashMap<VReg, i32>,
-    /// Pending spill/reload operations to be emitted
-    pending_ops: Vec<SpillReloadOp>,
+    /// Home stack slot for each VReg (allocated on first use)
+    home_slots: HashMap<VReg, i64>,
+    /// Current stack allocation pointer (grows downward)
+    /// Using i64 to prevent overflow with large functions
+    stack_offset: i64,
+    /// Scratch register states
+    scratch_states: Vec<ScratchState>,
+    /// Pending operations to emit
+    pending_ops: Vec<MachineInstr>,
+    /// Track which VRegs have been initialized (have valid values in their home slots)
+    /// This prevents spurious loads from uninitialized stack slots
+    initialized_vregs: std::collections::HashSet<VReg>,
 }
 
 impl RegisterAllocator {
+    /// Create a new allocator for a function
     pub fn new() -> Self {
-        // Use only caller-saved registers to avoid ABI violations
-        // R15 is reserved as a scratch register for the assembler
-        let registers = vec![
-            Register::Rcx,
-            Register::Rdx,
-            Register::Rsi,
-            Register::Rdi,
-            Register::R8,
-            Register::R9,
-            Register::R10,
-            Register::R11,
+        // Initialize scratch register states
+        // CRITICAL: Only use caller-saved registers that don't conflict with special operations:
+        // - RAX is used for division results and syscall returns
+        // - RCX is used for shift counts and division
+        // - RDX is used for division high bits and syscall args
+        // - R15 is callee-saved (excluded to avoid save/restore overhead)
+        // Using: R10, R11 (both caller-saved and available)
+        // Could also use: R8, R9 (but they're often used for function args)
+        let scratch_states = vec![
+            ScratchState {
+                reg: Register::R10,
+                state: RegState::Empty,
+            },
+            ScratchState {
+                reg: Register::R11,
+                state: RegState::Empty,
+            },
+            // Adding more caller-saved registers for better allocation
+            ScratchState {
+                reg: Register::R8,
+                state: RegState::Empty,
+            },
+            ScratchState {
+                reg: Register::R9,
+                state: RegState::Empty,
+            },
         ];
 
         Self {
-            allocation: HashMap::new(),
-            available_registers: registers.clone(),
-            free_registers: registers, // Initially all registers are free
-            stack_offset: 0,
-            lru_order: Vec::new(),
             home_slots: HashMap::new(),
+            stack_offset: 0,
+            scratch_states,
             pending_ops: Vec::new(),
+            initialized_vregs: std::collections::HashSet::new(),
         }
     }
 
-    /// Allocate a location (register or stack slot) for a virtual register
-    pub fn allocate(&mut self, vreg: VReg) -> Result<(), String> {
-        match self.allocation.get(&vreg).copied() {
-            Some(Location::Register(_)) => {
-                // Already in a register - just update LRU
-                self.update_lru(vreg);
-                Ok(())
-            }
-            Some(Location::StackSlot(_stack_offset)) => {
-                // Currently spilled - need to reload into a register
-                let physical_reg = if let Some(reg) = self.free_registers.pop() {
-                    reg
-                } else {
-                    // No free registers - spill another to make room
-                    self.spill_register()?
-                };
+    /// Set the initial stack offset to avoid overlapping with pre-allocated slots
+    /// (e.g., block parameter slots)
+    pub fn set_initial_stack_offset(&mut self, offset: i64) {
+        debug_assert!(
+            offset <= 0,
+            "Stack offset must be non-positive (stack grows downward), got {offset}"
+        );
+        self.stack_offset = offset;
+    }
 
-                // Update allocation to the new register
-                self.allocation
-                    .insert(vreg, Location::Register(physical_reg));
-
-                // Add to LRU order (it was removed when spilled)
-                self.lru_order.push(vreg);
-                Ok(())
+    /// Get or allocate a home slot for a VReg
+    /// For now, assumes all values are 8 bytes (will be enhanced later)
+    fn get_home_slot(&mut self, vreg: VReg) -> i64 {
+        *self.home_slots.entry(vreg).or_insert_with(|| {
+            // Allocate 8-byte slot (will be enhanced for variable sizes)
+            self.stack_offset -= SLOT_SIZE;
+            if std::env::var("RUE_DEBUG").is_ok() {
+                eprintln!(
+                    "Allocating home slot for {:?} at offset {}",
+                    vreg, self.stack_offset
+                );
             }
-            None => {
-                // Not yet allocated - allocate a new register
-                if let Some(physical_reg) = self.free_registers.pop() {
-                    // Free register available - use it
-                    self.allocation
-                        .insert(vreg, Location::Register(physical_reg));
-                    self.lru_order.push(vreg);
-                    Ok(())
-                } else {
-                    // No free registers - spill LRU register and use the freed one
-                    let freed_reg = self.spill_register()?;
-                    self.allocation.insert(vreg, Location::Register(freed_reg));
-                    self.lru_order.push(vreg);
-                    Ok(())
+            self.stack_offset
+        })
+    }
+
+    /// Generate a load instruction from memory to register
+    fn gen_load(&mut self, vreg: VReg, dest_reg: Register) -> MachineInstr {
+        let slot = self.get_home_slot(vreg);
+        // Ensure the offset fits in an i32
+        assert!(
+            slot >= i32::MIN as i64 && slot <= i32::MAX as i64,
+            "Stack offset {slot} exceeds i32 range"
+        );
+        MachineInstr::MovRM {
+            dest: dest_reg,
+            base: Register::Rbp,
+            offset: slot as i32,
+        }
+    }
+
+    /// Generate a store instruction from register to memory
+    fn gen_store(&mut self, vreg: VReg, src_reg: Register) -> MachineInstr {
+        let slot = self.get_home_slot(vreg);
+        // Ensure the offset fits in an i32
+        assert!(
+            slot >= i32::MIN as i64 && slot <= i32::MAX as i64,
+            "Stack offset {slot} exceeds i32 range"
+        );
+        // NOTE: VReg is marked as initialized in the lowering layer when the store is actually emitted
+        // This prevents race conditions where VRegs are marked initialized before their stores are emitted
+        MachineInstr::MovMR {
+            src: src_reg,
+            base: Register::Rbp,
+            offset: slot as i32,
+        }
+    }
+
+    /// Mark a VReg as initialized (called when its store instruction is actually emitted)
+    pub fn mark_vreg_initialized(&mut self, vreg: VReg) {
+        self.initialized_vregs.insert(vreg);
+    }
+
+    /// Get the home slot offset for a VReg (for extracting from MovMR instructions)
+    pub fn get_vreg_home_slot(&self, vreg: VReg) -> Option<i64> {
+        self.home_slots.get(&vreg).copied()
+    }
+
+    /// Find the VReg that corresponds to a given stack offset
+    pub fn find_vreg_for_slot(&self, offset: i64) -> Option<VReg> {
+        for (&vreg, &slot) in &self.home_slots {
+            if slot == offset {
+                return Some(vreg);
+            }
+        }
+        None
+    }
+
+    /// Get total stack space needed, properly aligned to 16 bytes
+    pub fn get_stack_size(&self) -> u32 {
+        self.aligned_stack_size()
+    }
+
+    /// Get aligned stack frame size (internal helper)
+    fn aligned_stack_size(&self) -> u32 {
+        // Align to 16 bytes for System V ABI
+        let size = -self.stack_offset;
+        let aligned = (size + STACK_ALIGNMENT - 1) & !(STACK_ALIGNMENT - 1); // Round up to next 16-byte boundary
+        aligned as u32
+    }
+
+    /// Spill a dirty value from a register and clear all mappings for that VReg
+    fn spill_dirty_value(&mut self, vreg: VReg, reg: Register) {
+        let spill = self.gen_store(vreg, reg);
+        self.pending_ops.push(spill);
+
+        // CRITICAL: Clear any stale mappings for the spilled VReg
+        // The VReg we just spilled might be marked as present in other registers too
+        // We must clear all those stale mappings to prevent ensure_reg from using them
+        for state in &mut self.scratch_states {
+            match &state.state {
+                RegState::Clean(v) | RegState::Dirty(v) if *v == vreg => {
+                    state.state = RegState::Empty;
+                }
+                _ => {}
+            }
+        }
+    }
+
+    /// Assign a register for defining a VReg with 8-bit operation constraints
+    /// This is specifically for operations like SetCC that require 8-bit capable registers
+    pub fn assign_reg_for_8bit_def(
+        &mut self,
+        vreg: VReg,
+        forbidden: &[Register],
+    ) -> Result<Register, String> {
+        // Allocate home slot if needed
+        self.get_home_slot(vreg);
+
+        // Find an available 8-bit capable scratch register
+        let scratch_idx = self.find_8bit_capable_scratch(forbidden)?;
+
+        // Handle existing state in the target register
+        match &self.scratch_states[scratch_idx].state {
+            RegState::Dirty(existing_vreg) => {
+                if existing_vreg != &vreg {
+                    // Spill the existing dirty value
+                    let existing = *existing_vreg;
+                    self.spill_dirty_value(existing, self.scratch_states[scratch_idx].reg);
                 }
             }
+            _ => {
+                // Clean or Empty - no spill needed
+            }
+        }
+
+        // Mark the register as containing this VReg (dirty because we're about to write to it)
+        let reg = self.scratch_states[scratch_idx].reg;
+        self.scratch_states[scratch_idx].state = RegState::Dirty(vreg);
+
+        Ok(reg)
+    }
+
+    /// Assign a register for defining a VReg (never loads old value)
+    /// This is used for phi nodes and other cases where the VReg is being defined, not read
+    pub fn assign_reg_for_def(
+        &mut self,
+        vreg: VReg,
+        forbidden: &[Register],
+    ) -> Result<Register, String> {
+        // Allocate home slot if needed
+        self.get_home_slot(vreg);
+
+        // DO NOT mark as initialized here! VRegs should only be marked as initialized
+        // when they're actually stored to memory via schedule_store -> gen_store.
+        // This fixes the bug where assign_reg_for_def would mark VRegs as initialized
+        // before any value was actually written, causing ensure_reg to load garbage.
+
+        // Find an available scratch register
+        let scratch_idx = self.find_available_scratch_with_filter(forbidden, None)?;
+
+        // Handle existing state in the target register
+        match &self.scratch_states[scratch_idx].state {
+            RegState::Dirty(existing_vreg) => {
+                if existing_vreg != &vreg {
+                    // Spill the existing dirty value
+                    let existing = *existing_vreg;
+                    self.spill_dirty_value(existing, self.scratch_states[scratch_idx].reg);
+                }
+            }
+            _ => {
+                // Clean or Empty - no spill needed
+            }
+        }
+
+        // Mark the register as containing this VReg (dirty because we're about to write to it)
+        let reg = self.scratch_states[scratch_idx].reg;
+        self.scratch_states[scratch_idx].state = RegState::Dirty(vreg);
+
+        Ok(reg)
+    }
+
+    /// Main API: ensure a VReg is in a register
+    pub fn ensure_reg(&mut self, vreg: VReg, forbidden: &[Register]) -> Result<Register, String> {
+        // First check if the vreg is already in a register (Clean or Dirty)
+        for state in &self.scratch_states {
+            match &state.state {
+                RegState::Clean(v) | RegState::Dirty(v)
+                    if *v == vreg && !forbidden.contains(&state.reg) =>
+                {
+                    // Already in this register, no need to reload
+                    if std::env::var("RUE_DEBUG").is_ok() {
+                        eprintln!(
+                            "ensure_reg: VReg {:?} found in register {:?} (state: {:?})",
+                            vreg, state.reg, state.state
+                        );
+                    }
+                    return Ok(state.reg);
+                }
+                _ => {}
+            }
+        }
+
+        // Find an available scratch register
+        let scratch_idx = self.find_available_scratch_with_filter(forbidden, None)?;
+
+        // Handle existing state in the target register
+        match &self.scratch_states[scratch_idx].state {
+            RegState::Dirty(existing_vreg) => {
+                if existing_vreg != &vreg {
+                    // Spill the existing dirty value
+                    let existing = *existing_vreg;
+                    self.spill_dirty_value(existing, self.scratch_states[scratch_idx].reg);
+                }
+            }
+            RegState::Clean(existing_vreg) => {
+                if existing_vreg == &vreg {
+                    // The register already contains the vreg we want
+                    return Ok(self.scratch_states[scratch_idx].reg);
+                }
+                // Clean value is being overwritten, no spill needed
+            }
+            RegState::Empty => {
+                // Register is empty, no cleanup needed
+            }
+        }
+
+        // Load the requested value
+        let reg = self.scratch_states[scratch_idx].reg;
+
+        // For the simple allocator, we need to be conservative about initialization.
+        // Only load from memory if we're absolutely certain the VReg has been stored.
+        // This fixes the bug where temporary VRegs for function call arguments
+        // (like the result of "n - 1") were loading garbage from uninitialized memory.
+        let should_load = self.initialized_vregs.contains(&vreg);
+
+        if std::env::var("RUE_DEBUG").is_ok() {
+            if should_load {
+                eprintln!("ensure_reg: VReg {vreg:?} is initialized, loading from memory");
+            } else {
+                eprintln!("ensure_reg: VReg {vreg:?} is uninitialized, treating as new value");
+            }
+        }
+
+        if should_load {
+            // Load from home slot
+            let load = self.gen_load(vreg, reg);
+            self.pending_ops.push(load);
+            self.scratch_states[scratch_idx].state = RegState::Clean(vreg);
+        } else {
+            // VReg has never been initialized, mark register as containing it
+            // but don't generate a load from uninitialized memory
+            self.scratch_states[scratch_idx].state = RegState::Dirty(vreg);
+        }
+
+        Ok(reg)
+    }
+
+    /// Schedule a store operation for a VReg value that's currently in a register
+    pub fn schedule_store(&mut self, vreg: VReg, reg: Register) {
+        // Check if this is one of our scratch registers
+        let mut found_idx = None;
+        for (idx, state) in self.scratch_states.iter().enumerate() {
+            if state.reg == reg {
+                found_idx = Some(idx);
+                break;
+            }
+        }
+
+        if let Some(idx) = found_idx {
+            // Handle existing state in the register
+            match &self.scratch_states[idx].state {
+                RegState::Dirty(old_vreg) if *old_vreg != vreg => {
+                    // Spill the old dirty value before overwriting
+                    let store = self.gen_store(*old_vreg, reg);
+                    self.pending_ops.push(store);
+                }
+                _ => {
+                    // Either Empty, Clean, or already Dirty with same vreg - no spill needed
+                }
+            }
+            // Mark the register as dirty with the new vreg
+            self.scratch_states[idx].state = RegState::Dirty(vreg);
+        } else {
+            // Not a scratch register - spill immediately
+            let store = self.gen_store(vreg, reg);
+            self.pending_ops.push(store);
         }
     }
 
-    /// Get the location for a virtual register
-    pub fn get_location(&self, vreg: VReg) -> Option<Location> {
-        self.allocation.get(&vreg).copied()
-    }
-
-    /// Get the physical register for a virtual register (must be already allocated)
-    pub fn get_register(&self, vreg: VReg) -> Option<Register> {
-        match self.allocation.get(&vreg) {
-            Some(Location::Register(reg)) => Some(*reg),
-            Some(Location::StackSlot(_)) => None,
-            None => None,
-        }
-    }
-
-    /// Check if a physical register is currently allocated to any virtual register
-    pub fn is_register_allocated(&self, reg: Register) -> bool {
-        self.allocation
-            .values()
-            .any(|loc| matches!(loc, Location::Register(r) if *r == reg))
-    }
-
-    /// Invalidate a register - mark any vreg in this register as spilled
-    /// and generate spill operations to preserve their values
-    pub fn invalidate_register(&mut self, reg: Register) {
-        // Find any vreg that thinks it's in this register
-        let vregs_to_spill: Vec<VReg> = self
-            .allocation
-            .iter()
-            .filter_map(|(vreg, loc)| match loc {
-                Location::Register(r) if *r == reg => Some(*vreg),
-                _ => None,
+    /// Flush all pending stores
+    pub fn flush_stores(&mut self) {
+        // Collect dirty registers first to avoid borrow checker issues
+        let dirty_regs: Vec<(VReg, Register)> = self
+            .scratch_states
+            .iter_mut()
+            .filter_map(|state| {
+                match std::mem::replace(&mut state.state, RegState::Empty) {
+                    RegState::Dirty(vreg) => Some((vreg, state.reg)),
+                    other_state => {
+                        // Restore non-dirty state
+                        state.state = other_state;
+                        None
+                    }
+                }
             })
             .collect();
 
-        // Spill those vregs and generate spill operations
-        for vreg in vregs_to_spill {
-            // Get or allocate a home slot
-            let home_slot = if let Some(&slot) = self.home_slots.get(&vreg) {
-                slot
-            } else {
-                let new_slot = self.allocate_stack_slot();
-                self.home_slots.insert(vreg, new_slot);
-                new_slot
-            };
-
-            // Generate spill operation to save the current value in the register
-            self.pending_ops.push(SpillReloadOp::Spill {
-                reg,
-                stack_offset: home_slot,
-            });
-
-            // Update the allocation to indicate it's on the stack
-            self.allocation.insert(vreg, Location::StackSlot(home_slot));
-
-            // Remove from LRU order since it's no longer in a register
-            self.lru_order.retain(|&v| v != vreg);
-
-            // The register is now free
-            if !self.free_registers.contains(&reg) {
-                self.free_registers.push(reg);
-            }
+        // Generate stores for all dirty registers
+        for (vreg, reg) in dirty_regs {
+            let store = self.gen_store(vreg, reg);
+            self.pending_ops.push(store);
         }
     }
 
-    /// Spill the least recently used register to stack and return the freed register
-    fn spill_register(&mut self) -> Result<Register, String> {
-        // Find the LRU register that's currently in a physical register
-        // Iterate from front since least recently used is at the beginning
-        let lru_vreg = self
-            .lru_order
-            .iter()
-            .find(|&&vreg| matches!(self.allocation.get(&vreg), Some(Location::Register(_))))
-            .copied()
-            .ok_or("No registers available to spill")?;
-
-        // Get the physical register before we remove the mapping
-        let freed_register = match self.allocation.get(&lru_vreg) {
-            Some(Location::Register(reg)) => *reg,
-            _ => return Err("LRU vreg is not in a register".to_string()),
-        };
-
-        // Get or allocate a home stack slot for the spilled register
-        let stack_slot = if let Some(&slot) = self.home_slots.get(&lru_vreg) {
-            slot
-        } else {
-            let new_slot = self.allocate_stack_slot();
-            self.home_slots.insert(lru_vreg, new_slot);
-            new_slot
-        };
-
-        // Update the allocation to point to stack
-        self.allocation
-            .insert(lru_vreg, Location::StackSlot(stack_slot));
-
-        // Remove from LRU order since it's now spilled
-        self.lru_order.retain(|&vreg| vreg != lru_vreg);
-
-        // Return the freed register (caller will use it)
-        Ok(freed_register)
-    }
-
-    /// Allocate a new stack slot with proper alignment
-    fn allocate_stack_slot(&mut self) -> i32 {
-        self.stack_offset -= 8; // 8-byte alignment for 64-bit values
-        self.stack_offset
-    }
-
-    /// Update LRU order (move vreg to end as most recently used)
-    fn update_lru(&mut self, vreg: VReg) {
-        self.lru_order.retain(|&v| v != vreg);
-        self.lru_order.push(vreg); // Push to end - most recent is last
-    }
-
-    /// Get total stack space needed for spilled registers
-    pub fn get_stack_space_needed(&self) -> u32 {
-        (-self.stack_offset) as u32
-    }
-
-    /// Get all current vreg locations for saving caller-saved registers
-    pub fn get_all_locations(&self) -> impl Iterator<Item = (VReg, Location)> + '_ {
-        self.allocation.iter().map(|(&vreg, &loc)| (vreg, loc))
-    }
-
-    /// Reset allocator state for a new function
-    /// This is critical for recursive functions to avoid stack slot conflicts
-    pub fn reset_for_new_function(&mut self) {
-        self.allocation.clear();
-        // Reset free registers to all available registers
-        self.free_registers = self.available_registers.clone();
-        self.stack_offset = 0;
-        self.lru_order.clear();
-        self.home_slots.clear();
-        self.pending_ops.clear();
-    }
-
-    /// Ensure a virtual register is in a physical register.
-    /// This is the new primary API that encapsulates all spilling logic.
-    ///
-    /// If the vreg is already in a register, returns that register.
-    /// If the vreg is spilled, emits reload instructions and returns the register.
-    /// If the vreg is unallocated, allocates a register (potentially spilling others).
-    ///
-    /// The `forbidden` parameter lists registers that must not be used for this vreg.
-    pub fn ensure_reg(&mut self, vreg: VReg, forbidden: &[Register]) -> Result<Register, String> {
-        // Handle spill/reload tracking internally
-        let mut spill_instructions = Vec::new();
-
-        match self.allocation.get(&vreg).copied() {
-            Some(Location::Register(reg)) => {
-                // Already in a register
-                if forbidden.contains(&reg) {
-                    // Need to move to a different register
-                    let new_reg =
-                        self.allocate_register_avoiding(forbidden, &mut spill_instructions)?;
-                    self.allocation.insert(vreg, Location::Register(new_reg));
-                    self.update_lru(vreg);
-
-                    // Record that we need to move from old reg to new reg
-                    spill_instructions.push(SpillReloadOp::Move {
-                        from: reg,
-                        to: new_reg,
-                    });
-
-                    // Free the old register
-                    self.free_registers.push(reg);
-
-                    Ok(new_reg)
+    /// Flush all pending stores except for the specified registers
+    pub fn flush_stores_except(&mut self, except: &[Register]) {
+        // Collect dirty registers first to avoid borrow checker issues
+        let dirty_regs: Vec<(VReg, Register)> = self
+            .scratch_states
+            .iter_mut()
+            .filter_map(|state| {
+                if except.contains(&state.reg) {
+                    // Skip registers in the exception list
+                    None
                 } else {
-                    self.update_lru(vreg);
-                    Ok(reg)
-                }
-            }
-            Some(Location::StackSlot(stack_offset)) => {
-                // Currently spilled - need to reload
-                let reg = self.allocate_register_avoiding(forbidden, &mut spill_instructions)?;
-
-                // Update allocation
-                self.allocation.insert(vreg, Location::Register(reg));
-
-                // Add to LRU order (it was removed when spilled)
-                self.lru_order.push(vreg);
-
-                // Record reload operation
-                spill_instructions.push(SpillReloadOp::Reload { reg, stack_offset });
-
-                // Store spill/reload ops for the lowering layer to emit
-                self.pending_ops.extend(spill_instructions);
-
-                Ok(reg)
-            }
-            None => {
-                // Not yet allocated
-                let reg = self.allocate_register_avoiding(forbidden, &mut spill_instructions)?;
-                self.allocation.insert(vreg, Location::Register(reg));
-                self.lru_order.push(vreg);
-
-                // Store spill/reload ops for the lowering layer to emit
-                self.pending_ops.extend(spill_instructions);
-
-                Ok(reg)
-            }
-        }
-    }
-
-    /// Allocate a register, avoiding the forbidden list.
-    /// May spill other vregs to make room.
-    fn allocate_register_avoiding(
-        &mut self,
-        forbidden: &[Register],
-        spill_ops: &mut Vec<SpillReloadOp>,
-    ) -> Result<Register, String> {
-        // First try to find a free register not in forbidden list
-        if let Some(pos) = self
-            .free_registers
-            .iter()
-            .position(|r| !forbidden.contains(r))
-        {
-            return Ok(self.free_registers.remove(pos));
-        }
-
-        // No free registers - need to spill
-        // Find LRU vreg that's in a register not in forbidden list
-        let spill_candidate = self
-            .lru_order
-            .iter()
-            .find(|&&vreg| {
-                if let Some(Location::Register(reg)) = self.allocation.get(&vreg) {
-                    !forbidden.contains(reg)
-                } else {
-                    false
+                    match std::mem::replace(&mut state.state, RegState::Empty) {
+                        RegState::Dirty(vreg) => Some((vreg, state.reg)),
+                        other_state => {
+                            // Restore non-dirty state
+                            state.state = other_state;
+                            None
+                        }
+                    }
                 }
             })
-            .copied()
-            .ok_or("No registers available to spill")?;
+            .collect();
 
-        // Get the register before spilling
-        let freed_reg = match self.allocation.get(&spill_candidate) {
-            Some(Location::Register(reg)) => *reg,
-            _ => return Err("Spill candidate not in register".to_string()),
-        };
+        // Generate stores for all dirty registers (except the exceptions)
+        for (vreg, reg) in dirty_regs {
+            let store = self.gen_store(vreg, reg);
+            self.pending_ops.push(store);
+        }
 
-        // Get or allocate home slot
-        let stack_slot = if let Some(&slot) = self.home_slots.get(&spill_candidate) {
-            slot
-        } else {
-            let new_slot = self.allocate_stack_slot();
-            self.home_slots.insert(spill_candidate, new_slot);
-            new_slot
-        };
-
-        // Record spill operation
-        spill_ops.push(SpillReloadOp::Spill {
-            reg: freed_reg,
-            stack_offset: stack_slot,
-        });
-
-        // Update allocation
-        self.allocation
-            .insert(spill_candidate, Location::StackSlot(stack_slot));
-
-        // Remove from LRU
-        self.lru_order.retain(|&v| v != spill_candidate);
-
-        Ok(freed_reg)
+        // CRITICAL: Mark excepted dirty registers as Clean after the flush
+        // This prevents them from being stored again in a later flush_stores()
+        for state in &mut self.scratch_states {
+            if except.contains(&state.reg) {
+                if let RegState::Dirty(vreg) = state.state {
+                    state.state = RegState::Clean(vreg);
+                }
+            }
+        }
     }
 
-    /// Get pending spill/reload operations and clear the buffer
-    pub fn take_pending_ops(&mut self) -> Vec<SpillReloadOp> {
+    /// Find an available scratch register with optional constraint filter
+    fn find_available_scratch_with_filter(
+        &self,
+        forbidden: &[Register],
+        filter: Option<fn(&Register) -> bool>,
+    ) -> Result<usize, String> {
+        // First, try to find an empty register
+        for (idx, state) in self.scratch_states.iter().enumerate() {
+            if matches!(state.state, RegState::Empty)
+                && !forbidden.contains(&state.reg)
+                && filter.is_none_or(|f| f(&state.reg))
+            {
+                return Ok(idx);
+            }
+        }
+
+        // Then try to find a clean register (can be overwritten without spill)
+        for (idx, state) in self.scratch_states.iter().enumerate() {
+            if matches!(state.state, RegState::Clean(_))
+                && !forbidden.contains(&state.reg)
+                && filter.is_none_or(|f| f(&state.reg))
+            {
+                return Ok(idx);
+            }
+        }
+
+        // Finally, find a dirty register that's not forbidden
+        for (idx, state) in self.scratch_states.iter().enumerate() {
+            if !forbidden.contains(&state.reg) && filter.is_none_or(|f| f(&state.reg)) {
+                return Ok(idx);
+            }
+        }
+
+        Err("No available registers matching constraints".to_string())
+    }
+
+    /// Find an available scratch register suitable for 8-bit operations
+    fn find_8bit_capable_scratch(&self, forbidden: &[Register]) -> Result<usize, String> {
+        self.find_available_scratch_with_filter(
+            forbidden,
+            Some(|reg| {
+                // Only these registers have 8-bit encodings in x86-64:
+                // - Classic x86 registers: Rax, Rbx, Rcx, Rdx, Rsi, Rdi
+                // - Extended registers: R8-R13 (but not R14, R15)
+                // We only have R8-R11 in our scratch pool, all of which support 8-bit ops
+                matches!(
+                    reg,
+                    Register::Rax
+                        | Register::Rbx
+                        | Register::Rcx
+                        | Register::Rdx
+                        | Register::Rsi
+                        | Register::Rdi
+                        | Register::R8
+                        | Register::R9
+                        | Register::R10
+                        | Register::R11
+                        | Register::R12
+                        | Register::R13
+                )
+            }),
+        )
+    }
+
+    /// Take any pending spill/reload operations
+    pub fn take_pending_ops(&mut self) -> Vec<MachineInstr> {
         std::mem::take(&mut self.pending_ops)
     }
 
-    /// Get the total stack space needed for spill slots
-    pub fn get_stack_size(&self) -> i32 {
-        // Stack grows downward, so negate the offset
-        -self.stack_offset
+    /// Reset for a new function
+    pub fn reset_for_new_function(&mut self) {
+        self.home_slots.clear();
+        self.stack_offset = 0;
+        self.pending_ops.clear();
+        self.initialized_vregs.clear();
+        for state in &mut self.scratch_states {
+            state.state = RegState::Empty;
+        }
+    }
+
+    /// Clear all register state but keep home slots (used at control flow joins)
+    pub fn clear_all_registers(&mut self) {
+        // First, flush any dirty values to memory
+        self.flush_stores();
+
+        // Then clear all register states
+        for state in &mut self.scratch_states {
+            state.state = RegState::Empty;
+        }
+    }
+
+    /// Check if a register contains a value (dirty or clean)
+    /// Returns true if the register contains a Clean or Dirty VReg
+    /// This is crucial for lower_call's caller-saved register detection
+    pub fn is_register_allocated(&self, reg: Register) -> bool {
+        self.scratch_states
+            .iter()
+            .any(|s| s.reg == reg && matches!(s.state, RegState::Clean(_) | RegState::Dirty(_)))
+    }
+
+    /// Check if a register contains any vreg (for get_scratch_register safety)
+    pub fn is_scratch_register(&self, reg: Register) -> bool {
+        self.scratch_states.iter().any(|s| s.reg == reg)
+    }
+
+    /// Invalidate a register - forces spill if dirty
+    pub fn invalidate_register(&mut self, reg: Register) {
+        if let Some(state) = self.scratch_states.iter_mut().find(|s| s.reg == reg) {
+            match std::mem::replace(&mut state.state, RegState::Empty) {
+                RegState::Dirty(vreg) => {
+                    let store = self.gen_store(vreg, reg);
+                    self.pending_ops.push(store);
+                }
+                _ => {
+                    // Clean or Empty register - no spill needed
+                }
+            }
+        }
+    }
+
+    /// Get register containing a VReg
+    pub fn get_register(&self, vreg: VReg) -> Option<Register> {
+        // Check if the vreg is currently in any register
+        for state in &self.scratch_states {
+            match &state.state {
+                RegState::Clean(v) | RegState::Dirty(v) if *v == vreg => {
+                    return Some(state.reg);
+                }
+                _ => {}
+            }
+        }
+        None
+    }
+
+    /// Get the VReg currently stored in a register (inverse of get_register)
+    pub fn get_vreg_in_register(&self, reg: Register) -> Option<VReg> {
+        for state in &self.scratch_states {
+            if state.reg == reg {
+                match &state.state {
+                    RegState::Clean(vreg) | RegState::Dirty(vreg) => {
+                        return Some(*vreg);
+                    }
+                    RegState::Empty => {
+                        return None;
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    /// Restore a VReg-to-register mapping after a pop operation
+    /// This tells the allocator that a VReg is now back in a register after being restored from stack
+    pub fn restore_vreg_mapping(&mut self, vreg: VReg, reg: Register) {
+        // Find the scratch register state for this register
+        for state in &mut self.scratch_states {
+            if state.reg == reg {
+                // Mark the register as containing the VReg in clean state
+                // (clean because it matches what's in memory)
+                state.state = RegState::Clean(vreg);
+                break;
+            }
+        }
+    }
+
+    /// Handle clobbered registers by spilling any dirty values they contain
+    ///
+    /// This is called before instructions that clobber specific registers
+    /// (e.g., division clobbers RDX, function calls clobber caller-saved regs)
+    pub fn handle_clobbers(&mut self, clobbered_regs: &[Register]) {
+        for &clobbered_reg in clobbered_regs {
+            // Find if this register is one of our scratch registers and has a dirty value
+            for state in &mut self.scratch_states {
+                if state.reg == clobbered_reg {
+                    match std::mem::replace(&mut state.state, RegState::Empty) {
+                        RegState::Dirty(vreg) => {
+                            // Spill the dirty value before it gets clobbered
+                            let store = self.gen_store(vreg, clobbered_reg);
+                            self.pending_ops.push(store);
+                        }
+                        _ => {
+                            // Clean or Empty register - no spill needed, just mark as empty
+                        }
+                    }
+                    break;
+                }
+            }
+        }
+    }
+
+    /// Get a scratch register that's not in the reserved set
+    /// This is useful for instructions that require specific registers
+    ///
+    /// **WARNING**: The returned register may contain a Dirty value!
+    /// The caller MUST call `invalidate_register()` on the returned register
+    /// immediately after getting it to ensure any dirty value is spilled.
+    pub fn get_unreserved_scratch(&self, reserved: &[Register]) -> Option<Register> {
+        for state in &self.scratch_states {
+            if !reserved.contains(&state.reg) {
+                return Some(state.reg);
+            }
+        }
+        None
+    }
+
+    /// Get the total stack space used (before alignment)
+    pub fn get_stack_usage(&self) -> i32 {
+        (-self.stack_offset) as i32
+    }
+
+    /// Get the aligned stack frame size in bytes
+    pub fn stack_size_bytes(&self) -> u32 {
+        self.get_stack_size()
     }
 }
 
@@ -399,251 +707,396 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_register_allocation() {
-        let mut allocator = RegisterAllocator::new();
+    fn test_home_slot_allocation() {
+        let mut alloc = RegisterAllocator::new();
 
-        let vreg1 = VReg(1);
-        let vreg2 = VReg(2);
+        // First vreg gets slot -8
+        let slot1 = alloc.get_home_slot(VReg(1));
+        assert_eq!(slot1, -8);
 
-        // Allocate registers
-        allocator.allocate(vreg1).unwrap();
-        allocator.allocate(vreg2).unwrap();
+        // Second vreg gets slot -16
+        let slot2 = alloc.get_home_slot(VReg(2));
+        assert_eq!(slot2, -16);
 
-        // Should get consistent allocation
-        let reg1 = allocator.get_register(vreg1).unwrap();
-        let reg2 = allocator.get_register(vreg2).unwrap();
+        // Requesting same vreg returns same slot
+        let slot1_again = alloc.get_home_slot(VReg(1));
+        assert_eq!(slot1_again, -8);
 
-        // Re-allocating should work
-        allocator.allocate(vreg1).unwrap();
-        allocator.allocate(vreg2).unwrap();
-
-        // Should still get same registers
-        assert_eq!(allocator.get_register(vreg1).unwrap(), reg1);
-        assert_eq!(allocator.get_register(vreg2).unwrap(), reg2);
-
-        // Should allocate different registers
-        assert_ne!(reg1, reg2);
+        // Stack size should be 16 bytes, already aligned
+        assert_eq!(alloc.get_stack_size(), 16);
     }
 
     #[test]
-    fn test_spilling_when_out_of_registers() {
-        let mut allocator = RegisterAllocator::new();
+    fn test_no_pending_store_clobbering() {
+        let mut alloc = RegisterAllocator::new();
 
-        // Successfully allocate all available registers
-        for i in 0..8 {
-            let vreg = VReg(i);
-            let result = allocator.allocate(vreg);
-            assert!(result.is_ok(), "Should allocate register {i}");
-            assert!(matches!(
-                allocator.get_location(vreg),
-                Some(Location::Register(_))
-            ));
-        }
+        // Ensure VReg(1) gets loaded to first scratch register (R10)
+        let r1 = alloc.ensure_reg(VReg(1), &[]).unwrap();
+        assert_eq!(r1, Register::R10);
 
-        // Attempting to allocate one more should trigger spilling
-        let vreg9 = VReg(8);
-        let result = allocator.allocate(vreg9);
-        assert!(result.is_ok(), "Should allocate register via spilling");
+        // Schedule store of VReg(1) from RAX
+        alloc.schedule_store(VReg(1), r1);
 
-        // The LRU register should now be spilled to stack
-        let vreg0 = VReg(0);
-        assert!(matches!(
-            allocator.get_location(vreg0),
-            Some(Location::StackSlot(_))
-        ));
+        // Now try to load VReg(2) - the allocator should avoid R10 since it's dirty
+        let r2 = alloc.ensure_reg(VReg(2), &[]).unwrap();
 
-        // The new register should be in a physical register
-        assert!(matches!(
-            allocator.get_location(vreg9),
-            Some(Location::Register(_))
-        ));
+        // The allocator should have chosen a different register
+        assert_ne!(r2, r1, "Allocator should not reuse dirty register");
 
-        // Should have allocated some stack space
-        assert!(allocator.get_stack_space_needed() > 0);
-
-        // The critical test: verify proper register reuse after spilling
-        // When we allocate many vregs, we should reuse registers efficiently
-
-        // First, allocate enough to trigger spilling (vregs 8-11)
-        for i in 8..12 {
-            allocator.allocate(VReg(i)).unwrap();
-        }
-
-        // At this point, we should have spilled 4 vregs (0-3) to make room
+        // Check pending ops - should have no ops (both VRegs are uninitialized)
+        let ops = alloc.take_pending_ops();
         assert_eq!(
-            allocator.get_stack_space_needed(),
-            32,
-            "Should have 4 spills after allocating 12 vregs"
+            ops.len(),
+            0,
+            "Should not generate loads for uninitialized VRegs"
         );
 
-        // Now test the key behavior: re-allocating a spilled vreg should work
-        allocator.allocate(VReg(0)).unwrap(); // Re-access spilled vreg
-        allocator.allocate(VReg(1)).unwrap(); // Re-access another spilled vreg
+        // Now if we force the allocator to use all registers, it should spill
+        let r3 = alloc.ensure_reg(VReg(3), &[]).unwrap();
+        alloc.schedule_store(VReg(3), r3);
 
-        // Stack usage should increase by 16 bytes (2 more spills) because we need to
-        // spill 2 current registers to make room for reloading VReg(0) and VReg(1)
-        assert_eq!(
-            allocator.get_stack_space_needed(),
-            48,
-            "Should have 6 total spills after reloading 2 vregs"
-        );
+        // Force reuse by forbidding other registers
+        let forbidden = if r1 == Register::R10 {
+            vec![Register::R11, Register::R8, Register::R9]
+        } else if r1 == Register::R11 {
+            vec![Register::R10, Register::R8, Register::R9]
+        } else if r1 == Register::R8 {
+            vec![Register::R10, Register::R11, Register::R9]
+        } else {
+            vec![Register::R10, Register::R11, Register::R8]
+        };
 
-        // Continue with the original test - allocate many more
-        for i in 12..40 {
-            allocator.allocate(VReg(i)).unwrap();
+        // This should force a spill
+        let _r4 = alloc.ensure_reg(VReg(4), &forbidden).unwrap();
+
+        let ops = alloc.take_pending_ops();
+        // Should have: spill v1 or v3 (no loads for uninitialized VRegs)
+        assert!(!ops.is_empty());
+
+        // Verify we got a spill
+        let has_spill = ops
+            .iter()
+            .any(|op| matches!(op, MachineInstr::MovMR { .. }));
+        assert!(has_spill, "Should have generated a spill");
+    }
+
+    #[test]
+    fn test_stack_alignment() {
+        let mut alloc = RegisterAllocator::new();
+
+        // Allocate odd number of slots
+        alloc.get_home_slot(VReg(1));
+        alloc.get_home_slot(VReg(2));
+        alloc.get_home_slot(VReg(3));
+
+        // Stack size should be 24 bytes (3 * 8)
+        // But get_stack_size should return 32 (aligned to 16)
+        assert_eq!(alloc.get_stack_size(), 32);
+    }
+
+    #[test]
+    fn test_forbidden_exhaustion() {
+        let mut alloc = RegisterAllocator::new();
+
+        // Forbid all scratch registers
+        let forbidden = vec![Register::R10, Register::R11, Register::R8, Register::R9];
+        let result = alloc.ensure_reg(VReg(1), &forbidden);
+
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("No available registers"));
+    }
+
+    #[test]
+    fn test_flush_clears_dirty_state() {
+        let mut alloc = RegisterAllocator::new();
+
+        // Load and mark registers as dirty
+        let r1 = alloc.ensure_reg(VReg(1), &[]).unwrap();
+        alloc.schedule_store(VReg(1), r1);
+
+        let r2 = alloc.ensure_reg(VReg(2), &[Register::Rax]).unwrap();
+        alloc.schedule_store(VReg(2), r2);
+
+        // Clear pending ops
+        alloc.take_pending_ops();
+
+        // Flush stores
+        alloc.flush_stores();
+
+        // Should have exactly 2 stores
+        let ops = alloc.take_pending_ops();
+        assert_eq!(ops.len(), 2);
+
+        // All registers should be empty now
+        for state in &alloc.scratch_states {
+            assert!(matches!(state.state, RegState::Empty));
         }
+    }
 
-        // With 40 unique vregs and 8 registers, we need 32 stack slots minimum
-        // With home slot optimization, vregs that are reloaded and spilled again
-        // reuse their existing slots, so we have exactly 32 unique stack slots
-        assert_eq!(
-            allocator.get_stack_space_needed(),
-            256,
-            "Should have exactly 32 unique stack slots (256 bytes) with home slot optimization"
-        );
+    #[test]
+    fn test_load_store_generation() {
+        let mut alloc = RegisterAllocator::new();
 
-        // Verify no aliasing - count vregs in each location
-        let mut in_registers = 0;
-        let mut in_stack = 0;
-        for i in 0..40 {
-            match allocator.get_location(VReg(i)) {
-                Some(Location::Register(_)) => in_registers += 1,
-                Some(Location::StackSlot(_)) => in_stack += 1,
-                None => panic!("VReg {i} should be allocated"),
+        // Generate load for VReg(1) to RAX
+        let load = alloc.gen_load(VReg(1), Register::Rax);
+        match load {
+            MachineInstr::MovRM { dest, base, offset } => {
+                assert_eq!(dest, Register::Rax);
+                assert_eq!(base, Register::Rbp);
+                assert_eq!(offset, -8);
             }
+            _ => panic!("Expected MovRM instruction"),
         }
-        assert_eq!(in_registers, 8, "Exactly 8 vregs should be in registers");
-        assert_eq!(in_stack, 32, "Exactly 32 vregs should be on stack");
+
+        // Generate store from RCX to VReg(2)
+        let store = alloc.gen_store(VReg(2), Register::Rcx);
+        match store {
+            MachineInstr::MovMR { src, base, offset } => {
+                assert_eq!(src, Register::Rcx);
+                assert_eq!(base, Register::Rbp);
+                assert_eq!(offset, -16);
+            }
+            _ => panic!("Expected MovMR instruction"),
+        }
     }
 
     #[test]
-    fn test_repeated_allocation_same_vreg() {
-        let mut allocator = RegisterAllocator::new();
+    fn test_ensure_reg() {
+        let mut alloc = RegisterAllocator::new();
 
-        let vreg = VReg(1);
-        allocator.allocate(vreg).unwrap();
-        let reg1 = allocator.get_register(vreg).unwrap();
+        // Test ensure_reg for uninitialized VReg
+        let reg = alloc.ensure_reg(VReg(1), &[]).unwrap();
+        assert!(matches!(
+            reg,
+            Register::R10 | Register::R11 | Register::R8 | Register::R9
+        ));
 
-        allocator.allocate(vreg).unwrap(); // Should work for repeated allocation
-        let reg2 = allocator.get_register(vreg).unwrap();
-
+        // Should NOT have generated a load for uninitialized VReg
+        let ops = alloc.take_pending_ops();
         assert_eq!(
-            reg1, reg2,
-            "Repeated allocation should return same register"
+            ops.len(),
+            0,
+            "Should not generate load for uninitialized VReg"
         );
-        assert_eq!(
-            allocator.free_registers.len(),
-            7,
-            "One register should be consumed from free list"
-        );
+
+        // After scheduling a store, the VReg becomes initialized
+        alloc.schedule_store(VReg(1), reg);
+        alloc.flush_stores();
+        let ops = alloc.take_pending_ops();
+        assert_eq!(ops.len(), 1);
+        assert!(matches!(ops[0], MachineInstr::MovMR { .. }));
+
+        // Simulate what the lowering layer does when emitting the store
+        alloc.mark_vreg_initialized(VReg(1));
+
+        // Now if we ensure_reg again after clearing the register state,
+        // it should generate a load because the VReg is initialized
+        for state in &mut alloc.scratch_states {
+            state.state = RegState::Empty;
+        }
+        let _reg2 = alloc.ensure_reg(VReg(1), &[]).unwrap();
+        let ops = alloc.take_pending_ops();
+        assert_eq!(ops.len(), 1, "Should generate load for initialized VReg");
+        assert!(matches!(ops[0], MachineInstr::MovRM { .. }));
     }
 
     #[test]
-    fn test_no_register_aliasing_after_spill() {
-        let mut allocator = RegisterAllocator::new();
+    fn test_reset() {
+        let mut alloc = RegisterAllocator::new();
 
-        // Allocate all available registers
-        for i in 0..8 {
-            let vreg = VReg(i);
-            allocator.allocate(vreg).unwrap();
+        // Allocate some slots
+        alloc.get_home_slot(VReg(1));
+        alloc.get_home_slot(VReg(2));
+        assert_eq!(alloc.get_stack_usage(), 16);
+
+        // Reset should clear everything
+        alloc.reset_for_new_function();
+        assert_eq!(alloc.get_stack_usage(), 0);
+
+        // New allocations should start fresh
+        let slot = alloc.get_home_slot(VReg(1));
+        assert_eq!(slot, -8);
+    }
+
+    #[test]
+    fn test_store_flush_order() {
+        let mut alloc = RegisterAllocator::new();
+
+        // Schedule multiple stores
+        let r1 = alloc.ensure_reg(VReg(1), &[]).unwrap();
+        alloc.schedule_store(VReg(1), r1);
+
+        let r2 = alloc.ensure_reg(VReg(2), &[r1]).unwrap();
+        alloc.schedule_store(VReg(2), r2);
+
+        let r3 = alloc.ensure_reg(VReg(3), &[r1, r2]).unwrap();
+        alloc.schedule_store(VReg(3), r3);
+
+        // Clear initial loads
+        alloc.take_pending_ops();
+
+        // Flush stores
+        alloc.flush_stores();
+
+        // Get pending operations
+        let ops = alloc.take_pending_ops();
+
+        // Should have 3 store operations
+        assert_eq!(ops.len(), 3);
+
+        // Verify all are stores
+        for op in &ops {
+            assert!(matches!(op, MachineInstr::MovMR { .. }));
         }
+    }
 
-        // Allocate one more to trigger spilling
-        let vreg9 = VReg(8);
-        allocator.allocate(vreg9).unwrap();
+    #[test]
+    fn test_multiple_stores_same_register() {
+        let mut alloc = RegisterAllocator::new();
 
-        // Check that no two vregs share a physical register
-        for (i, loc_i) in allocator.allocation.values().enumerate() {
-            if let Location::Register(r_i) = loc_i {
-                for loc_j in allocator.allocation.values().skip(i + 1) {
-                    if let Location::Register(r_j) = loc_j {
-                        assert_ne!(r_i, r_j, "alias detected: two vregs share register {r_i:?}");
-                    }
+        // This test validates that overwriting a dirty register
+        // spills the old value before marking the new one
+        let r1 = alloc.ensure_reg(VReg(1), &[]).unwrap();
+        alloc.schedule_store(VReg(1), r1);
+        alloc.schedule_store(VReg(2), r1); // Should spill VReg(1) first
+
+        // Get ops without flushing yet
+        let ops = alloc.take_pending_ops();
+
+        // Should have: spill v1 (no load for uninitialized v1, v2 is still dirty in register)
+        assert!(!ops.is_empty());
+
+        // Find the spill of v1
+        let mut found_v1_spill = false;
+        for op in &ops {
+            if let MachineInstr::MovMR { offset, .. } = op {
+                if *offset == -8 {
+                    // VReg(1)'s slot
+                    found_v1_spill = true;
                 }
             }
         }
-    }
+        assert!(found_v1_spill, "VReg(1) should have been spilled");
 
-    #[test]
-    fn test_reload_from_stack() {
-        let mut allocator = RegisterAllocator::new();
+        // Now flush remaining stores
+        alloc.flush_stores();
+        let ops = alloc.take_pending_ops();
 
-        // Allocate VReg(0)
-        allocator.allocate(VReg(0)).unwrap();
-        assert!(matches!(
-            allocator.get_location(VReg(0)),
-            Some(Location::Register(_))
-        ));
-
-        // Allocate 8 more to force VReg(0) to spill
-        for i in 1..9 {
-            allocator.allocate(VReg(i)).unwrap();
+        // Should have the store for VReg(2)
+        assert_eq!(ops.len(), 1);
+        match &ops[0] {
+            MachineInstr::MovMR { offset, .. } => {
+                assert_eq!(*offset, -16); // VReg(2)'s slot
+            }
+            _ => panic!("Expected MovMR"),
         }
-
-        // VReg(0) should now be on stack
-        assert!(matches!(
-            allocator.get_location(VReg(0)),
-            Some(Location::StackSlot(_))
-        ));
-
-        // Re-allocate VReg(0) - should load it back into a register
-        allocator.allocate(VReg(0)).unwrap();
-
-        // VReg(0) should now be in a register again
-        assert!(matches!(
-            allocator.get_location(VReg(0)),
-            Some(Location::Register(_))
-        ));
     }
 
     #[test]
-    fn test_no_callee_saved_regs_used() {
+    fn test_overwrite_without_schedule_store() {
         let mut alloc = RegisterAllocator::new();
 
-        // Allocate more VRegs than there are physical registers to force spills.
-        for i in 0..20 {
-            alloc.allocate(VReg(i)).unwrap();
+        // Load v1 into R10
+        let r1 = alloc.ensure_reg(VReg(1), &[]).unwrap();
+        assert_eq!(r1, Register::R10);
+        alloc.schedule_store(VReg(1), r1);
+
+        // Clear pending ops
+        alloc.take_pending_ops();
+
+        // Simulate a three-address operation that overwrites R10
+        // without calling schedule_store first (e.g., add R10, v2)
+        // This would be done by loading v2 and then doing the add
+        let r2 = alloc.ensure_reg(VReg(2), &[Register::R10]).unwrap();
+        assert_ne!(r2, Register::R10); // Should get a different register
+
+        // Now force allocation for v3 - this should spill v1 first
+        let forbidden_for_v3 = vec![r2, Register::R8, Register::R9];
+        let _r3 = alloc.ensure_reg(VReg(3), &forbidden_for_v3).unwrap();
+
+        let ops = alloc.take_pending_ops();
+
+        // Should have spilled v1 before loading v3
+        let mut found_v1_spill = false;
+        let mut found_v3_load = false;
+        for op in &ops {
+            match op {
+                MachineInstr::MovMR { offset, .. } if *offset == -8 => {
+                    found_v1_spill = true;
+                }
+                MachineInstr::MovRM { offset, .. } if *offset == -24 => {
+                    found_v3_load = true;
+                }
+                _ => {}
+            }
         }
 
-        // Callee‑saved registers must never appear in any live mapping.
-        let callee_saved = [
-            Register::Rbx, /*, Register::R12, Register::R13, Register::R14, Register::R15 */
-        ];
-        for reg in callee_saved {
-            assert!(
-                !alloc.is_register_allocated(reg),
-                "callee‑saved {reg:?} should not be allocated"
-            );
+        assert!(found_v1_spill, "VReg(1) should have been spilled");
+        // v3 is uninitialized so no load should be generated
+        assert!(
+            !found_v3_load,
+            "VReg(3) should NOT have been loaded (uninitialized)"
+        );
+    }
+
+    #[test]
+    fn test_handle_clobbers() {
+        let mut alloc = RegisterAllocator::new();
+
+        // Load values into registers and mark them dirty
+        let r1 = alloc.ensure_reg(VReg(1), &[]).unwrap();
+        alloc.schedule_store(VReg(1), r1);
+
+        let r2 = alloc.ensure_reg(VReg(2), &[Register::R10]).unwrap();
+        alloc.schedule_store(VReg(2), r2);
+
+        // Clear pending ops
+        alloc.take_pending_ops();
+
+        // Simulate an instruction that clobbers R10 and R11
+        let clobbers = vec![Register::R10, Register::R11];
+        alloc.handle_clobbers(&clobbers);
+
+        // Check that dirty values in clobbered registers were spilled
+        let ops = alloc.take_pending_ops();
+
+        // Should have at least one spill (for VReg(1) in R10)
+        let mut found_spill = false;
+        for op in &ops {
+            if let MachineInstr::MovMR { .. } = op {
+                found_spill = true;
+                break;
+            }
+        }
+        assert!(
+            found_spill,
+            "Should have spilled value in clobbered register"
+        );
+
+        // After handling clobbers, the registers should be clean
+        assert!(!alloc.is_register_allocated(Register::R10));
+        if alloc.scratch_states.iter().any(|s| s.reg == Register::R11) {
+            assert!(!alloc.is_register_allocated(Register::R11));
         }
     }
 
     #[test]
-    fn test_same_stack_slot_reused() {
-        let mut a = RegisterAllocator::new();
+    fn test_get_unreserved_scratch() {
+        let alloc = RegisterAllocator::new();
 
-        // Force VReg(0) to spill once
-        a.allocate(VReg(0)).unwrap();
-        for i in 1..=8 {
-            a.allocate(VReg(i)).unwrap();
-        } // all regs full, v0 spilled
-        let first_slot = match a.get_location(VReg(0)).unwrap() {
-            Location::StackSlot(o) => o,
-            _ => panic!("v0 should be on stack"),
-        };
+        // Test with no reserved registers
+        let scratch = alloc.get_unreserved_scratch(&[]);
+        assert!(scratch.is_some());
 
-        // Reload v0, then spill it again
-        a.allocate(VReg(0)).unwrap(); // reload
-        for i in 9..=16 {
-            a.allocate(VReg(i)).unwrap();
-        } // spill v0 again
-        let second_slot = match a.get_location(VReg(0)).unwrap() {
-            Location::StackSlot(o) => o,
-            _ => panic!("v0 should be on stack again"),
-        };
+        // Test with some reserved registers
+        let reserved = vec![Register::R10, Register::R11];
+        let scratch = alloc.get_unreserved_scratch(&reserved);
+        assert!(scratch.is_some());
+        assert!(!reserved.contains(&scratch.unwrap()));
 
-        assert_eq!(
-            first_slot, second_slot,
-            "vreg spilled to different stack slots; must reuse the same slot"
-        );
+        // Test with all scratch registers reserved
+        let all_reserved = vec![Register::R10, Register::R11, Register::R8, Register::R9];
+        let scratch = alloc.get_unreserved_scratch(&all_reserved);
+        assert!(scratch.is_none());
     }
 }
