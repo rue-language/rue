@@ -4,7 +4,8 @@ use common::get_project_root;
 use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
-use std::process::Command;
+use std::process::{Command, Stdio};
+use std::time::{Duration, Instant};
 
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
@@ -94,7 +95,7 @@ fn parse_readme(readme_path: &Path) -> HashMap<String, TestCase> {
     test_cases
 }
 
-/// Run a single test case
+/// Run a single test case with timeout
 fn run_test_case(
     test_case: &TestCase,
     samples_dir: &Path,
@@ -147,11 +148,51 @@ fn run_test_case(
         return Err(format!("Executable {executable_path:?} was not created"));
     }
 
-    // Run the compiled executable
-    let run_output = Command::new(&executable_path)
+    // Run the compiled executable with a timeout
+    let start = Instant::now();
+    let timeout = Duration::from_secs(5); // 5 second timeout
+
+    let mut child = Command::new(&executable_path)
         .current_dir(project_root)
-        .output()
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
         .map_err(|e| format!("Failed to execute compiled program: {e}"))?;
+
+    // Wait for the process with timeout
+    let run_output = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                // Process has exited
+                let output = child
+                    .wait_with_output()
+                    .map_err(|e| format!("Failed to get output: {e}"))?;
+
+                break std::process::Output {
+                    status,
+                    stdout: output.stdout,
+                    stderr: output.stderr,
+                };
+            }
+            Ok(None) => {
+                // Still running
+                if start.elapsed() > timeout {
+                    // Timeout exceeded, kill the process
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err(format!(
+                        "Test timed out after {} seconds. Program appears to be in an infinite loop.",
+                        timeout.as_secs()
+                    ));
+                }
+                // Sleep briefly before checking again
+                std::thread::sleep(Duration::from_millis(100));
+            }
+            Err(e) => {
+                return Err(format!("Error waiting for process: {e}"));
+            }
+        }
+    };
 
     // Check exit code if expected
     if let Some(expected_exit_code) = test_case.expected_exit_code {
@@ -237,6 +278,7 @@ fn test_samples_corpus() {
 
     for (filename, test_case) in &test_cases {
         print!("Testing {filename} ... ");
+        std::io::Write::flush(&mut std::io::stdout()).unwrap();
 
         // Skip tests without expected exit codes for now
         if test_case.expected_exit_code.is_none() {
@@ -266,28 +308,5 @@ fn test_samples_corpus() {
 
     if failed > 0 {
         panic!("{failed} tests failed");
-    }
-}
-
-// Individual test function to test a specific sample
-#[test]
-#[ignore] // Use with --ignored flag to run
-fn test_specific_sample() {
-    let sample_name = std::env::var("RUE_TEST_SAMPLE").unwrap_or_else(|_| "simple.rue".to_string());
-
-    let project_root = get_project_root();
-    let samples_dir = project_root.join("samples");
-    let readme_path = samples_dir.join("README.md");
-
-    let test_cases = parse_readme(&readme_path);
-
-    if let Some(test_case) = test_cases.get(&sample_name) {
-        println!("Testing {sample_name}");
-        match run_test_case(test_case, &samples_dir, project_root) {
-            Ok(()) => println!("PASSED"),
-            Err(e) => panic!("Test failed: {e}"),
-        }
-    } else {
-        panic!("Sample {sample_name} not found in README.md");
     }
 }

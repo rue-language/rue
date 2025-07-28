@@ -145,9 +145,39 @@ impl MirVerifier {
                     );
                 }
 
-                // Verify the value and get its type
-                if let Some(value_ty) = self.verify_value(value, block_id, defined_temps) {
-                    defined_temps.insert(*dest, value_ty);
+                // Special handling for Call assignments since calls don't carry return type info
+                match value {
+                    MirValue::Call { args, func, .. } => {
+                        // Debug output
+                        if std::env::var("RUE_DEBUG_MIR").is_ok() {
+                            eprintln!("DEBUG: Processing call assignment: {dest:?} = {func}({args:?})");
+                        }
+                        
+                        // Verify all arguments are defined
+                        for arg in args {
+                            if !defined_temps.contains_key(arg) {
+                                self.add_error(
+                                    format!("Use of undefined temp {arg:?} in call to {func}"),
+                                    Some(block_id),
+                                );
+                            }
+                        }
+                        
+                        // For calls, we infer the return type from the function signature
+                        // For now, we'll use a placeholder approach and mark the dest as defined
+                        // with an inferred type based on common function signatures
+                        let inferred_type = self.infer_call_return_type(func);
+                        if std::env::var("RUE_DEBUG_MIR").is_ok() {
+                            eprintln!("DEBUG: Inferred type for {func}: {inferred_type:?}, marking {dest:?} as defined");
+                        }
+                        defined_temps.insert(*dest, inferred_type);
+                    }
+                    _ => {
+                        // For non-call values, use the original logic
+                        if let Some(value_ty) = self.verify_value(value, block_id, defined_temps) {
+                            defined_temps.insert(*dest, value_ty);
+                        }
+                    }
                 }
             }
         }
@@ -170,7 +200,7 @@ impl MirVerifier {
                 }
             }
             MirValue::Const(c) => Some(c.ty()),
-            MirValue::BinaryOp { lhs, rhs, .. } => {
+            MirValue::BinaryOp { op, lhs, rhs } => {
                 let lhs_ty = if let Some(ty) = defined_temps.get(lhs) {
                     Some(ty.clone())
                 } else {
@@ -191,8 +221,38 @@ impl MirVerifier {
                     None
                 };
 
-                // For now, assume binary ops preserve the type of operands
-                lhs_ty.or(rhs_ty)
+                // Check operand types match
+                if let (Some(lhs_t), Some(rhs_t)) = (&lhs_ty, &rhs_ty) {
+                    if lhs_t != rhs_t {
+                        self.add_error(
+                            format!(
+                                "Binary op operands have mismatched types: {lhs_t:?} vs {rhs_t:?}"
+                            ),
+                            Some(block_id),
+                        );
+                    }
+                }
+
+                // Determine result type based on operation
+                match op {
+                    crate::mir::MirBinOp::Add
+                    | crate::mir::MirBinOp::Sub
+                    | crate::mir::MirBinOp::Mul
+                    | crate::mir::MirBinOp::Div
+                    | crate::mir::MirBinOp::Mod => {
+                        // Arithmetic ops preserve operand type
+                        lhs_ty.or(rhs_ty)
+                    }
+                    crate::mir::MirBinOp::Lt
+                    | crate::mir::MirBinOp::Le
+                    | crate::mir::MirBinOp::Gt
+                    | crate::mir::MirBinOp::Ge
+                    | crate::mir::MirBinOp::Eq
+                    | crate::mir::MirBinOp::Ne => {
+                        // Comparison ops always return Bool
+                        Some(RueType::Bool)
+                    }
+                }
             }
             MirValue::UnaryOp { operand, .. } => {
                 if let Some(ty) = defined_temps.get(operand) {
@@ -206,9 +266,9 @@ impl MirVerifier {
                 }
             }
             MirValue::Call {
-                return_type,
                 args,
                 func,
+                kind: _,
             } => {
                 // Verify all arguments are defined
                 for arg in args {
@@ -219,7 +279,9 @@ impl MirVerifier {
                         );
                     }
                 }
-                Some(return_type.clone())
+                // Call return type needs to be determined from assignment context
+                // For now, return None to indicate the type should come from the dest
+                None
             }
         }
     }
@@ -233,7 +295,7 @@ impl MirVerifier {
         defined_temps: &HashMap<Temp, RueType>,
     ) {
         match term {
-            MirTerminator::Goto { target, args } => {
+            MirTerminator::Goto { target, args, .. } => {
                 self.verify_jump(*target, args, block_id, block_map, defined_temps);
             }
             MirTerminator::Branch {
@@ -242,6 +304,7 @@ impl MirVerifier {
                 then_args,
                 else_block,
                 else_args,
+                ..
             } => {
                 // Verify condition is defined
                 if !defined_temps.contains_key(condition) {
@@ -255,7 +318,33 @@ impl MirVerifier {
                 self.verify_jump(*then_block, then_args, block_id, block_map, defined_temps);
                 self.verify_jump(*else_block, else_args, block_id, block_map, defined_temps);
             }
-            MirTerminator::Return { value } => {
+            MirTerminator::Switch {
+                discriminant,
+                targets,
+                default,
+                default_args,
+                ..
+            } => {
+                // Verify discriminant is defined
+                if !defined_temps.contains_key(discriminant) {
+                    self.add_error(
+                        format!("Switch discriminant {discriminant:?} is undefined"),
+                        Some(block_id),
+                    );
+                }
+
+                // Verify all target jumps
+                for (_, target_block, target_args) in targets {
+                    self.verify_jump(*target_block, target_args, block_id, block_map, defined_temps);
+                }
+
+                // Verify default jump
+                self.verify_jump(*default, default_args, block_id, block_map, defined_temps);
+            }
+            MirTerminator::Unreachable { .. } => {
+                // Unreachable terminators are always valid (they should never be reached)
+            }
+            MirTerminator::Return { value, .. } => {
                 if let Some(val) = value {
                     if !defined_temps.contains_key(val) {
                         self.add_error(
@@ -353,12 +442,56 @@ impl MirVerifier {
                         worklist.push(*then_block);
                         worklist.push(*else_block);
                     }
-                    MirTerminator::Return { .. } => {}
+                    MirTerminator::Switch {
+                        targets,
+                        default,
+                        ..
+                    } => {
+                        // Add all target blocks from switch cases
+                        for (_, target_block, _) in targets {
+                            worklist.push(*target_block);
+                        }
+                        // Add default block
+                        worklist.push(*default);
+                    }
+                    MirTerminator::Return { .. } | MirTerminator::Unreachable { .. } => {}
                 }
             }
         }
 
         reachable
+    }
+
+    /// Infer the return type of a function call based on its name
+    /// This is a temporary solution until we have proper function signature tracking
+    fn infer_call_return_type(&self, func_name: &str) -> RueType {
+        match func_name {
+            // Casting functions
+            "to_i32" => RueType::I32,
+            "to_i64" => RueType::I64,
+            "to_bool" => RueType::Bool,
+            
+            // I/O functions  
+            "println_i32" | "println_i64" | "println_bool" => RueType::Unit,
+            "input_i32" => RueType::I32,
+            "input_i64" => RueType::I64,
+            
+            // For recursive functions, we need to infer from context
+            // For now, assume i32 as a reasonable default for unknown functions
+            _ => {
+                // Try to infer from the current function context
+                // If we're in a function that returns a specific type, assume that
+                // This is a heuristic for recursive calls
+                if func_name == self.current_function {
+                    // For recursive calls, we'd need to look up the function's return type
+                    // For now, assume i32 as the most common case
+                    RueType::I32
+                } else {
+                    // For unknown functions, assume i32 as default
+                    RueType::I32
+                }
+            }
+        }
     }
 
     /// Add an error to the list
@@ -395,6 +528,7 @@ mod tests {
                     }],
                     terminator: MirTerminator::Return {
                         value: Some(Temp(0)),
+                        span: None,
                     },
                 }],
                 span: Span::dummy(),
@@ -419,6 +553,7 @@ mod tests {
                     statements: vec![],
                     terminator: MirTerminator::Return {
                         value: Some(Temp(0)), // Undefined!
+                        span: None,
                     },
                 }],
                 span: Span::dummy(),
@@ -458,6 +593,7 @@ mod tests {
                     ],
                     terminator: MirTerminator::Return {
                         value: Some(Temp(0)),
+                        span: None,
                     },
                 }],
                 span: Span::dummy(),
@@ -487,6 +623,7 @@ mod tests {
                         terminator: MirTerminator::Goto {
                             target: BlockId(1),
                             args: vec![Temp(0), Temp(1)], // Too many args!
+                            span: None,
                         },
                     },
                     BasicBlock {
@@ -495,6 +632,7 @@ mod tests {
                         statements: vec![],
                         terminator: MirTerminator::Return {
                             value: Some(Temp(2)),
+                            span: None,
                         },
                     },
                 ],

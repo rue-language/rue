@@ -10,12 +10,12 @@ path = "src/main.rs"
 [dependencies]
 rue-compiler = { path = "../rue-compiler" }
 rue-codegen = { path = "../rue-codegen" }
-bpaf = "0.9.20"
+bpaf.workspace = true
 
 [dev-dependencies]
-tempfile = "3.8"
-criterion = "0.5"
+tempfile.workspace = true
+criterion.workspace = true
 
 [[bench]]
-name = "mir_benchmarks"
+name = "compiler"
 harness = false

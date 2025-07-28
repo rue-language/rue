@@ -5,50 +5,90 @@
 
 use std::collections::HashMap;
 
-// Re-export HIR compilation functions - this is the current API
-mod backend_driver;
-mod compile_hir;
+// Internal modules
+mod backend;
 mod compile_hir_with_mir;
 mod elf_writer;
-mod hir_codegen;
-mod label_utils;
 mod lowering;
 mod mir_to_instructions;
 mod regalloc;
 mod util;
 mod x86_emitter;
 
-pub use compile_hir::{compile_hir_to_assembly, compile_hir_to_executable};
-pub use compile_hir_with_mir::{
-    compile_hir_via_mir_to_assembly, compile_hir_via_mir_to_executable,
-};
-// ElfWriter is used internally by compile_hir module
-pub use lowering::Lowering;
-pub use regalloc::RegisterAllocator;
-pub use x86_emitter::X86Emitter;
+// Re-export all public API through a single module
+pub mod compile {
+    pub use crate::compile_hir_with_mir::{
+        compile_hir_via_mir_to_assembly, compile_hir_via_mir_to_executable,
+    };
+
+    /// Wrapper for compile_hir_via_mir_to_executable that matches the signature
+    pub fn compile_hir_via_mir_to_bytes(
+        hir: &rue_ir::hir::HirProgram,
+        enable_optimizations: bool,
+    ) -> Result<Vec<u8>, crate::CodegenError> {
+        compile_hir_via_mir_to_executable(hir, enable_optimizations)
+    }
+}
+
+// Re-export internals for advanced usage
+pub mod internals {
+    pub use crate::format_instructions_as_assembly;
+    pub use crate::lowering::Lowering;
+    pub use crate::regalloc::RegisterAllocator;
+    pub use crate::x86_emitter::X86Emitter;
+}
 
 // Import types from rue-ir
 use rue_ir::target::{LabelRef, MachineInstr, Register};
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct CodegenError {
-    pub message: String,
+pub enum CodegenError {
+    UnsupportedInstruction(String),
+    UndefinedLabel(String),
+    RegisterAllocation(String),
+    Io,
+    InvalidOperation(String),
+    MirVerificationFailed,
+    Lowering(crate::lowering::LoweringError),
 }
+
+impl std::fmt::Display for CodegenError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            CodegenError::UnsupportedInstruction(msg) => {
+                write!(f, "Unsupported instruction: {msg}")
+            }
+            CodegenError::UndefinedLabel(label) => write!(f, "Undefined label: {label}"),
+            CodegenError::RegisterAllocation(msg) => {
+                write!(f, "Register allocation error: {msg}")
+            }
+            CodegenError::Io => write!(f, "I/O error"),
+            CodegenError::InvalidOperation(msg) => write!(f, "Invalid operation: {msg}"),
+            CodegenError::MirVerificationFailed => {
+                write!(f, "MIR verification failed")
+            }
+            CodegenError::Lowering(err) => write!(f, "Lowering error: {err}"),
+        }
+    }
+}
+
+impl std::error::Error for CodegenError {}
 
 /// Virtual register - will be allocated to a physical register or stack slot
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct VReg(pub u32);
 
 /// Value operand for instructions
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Value {
     VReg(VReg),
-    Immediate(i64),
+    SignedImm(i64),
+    UnsignedImm(u64),
     PhysicalReg(Register),
 }
 
 /// Binary operations
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum BinOp {
     Add,
     Sub,
@@ -115,22 +155,12 @@ impl Label {
 
     /// Create a label from a machine ID, determining its space based on offset
     pub fn from_machine_id(machine_id: u32, runtime_label_count: u32) -> Self {
-        if machine_id < runtime_label_count {
-            Label::runtime(machine_id)
-        } else {
+        // Use <= to correctly handle the case when runtime_label_count == 0
+        if runtime_label_count == 0 || machine_id >= runtime_label_count {
             Label::user(machine_id - runtime_label_count)
+        } else {
+            Label::runtime(machine_id)
         }
-    }
-}
-
-/// Label for control flow jumps (legacy compatibility)
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct LabelId(pub u32);
-
-impl From<Label> for LabelId {
-    fn from(label: Label) -> Self {
-        // This conversion loses space information - use only for legacy code
-        LabelId(label.id)
     }
 }
 
@@ -144,6 +174,11 @@ impl From<Label> for LabelId {
 pub enum Instruction {
     // Data movement
     Copy {
+        dest: VReg,
+        src: Value,
+    },
+    // Block parameter assignment - for MIR block parameters (never reads dest's old value)
+    BlockParamAssign {
         dest: VReg,
         src: Value,
     },
@@ -168,7 +203,7 @@ pub enum Instruction {
 
     // Stack operations for value preservation
     Push {
-        src: VReg,
+        src: Value,
     }, // Push register to stack
     Pop {
         dest: VReg,
@@ -250,7 +285,9 @@ pub fn format_instructions_as_assembly(
                 ));
             }
             MachineInstr::MovRI32 { dest, imm } => {
-                output.push_str(&format!("    movl ${}, %{}\n", imm, reg_name(dest)));
+                // MovRI32 is encoded as sign-extending mov imm32 → r64 with REX.W
+                // Use movq to reflect the actual 64-bit sign-extending behavior
+                output.push_str(&format!("    movq ${}, %{}\n", imm, reg_name(dest)));
             }
             MachineInstr::MovRI64 { dest, imm } => {
                 output.push_str(&format!("    movabsq ${}, %{}\n", imm, reg_name(dest)));
@@ -264,7 +301,7 @@ pub fn format_instructions_as_assembly(
                     ));
                 } else {
                     output.push_str(&format!(
-                        "    movq {}(%{}), %{}\n",
+                        "    movq {:+}(%{}), %{}\n",
                         offset,
                         reg_name(base),
                         reg_name(dest)
@@ -280,7 +317,7 @@ pub fn format_instructions_as_assembly(
                     ));
                 } else {
                     output.push_str(&format!(
-                        "    movq %{}, {}(%{})\n",
+                        "    movq %{}, {:+}(%{})\n",
                         reg_name(src),
                         offset,
                         reg_name(base)
@@ -296,7 +333,7 @@ pub fn format_instructions_as_assembly(
                     ));
                 } else {
                     output.push_str(&format!(
-                        "    movb %{}, {}(%{})\n",
+                        "    movb %{}, {:+}(%{})\n",
                         reg_name_8(src),
                         offset,
                         reg_name(base)
@@ -312,7 +349,7 @@ pub fn format_instructions_as_assembly(
                     ));
                 } else {
                     output.push_str(&format!(
-                        "    movb {}(%{}), %{}\n",
+                        "    movb {:+}(%{}), %{}\n",
                         offset,
                         reg_name(base),
                         reg_name_8(dest)
@@ -453,7 +490,9 @@ pub fn format_instructions_as_assembly(
                 output.push_str("    syscall\n");
             }
             MachineInstr::AllocStack { size } => {
-                output.push_str(&format!("    subq ${size}, %rsp\n"));
+                // Align size to 16 bytes as done by the encoder
+                let aligned_size = crate::util::align_to_16(*size as u64);
+                output.push_str(&format!("    subq ${aligned_size}, %rsp\n"));
             }
             MachineInstr::LeaLabel { dest, label } => {
                 output.push_str(&format!("    leaq {}(%rip), %{}\n", label, reg_name(dest)));
@@ -472,81 +511,78 @@ pub fn format_instructions_as_assembly(
                 output.push_str("    movq %rbp, %rsp\n");
                 output.push_str("    popq %rbp\n");
             }
+            MachineInstr::XorRR { dest, src } => {
+                output.push_str(&format!(
+                    "    xorq %{}, %{}\n",
+                    reg_name(src),
+                    reg_name(dest)
+                ));
+            }
+            MachineInstr::Ud2 => {
+                output.push_str("    ud2\n");
+            }
+            MachineInstr::DataBytes { bytes } => {
+                // Emit raw data bytes using .byte directive
+                for byte in bytes {
+                    output.push_str(&format!("    .byte {byte}\n"));
+                }
+            }
+            MachineInstr::ReserveBytes { count } => {
+                // Reserve uninitialized space using .space directive
+                output.push_str(&format!("    .space {count}\n"));
+            }
         }
     }
 
     output
 }
 
-// Helper functions for register names
-fn reg_name(reg: &Register) -> &'static str {
-    match reg {
-        Register::Rax => "rax",
-        Register::Rbx => "rbx",
-        Register::Rcx => "rcx",
-        Register::Rdx => "rdx",
-        Register::Rsi => "rsi",
-        Register::Rdi => "rdi",
-        Register::Rbp => "rbp",
-        Register::Rsp => "rsp",
-        Register::R8 => "r8",
-        Register::R9 => "r9",
-        Register::R10 => "r10",
-        Register::R11 => "r11",
-        Register::R12 => "r12",
-        Register::R13 => "r13",
-        Register::R14 => "r14",
-        Register::R15 => "r15",
-    }
+// Macro to generate register name tables consistently
+macro_rules! register_names {
+    (
+        $(
+            $reg:ident => { r64: $r64:literal, r32: $r32:literal, r8: $r8:literal }
+        ),+ $(,)?
+    ) => {
+        fn reg_name(reg: &Register) -> &'static str {
+            match reg {
+                $(Register::$reg => $r64,)+
+            }
+        }
+
+        fn reg_name_8(reg: &Register) -> &'static str {
+            match reg {
+                $(Register::$reg => $r8,)+
+            }
+        }
+
+        fn reg_name_32(reg: &Register) -> &'static str {
+            match reg {
+                $(Register::$reg => $r32,)+
+            }
+        }
+    };
 }
 
-fn reg_name_8(reg: &Register) -> &'static str {
-    match reg {
-        Register::Rax => "al",
-        Register::Rbx => "bl",
-        Register::Rcx => "cl",
-        Register::Rdx => "dl",
-        Register::Rsi => "sil",
-        Register::Rdi => "dil",
-        Register::Rbp => "bpl",
-        Register::Rsp => "spl",
-        Register::R8 => "r8b",
-        Register::R9 => "r9b",
-        Register::R10 => "r10b",
-        Register::R11 => "r11b",
-        Register::R12 => "r12b",
-        Register::R13 => "r13b",
-        Register::R14 => "r14b",
-        Register::R15 => "r15b",
-    }
+// Define all register names in one place
+register_names! {
+    Rax => { r64: "rax", r32: "eax", r8: "al" },
+    Rbx => { r64: "rbx", r32: "ebx", r8: "bl" },
+    Rcx => { r64: "rcx", r32: "ecx", r8: "cl" },
+    Rdx => { r64: "rdx", r32: "edx", r8: "dl" },
+    Rsi => { r64: "rsi", r32: "esi", r8: "sil" },
+    Rdi => { r64: "rdi", r32: "edi", r8: "dil" },
+    Rbp => { r64: "rbp", r32: "ebp", r8: "bpl" },
+    Rsp => { r64: "rsp", r32: "esp", r8: "spl" },
+    R8  => { r64: "r8",  r32: "r8d", r8: "r8b" },
+    R9  => { r64: "r9",  r32: "r9d", r8: "r9b" },
+    R10 => { r64: "r10", r32: "r10d", r8: "r10b" },
+    R11 => { r64: "r11", r32: "r11d", r8: "r11b" },
+    R12 => { r64: "r12", r32: "r12d", r8: "r12b" },
+    R13 => { r64: "r13", r32: "r13d", r8: "r13b" },
+    R14 => { r64: "r14", r32: "r14d", r8: "r14b" },
+    R15 => { r64: "r15", r32: "r15d", r8: "r15b" },
 }
-
-fn reg_name_32(reg: &Register) -> &'static str {
-    match reg {
-        Register::Rax => "eax",
-        Register::Rbx => "ebx",
-        Register::Rcx => "ecx",
-        Register::Rdx => "edx",
-        Register::Rsi => "esi",
-        Register::Rdi => "edi",
-        Register::Rbp => "ebp",
-        Register::Rsp => "esp",
-        Register::R8 => "r8d",
-        Register::R9 => "r9d",
-        Register::R10 => "r10d",
-        Register::R11 => "r11d",
-        Register::R12 => "r12d",
-        Register::R13 => "r13d",
-        Register::R14 => "r14d",
-        Register::R15 => "r15d",
-    }
-}
-
-#[cfg(test)]
-mod hir_test;
 
 #[cfg(test)]
 mod mir_to_instructions_test;
-
-#[cfg(test)]
-mod mir_roundtrip_test;

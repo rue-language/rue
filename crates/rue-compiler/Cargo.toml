@@ -10,4 +10,4 @@ rue-lexer = { path = "../rue-lexer" }
 rue-parser = { path = "../rue-parser" }
 rue-semantic = { path = "../rue-semantic" }
 rue-codegen = { path = "../rue-codegen" }
-salsa = "0.22"
+salsa.workspace = true

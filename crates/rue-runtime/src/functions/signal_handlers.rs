@@ -45,6 +45,9 @@ pub fn generate_setup_signal_handlers(ctx: &mut RuntimeContext) {
     ctx.instructions
         .push(MachineInstr::Label { id: setup_label });
 
+    // Set up stack frame
+    ctx.instructions.push(MachineInstr::EnterFrame);
+
     // Allocate space for sigaction structs
     ctx.instructions.push(MachineInstr::AllocStack {
         size: 2 * SIGACTION_STRUCT_SIZE,
@@ -146,11 +149,8 @@ pub fn generate_setup_signal_handlers(ctx: &mut RuntimeContext) {
     });
     ctx.instructions.push(MachineInstr::Syscall);
 
-    // Clean up stack
-    ctx.instructions.push(MachineInstr::AddRI {
-        dest: Register::Rsp,
-        imm: (2 * SIGACTION_STRUCT_SIZE) as i32,
-    });
+    // Clean up stack and leave frame
+    ctx.instructions.push(MachineInstr::LeaveFrame);
 
     ctx.instructions.push(MachineInstr::Ret);
 }

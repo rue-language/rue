@@ -31,6 +31,12 @@ pub struct MirBuilder {
     variables: HashMap<String, Temp>,
     /// Type information for temporaries
     temp_types: HashMap<Temp, RueType>,
+    /// Whether we're lowering the top-level expression of a function
+    /// (used to generate direct returns instead of join blocks)
+    is_function_body: bool,
+    /// Track variables that were assigned (not just declared) in the current scope
+    /// This helps distinguish between assignment (x = value) and shadowing (let x = value)
+    assigned_variables: std::collections::HashSet<String>,
 }
 
 impl Default for MirBuilder {
@@ -49,10 +55,12 @@ impl MirBuilder {
             blocks: Vec::new(),
             variables: HashMap::new(),
             temp_types: HashMap::new(),
+            is_function_body: false,
+            assigned_variables: std::collections::HashSet::new(),
         }
     }
 
-    /// Generate a fresh temporary
+    /// Generate a fresh temporary with type registration
     fn fresh_temp(&mut self, ty: RueType) -> Temp {
         let temp = Temp(self.temp_counter);
         self.temp_counter += 1;
@@ -67,6 +75,51 @@ impl MirBuilder {
         id
     }
 
+    /// Create a new temporary and assign a constant value to it
+    fn emit_const(&mut self, constant: MirConst, span: Option<rue_lexer::Span>) -> Temp {
+        let ty = constant.ty();
+        let temp = self.fresh_temp(ty);
+        self.add_statement(MirStatement::Assign {
+            dest: temp,
+            value: MirValue::Const(constant),
+            span,
+        });
+        temp
+    }
+
+    /// Create a new temporary and assign a binary operation to it
+    fn emit_binop(&mut self, op: MirBinOp, lhs: Temp, rhs: Temp, result_ty: RueType, span: Option<rue_lexer::Span>) -> Temp {
+        let temp = self.fresh_temp(result_ty);
+        self.add_statement(MirStatement::Assign {
+            dest: temp,
+            value: MirValue::BinaryOp { op, lhs, rhs },
+            span,
+        });
+        temp
+    }
+
+    /// Create a new temporary and assign a unary operation to it
+    fn emit_unop(&mut self, op: MirUnaryOp, operand: Temp, result_ty: RueType, span: Option<rue_lexer::Span>) -> Temp {
+        let temp = self.fresh_temp(result_ty);
+        self.add_statement(MirStatement::Assign {
+            dest: temp,
+            value: MirValue::UnaryOp { op, operand },
+            span,
+        });
+        temp
+    }
+
+    /// Create a new temporary and assign a function call to it
+    fn emit_call(&mut self, func: String, args: Vec<Temp>, kind: crate::mir::CallKind, return_ty: RueType, span: Option<rue_lexer::Span>) -> Temp {
+        let temp = self.fresh_temp(return_ty);
+        self.add_statement(MirStatement::Assign {
+            dest: temp,
+            value: MirValue::Call { func, args, kind },
+            span,
+        });
+        temp
+    }
+
     /// Start a new basic block
     fn start_block(&mut self, id: BlockId, params: Vec<(Temp, RueType)>) {
         if let Some(block) = self.current_block.take() {
@@ -76,7 +129,7 @@ impl MirBuilder {
             id,
             params,
             statements: Vec::new(),
-            terminator: MirTerminator::Return { value: None }, // Placeholder
+            terminator: MirTerminator::Return { value: None, span: None }, // Placeholder
         });
     }
 
@@ -130,32 +183,67 @@ impl MirBuilder {
 
         builder.start_block(entry_block, block_params);
 
-        // Lower the function body
+        // Lower the function body with is_function_body flag set
+        builder.is_function_body = true;
         let result = builder.lower_block(&func.body);
+        builder.is_function_body = false;
 
-        // Set return terminator
-        builder.set_terminator(MirTerminator::Return { value: result });
-        builder.finish_block();
+        if std::env::var("RUE_DEBUG").is_ok() {
+            eprintln!("Function {} body result: {:?}", func.name, result);
+        }
 
-        MirFunction {
+        // Set return terminator if we haven't already returned
+        if builder.current_block.is_some() {
+            builder.set_terminator(MirTerminator::Return { value: result, span: None });
+            builder.finish_block();
+        }
+
+        let mir_func = MirFunction {
             name: func.name.clone(),
             params: func.params.clone(),
             return_type: func.return_type.clone(),
             blocks: builder.blocks,
             entry_block,
             span: func.span,
+        };
+
+        // Debug: print MIR if enabled
+        if std::env::var("RUE_DEBUG_MIR").is_ok() {
+            eprintln!("=== MIR for {} ===", mir_func.name);
+            eprintln!("{mir_func}");
+            eprintln!("=================");
         }
+
+        mir_func
     }
 
     /// Lower a HIR block
     fn lower_block(&mut self, block: &HirBlock) -> Option<Temp> {
-        // Lower all statements
+        // Save the is_function_body flag
+        let saved_is_function_body = self.is_function_body;
+
+        // Lower all statements with is_function_body = false
+        // Statements should never generate direct returns, only the final expression
+        self.is_function_body = false;
         for stmt in &block.statements {
             self.lower_statement(stmt);
         }
 
+        // Restore is_function_body for the final expression only
+        self.is_function_body = saved_is_function_body;
+
         // Lower the final expression if present
-        block.expr.as_ref().map(|expr| self.lower_expr(expr))
+        let result = block.expr.as_ref().map(|expr| self.lower_expr(expr));
+
+        if std::env::var("RUE_DEBUG").is_ok() {
+            eprintln!(
+                "Block result: {:?}, has_expr: {}",
+                result,
+                block.expr.is_some()
+            );
+        }
+
+        result
     }
 
     /// Lower a HIR statement
@@ -169,6 +257,7 @@ impl MirBuilder {
             } => {
                 let init_temp = self.lower_expr(init);
                 self.variables.insert(name.clone(), init_temp);
+                // Let statements create new bindings (shadowing) - don't mark as assigned
             }
             HirStatement::Assign {
                 name,
@@ -178,6 +267,8 @@ impl MirBuilder {
                 let value_temp = self.lower_expr(value);
                 // In SSA form, we create a new temp for the assignment
                 self.variables.insert(name.clone(), value_temp);
+                // Mark this variable as having been assigned (not just shadowed)
+                self.assigned_variables.insert(name.clone());
             }
             HirStatement::Expr(expr) => {
                 // Expression statement - evaluate for side effects
@@ -211,10 +302,18 @@ impl MirBuilder {
                 span: _,
             } => {
                 // Look up the current temporary for this variable
-                self.variables
+                let temp = self
+                    .variables
                     .get(name)
                     .copied()
-                    .unwrap_or_else(|| panic!("Undefined variable: {name}"))
+                    .unwrap_or_else(|| panic!("Undefined variable: {name}"));
+                if std::env::var("RUE_DEBUG_VAR").is_ok() || std::env::var("RUE_DEBUG").is_ok() {
+                    eprintln!(
+                        "Variable lookup: {} -> {:?} (current vars: {:?})",
+                        name, temp, self.variables
+                    );
+                }
+                temp
             }
             HirExpr::Binary {
                 op,
@@ -223,8 +322,15 @@ impl MirBuilder {
                 ty,
                 span,
             } => {
+                // Save and clear is_function_body for sub-expressions
+                let saved_is_function_body = self.is_function_body;
+                self.is_function_body = false;
+
                 let lhs_temp = self.lower_expr(lhs);
                 let rhs_temp = self.lower_expr(rhs);
+
+                // Restore is_function_body
+                self.is_function_body = saved_is_function_body;
                 let result_temp = self.fresh_temp(ty.clone());
 
                 let mir_op = match op {
@@ -253,7 +359,14 @@ impl MirBuilder {
                 result_temp
             }
             HirExpr::Unary { op, expr, ty, span } => {
+                // Save and clear is_function_body for sub-expressions
+                let saved_is_function_body = self.is_function_body;
+                self.is_function_body = false;
+
                 let operand_temp = self.lower_expr(expr);
+
+                // Restore is_function_body
+                self.is_function_body = saved_is_function_body;
                 let result_temp = self.fresh_temp(ty.clone());
 
                 let mir_op = match op {
@@ -276,18 +389,24 @@ impl MirBuilder {
                 ty,
                 span,
             } => {
-                let arg_temps: Vec<Temp> = args.iter().map(|arg| self.lower_expr(arg)).collect();
-                let result_temp = self.fresh_temp(ty.clone());
+                // Save and clear is_function_body for sub-expressions
+                let saved_is_function_body = self.is_function_body;
+                self.is_function_body = false;
 
-                self.add_statement(MirStatement::Assign {
-                    dest: result_temp,
-                    value: MirValue::Call {
-                        func: func.clone(),
-                        args: arg_temps,
-                        return_type: ty.clone(),
-                    },
-                    span: Some(*span),
-                });
+                let arg_temps: Vec<Temp> = args.iter().map(|arg| self.lower_expr(arg)).collect();
+
+                // Restore is_function_body
+                self.is_function_body = saved_is_function_body;
+                
+                // For now, assume all function calls are impure (conservative approach)
+                // This can be refined later with function signature analysis or annotations
+                let result_temp = self.emit_call(
+                    func.clone(), 
+                    arg_temps, 
+                    crate::mir::CallKind::Impure, 
+                    ty.clone(), 
+                    Some(*span)
+                );
                 result_temp
             }
             HirExpr::If {
@@ -306,6 +425,9 @@ impl MirBuilder {
                     value: MirValue::Const(MirConst::Unit),
                     span: Some(*span),
                 });
+                if std::env::var("RUE_DEBUG").is_ok() {
+                    eprintln!("While expr returns unit temp: {unit_temp:?}");
+                }
                 unit_temp
             }
         }
@@ -319,7 +441,9 @@ impl MirBuilder {
         else_block: Option<&HirBlock>,
         result_ty: &RueType,
     ) -> Temp {
-        // Evaluate condition
+        // Evaluate condition (save is_function_body state to restore later)
+        let saved_is_function_body = self.is_function_body;
+        self.is_function_body = false; // Nested expressions shouldn't generate direct returns
         let cond_temp = self.lower_expr(cond);
 
         // Save current variable state before branching
@@ -335,24 +459,73 @@ impl MirBuilder {
         // Create blocks
         let then_block_id = self.fresh_block();
         let else_block_id = self.fresh_block();
-        let join_block_id = self.fresh_block();
 
-        // Create result temporary for join block
+        // Check if we should generate direct returns
+        // Re-enable direct returns now that we've improved block parameter handling
+        let generate_direct_returns = saved_is_function_body;
+
+        // Only create join block if not generating direct returns
+        let join_block_id = if generate_direct_returns {
+            BlockId(u32::MAX) // Dummy value, won't be used
+        } else {
+            self.fresh_block()
+        };
+
+        // Create result temporary for join block (only used if not direct returns)
         let result_temp = self.fresh_temp(result_ty.clone());
+
+        // When using direct returns, we need to pass variables as block parameters
+        let (then_block_params, else_block_params, branch_args) = if generate_direct_returns {
+            // Create block parameters for all variables
+            let mut params = Vec::new();
+            let mut args = Vec::new();
+
+            for (_var_name, temp) in &vars_before_branch {
+                let ty = self
+                    .temp_types
+                    .get(temp)
+                    .cloned()
+                    .expect("type for temp not registered in temp_types");
+                let param_temp = self.fresh_temp(ty.clone());
+                params.push((param_temp, ty));
+                args.push(*temp);
+            }
+
+            (params.clone(), params, args)
+        } else {
+            (vec![], vec![], vec![])
+        };
 
         // Branch to then/else blocks
         self.set_terminator(MirTerminator::Branch {
             condition: cond_temp,
             then_block: then_block_id,
-            then_args: vec![],
+            then_args: branch_args.clone(),
             else_block: else_block_id,
-            else_args: vec![],
+            else_args: branch_args,
+            span: None,
         });
         self.finish_block();
 
-        // Lower then block
-        self.start_block(then_block_id, vec![]);
+        // Lower then block (restore is_function_body for block lowering)
+        self.start_block(then_block_id, then_block_params.clone());
+
+        // Update variable mappings if using direct returns
+        if generate_direct_returns {
+            for ((name, _), (param_temp, _)) in
+                vars_before_branch.iter().zip(then_block_params.iter())
+            {
+                self.variables.insert(name.clone(), *param_temp);
+            }
+        }
+
+        // Save and clear assigned variables tracking for then block scope
+        let saved_assigned_vars = self.assigned_variables.clone();
+        self.assigned_variables.clear();
+
+        self.is_function_body = saved_is_function_body;
         let then_value = self.lower_block(then_block);
+        self.is_function_body = false;
         let then_result = then_value.unwrap_or_else(|| {
             // If no expression, use unit
             let temp = self.fresh_temp(RueType::Unit);
@@ -368,24 +541,64 @@ impl MirBuilder {
         let vars_after_then = self.variables.clone();
 
         // Prepare arguments for join block from then branch
+        // CRITICAL: Handle variable shadowing vs assignment correctly for if-expressions
         let mut then_join_args = vec![then_result];
-        for (name, _) in &vars_before_branch {
-            if let Some(&temp) = vars_after_then.get(name) {
-                then_join_args.push(temp);
+        for (name, original_temp) in &vars_before_branch {
+            if let Some(&current_temp) = vars_after_then.get(name) {
+                if self.assigned_variables.contains(name) {
+                    // Variable was assigned in then block - pass the new value
+                    then_join_args.push(current_temp);
+                } else {
+                    // Variable was only shadowed - pass the original value
+                    then_join_args.push(*original_temp);
+                }
+            } else {
+                // Variable not found, pass original
+                then_join_args.push(*original_temp);
             }
         }
 
-        self.set_terminator(MirTerminator::Goto {
-            target: join_block_id,
-            args: then_join_args,
-        });
-        self.finish_block();
+        // Store then block's assigned variables for later restoration
+        let then_assigned_vars = self.assigned_variables.clone();
+        // Restore assigned variables tracking
+        self.assigned_variables = saved_assigned_vars.clone();
+
+        if generate_direct_returns {
+            // Direct return from then block
+            self.set_terminator(MirTerminator::Return {
+                value: Some(then_result),
+                span: None,
+            });
+            self.finish_block();
+        } else {
+            // Jump to join block
+            self.set_terminator(MirTerminator::Goto {
+                target: join_block_id,
+                args: then_join_args,
+                span: None,
+            });
+            self.finish_block();
+        }
 
         // Reset variables to state before branching for else block
         self.variables = vars_before_branch.iter().cloned().collect();
 
         // Lower else block
-        self.start_block(else_block_id, vec![]);
+        self.start_block(else_block_id, else_block_params.clone());
+
+        // Update variable mappings if using direct returns
+        if generate_direct_returns {
+            for ((name, _), (param_temp, _)) in
+                vars_before_branch.iter().zip(else_block_params.iter())
+            {
+                self.variables.insert(name.clone(), *param_temp);
+            }
+        }
+
+        // Clear assigned variables tracking for else block scope
+        self.assigned_variables.clear();
+
+        self.is_function_body = saved_is_function_body;
         let else_result = if let Some(else_blk) = else_block {
             let else_value = self.lower_block(else_blk);
             else_value.unwrap_or_else(|| {
@@ -407,53 +620,87 @@ impl MirBuilder {
             });
             temp
         };
+        self.is_function_body = false;
 
         // Collect variables after else block
         let vars_after_else = self.variables.clone();
 
         // Prepare arguments for join block from else branch
+        // CRITICAL: Same logic as then branch - handle shadowing vs assignment
         let mut else_join_args = vec![else_result];
-        for (name, _) in &vars_before_branch {
-            if let Some(&temp) = vars_after_else.get(name) {
-                else_join_args.push(temp);
+        for (name, original_temp) in &vars_before_branch {
+            if let Some(&current_temp) = vars_after_else.get(name) {
+                if self.assigned_variables.contains(name) {
+                    // Variable was assigned in else block - pass the new value
+                    else_join_args.push(current_temp);
+                } else {
+                    // Variable was only shadowed - pass the original value
+                    else_join_args.push(*original_temp);
+                }
+            } else {
+                // Variable not found, pass original
+                else_join_args.push(*original_temp);
             }
         }
 
-        self.set_terminator(MirTerminator::Goto {
-            target: join_block_id,
-            args: else_join_args,
-        });
-        self.finish_block();
+        // Merge assignment tracking from both branches
+        let else_assigned_vars = self.assigned_variables.clone();
+        // Restore original assignment tracking and merge both branches
+        self.assigned_variables = saved_assigned_vars;
+        self.assigned_variables.extend(then_assigned_vars);
+        self.assigned_variables.extend(else_assigned_vars);
 
-        // Join block receives the result and all potentially modified variables as parameters
-        // IMPORTANT: The result is always the first parameter. This ordering is critical
-        // because we might have a variable with the same name as the result, and we need
-        // to ensure the result temp is not shadowed by variable temps.
-        let mut join_params = vec![(result_temp, result_ty.clone())];
+        if generate_direct_returns {
+            // Direct return from else block
+            self.set_terminator(MirTerminator::Return {
+                value: Some(else_result),
+                span: None,
+            });
+            self.finish_block();
+            // Clear current block since all paths have returned
+            self.current_block = None;
+            // Return dummy temp since we won't reach here
+            result_temp
+        } else {
+            // Jump to join block
+            self.set_terminator(MirTerminator::Goto {
+                target: join_block_id,
+                args: else_join_args,
+                span: None,
+            });
+            self.finish_block();
 
-        // Create a new temp for each variable that might have been modified
-        let mut join_param_vars = Vec::new();
-        for (name, original_temp) in &vars_before_branch {
-            // Get the type from any of the branches (they should be the same)
-            let ty = self
-                .temp_types
-                .get(original_temp)
-                .cloned()
-                .expect("type for temp not registered in temp_types");
-            let join_temp = self.fresh_temp(ty.clone());
-            join_params.push((join_temp, ty));
-            join_param_vars.push((name.clone(), join_temp));
+            // Join block receives the result and all potentially modified variables as parameters
+            // IMPORTANT: The result is always the first parameter. This ordering is critical
+            // because we might have a variable with the same name as the result, and we need
+            // to ensure the result temp is not shadowed by variable temps.
+            let mut join_params = vec![(result_temp, result_ty.clone())];
+
+            // Create a new temp for each variable that might have been modified
+            let mut join_param_vars = Vec::new();
+            for (name, original_temp) in &vars_before_branch {
+                // Get the type from any of the branches (they should be the same)
+                let ty = self
+                    .temp_types
+                    .get(original_temp)
+                    .cloned()
+                    .expect("type for temp not registered in temp_types");
+                let join_temp = self.fresh_temp(ty.clone());
+                join_params.push((join_temp, ty));
+                join_param_vars.push((name.clone(), join_temp));
+            }
+
+            self.start_block(join_block_id, join_params.clone());
+
+            // Update variable mappings to use the join block parameters
+            // The first parameter is the result, subsequent parameters are the variables
+            for (name, param_temp) in join_param_vars {
+                self.variables.insert(name, param_temp);
+            }
+
+            // Return the join block's first parameter (the result), not the original temp
+            join_params[0].0
         }
-
-        self.start_block(join_block_id, join_params);
-
-        // Update variable mappings to use the join block parameters
-        // The first parameter is the result, subsequent parameters are the variables
-        for (name, param_temp) in join_param_vars {
-            self.variables.insert(name, param_temp);
-        }
-
-        result_temp
     }
 
     /// Lower a while expression to MIR
@@ -483,6 +730,7 @@ impl MirBuilder {
         self.set_terminator(MirTerminator::Goto {
             target: loop_header,
             args: initial_args,
+            span: None,
         });
         self.finish_block();
 
@@ -520,27 +768,99 @@ impl MirBuilder {
         self.set_terminator(MirTerminator::Branch {
             condition: cond_temp,
             then_block: loop_body,
-            then_args: vec![],
+            then_args: branch_args.clone(),
             else_block: loop_exit,
             else_args: branch_args.clone(),
+            span: None,
         });
         self.finish_block();
 
-        // Loop body
-        self.start_block(loop_body, vec![]);
+        // Loop body - create block parameters for all variables
+        let mut loop_body_params = Vec::new();
+        let mut body_vars = HashMap::new();
+
+        for (name, _) in &vars_before_loop {
+            let temp_type = self
+                .temp_types
+                .get(&loop_vars[name])
+                .cloned()
+                .expect("type for temp not registered in temp_types");
+            let body_temp = self.fresh_temp(temp_type.clone());
+            loop_body_params.push((body_temp, temp_type));
+            body_vars.insert(name.clone(), body_temp);
+        }
+
+        // Save the loop body parameters before passing them to start_block
+        let saved_loop_body_params = loop_body_params.clone();
+
+        self.start_block(loop_body, loop_body_params);
+
+        // Update variables to use loop body parameters
+        self.variables = body_vars;
+
+        // Clear assigned variables tracking for the loop body scope
+        let saved_assigned_vars = self.assigned_variables.clone();
+        self.assigned_variables.clear();
+
         self.lower_block(body);
 
         // Collect variables after loop body to pass back to header
+        // CRITICAL: We need to handle variable shadowing vs assignment correctly
+        // - Variables that are assigned (x = value) should pass their new values
+        // - Variables that are shadowed (let x = value) should pass their original values
         let mut loop_back_args = Vec::new();
-        for (name, _) in &vars_before_loop {
-            if let Some(&temp) = self.variables.get(name) {
-                loop_back_args.push(temp);
+
+        // Get the variable state when we entered the loop body (should match loop header params)
+        let loop_body_entry_vars: HashMap<String, Temp> = vars_before_loop
+            .iter()
+            .enumerate()
+            .map(|(i, (name, _))| {
+                // The loop body parameter for this variable
+                let body_temp = saved_loop_body_params[i].0;
+                (name.clone(), body_temp)
+            })
+            .collect();
+
+        // CRITICAL: Handle variable shadowing vs assignment correctly:
+        // - Variables that were assigned (x = value) should pass their new values
+        // - Variables that were only shadowed (let x = value) should pass loop-carried values
+        for (name, _original_temp) in &vars_before_loop {
+            if let Some(&current_temp) = self.variables.get(name) {
+                // Get the loop-carried value (what this variable had when entering the loop body)
+                let loop_entry_temp = loop_body_entry_vars[name];
+
+                if self.assigned_variables.contains(name) {
+                    // Variable was assigned in the loop body - pass the new value
+                    if std::env::var("RUE_DEBUG").is_ok() {
+                        eprintln!(
+                            "While loop: {name} was assigned, passing new value: {current_temp:?}"
+                        );
+                    }
+                    loop_back_args.push(current_temp);
+                } else {
+                    // Variable was not assigned (only shadowed) - pass the loop-carried value
+                    if std::env::var("RUE_DEBUG").is_ok() {
+                        eprintln!(
+                            "While loop: {name} was not assigned, passing loop-carried value: {loop_entry_temp:?}"
+                        );
+                    }
+                    loop_back_args.push(loop_entry_temp);
+                }
+            } else {
+                // This shouldn't happen in well-formed code
+                if std::env::var("RUE_DEBUG").is_ok() {
+                    eprintln!("While loop variable {name} not found in current scope");
+                }
             }
         }
+
+        // Restore the assigned variables set
+        self.assigned_variables = saved_assigned_vars;
 
         self.set_terminator(MirTerminator::Goto {
             target: loop_header,
             args: loop_back_args,
+            span: None,
         });
         self.finish_block();
 
@@ -629,6 +949,82 @@ mod tests {
     }
 
     #[test]
+    fn debug_if_mult_mir() {
+        // Create HIR for: if x == 1 { 1 } else { x * 2 }
+        let hir_expr = HirExpr::If {
+            cond: Box::new(HirExpr::Binary {
+                op: BinOp::Eq,
+                lhs: Box::new(HirExpr::Var {
+                    name: "x".to_string(),
+                    ty: RueType::I32,
+                    span: Span::dummy(),
+                }),
+                rhs: Box::new(HirExpr::Literal {
+                    lit: HirLiteral::Int32(1),
+                    span: Span::dummy(),
+                }),
+                ty: RueType::Bool,
+                span: Span::dummy(),
+            }),
+            then_block: HirBlock {
+                statements: vec![],
+                expr: Some(Box::new(HirExpr::Literal {
+                    lit: HirLiteral::Int32(1),
+                    span: Span::dummy(),
+                })),
+            },
+            else_block: Some(HirBlock {
+                statements: vec![],
+                expr: Some(Box::new(HirExpr::Binary {
+                    op: BinOp::Mul,
+                    lhs: Box::new(HirExpr::Var {
+                        name: "x".to_string(),
+                        ty: RueType::I32,
+                        span: Span::dummy(),
+                    }),
+                    rhs: Box::new(HirExpr::Literal {
+                        lit: HirLiteral::Int32(2),
+                        span: Span::dummy(),
+                    }),
+                    ty: RueType::I32,
+                    span: Span::dummy(),
+                })),
+            }),
+            ty: RueType::I32,
+            span: Span::dummy(),
+        };
+
+        let hir_func = HirFunction {
+            name: "test_if".to_string(),
+            params: vec![("x".to_string(), RueType::I32)],
+            return_type: RueType::I32,
+            body: HirBlock {
+                statements: vec![],
+                expr: Some(Box::new(hir_expr)),
+            },
+            span: Span::dummy(),
+        };
+
+        let mir_func = MirBuilder::lower_function(&hir_func);
+
+        // Print the MIR for debugging
+        println!("\nMIR for test_if:");
+        println!("Parameters: {:?}", mir_func.params);
+        for block in &mir_func.blocks {
+            println!("\nBlock {}:", block.id.0);
+            println!("  Parameters: {:?}", block.params);
+            for stmt in &block.statements {
+                println!("  {stmt:?}");
+            }
+            println!("  Terminator: {:?}", block.terminator);
+        }
+
+        // The issue: in the else block, when we compute x * 2,
+        // which temp is used for x?
+        // It should be the block parameter, not the original function parameter
+    }
+
+    #[test]
     fn test_lower_if_expression() {
         // if x > 0 { 1 } else { 0 }
         let hir_expr = HirExpr::If {
@@ -677,7 +1073,7 @@ mod tests {
 
         let mir_func = MirBuilder::lower_function(&hir_func);
 
-        // Should have 4 blocks: entry, then, else, join
-        assert_eq!(mir_func.blocks.len(), 4);
+        // Should have 3 blocks: entry, then, else (join block optimized away since both branches return)
+        assert_eq!(mir_func.blocks.len(), 3);
     }
 }

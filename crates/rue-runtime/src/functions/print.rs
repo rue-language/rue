@@ -1,5 +1,6 @@
 //! Print functions implementation
 
+#[allow(unused_imports)]
 use crate::constants::*;
 use crate::helpers::*;
 use crate::machine_runtime::RuntimeContext;
@@ -12,6 +13,9 @@ pub fn generate_println_i64_function(ctx: &mut RuntimeContext) {
     ctx.instructions.push(MachineInstr::Label {
         id: println_i64_label,
     });
+
+    // Set up stack frame
+    ctx.instructions.push(MachineInstr::EnterFrame);
 
     // Allocate space for number buffer
     ctx.instructions.push(MachineInstr::AllocStack {
@@ -44,21 +48,14 @@ pub fn generate_println_i64_function(ctx: &mut RuntimeContext) {
     });
     emit_syscall_with_error_check(ctx, SYSCALL_WRITE, EXIT_CODE_SYSCALL_FAILED);
 
-    // Write newline - we need to put newline character on stack
-    ctx.instructions.push(MachineInstr::MovRI64 {
-        dest: Register::Rax,
-        imm: CHAR_NEWLINE as i64,
-    });
-    ctx.instructions
-        .push(MachineInstr::Push { reg: Register::Rax });
-
+    // Write newline - use static newline from data section
     ctx.instructions.push(MachineInstr::MovRI64 {
         dest: Register::Rdi,
         imm: FD_STDOUT,
     });
-    ctx.instructions.push(MachineInstr::MovRR {
+    ctx.instructions.push(MachineInstr::LeaLabel {
         dest: Register::Rsi,
-        src: Register::Rsp,
+        label: "__rue_newline".to_string(),
     });
     ctx.instructions.push(MachineInstr::MovRI64 {
         dest: Register::Rdx,
@@ -66,11 +63,8 @@ pub fn generate_println_i64_function(ctx: &mut RuntimeContext) {
     });
     emit_syscall_with_error_check(ctx, SYSCALL_WRITE, EXIT_CODE_SYSCALL_FAILED);
 
-    // Clean up stack (buffer + 8 bytes for newline)
-    ctx.instructions.push(MachineInstr::AddRI {
-        dest: Register::Rsp,
-        imm: (ITOA_BUFFER_SIZE + 8) as i32,
-    });
+    // Clean up stack and leave frame
+    ctx.instructions.push(MachineInstr::LeaveFrame);
 
     ctx.instructions.push(MachineInstr::Ret);
 }
@@ -119,12 +113,15 @@ pub fn generate_println_i32_function(ctx: &mut RuntimeContext) {
 /// Generate println_bool function
 pub fn generate_println_bool_function(ctx: &mut RuntimeContext) {
     let println_bool_label = ctx.define_label("__rue_println_bool");
-    let print_false = ctx.new_label();
-    let print_done = ctx.new_label();
+    let print_false_label = ctx.new_label();
+    let print_done_label = ctx.new_label();
 
     ctx.instructions.push(MachineInstr::Label {
         id: println_bool_label,
     });
+
+    // Set up stack frame
+    ctx.instructions.push(MachineInstr::EnterFrame);
 
     // Check if RDI is 0 (false) or non-zero (true)
     ctx.instructions.push(MachineInstr::CmpRI {
@@ -133,24 +130,17 @@ pub fn generate_println_bool_function(ctx: &mut RuntimeContext) {
     });
     ctx.instructions.push(MachineInstr::JmpCC {
         cc: rue_ir::target::ConditionCode::Equal,
-        target: rue_ir::target::LabelRef::Local(print_false),
+        target: rue_ir::target::LabelRef::Local(print_false_label),
     });
 
-    // Print "true" - put the string on the stack
-    ctx.instructions.push(MachineInstr::MovRI64 {
-        dest: Register::Rax,
-        imm: TRUE_STRING_HEX,
-    });
-    ctx.instructions
-        .push(MachineInstr::Push { reg: Register::Rax });
-
+    // Print "true" - use static string from data section
     ctx.instructions.push(MachineInstr::MovRI64 {
         dest: Register::Rdi,
         imm: FD_STDOUT,
     });
-    ctx.instructions.push(MachineInstr::MovRR {
+    ctx.instructions.push(MachineInstr::LeaLabel {
         dest: Register::Rsi,
-        src: Register::Rsp,
+        label: "__rue_true_str".to_string(),
     });
     ctx.instructions.push(MachineInstr::MovRI64 {
         dest: Register::Rdx,
@@ -158,35 +148,23 @@ pub fn generate_println_bool_function(ctx: &mut RuntimeContext) {
     });
     emit_syscall_with_error_check(ctx, SYSCALL_WRITE, EXIT_CODE_SYSCALL_FAILED);
 
-    // Clean up "true" from stack
-    ctx.instructions.push(MachineInstr::AddRI {
-        dest: Register::Rsp,
-        imm: 8,
-    });
-
     ctx.instructions.push(MachineInstr::Jmp {
-        target: rue_ir::target::LabelRef::Local(print_done),
+        target: rue_ir::target::LabelRef::Local(print_done_label),
     });
 
     // Print "false"
-    ctx.instructions
-        .push(MachineInstr::Label { id: print_false });
-
-    // Put "false" on stack
-    ctx.instructions.push(MachineInstr::MovRI64 {
-        dest: Register::Rax,
-        imm: FALSE_STRING_1,
+    ctx.instructions.push(MachineInstr::Label {
+        id: print_false_label,
     });
-    ctx.instructions
-        .push(MachineInstr::Push { reg: Register::Rax });
 
+    // Print "false" - use static string from data section
     ctx.instructions.push(MachineInstr::MovRI64 {
         dest: Register::Rdi,
         imm: FD_STDOUT,
     });
-    ctx.instructions.push(MachineInstr::MovRR {
+    ctx.instructions.push(MachineInstr::LeaLabel {
         dest: Register::Rsi,
-        src: Register::Rsp,
+        label: "__rue_false_str".to_string(),
     });
     ctx.instructions.push(MachineInstr::MovRI64 {
         dest: Register::Rdx,
@@ -194,30 +172,18 @@ pub fn generate_println_bool_function(ctx: &mut RuntimeContext) {
     });
     emit_syscall_with_error_check(ctx, SYSCALL_WRITE, EXIT_CODE_SYSCALL_FAILED);
 
-    // Clean up "false" from stack
-    ctx.instructions.push(MachineInstr::AddRI {
-        dest: Register::Rsp,
-        imm: 8,
+    ctx.instructions.push(MachineInstr::Label {
+        id: print_done_label,
     });
 
-    ctx.instructions
-        .push(MachineInstr::Label { id: print_done });
-
-    // Print newline
-    ctx.instructions.push(MachineInstr::MovRI64 {
-        dest: Register::Rax,
-        imm: CHAR_NEWLINE as i64,
-    });
-    ctx.instructions
-        .push(MachineInstr::Push { reg: Register::Rax });
-
+    // Print newline - use static newline from data section
     ctx.instructions.push(MachineInstr::MovRI64 {
         dest: Register::Rdi,
         imm: FD_STDOUT,
     });
-    ctx.instructions.push(MachineInstr::MovRR {
+    ctx.instructions.push(MachineInstr::LeaLabel {
         dest: Register::Rsi,
-        src: Register::Rsp,
+        label: "__rue_newline".to_string(),
     });
     ctx.instructions.push(MachineInstr::MovRI64 {
         dest: Register::Rdx,
@@ -225,11 +191,8 @@ pub fn generate_println_bool_function(ctx: &mut RuntimeContext) {
     });
     emit_syscall_with_error_check(ctx, SYSCALL_WRITE, EXIT_CODE_SYSCALL_FAILED);
 
-    // Clean up newline
-    ctx.instructions.push(MachineInstr::AddRI {
-        dest: Register::Rsp,
-        imm: 8,
-    });
+    // Clean up stack and leave frame
+    ctx.instructions.push(MachineInstr::LeaveFrame);
 
     ctx.instructions.push(MachineInstr::Ret);
 }
@@ -242,21 +205,17 @@ pub fn generate_println_unit_function(ctx: &mut RuntimeContext) {
         id: println_unit_label,
     });
 
-    // Print "()" - put it on stack
-    ctx.instructions.push(MachineInstr::MovRI64 {
-        dest: Register::Rax,
-        imm: UNIT_STRING_HEX,
-    });
-    ctx.instructions
-        .push(MachineInstr::Push { reg: Register::Rax });
+    // Set up stack frame
+    ctx.instructions.push(MachineInstr::EnterFrame);
 
+    // Print "()" - use static string from data section
     ctx.instructions.push(MachineInstr::MovRI64 {
         dest: Register::Rdi,
         imm: FD_STDOUT,
     });
-    ctx.instructions.push(MachineInstr::MovRR {
+    ctx.instructions.push(MachineInstr::LeaLabel {
         dest: Register::Rsi,
-        src: Register::Rsp,
+        label: "__rue_unit_str".to_string(),
     });
     ctx.instructions.push(MachineInstr::MovRI64 {
         dest: Register::Rdx,
@@ -264,27 +223,14 @@ pub fn generate_println_unit_function(ctx: &mut RuntimeContext) {
     });
     emit_syscall_with_error_check(ctx, SYSCALL_WRITE, EXIT_CODE_SYSCALL_FAILED);
 
-    // Clean up "()" from stack
-    ctx.instructions.push(MachineInstr::AddRI {
-        dest: Register::Rsp,
-        imm: 8,
-    });
-
-    // Print newline
-    ctx.instructions.push(MachineInstr::MovRI64 {
-        dest: Register::Rax,
-        imm: CHAR_NEWLINE as i64,
-    });
-    ctx.instructions
-        .push(MachineInstr::Push { reg: Register::Rax });
-
+    // Print newline - use static newline from data section
     ctx.instructions.push(MachineInstr::MovRI64 {
         dest: Register::Rdi,
         imm: FD_STDOUT,
     });
-    ctx.instructions.push(MachineInstr::MovRR {
+    ctx.instructions.push(MachineInstr::LeaLabel {
         dest: Register::Rsi,
-        src: Register::Rsp,
+        label: "__rue_newline".to_string(),
     });
     ctx.instructions.push(MachineInstr::MovRI64 {
         dest: Register::Rdx,
@@ -292,11 +238,8 @@ pub fn generate_println_unit_function(ctx: &mut RuntimeContext) {
     });
     emit_syscall_with_error_check(ctx, SYSCALL_WRITE, EXIT_CODE_SYSCALL_FAILED);
 
-    // Clean up newline
-    ctx.instructions.push(MachineInstr::AddRI {
-        dest: Register::Rsp,
-        imm: 8,
-    });
+    // Clean up stack and leave frame
+    ctx.instructions.push(MachineInstr::LeaveFrame);
 
     ctx.instructions.push(MachineInstr::Ret);
 }

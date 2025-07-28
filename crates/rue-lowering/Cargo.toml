@@ -1,0 +1,10 @@
+[package]
+name = "rue-lowering"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+rue-ir = { path = "../rue-ir" }
+rue-lexer = { path = "../rue-lexer" }
+
+[dev-dependencies]

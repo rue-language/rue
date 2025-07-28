@@ -362,6 +362,7 @@ Binary operations are evaluated left-to-right according to precedence:
 - `*`: Multiplication (wrapping on overflow)
 - `/`: Division (program aborts on division by zero)
 - `%`: Modulo (program aborts on division by zero)
+  - TODO: Specify that modulo uses truncated division (same as Rust/C)
 
 **Comparison Operations** (require matching types, return `bool`):
 - `<=`, `>=`, `<`, `>`: Comparison (returns `true` or `false`)

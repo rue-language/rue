@@ -159,6 +159,7 @@ impl ConstProp {
             then_args,
             else_block,
             else_args,
+            ..
         } = term
         {
             // If condition is a known constant, replace with goto
@@ -167,11 +168,13 @@ impl ConstProp {
                     MirTerminator::Goto {
                         target: *then_block,
                         args: then_args.clone(),
+                        span: None,
                     }
                 } else {
                     MirTerminator::Goto {
                         target: *else_block,
                         args: else_args.clone(),
+                        span: None,
                     }
                 };
             }
@@ -226,6 +229,7 @@ mod tests {
                     ],
                     terminator: MirTerminator::Return {
                         value: Some(Temp(2)),
+                        span: None,
                     },
                 }],
             }],
@@ -274,19 +278,20 @@ mod tests {
                             then_args: vec![],
                             else_block: BlockId(2),
                             else_args: vec![],
+                            span: None,
                         },
                     },
                     BasicBlock {
                         id: BlockId(1),
                         params: vec![],
                         statements: vec![],
-                        terminator: MirTerminator::Return { value: None },
+                        terminator: MirTerminator::Return { value: None, span: None },
                     },
                     BasicBlock {
                         id: BlockId(2),
                         params: vec![],
                         statements: vec![],
-                        terminator: MirTerminator::Return { value: None },
+                        terminator: MirTerminator::Return { value: None, span: None },
                     },
                 ],
             }],

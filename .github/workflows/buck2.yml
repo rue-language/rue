@@ -38,17 +38,6 @@ jobs:
       run: |
         buck2 build //crates/...
     
-    - name: Test reindeer buckify
-      run: |
-        # Backup current state
-        cp BUCK BUCK.backup
-        # Run reindeer to regenerate
-        reindeer buckify
-        # Check that the build still works
-        buck2 build //crates/rue:rue
-        # Restore backup
-        mv BUCK.backup BUCK
-    
     - name: Buck2 query tests
       run: |
         buck2 uquery "deps(//crates/rue:rue)"

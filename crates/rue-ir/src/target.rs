@@ -94,6 +94,9 @@ pub enum MachineInstr {
     /// sub dest, imm32
     SubRI { dest: Register, imm: i32 },
 
+    /// xor dest, src
+    XorRR { dest: Register, src: Register },
+
     /// imul dest, src
     ImulRR { dest: Register, src: Register },
 
@@ -172,6 +175,16 @@ pub enum MachineInstr {
 
     /// sub rsp, size (allocate stack space)
     AllocStack { size: u32 },
+
+    /// Data section instructions
+    /// Raw byte data (db equivalent)
+    DataBytes { bytes: Vec<u8> },
+
+    /// Zero-initialized space reservation (resb equivalent)
+    ReserveBytes { count: u32 },
+
+    /// ud2 - undefined instruction (causes SIGILL)
+    Ud2,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

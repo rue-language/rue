@@ -75,141 +75,17 @@ impl X86Emitter {
             }
 
             MachineInstr::MovRM { dest, base, offset } => {
-                self.emit_rex_if_needed(true, Some(dest), Some(base));
-                self.code.push(0x8b); // MOV r64, r/m64
-
-                // Special handling for RSP/R12 which require SIB byte
-                let base_code = self.register_code(base);
-                let needs_sib = base_code == 4; // RSP or R12
-
-                // Choose between disp8 and disp32 based on offset size
-                if *offset >= -128 && *offset <= 127 {
-                    // ModR/M byte: mod=01 (disp8), reg=dest, r/m=base
-                    let modrm = 0x40 | (self.register_code(dest) << 3) | base_code;
-                    self.code.push(modrm);
-                    if needs_sib {
-                        // SIB byte: scale=00, index=100 (none), base=100 (RSP)
-                        self.code.push(0x24);
-                    }
-                    self.code.push(*offset as u8);
-                } else {
-                    // ModR/M byte: mod=10 (disp32), reg=dest, r/m=base
-                    let modrm = 0x80 | (self.register_code(dest) << 3) | base_code;
-                    self.code.push(modrm);
-                    if needs_sib {
-                        // SIB byte: scale=00, index=100 (none), base=100 (RSP)
-                        self.code.push(0x24);
-                    }
-                    self.code.extend_from_slice(&offset.to_le_bytes());
-                }
+                self.emit_mem_op(0x8b, dest, base, *offset, false)?;
             }
 
             MachineInstr::MovMR { base, offset, src } => {
-                self.emit_rex_if_needed(true, Some(src), Some(base));
-                self.code.push(0x89); // MOV r/m64, r64
-
-                // Special handling for RSP/R12 which require SIB byte
-                let base_code = self.register_code(base);
-                let needs_sib = base_code == 4; // RSP or R12
-
-                // Choose between disp8 and disp32 based on offset size
-                if *offset >= -128 && *offset <= 127 {
-                    // ModR/M byte: mod=01 (disp8), reg=src, r/m=base
-                    let modrm = 0x40 | (self.register_code(src) << 3) | base_code;
-                    self.code.push(modrm);
-                    if needs_sib {
-                        // SIB byte: scale=00, index=100 (none), base=100 (RSP)
-                        self.code.push(0x24);
-                    }
-                    self.code.push(*offset as u8);
-                } else {
-                    // ModR/M byte: mod=10 (disp32), reg=src, r/m=base
-                    let modrm = 0x80 | (self.register_code(src) << 3) | base_code;
-                    self.code.push(modrm);
-                    if needs_sib {
-                        // SIB byte: scale=00, index=100 (none), base=100 (RSP)
-                        self.code.push(0x24);
-                    }
-                    self.code.extend_from_slice(&offset.to_le_bytes());
-                }
+                self.emit_mem_op(0x89, src, base, *offset, false)?;
             }
             MachineInstr::MovMR8 { base, offset, src } => {
-                // For byte operations, we need REX if using R8-R15 or accessing high byte regs
-                if src.needs_rex() || base.needs_rex() {
-                    let mut rex = 0x40;
-                    if src.needs_rex() {
-                        rex |= 0x04; // REX.R
-                    }
-                    if base.needs_rex() {
-                        rex |= 0x01; // REX.B
-                    }
-                    self.code.push(rex);
-                }
-                self.code.push(0x88); // MOV r/m8, r8
-
-                // Special handling for RSP/R12 which require SIB byte
-                let base_code = self.register_code(base);
-                let needs_sib = base_code == 4; // RSP or R12
-
-                // Choose between disp8 and disp32 based on offset size
-                if *offset >= -128 && *offset <= 127 {
-                    // ModR/M byte: mod=01 (disp8), reg=src, r/m=base
-                    let modrm = 0x40 | (self.register_code(src) << 3) | base_code;
-                    self.code.push(modrm);
-                    if needs_sib {
-                        // SIB byte: scale=00, index=100 (none), base=100 (RSP)
-                        self.code.push(0x24);
-                    }
-                    self.code.push(*offset as u8);
-                } else {
-                    // ModR/M byte: mod=10 (disp32), reg=src, r/m=base
-                    let modrm = 0x80 | (self.register_code(src) << 3) | base_code;
-                    self.code.push(modrm);
-                    if needs_sib {
-                        // SIB byte: scale=00, index=100 (none), base=100 (RSP)
-                        self.code.push(0x24);
-                    }
-                    self.code.extend_from_slice(&offset.to_le_bytes());
-                }
+                self.emit_mem_op(0x88, src, base, *offset, true)?;
             }
             MachineInstr::MovRM8 { dest, base, offset } => {
-                // For byte operations, we need REX if using R8-R15
-                if dest.needs_rex() || base.needs_rex() {
-                    let mut rex = 0x40;
-                    if dest.needs_rex() {
-                        rex |= 0x04; // REX.R
-                    }
-                    if base.needs_rex() {
-                        rex |= 0x01; // REX.B
-                    }
-                    self.code.push(rex);
-                }
-                self.code.push(0x8a); // MOV r8, r/m8
-
-                // Special handling for RSP/R12 which require SIB byte
-                let base_code = self.register_code(base);
-                let needs_sib = base_code == 4; // RSP or R12
-
-                // Choose between disp8 and disp32 based on offset size
-                if *offset >= -128 && *offset <= 127 {
-                    // ModR/M byte: mod=01 (disp8), reg=dest, r/m=base
-                    let modrm = 0x40 | (self.register_code(dest) << 3) | base_code;
-                    self.code.push(modrm);
-                    if needs_sib {
-                        // SIB byte: scale=00, index=100 (none), base=100 (RSP)
-                        self.code.push(0x24);
-                    }
-                    self.code.push(*offset as u8);
-                } else {
-                    // ModR/M byte: mod=10 (disp32), reg=dest, r/m=base
-                    let modrm = 0x80 | (self.register_code(dest) << 3) | base_code;
-                    self.code.push(modrm);
-                    if needs_sib {
-                        // SIB byte: scale=00, index=100 (none), base=100 (RSP)
-                        self.code.push(0x24);
-                    }
-                    self.code.extend_from_slice(&offset.to_le_bytes());
-                }
+                self.emit_mem_op(0x8a, dest, base, *offset, true)?;
             }
 
             MachineInstr::AddRR { dest, src } => {
@@ -257,7 +133,7 @@ impl X86Emitter {
             }
 
             MachineInstr::AndRR { dest, src } => {
-                self.emit_rex_if_needed(true, Some(dest), Some(src));
+                self.emit_rex_if_needed(true, Some(src), Some(dest));
                 self.code.push(0x21); // AND r/m64, r64
                 let modrm = 0xc0 | (self.register_code(src) << 3) | self.register_code(dest);
                 self.code.push(modrm);
@@ -358,9 +234,11 @@ impl X86Emitter {
             }
 
             MachineInstr::Movzx { dest, src } => {
+                // While REX.W=1 is not canonical for MOVZX (should use REX.W=0),
+                // we keep it for compatibility as some code may depend on this behavior
                 self.emit_rex_if_needed(true, Some(dest), Some(src));
                 self.code.push(0x0f);
-                self.code.push(0xb6); // MOVZX r64, r/m8
+                self.code.push(0xb6); // MOVZX r64, r/m8 (with REX.W=1)
                 let modrm = 0xc0 | (self.register_code(dest) << 3) | self.register_code(src);
                 self.code.push(modrm);
             }
@@ -493,6 +371,29 @@ impl X86Emitter {
                 self.code.push(0xf3); // REP prefix
                 self.code.push(0xaa); // STOSB
             }
+
+            MachineInstr::XorRR { dest, src } => {
+                self.emit_rex_if_needed(true, Some(src), Some(dest));
+                self.code.push(0x31); // XOR r/m64, r64
+                let modrm = 0xc0 | (self.register_code(src) << 3) | self.register_code(dest);
+                self.code.push(modrm);
+            }
+
+            MachineInstr::Ud2 => {
+                // UD2 - undefined instruction
+                self.code.push(0x0f);
+                self.code.push(0x0b);
+            }
+
+            MachineInstr::DataBytes { bytes } => {
+                // Emit raw bytes directly
+                self.code.extend_from_slice(bytes);
+            }
+
+            MachineInstr::ReserveBytes { count } => {
+                // Reserve zero-initialized space
+                self.code.resize(self.code.len() + *count as usize, 0);
+            }
         }
         Ok(())
     }
@@ -532,6 +433,9 @@ impl X86Emitter {
         Ok(())
     }
 
+    /// Get the 3-bit register encoding for ModR/M or SIB bytes
+    /// This returns the low 3 bits of the register number (0-7)
+    /// For R8-R15, the high bit is encoded in the REX prefix
     fn register_code(&self, reg: &Register) -> u8 {
         match reg {
             Register::Rax => 0,
@@ -542,14 +446,14 @@ impl X86Emitter {
             Register::Rbp => 5,
             Register::Rsi => 6,
             Register::Rdi => 7,
-            Register::R8 => 0,
-            Register::R9 => 1,
-            Register::R10 => 2,
-            Register::R11 => 3,
-            Register::R12 => 4,
-            Register::R13 => 5,
-            Register::R14 => 6,
-            Register::R15 => 7,
+            Register::R8 => 0,  // Requires REX.B/REX.R/REX.X
+            Register::R9 => 1,  // Requires REX.B/REX.R/REX.X
+            Register::R10 => 2, // Requires REX.B/REX.R/REX.X
+            Register::R11 => 3, // Requires REX.B/REX.R/REX.X
+            Register::R12 => 4, // Requires REX.B/REX.R/REX.X
+            Register::R13 => 5, // Requires REX.B/REX.R/REX.X
+            Register::R14 => 6, // Requires REX.B/REX.R/REX.X
+            Register::R15 => 7, // Requires REX.B/REX.R/REX.X
         }
     }
 
@@ -561,7 +465,33 @@ impl X86Emitter {
         reg.needs_rex() // Same registers need REX.R when used in reg field
     }
 
+    /// Emit REX prefix if needed for the given registers
+    ///
+    /// # Arguments
+    /// * `w` - Whether to set REX.W (64-bit operand size)
+    /// * `r_reg` - Register used in the reg field (affects REX.R)
+    /// * `b_reg` - Register used in the r/m field (affects REX.B)
+    ///
+    /// # Important
+    /// The order of r_reg and b_reg matters! For instructions like `add rax, rbx`:
+    /// - r_reg is the source register (rbx)
+    /// - b_reg is the destination register (rax)
     fn emit_rex_if_needed(&mut self, w: bool, r_reg: Option<&Register>, b_reg: Option<&Register>) {
+        self.emit_rex_with_sib(w, r_reg, b_reg, None)
+    }
+
+    /// Emit REX prefix with support for SIB byte index register
+    /// w: 64-bit operand size (REX.W)
+    /// r_reg: Register in ModR/M reg field (REX.R)
+    /// b_reg: Register in ModR/M r/m field or SIB base field (REX.B)
+    /// x_reg: Register in SIB index field (REX.X)
+    fn emit_rex_with_sib(
+        &mut self,
+        w: bool,
+        r_reg: Option<&Register>,
+        b_reg: Option<&Register>,
+        x_reg: Option<&Register>,
+    ) {
         let mut rex = 0x40;
 
         if w {
@@ -571,6 +501,12 @@ impl X86Emitter {
         if let Some(reg) = r_reg {
             if self.needs_rex_r(reg) {
                 rex |= 0x04; // REX.R
+            }
+        }
+
+        if let Some(reg) = x_reg {
+            if reg.needs_rex() {
+                rex |= 0x02; // REX.X for SIB index
             }
         }
 
@@ -594,6 +530,79 @@ impl X86Emitter {
         {
             self.code.push(rex);
         }
+    }
+
+    /// Emit a memory operation (load or store) with proper ModR/M and SIB encoding
+    ///
+    /// # Arguments
+    /// * `opcode` - The instruction opcode (e.g., 0x8B for MOV r64, r/m64)
+    /// * `reg` - The register operand (source for stores, dest for loads)
+    /// * `base` - The base register for memory addressing
+    /// * `offset` - The displacement from the base register
+    /// * `is_byte` - Whether this is a byte operation (affects REX prefix)
+    fn emit_mem_op(
+        &mut self,
+        opcode: u8,
+        reg: &Register,
+        base: &Register,
+        offset: i32,
+        is_byte: bool,
+    ) -> Result<(), String> {
+        // Emit REX prefix if needed
+        if is_byte {
+            // For byte operations, we need REX if using R8-R15 or accessing high byte regs
+            if reg.needs_rex() || base.needs_rex() {
+                let mut rex = 0x40;
+                if reg.needs_rex() {
+                    rex |= 0x04; // REX.R
+                }
+                if base.needs_rex() {
+                    rex |= 0x01; // REX.B
+                }
+                self.code.push(rex);
+            }
+        } else {
+            self.emit_rex_if_needed(true, Some(reg), Some(base));
+        }
+
+        // Emit opcode
+        self.code.push(opcode);
+
+        // Special handling for RSP/R12 which require SIB byte
+        let base_code = self.register_code(base);
+        let needs_sib = base_code == 4; // RSP or R12
+        let needs_disp32_for_rbp = base_code == 5; // RBP or R13
+
+        // Choose between mod values based on offset
+        if offset == 0 && !needs_disp32_for_rbp {
+            // ModR/M byte: mod=00 (no disp), reg=reg, r/m=base
+            let modrm = (self.register_code(reg) << 3) | base_code;
+            self.code.push(modrm);
+            if needs_sib {
+                // SIB byte: scale=00, index=100 (none), base=100 (RSP)
+                self.code.push(0x24);
+            }
+        } else if (-128..=127).contains(&offset) && !(offset == 0 && needs_disp32_for_rbp) {
+            // ModR/M byte: mod=01 (disp8), reg=reg, r/m=base
+            let modrm = 0x40 | (self.register_code(reg) << 3) | base_code;
+            self.code.push(modrm);
+            if needs_sib {
+                // SIB byte: scale=00, index=100 (none), base=100 (RSP)
+                self.code.push(0x24);
+            }
+            self.code.push(offset as u8);
+        } else {
+            // ModR/M byte: mod=10 (disp32), reg=reg, r/m=base
+            let modrm = 0x80 | (self.register_code(reg) << 3) | base_code;
+            self.code.push(modrm);
+            if needs_sib {
+                // SIB byte: scale=00, index=100 (none), base=100 (RSP)
+                self.code.push(0x24);
+            }
+            self.code.extend_from_slice(&offset.to_le_bytes());
+        }
+
+        Ok(())
     }
 
     /// Get the emitted code and symbol table for ELF generation

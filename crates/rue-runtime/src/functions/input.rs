@@ -11,6 +11,9 @@ pub fn generate_input_function(ctx: &mut RuntimeContext) {
     ctx.instructions
         .push(MachineInstr::Label { id: input_label });
 
+    // Set up stack frame
+    ctx.instructions.push(MachineInstr::EnterFrame);
+
     // Allocate buffer on stack
     ctx.instructions.push(MachineInstr::AllocStack {
         size: INPUT_BUFFER_SIZE,
@@ -77,11 +80,8 @@ pub fn generate_input_function(ctx: &mut RuntimeContext) {
         target: "__rue_atoi".to_string(),
     });
 
-    // Clean up stack
-    ctx.instructions.push(MachineInstr::AddRI {
-        dest: Register::Rsp,
-        imm: INPUT_BUFFER_SIZE as i32,
-    });
+    // Clean up stack and leave frame
+    ctx.instructions.push(MachineInstr::LeaveFrame);
 
     // RAX contains the parsed number
     ctx.instructions.push(MachineInstr::Ret);

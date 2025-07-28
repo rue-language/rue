@@ -27,6 +27,15 @@ pub struct MirToInstructions {
     function_labels: HashMap<String, Label>,
     /// Current function blocks (needed for block parameter lookup)
     current_blocks: Vec<BasicBlock>,
+    /// Mapping from (block_id, param_index) to VReg for block parameters
+    block_param_vregs: HashMap<(BlockId, usize), VReg>,
+    /// Mapping from (block_id, param_index) to dedicated stack offset for block parameters
+    /// These are allocated at function entry to ensure consistent locations
+    block_param_slots: HashMap<(BlockId, usize), i64>,
+    /// Current stack offset for allocating block parameter slots
+    block_param_stack_offset: i64,
+    /// Stack offset per function (function name -> lowest stack offset used)
+    function_stack_offsets: HashMap<String, i64>,
 }
 
 impl MirToInstructions {
@@ -39,6 +48,10 @@ impl MirToInstructions {
             block_to_label: HashMap::new(),
             function_labels: HashMap::new(),
             current_blocks: Vec::new(),
+            block_param_vregs: HashMap::new(),
+            block_param_slots: HashMap::new(),
+            block_param_stack_offset: -8, // Start after saved RBP
+            function_stack_offsets: HashMap::new(),
         }
     }
 
@@ -59,10 +72,16 @@ impl MirToInstructions {
     /// Get or create a virtual register for a temp
     fn get_vreg(&mut self, temp: Temp) -> VReg {
         if let Some(&vreg) = self.temp_to_vreg.get(&temp) {
+            if std::env::var("RUE_DEBUG_VREGS").is_ok() {
+                eprintln!("get_vreg: temp {temp:?} -> existing vreg {vreg:?}");
+            }
             vreg
         } else {
             let vreg = self.fresh_vreg();
             self.temp_to_vreg.insert(temp, vreg);
+            if std::env::var("RUE_DEBUG_VREGS").is_ok() {
+                eprintln!("get_vreg: temp {temp:?} -> new vreg {vreg:?}");
+            }
             vreg
         }
     }
@@ -80,6 +99,9 @@ impl MirToInstructions {
 
     /// Emit an instruction
     fn emit(&mut self, instr: Instruction) {
+        if std::env::var("RUE_DEBUG_INSTRUCTIONS").is_ok() {
+            eprintln!("EMIT: {instr:?}");
+        }
         self.instructions.push(instr);
     }
 
@@ -96,9 +118,6 @@ impl MirToInstructions {
             self.lower_function(func);
         }
 
-        // Generate entry point
-        self.emit_entry_point();
-
         self.instructions.clone()
     }
 
@@ -107,34 +126,17 @@ impl MirToInstructions {
         self.function_labels.clone()
     }
 
-    /// Generate the _start entry point
-    fn emit_entry_point(&mut self) {
-        let start_label = self.fresh_label();
-        self.emit(Instruction::Label(start_label));
-        self.function_labels
-            .insert("_start".to_string(), start_label);
+    /// Get the stack offset for a specific function
+    pub fn get_function_stack_offset(&self, function_name: &str) -> i64 {
+        *self
+            .function_stack_offsets
+            .get(function_name)
+            .unwrap_or(&-8)
+    }
 
-        // Call main
-        let main_result = self.fresh_vreg();
-        self.emit(Instruction::Call {
-            dest: Some(main_result),
-            function: "main".to_string(),
-            args: vec![],
-        });
-
-        // Exit with main's result
-        let syscall_num = self.fresh_vreg();
-        self.emit(Instruction::Copy {
-            dest: syscall_num,
-            src: Value::Immediate(60), // sys_exit
-        });
-
-        let syscall_result = self.fresh_vreg();
-        self.emit(Instruction::Syscall {
-            result: syscall_result,
-            syscall_num,
-            args: vec![main_result],
-        });
+    /// Get all block parameter offsets for proper tracking in lowering
+    pub fn get_block_param_offsets(&self) -> std::collections::HashSet<i64> {
+        self.block_param_slots.values().copied().collect()
     }
 
     /// Lower a MIR function to instructions
@@ -142,7 +144,35 @@ impl MirToInstructions {
         // Clear temp mappings for new function
         self.temp_to_vreg.clear();
         self.block_to_label.clear();
+        self.block_param_vregs.clear();
+        self.block_param_slots.clear();
+        self.block_param_stack_offset = -8; // Reset for new function
+        // Note: We don't clear return_param_vregs because it needs to accumulate
+        // across all functions in the program
         self.current_blocks = func.blocks.clone();
+
+        // CRITICAL: Pre-allocate stack slots for ALL block parameters
+        // This ensures consistent memory locations across all predecessor blocks
+        for block in &func.blocks {
+            // Skip entry block - its parameters come from calling convention
+            if block.id == func.entry_block {
+                continue;
+            }
+
+            // Allocate a stack slot for each block parameter
+            for (i, (_param_temp, _param_ty)) in block.params.iter().enumerate() {
+                self.block_param_stack_offset -= 8; // Each parameter is 8 bytes
+                self.block_param_slots
+                    .insert((block.id, i), self.block_param_stack_offset);
+
+                if std::env::var("RUE_DEBUG").is_ok() {
+                    eprintln!(
+                        "Allocated block param slot: block {:?}, param {} -> offset {}",
+                        block.id, i, self.block_param_stack_offset
+                    );
+                }
+            }
+        }
 
         // Function label
         let func_label = self.function_labels[&func.name];
@@ -181,17 +211,44 @@ impl MirToInstructions {
 
         // Lower each block
         for block in &func.blocks {
-            self.lower_block(block);
+            self.lower_block(block, func);
         }
+
+        // Store the lowest stack offset used by this function
+        self.function_stack_offsets
+            .insert(func.name.clone(), self.block_param_stack_offset);
     }
 
     /// Lower a basic block
-    fn lower_block(&mut self, block: &BasicBlock) {
+    fn lower_block(&mut self, block: &BasicBlock, func: &MirFunction) {
         // Emit block label
         let label = self.get_label(block.id);
         self.emit(Instruction::Label(label));
 
-        // Block parameters are handled by the predecessors passing arguments
+        // CRITICAL: Load block parameters from their dedicated stack slots
+        // This is the "always spill" approach - parameters are always in memory
+        if block.id != func.entry_block && !block.params.is_empty() {
+            for (i, (param_temp, _ty)) in block.params.iter().enumerate() {
+                // Get or create VReg for this parameter
+                let param_vreg = self.get_vreg(*param_temp);
+
+                // Get the pre-allocated stack slot for this block parameter
+                if let Some(&slot_offset) = self.block_param_slots.get(&(block.id, i)) {
+                    // Load from the dedicated stack slot
+                    self.emit(Instruction::Load {
+                        dest: param_vreg,
+                        offset: slot_offset,
+                    });
+
+                    if std::env::var("RUE_DEBUG").is_ok() {
+                        eprintln!(
+                            "Loading block param: block {:?}, param {} (temp {:?}) from offset {} into vreg {:?}",
+                            block.id, i, param_temp, slot_offset, param_vreg
+                        );
+                    }
+                }
+            }
+        }
 
         // Lower statements
         for stmt in &block.statements {
@@ -199,7 +256,7 @@ impl MirToInstructions {
         }
 
         // Lower terminator
-        self.lower_terminator(&block.terminator);
+        self.lower_terminator(&block.terminator, func);
     }
 
     /// Lower a MIR statement
@@ -237,7 +294,7 @@ impl MirToInstructions {
                 };
                 self.emit(Instruction::Copy {
                     dest,
-                    src: Value::Immediate(imm),
+                    src: Value::SignedImm(imm),
                 });
             }
             MirValue::BinaryOp { op, lhs, rhs } => {
@@ -274,7 +331,7 @@ impl MirToInstructions {
                         let zero = self.fresh_vreg();
                         self.emit(Instruction::Copy {
                             dest: zero,
-                            src: Value::Immediate(0),
+                            src: Value::SignedImm(0),
                         });
                         self.emit(Instruction::BinaryOp {
                             dest,
@@ -297,11 +354,11 @@ impl MirToInstructions {
     }
 
     /// Lower a MIR terminator
-    fn lower_terminator(&mut self, term: &MirTerminator) {
+    fn lower_terminator(&mut self, term: &MirTerminator, func: &MirFunction) {
         match term {
-            MirTerminator::Goto { target, args } => {
+            MirTerminator::Goto { target, args, .. } => {
                 // Handle block arguments by copying to block parameters
-                self.lower_block_arguments(*target, args);
+                self.lower_block_arguments(*target, args, func);
 
                 let label = self.get_label(*target);
                 self.emit(Instruction::Jump(label));
@@ -312,7 +369,11 @@ impl MirToInstructions {
                 then_args,
                 else_block,
                 else_args,
+                ..
             } => {
+                // Note: We can't reliably force spill here because the register allocator
+                // may optimize it away. The fix is in lower_block_arguments.
+
                 let cond_vreg = self.get_vreg(*condition);
 
                 // We need to handle block arguments differently for each branch
@@ -332,17 +393,96 @@ impl MirToInstructions {
 
                 // Then branch: copy arguments and jump
                 self.emit(Instruction::Label(then_label));
-                self.lower_block_arguments(*then_block, then_args);
+                self.lower_block_arguments(*then_block, then_args, func);
                 self.emit(Instruction::Jump(then_target));
 
                 // Else branch: copy arguments and jump
                 self.emit(Instruction::Label(else_label));
-                self.lower_block_arguments(*else_block, else_args);
+                self.lower_block_arguments(*else_block, else_args, func);
                 self.emit(Instruction::Jump(else_target));
             }
-            MirTerminator::Return { value } => {
+            MirTerminator::Switch {
+                discriminant,
+                targets,
+                default,
+                default_args,
+                ..
+            } => {
+                // For now, implement switch as a chain of conditional branches
+                // This can be optimized later to use jump tables for dense switches
+                let discriminant_vreg = self.get_vreg(*discriminant);
+                let default_label = self.get_label(*default);
+
+                // Create intermediate labels for each case
+                let mut case_labels = Vec::new();
+                for _ in targets {
+                    case_labels.push(self.fresh_label());
+                }
+
+                // Generate comparisons and branches for each case
+                for (i, (value, target_block, target_args)) in targets.iter().enumerate() {
+                    let case_label = case_labels[i];
+                    let target_label = self.get_label(*target_block);
+
+                    // Compare discriminant with case value
+                    let temp_vreg = self.fresh_vreg();
+                    self.emit(Instruction::Copy {
+                        dest: temp_vreg,
+                        src: Value::SignedImm(*value),
+                    });
+
+                    let cmp_result = self.fresh_vreg();
+                    self.emit(Instruction::BinaryOp {
+                        dest: cmp_result,
+                        lhs: Value::VReg(discriminant_vreg),
+                        rhs: Value::VReg(temp_vreg),
+                        op: BinOp::Eq,
+                    });
+
+                    // Branch to case or continue to next check
+                    let next_check_label = if i + 1 < targets.len() {
+                        self.fresh_label()
+                    } else {
+                        default_label
+                    };
+
+                    self.emit(Instruction::Branch {
+                        condition: cmp_result,
+                        true_label: case_label,
+                        false_label: next_check_label,
+                    });
+
+                    // Case block: handle arguments and jump to target
+                    self.emit(Instruction::Label(case_label));
+                    self.lower_block_arguments(*target_block, target_args, func);
+                    self.emit(Instruction::Jump(target_label));
+
+                    // Continue to next check if not last case
+                    if i + 1 < targets.len() {
+                        self.emit(Instruction::Label(next_check_label));
+                    }
+                }
+
+                // Default case
+                self.emit(Instruction::Label(default_label));
+                self.lower_block_arguments(*default, default_args, func);
+                let default_target = self.get_label(*default);
+                self.emit(Instruction::Jump(default_target));
+            }
+            MirTerminator::Unreachable { .. } => {
+                // Emit a trap instruction or halt for unreachable code
+                // For now, we'll emit a comment and a jump to itself (infinite loop)
+                // This should never be reached during normal execution
+                let unreachable_label = self.fresh_label();
+                self.emit(Instruction::Label(unreachable_label));
+                self.emit(Instruction::Jump(unreachable_label)); // Infinite loop
+            }
+            MirTerminator::Return { value, .. } => {
                 if let Some(val) = value {
                     let vreg = self.get_vreg(*val);
+                    if std::env::var("RUE_DEBUG").is_ok() {
+                        eprintln!("Return terminator: temp {val:?} -> vreg {vreg:?}");
+                    }
                     self.emit(Instruction::Return { value: Some(vreg) });
                 } else {
                     self.emit(Instruction::Return { value: None });
@@ -352,33 +492,45 @@ impl MirToInstructions {
     }
 
     /// Handle block arguments when jumping to a block
-    fn lower_block_arguments(&mut self, target_block: BlockId, args: &[Temp]) {
-        // Look up the target block's parameters and collect them first
-        let params: Vec<(Temp, usize)> = self
-            .current_blocks
-            .iter()
-            .find(|b| b.id == target_block)
-            .map(|target| {
-                target
-                    .params
-                    .iter()
-                    .enumerate()
-                    .map(|(i, (temp, _))| (*temp, i))
-                    .collect()
-            })
-            .unwrap_or_default();
+    fn lower_block_arguments(&mut self, target_block: BlockId, args: &[Temp], _func: &MirFunction) {
+        // Skip if this is the entry block (no block parameters to handle)
+        if target_block == BlockId(0) {
+            return;
+        }
 
-        // Generate copies from arguments to block parameters
-        for (param_temp, i) in params {
-            if let Some(&arg_temp) = args.get(i) {
+        // CRITICAL: "Always spill" approach for block parameters
+        // Store each argument value to its dedicated stack slot
+        // The target block will load these values after its label
+
+        for (i, &arg_temp) in args.iter().enumerate() {
+            // Get the pre-allocated stack slot for this block parameter
+            if let Some(&slot_offset) = self.block_param_slots.get(&(target_block, i)) {
+                // Get VReg for the argument value
                 let arg_vreg = self.get_vreg(arg_temp);
-                let param_vreg = self.get_vreg(param_temp);
 
-                // Generate copy from argument to parameter
-                self.emit(Instruction::Copy {
-                    dest: param_vreg,
-                    src: Value::VReg(arg_vreg),
+                if std::env::var("RUE_DEBUG_BLOCK_ARGS").is_ok() {
+                    eprintln!(
+                        "About to store block arg: target block {target_block:?}, arg {i} (temp {arg_temp:?}, vreg {arg_vreg:?}) to offset {slot_offset}"
+                    );
+                }
+
+                // Store the argument value to the dedicated slot
+                self.emit(Instruction::Store {
+                    src: arg_vreg,
+                    offset: slot_offset,
                 });
+
+                if std::env::var("RUE_DEBUG").is_ok()
+                    || std::env::var("RUE_DEBUG_BLOCK_ARGS").is_ok()
+                {
+                    eprintln!(
+                        "Storing block arg: target block {target_block:?}, arg {i} (temp {arg_temp:?}, vreg {arg_vreg:?}) to offset {slot_offset}"
+                    );
+                    // Also print what instruction we just emitted
+                    if let Some(last_inst) = self.instructions.last() {
+                        eprintln!("  Emitted: {last_inst:?}");
+                    }
+                }
             }
         }
     }
@@ -419,6 +571,7 @@ mod tests {
                 }],
                 terminator: MirTerminator::Return {
                     value: Some(Temp(2)),
+                    span: None,
                 },
             }],
         };

@@ -98,6 +98,22 @@ impl DeadCodeElimination {
                         self.used_temps.insert(*arg);
                     }
                 }
+                MirTerminator::Switch {
+                    targets,
+                    default_args,
+                    ..
+                } => {
+                    // Mark all target arguments as used
+                    for (_, _, target_args) in targets {
+                        for arg in target_args {
+                            self.used_temps.insert(*arg);
+                        }
+                    }
+                    // Mark default arguments as used
+                    for arg in default_args {
+                        self.used_temps.insert(*arg);
+                    }
+                }
                 _ => {}
             }
         }
@@ -128,7 +144,7 @@ impl DeadCodeElimination {
     /// Collect uses from a terminator
     fn collect_terminator_uses(&self, term: &MirTerminator, uses: &mut HashSet<Temp>) {
         match term {
-            MirTerminator::Return { value } => {
+            MirTerminator::Return { value, .. } => {
                 if let Some(temp) = value {
                     uses.insert(*temp);
                 }
@@ -136,7 +152,10 @@ impl DeadCodeElimination {
             MirTerminator::Branch { condition, .. } => {
                 uses.insert(*condition);
             }
-            MirTerminator::Goto { .. } => {}
+            MirTerminator::Switch { discriminant, .. } => {
+                uses.insert(*discriminant);
+            }
+            MirTerminator::Goto { .. } | MirTerminator::Unreachable { .. } => {}
         }
     }
 
@@ -167,7 +186,13 @@ impl DeadCodeElimination {
             | MirValue::Const(_)
             | MirValue::BinaryOp { .. }
             | MirValue::UnaryOp { .. } => true,
-            MirValue::Call { .. } => false, // Assume function calls have side effects
+            MirValue::Call { kind, .. } => {
+                // Use the CallKind to determine if the call has side effects
+                match kind {
+                    crate::mir::CallKind::Pure => true,   // Pure calls can be eliminated if unused
+                    crate::mir::CallKind::Impure => false, // Impure calls have side effects
+                }
+            }
         }
     }
 
@@ -206,7 +231,19 @@ impl DeadCodeElimination {
                         worklist.push(*then_block);
                         worklist.push(*else_block);
                     }
-                    MirTerminator::Return { .. } => {}
+                    MirTerminator::Switch {
+                        targets,
+                        default,
+                        ..
+                    } => {
+                        // Add all target blocks from switch cases
+                        for (_, target_block, _) in targets {
+                            worklist.push(*target_block);
+                        }
+                        // Add default block
+                        worklist.push(*default);
+                    }
+                    MirTerminator::Return { .. } | MirTerminator::Unreachable { .. } => {}
                 }
             }
         }
@@ -269,6 +306,7 @@ mod tests {
                     ],
                     terminator: MirTerminator::Return {
                         value: Some(Temp(2)),
+                        span: None,
                     },
                 }],
             }],
@@ -316,7 +354,7 @@ mod tests {
                             value: MirValue::Call {
                                 func: "foo".to_string(),
                                 args: vec![],
-                                return_type: RueType::I32,
+                                kind: crate::mir::CallKind::Impure,
                             },
                             span: None,
                         },
@@ -328,6 +366,7 @@ mod tests {
                     ],
                     terminator: MirTerminator::Return {
                         value: Some(Temp(42)), // Using a different temp
+                        span: None,
                     },
                 }],
             }],

@@ -3,23 +3,84 @@
 //! This module demonstrates how to integrate MIR into the compilation pipeline.
 //! It's an alternative to compile_hir that uses MIR for potential optimizations.
 
-use crate::backend_driver::BackendDriver;
+use crate::backend::Backend;
 use crate::elf_writer::ElfWriter;
 use crate::mir_to_instructions::MirToInstructions;
 use crate::x86_emitter::X86Emitter;
 use crate::{CodegenError, format_instructions_as_assembly};
 use rue_ir::hir::HirProgram;
-use rue_ir::mir_lowering::MirBuilder;
-use rue_ir::mir_passes::{CommonSubexpressionElimination, ConstProp, DeadCodeElimination};
+use rue_ir::mir::MirProgram;
+use rue_lowering::MirBuilder;
 #[cfg(debug_assertions)]
-use rue_ir::mir_verifier::MirVerifier;
-use std::path::Path;
+use rue_lowering::MirVerifier;
+use rue_optimize::{CommonSubexpressionElimination, ConstProp, DeadCodeElimination};
+
+/// Helper function to optimize and verify MIR
+fn optimize_and_verify_mir(
+    mir: &mut MirProgram,
+    enable_optimizations: bool,
+) -> Result<(), CodegenError> {
+    const MAX_ITERATIONS: usize = 3;
+
+    // Only run optimizations if enabled
+    if enable_optimizations {
+        // Run optimization passes in a fixed-point loop
+        // We run multiple iterations because optimizations can enable further optimizations
+        // For example: const prop might enable dead code elimination, which might enable more const prop
+        for iteration in 0..MAX_ITERATIONS {
+            if std::env::var("RUE_DUMP_MIR").is_ok() && iteration > 0 {
+                eprintln!("=== MIR optimization iteration {} ===", iteration + 1);
+            }
+
+            // Run constant propagation first
+            let mut const_prop = ConstProp::new();
+            const_prop.run(mir);
+
+            // Run common subexpression elimination
+            let mut cse = CommonSubexpressionElimination::new();
+            cse.run(mir);
+
+            // Run dead code elimination last (after other passes may have made code dead)
+            let mut dce = DeadCodeElimination::new();
+            dce.run(mir);
+
+            // TODO: Once passes return whether they made changes, we can break early
+        }
+    }
+
+    if std::env::var("RUE_DUMP_MIR").is_ok() {
+        eprintln!("=== MIR (after optimization) ===");
+        eprintln!("{mir}");
+        eprintln!("=== END MIR ===");
+    }
+
+    // Verify MIR if in debug mode
+    // Note: This is debug-only for performance reasons. The verifier will panic (via error return)
+    // if invalid MIR is detected, preventing undefined behavior. In release builds, we trust
+    // that the MIR generation and optimization passes are correct.
+    #[cfg(debug_assertions)]
+    {
+        let mut verifier = MirVerifier::new();
+        if let Err(errors) = verifier.verify_program(mir) {
+            eprintln!("MIR verification failed:");
+            for error in errors {
+                eprintln!("  - [{}] {}", error.function, error.message);
+            }
+            return Err(CodegenError::MirVerificationFailed);
+        }
+    }
+
+    Ok(())
+}
 
 /// Compile HIR to assembly via MIR
 ///
 /// This function demonstrates the MIR pipeline:
 /// HIR → MIR → (optimizations) → Instructions → Assembly
-pub fn compile_hir_via_mir_to_assembly(hir: &HirProgram) -> Result<String, CodegenError> {
+pub fn compile_hir_via_mir_to_assembly(
+    hir: &HirProgram,
+    enable_optimizations: bool,
+) -> Result<String, CodegenError> {
     // Step 1: Lower HIR to MIR
     let mut mir = MirBuilder::lower_program(hir);
 
@@ -30,59 +91,32 @@ pub fn compile_hir_via_mir_to_assembly(hir: &HirProgram) -> Result<String, Codeg
         eprintln!("=== END MIR ===");
     }
 
-    // Step 3: Apply MIR optimizations
-    // Run constant propagation first
-    let mut const_prop = ConstProp::new();
-    const_prop.run(&mut mir);
-
-    // Run common subexpression elimination
-    let mut cse = CommonSubexpressionElimination::new();
-    cse.run(&mut mir);
-
-    // Run dead code elimination last (after other passes may have made code dead)
-    let mut dce = DeadCodeElimination::new();
-    dce.run(&mut mir);
-
-    if std::env::var("RUE_DUMP_MIR").is_ok() {
-        eprintln!("=== MIR (after optimization) ===");
-        eprintln!("{mir}");
-        eprintln!("=== END MIR ===");
-    }
-
-    // Step 3.5: Verify MIR if in debug mode
-    #[cfg(debug_assertions)]
-    {
-        let mut verifier = MirVerifier::new();
-        if let Err(errors) = verifier.verify_program(&mir) {
-            eprintln!("MIR verification failed:");
-            for error in errors {
-                eprintln!("  - [{}] {}", error.function, error.message);
-            }
-            return Err(CodegenError {
-                message: "MIR verification failed".to_string(),
-            });
-        }
-    }
+    // Step 3: Apply MIR optimizations and verify
+    optimize_and_verify_mir(&mut mir, enable_optimizations)?;
 
     // Step 4: Lower MIR to Instructions
     let mut mir_lowerer = MirToInstructions::new();
     let instructions = mir_lowerer.lower_program(&mir);
     let function_labels = mir_lowerer.get_function_labels();
+    // Block parameters now handled via Load/Store with "always spill" approach
 
-    // Step 5: Create backend driver with runtime code
-    let driver = BackendDriver::new()?;
+    // Step 5: Create backend with runtime code
+    let driver = Backend::new()?;
 
     // Step 6: Identify function boundaries
     let function_boundaries = driver.discover_function_boundaries(&instructions, &function_labels);
 
-    // Step 7: Assign label IDs and lower functions
-    let (ir_to_machine_labels, label_id_counter) = driver.assign_label_ids(&instructions, 0);
+    // Step 7: Get runtime label count and assign label IDs
+    let runtime_label_count = driver.runtime_label_count();
+    let (ir_to_machine_labels, label_id_counter) =
+        driver.assign_label_ids(&instructions, runtime_label_count);
     let all_machine_instructions = driver.lower_functions(
         &instructions,
-        function_labels.clone(),
+        &function_labels,
         function_boundaries,
-        ir_to_machine_labels.clone(),
+        &ir_to_machine_labels,
         label_id_counter,
+        &mir_lowerer,
     )?;
 
     // Step 8: Combine runtime and user code
@@ -90,7 +124,6 @@ pub fn compile_hir_via_mir_to_assembly(hir: &HirProgram) -> Result<String, Codeg
 
     // Step 9: Build final labels and generate assembly
     let all_function_labels = driver.build_final_labels(&function_labels, &ir_to_machine_labels);
-    let runtime_label_count = driver.runtime_label_count();
 
     // Generate assembly
     Ok(format_instructions_as_assembly(
@@ -103,7 +136,7 @@ pub fn compile_hir_via_mir_to_assembly(hir: &HirProgram) -> Result<String, Codeg
 /// Compile HIR to executable via MIR
 pub fn compile_hir_via_mir_to_executable(
     hir: &HirProgram,
-    _output_path: &Path,
+    enable_optimizations: bool,
 ) -> Result<Vec<u8>, CodegenError> {
     // Step 1: Lower HIR to MIR
     let mut mir = MirBuilder::lower_program(hir);
@@ -115,59 +148,32 @@ pub fn compile_hir_via_mir_to_executable(
         eprintln!("=== END MIR ===");
     }
 
-    // Step 3: Apply MIR optimizations
-    // Run constant propagation first
-    let mut const_prop = ConstProp::new();
-    const_prop.run(&mut mir);
-
-    // Run common subexpression elimination
-    let mut cse = CommonSubexpressionElimination::new();
-    cse.run(&mut mir);
-
-    // Run dead code elimination last (after other passes may have made code dead)
-    let mut dce = DeadCodeElimination::new();
-    dce.run(&mut mir);
-
-    if std::env::var("RUE_DUMP_MIR").is_ok() {
-        eprintln!("=== MIR (after optimization) ===");
-        eprintln!("{mir}");
-        eprintln!("=== END MIR ===");
-    }
-
-    // Step 3.5: Verify MIR if in debug mode
-    #[cfg(debug_assertions)]
-    {
-        let mut verifier = MirVerifier::new();
-        if let Err(errors) = verifier.verify_program(&mir) {
-            eprintln!("MIR verification failed:");
-            for error in errors {
-                eprintln!("  - [{}] {}", error.function, error.message);
-            }
-            return Err(CodegenError {
-                message: "MIR verification failed".to_string(),
-            });
-        }
-    }
+    // Step 3: Apply MIR optimizations and verify
+    optimize_and_verify_mir(&mut mir, enable_optimizations)?;
 
     // Step 4: Lower MIR to Instructions
     let mut mir_lowerer = MirToInstructions::new();
     let instructions = mir_lowerer.lower_program(&mir);
     let function_labels = mir_lowerer.get_function_labels();
+    // Block parameters now handled via Load/Store with "always spill" approach
 
-    // Step 5: Create backend driver with runtime code
-    let driver = BackendDriver::new()?;
+    // Step 5: Create backend with runtime code
+    let driver = Backend::new()?;
 
     // Step 6: Identify function boundaries
     let function_boundaries = driver.discover_function_boundaries(&instructions, &function_labels);
 
-    // Step 7: Assign label IDs and lower functions
-    let (ir_to_machine_labels, label_id_counter) = driver.assign_label_ids(&instructions, 0);
+    // Step 7: Get runtime label count and assign label IDs
+    let runtime_label_count = driver.runtime_label_count();
+    let (ir_to_machine_labels, label_id_counter) =
+        driver.assign_label_ids(&instructions, runtime_label_count);
     let all_machine_instructions = driver.lower_functions(
         &instructions,
-        function_labels.clone(),
+        &function_labels,
         function_boundaries,
-        ir_to_machine_labels.clone(),
+        &ir_to_machine_labels,
         label_id_counter,
+        &mir_lowerer,
     )?;
 
     // Step 8: Combine runtime and user code
@@ -182,7 +188,7 @@ pub fn compile_hir_via_mir_to_executable(
     emitter.set_function_labels(all_function_labels, runtime_label_count);
     let code = emitter
         .emit_all(&final_instructions)
-        .map_err(|e| CodegenError { message: e })?;
+        .map_err(CodegenError::InvalidOperation)?;
 
     // Extract symbol positions from emitter
     let (_, symbols) = emitter.get_output();
@@ -227,22 +233,28 @@ mod tests {
             }],
         };
 
-        // Set environment variable to see MIR output
-        unsafe {
-            std::env::set_var("RUE_DUMP_MIR", "1");
-        }
+        // Note: We would need to set RUE_DUMP_MIR=1 environment variable
+        // to see MIR output, but we don't modify environment in tests
+        // as it's not thread-safe. Run with RUE_DUMP_MIR=1 cargo test
+        // to see MIR output during debugging.
 
         // Compile via MIR
-        let asm = compile_hir_via_mir_to_assembly(&hir).unwrap();
+        let asm = compile_hir_via_mir_to_assembly(&hir, false).unwrap();
 
-        // Verify we got assembly
-        assert!(asm.contains("main:"));
-        assert!(asm.contains("movl"));
+        // Verify we got assembly using regex to ensure we match actual labels/instructions
+        // and not comments
+        let label_regex = regex::Regex::new(r"(?m)^main:").unwrap();
+        assert!(
+            label_regex.is_match(&asm),
+            "Assembly should contain main label. Assembly:\n{asm}"
+        );
 
-        // Clean up
-        unsafe {
-            std::env::remove_var("RUE_DUMP_MIR");
-        }
+        // Match mov instruction - be flexible about formatting
+        let mov_regex = regex::Regex::new(r"(?i)\bmov\w*\b").unwrap();
+        assert!(
+            mov_regex.is_match(&asm),
+            "Assembly should contain mov instruction. Assembly:\n{asm}"
+        )
     }
 
     #[test]
@@ -353,7 +365,7 @@ mod tests {
         };
 
         // Compile via MIR
-        let result = compile_hir_via_mir_to_assembly(&hir);
+        let result = compile_hir_via_mir_to_assembly(&hir, false);
         assert!(
             result.is_ok(),
             "Fibonacci should compile successfully via MIR: {:?}",
@@ -362,23 +374,31 @@ mod tests {
 
         let asm = result.unwrap();
 
-        // Verify we got assembly for both functions
+        // Verify we got assembly for both functions using regex to match actual labels
+        let fib_label_regex = regex::Regex::new(r"(?m)^fibonacci:").unwrap();
         assert!(
-            asm.contains("fibonacci:"),
-            "Assembly should contain fibonacci function"
+            fib_label_regex.is_match(&asm),
+            "Assembly should contain fibonacci function label"
         );
+
+        let main_label_regex = regex::Regex::new(r"(?m)^main:").unwrap();
         assert!(
-            asm.contains("main:"),
-            "Assembly should contain main function"
+            main_label_regex.is_match(&asm),
+            "Assembly should contain main function label"
         );
 
         // The assembly should have proper control flow for fibonacci
+        // Use word boundaries to ensure we're matching instructions, not comments
+        let jump_regex = regex::Regex::new(r"\b(jle|jg)\b").unwrap();
         assert!(
-            asm.contains("jle") || asm.contains("jg"),
-            "Assembly should contain conditional jump for if statement"
+            jump_regex.is_match(&asm),
+            "Assembly should contain conditional jump instruction for if statement"
         );
+
+        // Match call instruction followed by fibonacci (with optional whitespace)
+        let call_regex = regex::Regex::new(r"\bcall\s+fibonacci\b").unwrap();
         assert!(
-            asm.contains("call fibonacci"),
+            call_regex.is_match(&asm),
             "Assembly should contain recursive calls to fibonacci"
         );
     }

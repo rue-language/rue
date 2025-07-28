@@ -1,7 +1,7 @@
 use bpaf::{Parser, construct};
 use rue_compiler::{
-    RueDatabase, SourceFile, compile_file, compile_file_to_assembly, compile_file_via_mir,
-    compile_file_via_mir_to_assembly,
+    CompileOptions, RueDatabase, SourceFile, compile_file_to_assembly_with_options,
+    compile_file_with_options,
 };
 use std::fs;
 use std::path::PathBuf;
@@ -11,7 +11,7 @@ struct Args {
     output: Option<PathBuf>,
     input: PathBuf,
     emit_asm: bool,
-    use_mir: bool,
+    optimize: bool,
 }
 
 fn parser() -> impl Parser<Args> {
@@ -25,16 +25,14 @@ fn parser() -> impl Parser<Args> {
         .help("Emit assembly instead of executable")
         .switch();
 
-    let use_mir = bpaf::long("use-mir")
-        .help("Use MIR (Mid-level Intermediate Representation) compilation path with optimizations")
-        .switch();
+    let optimize = bpaf::short('O').help("Enable MIR optimizations").switch();
 
     let input = bpaf::positional::<PathBuf>("INPUT").help("Input Rue source file");
 
     construct!(Args {
         output,
         emit_asm,
-        use_mir,
+        optimize,
         input,
     })
 }
@@ -65,15 +63,12 @@ fn main() {
     // Set up Salsa database
     let db = RueDatabase::default();
     let file = SourceFile::new(&db, input_path.to_string_lossy().to_string(), source);
+    let options = CompileOptions::new(&db, opts.optimize);
 
     // Compile
     if opts.emit_asm {
         // Generate assembly
-        let result = if opts.use_mir {
-            compile_file_via_mir_to_assembly(&db, file)
-        } else {
-            compile_file_to_assembly(&db, file)
-        };
+        let result = compile_file_to_assembly_with_options(&db, file, options);
         match result {
             Ok(assembly) => match fs::write(&output_path, &*assembly) {
                 Ok(()) => {
@@ -98,11 +93,7 @@ fn main() {
         }
     } else {
         // Generate executable
-        let result = if opts.use_mir {
-            compile_file_via_mir(&db, file)
-        } else {
-            compile_file(&db, file)
-        };
+        let result = compile_file_with_options(&db, file, options);
         match result {
             Ok(executable) => {
                 match fs::write(&output_path, &*executable) {

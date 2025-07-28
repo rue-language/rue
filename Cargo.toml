@@ -11,8 +11,23 @@ members = [
     "crates/rue-lsp",
     "crates/rue-runtime",
     "crates/rue-ir",
+    "crates/rue-lowering",
+    "crates/rue-optimize",
 ]
 
 [workspace.package]
 edition = "2024"
 version = "0.1.0"
+
+[workspace.dependencies]
+bpaf = "0.9.20"
+criterion = "0.5.0"
+indexmap = "2.0.0"
+object = { version = "0.37.1", features = ["write"] }
+regex = "1.0.0"
+salsa = "0.22"
+serde_json = "1.0.0"
+tempfile = "3.8.0"
+thiserror = "2.0.12"
+tokio = { version = "1.0", features = ["full"] }
+tower-lsp = "0.20"
