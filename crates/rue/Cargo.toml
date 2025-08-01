@@ -8,8 +8,8 @@ name = "rue"
 path = "src/main.rs"
 
 [dependencies]
-rue-compiler = { path = "../rue-compiler" }
-rue-codegen = { path = "../rue-codegen" }
+rue-compiler.workspace = true
+rue-codegen.workspace = true
 bpaf.workspace = true
 tracing.workspace = true
 

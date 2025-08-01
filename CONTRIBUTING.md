@@ -85,12 +85,23 @@ For implementation details, see [docs/implementation.md](./docs/implementation.m
 - **Note**: LSP currently only works with Cargo due to Buck2 third-party dependency compilation issues
 
 ### Managing Third-Party Dependencies
-- `reindeer update` - Update Cargo.lock with new dependencies  
-- `reindeer vendor` - Vendor crates needed for Buck2 build
-- `reindeer buckify` - Generate Buck build rules for third-party Cargo packages
-- When adding new dependencies to any crate, run the above commands to update Buck2 support
-- **Current limitation**: Some third-party dependencies have compilation issues with Buck2 (e.g., serde_json, auto_impl)
-- Use `fixups/<crate>/fixups.toml` to configure build script behavior for problematic dependencies
+
+All crates use `foo.workspace = true` for dependencies, and so all dependencies
+go into the root Cargo.toml.
+
+For buck, you should then:
+
+- `buck2 run support/buck2:sync-cargo-deps`
+
+To sync up the Cargo.toml that lives in `third-party`. This will invoke reineer
+for you as well. At that point, you can add dependencies in BUCK files like
+this:
+
+    "//third-party/rust:salsa",
+
+Use `third-party/rust/fixups/<crate>/fixups.toml` to configure reindeer. This is
+often just `buildscript.run = false`, but you can take a look at
+https://github.com/gilescope/buck2-fixups/tree/main/fixups for some example fixups.
 
 ### Debugging Compiled Programs
 When compiled programs crash or behave unexpectedly:

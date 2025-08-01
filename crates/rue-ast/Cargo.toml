@@ -4,4 +4,4 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
-rue-lexer = { path = "../rue-lexer" }
+rue-lexer.workspace = true

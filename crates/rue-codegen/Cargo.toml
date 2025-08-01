@@ -4,14 +4,14 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
-rue-ast = { path = "../rue-ast" }
-rue-lexer = { path = "../rue-lexer" }
-rue-parser = { path = "../rue-parser" }
-rue-semantic = { path = "../rue-semantic" }
-rue-runtime = { path = "../rue-runtime" }
-rue-ir = { path = "../rue-ir" }
-rue-lowering = { path = "../rue-lowering" }
-rue-optimize = { path = "../rue-optimize" }
+rue-ast.workspace = true
+rue-lexer.workspace = true
+rue-parser.workspace = true
+rue-semantic.workspace = true
+rue-runtime.workspace = true
+rue-ir.workspace = true
+rue-lowering.workspace = true
+rue-optimize.workspace = true
 indexmap.workspace = true
 thiserror.workspace = true
 object.workspace = true
