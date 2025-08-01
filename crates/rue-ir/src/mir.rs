@@ -32,6 +32,7 @@
 
 use crate::types::RueType;
 use rue_lexer::Span;
+use std::collections::HashMap;
 use std::fmt;
 
 /// A unique identifier for a basic block
@@ -42,11 +43,22 @@ pub struct BlockId(pub u32);
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct Temp(pub u32);
 
+/// Function signature information
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct FunctionSignature {
+    /// Parameter types in order
+    pub param_types: Vec<RueType>,
+    /// Return type
+    pub return_type: RueType,
+}
+
 /// A complete MIR program
 #[derive(Debug, Clone, PartialEq)]
 pub struct MirProgram {
     /// All functions in the program
     pub functions: Vec<MirFunction>,
+    /// Function signatures for all functions (builtin and user-defined)
+    pub function_signatures: HashMap<String, FunctionSignature>,
 }
 
 /// A function in MIR form
@@ -304,6 +316,24 @@ impl fmt::Display for Temp {
 
 impl fmt::Display for MirProgram {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // Display function signatures first if any exist
+        if !self.function_signatures.is_empty() {
+            writeln!(f, "// Function signatures:")?;
+            let mut sigs: Vec<_> = self.function_signatures.iter().collect();
+            sigs.sort_by_key(|(name, _)| *name);
+            for (name, sig) in sigs {
+                write!(f, "// {name}(")?;
+                for (i, ty) in sig.param_types.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{ty}")?;
+                }
+                writeln!(f, ") -> {}", sig.return_type)?;
+            }
+            writeln!(f)?;
+        }
+
         for (i, func) in self.functions.iter().enumerate() {
             if i > 0 {
                 writeln!(f)?;
@@ -555,7 +585,7 @@ mod tests {
             ],
             return_type: RueType::I32,
             entry_block: BlockId(0),
-            temp_types: std::collections::HashMap::new(),
+            temp_types: HashMap::new(),
             span: Span::dummy(),
             blocks: vec![BasicBlock {
                 id: BlockId(0),
@@ -641,7 +671,7 @@ mod tests {
             params: vec![("x".to_string(), RueType::I32)],
             return_type: RueType::I32,
             entry_block: BlockId(0),
-            temp_types: std::collections::HashMap::new(),
+            temp_types: HashMap::new(),
             span: Span::dummy(),
             blocks: vec![
                 BasicBlock {

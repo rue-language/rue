@@ -11,8 +11,8 @@ use crate::hir::{
     UnaryOp as HirUnaryOp,
 };
 use crate::mir::{
-    BasicBlock, BlockId, MirBinOp, MirConst, MirFunction, MirProgram, MirStatement, MirTerminator,
-    MirUnaryOp, MirValue, Temp,
+    BasicBlock, BlockId, FunctionSignature, MirBinOp, MirConst, MirFunction, MirProgram,
+    MirStatement, MirTerminator, MirUnaryOp, MirValue, Temp,
 };
 use crate::types::RueType;
 use std::collections::HashMap;
@@ -88,7 +88,14 @@ impl MirBuilder {
     }
 
     /// Create a new temporary and assign a binary operation to it
-    fn emit_binop(&mut self, op: MirBinOp, lhs: Temp, rhs: Temp, result_ty: RueType, span: Option<rue_lexer::Span>) -> Temp {
+    fn emit_binop(
+        &mut self,
+        op: MirBinOp,
+        lhs: Temp,
+        rhs: Temp,
+        result_ty: RueType,
+        span: Option<rue_lexer::Span>,
+    ) -> Temp {
         let temp = self.fresh_temp(result_ty);
         self.add_statement(MirStatement::Assign {
             dest: temp,
@@ -99,7 +106,13 @@ impl MirBuilder {
     }
 
     /// Create a new temporary and assign a unary operation to it
-    fn emit_unop(&mut self, op: MirUnaryOp, operand: Temp, result_ty: RueType, span: Option<rue_lexer::Span>) -> Temp {
+    fn emit_unop(
+        &mut self,
+        op: MirUnaryOp,
+        operand: Temp,
+        result_ty: RueType,
+        span: Option<rue_lexer::Span>,
+    ) -> Temp {
         let temp = self.fresh_temp(result_ty);
         self.add_statement(MirStatement::Assign {
             dest: temp,
@@ -110,7 +123,14 @@ impl MirBuilder {
     }
 
     /// Create a new temporary and assign a function call to it
-    fn emit_call(&mut self, func: String, args: Vec<Temp>, kind: crate::mir::CallKind, return_ty: RueType, span: Option<rue_lexer::Span>) -> Temp {
+    fn emit_call(
+        &mut self,
+        func: String,
+        args: Vec<Temp>,
+        kind: crate::mir::CallKind,
+        return_ty: RueType,
+        span: Option<rue_lexer::Span>,
+    ) -> Temp {
         let temp = self.fresh_temp(return_ty);
         self.add_statement(MirStatement::Assign {
             dest: temp,
@@ -129,7 +149,10 @@ impl MirBuilder {
             id,
             params,
             statements: Vec::new(),
-            terminator: MirTerminator::Return { value: None, span: None }, // Placeholder
+            terminator: MirTerminator::Return {
+                value: None,
+                span: None,
+            }, // Placeholder
         });
     }
 
@@ -157,13 +180,117 @@ impl MirBuilder {
     /// Lower a HIR program to MIR
     pub fn lower_program(hir: &HirProgram) -> MirProgram {
         let mut functions = Vec::new();
+        let mut function_signatures = HashMap::new();
 
+        // First pass: collect all function signatures (both user-defined and builtin)
+        // Add builtin function signatures
+        Self::add_builtin_function_signatures(&mut function_signatures);
+
+        // Add user-defined function signatures
+        for hir_func in &hir.functions {
+            let sig = FunctionSignature {
+                param_types: hir_func.params.iter().map(|(_, ty)| ty.clone()).collect(),
+                return_type: hir_func.return_type.clone(),
+            };
+            function_signatures.insert(hir_func.name.clone(), sig);
+        }
+
+        // Second pass: lower functions to MIR
         for hir_func in &hir.functions {
             let mir_func = Self::lower_function(hir_func);
             functions.push(mir_func);
         }
 
-        MirProgram { functions }
+        MirProgram {
+            functions,
+            function_signatures,
+        }
+    }
+
+    /// Add builtin function signatures to the function registry
+    fn add_builtin_function_signatures(signatures: &mut HashMap<String, FunctionSignature>) {
+        // I/O functions
+        signatures.insert(
+            "println_i32".to_string(),
+            FunctionSignature {
+                param_types: vec![RueType::I32],
+                return_type: RueType::Unit,
+            },
+        );
+        signatures.insert(
+            "println_i64".to_string(),
+            FunctionSignature {
+                param_types: vec![RueType::I64],
+                return_type: RueType::Unit,
+            },
+        );
+        signatures.insert(
+            "println_bool".to_string(),
+            FunctionSignature {
+                param_types: vec![RueType::Bool],
+                return_type: RueType::Unit,
+            },
+        );
+        signatures.insert(
+            "println_unit".to_string(),
+            FunctionSignature {
+                param_types: vec![RueType::Unit],
+                return_type: RueType::Unit,
+            },
+        );
+        signatures.insert(
+            "input".to_string(),
+            FunctionSignature {
+                param_types: vec![],
+                return_type: RueType::I64,
+            },
+        );
+        signatures.insert(
+            "input_i32".to_string(),
+            FunctionSignature {
+                param_types: vec![],
+                return_type: RueType::I32,
+            },
+        );
+        signatures.insert(
+            "input_i64".to_string(),
+            FunctionSignature {
+                param_types: vec![],
+                return_type: RueType::I64,
+            },
+        );
+
+        // Type conversion functions
+        signatures.insert(
+            "to_i32".to_string(),
+            FunctionSignature {
+                param_types: vec![RueType::I64],
+                return_type: RueType::I32,
+            },
+        );
+        signatures.insert(
+            "to_i64".to_string(),
+            FunctionSignature {
+                param_types: vec![RueType::I32],
+                return_type: RueType::I64,
+            },
+        );
+        signatures.insert(
+            "to_bool".to_string(),
+            FunctionSignature {
+                param_types: vec![RueType::I32],
+                return_type: RueType::Bool,
+            },
+        );
+
+        // System functions
+        signatures.insert(
+            "exit".to_string(),
+            FunctionSignature {
+                param_types: vec![RueType::I64],
+                return_type: RueType::Unit,
+            },
+        );
     }
 
     /// Lower a HIR function to MIR
@@ -194,7 +321,10 @@ impl MirBuilder {
 
         // Set return terminator if we haven't already returned
         if builder.current_block.is_some() {
-            builder.set_terminator(MirTerminator::Return { value: result, span: None });
+            builder.set_terminator(MirTerminator::Return {
+                value: result,
+                span: None,
+            });
             builder.finish_block();
         }
 
@@ -288,14 +418,7 @@ impl MirBuilder {
                     HirLiteral::Bool(b) => MirConst::Bool(*b),
                     HirLiteral::Unit => MirConst::Unit,
                 };
-                let ty = const_val.ty();
-                let temp = self.fresh_temp(ty);
-                self.add_statement(MirStatement::Assign {
-                    dest: temp,
-                    value: MirValue::Const(const_val),
-                    span: Some(*span),
-                });
-                temp
+                self.emit_const(const_val, Some(*span))
             }
             HirExpr::Var {
                 name,
@@ -332,7 +455,6 @@ impl MirBuilder {
 
                 // Restore is_function_body
                 self.is_function_body = saved_is_function_body;
-                let result_temp = self.fresh_temp(ty.clone());
 
                 let mir_op = match op {
                     HirBinOp::Add => MirBinOp::Add,
@@ -348,16 +470,7 @@ impl MirBuilder {
                     HirBinOp::Ne => MirBinOp::Ne,
                 };
 
-                self.add_statement(MirStatement::Assign {
-                    dest: result_temp,
-                    value: MirValue::BinaryOp {
-                        op: mir_op,
-                        lhs: lhs_temp,
-                        rhs: rhs_temp,
-                    },
-                    span: Some(*span),
-                });
-                result_temp
+                self.emit_binop(mir_op, lhs_temp, rhs_temp, ty.clone(), Some(*span))
             }
             HirExpr::Unary { op, expr, ty, span } => {
                 // Save and clear is_function_body for sub-expressions
@@ -368,21 +481,12 @@ impl MirBuilder {
 
                 // Restore is_function_body
                 self.is_function_body = saved_is_function_body;
-                let result_temp = self.fresh_temp(ty.clone());
 
                 let mir_op = match op {
                     HirUnaryOp::Neg => MirUnaryOp::Neg,
                 };
 
-                self.add_statement(MirStatement::Assign {
-                    dest: result_temp,
-                    value: MirValue::UnaryOp {
-                        op: mir_op,
-                        operand: operand_temp,
-                    },
-                    span: Some(*span),
-                });
-                result_temp
+                self.emit_unop(mir_op, operand_temp, ty.clone(), Some(*span))
             }
             HirExpr::Call {
                 func,
@@ -398,17 +502,17 @@ impl MirBuilder {
 
                 // Restore is_function_body
                 self.is_function_body = saved_is_function_body;
-                
+
                 // For now, assume all function calls are impure (conservative approach)
                 // This can be refined later with function signature analysis or annotations
-                let result_temp = self.emit_call(
-                    func.clone(), 
-                    arg_temps, 
-                    crate::mir::CallKind::Impure, 
-                    ty.clone(), 
-                    Some(*span)
-                );
-                result_temp
+
+                self.emit_call(
+                    func.clone(),
+                    arg_temps,
+                    crate::mir::CallKind::Impure,
+                    ty.clone(),
+                    Some(*span),
+                )
             }
             HirExpr::If {
                 cond,
@@ -420,12 +524,7 @@ impl MirBuilder {
             HirExpr::While { cond, body, span } => {
                 self.lower_while_expr(cond, body);
                 // While always returns unit
-                let unit_temp = self.fresh_temp(RueType::Unit);
-                self.add_statement(MirStatement::Assign {
-                    dest: unit_temp,
-                    value: MirValue::Const(MirConst::Unit),
-                    span: Some(*span),
-                });
+                let unit_temp = self.emit_const(MirConst::Unit, Some(*span));
                 if std::env::var("RUE_DEBUG").is_ok() {
                     eprintln!("While expr returns unit temp: {unit_temp:?}");
                 }
@@ -529,13 +628,7 @@ impl MirBuilder {
         self.is_function_body = false;
         let then_result = then_value.unwrap_or_else(|| {
             // If no expression, use unit
-            let temp = self.fresh_temp(RueType::Unit);
-            self.add_statement(MirStatement::Assign {
-                dest: temp,
-                value: MirValue::Const(MirConst::Unit),
-                span: None,
-            });
-            temp
+            self.emit_const(MirConst::Unit, None)
         });
 
         // Collect variables after then block
@@ -602,24 +695,10 @@ impl MirBuilder {
         self.is_function_body = saved_is_function_body;
         let else_result = if let Some(else_blk) = else_block {
             let else_value = self.lower_block(else_blk);
-            else_value.unwrap_or_else(|| {
-                let temp = self.fresh_temp(RueType::Unit);
-                self.add_statement(MirStatement::Assign {
-                    dest: temp,
-                    value: MirValue::Const(MirConst::Unit),
-                    span: None,
-                });
-                temp
-            })
+            else_value.unwrap_or_else(|| self.emit_const(MirConst::Unit, None))
         } else {
             // No else block - return unit
-            let temp = self.fresh_temp(RueType::Unit);
-            self.add_statement(MirStatement::Assign {
-                dest: temp,
-                value: MirValue::Const(MirConst::Unit),
-                span: None,
-            });
-            temp
+            self.emit_const(MirConst::Unit, None)
         };
         self.is_function_body = false;
 

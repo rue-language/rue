@@ -11,8 +11,8 @@ use rue_ir::hir::{
     UnaryOp as HirUnaryOp,
 };
 use rue_ir::mir::{
-    BasicBlock, BlockId, MirBinOp, MirConst, MirFunction, MirProgram, MirStatement, MirTerminator,
-    MirUnaryOp, MirValue, Temp,
+    BasicBlock, BlockId, FunctionSignature, MirBinOp, MirConst, MirFunction, MirProgram,
+    MirStatement, MirTerminator, MirUnaryOp, MirValue, Temp,
 };
 use rue_ir::types::RueType;
 use std::collections::HashMap;
@@ -180,13 +180,117 @@ impl MirBuilder {
     /// Lower a HIR program to MIR
     pub fn lower_program(hir: &HirProgram) -> MirProgram {
         let mut functions = Vec::new();
+        let mut function_signatures = HashMap::new();
 
+        // First pass: collect all function signatures (both user-defined and builtin)
+        // Add builtin function signatures
+        Self::add_builtin_function_signatures(&mut function_signatures);
+
+        // Add user-defined function signatures
+        for hir_func in &hir.functions {
+            let sig = FunctionSignature {
+                param_types: hir_func.params.iter().map(|(_, ty)| ty.clone()).collect(),
+                return_type: hir_func.return_type.clone(),
+            };
+            function_signatures.insert(hir_func.name.clone(), sig);
+        }
+
+        // Second pass: lower functions to MIR
         for hir_func in &hir.functions {
             let mir_func = Self::lower_function(hir_func);
             functions.push(mir_func);
         }
 
-        MirProgram { functions }
+        MirProgram {
+            functions,
+            function_signatures,
+        }
+    }
+
+    /// Add builtin function signatures to the function registry
+    fn add_builtin_function_signatures(signatures: &mut HashMap<String, FunctionSignature>) {
+        // I/O functions
+        signatures.insert(
+            "println_i32".to_string(),
+            FunctionSignature {
+                param_types: vec![RueType::I32],
+                return_type: RueType::Unit,
+            },
+        );
+        signatures.insert(
+            "println_i64".to_string(),
+            FunctionSignature {
+                param_types: vec![RueType::I64],
+                return_type: RueType::Unit,
+            },
+        );
+        signatures.insert(
+            "println_bool".to_string(),
+            FunctionSignature {
+                param_types: vec![RueType::Bool],
+                return_type: RueType::Unit,
+            },
+        );
+        signatures.insert(
+            "println_unit".to_string(),
+            FunctionSignature {
+                param_types: vec![RueType::Unit],
+                return_type: RueType::Unit,
+            },
+        );
+        signatures.insert(
+            "input".to_string(),
+            FunctionSignature {
+                param_types: vec![],
+                return_type: RueType::I64,
+            },
+        );
+        signatures.insert(
+            "input_i32".to_string(),
+            FunctionSignature {
+                param_types: vec![],
+                return_type: RueType::I32,
+            },
+        );
+        signatures.insert(
+            "input_i64".to_string(),
+            FunctionSignature {
+                param_types: vec![],
+                return_type: RueType::I64,
+            },
+        );
+
+        // Type conversion functions
+        signatures.insert(
+            "to_i32".to_string(),
+            FunctionSignature {
+                param_types: vec![RueType::I64],
+                return_type: RueType::I32,
+            },
+        );
+        signatures.insert(
+            "to_i64".to_string(),
+            FunctionSignature {
+                param_types: vec![RueType::I32],
+                return_type: RueType::I64,
+            },
+        );
+        signatures.insert(
+            "to_bool".to_string(),
+            FunctionSignature {
+                param_types: vec![RueType::I32],
+                return_type: RueType::Bool,
+            },
+        );
+
+        // System functions
+        signatures.insert(
+            "exit".to_string(),
+            FunctionSignature {
+                param_types: vec![RueType::I64],
+                return_type: RueType::Unit,
+            },
+        );
     }
 
     /// Lower a HIR function to MIR

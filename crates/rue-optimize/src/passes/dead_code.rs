@@ -311,6 +311,7 @@ mod tests {
                     },
                 }],
             }],
+            function_signatures: HashMap::new(),
         };
 
         // Run dead code elimination
@@ -372,6 +373,7 @@ mod tests {
                     },
                 }],
             }],
+            function_signatures: HashMap::new(),
         };
 
         // Run dead code elimination

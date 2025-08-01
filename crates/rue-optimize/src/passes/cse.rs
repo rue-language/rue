@@ -193,6 +193,7 @@ mod tests {
                     },
                 }],
             }],
+            function_signatures: HashMap::new(),
         };
 
         // Run CSE
@@ -265,6 +266,7 @@ mod tests {
                     },
                 }],
             }],
+            function_signatures: HashMap::new(),
         };
 
         // Run CSE
@@ -317,6 +319,7 @@ mod tests {
                     },
                 }],
             }],
+            function_signatures: HashMap::new(),
         };
 
         // Run CSE
