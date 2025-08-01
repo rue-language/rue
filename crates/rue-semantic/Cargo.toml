@@ -9,3 +9,4 @@ rue-ir.workspace = true
 rue-lexer.workspace = true
 rue-parser.workspace = true
 salsa.workspace = true
+thiserror.workspace = true

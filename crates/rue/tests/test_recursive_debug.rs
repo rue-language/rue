@@ -37,7 +37,7 @@ fn main() -> i32 {
             }
         }
         Err(e) => {
-            panic!("Compilation failed: {}", e.message);
+            panic!("Compilation failed: {e}");
         }
     }
 }

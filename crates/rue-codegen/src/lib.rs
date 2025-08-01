@@ -33,35 +33,26 @@ pub mod internals {
     pub use crate::target::x86_64::format_instructions_as_assembly;
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, thiserror::Error)]
 pub enum CodegenError {
+    #[error("Unsupported instruction: {0}")]
     UnsupportedInstruction(String),
+
+    #[error("Undefined label: {0}")]
     UndefinedLabel(String),
+
+    #[error("Register allocation error: {0}")]
     RegisterAllocation(String),
+
+    #[error("I/O error")]
     Io,
+
+    #[error("Invalid operation: {0}")]
     InvalidOperation(String),
+
+    #[error("MIR verification failed")]
     MirVerificationFailed,
-    Lowering(LoweringError),
-}
 
-impl std::fmt::Display for CodegenError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            CodegenError::UnsupportedInstruction(msg) => {
-                write!(f, "Unsupported instruction: {msg}")
-            }
-            CodegenError::UndefinedLabel(label) => write!(f, "Undefined label: {label}"),
-            CodegenError::RegisterAllocation(msg) => {
-                write!(f, "Register allocation error: {msg}")
-            }
-            CodegenError::Io => write!(f, "I/O error"),
-            CodegenError::InvalidOperation(msg) => write!(f, "Invalid operation: {msg}"),
-            CodegenError::MirVerificationFailed => {
-                write!(f, "MIR verification failed")
-            }
-            CodegenError::Lowering(err) => write!(f, "Lowering error: {err}"),
-        }
-    }
+    #[error("Lowering error: {0}")]
+    Lowering(#[from] LoweringError),
 }
-
-impl std::error::Error for CodegenError {}

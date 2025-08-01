@@ -34,7 +34,7 @@ fn main() {
             println!("AST contains {} top-level items", ast.items.len());
         }
         Err(error) => {
-            println!("Parse error: {}", error.message);
+            println!("Parse error: {error}");
         }
     }
 
@@ -55,6 +55,6 @@ fn main() {
             println!("Successfully re-parsed updated file");
             println!("AST contains {} top-level items", ast.items.len());
         }
-        Err(error) => println!("Re-parse error: {}", error.message),
+        Err(error) => println!("Re-parse error: {error}"),
     }
 }

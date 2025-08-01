@@ -18,38 +18,19 @@ use std::collections::HashMap;
 use tracing::{debug, info, instrument};
 
 /// Compilation errors that can occur during the pipeline
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, thiserror::Error)]
 pub enum CompileError {
     /// Error from codegen phase
-    Codegen(rue_codegen::CodegenError),
+    #[error("Codegen error: {0}")]
+    Codegen(#[from] rue_codegen::CodegenError),
+
     /// Error from lowering phase
-    Lowering(LoweringError),
+    #[error("Lowering error: {0}")]
+    Lowering(#[from] LoweringError),
+
     /// MIR verification failed
+    #[error("MIR verification failed")]
     MirVerificationFailed,
-}
-
-impl std::fmt::Display for CompileError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            CompileError::Codegen(err) => write!(f, "Codegen error: {err}"),
-            CompileError::Lowering(err) => write!(f, "Lowering error: {err}"),
-            CompileError::MirVerificationFailed => write!(f, "MIR verification failed"),
-        }
-    }
-}
-
-impl std::error::Error for CompileError {}
-
-impl From<rue_codegen::CodegenError> for CompileError {
-    fn from(err: rue_codegen::CodegenError) -> Self {
-        CompileError::Codegen(err)
-    }
-}
-
-impl From<LoweringError> for CompileError {
-    fn from(err: LoweringError) -> Self {
-        CompileError::Lowering(err)
-    }
 }
 
 /// Intermediate compilation result containing all the data needed for final output generation

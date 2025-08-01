@@ -6,3 +6,4 @@ edition.workspace = true
 [dependencies]
 rue-ast.workspace = true
 rue-lexer.workspace = true
+thiserror.workspace = true

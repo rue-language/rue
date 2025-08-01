@@ -22,7 +22,7 @@ fn compile_source(source: &str) -> Result<Vec<u8>, String> {
     // Compile
     compile_file(&db, file)
         .map(|arc| (*arc).clone())
-        .map_err(|e| e.message.clone())
+        .map_err(|e| e.to_string())
 }
 
 /// Benchmark compilation of a simple program
