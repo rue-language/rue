@@ -17,3 +17,6 @@ Cargo.lock
 /buck-out/
 /.buck-cache/
 /.buckd/
+
+# Claude
+.claude/settings.local.json
