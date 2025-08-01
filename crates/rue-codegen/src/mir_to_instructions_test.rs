@@ -18,6 +18,7 @@ fn make_simple_program(blocks: Vec<BasicBlock>) -> MirProgram {
             blocks,
             span: Span::dummy(),
         }],
+        function_signatures: std::collections::HashMap::new(),
     }
 }
 
@@ -390,6 +391,7 @@ fn test_lower_multiple_functions() {
                 span: Span::dummy(),
             },
         ],
+        function_signatures: std::collections::HashMap::new(),
     };
 
     let mut lowerer = MirToInstructions::new();

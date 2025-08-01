@@ -7,5 +7,7 @@
 pub mod cfg;
 pub mod hir;
 pub mod mir;
+pub mod mir_lowering;
+pub mod mir_verifier;
 pub mod target;
 pub mod types;

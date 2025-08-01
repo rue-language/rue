@@ -245,6 +245,7 @@ mod tests {
                     },
                 }],
             }],
+            function_signatures: HashMap::new(),
         };
 
         // Run constant propagation
@@ -314,6 +315,7 @@ mod tests {
                     },
                 ],
             }],
+            function_signatures: HashMap::new(),
         };
 
         // Run constant propagation

@@ -597,6 +597,7 @@ mod tests {
 
         let mir_program = MirProgram {
             functions: vec![mir_func],
+            function_signatures: HashMap::new(),
         };
 
         let mut lowerer = MirToInstructions::new();

@@ -530,6 +530,7 @@ mod tests {
                     },
                 }],
             }],
+            function_signatures: HashMap::new(),
         };
 
         let mut verifier = MirVerifier::new();
@@ -556,6 +557,7 @@ mod tests {
                     },
                 }],
             }],
+            function_signatures: HashMap::new(),
         };
 
         let mut verifier = MirVerifier::new();
@@ -597,6 +599,7 @@ mod tests {
                     },
                 }],
             }],
+            function_signatures: HashMap::new(),
         };
 
         let mut verifier = MirVerifier::new();
@@ -638,6 +641,7 @@ mod tests {
                     },
                 ],
             }],
+            function_signatures: HashMap::new(),
         };
 
         let mut verifier = MirVerifier::new();

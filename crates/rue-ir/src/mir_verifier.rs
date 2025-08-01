@@ -22,6 +22,7 @@ pub struct VerificationError {
 pub struct MirVerifier {
     errors: Vec<VerificationError>,
     current_function: String,
+    function_signatures: HashMap<String, crate::mir::FunctionSignature>,
 }
 
 impl Default for MirVerifier {
@@ -35,11 +36,15 @@ impl MirVerifier {
         Self {
             errors: Vec::new(),
             current_function: String::new(),
+            function_signatures: HashMap::new(),
         }
     }
 
     /// Verify an entire MIR program
     pub fn verify_program(&mut self, program: &MirProgram) -> Result<(), Vec<VerificationError>> {
+        // Store function signatures for use during verification
+        self.function_signatures = program.function_signatures.clone();
+
         for function in &program.functions {
             self.verify_function(function);
         }
@@ -150,9 +155,11 @@ impl MirVerifier {
                     MirValue::Call { args, func, .. } => {
                         // Debug output
                         if std::env::var("RUE_DEBUG_MIR").is_ok() {
-                            eprintln!("DEBUG: Processing call assignment: {dest:?} = {func}({args:?})");
+                            eprintln!(
+                                "DEBUG: Processing call assignment: {dest:?} = {func}({args:?})"
+                            );
                         }
-                        
+
                         // Verify all arguments are defined
                         for arg in args {
                             if !defined_temps.contains_key(arg) {
@@ -162,15 +169,54 @@ impl MirVerifier {
                                 );
                             }
                         }
-                        
-                        // For calls, we infer the return type from the function signature
-                        // For now, we'll use a placeholder approach and mark the dest as defined
-                        // with an inferred type based on common function signatures
-                        let inferred_type = self.infer_call_return_type(func);
-                        if std::env::var("RUE_DEBUG_MIR").is_ok() {
-                            eprintln!("DEBUG: Inferred type for {func}: {inferred_type:?}, marking {dest:?} as defined");
+
+                        // Look up the function signature
+                        if let Some(signature) = self.function_signatures.get(func).cloned() {
+                            // Verify argument count
+                            if args.len() != signature.param_types.len() {
+                                self.add_error(
+                                    format!(
+                                        "Function {func} expects {} arguments but got {}",
+                                        signature.param_types.len(),
+                                        args.len()
+                                    ),
+                                    Some(block_id),
+                                );
+                            } else {
+                                // Verify argument types match
+                                for (i, (arg, expected_ty)) in
+                                    args.iter().zip(&signature.param_types).enumerate()
+                                {
+                                    if let Some(arg_ty) = defined_temps.get(arg) {
+                                        if arg_ty != expected_ty {
+                                            self.add_error(
+                                                format!(
+                                                    "Type mismatch in call to {func}: argument {i} has type {arg_ty:?} but expected {expected_ty:?}"
+                                                ),
+                                                Some(block_id),
+                                            );
+                                        }
+                                    }
+                                }
+                            }
+
+                            // Mark destination with the function's return type
+                            if std::env::var("RUE_DEBUG_MIR").is_ok() {
+                                eprintln!(
+                                    "DEBUG: Function {func} returns {:?}, marking {dest:?} as defined",
+                                    signature.return_type
+                                );
+                            }
+                            defined_temps.insert(*dest, signature.return_type);
+                        } else {
+                            // Unknown function - this should have been caught during semantic analysis
+                            self.add_error(
+                                format!("Call to unknown function: {func}"),
+                                Some(block_id),
+                            );
+                            // Mark dest with a placeholder type to avoid cascading errors
+                            defined_temps.insert(*dest, RueType::I32);
                         }
-                        defined_temps.insert(*dest, inferred_type);
                     }
                     _ => {
                         // For non-call values, use the original logic
@@ -270,14 +316,43 @@ impl MirVerifier {
                 func,
                 kind: _,
             } => {
-                // Verify all arguments are defined
-                for arg in args {
-                    if !defined_temps.contains_key(arg) {
+                // Verify all arguments are defined and have correct types
+                if let Some(signature) = self.function_signatures.get(func).cloned() {
+                    // Verify argument count
+                    if args.len() != signature.param_types.len() {
                         self.add_error(
-                            format!("Use of undefined temp {arg:?} in call to {func}"),
+                            format!(
+                                "Function {func} expects {} arguments but got {}",
+                                signature.param_types.len(),
+                                args.len()
+                            ),
                             Some(block_id),
                         );
                     }
+
+                    // Verify each argument
+                    for (i, (arg, expected_ty)) in
+                        args.iter().zip(&signature.param_types).enumerate()
+                    {
+                        if let Some(arg_ty) = defined_temps.get(arg) {
+                            if arg_ty != expected_ty {
+                                self.add_error(
+                                    format!(
+                                        "Type mismatch in call to {func}: argument {i} has type {arg_ty:?} but expected {expected_ty:?}"
+                                    ),
+                                    Some(block_id),
+                                );
+                            }
+                        } else {
+                            self.add_error(
+                                format!("Use of undefined temp {arg:?} in call to {func}"),
+                                Some(block_id),
+                            );
+                        }
+                    }
+                } else {
+                    // Unknown function
+                    self.add_error(format!("Call to unknown function: {func}"), Some(block_id));
                 }
                 // Call return type needs to be determined from assignment context
                 // For now, return None to indicate the type should come from the dest
@@ -335,7 +410,13 @@ impl MirVerifier {
 
                 // Verify all target jumps
                 for (_, target_block, target_args) in targets {
-                    self.verify_jump(*target_block, target_args, block_id, block_map, defined_temps);
+                    self.verify_jump(
+                        *target_block,
+                        target_args,
+                        block_id,
+                        block_map,
+                        defined_temps,
+                    );
                 }
 
                 // Verify default jump
@@ -443,9 +524,7 @@ impl MirVerifier {
                         worklist.push(*else_block);
                     }
                     MirTerminator::Switch {
-                        targets,
-                        default,
-                        ..
+                        targets, default, ..
                     } => {
                         // Add all target blocks from switch cases
                         for (_, target_block, _) in targets {
@@ -460,38 +539,6 @@ impl MirVerifier {
         }
 
         reachable
-    }
-
-    /// Infer the return type of a function call based on its name
-    /// This is a temporary solution until we have proper function signature tracking
-    fn infer_call_return_type(&self, func_name: &str) -> RueType {
-        match func_name {
-            // Casting functions
-            "to_i32" => RueType::I32,
-            "to_i64" => RueType::I64,
-            "to_bool" => RueType::Bool,
-            
-            // I/O functions  
-            "println_i32" | "println_i64" | "println_bool" => RueType::Unit,
-            "input_i32" => RueType::I32,
-            "input_i64" => RueType::I64,
-            
-            // For recursive functions, we need to infer from context
-            // For now, assume i32 as a reasonable default for unknown functions
-            _ => {
-                // Try to infer from the current function context
-                // If we're in a function that returns a specific type, assume that
-                // This is a heuristic for recursive calls
-                if func_name == self.current_function {
-                    // For recursive calls, we'd need to look up the function's return type
-                    // For now, assume i32 as the most common case
-                    RueType::I32
-                } else {
-                    // For unknown functions, assume i32 as default
-                    RueType::I32
-                }
-            }
-        }
     }
 
     /// Add an error to the list
@@ -518,6 +565,7 @@ mod tests {
                 params: vec![],
                 return_type: RueType::I32,
                 entry_block: BlockId(0),
+                temp_types: HashMap::new(),
                 blocks: vec![BasicBlock {
                     id: BlockId(0),
                     params: vec![],
@@ -533,6 +581,7 @@ mod tests {
                 }],
                 span: Span::dummy(),
             }],
+            function_signatures: HashMap::new(),
         };
 
         let mut verifier = MirVerifier::new();
@@ -547,6 +596,7 @@ mod tests {
                 params: vec![],
                 return_type: RueType::I32,
                 entry_block: BlockId(0),
+                temp_types: HashMap::new(),
                 blocks: vec![BasicBlock {
                     id: BlockId(0),
                     params: vec![],
@@ -558,6 +608,7 @@ mod tests {
                 }],
                 span: Span::dummy(),
             }],
+            function_signatures: HashMap::new(),
         };
 
         let mut verifier = MirVerifier::new();
@@ -576,6 +627,7 @@ mod tests {
                 params: vec![],
                 return_type: RueType::I32,
                 entry_block: BlockId(0),
+                temp_types: HashMap::new(),
                 blocks: vec![BasicBlock {
                     id: BlockId(0),
                     params: vec![],
@@ -598,6 +650,7 @@ mod tests {
                 }],
                 span: Span::dummy(),
             }],
+            function_signatures: HashMap::new(),
         };
 
         let mut verifier = MirVerifier::new();
@@ -615,6 +668,7 @@ mod tests {
                 params: vec![],
                 return_type: RueType::I32,
                 entry_block: BlockId(0),
+                temp_types: HashMap::new(),
                 blocks: vec![
                     BasicBlock {
                         id: BlockId(0),
@@ -638,6 +692,7 @@ mod tests {
                 ],
                 span: Span::dummy(),
             }],
+            function_signatures: HashMap::new(),
         };
 
         let mut verifier = MirVerifier::new();
