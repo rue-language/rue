@@ -1,0 +1,28 @@
+fn factorial(n: i32) -> i32 {
+    if n <= 1 { 1 } else { n * factorial(n - 1) }
+}
+
+fn fibonacci(n: i32) -> i32 {
+    let a: i32 = 0;
+    let b: i32 = 1;
+    let i: i32 = 0;
+    while i < n {
+        let temp: i32 = a + b;
+        a = b;
+        b = temp;
+        i = i + 1;
+    };
+    a
+}
+
+fn gcd(a: i32, b: i32) -> i32 {
+    if b == 0 {
+        a
+    } else {
+        gcd(b, a % b)
+    }
+}
+
+fn main() -> i32 {
+    factorial(5) + fibonacci(10) + gcd(48, 18)
+}
