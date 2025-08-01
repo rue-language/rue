@@ -6,4 +6,4 @@
 
 pub mod x86_64;
 
-pub use x86_64::{RuntimeContext, generate_runtime};
+pub use x86_64::generate_runtime;
