@@ -1,4 +1,4 @@
-FROM node:20
+FROM node:22
 
 ARG TZ
 ENV TZ="$TZ"
@@ -25,7 +25,35 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
   jq \
   nano \
   vim \
+  zstd \
+  build-essential \
+  software-properties-common \
+  wget \
+  gnupg \
   && apt-get clean && rm -rf /var/lib/apt/lists/*
+
+# Add the LLVM APT repository key
+RUN wget -O - https://apt.llvm.org/llvm-snapshot.gpg.key | apt-key add -
+
+# Add the LLVM APT repository for Clang 20
+RUN echo "deb http://apt.llvm.org/bookworm/ llvm-toolchain-bookworm-20 main" >> /etc/apt/sources.list.d/llvm.list
+
+# Update package lists again after adding the repository
+RUN apt-get update
+
+# Install Clang 20 and related tools
+RUN apt-get install -y --no-install-recommends \
+  clang-20 \
+  lldb-20 \
+  lld-20 \
+  clang-format-20 \
+  clang-tidy-20 \
+  clangd-20 \
+  && rm -rf /var/lib/apt/lists/*
+
+RUN update-alternatives --install /usr/bin/clang clang /usr/bin/clang-20 100
+RUN update-alternatives --install /usr/bin/clang++ clang++ /usr/bin/clang++-20 100
+RUN update-alternatives --install /usr/bin/lld lld /usr/bin/lld-20 100
 
 # Ensure default node user has access to /usr/local/share
 RUN mkdir -p /usr/local/share/npm-global && \
@@ -77,9 +105,10 @@ RUN cargo install --locked jj-cli
 
 # Install Buck2 (prebuilt binary)
 USER root
-RUN curl -LO https://github.com/facebook/buck2/releases/latest/download/buck2-x86_64-unknown-linux-gnu \
-    && install -m 755 buck2-x86_64-unknown-linux-gnu /usr/local/bin/buck2 \
-    && rm buck2-x86_64-unknown-linux-gnu
+RUN curl -LO https://github.com/facebook/buck2/releases/download/latest/buck2-x86_64-unknown-linux-gnu.zst \
+    && zstd -d buck2-x86_64-unknown-linux-gnu.zst -o /usr/local/bin/buck2 \
+    && chmod +x /usr/local/bin/buck2 \
+    && rm buck2-x86_64-unknown-linux-gnu.zst
 
 # Switch back to node for dev work
 USER $USERNAME

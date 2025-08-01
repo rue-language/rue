@@ -47,21 +47,27 @@ if [ -z "$gh_ranges" ]; then
     echo "ERROR: Failed to fetch GitHub IP ranges"
     exit 1
 fi
-
-if ! echo "$gh_ranges" | jq -e '.web and .api and .git' >/dev/null; then
-    echo "ERROR: GitHub API response missing required fields"
-    exit 1
-fi
-
 echo "Processing GitHub IPs..."
+echo "$gh_ranges" | jq -r '(.web + .api + .git)[]' | aggregate -q |
 while read -r cidr; do
-    if [[ ! "$cidr" =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}/[0-9]{1,2}$ ]]; then
-        echo "ERROR: Invalid CIDR range from GitHub meta: $cidr"
-        exit 1
-    fi
     echo "Adding GitHub range $cidr"
     ipset add allowed-domains "$cidr"
-done < <(echo "$gh_ranges" | jq -r '(.web + .api + .git)[]' | aggregate -q)
+done
+
+# Fetch CloudFront meta information and aggregate + add their IP ranges
+echo "Fetching AWS IP ranges..."
+aws_ranges=$(curl -s https://ip-ranges.amazonaws.com/ip-ranges.json)
+if [ -z "$aws_ranges" ]; then
+    echo "ERROR: Failed to fetch AWS IP ranges"
+    exit 1
+fi
+echo "Processing CloudFront IPs..."
+echo "$aws_ranges" | jq -r '.prefixes[] | select(.service=="CLOUDFRONT") | .ip_prefix' | aggregate -q |
+while read -r cidr; do
+    echo "Adding CloudFront range $cidr"
+    ipset add allowed-domains "$cidr"
+done
+
 
 # Resolve and add other allowed domains
 for domain in \
@@ -69,9 +75,11 @@ for domain in \
     "api.anthropic.com" \
     "sentry.io" \
     "statsig.anthropic.com" \
+    "crates.io" \
+    "static.crates.io" \
     "statsig.com"; do
     echo "Resolving $domain..."
-    ips=$(dig +short A "$domain")
+    ips=$(host -t A "$domain" | awk '/has address/ { print $4 }')
     if [ -z "$ips" ]; then
         echo "ERROR: Failed to resolve $domain"
         exit 1
