@@ -23,8 +23,8 @@
 //! - Call `mark_vreg_initialized()` when emitting MovMR stores
 //! - Handle caller-saved register preservation around function calls
 
-use crate::VReg;
-use rue_ir::target::{MachineInstr, Register};
+use rue_ir::pir::VReg;
+use rue_target::{X86Register, X8664Instr};
 use std::collections::HashMap;
 use tracing::{debug, trace};
 
@@ -37,11 +37,11 @@ const STACK_ALIGNMENT: i64 = 16;
 /// State of a register - Empty, Clean (loaded but not modified), or Dirty (modified)
 #[derive(Clone, PartialEq, Eq)]
 enum RegState {
-    /// Register contains no useful value
+    /// X86Register contains no useful value
     Empty,
-    /// Register contains a VReg value that matches memory (read-only)
+    /// X86Register contains a VReg value that matches memory (read-only)
     Clean(VReg),
-    /// Register contains a VReg value that has been modified (needs spill)
+    /// X86Register contains a VReg value that has been modified (needs spill)
     Dirty(VReg),
 }
 
@@ -59,7 +59,7 @@ impl std::fmt::Debug for RegState {
 #[derive(Debug, Clone)]
 struct ScratchState {
     /// The register
-    reg: Register,
+    reg: X86Register,
     /// Current state of the register
     state: RegState,
 }
@@ -80,7 +80,7 @@ pub struct RegisterAllocator {
     /// Scratch register states
     scratch_states: Vec<ScratchState>,
     /// Pending operations to emit
-    pending_ops: Vec<MachineInstr>,
+    pending_ops: Vec<X8664Instr>,
     /// Track which VRegs have been initialized (have valid values in their home slots)
     /// This prevents spurious loads from uninitialized stack slots
     initialized_vregs: std::collections::HashSet<VReg>,
@@ -99,20 +99,20 @@ impl RegisterAllocator {
         // Could also use: R8, R9 (but they're often used for function args)
         let scratch_states = vec![
             ScratchState {
-                reg: Register::R10,
+                reg: X86Register::R10,
                 state: RegState::Empty,
             },
             ScratchState {
-                reg: Register::R11,
+                reg: X86Register::R11,
                 state: RegState::Empty,
             },
             // Adding more caller-saved registers for better allocation
             ScratchState {
-                reg: Register::R8,
+                reg: X86Register::R8,
                 state: RegState::Empty,
             },
             ScratchState {
-                reg: Register::R9,
+                reg: X86Register::R9,
                 state: RegState::Empty,
             },
         ];
@@ -153,22 +153,22 @@ impl RegisterAllocator {
     }
 
     /// Generate a load instruction from memory to register
-    fn gen_load(&mut self, vreg: VReg, dest_reg: Register) -> MachineInstr {
+    fn gen_load(&mut self, vreg: VReg, dest_reg: X86Register) -> X8664Instr {
         let slot = self.get_home_slot(vreg);
         // Ensure the offset fits in an i32
         assert!(
             slot >= i32::MIN as i64 && slot <= i32::MAX as i64,
             "Stack offset {slot} exceeds i32 range"
         );
-        MachineInstr::MovRM {
+        X8664Instr::MovRM {
             dest: dest_reg,
-            base: Register::Rbp,
+            base: X86Register::Rbp,
             offset: slot as i32,
         }
     }
 
     /// Generate a store instruction from register to memory
-    fn gen_store(&mut self, vreg: VReg, src_reg: Register) -> MachineInstr {
+    fn gen_store(&mut self, vreg: VReg, src_reg: X86Register) -> X8664Instr {
         let slot = self.get_home_slot(vreg);
         // Ensure the offset fits in an i32
         assert!(
@@ -177,9 +177,9 @@ impl RegisterAllocator {
         );
         // NOTE: VReg is marked as initialized in the lowering layer when the store is actually emitted
         // This prevents race conditions where VRegs are marked initialized before their stores are emitted
-        MachineInstr::MovMR {
+        X8664Instr::MovMR {
             src: src_reg,
-            base: Register::Rbp,
+            base: X86Register::Rbp,
             offset: slot as i32,
         }
     }
@@ -218,7 +218,7 @@ impl RegisterAllocator {
     }
 
     /// Spill a dirty value from a register and clear all mappings for that VReg
-    fn spill_dirty_value(&mut self, vreg: VReg, reg: Register) {
+    fn spill_dirty_value(&mut self, vreg: VReg, reg: X86Register) {
         let spill = self.gen_store(vreg, reg);
         self.pending_ops.push(spill);
 
@@ -240,8 +240,8 @@ impl RegisterAllocator {
     pub fn assign_reg_for_8bit_def(
         &mut self,
         vreg: VReg,
-        forbidden: &[Register],
-    ) -> Result<Register, String> {
+        forbidden: &[X86Register],
+    ) -> Result<X86Register, String> {
         // Allocate home slot if needed
         self.get_home_slot(vreg);
 
@@ -274,8 +274,8 @@ impl RegisterAllocator {
     pub fn assign_reg_for_def(
         &mut self,
         vreg: VReg,
-        forbidden: &[Register],
-    ) -> Result<Register, String> {
+        forbidden: &[X86Register],
+    ) -> Result<X86Register, String> {
         // Allocate home slot if needed
         self.get_home_slot(vreg);
 
@@ -309,7 +309,11 @@ impl RegisterAllocator {
     }
 
     /// Main API: ensure a VReg is in a register
-    pub fn ensure_reg(&mut self, vreg: VReg, forbidden: &[Register]) -> Result<Register, String> {
+    pub fn ensure_reg(
+        &mut self,
+        vreg: VReg,
+        forbidden: &[X86Register],
+    ) -> Result<X86Register, String> {
         // First check if the vreg is already in a register (Clean or Dirty)
         for state in &self.scratch_states {
             match &state.state {
@@ -350,7 +354,7 @@ impl RegisterAllocator {
                 // Clean value is being overwritten, no spill needed
             }
             RegState::Empty => {
-                // Register is empty, no cleanup needed
+                // X86Register is empty, no cleanup needed
             }
         }
 
@@ -385,7 +389,7 @@ impl RegisterAllocator {
     }
 
     /// Schedule a store operation for a VReg value that's currently in a register
-    pub fn schedule_store(&mut self, vreg: VReg, reg: Register) {
+    pub fn schedule_store(&mut self, vreg: VReg, reg: X86Register) {
         // Check if this is one of our scratch registers
         let mut found_idx = None;
         for (idx, state) in self.scratch_states.iter().enumerate() {
@@ -419,7 +423,7 @@ impl RegisterAllocator {
     /// Flush all pending stores
     pub fn flush_stores(&mut self) {
         // Collect dirty registers first to avoid borrow checker issues
-        let dirty_regs: Vec<(VReg, Register)> = self
+        let dirty_regs: Vec<(VReg, X86Register)> = self
             .scratch_states
             .iter_mut()
             .filter_map(|state| {
@@ -442,9 +446,9 @@ impl RegisterAllocator {
     }
 
     /// Flush all pending stores except for the specified registers
-    pub fn flush_stores_except(&mut self, except: &[Register]) {
+    pub fn flush_stores_except(&mut self, except: &[X86Register]) {
         // Collect dirty registers first to avoid borrow checker issues
-        let dirty_regs: Vec<(VReg, Register)> = self
+        let dirty_regs: Vec<(VReg, X86Register)> = self
             .scratch_states
             .iter_mut()
             .filter_map(|state| {
@@ -484,8 +488,8 @@ impl RegisterAllocator {
     /// Find an available scratch register with optional constraint filter
     fn find_available_scratch_with_filter(
         &self,
-        forbidden: &[Register],
-        filter: Option<fn(&Register) -> bool>,
+        forbidden: &[X86Register],
+        filter: Option<fn(&X86Register) -> bool>,
     ) -> Result<usize, String> {
         // First, try to find an empty register
         for (idx, state) in self.scratch_states.iter().enumerate() {
@@ -518,7 +522,7 @@ impl RegisterAllocator {
     }
 
     /// Find an available scratch register suitable for 8-bit operations
-    fn find_8bit_capable_scratch(&self, forbidden: &[Register]) -> Result<usize, String> {
+    fn find_8bit_capable_scratch(&self, forbidden: &[X86Register]) -> Result<usize, String> {
         self.find_available_scratch_with_filter(
             forbidden,
             Some(|reg| {
@@ -528,25 +532,25 @@ impl RegisterAllocator {
                 // We only have R8-R11 in our scratch pool, all of which support 8-bit ops
                 matches!(
                     reg,
-                    Register::Rax
-                        | Register::Rbx
-                        | Register::Rcx
-                        | Register::Rdx
-                        | Register::Rsi
-                        | Register::Rdi
-                        | Register::R8
-                        | Register::R9
-                        | Register::R10
-                        | Register::R11
-                        | Register::R12
-                        | Register::R13
+                    X86Register::Rax
+                        | X86Register::Rbx
+                        | X86Register::Rcx
+                        | X86Register::Rdx
+                        | X86Register::Rsi
+                        | X86Register::Rdi
+                        | X86Register::R8
+                        | X86Register::R9
+                        | X86Register::R10
+                        | X86Register::R11
+                        | X86Register::R12
+                        | X86Register::R13
                 )
             }),
         )
     }
 
     /// Take any pending spill/reload operations
-    pub fn take_pending_ops(&mut self) -> Vec<MachineInstr> {
+    pub fn take_pending_ops(&mut self) -> Vec<X8664Instr> {
         std::mem::take(&mut self.pending_ops)
     }
 
@@ -575,19 +579,19 @@ impl RegisterAllocator {
     /// Check if a register contains a value (dirty or clean)
     /// Returns true if the register contains a Clean or Dirty VReg
     /// This is crucial for lower_call's caller-saved register detection
-    pub fn is_register_allocated(&self, reg: Register) -> bool {
+    pub fn is_register_allocated(&self, reg: X86Register) -> bool {
         self.scratch_states
             .iter()
             .any(|s| s.reg == reg && matches!(s.state, RegState::Clean(_) | RegState::Dirty(_)))
     }
 
     /// Check if a register contains any vreg (for get_scratch_register safety)
-    pub fn is_scratch_register(&self, reg: Register) -> bool {
+    pub fn is_scratch_register(&self, reg: X86Register) -> bool {
         self.scratch_states.iter().any(|s| s.reg == reg)
     }
 
     /// Invalidate a register - forces spill if dirty
-    pub fn invalidate_register(&mut self, reg: Register) {
+    pub fn invalidate_register(&mut self, reg: X86Register) {
         if let Some(state) = self.scratch_states.iter_mut().find(|s| s.reg == reg) {
             match std::mem::replace(&mut state.state, RegState::Empty) {
                 RegState::Dirty(vreg) => {
@@ -602,7 +606,7 @@ impl RegisterAllocator {
     }
 
     /// Get register containing a VReg
-    pub fn get_register(&self, vreg: VReg) -> Option<Register> {
+    pub fn get_register(&self, vreg: VReg) -> Option<X86Register> {
         // Check if the vreg is currently in any register
         for state in &self.scratch_states {
             match &state.state {
@@ -616,7 +620,7 @@ impl RegisterAllocator {
     }
 
     /// Get the VReg currently stored in a register (inverse of get_register)
-    pub fn get_vreg_in_register(&self, reg: Register) -> Option<VReg> {
+    pub fn get_vreg_in_register(&self, reg: X86Register) -> Option<VReg> {
         for state in &self.scratch_states {
             if state.reg == reg {
                 match &state.state {
@@ -634,7 +638,7 @@ impl RegisterAllocator {
 
     /// Restore a VReg-to-register mapping after a pop operation
     /// This tells the allocator that a VReg is now back in a register after being restored from stack
-    pub fn restore_vreg_mapping(&mut self, vreg: VReg, reg: Register) {
+    pub fn restore_vreg_mapping(&mut self, vreg: VReg, reg: X86Register) {
         // Find the scratch register state for this register
         for state in &mut self.scratch_states {
             if state.reg == reg {
@@ -650,7 +654,7 @@ impl RegisterAllocator {
     ///
     /// This is called before instructions that clobber specific registers
     /// (e.g., division clobbers RDX, function calls clobber caller-saved regs)
-    pub fn handle_clobbers(&mut self, clobbered_regs: &[Register]) {
+    pub fn handle_clobbers(&mut self, clobbered_regs: &[X86Register]) {
         for &clobbered_reg in clobbered_regs {
             // Find if this register is one of our scratch registers and has a dirty value
             for state in &mut self.scratch_states {
@@ -677,7 +681,7 @@ impl RegisterAllocator {
     /// **WARNING**: The returned register may contain a Dirty value!
     /// The caller MUST call `invalidate_register()` on the returned register
     /// immediately after getting it to ensure any dirty value is spilled.
-    pub fn get_unreserved_scratch(&self, reserved: &[Register]) -> Option<Register> {
+    pub fn get_unreserved_scratch(&self, reserved: &[X86Register]) -> Option<X86Register> {
         for state in &self.scratch_states {
             if !reserved.contains(&state.reg) {
                 return Some(state.reg);
@@ -700,6 +704,77 @@ impl RegisterAllocator {
 impl Default for RegisterAllocator {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+// Implement the RegisterAllocator trait from x86_64_backend
+impl crate::x86_64_backend::RegisterAllocator for RegisterAllocator {
+    fn ensure_reg(&mut self, vreg: VReg, forbidden: &[X86Register]) -> Result<X86Register, String> {
+        self.ensure_reg(vreg, forbidden)
+    }
+
+    fn assign_reg_for_def(
+        &mut self,
+        vreg: VReg,
+        forbidden: &[X86Register],
+    ) -> Result<X86Register, String> {
+        self.assign_reg_for_def(vreg, forbidden)
+    }
+
+    fn assign_reg_for_8bit_def(
+        &mut self,
+        vreg: VReg,
+        forbidden: &[X86Register],
+    ) -> Result<X86Register, String> {
+        self.assign_reg_for_8bit_def(vreg, forbidden)
+    }
+
+    fn get_register(&self, vreg: VReg) -> Option<X86Register> {
+        self.get_register(vreg)
+    }
+
+    fn is_register_allocated(&self, reg: X86Register) -> bool {
+        self.is_register_allocated(reg)
+    }
+
+    fn is_scratch_register(&self, reg: X86Register) -> bool {
+        self.is_scratch_register(reg)
+    }
+
+    fn get_unreserved_scratch(&mut self, forbidden: &[X86Register]) -> Option<X86Register> {
+        RegisterAllocator::get_unreserved_scratch(self, forbidden)
+    }
+
+    fn invalidate_register(&mut self, reg: X86Register) {
+        self.invalidate_register(reg)
+    }
+
+    fn schedule_store(&mut self, vreg: VReg, reg: X86Register) {
+        self.schedule_store(vreg, reg)
+    }
+
+    fn take_pending_ops(&mut self) -> Vec<X8664Instr> {
+        self.take_pending_ops()
+    }
+
+    fn flush_stores(&mut self) {
+        self.flush_stores()
+    }
+
+    fn clear_all_registers(&mut self) {
+        self.clear_all_registers()
+    }
+
+    fn find_vreg_for_slot(&self, offset: i64) -> Option<VReg> {
+        self.find_vreg_for_slot(offset)
+    }
+
+    fn mark_vreg_initialized(&mut self, vreg: VReg) {
+        self.mark_vreg_initialized(vreg)
+    }
+
+    fn get_stack_size(&self) -> u64 {
+        self.get_stack_usage() as u64
     }
 }
 
@@ -733,7 +808,7 @@ mod tests {
 
         // Ensure VReg(1) gets loaded to first scratch register (R10)
         let r1 = alloc.ensure_reg(VReg(1), &[]).unwrap();
-        assert_eq!(r1, Register::R10);
+        assert_eq!(r1, X86Register::R10);
 
         // Schedule store of VReg(1) from RAX
         alloc.schedule_store(VReg(1), r1);
@@ -757,14 +832,14 @@ mod tests {
         alloc.schedule_store(VReg(3), r3);
 
         // Force reuse by forbidding other registers
-        let forbidden = if r1 == Register::R10 {
-            vec![Register::R11, Register::R8, Register::R9]
-        } else if r1 == Register::R11 {
-            vec![Register::R10, Register::R8, Register::R9]
-        } else if r1 == Register::R8 {
-            vec![Register::R10, Register::R11, Register::R9]
+        let forbidden = if r1 == X86Register::R10 {
+            vec![X86Register::R11, X86Register::R8, X86Register::R9]
+        } else if r1 == X86Register::R11 {
+            vec![X86Register::R10, X86Register::R8, X86Register::R9]
+        } else if r1 == X86Register::R8 {
+            vec![X86Register::R10, X86Register::R11, X86Register::R9]
         } else {
-            vec![Register::R10, Register::R11, Register::R8]
+            vec![X86Register::R10, X86Register::R11, X86Register::R8]
         };
 
         // This should force a spill
@@ -775,9 +850,7 @@ mod tests {
         assert!(!ops.is_empty());
 
         // Verify we got a spill
-        let has_spill = ops
-            .iter()
-            .any(|op| matches!(op, MachineInstr::MovMR { .. }));
+        let has_spill = ops.iter().any(|op| matches!(op, X8664Instr::MovMR { .. }));
         assert!(has_spill, "Should have generated a spill");
     }
 
@@ -800,7 +873,12 @@ mod tests {
         let mut alloc = RegisterAllocator::new();
 
         // Forbid all scratch registers
-        let forbidden = vec![Register::R10, Register::R11, Register::R8, Register::R9];
+        let forbidden = vec![
+            X86Register::R10,
+            X86Register::R11,
+            X86Register::R8,
+            X86Register::R9,
+        ];
         let result = alloc.ensure_reg(VReg(1), &forbidden);
 
         assert!(result.is_err());
@@ -815,7 +893,7 @@ mod tests {
         let r1 = alloc.ensure_reg(VReg(1), &[]).unwrap();
         alloc.schedule_store(VReg(1), r1);
 
-        let r2 = alloc.ensure_reg(VReg(2), &[Register::Rax]).unwrap();
+        let r2 = alloc.ensure_reg(VReg(2), &[X86Register::Rax]).unwrap();
         alloc.schedule_store(VReg(2), r2);
 
         // Clear pending ops
@@ -839,22 +917,22 @@ mod tests {
         let mut alloc = RegisterAllocator::new();
 
         // Generate load for VReg(1) to RAX
-        let load = alloc.gen_load(VReg(1), Register::Rax);
+        let load = alloc.gen_load(VReg(1), X86Register::Rax);
         match load {
-            MachineInstr::MovRM { dest, base, offset } => {
-                assert_eq!(dest, Register::Rax);
-                assert_eq!(base, Register::Rbp);
+            X8664Instr::MovRM { dest, base, offset } => {
+                assert_eq!(dest, X86Register::Rax);
+                assert_eq!(base, X86Register::Rbp);
                 assert_eq!(offset, -8);
             }
             _ => panic!("Expected MovRM instruction"),
         }
 
         // Generate store from RCX to VReg(2)
-        let store = alloc.gen_store(VReg(2), Register::Rcx);
+        let store = alloc.gen_store(VReg(2), X86Register::Rcx);
         match store {
-            MachineInstr::MovMR { src, base, offset } => {
-                assert_eq!(src, Register::Rcx);
-                assert_eq!(base, Register::Rbp);
+            X8664Instr::MovMR { src, base, offset } => {
+                assert_eq!(src, X86Register::Rcx);
+                assert_eq!(base, X86Register::Rbp);
                 assert_eq!(offset, -16);
             }
             _ => panic!("Expected MovMR instruction"),
@@ -869,7 +947,7 @@ mod tests {
         let reg = alloc.ensure_reg(VReg(1), &[]).unwrap();
         assert!(matches!(
             reg,
-            Register::R10 | Register::R11 | Register::R8 | Register::R9
+            X86Register::R10 | X86Register::R11 | X86Register::R8 | X86Register::R9
         ));
 
         // Should NOT have generated a load for uninitialized VReg
@@ -885,7 +963,7 @@ mod tests {
         alloc.flush_stores();
         let ops = alloc.take_pending_ops();
         assert_eq!(ops.len(), 1);
-        assert!(matches!(ops[0], MachineInstr::MovMR { .. }));
+        assert!(matches!(ops[0], X8664Instr::MovMR { .. }));
 
         // Simulate what the lowering layer does when emitting the store
         alloc.mark_vreg_initialized(VReg(1));
@@ -898,7 +976,7 @@ mod tests {
         let _reg2 = alloc.ensure_reg(VReg(1), &[]).unwrap();
         let ops = alloc.take_pending_ops();
         assert_eq!(ops.len(), 1, "Should generate load for initialized VReg");
-        assert!(matches!(ops[0], MachineInstr::MovRM { .. }));
+        assert!(matches!(ops[0], X8664Instr::MovRM { .. }));
     }
 
     #[test]
@@ -947,7 +1025,7 @@ mod tests {
 
         // Verify all are stores
         for op in &ops {
-            assert!(matches!(op, MachineInstr::MovMR { .. }));
+            assert!(matches!(op, X8664Instr::MovMR { .. }));
         }
     }
 
@@ -970,7 +1048,7 @@ mod tests {
         // Find the spill of v1
         let mut found_v1_spill = false;
         for op in &ops {
-            if let MachineInstr::MovMR { offset, .. } = op {
+            if let X8664Instr::MovMR { offset, .. } = op {
                 if *offset == -8 {
                     // VReg(1)'s slot
                     found_v1_spill = true;
@@ -986,7 +1064,7 @@ mod tests {
         // Should have the store for VReg(2)
         assert_eq!(ops.len(), 1);
         match &ops[0] {
-            MachineInstr::MovMR { offset, .. } => {
+            X8664Instr::MovMR { offset, .. } => {
                 assert_eq!(*offset, -16); // VReg(2)'s slot
             }
             _ => panic!("Expected MovMR"),
@@ -999,7 +1077,7 @@ mod tests {
 
         // Load v1 into R10
         let r1 = alloc.ensure_reg(VReg(1), &[]).unwrap();
-        assert_eq!(r1, Register::R10);
+        assert_eq!(r1, X86Register::R10);
         alloc.schedule_store(VReg(1), r1);
 
         // Clear pending ops
@@ -1008,11 +1086,11 @@ mod tests {
         // Simulate a three-address operation that overwrites R10
         // without calling schedule_store first (e.g., add R10, v2)
         // This would be done by loading v2 and then doing the add
-        let r2 = alloc.ensure_reg(VReg(2), &[Register::R10]).unwrap();
-        assert_ne!(r2, Register::R10); // Should get a different register
+        let r2 = alloc.ensure_reg(VReg(2), &[X86Register::R10]).unwrap();
+        assert_ne!(r2, X86Register::R10); // Should get a different register
 
         // Now force allocation for v3 - this should spill v1 first
-        let forbidden_for_v3 = vec![r2, Register::R8, Register::R9];
+        let forbidden_for_v3 = vec![r2, X86Register::R8, X86Register::R9];
         let _r3 = alloc.ensure_reg(VReg(3), &forbidden_for_v3).unwrap();
 
         let ops = alloc.take_pending_ops();
@@ -1022,10 +1100,10 @@ mod tests {
         let mut found_v3_load = false;
         for op in &ops {
             match op {
-                MachineInstr::MovMR { offset, .. } if *offset == -8 => {
+                X8664Instr::MovMR { offset, .. } if *offset == -8 => {
                     found_v1_spill = true;
                 }
-                MachineInstr::MovRM { offset, .. } if *offset == -24 => {
+                X8664Instr::MovRM { offset, .. } if *offset == -24 => {
                     found_v3_load = true;
                 }
                 _ => {}
@@ -1048,14 +1126,14 @@ mod tests {
         let r1 = alloc.ensure_reg(VReg(1), &[]).unwrap();
         alloc.schedule_store(VReg(1), r1);
 
-        let r2 = alloc.ensure_reg(VReg(2), &[Register::R10]).unwrap();
+        let r2 = alloc.ensure_reg(VReg(2), &[X86Register::R10]).unwrap();
         alloc.schedule_store(VReg(2), r2);
 
         // Clear pending ops
         alloc.take_pending_ops();
 
         // Simulate an instruction that clobbers R10 and R11
-        let clobbers = vec![Register::R10, Register::R11];
+        let clobbers = vec![X86Register::R10, X86Register::R11];
         alloc.handle_clobbers(&clobbers);
 
         // Check that dirty values in clobbered registers were spilled
@@ -1064,7 +1142,7 @@ mod tests {
         // Should have at least one spill (for VReg(1) in R10)
         let mut found_spill = false;
         for op in &ops {
-            if let MachineInstr::MovMR { .. } = op {
+            if let X8664Instr::MovMR { .. } = op {
                 found_spill = true;
                 break;
             }
@@ -1075,9 +1153,13 @@ mod tests {
         );
 
         // After handling clobbers, the registers should be clean
-        assert!(!alloc.is_register_allocated(Register::R10));
-        if alloc.scratch_states.iter().any(|s| s.reg == Register::R11) {
-            assert!(!alloc.is_register_allocated(Register::R11));
+        assert!(!alloc.is_register_allocated(X86Register::R10));
+        if alloc
+            .scratch_states
+            .iter()
+            .any(|s| s.reg == X86Register::R11)
+        {
+            assert!(!alloc.is_register_allocated(X86Register::R11));
         }
     }
 
@@ -1090,13 +1172,18 @@ mod tests {
         assert!(scratch.is_some());
 
         // Test with some reserved registers
-        let reserved = vec![Register::R10, Register::R11];
+        let reserved = vec![X86Register::R10, X86Register::R11];
         let scratch = alloc.get_unreserved_scratch(&reserved);
         assert!(scratch.is_some());
         assert!(!reserved.contains(&scratch.unwrap()));
 
         // Test with all scratch registers reserved
-        let all_reserved = vec![Register::R10, Register::R11, Register::R8, Register::R9];
+        let all_reserved = vec![
+            X86Register::R10,
+            X86Register::R11,
+            X86Register::R8,
+            X86Register::R9,
+        ];
         let scratch = alloc.get_unreserved_scratch(&all_reserved);
         assert!(scratch.is_none());
     }

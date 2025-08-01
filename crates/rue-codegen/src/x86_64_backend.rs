@@ -1,6 +1,10 @@
-use crate::regalloc::RegisterAllocator;
-use crate::{BinOp, Instruction, Label, VReg, Value};
-use rue_ir::target::{ConditionCode, LabelRef, MachineInstr, Register};
+//! x86-64 backend for code generation
+//!
+//! This module converts platform-independent representation (PIR) with virtual registers
+//! into x86-64 specific machine instructions with concrete registers.
+
+use rue_ir::pir::{BinOp, Label, PIR, PhysicalRegId, VReg, Value};
+use rue_target::{ConditionCode, LabelRef, X86Register, X8664Instr};
 use std::collections::HashMap;
 use tracing::{debug, trace};
 
@@ -48,12 +52,92 @@ impl From<String> for LoweringError {
 /// Exit code for division by zero
 const EXIT_DIV_ZERO: i64 = 250;
 
-/// The Lowering pass converts high-level IR instructions with virtual registers
-/// into x86-specific machine instructions with concrete registers.
+/// Convert abstract PhysicalRegId to concrete X86Register
+/// This mapping defines the x86-64 calling convention for register assignment
+fn physical_reg_id_to_x86(reg_id: PhysicalRegId) -> X86Register {
+    match reg_id.0 {
+        0 => X86Register::Rdi,  // First parameter register
+        1 => X86Register::Rsi,  // Second parameter register
+        2 => X86Register::Rdx,  // Third parameter register
+        3 => X86Register::Rcx,  // Fourth parameter register
+        4 => X86Register::R8,   // Fifth parameter register
+        5 => X86Register::R9,   // Sixth parameter register
+        6 => X86Register::Rax,  // Return value register
+        7 => X86Register::Rbx,  // Callee-saved register
+        8 => X86Register::Rbp,  // Base pointer
+        9 => X86Register::Rsp,  // Stack pointer
+        10 => X86Register::R10, // Scratch register
+        11 => X86Register::R11, // Scratch register
+        12 => X86Register::R12, // Callee-saved register
+        13 => X86Register::R13, // Callee-saved register
+        14 => X86Register::R14, // Callee-saved register
+        15 => X86Register::R15, // Callee-saved register
+        _ => panic!("Invalid PhysicalRegId: {}", reg_id.0),
+    }
+}
+
+/// Interface for register allocators used by the lowering pass
+pub trait RegisterAllocator {
+    /// Ensure a virtual register is in a physical register, avoiding conflicts
+    fn ensure_reg(&mut self, vreg: VReg, forbidden: &[X86Register]) -> Result<X86Register, String>;
+
+    /// Assign a physical register for defining a new value
+    fn assign_reg_for_def(
+        &mut self,
+        vreg: VReg,
+        forbidden: &[X86Register],
+    ) -> Result<X86Register, String>;
+
+    /// Assign a physical register for 8-bit operations (SetCC)
+    fn assign_reg_for_8bit_def(
+        &mut self,
+        vreg: VReg,
+        forbidden: &[X86Register],
+    ) -> Result<X86Register, String>;
+
+    /// Get the current physical register for a virtual register, if any
+    fn get_register(&self, vreg: VReg) -> Option<X86Register>;
+
+    /// Check if a physical register is currently allocated
+    fn is_register_allocated(&self, reg: X86Register) -> bool;
+
+    /// Check if a physical register is being used as scratch
+    fn is_scratch_register(&self, reg: X86Register) -> bool;
+
+    /// Get an unreserved scratch register
+    fn get_unreserved_scratch(&mut self, forbidden: &[X86Register]) -> Option<X86Register>;
+
+    /// Invalidate (force spill) a physical register
+    fn invalidate_register(&mut self, reg: X86Register);
+
+    /// Schedule a store operation for a virtual register
+    fn schedule_store(&mut self, vreg: VReg, reg: X86Register);
+
+    /// Take pending spill/reload operations
+    fn take_pending_ops(&mut self) -> Vec<X8664Instr>;
+
+    /// Flush all dirty registers to memory
+    fn flush_stores(&mut self);
+
+    /// Clear all register mappings
+    fn clear_all_registers(&mut self);
+
+    /// Find which VReg corresponds to a stack slot
+    fn find_vreg_for_slot(&self, offset: i64) -> Option<VReg>;
+
+    /// Mark a VReg as initialized
+    fn mark_vreg_initialized(&mut self, vreg: VReg);
+
+    /// Get the total stack size needed
+    fn get_stack_size(&self) -> u64;
+}
+
+/// The x86-64 code generator converts PIR instructions with virtual registers
+/// into x86-64 specific machine instructions with concrete registers.
 /// It delegates all spilling decisions to the RegisterAllocator.
-pub struct Lowering<'a> {
-    allocator: &'a mut RegisterAllocator,
-    instructions: Vec<MachineInstr>,
+pub struct X8664Codegen<'a> {
+    allocator: &'a mut dyn RegisterAllocator,
+    instructions: Vec<X8664Instr>,
     label_map: HashMap<Label, u32>,
     next_label_id: u32,
     /// External label map to use (if provided)
@@ -64,8 +148,8 @@ pub struct Lowering<'a> {
     block_param_offsets: std::collections::HashSet<i64>,
 }
 
-impl<'a> Lowering<'a> {
-    pub fn new(allocator: &'a mut RegisterAllocator, first_label_id: u32) -> Self {
+impl<'a> X8664Codegen<'a> {
+    pub fn new(allocator: &'a mut dyn RegisterAllocator, first_label_id: u32) -> Self {
         Self {
             allocator,
             instructions: Vec::new(),
@@ -74,7 +158,6 @@ impl<'a> Lowering<'a> {
             external_label_map: None,
             push_count: 0,
             block_param_offsets: std::collections::HashSet::new(),
-            // Block parameters handled via Load/Store with "always spill" approach
         }
     }
 
@@ -88,8 +171,6 @@ impl<'a> Lowering<'a> {
         self.external_label_map = Some(label_map);
     }
 
-    // Removed: mark_as_block_param and mark_as_return_param - no longer needed
-
     /// Get the next label ID that would be assigned
     pub fn next_label_id(&self) -> u32 {
         self.next_label_id
@@ -102,15 +183,12 @@ impl<'a> Lowering<'a> {
         id
     }
 
-    /// Lower a sequence of high-level instructions to machine instructions
-    pub fn lower(
-        &mut self,
-        ir_instructions: &[Instruction],
-    ) -> Result<Vec<MachineInstr>, LoweringError> {
+    /// Lower a sequence of PIR instructions to machine instructions
+    pub fn lower(&mut self, pir_instructions: &[PIR]) -> Result<Vec<X8664Instr>, LoweringError> {
         let start_len = self.instructions.len();
 
-        // Process instructions - BlockParamAssign is no longer used with "always spill" approach
-        for instr in ir_instructions {
+        // Process instructions
+        for instr in pir_instructions {
             self.lower_instruction(instr)?;
         }
 
@@ -119,23 +197,23 @@ impl<'a> Lowering<'a> {
 
     /// Patch stack allocation instructions with actual stack space needed
     pub fn patch_stack_allocation(
-        instructions: &mut [MachineInstr],
-        allocator: &RegisterAllocator,
+        instructions: &mut [X8664Instr],
+        allocator: &dyn RegisterAllocator,
     ) {
         let stack_size = allocator.get_stack_size();
 
         // Find and patch AllocStack instructions
         for instr in instructions.iter_mut() {
-            if let MachineInstr::AllocStack { size } = instr {
-                *size = stack_size;
+            if let X8664Instr::AllocStack { size } = instr {
+                *size = stack_size as u32;
             }
         }
     }
 
-    fn lower_instruction(&mut self, instr: &Instruction) -> Result<(), LoweringError> {
+    fn lower_instruction(&mut self, instr: &PIR) -> Result<(), LoweringError> {
         match instr {
-            Instruction::Copy { dest, src } => self.lower_copy(*dest, src),
-            Instruction::BlockParamAssign { .. } => {
+            PIR::Copy { dest, src } => self.lower_copy(*dest, src),
+            PIR::BlockParamAssign { .. } => {
                 // With "always spill" approach, block parameters are handled via Load/Store
                 // This instruction should not be generated anymore
                 Err(LoweringError::RegisterAllocation(
@@ -143,21 +221,19 @@ impl<'a> Lowering<'a> {
                         .to_string(),
                 ))
             }
-            Instruction::BinaryOp { dest, lhs, rhs, op } => {
-                self.lower_binary_op(*dest, lhs, rhs, op)
-            }
-            Instruction::TypedBinaryOp {
+            PIR::BinaryOp { dest, lhs, rhs, op } => self.lower_binary_op(*dest, lhs, rhs, op),
+            PIR::TypedBinaryOp {
                 dest,
                 lhs,
                 rhs,
                 op,
                 ty,
             } => self.lower_typed_binary_op(*dest, lhs, rhs, op, ty),
-            Instruction::Load { dest, offset } => self.lower_load(*dest, *offset),
-            Instruction::Store { src, offset } => self.lower_store(*src, *offset),
-            Instruction::Push { src } => self.lower_push(src),
-            Instruction::Pop { dest } => self.lower_pop(*dest),
-            Instruction::Label(_) => {
+            PIR::Load { dest, offset } => self.lower_load(*dest, *offset),
+            PIR::Store { src, offset } => self.lower_store(*src, *offset),
+            PIR::Push { src } => self.lower_push(src),
+            PIR::Pop { dest } => self.lower_pop(*dest),
+            PIR::Label(_) => {
                 // We are about to start a fresh basic block, so flush
                 // all pending stores from the previous one.
                 self.allocator.flush_stores();
@@ -167,33 +243,29 @@ impl<'a> Lowering<'a> {
                 // to ensure consistent numbering across functions
                 Ok(())
             }
-            Instruction::Jump(target) => self.lower_jump(*target),
-            Instruction::Branch {
+            PIR::Jump(target) => self.lower_jump(*target),
+            PIR::Branch {
                 condition,
                 true_label,
                 false_label,
             } => self.lower_branch(*condition, *true_label, *false_label),
-            Instruction::Call {
+            PIR::Call {
                 dest,
                 function,
                 args,
             } => self.lower_call(dest.as_ref(), function, args),
-            Instruction::Return { value } => self.lower_return(value.as_ref()),
-            Instruction::Syscall {
+            PIR::Return { value } => self.lower_return(value.as_ref()),
+            PIR::Syscall {
                 result,
                 syscall_num,
                 args,
             } => self.lower_syscall(*result, *syscall_num, args),
-            Instruction::SaveRegisters { registers } => self.lower_save_registers(registers),
-            Instruction::RestoreRegisters { registers } => self.lower_restore_registers(registers),
-            Instruction::EnterFrame => self.lower_enter_frame(),
-            Instruction::LeaveFrame => self.lower_leave_frame(),
+            PIR::SaveRegisters { registers } => self.lower_save_registers(registers),
+            PIR::RestoreRegisters { registers } => self.lower_restore_registers(registers),
+            PIR::EnterFrame => self.lower_enter_frame(),
+            PIR::LeaveFrame => self.lower_leave_frame(),
         }
     }
-
-    // Removed: lower_block_param_assign - no longer needed with "always spill" approach
-
-    // Removed: lower_parallel_block_assigns - no longer needed with "always spill" approach
 
     fn lower_copy(&mut self, dest: VReg, src: &Value) -> Result<(), LoweringError> {
         match src {
@@ -201,12 +273,12 @@ impl<'a> Lowering<'a> {
                 let dest_reg = self.allocator.ensure_reg(dest, &[])?;
                 self.emit_spill_reload_ops();
                 if *imm >= i32::MIN as i64 && *imm <= i32::MAX as i64 {
-                    self.emit(MachineInstr::MovRI32 {
+                    self.emit(X8664Instr::MovRI32 {
                         dest: dest_reg,
                         imm: *imm as i32,
                     });
                 } else {
-                    self.emit(MachineInstr::MovRI64 {
+                    self.emit(X8664Instr::MovRI64 {
                         dest: dest_reg,
                         imm: *imm,
                     });
@@ -233,7 +305,7 @@ impl<'a> Lowering<'a> {
 
                     self.emit_spill_reload_ops();
                     if src_reg != dest_reg {
-                        self.emit(MachineInstr::MovRR {
+                        self.emit(X8664Instr::MovRR {
                             dest: dest_reg,
                             src: src_reg,
                         });
@@ -248,26 +320,27 @@ impl<'a> Lowering<'a> {
 
                 // For unsigned immediates, we need to check the range
                 if *imm <= i32::MAX as u64 {
-                    self.emit(MachineInstr::MovRI32 {
+                    self.emit(X8664Instr::MovRI32 {
                         dest: dest_reg,
                         imm: *imm as i32,
                     });
                 } else {
-                    self.emit(MachineInstr::MovRI64 {
+                    self.emit(X8664Instr::MovRI64 {
                         dest: dest_reg,
                         imm: *imm as i64,
                     });
                 }
                 self.allocator.schedule_store(dest, dest_reg);
             }
-            Value::PhysicalReg(reg) => {
+            Value::PhysicalReg(reg_id) => {
+                let reg = physical_reg_id_to_x86(*reg_id);
                 // Use assign_reg_for_def since we're defining a new value (not reading old one)
-                let dest_reg = self.allocator.assign_reg_for_def(dest, &[*reg])?;
+                let dest_reg = self.allocator.assign_reg_for_def(dest, &[reg])?;
                 self.emit_spill_reload_ops();
-                if *reg != dest_reg {
-                    self.emit(MachineInstr::MovRR {
+                if reg != dest_reg {
+                    self.emit(X8664Instr::MovRR {
                         dest: dest_reg,
-                        src: *reg,
+                        src: reg,
                     });
                 }
                 // Note: assign_reg_for_def already marks the register as dirty
@@ -293,7 +366,7 @@ impl<'a> Lowering<'a> {
                         // Emit any pending spill/reload operations before moving
                         self.emit_spill_reload_ops();
                         if lhs_reg != dest_reg {
-                            self.emit(MachineInstr::MovRR {
+                            self.emit(X8664Instr::MovRR {
                                 dest: dest_reg,
                                 src: lhs_reg,
                             });
@@ -306,12 +379,12 @@ impl<'a> Lowering<'a> {
                         // Emit any pending spill/reload operations before moving
                         self.emit_spill_reload_ops();
                         if *imm >= i32::MIN as i64 && *imm <= i32::MAX as i64 {
-                            self.emit(MachineInstr::MovRI32 {
+                            self.emit(X8664Instr::MovRI32 {
                                 dest: dest_reg,
                                 imm: *imm as i32,
                             });
                         } else {
-                            self.emit(MachineInstr::MovRI64 {
+                            self.emit(X8664Instr::MovRI64 {
                                 dest: dest_reg,
                                 imm: *imm,
                             });
@@ -325,12 +398,12 @@ impl<'a> Lowering<'a> {
                         self.emit_spill_reload_ops();
 
                         if *imm <= i32::MAX as u64 {
-                            self.emit(MachineInstr::MovRI32 {
+                            self.emit(X8664Instr::MovRI32 {
                                 dest: dest_reg,
                                 imm: *imm as i32,
                             });
                         } else {
-                            self.emit(MachineInstr::MovRI64 {
+                            self.emit(X8664Instr::MovRI64 {
                                 dest: dest_reg,
                                 imm: *imm as i64,
                             });
@@ -353,7 +426,7 @@ impl<'a> Lowering<'a> {
                         self.emit_spill_reload_ops();
 
                         // Emit the addition
-                        self.emit(MachineInstr::AddRR {
+                        self.emit(X8664Instr::AddRR {
                             dest: dest_reg,
                             src: rhs_reg,
                         });
@@ -361,18 +434,18 @@ impl<'a> Lowering<'a> {
                     }
                     (BinOp::Add, Value::SignedImm(imm)) => {
                         if *imm >= i32::MIN as i64 && *imm <= i32::MAX as i64 {
-                            self.emit(MachineInstr::AddRI {
+                            self.emit(X8664Instr::AddRI {
                                 dest: dest_reg,
                                 imm: *imm as i32,
                             });
                         } else {
                             // Load large immediate to scratch register
                             let scratch = self.get_scratch_register(&[dest_reg])?;
-                            self.emit(MachineInstr::MovRI64 {
+                            self.emit(X8664Instr::MovRI64 {
                                 dest: scratch,
                                 imm: *imm,
                             });
-                            self.emit(MachineInstr::AddRR {
+                            self.emit(X8664Instr::AddRR {
                                 dest: dest_reg,
                                 src: scratch,
                             });
@@ -382,7 +455,7 @@ impl<'a> Lowering<'a> {
                     (BinOp::Sub, Value::VReg(rhs_vreg)) => {
                         let rhs_reg = self.allocator.ensure_reg(*rhs_vreg, &[dest_reg])?;
                         self.emit_spill_reload_ops();
-                        self.emit(MachineInstr::SubRR {
+                        self.emit(X8664Instr::SubRR {
                             dest: dest_reg,
                             src: rhs_reg,
                         });
@@ -390,17 +463,17 @@ impl<'a> Lowering<'a> {
                     }
                     (BinOp::Sub, Value::SignedImm(imm)) => {
                         if *imm >= i32::MIN as i64 && *imm <= i32::MAX as i64 {
-                            self.emit(MachineInstr::SubRI {
+                            self.emit(X8664Instr::SubRI {
                                 dest: dest_reg,
                                 imm: *imm as i32,
                             });
                         } else {
                             let scratch = self.get_scratch_register(&[dest_reg])?;
-                            self.emit(MachineInstr::MovRI64 {
+                            self.emit(X8664Instr::MovRI64 {
                                 dest: scratch,
                                 imm: *imm,
                             });
-                            self.emit(MachineInstr::SubRR {
+                            self.emit(X8664Instr::SubRR {
                                 dest: dest_reg,
                                 src: scratch,
                             });
@@ -410,7 +483,7 @@ impl<'a> Lowering<'a> {
                     (BinOp::Mul, Value::VReg(rhs_vreg)) => {
                         let rhs_reg = self.allocator.ensure_reg(*rhs_vreg, &[dest_reg])?;
                         self.emit_spill_reload_ops();
-                        self.emit(MachineInstr::ImulRR {
+                        self.emit(X8664Instr::ImulRR {
                             dest: dest_reg,
                             src: rhs_reg,
                         });
@@ -418,17 +491,17 @@ impl<'a> Lowering<'a> {
                     }
                     (BinOp::Mul, Value::SignedImm(imm)) => {
                         if *imm >= i32::MIN as i64 && *imm <= i32::MAX as i64 {
-                            self.emit(MachineInstr::ImulRI {
+                            self.emit(X8664Instr::ImulRI {
                                 dest: dest_reg,
                                 imm: *imm as i32,
                             });
                         } else {
                             let scratch = self.get_scratch_register(&[dest_reg])?;
-                            self.emit(MachineInstr::MovRI64 {
+                            self.emit(X8664Instr::MovRI64 {
                                 dest: scratch,
                                 imm: *imm,
                             });
-                            self.emit(MachineInstr::ImulRR {
+                            self.emit(X8664Instr::ImulRR {
                                 dest: dest_reg,
                                 src: scratch,
                             });
@@ -437,18 +510,18 @@ impl<'a> Lowering<'a> {
                     }
                     (BinOp::Add, Value::UnsignedImm(imm)) => {
                         if *imm <= i32::MAX as u64 {
-                            self.emit(MachineInstr::AddRI {
+                            self.emit(X8664Instr::AddRI {
                                 dest: dest_reg,
                                 imm: *imm as i32,
                             });
                         } else {
                             // Load large immediate to scratch register
                             let scratch = self.get_scratch_register(&[dest_reg])?;
-                            self.emit(MachineInstr::MovRI64 {
+                            self.emit(X8664Instr::MovRI64 {
                                 dest: scratch,
                                 imm: *imm as i64,
                             });
-                            self.emit(MachineInstr::AddRR {
+                            self.emit(X8664Instr::AddRR {
                                 dest: dest_reg,
                                 src: scratch,
                             });
@@ -457,17 +530,17 @@ impl<'a> Lowering<'a> {
                     }
                     (BinOp::Sub, Value::UnsignedImm(imm)) => {
                         if *imm <= i32::MAX as u64 {
-                            self.emit(MachineInstr::SubRI {
+                            self.emit(X8664Instr::SubRI {
                                 dest: dest_reg,
                                 imm: *imm as i32,
                             });
                         } else {
                             let scratch = self.get_scratch_register(&[dest_reg])?;
-                            self.emit(MachineInstr::MovRI64 {
+                            self.emit(X8664Instr::MovRI64 {
                                 dest: scratch,
                                 imm: *imm as i64,
                             });
-                            self.emit(MachineInstr::SubRR {
+                            self.emit(X8664Instr::SubRR {
                                 dest: dest_reg,
                                 src: scratch,
                             });
@@ -476,17 +549,17 @@ impl<'a> Lowering<'a> {
                     }
                     (BinOp::Mul, Value::UnsignedImm(imm)) => {
                         if *imm <= i32::MAX as u64 {
-                            self.emit(MachineInstr::ImulRI {
+                            self.emit(X8664Instr::ImulRI {
                                 dest: dest_reg,
                                 imm: *imm as i32,
                             });
                         } else {
                             let scratch = self.get_scratch_register(&[dest_reg])?;
-                            self.emit(MachineInstr::MovRI64 {
+                            self.emit(X8664Instr::MovRI64 {
                                 dest: scratch,
                                 imm: *imm as i64,
                             });
-                            self.emit(MachineInstr::ImulRR {
+                            self.emit(X8664Instr::ImulRR {
                                 dest: dest_reg,
                                 src: scratch,
                             });
@@ -553,7 +626,7 @@ impl<'a> Lowering<'a> {
 
             // Truncate to 32-bit and sign-extend back to 64-bit
             // This ensures i32 overflow wraps correctly (movsxd automatically truncates and sign-extends)
-            self.emit(MachineInstr::Movsxd {
+            self.emit(X8664Instr::Movsxd {
                 dest: dest_reg,
                 src: dest_reg,
             });
@@ -564,8 +637,8 @@ impl<'a> Lowering<'a> {
 
     fn lower_modulo(&mut self, dest: VReg, lhs: &Value, rhs: &Value) -> Result<(), LoweringError> {
         // Modulo is like division but we want the remainder from RDX
-        let rax = Register::Rax;
-        let rdx = Register::Rdx;
+        let rax = X86Register::Rax;
+        let rdx = X86Register::Rdx;
 
         // Move lhs to RAX
         match lhs {
@@ -573,7 +646,7 @@ impl<'a> Lowering<'a> {
                 let lhs_reg = self.allocator.ensure_reg(*vreg, &[])?;
                 self.emit_spill_reload_ops();
                 if lhs_reg != rax {
-                    self.emit(MachineInstr::MovRR {
+                    self.emit(X8664Instr::MovRR {
                         dest: rax,
                         src: lhs_reg,
                     });
@@ -581,12 +654,12 @@ impl<'a> Lowering<'a> {
             }
             Value::SignedImm(imm) => {
                 if *imm >= i32::MIN as i64 && *imm <= i32::MAX as i64 {
-                    self.emit(MachineInstr::MovRI32 {
+                    self.emit(X8664Instr::MovRI32 {
                         dest: rax,
                         imm: *imm as i32,
                     });
                 } else {
-                    self.emit(MachineInstr::MovRI64 {
+                    self.emit(X8664Instr::MovRI64 {
                         dest: rax,
                         imm: *imm,
                     });
@@ -594,12 +667,12 @@ impl<'a> Lowering<'a> {
             }
             Value::UnsignedImm(imm) => {
                 if *imm <= i32::MAX as u64 {
-                    self.emit(MachineInstr::MovRI32 {
+                    self.emit(X8664Instr::MovRI32 {
                         dest: rax,
                         imm: *imm as i32,
                     });
                 } else {
-                    self.emit(MachineInstr::MovRI64 {
+                    self.emit(X8664Instr::MovRI64 {
                         dest: rax,
                         imm: *imm as i64,
                     });
@@ -609,7 +682,7 @@ impl<'a> Lowering<'a> {
         }
 
         // Sign extend RAX to RDX:RAX
-        self.emit(MachineInstr::Cqo);
+        self.emit(X8664Instr::Cqo);
 
         // Get divisor in a register
         let divisor_reg = match rhs {
@@ -621,12 +694,12 @@ impl<'a> Lowering<'a> {
             Value::SignedImm(imm) => {
                 let scratch = self.get_scratch_register(&[rax, rdx])?;
                 if *imm >= i32::MIN as i64 && *imm <= i32::MAX as i64 {
-                    self.emit(MachineInstr::MovRI32 {
+                    self.emit(X8664Instr::MovRI32 {
                         dest: scratch,
                         imm: *imm as i32,
                     });
                 } else {
-                    self.emit(MachineInstr::MovRI64 {
+                    self.emit(X8664Instr::MovRI64 {
                         dest: scratch,
                         imm: *imm,
                     });
@@ -636,12 +709,12 @@ impl<'a> Lowering<'a> {
             Value::UnsignedImm(imm) => {
                 let scratch = self.get_scratch_register(&[rax, rdx])?;
                 if *imm <= i32::MAX as u64 {
-                    self.emit(MachineInstr::MovRI32 {
+                    self.emit(X8664Instr::MovRI32 {
                         dest: scratch,
                         imm: *imm as i32,
                     });
                 } else {
-                    self.emit(MachineInstr::MovRI64 {
+                    self.emit(X8664Instr::MovRI64 {
                         dest: scratch,
                         imm: *imm as i64,
                     });
@@ -654,36 +727,36 @@ impl<'a> Lowering<'a> {
         };
 
         // Check for division by zero (modulo by zero)
-        self.emit(MachineInstr::CmpRI {
+        self.emit(X8664Instr::CmpRI {
             reg: divisor_reg,
             imm: 0,
         });
 
         // Jump if not zero
         let mod_ok_label = self.new_label();
-        self.emit(MachineInstr::JmpCC {
+        self.emit(X8664Instr::JmpCC {
             cc: ConditionCode::NotEqual,
             target: LabelRef::Local(mod_ok_label),
         });
 
         // Modulo by zero - exit with code EXIT_DIV_ZERO
-        self.emit(MachineInstr::MovRI64 {
-            dest: Register::Rdi,
+        self.emit(X8664Instr::MovRI64 {
+            dest: X86Register::Rdi,
             imm: EXIT_DIV_ZERO,
         });
-        self.emit(MachineInstr::MovRI64 {
-            dest: Register::Rax,
+        self.emit(X8664Instr::MovRI64 {
+            dest: X86Register::Rax,
             imm: 60, // sys_exit
         });
-        self.emit(MachineInstr::Syscall);
+        self.emit(X8664Instr::Syscall);
         // Mark unreachable - sys_exit never returns
-        self.emit(MachineInstr::Ud2);
+        self.emit(X8664Instr::Ud2);
 
         // Continue with division
-        self.emit(MachineInstr::Label { id: mod_ok_label });
+        self.emit(X8664Instr::Label { id: mod_ok_label });
 
         // Perform division
-        self.emit(MachineInstr::Idiv {
+        self.emit(X8664Instr::Idiv {
             divisor: divisor_reg,
         });
 
@@ -695,7 +768,7 @@ impl<'a> Lowering<'a> {
         let dest_reg = self.allocator.ensure_reg(dest, &[])?;
         self.emit_spill_reload_ops();
         if dest_reg != rdx {
-            self.emit(MachineInstr::MovRR {
+            self.emit(X8664Instr::MovRR {
                 dest: dest_reg,
                 src: rdx,
             });
@@ -713,8 +786,8 @@ impl<'a> Lowering<'a> {
         rhs: &Value,
     ) -> Result<(), LoweringError> {
         // Division requires dividend in RAX
-        let rax = Register::Rax;
-        let rdx = Register::Rdx;
+        let rax = X86Register::Rax;
+        let rdx = X86Register::Rdx;
 
         // Move lhs to RAX
         match lhs {
@@ -722,7 +795,7 @@ impl<'a> Lowering<'a> {
                 let lhs_reg = self.allocator.ensure_reg(*vreg, &[])?;
                 self.emit_spill_reload_ops();
                 if lhs_reg != rax {
-                    self.emit(MachineInstr::MovRR {
+                    self.emit(X8664Instr::MovRR {
                         dest: rax,
                         src: lhs_reg,
                     });
@@ -730,12 +803,12 @@ impl<'a> Lowering<'a> {
             }
             Value::SignedImm(imm) => {
                 if *imm >= i32::MIN as i64 && *imm <= i32::MAX as i64 {
-                    self.emit(MachineInstr::MovRI32 {
+                    self.emit(X8664Instr::MovRI32 {
                         dest: rax,
                         imm: *imm as i32,
                     });
                 } else {
-                    self.emit(MachineInstr::MovRI64 {
+                    self.emit(X8664Instr::MovRI64 {
                         dest: rax,
                         imm: *imm,
                     });
@@ -743,12 +816,12 @@ impl<'a> Lowering<'a> {
             }
             Value::UnsignedImm(imm) => {
                 if *imm <= i32::MAX as u64 {
-                    self.emit(MachineInstr::MovRI32 {
+                    self.emit(X8664Instr::MovRI32 {
                         dest: rax,
                         imm: *imm as i32,
                     });
                 } else {
-                    self.emit(MachineInstr::MovRI64 {
+                    self.emit(X8664Instr::MovRI64 {
                         dest: rax,
                         imm: *imm as i64,
                     });
@@ -760,7 +833,7 @@ impl<'a> Lowering<'a> {
         }
 
         // Sign extend RAX to RDX:RAX
-        self.emit(MachineInstr::Cqo);
+        self.emit(X8664Instr::Cqo);
 
         // Get divisor in a register
         let divisor_reg = match rhs {
@@ -772,12 +845,12 @@ impl<'a> Lowering<'a> {
             Value::SignedImm(imm) => {
                 let scratch = self.get_scratch_register(&[rax, rdx])?;
                 if *imm >= i32::MIN as i64 && *imm <= i32::MAX as i64 {
-                    self.emit(MachineInstr::MovRI32 {
+                    self.emit(X8664Instr::MovRI32 {
                         dest: scratch,
                         imm: *imm as i32,
                     });
                 } else {
-                    self.emit(MachineInstr::MovRI64 {
+                    self.emit(X8664Instr::MovRI64 {
                         dest: scratch,
                         imm: *imm,
                     });
@@ -787,12 +860,12 @@ impl<'a> Lowering<'a> {
             Value::UnsignedImm(imm) => {
                 let scratch = self.get_scratch_register(&[rax, rdx])?;
                 if *imm <= i32::MAX as u64 {
-                    self.emit(MachineInstr::MovRI32 {
+                    self.emit(X8664Instr::MovRI32 {
                         dest: scratch,
                         imm: *imm as i32,
                     });
                 } else {
-                    self.emit(MachineInstr::MovRI64 {
+                    self.emit(X8664Instr::MovRI64 {
                         dest: scratch,
                         imm: *imm as i64,
                     });
@@ -805,36 +878,36 @@ impl<'a> Lowering<'a> {
         };
 
         // Check for division by zero
-        self.emit(MachineInstr::CmpRI {
+        self.emit(X8664Instr::CmpRI {
             reg: divisor_reg,
             imm: 0,
         });
 
         // Jump if not zero
         let div_ok_label = self.new_label();
-        self.emit(MachineInstr::JmpCC {
+        self.emit(X8664Instr::JmpCC {
             cc: ConditionCode::NotEqual,
             target: LabelRef::Local(div_ok_label),
         });
 
         // Division by zero - exit with code EXIT_DIV_ZERO
-        self.emit(MachineInstr::MovRI64 {
-            dest: Register::Rdi,
+        self.emit(X8664Instr::MovRI64 {
+            dest: X86Register::Rdi,
             imm: EXIT_DIV_ZERO,
         });
-        self.emit(MachineInstr::MovRI64 {
-            dest: Register::Rax,
+        self.emit(X8664Instr::MovRI64 {
+            dest: X86Register::Rax,
             imm: 60, // sys_exit
         });
-        self.emit(MachineInstr::Syscall);
+        self.emit(X8664Instr::Syscall);
         // Mark unreachable - sys_exit never returns
-        self.emit(MachineInstr::Ud2);
+        self.emit(X8664Instr::Ud2);
 
         // Continue with division
-        self.emit(MachineInstr::Label { id: div_ok_label });
+        self.emit(X8664Instr::Label { id: div_ok_label });
 
         // Perform division
-        self.emit(MachineInstr::Idiv {
+        self.emit(X8664Instr::Idiv {
             divisor: divisor_reg,
         });
 
@@ -846,7 +919,7 @@ impl<'a> Lowering<'a> {
         let dest_reg = self.allocator.ensure_reg(dest, &[])?;
         self.emit_spill_reload_ops();
         if dest_reg != rax {
-            self.emit(MachineInstr::MovRR {
+            self.emit(X8664Instr::MovRR {
                 dest: dest_reg,
                 src: rax,
             });
@@ -874,12 +947,12 @@ impl<'a> Lowering<'a> {
             Value::SignedImm(imm) => {
                 let scratch = self.get_scratch_register(&[])?;
                 if *imm >= i32::MIN as i64 && *imm <= i32::MAX as i64 {
-                    self.emit(MachineInstr::MovRI32 {
+                    self.emit(X8664Instr::MovRI32 {
                         dest: scratch,
                         imm: *imm as i32,
                     });
                 } else {
-                    self.emit(MachineInstr::MovRI64 {
+                    self.emit(X8664Instr::MovRI64 {
                         dest: scratch,
                         imm: *imm,
                     });
@@ -889,12 +962,12 @@ impl<'a> Lowering<'a> {
             Value::UnsignedImm(imm) => {
                 let scratch = self.get_scratch_register(&[])?;
                 if *imm <= i32::MAX as u64 {
-                    self.emit(MachineInstr::MovRI32 {
+                    self.emit(X8664Instr::MovRI32 {
                         dest: scratch,
                         imm: *imm as i32,
                     });
                 } else {
-                    self.emit(MachineInstr::MovRI64 {
+                    self.emit(X8664Instr::MovRI64 {
                         dest: scratch,
                         imm: *imm as i64,
                     });
@@ -911,24 +984,24 @@ impl<'a> Lowering<'a> {
             Value::VReg(rhs_vreg) => {
                 let rhs_reg = self.allocator.ensure_reg(*rhs_vreg, &[lhs_reg])?;
                 self.emit_spill_reload_ops();
-                self.emit(MachineInstr::CmpRR {
+                self.emit(X8664Instr::CmpRR {
                     left: lhs_reg,
                     right: rhs_reg,
                 });
             }
             Value::SignedImm(imm) => {
                 if *imm >= i32::MIN as i64 && *imm <= i32::MAX as i64 {
-                    self.emit(MachineInstr::CmpRI {
+                    self.emit(X8664Instr::CmpRI {
                         reg: lhs_reg,
                         imm: *imm as i32,
                     });
                 } else {
                     let scratch = self.get_scratch_register(&[lhs_reg])?;
-                    self.emit(MachineInstr::MovRI64 {
+                    self.emit(X8664Instr::MovRI64 {
                         dest: scratch,
                         imm: *imm,
                     });
-                    self.emit(MachineInstr::CmpRR {
+                    self.emit(X8664Instr::CmpRR {
                         left: lhs_reg,
                         right: scratch,
                     });
@@ -936,17 +1009,17 @@ impl<'a> Lowering<'a> {
             }
             Value::UnsignedImm(imm) => {
                 if *imm <= i32::MAX as u64 {
-                    self.emit(MachineInstr::CmpRI {
+                    self.emit(X8664Instr::CmpRI {
                         reg: lhs_reg,
                         imm: *imm as i32,
                     });
                 } else {
                     let scratch = self.get_scratch_register(&[lhs_reg])?;
-                    self.emit(MachineInstr::MovRI64 {
+                    self.emit(X8664Instr::MovRI64 {
                         dest: scratch,
                         imm: *imm as i64,
                     });
-                    self.emit(MachineInstr::CmpRR {
+                    self.emit(X8664Instr::CmpRR {
                         left: lhs_reg,
                         right: scratch,
                     });
@@ -972,8 +1045,8 @@ impl<'a> Lowering<'a> {
         // any other live value. Use 8-bit constraint for SetCC operations.
         let dest_reg = self.allocator.assign_reg_for_8bit_def(dest, &[lhs_reg])?;
         self.emit_spill_reload_ops();
-        self.emit(MachineInstr::SetCC { dest: dest_reg, cc });
-        self.emit(MachineInstr::Movzx {
+        self.emit(X8664Instr::SetCC { dest: dest_reg, cc });
+        self.emit(X8664Instr::Movzx {
             dest: dest_reg,
             src: dest_reg,
         });
@@ -987,14 +1060,14 @@ impl<'a> Lowering<'a> {
         // Use assign_reg_for_def since we're defining a new value in dest
         let dest_reg = self.allocator.assign_reg_for_def(dest, &[])?;
         debug_assert!(
-            dest_reg != Register::Rsp && dest_reg != Register::Rbp,
+            dest_reg != X86Register::Rsp && dest_reg != X86Register::Rbp,
             "Cannot use RSP/RBP as destination register"
         );
         self.emit_spill_reload_ops();
-        self.emit(MachineInstr::MovRM {
+        self.emit(X8664Instr::MovRM {
             // load from stack slot
             dest: dest_reg,
-            base: Register::Rbp, // <- use the frame-pointer
+            base: X86Register::Rbp, // <- use the frame-pointer
             offset: offset as i32,
         });
         // Mark the destination as dirty after loading from memory
@@ -1028,9 +1101,9 @@ impl<'a> Lowering<'a> {
             ?src_reg,
             "Store: vreg is in register"
         );
-        self.emit(MachineInstr::MovMR {
+        self.emit(X8664Instr::MovMR {
             // store to stack slot
-            base: Register::Rbp, // <- use the frame-pointer
+            base: X86Register::Rbp, // <- use the frame-pointer
             offset: offset as i32,
             src: src_reg,
         });
@@ -1042,11 +1115,12 @@ impl<'a> Lowering<'a> {
             Value::VReg(vreg) => {
                 let src_reg = self.allocator.ensure_reg(*vreg, &[])?;
                 self.emit_spill_reload_ops();
-                self.emit(MachineInstr::Push { reg: src_reg });
+                self.emit(X8664Instr::Push { reg: src_reg });
             }
-            Value::PhysicalReg(reg) => {
+            Value::PhysicalReg(reg_id) => {
+                let reg = physical_reg_id_to_x86(*reg_id);
                 // Physical register can be pushed directly
-                self.emit(MachineInstr::Push { reg: *reg });
+                self.emit(X8664Instr::Push { reg });
             }
             Value::SignedImm(_) | Value::UnsignedImm(_) => {
                 return Err(LoweringError::RegisterAllocation(
@@ -1065,11 +1139,11 @@ impl<'a> Lowering<'a> {
 
         let dest_reg = self.allocator.ensure_reg(dest, &[])?;
         debug_assert!(
-            dest_reg != Register::Rsp && dest_reg != Register::Rbp,
+            dest_reg != X86Register::Rsp && dest_reg != X86Register::Rbp,
             "Cannot use RSP/RBP as destination register"
         );
         self.emit_spill_reload_ops();
-        self.emit(MachineInstr::Pop { reg: dest_reg });
+        self.emit(X8664Instr::Pop { reg: dest_reg });
         self.push_count -= 1;
         // Mark the destination as dirty after popping into it
         self.allocator.schedule_store(dest, dest_reg);
@@ -1081,7 +1155,7 @@ impl<'a> Lowering<'a> {
         self.flush_for_cf();
 
         let machine_label_id = self.get_or_create_label(target);
-        self.emit(MachineInstr::Jmp {
+        self.emit(X8664Instr::Jmp {
             target: LabelRef::Local(machine_label_id),
         });
         Ok(())
@@ -1097,7 +1171,7 @@ impl<'a> Lowering<'a> {
         self.emit_spill_reload_ops();
 
         // Test condition
-        self.emit(MachineInstr::CmpRI {
+        self.emit(X8664Instr::CmpRI {
             reg: cond_reg,
             imm: 0,
         });
@@ -1108,14 +1182,14 @@ impl<'a> Lowering<'a> {
 
         // Jump to true label if not zero
         let true_id = self.get_or_create_label(true_label);
-        self.emit(MachineInstr::JmpCC {
+        self.emit(X8664Instr::JmpCC {
             cc: ConditionCode::NotEqual,
             target: LabelRef::Local(true_id),
         });
 
         // Fall through to false label
         let false_id = self.get_or_create_label(false_label);
-        self.emit(MachineInstr::Jmp {
+        self.emit(X8664Instr::Jmp {
             target: LabelRef::Local(false_id),
         });
 
@@ -1143,25 +1217,25 @@ impl<'a> Lowering<'a> {
 
         // System V ABI: arguments in RDI, RSI, RDX, RCX, R8, R9
         let arg_regs = [
-            Register::Rdi,
-            Register::Rsi,
-            Register::Rdx,
-            Register::Rcx,
-            Register::R8,
-            Register::R9,
+            X86Register::Rdi,
+            X86Register::Rsi,
+            X86Register::Rdx,
+            X86Register::Rcx,
+            X86Register::R8,
+            X86Register::R9,
         ];
 
         // Define caller-saved registers
         let caller_saved_regs = [
-            Register::Rax,
-            Register::Rcx,
-            Register::Rdx,
-            Register::Rsi,
-            Register::Rdi,
-            Register::R8,
-            Register::R9,
-            Register::R10,
-            Register::R11,
+            X86Register::Rax,
+            X86Register::Rcx,
+            X86Register::Rdx,
+            X86Register::Rsi,
+            X86Register::Rdi,
+            X86Register::R8,
+            X86Register::R9,
+            X86Register::R10,
+            X86Register::R11,
         ];
 
         // For user-defined functions, we use a simpler and more reliable approach:
@@ -1218,7 +1292,7 @@ impl<'a> Lowering<'a> {
         // Save caller-saved registers (only for runtime functions)
         if !is_user_function {
             for &reg in &regs_to_save {
-                self.emit(MachineInstr::Push { reg });
+                self.emit(X8664Instr::Push { reg });
                 self.push_count += 1;
             }
         }
@@ -1245,8 +1319,8 @@ impl<'a> Lowering<'a> {
             if needs_padding {
                 // sub rsp, 8 to maintain alignment
                 // Use SubRI directly to avoid AllocStack's 16-byte alignment
-                self.emit(MachineInstr::SubRI {
-                    dest: Register::Rsp,
+                self.emit(X8664Instr::SubRI {
+                    dest: X86Register::Rsp,
                     imm: 8,
                 });
             }
@@ -1289,7 +1363,7 @@ impl<'a> Lowering<'a> {
 
             if target_free {
                 if arg_locations[i] != arg_regs[i] {
-                    self.emit(MachineInstr::MovRR {
+                    self.emit(X8664Instr::MovRR {
                         dest: arg_regs[i],
                         src: arg_locations[i],
                     });
@@ -1305,7 +1379,7 @@ impl<'a> Lowering<'a> {
             }
 
             // Save current value to temp
-            self.emit(MachineInstr::MovRR {
+            self.emit(X8664Instr::MovRR {
                 dest: temp_reg,
                 src: arg_locations[i],
             });
@@ -1318,7 +1392,7 @@ impl<'a> Lowering<'a> {
 
             // Move the blocking value to its destination
             if arg_regs[blocking_idx] != arg_locations[blocking_idx] {
-                self.emit(MachineInstr::MovRR {
+                self.emit(X8664Instr::MovRR {
                     dest: arg_regs[blocking_idx],
                     src: arg_locations[blocking_idx],
                 });
@@ -1326,7 +1400,7 @@ impl<'a> Lowering<'a> {
             moved[blocking_idx] = true;
 
             // Now move our value from temp to its destination
-            self.emit(MachineInstr::MovRR {
+            self.emit(X8664Instr::MovRR {
                 dest: arg_regs[i],
                 src: temp_reg,
             });
@@ -1334,22 +1408,22 @@ impl<'a> Lowering<'a> {
         }
 
         // Call the function
-        self.emit(MachineInstr::Call {
+        self.emit(X8664Instr::Call {
             target: runtime_function.to_string(),
         });
 
         // Handle return value preservation (only for runtime functions)
         let rax_temp_reg =
-            if !is_user_function && dest.is_some() && regs_to_save.contains(&Register::Rax) {
+            if !is_user_function && dest.is_some() && regs_to_save.contains(&X86Register::Rax) {
                 // RAX will be overwritten when we restore, so save to temporary register first
                 // IMPORTANT: Include all regs_to_save and the argument registers in forbidden list
                 // to ensure the scratch register doesn't conflict with any register we're about to restore
                 let mut forbidden = regs_to_save.clone();
                 forbidden.extend(&arg_regs[..args.len()]);
                 let temp_reg = self.get_scratch_register(&forbidden)?;
-                self.emit(MachineInstr::MovRR {
+                self.emit(X8664Instr::MovRR {
                     dest: temp_reg,
-                    src: Register::Rax,
+                    src: X86Register::Rax,
                 });
                 Some(temp_reg)
             } else {
@@ -1358,8 +1432,8 @@ impl<'a> Lowering<'a> {
 
         // Restore alignment padding if we added it (only for runtime functions)
         if !is_user_function && needs_padding {
-            self.emit(MachineInstr::AddRI {
-                dest: Register::Rsp,
+            self.emit(X8664Instr::AddRI {
+                dest: X86Register::Rsp,
                 imm: 8,
             });
         }
@@ -1370,7 +1444,7 @@ impl<'a> Lowering<'a> {
                 if self.push_count <= 0 {
                     return Err(LoweringError::StackUnderflow);
                 }
-                self.emit(MachineInstr::Pop { reg });
+                self.emit(X8664Instr::Pop { reg });
                 self.push_count -= 1;
             }
         }
@@ -1380,7 +1454,7 @@ impl<'a> Lowering<'a> {
             // Use assign_reg_for_def since we're defining a new value (the return value)
             let dest_reg = self.allocator.assign_reg_for_def(*dest_vreg, &[])?;
             debug_assert!(
-                dest_reg != Register::Rsp && dest_reg != Register::Rbp,
+                dest_reg != X86Register::Rsp && dest_reg != X86Register::Rbp,
                 "Cannot use RSP/RBP as destination register"
             );
             self.emit_spill_reload_ops();
@@ -1389,11 +1463,11 @@ impl<'a> Lowering<'a> {
             let source_reg = if let Some(temp_reg) = rax_temp_reg {
                 temp_reg // We saved it to this temp register (runtime functions only)
             } else {
-                Register::Rax // Still in RAX
+                X86Register::Rax // Still in RAX
             };
 
             if dest_reg != source_reg {
-                self.emit(MachineInstr::MovRR {
+                self.emit(X8664Instr::MovRR {
                     dest: dest_reg,
                     src: source_reg,
                 });
@@ -1426,23 +1500,23 @@ impl<'a> Lowering<'a> {
                 ?value_reg,
                 "Return: vreg in register"
             );
-            if value_reg != Register::Rax {
-                self.emit(MachineInstr::MovRR {
-                    dest: Register::Rax,
+            if value_reg != X86Register::Rax {
+                self.emit(X8664Instr::MovRR {
+                    dest: X86Register::Rax,
                     src: value_reg,
                 });
             }
         } else {
             // No explicit return value - return 0 (unit type)
-            self.emit(MachineInstr::MovRI64 {
-                dest: Register::Rax,
+            self.emit(X8664Instr::MovRI64 {
+                dest: X86Register::Rax,
                 imm: 0,
             });
         }
 
         // Standard SysV epilogue
-        self.emit(MachineInstr::LeaveFrame); // mov rsp, rbp ; pop rbp
-        self.emit(MachineInstr::Ret);
+        self.emit(X8664Instr::LeaveFrame); // mov rsp, rbp ; pop rbp
+        self.emit(X8664Instr::Ret);
 
         Ok(())
     }
@@ -1455,20 +1529,20 @@ impl<'a> Lowering<'a> {
     ) -> Result<(), LoweringError> {
         // System V ABI for syscalls: syscall number in RAX, args in RDI, RSI, RDX, R10, R8, R9
         let syscall_arg_regs = [
-            Register::Rdi,
-            Register::Rsi,
-            Register::Rdx,
-            Register::R10,
-            Register::R8,
-            Register::R9,
+            X86Register::Rdi,
+            X86Register::Rsi,
+            X86Register::Rdx,
+            X86Register::R10,
+            X86Register::R8,
+            X86Register::R9,
         ];
 
         // Move syscall number to RAX
         let num_reg = self.allocator.ensure_reg(syscall_num, &[])?;
         self.emit_spill_reload_ops();
-        if num_reg != Register::Rax {
-            self.emit(MachineInstr::MovRR {
-                dest: Register::Rax,
+        if num_reg != X86Register::Rax {
+            self.emit(X8664Instr::MovRR {
+                dest: X86Register::Rax,
                 src: num_reg,
             });
         }
@@ -1481,26 +1555,26 @@ impl<'a> Lowering<'a> {
             let arg_reg = self.allocator.ensure_reg(arg_vreg, &[])?;
             self.emit_spill_reload_ops();
             if arg_reg != syscall_arg_regs[i] {
-                self.emit(MachineInstr::MovRR {
+                self.emit(X8664Instr::MovRR {
                     dest: syscall_arg_regs[i],
                     src: arg_reg,
                 });
             }
         }
 
-        self.emit(MachineInstr::Syscall);
+        self.emit(X8664Instr::Syscall);
 
         // Move result from RAX
         let result_reg = self.allocator.ensure_reg(result, &[])?;
         debug_assert!(
-            result_reg != Register::Rsp && result_reg != Register::Rbp,
+            result_reg != X86Register::Rsp && result_reg != X86Register::Rbp,
             "Cannot use RSP/RBP as destination register"
         );
         self.emit_spill_reload_ops();
-        if result_reg != Register::Rax {
-            self.emit(MachineInstr::MovRR {
+        if result_reg != X86Register::Rax {
+            self.emit(X8664Instr::MovRR {
                 dest: result_reg,
-                src: Register::Rax,
+                src: X86Register::Rax,
             });
         }
         // Mark the result as dirty after syscall
@@ -1509,23 +1583,28 @@ impl<'a> Lowering<'a> {
         Ok(())
     }
 
-    fn lower_save_registers(&mut self, registers: &[Register]) -> Result<(), LoweringError> {
-        for &reg in registers {
-            self.emit(MachineInstr::Push { reg });
+    fn lower_save_registers(&mut self, registers: &[PhysicalRegId]) -> Result<(), LoweringError> {
+        for &reg_id in registers {
+            let reg = physical_reg_id_to_x86(reg_id);
+            self.emit(X8664Instr::Push { reg });
         }
         Ok(())
     }
 
-    fn lower_restore_registers(&mut self, registers: &[Register]) -> Result<(), LoweringError> {
-        for &reg in registers.iter().rev() {
-            self.emit(MachineInstr::Pop { reg });
+    fn lower_restore_registers(
+        &mut self,
+        registers: &[PhysicalRegId],
+    ) -> Result<(), LoweringError> {
+        for &reg_id in registers.iter().rev() {
+            let reg = physical_reg_id_to_x86(reg_id);
+            self.emit(X8664Instr::Pop { reg });
         }
         Ok(())
     }
 
     fn lower_enter_frame(&mut self) -> Result<(), LoweringError> {
         // Standard x86-64 function prologue
-        self.emit(MachineInstr::EnterFrame);
+        self.emit(X8664Instr::EnterFrame);
 
         // EnterFrame pushes rbp, so we start with 1 push
         // (plus the return address pushed by call = 2 total, which is aligned)
@@ -1534,7 +1613,7 @@ impl<'a> Lowering<'a> {
         // We emit a placeholder AllocStack that will be patched later
         // with the actual required stack space after we know how many spills we need.
         // We use 0 as a placeholder value that will be replaced.
-        self.emit(MachineInstr::AllocStack { size: 0 });
+        self.emit(X8664Instr::AllocStack { size: 0 });
 
         Ok(())
     }
@@ -1548,7 +1627,7 @@ impl<'a> Lowering<'a> {
         );
 
         // Standard x86-64 function epilogue
-        self.emit(MachineInstr::LeaveFrame);
+        self.emit(X8664Instr::LeaveFrame);
         Ok(())
     }
 
@@ -1581,7 +1660,10 @@ impl<'a> Lowering<'a> {
         self.next_label_id
     }
 
-    fn get_scratch_register(&mut self, forbidden: &[Register]) -> Result<Register, LoweringError> {
+    fn get_scratch_register(
+        &mut self,
+        forbidden: &[X86Register],
+    ) -> Result<X86Register, LoweringError> {
         // Use the allocator to get an unreserved scratch register
         let scratch = self
             .allocator
@@ -1604,15 +1686,15 @@ impl<'a> Lowering<'a> {
         Ok(scratch)
     }
 
-    fn emit(&mut self, instr: MachineInstr) {
+    fn emit(&mut self, instr: X8664Instr) {
         // Track VReg initialization when store instructions are actually emitted
-        if let MachineInstr::MovMR {
+        if let X8664Instr::MovMR {
             src: _,
             base,
             offset,
         } = &instr
         {
-            if *base == Register::Rbp {
+            if *base == X86Register::Rbp {
                 // This is a store to stack - find which VReg this corresponds to
                 if let Some(vreg) = self.allocator.find_vreg_for_slot(*offset as i64) {
                     self.allocator.mark_vreg_initialized(vreg);

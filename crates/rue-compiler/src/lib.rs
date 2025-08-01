@@ -1,11 +1,14 @@
 use rue_ast::CstRoot;
-use rue_codegen::compile::{compile_hir_via_mir_to_assembly, compile_hir_via_mir_to_executable};
 use rue_lexer::Span;
 use rue_parser::ParseError;
 use rue_semantic::{SemanticError, analyze_cst};
 use std::sync::Arc;
 
 pub mod logging;
+pub mod pipeline;
+
+// Re-export the compilation functions for external use
+pub use pipeline::{compile_hir_via_mir_to_assembly, compile_hir_via_mir_to_executable};
 
 // Input structs
 #[salsa::input]
@@ -380,7 +383,7 @@ pub fn compile_file(
     };
 
     // Generate executable from HIR via MIR (without optimizations)
-    match compile_hir_via_mir_to_executable(&analysis.hir, false) {
+    match pipeline::compile_hir_via_mir_to_executable(&analysis.hir, false) {
         Ok(executable) => Ok(Arc::new(executable)),
         Err(e) => Err(Arc::new(CompileError {
             message: format!("{e}"),
@@ -404,7 +407,7 @@ pub fn compile_file_to_assembly(
     };
 
     // Generate assembly from HIR via MIR (without optimizations)
-    match compile_hir_via_mir_to_assembly(&analysis.hir, false) {
+    match pipeline::compile_hir_via_mir_to_assembly(&analysis.hir, false) {
         Ok(assembly) => Ok(Arc::new(assembly)),
         Err(e) => Err(Arc::new(CompileError {
             message: format!("{e}"),
@@ -429,7 +432,7 @@ pub fn compile_file_with_options(
     };
 
     // Generate executable from HIR via MIR with optimization settings
-    match compile_hir_via_mir_to_executable(&analysis.hir, options.optimize(db)) {
+    match pipeline::compile_hir_via_mir_to_executable(&analysis.hir, options.optimize(db)) {
         Ok(executable) => Ok(Arc::new(executable)),
         Err(e) => Err(Arc::new(CompileError {
             message: format!("{e}"),
@@ -454,7 +457,7 @@ pub fn compile_file_to_assembly_with_options(
     };
 
     // Generate assembly from HIR via MIR with optimization settings
-    match compile_hir_via_mir_to_assembly(&analysis.hir, options.optimize(db)) {
+    match pipeline::compile_hir_via_mir_to_assembly(&analysis.hir, options.optimize(db)) {
         Ok(assembly) => Ok(Arc::new(assembly)),
         Err(e) => Err(Arc::new(CompileError {
             message: format!("{e}"),

@@ -1,27 +1,253 @@
-//! HIR compilation with MIR intermediate step
+//! Compilation pipeline orchestration
 //!
-//! This module demonstrates how to integrate MIR into the compilation pipeline.
-//! It's an alternative to compile_hir that uses MIR for potential optimizations.
+//! This module contains the core compilation pipeline that orchestrates the entire
+//! compilation process from HIR to executable binaries.
 
-use crate::backend::Backend;
-use crate::elf_writer::ElfWriter;
-use crate::mir_to_instructions::MirToInstructions;
-use crate::x86_emitter::X86Emitter;
-use crate::{CodegenError, format_instructions_as_assembly};
+use rue_codegen::backend::RuntimeProvider;
+use rue_codegen::target::TargetRegistry;
+use rue_codegen::{LoweringError, RegisterAllocator, X8664Codegen};
 use rue_ir::hir::HirProgram;
 use rue_ir::mir::MirProgram;
-use rue_lowering::MirBuilder;
+use rue_ir::pir::{Label, PIR};
 #[cfg(debug_assertions)]
 use rue_lowering::MirVerifier;
+use rue_lowering::{MirBuilder, MirToPir};
 use rue_optimize::{CommonSubexpressionElimination, ConstProp, DeadCodeElimination};
+use rue_target::X8664Instr;
+use std::collections::HashMap;
 use tracing::{debug, info, instrument};
+
+/// Compilation errors that can occur during the pipeline
+#[derive(Debug, Clone, PartialEq)]
+pub enum CompileError {
+    /// Error from codegen phase
+    Codegen(rue_codegen::CodegenError),
+    /// Error from lowering phase
+    Lowering(LoweringError),
+    /// MIR verification failed
+    MirVerificationFailed,
+}
+
+impl std::fmt::Display for CompileError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            CompileError::Codegen(err) => write!(f, "Codegen error: {err}"),
+            CompileError::Lowering(err) => write!(f, "Lowering error: {err}"),
+            CompileError::MirVerificationFailed => write!(f, "MIR verification failed"),
+        }
+    }
+}
+
+impl std::error::Error for CompileError {}
+
+impl From<rue_codegen::CodegenError> for CompileError {
+    fn from(err: rue_codegen::CodegenError) -> Self {
+        CompileError::Codegen(err)
+    }
+}
+
+impl From<LoweringError> for CompileError {
+    fn from(err: LoweringError) -> Self {
+        CompileError::Lowering(err)
+    }
+}
+
+/// Intermediate compilation result containing all the data needed for final output generation
+pub struct CompilationIntermediateResult {
+    pub final_instructions: Vec<X8664Instr>,
+    pub all_function_labels: HashMap<String, Label>,
+    pub runtime_label_count: u32,
+}
+
+/// Discover function boundaries by scanning for labels that correspond to function entry points
+fn discover_function_boundaries(
+    instructions: &[PIR],
+    function_labels: &HashMap<String, Label>,
+) -> Vec<(usize, usize)> {
+    let mut function_boundaries = Vec::new();
+    let mut current_start = 0;
+
+    for (i, instr) in instructions.iter().enumerate() {
+        if let PIR::Label(label) = instr {
+            if function_labels
+                .values()
+                .any(|&func_label| func_label == *label)
+            {
+                if current_start < i {
+                    function_boundaries.push((current_start, i));
+                }
+                current_start = i;
+            }
+        }
+    }
+    if current_start < instructions.len() {
+        function_boundaries.push((current_start, instructions.len()));
+    }
+
+    function_boundaries
+}
+
+/// Assign machine instruction label IDs to IR labels
+fn assign_label_ids(instructions: &[PIR], starting_id: u32) -> (HashMap<Label, u32>, u32) {
+    let mut ir_to_machine_labels = HashMap::new();
+    let mut label_id_counter = starting_id;
+
+    for instr in instructions {
+        if let PIR::Label(label) = instr {
+            ir_to_machine_labels.entry(*label).or_insert_with(|| {
+                let id = label_id_counter;
+                label_id_counter += 1;
+                id
+            });
+        }
+    }
+
+    (ir_to_machine_labels, label_id_counter)
+}
+
+/// Lower functions to machine instructions with proper label handling and stack patching
+fn lower_functions(
+    instructions: &[PIR],
+    function_labels: &HashMap<String, Label>,
+    boundaries: Vec<(usize, usize)>,
+    ir_to_machine_labels: &HashMap<Label, u32>,
+    starting_label_id: u32,
+    mir_lowerer: &MirToPir,
+) -> Result<Vec<X8664Instr>, CompileError> {
+    let mut all_machine_instructions = Vec::new();
+    let mut label_id_counter = starting_label_id;
+
+    for (start, end) in boundaries {
+        let function_instrs = &instructions[start..end];
+
+        // Find the function name by looking for the first label
+        let mut function_name = None;
+        for instr in function_instrs {
+            if let PIR::Label(label) = instr {
+                // Find which function this label belongs to
+                for (name, &func_label) in function_labels {
+                    if func_label == *label {
+                        function_name = Some(name.clone());
+                        break;
+                    }
+                }
+                if function_name.is_some() {
+                    break;
+                }
+            }
+        }
+
+        let mut function_allocator = RegisterAllocator::new();
+
+        // Set the initial stack offset based on block parameters used in this function
+        if let Some(ref name) = function_name {
+            let stack_offset = mir_lowerer.get_function_stack_offset(name);
+            debug!(
+                target: "rue::codegen",
+                function = %name,
+                stack_offset,
+                "Setting initial stack offset for function"
+            );
+            function_allocator.set_initial_stack_offset(stack_offset);
+        }
+
+        let mut function_machine_instrs = Vec::new();
+        let next_label_id;
+
+        {
+            let mut lowering = X8664Codegen::new(&mut function_allocator, label_id_counter);
+            lowering.set_label_map(ir_to_machine_labels);
+
+            // Mark all block parameter offsets for proper handling in Store instructions
+            let block_param_offsets = mir_lowerer.get_block_param_offsets();
+            for offset in block_param_offsets {
+                lowering.mark_block_param_offset(offset);
+            }
+
+            // Block parameters now handled via Load/Store with "always spill" approach
+            // No need to mark VRegs specially
+
+            // Process instructions in batches between labels
+            let mut batch_start = 0;
+
+            for (i, instr) in function_instrs.iter().enumerate() {
+                if let PIR::Label(label) = instr {
+                    // Lower any instructions before this label
+                    if batch_start < i {
+                        let batch = &function_instrs[batch_start..i];
+                        let machine_instrs = lowering.lower(batch)?;
+                        function_machine_instrs.extend(machine_instrs);
+                    }
+
+                    // Emit the label
+                    let machine_label_id = ir_to_machine_labels[label];
+                    function_machine_instrs.push(X8664Instr::Label {
+                        id: machine_label_id,
+                    });
+
+                    // Next batch starts after this label
+                    batch_start = i + 1;
+                }
+            }
+
+            // Lower any remaining instructions after the last label
+            if batch_start < function_instrs.len() {
+                let batch = &function_instrs[batch_start..];
+                let machine_instrs = lowering.lower(batch)?;
+                function_machine_instrs.extend(machine_instrs);
+            }
+
+            next_label_id = lowering.next_label_id();
+        }
+
+        // Patch stack allocation with actual required space
+        X8664Codegen::patch_stack_allocation(&mut function_machine_instrs, &function_allocator);
+
+        // Add this function's instructions to the overall list
+        all_machine_instructions.extend(function_machine_instrs);
+
+        // Update the global label counter for the next function
+        label_id_counter = next_label_id;
+    }
+
+    Ok(all_machine_instructions)
+}
+
+/// Build the final function labels map, combining runtime and user labels
+fn build_final_labels(
+    runtime_provider: &RuntimeProvider,
+    function_labels: &HashMap<String, Label>,
+    ir_to_machine_labels: &HashMap<Label, u32>,
+) -> HashMap<String, Label> {
+    let mut all_function_labels = HashMap::new();
+
+    // Add runtime labels
+    for (name, &id) in runtime_provider.runtime_labels() {
+        all_function_labels.insert(name.clone(), Label::runtime(id));
+    }
+
+    // Add user function labels
+    let runtime_label_count = runtime_provider.runtime_label_count();
+    for (name, ir_label_id) in function_labels {
+        if let Some(&machine_label_id) = ir_to_machine_labels.get(ir_label_id) {
+            // The machine_label_id already includes the runtime offset from assign_label_ids
+            // Use from_machine_id to create the correct label with proper space
+            all_function_labels.insert(
+                name.clone(),
+                Label::from_machine_id(machine_label_id, runtime_label_count),
+            );
+        }
+    }
+
+    all_function_labels
+}
 
 /// Helper function to optimize and verify MIR
 #[instrument(skip_all, fields(optimize = enable_optimizations))]
 fn optimize_and_verify_mir(
     mir: &mut MirProgram,
     enable_optimizations: bool,
-) -> Result<(), CodegenError> {
+) -> Result<(), CompileError> {
     const MAX_ITERATIONS: usize = 3;
 
     // Only run optimizations if enabled
@@ -63,142 +289,126 @@ fn optimize_and_verify_mir(
             for error in &errors {
                 tracing::error!(target: "rue::mir::verify", function = %error.function, "{}", error.message);
             }
-            return Err(CodegenError::MirVerificationFailed);
+            return Err(CompileError::MirVerificationFailed);
         }
     }
 
     Ok(())
 }
 
+/// Unified HIR compilation pipeline via MIR that produces intermediate results
+///
+/// This function contains the common compilation steps used by both assembly and executable generation.
+/// It performs HIR → MIR → optimizations → instructions → machine code generation.
+#[instrument(skip_all, fields(optimize = enable_optimizations))]
+pub fn compile_hir_via_mir_to_intermediate(
+    hir: &HirProgram,
+    enable_optimizations: bool,
+) -> Result<CompilationIntermediateResult, CompileError> {
+    // Step 1: Lower HIR to MIR
+    info!(target: "rue::mir", "Lowering HIR to MIR");
+    let mut mir = MirBuilder::lower_program(hir);
+
+    // Step 2: Print MIR for debugging
+    debug!(target: "rue::mir", mir = %mir, "MIR before optimization");
+
+    // Step 3: Apply MIR optimizations and verify
+    if enable_optimizations {
+        info!(target: "rue::optimize", "Running optimization passes");
+    }
+    optimize_and_verify_mir(&mut mir, enable_optimizations)?;
+
+    // Step 4: Lower MIR to Instructions
+    info!(target: "rue::codegen", "Lowering MIR to instructions");
+    let mut mir_lowerer = MirToPir::new();
+    let instructions = mir_lowerer.lower_program(&mir);
+    let function_labels = mir_lowerer.get_function_labels();
+    // Block parameters now handled via Load/Store with "always spill" approach
+
+    // Step 5: Create runtime provider
+    let runtime_provider = RuntimeProvider::new()?;
+
+    // Step 6: Identify function boundaries
+    let function_boundaries = discover_function_boundaries(&instructions, &function_labels);
+
+    // Step 7: Get runtime label count and assign label IDs
+    let runtime_label_count = runtime_provider.runtime_label_count();
+    let (ir_to_machine_labels, label_id_counter) =
+        assign_label_ids(&instructions, runtime_label_count);
+    let all_machine_instructions = lower_functions(
+        &instructions,
+        &function_labels,
+        function_boundaries,
+        &ir_to_machine_labels,
+        label_id_counter,
+        &mir_lowerer,
+    )?;
+
+    // Step 8: Combine runtime and user code
+    let final_instructions =
+        runtime_provider.combine_runtime_and_user_code(all_machine_instructions);
+
+    // Step 9: Build final labels
+    let all_function_labels =
+        build_final_labels(&runtime_provider, &function_labels, &ir_to_machine_labels);
+
+    Ok(CompilationIntermediateResult {
+        final_instructions,
+        all_function_labels,
+        runtime_label_count,
+    })
+}
+
 /// Compile HIR to assembly via MIR
 ///
-/// This function demonstrates the MIR pipeline:
+/// This function uses the unified compilation pipeline and formats the result as assembly.
 /// HIR → MIR → (optimizations) → Instructions → Assembly
 #[instrument(skip_all, fields(optimize = enable_optimizations))]
 pub fn compile_hir_via_mir_to_assembly(
     hir: &HirProgram,
     enable_optimizations: bool,
-) -> Result<String, CodegenError> {
-    // Step 1: Lower HIR to MIR
-    info!(target: "rue::mir", "Lowering HIR to MIR");
-    let mut mir = MirBuilder::lower_program(hir);
+) -> Result<String, CompileError> {
+    // Use the unified compilation pipeline
+    let intermediate = compile_hir_via_mir_to_intermediate(hir, enable_optimizations)?;
 
-    // Step 2: Print MIR for debugging
-    debug!(target: "rue::mir", mir = %mir, "MIR before optimization");
-
-    // Step 3: Apply MIR optimizations and verify
-    if enable_optimizations {
-        info!(target: "rue::optimize", "Running optimization passes");
-    }
-    optimize_and_verify_mir(&mut mir, enable_optimizations)?;
-
-    // Step 4: Lower MIR to Instructions
-    info!(target: "rue::codegen", "Lowering MIR to instructions");
-    let mut mir_lowerer = MirToInstructions::new();
-    let instructions = mir_lowerer.lower_program(&mir);
-    let function_labels = mir_lowerer.get_function_labels();
-    // Block parameters now handled via Load/Store with "always spill" approach
-
-    // Step 5: Create backend with runtime code
-    let driver = Backend::new()?;
-
-    // Step 6: Identify function boundaries
-    let function_boundaries = driver.discover_function_boundaries(&instructions, &function_labels);
-
-    // Step 7: Get runtime label count and assign label IDs
-    let runtime_label_count = driver.runtime_label_count();
-    let (ir_to_machine_labels, label_id_counter) =
-        driver.assign_label_ids(&instructions, runtime_label_count);
-    let all_machine_instructions = driver.lower_functions(
-        &instructions,
-        &function_labels,
-        function_boundaries,
-        &ir_to_machine_labels,
-        label_id_counter,
-        &mir_lowerer,
-    )?;
-
-    // Step 8: Combine runtime and user code
-    let final_instructions = driver.combine_runtime_and_user_code(all_machine_instructions);
-
-    // Step 9: Build final labels and generate assembly
-    let all_function_labels = driver.build_final_labels(&function_labels, &ir_to_machine_labels);
-
-    // Generate assembly
+    // Generate assembly from intermediate results
     info!(target: "rue::codegen", "Generating assembly");
-    Ok(format_instructions_as_assembly(
-        &final_instructions,
-        &all_function_labels,
-        runtime_label_count,
+    let formatter = TargetRegistry::create_assembly_formatter(TargetRegistry::default_target());
+    Ok(formatter.format_assembly(
+        &intermediate.final_instructions,
+        &intermediate.all_function_labels,
+        intermediate.runtime_label_count,
     ))
 }
 
 /// Compile HIR to executable via MIR
+///
+/// This function uses the unified compilation pipeline and generates an ELF executable.
 #[instrument(skip_all, fields(optimize = enable_optimizations))]
 pub fn compile_hir_via_mir_to_executable(
     hir: &HirProgram,
     enable_optimizations: bool,
-) -> Result<Vec<u8>, CodegenError> {
-    // Step 1: Lower HIR to MIR
-    info!(target: "rue::mir", "Lowering HIR to MIR");
-    let mut mir = MirBuilder::lower_program(hir);
+) -> Result<Vec<u8>, CompileError> {
+    // Use the unified compilation pipeline
+    let intermediate = compile_hir_via_mir_to_intermediate(hir, enable_optimizations)?;
 
-    // Step 2: Print MIR for debugging
-    debug!(target: "rue::mir", mir = %mir, "MIR before optimization");
-
-    // Step 3: Apply MIR optimizations and verify
-    if enable_optimizations {
-        info!(target: "rue::optimize", "Running optimization passes");
-    }
-    optimize_and_verify_mir(&mut mir, enable_optimizations)?;
-
-    // Step 4: Lower MIR to Instructions
-    info!(target: "rue::codegen", "Lowering MIR to instructions");
-    let mut mir_lowerer = MirToInstructions::new();
-    let instructions = mir_lowerer.lower_program(&mir);
-    let function_labels = mir_lowerer.get_function_labels();
-    // Block parameters now handled via Load/Store with "always spill" approach
-
-    // Step 5: Create backend with runtime code
-    let driver = Backend::new()?;
-
-    // Step 6: Identify function boundaries
-    let function_boundaries = driver.discover_function_boundaries(&instructions, &function_labels);
-
-    // Step 7: Get runtime label count and assign label IDs
-    let runtime_label_count = driver.runtime_label_count();
-    let (ir_to_machine_labels, label_id_counter) =
-        driver.assign_label_ids(&instructions, runtime_label_count);
-    let all_machine_instructions = driver.lower_functions(
-        &instructions,
-        &function_labels,
-        function_boundaries,
-        &ir_to_machine_labels,
-        label_id_counter,
-        &mir_lowerer,
-    )?;
-
-    // Step 8: Combine runtime and user code
-    let final_instructions = driver.combine_runtime_and_user_code(all_machine_instructions);
-
-    // Step 9: Build final labels
-    let all_function_labels = driver.build_final_labels(&function_labels, &ir_to_machine_labels);
-    let runtime_label_count = driver.runtime_label_count();
-
-    // Step 10: Generate x86 code
+    // Generate machine code from intermediate results using trait abstraction
     info!(target: "rue::elf", "Generating ELF executable");
-    let mut emitter = X86Emitter::new();
-    emitter.set_function_labels(all_function_labels, runtime_label_count);
+    let mut emitter = TargetRegistry::create_emitter(TargetRegistry::default_target());
+    emitter.set_function_labels(
+        intermediate.all_function_labels,
+        intermediate.runtime_label_count,
+    );
     let code = emitter
-        .emit_all(&final_instructions)
-        .map_err(CodegenError::InvalidOperation)?;
+        .emit_all(&intermediate.final_instructions)
+        .map_err(rue_codegen::CodegenError::InvalidOperation)?;
 
     // Extract symbol positions from emitter
     let (_, symbols) = emitter.get_output();
 
-    // Step 11: Generate ELF executable
-    let elf_writer = ElfWriter::new();
-    Ok(elf_writer.generate_elf(&code, &symbols))
+    // Generate ELF executable using trait abstraction
+    let elf_writer = TargetRegistry::create_executable_writer(TargetRegistry::default_target());
+    Ok(elf_writer.generate_executable(&code, &symbols))
 }
 
 #[cfg(test)]
@@ -235,11 +445,6 @@ mod tests {
                 span: Span::dummy(),
             }],
         };
-
-        // Note: We would need to set RUST_LOG=rue::mir=debug environment variable
-        // to see MIR output, but we don't modify environment in tests
-        // as it's not thread-safe. Run with RUST_LOG=rue::mir=debug cargo test
-        // to see MIR output during debugging.
 
         // Compile via MIR
         let asm = compile_hir_via_mir_to_assembly(&hir, false).unwrap();
@@ -392,7 +597,8 @@ mod tests {
 
         // The assembly should have proper control flow for fibonacci
         // Use word boundaries to ensure we're matching instructions, not comments
-        let jump_regex = regex::Regex::new(r"\b(jle|jg)\b").unwrap();
+        // Look for various conditional jump instructions that might be generated
+        let jump_regex = regex::Regex::new(r"\b(jle|jg|je|jne|jl|jge)\b").unwrap();
         assert!(
             jump_regex.is_match(&asm),
             "Assembly should contain conditional jump instruction for if statement"

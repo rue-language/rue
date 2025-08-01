@@ -1,21 +1,20 @@
-//! MIR to Instruction lowering
+//! MIR to PIR lowering
 //!
 //! This module converts MIR (in SSA form with block parameters) to the
-//! platform-independent Instruction representation with virtual registers.
+//! platform-independent representation (PIR) with virtual registers.
 
-use crate::{BinOp, Instruction, Label, VReg, Value};
 use rue_ir::mir::{
     BasicBlock, BlockId, MirBinOp, MirConst, MirFunction, MirProgram, MirStatement, MirTerminator,
     MirUnaryOp, MirValue, Temp,
 };
-use rue_ir::target::Register;
+use rue_ir::pir::{BinOp, Label, PIR, PhysicalRegId, VReg, Value};
 use std::collections::HashMap;
 use tracing::{debug, trace};
 
-/// Lowers MIR to Instructions
-pub struct MirToInstructions {
-    /// Generated instructions
-    instructions: Vec<Instruction>,
+/// Lowers MIR to PIR
+pub struct MirToPir {
+    /// Generated PIR instructions
+    instructions: Vec<PIR>,
     /// Counter for virtual registers
     vreg_counter: u32,
     /// Counter for labels
@@ -41,7 +40,13 @@ pub struct MirToInstructions {
     current_temp_types: HashMap<Temp, rue_ir::types::RueType>,
 }
 
-impl MirToInstructions {
+impl Default for MirToPir {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl MirToPir {
     pub fn new() -> Self {
         Self {
             instructions: Vec::new(),
@@ -97,14 +102,14 @@ impl MirToInstructions {
         }
     }
 
-    /// Emit an instruction
-    fn emit(&mut self, instr: Instruction) {
-        debug!(target: "rue::codegen::instructions", ?instr, "Emitting instruction");
+    /// Emit a PIR instruction
+    fn emit(&mut self, instr: PIR) {
+        debug!(target: "rue::codegen::instructions", ?instr, "Emitting PIR instruction");
         self.instructions.push(instr);
     }
 
-    /// Lower a MIR program to instructions
-    pub fn lower_program(&mut self, program: &MirProgram) -> Vec<Instruction> {
+    /// Lower a MIR program to PIR
+    pub fn lower_program(&mut self, program: &MirProgram) -> Vec<PIR> {
         // First pass: collect all function labels
         for func in &program.functions {
             let label = self.fresh_label();
@@ -137,7 +142,7 @@ impl MirToInstructions {
         self.block_param_slots.values().copied().collect()
     }
 
-    /// Lower a MIR function to instructions
+    /// Lower a MIR function to PIR
     fn lower_function(&mut self, func: &MirFunction) {
         // Clear temp mappings for new function
         self.temp_to_vreg.clear();
@@ -176,19 +181,20 @@ impl MirToInstructions {
 
         // Function label
         let func_label = self.function_labels[&func.name];
-        self.emit(Instruction::Label(func_label));
+        self.emit(PIR::Label(func_label));
 
         // Function prologue
-        self.emit(Instruction::EnterFrame);
+        self.emit(PIR::EnterFrame);
 
         // Handle function parameters from calling convention registers
+        // Map to abstract register IDs following x86-64 calling convention
         let param_registers = [
-            Register::Rdi,
-            Register::Rsi,
-            Register::Rdx,
-            Register::Rcx,
-            Register::R8,
-            Register::R9,
+            PhysicalRegId(0), // Rdi - First parameter register
+            PhysicalRegId(1), // Rsi - Second parameter register
+            PhysicalRegId(2), // Rdx - Third parameter register
+            PhysicalRegId(3), // Rcx - Fourth parameter register
+            PhysicalRegId(4), // R8 - Fifth parameter register
+            PhysicalRegId(5), // R9 - Sixth parameter register
         ];
 
         // Map entry block parameters to function parameters
@@ -196,7 +202,7 @@ impl MirToInstructions {
             for (i, (temp, _ty)) in entry_block.params.iter().enumerate() {
                 if i < param_registers.len() {
                     let vreg = self.get_vreg(*temp);
-                    self.emit(Instruction::Copy {
+                    self.emit(PIR::Copy {
                         dest: vreg,
                         src: Value::PhysicalReg(param_registers[i]),
                     });
@@ -223,7 +229,7 @@ impl MirToInstructions {
     fn lower_block(&mut self, block: &BasicBlock, func: &MirFunction) {
         // Emit block label
         let label = self.get_label(block.id);
-        self.emit(Instruction::Label(label));
+        self.emit(PIR::Label(label));
 
         // CRITICAL: Load block parameters from their dedicated stack slots
         // This is the "always spill" approach - parameters are always in memory
@@ -235,7 +241,7 @@ impl MirToInstructions {
                 // Get the pre-allocated stack slot for this block parameter
                 if let Some(&slot_offset) = self.block_param_slots.get(&(block.id, i)) {
                     // Load from the dedicated stack slot
-                    self.emit(Instruction::Load {
+                    self.emit(PIR::Load {
                         dest: param_vreg,
                         offset: slot_offset,
                     });
@@ -277,7 +283,7 @@ impl MirToInstructions {
         match value {
             MirValue::Use(temp) => {
                 let src_vreg = self.get_vreg(*temp);
-                self.emit(Instruction::Copy {
+                self.emit(PIR::Copy {
                     dest,
                     src: Value::VReg(src_vreg),
                 });
@@ -295,7 +301,7 @@ impl MirToInstructions {
                     }
                     MirConst::Unit => 0,
                 };
-                self.emit(Instruction::Copy {
+                self.emit(PIR::Copy {
                     dest,
                     src: Value::SignedImm(imm),
                 });
@@ -322,7 +328,7 @@ impl MirToInstructions {
                 // For arithmetic operations, the result type should match the operand type
                 if let Some(lhs_ty) = self.current_temp_types.get(lhs) {
                     // Use typed binary operation when type information is available
-                    self.emit(Instruction::TypedBinaryOp {
+                    self.emit(PIR::TypedBinaryOp {
                         dest,
                         lhs: Value::VReg(lhs_vreg),
                         rhs: Value::VReg(rhs_vreg),
@@ -331,7 +337,7 @@ impl MirToInstructions {
                     });
                 } else {
                     // Fall back to untyped operation
-                    self.emit(Instruction::BinaryOp {
+                    self.emit(PIR::BinaryOp {
                         dest,
                         lhs: Value::VReg(lhs_vreg),
                         rhs: Value::VReg(rhs_vreg),
@@ -346,11 +352,11 @@ impl MirToInstructions {
                     MirUnaryOp::Neg => {
                         // Implement negation as 0 - operand
                         let zero = self.fresh_vreg();
-                        self.emit(Instruction::Copy {
+                        self.emit(PIR::Copy {
                             dest: zero,
                             src: Value::SignedImm(0),
                         });
-                        self.emit(Instruction::BinaryOp {
+                        self.emit(PIR::BinaryOp {
                             dest,
                             lhs: Value::VReg(zero),
                             rhs: Value::VReg(operand_vreg),
@@ -361,7 +367,7 @@ impl MirToInstructions {
             }
             MirValue::Call { func, args, .. } => {
                 let arg_vregs: Vec<VReg> = args.iter().map(|&arg| self.get_vreg(arg)).collect();
-                self.emit(Instruction::Call {
+                self.emit(PIR::Call {
                     dest: Some(dest),
                     function: func.clone(),
                     args: arg_vregs,
@@ -378,7 +384,7 @@ impl MirToInstructions {
                 self.lower_block_arguments(*target, args, func);
 
                 let label = self.get_label(*target);
-                self.emit(Instruction::Jump(label));
+                self.emit(PIR::Jump(label));
             }
             MirTerminator::Branch {
                 condition,
@@ -402,21 +408,21 @@ impl MirToInstructions {
                 let else_target = self.get_label(*else_block);
 
                 // Emit the branch
-                self.emit(Instruction::Branch {
+                self.emit(PIR::Branch {
                     condition: cond_vreg,
                     true_label: then_label,
                     false_label: else_label,
                 });
 
                 // Then branch: copy arguments and jump
-                self.emit(Instruction::Label(then_label));
+                self.emit(PIR::Label(then_label));
                 self.lower_block_arguments(*then_block, then_args, func);
-                self.emit(Instruction::Jump(then_target));
+                self.emit(PIR::Jump(then_target));
 
                 // Else branch: copy arguments and jump
-                self.emit(Instruction::Label(else_label));
+                self.emit(PIR::Label(else_label));
                 self.lower_block_arguments(*else_block, else_args, func);
-                self.emit(Instruction::Jump(else_target));
+                self.emit(PIR::Jump(else_target));
             }
             MirTerminator::Switch {
                 discriminant,
@@ -443,13 +449,13 @@ impl MirToInstructions {
 
                     // Compare discriminant with case value
                     let temp_vreg = self.fresh_vreg();
-                    self.emit(Instruction::Copy {
+                    self.emit(PIR::Copy {
                         dest: temp_vreg,
                         src: Value::SignedImm(*value),
                     });
 
                     let cmp_result = self.fresh_vreg();
-                    self.emit(Instruction::BinaryOp {
+                    self.emit(PIR::BinaryOp {
                         dest: cmp_result,
                         lhs: Value::VReg(discriminant_vreg),
                         rhs: Value::VReg(temp_vreg),
@@ -463,44 +469,44 @@ impl MirToInstructions {
                         default_label
                     };
 
-                    self.emit(Instruction::Branch {
+                    self.emit(PIR::Branch {
                         condition: cmp_result,
                         true_label: case_label,
                         false_label: next_check_label,
                     });
 
                     // Case block: handle arguments and jump to target
-                    self.emit(Instruction::Label(case_label));
+                    self.emit(PIR::Label(case_label));
                     self.lower_block_arguments(*target_block, target_args, func);
-                    self.emit(Instruction::Jump(target_label));
+                    self.emit(PIR::Jump(target_label));
 
                     // Continue to next check if not last case
                     if i + 1 < targets.len() {
-                        self.emit(Instruction::Label(next_check_label));
+                        self.emit(PIR::Label(next_check_label));
                     }
                 }
 
                 // Default case
-                self.emit(Instruction::Label(default_label));
+                self.emit(PIR::Label(default_label));
                 self.lower_block_arguments(*default, default_args, func);
                 let default_target = self.get_label(*default);
-                self.emit(Instruction::Jump(default_target));
+                self.emit(PIR::Jump(default_target));
             }
             MirTerminator::Unreachable { .. } => {
                 // Emit a trap instruction or halt for unreachable code
                 // For now, we'll emit a comment and a jump to itself (infinite loop)
                 // This should never be reached during normal execution
                 let unreachable_label = self.fresh_label();
-                self.emit(Instruction::Label(unreachable_label));
-                self.emit(Instruction::Jump(unreachable_label)); // Infinite loop
+                self.emit(PIR::Label(unreachable_label));
+                self.emit(PIR::Jump(unreachable_label)); // Infinite loop
             }
             MirTerminator::Return { value, .. } => {
                 if let Some(val) = value {
                     let vreg = self.get_vreg(*val);
                     debug!(target: "rue::codegen", ?val, ?vreg, "Return terminator: temp -> vreg");
-                    self.emit(Instruction::Return { value: Some(vreg) });
+                    self.emit(PIR::Return { value: Some(vreg) });
                 } else {
-                    self.emit(Instruction::Return { value: None });
+                    self.emit(PIR::Return { value: None });
                 }
             }
         }
@@ -534,7 +540,7 @@ impl MirToInstructions {
                 );
 
                 // Store the argument value to the dedicated slot
-                self.emit(Instruction::Store {
+                self.emit(PIR::Store {
                     src: arg_vreg,
                     offset: slot_offset,
                 });
@@ -603,22 +609,20 @@ mod tests {
             function_signatures: HashMap::new(),
         };
 
-        let mut lowerer = MirToInstructions::new();
-        let instructions = lowerer.lower_program(&mir_program);
+        let mut lowerer = MirToPir::new();
+        let pir_instructions = lowerer.lower_program(&mir_program);
 
         // Verify we have instructions
-        assert!(!instructions.is_empty());
+        assert!(!pir_instructions.is_empty());
 
         // Should have labels, copies for parameters, binary op, return
-        let has_label = instructions
+        let has_label = pir_instructions.iter().any(|i| matches!(i, PIR::Label(_)));
+        let has_binary_op = pir_instructions
             .iter()
-            .any(|i| matches!(i, Instruction::Label(_)));
-        let has_binary_op = instructions
+            .any(|i| matches!(i, PIR::BinaryOp { .. }));
+        let has_return = pir_instructions
             .iter()
-            .any(|i| matches!(i, Instruction::BinaryOp { .. }));
-        let has_return = instructions
-            .iter()
-            .any(|i| matches!(i, Instruction::Return { .. }));
+            .any(|i| matches!(i, PIR::Return { .. }));
 
         assert!(has_label);
         assert!(has_binary_op);

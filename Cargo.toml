@@ -9,10 +9,10 @@ members = [
     "crates/rue-codegen",
     "crates/rue",
     "crates/rue-lsp",
-    "crates/rue-runtime",
     "crates/rue-ir",
     "crates/rue-lowering",
     "crates/rue-optimize",
+    "crates/rue-target",
 ]
 
 [workspace.package]
@@ -28,10 +28,10 @@ rue-compiler = { path = "crates/rue-compiler" }
 rue-codegen = { path = "crates/rue-codegen" }
 rue = { path = "crates/rue" }
 rue-lsp = { path = "crates/rue-lsp" }
-rue-runtime = { path = "crates/rue-runtime" }
 rue-ir = { path = "crates/rue-ir" }
 rue-lowering = { path = "crates/rue-lowering" }
 rue-optimize = { path = "crates/rue-optimize" }
+rue-target = { path = "crates/rue-target" }
 atty = "0.2"
 bpaf = "0.9.20"
 criterion = "0.5.0"

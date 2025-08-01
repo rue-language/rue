@@ -5,4 +5,5 @@ version.workspace = true
 
 [dependencies]
 rue-lexer.workspace = true
+rue-target.workspace = true
 tracing.workspace = true

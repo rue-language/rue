@@ -1,12 +1,19 @@
-//! HIR to MIR lowering and MIR verification
+//! IR lowering phases
 //!
-//! This crate handles the transformation from High-level IR (HIR) to
-//! Mid-level IR (MIR), as well as MIR verification passes.
+//! This crate handles IR transformations between different representations:
+//! - HIR to MIR lowering
+//! - MIR verification
+//! - MIR to PIR lowering
+//!
+//! Note: MIR optimizations are handled separately in the `rue-optimize` crate.
+//! Note: PIR to target instruction lowering is handled in the `rue-codegen` crate.
 
 pub mod hir_to_mir;
+pub mod mir_to_pir;
 pub mod verifier;
 
 pub use hir_to_mir::MirBuilder;
+pub use mir_to_pir::MirToPir;
 pub use verifier::MirVerifier;
 
 #[cfg(test)]
