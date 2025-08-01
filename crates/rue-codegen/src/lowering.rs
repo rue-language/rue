@@ -145,6 +145,13 @@ impl<'a> Lowering<'a> {
             Instruction::BinaryOp { dest, lhs, rhs, op } => {
                 self.lower_binary_op(*dest, lhs, rhs, op)
             }
+            Instruction::TypedBinaryOp {
+                dest,
+                lhs,
+                rhs,
+                op,
+                ty,
+            } => self.lower_typed_binary_op(*dest, lhs, rhs, op, ty),
             Instruction::Load { dest, offset } => self.lower_load(*dest, *offset),
             Instruction::Store { src, offset } => self.lower_store(*src, *offset),
             Instruction::Push { src } => self.lower_push(src),
@@ -495,6 +502,59 @@ impl<'a> Lowering<'a> {
                 self.lower_comparison(dest, lhs, rhs, op)
             }
         }
+    }
+
+    /// Lower a typed binary operation, handling i32 overflow properly
+    fn lower_typed_binary_op(
+        &mut self,
+        dest: VReg,
+        lhs: &Value,
+        rhs: &Value,
+        op: &BinOp,
+        ty: &rue_ir::types::RueType,
+    ) -> Result<(), LoweringError> {
+        use rue_ir::types::RueType;
+
+        if std::env::var("RUE_DEBUG").is_ok() {
+            eprintln!("lower_typed_binary_op: dest={dest:?}, op={op:?}, ty={ty:?}");
+        }
+
+        // For non-arithmetic operations, delegate to regular binary operation
+        if matches!(
+            op,
+            BinOp::Lt
+                | BinOp::Le
+                | BinOp::Gt
+                | BinOp::Ge
+                | BinOp::Eq
+                | BinOp::Ne
+                | BinOp::Div
+                | BinOp::Mod
+        ) {
+            return self.lower_binary_op(dest, lhs, rhs, op);
+        }
+
+        // First, perform the operation using regular binary operation logic
+        self.lower_binary_op(dest, lhs, rhs, op)?;
+
+        // For i32 operations, add truncation to handle overflow correctly
+        if matches!(ty, RueType::I32) {
+            let dest_reg = self.allocator.ensure_reg(dest, &[])?;
+            self.emit_spill_reload_ops();
+
+            if std::env::var("RUE_DEBUG").is_ok() {
+                eprintln!("Adding i32 truncation: dest_reg={dest_reg:?}");
+            }
+
+            // Truncate to 32-bit and sign-extend back to 64-bit
+            // This ensures i32 overflow wraps correctly (movsxd automatically truncates and sign-extends)
+            self.emit(MachineInstr::Movsxd {
+                dest: dest_reg,
+                src: dest_reg,
+            });
+        }
+
+        Ok(())
     }
 
     fn lower_modulo(&mut self, dest: VReg, lhs: &Value, rhs: &Value) -> Result<(), LoweringError> {

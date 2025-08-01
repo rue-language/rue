@@ -36,6 +36,8 @@ pub struct MirToInstructions {
     block_param_stack_offset: i64,
     /// Stack offset per function (function name -> lowest stack offset used)
     function_stack_offsets: HashMap<String, i64>,
+    /// Type information for the current function's temporaries
+    current_temp_types: HashMap<Temp, rue_ir::types::RueType>,
 }
 
 impl MirToInstructions {
@@ -52,6 +54,7 @@ impl MirToInstructions {
             block_param_slots: HashMap::new(),
             block_param_stack_offset: -8, // Start after saved RBP
             function_stack_offsets: HashMap::new(),
+            current_temp_types: HashMap::new(),
         }
     }
 
@@ -150,6 +153,7 @@ impl MirToInstructions {
         // Note: We don't clear return_param_vregs because it needs to accumulate
         // across all functions in the program
         self.current_blocks = func.blocks.clone();
+        self.current_temp_types = func.temp_types.clone();
 
         // CRITICAL: Pre-allocate stack slots for ALL block parameters
         // This ensures consistent memory locations across all predecessor blocks
@@ -315,12 +319,26 @@ impl MirToInstructions {
                     MirBinOp::Ne => BinOp::Ne,
                 };
 
-                self.emit(Instruction::BinaryOp {
-                    dest,
-                    lhs: Value::VReg(lhs_vreg),
-                    rhs: Value::VReg(rhs_vreg),
-                    op: instr_op,
-                });
+                // Check if we have type information for the LHS operand
+                // For arithmetic operations, the result type should match the operand type
+                if let Some(lhs_ty) = self.current_temp_types.get(lhs) {
+                    // Use typed binary operation when type information is available
+                    self.emit(Instruction::TypedBinaryOp {
+                        dest,
+                        lhs: Value::VReg(lhs_vreg),
+                        rhs: Value::VReg(rhs_vreg),
+                        op: instr_op,
+                        ty: lhs_ty.clone(),
+                    });
+                } else {
+                    // Fall back to untyped operation
+                    self.emit(Instruction::BinaryOp {
+                        dest,
+                        lhs: Value::VReg(lhs_vreg),
+                        rhs: Value::VReg(rhs_vreg),
+                        op: instr_op,
+                    });
+                }
             }
             MirValue::UnaryOp { op, operand } => {
                 let operand_vreg = self.get_vreg(*operand);
@@ -556,6 +574,7 @@ mod tests {
             ],
             return_type: RueType::I32,
             entry_block: BlockId(0),
+            temp_types: std::collections::HashMap::new(),
             span: rue_lexer::Span::dummy(),
             blocks: vec![BasicBlock {
                 id: BlockId(0),

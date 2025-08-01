@@ -204,6 +204,7 @@ impl MirBuilder {
             return_type: func.return_type.clone(),
             blocks: builder.blocks,
             entry_block,
+            temp_types: builder.temp_types,
             span: func.span,
         };
 

@@ -514,6 +514,8 @@ mod tests {
                 params: vec![],
                 return_type: RueType::I32,
                 entry_block: BlockId(0),
+                temp_types: HashMap::new(),
+                span: Span::dummy(),
                 blocks: vec![BasicBlock {
                     id: BlockId(0),
                     params: vec![],
@@ -527,7 +529,6 @@ mod tests {
                         span: None,
                     },
                 }],
-                span: Span::dummy(),
             }],
         };
 
@@ -543,6 +544,8 @@ mod tests {
                 params: vec![],
                 return_type: RueType::I32,
                 entry_block: BlockId(0),
+                temp_types: HashMap::new(),
+                span: Span::dummy(),
                 blocks: vec![BasicBlock {
                     id: BlockId(0),
                     params: vec![],
@@ -552,7 +555,6 @@ mod tests {
                         span: None,
                     },
                 }],
-                span: Span::dummy(),
             }],
         };
 
@@ -572,6 +574,8 @@ mod tests {
                 params: vec![],
                 return_type: RueType::I32,
                 entry_block: BlockId(0),
+                temp_types: HashMap::new(),
+                span: Span::dummy(),
                 blocks: vec![BasicBlock {
                     id: BlockId(0),
                     params: vec![],
@@ -592,7 +596,6 @@ mod tests {
                         span: None,
                     },
                 }],
-                span: Span::dummy(),
             }],
         };
 
@@ -611,6 +614,8 @@ mod tests {
                 params: vec![],
                 return_type: RueType::I32,
                 entry_block: BlockId(0),
+                temp_types: HashMap::new(),
+                span: Span::dummy(),
                 blocks: vec![
                     BasicBlock {
                         id: BlockId(0),
@@ -632,7 +637,6 @@ mod tests {
                         },
                     },
                 ],
-                span: Span::dummy(),
             }],
         };
 
