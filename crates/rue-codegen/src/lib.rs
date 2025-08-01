@@ -5,9 +5,9 @@
 
 // Internal modules
 pub mod backend;
-pub mod constants;
+mod constants;
 mod regalloc;
-pub mod runtime;
+mod runtime;
 mod util;
 mod x86_64_backend;
 
@@ -26,12 +26,7 @@ pub use regalloc::RegisterAllocator;
 // Re-export x86-64 backend types
 pub use x86_64_backend::{LoweringError, X8664Codegen};
 
-// Re-export internals for advanced usage
-pub mod internals {
-    pub use crate::regalloc::RegisterAllocator;
-    pub use crate::target::x86_64::X86Emitter;
-    pub use crate::target::x86_64::format_instructions_as_assembly;
-}
+// Internals are now private - removed since they're unused
 
 #[derive(Debug, Clone, PartialEq, thiserror::Error)]
 pub enum CodegenError {

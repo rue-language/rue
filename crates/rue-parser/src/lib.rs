@@ -1,7 +1,7 @@
 use rue_ast::*;
 use rue_lexer::{Span, TokenKind, format_error_with_context};
 
-pub struct Parser {
+struct Parser {
     tokens: Vec<TokenNode>,
     current: usize,
 }
@@ -22,11 +22,11 @@ impl ParseError {
 }
 
 impl Parser {
-    pub fn new(tokens: Vec<TokenNode>) -> Self {
+    fn new(tokens: Vec<TokenNode>) -> Self {
         Self { tokens, current: 0 }
     }
 
-    pub fn parse(mut self) -> ParseResult<CstRoot> {
+    fn parse(mut self) -> ParseResult<CstRoot> {
         let mut items = Vec::new();
         let leading_trivia = self.consume_trivia();
 

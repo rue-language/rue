@@ -43,7 +43,7 @@ pub struct Scope {
 
 /// Stack-based scope management for block-level scoping
 #[derive(Debug, Clone)]
-pub struct ScopeStack {
+struct ScopeStack {
     scopes: Vec<HashMap<String, RueType>>,
 }
 
@@ -93,7 +93,7 @@ pub struct FunctionSignature {
 }
 
 // Helper function to convert AST type to semantic type
-pub(crate) fn convert_type_node(type_node: &rue_ast::TypeNode) -> RueType {
+fn convert_type_node(type_node: &rue_ast::TypeNode) -> RueType {
     match type_node {
         rue_ast::TypeNode::I32(_) => RueType::I32,
         rue_ast::TypeNode::I64(_) => RueType::I64,

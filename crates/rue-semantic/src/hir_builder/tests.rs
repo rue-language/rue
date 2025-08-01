@@ -3,7 +3,7 @@
 //! These tests verify that the HIR builder correctly converts typed AST to HIR.
 
 use super::*;
-use rue_parser::Parser;
+use rue_parser::parse;
 use rue_lexer::Lexer;
 use crate::analyze_cst;
 
@@ -15,8 +15,7 @@ fn build_hir_from_source(source: &str) -> Result<HirProgram, String> {
         .tokenize()
         .map_err(|e| format!("Lex error: {e}"))?;
     
-    let cst = Parser::new(tokens)
-        .parse()
+    let cst = parse(tokens)
         .map_err(|e| format!("Parse error: {:?}", e))?;
     
     // Run semantic analysis
