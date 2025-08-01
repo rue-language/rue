@@ -16,6 +16,7 @@ use rue_ir::mir::{
 };
 use rue_ir::types::RueType;
 use std::collections::HashMap;
+use tracing::{debug, trace};
 
 /// Builder for constructing MIR from HIR
 pub struct MirBuilder {
@@ -315,9 +316,7 @@ impl MirBuilder {
         let result = builder.lower_block(&func.body);
         builder.is_function_body = false;
 
-        if std::env::var("RUE_DEBUG").is_ok() {
-            eprintln!("Function {} body result: {:?}", func.name, result);
-        }
+        debug!(target: "rue::mir", function = %func.name, ?result, "Function body lowering result");
 
         // Set return terminator if we haven't already returned
         if builder.current_block.is_some() {
@@ -339,11 +338,7 @@ impl MirBuilder {
         };
 
         // Debug: print MIR if enabled
-        if std::env::var("RUE_DEBUG_MIR").is_ok() {
-            eprintln!("=== MIR for {} ===", mir_func.name);
-            eprintln!("{mir_func}");
-            eprintln!("=================");
-        }
+        trace!(target: "rue::mir", function = %mir_func.name, mir = %mir_func, "Generated MIR for function");
 
         mir_func
     }
@@ -366,13 +361,12 @@ impl MirBuilder {
         // Lower the final expression if present
         let result = block.expr.as_ref().map(|expr| self.lower_expr(expr));
 
-        if std::env::var("RUE_DEBUG").is_ok() {
-            eprintln!(
-                "Block result: {:?}, has_expr: {}",
-                result,
-                block.expr.is_some()
-            );
-        }
+        debug!(
+            target: "rue::mir::blocks",
+            ?result,
+            has_expr = block.expr.is_some(),
+            "Block lowering result"
+        );
 
         result
     }
@@ -431,12 +425,13 @@ impl MirBuilder {
                     .get(name)
                     .copied()
                     .unwrap_or_else(|| panic!("Undefined variable: {name}"));
-                if std::env::var("RUE_DEBUG_VAR").is_ok() || std::env::var("RUE_DEBUG").is_ok() {
-                    eprintln!(
-                        "Variable lookup: {} -> {:?} (current vars: {:?})",
-                        name, temp, self.variables
-                    );
-                }
+                trace!(
+                    target: "rue::mir::vars",
+                    variable = %name,
+                    ?temp,
+                    ?self.variables,
+                    "Variable lookup"
+                );
                 temp
             }
             HirExpr::Binary {
@@ -525,9 +520,7 @@ impl MirBuilder {
                 self.lower_while_expr(cond, body);
                 // While always returns unit
                 let unit_temp = self.emit_const(MirConst::Unit, Some(*span));
-                if std::env::var("RUE_DEBUG").is_ok() {
-                    eprintln!("While expr returns unit temp: {unit_temp:?}");
-                }
+                debug!(target: "rue::mir", ?unit_temp, "While expression returns unit temp");
                 unit_temp
             }
         }
@@ -911,26 +904,30 @@ impl MirBuilder {
 
                 if self.assigned_variables.contains(name) {
                     // Variable was assigned in the loop body - pass the new value
-                    if std::env::var("RUE_DEBUG").is_ok() {
-                        eprintln!(
-                            "While loop: {name} was assigned, passing new value: {current_temp:?}"
-                        );
-                    }
+                    debug!(
+                        target: "rue::mir::vars",
+                        variable = %name,
+                        ?current_temp,
+                        "While loop: variable was assigned, passing new value"
+                    );
                     loop_back_args.push(current_temp);
                 } else {
                     // Variable was not assigned (only shadowed) - pass the loop-carried value
-                    if std::env::var("RUE_DEBUG").is_ok() {
-                        eprintln!(
-                            "While loop: {name} was not assigned, passing loop-carried value: {loop_entry_temp:?}"
-                        );
-                    }
+                    debug!(
+                        target: "rue::mir::vars",
+                        variable = %name,
+                        ?loop_entry_temp,
+                        "While loop: variable was not assigned, passing loop-carried value"
+                    );
                     loop_back_args.push(loop_entry_temp);
                 }
             } else {
                 // This shouldn't happen in well-formed code
-                if std::env::var("RUE_DEBUG").is_ok() {
-                    eprintln!("While loop variable {name} not found in current scope");
-                }
+                debug!(
+                    target: "rue::mir::vars",
+                    variable = %name,
+                    "While loop variable not found in current scope"
+                );
             }
         }
 

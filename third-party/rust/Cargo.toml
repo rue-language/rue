@@ -23,6 +23,7 @@ edition = "2024"
 version = "0.1.0"
 
 [dependencies]
+atty = "0.2"
 bpaf = "0.9.20"
 criterion = "0.5.0"
 indexmap = "2.0.0"
@@ -34,4 +35,7 @@ tempfile = "3.8.0"
 thiserror = "2.0.12"
 tokio = { version = "1.0", features = ["full"] }
 tower-lsp = "0.20"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "json"] }
+tracing-tree = "0.3"
 # END: DEPENDENCIES

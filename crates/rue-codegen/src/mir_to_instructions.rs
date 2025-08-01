@@ -10,6 +10,7 @@ use rue_ir::mir::{
 };
 use rue_ir::target::Register;
 use std::collections::HashMap;
+use tracing::{debug, trace};
 
 /// Lowers MIR to Instructions
 pub struct MirToInstructions {
@@ -75,16 +76,12 @@ impl MirToInstructions {
     /// Get or create a virtual register for a temp
     fn get_vreg(&mut self, temp: Temp) -> VReg {
         if let Some(&vreg) = self.temp_to_vreg.get(&temp) {
-            if std::env::var("RUE_DEBUG_VREGS").is_ok() {
-                eprintln!("get_vreg: temp {temp:?} -> existing vreg {vreg:?}");
-            }
+            trace!(target: "rue::codegen::regalloc", ?temp, ?vreg, "get_vreg: temp -> existing vreg");
             vreg
         } else {
             let vreg = self.fresh_vreg();
             self.temp_to_vreg.insert(temp, vreg);
-            if std::env::var("RUE_DEBUG_VREGS").is_ok() {
-                eprintln!("get_vreg: temp {temp:?} -> new vreg {vreg:?}");
-            }
+            trace!(target: "rue::codegen::regalloc", ?temp, ?vreg, "get_vreg: temp -> new vreg");
             vreg
         }
     }
@@ -102,9 +99,7 @@ impl MirToInstructions {
 
     /// Emit an instruction
     fn emit(&mut self, instr: Instruction) {
-        if std::env::var("RUE_DEBUG_INSTRUCTIONS").is_ok() {
-            eprintln!("EMIT: {instr:?}");
-        }
+        debug!(target: "rue::codegen::instructions", ?instr, "Emitting instruction");
         self.instructions.push(instr);
     }
 
@@ -169,12 +164,13 @@ impl MirToInstructions {
                 self.block_param_slots
                     .insert((block.id, i), self.block_param_stack_offset);
 
-                if std::env::var("RUE_DEBUG").is_ok() {
-                    eprintln!(
-                        "Allocated block param slot: block {:?}, param {} -> offset {}",
-                        block.id, i, self.block_param_stack_offset
-                    );
-                }
+                debug!(
+                    target: "rue::codegen",
+                    block = ?block.id,
+                    param_index = i,
+                    offset = self.block_param_stack_offset,
+                    "Allocated block param slot"
+                );
             }
         }
 
@@ -244,12 +240,15 @@ impl MirToInstructions {
                         offset: slot_offset,
                     });
 
-                    if std::env::var("RUE_DEBUG").is_ok() {
-                        eprintln!(
-                            "Loading block param: block {:?}, param {} (temp {:?}) from offset {} into vreg {:?}",
-                            block.id, i, param_temp, slot_offset, param_vreg
-                        );
-                    }
+                    debug!(
+                        target: "rue::codegen",
+                        block = ?block.id,
+                        param_index = i,
+                        ?param_temp,
+                        offset = slot_offset,
+                        ?param_vreg,
+                        "Loading block param from stack"
+                    );
                 }
             }
         }
@@ -498,9 +497,7 @@ impl MirToInstructions {
             MirTerminator::Return { value, .. } => {
                 if let Some(val) = value {
                     let vreg = self.get_vreg(*val);
-                    if std::env::var("RUE_DEBUG").is_ok() {
-                        eprintln!("Return terminator: temp {val:?} -> vreg {vreg:?}");
-                    }
+                    debug!(target: "rue::codegen", ?val, ?vreg, "Return terminator: temp -> vreg");
                     self.emit(Instruction::Return { value: Some(vreg) });
                 } else {
                     self.emit(Instruction::Return { value: None });
@@ -526,11 +523,15 @@ impl MirToInstructions {
                 // Get VReg for the argument value
                 let arg_vreg = self.get_vreg(arg_temp);
 
-                if std::env::var("RUE_DEBUG_BLOCK_ARGS").is_ok() {
-                    eprintln!(
-                        "About to store block arg: target block {target_block:?}, arg {i} (temp {arg_temp:?}, vreg {arg_vreg:?}) to offset {slot_offset}"
-                    );
-                }
+                trace!(
+                    target: "rue::mir::blocks",
+                    ?target_block,
+                    arg_index = i,
+                    ?arg_temp,
+                    ?arg_vreg,
+                    offset = slot_offset,
+                    "About to store block arg to stack"
+                );
 
                 // Store the argument value to the dedicated slot
                 self.emit(Instruction::Store {
@@ -538,16 +539,18 @@ impl MirToInstructions {
                     offset: slot_offset,
                 });
 
-                if std::env::var("RUE_DEBUG").is_ok()
-                    || std::env::var("RUE_DEBUG_BLOCK_ARGS").is_ok()
-                {
-                    eprintln!(
-                        "Storing block arg: target block {target_block:?}, arg {i} (temp {arg_temp:?}, vreg {arg_vreg:?}) to offset {slot_offset}"
-                    );
-                    // Also print what instruction we just emitted
-                    if let Some(last_inst) = self.instructions.last() {
-                        eprintln!("  Emitted: {last_inst:?}");
-                    }
+                debug!(
+                    target: "rue::mir::blocks",
+                    ?target_block,
+                    arg_index = i,
+                    ?arg_temp,
+                    ?arg_vreg,
+                    offset = slot_offset,
+                    "Storing block arg to stack"
+                );
+                // Also log what instruction we just emitted
+                if let Some(last_inst) = self.instructions.last() {
+                    trace!(target: "rue::mir::blocks", ?last_inst, "Last emitted instruction");
                 }
             }
         }

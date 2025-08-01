@@ -15,6 +15,7 @@ rue-optimize = { path = "../rue-optimize" }
 indexmap.workspace = true
 thiserror.workspace = true
 object.workspace = true
+tracing.workspace = true
 
 [dev-dependencies]
 criterion.workspace = true

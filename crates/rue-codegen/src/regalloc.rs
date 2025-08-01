@@ -26,6 +26,7 @@
 use crate::VReg;
 use rue_ir::target::{MachineInstr, Register};
 use std::collections::HashMap;
+use tracing::{debug, trace};
 
 /// Size of a stack slot in bytes
 const SLOT_SIZE: i64 = 8;
@@ -141,12 +142,12 @@ impl RegisterAllocator {
         *self.home_slots.entry(vreg).or_insert_with(|| {
             // Allocate 8-byte slot (will be enhanced for variable sizes)
             self.stack_offset -= SLOT_SIZE;
-            if std::env::var("RUE_DEBUG").is_ok() {
-                eprintln!(
-                    "Allocating home slot for {:?} at offset {}",
-                    vreg, self.stack_offset
-                );
-            }
+            debug!(
+                target: "rue::codegen::regalloc",
+                ?vreg,
+                offset = self.stack_offset,
+                "Allocating home slot for VReg"
+            );
             self.stack_offset
         })
     }
@@ -316,12 +317,13 @@ impl RegisterAllocator {
                     if *v == vreg && !forbidden.contains(&state.reg) =>
                 {
                     // Already in this register, no need to reload
-                    if std::env::var("RUE_DEBUG").is_ok() {
-                        eprintln!(
-                            "ensure_reg: VReg {:?} found in register {:?} (state: {:?})",
-                            vreg, state.reg, state.state
-                        );
-                    }
+                    trace!(
+                        target: "rue::codegen::regalloc",
+                        ?vreg,
+                        register = ?state.reg,
+                        state = ?state.state,
+                        "ensure_reg: VReg found in register"
+                    );
                     return Ok(state.reg);
                 }
                 _ => {}
@@ -361,13 +363,12 @@ impl RegisterAllocator {
         // (like the result of "n - 1") were loading garbage from uninitialized memory.
         let should_load = self.initialized_vregs.contains(&vreg);
 
-        if std::env::var("RUE_DEBUG").is_ok() {
-            if should_load {
-                eprintln!("ensure_reg: VReg {vreg:?} is initialized, loading from memory");
-            } else {
-                eprintln!("ensure_reg: VReg {vreg:?} is uninitialized, treating as new value");
-            }
-        }
+        debug!(
+            target: "rue::codegen::regalloc",
+            ?vreg,
+            initialized = should_load,
+            "ensure_reg: VReg initialization status"
+        );
 
         if should_load {
             // Load from home slot

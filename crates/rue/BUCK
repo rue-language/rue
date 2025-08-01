@@ -9,6 +9,7 @@ cargo.rust_binary(
         "//crates/rue-compiler:rue-compiler",
         "//crates/rue-codegen:rue-codegen",
         "//third-party/rust:bpaf",
+        "//third-party/rust:tracing",
     ],
     visibility = ["PUBLIC"],
 )

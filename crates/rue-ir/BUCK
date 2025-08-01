@@ -7,6 +7,7 @@ cargo.rust_library(
     edition = "2021",
     deps = [
         "//crates/rue-lexer:rue-lexer",
+        "//third-party/rust:tracing",
     ],
     visibility = ["PUBLIC"],
 )
@@ -18,5 +19,6 @@ rust_test(
     edition = "2021",
     deps = [
         "//crates/rue-lexer:rue-lexer",
+        "//third-party/rust:tracing",
     ],
 )

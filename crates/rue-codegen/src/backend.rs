@@ -3,6 +3,7 @@ use crate::regalloc::RegisterAllocator;
 use crate::{CodegenError, Instruction, Label};
 use rue_ir::target::MachineInstr;
 use std::collections::HashMap;
+use tracing::debug;
 
 /// Backend that handles compilation from high-level IR to machine instructions.
 /// Manages function boundaries, label assignment, and register allocation.
@@ -116,9 +117,12 @@ impl Backend {
             // Set the initial stack offset based on block parameters used in this function
             if let Some(ref name) = function_name {
                 let stack_offset = mir_lowerer.get_function_stack_offset(name);
-                if std::env::var("RUE_DEBUG").is_ok() {
-                    eprintln!("Setting initial stack offset for function '{name}': {stack_offset}");
-                }
+                debug!(
+                    target: "rue::codegen",
+                    function = %name,
+                    stack_offset,
+                    "Setting initial stack offset for function"
+                );
                 function_allocator.set_initial_stack_offset(stack_offset);
             }
 

@@ -11,6 +11,7 @@ path = "src/main.rs"
 rue-compiler = { path = "../rue-compiler" }
 rue-codegen = { path = "../rue-codegen" }
 bpaf.workspace = true
+tracing.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

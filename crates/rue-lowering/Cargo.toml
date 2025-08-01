@@ -6,5 +6,6 @@ edition.workspace = true
 [dependencies]
 rue-ir = { path = "../rue-ir" }
 rue-lexer = { path = "../rue-lexer" }
+tracing.workspace = true
 
 [dev-dependencies]
