@@ -18,6 +18,7 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 tracing-tree.workspace = true
 atty.workspace = true
+thiserror.workspace = true
 
 [dev-dependencies]
 regex.workspace = true

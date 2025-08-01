@@ -15,6 +15,7 @@ cargo.rust_library(
         "//crates/rue-ir:rue-ir",
         "//crates/rue-target:rue-target",
         "//third-party/rust:indexmap",
+        "//third-party/rust:thiserror",
         "//third-party/rust:tracing",
     ],
     visibility = ["PUBLIC"],
@@ -37,5 +38,6 @@ rust_test(
         "//third-party/rust:indexmap",
         "//third-party/rust:regex",
         "//third-party/rust:tracing",
+        "//third-party/rust:thiserror",
     ],
 )

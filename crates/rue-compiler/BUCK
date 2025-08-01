@@ -20,6 +20,7 @@ cargo.rust_library(
         "//third-party/rust:tracing-subscriber",
         "//third-party/rust:atty",
         "//third-party/rust:tracing-tree",
+        "//third-party/rust:thiserror",
     ],
     visibility = ["PUBLIC"],
 )
@@ -45,6 +46,7 @@ rust_test(
         "//third-party/rust:tracing-subscriber",
         "//third-party/rust:atty",
         "//third-party/rust:tracing-tree",
+        "//third-party/rust:thiserror",
     ],
 )
 

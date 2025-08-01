@@ -31,8 +31,7 @@ fn compile_and_run(source: &str, input: Option<&str>) -> Result<(i32, String), S
     );
 
     // Compile
-    let executable =
-        compile_file(&db, file).map_err(|e| format!("Compilation failed: {}", e.message))?;
+    let executable = compile_file(&db, file).map_err(|e| format!("Compilation failed: {e}"))?;
 
     // Write executable
     fs::write(&output_path, &*executable)

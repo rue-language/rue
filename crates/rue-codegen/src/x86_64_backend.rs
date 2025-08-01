@@ -9,39 +9,28 @@ use std::collections::HashMap;
 use tracing::{debug, trace};
 
 /// Errors that can occur during lowering
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, thiserror::Error)]
 pub enum LoweringError {
     /// Register allocation failed
+    #[error("Register allocation error: {0}")]
     RegisterAllocation(String),
+
     /// Too many arguments for function call
+    #[error("Too many arguments for function call")]
     TooManyArguments,
+
     /// Cannot pop from empty stack
+    #[error("Cannot pop from empty stack: push_count would underflow")]
     StackUnderflow,
+
     /// Unsupported value type in operation
+    #[error("PhysicalReg not supported in {0}")]
     UnsupportedValueType(&'static str),
+
     /// No available scratch register
+    #[error("No available scratch register")]
     NoScratchRegister,
 }
-
-impl std::fmt::Display for LoweringError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            LoweringError::RegisterAllocation(msg) => {
-                write!(f, "Register allocation error: {msg}")
-            }
-            LoweringError::TooManyArguments => write!(f, "Too many arguments for function call"),
-            LoweringError::StackUnderflow => {
-                write!(f, "Cannot pop from empty stack: push_count would underflow")
-            }
-            LoweringError::UnsupportedValueType(op) => {
-                write!(f, "PhysicalReg not supported in {op}")
-            }
-            LoweringError::NoScratchRegister => write!(f, "No available scratch register"),
-        }
-    }
-}
-
-impl std::error::Error for LoweringError {}
 
 impl From<String> for LoweringError {
     fn from(s: String) -> Self {

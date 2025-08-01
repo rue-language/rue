@@ -22,7 +22,8 @@ mod hir_validation_integration_test;
 mod hir_roundtrip_test;
 
 // Semantic analysis types
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, thiserror::Error)]
+#[error("{message}")]
 pub struct SemanticError {
     pub message: String,
     pub span: rue_lexer::Span,

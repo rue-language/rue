@@ -1,11 +1,13 @@
 use rue_ast::CstRoot;
-use rue_lexer::Span;
-use rue_parser::ParseError;
-use rue_semantic::{SemanticError, analyze_cst};
+use rue_semantic::analyze_cst;
 use std::sync::Arc;
 
+pub mod error;
 pub mod logging;
 pub mod pipeline;
+
+// Re-export the error type for convenience
+pub use error::RueError;
 
 // Re-export the compilation functions for external use
 pub use pipeline::{compile_hir_via_mir_to_assembly, compile_hir_via_mir_to_executable};
@@ -24,25 +26,19 @@ pub struct SourceFile {
 pub fn parse_file(
     db: &dyn salsa::Database,
     file: SourceFile,
-) -> Result<Arc<CstRoot>, Arc<ParseError>> {
+) -> Result<Arc<CstRoot>, Arc<RueError>> {
     let text = file.text(db);
     let mut lexer = rue_lexer::Lexer::new(text.as_str());
     let tokens = match lexer.tokenize() {
         Ok(tokens) => tokens,
         Err(e) => {
-            return Err(Arc::new(ParseError {
-                message: format!("Lexical error: {}", e.message),
-                span: Span {
-                    start: e.position,
-                    end: e.position + 1,
-                },
-            }));
+            return Err(Arc::new(e.into()));
         }
     };
 
     match rue_parser::parse(tokens) {
         Ok(cst) => Ok(Arc::new(cst)),
-        Err(e) => Err(Arc::new(e)),
+        Err(e) => Err(Arc::new(e.into())),
     }
 }
 
@@ -50,22 +46,19 @@ pub fn parse_file(
 pub fn analyze_file(
     db: &dyn salsa::Database,
     file: SourceFile,
-) -> Result<Arc<rue_semantic::AnalysisResult>, Arc<SemanticError>> {
+) -> Result<Arc<rue_semantic::AnalysisResult>, Arc<RueError>> {
     // Parse the file first
     let ast = match parse_file(db, file) {
         Ok(ast) => ast,
         Err(parse_error) => {
-            return Err(Arc::new(SemanticError {
-                message: format!("Parse error: {}", parse_error.message),
-                span: parse_error.span,
-            }));
+            return Err(parse_error);
         }
     };
 
     // Analyze the AST
     match analyze_cst(&ast) {
         Ok(result) => Ok(Arc::new(result)),
-        Err(e) => Err(Arc::new(e)),
+        Err(e) => Err(Arc::new(e.into())),
     }
 }
 
@@ -203,7 +196,11 @@ fn main() -> i32 {
         assert!(result.is_err());
 
         let error = result.unwrap_err();
-        assert!(error.message.contains("Undefined variable: undefined_var"));
+        assert!(
+            error
+                .to_string()
+                .contains("Undefined variable: undefined_var")
+        );
     }
 
     #[test]
@@ -225,7 +222,11 @@ fn main() -> i32 {
         assert!(result.is_err());
 
         let error = result.unwrap_err();
-        assert!(error.message.contains("Undefined function: undefined_func"));
+        assert!(
+            error
+                .to_string()
+                .contains("Undefined function: undefined_func")
+        );
     }
 
     #[test]
@@ -251,7 +252,7 @@ fn main() -> i32 {
         assert!(result.is_err());
 
         let error = result.unwrap_err();
-        assert!(error.message.contains("Expected 1 arguments, got 0"));
+        assert!(error.to_string().contains("Expected 1 arguments, got 0"));
     }
 
     #[test]
@@ -355,12 +356,6 @@ fn main() -> i32 {
     }
 }
 
-// Simplified compilation error for Salsa
-#[derive(Debug, Clone, PartialEq)]
-pub struct CompileError {
-    pub message: String,
-}
-
 // Compilation options
 #[salsa::input]
 pub struct CompileOptions {
@@ -371,23 +366,19 @@ pub struct CompileOptions {
 pub fn compile_file(
     db: &dyn salsa::Database,
     file: SourceFile,
-) -> Result<Arc<Vec<u8>>, Arc<CompileError>> {
+) -> Result<Arc<Vec<u8>>, Arc<RueError>> {
     // Parse and analyze the file first
     let analysis = match analyze_file(db, file) {
         Ok(analysis) => analysis,
-        Err(semantic_error) => {
-            return Err(Arc::new(CompileError {
-                message: format!("Semantic error: {}", semantic_error.message),
-            }));
+        Err(error) => {
+            return Err(error);
         }
     };
 
     // Generate executable from HIR via MIR (without optimizations)
     match pipeline::compile_hir_via_mir_to_executable(&analysis.hir, false) {
         Ok(executable) => Ok(Arc::new(executable)),
-        Err(e) => Err(Arc::new(CompileError {
-            message: format!("{e}"),
-        })),
+        Err(e) => Err(Arc::new(RueError::Compile(e.to_string()))),
     }
 }
 
@@ -395,23 +386,19 @@ pub fn compile_file(
 pub fn compile_file_to_assembly(
     db: &dyn salsa::Database,
     file: SourceFile,
-) -> Result<Arc<String>, Arc<CompileError>> {
+) -> Result<Arc<String>, Arc<RueError>> {
     // Parse and analyze the file first
     let analysis = match analyze_file(db, file) {
         Ok(analysis) => analysis,
-        Err(semantic_error) => {
-            return Err(Arc::new(CompileError {
-                message: format!("Semantic error: {}", semantic_error.message),
-            }));
+        Err(error) => {
+            return Err(error);
         }
     };
 
     // Generate assembly from HIR via MIR (without optimizations)
     match pipeline::compile_hir_via_mir_to_assembly(&analysis.hir, false) {
         Ok(assembly) => Ok(Arc::new(assembly)),
-        Err(e) => Err(Arc::new(CompileError {
-            message: format!("{e}"),
-        })),
+        Err(e) => Err(Arc::new(RueError::Compile(e.to_string()))),
     }
 }
 
@@ -420,23 +407,19 @@ pub fn compile_file_with_options(
     db: &dyn salsa::Database,
     file: SourceFile,
     options: CompileOptions,
-) -> Result<Arc<Vec<u8>>, Arc<CompileError>> {
+) -> Result<Arc<Vec<u8>>, Arc<RueError>> {
     // Parse and analyze the file first
     let analysis = match analyze_file(db, file) {
         Ok(analysis) => analysis,
-        Err(semantic_error) => {
-            return Err(Arc::new(CompileError {
-                message: format!("Semantic error: {}", semantic_error.message),
-            }));
+        Err(error) => {
+            return Err(error);
         }
     };
 
     // Generate executable from HIR via MIR with optimization settings
     match pipeline::compile_hir_via_mir_to_executable(&analysis.hir, options.optimize(db)) {
         Ok(executable) => Ok(Arc::new(executable)),
-        Err(e) => Err(Arc::new(CompileError {
-            message: format!("{e}"),
-        })),
+        Err(e) => Err(Arc::new(RueError::Compile(e.to_string()))),
     }
 }
 
@@ -445,22 +428,18 @@ pub fn compile_file_to_assembly_with_options(
     db: &dyn salsa::Database,
     file: SourceFile,
     options: CompileOptions,
-) -> Result<Arc<String>, Arc<CompileError>> {
+) -> Result<Arc<String>, Arc<RueError>> {
     // Parse and analyze the file first
     let analysis = match analyze_file(db, file) {
         Ok(analysis) => analysis,
-        Err(semantic_error) => {
-            return Err(Arc::new(CompileError {
-                message: format!("Semantic error: {}", semantic_error.message),
-            }));
+        Err(error) => {
+            return Err(error);
         }
     };
 
     // Generate assembly from HIR via MIR with optimization settings
     match pipeline::compile_hir_via_mir_to_assembly(&analysis.hir, options.optimize(db)) {
         Ok(assembly) => Ok(Arc::new(assembly)),
-        Err(e) => Err(Arc::new(CompileError {
-            message: format!("{e}"),
-        })),
+        Err(e) => Err(Arc::new(RueError::Compile(e.to_string()))),
     }
 }

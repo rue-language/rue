@@ -1,20 +1,9 @@
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("Lexical error at position {position}: {message}")]
 pub struct LexError {
     pub message: String,
     pub position: usize,
 }
-
-impl std::fmt::Display for LexError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "Lexical error at position {}: {}",
-            self.position, self.message
-        )
-    }
-}
-
-impl std::error::Error for LexError {}
 
 pub type LexResult<T> = Result<T, LexError>;
 

@@ -148,7 +148,16 @@ fn main() {
                 }
             },
             Err(error) => {
-                eprintln!("Compilation failed: {}", error.message);
+                // Check if we have source code to show error with context
+                let source_file = file.text(&db);
+                if let Some(_span) = error.span() {
+                    eprintln!(
+                        "Compilation failed:\n{}",
+                        error.format_with_source(&source_file)
+                    );
+                } else {
+                    eprintln!("Compilation failed: {error}");
+                }
                 std::process::exit(1);
             }
         }
@@ -182,7 +191,16 @@ fn main() {
                 }
             }
             Err(error) => {
-                eprintln!("Compilation failed: {}", error.message);
+                // Check if we have source code to show error with context
+                let source_file = file.text(&db);
+                if let Some(_span) = error.span() {
+                    eprintln!(
+                        "Compilation failed:\n{}",
+                        error.format_with_source(&source_file)
+                    );
+                } else {
+                    eprintln!("Compilation failed: {error}");
+                }
                 std::process::exit(1);
             }
         }
