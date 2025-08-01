@@ -8,6 +8,7 @@ cargo.rust_library(
     deps = [
         "//crates/rue-lexer:rue-lexer",
         "//crates/rue-ir:rue-ir",
+        "//third-party/rust:tracing",
     ],
     visibility = ["PUBLIC"],
 )
@@ -20,5 +21,6 @@ rust_test(
     deps = [
         "//crates/rue-lexer:rue-lexer",
         "//crates/rue-ir:rue-ir",
+        "//third-party/rust:tracing",
     ],
 )

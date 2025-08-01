@@ -4,10 +4,13 @@
 //! It performs use-def analysis to track which temporaries are actually needed
 //! and eliminates assignments to dead temporaries.
 
+use crate::pass_manager::{Pass, PassResult};
+use crate::visitor::{MirFolder, MirVisitor, VisitorControl};
 use rue_ir::mir::{
     BasicBlock, BlockId, MirFunction, MirProgram, MirStatement, MirTerminator, MirValue, Temp,
 };
 use std::collections::{HashMap, HashSet};
+use std::time::Instant;
 
 /// Dead code elimination pass
 pub struct DeadCodeElimination {
@@ -15,6 +18,21 @@ pub struct DeadCodeElimination {
     used_temps: HashSet<Temp>,
     /// Map from block ID to the set of temps used in that block
     block_uses: HashMap<BlockId, HashSet<Temp>>,
+    /// Number of transformations made in the current run
+    transformations: u32,
+}
+
+/// Helper visitor for collecting uses
+struct UseCollector {
+    used_temps: HashSet<Temp>,
+    current_block: Option<BlockId>,
+    block_uses: HashMap<BlockId, HashSet<Temp>>,
+}
+
+/// Helper folder for removing dead assignments
+struct DeadAssignmentRemover {
+    used_temps: HashSet<Temp>,
+    transformations: u32,
 }
 
 impl Default for DeadCodeElimination {
@@ -28,11 +46,13 @@ impl DeadCodeElimination {
         Self {
             used_temps: HashSet::new(),
             block_uses: HashMap::new(),
+            transformations: 0,
         }
     }
 
-    /// Run dead code elimination on a MIR program
+    /// Run dead code elimination on a MIR program (legacy interface)
     pub fn run(&mut self, program: &mut MirProgram) {
+        self.transformations = 0;
         for func in &mut program.functions {
             self.optimize_function(func);
         }
@@ -44,156 +64,27 @@ impl DeadCodeElimination {
         self.used_temps.clear();
         self.block_uses.clear();
 
-        // First pass: collect all uses
-        self.collect_uses(func);
+        // First pass: collect all uses using visitor
+        let mut collector = UseCollector {
+            used_temps: HashSet::new(),
+            current_block: None,
+            block_uses: HashMap::new(),
+        };
+        collector.visit_function(func);
 
-        // Second pass: remove dead assignments
-        self.remove_dead_assignments(func);
+        self.used_temps = collector.used_temps;
+        self.block_uses = collector.block_uses;
+
+        // Second pass: remove dead assignments using folder
+        let mut remover = DeadAssignmentRemover {
+            used_temps: self.used_temps.clone(),
+            transformations: 0,
+        };
+        *func = remover.fold_function(func.clone()).unwrap();
+        self.transformations += remover.transformations;
 
         // Third pass: remove unreachable blocks
         self.remove_unreachable_blocks(func);
-    }
-
-    /// Collect all temporary uses in the function
-    fn collect_uses(&mut self, func: &MirFunction) {
-        for block in &func.blocks {
-            let mut block_uses = HashSet::new();
-
-            // Collect uses from statements
-            for stmt in &block.statements {
-                match stmt {
-                    MirStatement::Assign { value, .. } => {
-                        self.collect_value_uses(value, &mut block_uses);
-                    }
-                }
-            }
-
-            // Collect uses from terminator
-            self.collect_terminator_uses(&block.terminator, &mut block_uses);
-
-            // Add to global used set
-            self.used_temps.extend(&block_uses);
-            self.block_uses.insert(block.id, block_uses);
-        }
-
-        // Also mark block parameters as used if they're passed as arguments
-        for block in &func.blocks {
-            match &block.terminator {
-                MirTerminator::Goto { args, .. } => {
-                    // Mark arguments as used
-                    for arg in args {
-                        self.used_temps.insert(*arg);
-                    }
-                }
-                MirTerminator::Branch {
-                    then_args,
-                    else_args,
-                    ..
-                } => {
-                    // Mark arguments as used
-                    for arg in then_args {
-                        self.used_temps.insert(*arg);
-                    }
-                    for arg in else_args {
-                        self.used_temps.insert(*arg);
-                    }
-                }
-                MirTerminator::Switch {
-                    targets,
-                    default_args,
-                    ..
-                } => {
-                    // Mark all target arguments as used
-                    for (_, _, target_args) in targets {
-                        for arg in target_args {
-                            self.used_temps.insert(*arg);
-                        }
-                    }
-                    // Mark default arguments as used
-                    for arg in default_args {
-                        self.used_temps.insert(*arg);
-                    }
-                }
-                _ => {}
-            }
-        }
-    }
-
-    /// Collect uses from a value
-    fn collect_value_uses(&self, value: &MirValue, uses: &mut HashSet<Temp>) {
-        match value {
-            MirValue::Use(temp) => {
-                uses.insert(*temp);
-            }
-            MirValue::BinaryOp { lhs, rhs, .. } => {
-                uses.insert(*lhs);
-                uses.insert(*rhs);
-            }
-            MirValue::UnaryOp { operand, .. } => {
-                uses.insert(*operand);
-            }
-            MirValue::Call { args, .. } => {
-                for arg in args {
-                    uses.insert(*arg);
-                }
-            }
-            MirValue::Const(_) => {}
-        }
-    }
-
-    /// Collect uses from a terminator
-    fn collect_terminator_uses(&self, term: &MirTerminator, uses: &mut HashSet<Temp>) {
-        match term {
-            MirTerminator::Return { value, .. } => {
-                if let Some(temp) = value {
-                    uses.insert(*temp);
-                }
-            }
-            MirTerminator::Branch { condition, .. } => {
-                uses.insert(*condition);
-            }
-            MirTerminator::Switch { discriminant, .. } => {
-                uses.insert(*discriminant);
-            }
-            MirTerminator::Goto { .. } | MirTerminator::Unreachable { .. } => {}
-        }
-    }
-
-    /// Remove assignments to dead temporaries
-    fn remove_dead_assignments(&mut self, func: &mut MirFunction) {
-        for block in &mut func.blocks {
-            // Filter out dead assignments
-            block.statements.retain(|stmt| match stmt {
-                MirStatement::Assign { dest, value, .. } => {
-                    // Keep assignment if:
-                    // 1. The destination is used
-                    // 2. The value has side effects (function calls)
-                    if self.used_temps.contains(dest) {
-                        true
-                    } else {
-                        // Check if the value has side effects
-                        !self.is_pure_value(value)
-                    }
-                }
-            });
-        }
-    }
-
-    /// Check if a value is pure (has no side effects)
-    fn is_pure_value(&self, value: &MirValue) -> bool {
-        match value {
-            MirValue::Use(_)
-            | MirValue::Const(_)
-            | MirValue::BinaryOp { .. }
-            | MirValue::UnaryOp { .. } => true,
-            MirValue::Call { kind, .. } => {
-                // Use the CallKind to determine if the call has side effects
-                match kind {
-                    rue_ir::mir::CallKind::Pure => true, // Pure calls can be eliminated if unused
-                    rue_ir::mir::CallKind::Impure => false, // Impure calls have side effects
-                }
-            }
-        }
     }
 
     /// Remove unreachable blocks from the function
@@ -201,8 +92,13 @@ impl DeadCodeElimination {
         // Find all reachable blocks starting from entry
         let reachable = self.find_reachable_blocks(func.entry_block, &func.blocks);
 
+        let original_len = func.blocks.len();
+
         // Remove unreachable blocks
         func.blocks.retain(|block| reachable.contains(&block.id));
+
+        // Count removed blocks as transformations
+        self.transformations += (original_len - func.blocks.len()) as u32;
     }
 
     /// Find all reachable blocks from a starting block
@@ -247,6 +143,116 @@ impl DeadCodeElimination {
         }
 
         reachable
+    }
+}
+
+// Visitor implementations
+
+impl MirVisitor for UseCollector {
+    fn visit_block(&mut self, block: &BasicBlock) -> VisitorControl {
+        self.current_block = Some(block.id);
+        let mut block_uses = HashSet::new();
+
+        // Store the current set to collect block-specific uses
+        let old_uses = self.used_temps.clone();
+
+        // Visit all components of the block
+        crate::visitor::walk_block(self, block);
+
+        // Calculate block-specific uses
+        for temp in &self.used_temps {
+            if !old_uses.contains(temp) {
+                block_uses.insert(*temp);
+            }
+        }
+
+        self.block_uses.insert(block.id, block_uses);
+        VisitorControl::Continue
+    }
+
+    fn visit_statement(&mut self, stmt: &MirStatement) -> VisitorControl {
+        match stmt {
+            MirStatement::Assign { value, .. } => {
+                // Only visit the value, not the destination
+                self.visit_value(value)
+            }
+        }
+    }
+
+    fn visit_temp(&mut self, temp: &Temp) -> VisitorControl {
+        self.used_temps.insert(*temp);
+        VisitorControl::Continue
+    }
+}
+
+impl MirFolder for DeadAssignmentRemover {
+    type Error = ();
+
+    fn fold_statement(&mut self, stmt: MirStatement) -> Result<Option<MirStatement>, Self::Error> {
+        match &stmt {
+            MirStatement::Assign { dest, value, .. } => {
+                // Keep assignment if:
+                // 1. The destination is used
+                // 2. The value has side effects (function calls)
+                if self.used_temps.contains(dest) {
+                    Ok(Some(stmt))
+                } else if !Self::is_pure_value(value) {
+                    // Keep statements with side effects
+                    Ok(Some(stmt))
+                } else {
+                    // Remove dead assignment
+                    self.transformations += 1;
+                    Ok(None)
+                }
+            }
+        }
+    }
+}
+
+impl DeadAssignmentRemover {
+    /// Check if a value is pure (has no side effects)
+    fn is_pure_value(value: &MirValue) -> bool {
+        match value {
+            MirValue::Use(_)
+            | MirValue::Const(_)
+            | MirValue::BinaryOp { .. }
+            | MirValue::UnaryOp { .. } => true,
+            MirValue::Call { kind, .. } => {
+                // Use the CallKind to determine if the call has side effects
+                match kind {
+                    rue_ir::mir::CallKind::Pure => true, // Pure calls can be eliminated if unused
+                    rue_ir::mir::CallKind::Impure => false, // Impure calls have side effects
+                }
+            }
+        }
+    }
+}
+
+impl Pass for DeadCodeElimination {
+    fn name(&self) -> &'static str {
+        "dce"
+    }
+
+    fn run(&mut self, program: &mut MirProgram) -> PassResult {
+        let start = Instant::now();
+        self.transformations = 0;
+
+        for func in &mut program.functions {
+            self.optimize_function(func);
+        }
+
+        let duration = start.elapsed();
+        let changed = self.transformations > 0;
+
+        if changed {
+            PassResult::changed(duration, self.transformations)
+        } else {
+            PassResult::no_change(duration)
+        }
+    }
+
+    fn description(&self) -> &'static str {
+        "Removes assignments to temporaries that are never used and eliminates unreachable blocks"
     }
 }
 

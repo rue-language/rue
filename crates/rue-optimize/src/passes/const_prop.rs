@@ -3,16 +3,21 @@
 //! This optimization pass evaluates constant expressions at compile time
 //! and replaces them with their computed values.
 
+use crate::pass_manager::{Pass, PassResult};
+use crate::visitor::{MirMutVisitor, VisitorControl};
 use rue_ir::mir::{
-    BasicBlock, MirBinOp, MirConst, MirFunction, MirProgram, MirStatement, MirTerminator,
-    MirUnaryOp, MirValue, Temp,
+    MirBinOp, MirConst, MirFunction, MirProgram, MirStatement, MirTerminator, MirUnaryOp, MirValue,
+    Temp,
 };
 use std::collections::HashMap;
+use std::time::Instant;
 
 /// Constant propagation pass
 pub struct ConstProp {
     /// Known constant values for temporaries
     constants: HashMap<Temp, MirConst>,
+    /// Number of transformations made in the current run
+    transformations: u32,
 }
 
 impl Default for ConstProp {
@@ -25,11 +30,13 @@ impl ConstProp {
     pub fn new() -> Self {
         Self {
             constants: HashMap::new(),
+            transformations: 0,
         }
     }
 
-    /// Run constant propagation on a MIR program
+    /// Run constant propagation on a MIR program (legacy interface)
     pub fn run(&mut self, program: &mut MirProgram) {
+        self.transformations = 0;
         for func in &mut program.functions {
             self.optimize_function(func);
         }
@@ -37,46 +44,28 @@ impl ConstProp {
 
     /// Optimize a single function
     fn optimize_function(&mut self, func: &mut MirFunction) {
-        // Process each block
-        for block in &mut func.blocks {
-            self.optimize_block(block);
-        }
+        // The visitor pattern requires starting from the top
+        // visit_function will handle clearing state and traversing the function
+        let _ = self.visit_function(func);
     }
 
-    /// Optimize a single block
-    fn optimize_block(&mut self, block: &mut BasicBlock) {
-        // Clear constants for new block (simplified - real impl would handle control flow)
-        self.constants.clear();
-
-        // Process statements
-        let mut new_statements = Vec::new();
-
-        for stmt in &block.statements {
-            match stmt {
-                MirStatement::Assign { dest, value, span } => {
-                    // Try to evaluate the value as a constant
-                    if let Some(const_val) = self.evaluate_value(value) {
-                        // Record this temp as a constant
-                        self.constants.insert(*dest, const_val);
-
-                        // Replace with constant assignment
-                        new_statements.push(MirStatement::Assign {
-                            dest: *dest,
-                            value: MirValue::Const(const_val),
-                            span: *span,
-                        });
-                    } else {
-                        // Keep original statement
-                        new_statements.push(stmt.clone());
-                    }
+    /// Propagate constants in a value (replace temp uses with known constants)
+    fn propagate_constants_in_value(&self, value: &mut MirValue) {
+        match value {
+            MirValue::Use(temp) => {
+                if let Some(const_val) = self.constants.get(temp) {
+                    *value = MirValue::Const(*const_val);
                 }
             }
+            MirValue::BinaryOp { .. } => {
+                // No need to modify lhs/rhs as they are temps, not values
+                // The evaluation will handle looking them up
+            }
+            MirValue::UnaryOp { .. } => {
+                // Same as above
+            }
+            _ => {}
         }
-
-        block.statements = new_statements;
-
-        // Optimize terminator
-        self.optimize_terminator(&mut block.terminator);
     }
 
     /// Try to evaluate a value as a constant
@@ -93,17 +82,18 @@ impl ConstProp {
                 Self::fold_binop(*op, lhs_const, rhs_const)
             }
             MirValue::UnaryOp { op, operand } => {
+                // Get constant value for operand
                 let operand_const = self.constants.get(operand)?;
 
                 // Fold the unary operation
                 Self::fold_unop(*op, operand_const)
             }
-            MirValue::Call { .. } => None, // Can't constant-fold function calls
+            MirValue::Call { .. } => None, // Calls cannot be constant-folded
         }
     }
 
     /// Optimize a terminator
-    fn optimize_terminator(&self, term: &mut MirTerminator) {
+    fn optimize_terminator(&mut self, term: &mut MirTerminator) {
         if let MirTerminator::Branch {
             condition,
             then_block,
@@ -128,6 +118,7 @@ impl ConstProp {
                         span: None,
                     }
                 };
+                self.transformations += 1;
             }
         }
     }
@@ -193,10 +184,91 @@ impl ConstProp {
     }
 }
 
+// Visitor implementation for constant propagation
+impl MirMutVisitor for ConstProp {
+    fn visit_function(&mut self, func: &mut MirFunction) -> VisitorControl {
+        // Clear constants for new function
+        self.constants.clear();
+
+        // Let the default implementation handle traversal
+        // by not calling this method from the trait
+        crate::visitor::walk_function_mut(self, func)
+    }
+
+    fn visit_statement(&mut self, stmt: &mut MirStatement) -> VisitorControl {
+        match stmt {
+            MirStatement::Assign { dest, value, .. } => {
+                // First, propagate constants in the value
+                self.propagate_constants_in_value(value);
+
+                // Then try to evaluate the value as a constant
+                let new_value = self.evaluate_value(value);
+
+                if let Some(const_val) = new_value {
+                    // Record this temp as a constant
+                    self.constants.insert(*dest, const_val);
+
+                    // Replace with constant value
+                    *value = MirValue::Const(const_val);
+                    self.transformations += 1;
+                } else if let MirValue::Const(c) = value {
+                    // If the value is already a constant, record it
+                    self.constants.insert(*dest, *c);
+                }
+            }
+        }
+        VisitorControl::Continue
+    }
+
+    fn visit_value(&mut self, value: &mut MirValue) -> VisitorControl {
+        self.propagate_constants_in_value(value);
+        VisitorControl::Continue
+    }
+
+    fn visit_terminator(&mut self, term: &mut MirTerminator) -> VisitorControl {
+        // First propagate constants in the terminator
+        if let MirTerminator::Branch { condition, .. } = term {
+            if let Some(_const_val) = self.constants.get(condition) {
+                // We know the condition value, but we need to let optimize_terminator handle the transformation
+            }
+        }
+        self.optimize_terminator(term);
+        VisitorControl::Continue
+    }
+}
+
+impl Pass for ConstProp {
+    fn name(&self) -> &'static str {
+        "const_prop"
+    }
+
+    fn run(&mut self, program: &mut MirProgram) -> PassResult {
+        let start = Instant::now();
+        self.transformations = 0;
+
+        for func in &mut program.functions {
+            self.optimize_function(func);
+        }
+
+        let duration = start.elapsed();
+        let changed = self.transformations > 0;
+
+        if changed {
+            PassResult::changed(duration, self.transformations)
+        } else {
+            PassResult::no_change(duration)
+        }
+    }
+
+    fn description(&self) -> &'static str {
+        "Evaluates constant expressions at compile time and replaces them with computed values"
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rue_ir::mir::{BlockId, MirBinOp, MirStatement, Temp};
+    use rue_ir::mir::{BasicBlock, BlockId, MirBinOp, MirStatement, Temp};
     use rue_ir::types::RueType;
     use rue_lexer::Span;
 
