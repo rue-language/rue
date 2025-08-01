@@ -14,6 +14,7 @@ fn make_simple_program(blocks: Vec<BasicBlock>) -> MirProgram {
             params: vec![],
             return_type: RueType::I32,
             entry_block: BlockId(0),
+            temp_types: std::collections::HashMap::new(),
             blocks,
             span: Span::dummy(),
         }],
@@ -347,6 +348,7 @@ fn test_lower_multiple_functions() {
                 params: vec![],
                 return_type: RueType::I32,
                 entry_block: BlockId(0),
+                temp_types: std::collections::HashMap::new(),
                 blocks: vec![BasicBlock {
                     id: BlockId(0),
                     params: vec![],
@@ -371,6 +373,7 @@ fn test_lower_multiple_functions() {
                 params: vec![],
                 return_type: RueType::I32,
                 entry_block: BlockId(0),
+                temp_types: std::collections::HashMap::new(),
                 blocks: vec![BasicBlock {
                     id: BlockId(0),
                     params: vec![],

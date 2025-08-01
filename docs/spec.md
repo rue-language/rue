@@ -357,12 +357,20 @@ Variable references evaluate to the current value of the variable.
 Binary operations are evaluated left-to-right according to precedence:
 
 **Arithmetic Operations** (require matching numeric types):
-- `+`: Addition (wrapping on overflow)
-- `-`: Subtraction (wrapping on overflow)  
-- `*`: Multiplication (wrapping on overflow)
+- `+`: Addition (wrapping on overflow using two's complement)
+- `-`: Subtraction (wrapping on overflow using two's complement)  
+- `*`: Multiplication (wrapping on overflow using two's complement)
 - `/`: Division (program aborts on division by zero)
 - `%`: Modulo (program aborts on division by zero)
-  - TODO: Specify that modulo uses truncated division (same as Rust/C)
+  - Modulo uses truncated division semantics (same as Rust/C)
+  - For negative dividends: `-5 % 3 = -2`, `5 % -3 = 2`, `-5 % -3 = -2`
+
+**Overflow Behavior**:
+- Both `i32` and `i64` arithmetic operations wrap on overflow using two's complement arithmetic
+- For `i32`: operations are performed, then the result is truncated to 32 bits
+  - Example: `2147483647 + 1` wraps to `-2147483648` (i32::MAX + 1 = i32::MIN)
+- For `i64`: operations wrap at 64-bit boundaries
+  - Example: `9223372036854775807 + 1` wraps to `-9223372036854775808` (i64::MAX + 1 = i64::MIN)
 
 **Comparison Operations** (require matching types, return `bool`):
 - `<=`, `>=`, `<`, `>`: Comparison (returns `true` or `false`)

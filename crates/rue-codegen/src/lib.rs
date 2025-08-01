@@ -190,6 +190,14 @@ pub enum Instruction {
         rhs: Value,
         op: BinOp,
     },
+    // Type-aware binary operations (for proper i32 overflow handling)
+    TypedBinaryOp {
+        dest: VReg,
+        lhs: Value,
+        rhs: Value,
+        op: BinOp,
+        ty: rue_ir::types::RueType,
+    },
 
     // Memory operations
     Load {

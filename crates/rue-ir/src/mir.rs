@@ -62,6 +62,8 @@ pub struct MirFunction {
     pub blocks: Vec<BasicBlock>,
     /// The entry block ID (always the first block)
     pub entry_block: BlockId,
+    /// Type information for all temporaries in this function
+    pub temp_types: std::collections::HashMap<Temp, RueType>,
     /// Source span for debugging
     pub span: Span,
 }
@@ -553,6 +555,7 @@ mod tests {
             ],
             return_type: RueType::I32,
             entry_block: BlockId(0),
+            temp_types: std::collections::HashMap::new(),
             span: Span::dummy(),
             blocks: vec![BasicBlock {
                 id: BlockId(0),
@@ -638,6 +641,7 @@ mod tests {
             params: vec![("x".to_string(), RueType::I32)],
             return_type: RueType::I32,
             entry_block: BlockId(0),
+            temp_types: std::collections::HashMap::new(),
             span: Span::dummy(),
             blocks: vec![
                 BasicBlock {

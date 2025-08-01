@@ -160,6 +160,7 @@ mod tests {
             params: vec![],
             return_type: RueType::I32,
             entry_block: BlockId(0),
+            temp_types: std::collections::HashMap::new(),
             span: Span::dummy(),
             blocks: vec![
                 BasicBlock {
@@ -203,6 +204,7 @@ mod tests {
             params: vec![],
             return_type: RueType::I32,
             entry_block: BlockId(0),
+            temp_types: std::collections::HashMap::new(),
             span: Span::dummy(),
             blocks: vec![
                 BasicBlock {

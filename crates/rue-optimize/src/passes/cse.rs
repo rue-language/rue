@@ -153,6 +153,7 @@ mod tests {
                 return_type: RueType::I32,
                 entry_block: BlockId(0),
                 span: Span::dummy(),
+                temp_types: HashMap::new(),
                 blocks: vec![BasicBlock {
                     id: BlockId(0),
                     params: vec![],
@@ -224,6 +225,7 @@ mod tests {
                 return_type: RueType::I32,
                 entry_block: BlockId(0),
                 span: Span::dummy(),
+                temp_types: HashMap::new(),
                 blocks: vec![BasicBlock {
                     id: BlockId(0),
                     params: vec![],
@@ -293,6 +295,7 @@ mod tests {
                 return_type: RueType::I32,
                 entry_block: BlockId(0),
                 span: Span::dummy(),
+                temp_types: HashMap::new(),
                 blocks: vec![BasicBlock {
                     id: BlockId(0),
                     params: vec![],
