@@ -2,8 +2,8 @@ mod position;
 
 use position::PositionCalculator;
 use rue_lexer::Lexer;
-use rue_parser::{parse, ParseError};
-use rue_semantic::{analyze_cst, SemanticError};
+use rue_parser::{ParseError, parse};
+use rue_semantic::{SemanticError, analyze_cst};
 use std::collections::HashMap;
 use tokio::sync::RwLock;
 use tower_lsp::jsonrpc::Result;
