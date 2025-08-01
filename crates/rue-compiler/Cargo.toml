@@ -11,3 +11,7 @@ rue-parser = { path = "../rue-parser" }
 rue-semantic = { path = "../rue-semantic" }
 rue-codegen = { path = "../rue-codegen" }
 salsa.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+tracing-tree.workspace = true
+atty.workspace = true

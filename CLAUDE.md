@@ -52,6 +52,27 @@ When working on features:
 - `cargo test -p rue` - Integration tests
 - `cargo test` - All tests
 
+### Debugging and Logging
+
+The compiler uses structured logging via the `tracing` crate. Control logging with:
+
+**Environment Variable:**
+- `RUST_LOG=rue=info` - Default info level
+- `RUST_LOG=rue=debug` - Debug information
+- `RUST_LOG=rue=trace` - Detailed trace information
+
+**Specific Targets:**
+- `RUST_LOG=rue::mir=debug` - MIR generation and optimization
+- `RUST_LOG=rue::codegen=trace` - Instruction generation details
+- `RUST_LOG=rue::optimize=debug` - Optimization passes
+
+**CLI Flags:**
+- `rue -v` - Info level logging
+- `rue -vv` - Debug level logging  
+- `rue -vvv` - Trace level logging
+- `rue --log-format=tree` - Hierarchical log output (good for compiler phases)
+- `rue --log-filter="rue::mir=trace"` - Custom filter
+
 ## Version Control
 
 **IMPORTANT**: This project uses jj (Jujutsu) exclusively. NEVER use git commands.

@@ -13,6 +13,10 @@ cargo.rust_library(
         "//crates/rue-semantic:rue-semantic",
         "//crates/rue-codegen:rue-codegen",
         "//third-party/rust:salsa",
+        "//third-party/rust:tracing",
+        "//third-party/rust:tracing-subscriber",
+        "//third-party/rust:atty",
+        "//third-party/rust:tracing-tree",
     ],
     visibility = ["PUBLIC"],
 )
@@ -30,6 +34,10 @@ rust_test(
         "//crates/rue-semantic:rue-semantic",
         "//crates/rue-codegen:rue-codegen",
         "//third-party/rust:salsa",
+        "//third-party/rust:tracing",
+        "//third-party/rust:tracing-subscriber",
+        "//third-party/rust:atty",
+        "//third-party/rust:tracing-tree",
     ],
 )
 

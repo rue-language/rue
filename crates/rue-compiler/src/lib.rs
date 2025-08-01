@@ -5,6 +5,8 @@ use rue_parser::ParseError;
 use rue_semantic::{SemanticError, analyze_cst};
 use std::sync::Arc;
 
+pub mod logging;
+
 // Input structs
 #[salsa::input]
 pub struct SourceFile {

@@ -14,8 +14,10 @@ use rue_lowering::MirBuilder;
 #[cfg(debug_assertions)]
 use rue_lowering::MirVerifier;
 use rue_optimize::{CommonSubexpressionElimination, ConstProp, DeadCodeElimination};
+use tracing::{debug, info, instrument};
 
 /// Helper function to optimize and verify MIR
+#[instrument(skip_all, fields(optimize = enable_optimizations))]
 fn optimize_and_verify_mir(
     mir: &mut MirProgram,
     enable_optimizations: bool,
@@ -28,8 +30,8 @@ fn optimize_and_verify_mir(
         // We run multiple iterations because optimizations can enable further optimizations
         // For example: const prop might enable dead code elimination, which might enable more const prop
         for iteration in 0..MAX_ITERATIONS {
-            if std::env::var("RUE_DUMP_MIR").is_ok() && iteration > 0 {
-                eprintln!("=== MIR optimization iteration {} ===", iteration + 1);
+            if iteration > 0 {
+                debug!("MIR optimization iteration {}", iteration + 1);
             }
 
             // Run constant propagation first
@@ -48,11 +50,7 @@ fn optimize_and_verify_mir(
         }
     }
 
-    if std::env::var("RUE_DUMP_MIR").is_ok() {
-        eprintln!("=== MIR (after optimization) ===");
-        eprintln!("{mir}");
-        eprintln!("=== END MIR ===");
-    }
+    debug!(target: "rue::mir", mir = %mir, "MIR after optimization");
 
     // Verify MIR if in debug mode
     // Note: This is debug-only for performance reasons. The verifier will panic (via error return)
@@ -62,9 +60,8 @@ fn optimize_and_verify_mir(
     {
         let mut verifier = MirVerifier::new();
         if let Err(errors) = verifier.verify_program(mir) {
-            eprintln!("MIR verification failed:");
-            for error in errors {
-                eprintln!("  - [{}] {}", error.function, error.message);
+            for error in &errors {
+                tracing::error!(target: "rue::mir::verify", function = %error.function, "{}", error.message);
             }
             return Err(CodegenError::MirVerificationFailed);
         }
@@ -77,24 +74,26 @@ fn optimize_and_verify_mir(
 ///
 /// This function demonstrates the MIR pipeline:
 /// HIR → MIR → (optimizations) → Instructions → Assembly
+#[instrument(skip_all, fields(optimize = enable_optimizations))]
 pub fn compile_hir_via_mir_to_assembly(
     hir: &HirProgram,
     enable_optimizations: bool,
 ) -> Result<String, CodegenError> {
     // Step 1: Lower HIR to MIR
+    info!(target: "rue::mir", "Lowering HIR to MIR");
     let mut mir = MirBuilder::lower_program(hir);
 
-    // Step 2: Print MIR for debugging (optional)
-    if std::env::var("RUE_DUMP_MIR").is_ok() {
-        eprintln!("=== MIR (before optimization) ===");
-        eprintln!("{mir}");
-        eprintln!("=== END MIR ===");
-    }
+    // Step 2: Print MIR for debugging
+    debug!(target: "rue::mir", mir = %mir, "MIR before optimization");
 
     // Step 3: Apply MIR optimizations and verify
+    if enable_optimizations {
+        info!(target: "rue::optimize", "Running optimization passes");
+    }
     optimize_and_verify_mir(&mut mir, enable_optimizations)?;
 
     // Step 4: Lower MIR to Instructions
+    info!(target: "rue::codegen", "Lowering MIR to instructions");
     let mut mir_lowerer = MirToInstructions::new();
     let instructions = mir_lowerer.lower_program(&mir);
     let function_labels = mir_lowerer.get_function_labels();
@@ -126,6 +125,7 @@ pub fn compile_hir_via_mir_to_assembly(
     let all_function_labels = driver.build_final_labels(&function_labels, &ir_to_machine_labels);
 
     // Generate assembly
+    info!(target: "rue::codegen", "Generating assembly");
     Ok(format_instructions_as_assembly(
         &final_instructions,
         &all_function_labels,
@@ -134,24 +134,26 @@ pub fn compile_hir_via_mir_to_assembly(
 }
 
 /// Compile HIR to executable via MIR
+#[instrument(skip_all, fields(optimize = enable_optimizations))]
 pub fn compile_hir_via_mir_to_executable(
     hir: &HirProgram,
     enable_optimizations: bool,
 ) -> Result<Vec<u8>, CodegenError> {
     // Step 1: Lower HIR to MIR
+    info!(target: "rue::mir", "Lowering HIR to MIR");
     let mut mir = MirBuilder::lower_program(hir);
 
-    // Step 2: Print MIR for debugging (optional)
-    if std::env::var("RUE_DUMP_MIR").is_ok() {
-        eprintln!("=== MIR (before optimization) ===");
-        eprintln!("{mir}");
-        eprintln!("=== END MIR ===");
-    }
+    // Step 2: Print MIR for debugging
+    debug!(target: "rue::mir", mir = %mir, "MIR before optimization");
 
     // Step 3: Apply MIR optimizations and verify
+    if enable_optimizations {
+        info!(target: "rue::optimize", "Running optimization passes");
+    }
     optimize_and_verify_mir(&mut mir, enable_optimizations)?;
 
     // Step 4: Lower MIR to Instructions
+    info!(target: "rue::codegen", "Lowering MIR to instructions");
     let mut mir_lowerer = MirToInstructions::new();
     let instructions = mir_lowerer.lower_program(&mir);
     let function_labels = mir_lowerer.get_function_labels();
@@ -184,6 +186,7 @@ pub fn compile_hir_via_mir_to_executable(
     let runtime_label_count = driver.runtime_label_count();
 
     // Step 10: Generate x86 code
+    info!(target: "rue::elf", "Generating ELF executable");
     let mut emitter = X86Emitter::new();
     emitter.set_function_labels(all_function_labels, runtime_label_count);
     let code = emitter
@@ -233,9 +236,9 @@ mod tests {
             }],
         };
 
-        // Note: We would need to set RUE_DUMP_MIR=1 environment variable
+        // Note: We would need to set RUST_LOG=rue::mir=debug environment variable
         // to see MIR output, but we don't modify environment in tests
-        // as it's not thread-safe. Run with RUE_DUMP_MIR=1 cargo test
+        // as it's not thread-safe. Run with RUST_LOG=rue::mir=debug cargo test
         // to see MIR output during debugging.
 
         // Compile via MIR

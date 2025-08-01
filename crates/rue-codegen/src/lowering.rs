@@ -2,6 +2,7 @@ use crate::regalloc::RegisterAllocator;
 use crate::{BinOp, Instruction, Label, VReg, Value};
 use rue_ir::target::{ConditionCode, LabelRef, MachineInstr, Register};
 use std::collections::HashMap;
+use tracing::{debug, trace};
 
 /// Errors that can occur during lowering
 #[derive(Debug, Clone, PartialEq)]
@@ -515,9 +516,11 @@ impl<'a> Lowering<'a> {
     ) -> Result<(), LoweringError> {
         use rue_ir::types::RueType;
 
-        if std::env::var("RUE_DEBUG").is_ok() {
-            eprintln!("lower_typed_binary_op: dest={dest:?}, op={op:?}, ty={ty:?}");
-        }
+        debug!(
+            target: "rue::codegen",
+            ?dest, ?op, ?ty,
+            "Lowering typed binary operation"
+        );
 
         // For non-arithmetic operations, delegate to regular binary operation
         if matches!(
@@ -542,9 +545,11 @@ impl<'a> Lowering<'a> {
             let dest_reg = self.allocator.ensure_reg(dest, &[])?;
             self.emit_spill_reload_ops();
 
-            if std::env::var("RUE_DEBUG").is_ok() {
-                eprintln!("Adding i32 truncation: dest_reg={dest_reg:?}");
-            }
+            debug!(
+                target: "rue::codegen",
+                ?dest_reg,
+                "Adding i32 truncation"
+            );
 
             // Truncate to 32-bit and sign-extend back to 64-bit
             // This ensures i32 overflow wraps correctly (movsxd automatically truncates and sign-extends)
@@ -998,9 +1003,12 @@ impl<'a> Lowering<'a> {
     }
 
     fn lower_store(&mut self, src: VReg, offset: i64) -> Result<(), LoweringError> {
-        if std::env::var("RUE_DEBUG").is_ok() {
-            eprintln!("lower_store: storing vreg {src:?} to offset {offset}");
-        }
+        debug!(
+            target: "rue::codegen",
+            ?src,
+            offset,
+            "Lowering store operation"
+        );
 
         // Check if this is a block parameter store
         let is_block_param = self.block_param_offsets.contains(&offset);
@@ -1014,9 +1022,12 @@ impl<'a> Lowering<'a> {
 
         let src_reg = self.allocator.ensure_reg(src, &[])?;
         self.emit_spill_reload_ops();
-        if std::env::var("RUE_DEBUG").is_ok() {
-            eprintln!("lower_store: vreg {src:?} is in register {src_reg:?}");
-        }
+        trace!(
+            target: "rue::codegen",
+            ?src,
+            ?src_reg,
+            "Store: vreg is in register"
+        );
         self.emit(MachineInstr::MovMR {
             // store to stack slot
             base: Register::Rbp, // <- use the frame-pointer
@@ -1400,16 +1411,21 @@ impl<'a> Lowering<'a> {
         self.emit_spill_reload_ops();
 
         if let Some(vreg) = value {
-            if std::env::var("RUE_DEBUG").is_ok() {
-                eprintln!("lower_return: returning vreg {vreg:?}");
-            }
+            debug!(
+                target: "rue::codegen",
+                ?vreg,
+                "Lowering return with value"
+            );
             // Now load the return value after all other values have been flushed
             // This ensures the return value register won't be used as a scratch register
             let value_reg = self.allocator.ensure_reg(*vreg, &[])?;
             self.emit_spill_reload_ops();
-            if std::env::var("RUE_DEBUG").is_ok() {
-                eprintln!("lower_return: vreg {vreg:?} in register {value_reg:?}");
-            }
+            trace!(
+                target: "rue::codegen",
+                ?vreg,
+                ?value_reg,
+                "Return: vreg in register"
+            );
             if value_reg != Register::Rax {
                 self.emit(MachineInstr::MovRR {
                     dest: Register::Rax,
@@ -1600,11 +1616,12 @@ impl<'a> Lowering<'a> {
                 // This is a store to stack - find which VReg this corresponds to
                 if let Some(vreg) = self.allocator.find_vreg_for_slot(*offset as i64) {
                     self.allocator.mark_vreg_initialized(vreg);
-                    if std::env::var("RUE_DEBUG").is_ok() {
-                        eprintln!(
-                            "Marking VReg {vreg:?} as initialized (stored to offset {offset})"
-                        );
-                    }
+                    trace!(
+                        target: "rue::codegen::regalloc",
+                        ?vreg,
+                        offset,
+                        "Marking VReg as initialized (stored to stack)"
+                    );
                 }
             }
         }

@@ -11,6 +11,7 @@ use crate::mir::{
 };
 use crate::types::RueType;
 use std::collections::{HashMap, HashSet};
+use tracing::trace;
 
 #[derive(Debug)]
 pub struct VerificationError {
@@ -154,11 +155,11 @@ impl MirVerifier {
                 match value {
                     MirValue::Call { args, func, .. } => {
                         // Debug output
-                        if std::env::var("RUE_DEBUG_MIR").is_ok() {
-                            eprintln!(
-                                "DEBUG: Processing call assignment: {dest:?} = {func}({args:?})"
-                            );
-                        }
+                        trace!(
+                            target: "rue::mir::verify",
+                            ?dest, func, ?args,
+                            "Processing call assignment"
+                        );
 
                         // Verify all arguments are defined
                         for arg in args {
@@ -201,12 +202,13 @@ impl MirVerifier {
                             }
 
                             // Mark destination with the function's return type
-                            if std::env::var("RUE_DEBUG_MIR").is_ok() {
-                                eprintln!(
-                                    "DEBUG: Function {func} returns {:?}, marking {dest:?} as defined",
-                                    signature.return_type
-                                );
-                            }
+                            trace!(
+                                target: "rue::mir::verify",
+                                func,
+                                return_type = ?signature.return_type,
+                                ?dest,
+                                "Function return type, marking destination as defined"
+                            );
                             defined_temps.insert(*dest, signature.return_type);
                         } else {
                             // Unknown function - this should have been caught during semantic analysis
