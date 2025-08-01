@@ -4,11 +4,14 @@
 //! with uses of previously computed values. This reduces redundant calculations
 //! and can improve performance.
 
+use crate::pass_manager::{Pass, PassResult};
+use crate::visitor::{MirMutVisitor, VisitorControl};
 use rue_ir::mir::{
     BasicBlock, MirBinOp, MirConst, MirFunction, MirProgram, MirStatement, MirUnaryOp, MirValue,
     Temp,
 };
 use std::collections::HashMap;
+use std::time::Instant;
 
 /// Represents an expression that can be compared for equality
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -24,6 +27,8 @@ pub struct CommonSubexpressionElimination {
     available_exprs: HashMap<Expression, Temp>,
     /// Map from temporaries to the expressions they compute
     temp_to_expr: HashMap<Temp, Expression>,
+    /// Number of transformations made in the current run
+    transformations: u32,
 }
 
 impl Default for CommonSubexpressionElimination {
@@ -37,11 +42,13 @@ impl CommonSubexpressionElimination {
         Self {
             available_exprs: HashMap::new(),
             temp_to_expr: HashMap::new(),
+            transformations: 0,
         }
     }
 
-    /// Run CSE on a MIR program
+    /// Run CSE on a MIR program (legacy interface)
     pub fn run(&mut self, program: &mut MirProgram) {
+        self.transformations = 0;
         for func in &mut program.functions {
             self.optimize_function(func);
         }
@@ -49,55 +56,13 @@ impl CommonSubexpressionElimination {
 
     /// Optimize a single function
     fn optimize_function(&mut self, func: &mut MirFunction) {
-        // Process each block independently (local CSE)
-        // A more sophisticated implementation would do global CSE
-        for block in &mut func.blocks {
-            self.optimize_block(block);
-        }
-    }
-
-    /// Optimize a single block
-    fn optimize_block(&mut self, block: &mut BasicBlock) {
-        // Clear state for new block
+        // Clear state for new function
         self.available_exprs.clear();
         self.temp_to_expr.clear();
+        self.transformations = 0;
 
-        let mut new_statements = Vec::new();
-
-        for stmt in &block.statements {
-            match stmt {
-                MirStatement::Assign { dest, value, span } => {
-                    // Try to convert the value to an expression
-                    if let Some(expr) = self.value_to_expression(value) {
-                        // Check if we've already computed this expression
-                        if let Some(&existing_temp) = self.available_exprs.get(&expr) {
-                            // Replace with use of existing temp
-                            new_statements.push(MirStatement::Assign {
-                                dest: *dest,
-                                value: MirValue::Use(existing_temp),
-                                span: *span,
-                            });
-                        } else {
-                            // This is a new expression, record it
-                            self.available_exprs.insert(expr.clone(), *dest);
-                            self.temp_to_expr.insert(*dest, expr);
-                            new_statements.push(stmt.clone());
-                        }
-                    } else {
-                        // Not an expression we can eliminate (e.g., function call)
-                        new_statements.push(stmt.clone());
-
-                        // If this assigns to a temp that was computing an expression,
-                        // that expression is no longer available
-                        if let Some(old_expr) = self.temp_to_expr.remove(dest) {
-                            self.available_exprs.remove(&old_expr);
-                        }
-                    }
-                }
-            }
-        }
-
-        block.statements = new_statements;
+        // Use mutable visitor to process the function
+        let _ = self.visit_function(func);
     }
 
     /// Convert a MIR value to an expression if possible
@@ -127,6 +92,76 @@ impl CommonSubexpressionElimination {
     fn is_commutative(&self, op: MirBinOp) -> bool {
         use MirBinOp::*;
         matches!(op, Add | Mul | Eq | Ne)
+    }
+}
+
+// Visitor implementation for CSE
+impl MirMutVisitor for CommonSubexpressionElimination {
+    // visit_function uses default implementation
+
+    fn visit_block(&mut self, block: &mut BasicBlock) -> VisitorControl {
+        // Clear state for new block (local CSE)
+        self.available_exprs.clear();
+        self.temp_to_expr.clear();
+
+        // Let the default implementation handle traversal
+        crate::visitor::walk_block_mut(self, block)
+    }
+
+    fn visit_statement(&mut self, stmt: &mut MirStatement) -> VisitorControl {
+        match stmt {
+            MirStatement::Assign { dest, value, .. } => {
+                // Try to convert the value to an expression
+                if let Some(expr) = self.value_to_expression(value) {
+                    // Check if we've already computed this expression
+                    if let Some(&existing_temp) = self.available_exprs.get(&expr) {
+                        // Replace with use of existing temp
+                        *value = MirValue::Use(existing_temp);
+                        self.transformations += 1;
+                    } else {
+                        // This is a new expression, record it
+                        self.available_exprs.insert(expr.clone(), *dest);
+                        self.temp_to_expr.insert(*dest, expr);
+                    }
+                } else {
+                    // Not an expression we can eliminate (e.g., function call)
+                    // If this assigns to a temp that was computing an expression,
+                    // that expression is no longer available
+                    if let Some(old_expr) = self.temp_to_expr.remove(dest) {
+                        self.available_exprs.remove(&old_expr);
+                    }
+                }
+            }
+        }
+        VisitorControl::Continue
+    }
+}
+
+impl Pass for CommonSubexpressionElimination {
+    fn name(&self) -> &'static str {
+        "cse"
+    }
+
+    fn run(&mut self, program: &mut MirProgram) -> PassResult {
+        let start = Instant::now();
+        self.transformations = 0;
+
+        for func in &mut program.functions {
+            self.optimize_function(func);
+        }
+
+        let duration = start.elapsed();
+        let changed = self.transformations > 0;
+
+        if changed {
+            PassResult::changed(duration, self.transformations)
+        } else {
+            PassResult::no_change(duration)
+        }
+    }
+
+    fn description(&self) -> &'static str {
+        "Identifies duplicate computations and replaces them with uses of previously computed values"
     }
 }
 

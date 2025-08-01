@@ -12,7 +12,7 @@ use rue_ir::pir::{Label, PIR};
 #[cfg(debug_assertions)]
 use rue_lowering::MirVerifier;
 use rue_lowering::{MirBuilder, MirToPir};
-use rue_optimize::{CommonSubexpressionElimination, ConstProp, DeadCodeElimination};
+use rue_optimize::{OptimizationLevel, OptimizationProfileFactory};
 use rue_target::X8664Instr;
 use std::collections::HashMap;
 use tracing::{debug, info, instrument};
@@ -229,33 +229,15 @@ fn optimize_and_verify_mir(
     mir: &mut MirProgram,
     enable_optimizations: bool,
 ) -> Result<(), CompileError> {
-    const MAX_ITERATIONS: usize = 3;
+    // Determine optimization level based on enable_optimizations flag
+    let optimization_level = if enable_optimizations {
+        OptimizationLevel::Full
+    } else {
+        OptimizationLevel::None
+    };
 
-    // Only run optimizations if enabled
-    if enable_optimizations {
-        // Run optimization passes in a fixed-point loop
-        // We run multiple iterations because optimizations can enable further optimizations
-        // For example: const prop might enable dead code elimination, which might enable more const prop
-        for iteration in 0..MAX_ITERATIONS {
-            if iteration > 0 {
-                debug!("MIR optimization iteration {}", iteration + 1);
-            }
-
-            // Run constant propagation first
-            let mut const_prop = ConstProp::new();
-            const_prop.run(mir);
-
-            // Run common subexpression elimination
-            let mut cse = CommonSubexpressionElimination::new();
-            cse.run(mir);
-
-            // Run dead code elimination last (after other passes may have made code dead)
-            let mut dce = DeadCodeElimination::new();
-            dce.run(mir);
-
-            // TODO: Once passes return whether they made changes, we can break early
-        }
-    }
+    // Run optimizations using the new Pass Manager Framework
+    OptimizationProfileFactory::optimize_program(mir, optimization_level);
 
     debug!(target: "rue::mir", mir = %mir, "MIR after optimization");
 
