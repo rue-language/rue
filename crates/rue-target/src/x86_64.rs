@@ -1,10 +1,11 @@
-//! Target-level IR (machine instructions)
+//! x86-64 target architecture definitions
 //!
-//! This module defines the low-level IR that maps directly to machine instructions.
+//! This module contains x86-64 specific types for registers, instructions,
+//! and related enums used in code generation.
 
 /// x86-64 registers
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum Register {
+pub enum X86Register {
     Rax, // Accumulator, return value
     Rbx, // Base
     Rcx, // Counter
@@ -23,121 +24,149 @@ pub enum Register {
     R15,
 }
 
-impl Register {
+impl X86Register {
     /// Check if register requires REX prefix (R8-R15)
     #[inline]
     pub fn needs_rex(&self) -> bool {
         matches!(
             self,
-            Register::R8
-                | Register::R9
-                | Register::R10
-                | Register::R11
-                | Register::R12
-                | Register::R13
-                | Register::R14
-                | Register::R15
+            X86Register::R8
+                | X86Register::R9
+                | X86Register::R10
+                | X86Register::R11
+                | X86Register::R12
+                | X86Register::R13
+                | X86Register::R14
+                | X86Register::R15
         )
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConditionCode {
+    Equal,        // ZF=1
+    NotEqual,     // ZF=0
+    Less,         // SF≠OF
+    LessEqual,    // ZF=1 or SF≠OF
+    Greater,      // ZF=0 and SF=OF
+    GreaterEqual, // SF=OF
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LabelRef {
+    Local(u32),     // Local label ID
+    Global(String), // Global symbol name
 }
 
 /// x86-64 specific machine instructions
 /// These map directly to x86 opcodes with concrete registers
 #[derive(Debug, Clone)]
-pub enum MachineInstr {
+pub enum X8664Instr {
     /// mov dest, src (register to register)
-    MovRR { dest: Register, src: Register },
+    MovRR { dest: X86Register, src: X86Register },
 
     /// mov dest, imm32 (sign-extended to 64-bit)
-    MovRI32 { dest: Register, imm: i32 },
+    MovRI32 { dest: X86Register, imm: i32 },
 
     /// mov dest, imm64
-    MovRI64 { dest: Register, imm: i64 },
+    MovRI64 { dest: X86Register, imm: i64 },
 
     /// mov dest, [rbp + offset] (load from stack)
     MovRM {
-        dest: Register,
-        base: Register,
+        dest: X86Register,
+        base: X86Register,
         offset: i32,
     },
 
     /// mov [rbp + offset], src (store to stack)
     MovMR {
-        base: Register,
+        base: X86Register,
         offset: i32,
-        src: Register,
+        src: X86Register,
     },
 
     /// mov byte ptr [base + offset], src (store byte to memory)
     MovMR8 {
-        base: Register,
+        base: X86Register,
         offset: i32,
-        src: Register,
+        src: X86Register,
     },
 
     /// mov dest, byte ptr [base + offset] (load byte from memory)
     MovRM8 {
-        dest: Register,
-        base: Register,
+        dest: X86Register,
+        base: X86Register,
         offset: i32,
     },
 
     /// add dest, src
-    AddRR { dest: Register, src: Register },
+    AddRR { dest: X86Register, src: X86Register },
 
     /// add dest, imm32
-    AddRI { dest: Register, imm: i32 },
+    AddRI { dest: X86Register, imm: i32 },
 
     /// sub dest, src
-    SubRR { dest: Register, src: Register },
+    SubRR { dest: X86Register, src: X86Register },
 
     /// sub dest, imm32
-    SubRI { dest: Register, imm: i32 },
+    SubRI { dest: X86Register, imm: i32 },
 
     /// xor dest, src
-    XorRR { dest: Register, src: Register },
+    XorRR { dest: X86Register, src: X86Register },
 
     /// imul dest, src
-    ImulRR { dest: Register, src: Register },
+    ImulRR { dest: X86Register, src: X86Register },
 
     /// imul dest, dest, imm32
-    ImulRI { dest: Register, imm: i32 },
+    ImulRI { dest: X86Register, imm: i32 },
 
     /// and dest, src
-    AndRR { dest: Register, src: Register },
+    AndRR { dest: X86Register, src: X86Register },
 
     /// shl dest, cl (shift left)
-    Shl { dest: Register, count: Register },
+    Shl {
+        dest: X86Register,
+        count: X86Register,
+    },
 
     /// sar dest, cl (arithmetic shift right)
-    Sar { dest: Register, count: Register },
+    Sar {
+        dest: X86Register,
+        count: X86Register,
+    },
 
     /// idiv divisor (signed division, dividend in RAX, quotient in RAX, remainder in RDX)
-    Idiv { divisor: Register },
+    Idiv { divisor: X86Register },
 
     /// cqo (sign extend RAX to RDX:RAX)
     Cqo,
 
     /// cmp left, right
-    CmpRR { left: Register, right: Register },
+    CmpRR {
+        left: X86Register,
+        right: X86Register,
+    },
 
     /// cmp reg, imm32
-    CmpRI { reg: Register, imm: i32 },
+    CmpRI { reg: X86Register, imm: i32 },
 
     /// setcc dest (set byte based on condition code)
-    SetCC { dest: Register, cc: ConditionCode },
+    SetCC {
+        dest: X86Register,
+        cc: ConditionCode,
+    },
 
     /// movzx dest, src (zero extend byte to qword)
-    Movzx { dest: Register, src: Register },
+    Movzx { dest: X86Register, src: X86Register },
 
     /// movsxd dest, src (sign extend dword to qword)
-    Movsxd { dest: Register, src: Register },
+    Movsxd { dest: X86Register, src: X86Register },
 
     /// push reg
-    Push { reg: Register },
+    Push { reg: X86Register },
 
     /// pop reg
-    Pop { reg: Register },
+    Pop { reg: X86Register },
 
     /// call label
     Call { target: String },
@@ -155,7 +184,7 @@ pub enum MachineInstr {
     Label { id: u32 },
 
     /// lea dest, [rip + label] - Load effective address of label
-    LeaLabel { dest: Register, label: String },
+    LeaLabel { dest: X86Register, label: String },
 
     /// cld - Clear direction flag
     Cld,
@@ -185,20 +214,4 @@ pub enum MachineInstr {
 
     /// ud2 - undefined instruction (causes SIGILL)
     Ud2,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ConditionCode {
-    Equal,        // ZF=1
-    NotEqual,     // ZF=0
-    Less,         // SF≠OF
-    LessEqual,    // ZF=1 or SF≠OF
-    Greater,      // ZF=0 and SF=OF
-    GreaterEqual, // SF=OF
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum LabelRef {
-    Local(u32),     // Local label ID
-    Global(String), // Global symbol name
 }

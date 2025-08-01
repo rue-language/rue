@@ -1,14 +1,15 @@
 use crate::util::align_to_16;
-use rue_ir::target::{ConditionCode, LabelRef, MachineInstr, Register};
+use rue_ir::pir::Label;
+use rue_target::{ConditionCode, LabelRef, X86Register, X8664Instr};
 use std::collections::HashMap;
 
 /// x86-64 machine code emitter
-/// Converts MachineInstr to raw bytes
+/// Converts X8664Instr to raw bytes
 pub struct X86Emitter {
     code: Vec<u8>,
     label_positions: HashMap<u32, usize>,
     pending_fixups: Vec<(usize, LabelRef)>,
-    function_labels: HashMap<String, crate::Label>,
+    function_labels: HashMap<String, Label>,
     runtime_label_count: u32,
 }
 
@@ -25,7 +26,7 @@ impl X86Emitter {
 
     pub fn set_function_labels(
         &mut self,
-        labels: HashMap<String, crate::Label>,
+        labels: HashMap<String, Label>,
         runtime_label_count: u32,
     ) {
         // We'll use this to map function names to their label IDs
@@ -34,7 +35,7 @@ impl X86Emitter {
     }
 
     /// Emit machine instructions to bytes
-    pub fn emit_all(&mut self, instructions: &[MachineInstr]) -> Result<Vec<u8>, String> {
+    pub fn emit_all(&mut self, instructions: &[X8664Instr]) -> Result<Vec<u8>, String> {
         // First pass: emit code and record label positions
         for instr in instructions {
             self.emit_instruction(instr)?;
@@ -46,16 +47,16 @@ impl X86Emitter {
         Ok(self.code.clone())
     }
 
-    fn emit_instruction(&mut self, instr: &MachineInstr) -> Result<(), String> {
+    fn emit_instruction(&mut self, instr: &X8664Instr) -> Result<(), String> {
         match instr {
-            MachineInstr::MovRR { dest, src } => {
+            X8664Instr::MovRR { dest, src } => {
                 self.emit_rex_if_needed(true, Some(src), Some(dest));
                 self.code.push(0x89); // MOV r/m64, r64
                 let modrm = 0xc0 | (self.register_code(src) << 3) | self.register_code(dest);
                 self.code.push(modrm);
             }
 
-            MachineInstr::MovRI32 { dest, imm } => {
+            X8664Instr::MovRI32 { dest, imm } => {
                 self.emit_rex_if_needed(true, None, Some(dest));
                 self.code.push(0xc7); // MOV r/m64, imm32
                 let modrm = 0xc0 | self.register_code(dest);
@@ -63,7 +64,7 @@ impl X86Emitter {
                 self.code.extend_from_slice(&imm.to_le_bytes());
             }
 
-            MachineInstr::MovRI64 { dest, imm } => {
+            X8664Instr::MovRI64 { dest, imm } => {
                 if self.needs_rex_b(dest) {
                     self.code.push(0x49); // REX.WB
                     self.code.push(0xb8 + self.register_code(dest));
@@ -74,28 +75,28 @@ impl X86Emitter {
                 self.code.extend_from_slice(&imm.to_le_bytes());
             }
 
-            MachineInstr::MovRM { dest, base, offset } => {
+            X8664Instr::MovRM { dest, base, offset } => {
                 self.emit_mem_op(0x8b, dest, base, *offset, false)?;
             }
 
-            MachineInstr::MovMR { base, offset, src } => {
+            X8664Instr::MovMR { base, offset, src } => {
                 self.emit_mem_op(0x89, src, base, *offset, false)?;
             }
-            MachineInstr::MovMR8 { base, offset, src } => {
+            X8664Instr::MovMR8 { base, offset, src } => {
                 self.emit_mem_op(0x88, src, base, *offset, true)?;
             }
-            MachineInstr::MovRM8 { dest, base, offset } => {
+            X8664Instr::MovRM8 { dest, base, offset } => {
                 self.emit_mem_op(0x8a, dest, base, *offset, true)?;
             }
 
-            MachineInstr::AddRR { dest, src } => {
+            X8664Instr::AddRR { dest, src } => {
                 self.emit_rex_if_needed(true, Some(src), Some(dest));
                 self.code.push(0x01); // ADD r/m64, r64
                 let modrm = 0xc0 | (self.register_code(src) << 3) | self.register_code(dest);
                 self.code.push(modrm);
             }
 
-            MachineInstr::AddRI { dest, imm } => {
+            X8664Instr::AddRI { dest, imm } => {
                 self.emit_rex_if_needed(true, None, Some(dest));
                 if *imm >= -128 && *imm <= 127 {
                     self.code.push(0x83); // ADD r/m64, imm8
@@ -110,14 +111,14 @@ impl X86Emitter {
                 }
             }
 
-            MachineInstr::SubRR { dest, src } => {
+            X8664Instr::SubRR { dest, src } => {
                 self.emit_rex_if_needed(true, Some(src), Some(dest));
                 self.code.push(0x29); // SUB r/m64, r64
                 let modrm = 0xc0 | (self.register_code(src) << 3) | self.register_code(dest);
                 self.code.push(modrm);
             }
 
-            MachineInstr::SubRI { dest, imm } => {
+            X8664Instr::SubRI { dest, imm } => {
                 self.emit_rex_if_needed(true, None, Some(dest));
                 if *imm >= -128 && *imm <= 127 {
                     self.code.push(0x83); // SUB r/m64, imm8
@@ -132,14 +133,14 @@ impl X86Emitter {
                 }
             }
 
-            MachineInstr::AndRR { dest, src } => {
+            X8664Instr::AndRR { dest, src } => {
                 self.emit_rex_if_needed(true, Some(src), Some(dest));
                 self.code.push(0x21); // AND r/m64, r64
                 let modrm = 0xc0 | (self.register_code(src) << 3) | self.register_code(dest);
                 self.code.push(modrm);
             }
 
-            MachineInstr::Shl { dest, count: _ } => {
+            X8664Instr::Shl { dest, count: _ } => {
                 // count must be in RCX
                 self.emit_rex_if_needed(true, None, Some(dest));
                 self.code.push(0xd3); // SHL r/m64, CL
@@ -147,7 +148,7 @@ impl X86Emitter {
                 self.code.push(modrm);
             }
 
-            MachineInstr::Sar { dest, count: _ } => {
+            X8664Instr::Sar { dest, count: _ } => {
                 // count must be in RCX
                 self.emit_rex_if_needed(true, None, Some(dest));
                 self.code.push(0xd3); // SAR r/m64, CL
@@ -155,7 +156,7 @@ impl X86Emitter {
                 self.code.push(modrm);
             }
 
-            MachineInstr::ImulRR { dest, src } => {
+            X8664Instr::ImulRR { dest, src } => {
                 self.emit_rex_if_needed(true, Some(dest), Some(src));
                 self.code.push(0x0f);
                 self.code.push(0xaf); // IMUL r64, r/m64
@@ -163,7 +164,7 @@ impl X86Emitter {
                 self.code.push(modrm);
             }
 
-            MachineInstr::ImulRI { dest, imm } => {
+            X8664Instr::ImulRI { dest, imm } => {
                 self.emit_rex_if_needed(true, Some(dest), Some(dest));
                 if *imm >= -128 && *imm <= 127 {
                     self.code.push(0x6b); // IMUL r64, r/m64, imm8
@@ -178,26 +179,26 @@ impl X86Emitter {
                 }
             }
 
-            MachineInstr::Idiv { divisor } => {
+            X8664Instr::Idiv { divisor } => {
                 self.emit_rex_if_needed(true, None, Some(divisor));
                 self.code.push(0xf7); // IDIV r/m64
                 let modrm = 0xf8 | self.register_code(divisor); // /7
                 self.code.push(modrm);
             }
 
-            MachineInstr::Cqo => {
+            X8664Instr::Cqo => {
                 self.code.push(0x48); // REX.W
                 self.code.push(0x99); // CQO
             }
 
-            MachineInstr::CmpRR { left, right } => {
+            X8664Instr::CmpRR { left, right } => {
                 self.emit_rex_if_needed(true, Some(right), Some(left));
                 self.code.push(0x39); // CMP r/m64, r64
                 let modrm = 0xc0 | (self.register_code(right) << 3) | self.register_code(left);
                 self.code.push(modrm);
             }
 
-            MachineInstr::CmpRI { reg, imm } => {
+            X8664Instr::CmpRI { reg, imm } => {
                 self.emit_rex_if_needed(true, None, Some(reg));
                 if *imm >= -128 && *imm <= 127 {
                     self.code.push(0x83); // CMP r/m64, imm8
@@ -212,7 +213,7 @@ impl X86Emitter {
                 }
             }
 
-            MachineInstr::SetCC { dest, cc } => {
+            X8664Instr::SetCC { dest, cc } => {
                 let opcode = match cc {
                     ConditionCode::Equal => 0x94,        // SETE
                     ConditionCode::NotEqual => 0x95,     // SETNE
@@ -233,7 +234,7 @@ impl X86Emitter {
                 self.code.push(modrm);
             }
 
-            MachineInstr::Movzx { dest, src } => {
+            X8664Instr::Movzx { dest, src } => {
                 // While REX.W=1 is not canonical for MOVZX (should use REX.W=0),
                 // we keep it for compatibility as some code may depend on this behavior
                 self.emit_rex_if_needed(true, Some(dest), Some(src));
@@ -243,28 +244,28 @@ impl X86Emitter {
                 self.code.push(modrm);
             }
 
-            MachineInstr::Movsxd { dest, src } => {
+            X8664Instr::Movsxd { dest, src } => {
                 self.emit_rex_if_needed(true, Some(dest), Some(src));
                 self.code.push(0x63); // MOVSXD r64, r/m32
                 let modrm = 0xc0 | (self.register_code(dest) << 3) | self.register_code(src);
                 self.code.push(modrm);
             }
 
-            MachineInstr::Push { reg } => {
+            X8664Instr::Push { reg } => {
                 if self.needs_rex_b(reg) {
                     self.code.push(0x41); // REX.B
                 }
                 self.code.push(0x50 + self.register_code(reg));
             }
 
-            MachineInstr::Pop { reg } => {
+            X8664Instr::Pop { reg } => {
                 if self.needs_rex_b(reg) {
                     self.code.push(0x41); // REX.B
                 }
                 self.code.push(0x58 + self.register_code(reg));
             }
 
-            MachineInstr::Call { target } => {
+            X8664Instr::Call { target } => {
                 // For now, we only support relative calls
                 self.code.push(0xe8); // CALL rel32
                 let fixup_pos = self.code.len();
@@ -273,18 +274,18 @@ impl X86Emitter {
                     .push((fixup_pos, LabelRef::Global(target.clone())));
             }
 
-            MachineInstr::Ret => {
+            X8664Instr::Ret => {
                 self.code.push(0xc3); // RET
             }
 
-            MachineInstr::Jmp { target } => {
+            X8664Instr::Jmp { target } => {
                 self.code.push(0xe9); // JMP rel32
                 let fixup_pos = self.code.len();
                 self.code.extend_from_slice(&[0, 0, 0, 0]); // Placeholder
                 self.pending_fixups.push((fixup_pos, target.clone()));
             }
 
-            MachineInstr::JmpCC { cc, target } => {
+            X8664Instr::JmpCC { cc, target } => {
                 let opcode = match cc {
                     ConditionCode::Equal => 0x84,        // JE
                     ConditionCode::NotEqual => 0x85,     // JNE
@@ -301,16 +302,16 @@ impl X86Emitter {
                 self.pending_fixups.push((fixup_pos, target.clone()));
             }
 
-            MachineInstr::Label { id } => {
+            X8664Instr::Label { id } => {
                 self.label_positions.insert(*id, self.code.len());
             }
 
-            MachineInstr::Syscall => {
+            X8664Instr::Syscall => {
                 self.code.push(0x0f);
                 self.code.push(0x05);
             }
 
-            MachineInstr::EnterFrame => {
+            X8664Instr::EnterFrame => {
                 // push rbp
                 self.code.push(0x55);
                 // mov rbp, rsp
@@ -319,7 +320,7 @@ impl X86Emitter {
                 self.code.push(0xe5);
             }
 
-            MachineInstr::LeaveFrame => {
+            X8664Instr::LeaveFrame => {
                 // mov rsp, rbp
                 self.code.push(0x48);
                 self.code.push(0x89);
@@ -328,7 +329,7 @@ impl X86Emitter {
                 self.code.push(0x5d);
             }
 
-            MachineInstr::AllocStack { size } => {
+            X8664Instr::AllocStack { size } => {
                 if *size == 0 {
                     return Ok(());
                 }
@@ -336,7 +337,7 @@ impl X86Emitter {
                 // Align stack allocation to maintain 16-byte alignment
                 let aligned_size = align_to_16(*size as u64) as u32;
 
-                self.emit_rex_if_needed(true, None, Some(&Register::Rsp));
+                self.emit_rex_if_needed(true, None, Some(&X86Register::Rsp));
                 if aligned_size <= 127 {
                     self.code.push(0x83); // SUB r/m64, imm8
                     self.code.push(0xec); // /5 RSP
@@ -348,7 +349,7 @@ impl X86Emitter {
                 }
             }
 
-            MachineInstr::LeaLabel { dest, label } => {
+            X8664Instr::LeaLabel { dest, label } => {
                 // lea dest, [rip + offset]
                 self.emit_rex_if_needed(true, Some(dest), None);
                 self.code.push(0x8d); // LEA
@@ -361,36 +362,36 @@ impl X86Emitter {
                     .push((fixup_pos, LabelRef::Global(label.clone())));
             }
 
-            MachineInstr::Cld => {
+            X8664Instr::Cld => {
                 // cld - Clear direction flag
                 self.code.push(0xfc);
             }
 
-            MachineInstr::RepStosb => {
+            X8664Instr::RepStosb => {
                 // rep stosb - Repeat store byte
                 self.code.push(0xf3); // REP prefix
                 self.code.push(0xaa); // STOSB
             }
 
-            MachineInstr::XorRR { dest, src } => {
+            X8664Instr::XorRR { dest, src } => {
                 self.emit_rex_if_needed(true, Some(src), Some(dest));
                 self.code.push(0x31); // XOR r/m64, r64
                 let modrm = 0xc0 | (self.register_code(src) << 3) | self.register_code(dest);
                 self.code.push(modrm);
             }
 
-            MachineInstr::Ud2 => {
+            X8664Instr::Ud2 => {
                 // UD2 - undefined instruction
                 self.code.push(0x0f);
                 self.code.push(0x0b);
             }
 
-            MachineInstr::DataBytes { bytes } => {
+            X8664Instr::DataBytes { bytes } => {
                 // Emit raw bytes directly
                 self.code.extend_from_slice(bytes);
             }
 
-            MachineInstr::ReserveBytes { count } => {
+            X8664Instr::ReserveBytes { count } => {
                 // Reserve zero-initialized space
                 self.code.resize(self.code.len() + *count as usize, 0);
             }
@@ -436,32 +437,32 @@ impl X86Emitter {
     /// Get the 3-bit register encoding for ModR/M or SIB bytes
     /// This returns the low 3 bits of the register number (0-7)
     /// For R8-R15, the high bit is encoded in the REX prefix
-    fn register_code(&self, reg: &Register) -> u8 {
+    fn register_code(&self, reg: &X86Register) -> u8 {
         match reg {
-            Register::Rax => 0,
-            Register::Rcx => 1,
-            Register::Rdx => 2,
-            Register::Rbx => 3,
-            Register::Rsp => 4,
-            Register::Rbp => 5,
-            Register::Rsi => 6,
-            Register::Rdi => 7,
-            Register::R8 => 0,  // Requires REX.B/REX.R/REX.X
-            Register::R9 => 1,  // Requires REX.B/REX.R/REX.X
-            Register::R10 => 2, // Requires REX.B/REX.R/REX.X
-            Register::R11 => 3, // Requires REX.B/REX.R/REX.X
-            Register::R12 => 4, // Requires REX.B/REX.R/REX.X
-            Register::R13 => 5, // Requires REX.B/REX.R/REX.X
-            Register::R14 => 6, // Requires REX.B/REX.R/REX.X
-            Register::R15 => 7, // Requires REX.B/REX.R/REX.X
+            X86Register::Rax => 0,
+            X86Register::Rcx => 1,
+            X86Register::Rdx => 2,
+            X86Register::Rbx => 3,
+            X86Register::Rsp => 4,
+            X86Register::Rbp => 5,
+            X86Register::Rsi => 6,
+            X86Register::Rdi => 7,
+            X86Register::R8 => 0,  // Requires REX.B/REX.R/REX.X
+            X86Register::R9 => 1,  // Requires REX.B/REX.R/REX.X
+            X86Register::R10 => 2, // Requires REX.B/REX.R/REX.X
+            X86Register::R11 => 3, // Requires REX.B/REX.R/REX.X
+            X86Register::R12 => 4, // Requires REX.B/REX.R/REX.X
+            X86Register::R13 => 5, // Requires REX.B/REX.R/REX.X
+            X86Register::R14 => 6, // Requires REX.B/REX.R/REX.X
+            X86Register::R15 => 7, // Requires REX.B/REX.R/REX.X
         }
     }
 
-    fn needs_rex_b(&self, reg: &Register) -> bool {
+    fn needs_rex_b(&self, reg: &X86Register) -> bool {
         reg.needs_rex()
     }
 
-    fn needs_rex_r(&self, reg: &Register) -> bool {
+    fn needs_rex_r(&self, reg: &X86Register) -> bool {
         reg.needs_rex() // Same registers need REX.R when used in reg field
     }
 
@@ -469,28 +470,33 @@ impl X86Emitter {
     ///
     /// # Arguments
     /// * `w` - Whether to set REX.W (64-bit operand size)
-    /// * `r_reg` - Register used in the reg field (affects REX.R)
-    /// * `b_reg` - Register used in the r/m field (affects REX.B)
+    /// * `r_reg` - X86Register used in the reg field (affects REX.R)
+    /// * `b_reg` - X86Register used in the r/m field (affects REX.B)
     ///
     /// # Important
     /// The order of r_reg and b_reg matters! For instructions like `add rax, rbx`:
     /// - r_reg is the source register (rbx)
     /// - b_reg is the destination register (rax)
-    fn emit_rex_if_needed(&mut self, w: bool, r_reg: Option<&Register>, b_reg: Option<&Register>) {
+    fn emit_rex_if_needed(
+        &mut self,
+        w: bool,
+        r_reg: Option<&X86Register>,
+        b_reg: Option<&X86Register>,
+    ) {
         self.emit_rex_with_sib(w, r_reg, b_reg, None)
     }
 
     /// Emit REX prefix with support for SIB byte index register
     /// w: 64-bit operand size (REX.W)
-    /// r_reg: Register in ModR/M reg field (REX.R)
-    /// b_reg: Register in ModR/M r/m field or SIB base field (REX.B)
-    /// x_reg: Register in SIB index field (REX.X)
+    /// r_reg: X86Register in ModR/M reg field (REX.R)
+    /// b_reg: X86Register in ModR/M r/m field or SIB base field (REX.B)
+    /// x_reg: X86Register in SIB index field (REX.X)
     fn emit_rex_with_sib(
         &mut self,
         w: bool,
-        r_reg: Option<&Register>,
-        b_reg: Option<&Register>,
-        x_reg: Option<&Register>,
+        r_reg: Option<&X86Register>,
+        b_reg: Option<&X86Register>,
+        x_reg: Option<&X86Register>,
     ) {
         let mut rex = 0x40;
 
@@ -524,7 +530,7 @@ impl X86Emitter {
                 && b_reg.is_some_and(|r| {
                     matches!(
                         r,
-                        Register::Rsp | Register::Rbp | Register::Rsi | Register::Rdi
+                        X86Register::Rsp | X86Register::Rbp | X86Register::Rsi | X86Register::Rdi
                     )
                 }))
         {
@@ -543,8 +549,8 @@ impl X86Emitter {
     fn emit_mem_op(
         &mut self,
         opcode: u8,
-        reg: &Register,
-        base: &Register,
+        reg: &X86Register,
+        base: &X86Register,
         offset: i32,
         is_byte: bool,
     ) -> Result<(), String> {

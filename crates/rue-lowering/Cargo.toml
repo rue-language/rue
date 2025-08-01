@@ -6,6 +6,7 @@ edition.workspace = true
 [dependencies]
 rue-ir.workspace = true
 rue-lexer.workspace = true
+rue-target.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
