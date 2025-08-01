@@ -21,7 +21,8 @@ fn parser() -> impl Parser<Args> {
         .argument::<PathBuf>("OUTPUT")
         .optional();
 
-    let emit_asm = bpaf::long("emit-asm")
+    let emit_asm = bpaf::short('S')
+        .long("emit-asm")
         .help("Emit assembly instead of executable")
         .switch();
 
