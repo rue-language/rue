@@ -8,11 +8,11 @@ name = "rue-lsp"
 path = "src/main.rs"
 
 [dependencies]
-rue-compiler = { path = "../rue-compiler" }
-rue-parser = { path = "../rue-parser" }
-rue-lexer = { path = "../rue-lexer" }
-rue-ast = { path = "../rue-ast" }
-rue-semantic = { path = "../rue-semantic" }
+rue-compiler.workspace = true
+rue-parser.workspace = true
+rue-lexer.workspace = true
+rue-ast.workspace = true
+rue-semantic.workspace = true
 tokio.workspace = true
 tower-lsp.workspace = true
 serde_json.workspace = true

@@ -4,8 +4,8 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
-rue-ir = { path = "../rue-ir" }
-rue-lexer = { path = "../rue-lexer" }
+rue-ir.workspace = true
+rue-lexer.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]

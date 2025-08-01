@@ -20,6 +20,18 @@ edition = "2024"
 version = "0.1.0"
 
 [workspace.dependencies]
+rue-ast = { path = "crates/rue-ast" }
+rue-lexer = { path = "crates/rue-lexer" }
+rue-parser = { path = "crates/rue-parser" }
+rue-semantic = { path = "crates/rue-semantic" }
+rue-compiler = { path = "crates/rue-compiler" }
+rue-codegen = { path = "crates/rue-codegen" }
+rue = { path = "crates/rue" }
+rue-lsp = { path = "crates/rue-lsp" }
+rue-runtime = { path = "crates/rue-runtime" }
+rue-ir = { path = "crates/rue-ir" }
+rue-lowering = { path = "crates/rue-lowering" }
+rue-optimize = { path = "crates/rue-optimize" }
 atty = "0.2"
 bpaf = "0.9.20"
 criterion = "0.5.0"

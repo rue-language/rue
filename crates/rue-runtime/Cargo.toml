@@ -4,4 +4,4 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-rue-ir = { path = "../rue-ir" }
+rue-ir.workspace = true

@@ -4,8 +4,8 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
-rue-ast = { path = "../rue-ast" }
-rue-ir = { path = "../rue-ir" }
-rue-lexer = { path = "../rue-lexer" }
-rue-parser = { path = "../rue-parser" }
+rue-ast.workspace = true
+rue-ir.workspace = true
+rue-lexer.workspace = true
+rue-parser.workspace = true
 salsa.workspace = true
