@@ -253,6 +253,25 @@ impl<'a> X8664Codegen<'a> {
             PIR::RestoreRegisters { registers } => self.lower_restore_registers(registers),
             PIR::EnterFrame => self.lower_enter_frame(),
             PIR::LeaveFrame => self.lower_leave_frame(),
+            PIR::AllocateAggregate {
+                dest,
+                size,
+                alignment,
+            } => self.lower_allocate_aggregate(*dest, *size, *alignment),
+            PIR::CopyAggregate { dest, src, size } => self.lower_copy_aggregate(*dest, *src, *size),
+            PIR::ZeroAggregate { dest, size } => self.lower_zero_aggregate(*dest, *size),
+            PIR::LoadField {
+                dest,
+                base,
+                offset,
+                field_type,
+            } => self.lower_load_field(*dest, *base, *offset, field_type),
+            PIR::StoreField {
+                base,
+                offset,
+                src,
+                field_type,
+            } => self.lower_store_field(*base, *offset, src, field_type),
         }
     }
 
@@ -1720,5 +1739,185 @@ impl<'a> X8664Codegen<'a> {
         // about the registers, because the forthcoming control-flow edge or
         // call may clobber them.
         self.allocator.clear_all_registers();
+    }
+
+    /// Lower AllocateAggregate to x86-64 instructions
+    fn lower_allocate_aggregate(
+        &mut self,
+        dest: VReg,
+        size: i64,
+        _alignment: i64,
+    ) -> Result<(), LoweringError> {
+        // Call __rue_alloc(size) to allocate memory on the heap
+        let dest_reg = self.allocator.ensure_reg(dest, &[])?;
+        self.emit_spill_reload_ops();
+
+        // Set up function call to __rue_alloc
+        // Size argument goes in RDI (first parameter register)
+        self.emit(X8664Instr::MovRI64 {
+            dest: X86Register::Rdi,
+            imm: size,
+        });
+
+        // Call the allocator function
+        self.emit(X8664Instr::Call {
+            target: "__rue_alloc".to_string(),
+        });
+
+        // Move result from RAX to destination register if different
+        if dest_reg != X86Register::Rax {
+            self.emit(X8664Instr::MovRR {
+                dest: dest_reg,
+                src: X86Register::Rax,
+            });
+        }
+
+        Ok(())
+    }
+
+    /// Lower CopyAggregate to x86-64 instructions using runtime helper
+    fn lower_copy_aggregate(
+        &mut self,
+        dest: VReg,
+        src: VReg,
+        size: i64,
+    ) -> Result<(), LoweringError> {
+        let dest_reg = self.allocator.ensure_reg(dest, &[])?;
+        let src_reg = self.allocator.ensure_reg(src, &[dest_reg])?;
+        self.emit_spill_reload_ops();
+
+        // Set up call to __rue_memcpy(dest, src, size)
+        // dest -> RDI, src -> RSI, size -> RDX
+        if dest_reg != X86Register::Rdi {
+            self.emit(X8664Instr::MovRR {
+                dest: X86Register::Rdi,
+                src: dest_reg,
+            });
+        }
+        if src_reg != X86Register::Rsi {
+            self.emit(X8664Instr::MovRR {
+                dest: X86Register::Rsi,
+                src: src_reg,
+            });
+        }
+        self.emit(X8664Instr::MovRI64 {
+            dest: X86Register::Rdx,
+            imm: size,
+        });
+
+        // Call memory copy function
+        self.emit(X8664Instr::Call {
+            target: "__rue_memcpy".to_string(),
+        });
+
+        Ok(())
+    }
+
+    /// Lower ZeroAggregate to x86-64 instructions using runtime helper
+    fn lower_zero_aggregate(&mut self, dest: VReg, size: i64) -> Result<(), LoweringError> {
+        let dest_reg = self.allocator.ensure_reg(dest, &[])?;
+        self.emit_spill_reload_ops();
+
+        // Set up call to __rue_memzero(dest, size)
+        // dest -> RDI, size -> RSI
+        if dest_reg != X86Register::Rdi {
+            self.emit(X8664Instr::MovRR {
+                dest: X86Register::Rdi,
+                src: dest_reg,
+            });
+        }
+        self.emit(X8664Instr::MovRI64 {
+            dest: X86Register::Rsi,
+            imm: size,
+        });
+
+        // Call memory zero function
+        self.emit(X8664Instr::Call {
+            target: "__rue_memzero".to_string(),
+        });
+
+        Ok(())
+    }
+
+    /// Lower LoadField to x86-64 instructions
+    fn lower_load_field(
+        &mut self,
+        dest: VReg,
+        base: VReg,
+        offset: i64,
+        _field_type: &rue_ir::types::RueType,
+    ) -> Result<(), LoweringError> {
+        let dest_reg = self.allocator.ensure_reg(dest, &[])?;
+        let base_reg = self.allocator.ensure_reg(base, &[dest_reg])?;
+        self.emit_spill_reload_ops();
+
+        // Load field from [base + offset] - all loads are 64-bit for simplicity
+        self.emit(X8664Instr::MovRM {
+            dest: dest_reg,
+            base: base_reg,
+            offset: offset as i32, // Truncate to i32 for instruction encoding
+        });
+
+        Ok(())
+    }
+
+    /// Lower StoreField to x86-64 instructions
+    fn lower_store_field(
+        &mut self,
+        base: VReg,
+        offset: i64,
+        src: &Value,
+        _field_type: &rue_ir::types::RueType,
+    ) -> Result<(), LoweringError> {
+        let base_reg = self.allocator.ensure_reg(base, &[])?;
+
+        match src {
+            Value::VReg(src_vreg) => {
+                let src_reg = self.allocator.ensure_reg(*src_vreg, &[base_reg])?;
+                self.emit_spill_reload_ops();
+
+                // Store field to [base + offset] - all stores are 64-bit for simplicity
+                self.emit(X8664Instr::MovMR {
+                    base: base_reg,
+                    offset: offset as i32, // Truncate to i32 for instruction encoding
+                    src: src_reg,
+                });
+            }
+            Value::SignedImm(imm) => {
+                self.emit_spill_reload_ops();
+
+                // Load immediate into a register, then store to memory
+                let scratch = self.get_scratch_register(&[base_reg])?;
+                self.emit(X8664Instr::MovRI64 {
+                    dest: scratch,
+                    imm: *imm,
+                });
+                self.emit(X8664Instr::MovMR {
+                    base: base_reg,
+                    offset: offset as i32,
+                    src: scratch,
+                });
+            }
+            Value::UnsignedImm(imm) => {
+                self.emit_spill_reload_ops();
+
+                // Load immediate into a register, then store to memory
+                let scratch = self.get_scratch_register(&[base_reg])?;
+                self.emit(X8664Instr::MovRI64 {
+                    dest: scratch,
+                    imm: *imm as i64,
+                });
+                self.emit(X8664Instr::MovMR {
+                    base: base_reg,
+                    offset: offset as i32,
+                    src: scratch,
+                });
+            }
+            Value::PhysicalReg(_) => {
+                return Err(LoweringError::UnsupportedValueType("StoreField"));
+            }
+        }
+
+        Ok(())
     }
 }

@@ -37,6 +37,8 @@ impl ElfWriter {
             .get("_start")
             .expect("_start symbol must be present in symbols table");
 
+        // Create a proper executable ELF manually since the object crate
+        // can only create relocatable objects (ET_REL), not executables (ET_EXEC)
         self.create_executable_elf(machine_code, data_section, bss_size, start_offset)
     }
 
