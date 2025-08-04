@@ -217,4 +217,35 @@ pub enum PIR {
         src: Value,          // Source value to store
         field_type: RueType, // Type of field being stored
     },
+
+    // Dynamic array operations with bounds checking
+    /// Check array bounds and trap if index is out of bounds
+    ArrayBoundsCheck {
+        array_base: VReg,  // Base pointer to array
+        index: VReg,       // Index to check
+        array_len: u64,    // Array length (compile-time constant)
+        trap_label: Label, // Label to jump to on bounds violation
+    },
+    /// Load from array at dynamic index (assumes bounds check already done)
+    DynamicLoadField {
+        dest: VReg,            // Destination register
+        base: VReg,            // Base pointer register
+        index: VReg,           // Index register (must be bounds-checked)
+        element_size: i64,     // Size of each element in bytes
+        element_type: RueType, // Type of element being loaded
+    },
+    /// Store to array at dynamic index (assumes bounds check already done)
+    DynamicStoreField {
+        base: VReg,            // Base pointer register
+        index: VReg,           // Index register (must be bounds-checked)
+        src: Value,            // Source value to store
+        element_size: i64,     // Size of each element in bytes
+        element_type: RueType, // Type of element being stored
+    },
+
+    // Runtime error handling
+    /// Trap with error message (for bounds violations, etc.)
+    Trap {
+        message: String, // Error message
+    },
 }

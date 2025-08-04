@@ -288,6 +288,10 @@ impl X86Emitter {
                     ConditionCode::LessEqual => 0x9e,    // SETLE
                     ConditionCode::Greater => 0x9f,      // SETG
                     ConditionCode::GreaterEqual => 0x9d, // SETGE
+                    ConditionCode::Below => 0x92,        // SETB
+                    ConditionCode::BelowEqual => 0x96,   // SETBE
+                    ConditionCode::Above => 0x97,        // SETA
+                    ConditionCode::AboveEqual => 0x93,   // SETAE
                 };
 
                 // Need a REX prefix when the destination is r8-r15 so that
@@ -366,6 +370,10 @@ impl X86Emitter {
                     ConditionCode::LessEqual => 0x8e,    // JLE
                     ConditionCode::Greater => 0x8f,      // JG
                     ConditionCode::GreaterEqual => 0x8d, // JGE
+                    ConditionCode::Below => 0x82,        // JB
+                    ConditionCode::BelowEqual => 0x86,   // JBE
+                    ConditionCode::Above => 0x87,        // JA
+                    ConditionCode::AboveEqual => 0x83,   // JAE
                 };
 
                 self.current_section_data().push(0x0f);

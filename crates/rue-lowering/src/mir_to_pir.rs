@@ -8,9 +8,20 @@ use rue_ir::mir::{
     MirUnaryOp, MirValue, Temp,
 };
 use rue_ir::pir::{BinOp, Label, PIR, PhysicalRegId, VReg, Value};
-use rue_ir::types::FieldId;
+use rue_ir::types::{FieldId, RueType};
 use std::collections::HashMap;
 use tracing::{debug, trace};
+
+/// Memory allocation strategy for aggregates
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum AllocationStrategy {
+    /// Zero-sized aggregates need no allocation
+    ZeroSized,
+    /// Small aggregates allocated on stack
+    Stack,
+    /// Large aggregates allocated on heap
+    Heap,
+}
 
 /// Lowers MIR to PIR
 pub struct MirToPir {
@@ -301,9 +312,10 @@ impl MirToPir {
                         }
                     }
                     MirConst::Unit => 0,
-                    MirConst::Aggregate { .. } => {
-                        // Aggregate constants not yet supported in lowering
-                        panic!("Aggregate constants not yet supported in MIR to PIR lowering");
+                    MirConst::Aggregate { ty, fields } => {
+                        // Lower aggregate constant using enhanced method
+                        self.lower_aggregate_constant(dest, ty, fields);
+                        return; // Already handled, don't emit additional Copy instruction
                     }
                 };
                 self.emit(PIR::Copy {
@@ -394,6 +406,9 @@ impl MirToPir {
                 struct_type,
             } => {
                 self.lower_struct_update(dest, *base, updates, *struct_type);
+            }
+            MirValue::DynamicArrayAccess { base, index } => {
+                self.lower_dynamic_array_access(dest, *base, *index);
             }
         }
     }
@@ -584,59 +599,162 @@ impl MirToPir {
         }
     }
 
-    /// Lower ConstructAggregate to PIR
-    fn lower_construct_aggregate(
-        &mut self,
-        dest: VReg,
-        ty: &rue_ir::types::RueType,
-        fields: &[Temp],
-    ) {
-        let size = Self::compute_type_size(ty);
+    /// Helper function to compute size of a type in bytes using proper layout
+    fn compute_type_size(ty: &RueType) -> i64 {
+        ty.size_bytes() as i64
+    }
 
-        // Allocate memory for the aggregate
-        self.emit(PIR::AllocateAggregate {
-            dest,
-            size,
-            alignment: 8, // Use 8-byte alignment for all aggregates
-        });
+    /// Helper function to compute alignment of a type in bytes
+    fn compute_type_alignment(ty: &RueType) -> i64 {
+        ty.align_bytes() as i64
+    }
 
-        // Store each field value into the allocated memory
-        let mut current_offset = 0;
+    /// Memory allocation strategy for aggregates
+    fn choose_allocation_strategy(size: usize) -> AllocationStrategy {
+        const STACK_ALLOCATION_THRESHOLD: usize = 128;
+        match size {
+            0 => AllocationStrategy::ZeroSized,
+            1..=STACK_ALLOCATION_THRESHOLD => AllocationStrategy::Stack,
+            _ => AllocationStrategy::Heap,
+        }
+    }
+
+    /// Helper function to compute field offset within an aggregate using proper type layout
+    fn compute_field_offset(base_ty: &RueType, field: &FieldId) -> (i64, RueType) {
+        match (base_ty, field) {
+            (RueType::Tuple(types), FieldId::Index(idx)) => {
+                if idx >= &types.len() {
+                    panic!(
+                        "Field index {} out of bounds for tuple with {} fields",
+                        idx,
+                        types.len()
+                    );
+                }
+                // Use proper layout computation from type system
+                let offset = base_ty
+                    .tuple_field_offset(*idx)
+                    .expect("Valid tuple field offset") as i64;
+                (offset, types[*idx].clone())
+            }
+            (RueType::Array(elem_ty, len), FieldId::Index(idx)) => {
+                if idx >= len {
+                    panic!("Array index {idx} out of bounds for array of length {len}");
+                }
+                // Use proper layout computation from type system
+                let offset = base_ty
+                    .array_element_offset(*idx)
+                    .expect("Valid array element offset") as i64;
+                (offset, (**elem_ty).clone())
+            }
+            (RueType::Struct(_struct_id), FieldId::Named(_name)) => {
+                // For now, return conservative defaults
+                // TODO: Implement struct field offset lookup via type registry
+                (0, RueType::I64)
+            }
+            (RueType::Struct(_struct_id), FieldId::Index(idx)) => {
+                // Treat as tuple-like access for now
+                // TODO: Implement proper struct field offset computation
+                ((*idx as i64) * 8, RueType::I64)
+            }
+            _ => {
+                panic!("Invalid field access: {field:?} on type {base_ty:?}");
+            }
+        }
+    }
+
+    /// Lower ConstructAggregate to PIR with optimized allocation strategy
+    fn lower_construct_aggregate(&mut self, dest: VReg, ty: &RueType, fields: &[Temp]) {
+        let size = Self::compute_type_size(ty) as usize;
+        let alignment = Self::compute_type_alignment(ty);
+        let strategy = Self::choose_allocation_strategy(size);
+
+        // Handle allocation based on strategy
+        match strategy {
+            AllocationStrategy::ZeroSized => {
+                // Zero-sized aggregates don't need actual allocation
+                // Just assign a dummy pointer value
+                self.emit(PIR::Copy {
+                    dest,
+                    src: Value::UnsignedImm(1), // Non-null dummy pointer
+                });
+                return; // No fields to store
+            }
+            AllocationStrategy::Stack => {
+                // TODO: Implement stack allocation via stack frame management
+                // For now, fall back to heap allocation
+                self.emit(PIR::AllocateAggregate {
+                    dest,
+                    size: size as i64,
+                    alignment,
+                });
+            }
+            AllocationStrategy::Heap => {
+                self.emit(PIR::AllocateAggregate {
+                    dest,
+                    size: size as i64,
+                    alignment,
+                });
+            }
+        }
+
+        // Zero-initialize the allocated memory for safety
+        if size > 0 {
+            self.emit(PIR::ZeroAggregate {
+                dest,
+                size: size as i64,
+            });
+        }
+
+        // Store each field value using proper layout computation
+        self.store_aggregate_fields(dest, ty, fields);
+    }
+
+    /// Store fields into aggregate using proper layout
+    fn store_aggregate_fields(&mut self, dest: VReg, ty: &RueType, fields: &[Temp]) {
         match ty {
-            rue_ir::types::RueType::Tuple(field_types) => {
-                for (field_temp, field_ty) in fields.iter().zip(field_types.iter()) {
+            RueType::Tuple(field_types) => {
+                for (idx, (field_temp, field_ty)) in
+                    fields.iter().zip(field_types.iter()).enumerate()
+                {
                     let field_vreg = self.get_vreg(*field_temp);
+                    let offset = ty
+                        .tuple_field_offset(idx)
+                        .expect("Valid tuple field offset") as i64;
+
                     self.emit(PIR::StoreField {
                         base: dest,
-                        offset: current_offset,
+                        offset,
                         src: Value::VReg(field_vreg),
                         field_type: field_ty.clone(),
                     });
-                    current_offset += Self::compute_type_size(field_ty);
                 }
             }
-            rue_ir::types::RueType::Array(elem_ty, _len) => {
-                let elem_size = Self::compute_type_size(elem_ty);
-                for field_temp in fields.iter() {
+            RueType::Array(elem_ty, _len) => {
+                for (idx, field_temp) in fields.iter().enumerate() {
                     let field_vreg = self.get_vreg(*field_temp);
+                    let offset =
+                        ty.array_element_offset(idx)
+                            .expect("Valid array element offset") as i64;
+
                     self.emit(PIR::StoreField {
                         base: dest,
-                        offset: current_offset,
+                        offset,
                         src: Value::VReg(field_vreg),
                         field_type: (**elem_ty).clone(),
                     });
-                    current_offset += elem_size;
                 }
             }
-            rue_ir::types::RueType::Struct(_) => {
-                // Simple sequential layout for structs
+            RueType::Struct(_) => {
+                // Sequential layout for structs (simplified)
+                // TODO: Use proper struct field layout when type registry is available
+                let mut current_offset = 0;
                 for field_temp in fields.iter() {
                     let field_vreg = self.get_vreg(*field_temp);
                     self.emit(PIR::StoreField {
                         base: dest,
                         offset: current_offset,
                         src: Value::VReg(field_vreg),
-                        field_type: rue_ir::types::RueType::I64, // Conservative assumption
+                        field_type: RueType::I64, // Conservative assumption
                     });
                     current_offset += 8; // Conservative field size
                 }
@@ -647,187 +765,307 @@ impl MirToPir {
         }
     }
 
-    /// Lower GetField to PIR
+    /// Lower GetField to PIR with proper type-aware offset computation
     fn lower_get_field(&mut self, dest: VReg, base: Temp, field: &FieldId) {
         let base_vreg = self.get_vreg(base);
 
-        // We need the base type to compute the field offset
-        // For now, we'll make conservative assumptions
-        // In the future, this would use type information from the MIR
+        // Get the base type from our type information
+        let base_type = self
+            .current_temp_types
+            .get(&base)
+            .cloned()
+            .unwrap_or(RueType::Unknown);
 
-        match field {
-            FieldId::Index(idx) => {
-                // Assume base is a pointer to an aggregate with 8-byte fields
-                let offset = (*idx as i64) * 8;
-                self.emit(PIR::LoadField {
-                    dest,
-                    base: base_vreg,
-                    offset,
-                    field_type: rue_ir::types::RueType::I64, // Conservative assumption
-                });
+        let (offset, field_type) = if base_type != RueType::Unknown {
+            // Use proper type-aware offset computation
+            Self::compute_field_offset(&base_type, field)
+        } else {
+            tracing::warn!(
+                "Missing type information for temp {base:?}, using conservative assumptions"
+            );
+            // Fall back to conservative assumptions
+            match field {
+                FieldId::Index(idx) => ((*idx as i64) * 8, RueType::I64),
+                FieldId::Named(_) => (0, RueType::I64),
             }
-            FieldId::Named(_name) => {
-                // For named fields, assume offset 0 for now
-                self.emit(PIR::LoadField {
-                    dest,
-                    base: base_vreg,
-                    offset: 0,
-                    field_type: rue_ir::types::RueType::I64, // Conservative assumption
-                });
-            }
-        }
+        };
+
+        self.emit(PIR::LoadField {
+            dest,
+            base: base_vreg,
+            offset,
+            field_type,
+        });
     }
 
-    /// Lower SetField to PIR
+    /// Lower SetField to PIR with efficient functional update
     fn lower_set_field(&mut self, dest: VReg, base: Temp, field: &FieldId, value: Temp) {
         let base_vreg = self.get_vreg(base);
         let value_vreg = self.get_vreg(value);
 
-        // Allocate a new aggregate (functional update)
-        // For now, assume base type is a 64-byte struct
-        self.emit(PIR::AllocateAggregate {
-            dest,
-            size: 64,
-            alignment: 8,
-        });
+        // Get the base type for proper size and layout computation
+        let base_type = self
+            .current_temp_types
+            .get(&base)
+            .cloned()
+            .unwrap_or(RueType::Unknown);
+
+        let (size, alignment) = if base_type != RueType::Unknown {
+            (
+                Self::compute_type_size(&base_type),
+                Self::compute_type_alignment(&base_type),
+            )
+        } else {
+            tracing::warn!(
+                "Missing type information for temp {base:?}, using conservative assumptions"
+            );
+            (64, 8) // Conservative defaults
+        };
+
+        // Allocate a new aggregate for the functional update
+        let strategy = Self::choose_allocation_strategy(size as usize);
+        match strategy {
+            AllocationStrategy::ZeroSized => {
+                // Zero-sized aggregates don't need copying
+                self.emit(PIR::Copy {
+                    dest,
+                    src: Value::UnsignedImm(1), // Non-null dummy pointer
+                });
+                return;
+            }
+            _ => {
+                self.emit(PIR::AllocateAggregate {
+                    dest,
+                    size,
+                    alignment,
+                });
+            }
+        }
 
         // Copy the base aggregate to the new location
         self.emit(PIR::CopyAggregate {
             dest,
             src: base_vreg,
-            size: 64,
+            size,
         });
 
-        // Update the specific field
-        match field {
-            FieldId::Index(idx) => {
-                let offset = (*idx as i64) * 8;
-                self.emit(PIR::StoreField {
-                    base: dest,
-                    offset,
-                    src: Value::VReg(value_vreg),
-                    field_type: rue_ir::types::RueType::I64,
-                });
+        // Update the specific field with proper offset computation
+        let (offset, field_type) = if base_type != RueType::Unknown {
+            Self::compute_field_offset(&base_type, field)
+        } else {
+            // Fall back to conservative assumptions
+            match field {
+                FieldId::Index(idx) => ((*idx as i64) * 8, RueType::I64),
+                FieldId::Named(_) => (0, RueType::I64),
             }
-            FieldId::Named(_name) => {
-                self.emit(PIR::StoreField {
-                    base: dest,
-                    offset: 0,
-                    src: Value::VReg(value_vreg),
-                    field_type: rue_ir::types::RueType::I64,
-                });
-            }
-        }
+        };
+
+        self.emit(PIR::StoreField {
+            base: dest,
+            offset,
+            src: Value::VReg(value_vreg),
+            field_type,
+        });
     }
 
-    /// Lower StructUpdate to PIR
+    /// Lower StructUpdate to PIR with efficient selective copying
     fn lower_struct_update(
         &mut self,
         dest: VReg,
         base: Temp,
         updates: &[(FieldId, Temp)],
-        _struct_type: rue_ir::types::StructId,
+        struct_type: rue_ir::types::StructId,
     ) {
         let base_vreg = self.get_vreg(base);
+        let base_type = RueType::Struct(struct_type);
+        let size = Self::compute_type_size(&base_type);
+        let alignment = Self::compute_type_alignment(&base_type);
 
-        // Allocate a new struct
-        self.emit(PIR::AllocateAggregate {
-            dest,
-            size: 64, // Conservative struct size
-            alignment: 8,
-        });
+        // Allocate new struct
+        let strategy = Self::choose_allocation_strategy(size as usize);
+        match strategy {
+            AllocationStrategy::ZeroSized => {
+                self.emit(PIR::Copy {
+                    dest,
+                    src: Value::UnsignedImm(1),
+                });
+                return;
+            }
+            _ => {
+                self.emit(PIR::AllocateAggregate {
+                    dest,
+                    size,
+                    alignment,
+                });
+            }
+        }
 
-        // Copy the base struct
+        // Copy the base struct to new location
         self.emit(PIR::CopyAggregate {
             dest,
             src: base_vreg,
-            size: 64,
+            size,
         });
 
-        // Apply all updates
+        // Apply all field updates
         for (field, value_temp) in updates {
             let value_vreg = self.get_vreg(*value_temp);
-            match field {
-                FieldId::Index(idx) => {
-                    let offset = (*idx as i64) * 8;
+            let (offset, field_type) = Self::compute_field_offset(&base_type, field);
+
+            self.emit(PIR::StoreField {
+                base: dest,
+                offset,
+                src: Value::VReg(value_vreg),
+                field_type,
+            });
+        }
+    }
+
+    /// Lower dynamic array access with bounds checking
+    fn lower_dynamic_array_access(&mut self, dest: VReg, base: Temp, index: Temp) {
+        let base_vreg = self.get_vreg(base);
+        let index_vreg = self.get_vreg(index);
+
+        // Get the array type to determine element size and array length
+        let base_type = self
+            .current_temp_types
+            .get(&base)
+            .cloned()
+            .unwrap_or(RueType::Unknown);
+
+        let (element_type, array_len, element_size) = match &base_type {
+            RueType::Array(elem_type, len) => {
+                let elem_layout = elem_type.layout();
+                ((**elem_type).clone(), *len as u64, elem_layout.size as i64)
+            }
+            _ => {
+                panic!("Dynamic array access on non-array type: {base_type:?}");
+            }
+        };
+
+        // Create trap label for bounds violation
+        let trap_label = self.fresh_label();
+
+        trace!(
+            target: "rue::mir::arrays",
+            ?base_vreg,
+            ?index_vreg,
+            ?array_len,
+            ?element_size,
+            "Lowering dynamic array access with bounds checking"
+        );
+
+        // Create a label to continue after successful bounds check
+        let continue_label = self.fresh_label();
+
+        // Emit bounds check
+        self.emit(PIR::ArrayBoundsCheck {
+            array_base: base_vreg,
+            index: index_vreg,
+            array_len,
+            trap_label,
+        });
+
+        // Emit dynamic load (bounds check ensures this is safe)
+        self.emit(PIR::DynamicLoadField {
+            dest,
+            base: base_vreg,
+            index: index_vreg,
+            element_size,
+            element_type,
+        });
+
+        // Jump over the trap code after successful load
+        self.emit(PIR::Jump(continue_label));
+
+        // Emit trap label and trap instruction
+        self.emit(PIR::Label(trap_label));
+        self.emit(PIR::Trap {
+            message: format!("Array index out of bounds (array length: {array_len})"),
+        });
+
+        // Continue label for normal execution
+        self.emit(PIR::Label(continue_label));
+    }
+
+    /// Lower aggregate constant construction
+    fn lower_aggregate_constant(
+        &mut self,
+        dest: VReg,
+        ty: &RueType,
+        fields: &std::rc::Rc<[MirConst]>,
+    ) {
+        let size = Self::compute_type_size(ty) as usize;
+        let strategy = Self::choose_allocation_strategy(size);
+
+        match strategy {
+            AllocationStrategy::ZeroSized => {
+                self.emit(PIR::Copy {
+                    dest,
+                    src: Value::UnsignedImm(1),
+                });
+                return;
+            }
+            _ => {
+                let alignment = Self::compute_type_alignment(ty);
+                self.emit(PIR::AllocateAggregate {
+                    dest,
+                    size: size as i64,
+                    alignment,
+                });
+            }
+        }
+
+        // Store constant field values
+        match ty {
+            RueType::Tuple(field_types) => {
+                for (idx, (field_const, field_ty)) in
+                    fields.iter().zip(field_types.iter()).enumerate()
+                {
+                    let offset = ty
+                        .tuple_field_offset(idx)
+                        .expect("Valid tuple field offset") as i64;
+
+                    // Convert constant to immediate value
+                    let immediate = self.constant_to_immediate(field_const);
                     self.emit(PIR::StoreField {
                         base: dest,
                         offset,
-                        src: Value::VReg(value_vreg),
-                        field_type: rue_ir::types::RueType::I64,
+                        src: immediate,
+                        field_type: field_ty.clone(),
                     });
                 }
-                FieldId::Named(_name) => {
+            }
+            RueType::Array(elem_ty, _len) => {
+                for (idx, field_const) in fields.iter().enumerate() {
+                    let offset =
+                        ty.array_element_offset(idx)
+                            .expect("Valid array element offset") as i64;
+
+                    let immediate = self.constant_to_immediate(field_const);
                     self.emit(PIR::StoreField {
                         base: dest,
-                        offset: 0,
-                        src: Value::VReg(value_vreg),
-                        field_type: rue_ir::types::RueType::I64,
+                        offset,
+                        src: immediate,
+                        field_type: (**elem_ty).clone(),
                     });
                 }
             }
-        }
-    }
-
-    /// Helper function to compute size of a type in bytes
-    fn compute_type_size(ty: &rue_ir::types::RueType) -> i64 {
-        match ty {
-            rue_ir::types::RueType::I32 => 4,
-            rue_ir::types::RueType::I64 | rue_ir::types::RueType::Bool => 8, // Bool stored as i64
-            rue_ir::types::RueType::Unit | rue_ir::types::RueType::Unknown => 0,
-            rue_ir::types::RueType::Tuple(types) => {
-                // Sum of field sizes - simple layout for now
-                types.iter().map(Self::compute_type_size).sum()
-            }
-            rue_ir::types::RueType::Array(elem_ty, len) => {
-                Self::compute_type_size(elem_ty) * (*len as i64)
-            }
-            rue_ir::types::RueType::Struct(_) => {
-                // Conservative size estimate for structs
-                // In the future, this would query a type registry
-                64
-            }
-        }
-    }
-
-    /// Helper function to compute field offset within an aggregate
-    #[expect(dead_code)] // Will be used when proper type information is available
-    fn compute_field_offset(
-        &self,
-        base_ty: &rue_ir::types::RueType,
-        field: &FieldId,
-    ) -> (i64, rue_ir::types::RueType) {
-        match (base_ty, field) {
-            (rue_ir::types::RueType::Tuple(types), FieldId::Index(idx)) => {
-                if *idx >= types.len() {
-                    panic!(
-                        "Field index {} out of bounds for tuple with {} fields",
-                        idx,
-                        types.len()
-                    );
-                }
-                let offset = types.iter().take(*idx).map(Self::compute_type_size).sum();
-                (offset, types[*idx].clone())
-            }
-            (rue_ir::types::RueType::Array(elem_ty, len), FieldId::Index(idx)) => {
-                if *idx >= *len {
-                    panic!("Array index {idx} out of bounds for array of length {len}");
-                }
-                let elem_size = Self::compute_type_size(elem_ty);
-                let offset = elem_size * (*idx as i64);
-                (offset, (**elem_ty).clone())
-            }
-            (rue_ir::types::RueType::Struct(_struct_id), FieldId::Named(_name)) => {
-                // For now, return conservative defaults
-                // In the future, this would query the type registry
-                (0, rue_ir::types::RueType::I64)
-            }
-            (rue_ir::types::RueType::Struct(_struct_id), FieldId::Index(idx)) => {
-                // Treat as tuple-like access for now
-                ((*idx as i64) * 8, rue_ir::types::RueType::I64)
-            }
             _ => {
-                panic!("Invalid field access: {field:?} on type {base_ty:?}");
+                panic!("Unsupported aggregate constant type: {ty:?}");
+            }
+        }
+    }
+
+    /// Helper to convert MIR constant to PIR immediate value
+    fn constant_to_immediate(&self, constant: &MirConst) -> Value {
+        match constant {
+            MirConst::Int32(n) => Value::SignedImm(*n as i64),
+            MirConst::Int64(n) => Value::SignedImm(*n),
+            MirConst::Bool(b) => Value::SignedImm(if *b { 1 } else { 0 }),
+            MirConst::Unit => Value::SignedImm(0),
+            MirConst::Aggregate { .. } => {
+                panic!("Nested aggregate constants not supported in immediate values");
             }
         }
     }
@@ -848,9 +1086,14 @@ mod tests {
         // Test tuple size calculation
         let tuple_ty = RueType::Tuple(vec![RueType::I64, RueType::I32]);
         let tuple_size = MirToPir::compute_type_size(&tuple_ty);
+
+        // Tuple (i64, i32) has proper alignment:
+        // - i64 at offset 0 (8 bytes)
+        // - i32 at offset 8 (4 bytes)
+        // - Total size 16 bytes due to 8-byte alignment requirement
         assert_eq!(
-            tuple_size, 12,
-            "Tuple (i64, i32) should be 8 + 4 = 12 bytes"
+            tuple_size, 16,
+            "Tuple (i64, i32) should be 16 bytes with proper alignment"
         );
 
         // Test array size calculation
@@ -858,12 +1101,12 @@ mod tests {
         let array_size = MirToPir::compute_type_size(&array_ty);
         assert_eq!(array_size, 20, "Array [i32; 5] should be 4 * 5 = 20 bytes");
 
-        // Test struct size (conservative estimate)
+        // Test struct size (placeholder)
         let struct_ty = RueType::Struct(rue_ir::types::StructId::new(1));
         let struct_size = MirToPir::compute_type_size(&struct_ty);
         assert_eq!(
-            struct_size, 64,
-            "Struct should use conservative size of 64 bytes"
+            struct_size, 8,
+            "Struct should use placeholder size of 8 bytes (from type system)"
         );
     }
 
@@ -888,7 +1131,7 @@ mod tests {
 
         // Find AllocateAggregate instruction
         let alloc_found = instructions.iter().any(|inst| {
-            matches!(inst, PIR::AllocateAggregate { dest: d, size: 12, alignment: 8 } if *d == dest)
+            matches!(inst, PIR::AllocateAggregate { dest: d, size: 16, alignment: 8 } if *d == dest)
         });
         assert!(alloc_found, "Should generate AllocateAggregate instruction");
 

@@ -445,6 +445,13 @@ pub fn walk_value<V: MirVisitor + ?Sized>(visitor: &mut V, value: &MirValue) -> 
             }
             VisitorControl::Continue
         }
+        MirValue::DynamicArrayAccess { base, index } => {
+            let control = visitor.visit_temp(base);
+            if !control.should_continue() {
+                return control;
+            }
+            visitor.visit_temp(index)
+        }
     }
 }
 
@@ -668,6 +675,13 @@ pub fn walk_value_mut<V: MirMutVisitor + ?Sized>(
             }
             VisitorControl::Continue
         }
+        MirValue::DynamicArrayAccess { base, index } => {
+            let control = visitor.visit_temp(base);
+            if !control.should_continue() {
+                return control;
+            }
+            visitor.visit_temp(index)
+        }
     }
 }
 
@@ -855,5 +869,9 @@ pub fn fold_value<F: MirFolder + ?Sized>(
                 struct_type,
             }
         }
+        MirValue::DynamicArrayAccess { base, index } => MirValue::DynamicArrayAccess {
+            base: folder.fold_temp(base)?,
+            index: folder.fold_temp(index)?,
+        },
     })
 }

@@ -340,6 +340,46 @@ impl MirVerifier {
                 }
                 Some(RueType::Struct(*struct_type))
             }
+            MirValue::DynamicArrayAccess { base, index } => {
+                // Verify base is defined and is an array
+                let base_ty = if let Some(ty) = defined_temps.get(base) {
+                    ty.clone()
+                } else {
+                    self.add_error(
+                        format!("Use of undefined temp {base:?} in dynamic array access"),
+                        Some(block_id),
+                    );
+                    return None;
+                };
+
+                // Verify index is defined and is an integer
+                if let Some(index_ty) = defined_temps.get(index) {
+                    if !matches!(index_ty, RueType::I32 | RueType::I64) {
+                        self.add_error(
+                            format!("Array index must be integer, got {index_ty:?}"),
+                            Some(block_id),
+                        );
+                    }
+                } else {
+                    self.add_error(
+                        format!("Use of undefined temp {index:?} as array index"),
+                        Some(block_id),
+                    );
+                    return None;
+                }
+
+                // Verify base is actually an array and return element type
+                match base_ty {
+                    RueType::Array(elem_ty, _) => Some(elem_ty.as_ref().clone()),
+                    _ => {
+                        self.add_error(
+                            format!("Dynamic array access on non-array type {base_ty:?}"),
+                            Some(block_id),
+                        );
+                        None
+                    }
+                }
+            }
         }
     }
 

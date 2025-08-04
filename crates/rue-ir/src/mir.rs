@@ -162,6 +162,14 @@ pub enum MirValue {
         /// Type of the struct (for validation)
         struct_type: StructId,
     },
+    /// Dynamic array access with bounds checking
+    /// Accesses an array element at a runtime-computed index
+    DynamicArrayAccess {
+        /// The array to access
+        base: Temp,
+        /// The index (computed at runtime)
+        index: Temp,
+    },
 }
 
 /// Constant values in MIR
@@ -381,6 +389,14 @@ impl MirValue {
                 // StructUpdate creates a new struct of the given type
                 Some(RueType::Struct(*struct_type))
             }
+            MirValue::DynamicArrayAccess { base, .. } => {
+                // Dynamic array access returns the element type of the array
+                let base_ty = temp_types(*base);
+                match base_ty {
+                    RueType::Array(elem_ty, _) => Some(elem_ty.as_ref().clone()),
+                    _ => None, // Error case - not an array
+                }
+            }
         }
     }
 }
@@ -538,6 +554,9 @@ impl fmt::Display for MirValue {
                     write!(f, "{field}: {value}")?;
                 }
                 write!(f, ", ..{base} }}")
+            }
+            MirValue::DynamicArrayAccess { base, index } => {
+                write!(f, "{base}[{index}]")
             }
         }
     }

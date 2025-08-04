@@ -94,6 +94,7 @@ impl ConstProp {
             MirValue::GetField { .. } => None,
             MirValue::SetField { .. } => None,
             MirValue::StructUpdate { .. } => None,
+            MirValue::DynamicArrayAccess { .. } => None, // Dynamic array access cannot be constant-folded
         }
     }
 

@@ -50,6 +50,10 @@ pub enum ConditionCode {
     LessEqual,    // ZF=1 or SF≠OF
     Greater,      // ZF=0 and SF=OF
     GreaterEqual, // SF=OF
+    Below,        // CF=1 (unsigned less than)
+    BelowEqual,   // CF=1 or ZF=1 (unsigned less than or equal)
+    Above,        // CF=0 and ZF=0 (unsigned greater than)
+    AboveEqual,   // CF=0 (unsigned greater than or equal)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
