@@ -283,6 +283,12 @@ pub fn format_instructions_as_assembly(
                 // Reserve uninitialized space using .space directive
                 output.push_str(&format!("    .space {count}\n"));
             }
+            X8664Instr::RepMovsb => {
+                output.push_str("    rep movsb\n");
+            }
+            X8664Instr::Std => {
+                output.push_str("    std\n");
+            }
         }
     }
 

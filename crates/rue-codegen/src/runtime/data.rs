@@ -1,11 +1,7 @@
-//! Static data section and heap groundwork
+//! Static data section groundwork
 
 use crate::runtime::context::RuntimeContext;
 use rue_target::{LabelRef, X8664Instr};
-
-// Placeholder for future bump allocator heap start
-// Will be placed in .bss and sized later
-pub const RUE_HEAP_START: &str = "__rue_heap_start";
 
 impl RuntimeContext {
     /// Generate data section with static strings
@@ -59,16 +55,6 @@ impl RuntimeContext {
         // Reserve 1024 bytes for input buffer
         self.instructions
             .push(X8664Instr::ReserveBytes { count: 1024 });
-
-        // Placeholder heap start symbol for future bump allocator
-        // This will be in .bss section and sized later when heap is implemented
-        let heap_start_label = self.define_label(RUE_HEAP_START);
-        self.instructions.push(X8664Instr::Label {
-            id: heap_start_label,
-        });
-        // Reserve minimal space for now - will be expanded when heap is implemented
-        self.instructions
-            .push(X8664Instr::ReserveBytes { count: 8 });
 
         // End of data section
         self.instructions

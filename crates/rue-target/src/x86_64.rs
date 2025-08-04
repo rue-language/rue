@@ -192,6 +192,12 @@ pub enum X8664Instr {
     /// rep stosb - Repeat store byte (fill memory)
     RepStosb,
 
+    /// rep movsb - Repeat move byte (copy memory)
+    RepMovsb,
+
+    /// std - Set direction flag (for backward copy)
+    Std,
+
     /// syscall
     Syscall,
 

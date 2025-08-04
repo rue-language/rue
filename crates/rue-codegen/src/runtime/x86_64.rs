@@ -14,6 +14,9 @@ pub fn generate_runtime() -> Result<(Vec<X8664Instr>, HashMap<String, u32>), Str
     // Generate data section
     ctx.generate_data_section();
 
+    // Generate memory management functions
+    ctx.generate_memory_functions();
+
     // Generate all runtime functions
     ctx.generate_exit_function();
     ctx.generate_itoa_function();
