@@ -13,7 +13,7 @@ Rue source code is UTF-8 encoded text.
 
 #### 2.2.1 Keywords
 ```
-fn let if else while i32 i64 bool true false
+fn let if else while i32 i64 bool true false struct
 ```
 
 #### 2.2.2 Identifiers
@@ -41,7 +41,7 @@ unit_literal    ::= "()"
 
 #### 2.2.5 Delimiters
 ```
-( ) { } , ;
+( ) { } [ ] , ; .
 ```
 
 #### 2.2.6 Whitespace
@@ -72,7 +72,13 @@ Comments are treated as whitespace and can appear anywhere whitespace is allowed
 The following grammar is presented in EBNF notation:
 
 ```ebnf
-program ::= function*
+program ::= (struct_definition | function)*
+
+struct_definition ::= "struct" identifier "{" struct_fields? "}"
+
+struct_fields ::= struct_field ("," struct_field)* ","?
+
+struct_field ::= identifier ":" type
 
 function ::= "fn" identifier "(" parameters? ")" return_type? block
 
@@ -82,7 +88,16 @@ parameter ::= identifier ":" type
 
 return_type ::= "->" type
 
-type ::= "i32" | "i64" | "bool" | "()"
+type ::= "i32" | "i64" | "bool" | "()" 
+       | struct_type | tuple_type | array_type
+
+struct_type ::= identifier
+
+tuple_type ::= "(" ")" 
+             | "(" type "," ")" 
+             | "(" type ("," type)+ ")"
+
+array_type ::= "[" type ";" integer_literal "]"
 
 block ::= "{" statement* expression? "}"
 
@@ -108,7 +123,27 @@ call_expression ::= identifier "(" arguments? ")"
 
 arguments ::= expression ("," expression)*
 
-primary_expression ::= identifier | integer_literal | boolean_literal | unit_literal | "(" expression ")"
+primary_expression ::= identifier | integer_literal | boolean_literal | unit_literal 
+                     | "(" expression ")" | struct_literal | tuple_literal 
+                     | array_literal | field_access | array_access
+
+struct_literal ::= identifier "{" struct_field_inits? "}"
+
+struct_field_inits ::= struct_field_init ("," struct_field_init)* ","?
+
+struct_field_init ::= identifier ":" expression
+
+tuple_literal ::= "(" ")" 
+                | "(" expression "," ")" 
+                | "(" expression ("," expression)+ ")"
+
+array_literal ::= "[" array_elements? "]"
+
+array_elements ::= expression ("," expression)* ","?
+
+field_access ::= expression "." (identifier | integer_literal)
+
+array_access ::= expression "[" expression "]"
 
 binary_operator ::= "+" | "-" | "*" | "/" | "%" | "<=" | ">=" | "<" | ">" | "==" | "!="
 ```
@@ -116,10 +151,11 @@ binary_operator ::= "+" | "-" | "*" | "/" | "%" | "<=" | ">=" | "<" | ">" | "=="
 ### 3.2 Operator Precedence
 Operators are listed from highest to lowest precedence:
 
-1. Function calls: `f(x)`
-2. Multiplicative: `*`, `/`, `%`
-3. Additive: `+`, `-`
-4. Comparison: `<=`, `>=`, `<`, `>`, `==`, `!=`
+1. Field access and array access: `.field`, `[index]`
+2. Function calls: `f(x)`
+3. Multiplicative: `*`, `/`, `%`
+4. Additive: `+`, `-`
+5. Comparison: `<=`, `>=`, `<`, `>`, `==`, `!=`
 
 Operators of the same precedence are left-associative.
 
@@ -336,6 +372,68 @@ Rue supports the following primitive types:
 - Function arguments must match the declared parameter types exactly
 - Function return values must match the declared return type (or unit if none specified)
 
+### 4.4 Aggregate Types
+
+#### 4.4.1 Struct Types
+Struct types group named fields together:
+```rue
+struct Point {
+    x: i32,
+    y: i32,
+}
+```
+
+**Syntax Rules**:
+- Struct names must be unique within a program
+- All fields must have explicit types
+- Fields cannot be omitted during construction
+- Struct definitions must appear before their first use
+- Optional trailing commas are allowed in both definitions and literals
+
+#### 4.4.2 Tuple Types
+Tuple types group unnamed fields by position:
+```rue
+let coords: (i32, i32) = (10, 20);
+let single: (i32,) = (42,);      // Single-element tuple requires trailing comma
+let empty: () = ();              // Unit type
+```
+
+**Syntax Rules**:
+- Empty tuples `()` are the unit type
+- Single-element tuples require trailing comma: `(T,)` and `(expr,)`
+- Multi-element tuples may have optional trailing comma: `(T1, T2,)`
+- Fields accessed by position: `.0`, `.1`, etc.
+
+#### 4.4.3 Array Types
+Array types contain a fixed number of elements of the same type:
+```rue
+let numbers: [i32; 5] = [1, 2, 3, 4, 5];
+let empty_array: [bool; 0] = [];  // Zero-length arrays are allowed
+```
+
+**Syntax Rules**:
+- Array size must be a compile-time integer literal
+- Array size must be non-negative (0 or greater)
+- All elements must have the same type
+- Elements accessed by zero-based indexing: `arr[0]`, `arr[1]`, etc.
+- Optional trailing commas allowed in array literals: `[1, 2, 3,]`
+
+#### 4.4.4 Copy Semantics
+All aggregate types have copy semantics:
+- Assignment copies the entire value
+- Function parameters are passed by copy
+- Function return values are copied
+
+```rue
+let p1 = Point { x: 1, y: 2 };
+let p2 = p1;  // p1 is copied completely, both variables exist independently
+```
+
+#### 4.4.5 Type Compatibility
+- **Struct types are nominal**: Two structs with identical fields but different names are incompatible
+- **Tuple types are structural**: `(i32, bool)` and `(i32, bool)` are the same type regardless of context
+- **Array types are structural**: `[i32; 3]` and `[i32; 3]` are the same type regardless of context
+
 ## 5. Dynamic Semantics
 
 ### 5.1 Program Execution
@@ -399,6 +497,45 @@ Function calls:
 2. If the condition is `false`, return unit
 3. If the condition is `true`, execute the loop body and repeat from step 1
 4. The loop body value is discarded; the loop always returns unit
+
+#### 5.2.7 Struct Construction
+Struct literals evaluate all field expressions and create a new struct value:
+```rue
+Point { x: 10 + 5, y: 20 }  // Evaluates to Point { x: 15, y: 20 }
+```
+
+#### 5.2.8 Tuple Construction  
+Tuple literals evaluate all element expressions and create a new tuple value:
+```rue
+(1 + 2, true, 5 * 2)  // Evaluates to (3, true, 10)
+```
+
+#### 5.2.9 Array Construction
+Array literals evaluate all element expressions and create a new array value:
+```rue
+[1 + 1, 2 + 2, 3 + 3]  // Evaluates to [2, 4, 6]
+```
+
+#### 5.2.10 Field Access
+Field access evaluates the base expression and extracts the specified field:
+- Struct field access: `point.x` extracts field `x` from struct `point`
+- Tuple field access: `tuple.0` extracts the first element from `tuple`
+
+#### 5.2.11 Array Access
+Array access evaluates the base and index expressions, performs bounds checking, then extracts the element:
+```rue
+arr[index]
+```
+
+**Bounds Checking**:
+- If `index < 0` or `index >= array_length`, the program terminates with exit code 252
+- Bounds checking is performed at runtime for all array access operations  
+- Array length is determined at compile time from the array type
+
+**Runtime Behavior**:
+- The array length is **not stored in memory at runtime**; it is known only at compile time
+- Arrays are stored as contiguous sequences of elements with no metadata
+- Zero-length arrays (`[T; 0]`) occupy no memory but are valid types
 
 ### 5.3 Statements
 
@@ -476,6 +613,7 @@ Casts a 32-bit integer to a 64-bit integer by sign extension. The sign bit of th
 - Integer overflow wraps using two's complement arithmetic for both `i32` and `i64`
 - Division by zero causes program termination with exit code 250
 - Modulo by zero causes program termination with exit code 250
+- Array bounds violation causes program termination with exit code 252
 - Boolean values are represented as 0 (`false`) and 1 (`true`) at runtime
 - All memory management is handled by the runtime
 - Stack overflow causes program termination with exit code 251 (when implemented)
@@ -636,5 +774,87 @@ fn main() -> i64 {
     println_i64(sum);  // Prints 300
     
     0
+}
+```
+
+### 7.11 Struct Usage
+```rue
+struct Rectangle {
+    width: i32,
+    height: i32,
+}
+
+fn area(rect: Rectangle) -> i32 {
+    rect.width * rect.height
+}
+
+fn main() -> i32 {
+    let r = Rectangle { width: 10, height: 5 };
+    area(r)  // Returns 50
+}
+```
+
+### 7.12 Tuple Operations
+```rue
+fn swap(pair: (i32, i32)) -> (i32, i32) {
+    (pair.1, pair.0)
+}
+
+fn main() -> i32 {
+    let coords = (3, 4);
+    let swapped = swap(coords);
+    swapped.0 + swapped.1  // Returns 7
+}
+```
+
+### 7.13 Array Processing
+```rue
+fn sum_array(arr: [i32; 3]) -> i32 {
+    arr[0] + arr[1] + arr[2]
+}
+
+fn main() -> i32 {
+    let numbers = [10, 20, 30];
+    sum_array(numbers)  // Returns 60
+}
+```
+
+### 7.14 Array Bounds Checking
+```rue
+fn main() -> i32 {
+    let arr: [i32; 3] = [1, 2, 3];
+    let valid = arr[1];    // OK: returns 2
+    let invalid = arr[5];  // Runtime error: program exits with code 252
+    valid
+}
+```
+
+### 7.15 Single-Element Tuples and Trailing Commas
+```rue
+struct Point {
+    x: i32,
+    y: i32,
+}
+
+fn main() -> i32 {
+    let single: (i32,) = (42,);     // Single-element tuple
+    let pair: (i32, i32,) = (1, 2,); // Optional trailing comma
+    
+    // Struct with trailing comma
+    let point = Point {
+        x: single.0,
+        y: pair.1,
+    };
+    
+    point.x + point.y  // Returns 44
+}
+```
+
+### 7.16 Zero-Length Arrays
+```rue
+fn main() -> i32 {
+    let empty: [i32; 0] = [];
+    // empty[0] would cause runtime error with exit code 252
+    42
 }
 ```
