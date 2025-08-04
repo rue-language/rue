@@ -68,7 +68,7 @@ impl CommonSubexpressionElimination {
     /// Convert a MIR value to an expression if possible
     fn value_to_expression(&self, value: &MirValue) -> Option<Expression> {
         match value {
-            MirValue::Const(c) => Some(Expression::Const(*c)),
+            MirValue::Const(c) => Some(Expression::Const(c.clone())),
             MirValue::BinaryOp { op, lhs, rhs } => {
                 // For commutative operations, normalize the order
                 let (lhs, rhs) = if self.is_commutative(*op) && lhs > rhs {
@@ -85,6 +85,11 @@ impl CommonSubexpressionElimination {
             }),
             MirValue::Use(_) => None, // Simple uses aren't expressions we eliminate
             MirValue::Call { .. } => None, // Function calls have side effects
+            // Aggregate operations not yet handled by CSE
+            MirValue::ConstructAggregate { .. } => None,
+            MirValue::GetField { .. } => None,
+            MirValue::SetField { .. } => None,
+            MirValue::StructUpdate { .. } => None,
         }
     }
 

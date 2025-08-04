@@ -54,7 +54,7 @@ impl ConstProp {
         match value {
             MirValue::Use(temp) => {
                 if let Some(const_val) = self.constants.get(temp) {
-                    *value = MirValue::Const(*const_val);
+                    *value = MirValue::Const(const_val.clone());
                 }
             }
             MirValue::BinaryOp { .. } => {
@@ -71,7 +71,7 @@ impl ConstProp {
     /// Try to evaluate a value as a constant
     fn evaluate_value(&self, value: &MirValue) -> Option<MirConst> {
         match value {
-            MirValue::Const(c) => Some(*c),
+            MirValue::Const(c) => Some(c.clone()),
             MirValue::Use(temp) => self.constants.get(temp).cloned(),
             MirValue::BinaryOp { op, lhs, rhs } => {
                 // Get constant values for both operands
@@ -89,6 +89,11 @@ impl ConstProp {
                 Self::fold_unop(*op, operand_const)
             }
             MirValue::Call { .. } => None, // Calls cannot be constant-folded
+            // Aggregate operations cannot be constant-folded yet
+            MirValue::ConstructAggregate { .. } => None,
+            MirValue::GetField { .. } => None,
+            MirValue::SetField { .. } => None,
+            MirValue::StructUpdate { .. } => None,
         }
     }
 
@@ -206,14 +211,14 @@ impl MirMutVisitor for ConstProp {
 
                 if let Some(const_val) = new_value {
                     // Record this temp as a constant
-                    self.constants.insert(*dest, const_val);
+                    self.constants.insert(*dest, const_val.clone());
 
                     // Replace with constant value
                     *value = MirValue::Const(const_val);
                     self.transformations += 1;
                 } else if let MirValue::Const(c) = value {
                     // If the value is already a constant, record it
-                    self.constants.insert(*dest, *c);
+                    self.constants.insert(*dest, c.clone());
                 }
             }
         }

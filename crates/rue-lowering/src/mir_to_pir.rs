@@ -300,6 +300,10 @@ impl MirToPir {
                         }
                     }
                     MirConst::Unit => 0,
+                    MirConst::Aggregate { .. } => {
+                        // Aggregate constants not yet supported in lowering
+                        panic!("Aggregate constants not yet supported in MIR to PIR lowering");
+                    }
                 };
                 self.emit(PIR::Copy {
                     dest,
@@ -372,6 +376,19 @@ impl MirToPir {
                     function: func.clone(),
                     args: arg_vregs,
                 });
+            }
+            // Aggregate operations not yet supported in lowering
+            MirValue::ConstructAggregate { .. } => {
+                panic!("Aggregate construction not yet supported in MIR to PIR lowering");
+            }
+            MirValue::GetField { .. } => {
+                panic!("Field access not yet supported in MIR to PIR lowering");
+            }
+            MirValue::SetField { .. } => {
+                panic!("Field update not yet supported in MIR to PIR lowering");
+            }
+            MirValue::StructUpdate { .. } => {
+                panic!("Struct update not yet supported in MIR to PIR lowering");
             }
         }
     }
