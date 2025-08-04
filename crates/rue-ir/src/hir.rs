@@ -263,6 +263,74 @@ pub enum HirExpr {
         /// Source location of the while loop
         span: Span,
     },
+
+    /// Struct literal expression
+    ///
+    /// Creates a struct instance with named field initializers.
+    /// All fields must be provided and match the struct definition.
+    StructLiteral {
+        /// ID of the struct type being constructed
+        struct_id: crate::types::StructId,
+        /// Field initializers (field name -> expression)
+        fields: Vec<(String, HirExpr)>,
+        /// Result type (always the struct type)
+        ty: RueType,
+        /// Source location of the struct literal
+        span: Span,
+    },
+
+    /// Field access expression
+    ///
+    /// Access a field of a struct, tuple, or array by name or index.
+    FieldAccess {
+        /// Base expression being accessed
+        base: Box<HirExpr>,
+        /// Field identifier (name or index)
+        field: crate::types::FieldId,
+        /// Type of the accessed field
+        ty: RueType,
+        /// Source location of the field access
+        span: Span,
+    },
+
+    /// Tuple literal expression
+    ///
+    /// Creates a tuple with the given elements in order.
+    TupleLiteral {
+        /// Tuple element expressions
+        elements: Vec<HirExpr>,
+        /// Result type (always a tuple type)
+        ty: RueType,
+        /// Source location of the tuple literal
+        span: Span,
+    },
+
+    /// Array literal expression
+    ///
+    /// Creates an array with the given elements.
+    /// All elements must have the same type.
+    ArrayLiteral {
+        /// Array element expressions
+        elements: Vec<HirExpr>,
+        /// Result type (always an array type)
+        ty: RueType,
+        /// Source location of the array literal
+        span: Span,
+    },
+
+    /// Array access expression
+    ///
+    /// Access an element of an array by index.
+    ArrayAccess {
+        /// Base array expression
+        base: Box<HirExpr>,
+        /// Index expression (must be integer type)
+        index: Box<HirExpr>,
+        /// Type of the accessed element
+        ty: RueType,
+        /// Source location of the array access
+        span: Span,
+    },
 }
 
 /// Literal values with concrete types.
@@ -388,6 +456,11 @@ impl HirExpr {
             HirExpr::Call { ty, .. } => ty,
             HirExpr::If { ty, .. } => ty,
             HirExpr::While { .. } => &RueType::Unit, // While always returns unit
+            HirExpr::StructLiteral { ty, .. } => ty,
+            HirExpr::FieldAccess { ty, .. } => ty,
+            HirExpr::TupleLiteral { ty, .. } => ty,
+            HirExpr::ArrayLiteral { ty, .. } => ty,
+            HirExpr::ArrayAccess { ty, .. } => ty,
         }
     }
 }
@@ -480,6 +553,44 @@ impl fmt::Display for HirExpr {
             }
             HirExpr::While { cond, body, .. } => {
                 write!(f, "while {cond} {body}")
+            }
+            HirExpr::StructLiteral {
+                struct_id, fields, ..
+            } => {
+                write!(f, "{struct_id} {{ ")?;
+                for (i, (name, value)) in fields.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{name}: {value}")?;
+                }
+                write!(f, " }}")
+            }
+            HirExpr::FieldAccess { base, field, .. } => {
+                write!(f, "{base}.{field}")
+            }
+            HirExpr::TupleLiteral { elements, .. } => {
+                write!(f, "(")?;
+                for (i, elem) in elements.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{elem}")?;
+                }
+                write!(f, ")")
+            }
+            HirExpr::ArrayLiteral { elements, .. } => {
+                write!(f, "[")?;
+                for (i, elem) in elements.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{elem}")?;
+                }
+                write!(f, "]")
+            }
+            HirExpr::ArrayAccess { base, index, .. } => {
+                write!(f, "{base}[{index}]")
             }
         }
     }

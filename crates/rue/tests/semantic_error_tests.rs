@@ -168,7 +168,7 @@ fn main() -> i32 {
     add(5)
 }
 "#,
-        "Expected 2 arguments, got 1",
+        "Function 'add' expects 2 arguments, but 1 were provided",
     );
 
     // Too many arguments
@@ -183,7 +183,7 @@ fn main() -> i32 {
     add(1, 2, 3)
 }
 "#,
-        "Expected 2 arguments, got 3",
+        "Function 'add' expects 2 arguments, but 3 were provided",
     );
 
     // Wrong arguments to builtin
@@ -195,7 +195,7 @@ fn main() -> i32 {
     0
 }
 "#,
-        "Expected 1 arguments, got 2",
+        "Function 'println_i32' expects 1 arguments, but 2 were provided",
     );
 
     // No arguments when expecting some
@@ -207,7 +207,7 @@ fn main() -> i32 {
     0
 }
 "#,
-        "Expected 1 arguments, got 0",
+        "Function 'exit' expects 1 arguments, but 0 were provided",
     );
 }
 
@@ -357,7 +357,7 @@ fn main() -> i32 {
     }
 }
 "#,
-        "If expression branches must have the same type",
+        "If branches have incompatible types",
     );
 }
 
@@ -375,7 +375,7 @@ fn main() -> i32 {
     0
 }
 "#,
-        "Type mismatch",
+        "Cannot use integer literal in context expecting bool",
     );
 
     // Missing return in function

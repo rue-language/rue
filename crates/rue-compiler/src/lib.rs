@@ -252,7 +252,11 @@ fn main() -> i32 {
         assert!(result.is_err());
 
         let error = result.unwrap_err();
-        assert!(error.to_string().contains("Expected 1 arguments, got 0"));
+        assert!(
+            error
+                .to_string()
+                .contains("expects 1 arguments, but 0 were provided")
+        );
     }
 
     #[test]

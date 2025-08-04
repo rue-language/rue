@@ -14,7 +14,7 @@ use rue_ir::mir::{
     BasicBlock, BlockId, FunctionSignature, MirBinOp, MirConst, MirFunction, MirProgram,
     MirStatement, MirTerminator, MirUnaryOp, MirValue, Temp,
 };
-use rue_ir::types::RueType;
+use rue_ir::types::{FieldId, RueType};
 use std::collections::HashMap;
 use tracing::{debug, trace};
 
@@ -136,6 +136,42 @@ impl MirBuilder {
         self.add_statement(MirStatement::Assign {
             dest: temp,
             value: MirValue::Call { func, args, kind },
+            span,
+        });
+        temp
+    }
+
+    /// Create a new temporary and assign an aggregate construction to it
+    fn emit_construct_aggregate(
+        &mut self,
+        aggregate_ty: RueType,
+        fields: Vec<Temp>,
+        span: Option<rue_lexer::Span>,
+    ) -> Temp {
+        let temp = self.fresh_temp(aggregate_ty.clone());
+        self.add_statement(MirStatement::Assign {
+            dest: temp,
+            value: MirValue::ConstructAggregate {
+                ty: aggregate_ty,
+                fields,
+            },
+            span,
+        });
+        temp
+    }
+
+    /// Create a new temporary and assign a field access to it
+    fn emit_get_field(
+        &mut self,
+        base: Temp,
+        field: FieldId,
+        field_ty: RueType,
+        span: Option<rue_lexer::Span>,
+    ) -> Temp {
+        let temp = self.fresh_temp(field_ty);
+        self.add_statement(MirStatement::Assign {
+            dest: temp,
+            value: MirValue::GetField { base, field },
             span,
         });
         temp
@@ -522,6 +558,97 @@ impl MirBuilder {
                 let unit_temp = self.emit_const(MirConst::Unit, Some(*span));
                 debug!(target: "rue::mir", ?unit_temp, "While expression returns unit temp");
                 unit_temp
+            }
+            HirExpr::StructLiteral {
+                struct_id: _,
+                fields,
+                ty,
+                span,
+            } => {
+                // Save and clear is_function_body for sub-expressions
+                let saved_is_function_body = self.is_function_body;
+                self.is_function_body = false;
+
+                // Lower all field expressions
+                let field_temps: Vec<Temp> = fields
+                    .iter()
+                    .map(|(_, expr)| self.lower_expr(expr))
+                    .collect();
+
+                // Restore is_function_body
+                self.is_function_body = saved_is_function_body;
+
+                self.emit_construct_aggregate(ty.clone(), field_temps, Some(*span))
+            }
+            HirExpr::FieldAccess {
+                base,
+                field,
+                ty,
+                span,
+            } => {
+                // Save and clear is_function_body for sub-expressions
+                let saved_is_function_body = self.is_function_body;
+                self.is_function_body = false;
+
+                let base_temp = self.lower_expr(base);
+
+                // Restore is_function_body
+                self.is_function_body = saved_is_function_body;
+
+                self.emit_get_field(base_temp, field.clone(), ty.clone(), Some(*span))
+            }
+            HirExpr::TupleLiteral { elements, ty, span } => {
+                // Save and clear is_function_body for sub-expressions
+                let saved_is_function_body = self.is_function_body;
+                self.is_function_body = false;
+
+                // Lower all element expressions
+                let element_temps: Vec<Temp> =
+                    elements.iter().map(|expr| self.lower_expr(expr)).collect();
+
+                // Restore is_function_body
+                self.is_function_body = saved_is_function_body;
+
+                self.emit_construct_aggregate(ty.clone(), element_temps, Some(*span))
+            }
+            HirExpr::ArrayLiteral { elements, ty, span } => {
+                // Save and clear is_function_body for sub-expressions
+                let saved_is_function_body = self.is_function_body;
+                self.is_function_body = false;
+
+                // Lower all element expressions
+                let element_temps: Vec<Temp> =
+                    elements.iter().map(|expr| self.lower_expr(expr)).collect();
+
+                // Restore is_function_body
+                self.is_function_body = saved_is_function_body;
+
+                self.emit_construct_aggregate(ty.clone(), element_temps, Some(*span))
+            }
+            HirExpr::ArrayAccess {
+                base,
+                index,
+                ty,
+                span,
+            } => {
+                // Save and clear is_function_body for sub-expressions
+                let saved_is_function_body = self.is_function_body;
+                self.is_function_body = false;
+
+                let base_temp = self.lower_expr(base);
+                let _index_temp = self.lower_expr(index); // TODO: Use for proper runtime indexing
+
+                // Restore is_function_body
+                self.is_function_body = saved_is_function_body;
+
+                // Array access uses numeric index field ID
+                // Note: In a real implementation, we'd need to evaluate the index expression
+                // at compile time or use a different MIR instruction for dynamic array access.
+                // For now, we'll assume the index is an integer literal.
+                // This is a simplification - proper array access would need runtime indexing.
+                let field_id = FieldId::Index(0); // Placeholder - needs proper index evaluation
+
+                self.emit_get_field(base_temp, field_id, ty.clone(), Some(*span))
             }
         }
     }

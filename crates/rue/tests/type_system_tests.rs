@@ -282,17 +282,16 @@ fn main() -> i32 {
 "#,
     );
 
-    // But without type annotation, numeric literals default to i32
-    test_compile_error(
-        "numeric_literal_default_in_binary_op",
+    // With contextual type inference, numeric literals adapt to context
+    test_compiles(
+        "numeric_literal_contextual_inference",
         r#"
 fn main() -> i32 {
     let x: i64 = 100;
-    let y = x + 42;
+    let y = x + 42; // 42 inferred as i64 due to context
     0
 }
 "#,
-        "Type mismatch",
     );
 }
 
@@ -401,7 +400,7 @@ fn main() -> i32 {
     add(10)
 }
 "#,
-        "Expected 2 arguments",
+        "Function 'add' expects 2 arguments",
     );
 }
 
@@ -477,7 +476,7 @@ fn main() -> i32 {
     }
 }
 "#,
-        "If expression branches must have the same type",
+        "If branches have incompatible types",
     );
 
     // Type checking with while loops

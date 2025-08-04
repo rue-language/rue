@@ -1,4 +1,4 @@
-use rue_ast::{CstRoot, ExpressionNode, FunctionNode, StatementNode};
+use rue_ast::{CstRoot, FunctionNode};
 use rue_ir::types::RueType;
 use rue_lexer::format_error_with_context;
 use std::collections::HashMap;
@@ -41,50 +41,7 @@ pub struct Scope {
     pub functions: HashMap<String, FunctionSignature>,
 }
 
-/// Stack-based scope management for block-level scoping
-#[derive(Debug, Clone)]
-struct ScopeStack {
-    scopes: Vec<HashMap<String, RueType>>,
-}
-
-impl ScopeStack {
-    /// Create a new scope stack with an initial empty scope
-    fn new() -> Self {
-        Self {
-            scopes: vec![HashMap::new()],
-        }
-    }
-
-    /// Push a new scope onto the stack
-    fn push_scope(&mut self) {
-        self.scopes.push(HashMap::new());
-    }
-
-    /// Pop the innermost scope from the stack
-    fn pop_scope(&mut self) {
-        if self.scopes.len() > 1 {
-            self.scopes.pop();
-        }
-    }
-
-    /// Declare a variable in the current (innermost) scope
-    fn declare_variable(&mut self, name: String, var_type: RueType) {
-        if let Some(current_scope) = self.scopes.last_mut() {
-            current_scope.insert(name, var_type);
-        }
-    }
-
-    /// Look up a variable, searching from innermost to outermost scope
-    fn lookup_variable(&self, name: &str) -> Option<&RueType> {
-        // Search from innermost (last) to outermost (first) scope
-        for scope in self.scopes.iter().rev() {
-            if let Some(var_type) = scope.get(name) {
-                return Some(var_type);
-            }
-        }
-        None
-    }
-}
+// ScopeStack removed - TypeChecker has its own scope management
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct FunctionSignature {
@@ -99,13 +56,85 @@ fn convert_type_node(type_node: &rue_ast::TypeNode) -> RueType {
         rue_ast::TypeNode::I64(_) => RueType::I64,
         rue_ast::TypeNode::Bool(_) => RueType::Bool,
         rue_ast::TypeNode::Unit => RueType::Unit,
+        rue_ast::TypeNode::Struct(struct_type) => {
+            // For now, use a simple hash of the struct name as ID
+            // In a real implementation, this would use a proper type registry
+            if let rue_lexer::TokenKind::Ident(name) = &struct_type.name.kind {
+                let id = rue_ir::types::StructId::new(hash_string(name));
+                RueType::Struct(id)
+            } else {
+                panic!("Expected struct name to be an identifier")
+            }
+        }
+        rue_ast::TypeNode::Tuple(tuple_type) => {
+            let element_types = tuple_type.types.iter().map(convert_type_node).collect();
+            RueType::Tuple(element_types)
+        }
+        rue_ast::TypeNode::Array(array_type) => {
+            let element_type = Box::new(convert_type_node(&array_type.element_type));
+
+            // Parse array size from token
+            let size = if let rue_lexer::TokenKind::Integer(n) = &array_type.size.kind {
+                *n as usize
+            } else {
+                panic!("Array size must be an integer literal")
+            };
+
+            RueType::Array(element_type, size)
+        }
     }
 }
 
-// Add built-in functions to the scope
-fn add_builtin_functions(scope: &mut Scope) {
+// Simple hash function for struct names (temporary)
+fn hash_string(s: &str) -> u32 {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+
+    let mut hasher = DefaultHasher::new();
+    s.hash(&mut hasher);
+    hasher.finish() as u32
+}
+
+// Clean symbol collection functions
+fn extract_function_name(func: &FunctionNode) -> Result<String, SemanticError> {
+    match &func.name.kind {
+        rue_lexer::TokenKind::Ident(name) => Ok(name.clone()),
+        _ => Err(SemanticError {
+            message: "Expected function name".to_string(),
+            span: func.name.span,
+        }),
+    }
+}
+
+fn collect_function_signature(func: &FunctionNode) -> Result<FunctionSignature, SemanticError> {
+    // Extract parameter types
+    let mut param_types = Vec::new();
+    for param in &func.param_list.params {
+        let param_type = if let Some(type_ann) = &param.type_annotation {
+            convert_type_node(&type_ann.ty)
+        } else {
+            RueType::I32 // Default to i32 if no type annotation
+        };
+        param_types.push(param_type);
+    }
+
+    // Extract return type
+    let return_type = if let Some(return_type_node) = &func.return_type {
+        convert_type_node(&return_type_node.ty)
+    } else {
+        RueType::Unit // Default to unit if no return type specified
+    };
+
+    Ok(FunctionSignature {
+        param_types,
+        return_type,
+    })
+}
+
+// Add built-in functions to function signature map
+fn add_builtin_functions_to_map(functions: &mut HashMap<String, FunctionSignature>) {
     // exit(code: i64) -> ()
-    scope.functions.insert(
+    functions.insert(
         "exit".to_string(),
         FunctionSignature {
             param_types: vec![RueType::I64],
@@ -114,7 +143,7 @@ fn add_builtin_functions(scope: &mut Scope) {
     );
 
     // println_i32(value: i32) -> ()
-    scope.functions.insert(
+    functions.insert(
         "println_i32".to_string(),
         FunctionSignature {
             param_types: vec![RueType::I32],
@@ -123,7 +152,7 @@ fn add_builtin_functions(scope: &mut Scope) {
     );
 
     // println_i64(value: i64) -> ()
-    scope.functions.insert(
+    functions.insert(
         "println_i64".to_string(),
         FunctionSignature {
             param_types: vec![RueType::I64],
@@ -132,7 +161,7 @@ fn add_builtin_functions(scope: &mut Scope) {
     );
 
     // println_bool(value: bool) -> ()
-    scope.functions.insert(
+    functions.insert(
         "println_bool".to_string(),
         FunctionSignature {
             param_types: vec![RueType::Bool],
@@ -141,7 +170,7 @@ fn add_builtin_functions(scope: &mut Scope) {
     );
 
     // println_unit(value: ()) -> ()
-    scope.functions.insert(
+    functions.insert(
         "println_unit".to_string(),
         FunctionSignature {
             param_types: vec![RueType::Unit],
@@ -150,7 +179,7 @@ fn add_builtin_functions(scope: &mut Scope) {
     );
 
     // input() -> i64
-    scope.functions.insert(
+    functions.insert(
         "input".to_string(),
         FunctionSignature {
             param_types: vec![],
@@ -159,7 +188,7 @@ fn add_builtin_functions(scope: &mut Scope) {
     );
 
     // to_i32(value: i64) -> i32
-    scope.functions.insert(
+    functions.insert(
         "to_i32".to_string(),
         FunctionSignature {
             param_types: vec![RueType::I64],
@@ -168,7 +197,7 @@ fn add_builtin_functions(scope: &mut Scope) {
     );
 
     // to_i64(value: i32) -> i64
-    scope.functions.insert(
+    functions.insert(
         "to_i64".to_string(),
         FunctionSignature {
             param_types: vec![RueType::I32],
@@ -184,41 +213,51 @@ pub struct AnalysisResult {
     pub hir: hir::HirProgram,
 }
 
-// Semantic analysis functions
+// Clean semantic analysis pipeline
 pub fn analyze_cst(ast: &CstRoot) -> Result<AnalysisResult, SemanticError> {
-    let mut global_scope = Scope::default();
+    // Phase 1: Symbol Collection - collect function signatures only, no type checking
+    let mut function_signatures = HashMap::new();
+    add_builtin_functions_to_map(&mut function_signatures);
 
-    // Add built-in functions
-    add_builtin_functions(&mut global_scope);
-
-    // First pass: collect all function signatures using existing analysis
     for item in &ast.items {
         match item {
             rue_ast::CstNode::Function(func) => {
-                analyze_function(&mut global_scope, func)?;
+                let signature = collect_function_signature(func)?;
+                let func_name = extract_function_name(func)?;
+                function_signatures.insert(func_name, signature);
             }
-            rue_ast::CstNode::Statement(stmt) => {
-                // Top-level statements use an empty variable scope
-                let mut var_scope = ScopeStack::new();
-                analyze_statement(&mut var_scope, &global_scope.functions, stmt)?;
+            rue_ast::CstNode::StructDefinition(_) => {
+                // TODO: In full implementation, collect struct definitions in type registry
+                // For now, structs are handled dynamically by TypeChecker
             }
-            _ => {} // Skip other node types for now
+            rue_ast::CstNode::Statement(_) => {
+                // Top-level statements are not supported in current language design
+                return Err(SemanticError {
+                    message: "Top-level statements are not supported".to_string(),
+                    span: rue_lexer::Span { start: 0, end: 0 }, // TODO: proper span
+                });
+            }
+            _ => {} // Skip other node types
         }
     }
 
-    // Second pass: build HIR with type checking using the new type checker
-    let mut type_checker = type_checker::TypeChecker::new(global_scope.functions.clone());
+    // Phase 2: Type Checking + HIR Generation - all semantic analysis happens here
+    let mut type_checker = type_checker::TypeChecker::new(function_signatures.clone());
     let hir = type_checker.check_program(ast)?;
 
-    // Third pass: validate the generated HIR
+    // Phase 3: HIR Validation
     let mut validator = hir_validator::HirValidator::new();
     if let Err(validation_errors) = validator.validate_program(&hir) {
-        // Return the first validation error
-        // In a real compiler, we might want to collect all errors
         if let Some(error) = validation_errors.into_iter().next() {
             return Err(error);
         }
     }
+
+    // Create legacy scope for compatibility
+    let global_scope = Scope {
+        functions: function_signatures,
+        ..Default::default()
+    };
 
     Ok(AnalysisResult {
         scope: global_scope,
@@ -226,489 +265,7 @@ pub fn analyze_cst(ast: &CstRoot) -> Result<AnalysisResult, SemanticError> {
     })
 }
 
-// Helper functions for semantic analysis
-fn analyze_function(global_scope: &mut Scope, func: &FunctionNode) -> Result<(), SemanticError> {
-    // Extract function name
-    let func_name = match &func.name.kind {
-        rue_lexer::TokenKind::Ident(name) => name.clone(),
-        _ => {
-            return Err(SemanticError {
-                message: "Expected function name".to_string(),
-                span: func.name.span,
-            });
-        }
-    };
-
-    // Extract parameter types
-    let mut param_types = Vec::new();
-    for param in &func.param_list.params {
-        let param_type = if let Some(type_ann) = &param.type_annotation {
-            convert_type_node(&type_ann.ty)
-        } else {
-            RueType::I32 // Default to i32 if no type annotation
-        };
-        param_types.push(param_type.clone());
-    }
-
-    // Extract return type
-    let return_type = if let Some(return_type_node) = &func.return_type {
-        convert_type_node(&return_type_node.ty)
-    } else {
-        RueType::Unit // Default to unit if no return type specified
-    };
-
-    // Register function in global scope
-    global_scope.functions.insert(
-        func_name.clone(),
-        FunctionSignature {
-            param_types: param_types.clone(),
-            return_type: return_type.clone(),
-        },
-    );
-
-    // Create variable scope stack for function body
-    let mut var_scope = ScopeStack::new();
-
-    // Add parameters to function scope
-    for (i, param) in func.param_list.params.iter().enumerate() {
-        if let rue_lexer::TokenKind::Ident(param_name) = &param.name.kind {
-            var_scope.declare_variable(param_name.clone(), param_types[i].clone());
-        }
-    }
-
-    // Analyze function body statements
-    for stmt in &func.body.statements {
-        analyze_statement(&mut var_scope, &global_scope.functions, stmt)?;
-    }
-
-    // Analyze final expression and check return type
-    let actual_return_type = if let Some(final_expr) = &func.body.final_expr {
-        analyze_literal_with_expected_type(
-            &mut var_scope,
-            &global_scope.functions,
-            final_expr,
-            &return_type,
-        )?
-    } else {
-        RueType::Unit // No final expression means unit return
-    };
-
-    // Check that actual return type matches declared return type
-    if actual_return_type != return_type {
-        return Err(SemanticError {
-            message: format!(
-                "Type mismatch: function '{func_name}' is declared to return '{return_type}' but returns '{actual_return_type}'"
-            ),
-            span: func.body.close_brace.span,
-        });
-    }
-
-    Ok(())
-}
-
-fn analyze_statement(
-    var_scope: &mut ScopeStack,
-    functions: &HashMap<String, FunctionSignature>,
-    stmt: &StatementNode,
-) -> Result<(), SemanticError> {
-    match stmt {
-        StatementNode::Let(let_stmt) => {
-            // Get declared type if present
-            let declared_type = let_stmt
-                .type_annotation
-                .as_ref()
-                .map(|type_ann| convert_type_node(&type_ann.ty));
-
-            // Analyze the value expression with type context
-            let value_type = if let Some(expected_type) = &declared_type {
-                analyze_literal_with_expected_type(
-                    var_scope,
-                    functions,
-                    &let_stmt.value,
-                    expected_type,
-                )?
-            } else {
-                analyze_expression(var_scope, functions, &let_stmt.value)?
-            };
-
-            // Determine final type
-            let final_type = declared_type.clone().unwrap_or(value_type.clone());
-
-            // Check type compatibility only if type was declared
-            if let Some(decl_type) = declared_type {
-                if decl_type != value_type {
-                    // Special case: allow integer literals to be used as i64
-                    let is_valid = matches!(
-                        (&let_stmt.value, &decl_type, &value_type),
-                        (ExpressionNode::Literal(token), RueType::I64, RueType::I32)
-                            if matches!(&token.kind, rue_lexer::TokenKind::Integer(_))
-                    );
-
-                    if !is_valid {
-                        return Err(SemanticError {
-                            message: format!(
-                                "Type mismatch: variable declared as '{decl_type}' but initialized with expression of type '{value_type}'"
-                            ),
-                            span: let_stmt.equals.span,
-                        });
-                    }
-                }
-            }
-
-            // Add variable to current scope
-            if let rue_lexer::TokenKind::Ident(var_name) = &let_stmt.name.kind {
-                var_scope.declare_variable(var_name.clone(), final_type);
-            }
-        }
-        StatementNode::Assign(assign_stmt) => {
-            // Analyze the value expression
-            let value_type = analyze_expression(var_scope, functions, &assign_stmt.value)?;
-
-            // Check that variable exists in scope and types match
-            if let rue_lexer::TokenKind::Ident(var_name) = &assign_stmt.name.kind {
-                if let Some(var_type) = var_scope.lookup_variable(var_name) {
-                    if *var_type != value_type {
-                        return Err(SemanticError {
-                            message: format!(
-                                "Type mismatch: cannot assign value of type '{value_type}' to variable of type '{var_type}'"
-                            ),
-                            span: assign_stmt.equals.span,
-                        });
-                    }
-                } else {
-                    return Err(SemanticError {
-                        message: format!("Cannot assign to undefined variable: {var_name}"),
-                        span: assign_stmt.name.span,
-                    });
-                }
-            }
-        }
-        StatementNode::Expression(expr_stmt) => {
-            analyze_expression(var_scope, functions, &expr_stmt.expression)?;
-        }
-    }
-    Ok(())
-}
-
-/// Analyzes an expression with contextual type information for literal type inference.
-///
-/// This function is used when we have an expected type context (e.g., from a type annotation).
-/// The key difference from `analyze_expression` is that integer literals can be inferred
-/// as either i32 or i64 based on the expected type, rather than always defaulting to i32.
-///
-/// For example:
-/// - `let x: i64 = 42` - The literal 42 will be inferred as i64
-/// - `let x: i32 = 42` - The literal 42 will be inferred as i32
-///
-/// For non-literal expressions, this delegates to `analyze_expression` since they
-/// have fixed types that don't depend on context.
-fn analyze_literal_with_expected_type(
-    var_scope: &mut ScopeStack,
-    functions: &HashMap<String, FunctionSignature>,
-    expr: &ExpressionNode,
-    expected_type: &RueType,
-) -> Result<RueType, SemanticError> {
-    match expr {
-        ExpressionNode::Literal(token) => {
-            match &token.kind {
-                rue_lexer::TokenKind::Integer(_) => {
-                    // Integer literals can be either i32 or i64 depending on context
-                    match expected_type {
-                        RueType::I64 => Ok(RueType::I64),
-                        _ => Ok(RueType::I32), // Default to i32
-                    }
-                }
-                rue_lexer::TokenKind::True | rue_lexer::TokenKind::False => Ok(RueType::Bool),
-                rue_lexer::TokenKind::Unit => Ok(RueType::Unit),
-                _ => Err(SemanticError {
-                    message: "Unexpected literal type".to_string(),
-                    span: token.span,
-                }),
-            }
-        }
-        _ => analyze_expression(var_scope, functions, expr), // For non-literals, use regular analysis
-    }
-}
-
-/// Analyzes an expression to determine its type.
-///
-/// This is the primary expression analysis function. It determines types based on:
-/// - Literals: Integer literals default to i32, booleans are bool
-/// - Identifiers: Look up the type from the current scope
-/// - Binary operations: Check operand types and determine result type
-/// - Function calls: Look up function signature and check arguments
-/// - Control flow: Analyze branches and ensure consistency
-///
-/// Note: This function always infers integer literals as i32. When type context
-/// is available (e.g., from type annotations), use `analyze_literal_with_expected_type`
-/// instead to allow integer literals to be inferred as i64 when needed.
-fn analyze_expression(
-    var_scope: &mut ScopeStack,
-    functions: &HashMap<String, FunctionSignature>,
-    expr: &ExpressionNode,
-) -> Result<RueType, SemanticError> {
-    match expr {
-        ExpressionNode::Literal(token) => {
-            match &token.kind {
-                rue_lexer::TokenKind::Integer(_) => Ok(RueType::I32), // Numeric literals default to i32
-                rue_lexer::TokenKind::True | rue_lexer::TokenKind::False => Ok(RueType::Bool),
-                rue_lexer::TokenKind::Unit => Ok(RueType::Unit),
-                _ => Err(SemanticError {
-                    message: "Unexpected literal type".to_string(),
-                    span: token.span,
-                }),
-            }
-        }
-        ExpressionNode::Identifier(token) => {
-            if let rue_lexer::TokenKind::Ident(name) = &token.kind {
-                if let Some(var_type) = var_scope.lookup_variable(name) {
-                    Ok(var_type.clone())
-                } else {
-                    Err(SemanticError {
-                        message: format!("Undefined variable: {name}"),
-                        span: token.span,
-                    })
-                }
-            } else {
-                Err(SemanticError {
-                    message: "Expected identifier".to_string(),
-                    span: token.span,
-                })
-            }
-        }
-        ExpressionNode::Binary(binary_expr) => {
-            // Analyze both operands
-            let left_type = analyze_expression(var_scope, functions, &binary_expr.left)?;
-            let right_type = analyze_expression(var_scope, functions, &binary_expr.right)?;
-
-            // Check operator type
-            match &binary_expr.operator.kind {
-                // Arithmetic operators: require matching numeric types
-                rue_lexer::TokenKind::Plus
-                | rue_lexer::TokenKind::Minus
-                | rue_lexer::TokenKind::Star
-                | rue_lexer::TokenKind::Slash
-                | rue_lexer::TokenKind::Percent => {
-                    if left_type != right_type {
-                        return Err(SemanticError {
-                            message: format!(
-                                "Type mismatch: binary operator cannot be applied to types '{left_type}' and '{right_type}'"
-                            ),
-                            span: binary_expr.operator.span,
-                        });
-                    }
-
-                    // Both operands must be numeric
-                    match left_type {
-                        RueType::I32 | RueType::I64 => Ok(left_type),
-                        _ => Err(SemanticError {
-                            message: format!(
-                                "Arithmetic operators require numeric types, found {left_type}"
-                            ),
-                            span: binary_expr.operator.span,
-                        }),
-                    }
-                }
-
-                // Comparison operators: require matching types, return bool
-                rue_lexer::TokenKind::Less
-                | rue_lexer::TokenKind::LessEqual
-                | rue_lexer::TokenKind::Greater
-                | rue_lexer::TokenKind::GreaterEqual
-                | rue_lexer::TokenKind::Equal
-                | rue_lexer::TokenKind::NotEqual => {
-                    if left_type != right_type {
-                        return Err(SemanticError {
-                            message: format!(
-                                "Type mismatch: cannot compare values of types '{left_type}' and '{right_type}'"
-                            ),
-                            span: binary_expr.operator.span,
-                        });
-                    }
-                    Ok(RueType::Bool)
-                }
-
-                _ => Err(SemanticError {
-                    message: "Unknown binary operator".to_string(),
-                    span: binary_expr.operator.span,
-                }),
-            }
-        }
-        ExpressionNode::Call(call_expr) => {
-            // Get function name
-            if let ExpressionNode::Identifier(func_token) = &*call_expr.function {
-                if let rue_lexer::TokenKind::Ident(func_name) = &func_token.kind {
-                    // Check if function exists
-                    if let Some(signature) = functions.get(func_name).cloned() {
-                        // Check argument count
-                        if call_expr.args.len() != signature.param_types.len() {
-                            return Err(SemanticError {
-                                message: format!(
-                                    "Function '{}': Expected {} arguments, got {}",
-                                    func_name,
-                                    signature.param_types.len(),
-                                    call_expr.args.len()
-                                ),
-                                span: call_expr.open_paren.span,
-                            });
-                        }
-
-                        // Analyze and check types of all arguments
-                        for (i, arg) in call_expr.args.iter().enumerate() {
-                            let expected_type = &signature.param_types[i];
-
-                            // Try to analyze with expected type for better inference
-                            let arg_type = if let ExpressionNode::Literal(_) = arg {
-                                analyze_literal_with_expected_type(
-                                    var_scope,
-                                    functions,
-                                    arg,
-                                    expected_type,
-                                )?
-                            } else {
-                                analyze_expression(var_scope, functions, arg)?
-                            };
-
-                            if arg_type != *expected_type {
-                                return Err(SemanticError {
-                                    message: format!(
-                                        "Type mismatch in argument {} of function '{}': expected '{}', found '{}'",
-                                        i + 1,
-                                        func_name,
-                                        expected_type,
-                                        arg_type
-                                    ),
-                                    span: call_expr.open_paren.span, // TODO: Get actual argument span
-                                });
-                            }
-                        }
-
-                        Ok(signature.return_type)
-                    } else {
-                        Err(SemanticError {
-                            message: format!("Undefined function: {func_name}"),
-                            span: func_token.span,
-                        })
-                    }
-                } else {
-                    Err(SemanticError {
-                        message: "Expected function name".to_string(),
-                        span: func_token.span,
-                    })
-                }
-            } else {
-                Err(SemanticError {
-                    message: "Function calls must use identifiers".to_string(),
-                    span: call_expr.open_paren.span,
-                })
-            }
-        }
-        ExpressionNode::If(if_stmt) => {
-            // Analyze condition - must be bool
-            let condition_type = analyze_expression(var_scope, functions, &if_stmt.condition)?;
-            if condition_type != RueType::Bool {
-                return Err(SemanticError {
-                    message: format!("If condition must be bool, found {condition_type}"),
-                    span: if_stmt.if_token.span,
-                });
-            }
-
-            // Analyze then block with new scope
-            var_scope.push_scope();
-            for stmt in &if_stmt.then_block.statements {
-                analyze_statement(var_scope, functions, stmt)?;
-            }
-            let then_type = if let Some(final_expr) = &if_stmt.then_block.final_expr {
-                analyze_expression(var_scope, functions, final_expr)?
-            } else {
-                RueType::Unit // blocks without final expression return unit
-            };
-            var_scope.pop_scope();
-
-            // Analyze else block if it exists
-            let else_type = if let Some(else_clause) = &if_stmt.else_clause {
-                match &else_clause.body {
-                    rue_ast::ElseBodyNode::Block(block) => {
-                        var_scope.push_scope();
-                        for stmt in &block.statements {
-                            analyze_statement(var_scope, functions, stmt)?;
-                        }
-                        let result_type = if let Some(final_expr) = &block.final_expr {
-                            analyze_expression(var_scope, functions, final_expr)?
-                        } else {
-                            RueType::Unit
-                        };
-                        var_scope.pop_scope();
-                        result_type
-                    }
-                    rue_ast::ElseBodyNode::If(nested_if) => analyze_expression(
-                        var_scope,
-                        functions,
-                        &ExpressionNode::If(nested_if.clone()),
-                    )?,
-                }
-            } else {
-                RueType::Unit // missing else defaults to unit
-            };
-
-            // Both branches must have same type
-            if then_type == else_type {
-                Ok(then_type)
-            } else {
-                Err(SemanticError {
-                    message: "If expression branches must have the same type".to_string(),
-                    span: if_stmt.if_token.span,
-                })
-            }
-        }
-        ExpressionNode::While(while_stmt) => {
-            // Analyze condition - must be bool
-            let condition_type = analyze_expression(var_scope, functions, &while_stmt.condition)?;
-            if condition_type != RueType::Bool {
-                return Err(SemanticError {
-                    message: format!("While condition must be bool, found {condition_type}"),
-                    span: while_stmt.while_token.span,
-                });
-            }
-
-            // Analyze body with new scope
-            var_scope.push_scope();
-            for stmt in &while_stmt.body.statements {
-                analyze_statement(var_scope, functions, stmt)?;
-            }
-            if let Some(final_expr) = &while_stmt.body.final_expr {
-                analyze_expression(var_scope, functions, final_expr)?;
-            }
-            var_scope.pop_scope();
-
-            // While expressions always return unit
-            Ok(RueType::Unit)
-        }
-        ExpressionNode::Unary(unary_expr) => {
-            // Analyze operand
-            let operand_type = analyze_expression(var_scope, functions, &unary_expr.operand)?;
-
-            // Check operator type
-            match &unary_expr.operator.kind {
-                rue_lexer::TokenKind::Minus => {
-                    // Unary minus only works on numeric types
-                    if operand_type == RueType::I32 || operand_type == RueType::I64 {
-                        Ok(operand_type)
-                    } else {
-                        Err(SemanticError {
-                            message: format!("Cannot negate type {operand_type}"),
-                            span: unary_expr.operator.span,
-                        })
-                    }
-                }
-                _ => Err(SemanticError {
-                    message: format!("Unknown unary operator: {:?}", unary_expr.operator.kind),
-                    span: unary_expr.operator.span,
-                }),
-            }
-        }
-    }
-}
+// All old semantic analysis functions removed - TypeChecker now handles everything
 
 #[cfg(test)]
 mod tests {
@@ -825,7 +382,11 @@ fn main() -> i32 {
         assert!(result.is_err());
 
         let error = result.unwrap_err();
-        assert!(error.message.contains("Expected 1 arguments, got 0"));
+        assert!(
+            error
+                .message
+                .contains("expects 1 arguments, but 0 were provided")
+        );
     }
 
     #[test]
@@ -968,7 +529,11 @@ fn main() -> i32 {
         assert!(result.is_err());
 
         let error = result.unwrap_err();
-        assert!(error.message.contains("Type mismatch"));
+        assert!(
+            error
+                .message
+                .contains("Cannot use integer literal in context expecting bool")
+        );
     }
 
     #[test]
