@@ -189,4 +189,32 @@ pub enum PIR {
     // Stack frame management
     EnterFrame,
     LeaveFrame,
+
+    // Aggregate operations
+    AllocateAggregate {
+        dest: VReg,     // Result register containing pointer to allocated memory
+        size: i64,      // Size of aggregate in bytes
+        alignment: i64, // Alignment requirement (typically 8)
+    },
+    CopyAggregate {
+        dest: VReg, // Destination pointer
+        src: VReg,  // Source pointer
+        size: i64,  // Size in bytes
+    },
+    ZeroAggregate {
+        dest: VReg, // Destination pointer
+        size: i64,  // Size in bytes
+    },
+    LoadField {
+        dest: VReg,          // Destination register
+        base: VReg,          // Base pointer register
+        offset: i64,         // Field offset in bytes
+        field_type: RueType, // Type of field being loaded
+    },
+    StoreField {
+        base: VReg,          // Base pointer register
+        offset: i64,         // Field offset in bytes
+        src: Value,          // Source value to store
+        field_type: RueType, // Type of field being stored
+    },
 }
