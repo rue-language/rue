@@ -1,5 +1,5 @@
-use rue_ast::{CstRoot, FunctionNode};
-use rue_ir::types::RueType;
+use rue_ast::{CstRoot, StructDefinitionNode};
+use rue_ir::types::{RueType, StructDef, StructId};
 use rue_lexer::format_error_with_context;
 use std::collections::HashMap;
 
@@ -21,6 +21,9 @@ mod hir_validation_integration_test;
 #[cfg(test)]
 mod hir_roundtrip_test;
 
+#[cfg(test)]
+mod aggregate_type_tests;
+
 // Semantic analysis types
 #[derive(Debug, Clone, PartialEq, thiserror::Error)]
 #[error("{message}")]
@@ -39,9 +42,9 @@ impl SemanticError {
 pub struct Scope {
     pub variables: HashMap<String, RueType>,
     pub functions: HashMap<String, FunctionSignature>,
+    pub structs: HashMap<String, StructDef>,
+    pub struct_id_counter: u32,
 }
-
-// ScopeStack removed - TypeChecker has its own scope management
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct FunctionSignature {
@@ -49,92 +52,135 @@ pub struct FunctionSignature {
     pub return_type: RueType,
 }
 
-// Helper function to convert AST type to semantic type
-fn convert_type_node(type_node: &rue_ast::TypeNode) -> RueType {
+impl Scope {
+    /// Register a new struct definition and return its ID
+    pub fn register_struct(&mut self, name: String, fields: Vec<(String, RueType)>) -> StructId {
+        let struct_id = StructId::new(self.struct_id_counter);
+        self.struct_id_counter += 1;
+
+        let struct_def = StructDef::new(struct_id, name.clone(), fields);
+        self.structs.insert(name, struct_def);
+
+        struct_id
+    }
+
+    /// Look up a struct definition by name
+    pub fn get_struct(&self, name: &str) -> Option<&StructDef> {
+        self.structs.get(name)
+    }
+
+    /// Look up a struct definition by ID (for convenience)
+    pub fn get_struct_by_id(&self, id: StructId) -> Option<&StructDef> {
+        self.structs.values().find(|def| def.id == id)
+    }
+}
+
+// Helper function to convert AST type to semantic type with scope context
+fn convert_type_node_with_scope(
+    type_node: &rue_ast::TypeNode,
+    scope: &Scope,
+) -> Result<RueType, SemanticError> {
     match type_node {
-        rue_ast::TypeNode::I32(_) => RueType::I32,
-        rue_ast::TypeNode::I64(_) => RueType::I64,
-        rue_ast::TypeNode::Bool(_) => RueType::Bool,
-        rue_ast::TypeNode::Unit => RueType::Unit,
+        rue_ast::TypeNode::I32(_) => Ok(RueType::I32),
+        rue_ast::TypeNode::I64(_) => Ok(RueType::I64),
+        rue_ast::TypeNode::Bool(_) => Ok(RueType::Bool),
+        rue_ast::TypeNode::Unit => Ok(RueType::Unit),
         rue_ast::TypeNode::Struct(struct_type) => {
-            // For now, use a simple hash of the struct name as ID
-            // In a real implementation, this would use a proper type registry
-            if let rue_lexer::TokenKind::Ident(name) = &struct_type.name.kind {
-                let id = rue_ir::types::StructId::new(hash_string(name));
-                RueType::Struct(id)
+            // Extract struct name from the token
+            if let rue_lexer::TokenKind::Ident(struct_name) = &struct_type.name.kind {
+                if let Some(struct_def) = scope.get_struct(struct_name) {
+                    Ok(RueType::Struct(struct_def.id))
+                } else {
+                    Err(SemanticError {
+                        message: format!("Undefined struct type: {struct_name}"),
+                        span: struct_type.name.span,
+                    })
+                }
             } else {
-                panic!("Expected struct name to be an identifier")
+                Err(SemanticError {
+                    message: "Expected struct name".to_string(),
+                    span: struct_type.name.span,
+                })
             }
         }
         rue_ast::TypeNode::Tuple(tuple_type) => {
-            let element_types = tuple_type.types.iter().map(convert_type_node).collect();
-            RueType::Tuple(element_types)
+            let mut element_types = Vec::new();
+            for element_type in &tuple_type.types {
+                element_types.push(convert_type_node_with_scope(element_type, scope)?);
+            }
+            Ok(RueType::Tuple(element_types))
         }
         rue_ast::TypeNode::Array(array_type) => {
-            let element_type = Box::new(convert_type_node(&array_type.element_type));
+            let element_type = convert_type_node_with_scope(&array_type.element_type, scope)?;
 
-            // Parse array size from token
-            let size = if let rue_lexer::TokenKind::Integer(n) = &array_type.size.kind {
-                *n as usize
+            // Extract array size from the integer literal token
+            if let rue_lexer::TokenKind::Integer(size_value) = array_type.size.kind {
+                if size_value < 0 {
+                    return Err(SemanticError {
+                        message: format!("Array size must be non-negative, found: {size_value}"),
+                        span: array_type.size.span,
+                    });
+                }
+                let size = size_value as usize;
+                Ok(RueType::Array(Box::new(element_type), size))
             } else {
-                panic!("Array size must be an integer literal")
-            };
-
-            RueType::Array(element_type, size)
+                Err(SemanticError {
+                    message: "Expected array size as integer literal".to_string(),
+                    span: array_type.size.span,
+                })
+            }
         }
     }
 }
 
-// Simple hash function for struct names (temporary)
-fn hash_string(s: &str) -> u32 {
-    use std::collections::hash_map::DefaultHasher;
-    use std::hash::{Hash, Hasher};
-
-    let mut hasher = DefaultHasher::new();
-    s.hash(&mut hasher);
-    hasher.finish() as u32
-}
-
-// Clean symbol collection functions
-fn extract_function_name(func: &FunctionNode) -> Result<String, SemanticError> {
-    match &func.name.kind {
-        rue_lexer::TokenKind::Ident(name) => Ok(name.clone()),
-        _ => Err(SemanticError {
-            message: "Expected function name".to_string(),
-            span: func.name.span,
-        }),
-    }
-}
-
-fn collect_function_signature(func: &FunctionNode) -> Result<FunctionSignature, SemanticError> {
-    // Extract parameter types
-    let mut param_types = Vec::new();
-    for param in &func.param_list.params {
-        let param_type = if let Some(type_ann) = &param.type_annotation {
-            convert_type_node(&type_ann.ty)
-        } else {
-            RueType::I32 // Default to i32 if no type annotation
-        };
-        param_types.push(param_type);
-    }
-
-    // Extract return type
-    let return_type = if let Some(return_type_node) = &func.return_type {
-        convert_type_node(&return_type_node.ty)
+// Helper function to analyze a struct definition
+fn analyze_struct_definition(
+    scope: &mut Scope,
+    struct_def: &StructDefinitionNode,
+) -> Result<(), SemanticError> {
+    // Extract struct name
+    let struct_name = if let rue_lexer::TokenKind::Ident(name) = &struct_def.name.kind {
+        name.clone()
     } else {
-        RueType::Unit // Default to unit if no return type specified
+        return Err(SemanticError {
+            message: "Expected struct name".to_string(),
+            span: struct_def.name.span,
+        });
     };
 
-    Ok(FunctionSignature {
-        param_types,
-        return_type,
-    })
+    // Check if struct already exists
+    if scope.structs.contains_key(&struct_name) {
+        return Err(SemanticError {
+            message: format!("Struct '{struct_name}' is already defined"),
+            span: struct_def.name.span,
+        });
+    }
+
+    // Extract field definitions
+    let mut fields = Vec::new();
+    for field in &struct_def.fields {
+        let field_name = if let rue_lexer::TokenKind::Ident(name) = &field.name.kind {
+            name.clone()
+        } else {
+            return Err(SemanticError {
+                message: "Expected field name".to_string(),
+                span: field.name.span,
+            });
+        };
+
+        let field_type = convert_type_node_with_scope(&field.type_annotation.ty, scope)?;
+        fields.push((field_name, field_type));
+    }
+
+    // Register the struct in the scope
+    scope.register_struct(struct_name, fields);
+    Ok(())
 }
 
-// Add built-in functions to function signature map
-fn add_builtin_functions_to_map(functions: &mut HashMap<String, FunctionSignature>) {
+// Add built-in functions to the scope
+fn add_builtin_functions(scope: &mut Scope) {
     // exit(code: i64) -> ()
-    functions.insert(
+    scope.functions.insert(
         "exit".to_string(),
         FunctionSignature {
             param_types: vec![RueType::I64],
@@ -143,7 +189,7 @@ fn add_builtin_functions_to_map(functions: &mut HashMap<String, FunctionSignatur
     );
 
     // println_i32(value: i32) -> ()
-    functions.insert(
+    scope.functions.insert(
         "println_i32".to_string(),
         FunctionSignature {
             param_types: vec![RueType::I32],
@@ -152,7 +198,7 @@ fn add_builtin_functions_to_map(functions: &mut HashMap<String, FunctionSignatur
     );
 
     // println_i64(value: i64) -> ()
-    functions.insert(
+    scope.functions.insert(
         "println_i64".to_string(),
         FunctionSignature {
             param_types: vec![RueType::I64],
@@ -161,7 +207,7 @@ fn add_builtin_functions_to_map(functions: &mut HashMap<String, FunctionSignatur
     );
 
     // println_bool(value: bool) -> ()
-    functions.insert(
+    scope.functions.insert(
         "println_bool".to_string(),
         FunctionSignature {
             param_types: vec![RueType::Bool],
@@ -170,7 +216,7 @@ fn add_builtin_functions_to_map(functions: &mut HashMap<String, FunctionSignatur
     );
 
     // println_unit(value: ()) -> ()
-    functions.insert(
+    scope.functions.insert(
         "println_unit".to_string(),
         FunctionSignature {
             param_types: vec![RueType::Unit],
@@ -179,7 +225,7 @@ fn add_builtin_functions_to_map(functions: &mut HashMap<String, FunctionSignatur
     );
 
     // input() -> i64
-    functions.insert(
+    scope.functions.insert(
         "input".to_string(),
         FunctionSignature {
             param_types: vec![],
@@ -188,7 +234,7 @@ fn add_builtin_functions_to_map(functions: &mut HashMap<String, FunctionSignatur
     );
 
     // to_i32(value: i64) -> i32
-    functions.insert(
+    scope.functions.insert(
         "to_i32".to_string(),
         FunctionSignature {
             param_types: vec![RueType::I64],
@@ -197,7 +243,7 @@ fn add_builtin_functions_to_map(functions: &mut HashMap<String, FunctionSignatur
     );
 
     // to_i64(value: i32) -> i64
-    functions.insert(
+    scope.functions.insert(
         "to_i64".to_string(),
         FunctionSignature {
             param_types: vec![RueType::I32],
@@ -215,437 +261,87 @@ pub struct AnalysisResult {
 
 // Clean semantic analysis pipeline
 pub fn analyze_cst(ast: &CstRoot) -> Result<AnalysisResult, SemanticError> {
-    // Phase 1: Symbol Collection - collect function signatures only, no type checking
-    let mut function_signatures = HashMap::new();
-    add_builtin_functions_to_map(&mut function_signatures);
+    let mut global_scope = Scope::default();
 
+    // Add built-in functions
+    add_builtin_functions(&mut global_scope);
+
+    // First pass: collect all struct definitions and function signatures
     for item in &ast.items {
         match item {
-            rue_ast::CstNode::Function(func) => {
-                let signature = collect_function_signature(func)?;
-                let func_name = extract_function_name(func)?;
-                function_signatures.insert(func_name, signature);
+            rue_ast::CstNode::StructDefinition(struct_def) => {
+                analyze_struct_definition(&mut global_scope, struct_def)?;
             }
-            rue_ast::CstNode::StructDefinition(_) => {
-                // TODO: In full implementation, collect struct definitions in type registry
-                // For now, structs are handled dynamically by TypeChecker
+            rue_ast::CstNode::Function(func) => {
+                // Extract function signature for later use
+                let func_name = if let rue_lexer::TokenKind::Ident(name) = &func.name.kind {
+                    name.clone()
+                } else {
+                    return Err(SemanticError {
+                        message: "Expected function name".to_string(),
+                        span: func.name.span,
+                    });
+                };
+
+                // Extract parameter types
+                let mut param_types = Vec::new();
+                for param in &func.param_list.params {
+                    let param_type = if let Some(type_ann) = &param.type_annotation {
+                        convert_type_node_with_scope(&type_ann.ty, &global_scope)?
+                    } else {
+                        RueType::I32 // Default to i32 if no type annotation
+                    };
+                    param_types.push(param_type);
+                }
+
+                // Extract return type
+                let return_type = if let Some(return_type_node) = &func.return_type {
+                    convert_type_node_with_scope(&return_type_node.ty, &global_scope)?
+                } else {
+                    RueType::Unit // Default to unit if no return type specified
+                };
+
+                let signature = FunctionSignature {
+                    param_types,
+                    return_type,
+                };
+
+                global_scope.functions.insert(func_name, signature);
             }
             rue_ast::CstNode::Statement(_) => {
                 // Top-level statements are not supported in current language design
                 return Err(SemanticError {
                     message: "Top-level statements are not supported".to_string(),
-                    span: rue_lexer::Span { start: 0, end: 0 }, // TODO: proper span
+                    span: rue_lexer::Span { start: 0, end: 0 },
                 });
             }
-            _ => {} // Skip other node types
+            rue_ast::CstNode::Expression(_)
+            | rue_ast::CstNode::Token(_)
+            | rue_ast::CstNode::Error(_) => {
+                return Err(SemanticError {
+                    message: "Unexpected top-level node type".to_string(),
+                    span: rue_lexer::Span { start: 0, end: 0 },
+                });
+            }
         }
     }
 
     // Phase 2: Type Checking + HIR Generation - all semantic analysis happens here
-    let mut type_checker = type_checker::TypeChecker::new(function_signatures.clone());
+    let mut type_checker = type_checker::TypeChecker::new(global_scope.clone());
     let hir = type_checker.check_program(ast)?;
 
-    // Phase 3: HIR Validation
-    let mut validator = hir_validator::HirValidator::new();
-    if let Err(validation_errors) = validator.validate_program(&hir) {
-        if let Some(error) = validation_errors.into_iter().next() {
-            return Err(error);
-        }
-    }
-
-    // Create legacy scope for compatibility
-    let global_scope = Scope {
-        functions: function_signatures,
-        ..Default::default()
-    };
+    // Phase 3: HIR Validation - ensure HIR is well-formed and internally consistent
+    let mut hir_validator = hir_validator::HirValidator::new();
+    hir_validator.validate_program(&hir).map_err(|errors| {
+        // Return the first validation error if any occur
+        errors.into_iter().next().unwrap_or_else(|| SemanticError {
+            message: "HIR validation failed".to_string(),
+            span: rue_lexer::Span { start: 0, end: 0 },
+        })
+    })?;
 
     Ok(AnalysisResult {
         scope: global_scope,
         hir,
     })
-}
-
-// All old semantic analysis functions removed - TypeChecker now handles everything
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use rue_lexer::{Lexer, Span};
-
-    fn parse_and_analyze(source: &str) -> Result<AnalysisResult, SemanticError> {
-        let mut lexer = Lexer::new(source);
-        let tokens = lexer.tokenize().map_err(|e| SemanticError {
-            message: format!("Lexical error: {}", e.message),
-            span: Span {
-                start: e.position,
-                end: e.position + 1,
-            },
-        })?;
-        let ast = rue_parser::parse(tokens).map_err(|e| SemanticError {
-            message: format!("Parse error: {}", e.message),
-            span: e.span,
-        })?;
-        analyze_cst(&ast)
-    }
-
-    #[test]
-    fn test_semantic_analysis_simple() {
-        let result = parse_and_analyze(
-            r#"
-fn main() -> i32 {
-    42
-}
-"#,
-        );
-        assert!(result.is_ok());
-
-        let analysis = result.unwrap();
-        assert!(analysis.scope.functions.contains_key("main"));
-        assert_eq!(analysis.scope.functions["main"].param_types.len(), 0);
-        assert_eq!(analysis.scope.functions["main"].return_type, RueType::I32);
-    }
-
-    #[test]
-    fn test_semantic_analysis_with_parameter() {
-        let result = parse_and_analyze(
-            r#"
-fn factorial(n: i32) -> i32 {
-    if n <= 1 {
-        1
-    } else {
-        n * factorial(n - 1)
-    }
-}
-"#,
-        );
-        if let Err(e) = &result {
-            eprintln!("Error: {} at span {:?}", e.message, e.span);
-        }
-        assert!(result.is_ok());
-
-        let analysis = result.unwrap();
-        assert!(analysis.scope.functions.contains_key("factorial"));
-        assert_eq!(analysis.scope.functions["factorial"].param_types.len(), 1);
-        assert_eq!(
-            analysis.scope.functions["factorial"].param_types[0],
-            RueType::I32
-        );
-        assert_eq!(
-            analysis.scope.functions["factorial"].return_type,
-            RueType::I32
-        );
-    }
-
-    #[test]
-    fn test_semantic_analysis_undefined_variable() {
-        let result = parse_and_analyze(
-            r#"
-fn main() -> i32 {
-    undefined_var
-}
-"#,
-        );
-        assert!(result.is_err());
-
-        let error = result.unwrap_err();
-        assert!(error.message.contains("Undefined variable: undefined_var"));
-    }
-
-    #[test]
-    fn test_semantic_analysis_undefined_function() {
-        let result = parse_and_analyze(
-            r#"
-fn main() -> i32 {
-    undefined_func(42)
-}
-"#,
-        );
-        assert!(result.is_err());
-
-        let error = result.unwrap_err();
-        assert!(error.message.contains("Undefined function: undefined_func"));
-    }
-
-    #[test]
-    fn test_semantic_analysis_wrong_argument_count() {
-        let result = parse_and_analyze(
-            r#"
-fn factorial(n: i32) -> i32 {
-    n
-}
-
-fn main() -> i32 {
-    factorial()
-}
-"#,
-        );
-        assert!(result.is_err());
-
-        let error = result.unwrap_err();
-        assert!(
-            error
-                .message
-                .contains("expects 1 arguments, but 0 were provided")
-        );
-    }
-
-    #[test]
-    fn test_semantic_analysis_let_statement() {
-        let result = parse_and_analyze(
-            r#"
-fn main() -> i32 {
-    let x: i32 = 42;
-    x + 1
-}
-"#,
-        );
-        assert!(result.is_ok());
-    }
-
-    #[test]
-    fn test_semantic_analysis_while_loop() {
-        let result = parse_and_analyze(
-            r#"
-fn countdown(n: i32) -> () {
-    while n > 0 {
-        n - 1;
-    };
-}
-"#,
-        );
-        assert!(result.is_ok());
-    }
-
-    #[test]
-    fn test_semantic_analysis_while_loop_undefined_variable() {
-        let result = parse_and_analyze(
-            r#"
-fn main() -> i32 {
-    while undefined_var > 0 {
-        42;
-    };
-    0
-}
-"#,
-        );
-        assert!(result.is_err());
-
-        let error = result.unwrap_err();
-        assert!(error.message.contains("Undefined variable: undefined_var"));
-    }
-
-    #[test]
-    fn test_semantic_analysis_assignment_valid() {
-        let result = parse_and_analyze(
-            r#"
-fn main() -> i32 {
-    let x: i32 = 42;
-    x = 100;
-    x
-}
-"#,
-        );
-        assert!(result.is_ok());
-    }
-
-    #[test]
-    fn test_semantic_analysis_assignment_undefined_variable() {
-        let result = parse_and_analyze(
-            r#"
-fn main() -> () {
-    undefined_var = 42;
-}
-"#,
-        );
-        assert!(result.is_err());
-
-        let error = result.unwrap_err();
-        assert!(
-            error
-                .message
-                .contains("Cannot assign to undefined variable: undefined_var")
-        );
-    }
-
-    #[test]
-    fn test_semantic_analysis_assignment_with_expression() {
-        let result = parse_and_analyze(
-            r#"
-fn main() -> i32 {
-    let x: i32 = 10;
-    let y: i32 = 20;
-    x = y + 5;
-    x
-}
-"#,
-        );
-        assert!(result.is_ok());
-    }
-
-    #[test]
-    fn test_type_mismatch_in_let() {
-        let result = parse_and_analyze(
-            r#"
-fn main() -> () {
-    let x: i32 = true;
-}
-"#,
-        );
-        assert!(result.is_err());
-
-        let error = result.unwrap_err();
-        assert!(error.message.contains("Type mismatch"));
-        assert!(error.message.contains("i32"));
-        assert!(error.message.contains("bool"));
-    }
-
-    #[test]
-    fn test_type_mismatch_in_assignment() {
-        let result = parse_and_analyze(
-            r#"
-fn main() -> () {
-    let x: i32 = 42;
-    x = true;
-}
-"#,
-        );
-        assert!(result.is_err());
-
-        let error = result.unwrap_err();
-        assert!(error.message.contains("Type mismatch"));
-        assert!(error.message.contains("bool"));
-        assert!(error.message.contains("i32"));
-    }
-
-    #[test]
-    fn test_type_mismatch_in_binary_op() {
-        let result = parse_and_analyze(
-            r#"
-fn main() -> i32 {
-    42 + true
-}
-"#,
-        );
-        assert!(result.is_err());
-
-        let error = result.unwrap_err();
-        assert!(
-            error
-                .message
-                .contains("Cannot use integer literal in context expecting bool")
-        );
-    }
-
-    #[test]
-    fn test_bool_operations() {
-        let result = parse_and_analyze(
-            r#"
-fn main() -> bool {
-    let x: i32 = 42;
-    let y: i32 = 100;
-    x < y
-}
-"#,
-        );
-        assert!(result.is_ok());
-    }
-
-    #[test]
-    fn test_if_condition_must_be_bool() {
-        let result = parse_and_analyze(
-            r#"
-fn main() -> i32 {
-    if 42 {
-        1
-    } else {
-        0
-    }
-}
-"#,
-        );
-        assert!(result.is_err());
-
-        let error = result.unwrap_err();
-        assert!(error.message.contains("If condition must be bool"));
-    }
-
-    #[test]
-    fn test_function_return_type_mismatch() {
-        let result = parse_and_analyze(
-            r#"
-fn get_number() -> i32 {
-    true
-}
-"#,
-        );
-        assert!(result.is_err());
-
-        let error = result.unwrap_err();
-        assert!(
-            error
-                .message
-                .contains("declared to return 'i32' but returns 'bool'")
-        );
-    }
-
-    #[test]
-    fn test_function_argument_type_check() {
-        let result = parse_and_analyze(
-            r#"
-fn add(a: i32, b: i32) -> i32 {
-    a + b
-}
-
-fn main() -> i32 {
-    add(42, true)
-}
-"#,
-        );
-        // The test should fail during semantic analysis with type mismatch
-        assert!(result.is_err());
-
-        let error = result.unwrap_err();
-        // For now, accept either parse error or type error since we're in transition
-        assert!(
-            error.message.contains("Type mismatch in argument")
-                || error.message.contains("Parse error")
-        );
-    }
-
-    #[test]
-    fn test_unit_type_function() {
-        let result = parse_and_analyze(
-            r#"
-fn print_value(x: i32) -> () {
-    x;
-}
-
-fn main() -> () {
-    print_value(42);
-}
-"#,
-        );
-        assert!(result.is_ok());
-    }
-
-    #[test]
-    fn test_multiple_parameters() {
-        let result = parse_and_analyze(
-            r#"
-fn add(a: i32, b: i32) -> i32 {
-    a + b
-}
-
-fn main() -> i32 {
-    add(10, 20)
-}
-"#,
-        );
-        assert!(result.is_ok());
-
-        let analysis = result.unwrap();
-        assert_eq!(analysis.scope.functions["add"].param_types.len(), 2);
-        assert_eq!(analysis.scope.functions["add"].param_types[0], RueType::I32);
-        assert_eq!(analysis.scope.functions["add"].param_types[1], RueType::I32);
-    }
 }

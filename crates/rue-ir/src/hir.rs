@@ -41,7 +41,7 @@
 //! }
 //! ```
 
-use crate::types::RueType;
+use crate::types::{FieldId, RueType};
 use rue_lexer::Span;
 use std::fmt;
 
@@ -266,40 +266,28 @@ pub enum HirExpr {
 
     /// Struct literal expression
     ///
-    /// Creates a struct instance with named field initializers.
-    /// All fields must be provided and match the struct definition.
+    /// Creates a struct instance by providing values for all required fields.
+    /// Field names and types are validated during semantic analysis.
     StructLiteral {
-        /// ID of the struct type being constructed
-        struct_id: crate::types::StructId,
-        /// Field initializers (field name -> expression)
+        /// Name of the struct type being instantiated
+        struct_name: String,
+        /// Field initializations (name -> expression)
+        /// Order preserved from source code
         fields: Vec<(String, HirExpr)>,
-        /// Result type (always the struct type)
+        /// The concrete struct type
         ty: RueType,
         /// Source location of the struct literal
         span: Span,
     },
 
-    /// Field access expression
-    ///
-    /// Access a field of a struct, tuple, or array by name or index.
-    FieldAccess {
-        /// Base expression being accessed
-        base: Box<HirExpr>,
-        /// Field identifier (name or index)
-        field: crate::types::FieldId,
-        /// Type of the accessed field
-        ty: RueType,
-        /// Source location of the field access
-        span: Span,
-    },
-
     /// Tuple literal expression
     ///
-    /// Creates a tuple with the given elements in order.
+    /// Creates a tuple instance with the given element expressions.
+    /// Element types are validated and combined into tuple type.
     TupleLiteral {
-        /// Tuple element expressions
+        /// Element expressions in order
         elements: Vec<HirExpr>,
-        /// Result type (always a tuple type)
+        /// The concrete tuple type
         ty: RueType,
         /// Source location of the tuple literal
         span: Span,
@@ -307,30 +295,66 @@ pub enum HirExpr {
 
     /// Array literal expression
     ///
-    /// Creates an array with the given elements.
+    /// Creates an array instance with the given element expressions.
     /// All elements must have the same type.
     ArrayLiteral {
-        /// Array element expressions
+        /// Element expressions in order
         elements: Vec<HirExpr>,
-        /// Result type (always an array type)
+        /// The concrete array type (element type + size)
         ty: RueType,
         /// Source location of the array literal
         span: Span,
     },
 
-    /// Array access expression
+    /// Field access expression (struct.field or tuple.0)
     ///
-    /// Access an element of an array by index.
+    /// Accesses a field of a struct or tuple. The field identifier can be
+    /// either a named field (for structs) or a positional index (for tuples).
+    FieldAccess {
+        /// Base expression (must be struct or tuple type)
+        base: Box<HirExpr>,
+        /// Field identifier (name or index)
+        field: FieldId,
+        /// Type of the accessed field
+        ty: RueType,
+        /// Source location of the field access
+        span: Span,
+    },
+
+    /// Array indexing expression (array[index])
+    ///
+    /// Accesses an element of an array by index. Index must be integer type.
+    /// Bounds checking is performed at runtime.
     ArrayAccess {
-        /// Base array expression
+        /// Base expression (must be array type)
         base: Box<HirExpr>,
         /// Index expression (must be integer type)
         index: Box<HirExpr>,
-        /// Type of the accessed element
+        /// Element type of the array
         ty: RueType,
         /// Source location of the array access
         span: Span,
     },
+}
+
+impl HirExpr {
+    /// Get the span of this HIR expression
+    pub fn span(&self) -> Span {
+        match self {
+            HirExpr::Literal { span, .. } => *span,
+            HirExpr::Var { span, .. } => *span,
+            HirExpr::Binary { span, .. } => *span,
+            HirExpr::Unary { span, .. } => *span,
+            HirExpr::Call { span, .. } => *span,
+            HirExpr::If { span, .. } => *span,
+            HirExpr::While { span, .. } => *span,
+            HirExpr::StructLiteral { span, .. } => *span,
+            HirExpr::TupleLiteral { span, .. } => *span,
+            HirExpr::ArrayLiteral { span, .. } => *span,
+            HirExpr::FieldAccess { span, .. } => *span,
+            HirExpr::ArrayAccess { span, .. } => *span,
+        }
+    }
 }
 
 /// Literal values with concrete types.
@@ -457,9 +481,9 @@ impl HirExpr {
             HirExpr::If { ty, .. } => ty,
             HirExpr::While { .. } => &RueType::Unit, // While always returns unit
             HirExpr::StructLiteral { ty, .. } => ty,
-            HirExpr::FieldAccess { ty, .. } => ty,
             HirExpr::TupleLiteral { ty, .. } => ty,
             HirExpr::ArrayLiteral { ty, .. } => ty,
+            HirExpr::FieldAccess { ty, .. } => ty,
             HirExpr::ArrayAccess { ty, .. } => ty,
         }
     }
@@ -555,39 +579,41 @@ impl fmt::Display for HirExpr {
                 write!(f, "while {cond} {body}")
             }
             HirExpr::StructLiteral {
-                struct_id, fields, ..
+                struct_name,
+                fields,
+                ..
             } => {
-                write!(f, "{struct_id} {{ ")?;
-                for (i, (name, value)) in fields.iter().enumerate() {
+                write!(f, "{struct_name} {{ ")?;
+                for (i, (field_name, field_expr)) in fields.iter().enumerate() {
                     if i > 0 {
                         write!(f, ", ")?;
                     }
-                    write!(f, "{name}: {value}")?;
+                    write!(f, "{field_name}: {field_expr}")?;
                 }
                 write!(f, " }}")
             }
-            HirExpr::FieldAccess { base, field, .. } => {
-                write!(f, "{base}.{field}")
-            }
             HirExpr::TupleLiteral { elements, .. } => {
                 write!(f, "(")?;
-                for (i, elem) in elements.iter().enumerate() {
+                for (i, element) in elements.iter().enumerate() {
                     if i > 0 {
                         write!(f, ", ")?;
                     }
-                    write!(f, "{elem}")?;
+                    write!(f, "{element}")?;
                 }
                 write!(f, ")")
             }
             HirExpr::ArrayLiteral { elements, .. } => {
                 write!(f, "[")?;
-                for (i, elem) in elements.iter().enumerate() {
+                for (i, element) in elements.iter().enumerate() {
                     if i > 0 {
                         write!(f, ", ")?;
                     }
-                    write!(f, "{elem}")?;
+                    write!(f, "{element}")?;
                 }
                 write!(f, "]")
+            }
+            HirExpr::FieldAccess { base, field, .. } => {
+                write!(f, "{base}.{field}")
             }
             HirExpr::ArrayAccess { base, index, .. } => {
                 write!(f, "{base}[{index}]")
