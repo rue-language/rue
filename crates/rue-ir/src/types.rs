@@ -121,6 +121,103 @@ impl RueType {
             _ => None,
         }
     }
+
+    /// Compute the memory layout of this type
+    pub fn layout(&self) -> TypeLayout {
+        match self {
+            RueType::I32 => TypeLayout::new(4, 4),
+            RueType::I64 => TypeLayout::new(8, 8),
+            RueType::Bool => TypeLayout::new(1, 1),
+            RueType::Unit => TypeLayout::new(0, 1),
+            RueType::Unknown => TypeLayout::new(0, 1), // Placeholder, should not be used in final code
+
+            RueType::Struct(_struct_id) => {
+                // For now, we can't compute struct layout without access to the struct registry
+                // This would need to be resolved through a type context in the future
+                // For testing purposes, we'll use a placeholder
+                TypeLayout::new(8, 8) // Placeholder
+            }
+
+            RueType::Tuple(types) => Self::compute_tuple_layout(types),
+
+            RueType::Array(elem_type, len) => {
+                let elem_layout = elem_type.layout();
+                TypeLayout::new(elem_layout.size * len, elem_layout.align)
+            }
+        }
+    }
+
+    /// Get the size in bytes of this type
+    pub fn size_bytes(&self) -> usize {
+        self.layout().size
+    }
+
+    /// Get the alignment requirement in bytes of this type
+    pub fn align_bytes(&self) -> usize {
+        self.layout().align
+    }
+
+    /// Compute layout for a tuple type (internal helper)
+    fn compute_tuple_layout(types: &[RueType]) -> TypeLayout {
+        if types.is_empty() {
+            return TypeLayout::new(0, 1);
+        }
+
+        let mut offset = 0;
+        let mut max_align = 1;
+
+        for ty in types {
+            let field_layout = ty.layout();
+
+            // Align the field
+            offset = field_layout.align_offset(offset);
+            offset += field_layout.size;
+            max_align = max_align.max(field_layout.align);
+        }
+
+        // Align the total size to the tuple's alignment
+        let final_size = TypeLayout::new(0, max_align).align_offset(offset);
+        TypeLayout::new(final_size, max_align)
+    }
+
+    /// Compute the offset of a tuple field by index
+    pub fn tuple_field_offset(&self, index: usize) -> Option<usize> {
+        match self {
+            RueType::Tuple(types) => {
+                if index >= types.len() {
+                    return None;
+                }
+
+                let mut offset = 0;
+                for (i, ty) in types.iter().enumerate() {
+                    if i == index {
+                        let field_layout = ty.layout();
+                        return Some(field_layout.align_offset(offset));
+                    }
+
+                    let field_layout = ty.layout();
+                    offset = field_layout.align_offset(offset);
+                    offset += field_layout.size;
+                }
+                None
+            }
+            _ => None,
+        }
+    }
+
+    /// Compute the offset of an array element by index
+    pub fn array_element_offset(&self, index: usize) -> Option<usize> {
+        match self {
+            RueType::Array(elem_type, len) => {
+                if index >= *len {
+                    return None;
+                }
+                let elem_layout = elem_type.layout();
+                Some(elem_layout.size * index)
+            }
+            _ => None,
+        }
+    }
 }
 
 impl fmt::Display for RueType {
@@ -147,10 +244,47 @@ impl fmt::Display for RueType {
     }
 }
 
-/// Stub struct definition for future use
-///
-/// This will eventually hold the actual struct field definitions.
-/// For now, it's a placeholder to demonstrate the API design.
+/// Computed layout information for a type
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct TypeLayout {
+    /// Size in bytes
+    pub size: usize,
+    /// Alignment requirement in bytes (must be power of 2)
+    pub align: usize,
+}
+
+impl TypeLayout {
+    /// Create a new layout with given size and alignment
+    pub fn new(size: usize, align: usize) -> Self {
+        debug_assert!(
+            align > 0 && (align & (align - 1)) == 0,
+            "Alignment must be power of 2"
+        );
+        Self { size, align }
+    }
+
+    /// Compute the offset for the next field, given the current offset
+    pub fn align_offset(&self, offset: usize) -> usize {
+        (offset + self.align - 1) & !(self.align - 1)
+    }
+
+    /// Compute the size needed to hold this layout at the given offset
+    pub fn size_at_offset(&self, offset: usize) -> usize {
+        let aligned_offset = self.align_offset(offset);
+        aligned_offset + self.size
+    }
+}
+
+/// Field layout information
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FieldLayout {
+    /// Offset from start of struct in bytes
+    pub offset: usize,
+    /// Field type
+    pub field_type: RueType,
+}
+
+/// Struct definition with computed layout information
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StructDef {
     /// The struct's unique ID
@@ -160,15 +294,32 @@ pub struct StructDef {
     /// Field definitions (name -> type)
     /// Using Vec to preserve field order
     pub fields: Vec<(String, RueType)>,
+    /// Computed layout information
+    layout: Option<TypeLayout>,
+    /// Field layout information (computed lazily)
+    field_layouts: Option<Vec<FieldLayout>>,
 }
 
 impl StructDef {
+    /// Create a struct definition with fields
+    pub fn new(id: StructId, name: impl Into<String>, fields: Vec<(String, RueType)>) -> Self {
+        Self {
+            id,
+            name: name.into(),
+            fields,
+            layout: None,
+            field_layouts: None,
+        }
+    }
+
     /// Create a stub struct definition
     pub fn stub(id: StructId, name: impl Into<String>) -> Self {
         Self {
             id,
             name: name.into(),
             fields: Vec::new(),
+            layout: None,
+            field_layouts: None,
         }
     }
 
@@ -183,5 +334,66 @@ impl StructDef {
     /// Get the type of a field by index
     pub fn field_type_by_index(&self, index: usize) -> Option<&RueType> {
         self.fields.get(index).map(|(_, ty)| ty)
+    }
+
+    /// Compute the layout of this struct, caching it for future calls
+    pub fn compute_layout(&mut self) -> TypeLayout {
+        // Return cached layout if already computed
+        if let Some(layout) = self.layout {
+            return layout;
+        }
+
+        // Compute and cache the layout and field layouts
+        let (layout, field_layouts) = Self::compute_struct_layout(&self.fields);
+        self.layout = Some(layout);
+        self.field_layouts = Some(field_layouts);
+        layout
+    }
+
+    /// Get the field layout by index
+    pub fn field_layout_by_index(&mut self, index: usize) -> Option<&FieldLayout> {
+        self.compute_layout(); // Ensure layouts are computed
+        self.field_layouts.as_ref()?.get(index)
+    }
+
+    /// Get the field layout by name
+    pub fn field_layout_by_name(&mut self, name: &str) -> Option<&FieldLayout> {
+        let index = self
+            .fields
+            .iter()
+            .position(|(field_name, _)| field_name == name)?;
+        self.field_layout_by_index(index)
+    }
+
+    /// Compute layout for a list of field types (internal helper)
+    fn compute_struct_layout(fields: &[(String, RueType)]) -> (TypeLayout, Vec<FieldLayout>) {
+        if fields.is_empty() {
+            return (TypeLayout::new(0, 1), Vec::new());
+        }
+
+        let mut offset = 0;
+        let mut max_align = 1;
+        let mut field_layouts = Vec::new();
+
+        for (_, field_type) in fields {
+            let field_layout = field_type.layout();
+
+            // Align the field
+            offset = field_layout.align_offset(offset);
+
+            field_layouts.push(FieldLayout {
+                offset,
+                field_type: field_type.clone(),
+            });
+
+            offset += field_layout.size;
+            max_align = max_align.max(field_layout.align);
+        }
+
+        // Align the total size to the struct's alignment
+        let final_size = TypeLayout::new(0, max_align).align_offset(offset);
+        let layout = TypeLayout::new(final_size, max_align);
+
+        (layout, field_layouts)
     }
 }

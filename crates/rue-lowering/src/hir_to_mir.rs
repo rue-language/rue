@@ -560,7 +560,7 @@ impl MirBuilder {
                 unit_temp
             }
             HirExpr::StructLiteral {
-                struct_id: _,
+                struct_name: _,
                 fields,
                 ty,
                 span,

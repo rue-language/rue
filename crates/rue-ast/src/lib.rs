@@ -198,6 +198,40 @@ pub enum ExpressionNode {
     ArrayAccess(ArrayAccessNode),
 }
 
+impl ExpressionNode {
+    pub fn span(&self) -> rue_lexer::Span {
+        match self {
+            ExpressionNode::Binary(node) => node
+                .trivia
+                .leading
+                .first()
+                .map(|t| t.span)
+                .unwrap_or_else(|| node.left.span()),
+            ExpressionNode::Unary(node) => node
+                .trivia
+                .leading
+                .first()
+                .map(|t| t.span)
+                .unwrap_or_else(|| node.operator.span),
+            ExpressionNode::Call(node) => node
+                .trivia
+                .leading
+                .first()
+                .map(|t| t.span)
+                .unwrap_or_else(|| node.function.span()),
+            ExpressionNode::If(node) => node.if_token.span,
+            ExpressionNode::While(node) => node.while_token.span,
+            ExpressionNode::Identifier(token) => token.span,
+            ExpressionNode::Literal(token) => token.span,
+            ExpressionNode::StructLiteral(node) => node.name.span,
+            ExpressionNode::TupleLiteral(node) => node.open_paren.span,
+            ExpressionNode::ArrayLiteral(node) => node.open_bracket.span,
+            ExpressionNode::FieldAccess(node) => node.base.span(),
+            ExpressionNode::ArrayAccess(node) => node.base.span(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct BinaryExprNode {
     pub left: Box<ExpressionNode>,

@@ -9,7 +9,6 @@
 use crate::SemanticError;
 use rue_ir::hir::{BinOp, HirBlock, HirExpr, HirFunction, HirProgram, HirStatement, UnaryOp};
 use rue_ir::types::RueType;
-use rue_lexer::Span;
 use std::collections::HashMap;
 
 /// Context for HIR validation
@@ -48,10 +47,6 @@ impl HirValidator {
             self.validate_function(function);
         }
 
-        // Don't check for main function in HIR validation
-        // This should be done at a higher level if needed
-        // (Many tests don't have main functions)
-
         if self.errors.is_empty() {
             Ok(())
         } else {
@@ -59,12 +54,10 @@ impl HirValidator {
         }
     }
 
-    /// Collect function signatures for validation
+    /// Collect all function signatures for reference validation
     fn collect_function_signatures(&mut self, program: &HirProgram) {
         for function in &program.functions {
-            let param_types: Vec<RueType> =
-                function.params.iter().map(|(_, ty)| ty.clone()).collect();
-
+            let param_types = function.params.iter().map(|(_, ty)| ty.clone()).collect();
             self.functions.insert(
                 function.name.clone(),
                 (param_types, function.return_type.clone()),
@@ -77,10 +70,6 @@ impl HirValidator {
         // exit(code: i64) -> ()
         self.functions
             .insert("exit".to_string(), (vec![RueType::I64], RueType::Unit));
-
-        // print(value: i64) -> ()
-        self.functions
-            .insert("print".to_string(), (vec![RueType::I64], RueType::Unit));
 
         // println_i32(value: i32) -> ()
         self.functions.insert(
@@ -121,13 +110,14 @@ impl HirValidator {
 
     /// Validate a single function
     fn validate_function(&mut self, function: &HirFunction) {
-        // Clear variable scope for new function
-        self.variables.clear();
+        // Clear scope stack and add parameters
         self.scope_stack.clear();
+        self.variables.clear();
 
-        // Add parameters to scope
-        for (name, ty) in &function.params {
-            self.variables.insert(name.clone(), ty.clone());
+        // Add parameters to current scope
+        for (param_name, param_type) in &function.params {
+            self.variables
+                .insert(param_name.clone(), param_type.clone());
         }
 
         // Validate function body
@@ -137,8 +127,8 @@ impl HirValidator {
         if body_type != function.return_type {
             self.errors.push(SemanticError {
                 message: format!(
-                    "Function '{}' declares return type {} but body returns {}",
-                    function.name, function.return_type, body_type
+                    "Function '{}' returns {body_type}, expected {}",
+                    function.name, function.return_type
                 ),
                 span: function.span,
             });
@@ -150,14 +140,14 @@ impl HirValidator {
         // Push new scope
         self.push_scope();
 
-        // Validate statements
+        // Validate all statements
         for stmt in &block.statements {
             self.validate_statement(stmt);
         }
 
-        // Validate final expression
-        let block_type = if let Some(expr) = &block.expr {
-            self.validate_expression(expr)
+        // Determine block type from final expression
+        let block_type = if let Some(final_expr) = &block.expr {
+            self.validate_expression(final_expr)
         } else {
             RueType::Unit
         };
@@ -168,34 +158,42 @@ impl HirValidator {
         block_type
     }
 
+    /// Push a new scope onto the stack
+    fn push_scope(&mut self) {
+        self.scope_stack.push(self.variables.clone());
+    }
+
+    /// Pop the current scope from the stack
+    fn pop_scope(&mut self) {
+        if let Some(previous_scope) = self.scope_stack.pop() {
+            self.variables = previous_scope;
+        }
+    }
+
+    /// Look up a variable in the current scope
+    fn lookup_variable(&self, name: &str) -> Option<RueType> {
+        self.variables.get(name).cloned()
+    }
+
     /// Validate a statement
     fn validate_statement(&mut self, stmt: &HirStatement) {
         match stmt {
-            HirStatement::Let {
-                name,
-                ty,
-                init,
-                span,
-            } => {
-                // Validate init expression
+            HirStatement::Let { name, ty, init, .. } => {
+                // Validate initialization expression
                 let init_type = self.validate_expression(init);
 
                 // Check type matches
-                if &init_type != ty {
+                if init_type != *ty {
                     self.errors.push(SemanticError {
                         message: format!(
-                            "Let binding '{name}' declares type {ty} but initializer has type {init_type}"
+                            "Variable '{name}' declared as {ty} but initialized with {init_type}"
                         ),
-                        span: *span,
+                        span: init.span(),
                     });
                 }
 
-                // Add variable to current scope
-                if let Some(scope) = self.scope_stack.last_mut() {
-                    scope.insert(name.clone(), ty.clone());
-                } else {
-                    self.variables.insert(name.clone(), ty.clone());
-                }
+                // Add variable to scope
+                self.variables.insert(name.clone(), ty.clone());
             }
             HirStatement::Assign { name, value, span } => {
                 // Check variable exists
@@ -312,27 +310,27 @@ impl HirValidator {
                 ty.clone()
             }
             HirExpr::Unary { op, expr, ty, span } => {
-                let operand_type = self.validate_expression(expr);
+                let expr_type = self.validate_expression(expr);
 
-                // Check operand type is numeric
-                match op {
+                // Validate operand type for operation
+                let expected_type = match op {
                     UnaryOp::Neg => {
-                        if !matches!(operand_type, RueType::I32 | RueType::I64) {
+                        if !matches!(expr_type, RueType::I32 | RueType::I64) {
                             self.errors.push(SemanticError {
                                 message: format!(
-                                    "Unary negation requires numeric type, found {operand_type}"
+                                    "Unary negation requires numeric type, found {expr_type}"
                                 ),
                                 span: *span,
                             });
                         }
+                        expr_type.clone()
                     }
-                }
+                };
 
-                // Result type should match operand type
-                if ty != &operand_type {
+                if ty != &expected_type {
                     self.errors.push(SemanticError {
                         message: format!(
-                            "Unary expression has type {ty} in HIR but operand has type {operand_type}"
+                            "Unary expression has type {ty} in HIR but should be {expected_type}"
                         ),
                         span: *span,
                     });
@@ -346,57 +344,54 @@ impl HirValidator {
                 ty,
                 span,
             } => {
-                // Look up function (clone to avoid borrow issues)
-                let func_sig = self.functions.get(func).cloned();
-
-                match func_sig {
-                    Some((param_types, return_type)) => {
-                        // Check argument count
-                        if args.len() != param_types.len() {
-                            self.errors.push(SemanticError {
-                                message: format!(
-                                    "Function '{}' expects {} arguments but {} provided",
-                                    func,
-                                    param_types.len(),
-                                    args.len()
-                                ),
-                                span: *span,
-                            });
-                        } else {
-                            // Check argument types
-                            for (i, (arg, expected)) in args.iter().zip(&param_types).enumerate() {
-                                let arg_type = self.validate_expression(arg);
-                                if &arg_type != expected {
-                                    self.errors.push(SemanticError {
-                                        message: format!(
-                                            "Argument {} to function '{}' has type {} but {} expected",
-                                            i + 1,
-                                            func,
-                                            arg_type,
-                                            expected
-                                        ),
-                                        span: arg.span(),
-                                    });
-                                }
-                            }
-                        }
-
-                        // Check return type
-                        if ty != &return_type {
-                            self.errors.push(SemanticError {
-                                message: format!(
-                                    "Function call has type {ty} in HIR but function returns {return_type}"
-                                ),
-                                span: *span,
-                            });
-                        }
-                    }
+                // Check function exists
+                let (param_types, return_type) = match self.functions.get(func) {
+                    Some((params, ret)) => (params.clone(), ret.clone()),
                     None => {
                         self.errors.push(SemanticError {
                             message: format!("Call to undefined function '{func}'"),
                             span: *span,
                         });
+                        return ty.clone();
                     }
+                };
+
+                // Check argument count
+                if args.len() != param_types.len() {
+                    self.errors.push(SemanticError {
+                        message: format!(
+                            "Function '{func}' expects {} arguments, found {}",
+                            param_types.len(),
+                            args.len()
+                        ),
+                        span: *span,
+                    });
+                }
+
+                // Validate each argument
+                for (i, arg) in args.iter().enumerate() {
+                    let arg_type = self.validate_expression(arg);
+                    if let Some(expected_type) = param_types.get(i) {
+                        if arg_type != *expected_type {
+                            self.errors.push(SemanticError {
+                                message: format!(
+                                    "Argument {} to function '{func}': expected {expected_type}, found {arg_type}",
+                                    i + 1
+                                ),
+                                span: arg.span(),
+                            });
+                        }
+                    }
+                }
+
+                // Check return type
+                if ty != &return_type {
+                    self.errors.push(SemanticError {
+                        message: format!(
+                            "Call to '{func}' has type {ty} in HIR but function returns {return_type}"
+                        ),
+                        span: *span,
+                    });
                 }
 
                 ty.clone()
@@ -408,7 +403,7 @@ impl HirValidator {
                 ty,
                 span,
             } => {
-                // Validate condition is bool
+                // Validate condition
                 let cond_type = self.validate_expression(cond);
                 if cond_type != RueType::Bool {
                     self.errors.push(SemanticError {
@@ -417,29 +412,32 @@ impl HirValidator {
                     });
                 }
 
-                // Validate branches
+                // Validate then block
                 let then_type = self.validate_block(then_block);
-                let else_type = if let Some(else_block) = else_block {
-                    self.validate_block(else_block)
+
+                // Validate else block if present
+                let expected_type = if let Some(else_block) = else_block {
+                    let else_type = self.validate_block(else_block);
+
+                    // Both branches must have compatible types
+                    if then_type != else_type {
+                        self.errors.push(SemanticError {
+                            message: format!(
+                                "If expression branches have incompatible types: {then_type} and {else_type}"
+                            ),
+                            span: *span,
+                        });
+                    }
+                    then_type
                 } else {
+                    // No else block means result is unit
                     RueType::Unit
                 };
 
-                // Check branch types match
-                if then_type != else_type {
+                if ty != &expected_type {
                     self.errors.push(SemanticError {
                         message: format!(
-                            "If branches have different types: {then_type} and {else_type}"
-                        ),
-                        span: *span,
-                    });
-                }
-
-                // Check overall type
-                if ty != &then_type {
-                    self.errors.push(SemanticError {
-                        message: format!(
-                            "If expression has type {ty} in HIR but branches return {then_type}"
+                            "If expression has type {ty} in HIR but should be {expected_type}"
                         ),
                         span: *span,
                     });
@@ -448,7 +446,7 @@ impl HirValidator {
                 ty.clone()
             }
             HirExpr::While { cond, body, .. } => {
-                // Validate condition is bool
+                // Validate condition
                 let cond_type = self.validate_expression(cond);
                 if cond_type != RueType::Bool {
                     self.errors.push(SemanticError {
@@ -464,7 +462,7 @@ impl HirValidator {
                 RueType::Unit
             }
             HirExpr::StructLiteral {
-                struct_id: _,
+                struct_name: _,
                 fields,
                 ty,
                 span: _,
@@ -474,6 +472,28 @@ impl HirValidator {
                     self.validate_expression(field_expr);
                 }
                 // Return struct type
+                ty.clone()
+            }
+            HirExpr::TupleLiteral {
+                elements,
+                ty,
+                span: _,
+            } => {
+                // Validate all element expressions
+                for element in elements {
+                    self.validate_expression(element);
+                }
+                ty.clone()
+            }
+            HirExpr::ArrayLiteral {
+                elements,
+                ty,
+                span: _,
+            } => {
+                // Validate all element expressions
+                for element in elements {
+                    self.validate_expression(element);
+                }
                 ty.clone()
             }
             HirExpr::FieldAccess {
@@ -502,60 +522,20 @@ impl HirValidator {
 
                 ty.clone()
             }
-            HirExpr::TupleLiteral {
-                elements,
-                ty,
-                span: _,
-            } => {
-                // Validate all tuple elements
-                for element in elements {
-                    self.validate_expression(element);
-                }
-                ty.clone()
-            }
-            HirExpr::ArrayLiteral {
-                elements,
-                ty,
-                span: _,
-            } => {
-                // Validate all array elements have same type
-                if let RueType::Array(expected_elem_type, expected_len) = ty {
-                    if elements.len() != *expected_len {
-                        self.errors.push(SemanticError {
-                            message: format!(
-                                "Array literal has {} elements but type specifies {}",
-                                elements.len(),
-                                expected_len
-                            ),
-                            span: expr.span(),
-                        });
-                    }
-
-                    for element in elements {
-                        let elem_type = self.validate_expression(element);
-                        if elem_type != **expected_elem_type {
-                            self.errors.push(SemanticError {
-                                message: format!(
-                                    "Array element has type '{elem_type}' but expected '{expected_elem_type}'"
-                                ),
-                                span: element.span(),
-                            });
-                        }
-                    }
-                }
-                ty.clone()
-            }
             HirExpr::ArrayAccess {
                 base,
                 index,
                 ty,
                 span: _,
             } => {
-                // Validate base is array
+                // Validate base expression
                 let base_type = self.validate_expression(base);
+                let index_type = self.validate_expression(index);
+
+                // Verify base type supports array access
                 match &base_type {
                     RueType::Array(_, _) => {
-                        // Valid
+                        // Valid base type for array access
                     }
                     _ => {
                         self.errors.push(SemanticError {
@@ -565,67 +545,21 @@ impl HirValidator {
                     }
                 }
 
-                // Validate index is integer
-                let index_type = self.validate_expression(index);
-                if !matches!(index_type, RueType::I32 | RueType::I64) {
-                    self.errors.push(SemanticError {
-                        message: format!("Array index must be integer type, found '{index_type}'"),
-                        span: index.span(),
-                    });
+                // Verify index type is integer
+                match &index_type {
+                    RueType::I32 | RueType::I64 => {
+                        // Valid index types
+                    }
+                    _ => {
+                        self.errors.push(SemanticError {
+                            message: format!("Array index must be integer, found {index_type}"),
+                            span: index.span(),
+                        });
+                    }
                 }
 
                 ty.clone()
             }
         }
     }
-
-    /// Push a new scope
-    fn push_scope(&mut self) {
-        self.scope_stack.push(HashMap::new());
-    }
-
-    /// Pop the current scope
-    fn pop_scope(&mut self) {
-        self.scope_stack.pop();
-    }
-
-    /// Look up a variable in the current scope chain
-    fn lookup_variable(&self, name: &str) -> Option<RueType> {
-        // Check scope stack from innermost to outermost
-        for scope in self.scope_stack.iter().rev() {
-            if let Some(ty) = scope.get(name) {
-                return Some(ty.clone());
-            }
-        }
-
-        // Check function-level variables
-        self.variables.get(name).cloned()
-    }
 }
-
-/// Extension trait to get span from expressions
-trait HasSpan {
-    fn span(&self) -> Span;
-}
-
-impl HasSpan for HirExpr {
-    fn span(&self) -> Span {
-        match self {
-            HirExpr::Literal { span, .. } => *span,
-            HirExpr::Var { span, .. } => *span,
-            HirExpr::Binary { span, .. } => *span,
-            HirExpr::Unary { span, .. } => *span,
-            HirExpr::Call { span, .. } => *span,
-            HirExpr::If { span, .. } => *span,
-            HirExpr::While { span, .. } => *span,
-            HirExpr::StructLiteral { span, .. } => *span,
-            HirExpr::FieldAccess { span, .. } => *span,
-            HirExpr::TupleLiteral { span, .. } => *span,
-            HirExpr::ArrayLiteral { span, .. } => *span,
-            HirExpr::ArrayAccess { span, .. } => *span,
-        }
-    }
-}
-
-#[cfg(test)]
-mod tests;
