@@ -4,7 +4,7 @@
 //! and HIR construction in a single pass, ensuring that all type information
 //! is accurately preserved in the HIR.
 
-use crate::{FunctionSignature, ScopeStack, SemanticError};
+use crate::{FunctionSignature, SemanticError};
 use rue_ast::{CstRoot, ExpressionNode, FunctionNode, StatementNode};
 use rue_ir::hir::{
     BinOp, HirBlock, HirExpr, HirFunction, HirLiteral, HirProgram, HirStatement, UnaryOp,
@@ -13,10 +13,32 @@ use rue_ir::types::RueType;
 use rue_lexer::{Span, TokenKind};
 use std::collections::HashMap;
 
+/// Simple scope for variable type tracking
+#[derive(Debug, Clone)]
+struct VariableScope {
+    variables: HashMap<String, RueType>,
+}
+
+impl VariableScope {
+    fn new() -> Self {
+        Self {
+            variables: HashMap::new(),
+        }
+    }
+
+    fn insert(&mut self, name: String, ty: RueType) {
+        self.variables.insert(name, ty);
+    }
+
+    fn get(&self, name: &str) -> Option<&RueType> {
+        self.variables.get(name)
+    }
+}
+
 /// Type checker that builds HIR during analysis
 pub struct TypeChecker {
     /// Stack of variable scopes for type lookup
-    var_scope: ScopeStack,
+    var_scopes: Vec<VariableScope>,
     /// Function signatures for type lookup
     functions: HashMap<String, FunctionSignature>,
     /// HIR functions being built
@@ -27,10 +49,40 @@ impl TypeChecker {
     /// Create a new type checker with built-in functions
     pub fn new(functions: HashMap<String, FunctionSignature>) -> Self {
         Self {
-            var_scope: ScopeStack::new(),
+            var_scopes: vec![VariableScope::new()],
             functions,
             hir_functions: Vec::new(),
         }
+    }
+
+    /// Push a new variable scope
+    fn push_scope(&mut self) {
+        self.var_scopes.push(VariableScope::new());
+    }
+
+    /// Pop the current variable scope
+    fn pop_scope(&mut self) {
+        if self.var_scopes.len() > 1 {
+            self.var_scopes.pop();
+        }
+    }
+
+    /// Add a variable to the current scope
+    fn add_variable(&mut self, name: String, ty: RueType) {
+        if let Some(current_scope) = self.var_scopes.last_mut() {
+            current_scope.insert(name, ty);
+        }
+    }
+
+    /// Look up a variable type in the scope stack
+    fn lookup_variable(&self, name: &str) -> Option<&RueType> {
+        // Search from innermost to outermost scope
+        for scope in self.var_scopes.iter().rev() {
+            if let Some(ty) = scope.get(name) {
+                return Some(ty);
+            }
+        }
+        None
     }
 
     /// Type check and build HIR for a complete program
@@ -104,7 +156,7 @@ impl TypeChecker {
     /// Type check a function and build HIR
     fn check_function(&mut self, func: &FunctionNode) -> Result<HirFunction, SemanticError> {
         // Reset scope for new function
-        self.var_scope = ScopeStack::new();
+        self.var_scopes = vec![VariableScope::new()];
 
         let name = match &func.name.kind {
             TokenKind::Ident(name) => name.clone(),
@@ -141,7 +193,7 @@ impl TypeChecker {
 
             let param_type = sig.param_types[i].clone();
             params.push((param_name.clone(), param_type.clone()));
-            self.var_scope.declare_variable(param_name, param_type);
+            self.add_variable(param_name, param_type);
         }
 
         // Type check and build body
@@ -178,7 +230,7 @@ impl TypeChecker {
         &mut self,
         block: &rue_ast::BlockNode,
     ) -> Result<HirBlock, SemanticError> {
-        self.var_scope.push_scope();
+        self.push_scope();
 
         let mut statements = Vec::new();
 
@@ -197,7 +249,7 @@ impl TypeChecker {
             None
         };
 
-        self.var_scope.pop_scope();
+        self.pop_scope();
 
         Ok(HirBlock { statements, expr })
     }
@@ -208,7 +260,7 @@ impl TypeChecker {
         block: &rue_ast::BlockNode,
         expected_type: &RueType,
     ) -> Result<HirBlock, SemanticError> {
-        self.var_scope.push_scope();
+        self.push_scope();
 
         let mut statements = Vec::new();
 
@@ -230,7 +282,7 @@ impl TypeChecker {
             None
         };
 
-        self.var_scope.pop_scope();
+        self.pop_scope();
 
         Ok(HirBlock { statements, expr })
     }
@@ -276,8 +328,7 @@ impl TypeChecker {
                 }
 
                 // Add to scope
-                self.var_scope
-                    .declare_variable(name.clone(), expected_type.clone());
+                self.add_variable(name.clone(), expected_type.clone());
 
                 Ok(Some(HirStatement::Let {
                     name,
@@ -298,14 +349,13 @@ impl TypeChecker {
                 };
 
                 // Look up variable type
-                let var_type = self
-                    .var_scope
-                    .lookup_variable(&name)
-                    .cloned()
-                    .ok_or_else(|| SemanticError {
-                        message: format!("Undefined variable: {name}"),
-                        span: assign_stmt.name.span,
-                    })?;
+                let var_type =
+                    self.lookup_variable(&name)
+                        .cloned()
+                        .ok_or_else(|| SemanticError {
+                            message: format!("Cannot assign to undefined variable: {name}"),
+                            span: assign_stmt.name.span,
+                        })?;
 
                 // Type check value with expected type
                 let value =
@@ -417,7 +467,6 @@ impl TypeChecker {
                 };
 
                 let ty = self
-                    .var_scope
                     .lookup_variable(&name)
                     .cloned()
                     .ok_or_else(|| SemanticError {
@@ -707,6 +756,226 @@ impl TypeChecker {
                     span: while_stmt.while_token.span,
                 })
             }
+            ExpressionNode::StructLiteral(struct_lit) => {
+                // Get struct name
+                let struct_name = match &struct_lit.name.kind {
+                    TokenKind::Ident(name) => name.clone(),
+                    _ => {
+                        return Err(SemanticError {
+                            message: "Expected struct name".to_string(),
+                            span: struct_lit.name.span,
+                        });
+                    }
+                };
+
+                // Generate struct ID (for now, use simple hash)
+                let struct_id = rue_ir::types::StructId::new(crate::hash_string(&struct_name));
+                let struct_type = RueType::Struct(struct_id);
+
+                // Type check field initializers
+                let mut hir_fields = Vec::new();
+                for field_init in &struct_lit.fields {
+                    let field_name = match &field_init.name.kind {
+                        TokenKind::Ident(name) => name.clone(),
+                        _ => {
+                            return Err(SemanticError {
+                                message: "Expected field name".to_string(),
+                                span: field_init.name.span,
+                            });
+                        }
+                    };
+
+                    // For now, accept any expression type for fields
+                    // In a full implementation, we'd check against struct definition
+                    let field_expr = self.check_expression(&field_init.value)?;
+                    hir_fields.push((field_name, field_expr));
+                }
+
+                Ok(HirExpr::StructLiteral {
+                    struct_id,
+                    fields: hir_fields,
+                    ty: struct_type,
+                    span: struct_lit.name.span,
+                })
+            }
+            ExpressionNode::TupleLiteral(tuple_lit) => {
+                // Type check all tuple elements
+                let mut hir_elements = Vec::new();
+                let mut element_types = Vec::new();
+
+                for element in &tuple_lit.elements {
+                    let hir_elem = self.check_expression(element)?;
+                    element_types.push(hir_elem.ty().clone());
+                    hir_elements.push(hir_elem);
+                }
+
+                let tuple_type = RueType::Tuple(element_types);
+
+                Ok(HirExpr::TupleLiteral {
+                    elements: hir_elements,
+                    ty: tuple_type,
+                    span: tuple_lit.open_paren.span,
+                })
+            }
+            ExpressionNode::ArrayLiteral(array_lit) => {
+                if array_lit.elements.is_empty() {
+                    return Err(SemanticError {
+                        message: "Array literals cannot be empty (type cannot be inferred)"
+                            .to_string(),
+                        span: array_lit.open_bracket.span,
+                    });
+                }
+
+                // Type check first element to determine array element type
+                let first_elem = self.check_expression(&array_lit.elements[0])?;
+                let element_type = first_elem.ty().clone();
+
+                let mut hir_elements = vec![first_elem];
+
+                // Type check remaining elements, ensuring they match the first
+                for (i, element) in array_lit.elements.iter().enumerate().skip(1) {
+                    let hir_elem =
+                        self.check_expression_with_expected_type(element, &element_type)?;
+                    let actual_type = hir_elem.ty();
+
+                    if *actual_type != element_type {
+                        return Err(SemanticError {
+                            message: format!(
+                                "Array element {i} has type '{actual_type}' but expected '{element_type}'"
+                            ),
+                            span: element.span(),
+                        });
+                    }
+
+                    hir_elements.push(hir_elem);
+                }
+
+                let array_type = RueType::Array(Box::new(element_type), array_lit.elements.len());
+
+                Ok(HirExpr::ArrayLiteral {
+                    elements: hir_elements,
+                    ty: array_type,
+                    span: array_lit.open_bracket.span,
+                })
+            }
+            ExpressionNode::FieldAccess(field_access) => {
+                // Type check base expression
+                let base_expr = Box::new(self.check_expression(&field_access.base)?);
+                let base_type = base_expr.ty().clone();
+
+                // Determine field and its type based on base type
+                let (field_id, field_type) = match &base_type {
+                    RueType::Struct(_struct_id) => {
+                        // For structs, field must be named
+                        match &field_access.field {
+                            rue_ast::FieldKindNode::Named(name_token) => {
+                                if let TokenKind::Ident(field_name) = &name_token.kind {
+                                    // In a full implementation, we'd look up the field type from struct definition
+                                    // For now, assume i64 for all struct fields
+                                    let field_id =
+                                        rue_ir::types::FieldId::from_name(field_name.clone());
+                                    (field_id, RueType::I64)
+                                } else {
+                                    return Err(SemanticError {
+                                        message: "Expected field name".to_string(),
+                                        span: name_token.span,
+                                    });
+                                }
+                            }
+                            rue_ast::FieldKindNode::Positional(_) => {
+                                return Err(SemanticError {
+                                    message: "Cannot use positional field access on struct"
+                                        .to_string(),
+                                    span: field_access.dot.span,
+                                });
+                            }
+                        }
+                    }
+                    RueType::Tuple(element_types) => {
+                        // For tuples, field can be named or positional
+                        match &field_access.field {
+                            rue_ast::FieldKindNode::Positional(index_token) => {
+                                if let TokenKind::Integer(index) = &index_token.kind {
+                                    let idx = *index as usize;
+                                    if idx < element_types.len() {
+                                        let field_id = rue_ir::types::FieldId::from_index(idx);
+                                        (field_id, element_types[idx].clone())
+                                    } else {
+                                        return Err(SemanticError {
+                                            message: format!(
+                                                "Tuple index {} out of bounds (tuple has {} elements)",
+                                                idx,
+                                                element_types.len()
+                                            ),
+                                            span: index_token.span,
+                                        });
+                                    }
+                                } else {
+                                    return Err(SemanticError {
+                                        message: "Expected integer index".to_string(),
+                                        span: index_token.span,
+                                    });
+                                }
+                            }
+                            rue_ast::FieldKindNode::Named(_) => {
+                                return Err(SemanticError {
+                                    message: "Cannot use named field access on tuple".to_string(),
+                                    span: field_access.dot.span,
+                                });
+                            }
+                        }
+                    }
+                    _ => {
+                        return Err(SemanticError {
+                            message: format!(
+                                "Cannot access field of type '{base_type}' (not a struct or tuple)"
+                            ),
+                            span: field_access.dot.span,
+                        });
+                    }
+                };
+
+                Ok(HirExpr::FieldAccess {
+                    base: base_expr,
+                    field: field_id,
+                    ty: field_type,
+                    span: field_access.dot.span,
+                })
+            }
+            ExpressionNode::ArrayAccess(array_access) => {
+                // Type check base expression
+                let base_expr = Box::new(self.check_expression(&array_access.base)?);
+                let base_type = base_expr.ty().clone();
+
+                // Ensure base is an array
+                let element_type = match &base_type {
+                    RueType::Array(elem_type, _) => (**elem_type).clone(),
+                    _ => {
+                        return Err(SemanticError {
+                            message: format!("Cannot index into type '{base_type}' (not an array)"),
+                            span: array_access.open_bracket.span,
+                        });
+                    }
+                };
+
+                // Type check index expression (must be integer)
+                let index_expr = Box::new(self.check_expression(&array_access.index)?);
+                let index_type = index_expr.ty();
+
+                if !matches!(index_type, RueType::I32 | RueType::I64) {
+                    return Err(SemanticError {
+                        message: format!("Array index must be integer type, found '{index_type}'"),
+                        span: array_access.index.span(),
+                    });
+                }
+
+                Ok(HirExpr::ArrayAccess {
+                    base: base_expr,
+                    index: index_expr,
+                    ty: element_type,
+                    span: array_access.open_bracket.span,
+                })
+            }
         }
     }
 
@@ -724,8 +993,7 @@ impl TypeChecker {
             },
             ExpressionNode::Identifier(token) => {
                 if let TokenKind::Ident(name) = &token.kind {
-                    self.var_scope
-                        .lookup_variable(name)
+                    self.lookup_variable(name)
                         .cloned()
                         .ok_or_else(|| SemanticError {
                             message: format!("Undefined variable: {name}"),
@@ -791,6 +1059,93 @@ impl TypeChecker {
                 }
             }
             ExpressionNode::While(_) => Ok(RueType::Unit),
+            ExpressionNode::StructLiteral(struct_lit) => {
+                // Get struct name and generate ID
+                if let TokenKind::Ident(name) = &struct_lit.name.kind {
+                    let struct_id = rue_ir::types::StructId::new(crate::hash_string(name));
+                    Ok(RueType::Struct(struct_id))
+                } else {
+                    Err(SemanticError {
+                        message: "Expected struct name".to_string(),
+                        span: struct_lit.name.span,
+                    })
+                }
+            }
+            ExpressionNode::TupleLiteral(tuple_lit) => {
+                // Infer types of all elements
+                let mut element_types = Vec::new();
+                for element in &tuple_lit.elements {
+                    element_types.push(self.infer_expression_type(element)?);
+                }
+                Ok(RueType::Tuple(element_types))
+            }
+            ExpressionNode::ArrayLiteral(array_lit) => {
+                if array_lit.elements.is_empty() {
+                    return Err(SemanticError {
+                        message: "Cannot infer type of empty array literal".to_string(),
+                        span: array_lit.open_bracket.span,
+                    });
+                }
+
+                // Infer type from first element
+                let element_type = self.infer_expression_type(&array_lit.elements[0])?;
+                Ok(RueType::Array(
+                    Box::new(element_type),
+                    array_lit.elements.len(),
+                ))
+            }
+            ExpressionNode::FieldAccess(field_access) => {
+                // Infer base type and determine field type
+                let base_type = self.infer_expression_type(&field_access.base)?;
+                match &base_type {
+                    RueType::Struct(_) => {
+                        // For structs, assume i64 field type for now
+                        Ok(RueType::I64)
+                    }
+                    RueType::Tuple(element_types) => {
+                        // For tuples, need to determine which field is being accessed
+                        match &field_access.field {
+                            rue_ast::FieldKindNode::Positional(index_token) => {
+                                if let TokenKind::Integer(index) = &index_token.kind {
+                                    let idx = *index as usize;
+                                    if idx < element_types.len() {
+                                        Ok(element_types[idx].clone())
+                                    } else {
+                                        Err(SemanticError {
+                                            message: format!("Tuple index {idx} out of bounds"),
+                                            span: index_token.span,
+                                        })
+                                    }
+                                } else {
+                                    Err(SemanticError {
+                                        message: "Expected integer index".to_string(),
+                                        span: index_token.span,
+                                    })
+                                }
+                            }
+                            _ => Err(SemanticError {
+                                message: "Cannot use named field access on tuple".to_string(),
+                                span: field_access.dot.span,
+                            }),
+                        }
+                    }
+                    _ => Err(SemanticError {
+                        message: format!("Cannot access field of type '{base_type}'"),
+                        span: field_access.dot.span,
+                    }),
+                }
+            }
+            ExpressionNode::ArrayAccess(array_access) => {
+                // Infer base type and get element type
+                let base_type = self.infer_expression_type(&array_access.base)?;
+                match base_type {
+                    RueType::Array(element_type, _) => Ok(*element_type),
+                    _ => Err(SemanticError {
+                        message: format!("Cannot index into type '{base_type}'"),
+                        span: array_access.open_bracket.span,
+                    }),
+                }
+            }
         }
     }
 }
@@ -813,6 +1168,11 @@ impl HasSpan for ExpressionNode {
             },
             ExpressionNode::If(expr) => expr.if_token.span,
             ExpressionNode::While(expr) => expr.while_token.span,
+            ExpressionNode::StructLiteral(expr) => expr.name.span,
+            ExpressionNode::TupleLiteral(expr) => expr.open_paren.span,
+            ExpressionNode::ArrayLiteral(expr) => expr.open_bracket.span,
+            ExpressionNode::FieldAccess(expr) => expr.dot.span,
+            ExpressionNode::ArrayAccess(expr) => expr.open_bracket.span,
         }
     }
 }

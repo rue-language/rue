@@ -8,6 +8,33 @@ pub enum TypeNode {
     I64(TokenNode),
     Bool(TokenNode),
     Unit,
+    Struct(StructTypeNode),
+    Tuple(TupleTypeNode),
+    Array(ArrayTypeNode),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct StructTypeNode {
+    pub name: TokenNode,
+    pub trivia: Trivia,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct TupleTypeNode {
+    pub open_paren: TokenNode,
+    pub types: Vec<TypeNode>,
+    pub close_paren: TokenNode,
+    pub trivia: Trivia,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ArrayTypeNode {
+    pub open_bracket: TokenNode,
+    pub element_type: Box<TypeNode>,
+    pub semicolon: TokenNode,
+    pub size: TokenNode, // Integer literal token
+    pub close_bracket: TokenNode,
+    pub trivia: Trivia,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -19,6 +46,7 @@ pub struct CstRoot {
 #[derive(Debug, Clone, PartialEq)]
 pub enum CstNode {
     Function(Box<FunctionNode>),
+    StructDefinition(Box<StructDefinitionNode>),
     Statement(Box<StatementNode>),
     Expression(ExpressionNode),
     Token(TokenNode),
@@ -32,6 +60,23 @@ pub struct FunctionNode {
     pub param_list: ParamListNode,
     pub return_type: Option<ReturnTypeNode>,
     pub body: BlockNode,
+    pub trivia: Trivia,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct StructDefinitionNode {
+    pub struct_token: TokenNode,
+    pub name: TokenNode,
+    pub open_brace: TokenNode,
+    pub fields: Vec<StructFieldDefNode>,
+    pub close_brace: TokenNode,
+    pub trivia: Trivia,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct StructFieldDefNode {
+    pub name: TokenNode,
+    pub type_annotation: TypeAnnotationNode,
     pub trivia: Trivia,
 }
 
@@ -68,7 +113,7 @@ pub struct BlockNode {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum StatementNode {
-    Let(LetStatementNode),
+    Let(Box<LetStatementNode>),
     Assign(AssignStatementNode),
     Expression(ExpressionStatementNode),
 }
@@ -146,6 +191,11 @@ pub enum ExpressionNode {
     While(Box<WhileStatementNode>),
     Identifier(TokenNode),
     Literal(TokenNode),
+    StructLiteral(StructLiteralNode),
+    TupleLiteral(TupleLiteralNode),
+    ArrayLiteral(ArrayLiteralNode),
+    FieldAccess(FieldAccessNode),
+    ArrayAccess(ArrayAccessNode),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -183,4 +233,60 @@ pub struct ErrorNode {
 pub struct Trivia {
     pub leading: Vec<TokenNode>,
     pub trailing: Vec<TokenNode>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct StructLiteralNode {
+    pub name: TokenNode,
+    pub open_brace: TokenNode,
+    pub fields: Vec<StructFieldInitNode>,
+    pub close_brace: TokenNode,
+    pub trivia: Trivia,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct StructFieldInitNode {
+    pub name: TokenNode,
+    pub colon: TokenNode,
+    pub value: ExpressionNode,
+    pub trivia: Trivia,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct TupleLiteralNode {
+    pub open_paren: TokenNode,
+    pub elements: Vec<ExpressionNode>,
+    pub close_paren: TokenNode,
+    pub trivia: Trivia,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ArrayLiteralNode {
+    pub open_bracket: TokenNode,
+    pub elements: Vec<ExpressionNode>,
+    pub close_bracket: TokenNode,
+    pub trivia: Trivia,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct FieldAccessNode {
+    pub base: Box<ExpressionNode>,
+    pub dot: TokenNode,
+    pub field: FieldKindNode,
+    pub trivia: Trivia,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum FieldKindNode {
+    Named(TokenNode),      // identifier
+    Positional(TokenNode), // integer literal
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ArrayAccessNode {
+    pub base: Box<ExpressionNode>,
+    pub open_bracket: TokenNode,
+    pub index: Box<ExpressionNode>,
+    pub close_bracket: TokenNode,
+    pub trivia: Trivia,
 }

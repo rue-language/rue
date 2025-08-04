@@ -463,6 +463,119 @@ impl HirValidator {
                 // While always returns unit
                 RueType::Unit
             }
+            HirExpr::StructLiteral {
+                struct_id: _,
+                fields,
+                ty,
+                span: _,
+            } => {
+                // Validate all field expressions
+                for (_field_name, field_expr) in fields {
+                    self.validate_expression(field_expr);
+                }
+                // Return struct type
+                ty.clone()
+            }
+            HirExpr::FieldAccess {
+                base,
+                field: _,
+                ty,
+                span: _,
+            } => {
+                // Validate base expression
+                let base_type = self.validate_expression(base);
+
+                // Verify base type supports field access
+                match &base_type {
+                    RueType::Struct(_) | RueType::Tuple(_) => {
+                        // Valid base types for field access
+                    }
+                    _ => {
+                        self.errors.push(SemanticError {
+                            message: format!(
+                                "Cannot access field of type '{base_type}' (not a struct or tuple)"
+                            ),
+                            span: base.span(),
+                        });
+                    }
+                }
+
+                ty.clone()
+            }
+            HirExpr::TupleLiteral {
+                elements,
+                ty,
+                span: _,
+            } => {
+                // Validate all tuple elements
+                for element in elements {
+                    self.validate_expression(element);
+                }
+                ty.clone()
+            }
+            HirExpr::ArrayLiteral {
+                elements,
+                ty,
+                span: _,
+            } => {
+                // Validate all array elements have same type
+                if let RueType::Array(expected_elem_type, expected_len) = ty {
+                    if elements.len() != *expected_len {
+                        self.errors.push(SemanticError {
+                            message: format!(
+                                "Array literal has {} elements but type specifies {}",
+                                elements.len(),
+                                expected_len
+                            ),
+                            span: expr.span(),
+                        });
+                    }
+
+                    for element in elements {
+                        let elem_type = self.validate_expression(element);
+                        if elem_type != **expected_elem_type {
+                            self.errors.push(SemanticError {
+                                message: format!(
+                                    "Array element has type '{elem_type}' but expected '{expected_elem_type}'"
+                                ),
+                                span: element.span(),
+                            });
+                        }
+                    }
+                }
+                ty.clone()
+            }
+            HirExpr::ArrayAccess {
+                base,
+                index,
+                ty,
+                span: _,
+            } => {
+                // Validate base is array
+                let base_type = self.validate_expression(base);
+                match &base_type {
+                    RueType::Array(_, _) => {
+                        // Valid
+                    }
+                    _ => {
+                        self.errors.push(SemanticError {
+                            message: format!("Cannot index into type '{base_type}' (not an array)"),
+                            span: base.span(),
+                        });
+                    }
+                }
+
+                // Validate index is integer
+                let index_type = self.validate_expression(index);
+                if !matches!(index_type, RueType::I32 | RueType::I64) {
+                    self.errors.push(SemanticError {
+                        message: format!("Array index must be integer type, found '{index_type}'"),
+                        span: index.span(),
+                    });
+                }
+
+                ty.clone()
+            }
         }
     }
 
@@ -505,6 +618,11 @@ impl HasSpan for HirExpr {
             HirExpr::Call { span, .. } => *span,
             HirExpr::If { span, .. } => *span,
             HirExpr::While { span, .. } => *span,
+            HirExpr::StructLiteral { span, .. } => *span,
+            HirExpr::FieldAccess { span, .. } => *span,
+            HirExpr::TupleLiteral { span, .. } => *span,
+            HirExpr::ArrayLiteral { span, .. } => *span,
+            HirExpr::ArrayAccess { span, .. } => *span,
         }
     }
 }

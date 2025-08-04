@@ -24,6 +24,7 @@ pub enum TokenKind {
     Bool,
     True,
     False,
+    Struct,
 
     // Identifiers
     Ident(String),
@@ -49,8 +50,11 @@ pub enum TokenKind {
     RightParen,
     LeftBrace,
     RightBrace,
+    LeftBracket,
+    RightBracket,
     Semicolon,
     Comma,
+    Dot,
 
     // Special
     Comment(String),
@@ -212,8 +216,11 @@ impl<'a> Lexer<'a> {
             ')' => self.make_token(TokenKind::RightParen, start),
             '{' => self.make_token(TokenKind::LeftBrace, start),
             '}' => self.make_token(TokenKind::RightBrace, start),
+            '[' => self.make_token(TokenKind::LeftBracket, start),
+            ']' => self.make_token(TokenKind::RightBracket, start),
             ';' => self.make_token(TokenKind::Semicolon, start),
             ',' => self.make_token(TokenKind::Comma, start),
+            '.' => self.make_token(TokenKind::Dot, start),
             '=' => {
                 self.advance();
                 if self.current_char() == '=' {
@@ -341,6 +348,7 @@ impl<'a> Lexer<'a> {
             "bool" => TokenKind::Bool,
             "true" => TokenKind::True,
             "false" => TokenKind::False,
+            "struct" => TokenKind::Struct,
             _ => TokenKind::Ident(text.to_string()),
         };
 
@@ -1019,6 +1027,32 @@ fn factorial(n) {
         assert_eq!(tokens.len(), 4);
         assert!(matches!(tokens[0].kind, TokenKind::Comment(_)));
         assert_eq!(tokens[1].kind, TokenKind::Integer(100));
+    }
+
+    #[test]
+    fn test_new_aggregate_tokens() {
+        let mut lexer = Lexer::new("struct Point { x: [i32; 5], } arr[0].field");
+        let tokens = lexer.tokenize().unwrap();
+
+        assert_eq!(tokens[0].kind, TokenKind::Struct);
+        assert_eq!(tokens[1].kind, TokenKind::Ident("Point".to_string()));
+        assert_eq!(tokens[2].kind, TokenKind::LeftBrace);
+        assert_eq!(tokens[3].kind, TokenKind::Ident("x".to_string()));
+        assert_eq!(tokens[4].kind, TokenKind::Colon);
+        assert_eq!(tokens[5].kind, TokenKind::LeftBracket);
+        assert_eq!(tokens[6].kind, TokenKind::I32);
+        assert_eq!(tokens[7].kind, TokenKind::Semicolon);
+        assert_eq!(tokens[8].kind, TokenKind::Integer(5));
+        assert_eq!(tokens[9].kind, TokenKind::RightBracket);
+        assert_eq!(tokens[10].kind, TokenKind::Comma);
+        assert_eq!(tokens[11].kind, TokenKind::RightBrace);
+        assert_eq!(tokens[12].kind, TokenKind::Ident("arr".to_string()));
+        assert_eq!(tokens[13].kind, TokenKind::LeftBracket);
+        assert_eq!(tokens[14].kind, TokenKind::Integer(0));
+        assert_eq!(tokens[15].kind, TokenKind::RightBracket);
+        assert_eq!(tokens[16].kind, TokenKind::Dot);
+        assert_eq!(tokens[17].kind, TokenKind::Ident("field".to_string()));
+        assert_eq!(tokens[18].kind, TokenKind::Eof);
     }
 
     #[test]

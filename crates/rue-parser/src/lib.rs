@@ -46,6 +46,9 @@ impl Parser {
     fn parse_item(&mut self) -> ParseResult<CstNode> {
         match self.peek().kind {
             TokenKind::Fn => Ok(CstNode::Function(Box::new(self.parse_function()?))),
+            TokenKind::Struct => Ok(CstNode::StructDefinition(Box::new(
+                self.parse_struct_definition()?,
+            ))),
             _ => {
                 let stmt = self.parse_statement()?;
                 Ok(CstNode::Statement(Box::new(stmt)))
@@ -74,6 +77,77 @@ impl Parser {
             param_list,
             return_type,
             body,
+            trivia: Trivia {
+                leading: leading_trivia,
+                trailing: self.consume_trivia(),
+            },
+        })
+    }
+
+    fn parse_struct_definition(&mut self) -> ParseResult<StructDefinitionNode> {
+        let leading_trivia = self.consume_trivia();
+        let struct_token = self.expect_kind(&TokenKind::Struct)?;
+        let name = self.expect_ident()?;
+        let open_brace = self.expect_kind(&TokenKind::LeftBrace)?;
+
+        let mut fields = Vec::new();
+        self.skip_comments();
+
+        // Parse struct fields
+        let mut field_names = std::collections::HashSet::new();
+        while !self.check_kind(&TokenKind::RightBrace) && !self.is_at_end() {
+            let field = self.parse_struct_field_def()?;
+
+            // Check for duplicate field names
+            if let TokenKind::Ident(field_name) = &field.name.kind {
+                if !field_names.insert(field_name.clone()) {
+                    return Err(ParseError {
+                        message: format!(
+                            "Duplicate field name '{field_name}' in struct definition"
+                        ),
+                        span: field.name.span,
+                    });
+                }
+            }
+
+            fields.push(field);
+            self.skip_comments();
+
+            // Optional comma
+            if self.check_kind(&TokenKind::Comma) {
+                self.advance();
+                self.skip_comments();
+            } else if !self.check_kind(&TokenKind::RightBrace) {
+                return Err(ParseError {
+                    message: "Expected ',' or '}' after struct field".to_string(),
+                    span: self.peek().span,
+                });
+            }
+        }
+
+        let close_brace = self.expect_kind(&TokenKind::RightBrace)?;
+
+        Ok(StructDefinitionNode {
+            struct_token,
+            name,
+            open_brace,
+            fields,
+            close_brace,
+            trivia: Trivia {
+                leading: leading_trivia,
+                trailing: self.consume_trivia(),
+            },
+        })
+    }
+
+    fn parse_struct_field_def(&mut self) -> ParseResult<StructFieldDefNode> {
+        let leading_trivia = self.consume_trivia();
+        let name = self.expect_ident()?;
+        let type_annotation = self.parse_type_annotation()?;
+
+        Ok(StructFieldDefNode {
+            name,
+            type_annotation,
             trivia: Trivia {
                 leading: leading_trivia,
                 trailing: self.consume_trivia(),
@@ -222,7 +296,7 @@ impl Parser {
 
     fn parse_statement(&mut self) -> ParseResult<StatementNode> {
         match self.peek().kind {
-            TokenKind::Let => Ok(StatementNode::Let(self.parse_let_statement()?)),
+            TokenKind::Let => Ok(StatementNode::Let(Box::new(self.parse_let_statement()?))),
             TokenKind::Ident(_) => {
                 // Look ahead to see if this is an assignment (identifier = expression)
                 if self.current + 1 < self.tokens.len() {
@@ -474,35 +548,90 @@ impl Parser {
     fn parse_call(&mut self) -> ParseResult<ExpressionNode> {
         let mut expr = self.parse_primary()?;
 
-        while self.check_kind(&TokenKind::LeftParen) {
-            let leading_trivia = self.consume_trivia();
-            let open_paren = self.advance();
+        // Handle postfix operators: function calls, field access, array access
+        loop {
+            match &self.peek().kind {
+                TokenKind::LeftParen => {
+                    // Function call
+                    let leading_trivia = self.consume_trivia();
+                    let open_paren = self.advance();
 
-            let mut args = Vec::new();
-            if !self.check_kind(&TokenKind::RightParen) {
-                args.push(self.parse_expression()?);
+                    let mut args = Vec::new();
+                    if !self.check_kind(&TokenKind::RightParen) {
+                        args.push(self.parse_expression()?);
 
-                // Handle multiple arguments with commas
-                while self.check_kind(&TokenKind::Comma) {
-                    self.advance(); // consume comma
-                    args.push(self.parse_expression()?);
+                        // Handle multiple arguments with commas
+                        while self.check_kind(&TokenKind::Comma) {
+                            self.advance(); // consume comma
+                            args.push(self.parse_expression()?);
+                        }
+                    }
+
+                    // Skip comments before close paren
+                    self.skip_comments();
+                    let close_paren = self.expect_kind(&TokenKind::RightParen)?;
+
+                    expr = ExpressionNode::Call(CallExprNode {
+                        function: Box::new(expr),
+                        open_paren,
+                        args,
+                        close_paren,
+                        trivia: Trivia {
+                            leading: leading_trivia,
+                            trailing: self.consume_trivia(),
+                        },
+                    });
                 }
+                TokenKind::Dot => {
+                    // Field access
+                    let leading_trivia = self.consume_trivia();
+                    let dot = self.advance();
+
+                    // Field can be an identifier (named field) or integer (tuple field)
+                    let field = match &self.peek().kind {
+                        TokenKind::Ident(_) => FieldKindNode::Named(self.advance()),
+                        TokenKind::Integer(_) => FieldKindNode::Positional(self.advance()),
+                        _ => {
+                            return Err(ParseError {
+                                message: "Expected field name or index after '.'".to_string(),
+                                span: self.peek().span,
+                            });
+                        }
+                    };
+
+                    expr = ExpressionNode::FieldAccess(FieldAccessNode {
+                        base: Box::new(expr),
+                        dot,
+                        field,
+                        trivia: Trivia {
+                            leading: leading_trivia,
+                            trailing: self.consume_trivia(),
+                        },
+                    });
+                }
+                TokenKind::LeftBracket => {
+                    // Array access
+                    let leading_trivia = self.consume_trivia();
+                    let open_bracket = self.advance();
+
+                    let index = Box::new(self.parse_expression()?);
+
+                    self.skip_comments();
+                    let close_bracket = self.expect_kind(&TokenKind::RightBracket)?;
+
+                    expr = ExpressionNode::ArrayAccess(ArrayAccessNode {
+                        base: Box::new(expr),
+                        open_bracket,
+                        index,
+                        close_bracket,
+                        trivia: Trivia {
+                            leading: leading_trivia,
+                            trailing: self.consume_trivia(),
+                        },
+                    });
+                }
+                _ => break, // No more postfix operators
             }
-
-            // Skip comments before close paren
-            self.skip_comments();
-            let close_paren = self.expect_kind(&TokenKind::RightParen)?;
-
-            expr = ExpressionNode::Call(CallExprNode {
-                function: Box::new(expr),
-                open_paren,
-                args,
-                close_paren,
-                trivia: Trivia {
-                    leading: leading_trivia,
-                    trailing: self.consume_trivia(),
-                },
-            });
         }
 
         Ok(expr)
@@ -512,40 +641,268 @@ impl Parser {
         match &self.peek().kind {
             TokenKind::Integer(_) => Ok(ExpressionNode::Literal(self.advance())),
             TokenKind::True | TokenKind::False => Ok(ExpressionNode::Literal(self.advance())),
-            TokenKind::Ident(_) => Ok(ExpressionNode::Identifier(self.advance())),
+            TokenKind::Ident(_) => {
+                // Could be identifier or struct literal
+                if self.peek_ahead(1).kind == TokenKind::LeftBrace {
+                    // Need to distinguish between struct literal and if/while condition
+                    // Look ahead to see if this looks like a struct literal pattern
+                    if self.looks_like_struct_literal() {
+                        // Struct literal: Identifier { field: value, ... }
+                        Ok(ExpressionNode::StructLiteral(self.parse_struct_literal()?))
+                    } else {
+                        // Regular identifier (e.g., in "if condition {")
+                        Ok(ExpressionNode::Identifier(self.advance()))
+                    }
+                } else {
+                    // Regular identifier
+                    Ok(ExpressionNode::Identifier(self.advance()))
+                }
+            }
             TokenKind::If => Ok(ExpressionNode::If(Box::new(self.parse_if_statement()?))),
             TokenKind::While => Ok(ExpressionNode::While(Box::new(
                 self.parse_while_statement()?,
             ))),
             TokenKind::LeftParen => {
-                // Check if this is a unit literal or a parenthesized expression
-                if self.peek_ahead(1).kind == TokenKind::RightParen {
-                    // Unit literal: ()
-                    let start_token = self.advance(); // consume '('
-                    let end_token = self.advance(); // consume ')'
-                    // Create a synthetic Unit token
-                    let unit_token = TokenNode {
-                        kind: TokenKind::Unit,
-                        span: rue_lexer::Span {
-                            start: start_token.span.start,
-                            end: end_token.span.end,
-                        },
-                    };
-                    Ok(ExpressionNode::Literal(unit_token))
-                } else {
-                    // Parenthesized expression
-                    self.advance(); // consume '('
-                    let expr = self.parse_expression()?;
-                    self.skip_comments(); // Skip comments before close paren
-                    self.expect_kind(&TokenKind::RightParen)?;
-                    Ok(expr)
-                }
+                // Could be unit literal, tuple literal, or parenthesized expression
+                self.parse_parenthesized_expression_or_tuple()
+            }
+            TokenKind::LeftBracket => {
+                // Array literal: [...]
+                Ok(ExpressionNode::ArrayLiteral(self.parse_array_literal()?))
             }
             _ => Err(ParseError {
                 message: format!("Unexpected token: {:?}", self.peek().kind),
                 span: self.peek().span,
             }),
         }
+    }
+
+    fn parse_struct_literal(&mut self) -> ParseResult<StructLiteralNode> {
+        let leading_trivia = self.consume_trivia();
+        let name = self.expect_ident()?;
+        let open_brace = self.expect_kind(&TokenKind::LeftBrace)?;
+
+        let mut fields = Vec::new();
+        self.skip_comments();
+
+        // Parse struct field initializers
+        let mut field_names = std::collections::HashSet::new();
+        while !self.check_kind(&TokenKind::RightBrace) && !self.is_at_end() {
+            let field = self.parse_struct_field_init()?;
+
+            // Check for duplicate field names
+            if let TokenKind::Ident(field_name) = &field.name.kind {
+                if !field_names.insert(field_name.clone()) {
+                    return Err(ParseError {
+                        message: format!("Duplicate field name '{field_name}' in struct literal"),
+                        span: field.name.span,
+                    });
+                }
+            }
+
+            fields.push(field);
+            self.skip_comments();
+
+            // Optional comma
+            if self.check_kind(&TokenKind::Comma) {
+                self.advance();
+                self.skip_comments();
+            } else if !self.check_kind(&TokenKind::RightBrace) {
+                return Err(ParseError {
+                    message: "Expected ',' or '}' after struct field initializer".to_string(),
+                    span: self.peek().span,
+                });
+            }
+        }
+
+        let close_brace = self.expect_kind(&TokenKind::RightBrace)?;
+
+        Ok(StructLiteralNode {
+            name,
+            open_brace,
+            fields,
+            close_brace,
+            trivia: Trivia {
+                leading: leading_trivia,
+                trailing: self.consume_trivia(),
+            },
+        })
+    }
+
+    fn parse_struct_field_init(&mut self) -> ParseResult<StructFieldInitNode> {
+        let leading_trivia = self.consume_trivia();
+        let name = self.expect_ident()?;
+        let colon = self.expect_kind(&TokenKind::Colon)?;
+        let value = self.parse_expression()?;
+
+        Ok(StructFieldInitNode {
+            name,
+            colon,
+            value,
+            trivia: Trivia {
+                leading: leading_trivia,
+                trailing: self.consume_trivia(),
+            },
+        })
+    }
+
+    /// Look ahead to determine if `Identifier {` pattern is likely a struct literal
+    /// rather than part of an if/while statement.
+    ///
+    /// A struct literal should have the pattern: Identifier { field: value, ... }
+    /// We look for an identifier followed by a colon after the opening brace.
+    fn looks_like_struct_literal(&mut self) -> bool {
+        // We're at position: Identifier {
+        // Look ahead to see what's after the opening brace
+        let mut pos = 2; // Skip identifier and opening brace
+
+        // Skip any comments
+        while self.current + pos < self.tokens.len() {
+            match &self.tokens[self.current + pos].kind {
+                TokenKind::Comment(_) => {
+                    pos += 1;
+                    continue;
+                }
+                _ => break,
+            }
+        }
+
+        if self.current + pos >= self.tokens.len() {
+            return false;
+        }
+
+        // Check if we have an identifier followed by a colon (struct field pattern)
+        // or closing brace (empty struct literal)
+        match &self.tokens[self.current + pos].kind {
+            TokenKind::Ident(_) => {
+                // Look for colon after identifier
+                pos += 1;
+                while self.current + pos < self.tokens.len() {
+                    match &self.tokens[self.current + pos].kind {
+                        TokenKind::Comment(_) => {
+                            pos += 1;
+                            continue;
+                        }
+                        TokenKind::Colon => return true, // field: value pattern
+                        _ => return false,               // not a struct literal
+                    }
+                }
+                false
+            }
+            TokenKind::RightBrace => true, // Empty struct literal: Struct {}
+            _ => false,                    // Something else, not a struct literal
+        }
+    }
+
+    fn parse_parenthesized_expression_or_tuple(&mut self) -> ParseResult<ExpressionNode> {
+        let leading_trivia = self.consume_trivia();
+        let open_paren = self.advance(); // consume '('
+        self.skip_comments();
+
+        // Check for unit literal: ()
+        if self.check_kind(&TokenKind::RightParen) {
+            let close_paren = self.advance();
+            // Create a synthetic Unit token
+            let unit_token = TokenNode {
+                kind: TokenKind::Unit,
+                span: rue_lexer::Span {
+                    start: open_paren.span.start,
+                    end: close_paren.span.end,
+                },
+            };
+            return Ok(ExpressionNode::Literal(unit_token));
+        }
+
+        // Parse first expression
+        let first_expr = self.parse_expression()?;
+        self.skip_comments();
+
+        // Check if this is a tuple (has comma) or parenthesized expression
+        if self.check_kind(&TokenKind::Comma) {
+            // This is a tuple literal
+            let mut elements = vec![first_expr];
+            self.advance(); // consume comma
+            self.skip_comments();
+
+            // If we see ), this is a single-element tuple (expr,)
+            if self.check_kind(&TokenKind::RightParen) {
+                let close_paren = self.advance();
+                return Ok(ExpressionNode::TupleLiteral(TupleLiteralNode {
+                    open_paren,
+                    elements,
+                    close_paren,
+                    trivia: Trivia {
+                        leading: leading_trivia,
+                        trailing: self.consume_trivia(),
+                    },
+                }));
+            }
+
+            // Parse remaining elements
+            while !self.check_kind(&TokenKind::RightParen) && !self.is_at_end() {
+                elements.push(self.parse_expression()?);
+                self.skip_comments();
+
+                if self.check_kind(&TokenKind::Comma) {
+                    self.advance();
+                    self.skip_comments();
+                } else {
+                    break;
+                }
+            }
+
+            let close_paren = self.expect_kind(&TokenKind::RightParen)?;
+            Ok(ExpressionNode::TupleLiteral(TupleLiteralNode {
+                open_paren,
+                elements,
+                close_paren,
+                trivia: Trivia {
+                    leading: leading_trivia,
+                    trailing: self.consume_trivia(),
+                },
+            }))
+        } else {
+            // This is a parenthesized expression
+            self.expect_kind(&TokenKind::RightParen)?;
+            Ok(first_expr)
+        }
+    }
+
+    fn parse_array_literal(&mut self) -> ParseResult<ArrayLiteralNode> {
+        let leading_trivia = self.consume_trivia();
+        let open_bracket = self.expect_kind(&TokenKind::LeftBracket)?;
+
+        let mut elements = Vec::new();
+        self.skip_comments();
+
+        // Parse array elements
+        while !self.check_kind(&TokenKind::RightBracket) && !self.is_at_end() {
+            elements.push(self.parse_expression()?);
+            self.skip_comments();
+
+            // Optional comma
+            if self.check_kind(&TokenKind::Comma) {
+                self.advance();
+                self.skip_comments();
+            } else if !self.check_kind(&TokenKind::RightBracket) {
+                return Err(ParseError {
+                    message: "Expected ',' or ']' after array element".to_string(),
+                    span: self.peek().span,
+                });
+            }
+        }
+
+        let close_bracket = self.expect_kind(&TokenKind::RightBracket)?;
+
+        Ok(ArrayLiteralNode {
+            open_bracket,
+            elements,
+            close_bracket,
+            trivia: Trivia {
+                leading: leading_trivia,
+                trailing: self.consume_trivia(),
+            },
+        })
     }
 
     // Helper methods
@@ -595,6 +952,16 @@ impl Parser {
         }
     }
 
+    fn expect_integer(&mut self) -> ParseResult<TokenNode> {
+        match &self.peek().kind {
+            TokenKind::Integer(_) => Ok(self.advance()),
+            _ => Err(ParseError {
+                message: format!("Expected integer literal, found {:?}", self.peek().kind),
+                span: self.peek().span,
+            }),
+        }
+    }
+
     fn is_at_end(&self) -> bool {
         self.current >= self.tokens.len() || self.peek().kind == TokenKind::Eof
     }
@@ -622,17 +989,138 @@ impl Parser {
             TokenKind::I64 => Ok(TypeNode::I64(self.advance())),
             TokenKind::Bool => Ok(TypeNode::Bool(self.advance())),
             TokenKind::LeftParen => {
-                // Unit type: ()
-                self.advance(); // consume '('
-                self.skip_comments(); // Skip comments before close paren
-                self.expect_kind(&TokenKind::RightParen)?;
-                Ok(TypeNode::Unit)
+                // Tuple type or unit type: (T1, T2, ...) or ()
+                self.parse_tuple_type()
+            }
+            TokenKind::LeftBracket => {
+                // Array type: [T; size]
+                self.parse_array_type()
+            }
+            TokenKind::Ident(_) => {
+                // Struct type: StructName
+                self.parse_struct_type()
             }
             _ => Err(ParseError {
                 message: format!("Expected type, found {:?}", self.peek().kind),
                 span: self.peek().span,
             }),
         }
+    }
+
+    fn parse_struct_type(&mut self) -> ParseResult<TypeNode> {
+        let leading_trivia = self.consume_trivia();
+        let name = self.expect_ident()?;
+
+        Ok(TypeNode::Struct(StructTypeNode {
+            name,
+            trivia: Trivia {
+                leading: leading_trivia,
+                trailing: self.consume_trivia(),
+            },
+        }))
+    }
+
+    fn parse_tuple_type(&mut self) -> ParseResult<TypeNode> {
+        let leading_trivia = self.consume_trivia();
+        let open_paren = self.expect_kind(&TokenKind::LeftParen)?;
+
+        self.skip_comments();
+
+        // Check for unit type: ()
+        if self.check_kind(&TokenKind::RightParen) {
+            let _close_paren = self.advance();
+            return Ok(TypeNode::Unit);
+        }
+
+        let mut types = Vec::new();
+
+        // Parse first type
+        types.push(self.parse_type()?);
+        self.skip_comments();
+
+        // Handle single-element tuple: (T,)
+        if self.check_kind(&TokenKind::Comma) {
+            self.advance(); // consume comma
+            self.skip_comments();
+
+            // Optional trailing comma - if we see ), this is a single-element tuple
+            if self.check_kind(&TokenKind::RightParen) {
+                let close_paren = self.advance();
+                return Ok(TypeNode::Tuple(TupleTypeNode {
+                    open_paren,
+                    types,
+                    close_paren,
+                    trivia: Trivia {
+                        leading: leading_trivia,
+                        trailing: self.consume_trivia(),
+                    },
+                }));
+            }
+
+            // Parse remaining types
+            while !self.check_kind(&TokenKind::RightParen) && !self.is_at_end() {
+                types.push(self.parse_type()?);
+                self.skip_comments();
+
+                if self.check_kind(&TokenKind::Comma) {
+                    self.advance(); // consume comma
+                    self.skip_comments();
+                } else {
+                    break;
+                }
+            }
+        }
+
+        let close_paren = self.expect_kind(&TokenKind::RightParen)?;
+
+        Ok(TypeNode::Tuple(TupleTypeNode {
+            open_paren,
+            types,
+            close_paren,
+            trivia: Trivia {
+                leading: leading_trivia,
+                trailing: self.consume_trivia(),
+            },
+        }))
+    }
+
+    fn parse_array_type(&mut self) -> ParseResult<TypeNode> {
+        let leading_trivia = self.consume_trivia();
+        let open_bracket = self.expect_kind(&TokenKind::LeftBracket)?;
+
+        self.skip_comments();
+        let element_type = Box::new(self.parse_type()?);
+
+        self.skip_comments();
+        let semicolon = self.expect_kind(&TokenKind::Semicolon)?;
+
+        self.skip_comments();
+        let size = self.expect_integer()?;
+
+        // Validate array size is non-negative
+        if let TokenKind::Integer(size_value) = &size.kind {
+            if *size_value < 0 {
+                return Err(ParseError {
+                    message: format!("Array size must be non-negative, found {size_value}"),
+                    span: size.span,
+                });
+            }
+        }
+
+        self.skip_comments();
+        let close_bracket = self.expect_kind(&TokenKind::RightBracket)?;
+
+        Ok(TypeNode::Array(ArrayTypeNode {
+            open_bracket,
+            element_type,
+            semicolon,
+            size,
+            close_bracket,
+            trivia: Trivia {
+                leading: leading_trivia,
+                trailing: self.consume_trivia(),
+            },
+        }))
     }
 
     fn parse_type_annotation(&mut self) -> ParseResult<TypeAnnotationNode> {
@@ -1703,5 +2191,454 @@ fn complex(x: i32) -> i32 {
         assert!(result.is_ok());
         let cst = result.unwrap();
         assert_eq!(cst.items.len(), 0);
+    }
+
+    // ===== AGGREGATE TYPE TESTS =====
+
+    #[test]
+    fn test_struct_definition_simple() {
+        let result = lex_and_parse("struct Point { x: i32, y: i32 }");
+        assert!(result.is_ok());
+        let cst = result.unwrap();
+        assert_eq!(cst.items.len(), 1);
+
+        match &cst.items[0] {
+            CstNode::StructDefinition(struct_def) => {
+                assert_eq!(struct_def.fields.len(), 2);
+                if let TokenKind::Ident(name) = &struct_def.name.kind {
+                    assert_eq!(name, "Point");
+                }
+                if let TokenKind::Ident(field_name) = &struct_def.fields[0].name.kind {
+                    assert_eq!(field_name, "x");
+                }
+                if let TokenKind::Ident(field_name) = &struct_def.fields[1].name.kind {
+                    assert_eq!(field_name, "y");
+                }
+            }
+            _ => panic!("Expected struct definition"),
+        }
+    }
+
+    #[test]
+    fn test_struct_definition_with_trailing_comma() {
+        let result = lex_and_parse("struct Point { x: i32, y: i32, }");
+        assert!(result.is_ok());
+        let cst = result.unwrap();
+        assert_eq!(cst.items.len(), 1);
+    }
+
+    #[test]
+    fn test_struct_definition_duplicate_fields() {
+        let result = lex_and_parse("struct Point { x: i32, x: i64 }");
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.message.contains("Duplicate field name 'x'"));
+    }
+
+    #[test]
+    fn test_struct_literal_simple() {
+        let result = lex_and_parse("Point { x: 10, y: 20 };");
+        assert!(result.is_ok());
+        let cst = result.unwrap();
+        assert_eq!(cst.items.len(), 1);
+
+        match &cst.items[0] {
+            CstNode::Statement(stmt) => match &**stmt {
+                StatementNode::Expression(expr_stmt) => match &expr_stmt.expression {
+                    ExpressionNode::StructLiteral(struct_lit) => {
+                        if let TokenKind::Ident(name) = &struct_lit.name.kind {
+                            assert_eq!(name, "Point");
+                        }
+                        assert_eq!(struct_lit.fields.len(), 2);
+                    }
+                    _ => panic!("Expected struct literal"),
+                },
+                _ => panic!("Expected expression statement"),
+            },
+            _ => panic!("Expected statement"),
+        }
+    }
+
+    #[test]
+    fn test_struct_literal_duplicate_fields() {
+        let result = lex_and_parse("Point { x: 10, x: 20 };");
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.message.contains("Duplicate field name 'x'"));
+    }
+
+    #[test]
+    fn test_tuple_type_empty() {
+        let result = lex_and_parse("fn test() -> () { }");
+        assert!(result.is_ok());
+        let cst = result.unwrap();
+        assert_eq!(cst.items.len(), 1);
+
+        match &cst.items[0] {
+            CstNode::Function(func) => {
+                if let Some(return_type) = &func.return_type {
+                    match &return_type.ty {
+                        TypeNode::Unit => {} // Expected
+                        _ => panic!("Expected unit type"),
+                    }
+                }
+            }
+            _ => panic!("Expected function"),
+        }
+    }
+
+    #[test]
+    fn test_tuple_type_single_element() {
+        let result = lex_and_parse("fn test() -> (i32,) { }");
+        assert!(result.is_ok());
+        let cst = result.unwrap();
+        assert_eq!(cst.items.len(), 1);
+
+        match &cst.items[0] {
+            CstNode::Function(func) => {
+                if let Some(return_type) = &func.return_type {
+                    match &return_type.ty {
+                        TypeNode::Tuple(tuple_type) => {
+                            assert_eq!(tuple_type.types.len(), 1);
+                        }
+                        _ => panic!("Expected tuple type"),
+                    }
+                }
+            }
+            _ => panic!("Expected function"),
+        }
+    }
+
+    #[test]
+    fn test_tuple_type_multiple_elements() {
+        let result = lex_and_parse("fn test() -> (i32, bool, i64) { }");
+        assert!(result.is_ok());
+        let cst = result.unwrap();
+        assert_eq!(cst.items.len(), 1);
+
+        match &cst.items[0] {
+            CstNode::Function(func) => {
+                if let Some(return_type) = &func.return_type {
+                    match &return_type.ty {
+                        TypeNode::Tuple(tuple_type) => {
+                            assert_eq!(tuple_type.types.len(), 3);
+                        }
+                        _ => panic!("Expected tuple type"),
+                    }
+                }
+            }
+            _ => panic!("Expected function"),
+        }
+    }
+
+    #[test]
+    fn test_array_type() {
+        let result = lex_and_parse("fn test() -> [i32; 5] { }");
+        assert!(result.is_ok());
+        let cst = result.unwrap();
+        assert_eq!(cst.items.len(), 1);
+
+        match &cst.items[0] {
+            CstNode::Function(func) => {
+                if let Some(return_type) = &func.return_type {
+                    match &return_type.ty {
+                        TypeNode::Array(array_type) => {
+                            if let TokenKind::Integer(size) = &array_type.size.kind {
+                                assert_eq!(*size, 5);
+                            }
+                        }
+                        _ => panic!("Expected array type"),
+                    }
+                }
+            }
+            _ => panic!("Expected function"),
+        }
+    }
+
+    #[test]
+    fn test_array_type_zero_size() {
+        let result = lex_and_parse("fn test() -> [i32; 0] { }");
+        assert!(result.is_ok()); // Zero-size arrays are allowed
+    }
+
+    #[test]
+    fn test_array_type_negative_size() {
+        let result = lex_and_parse("fn test() -> [i32; -1] { }");
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.message.contains("Array size must be non-negative"));
+    }
+
+    #[test]
+    fn test_struct_type() {
+        let result = lex_and_parse("fn test() -> Point { }");
+        assert!(result.is_ok());
+        let cst = result.unwrap();
+        assert_eq!(cst.items.len(), 1);
+
+        match &cst.items[0] {
+            CstNode::Function(func) => {
+                if let Some(return_type) = &func.return_type {
+                    match &return_type.ty {
+                        TypeNode::Struct(struct_type) => {
+                            if let TokenKind::Ident(name) = &struct_type.name.kind {
+                                assert_eq!(name, "Point");
+                            }
+                        }
+                        _ => panic!("Expected struct type"),
+                    }
+                }
+            }
+            _ => panic!("Expected function"),
+        }
+    }
+
+    #[test]
+    fn test_tuple_literal_empty() {
+        let result = lex_and_parse("();");
+        assert!(result.is_ok());
+        let cst = result.unwrap();
+        assert_eq!(cst.items.len(), 1);
+
+        match &cst.items[0] {
+            CstNode::Statement(stmt) => match &**stmt {
+                StatementNode::Expression(expr_stmt) => match &expr_stmt.expression {
+                    ExpressionNode::Literal(token) => {
+                        assert_eq!(token.kind, TokenKind::Unit);
+                    }
+                    _ => panic!("Expected unit literal"),
+                },
+                _ => panic!("Expected expression statement"),
+            },
+            _ => panic!("Expected statement"),
+        }
+    }
+
+    #[test]
+    fn test_tuple_literal_single_element() {
+        let result = lex_and_parse("(42,);");
+        assert!(result.is_ok());
+        let cst = result.unwrap();
+        assert_eq!(cst.items.len(), 1);
+
+        match &cst.items[0] {
+            CstNode::Statement(stmt) => match &**stmt {
+                StatementNode::Expression(expr_stmt) => match &expr_stmt.expression {
+                    ExpressionNode::TupleLiteral(tuple_lit) => {
+                        assert_eq!(tuple_lit.elements.len(), 1);
+                    }
+                    _ => panic!("Expected tuple literal"),
+                },
+                _ => panic!("Expected expression statement"),
+            },
+            _ => panic!("Expected statement"),
+        }
+    }
+
+    #[test]
+    fn test_tuple_literal_multiple_elements() {
+        let result = lex_and_parse("(1, true, 42);");
+        assert!(result.is_ok());
+        let cst = result.unwrap();
+        assert_eq!(cst.items.len(), 1);
+
+        match &cst.items[0] {
+            CstNode::Statement(stmt) => match &**stmt {
+                StatementNode::Expression(expr_stmt) => match &expr_stmt.expression {
+                    ExpressionNode::TupleLiteral(tuple_lit) => {
+                        assert_eq!(tuple_lit.elements.len(), 3);
+                    }
+                    _ => panic!("Expected tuple literal"),
+                },
+                _ => panic!("Expected expression statement"),
+            },
+            _ => panic!("Expected statement"),
+        }
+    }
+
+    #[test]
+    fn test_array_literal_empty() {
+        let result = lex_and_parse("[];");
+        assert!(result.is_ok());
+        let cst = result.unwrap();
+        assert_eq!(cst.items.len(), 1);
+
+        match &cst.items[0] {
+            CstNode::Statement(stmt) => match &**stmt {
+                StatementNode::Expression(expr_stmt) => match &expr_stmt.expression {
+                    ExpressionNode::ArrayLiteral(array_lit) => {
+                        assert_eq!(array_lit.elements.len(), 0);
+                    }
+                    _ => panic!("Expected array literal"),
+                },
+                _ => panic!("Expected expression statement"),
+            },
+            _ => panic!("Expected statement"),
+        }
+    }
+
+    #[test]
+    fn test_array_literal_with_elements() {
+        let result = lex_and_parse("[1, 2, 3];");
+        assert!(result.is_ok());
+        let cst = result.unwrap();
+        assert_eq!(cst.items.len(), 1);
+
+        match &cst.items[0] {
+            CstNode::Statement(stmt) => match &**stmt {
+                StatementNode::Expression(expr_stmt) => match &expr_stmt.expression {
+                    ExpressionNode::ArrayLiteral(array_lit) => {
+                        assert_eq!(array_lit.elements.len(), 3);
+                    }
+                    _ => panic!("Expected array literal"),
+                },
+                _ => panic!("Expected expression statement"),
+            },
+            _ => panic!("Expected statement"),
+        }
+    }
+
+    #[test]
+    fn test_field_access_named() {
+        let result = lex_and_parse("point.x;");
+        assert!(result.is_ok());
+        let cst = result.unwrap();
+        assert_eq!(cst.items.len(), 1);
+
+        match &cst.items[0] {
+            CstNode::Statement(stmt) => match &**stmt {
+                StatementNode::Expression(expr_stmt) => match &expr_stmt.expression {
+                    ExpressionNode::FieldAccess(field_access) => match &field_access.field {
+                        FieldKindNode::Named(token) => {
+                            if let TokenKind::Ident(name) = &token.kind {
+                                assert_eq!(name, "x");
+                            }
+                        }
+                        _ => panic!("Expected named field"),
+                    },
+                    _ => panic!("Expected field access"),
+                },
+                _ => panic!("Expected expression statement"),
+            },
+            _ => panic!("Expected statement"),
+        }
+    }
+
+    #[test]
+    fn test_field_access_positional() {
+        let result = lex_and_parse("tuple.0;");
+        assert!(result.is_ok());
+        let cst = result.unwrap();
+        assert_eq!(cst.items.len(), 1);
+
+        match &cst.items[0] {
+            CstNode::Statement(stmt) => match &**stmt {
+                StatementNode::Expression(expr_stmt) => match &expr_stmt.expression {
+                    ExpressionNode::FieldAccess(field_access) => match &field_access.field {
+                        FieldKindNode::Positional(token) => {
+                            if let TokenKind::Integer(index) = &token.kind {
+                                assert_eq!(*index, 0);
+                            }
+                        }
+                        _ => panic!("Expected positional field"),
+                    },
+                    _ => panic!("Expected field access"),
+                },
+                _ => panic!("Expected expression statement"),
+            },
+            _ => panic!("Expected statement"),
+        }
+    }
+
+    #[test]
+    fn test_array_access() {
+        let result = lex_and_parse("arr[0];");
+        assert!(result.is_ok());
+        let cst = result.unwrap();
+        assert_eq!(cst.items.len(), 1);
+
+        match &cst.items[0] {
+            CstNode::Statement(stmt) => match &**stmt {
+                StatementNode::Expression(expr_stmt) => match &expr_stmt.expression {
+                    ExpressionNode::ArrayAccess(array_access) => {
+                        match array_access.index.as_ref() {
+                            ExpressionNode::Literal(token) => {
+                                if let TokenKind::Integer(index) = &token.kind {
+                                    assert_eq!(*index, 0);
+                                }
+                            }
+                            _ => panic!("Expected integer literal"),
+                        }
+                    }
+                    _ => panic!("Expected array access"),
+                },
+                _ => panic!("Expected expression statement"),
+            },
+            _ => panic!("Expected statement"),
+        }
+    }
+
+    #[test]
+    fn test_chained_access() {
+        let result = lex_and_parse("data.points[0].x;");
+        assert!(result.is_ok());
+        let cst = result.unwrap();
+        assert_eq!(cst.items.len(), 1);
+
+        // Should parse as ((data.points)[0]).x
+        match &cst.items[0] {
+            CstNode::Statement(stmt) => match &**stmt {
+                StatementNode::Expression(expr_stmt) => match &expr_stmt.expression {
+                    ExpressionNode::FieldAccess(_) => {} // Expected outermost field access
+                    _ => panic!("Expected field access"),
+                },
+                _ => panic!("Expected expression statement"),
+            },
+            _ => panic!("Expected statement"),
+        }
+    }
+
+    #[test]
+    fn test_parenthesized_expression_vs_tuple() {
+        // (42) should be a parenthesized expression, not a tuple
+        let result = lex_and_parse("(42);");
+        assert!(result.is_ok());
+        let cst = result.unwrap();
+        assert_eq!(cst.items.len(), 1);
+
+        match &cst.items[0] {
+            CstNode::Statement(stmt) => match &**stmt {
+                StatementNode::Expression(expr_stmt) => match &expr_stmt.expression {
+                    ExpressionNode::Literal(_) => {} // Should be unwrapped literal
+                    _ => panic!("Expected literal (parentheses should be unwrapped)"),
+                },
+                _ => panic!("Expected expression statement"),
+            },
+            _ => panic!("Expected statement"),
+        }
+    }
+
+    #[test]
+    fn test_nested_aggregates() {
+        let result = lex_and_parse("struct Nested { points: [Point; 3], metadata: (i32, bool) }");
+        assert!(result.is_ok());
+        let cst = result.unwrap();
+        assert_eq!(cst.items.len(), 1);
+
+        match &cst.items[0] {
+            CstNode::StructDefinition(struct_def) => {
+                assert_eq!(struct_def.fields.len(), 2);
+                // Verify the field types contain the expected nested structures
+                match &struct_def.fields[0].type_annotation.ty {
+                    TypeNode::Array(_) => {} // First field should be array type
+                    _ => panic!("Expected array type for first field"),
+                }
+                match &struct_def.fields[1].type_annotation.ty {
+                    TypeNode::Tuple(_) => {} // Second field should be tuple type
+                    _ => panic!("Expected tuple type for second field"),
+                }
+            }
+            _ => panic!("Expected struct definition"),
+        }
     }
 }

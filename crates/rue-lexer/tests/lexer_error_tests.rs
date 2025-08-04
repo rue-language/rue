@@ -56,10 +56,12 @@ fn test_invalid_operators() {
 
 #[test]
 fn test_invalid_number_formats() {
-    // Decimal numbers (not supported in Rue)
-    expect_lex_error_containing("3.14", "Unexpected character");
-    expect_lex_error_containing("2.0", "Unexpected character");
-    expect_lex_error_containing(".5", "Unexpected character");
+    // Note: Decimal numbers like 3.14 are now tokenized as separate tokens (3, ., 14)
+    // since '.' is a valid token for field access. This is not an error anymore.
+
+    // Test invalid characters that should still cause lexer errors
+    expect_lex_error_containing("3@14", "Unexpected character"); // @ is not valid
+    expect_lex_error_containing("3#14", "Unexpected character"); // # is not valid
 
     // Underscores in numbers are tokenized as separate tokens
     // 1_000 becomes: 1, _, 000
