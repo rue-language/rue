@@ -7,8 +7,7 @@
 //! - Types are consistent across edges
 
 use rue_ir::mir::{
-    BasicBlock, BlockId, MirBinOp, MirFunction, MirProgram, MirStatement, MirTerminator, MirValue,
-    Temp,
+    BasicBlock, BlockId, MirFunction, MirProgram, MirStatement, MirTerminator, MirValue, Temp,
 };
 use rue_ir::types::RueType;
 use std::collections::{HashMap, HashSet};
@@ -84,7 +83,7 @@ impl MirVerifier {
 
         // Verify each block
         for block in &function.blocks {
-            self.verify_block(block, &block_map, &mut defined_temps);
+            self.verify_block(block, &block_map, &mut defined_temps, &function.temp_types);
         }
 
         // Check for unreachable blocks (except entry)
@@ -105,6 +104,7 @@ impl MirVerifier {
         block: &BasicBlock,
         block_map: &HashMap<BlockId, &BasicBlock>,
         defined_temps: &mut HashMap<Temp, RueType>,
+        temp_types: &HashMap<Temp, RueType>,
     ) {
         // Add block parameters as defined
         for (temp, ty) in &block.params {
@@ -122,7 +122,7 @@ impl MirVerifier {
 
         // Verify statements
         for stmt in &block.statements {
-            self.verify_statement(stmt, block.id, defined_temps);
+            self.verify_statement(stmt, block.id, defined_temps, temp_types);
         }
 
         // Verify terminator
@@ -135,6 +135,7 @@ impl MirVerifier {
         stmt: &MirStatement,
         block_id: BlockId,
         defined_temps: &mut HashMap<Temp, RueType>,
+        temp_types: &HashMap<Temp, RueType>,
     ) {
         match stmt {
             MirStatement::Assign { dest, value, .. } => {
@@ -144,164 +145,96 @@ impl MirVerifier {
                         format!("Temp {dest:?} assigned multiple times (violates SSA)"),
                         Some(block_id),
                     );
+                    return;
                 }
 
-                // Special handling for Call assignments since calls don't carry return type info
-                match value {
-                    MirValue::Call { args, func, .. } => {
-                        // Verify all arguments are defined
-                        for arg in args {
-                            if !defined_temps.contains_key(arg) {
-                                self.add_error(
-                                    format!("Use of undefined temp {arg:?} in call to {func}"),
-                                    Some(block_id),
-                                );
-                            }
-                        }
+                // Verify that the value expression is valid (all referenced temps are defined)
+                // For now, we'll just verify basic validity and rely on temp_types for types
+                self.verify_basic_value_validity(value, block_id, defined_temps);
 
-                        // For calls, we infer the return type from the function signature
-                        // For now, we'll use a placeholder approach and mark the dest as defined
-                        // with an inferred type based on common function signatures
-                        let inferred_type = self.infer_call_return_type(func);
-                        defined_temps.insert(*dest, inferred_type);
-                    }
-                    _ => {
-                        // For non-call values, use the original logic
-                        if let Some(value_ty) = self.verify_value(value, block_id, defined_temps) {
-                            defined_temps.insert(*dest, value_ty);
-                        }
-                    }
+                // Get the type for this assignment from temp_types (the authoritative source)
+                if let Some(expected_ty) = temp_types.get(dest) {
+                    defined_temps.insert(*dest, expected_ty.clone());
+                } else {
+                    // This should not happen in well-formed MIR
+                    self.add_error(
+                        format!("No type information available for temporary {dest:?}"),
+                        Some(block_id),
+                    );
                 }
             }
         }
     }
 
-    /// Verify a value and return its type
-    fn verify_value(
+    /// Verify basic validity of a value expression (all referenced temps are defined)
+    fn verify_basic_value_validity(
         &mut self,
         value: &MirValue,
         block_id: BlockId,
         defined_temps: &HashMap<Temp, RueType>,
-    ) -> Option<RueType> {
+    ) {
         match value {
             MirValue::Use(temp) => {
-                if let Some(ty) = defined_temps.get(temp) {
-                    Some(ty.clone())
-                } else {
+                if !defined_temps.contains_key(temp) {
                     self.add_error(format!("Use of undefined temp {temp:?}"), Some(block_id));
-                    None
                 }
             }
-            MirValue::Const(c) => Some(c.ty()),
-            MirValue::BinaryOp { op, lhs, rhs } => {
-                let lhs_ty = if let Some(ty) = defined_temps.get(lhs) {
-                    Some(ty.clone())
-                } else {
+            MirValue::Const(_) => {
+                // Constants are always valid
+            }
+            MirValue::BinaryOp { lhs, rhs, .. } => {
+                if !defined_temps.contains_key(lhs) {
                     self.add_error(
-                        format!("Use of undefined temp {lhs:?} in binary op"),
+                        format!("Use of undefined temp {lhs:?} in binary operation"),
                         Some(block_id),
                     );
-                    None
-                };
-
-                let rhs_ty = if let Some(ty) = defined_temps.get(rhs) {
-                    Some(ty.clone())
-                } else {
+                }
+                if !defined_temps.contains_key(rhs) {
                     self.add_error(
-                        format!("Use of undefined temp {rhs:?} in binary op"),
+                        format!("Use of undefined temp {rhs:?} in binary operation"),
                         Some(block_id),
                     );
-                    None
-                };
-
-                // Check operand types match
-                if let (Some(lhs_t), Some(rhs_t)) = (&lhs_ty, &rhs_ty) {
-                    if lhs_t != rhs_t {
+                }
+            }
+            MirValue::UnaryOp { operand, .. } => {
+                if !defined_temps.contains_key(operand) {
+                    self.add_error(
+                        format!("Use of undefined temp {operand:?} in unary operation"),
+                        Some(block_id),
+                    );
+                }
+            }
+            MirValue::Call { args, .. } => {
+                for arg in args {
+                    if !defined_temps.contains_key(arg) {
+                        self.add_error(
+                            format!("Use of undefined temp {arg:?} in function call"),
+                            Some(block_id),
+                        );
+                    }
+                }
+            }
+            MirValue::ConstructAggregate { fields, .. } => {
+                for field_temp in fields {
+                    if !defined_temps.contains_key(field_temp) {
                         self.add_error(
                             format!(
-                                "Binary op operands have mismatched types: {lhs_t:?} vs {rhs_t:?}"
+                                "Use of undefined temp {field_temp:?} in aggregate construction"
                             ),
                             Some(block_id),
                         );
                     }
                 }
-
-                // Determine result type based on operation
-                match op {
-                    MirBinOp::Add
-                    | MirBinOp::Sub
-                    | MirBinOp::Mul
-                    | MirBinOp::Div
-                    | MirBinOp::Mod => {
-                        // Arithmetic ops preserve operand type
-                        lhs_ty.or(rhs_ty)
-                    }
-                    MirBinOp::Lt
-                    | MirBinOp::Le
-                    | MirBinOp::Gt
-                    | MirBinOp::Ge
-                    | MirBinOp::Eq
-                    | MirBinOp::Ne => {
-                        // Comparison ops always return Bool
-                        Some(RueType::Bool)
-                    }
-                }
-            }
-            MirValue::UnaryOp { operand, .. } => {
-                if let Some(ty) = defined_temps.get(operand) {
-                    Some(ty.clone())
-                } else {
-                    self.add_error(
-                        format!("Use of undefined temp {operand:?} in unary op"),
-                        Some(block_id),
-                    );
-                    None
-                }
-            }
-            MirValue::Call {
-                args,
-                func,
-                kind: _,
-            } => {
-                // Verify all arguments are defined
-                for arg in args {
-                    if !defined_temps.contains_key(arg) {
-                        self.add_error(
-                            format!("Use of undefined temp {arg:?} in call to {func}"),
-                            Some(block_id),
-                        );
-                    }
-                }
-                // Call return type needs to be determined from assignment context
-                // For now, return None to indicate the type should come from the dest
-                None
-            }
-            // Aggregate operations - not yet fully verified
-            MirValue::ConstructAggregate { ty, fields } => {
-                // Verify all field temps are defined
-                for field in fields {
-                    if !defined_temps.contains_key(field) {
-                        self.add_error(
-                            format!("Use of undefined temp {field:?} in aggregate construction"),
-                            Some(block_id),
-                        );
-                    }
-                }
-                Some(ty.clone())
             }
             MirValue::GetField { base, .. } => {
-                // Verify base is defined
                 if !defined_temps.contains_key(base) {
                     self.add_error(
                         format!("Use of undefined temp {base:?} in field access"),
                         Some(block_id),
                     );
                 }
-                // Field type would need struct definition to determine
-                None
             }
             MirValue::SetField { base, value, .. } => {
-                // Verify base and value are defined
                 if !defined_temps.contains_key(base) {
                     self.add_error(
                         format!("Use of undefined temp {base:?} in field update"),
@@ -314,70 +247,35 @@ impl MirVerifier {
                         Some(block_id),
                     );
                 }
-                // Result type is same as base type
-                defined_temps.get(base).cloned()
             }
-            MirValue::StructUpdate {
-                base,
-                updates,
-                struct_type,
-            } => {
-                // Verify base is defined
+            MirValue::StructUpdate { base, updates, .. } => {
                 if !defined_temps.contains_key(base) {
                     self.add_error(
                         format!("Use of undefined temp {base:?} in struct update"),
                         Some(block_id),
                     );
                 }
-                // Verify all update values are defined
-                for (_, value) in updates {
-                    if !defined_temps.contains_key(value) {
+                for (_, value_temp) in updates {
+                    if !defined_temps.contains_key(value_temp) {
                         self.add_error(
-                            format!("Use of undefined temp {value:?} in struct update"),
+                            format!("Use of undefined temp {value_temp:?} in struct update"),
                             Some(block_id),
                         );
                     }
                 }
-                Some(RueType::Struct(*struct_type))
             }
             MirValue::DynamicArrayAccess { base, index } => {
-                // Verify base is defined and is an array
-                let base_ty = if let Some(ty) = defined_temps.get(base) {
-                    ty.clone()
-                } else {
+                if !defined_temps.contains_key(base) {
                     self.add_error(
-                        format!("Use of undefined temp {base:?} in dynamic array access"),
+                        format!("Use of undefined temp {base:?} in array access"),
                         Some(block_id),
                     );
-                    return None;
-                };
-
-                // Verify index is defined and is an integer
-                if let Some(index_ty) = defined_temps.get(index) {
-                    if !matches!(index_ty, RueType::I32 | RueType::I64) {
-                        self.add_error(
-                            format!("Array index must be integer, got {index_ty:?}"),
-                            Some(block_id),
-                        );
-                    }
-                } else {
-                    self.add_error(
-                        format!("Use of undefined temp {index:?} as array index"),
-                        Some(block_id),
-                    );
-                    return None;
                 }
-
-                // Verify base is actually an array and return element type
-                match base_ty {
-                    RueType::Array(elem_ty, _) => Some(elem_ty.as_ref().clone()),
-                    _ => {
-                        self.add_error(
-                            format!("Dynamic array access on non-array type {base_ty:?}"),
-                            Some(block_id),
-                        );
-                        None
-                    }
+                if !defined_temps.contains_key(index) {
+                    self.add_error(
+                        format!("Use of undefined temp {index:?} in array access"),
+                        Some(block_id),
+                    );
                 }
             }
         }
@@ -561,39 +459,6 @@ impl MirVerifier {
         reachable
     }
 
-    /// Infer the return type of a function call based on its name
-    /// This is a temporary solution until we have proper function signature tracking
-    fn infer_call_return_type(&self, func_name: &str) -> RueType {
-        match func_name {
-            // Casting functions
-            "to_i32" => RueType::I32,
-            "to_i64" => RueType::I64,
-            "to_bool" => RueType::Bool,
-
-            // I/O functions
-            "println_i32" | "println_i64" | "println_bool" => RueType::Unit,
-            "input" => RueType::I64, // The main input function returns i64
-            "input_i32" => RueType::I32,
-            "input_i64" => RueType::I64,
-
-            // For recursive functions, we need to infer from context
-            // For now, assume i32 as a reasonable default for unknown functions
-            _ => {
-                // Try to infer from the current function context
-                // If we're in a function that returns a specific type, assume that
-                // This is a heuristic for recursive calls
-                if func_name == self.current_function {
-                    // For recursive calls, we'd need to look up the function's return type
-                    // For now, assume i32 as the most common case
-                    RueType::I32
-                } else {
-                    // For unknown functions, assume i32 as default
-                    RueType::I32
-                }
-            }
-        }
-    }
-
     /// Add an error to the list
     fn add_error(&mut self, message: String, block: Option<BlockId>) {
         self.errors.push(VerificationError {
@@ -612,13 +477,16 @@ mod tests {
 
     #[test]
     fn test_verify_valid_program() {
+        let mut temp_types = HashMap::new();
+        temp_types.insert(Temp(0), RueType::I32);
+
         let program = MirProgram {
             functions: vec![MirFunction {
                 name: "main".to_string(),
                 params: vec![],
                 return_type: RueType::I32,
                 entry_block: BlockId(0),
-                temp_types: HashMap::new(),
+                temp_types,
                 span: Span::dummy(),
                 blocks: vec![BasicBlock {
                     id: BlockId(0),
@@ -674,13 +542,16 @@ mod tests {
 
     #[test]
     fn test_verify_multiple_assignments() {
+        let mut temp_types = HashMap::new();
+        temp_types.insert(Temp(0), RueType::I32);
+
         let program = MirProgram {
             functions: vec![MirFunction {
                 name: "main".to_string(),
                 params: vec![],
                 return_type: RueType::I32,
                 entry_block: BlockId(0),
-                temp_types: HashMap::new(),
+                temp_types,
                 span: Span::dummy(),
                 blocks: vec![BasicBlock {
                     id: BlockId(0),

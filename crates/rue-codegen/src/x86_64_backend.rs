@@ -260,6 +260,12 @@ impl<'a> X8664Codegen<'a> {
             } => self.lower_allocate_aggregate(*dest, *size, *alignment),
             PIR::CopyAggregate { dest, src, size } => self.lower_copy_aggregate(*dest, *src, *size),
             PIR::ZeroAggregate { dest, size } => self.lower_zero_aggregate(*dest, *size),
+            PIR::InlineCopyAggregate { dest, src, size } => {
+                self.lower_inline_copy_aggregate(*dest, *src, *size)
+            }
+            PIR::InlineZeroAggregate { dest, size } => {
+                self.lower_inline_zero_aggregate(*dest, *size)
+            }
             PIR::LoadField {
                 dest,
                 base,
@@ -1856,6 +1862,170 @@ impl<'a> X8664Codegen<'a> {
         self.emit(X8664Instr::Call {
             target: "__rue_memzero".to_string(),
         });
+
+        Ok(())
+    }
+
+    /// Lower InlineCopyAggregate to x86-64 instructions using direct register moves
+    fn lower_inline_copy_aggregate(
+        &mut self,
+        dest: VReg,
+        src: VReg,
+        size: i64,
+    ) -> Result<(), LoweringError> {
+        let dest_reg = self.allocator.ensure_reg(dest, &[])?;
+        let src_reg = self.allocator.ensure_reg(src, &[dest_reg])?;
+        self.emit_spill_reload_ops();
+
+        // For small sizes, use direct register-to-register moves
+        match size {
+            1 => {
+                // Copy 1 byte
+                self.emit(X8664Instr::MovRM8 {
+                    dest: X86Register::Rax,
+                    base: src_reg,
+                    offset: 0,
+                });
+                self.emit(X8664Instr::MovMR8 {
+                    base: dest_reg,
+                    offset: 0,
+                    src: X86Register::Rax,
+                });
+            }
+            2..=7 => {
+                // Copy 2-7 bytes using byte-by-byte copying
+                for i in 0..size {
+                    self.emit(X8664Instr::MovRM8 {
+                        dest: X86Register::Rax,
+                        base: src_reg,
+                        offset: i as i32,
+                    });
+                    self.emit(X8664Instr::MovMR8 {
+                        base: dest_reg,
+                        offset: i as i32,
+                        src: X86Register::Rax,
+                    });
+                }
+            }
+            8 => {
+                // Copy 8 bytes using 64-bit move
+                self.emit(X8664Instr::MovRM {
+                    dest: X86Register::Rax,
+                    base: src_reg,
+                    offset: 0,
+                });
+                self.emit(X8664Instr::MovMR {
+                    base: dest_reg,
+                    offset: 0,
+                    src: X86Register::Rax,
+                });
+            }
+            9..=15 => {
+                // Copy 8 bytes + remaining bytes
+                self.emit(X8664Instr::MovRM {
+                    dest: X86Register::Rax,
+                    base: src_reg,
+                    offset: 0,
+                });
+                self.emit(X8664Instr::MovMR {
+                    base: dest_reg,
+                    offset: 0,
+                    src: X86Register::Rax,
+                });
+                // Copy remaining bytes one by one
+                for i in 8..size {
+                    self.emit(X8664Instr::MovRM8 {
+                        dest: X86Register::Rax,
+                        base: src_reg,
+                        offset: i as i32,
+                    });
+                    self.emit(X8664Instr::MovMR8 {
+                        base: dest_reg,
+                        offset: i as i32,
+                        src: X86Register::Rax,
+                    });
+                }
+            }
+            16 => {
+                // Copy 16 bytes using two 64-bit moves
+                self.emit(X8664Instr::MovRM {
+                    dest: X86Register::Rax,
+                    base: src_reg,
+                    offset: 0,
+                });
+                self.emit(X8664Instr::MovMR {
+                    base: dest_reg,
+                    offset: 0,
+                    src: X86Register::Rax,
+                });
+                self.emit(X8664Instr::MovRM {
+                    dest: X86Register::Rax,
+                    base: src_reg,
+                    offset: 8,
+                });
+                self.emit(X8664Instr::MovMR {
+                    base: dest_reg,
+                    offset: 8,
+                    src: X86Register::Rax,
+                });
+            }
+            _ => {
+                // Should not happen - inline copy is only for sizes ≤16
+                return Err(LoweringError::RegisterAllocation(format!(
+                    "Inline copy called with size {size} > 16"
+                )));
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Lower InlineZeroAggregate to x86-64 instructions using direct register moves
+    fn lower_inline_zero_aggregate(&mut self, dest: VReg, size: i64) -> Result<(), LoweringError> {
+        let dest_reg = self.allocator.ensure_reg(dest, &[])?;
+        self.emit_spill_reload_ops();
+
+        // Zero out RAX once for all writes
+        self.emit(X8664Instr::XorRR {
+            dest: X86Register::Rax,
+            src: X86Register::Rax,
+        });
+
+        // For small sizes, use direct register writes
+        match size {
+            1 => {
+                // Zero 1 byte
+                self.emit(X8664Instr::MovMR8 {
+                    base: dest_reg,
+                    offset: 0,
+                    src: X86Register::Rax,
+                });
+            }
+            2..=7 => {
+                // Zero 2-7 bytes using byte-by-byte zeroing
+                for i in 0..size {
+                    self.emit(X8664Instr::MovMR8 {
+                        base: dest_reg,
+                        offset: i as i32,
+                        src: X86Register::Rax,
+                    });
+                }
+            }
+            8 => {
+                // Zero 8 bytes using 64-bit move
+                self.emit(X8664Instr::MovMR {
+                    base: dest_reg,
+                    offset: 0,
+                    src: X86Register::Rax,
+                });
+            }
+            _ => {
+                // Should not happen - inline zero is only for sizes ≤8
+                return Err(LoweringError::RegisterAllocation(format!(
+                    "Inline zero called with size {size} > 8"
+                )));
+            }
+        }
 
         Ok(())
     }
