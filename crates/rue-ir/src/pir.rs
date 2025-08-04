@@ -248,4 +248,15 @@ pub enum PIR {
     Trap {
         message: String, // Error message
     },
+
+    // Optimized inline aggregate operations for small sizes
+    InlineCopyAggregate {
+        dest: VReg, // Destination pointer
+        src: VReg,  // Source pointer
+        size: i64,  // Size in bytes (≤16 for inline optimization)
+    },
+    InlineZeroAggregate {
+        dest: VReg, // Destination pointer
+        size: i64,  // Size in bytes (≤8 for inline optimization)
+    },
 }
