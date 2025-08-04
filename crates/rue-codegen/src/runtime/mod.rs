@@ -8,6 +8,7 @@ pub mod context;
 pub mod conversion;
 pub mod data;
 pub mod io;
+pub mod memory;
 pub mod startup;
 pub mod syscalls;
 pub mod x86_64;

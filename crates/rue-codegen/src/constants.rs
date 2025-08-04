@@ -44,3 +44,11 @@ pub const CHAR_MINUS: u8 = 45;
 
 /// Zero character
 pub const CHAR_ZERO: u8 = 48;
+
+// Memory management constants
+
+/// Threshold for using rep movsb in memcpy (256 bytes)
+pub const MEMCPY_REP_THRESHOLD: u64 = 256;
+
+/// Threshold for qword copy vs byte copy (8 bytes)
+pub const MEMCPY_QWORD_THRESHOLD: u64 = 8;

@@ -395,6 +395,14 @@ impl X86Emitter {
                 // Reserve zero-initialized space
                 self.code.resize(self.code.len() + *count as usize, 0);
             }
+            X8664Instr::RepMovsb => {
+                // rep movsb
+                self.code.extend_from_slice(&[0xF3, 0xA4]);
+            }
+            X8664Instr::Std => {
+                // std - set direction flag
+                self.code.push(0xFD);
+            }
         }
         Ok(())
     }
