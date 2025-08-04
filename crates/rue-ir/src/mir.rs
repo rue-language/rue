@@ -30,10 +30,11 @@
 //!     return result
 //! ```
 
-use crate::types::RueType;
+use crate::types::{FieldId, RueType, StructId};
 use rue_lexer::Span;
 use std::collections::HashMap;
 use std::fmt;
+use std::rc::Rc;
 
 /// A unique identifier for a basic block
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -124,10 +125,47 @@ pub enum MirValue {
         args: Vec<Temp>,
         kind: CallKind,
     },
+    /// Construct an aggregate value (struct, tuple, or array)
+    ConstructAggregate {
+        /// Type of the aggregate being constructed
+        ty: RueType,
+        /// Values for each field/element in order
+        fields: Vec<Temp>,
+    },
+    /// Extract a field from an aggregate value
+    GetField {
+        /// The aggregate value to extract from
+        base: Temp,
+        /// Which field to extract
+        field: FieldId,
+    },
+    /// Update a field in an aggregate value (creates new aggregate)
+    SetField {
+        /// The aggregate value to update
+        base: Temp,
+        /// Which field to update
+        field: FieldId,
+        /// New value for the field
+        value: Temp,
+    },
+    /// Partial struct update (functional update syntax)
+    /// Creates a new struct with some fields from base and some overridden
+    ///
+    /// **MVS Semantics**: This operation CONSUMES the base struct.
+    /// The base temp is moved into the result and should not be used after
+    /// this operation. This is important for move/ownership tracking.
+    StructUpdate {
+        /// The base struct to copy from (consumed by this operation)
+        base: Temp,
+        /// Fields to override (field_id, new_value)
+        updates: Vec<(FieldId, Temp)>,
+        /// Type of the struct (for validation)
+        struct_type: StructId,
+    },
 }
 
 /// Constant values in MIR
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum MirConst {
     /// 32-bit integer constant
     Int32(i32),
@@ -137,6 +175,14 @@ pub enum MirConst {
     Bool(bool),
     /// Unit constant
     Unit,
+    /// Aggregate constant (struct, tuple, or array)
+    Aggregate {
+        /// Type of the aggregate
+        ty: RueType,
+        /// Constant values for each field/element
+        /// Uses Rc to allow cheap cloning
+        fields: Rc<[MirConst]>,
+    },
 }
 
 /// Binary operations in MIR
@@ -266,6 +312,23 @@ impl MirConst {
             MirConst::Int64(_) => RueType::I64,
             MirConst::Bool(_) => RueType::Bool,
             MirConst::Unit => RueType::Unit,
+            MirConst::Aggregate { ty, .. } => ty.clone(),
+        }
+    }
+
+    /// Create an aggregate constant from a vector of fields
+    pub fn aggregate(ty: RueType, fields: Vec<MirConst>) -> Self {
+        MirConst::Aggregate {
+            ty,
+            fields: fields.into(), // Vec<T> converts to Rc<[T]>
+        }
+    }
+
+    /// Get fields of an aggregate (returns empty slice for non-aggregates)
+    pub fn fields(&self) -> &[MirConst] {
+        match self {
+            MirConst::Aggregate { fields, .. } => fields,
+            _ => &[],
         }
     }
 }
@@ -295,6 +358,28 @@ impl MirValue {
                 // Call types must be determined from assignment context
                 // The destination temp of the assignment contains the type
                 None
+            }
+            MirValue::ConstructAggregate { ty, .. } => Some(ty.clone()),
+            MirValue::GetField { base, field } => {
+                let base_ty = temp_types(*base);
+                // Extract field type from aggregate type
+                match (&base_ty, field) {
+                    (RueType::Tuple(types), FieldId::Index(idx)) => types.get(*idx).cloned(),
+                    (RueType::Array(elem_ty, _), FieldId::Index(_)) => {
+                        Some(elem_ty.as_ref().clone())
+                    }
+                    // For structs, we'd need the struct definition to get field type
+                    // For now, return None (type must be determined from context)
+                    _ => None,
+                }
+            }
+            MirValue::SetField { base, .. } => {
+                // SetField creates a new aggregate of the same type as base
+                Some(temp_types(*base))
+            }
+            MirValue::StructUpdate { struct_type, .. } => {
+                // StructUpdate creates a new struct of the given type
+                Some(RueType::Struct(*struct_type))
             }
         }
     }
@@ -424,6 +509,36 @@ impl fmt::Display for MirValue {
                 }
                 write!(f, ")")
             }
+            MirValue::ConstructAggregate { ty, fields } => {
+                write!(f, "ConstructAggregate {ty} {{")?;
+                for (i, field) in fields.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{field}")?;
+                }
+                write!(f, "}}")
+            }
+            MirValue::GetField { base, field } => {
+                write!(f, "{base}.{field}")
+            }
+            MirValue::SetField { base, field, value } => {
+                write!(f, "SetField {base}.{field} = {value}")
+            }
+            MirValue::StructUpdate {
+                base,
+                updates,
+                struct_type,
+            } => {
+                write!(f, "StructUpdate({struct_type}) {{ ")?;
+                for (i, (field, value)) in updates.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{field}: {value}")?;
+                }
+                write!(f, ", ..{base} }}")
+            }
         }
     }
 }
@@ -435,6 +550,16 @@ impl fmt::Display for MirConst {
             MirConst::Int64(n) => write!(f, "{n}_i64"),
             MirConst::Bool(b) => write!(f, "{b}"),
             MirConst::Unit => write!(f, "()"),
+            MirConst::Aggregate { ty, fields } => {
+                write!(f, "const {ty} {{")?;
+                for (i, field) in fields.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{field}")?;
+                }
+                write!(f, "}}")
+            }
         }
     }
 }
@@ -735,3 +860,8 @@ mod tests {
         assert!(output.contains("default B3"));
     }
 }
+
+// Include aggregate tests module
+#[cfg(test)]
+#[path = "mir_aggregate_tests.rs"]
+mod mir_aggregate_tests;

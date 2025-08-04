@@ -276,6 +276,70 @@ impl MirVerifier {
                 // For now, return None to indicate the type should come from the dest
                 None
             }
+            // Aggregate operations - not yet fully verified
+            MirValue::ConstructAggregate { ty, fields } => {
+                // Verify all field temps are defined
+                for field in fields {
+                    if !defined_temps.contains_key(field) {
+                        self.add_error(
+                            format!("Use of undefined temp {field:?} in aggregate construction"),
+                            Some(block_id),
+                        );
+                    }
+                }
+                Some(ty.clone())
+            }
+            MirValue::GetField { base, .. } => {
+                // Verify base is defined
+                if !defined_temps.contains_key(base) {
+                    self.add_error(
+                        format!("Use of undefined temp {base:?} in field access"),
+                        Some(block_id),
+                    );
+                }
+                // Field type would need struct definition to determine
+                None
+            }
+            MirValue::SetField { base, value, .. } => {
+                // Verify base and value are defined
+                if !defined_temps.contains_key(base) {
+                    self.add_error(
+                        format!("Use of undefined temp {base:?} in field update"),
+                        Some(block_id),
+                    );
+                }
+                if !defined_temps.contains_key(value) {
+                    self.add_error(
+                        format!("Use of undefined temp {value:?} in field update"),
+                        Some(block_id),
+                    );
+                }
+                // Result type is same as base type
+                defined_temps.get(base).cloned()
+            }
+            MirValue::StructUpdate {
+                base,
+                updates,
+                struct_type,
+            } => {
+                // Verify base is defined
+                if !defined_temps.contains_key(base) {
+                    self.add_error(
+                        format!("Use of undefined temp {base:?} in struct update"),
+                        Some(block_id),
+                    );
+                }
+                // Verify all update values are defined
+                for (_, value) in updates {
+                    if !defined_temps.contains_key(value) {
+                        self.add_error(
+                            format!("Use of undefined temp {value:?} in struct update"),
+                            Some(block_id),
+                        );
+                    }
+                }
+                Some(RueType::Struct(*struct_type))
+            }
         }
     }
 

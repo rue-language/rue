@@ -414,6 +414,37 @@ pub fn walk_value<V: MirVisitor + ?Sized>(visitor: &mut V, value: &MirValue) -> 
             }
             VisitorControl::Continue
         }
+        // Aggregate operations
+        MirValue::ConstructAggregate { fields, .. } => {
+            for field in fields {
+                let control = visitor.visit_temp(field);
+                if !control.should_continue() {
+                    return control;
+                }
+            }
+            VisitorControl::Continue
+        }
+        MirValue::GetField { base, .. } => visitor.visit_temp(base),
+        MirValue::SetField { base, value, .. } => {
+            let control = visitor.visit_temp(base);
+            if !control.should_continue() {
+                return control;
+            }
+            visitor.visit_temp(value)
+        }
+        MirValue::StructUpdate { base, updates, .. } => {
+            let control = visitor.visit_temp(base);
+            if !control.should_continue() {
+                return control;
+            }
+            for (_, value) in updates {
+                let control = visitor.visit_temp(value);
+                if !control.should_continue() {
+                    return control;
+                }
+            }
+            VisitorControl::Continue
+        }
     }
 }
 
@@ -606,6 +637,37 @@ pub fn walk_value_mut<V: MirMutVisitor + ?Sized>(
             }
             VisitorControl::Continue
         }
+        // Aggregate operations
+        MirValue::ConstructAggregate { fields, .. } => {
+            for field in fields {
+                let control = visitor.visit_temp(field);
+                if !control.should_continue() {
+                    return control;
+                }
+            }
+            VisitorControl::Continue
+        }
+        MirValue::GetField { base, .. } => visitor.visit_temp(base),
+        MirValue::SetField { base, value, .. } => {
+            let control = visitor.visit_temp(base);
+            if !control.should_continue() {
+                return control;
+            }
+            visitor.visit_temp(value)
+        }
+        MirValue::StructUpdate { base, updates, .. } => {
+            let control = visitor.visit_temp(base);
+            if !control.should_continue() {
+                return control;
+            }
+            for (_, value) in updates {
+                let control = visitor.visit_temp(value);
+                if !control.should_continue() {
+                    return control;
+                }
+            }
+            VisitorControl::Continue
+        }
     }
 }
 
@@ -755,6 +817,42 @@ pub fn fold_value<F: MirFolder + ?Sized>(
                 func,
                 args: new_args,
                 kind,
+            }
+        }
+        // Aggregate operations
+        MirValue::ConstructAggregate { ty, fields } => {
+            let mut new_fields = Vec::with_capacity(fields.len());
+            for field in fields {
+                new_fields.push(folder.fold_temp(field)?);
+            }
+            MirValue::ConstructAggregate {
+                ty,
+                fields: new_fields,
+            }
+        }
+        MirValue::GetField { base, field } => MirValue::GetField {
+            base: folder.fold_temp(base)?,
+            field,
+        },
+        MirValue::SetField { base, field, value } => MirValue::SetField {
+            base: folder.fold_temp(base)?,
+            field,
+            value: folder.fold_temp(value)?,
+        },
+        MirValue::StructUpdate {
+            base,
+            updates,
+            struct_type,
+        } => {
+            let base = folder.fold_temp(base)?;
+            let mut new_updates = Vec::with_capacity(updates.len());
+            for (field, value) in updates {
+                new_updates.push((field, folder.fold_temp(value)?));
+            }
+            MirValue::StructUpdate {
+                base,
+                updates: new_updates,
+                struct_type,
             }
         }
     })

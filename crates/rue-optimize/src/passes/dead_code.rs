@@ -224,6 +224,11 @@ impl DeadAssignmentRemover {
                     rue_ir::mir::CallKind::Impure => false, // Impure calls have side effects
                 }
             }
+            // Aggregate operations are pure (no side effects)
+            MirValue::ConstructAggregate { .. }
+            | MirValue::GetField { .. }
+            | MirValue::SetField { .. }
+            | MirValue::StructUpdate { .. } => true,
         }
     }
 }
