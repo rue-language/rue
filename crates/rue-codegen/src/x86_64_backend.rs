@@ -272,6 +272,27 @@ impl<'a> X8664Codegen<'a> {
                 src,
                 field_type,
             } => self.lower_store_field(*base, *offset, src, field_type),
+            PIR::ArrayBoundsCheck {
+                array_base,
+                index,
+                array_len,
+                trap_label,
+            } => self.lower_array_bounds_check(*array_base, *index, *array_len, *trap_label),
+            PIR::DynamicLoadField {
+                dest,
+                base,
+                index,
+                element_size,
+                element_type,
+            } => self.lower_dynamic_load_field(*dest, *base, *index, *element_size, element_type),
+            PIR::DynamicStoreField {
+                base,
+                index,
+                src,
+                element_size,
+                element_type,
+            } => self.lower_dynamic_store_field(*base, *index, src, *element_size, element_type),
+            PIR::Trap { message } => self.lower_trap(message),
         }
     }
 
@@ -1917,6 +1938,248 @@ impl<'a> X8664Codegen<'a> {
                 return Err(LoweringError::UnsupportedValueType("StoreField"));
             }
         }
+
+        Ok(())
+    }
+
+    /// Lower ArrayBoundsCheck to x86-64 instructions
+    fn lower_array_bounds_check(
+        &mut self,
+        _array_base: VReg,
+        index: VReg,
+        array_len: u64,
+        trap_label: Label,
+    ) -> Result<(), LoweringError> {
+        let index_reg = self.allocator.ensure_reg(index, &[])?;
+        self.emit_spill_reload_ops();
+
+        // Compare index with array length (unsigned comparison)
+        self.emit(X8664Instr::CmpRI {
+            reg: index_reg,
+            imm: array_len as i32,
+        });
+
+        // Jump to trap if index >= array_len (unsigned greater or equal)
+        let trap_machine_id = self.get_or_create_label(trap_label);
+        self.emit(X8664Instr::JmpCC {
+            cc: ConditionCode::AboveEqual, // Jump if Above or Equal (unsigned >= )
+            target: LabelRef::Local(trap_machine_id),
+        });
+
+        Ok(())
+    }
+
+    /// Lower DynamicLoadField to x86-64 instructions
+    fn lower_dynamic_load_field(
+        &mut self,
+        dest: VReg,
+        base: VReg,
+        index: VReg,
+        element_size: i64,
+        _element_type: &rue_ir::types::RueType,
+    ) -> Result<(), LoweringError> {
+        let base_reg = self.allocator.ensure_reg(base, &[])?;
+        let index_reg = self.allocator.ensure_reg(index, &[base_reg])?;
+        let dest_reg = self.allocator.ensure_reg(dest, &[base_reg, index_reg])?;
+        self.emit_spill_reload_ops();
+
+        // Calculate offset: index * element_size
+        // Use a scratch register for the computation
+        let scratch = self.get_scratch_register(&[base_reg, index_reg, dest_reg])?;
+
+        // Move index to scratch register
+        self.emit(X8664Instr::MovRR {
+            dest: scratch,
+            src: index_reg,
+        });
+
+        // Multiply by element size (imul scratch, element_size)
+        self.emit(X8664Instr::ImulRI {
+            dest: scratch,
+            imm: element_size as i32,
+        });
+
+        // Calculate final address: base + scratch
+        self.emit(X8664Instr::AddRR {
+            dest: scratch,
+            src: base_reg,
+        });
+
+        // Load from [scratch] into dest
+        self.emit(X8664Instr::MovRM {
+            dest: dest_reg,
+            base: scratch,
+            offset: 0,
+        });
+
+        // Schedule store for the destination register
+        self.allocator.schedule_store(dest, dest_reg);
+
+        Ok(())
+    }
+
+    /// Lower DynamicStoreField to x86-64 instructions
+    fn lower_dynamic_store_field(
+        &mut self,
+        base: VReg,
+        index: VReg,
+        src: &Value,
+        element_size: i64,
+        _element_type: &rue_ir::types::RueType,
+    ) -> Result<(), LoweringError> {
+        let base_reg = self.allocator.ensure_reg(base, &[])?;
+        let index_reg = self.allocator.ensure_reg(index, &[base_reg])?;
+
+        match src {
+            Value::VReg(src_vreg) => {
+                let src_reg = self
+                    .allocator
+                    .ensure_reg(*src_vreg, &[base_reg, index_reg])?;
+                self.emit_spill_reload_ops();
+
+                // Calculate offset: index * element_size
+                let scratch = self.get_scratch_register(&[base_reg, index_reg, src_reg])?;
+
+                // Move index to scratch register
+                self.emit(X8664Instr::MovRR {
+                    dest: scratch,
+                    src: index_reg,
+                });
+
+                // Multiply by element size
+                self.emit(X8664Instr::ImulRI {
+                    dest: scratch,
+                    imm: element_size as i32,
+                });
+
+                // Calculate final address: base + scratch
+                self.emit(X8664Instr::AddRR {
+                    dest: scratch,
+                    src: base_reg,
+                });
+
+                // Store src to [scratch]
+                self.emit(X8664Instr::MovMR {
+                    base: scratch,
+                    offset: 0,
+                    src: src_reg,
+                });
+            }
+            Value::SignedImm(imm) => {
+                self.emit_spill_reload_ops();
+
+                // Calculate offset: index * element_size
+                let scratch = self.get_scratch_register(&[base_reg, index_reg])?;
+                let value_scratch = self.get_scratch_register(&[base_reg, index_reg, scratch])?;
+
+                // Load immediate into value scratch register
+                self.emit(X8664Instr::MovRI64 {
+                    dest: value_scratch,
+                    imm: *imm,
+                });
+
+                // Calculate offset
+                self.emit(X8664Instr::MovRR {
+                    dest: scratch,
+                    src: index_reg,
+                });
+                self.emit(X8664Instr::ImulRI {
+                    dest: scratch,
+                    imm: element_size as i32,
+                });
+
+                // Calculate final address: base + scratch
+                self.emit(X8664Instr::AddRR {
+                    dest: scratch,
+                    src: base_reg,
+                });
+
+                // Store value to [scratch]
+                self.emit(X8664Instr::MovMR {
+                    base: scratch,
+                    offset: 0,
+                    src: value_scratch,
+                });
+            }
+            Value::UnsignedImm(imm) => {
+                self.emit_spill_reload_ops();
+
+                // Similar to SignedImm but cast the immediate
+                let scratch = self.get_scratch_register(&[base_reg, index_reg])?;
+                let value_scratch = self.get_scratch_register(&[base_reg, index_reg, scratch])?;
+
+                self.emit(X8664Instr::MovRI64 {
+                    dest: value_scratch,
+                    imm: *imm as i64,
+                });
+
+                // Calculate offset
+                self.emit(X8664Instr::MovRR {
+                    dest: scratch,
+                    src: index_reg,
+                });
+                self.emit(X8664Instr::ImulRI {
+                    dest: scratch,
+                    imm: element_size as i32,
+                });
+
+                // Calculate final address: base + scratch
+                self.emit(X8664Instr::AddRR {
+                    dest: scratch,
+                    src: base_reg,
+                });
+
+                // Store value to [scratch]
+                self.emit(X8664Instr::MovMR {
+                    base: scratch,
+                    offset: 0,
+                    src: value_scratch,
+                });
+            }
+            Value::PhysicalReg(_) => {
+                return Err(LoweringError::UnsupportedValueType("DynamicStoreField"));
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Lower Trap to x86-64 instructions
+    fn lower_trap(&mut self, message: &str) -> Result<(), LoweringError> {
+        // For now, we'll implement trap as a system exit with a specific error code
+        // In a more sophisticated implementation, we might print the error message
+        // and/or generate debugging information
+
+        // CRITICAL: Flush all register state before trap since we're terminating
+        // This ensures any pending spill operations are completed and register
+        // state is consistent before the system call
+        self.allocator.flush_stores();
+        self.emit_spill_reload_ops();
+
+        // Load exit code for array bounds violation into rax (system call number)
+        self.emit(X8664Instr::MovRI32 {
+            dest: X86Register::Rax,
+            imm: 60, // sys_exit
+        });
+
+        // Load error code into rdi (first argument)
+        self.emit(X8664Instr::MovRI32 {
+            dest: X86Register::Rdi,
+            imm: 2, // Exit code 2 for bounds violation
+        });
+
+        // System call
+        self.emit(X8664Instr::Syscall);
+
+        // Mark as unreachable - sys_exit never returns
+        self.emit(X8664Instr::Ud2);
+
+        // Add a comment for debugging
+        trace!(
+            target: "rue::codegen::trap",
+            message = %message,
+            "Generated trap instruction"
+        );
 
         Ok(())
     }

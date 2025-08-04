@@ -229,6 +229,8 @@ impl DeadAssignmentRemover {
             | MirValue::GetField { .. }
             | MirValue::SetField { .. }
             | MirValue::StructUpdate { .. } => true,
+            // Dynamic array access has side effects (bounds checking can trap)
+            MirValue::DynamicArrayAccess { .. } => false,
         }
     }
 }

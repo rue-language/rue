@@ -144,17 +144,14 @@ impl MirBuilder {
     /// Create a new temporary and assign an aggregate construction to it
     fn emit_construct_aggregate(
         &mut self,
-        aggregate_ty: RueType,
+        ty: RueType,
         fields: Vec<Temp>,
         span: Option<rue_lexer::Span>,
     ) -> Temp {
-        let temp = self.fresh_temp(aggregate_ty.clone());
+        let temp = self.fresh_temp(ty.clone());
         self.add_statement(MirStatement::Assign {
             dest: temp,
-            value: MirValue::ConstructAggregate {
-                ty: aggregate_ty,
-                fields,
-            },
+            value: MirValue::ConstructAggregate { ty, fields },
             span,
         });
         temp
@@ -165,10 +162,10 @@ impl MirBuilder {
         &mut self,
         base: Temp,
         field: FieldId,
-        field_ty: RueType,
+        result_ty: RueType,
         span: Option<rue_lexer::Span>,
     ) -> Temp {
-        let temp = self.fresh_temp(field_ty);
+        let temp = self.fresh_temp(result_ty);
         self.add_statement(MirStatement::Assign {
             dest: temp,
             value: MirValue::GetField { base, field },
@@ -176,7 +173,6 @@ impl MirBuilder {
         });
         temp
     }
-
     /// Start a new basic block
     fn start_block(&mut self, id: BlockId, params: Vec<(Temp, RueType)>) {
         if let Some(block) = self.current_block.take() {
@@ -572,30 +568,13 @@ impl MirBuilder {
                 // Lower all field expressions
                 let field_temps: Vec<Temp> = fields
                     .iter()
-                    .map(|(_, expr)| self.lower_expr(expr))
+                    .map(|(_name, expr)| self.lower_expr(expr))
                     .collect();
 
                 // Restore is_function_body
                 self.is_function_body = saved_is_function_body;
 
                 self.emit_construct_aggregate(ty.clone(), field_temps, Some(*span))
-            }
-            HirExpr::FieldAccess {
-                base,
-                field,
-                ty,
-                span,
-            } => {
-                // Save and clear is_function_body for sub-expressions
-                let saved_is_function_body = self.is_function_body;
-                self.is_function_body = false;
-
-                let base_temp = self.lower_expr(base);
-
-                // Restore is_function_body
-                self.is_function_body = saved_is_function_body;
-
-                self.emit_get_field(base_temp, field.clone(), ty.clone(), Some(*span))
             }
             HirExpr::TupleLiteral { elements, ty, span } => {
                 // Save and clear is_function_body for sub-expressions
@@ -625,6 +604,23 @@ impl MirBuilder {
 
                 self.emit_construct_aggregate(ty.clone(), element_temps, Some(*span))
             }
+            HirExpr::FieldAccess {
+                base,
+                field,
+                ty,
+                span,
+            } => {
+                // Save and clear is_function_body for sub-expressions
+                let saved_is_function_body = self.is_function_body;
+                self.is_function_body = false;
+
+                let base_temp = self.lower_expr(base);
+
+                // Restore is_function_body
+                self.is_function_body = saved_is_function_body;
+
+                self.emit_get_field(base_temp, field.clone(), ty.clone(), Some(*span))
+            }
             HirExpr::ArrayAccess {
                 base,
                 index,
@@ -636,19 +632,32 @@ impl MirBuilder {
                 self.is_function_body = false;
 
                 let base_temp = self.lower_expr(base);
-                let _index_temp = self.lower_expr(index); // TODO: Use for proper runtime indexing
+                let index_temp = self.lower_expr(index);
 
                 // Restore is_function_body
                 self.is_function_body = saved_is_function_body;
 
-                // Array access uses numeric index field ID
-                // Note: In a real implementation, we'd need to evaluate the index expression
-                // at compile time or use a different MIR instruction for dynamic array access.
-                // For now, we'll assume the index is an integer literal.
-                // This is a simplification - proper array access would need runtime indexing.
-                let field_id = FieldId::Index(0); // Placeholder - needs proper index evaluation
+                // Generate dynamic array access with bounds checking
+                let result_temp = self.fresh_temp(ty.clone());
 
-                self.emit_get_field(base_temp, field_id, ty.clone(), Some(*span))
+                trace!(
+                    target: "rue::mir::arrays",
+                    ?base_temp,
+                    ?index_temp,
+                    ?result_temp,
+                    "Array access lowered to dynamic array access with bounds checking"
+                );
+
+                self.add_statement(MirStatement::Assign {
+                    dest: result_temp,
+                    value: MirValue::DynamicArrayAccess {
+                        base: base_temp,
+                        index: index_temp,
+                    },
+                    span: Some(*span),
+                });
+
+                result_temp
             }
         }
     }

@@ -90,6 +90,7 @@ impl CommonSubexpressionElimination {
             MirValue::GetField { .. } => None,
             MirValue::SetField { .. } => None,
             MirValue::StructUpdate { .. } => None,
+            MirValue::DynamicArrayAccess { .. } => None, // Dynamic array access not handled by CSE yet
         }
     }
 

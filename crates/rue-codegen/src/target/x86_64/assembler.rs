@@ -178,6 +178,10 @@ pub fn format_instructions_as_assembly(
                     ConditionCode::LessEqual => "setle",
                     ConditionCode::Greater => "setg",
                     ConditionCode::GreaterEqual => "setge",
+                    ConditionCode::Below => "setb",
+                    ConditionCode::BelowEqual => "setbe",
+                    ConditionCode::Above => "seta",
+                    ConditionCode::AboveEqual => "setae",
                 };
                 output.push_str(&format!("    {} %{}\n", cc_str, reg_name_8(dest)));
             }
@@ -227,6 +231,10 @@ pub fn format_instructions_as_assembly(
                     ConditionCode::LessEqual => "jle",
                     ConditionCode::Greater => "jg",
                     ConditionCode::GreaterEqual => "jge",
+                    ConditionCode::Below => "jb",
+                    ConditionCode::BelowEqual => "jbe",
+                    ConditionCode::Above => "ja",
+                    ConditionCode::AboveEqual => "jae",
                 };
                 match target {
                     LabelRef::Local(id) => {
