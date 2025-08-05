@@ -3,20 +3,58 @@ use rue_ir::pir::Label;
 use rue_target::{ConditionCode, LabelRef, X86Register, X8664Instr};
 use std::collections::HashMap;
 
+/// ELF section types
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum SectionType {
+    Text,   // .text - executable code
+    Data,   // .data - initialized writable data
+    Bss,    // .bss - uninitialized writable data
+    Rodata, // .rodata - read-only data
+}
+
+/// Information about a section
+#[derive(Debug, Clone)]
+pub struct SectionInfo {
+    pub section_type: SectionType,
+    pub data: Vec<u8>,
+    pub labels: HashMap<u32, usize>, // label_id -> offset within section
+}
+
+/// Type alias for complex return type from get_sections_and_symbols
+type SectionsAndSymbols<'a> = (
+    &'a HashMap<SectionType, SectionInfo>,
+    HashMap<String, (SectionType, usize)>,
+);
+
 /// x86-64 machine code emitter
 /// Converts X8664Instr to raw bytes
 pub struct X86Emitter {
-    code: Vec<u8>,
-    label_positions: HashMap<u32, usize>,
-    pending_fixups: Vec<(usize, LabelRef)>,
+    // Section-aware state
+    current_section: SectionType,
+    sections: HashMap<SectionType, SectionInfo>,
+
+    // Global state
+    label_positions: HashMap<u32, (SectionType, usize)>, // label_id -> (section, offset)
+    pending_fixups: Vec<(SectionType, usize, LabelRef)>, // (section, offset, target)
     function_labels: HashMap<String, Label>,
     runtime_label_count: u32,
 }
 
 impl X86Emitter {
     pub fn new() -> Self {
+        let mut sections = HashMap::new();
+        sections.insert(
+            SectionType::Text,
+            SectionInfo {
+                section_type: SectionType::Text,
+                data: Vec::new(),
+                labels: HashMap::new(),
+            },
+        );
+
         Self {
-            code: Vec::new(),
+            current_section: SectionType::Text,
+            sections,
             label_positions: HashMap::new(),
             pending_fixups: Vec::new(),
             function_labels: HashMap::new(),
@@ -44,35 +82,45 @@ impl X86Emitter {
         // Second pass: fix up label references
         self.resolve_fixups()?;
 
-        Ok(self.code.clone())
+        // Return .text section data
+        let text_data = &self.sections.get(&SectionType::Text).unwrap().data;
+        Ok(text_data.clone())
+    }
+
+    /// Get the current section's data buffer for writing
+    fn current_section_data(&mut self) -> &mut Vec<u8> {
+        &mut self.sections.get_mut(&self.current_section).unwrap().data
     }
 
     fn emit_instruction(&mut self, instr: &X8664Instr) -> Result<(), String> {
         match instr {
             X8664Instr::MovRR { dest, src } => {
                 self.emit_rex_if_needed(true, Some(src), Some(dest));
-                self.code.push(0x89); // MOV r/m64, r64
+                self.current_section_data().push(0x89); // MOV r/m64, r64
                 let modrm = 0xc0 | (self.register_code(src) << 3) | self.register_code(dest);
-                self.code.push(modrm);
+                self.current_section_data().push(modrm);
             }
 
             X8664Instr::MovRI32 { dest, imm } => {
                 self.emit_rex_if_needed(true, None, Some(dest));
-                self.code.push(0xc7); // MOV r/m64, imm32
+                self.current_section_data().push(0xc7); // MOV r/m64, imm32
                 let modrm = 0xc0 | self.register_code(dest);
-                self.code.push(modrm);
-                self.code.extend_from_slice(&imm.to_le_bytes());
+                self.current_section_data().push(modrm);
+                self.current_section_data()
+                    .extend_from_slice(&imm.to_le_bytes());
             }
 
             X8664Instr::MovRI64 { dest, imm } => {
+                let reg_code = self.register_code(dest);
                 if self.needs_rex_b(dest) {
-                    self.code.push(0x49); // REX.WB
-                    self.code.push(0xb8 + self.register_code(dest));
+                    self.current_section_data().push(0x49); // REX.WB
+                    self.current_section_data().push(0xb8 + reg_code);
                 } else {
-                    self.code.push(0x48); // REX.W
-                    self.code.push(0xb8 + self.register_code(dest));
+                    self.current_section_data().push(0x48); // REX.W
+                    self.current_section_data().push(0xb8 + reg_code);
                 }
-                self.code.extend_from_slice(&imm.to_le_bytes());
+                self.current_section_data()
+                    .extend_from_slice(&imm.to_le_bytes());
             }
 
             X8664Instr::MovRM { dest, base, offset } => {
@@ -91,125 +139,144 @@ impl X86Emitter {
 
             X8664Instr::AddRR { dest, src } => {
                 self.emit_rex_if_needed(true, Some(src), Some(dest));
-                self.code.push(0x01); // ADD r/m64, r64
+                self.current_section_data().push(0x01); // ADD r/m64, r64
                 let modrm = 0xc0 | (self.register_code(src) << 3) | self.register_code(dest);
-                self.code.push(modrm);
+                self.current_section_data().push(modrm);
             }
 
             X8664Instr::AddRI { dest, imm } => {
                 self.emit_rex_if_needed(true, None, Some(dest));
                 if *imm >= -128 && *imm <= 127 {
-                    self.code.push(0x83); // ADD r/m64, imm8
+                    self.current_section_data().push(0x83); // ADD r/m64, imm8
                     let modrm = 0xc0 | self.register_code(dest);
-                    self.code.push(modrm);
-                    self.code.push(*imm as u8);
+                    self.current_section_data().push(modrm);
+                    self.current_section_data().push(*imm as u8);
                 } else {
-                    self.code.push(0x81); // ADD r/m64, imm32
+                    self.current_section_data().push(0x81); // ADD r/m64, imm32
                     let modrm = 0xc0 | self.register_code(dest);
-                    self.code.push(modrm);
-                    self.code.extend_from_slice(&imm.to_le_bytes());
+                    self.current_section_data().push(modrm);
+                    self.current_section_data()
+                        .extend_from_slice(&imm.to_le_bytes());
                 }
             }
 
             X8664Instr::SubRR { dest, src } => {
                 self.emit_rex_if_needed(true, Some(src), Some(dest));
-                self.code.push(0x29); // SUB r/m64, r64
+                self.current_section_data().push(0x29); // SUB r/m64, r64
                 let modrm = 0xc0 | (self.register_code(src) << 3) | self.register_code(dest);
-                self.code.push(modrm);
+                self.current_section_data().push(modrm);
             }
 
             X8664Instr::SubRI { dest, imm } => {
                 self.emit_rex_if_needed(true, None, Some(dest));
                 if *imm >= -128 && *imm <= 127 {
-                    self.code.push(0x83); // SUB r/m64, imm8
+                    self.current_section_data().push(0x83); // SUB r/m64, imm8
                     let modrm = 0xe8 | self.register_code(dest); // /5
-                    self.code.push(modrm);
-                    self.code.push(*imm as u8);
+                    self.current_section_data().push(modrm);
+                    self.current_section_data().push(*imm as u8);
                 } else {
-                    self.code.push(0x81); // SUB r/m64, imm32
+                    self.current_section_data().push(0x81); // SUB r/m64, imm32
                     let modrm = 0xe8 | self.register_code(dest); // /5
-                    self.code.push(modrm);
-                    self.code.extend_from_slice(&imm.to_le_bytes());
+                    self.current_section_data().push(modrm);
+                    self.current_section_data()
+                        .extend_from_slice(&imm.to_le_bytes());
                 }
             }
 
             X8664Instr::AndRR { dest, src } => {
                 self.emit_rex_if_needed(true, Some(src), Some(dest));
-                self.code.push(0x21); // AND r/m64, r64
+                self.current_section_data().push(0x21); // AND r/m64, r64
                 let modrm = 0xc0 | (self.register_code(src) << 3) | self.register_code(dest);
-                self.code.push(modrm);
+                self.current_section_data().push(modrm);
+            }
+            X8664Instr::AndRI { dest, imm } => {
+                self.emit_rex_if_needed(true, None, Some(dest));
+                if *imm >= -128 && *imm <= 127 {
+                    self.current_section_data().push(0x83); // AND r/m64, imm8
+                    let modrm = 0xe0 | self.register_code(dest); // /4 for AND
+                    self.current_section_data().push(modrm);
+                    self.current_section_data().push(*imm as u8);
+                } else {
+                    self.current_section_data().push(0x81); // AND r/m64, imm32
+                    let modrm = 0xe0 | self.register_code(dest); // /4 for AND
+                    self.current_section_data().push(modrm);
+                    self.current_section_data()
+                        .extend_from_slice(&imm.to_le_bytes());
+                }
             }
 
             X8664Instr::Shl { dest, count: _ } => {
                 // count must be in RCX
                 self.emit_rex_if_needed(true, None, Some(dest));
-                self.code.push(0xd3); // SHL r/m64, CL
+                self.current_section_data().push(0xd3); // SHL r/m64, CL
                 let modrm = 0xe0 | self.register_code(dest); // /4
-                self.code.push(modrm);
+                self.current_section_data().push(modrm);
             }
 
             X8664Instr::Sar { dest, count: _ } => {
                 // count must be in RCX
                 self.emit_rex_if_needed(true, None, Some(dest));
-                self.code.push(0xd3); // SAR r/m64, CL
+                self.current_section_data().push(0xd3); // SAR r/m64, CL
                 let modrm = 0xf8 | self.register_code(dest); // /7
-                self.code.push(modrm);
+                self.current_section_data().push(modrm);
             }
 
             X8664Instr::ImulRR { dest, src } => {
                 self.emit_rex_if_needed(true, Some(dest), Some(src));
-                self.code.push(0x0f);
-                self.code.push(0xaf); // IMUL r64, r/m64
+                self.current_section_data().push(0x0f);
+                self.current_section_data().push(0xaf); // IMUL r64, r/m64
                 let modrm = 0xc0 | (self.register_code(dest) << 3) | self.register_code(src);
-                self.code.push(modrm);
+                self.current_section_data().push(modrm);
             }
 
             X8664Instr::ImulRI { dest, imm } => {
                 self.emit_rex_if_needed(true, Some(dest), Some(dest));
                 if *imm >= -128 && *imm <= 127 {
-                    self.code.push(0x6b); // IMUL r64, r/m64, imm8
+                    self.current_section_data().push(0x6b); // IMUL r64, r/m64, imm8
                     let modrm = 0xc0 | (self.register_code(dest) << 3) | self.register_code(dest);
-                    self.code.push(modrm);
-                    self.code.push(*imm as u8);
+                    self.current_section_data().push(modrm);
+                    self.current_section_data().push(*imm as u8);
                 } else {
-                    self.code.push(0x69); // IMUL r64, r/m64, imm32
+                    self.current_section_data().push(0x69); // IMUL r64, r/m64, imm32
                     let modrm = 0xc0 | (self.register_code(dest) << 3) | self.register_code(dest);
-                    self.code.push(modrm);
-                    self.code.extend_from_slice(&imm.to_le_bytes());
+                    self.current_section_data().push(modrm);
+                    self.current_section_data()
+                        .extend_from_slice(&imm.to_le_bytes());
                 }
             }
 
             X8664Instr::Idiv { divisor } => {
                 self.emit_rex_if_needed(true, None, Some(divisor));
-                self.code.push(0xf7); // IDIV r/m64
+                self.current_section_data().push(0xf7); // IDIV r/m64
                 let modrm = 0xf8 | self.register_code(divisor); // /7
-                self.code.push(modrm);
+                self.current_section_data().push(modrm);
             }
 
             X8664Instr::Cqo => {
-                self.code.push(0x48); // REX.W
-                self.code.push(0x99); // CQO
+                self.current_section_data().push(0x48); // REX.W
+                self.current_section_data().push(0x99); // CQO
             }
 
             X8664Instr::CmpRR { left, right } => {
                 self.emit_rex_if_needed(true, Some(right), Some(left));
-                self.code.push(0x39); // CMP r/m64, r64
+                self.current_section_data().push(0x39); // CMP r/m64, r64
                 let modrm = 0xc0 | (self.register_code(right) << 3) | self.register_code(left);
-                self.code.push(modrm);
+                self.current_section_data().push(modrm);
             }
 
             X8664Instr::CmpRI { reg, imm } => {
                 self.emit_rex_if_needed(true, None, Some(reg));
                 if *imm >= -128 && *imm <= 127 {
-                    self.code.push(0x83); // CMP r/m64, imm8
+                    self.current_section_data().push(0x83); // CMP r/m64, imm8
                     let modrm = 0xf8 | self.register_code(reg); // /7
-                    self.code.push(modrm);
-                    self.code.push(*imm as u8);
+                    self.current_section_data().push(modrm);
+                    self.current_section_data().push(*imm as u8);
                 } else {
-                    self.code.push(0x81); // CMP r/m64, imm32
+                    self.current_section_data().push(0x81); // CMP r/m64, imm32
                     let modrm = 0xf8 | self.register_code(reg); // /7
-                    self.code.push(modrm);
-                    self.code.extend_from_slice(&imm.to_le_bytes());
+                    self.current_section_data().push(modrm);
+                    self.current_section_data()
+                        .extend_from_slice(&imm.to_le_bytes());
                 }
             }
 
@@ -227,62 +294,68 @@ impl X86Emitter {
                 // the low-byte form (r8b…r15b) is addressable.
                 // W=0 (8-bit op), R=0, X=0, B = dest.needs_rex()
                 self.emit_rex_if_needed(false, None, Some(dest));
-                self.code.push(0x0f);
-                self.code.push(opcode);
+                self.current_section_data().push(0x0f);
+                self.current_section_data().push(opcode);
                 // SetCC uses /0 encoding, so reg field must be 000
                 let modrm = 0xc0 | self.register_code(dest);
-                self.code.push(modrm);
+                self.current_section_data().push(modrm);
             }
 
             X8664Instr::Movzx { dest, src } => {
                 // While REX.W=1 is not canonical for MOVZX (should use REX.W=0),
                 // we keep it for compatibility as some code may depend on this behavior
                 self.emit_rex_if_needed(true, Some(dest), Some(src));
-                self.code.push(0x0f);
-                self.code.push(0xb6); // MOVZX r64, r/m8 (with REX.W=1)
+                self.current_section_data().push(0x0f);
+                self.current_section_data().push(0xb6); // MOVZX r64, r/m8 (with REX.W=1)
                 let modrm = 0xc0 | (self.register_code(dest) << 3) | self.register_code(src);
-                self.code.push(modrm);
+                self.current_section_data().push(modrm);
             }
 
             X8664Instr::Movsxd { dest, src } => {
                 self.emit_rex_if_needed(true, Some(dest), Some(src));
-                self.code.push(0x63); // MOVSXD r64, r/m32
+                self.current_section_data().push(0x63); // MOVSXD r64, r/m32
                 let modrm = 0xc0 | (self.register_code(dest) << 3) | self.register_code(src);
-                self.code.push(modrm);
+                self.current_section_data().push(modrm);
             }
 
             X8664Instr::Push { reg } => {
+                let reg_code = self.register_code(reg);
                 if self.needs_rex_b(reg) {
-                    self.code.push(0x41); // REX.B
+                    self.current_section_data().push(0x41); // REX.B
                 }
-                self.code.push(0x50 + self.register_code(reg));
+                self.current_section_data().push(0x50 + reg_code);
             }
 
             X8664Instr::Pop { reg } => {
+                let reg_code = self.register_code(reg);
                 if self.needs_rex_b(reg) {
-                    self.code.push(0x41); // REX.B
+                    self.current_section_data().push(0x41); // REX.B
                 }
-                self.code.push(0x58 + self.register_code(reg));
+                self.current_section_data().push(0x58 + reg_code);
             }
 
             X8664Instr::Call { target } => {
                 // For now, we only support relative calls
-                self.code.push(0xe8); // CALL rel32
-                let fixup_pos = self.code.len();
-                self.code.extend_from_slice(&[0, 0, 0, 0]); // Placeholder
-                self.pending_fixups
-                    .push((fixup_pos, LabelRef::Global(target.clone())));
+                self.current_section_data().push(0xe8); // CALL rel32
+                let fixup_pos = self.current_section_data().len();
+                self.current_section_data().extend_from_slice(&[0, 0, 0, 0]); // Placeholder
+                self.pending_fixups.push((
+                    self.current_section.clone(),
+                    fixup_pos,
+                    LabelRef::Global(target.clone()),
+                ));
             }
 
             X8664Instr::Ret => {
-                self.code.push(0xc3); // RET
+                self.current_section_data().push(0xc3); // RET
             }
 
             X8664Instr::Jmp { target } => {
-                self.code.push(0xe9); // JMP rel32
-                let fixup_pos = self.code.len();
-                self.code.extend_from_slice(&[0, 0, 0, 0]); // Placeholder
-                self.pending_fixups.push((fixup_pos, target.clone()));
+                self.current_section_data().push(0xe9); // JMP rel32
+                let fixup_pos = self.current_section_data().len();
+                self.current_section_data().extend_from_slice(&[0, 0, 0, 0]); // Placeholder
+                self.pending_fixups
+                    .push((self.current_section.clone(), fixup_pos, target.clone()));
             }
 
             X8664Instr::JmpCC { cc, target } => {
@@ -295,38 +368,48 @@ impl X86Emitter {
                     ConditionCode::GreaterEqual => 0x8d, // JGE
                 };
 
-                self.code.push(0x0f);
-                self.code.push(opcode);
-                let fixup_pos = self.code.len();
-                self.code.extend_from_slice(&[0, 0, 0, 0]); // Placeholder
-                self.pending_fixups.push((fixup_pos, target.clone()));
+                self.current_section_data().push(0x0f);
+                self.current_section_data().push(opcode);
+                let fixup_pos = self.current_section_data().len();
+                self.current_section_data().extend_from_slice(&[0, 0, 0, 0]); // Placeholder
+                self.pending_fixups
+                    .push((self.current_section.clone(), fixup_pos, target.clone()));
             }
 
             X8664Instr::Label { id } => {
-                self.label_positions.insert(*id, self.code.len());
+                let current_pos = self.sections.get(&self.current_section).unwrap().data.len();
+                self.label_positions
+                    .insert(*id, (self.current_section.clone(), current_pos));
+
+                // Update section labels
+                self.sections
+                    .get_mut(&self.current_section)
+                    .unwrap()
+                    .labels
+                    .insert(*id, current_pos);
             }
 
             X8664Instr::Syscall => {
-                self.code.push(0x0f);
-                self.code.push(0x05);
+                self.current_section_data().push(0x0f);
+                self.current_section_data().push(0x05);
             }
 
             X8664Instr::EnterFrame => {
                 // push rbp
-                self.code.push(0x55);
+                self.current_section_data().push(0x55);
                 // mov rbp, rsp
-                self.code.push(0x48);
-                self.code.push(0x89);
-                self.code.push(0xe5);
+                self.current_section_data().push(0x48);
+                self.current_section_data().push(0x89);
+                self.current_section_data().push(0xe5);
             }
 
             X8664Instr::LeaveFrame => {
                 // mov rsp, rbp
-                self.code.push(0x48);
-                self.code.push(0x89);
-                self.code.push(0xec);
+                self.current_section_data().push(0x48);
+                self.current_section_data().push(0x89);
+                self.current_section_data().push(0xec);
                 // pop rbp
-                self.code.push(0x5d);
+                self.current_section_data().push(0x5d);
             }
 
             X8664Instr::AllocStack { size } => {
@@ -339,81 +422,123 @@ impl X86Emitter {
 
                 self.emit_rex_if_needed(true, None, Some(&X86Register::Rsp));
                 if aligned_size <= 127 {
-                    self.code.push(0x83); // SUB r/m64, imm8
-                    self.code.push(0xec); // /5 RSP
-                    self.code.push(aligned_size as u8);
+                    self.current_section_data().push(0x83); // SUB r/m64, imm8
+                    self.current_section_data().push(0xec); // /5 RSP
+                    self.current_section_data().push(aligned_size as u8);
                 } else {
-                    self.code.push(0x81); // SUB r/m64, imm32
-                    self.code.push(0xec); // /5 RSP
-                    self.code.extend_from_slice(&aligned_size.to_le_bytes());
+                    self.current_section_data().push(0x81); // SUB r/m64, imm32
+                    self.current_section_data().push(0xec); // /5 RSP
+                    self.current_section_data()
+                        .extend_from_slice(&aligned_size.to_le_bytes());
                 }
             }
 
             X8664Instr::LeaLabel { dest, label } => {
                 // lea dest, [rip + offset]
+                let reg_code = self.register_code(dest);
                 self.emit_rex_if_needed(true, Some(dest), None);
-                self.code.push(0x8d); // LEA
-                self.code.push((self.register_code(dest) << 3) | 0x05); // ModRM: mod=00, reg=dest, rm=101 (RIP+disp32)
+                self.current_section_data().push(0x8d); // LEA
+                self.current_section_data().push((reg_code << 3) | 0x05); // ModRM: mod=00, reg=dest, rm=101 (RIP+disp32)
 
                 // Record fixup for the label
-                let fixup_pos = self.code.len();
-                self.code.extend_from_slice(&[0, 0, 0, 0]); // Placeholder
-                self.pending_fixups
-                    .push((fixup_pos, LabelRef::Global(label.clone())));
+                let fixup_pos = self.current_section_data().len();
+                self.current_section_data().extend_from_slice(&[0, 0, 0, 0]); // Placeholder
+                self.pending_fixups.push((
+                    self.current_section.clone(),
+                    fixup_pos,
+                    LabelRef::Global(label.clone()),
+                ));
             }
 
             X8664Instr::Cld => {
                 // cld - Clear direction flag
-                self.code.push(0xfc);
+                self.current_section_data().push(0xfc);
             }
 
             X8664Instr::RepStosb => {
                 // rep stosb - Repeat store byte
-                self.code.push(0xf3); // REP prefix
-                self.code.push(0xaa); // STOSB
+                self.current_section_data().push(0xf3); // REP prefix
+                self.current_section_data().push(0xaa); // STOSB
             }
 
             X8664Instr::XorRR { dest, src } => {
                 self.emit_rex_if_needed(true, Some(src), Some(dest));
-                self.code.push(0x31); // XOR r/m64, r64
+                self.current_section_data().push(0x31); // XOR r/m64, r64
                 let modrm = 0xc0 | (self.register_code(src) << 3) | self.register_code(dest);
-                self.code.push(modrm);
+                self.current_section_data().push(modrm);
             }
 
             X8664Instr::Ud2 => {
                 // UD2 - undefined instruction
-                self.code.push(0x0f);
-                self.code.push(0x0b);
+                self.current_section_data().push(0x0f);
+                self.current_section_data().push(0x0b);
+            }
+            X8664Instr::Section { name } => {
+                let new_section = match name.as_str() {
+                    ".text" => SectionType::Text,
+                    ".data" => SectionType::Data,
+                    ".bss" => SectionType::Bss,
+                    ".rodata" => SectionType::Rodata,
+                    _ => return Err(format!("Unsupported section: {name}")),
+                };
+
+                // Switch to new section
+                self.current_section = new_section.clone();
+
+                // Ensure section exists
+                if !self.sections.contains_key(&new_section) {
+                    self.sections.insert(
+                        new_section.clone(),
+                        SectionInfo {
+                            section_type: new_section.clone(),
+                            data: Vec::new(),
+                            labels: HashMap::new(),
+                        },
+                    );
+                }
             }
 
             X8664Instr::DataBytes { bytes } => {
                 // Emit raw bytes directly
-                self.code.extend_from_slice(bytes);
+                self.current_section_data().extend_from_slice(bytes);
             }
 
             X8664Instr::ReserveBytes { count } => {
-                // Reserve zero-initialized space
-                self.code.resize(self.code.len() + *count as usize, 0);
+                match self.current_section {
+                    SectionType::Bss => {
+                        // In .bss, just track the size - no actual data in file
+                        // For BSS sections, we use the data.len() to track the virtual size
+                        // but we don't store actual bytes
+                        let section = self.sections.get_mut(&SectionType::Bss).unwrap();
+                        // Extend data field to track size, but this data won't be written to file
+                        section.data.resize(section.data.len() + *count as usize, 0);
+                    }
+                    _ => {
+                        // In other sections, reserve actual zero bytes
+                        let section = self.sections.get_mut(&self.current_section).unwrap();
+                        section.data.resize(section.data.len() + *count as usize, 0);
+                    }
+                }
             }
             X8664Instr::RepMovsb => {
                 // rep movsb
-                self.code.extend_from_slice(&[0xF3, 0xA4]);
+                self.current_section_data().extend_from_slice(&[0xF3, 0xA4]);
             }
             X8664Instr::Std => {
                 // std - set direction flag
-                self.code.push(0xFD);
+                self.current_section_data().push(0xFD);
             }
         }
         Ok(())
     }
 
     fn resolve_fixups(&mut self) -> Result<(), String> {
-        for (fixup_pos, target) in &self.pending_fixups {
-            let target_pos = match target {
+        for (section, fixup_pos, target) in &self.pending_fixups {
+            let (target_section, target_pos) = match target {
                 LabelRef::Local(id) => self
                     .label_positions
                     .get(id)
-                    .copied()
+                    .cloned()
                     .ok_or_else(|| format!("Undefined label: {id}"))?,
                 LabelRef::Global(name) => {
                     // Look up the function name to get its label ID
@@ -426,20 +551,104 @@ impl X86Emitter {
                     let machine_id = label_id.to_machine_id(self.runtime_label_count);
                     self.label_positions
                         .get(&machine_id)
-                        .copied()
+                        .cloned()
                         .ok_or_else(|| format!("Undefined label for function: {name}"))?
                 }
             };
 
-            let current_pos = fixup_pos + 4; // Position after the offset
-            let offset = (target_pos as i32) - (current_pos as i32);
+            // Calculate relative offset accounting for section layout in memory
+            let offset = if section == &target_section {
+                // Same section: simple relative addressing
+                let current_pos = fixup_pos + 4; // Position after the offset
+                (target_pos as i32) - (current_pos as i32)
+            } else {
+                // Cross-section: calculate based on expected memory layout
+                self.calculate_cross_section_offset(
+                    section,
+                    *fixup_pos,
+                    &target_section,
+                    target_pos,
+                )?
+            };
 
             let offset_bytes = offset.to_le_bytes();
+            let section_data = &mut self.sections.get_mut(section).unwrap().data;
             for (i, &byte) in offset_bytes.iter().enumerate() {
-                self.code[fixup_pos + i] = byte;
+                section_data[fixup_pos + i] = byte;
             }
         }
         Ok(())
+    }
+
+    /// Calculate cross-section offset based on expected ELF memory layout
+    fn calculate_cross_section_offset(
+        &self,
+        from_section: &SectionType,
+        from_offset: usize,
+        to_section: &SectionType,
+        to_offset: usize,
+    ) -> Result<i32, String> {
+        // Calculate expected memory layout matching ELF writer
+        // Base address for sections (matches ELF writer)
+        const BASE_ADDR: u64 = 0x400000;
+        const EHDR_SIZE: usize = 0x40;
+        const PHDR_SIZE: usize = 0x38;
+
+        // Calculate expected section offsets (matches ELF writer logic)
+        // This must match the layout calculation in generate_elf_with_sections
+        let program_header_count = if self.sections.contains_key(&SectionType::Bss)
+            || self.sections.contains_key(&SectionType::Data)
+        {
+            2
+        } else {
+            1
+        };
+        let headers_size = EHDR_SIZE + (PHDR_SIZE * program_header_count);
+        let mut current_file_offset = align_to_16(headers_size as u64) as usize;
+
+        // Section layout: .text, .data, .bss (matches ELF writer)
+        let mut section_addresses = HashMap::new();
+
+        // .text section
+        if let Some(text_section) = self.sections.get(&SectionType::Text) {
+            section_addresses.insert(SectionType::Text, BASE_ADDR + current_file_offset as u64);
+            current_file_offset += text_section.data.len();
+            current_file_offset = align_to_16(current_file_offset as u64) as usize;
+        }
+
+        // .data section
+        if let Some(data_section) = self.sections.get(&SectionType::Data) {
+            section_addresses.insert(SectionType::Data, BASE_ADDR + current_file_offset as u64);
+            current_file_offset += data_section.data.len();
+            current_file_offset = align_to_16(current_file_offset as u64) as usize;
+        }
+
+        // .bss section (virtual address, no file space)
+        if let Some(_bss_section) = self.sections.get(&SectionType::Bss) {
+            section_addresses.insert(SectionType::Bss, BASE_ADDR + current_file_offset as u64);
+        }
+
+        // Calculate addresses
+        let from_addr = section_addresses
+            .get(from_section)
+            .ok_or_else(|| format!("Section not found: {from_section:?}"))?
+            + from_offset as u64
+            + 4; // +4 for instruction pointer after the displacement
+
+        let to_addr = section_addresses
+            .get(to_section)
+            .ok_or_else(|| format!("Section not found: {to_section:?}"))?
+            + to_offset as u64;
+
+        // Calculate relative offset
+        let offset = (to_addr as i64) - (from_addr as i64);
+
+        // Check if offset fits in i32
+        if offset < i32::MIN as i64 || offset > i32::MAX as i64 {
+            return Err(format!("Cross-section offset too large: {offset}"));
+        }
+
+        Ok(offset as i32)
     }
 
     /// Get the 3-bit register encoding for ModR/M or SIB bytes
@@ -542,7 +751,7 @@ impl X86Emitter {
                     )
                 }))
         {
-            self.code.push(rex);
+            self.current_section_data().push(rex);
         }
     }
 
@@ -573,14 +782,14 @@ impl X86Emitter {
                 if base.needs_rex() {
                     rex |= 0x01; // REX.B
                 }
-                self.code.push(rex);
+                self.current_section_data().push(rex);
             }
         } else {
             self.emit_rex_if_needed(true, Some(reg), Some(base));
         }
 
         // Emit opcode
-        self.code.push(opcode);
+        self.current_section_data().push(opcode);
 
         // Special handling for RSP/R12 which require SIB byte
         let base_code = self.register_code(base);
@@ -591,29 +800,30 @@ impl X86Emitter {
         if offset == 0 && !needs_disp32_for_rbp {
             // ModR/M byte: mod=00 (no disp), reg=reg, r/m=base
             let modrm = (self.register_code(reg) << 3) | base_code;
-            self.code.push(modrm);
+            self.current_section_data().push(modrm);
             if needs_sib {
                 // SIB byte: scale=00, index=100 (none), base=100 (RSP)
-                self.code.push(0x24);
+                self.current_section_data().push(0x24);
             }
         } else if (-128..=127).contains(&offset) && !(offset == 0 && needs_disp32_for_rbp) {
             // ModR/M byte: mod=01 (disp8), reg=reg, r/m=base
             let modrm = 0x40 | (self.register_code(reg) << 3) | base_code;
-            self.code.push(modrm);
+            self.current_section_data().push(modrm);
             if needs_sib {
                 // SIB byte: scale=00, index=100 (none), base=100 (RSP)
-                self.code.push(0x24);
+                self.current_section_data().push(0x24);
             }
-            self.code.push(offset as u8);
+            self.current_section_data().push(offset as u8);
         } else {
             // ModR/M byte: mod=10 (disp32), reg=reg, r/m=base
             let modrm = 0x80 | (self.register_code(reg) << 3) | base_code;
-            self.code.push(modrm);
+            self.current_section_data().push(modrm);
             if needs_sib {
                 // SIB byte: scale=00, index=100 (none), base=100 (RSP)
-                self.code.push(0x24);
+                self.current_section_data().push(0x24);
             }
-            self.code.extend_from_slice(&offset.to_le_bytes());
+            self.current_section_data()
+                .extend_from_slice(&offset.to_le_bytes());
         }
 
         Ok(())
@@ -623,29 +833,65 @@ impl X86Emitter {
     pub fn get_output(&self) -> (&[u8], HashMap<String, usize>) {
         let mut symbols = HashMap::new();
 
-        // Convert local labels to symbols
-        for (id, pos) in &self.label_positions {
-            symbols.insert(format!("L{id}"), *pos);
+        // Convert local labels to symbols - only include .text section labels for compatibility
+        for (id, (section, pos)) in &self.label_positions {
+            if *section == SectionType::Text {
+                symbols.insert(format!("L{id}"), *pos);
+            }
         }
 
         // Add function names to symbol table
         for (name, label_id) in &self.function_labels {
             let machine_id = label_id.to_machine_id(self.runtime_label_count);
-            if let Some(&pos) = self.label_positions.get(&machine_id) {
-                symbols.insert(name.clone(), pos);
+            if let Some((section, pos)) = self.label_positions.get(&machine_id) {
+                if *section == SectionType::Text {
+                    symbols.insert(name.clone(), *pos);
+                }
             }
         }
 
-        // Add global symbols from fixups
-        for (pos, target) in &self.pending_fixups {
-            if let LabelRef::Global(name) = target {
-                // For now, store the fixup position as the symbol location
-                // The ELF writer will need to handle these properly
-                symbols.insert(name.clone(), *pos);
+        // Note: We do NOT add global symbols from fixups to the symbol table
+        // because the fixup positions are where calls are made FROM, not where functions are located.
+        // The actual function positions are already added above in the function_labels loop.
+
+        // Return .text section data
+        let text_data = &self.sections.get(&SectionType::Text).unwrap().data;
+        (text_data, symbols)
+    }
+
+    /// Get all sections and their symbols (new interface for multi-section ELF generation)
+    pub fn get_sections_and_symbols(&self) -> SectionsAndSymbols<'_> {
+        let mut symbols = HashMap::new();
+
+        // Convert local labels to symbols with section information
+        for (id, (section, pos)) in &self.label_positions {
+            symbols.insert(format!("L{id}"), (section.clone(), *pos));
+        }
+
+        // Add function names to symbol table with section information
+        for (name, label_id) in &self.function_labels {
+            let machine_id = label_id.to_machine_id(self.runtime_label_count);
+            if let Some((section, pos)) = self.label_positions.get(&machine_id) {
+                symbols.insert(name.clone(), (section.clone(), *pos));
             }
         }
 
-        (&self.code, symbols)
+        (&self.sections, symbols)
+    }
+
+    /// Get data section content and BSS size for ELF generation
+    pub fn get_data_and_bss(&self) -> (&[u8], usize) {
+        let data_section = self
+            .sections
+            .get(&SectionType::Data)
+            .map(|s| s.data.as_slice())
+            .unwrap_or(&[]);
+        let bss_size = self
+            .sections
+            .get(&SectionType::Bss)
+            .map(|s| s.data.len())
+            .unwrap_or(0);
+        (data_section, bss_size)
     }
 }
 

@@ -123,6 +123,9 @@ pub enum X8664Instr {
     /// and dest, src
     AndRR { dest: X86Register, src: X86Register },
 
+    /// and dest, imm32
+    AndRI { dest: X86Register, imm: i32 },
+
     /// shl dest, cl (shift left)
     Shl {
         dest: X86Register,
@@ -220,4 +223,7 @@ pub enum X8664Instr {
 
     /// ud2 - undefined instruction (causes SIGILL)
     Ud2,
+
+    /// Section directive for assembly generation
+    Section { name: String },
 }

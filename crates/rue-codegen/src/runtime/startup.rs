@@ -62,6 +62,11 @@ impl RuntimeContext {
             target: "__rue_setup_signal_handlers".to_string(),
         });
 
+        // Initialize heap (stub implementation - safe to call)
+        self.instructions.push(X8664Instr::Call {
+            target: "__rue_heap_init".to_string(),
+        });
+
         // Call user's main function
         self.instructions.push(X8664Instr::Call {
             target: "main".to_string(),

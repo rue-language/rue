@@ -46,6 +46,28 @@ pub const CHAR_MINUS: u8 = 45;
 pub const CHAR_ZERO: u8 = 48;
 
 // Memory management constants
+/// Memory management system call: brk (change data segment size)
+#[expect(unused)]
+pub const SYSCALL_BRK: i64 = 12;
+
+/// Memory management system call: mmap (map files or devices into memory)
+#[expect(unused)]
+pub const SYSCALL_MMAP: i64 = 9;
+
+/// Memory management system call: munmap (unmap files or devices from memory)
+#[expect(unused)]
+pub const SYSCALL_MUNMAP: i64 = 11;
+
+/// Default heap size for static allocator (64KB)
+pub const DEFAULT_HEAP_SIZE: u64 = 65536;
+
+/// Memory page size on x86-64 (4KB)
+#[expect(unused)]
+pub const PAGE_SIZE: u64 = 4096;
+
+/// Heap alignment requirement (8 bytes for x86-64)
+#[expect(unused)]
+pub const HEAP_ALIGNMENT: u64 = 8;
 
 /// Threshold for using rep movsb in memcpy (256 bytes)
 pub const MEMCPY_REP_THRESHOLD: u64 = 256;

@@ -30,12 +30,13 @@ impl ElfWriter {
             symbols.contains_key("_start"),
             "_start symbol must be present in symbols table"
         );
+
+        // Step 1: Use object crate to generate a proper relocatable object
+        // Use the working implementation directly with the actual machine code and sections
         let start_offset = *symbols
             .get("_start")
             .expect("_start symbol must be present in symbols table");
 
-        // Create a proper executable ELF manually since the object crate
-        // can only create relocatable objects (ET_REL), not executables (ET_EXEC)
         self.create_executable_elf(machine_code, data_section, bss_size, start_offset)
     }
 
