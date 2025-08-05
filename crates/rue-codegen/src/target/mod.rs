@@ -22,6 +22,9 @@ pub trait InstructionEmitter<Instr> {
 
     /// Get the emitted code and symbol table
     fn get_output(&self) -> (&[u8], HashMap<String, usize>);
+
+    /// Get data section content and BSS size for ELF generation
+    fn get_data_and_bss(&self) -> (&[u8], usize);
 }
 
 /// Trait for target-specific executable format writers
@@ -29,6 +32,15 @@ pub trait ExecutableWriter {
     /// Generate an executable from machine code and symbols
     fn generate_executable(&self, machine_code: &[u8], symbols: &HashMap<String, usize>)
     -> Vec<u8>;
+
+    /// Generate an executable with data and BSS sections
+    fn generate_executable_with_sections(
+        &self,
+        machine_code: &[u8],
+        symbols: &HashMap<String, usize>,
+        data_section: &[u8],
+        bss_size: usize,
+    ) -> Vec<u8>;
 }
 
 /// Trait for target-specific assembly formatters  

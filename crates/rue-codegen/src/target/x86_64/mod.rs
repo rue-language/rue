@@ -11,7 +11,7 @@ mod emitter;
 // Re-export the main types with appropriate names
 pub use assembler::format_instructions_as_assembly;
 pub use elf::ElfWriter;
-pub use emitter::X86Emitter;
+pub use emitter::{SectionType, X86Emitter};
 
 use crate::target::{AssemblyFormatter, ExecutableWriter, InstructionEmitter};
 use rue_ir::pir::Label;
@@ -34,6 +34,10 @@ impl InstructionEmitter<X8664Instr> for X86Emitter {
     fn get_output(&self) -> (&[u8], HashMap<String, usize>) {
         self.get_output()
     }
+
+    fn get_data_and_bss(&self) -> (&[u8], usize) {
+        self.get_data_and_bss()
+    }
 }
 
 impl ExecutableWriter for ElfWriter {
@@ -43,6 +47,16 @@ impl ExecutableWriter for ElfWriter {
         symbols: &HashMap<String, usize>,
     ) -> Vec<u8> {
         self.generate_elf(machine_code, symbols)
+    }
+
+    fn generate_executable_with_sections(
+        &self,
+        machine_code: &[u8],
+        symbols: &HashMap<String, usize>,
+        data_section: &[u8],
+        bss_size: usize,
+    ) -> Vec<u8> {
+        self.generate_elf_with_sections(machine_code, symbols, data_section, bss_size)
     }
 }
 

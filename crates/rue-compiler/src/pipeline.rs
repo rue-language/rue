@@ -5,7 +5,7 @@
 
 use rue_codegen::backend::RuntimeProvider;
 use rue_codegen::target::TargetRegistry;
-use rue_codegen::{LoweringError, RegisterAllocator, X8664Codegen};
+use rue_codegen::{CodegenError, LoweringError, RegisterAllocator, X8664Codegen};
 use rue_ir::hir::HirProgram;
 use rue_ir::mir::MirProgram;
 use rue_ir::pir::{Label, PIR};
@@ -369,9 +369,19 @@ pub fn compile_hir_via_mir_to_executable(
     // Extract symbol positions from emitter
     let (_, symbols) = emitter.get_output();
 
-    // Generate ELF executable using trait abstraction
+    // Validate that _start symbol exists
+    if !symbols.contains_key("_start") {
+        return Err(CompileError::Codegen(CodegenError::InvalidOperation(
+            "_start symbol not found in symbol table - runtime initialization failed".to_string(),
+        )));
+    }
+
+    // Get data and BSS section information
+    let (data_section, bss_size) = emitter.get_data_and_bss();
+
+    // Generate ELF executable using trait abstraction with section support
     let elf_writer = TargetRegistry::create_executable_writer(TargetRegistry::default_target());
-    Ok(elf_writer.generate_executable(&code, &symbols))
+    Ok(elf_writer.generate_executable_with_sections(&code, &symbols, data_section, bss_size))
 }
 
 #[cfg(test)]

@@ -151,6 +151,9 @@ pub fn format_instructions_as_assembly(
                     reg_name(dest)
                 ));
             }
+            X8664Instr::AndRI { dest, imm } => {
+                output.push_str(&format!("    andq ${}, %{}\n", imm, reg_name(dest)));
+            }
             X8664Instr::Shl { dest, count: _ } => {
                 output.push_str(&format!("    shlq %cl, %{}\n", reg_name(dest)));
             }
@@ -272,6 +275,9 @@ pub fn format_instructions_as_assembly(
             }
             X8664Instr::Ud2 => {
                 output.push_str("    ud2\n");
+            }
+            X8664Instr::Section { name } => {
+                output.push_str(&format!(".section {name}\n"));
             }
             X8664Instr::DataBytes { bytes } => {
                 // Emit raw data bytes using .byte directive

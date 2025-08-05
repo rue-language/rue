@@ -4,6 +4,7 @@
 //! that are embedded in Rue executables. It provides assembly code for basic I/O
 //! operations, syscalls, and other runtime support functions.
 
+pub mod alloc;
 pub mod context;
 pub mod conversion;
 pub mod data;
