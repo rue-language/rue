@@ -14,7 +14,7 @@ use rue_ir::mir::{
     BasicBlock, BlockId, FunctionSignature, MirBinOp, MirConst, MirFunction, MirProgram,
     MirStatement, MirTerminator, MirUnaryOp, MirValue, Temp,
 };
-use rue_ir::types::{FieldId, RueType};
+use rue_ir::types::{FieldId, RueType, TypeContext};
 use std::collections::HashMap;
 use tracing::{debug, trace};
 
@@ -211,7 +211,7 @@ impl MirBuilder {
     }
 
     /// Lower a HIR program to MIR
-    pub fn lower_program(hir: &HirProgram) -> MirProgram {
+    pub fn lower_program(hir: &HirProgram, type_context: TypeContext) -> MirProgram {
         let mut functions = Vec::new();
         let mut function_signatures = HashMap::new();
 
@@ -237,6 +237,7 @@ impl MirBuilder {
         MirProgram {
             functions,
             function_signatures,
+            type_context,
         }
     }
 
@@ -430,6 +431,16 @@ impl MirBuilder {
             HirStatement::Expr(expr) => {
                 // Expression statement - evaluate for side effects
                 self.lower_expr(expr);
+            }
+            HirStatement::Return { expr, span } => {
+                let return_value = expr
+                    .as_ref()
+                    .map(|return_expr| self.lower_expr(return_expr));
+
+                self.add_statement(MirStatement::Return {
+                    value: return_value,
+                    span: Some(*span),
+                });
             }
         }
     }

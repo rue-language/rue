@@ -1,5 +1,0 @@
-// Minimal input test
-fn main() {
-    let n = input();
-    println_i64(n);
-}

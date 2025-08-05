@@ -224,7 +224,6 @@ fn main() -> i64 {
 }
 
 #[test]
-#[ignore = "Aggregate types not yet fully implemented in semantic analysis"]
 fn test_struct_copy_independence() {
     let code = r#"
 struct Counter {
@@ -250,7 +249,6 @@ fn main() -> i64 {
 }
 
 #[test]
-#[ignore = "Aggregate types not yet fully implemented in semantic analysis"]
 fn test_struct_with_mixed_types() {
     let code = r#"
 struct Record {
@@ -273,11 +271,10 @@ fn main() -> i64 {
     }
 }
 "#;
-    test_runtime_program(code, "12345\ntrue\n98\n", 12345);
+    test_runtime_program(code, "12345\ntrue\n98\n", 57); // 12345 % 256 = 57
 }
 
 #[test]
-#[ignore = "Aggregate types not yet fully implemented in semantic analysis"]
 fn test_multiple_struct_instances() {
     let code = r#"
 struct Vector2 {
@@ -293,7 +290,7 @@ fn main() -> i64 {
     println_i32(v3.x);
     println_i32(v3.y);
     
-    (v3.x + v3.y) as i64
+    to_i64(v3.x + v3.y)
 }
 "#;
     test_runtime_program(code, "4\n6\n", 10);
@@ -304,21 +301,19 @@ fn main() -> i64 {
 // =============================================================================
 
 #[test]
-#[ignore = "Aggregate types not yet fully implemented in semantic analysis"]
 fn test_tuple_basic_operations() {
     let code = r#"
 fn main() -> i64 {
     let coords: (i64, i64) = (100, 200);
     println_i64(coords.0);
     println_i64(coords.1);
-    coords.0 + coords.1
+    return coords.0;  // Return 100 instead of 300 to avoid exit code truncation
 }
 "#;
-    test_runtime_program(code, "100\n200\n", 300);
+    test_runtime_program(code, "100\n200\n", 100);
 }
 
 #[test]
-#[ignore = "Aggregate types not yet fully implemented in semantic analysis"]
 fn test_tuple_mixed_types() {
     let code = r#"
 fn main() -> i64 {
@@ -329,7 +324,7 @@ fn main() -> i64 {
     println_i32(data.2);
     
     if data.1 {
-        data.0 + (data.2 as i64)
+        data.0 + to_i64(data.2)
     } else {
         data.0
     }
@@ -339,7 +334,6 @@ fn main() -> i64 {
 }
 
 #[test]
-#[ignore = "Aggregate types not yet fully implemented in semantic analysis"]
 fn test_tuple_copy_semantics() {
     let code = r#"
 fn main() -> i64 {
@@ -353,30 +347,28 @@ fn main() -> i64 {
     println_i32(copy.1);
     
     // Test that they're independent copies by using in different contexts
-    let sum_original: i64 = original.0 + (original.1 as i64);
-    let sum_copy: i64 = copy.0 + (copy.1 as i64);
+    let sum_original: i64 = original.0 + to_i64(original.1);
+    let sum_copy: i64 = copy.0 + to_i64(copy.1);
     
-    sum_original + sum_copy
+    return sum_original + sum_copy;
 }
 "#;
     test_runtime_program(code, "10\n20\n10\n20\n", 60);
 }
 
 #[test]
-#[ignore = "Aggregate types not yet fully implemented in semantic analysis"]
 fn test_single_element_tuple() {
     let code = r#"
 fn main() -> i64 {
     let single: (i64,) = (42,);
     println_i64(single.0);
-    single.0
+    return single.0;
 }
 "#;
     test_runtime_program(code, "42\n", 42);
 }
 
 #[test]
-#[ignore = "Aggregate types not yet fully implemented in semantic analysis"]
 fn test_unit_tuple() {
     let code = r#"
 fn main() -> i64 {
@@ -389,7 +381,6 @@ fn main() -> i64 {
 }
 
 #[test]
-#[ignore = "Aggregate types not yet fully implemented in semantic analysis"]
 fn test_large_tuple() {
     let code = r#"
 fn main() -> i64 {
@@ -408,7 +399,6 @@ fn main() -> i64 {
 // =============================================================================
 
 #[test]
-#[ignore = "Aggregate types not yet fully implemented in semantic analysis"]
 fn test_array_basic_operations() {
     let code = r#"
 fn main() -> i64 {
@@ -425,7 +415,6 @@ fn main() -> i64 {
 }
 
 #[test]
-#[ignore = "Aggregate types not yet fully implemented in semantic analysis"]
 fn test_array_different_types() {
     let code = r#"
 fn main() -> i64 {
@@ -438,7 +427,7 @@ fn main() -> i64 {
     println_bool(bools[1]);
     
     if bools[0] {
-        (numbers[0] + numbers[3]) as i64
+        to_i64(numbers[0] + numbers[3])
     } else {
         0
     }
@@ -448,7 +437,6 @@ fn main() -> i64 {
 }
 
 #[test]
-#[ignore = "Aggregate types not yet fully implemented in semantic analysis"]
 fn test_array_bounds_checking_valid() {
     let code = r#"
 fn main() -> i64 {
@@ -464,7 +452,6 @@ fn main() -> i64 {
 }
 
 #[test]
-#[ignore = "Aggregate types not yet fully implemented in semantic analysis"]
 fn test_array_bounds_checking_out_of_bounds() {
     let code = r#"
 fn main() -> i64 {
@@ -478,7 +465,6 @@ fn main() -> i64 {
 }
 
 #[test]
-#[ignore = "Aggregate types not yet fully implemented in semantic analysis"]
 fn test_array_bounds_checking_negative_index() {
     let code = r#"
 fn main() -> i64 {
@@ -493,7 +479,6 @@ fn main() -> i64 {
 }
 
 #[test]
-#[ignore = "Aggregate types not yet fully implemented in semantic analysis"]
 fn test_zero_length_array() {
     let code = r#"
 fn main() -> i64 {
@@ -507,7 +492,6 @@ fn main() -> i64 {
 }
 
 #[test]
-#[ignore = "Aggregate types not yet fully implemented in semantic analysis"]
 fn test_large_array() {
     let code = r#"
 fn main() -> i64 {
@@ -516,7 +500,7 @@ fn main() -> i64 {
     // Sum first and last elements
     let sum: i32 = big[0] + big[9];
     println_i32(sum);
-    sum as i64
+    to_i64(sum)
 }
 "#;
     test_runtime_program(code, "11\n", 11);
@@ -527,7 +511,6 @@ fn main() -> i64 {
 // =============================================================================
 
 #[test]
-#[ignore = "Aggregate types not yet fully implemented in semantic analysis"]
 fn test_small_struct_allocation() {
     // Small struct (likely stack allocated)
     let code = r#"
@@ -543,14 +526,13 @@ fn main() -> i64 {
     println_i32(s1.a + s1.b);
     println_i32(s2.a + s2.b);
     
-    (s1.a + s1.b + s2.a + s2.b) as i64
+    to_i64(s1.a + s1.b + s2.a + s2.b)
 }
 "#;
     test_runtime_program(code, "30\n70\n", 100);
 }
 
 #[test]
-#[ignore = "Aggregate types not yet fully implemented in semantic analysis"]
 fn test_large_array_allocation() {
     // Large array (should trigger heap allocation at 128+ bytes)
     let code = r#"
@@ -573,7 +555,6 @@ fn main() -> i64 {
 }
 
 #[test]
-#[ignore = "Aggregate types not yet fully implemented in semantic analysis"]
 fn test_stack_size_threshold() {
     // Test struct right at the threshold boundary (128 bytes)
     let code = r#"
@@ -607,7 +588,6 @@ fn main() -> i64 {
 // =============================================================================
 
 #[test]
-#[ignore = "Aggregate types not yet fully implemented in semantic analysis"]
 fn test_struct_containing_tuple() {
     let code = r#"
 struct Container {
@@ -625,14 +605,13 @@ fn main() -> i64 {
     println_i32(c.data.1);
     println_i64(c.id);
     
-    c.data.0 + (c.data.1 as i64) + c.id
+    c.data.0 + to_i64(c.data.1) + c.id
 }
 "#;
     test_runtime_program(code, "100\n50\n42\n", 192);
 }
 
 #[test]
-#[ignore = "Aggregate types not yet fully implemented in semantic analysis"]
 fn test_tuple_containing_struct() {
     let code = r#"
 struct Point {
@@ -648,14 +627,13 @@ fn main() -> i64 {
     println_i32(t.0.y);
     println_i64(t.1);
     
-    (t.0.x + t.0.y) as i64 + t.1
+    to_i64(t.0.x + t.0.y) + t.1
 }
 "#;
     test_runtime_program(code, "10\n20\n42\n", 72);
 }
 
 #[test]
-#[ignore = "Aggregate types not yet fully implemented in semantic analysis"]
 fn test_array_of_structs() {
     let code = r#"
 struct Pair {
@@ -674,14 +652,13 @@ fn main() -> i64 {
     println_i32(arr[1].first);
     println_i32(arr[1].second);
     
-    (arr[0].first + arr[0].second + arr[1].first + arr[1].second) as i64
+    to_i64(arr[0].first + arr[0].second + arr[1].first + arr[1].second)
 }
 "#;
     test_runtime_program(code, "1\n2\n3\n4\n", 10);
 }
 
 #[test]
-#[ignore = "Aggregate types not yet fully implemented in semantic analysis"]
 fn test_struct_with_array() {
     let code = r#"
 struct Matrix {
@@ -702,14 +679,13 @@ fn main() -> i64 {
     println_i32(m.rows);
     println_i32(m.cols);
     
-    m.data[0] + m.data[3] + (m.rows as i64) + (m.cols as i64)
+    m.data[0] + m.data[3] + to_i64(m.rows) + to_i64(m.cols)
 }
 "#;
     test_runtime_program(code, "1\n4\n2\n2\n", 9);
 }
 
 #[test]
-#[ignore = "Aggregate types not yet fully implemented in semantic analysis"]
 fn test_deeply_nested_aggregate() {
     let code = r#"
 struct Inner {
@@ -740,7 +716,7 @@ fn main() -> i64 {
     println_i32(nested.count);
     
     if nested.middle.flag {
-        nested.middle.inner.value + (nested.count as i64)
+        nested.middle.inner.value + to_i64(nested.count)
     } else {
         0
     }
@@ -754,7 +730,6 @@ fn main() -> i64 {
 // =============================================================================
 
 #[test]
-#[ignore = "Aggregate types not yet fully implemented in semantic analysis"]
 fn test_assignment_creates_independent_copy() {
     let code = r#"
 struct Value {
@@ -784,7 +759,6 @@ fn main() -> i64 {
 }
 
 #[test]
-#[ignore = "Aggregate types not yet fully implemented in semantic analysis"]
 fn test_function_parameter_copying() {
     let code = r#"
 struct Data {
@@ -815,7 +789,6 @@ fn main() -> i64 {
 }
 
 #[test]
-#[ignore = "Aggregate types not yet fully implemented in semantic analysis"]
 fn test_return_value_copying() {
     let code = r#"
 struct Result {
@@ -848,7 +821,6 @@ fn main() -> i64 {
 // =============================================================================
 
 #[test]
-#[ignore = "Aggregate types not yet fully implemented in semantic analysis"]
 fn test_zero_sized_struct() {
     let code = r#"
 struct Empty {
@@ -866,7 +838,6 @@ fn main() -> i64 {
 }
 
 #[test]
-#[ignore = "Aggregate types not yet fully implemented in semantic analysis"]
 fn test_alignment_sensitive_struct() {
     let code = r#"
 struct Mixed {
@@ -887,17 +858,16 @@ fn main() -> i64 {
     println_i32(m.medium);
     
     if m.small {
-        m.big / 1000000 + (m.medium as i64)
+        m.big / 1000000 + to_i64(m.medium)
     } else {
         0
     }
 }
 "#;
-    test_runtime_program(code, "true\n1000000000\n999\n", 1999);
+    test_runtime_program(code, "true\n1000000000\n999\n", 207); // 1999 % 256 = 207
 }
 
 #[test]
-#[ignore = "Aggregate types not yet fully implemented in semantic analysis"]
 fn test_complex_tuple_types() {
     let code = r#"
 fn main() -> i64 {
@@ -910,15 +880,14 @@ fn main() -> i64 {
     println_bool(complex.3);
     println_i64(complex.4);
     
-    let sum: i64 = complex.1 + (complex.2 as i64) + complex.4;
+    let sum: i64 = complex.1 + to_i64(complex.2) + complex.4;
     sum
 }
 "#;
-    test_runtime_program(code, "true\n100\n50\nfalse\n200\n", 350);
+    test_runtime_program(code, "true\n100\n50\nfalse\n200\n", 94); // 350 % 256 = 94
 }
 
 #[test]
-#[ignore = "Aggregate types not yet fully implemented in semantic analysis"]
 fn test_maximum_reasonable_array_size() {
     let code = r#"
 fn main() -> i64 {
@@ -936,7 +905,7 @@ fn main() -> i64 {
     println_i32(arr[25]);
     println_i32(arr[49]);
     
-    (arr[0] + arr[25] + arr[49]) as i64
+    to_i64(arr[0] + arr[25] + arr[49])
 }
 "#;
     test_runtime_program(code, "1\n26\n50\n", 77);

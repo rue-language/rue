@@ -150,6 +150,16 @@ pub enum HirStatement {
     /// Evaluates an expression for its side effects, discarding the return value.
     /// Common for function calls that don't return useful values.
     Expr(HirExpr),
+    /// Return statement: `return expr;` or `return;`
+    ///
+    /// Returns a value from the current function. The expression type must match
+    /// the function's declared return type. If no expression is provided, returns unit.
+    Return {
+        /// Optional expression to return (None for bare `return;`)
+        expr: Option<HirExpr>,
+        /// Source location of the return statement
+        span: Span,
+    },
 }
 
 /// Typed expressions in HIR.
@@ -537,6 +547,13 @@ impl fmt::Display for HirStatement {
             }
             HirStatement::Expr(expr) => {
                 write!(f, "{expr};")
+            }
+            HirStatement::Return { expr, .. } => {
+                if let Some(return_expr) = expr {
+                    write!(f, "return {return_expr};")
+                } else {
+                    write!(f, "return;")
+                }
             }
         }
     }

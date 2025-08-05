@@ -314,7 +314,7 @@ fn main() -> i32 {
         "variable_in_nested_if",
         r#"
 fn main() -> i32 {
-    if true {
+    let _result: i32 = if true {
         if true {
             let z: i32 = 15;
             z
@@ -357,7 +357,7 @@ fn main() -> i32 {
     }
 }
 "#,
-        "If branches have incompatible types",
+        "Type mismatch",
     );
 }
 

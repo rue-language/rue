@@ -138,6 +138,10 @@ impl MirMutVisitor for CommonSubexpressionElimination {
                     }
                 }
             }
+            MirStatement::Return { .. } => {
+                // Return statements don't affect CSE directly
+                // (they don't assign to temporaries)
+            }
         }
         VisitorControl::Continue
     }
@@ -235,6 +239,7 @@ mod tests {
                 }],
             }],
             function_signatures: HashMap::new(),
+            type_context: rue_ir::types::TypeContext::new(),
         };
 
         // Run CSE
@@ -308,6 +313,7 @@ mod tests {
                 }],
             }],
             function_signatures: HashMap::new(),
+            type_context: rue_ir::types::TypeContext::new(),
         };
 
         // Run CSE
@@ -361,6 +367,7 @@ mod tests {
                 }],
             }],
             function_signatures: HashMap::new(),
+            type_context: rue_ir::types::TypeContext::new(),
         };
 
         // Run CSE

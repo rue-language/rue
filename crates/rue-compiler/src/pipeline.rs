@@ -6,13 +6,13 @@
 use rue_codegen::backend::RuntimeProvider;
 use rue_codegen::target::TargetRegistry;
 use rue_codegen::{CodegenError, LoweringError, RegisterAllocator, X8664Codegen};
-use rue_ir::hir::HirProgram;
 use rue_ir::mir::MirProgram;
 use rue_ir::pir::{Label, PIR};
 #[cfg(debug_assertions)]
 use rue_lowering::MirVerifier;
 use rue_lowering::{MirBuilder, MirToPir};
 use rue_optimize::{OptimizationLevel, OptimizationProfileFactory};
+use rue_semantic::{AnalysisResult, scope_to_type_context};
 use rue_target::X8664Instr;
 use std::collections::HashMap;
 use tracing::{debug, info, instrument};
@@ -265,12 +265,15 @@ fn optimize_and_verify_mir(
 /// It performs HIR → MIR → optimizations → instructions → machine code generation.
 #[instrument(skip_all, fields(optimize = enable_optimizations))]
 pub fn compile_hir_via_mir_to_intermediate(
-    hir: &HirProgram,
+    analysis: &AnalysisResult,
     enable_optimizations: bool,
 ) -> Result<CompilationIntermediateResult, CompileError> {
-    // Step 1: Lower HIR to MIR
+    // Step 1: Extract TypeContext from semantic analysis
+    let type_context = scope_to_type_context(&analysis.scope);
+
+    // Step 2: Lower HIR to MIR with TypeContext
     info!(target: "rue::mir", "Lowering HIR to MIR");
-    let mut mir = MirBuilder::lower_program(hir);
+    let mut mir = MirBuilder::lower_program(&analysis.hir, type_context);
 
     // Step 2: Print MIR for debugging
     debug!(target: "rue::mir", mir = %mir, "MIR before optimization");
@@ -283,7 +286,7 @@ pub fn compile_hir_via_mir_to_intermediate(
 
     // Step 4: Lower MIR to Instructions
     info!(target: "rue::codegen", "Lowering MIR to instructions");
-    let mut mir_lowerer = MirToPir::new();
+    let mut mir_lowerer = MirToPir::with_type_context(mir.type_context.clone());
     let instructions = mir_lowerer.lower_program(&mir);
     let function_labels = mir_lowerer.get_function_labels();
     // Block parameters now handled via Load/Store with "always spill" approach
@@ -328,11 +331,11 @@ pub fn compile_hir_via_mir_to_intermediate(
 /// HIR → MIR → (optimizations) → Instructions → Assembly
 #[instrument(skip_all, fields(optimize = enable_optimizations))]
 pub fn compile_hir_via_mir_to_assembly(
-    hir: &HirProgram,
+    analysis: &AnalysisResult,
     enable_optimizations: bool,
 ) -> Result<String, CompileError> {
     // Use the unified compilation pipeline
-    let intermediate = compile_hir_via_mir_to_intermediate(hir, enable_optimizations)?;
+    let intermediate = compile_hir_via_mir_to_intermediate(analysis, enable_optimizations)?;
 
     // Generate assembly from intermediate results
     info!(target: "rue::codegen", "Generating assembly");
@@ -349,11 +352,11 @@ pub fn compile_hir_via_mir_to_assembly(
 /// This function uses the unified compilation pipeline and generates an ELF executable.
 #[instrument(skip_all, fields(optimize = enable_optimizations))]
 pub fn compile_hir_via_mir_to_executable(
-    hir: &HirProgram,
+    analysis: &AnalysisResult,
     enable_optimizations: bool,
 ) -> Result<Vec<u8>, CompileError> {
     // Use the unified compilation pipeline
-    let intermediate = compile_hir_via_mir_to_intermediate(hir, enable_optimizations)?;
+    let intermediate = compile_hir_via_mir_to_intermediate(analysis, enable_optimizations)?;
 
     // Generate machine code from intermediate results using trait abstraction
     info!(target: "rue::elf", "Generating ELF executable");
@@ -390,6 +393,7 @@ mod tests {
     use rue_ir::hir::{BinOp, HirBlock, HirExpr, HirFunction, HirLiteral, HirProgram};
     use rue_ir::types::RueType;
     use rue_lexer::Span;
+    use rue_semantic::{AnalysisResult, Scope};
 
     #[test]
     fn test_compile_via_mir() {
@@ -419,8 +423,14 @@ mod tests {
             }],
         };
 
+        // Create analysis result with empty scope for testing
+        let analysis = AnalysisResult {
+            scope: Scope::default(),
+            hir,
+        };
+
         // Compile via MIR
-        let asm = compile_hir_via_mir_to_assembly(&hir, false).unwrap();
+        let asm = compile_hir_via_mir_to_assembly(&analysis, false).unwrap();
 
         // Verify we got assembly using regex to ensure we match actual labels/instructions
         // and not comments
@@ -545,8 +555,14 @@ mod tests {
             ],
         };
 
+        // Create analysis result with empty scope for testing
+        let analysis = AnalysisResult {
+            scope: Scope::default(),
+            hir,
+        };
+
         // Compile via MIR
-        let result = compile_hir_via_mir_to_assembly(&hir, false);
+        let result = compile_hir_via_mir_to_assembly(&analysis, false);
         assert!(
             result.is_ok(),
             "Fibonacci should compile successfully via MIR: {:?}",

@@ -145,11 +145,26 @@ impl HirValidator {
             self.validate_statement(stmt);
         }
 
-        // Determine block type from final expression
+        // Determine block type from final expression or return statements
         let block_type = if let Some(final_expr) = &block.expr {
             self.validate_expression(final_expr)
         } else {
-            RueType::Unit
+            // Check if any statement is a return statement
+            let return_type = block.statements.iter().find_map(|stmt| {
+                if let HirStatement::Return {
+                    expr: Some(return_expr),
+                    ..
+                } = stmt
+                {
+                    Some(return_expr.ty().clone())
+                } else if let HirStatement::Return { expr: None, .. } = stmt {
+                    Some(RueType::Unit)
+                } else {
+                    None
+                }
+            });
+
+            return_type.unwrap_or(RueType::Unit)
         };
 
         // Pop scope
@@ -224,6 +239,13 @@ impl HirValidator {
             HirStatement::Expr(expr) => {
                 // Just validate the expression
                 self.validate_expression(expr);
+            }
+            HirStatement::Return { expr, .. } => {
+                // Validate the return expression if present
+                if let Some(return_expr) = expr {
+                    self.validate_expression(return_expr);
+                }
+                // Note: Type checking for return statements was already done in semantic analysis
             }
         }
     }

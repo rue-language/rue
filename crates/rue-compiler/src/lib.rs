@@ -380,7 +380,7 @@ pub fn compile_file(
     };
 
     // Generate executable from HIR via MIR (without optimizations)
-    match pipeline::compile_hir_via_mir_to_executable(&analysis.hir, false) {
+    match pipeline::compile_hir_via_mir_to_executable(&analysis, false) {
         Ok(executable) => Ok(Arc::new(executable)),
         Err(e) => Err(Arc::new(RueError::Compile(e.to_string()))),
     }
@@ -400,7 +400,7 @@ pub fn compile_file_to_assembly(
     };
 
     // Generate assembly from HIR via MIR (without optimizations)
-    match pipeline::compile_hir_via_mir_to_assembly(&analysis.hir, false) {
+    match pipeline::compile_hir_via_mir_to_assembly(&analysis, false) {
         Ok(assembly) => Ok(Arc::new(assembly)),
         Err(e) => Err(Arc::new(RueError::Compile(e.to_string()))),
     }
@@ -421,7 +421,7 @@ pub fn compile_file_with_options(
     };
 
     // Generate executable from HIR via MIR with optimization settings
-    match pipeline::compile_hir_via_mir_to_executable(&analysis.hir, options.optimize(db)) {
+    match pipeline::compile_hir_via_mir_to_executable(&analysis, options.optimize(db)) {
         Ok(executable) => Ok(Arc::new(executable)),
         Err(e) => Err(Arc::new(RueError::Compile(e.to_string()))),
     }
@@ -442,7 +442,7 @@ pub fn compile_file_to_assembly_with_options(
     };
 
     // Generate assembly from HIR via MIR with optimization settings
-    match pipeline::compile_hir_via_mir_to_assembly(&analysis.hir, options.optimize(db)) {
+    match pipeline::compile_hir_via_mir_to_assembly(&analysis, options.optimize(db)) {
         Ok(assembly) => Ok(Arc::new(assembly)),
         Err(e) => Err(Arc::new(RueError::Compile(e.to_string()))),
     }

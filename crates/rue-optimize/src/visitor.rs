@@ -292,6 +292,13 @@ pub fn walk_statement<V: MirVisitor + ?Sized>(
             }
             visitor.visit_value(value)
         }
+        MirStatement::Return { value, .. } => {
+            if let Some(temp) = value {
+                visitor.visit_temp(temp)
+            } else {
+                VisitorControl::Continue
+            }
+        }
     }
 }
 
@@ -519,6 +526,13 @@ pub fn walk_statement_mut<V: MirMutVisitor + ?Sized>(
             }
             visitor.visit_value(value)
         }
+        MirStatement::Return { value, .. } => {
+            if let Some(temp) = value {
+                visitor.visit_temp(temp)
+            } else {
+                VisitorControl::Continue
+            }
+        }
     }
 }
 
@@ -743,6 +757,11 @@ pub fn fold_statement<F: MirFolder + ?Sized>(
         MirStatement::Assign { dest, value, .. } => {
             *dest = folder.fold_temp(*dest)?;
             *value = folder.fold_value(value.clone())?;
+        }
+        MirStatement::Return { value, .. } => {
+            if let Some(temp) = value {
+                *temp = folder.fold_temp(*temp)?;
+            }
         }
     }
     Ok(stmt)

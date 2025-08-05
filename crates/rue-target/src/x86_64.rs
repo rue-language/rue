@@ -103,17 +103,43 @@ pub enum X8664Instr {
         offset: i32,
     },
 
+    /// mov dest, dword ptr [base + offset] (load 32-bit from memory)
+    MovRM32 {
+        dest: X86Register,
+        base: X86Register,
+        offset: i32,
+    },
+
+    /// mov dword ptr [base + offset], src (store 32-bit to memory)
+    MovMR32 {
+        base: X86Register,
+        offset: i32,
+        src: X86Register,
+    },
+
     /// add dest, src
     AddRR { dest: X86Register, src: X86Register },
 
     /// add dest, imm32
     AddRI { dest: X86Register, imm: i32 },
 
+    /// add dest, src (32-bit)
+    AddRR32 { dest: X86Register, src: X86Register },
+
+    /// add dest, imm32 (32-bit)
+    AddRI32 { dest: X86Register, imm: i32 },
+
     /// sub dest, src
     SubRR { dest: X86Register, src: X86Register },
 
     /// sub dest, imm32
     SubRI { dest: X86Register, imm: i32 },
+
+    /// sub dest, src (32-bit)
+    SubRR32 { dest: X86Register, src: X86Register },
+
+    /// sub dest, imm32 (32-bit)
+    SubRI32 { dest: X86Register, imm: i32 },
 
     /// xor dest, src
     XorRR { dest: X86Register, src: X86Register },
@@ -123,6 +149,12 @@ pub enum X8664Instr {
 
     /// imul dest, dest, imm32
     ImulRI { dest: X86Register, imm: i32 },
+
+    /// imul dest, src (32-bit)
+    ImulRR32 { dest: X86Register, src: X86Register },
+
+    /// imul dest, dest, imm32 (32-bit)
+    ImulRI32 { dest: X86Register, imm: i32 },
 
     /// and dest, src
     AndRR { dest: X86Register, src: X86Register },
