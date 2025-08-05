@@ -137,6 +137,16 @@ impl X86Emitter {
                 self.emit_mem_op(0x8a, dest, base, *offset, true)?;
             }
 
+            X8664Instr::MovRM32 { dest, base, offset } => {
+                // 32-bit load with zero-extension to 64-bit
+                self.emit_mem_op_32(0x8b, dest, base, *offset)?;
+            }
+
+            X8664Instr::MovMR32 { base, offset, src } => {
+                // 32-bit store
+                self.emit_mem_op_32(0x89, src, base, *offset)?;
+            }
+
             X8664Instr::AddRR { dest, src } => {
                 self.emit_rex_if_needed(true, Some(src), Some(dest));
                 self.current_section_data().push(0x01); // ADD r/m64, r64
@@ -153,6 +163,33 @@ impl X86Emitter {
                     self.current_section_data().push(*imm as u8);
                 } else {
                     self.current_section_data().push(0x81); // ADD r/m64, imm32
+                    let modrm = 0xc0 | self.register_code(dest);
+                    self.current_section_data().push(modrm);
+                    self.current_section_data()
+                        .extend_from_slice(&imm.to_le_bytes());
+                }
+            }
+            X8664Instr::AddRR32 { dest, src } => {
+                // 32-bit ADD does not need REX prefix for basic registers
+                if dest.needs_rex() || src.needs_rex() {
+                    self.emit_rex_if_needed(false, Some(src), Some(dest));
+                }
+                self.current_section_data().push(0x01); // ADD r/m32, r32
+                let modrm = 0xc0 | (self.register_code(src) << 3) | self.register_code(dest);
+                self.current_section_data().push(modrm);
+            }
+            X8664Instr::AddRI32 { dest, imm } => {
+                // 32-bit ADD does not need REX prefix for basic registers
+                if dest.needs_rex() {
+                    self.emit_rex_if_needed(false, None, Some(dest));
+                }
+                if *imm >= -128 && *imm <= 127 {
+                    self.current_section_data().push(0x83); // ADD r/m32, imm8
+                    let modrm = 0xc0 | self.register_code(dest);
+                    self.current_section_data().push(modrm);
+                    self.current_section_data().push(*imm as u8);
+                } else {
+                    self.current_section_data().push(0x81); // ADD r/m32, imm32
                     let modrm = 0xc0 | self.register_code(dest);
                     self.current_section_data().push(modrm);
                     self.current_section_data()
@@ -176,6 +213,33 @@ impl X86Emitter {
                     self.current_section_data().push(*imm as u8);
                 } else {
                     self.current_section_data().push(0x81); // SUB r/m64, imm32
+                    let modrm = 0xe8 | self.register_code(dest); // /5
+                    self.current_section_data().push(modrm);
+                    self.current_section_data()
+                        .extend_from_slice(&imm.to_le_bytes());
+                }
+            }
+            X8664Instr::SubRR32 { dest, src } => {
+                // 32-bit SUB does not need REX prefix for basic registers
+                if dest.needs_rex() || src.needs_rex() {
+                    self.emit_rex_if_needed(false, Some(src), Some(dest));
+                }
+                self.current_section_data().push(0x29); // SUB r/m32, r32
+                let modrm = 0xc0 | (self.register_code(src) << 3) | self.register_code(dest);
+                self.current_section_data().push(modrm);
+            }
+            X8664Instr::SubRI32 { dest, imm } => {
+                // 32-bit SUB does not need REX prefix for basic registers
+                if dest.needs_rex() {
+                    self.emit_rex_if_needed(false, None, Some(dest));
+                }
+                if *imm >= -128 && *imm <= 127 {
+                    self.current_section_data().push(0x83); // SUB r/m32, imm8
+                    let modrm = 0xe8 | self.register_code(dest); // /5
+                    self.current_section_data().push(modrm);
+                    self.current_section_data().push(*imm as u8);
+                } else {
+                    self.current_section_data().push(0x81); // SUB r/m32, imm32
                     let modrm = 0xe8 | self.register_code(dest); // /5
                     self.current_section_data().push(modrm);
                     self.current_section_data()
@@ -238,6 +302,34 @@ impl X86Emitter {
                     self.current_section_data().push(*imm as u8);
                 } else {
                     self.current_section_data().push(0x69); // IMUL r64, r/m64, imm32
+                    let modrm = 0xc0 | (self.register_code(dest) << 3) | self.register_code(dest);
+                    self.current_section_data().push(modrm);
+                    self.current_section_data()
+                        .extend_from_slice(&imm.to_le_bytes());
+                }
+            }
+            X8664Instr::ImulRR32 { dest, src } => {
+                // 32-bit IMUL does not need REX prefix for basic registers
+                if dest.needs_rex() || src.needs_rex() {
+                    self.emit_rex_if_needed(false, Some(src), Some(dest));
+                }
+                self.current_section_data().push(0x0f); // Two-byte escape
+                self.current_section_data().push(0xaf); // IMUL r32, r/m32
+                let modrm = 0xc0 | (self.register_code(dest) << 3) | self.register_code(src);
+                self.current_section_data().push(modrm);
+            }
+            X8664Instr::ImulRI32 { dest, imm } => {
+                // 32-bit IMUL does not need REX prefix for basic registers
+                if dest.needs_rex() {
+                    self.emit_rex_if_needed(false, Some(dest), Some(dest));
+                }
+                if *imm >= -128 && *imm <= 127 {
+                    self.current_section_data().push(0x6b); // IMUL r32, r/m32, imm8
+                    let modrm = 0xc0 | (self.register_code(dest) << 3) | self.register_code(dest);
+                    self.current_section_data().push(modrm);
+                    self.current_section_data().push(*imm as u8);
+                } else {
+                    self.current_section_data().push(0x69); // IMUL r32, r/m32, imm32
                     let modrm = 0xc0 | (self.register_code(dest) << 3) | self.register_code(dest);
                     self.current_section_data().push(modrm);
                     self.current_section_data()
@@ -900,6 +992,67 @@ impl X86Emitter {
             .map(|s| s.data.len())
             .unwrap_or(0);
         (data_section, bss_size)
+    }
+
+    /// Emit a 32-bit memory operation (no REX.W bit for true 32-bit operation)
+    fn emit_mem_op_32(
+        &mut self,
+        opcode: u8,
+        reg: &X86Register,
+        base: &X86Register,
+        offset: i32,
+    ) -> Result<(), String> {
+        // Emit REX prefix if needed for register encoding, but without REX.W
+        if reg.needs_rex() || base.needs_rex() {
+            let mut rex = 0x40;
+            if reg.needs_rex() {
+                rex |= 0x04; // REX.R
+            }
+            if base.needs_rex() {
+                rex |= 0x01; // REX.B
+            }
+            self.current_section_data().push(rex);
+        }
+
+        // Emit opcode
+        self.current_section_data().push(opcode);
+
+        // Special handling for RSP/R12 which require SIB byte
+        let base_code = self.register_code(base);
+        let needs_sib = base_code == 4; // RSP or R12
+        let needs_disp32_for_rbp = base_code == 5; // RBP or R13
+
+        // Choose between mod values based on offset
+        if offset == 0 && !needs_disp32_for_rbp {
+            // ModR/M byte: mod=00 (no disp), reg=reg, r/m=base
+            let modrm = (self.register_code(reg) << 3) | base_code;
+            self.current_section_data().push(modrm);
+            if needs_sib {
+                // SIB byte: scale=00, index=100 (none), base=100 (RSP)
+                self.current_section_data().push(0x24);
+            }
+        } else if (-128..=127).contains(&offset) {
+            // ModR/M byte: mod=01 (8-bit disp), reg=reg, r/m=base
+            let modrm = 0x40 | (self.register_code(reg) << 3) | base_code;
+            self.current_section_data().push(modrm);
+            if needs_sib {
+                // SIB byte: scale=00, index=100 (none), base=100 (RSP)
+                self.current_section_data().push(0x24);
+            }
+            self.current_section_data().push(offset as u8);
+        } else {
+            // ModR/M byte: mod=10 (32-bit disp), reg=reg, r/m=base
+            let modrm = 0x80 | (self.register_code(reg) << 3) | base_code;
+            self.current_section_data().push(modrm);
+            if needs_sib {
+                // SIB byte: scale=00, index=100 (none), base=100 (RSP)
+                self.current_section_data().push(0x24);
+            }
+            self.current_section_data()
+                .extend_from_slice(&offset.to_le_bytes());
+        }
+
+        Ok(())
     }
 }
 

@@ -24,6 +24,7 @@ mod tests {
         MirProgram {
             functions: vec![func],
             function_signatures: HashMap::new(),
+            type_context: crate::types::TypeContext::new(),
         }
     }
 

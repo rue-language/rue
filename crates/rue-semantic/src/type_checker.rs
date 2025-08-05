@@ -97,6 +97,24 @@ impl TypeChecker {
         }
     }
 
+    /// Check if an expression could benefit from numeric type inference hints
+    #[allow(clippy::only_used_in_recursion)] // this is about &self, which we kind of need
+    fn could_benefit_from_numeric_inference(&self, expr: &ExpressionNode) -> bool {
+        match expr {
+            ExpressionNode::Literal(lit) => matches!(lit.kind, TokenKind::Integer(_)),
+            ExpressionNode::Unary(unary_expr) => {
+                // Unary operations like negation can benefit if their operand can
+                self.could_benefit_from_numeric_inference(&unary_expr.operand)
+            }
+            ExpressionNode::Binary(bin_expr) => {
+                // Binary operations can benefit if either operand can benefit
+                self.could_benefit_from_numeric_inference(&bin_expr.left)
+                    || self.could_benefit_from_numeric_inference(&bin_expr.right)
+            }
+            _ => false,
+        }
+    }
+
     /// Type check the entire program and build HIR
     pub fn check_program(&mut self, ast: &CstRoot) -> Result<HirProgram, SemanticError> {
         let mut functions = Vec::new();
@@ -204,7 +222,7 @@ impl TypeChecker {
 
         // Process all statements
         for stmt in &block.statements {
-            let hir_stmt = self.check_statement(stmt)?;
+            let hir_stmt = self.check_statement(stmt, expected_return_type)?;
             statements.push(hir_stmt);
         }
 
@@ -227,7 +245,23 @@ impl TypeChecker {
                 &RueType::Unit
             };
 
-            if block_type != expected_type {
+            // Check if any statement is a return statement that matches the expected type
+            let has_valid_return = statements.iter().any(|stmt| {
+                if let HirStatement::Return {
+                    expr: Some(return_expr),
+                    ..
+                } = stmt
+                {
+                    return_expr.ty() == expected_type
+                } else if let HirStatement::Return { expr: None, .. } = stmt {
+                    *expected_type == RueType::Unit
+                } else {
+                    false
+                }
+            });
+
+            // If there's a valid return statement, don't require the block's final expression to match
+            if !has_valid_return && block_type != expected_type {
                 return Err(SemanticError {
                     message: format!(
                         "Type mismatch: Expected return type {expected_type}, found {block_type}"
@@ -244,7 +278,11 @@ impl TypeChecker {
     }
 
     /// Type check a statement and build HIR
-    fn check_statement(&mut self, stmt: &StatementNode) -> Result<HirStatement, SemanticError> {
+    fn check_statement(
+        &mut self,
+        stmt: &StatementNode,
+        expected_return_type: Option<&RueType>,
+    ) -> Result<HirStatement, SemanticError> {
         match stmt {
             StatementNode::Let(let_stmt) => {
                 // Extract variable name
@@ -262,8 +300,28 @@ impl TypeChecker {
                 let declared_type = if let Some(type_ann) = &let_stmt.type_annotation {
                     crate::convert_type_node_with_scope(&type_ann.ty, &self.global_scope)?
                 } else {
-                    // For now, we'll check expression first, then infer
-                    let temp_expr = self.check_expression(&let_stmt.value)?;
+                    // If we have an expected return type and the value is a numeric literal or expression
+                    // that could benefit from contextual inference, try using the return type as a hint
+                    let type_hint = if let Some(ret_type) = expected_return_type {
+                        match ret_type {
+                            RueType::I32 | RueType::I64 => {
+                                if self.could_benefit_from_numeric_inference(&let_stmt.value) {
+                                    Some(ret_type)
+                                } else {
+                                    None
+                                }
+                            }
+                            _ => None,
+                        }
+                    } else {
+                        None
+                    };
+
+                    let temp_expr = if let Some(hint) = type_hint {
+                        self.check_expression_with_hint(&let_stmt.value, Some(hint))?
+                    } else {
+                        self.check_expression(&let_stmt.value)?
+                    };
                     temp_expr.ty().clone()
                 };
 
@@ -272,8 +330,28 @@ impl TypeChecker {
                     // Use declared type as hint for inference
                     self.check_expression_with_hint(&let_stmt.value, Some(&declared_type))?
                 } else {
-                    // No type annotation, infer from expression
-                    self.check_expression(&let_stmt.value)?
+                    // No type annotation, but we might have used a hint to infer the declared type
+                    // Check with the same hint we used for inference
+                    let type_hint = if let Some(ret_type) = expected_return_type {
+                        match ret_type {
+                            RueType::I32 | RueType::I64 => {
+                                if self.could_benefit_from_numeric_inference(&let_stmt.value) {
+                                    Some(ret_type)
+                                } else {
+                                    None
+                                }
+                            }
+                            _ => None,
+                        }
+                    } else {
+                        None
+                    };
+
+                    if let Some(hint) = type_hint {
+                        self.check_expression_with_hint(&let_stmt.value, Some(hint))?
+                    } else {
+                        self.check_expression(&let_stmt.value)?
+                    }
                 };
 
                 // Validate type compatibility
@@ -344,6 +422,49 @@ impl TypeChecker {
                 let hir_expr = self.check_expression(&expr_stmt.expression)?;
                 Ok(HirStatement::Expr(hir_expr))
             }
+            StatementNode::Return(return_stmt) => {
+                let return_expr = if let Some(expr) = &return_stmt.expression {
+                    // Type check the return expression with the expected return type as hint
+                    let hir_expr = if let Some(expected_type) = expected_return_type {
+                        self.check_expression_with_hint(expr, Some(expected_type))?
+                    } else {
+                        self.check_expression(expr)?
+                    };
+
+                    // Validate that the return type matches the function's return type
+                    if let Some(expected_type) = expected_return_type {
+                        if hir_expr.ty() != expected_type {
+                            return Err(SemanticError {
+                                message: format!(
+                                    "Return type mismatch: expected {expected_type}, found {}",
+                                    hir_expr.ty()
+                                ),
+                                span: expr.span(),
+                            });
+                        }
+                    }
+
+                    Some(hir_expr)
+                } else {
+                    // Bare return; - should be unit type
+                    if let Some(expected_type) = expected_return_type {
+                        if *expected_type != RueType::Unit {
+                            return Err(SemanticError {
+                                message: format!(
+                                    "Return type mismatch: expected {expected_type}, found unit (bare return)"
+                                ),
+                                span: return_stmt.return_token.span,
+                            });
+                        }
+                    }
+                    None
+                };
+
+                Ok(HirStatement::Return {
+                    expr: return_expr,
+                    span: return_stmt.return_token.span,
+                })
+            }
         }
     }
 
@@ -361,15 +482,23 @@ impl TypeChecker {
         match expr {
             ExpressionNode::Literal(lit) => self.check_literal_with_hint(lit, type_hint),
             ExpressionNode::Identifier(ident) => self.check_identifier(ident),
-            ExpressionNode::Binary(bin_expr) => self.check_binary_expression(bin_expr),
-            ExpressionNode::Unary(unary_expr) => self.check_unary_expression(unary_expr),
+            ExpressionNode::Binary(bin_expr) => {
+                self.check_binary_expression_with_hint(bin_expr, type_hint)
+            }
+            ExpressionNode::Unary(unary_expr) => {
+                self.check_unary_expression_with_hint(unary_expr, type_hint)
+            }
             ExpressionNode::Call(call) => self.check_call_expression(call),
-            ExpressionNode::If(if_expr) => self.check_if_expression(if_expr),
+            ExpressionNode::If(if_expr) => self.check_if_expression_with_hint(if_expr, type_hint),
             ExpressionNode::While(while_expr) => self.check_while_expression(while_expr),
             ExpressionNode::StructLiteral(struct_lit) => self.check_struct_literal(struct_lit),
             ExpressionNode::FieldAccess(field_access) => self.check_field_access(field_access),
-            ExpressionNode::TupleLiteral(tuple_lit) => self.check_tuple_literal(tuple_lit),
-            ExpressionNode::ArrayLiteral(array_lit) => self.check_array_literal(array_lit),
+            ExpressionNode::TupleLiteral(tuple_lit) => {
+                self.check_tuple_literal_with_hint(tuple_lit, type_hint)
+            }
+            ExpressionNode::ArrayLiteral(array_lit) => {
+                self.check_array_literal_with_hint(array_lit, type_hint)
+            }
             ExpressionNode::ArrayAccess(array_access) => self.check_array_access(array_access),
         }
     }
@@ -381,10 +510,10 @@ impl TypeChecker {
     ) -> Result<HirExpr, SemanticError> {
         let hir_lit = match &lit.kind {
             TokenKind::Integer(n) => {
-                // Use type hint for inference, default to i32 if no hint
+                // Use type hint for inference, default to i64 if no hint
                 match type_hint {
-                    Some(RueType::I64) => HirLiteral::Int64(*n),
-                    Some(RueType::I32) | None => HirLiteral::Int32(*n as i32),
+                    Some(RueType::I64) | None => HirLiteral::Int64(*n),
+                    Some(RueType::I32) => HirLiteral::Int32(*n as i32),
                     Some(other_type) => {
                         return Err(SemanticError {
                             message: format!(
@@ -438,39 +567,12 @@ impl TypeChecker {
         })
     }
 
-    fn check_binary_expression(
+    fn check_binary_expression_with_hint(
         &mut self,
         bin_expr: &rue_ast::BinaryExprNode,
+        type_hint: Option<&RueType>,
     ) -> Result<HirExpr, SemanticError> {
-        // First try with no hints to see what we get
-        let lhs = self.check_expression(&bin_expr.left)?;
-        let rhs = self.check_expression(&bin_expr.right)?;
-
-        // If operands have different types, try contextual inference for numeric literals
-        let (lhs, rhs) = if lhs.ty() != rhs.ty() {
-            // Check if we can apply contextual inference
-            if self.is_numeric_literal(&bin_expr.left)
-                && matches!(rhs.ty(), RueType::I32 | RueType::I64)
-            {
-                // Re-check lhs with rhs type as hint
-                let lhs_with_hint =
-                    self.check_expression_with_hint(&bin_expr.left, Some(rhs.ty()))?;
-                (lhs_with_hint, rhs)
-            } else if self.is_numeric_literal(&bin_expr.right)
-                && matches!(lhs.ty(), RueType::I32 | RueType::I64)
-            {
-                // Re-check rhs with lhs type as hint
-                let rhs_with_hint =
-                    self.check_expression_with_hint(&bin_expr.right, Some(lhs.ty()))?;
-                (lhs, rhs_with_hint)
-            } else {
-                (lhs, rhs)
-            }
-        } else {
-            (lhs, rhs)
-        };
-
-        // Convert operator
+        // Convert operator first to determine what kinds of operands we need
         let op = match &bin_expr.operator.kind {
             TokenKind::Plus => BinOp::Add,
             TokenKind::Minus => BinOp::Sub,
@@ -488,6 +590,61 @@ impl TypeChecker {
                     message: format!("Invalid binary operator: {:?}", bin_expr.operator.kind),
                     span: bin_expr.operator.span,
                 });
+            }
+        };
+
+        // Determine operand hint based on operation type and type hint
+        let operand_hint = match op {
+            BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod => {
+                // Arithmetic operations: if we have a type hint and it's numeric, use it for operands
+                if let Some(hint) = type_hint {
+                    match hint {
+                        RueType::I32 | RueType::I64 => Some(hint),
+                        _ => None, // Non-numeric hints don't apply to arithmetic operands
+                    }
+                } else {
+                    None
+                }
+            }
+            BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge | BinOp::Eq | BinOp::Ne => {
+                // Comparison operations: don't pass type hint to operands, as result is always bool
+                None
+            }
+        };
+
+        // Check operands with appropriate hints
+        let (lhs, rhs) = if let Some(hint) = operand_hint {
+            // Use the hint for both operands
+            let lhs = self.check_expression_with_hint(&bin_expr.left, Some(hint))?;
+            let rhs = self.check_expression_with_hint(&bin_expr.right, Some(hint))?;
+            (lhs, rhs)
+        } else {
+            // No hint for operands, use the old contextual inference logic
+            let lhs = self.check_expression(&bin_expr.left)?;
+            let rhs = self.check_expression(&bin_expr.right)?;
+
+            // If operands have different types, try contextual inference for numeric literals
+            if lhs.ty() != rhs.ty() {
+                // Check if we can apply contextual inference
+                if self.is_numeric_literal(&bin_expr.left)
+                    && matches!(rhs.ty(), RueType::I32 | RueType::I64)
+                {
+                    // Re-check lhs with rhs type as hint
+                    let lhs_with_hint =
+                        self.check_expression_with_hint(&bin_expr.left, Some(rhs.ty()))?;
+                    (lhs_with_hint, rhs)
+                } else if self.is_numeric_literal(&bin_expr.right)
+                    && matches!(lhs.ty(), RueType::I32 | RueType::I64)
+                {
+                    // Re-check rhs with lhs type as hint
+                    let rhs_with_hint =
+                        self.check_expression_with_hint(&bin_expr.right, Some(lhs.ty()))?;
+                    (lhs, rhs_with_hint)
+                } else {
+                    (lhs, rhs)
+                }
+            } else {
+                (lhs, rhs)
             }
         };
 
@@ -542,11 +699,13 @@ impl TypeChecker {
         })
     }
 
-    fn check_unary_expression(
+    fn check_unary_expression_with_hint(
         &mut self,
         unary_expr: &rue_ast::UnaryExprNode,
+        type_hint: Option<&RueType>,
     ) -> Result<HirExpr, SemanticError> {
-        let expr = self.check_expression(&unary_expr.operand)?;
+        // For unary operations, we can pass the type hint to the operand
+        let expr = self.check_expression_with_hint(&unary_expr.operand, type_hint)?;
 
         let op = match &unary_expr.operator.kind {
             TokenKind::Minus => UnaryOp::Neg,
@@ -657,9 +816,10 @@ impl TypeChecker {
         })
     }
 
-    fn check_if_expression(
+    fn check_if_expression_with_hint(
         &mut self,
         if_expr: &rue_ast::IfStatementNode,
+        type_hint: Option<&RueType>,
     ) -> Result<HirExpr, SemanticError> {
         // Type check condition
         let cond = self.check_expression(&if_expr.condition)?;
@@ -670,8 +830,8 @@ impl TypeChecker {
             });
         }
 
-        // Type check then block
-        let then_block = self.check_block(&if_expr.then_block, None)?;
+        // Type check then block with type hint
+        let then_block = self.check_block(&if_expr.then_block, type_hint)?;
 
         // Type check else block if present
         let (else_block, result_type) = if let Some(else_clause) = &if_expr.else_clause {
@@ -684,7 +844,7 @@ impl TypeChecker {
                     });
                 }
             };
-            let else_block = self.check_block(else_block_node, None)?;
+            let else_block = self.check_block(else_block_node, type_hint)?;
 
             // Determine result type by combining both branches
             let then_type = if let Some(ref then_expr) = then_block.expr {
@@ -962,15 +1122,25 @@ impl TypeChecker {
         }
     }
 
-    fn check_tuple_literal(
+    fn check_tuple_literal_with_hint(
         &mut self,
         tuple_lit: &TupleLiteralNode,
+        type_hint: Option<&RueType>,
     ) -> Result<HirExpr, SemanticError> {
         let mut elements = Vec::new();
         let mut element_types = Vec::new();
 
-        for element_expr in &tuple_lit.elements {
-            let element = self.check_expression(element_expr)?;
+        // Extract element type hints from the tuple type hint
+        let element_hints: Vec<Option<&RueType>> =
+            if let Some(RueType::Tuple(expected_types)) = type_hint {
+                expected_types.iter().map(Some).collect()
+            } else {
+                vec![None; tuple_lit.elements.len()]
+            };
+
+        for (i, element_expr) in tuple_lit.elements.iter().enumerate() {
+            let element_hint = element_hints.get(i).and_then(|h| *h);
+            let element = self.check_expression_with_hint(element_expr, element_hint)?;
             element_types.push(element.ty().clone());
             elements.push(element);
         }
@@ -982,22 +1152,51 @@ impl TypeChecker {
         })
     }
 
-    fn check_array_literal(
+    fn check_array_literal_with_hint(
         &mut self,
         array_lit: &ArrayLiteralNode,
+        type_hint: Option<&RueType>,
     ) -> Result<HirExpr, SemanticError> {
+        // Handle empty array literals with type inference
         if array_lit.elements.is_empty() {
-            return Err(SemanticError {
-                message: "Cannot infer type of empty array literal".to_string(),
-                span: array_lit.open_bracket.span,
-            });
+            // For empty arrays, we need a type hint to infer the element type
+            if let Some(RueType::Array(element_type, size)) = type_hint {
+                // Verify that the size matches (should be 0 for empty array)
+                if *size != 0 {
+                    return Err(SemanticError {
+                        message: format!("Array size mismatch: expected {size} elements, found 0"),
+                        span: array_lit.open_bracket.span,
+                    });
+                }
+
+                // Create empty array with inferred type
+                let array_type = RueType::Array(element_type.clone(), 0);
+                return Ok(HirExpr::ArrayLiteral {
+                    elements: Vec::new(),
+                    ty: array_type,
+                    span: array_lit.open_bracket.span,
+                });
+            } else {
+                return Err(SemanticError {
+                    message: "Cannot infer type of empty array literal without type annotation"
+                        .to_string(),
+                    span: array_lit.open_bracket.span,
+                });
+            }
         }
 
         let mut elements = Vec::new();
         let mut element_type: Option<RueType> = None;
 
+        // Extract element type hint from the array type hint
+        let element_hint = if let Some(RueType::Array(element_type, _)) = type_hint {
+            Some(element_type.as_ref())
+        } else {
+            None
+        };
+
         for element_expr in &array_lit.elements {
-            let element = self.check_expression(element_expr)?;
+            let element = self.check_expression_with_hint(element_expr, element_hint)?;
 
             // Check that all elements have the same type
             if let Some(ref expected_type) = element_type {
@@ -1031,7 +1230,8 @@ impl TypeChecker {
         array_access: &ArrayAccessNode,
     ) -> Result<HirExpr, SemanticError> {
         let base = self.check_expression(&array_access.base)?;
-        let index = self.check_expression(&array_access.index)?;
+        // Array indices default to i32 for consistency with tests and common usage
+        let index = self.check_expression_with_hint(&array_access.index, Some(&RueType::I32))?;
 
         // Validate index type
         match index.ty() {

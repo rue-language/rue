@@ -222,6 +222,15 @@ impl MirMutVisitor for ConstProp {
                     self.constants.insert(*dest, c.clone());
                 }
             }
+            MirStatement::Return { value, .. } => {
+                // Propagate constants in return value if present
+                if let Some(temp) = value {
+                    if let Some(_const_val) = self.constants.get(temp) {
+                        // Could optimize by replacing return temp with constant,
+                        // but this doesn't affect correctness, just efficiency
+                    }
+                }
+            }
         }
         VisitorControl::Continue
     }
@@ -324,6 +333,7 @@ mod tests {
                 }],
             }],
             function_signatures: HashMap::new(),
+            type_context: rue_ir::types::TypeContext::new(),
         };
 
         // Run constant propagation
@@ -394,6 +404,7 @@ mod tests {
                 ],
             }],
             function_signatures: HashMap::new(),
+            type_context: rue_ir::types::TypeContext::new(),
         };
 
         // Run constant propagation

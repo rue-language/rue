@@ -1,5 +1,5 @@
 use rue_ast::{CstRoot, StructDefinitionNode};
-use rue_ir::types::{RueType, StructDef, StructId};
+use rue_ir::types::{RueType, StructDef, StructId, TypeContext};
 use rue_lexer::format_error_with_context;
 use std::collections::HashMap;
 
@@ -289,7 +289,7 @@ pub fn analyze_cst(ast: &CstRoot) -> Result<AnalysisResult, SemanticError> {
                     let param_type = if let Some(type_ann) = &param.type_annotation {
                         convert_type_node_with_scope(&type_ann.ty, &global_scope)?
                     } else {
-                        RueType::I32 // Default to i32 if no type annotation
+                        RueType::I64 // Default to i64 if no type annotation
                     };
                     param_types.push(param_type);
                 }
@@ -344,4 +344,24 @@ pub fn analyze_cst(ast: &CstRoot) -> Result<AnalysisResult, SemanticError> {
         scope: global_scope,
         hir,
     })
+}
+
+/// Convert a Scope containing struct definitions to a TypeContext
+///
+/// This function extracts struct definitions from the semantic analysis scope
+/// and creates a TypeContext that can be used by the MIR and codegen phases
+/// for proper struct layout computation.
+pub fn scope_to_type_context(scope: &Scope) -> TypeContext {
+    let mut type_context = TypeContext::new();
+
+    // Copy all struct definitions to the type context, preserving IDs
+    for (struct_name, struct_def) in &scope.structs {
+        type_context.define_struct_with_id(
+            struct_def.id,
+            struct_name.clone(),
+            struct_def.fields.clone(),
+        );
+    }
+
+    type_context
 }

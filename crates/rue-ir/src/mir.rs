@@ -30,7 +30,7 @@
 //!     return result
 //! ```
 
-use crate::types::{FieldId, RueType, StructId};
+use crate::types::{FieldId, RueType, StructId, TypeContext};
 use rue_lexer::Span;
 use std::collections::HashMap;
 use std::fmt;
@@ -60,6 +60,8 @@ pub struct MirProgram {
     pub functions: Vec<MirFunction>,
     /// Function signatures for all functions (builtin and user-defined)
     pub function_signatures: HashMap<String, FunctionSignature>,
+    /// Type context containing struct definitions and layout information
+    pub type_context: TypeContext,
 }
 
 /// A function in MIR form
@@ -103,6 +105,13 @@ pub enum MirStatement {
         dest: Temp,
         /// Source value
         value: MirValue,
+        /// Source span for debugging
+        span: Option<Span>,
+    },
+    /// Return statement
+    Return {
+        /// Optional value to return (None for bare return)
+        value: Option<Temp>,
         /// Source span for debugging
         span: Option<Span>,
     },
@@ -499,6 +508,13 @@ impl fmt::Display for MirStatement {
         match self {
             MirStatement::Assign { dest, value, .. } => {
                 write!(f, "{dest} = {value}")
+            }
+            MirStatement::Return { value, .. } => {
+                if let Some(return_value) = value {
+                    write!(f, "return {return_value}")
+                } else {
+                    write!(f, "return")
+                }
             }
         }
     }

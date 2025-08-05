@@ -9,3 +9,6 @@ pub mod hir;
 pub mod mir;
 pub mod pir;
 pub mod types;
+
+#[cfg(test)]
+mod debug_offsets_test;

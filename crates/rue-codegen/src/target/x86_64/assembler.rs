@@ -108,6 +108,38 @@ pub fn format_instructions_as_assembly(
                     ));
                 }
             }
+            X8664Instr::MovRM32 { dest, base, offset } => {
+                if *offset == 0 {
+                    output.push_str(&format!(
+                        "    movl (%{}), %{}\n",
+                        reg_name(base),
+                        reg_name_32(dest)
+                    ));
+                } else {
+                    output.push_str(&format!(
+                        "    movl {:+}(%{}), %{}\n",
+                        offset,
+                        reg_name(base),
+                        reg_name_32(dest)
+                    ));
+                }
+            }
+            X8664Instr::MovMR32 { base, offset, src } => {
+                if *offset == 0 {
+                    output.push_str(&format!(
+                        "    movl %{}, (%{})\n",
+                        reg_name_32(src),
+                        reg_name(base)
+                    ));
+                } else {
+                    output.push_str(&format!(
+                        "    movl %{}, {:+}(%{})\n",
+                        reg_name_32(src),
+                        offset,
+                        reg_name(base)
+                    ));
+                }
+            }
             X8664Instr::AddRR { dest, src } => {
                 output.push_str(&format!(
                     "    addq %{}, %{}\n",
@@ -117,6 +149,16 @@ pub fn format_instructions_as_assembly(
             }
             X8664Instr::AddRI { dest, imm } => {
                 output.push_str(&format!("    addq ${}, %{}\n", imm, reg_name(dest)));
+            }
+            X8664Instr::AddRR32 { dest, src } => {
+                output.push_str(&format!(
+                    "    addl %{}, %{}\n",
+                    reg_name_32(src),
+                    reg_name_32(dest)
+                ));
+            }
+            X8664Instr::AddRI32 { dest, imm } => {
+                output.push_str(&format!("    addl ${}, %{}\n", imm, reg_name_32(dest)));
             }
             X8664Instr::SubRR { dest, src } => {
                 output.push_str(&format!(
@@ -128,6 +170,16 @@ pub fn format_instructions_as_assembly(
             X8664Instr::SubRI { dest, imm } => {
                 output.push_str(&format!("    subq ${}, %{}\n", imm, reg_name(dest)));
             }
+            X8664Instr::SubRR32 { dest, src } => {
+                output.push_str(&format!(
+                    "    subl %{}, %{}\n",
+                    reg_name_32(src),
+                    reg_name_32(dest)
+                ));
+            }
+            X8664Instr::SubRI32 { dest, imm } => {
+                output.push_str(&format!("    subl ${}, %{}\n", imm, reg_name_32(dest)));
+            }
             X8664Instr::ImulRR { dest, src } => {
                 output.push_str(&format!(
                     "    imulq %{}, %{}\n",
@@ -137,6 +189,16 @@ pub fn format_instructions_as_assembly(
             }
             X8664Instr::ImulRI { dest, imm } => {
                 output.push_str(&format!("    imulq ${}, %{}\n", imm, reg_name(dest)));
+            }
+            X8664Instr::ImulRR32 { dest, src } => {
+                output.push_str(&format!(
+                    "    imull %{}, %{}\n",
+                    reg_name_32(src),
+                    reg_name_32(dest)
+                ));
+            }
+            X8664Instr::ImulRI32 { dest, imm } => {
+                output.push_str(&format!("    imull ${}, %{}\n", imm, reg_name_32(dest)));
             }
             X8664Instr::Idiv { divisor } => {
                 output.push_str(&format!("    idivq %{}\n", reg_name(divisor)));

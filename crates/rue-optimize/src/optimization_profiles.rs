@@ -139,6 +139,7 @@ mod tests {
                 }],
             }],
             function_signatures: HashMap::new(),
+            type_context: rue_ir::types::TypeContext::new(),
         }
     }
 

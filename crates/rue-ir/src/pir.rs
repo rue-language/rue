@@ -166,9 +166,21 @@ pub enum PIR {
         dest: Option<VReg>,
         function: String,
         args: Vec<VReg>,
+        return_type: Option<RueType>, // Return type for aggregate handling
+        return_size: Option<i64>,     // Computed return size for aggregates (bytes)
     },
     Return {
         value: Option<VReg>,
+    },
+    /// Return small aggregate (≤16 bytes) in registers
+    ReturnSmallAggregate {
+        value: VReg, // VReg pointing to aggregate memory
+        size: i64,   // Size in bytes
+    },
+    /// Return large aggregate (>16 bytes) using hidden return pointer
+    ReturnLargeAggregate {
+        value: VReg, // VReg pointing to aggregate memory
+        size: i64,   // Size in bytes
     },
 
     // System operations

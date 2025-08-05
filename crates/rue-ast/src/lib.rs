@@ -116,6 +116,7 @@ pub enum StatementNode {
     Let(Box<LetStatementNode>),
     Assign(AssignStatementNode),
     Expression(ExpressionStatementNode),
+    Return(ReturnStatementNode),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -148,6 +149,14 @@ pub struct AssignStatementNode {
 #[derive(Debug, Clone, PartialEq)]
 pub struct ExpressionStatementNode {
     pub expression: ExpressionNode,
+    pub semicolon: TokenNode,
+    pub trivia: Trivia,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ReturnStatementNode {
+    pub return_token: TokenNode,
+    pub expression: Option<ExpressionNode>,
     pub semicolon: TokenNode,
     pub trivia: Trivia,
 }

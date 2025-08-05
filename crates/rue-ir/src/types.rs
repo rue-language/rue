@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::fmt;
 
 /// Unique identifier for a struct type definition
@@ -121,106 +122,6 @@ impl RueType {
             _ => None,
         }
     }
-
-    /// Compute the memory layout of this type
-    pub fn layout(&self) -> TypeLayout {
-        match self {
-            RueType::I32 => TypeLayout::new(4, 4),
-            RueType::I64 => TypeLayout::new(8, 8),
-            RueType::Bool => TypeLayout::new(1, 1),
-            RueType::Unit => TypeLayout::new(0, 1),
-            RueType::Unknown => TypeLayout::new(0, 1), // Placeholder, should not be used in final code
-
-            RueType::Struct(_struct_id) => {
-                // For now, we can't compute struct layout without access to the struct registry
-                // This would need to be resolved through a type context in the future
-                //
-                // TEMPORARY FIX: Assume structs with 2 i64 fields (common case for testing)
-                // This addresses Issue #113 where 8 bytes was too small for Point{x,y} structs
-                // TODO: Implement proper struct field lookup via type registry
-                TypeLayout::new(16, 8) // Assume 2 x i64 fields = 16 bytes
-            }
-
-            RueType::Tuple(types) => Self::compute_tuple_layout(types),
-
-            RueType::Array(elem_type, len) => {
-                let elem_layout = elem_type.layout();
-                TypeLayout::new(elem_layout.size * len, elem_layout.align)
-            }
-        }
-    }
-
-    /// Get the size in bytes of this type
-    pub fn size_bytes(&self) -> usize {
-        self.layout().size
-    }
-
-    /// Get the alignment requirement in bytes of this type
-    pub fn align_bytes(&self) -> usize {
-        self.layout().align
-    }
-
-    /// Compute layout for a tuple type (internal helper)
-    fn compute_tuple_layout(types: &[RueType]) -> TypeLayout {
-        if types.is_empty() {
-            return TypeLayout::new(0, 1);
-        }
-
-        let mut offset = 0;
-        let mut max_align = 1;
-
-        for ty in types {
-            let field_layout = ty.layout();
-
-            // Align the field
-            offset = field_layout.align_offset(offset);
-            offset += field_layout.size;
-            max_align = max_align.max(field_layout.align);
-        }
-
-        // Align the total size to the tuple's alignment
-        let final_size = TypeLayout::new(0, max_align).align_offset(offset);
-        TypeLayout::new(final_size, max_align)
-    }
-
-    /// Compute the offset of a tuple field by index
-    pub fn tuple_field_offset(&self, index: usize) -> Option<usize> {
-        match self {
-            RueType::Tuple(types) => {
-                if index >= types.len() {
-                    return None;
-                }
-
-                let mut offset = 0;
-                for (i, ty) in types.iter().enumerate() {
-                    if i == index {
-                        let field_layout = ty.layout();
-                        return Some(field_layout.align_offset(offset));
-                    }
-
-                    let field_layout = ty.layout();
-                    offset = field_layout.align_offset(offset);
-                    offset += field_layout.size;
-                }
-                None
-            }
-            _ => None,
-        }
-    }
-
-    /// Compute the offset of an array element by index
-    pub fn array_element_offset(&self, index: usize) -> Option<usize> {
-        match self {
-            RueType::Array(elem_type, len) => {
-                if index >= *len {
-                    return None;
-                }
-                let elem_layout = elem_type.layout();
-                Some(elem_layout.size * index)
-            }
-            _ => None,
-        }
-    }
 }
 
 impl fmt::Display for RueType {
@@ -340,46 +241,34 @@ impl StructDef {
     }
 
     /// Compute the layout of this struct, caching it for future calls
-    pub fn compute_layout(&mut self) -> TypeLayout {
+    pub fn compute_layout(&mut self, type_ctx: &mut TypeContext) -> Result<TypeLayout, TypeError> {
         // Return cached layout if already computed
         if let Some(layout) = self.layout {
-            return layout;
+            return Ok(layout);
         }
 
         // Compute and cache the layout and field layouts
-        let (layout, field_layouts) = Self::compute_struct_layout(&self.fields);
+        let (layout, field_layouts) = self.compute_struct_layout_with_context(type_ctx)?;
         self.layout = Some(layout);
         self.field_layouts = Some(field_layouts);
-        layout
+        Ok(layout)
     }
 
-    /// Get the field layout by index
-    pub fn field_layout_by_index(&mut self, index: usize) -> Option<&FieldLayout> {
-        self.compute_layout(); // Ensure layouts are computed
-        self.field_layouts.as_ref()?.get(index)
-    }
-
-    /// Get the field layout by name
-    pub fn field_layout_by_name(&mut self, name: &str) -> Option<&FieldLayout> {
-        let index = self
-            .fields
-            .iter()
-            .position(|(field_name, _)| field_name == name)?;
-        self.field_layout_by_index(index)
-    }
-
-    /// Compute layout for a list of field types (internal helper)
-    fn compute_struct_layout(fields: &[(String, RueType)]) -> (TypeLayout, Vec<FieldLayout>) {
-        if fields.is_empty() {
-            return (TypeLayout::new(0, 1), Vec::new());
+    /// Compute struct layout using TypeContext
+    fn compute_struct_layout_with_context(
+        &self,
+        type_ctx: &mut TypeContext,
+    ) -> Result<(TypeLayout, Vec<FieldLayout>), TypeError> {
+        if self.fields.is_empty() {
+            return Ok((TypeLayout::new(0, 1), Vec::new()));
         }
 
         let mut offset = 0;
         let mut max_align = 1;
         let mut field_layouts = Vec::new();
 
-        for (_, field_type) in fields {
-            let field_layout = field_type.layout();
+        for (_, field_type) in &self.fields {
+            let field_layout = type_ctx.compute_layout(field_type)?;
 
             // Align the field
             offset = field_layout.align_offset(offset);
@@ -397,6 +286,330 @@ impl StructDef {
         let final_size = TypeLayout::new(0, max_align).align_offset(offset);
         let layout = TypeLayout::new(final_size, max_align);
 
-        (layout, field_layouts)
+        Ok((layout, field_layouts))
+    }
+
+    /// Get the field layout by index (requires TypeContext)
+    pub fn field_layout_by_index(
+        &mut self,
+        index: usize,
+        type_ctx: &mut TypeContext,
+    ) -> Result<Option<&FieldLayout>, TypeError> {
+        self.compute_layout(type_ctx)?; // Ensure layouts are computed
+        Ok(self
+            .field_layouts
+            .as_ref()
+            .and_then(|layouts| layouts.get(index)))
+    }
+
+    /// Get the field layout by name (requires TypeContext)
+    pub fn field_layout_by_name(
+        &mut self,
+        name: &str,
+        type_ctx: &mut TypeContext,
+    ) -> Result<Option<&FieldLayout>, TypeError> {
+        let index = self
+            .fields
+            .iter()
+            .position(|(field_name, _)| field_name == name);
+        match index {
+            Some(idx) => self.field_layout_by_index(idx, type_ctx),
+            None => Ok(None),
+        }
     }
 }
+
+/// Errors that can occur during type operations
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TypeError {
+    /// Struct ID not found in registry
+    UnknownStruct(StructId),
+    /// Invalid field access for type
+    InvalidFieldAccess { ty: RueType, field: FieldId },
+    /// Type mismatch
+    TypeMismatch { expected: RueType, actual: RueType },
+    /// Array index out of bounds
+    OutOfBoundsAccess { index: usize, len: usize },
+    /// Field not found in struct
+    FieldNotFound { struct_id: StructId, field: FieldId },
+}
+
+impl fmt::Display for TypeError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            TypeError::UnknownStruct(id) => write!(f, "Unknown struct: {id}"),
+            TypeError::InvalidFieldAccess { ty, field } => {
+                write!(f, "Invalid field access: {field} on type {ty}")
+            }
+            TypeError::TypeMismatch { expected, actual } => {
+                write!(f, "Type mismatch: expected {expected}, got {actual}")
+            }
+            TypeError::OutOfBoundsAccess { index, len } => {
+                write!(f, "Index {index} out of bounds for length {len}")
+            }
+            TypeError::FieldNotFound { struct_id, field } => {
+                write!(f, "Field {field} not found in struct {struct_id}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for TypeError {}
+
+/// Type context that holds all type definitions
+///
+/// This is the central registry for all type information in the compiler.
+/// It provides methods to define and look up struct types, compute layouts,
+/// and resolve field information.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TypeContext {
+    /// All struct definitions
+    structs: HashMap<StructId, StructDef>,
+    /// Next available struct ID
+    next_struct_id: u32,
+}
+
+impl TypeContext {
+    /// Create a new empty type context
+    pub fn new() -> Self {
+        Self {
+            structs: HashMap::new(),
+            next_struct_id: 0,
+        }
+    }
+
+    /// Define a new struct type
+    pub fn define_struct(
+        &mut self,
+        name: impl Into<String>,
+        fields: Vec<(String, RueType)>,
+    ) -> StructId {
+        let id = StructId(self.next_struct_id);
+        self.next_struct_id += 1;
+
+        let struct_def = StructDef::new(id, name, fields);
+        self.structs.insert(id, struct_def);
+        id
+    }
+
+    /// Define a struct with an explicit ID (used when importing from semantic analysis)
+    pub fn define_struct_with_id(
+        &mut self,
+        id: StructId,
+        name: impl Into<String>,
+        fields: Vec<(String, RueType)>,
+    ) {
+        let struct_def = StructDef::new(id, name, fields);
+        self.structs.insert(id, struct_def);
+
+        // Update the next_struct_id to ensure no conflicts
+        if id.as_u32() >= self.next_struct_id {
+            self.next_struct_id = id.as_u32() + 1;
+        }
+    }
+
+    /// Look up a struct definition
+    pub fn get_struct(&self, id: StructId) -> Option<&StructDef> {
+        self.structs.get(&id)
+    }
+
+    /// Look up a struct definition, returning an error if not found
+    pub fn lookup_struct(&self, id: StructId) -> Result<&StructDef, TypeError> {
+        self.structs.get(&id).ok_or(TypeError::UnknownStruct(id))
+    }
+
+    /// Get the type of a field in a struct
+    pub fn get_field_type(
+        &self,
+        struct_id: StructId,
+        field: &FieldId,
+    ) -> Result<&RueType, TypeError> {
+        let struct_def = self.lookup_struct(struct_id)?;
+
+        match field {
+            FieldId::Named(name) => {
+                struct_def
+                    .field_type(name)
+                    .ok_or_else(|| TypeError::FieldNotFound {
+                        struct_id,
+                        field: field.clone(),
+                    })
+            }
+            FieldId::Index(idx) => {
+                struct_def
+                    .field_type_by_index(*idx)
+                    .ok_or_else(|| TypeError::FieldNotFound {
+                        struct_id,
+                        field: field.clone(),
+                    })
+            }
+        }
+    }
+
+    /// Compute the layout of a type
+    pub fn compute_layout(&mut self, ty: &RueType) -> Result<TypeLayout, TypeError> {
+        match ty {
+            RueType::I32 => Ok(TypeLayout::new(4, 4)),
+            RueType::I64 => Ok(TypeLayout::new(8, 8)),
+            RueType::Bool => Ok(TypeLayout::new(1, 1)),
+            RueType::Unit => Ok(TypeLayout::new(0, 1)),
+            RueType::Unknown => Ok(TypeLayout::new(0, 1)),
+
+            RueType::Struct(id) => {
+                // We need to compute the struct layout, but we can't borrow self mutably twice
+                // So we'll clone the struct def, compute its layout, then update the cache
+                let mut struct_def = self
+                    .structs
+                    .get(id)
+                    .ok_or(TypeError::UnknownStruct(*id))?
+                    .clone();
+                let layout = struct_def.compute_layout(self)?;
+                // Update the cached struct with computed layout
+                if let Some(cached_struct) = self.structs.get_mut(id) {
+                    cached_struct.layout = struct_def.layout;
+                    cached_struct.field_layouts = struct_def.field_layouts;
+                }
+                Ok(layout)
+            }
+
+            RueType::Tuple(types) => self.compute_tuple_layout(types),
+
+            RueType::Array(elem_type, len) => {
+                let elem_layout = self.compute_layout(elem_type)?;
+                Ok(TypeLayout::new(elem_layout.size * len, elem_layout.align))
+            }
+        }
+    }
+
+    /// Compute the offset of a field within a struct
+    pub fn compute_field_offset(
+        &mut self,
+        struct_id: StructId,
+        field: &FieldId,
+    ) -> Result<usize, TypeError> {
+        // Clone the struct to avoid double borrow
+        let mut struct_def = self
+            .structs
+            .get(&struct_id)
+            .ok_or(TypeError::UnknownStruct(struct_id))?
+            .clone();
+
+        match field {
+            FieldId::Named(name) => {
+                let field_layout =
+                    struct_def
+                        .field_layout_by_name(name, self)?
+                        .ok_or_else(|| TypeError::FieldNotFound {
+                            struct_id,
+                            field: field.clone(),
+                        })?;
+                let offset = field_layout.offset;
+
+                // Update cache
+                if let Some(cached_struct) = self.structs.get_mut(&struct_id) {
+                    cached_struct.layout = struct_def.layout;
+                    cached_struct.field_layouts = struct_def.field_layouts;
+                }
+
+                Ok(offset)
+            }
+            FieldId::Index(idx) => {
+                let field_layout =
+                    struct_def
+                        .field_layout_by_index(*idx, self)?
+                        .ok_or_else(|| TypeError::FieldNotFound {
+                            struct_id,
+                            field: field.clone(),
+                        })?;
+                let offset = field_layout.offset;
+
+                // Update cache
+                if let Some(cached_struct) = self.structs.get_mut(&struct_id) {
+                    cached_struct.layout = struct_def.layout;
+                    cached_struct.field_layouts = struct_def.field_layouts;
+                }
+
+                Ok(offset)
+            }
+        }
+    }
+
+    /// Get all struct definitions (for debugging/display)
+    pub fn all_structs(&self) -> impl Iterator<Item = (&StructId, &StructDef)> {
+        self.structs.iter()
+    }
+
+    /// Compute the offset of a tuple field by index
+    pub fn compute_tuple_field_offset(
+        &mut self,
+        types: &[RueType],
+        index: usize,
+    ) -> Result<usize, TypeError> {
+        if index >= types.len() {
+            return Err(TypeError::OutOfBoundsAccess {
+                index,
+                len: types.len(),
+            });
+        }
+
+        let mut offset = 0;
+        for (i, ty) in types.iter().enumerate() {
+            if i == index {
+                let field_layout = self.compute_layout(ty)?;
+                return Ok(field_layout.align_offset(offset));
+            }
+
+            let field_layout = self.compute_layout(ty)?;
+            offset = field_layout.align_offset(offset);
+            offset += field_layout.size;
+        }
+        unreachable!("Index was validated but not found")
+    }
+
+    /// Compute the offset of an array element by index
+    pub fn compute_array_element_offset(
+        &mut self,
+        elem_type: &RueType,
+        len: usize,
+        index: usize,
+    ) -> Result<usize, TypeError> {
+        if index >= len {
+            return Err(TypeError::OutOfBoundsAccess { index, len });
+        }
+        let elem_layout = self.compute_layout(elem_type)?;
+        Ok(elem_layout.size * index)
+    }
+
+    /// Compute layout for a tuple type (helper)
+    fn compute_tuple_layout(&mut self, types: &[RueType]) -> Result<TypeLayout, TypeError> {
+        if types.is_empty() {
+            return Ok(TypeLayout::new(0, 1));
+        }
+
+        let mut offset = 0;
+        let mut max_align = 1;
+
+        for ty in types {
+            let field_layout = self.compute_layout(ty)?;
+
+            // Align the field
+            offset = field_layout.align_offset(offset);
+            offset += field_layout.size;
+            max_align = max_align.max(field_layout.align);
+        }
+
+        // Align the total size to the tuple's alignment
+        let final_size = TypeLayout::new(0, max_align).align_offset(offset);
+        Ok(TypeLayout::new(final_size, max_align))
+    }
+}
+
+impl Default for TypeContext {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[cfg(test)]
+#[path = "types_test.rs"]
+mod types_test;

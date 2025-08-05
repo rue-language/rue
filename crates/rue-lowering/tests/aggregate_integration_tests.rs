@@ -5,7 +5,7 @@
 
 use rue_ir::hir::{HirBlock, HirExpr, HirFunction, HirLiteral, HirProgram};
 use rue_ir::mir::MirValue;
-use rue_ir::types::{FieldId, RueType, StructId};
+use rue_ir::types::{FieldId, RueType, StructId, TypeContext};
 use rue_lexer::Span;
 use rue_lowering::hir_to_mir::MirBuilder;
 use rue_lowering::mir_to_pir::MirToPir;
@@ -62,7 +62,7 @@ fn test_struct_literal_to_pir() {
     );
 
     // HIR → MIR
-    let mir_program = MirBuilder::lower_program(&hir_program);
+    let mir_program = MirBuilder::lower_program(&hir_program, TypeContext::new());
 
     // Verify MIR contains ConstructAggregate
     let mir_func = &mir_program.functions[0];
@@ -74,6 +74,7 @@ fn test_struct_literal_to_pir() {
             rue_ir::mir::MirStatement::Assign { value, .. } => {
                 matches!(value, MirValue::ConstructAggregate { .. })
             }
+            _ => false,
         });
 
     assert!(
@@ -133,7 +134,7 @@ fn test_tuple_literal_to_pir() {
     );
 
     // HIR → MIR
-    let mir_program = MirBuilder::lower_program(&hir_program);
+    let mir_program = MirBuilder::lower_program(&hir_program, TypeContext::new());
 
     // Verify MIR contains ConstructAggregate for tuple
     let mir_func = &mir_program.functions[0];
@@ -142,10 +143,11 @@ fn test_tuple_literal_to_pir() {
         .iter()
         .flat_map(|block| &block.statements)
         .filter_map(|stmt| match stmt {
-            rue_ir::mir::MirStatement::Assign { value, .. } => match value {
-                MirValue::ConstructAggregate { ty, fields } => Some((ty, fields.len())),
-                _ => None,
-            },
+            rue_ir::mir::MirStatement::Assign {
+                value: MirValue::ConstructAggregate { ty, fields },
+                ..
+            } => Some((ty, fields.len())),
+            _ => None,
         })
         .collect();
 
@@ -205,7 +207,7 @@ fn test_array_literal_to_pir() {
     );
 
     // HIR → MIR
-    let mir_program = MirBuilder::lower_program(&hir_program);
+    let mir_program = MirBuilder::lower_program(&hir_program, TypeContext::new());
 
     // Verify MIR contains ConstructAggregate for array
     let mir_func = &mir_program.functions[0];
@@ -214,10 +216,11 @@ fn test_array_literal_to_pir() {
         .iter()
         .flat_map(|block| &block.statements)
         .filter_map(|stmt| match stmt {
-            rue_ir::mir::MirStatement::Assign { value, .. } => match value {
-                MirValue::ConstructAggregate { ty, fields } => Some((ty, fields.len())),
-                _ => None,
-            },
+            rue_ir::mir::MirStatement::Assign {
+                value: MirValue::ConstructAggregate { ty, fields },
+                ..
+            } => Some((ty, fields.len())),
+            _ => None,
         })
         .collect();
 
@@ -280,7 +283,7 @@ fn test_field_access_to_pir() {
     };
 
     // HIR → MIR
-    let mir_program = MirBuilder::lower_program(&hir_program);
+    let mir_program = MirBuilder::lower_program(&hir_program, TypeContext::new());
 
     // Verify MIR contains GetField
     let mir_func = &mir_program.functions[0];
@@ -292,6 +295,7 @@ fn test_field_access_to_pir() {
             rue_ir::mir::MirStatement::Assign { value, .. } => {
                 matches!(value, MirValue::GetField { .. })
             }
+            _ => false,
         });
 
     assert!(has_get_field, "MIR should contain GetField instruction");
@@ -329,7 +333,7 @@ fn test_zero_sized_aggregate() {
     );
 
     // HIR → MIR → PIR
-    let mir_program = MirBuilder::lower_program(&hir_program);
+    let mir_program = MirBuilder::lower_program(&hir_program, TypeContext::new());
     let mut lowerer = MirToPir::new();
     let pir_instructions = lowerer.lower_program(&mir_program);
 
@@ -356,10 +360,15 @@ fn test_aggregate_type_layout_usage() {
     let tuple_type = RueType::Tuple(vec![RueType::I32, RueType::I64, RueType::Bool]);
 
     // Manually verify the expected layout
-    assert_eq!(tuple_type.size_bytes(), 24); // i32(4) + padding(4) + i64(8) + bool(1) + padding(7) = 24
-    assert_eq!(tuple_type.tuple_field_offset(0), Some(0)); // First field at offset 0
-    assert_eq!(tuple_type.tuple_field_offset(1), Some(8)); // Second field aligned to 8 bytes
-    assert_eq!(tuple_type.tuple_field_offset(2), Some(16)); // Third field after i64
+    let mut type_ctx = TypeContext::new();
+    let layout = type_ctx.compute_layout(&tuple_type).unwrap();
+    assert_eq!(layout.size, 24); // i32(4) + padding(4) + i64(8) + bool(1) + padding(7) = 24
+
+    if let RueType::Tuple(types) = &tuple_type {
+        assert_eq!(type_ctx.compute_tuple_field_offset(types, 0).unwrap(), 0); // First field at offset 0
+        assert_eq!(type_ctx.compute_tuple_field_offset(types, 1).unwrap(), 8); // Second field aligned to 8 bytes
+        assert_eq!(type_ctx.compute_tuple_field_offset(types, 2).unwrap(), 16); // Third field after i64
+    }
 
     // Create a tuple literal to test the layout usage
     let tuple_literal = HirExpr::TupleLiteral {
@@ -391,7 +400,7 @@ fn test_aggregate_type_layout_usage() {
     );
 
     // HIR → MIR → PIR
-    let mir_program = MirBuilder::lower_program(&hir_program);
+    let mir_program = MirBuilder::lower_program(&hir_program, TypeContext::new());
     let mut lowerer = MirToPir::new();
     let pir_instructions = lowerer.lower_program(&mir_program);
 
@@ -460,7 +469,7 @@ fn test_nested_aggregate_access() {
     };
 
     // HIR → MIR → PIR
-    let mir_program = MirBuilder::lower_program(&hir_program);
+    let mir_program = MirBuilder::lower_program(&hir_program, TypeContext::new());
     let mut lowerer = MirToPir::new();
     let pir_instructions = lowerer.lower_program(&mir_program);
 
@@ -489,11 +498,14 @@ fn test_allocation_strategy_integration() {
 
     // Small tuple (should use stack allocation strategy in future)
     let small_tuple = RueType::Tuple(vec![RueType::I32, RueType::I32]); // 8 bytes
-    assert_eq!(small_tuple.size_bytes(), 8);
+    let mut type_ctx = TypeContext::new();
+    let small_layout = type_ctx.compute_layout(&small_tuple).unwrap();
+    assert_eq!(small_layout.size, 8);
 
     // Large array (should use heap allocation strategy)
     let large_array = RueType::Array(Box::new(RueType::I64), 20); // 160 bytes
-    assert_eq!(large_array.size_bytes(), 160);
+    let large_layout = type_ctx.compute_layout(&large_array).unwrap();
+    assert_eq!(large_layout.size, 160);
 
     // Test that both can be lowered without panic
     let small_literal = HirExpr::TupleLiteral {
@@ -532,7 +544,7 @@ fn test_allocation_strategy_integration() {
         small_tuple,
     );
 
-    let small_mir = MirBuilder::lower_program(&small_hir);
+    let small_mir = MirBuilder::lower_program(&small_hir, TypeContext::new());
     let mut small_lowerer = MirToPir::new();
     let small_pir = small_lowerer.lower_program(&small_mir);
 
@@ -546,7 +558,7 @@ fn test_allocation_strategy_integration() {
         large_array,
     );
 
-    let large_mir = MirBuilder::lower_program(&large_hir);
+    let large_mir = MirBuilder::lower_program(&large_hir, TypeContext::new());
     let mut large_lowerer = MirToPir::new();
     let large_pir = large_lowerer.lower_program(&large_mir);
 

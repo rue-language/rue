@@ -282,6 +282,7 @@ impl Parser {
     fn is_statement_start(&self) -> bool {
         match self.peek().kind {
             TokenKind::Let => true,
+            TokenKind::Return => true,
             TokenKind::Ident(_) => {
                 // Check if this is an assignment statement (identifier = expression)
                 if self.current + 1 < self.tokens.len() {
@@ -297,6 +298,7 @@ impl Parser {
     fn parse_statement(&mut self) -> ParseResult<StatementNode> {
         match self.peek().kind {
             TokenKind::Let => Ok(StatementNode::Let(Box::new(self.parse_let_statement()?))),
+            TokenKind::Return => Ok(StatementNode::Return(self.parse_return_statement()?)),
             TokenKind::Ident(_) => {
                 // Look ahead to see if this is an assignment (identifier = expression)
                 if self.current + 1 < self.tokens.len() {
@@ -382,6 +384,30 @@ impl Parser {
             name,
             equals,
             value,
+            semicolon,
+            trivia: Trivia {
+                leading: leading_trivia,
+                trailing: self.consume_trivia(),
+            },
+        })
+    }
+
+    fn parse_return_statement(&mut self) -> ParseResult<ReturnStatementNode> {
+        let leading_trivia = self.consume_trivia();
+        let return_token = self.expect_kind(&TokenKind::Return)?;
+
+        // Check if there's an expression after return
+        let expression = if self.check_kind(&TokenKind::Semicolon) {
+            None
+        } else {
+            Some(self.parse_expression()?)
+        };
+
+        let semicolon = self.expect_kind(&TokenKind::Semicolon)?;
+
+        Ok(ReturnStatementNode {
+            return_token,
+            expression,
             semicolon,
             trivia: Trivia {
                 leading: leading_trivia,

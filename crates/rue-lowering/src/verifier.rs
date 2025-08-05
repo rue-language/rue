@@ -163,6 +163,18 @@ impl MirVerifier {
                     );
                 }
             }
+            MirStatement::Return { value, .. } => {
+                // Verify that return value temp is defined if present
+                if let Some(temp) = value {
+                    if !defined_temps.contains_key(temp) {
+                        self.add_error(
+                            format!("Return statement uses undefined temporary {temp:?}"),
+                            Some(block_id),
+                        );
+                    }
+                }
+                // Type checking for return statements was already done in semantic analysis
+            }
         }
     }
 
@@ -473,6 +485,7 @@ impl MirVerifier {
 mod tests {
     use super::*;
     use rue_ir::mir::MirConst;
+    use rue_ir::types::TypeContext;
     use rue_lexer::Span;
 
     #[test]
@@ -503,6 +516,7 @@ mod tests {
                 }],
             }],
             function_signatures: HashMap::new(),
+            type_context: TypeContext::new(),
         };
 
         let mut verifier = MirVerifier::new();
@@ -530,6 +544,7 @@ mod tests {
                 }],
             }],
             function_signatures: HashMap::new(),
+            type_context: TypeContext::new(),
         };
 
         let mut verifier = MirVerifier::new();
@@ -575,6 +590,7 @@ mod tests {
                 }],
             }],
             function_signatures: HashMap::new(),
+            type_context: TypeContext::new(),
         };
 
         let mut verifier = MirVerifier::new();
@@ -617,6 +633,7 @@ mod tests {
                 ],
             }],
             function_signatures: HashMap::new(),
+            type_context: TypeContext::new(),
         };
 
         let mut verifier = MirVerifier::new();

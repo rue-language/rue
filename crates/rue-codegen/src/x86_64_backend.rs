@@ -6,7 +6,9 @@
 use rue_ir::pir::{BinOp, Label, PIR, PhysicalRegId, VReg, Value};
 use rue_target::{ConditionCode, LabelRef, X86Register, X8664Instr};
 use std::collections::HashMap;
-use tracing::{debug, trace};
+use tracing::{debug, trace, warn};
+
+use crate::constants::{EXIT_CODE_BOUNDS_CHECK, EXIT_CODE_DIV_BY_ZERO};
 
 /// Errors that can occur during lowering
 #[derive(Debug, Clone, PartialEq, thiserror::Error)]
@@ -30,6 +32,10 @@ pub enum LoweringError {
     /// No available scratch register
     #[error("No available scratch register")]
     NoScratchRegister,
+
+    /// Invalid aggregate size for return value
+    #[error("Invalid aggregate size for return value: {0} bytes")]
+    InvalidAggregateSize(i64),
 }
 
 impl From<String> for LoweringError {
@@ -37,9 +43,6 @@ impl From<String> for LoweringError {
         LoweringError::RegisterAllocation(s)
     }
 }
-
-/// Exit code for division by zero
-const EXIT_DIV_ZERO: i64 = 250;
 
 /// Convert abstract PhysicalRegId to concrete X86Register
 /// This mapping defines the x86-64 calling convention for register assignment
@@ -135,6 +138,8 @@ pub struct X8664Codegen<'a> {
     push_count: i32,
     /// Track which stack slots are for block parameters (set during Store instructions)
     block_param_offsets: std::collections::HashSet<i64>,
+    /// Track VRegs that represent aggregate pointers (VReg -> size in bytes)
+    aggregate_vregs: HashMap<VReg, i64>,
 }
 
 impl<'a> X8664Codegen<'a> {
@@ -147,6 +152,7 @@ impl<'a> X8664Codegen<'a> {
             external_label_map: None,
             push_count: 0,
             block_param_offsets: std::collections::HashSet::new(),
+            aggregate_vregs: HashMap::new(),
         }
     }
 
@@ -242,8 +248,22 @@ impl<'a> X8664Codegen<'a> {
                 dest,
                 function,
                 args,
-            } => self.lower_call(dest.as_ref(), function, args),
+                return_type,
+                return_size,
+            } => self.lower_call(
+                dest.as_ref(),
+                function,
+                args,
+                return_type.as_ref(),
+                return_size.as_ref(),
+            ),
             PIR::Return { value } => self.lower_return(value.as_ref()),
+            PIR::ReturnSmallAggregate { value, size } => {
+                self.lower_return_small_aggregate(*value, *size)
+            }
+            PIR::ReturnLargeAggregate { value, size } => {
+                self.lower_return_large_aggregate(*value, *size)
+            }
             PIR::Syscall {
                 result,
                 syscall_num,
@@ -396,6 +416,11 @@ impl<'a> X8664Codegen<'a> {
                 // Get lhs into dest register first
                 let dest_reg = match lhs {
                     Value::VReg(vreg) => {
+                        // STRUCT FIELD ACCESS FIX: Ensure stable register state for field access operations
+                        // First, flush all pending stores to ensure field values are safely in memory
+                        self.allocator.flush_stores();
+                        self.emit_spill_reload_ops();
+
                         let lhs_reg = self.allocator.ensure_reg(*vreg, &[])?;
                         let dest_reg = self.allocator.assign_reg_for_def(dest, &[lhs_reg])?;
                         // Emit any pending spill/reload operations before moving
@@ -406,6 +431,12 @@ impl<'a> X8664Codegen<'a> {
                                 src: lhs_reg,
                             });
                         }
+
+                        // CRITICAL: Force another flush after loading left operand to ensure stability
+                        // This prevents register corruption when processing the right operand
+                        self.allocator.flush_stores();
+                        self.emit_spill_reload_ops();
+
                         // Note: assign_reg_for_def already marks the register as dirty
                         dest_reg
                     }
@@ -454,18 +485,34 @@ impl<'a> X8664Codegen<'a> {
                 // Apply operation with rhs
                 match (op, rhs) {
                     (BinOp::Add, Value::VReg(rhs_vreg)) => {
-                        // Ensure RHS gets a different register than the destination
-                        // This prevents the "add rax, rax" issue when both operands
-                        // happen to be in the same register
+                        // FINAL FIX: Robust handling of register allocation for field access operations
+                        // The core issue is that when both operands come from field loads (like v1.x + v2.x),
+                        // the register allocator can corrupt values during ensure_reg calls.
+                        // Solution: Force all register state to be stable before loading RHS.
+
+                        // First, ensure all pending spill/reload operations are completed
+                        // This stabilizes the current register allocation state
+                        self.emit_spill_reload_ops();
+
+                        // Force a complete flush of all dirty registers to memory
+                        // This ensures that any field values are safely stored
+                        self.allocator.flush_stores();
+                        self.emit_spill_reload_ops();
+
+                        // Now load RHS into a register, knowing that LHS is safely in memory if needed
                         let rhs_reg = self.allocator.ensure_reg(*rhs_vreg, &[dest_reg])?;
                         self.emit_spill_reload_ops();
 
-                        // Emit the addition
+                        // At this point:
+                        // - dest_reg contains LHS (may have been reloaded from memory if necessary)
+                        // - rhs_reg contains RHS (freshly loaded)
+                        // Both values are now stable for the arithmetic operation
                         self.emit(X8664Instr::AddRR {
                             dest: dest_reg,
                             src: rhs_reg,
                         });
-                        // Note: operations on already-dirty registers remain dirty
+                        // Schedule store to ensure result is written back to memory
+                        self.allocator.schedule_store(dest, dest_reg);
                     }
                     (BinOp::Add, Value::SignedImm(imm)) => {
                         if *imm >= i32::MIN as i64 && *imm <= i32::MAX as i64 {
@@ -473,6 +520,8 @@ impl<'a> X8664Codegen<'a> {
                                 dest: dest_reg,
                                 imm: *imm as i32,
                             });
+                            // Schedule store to ensure result is written back to memory
+                            self.allocator.schedule_store(dest, dest_reg);
                         } else {
                             // Load large immediate to scratch register
                             let scratch = self.get_scratch_register(&[dest_reg])?;
@@ -484,17 +533,25 @@ impl<'a> X8664Codegen<'a> {
                                 dest: dest_reg,
                                 src: scratch,
                             });
+                            // Schedule store to ensure result is written back to memory
+                            self.allocator.schedule_store(dest, dest_reg);
                         }
-                        // Note: operations on already-dirty registers remain dirty
                     }
                     (BinOp::Sub, Value::VReg(rhs_vreg)) => {
+                        // Apply the same robust fix as for addition
+                        self.emit_spill_reload_ops();
+                        self.allocator.flush_stores();
+                        self.emit_spill_reload_ops();
+
                         let rhs_reg = self.allocator.ensure_reg(*rhs_vreg, &[dest_reg])?;
                         self.emit_spill_reload_ops();
+
                         self.emit(X8664Instr::SubRR {
                             dest: dest_reg,
                             src: rhs_reg,
                         });
-                        // Note: operations on already-dirty registers remain dirty
+                        // Schedule store to ensure result is written back to memory
+                        self.allocator.schedule_store(dest, dest_reg);
                     }
                     (BinOp::Sub, Value::SignedImm(imm)) => {
                         if *imm >= i32::MIN as i64 && *imm <= i32::MAX as i64 {
@@ -513,16 +570,24 @@ impl<'a> X8664Codegen<'a> {
                                 src: scratch,
                             });
                         }
-                        // Note: operations on already-dirty registers remain dirty
+                        // Schedule store to ensure result is written back to memory
+                        self.allocator.schedule_store(dest, dest_reg);
                     }
                     (BinOp::Mul, Value::VReg(rhs_vreg)) => {
+                        // Apply the same robust fix as for addition
+                        self.emit_spill_reload_ops();
+                        self.allocator.flush_stores();
+                        self.emit_spill_reload_ops();
+
                         let rhs_reg = self.allocator.ensure_reg(*rhs_vreg, &[dest_reg])?;
                         self.emit_spill_reload_ops();
+
                         self.emit(X8664Instr::ImulRR {
                             dest: dest_reg,
                             src: rhs_reg,
                         });
-                        // Note: operations on already-dirty registers remain dirty
+                        // Schedule store to ensure result is written back to memory
+                        self.allocator.schedule_store(dest, dest_reg);
                     }
                     (BinOp::Mul, Value::SignedImm(imm)) => {
                         if *imm >= i32::MIN as i64 && *imm <= i32::MAX as i64 {
@@ -541,7 +606,8 @@ impl<'a> X8664Codegen<'a> {
                                 src: scratch,
                             });
                         }
-                        // Note: operations on already-dirty registers remain dirty
+                        // Schedule store to ensure result is written back to memory
+                        self.allocator.schedule_store(dest, dest_reg);
                     }
                     (BinOp::Add, Value::UnsignedImm(imm)) => {
                         if *imm <= i32::MAX as u64 {
@@ -561,7 +627,8 @@ impl<'a> X8664Codegen<'a> {
                                 src: scratch,
                             });
                         }
-                        // Note: operations on already-dirty registers remain dirty
+                        // Schedule store to ensure result is written back to memory
+                        self.allocator.schedule_store(dest, dest_reg);
                     }
                     (BinOp::Sub, Value::UnsignedImm(imm)) => {
                         if *imm <= i32::MAX as u64 {
@@ -580,7 +647,8 @@ impl<'a> X8664Codegen<'a> {
                                 src: scratch,
                             });
                         }
-                        // Note: operations on already-dirty registers remain dirty
+                        // Schedule store to ensure result is written back to memory
+                        self.allocator.schedule_store(dest, dest_reg);
                     }
                     (BinOp::Mul, Value::UnsignedImm(imm)) => {
                         if *imm <= i32::MAX as u64 {
@@ -599,7 +667,8 @@ impl<'a> X8664Codegen<'a> {
                                 src: scratch,
                             });
                         }
-                        // Note: operations on already-dirty registers remain dirty
+                        // Schedule store to ensure result is written back to memory
+                        self.allocator.schedule_store(dest, dest_reg);
                     }
                     _ => unreachable!(),
                 }
@@ -630,44 +699,273 @@ impl<'a> X8664Codegen<'a> {
             "Lowering typed binary operation"
         );
 
-        // For non-arithmetic operations, delegate to regular binary operation
+        // For comparison operations, delegate to regular binary operation
+        // Division and modulo will be handled below with proper type awareness
         if matches!(
             op,
-            BinOp::Lt
-                | BinOp::Le
-                | BinOp::Gt
-                | BinOp::Ge
-                | BinOp::Eq
-                | BinOp::Ne
-                | BinOp::Div
-                | BinOp::Mod
+            BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge | BinOp::Eq | BinOp::Ne
         ) {
             return self.lower_binary_op(dest, lhs, rhs, op);
         }
 
-        // First, perform the operation using regular binary operation logic
-        self.lower_binary_op(dest, lhs, rhs, op)?;
-
-        // For i32 operations, add truncation to handle overflow correctly
+        // For i32 operations, use 32-bit instructions directly
         if matches!(ty, RueType::I32) {
-            let dest_reg = self.allocator.ensure_reg(dest, &[])?;
-            self.emit_spill_reload_ops();
-
             debug!(
                 target: "rue::codegen",
-                ?dest_reg,
-                "Adding i32 truncation"
+                ?dest, ?op,
+                "Using 32-bit arithmetic instructions for i32"
             );
-
-            // Truncate to 32-bit and sign-extend back to 64-bit
-            // This ensures i32 overflow wraps correctly (movsxd automatically truncates and sign-extends)
-            self.emit(X8664Instr::Movsxd {
-                dest: dest_reg,
-                src: dest_reg,
-            });
+            self.lower_binary_op_32bit(dest, lhs, rhs, op)?;
+        } else {
+            // For i64 and other types, use regular binary operation logic
+            self.lower_binary_op(dest, lhs, rhs, op)?;
         }
 
         Ok(())
+    }
+
+    /// Lower a 32-bit binary operation using 32-bit instructions
+    fn lower_binary_op_32bit(
+        &mut self,
+        dest: VReg,
+        lhs: &Value,
+        rhs: &Value,
+        op: &BinOp,
+    ) -> Result<(), LoweringError> {
+        match op {
+            BinOp::Add | BinOp::Sub | BinOp::Mul => {
+                // Get lhs into dest register first
+                let dest_reg = match lhs {
+                    Value::VReg(vreg) => {
+                        // STRUCT FIELD ACCESS FIX: Ensure stable register state for field access operations
+                        // First, flush all pending stores to ensure field values are safely in memory
+                        self.allocator.flush_stores();
+                        self.emit_spill_reload_ops();
+
+                        let lhs_reg = self.allocator.ensure_reg(*vreg, &[])?;
+                        let dest_reg = self.allocator.assign_reg_for_def(dest, &[lhs_reg])?;
+                        // Emit any pending spill/reload operations before moving
+                        self.emit_spill_reload_ops();
+                        if lhs_reg != dest_reg {
+                            self.emit(X8664Instr::MovRR {
+                                dest: dest_reg,
+                                src: lhs_reg,
+                            });
+                        }
+
+                        // CRITICAL: Force another flush after loading left operand to ensure stability
+                        // This prevents register corruption when processing the right operand
+                        self.allocator.flush_stores();
+                        self.emit_spill_reload_ops();
+
+                        // Note: assign_reg_for_def already marks the register as dirty
+                        dest_reg
+                    }
+                    Value::SignedImm(imm) => {
+                        let dest_reg = self.allocator.assign_reg_for_def(dest, &[])?;
+                        // Emit any pending spill/reload operations before moving
+                        self.emit_spill_reload_ops();
+                        if *imm >= i32::MIN as i64 && *imm <= i32::MAX as i64 {
+                            self.emit(X8664Instr::MovRI32 {
+                                dest: dest_reg,
+                                imm: *imm as i32,
+                            });
+                        } else {
+                            // This shouldn't happen for i32 constants, but handle it
+                            self.emit(X8664Instr::MovRI64 {
+                                dest: dest_reg,
+                                imm: *imm,
+                            });
+                        }
+                        dest_reg
+                    }
+                    Value::UnsignedImm(imm) => {
+                        let dest_reg = self.allocator.assign_reg_for_def(dest, &[])?;
+                        self.emit_spill_reload_ops();
+                        if *imm <= i32::MAX as u64 {
+                            self.emit(X8664Instr::MovRI32 {
+                                dest: dest_reg,
+                                imm: *imm as i32,
+                            });
+                        } else {
+                            // This shouldn't happen for i32 constants, but handle it
+                            self.emit(X8664Instr::MovRI64 {
+                                dest: dest_reg,
+                                imm: *imm as i64,
+                            });
+                        }
+                        dest_reg
+                    }
+                    Value::PhysicalReg(_reg_id) => {
+                        // Physical register handling for i32 operations - this case is likely rare
+                        // For now, delegate to the regular binary operation
+                        return self.lower_binary_op(dest, lhs, rhs, op);
+                    }
+                };
+
+                // Apply the operation with rhs using 32-bit instructions
+                match (op, rhs) {
+                    (BinOp::Add, Value::VReg(rhs_vreg)) => {
+                        // Apply the same robust fix as for addition
+                        self.emit_spill_reload_ops();
+                        self.allocator.flush_stores();
+
+                        let rhs_reg = self.allocator.ensure_reg(*rhs_vreg, &[dest_reg])?;
+                        self.emit_spill_reload_ops();
+
+                        self.emit(X8664Instr::AddRR32 {
+                            dest: dest_reg,
+                            src: rhs_reg,
+                        });
+                        // Schedule store to ensure result is written back to memory
+                        self.allocator.schedule_store(dest, dest_reg);
+                    }
+                    (BinOp::Add, Value::SignedImm(imm)) => {
+                        if *imm >= i32::MIN as i64 && *imm <= i32::MAX as i64 {
+                            self.emit(X8664Instr::AddRI32 {
+                                dest: dest_reg,
+                                imm: *imm as i32,
+                            });
+                            // Schedule store to ensure result is written back to memory
+                            self.allocator.schedule_store(dest, dest_reg);
+                        } else {
+                            // This shouldn't happen for i32 constants
+                            return Err(LoweringError::RegisterAllocation(
+                                "i32 immediate value out of range".to_string(),
+                            ));
+                        }
+                    }
+                    (BinOp::Sub, Value::VReg(rhs_vreg)) => {
+                        // Apply the same robust fix as for addition
+                        self.emit_spill_reload_ops();
+                        self.allocator.flush_stores();
+
+                        let rhs_reg = self.allocator.ensure_reg(*rhs_vreg, &[dest_reg])?;
+                        self.emit_spill_reload_ops();
+
+                        self.emit(X8664Instr::SubRR32 {
+                            dest: dest_reg,
+                            src: rhs_reg,
+                        });
+                        // Schedule store to ensure result is written back to memory
+                        self.allocator.schedule_store(dest, dest_reg);
+                    }
+                    (BinOp::Sub, Value::SignedImm(imm)) => {
+                        if *imm >= i32::MIN as i64 && *imm <= i32::MAX as i64 {
+                            self.emit(X8664Instr::SubRI32 {
+                                dest: dest_reg,
+                                imm: *imm as i32,
+                            });
+                            // Schedule store to ensure result is written back to memory
+                            self.allocator.schedule_store(dest, dest_reg);
+                        } else {
+                            // This shouldn't happen for i32 constants
+                            return Err(LoweringError::RegisterAllocation(
+                                "i32 immediate value out of range".to_string(),
+                            ));
+                        }
+                    }
+                    (BinOp::Mul, Value::VReg(rhs_vreg)) => {
+                        // Apply the same robust fix as for addition
+                        self.emit_spill_reload_ops();
+                        self.allocator.flush_stores();
+
+                        let rhs_reg = self.allocator.ensure_reg(*rhs_vreg, &[dest_reg])?;
+                        self.emit_spill_reload_ops();
+
+                        self.emit(X8664Instr::ImulRR32 {
+                            dest: dest_reg,
+                            src: rhs_reg,
+                        });
+                        // Schedule store to ensure result is written back to memory
+                        self.allocator.schedule_store(dest, dest_reg);
+                    }
+                    (BinOp::Mul, Value::SignedImm(imm)) => {
+                        if *imm >= i32::MIN as i64 && *imm <= i32::MAX as i64 {
+                            self.emit(X8664Instr::ImulRI32 {
+                                dest: dest_reg,
+                                imm: *imm as i32,
+                            });
+                            // Schedule store to ensure result is written back to memory
+                            self.allocator.schedule_store(dest, dest_reg);
+                        } else {
+                            // This shouldn't happen for i32 constants
+                            return Err(LoweringError::RegisterAllocation(
+                                "i32 immediate value out of range".to_string(),
+                            ));
+                        }
+                    }
+                    (BinOp::Add, Value::UnsignedImm(imm)) => {
+                        if *imm <= i32::MAX as u64 {
+                            self.emit(X8664Instr::AddRI32 {
+                                dest: dest_reg,
+                                imm: *imm as i32,
+                            });
+                            // Schedule store to ensure result is written back to memory
+                            self.allocator.schedule_store(dest, dest_reg);
+                        } else {
+                            // This shouldn't happen for i32 constants
+                            return Err(LoweringError::RegisterAllocation(
+                                "i32 immediate value out of range".to_string(),
+                            ));
+                        }
+                    }
+                    (BinOp::Sub, Value::UnsignedImm(imm)) => {
+                        if *imm <= i32::MAX as u64 {
+                            self.emit(X8664Instr::SubRI32 {
+                                dest: dest_reg,
+                                imm: *imm as i32,
+                            });
+                            // Schedule store to ensure result is written back to memory
+                            self.allocator.schedule_store(dest, dest_reg);
+                        } else {
+                            // This shouldn't happen for i32 constants
+                            return Err(LoweringError::RegisterAllocation(
+                                "i32 immediate value out of range".to_string(),
+                            ));
+                        }
+                    }
+                    (BinOp::Mul, Value::UnsignedImm(imm)) => {
+                        if *imm <= i32::MAX as u64 {
+                            self.emit(X8664Instr::ImulRI32 {
+                                dest: dest_reg,
+                                imm: *imm as i32,
+                            });
+                            // Schedule store to ensure result is written back to memory
+                            self.allocator.schedule_store(dest, dest_reg);
+                        } else {
+                            // This shouldn't happen for i32 constants
+                            return Err(LoweringError::RegisterAllocation(
+                                "i32 immediate value out of range".to_string(),
+                            ));
+                        }
+                    }
+                    (_, Value::PhysicalReg(_)) => {
+                        // Physical register handling for i32 operations - delegate to regular operation
+                        return self.lower_binary_op(dest, lhs, rhs, op);
+                    }
+                    _ => {
+                        return Err(LoweringError::RegisterAllocation(
+                            "Unsupported 32-bit binary operation".to_string(),
+                        ));
+                    }
+                }
+
+                Ok(())
+            }
+            BinOp::Div => {
+                // Use specialized i32 division with proper sign extension
+                self.lower_division_i32(dest, lhs, rhs)
+            }
+            BinOp::Mod => {
+                // Use specialized i32 modulo with proper sign extension
+                self.lower_modulo_i32(dest, lhs, rhs)
+            }
+            _ => {
+                // For non-arithmetic operations (comparisons), delegate to regular binary operation
+                self.lower_binary_op(dest, lhs, rhs, op)
+            }
+        }
     }
 
     fn lower_modulo(&mut self, dest: VReg, lhs: &Value, rhs: &Value) -> Result<(), LoweringError> {
@@ -774,10 +1072,10 @@ impl<'a> X8664Codegen<'a> {
             target: LabelRef::Local(mod_ok_label),
         });
 
-        // Modulo by zero - exit with code EXIT_DIV_ZERO
+        // Modulo by zero - exit with code EXIT_CODE_DIV_BY_ZERO
         self.emit(X8664Instr::MovRI64 {
             dest: X86Register::Rdi,
-            imm: EXIT_DIV_ZERO,
+            imm: EXIT_CODE_DIV_BY_ZERO,
         });
         self.emit(X8664Instr::MovRI64 {
             dest: X86Register::Rax,
@@ -925,10 +1223,10 @@ impl<'a> X8664Codegen<'a> {
             target: LabelRef::Local(div_ok_label),
         });
 
-        // Division by zero - exit with code EXIT_DIV_ZERO
+        // Division by zero - exit with code EXIT_CODE_DIV_BY_ZERO
         self.emit(X8664Instr::MovRI64 {
             dest: X86Register::Rdi,
-            imm: EXIT_DIV_ZERO,
+            imm: EXIT_CODE_DIV_BY_ZERO,
         });
         self.emit(X8664Instr::MovRI64 {
             dest: X86Register::Rax,
@@ -963,6 +1261,256 @@ impl<'a> X8664Codegen<'a> {
         self.allocator.schedule_store(dest, dest_reg);
 
         Ok(())
+    }
+
+    /// Lower i32 modulo operation with proper sign extension
+    fn lower_modulo_i32(
+        &mut self,
+        dest: VReg,
+        lhs: &Value,
+        rhs: &Value,
+    ) -> Result<(), LoweringError> {
+        // Modulo is like division but we want the remainder from RDX
+        let rax = X86Register::Rax;
+        let rdx = X86Register::Rdx;
+
+        // Move lhs to RAX with proper sign extension for i32
+        self.load_i32_to_rax(lhs)?;
+
+        // Sign extend RAX to RDX:RAX (this handles the sign extension properly)
+        self.emit(X8664Instr::Cqo);
+
+        // Get divisor in a register with proper sign extension for i32
+        let divisor_reg = self.load_i32_to_register(rhs, &[rax, rdx])?;
+
+        // Check for division by zero (modulo by zero)
+        self.emit(X8664Instr::CmpRI {
+            reg: divisor_reg,
+            imm: 0,
+        });
+
+        // Jump if not zero
+        let mod_ok_label = self.new_label();
+        self.emit(X8664Instr::JmpCC {
+            cc: ConditionCode::NotEqual,
+            target: LabelRef::Local(mod_ok_label),
+        });
+
+        // Modulo by zero - exit with code EXIT_CODE_DIV_BY_ZERO
+        self.emit(X8664Instr::MovRI64 {
+            dest: X86Register::Rdi,
+            imm: EXIT_CODE_DIV_BY_ZERO,
+        });
+        self.emit(X8664Instr::MovRI64 {
+            dest: X86Register::Rax,
+            imm: 60, // sys_exit
+        });
+        self.emit(X8664Instr::Syscall);
+        // Mark unreachable - sys_exit never returns
+        self.emit(X8664Instr::Ud2);
+
+        // Continue with division
+        self.emit(X8664Instr::Label { id: mod_ok_label });
+
+        // Perform division
+        self.emit(X8664Instr::Idiv {
+            divisor: divisor_reg,
+        });
+
+        // CRITICAL: Mark RDX as dirty since idiv writes remainder to it
+        // This prevents the allocator from thinking RDX is clean
+        self.allocator.invalidate_register(rdx); // Force spill of any value in RDX
+
+        // Move remainder from RDX to dest (this is the key difference from division)
+        let dest_reg = self.allocator.ensure_reg(dest, &[])?;
+        self.emit_spill_reload_ops();
+        if dest_reg != rdx {
+            self.emit(X8664Instr::MovRR {
+                dest: dest_reg,
+                src: rdx,
+            });
+        }
+        // Mark the destination as dirty after writing to it
+        self.allocator.schedule_store(dest, dest_reg);
+
+        Ok(())
+    }
+
+    /// Lower i32 division operation with proper sign extension
+    fn lower_division_i32(
+        &mut self,
+        dest: VReg,
+        lhs: &Value,
+        rhs: &Value,
+    ) -> Result<(), LoweringError> {
+        // Division requires dividend in RAX
+        let rax = X86Register::Rax;
+        let rdx = X86Register::Rdx;
+
+        // Move lhs to RAX with proper sign extension for i32
+        self.load_i32_to_rax(lhs)?;
+
+        // Sign extend RAX to RDX:RAX (this handles the sign extension properly)
+        self.emit(X8664Instr::Cqo);
+
+        // Get divisor in a register with proper sign extension for i32
+        let divisor_reg = self.load_i32_to_register(rhs, &[rax, rdx])?;
+
+        // Check for division by zero
+        self.emit(X8664Instr::CmpRI {
+            reg: divisor_reg,
+            imm: 0,
+        });
+
+        // Jump if not zero
+        let div_ok_label = self.new_label();
+        self.emit(X8664Instr::JmpCC {
+            cc: ConditionCode::NotEqual,
+            target: LabelRef::Local(div_ok_label),
+        });
+
+        // Division by zero - exit with code EXIT_CODE_DIV_BY_ZERO
+        self.emit(X8664Instr::MovRI64 {
+            dest: X86Register::Rdi,
+            imm: EXIT_CODE_DIV_BY_ZERO,
+        });
+        self.emit(X8664Instr::MovRI64 {
+            dest: X86Register::Rax,
+            imm: 60, // sys_exit
+        });
+        self.emit(X8664Instr::Syscall);
+        // Mark unreachable - sys_exit never returns
+        self.emit(X8664Instr::Ud2);
+
+        // Continue with division
+        self.emit(X8664Instr::Label { id: div_ok_label });
+
+        // Perform division
+        self.emit(X8664Instr::Idiv {
+            divisor: divisor_reg,
+        });
+
+        // CRITICAL: Mark RDX as dirty since idiv writes remainder to it
+        // This prevents the allocator from thinking RDX is clean
+        self.allocator.invalidate_register(rdx); // Force spill of any value in RDX
+
+        // Move quotient from RAX to dest (this is the key difference from modulo)
+        let dest_reg = self.allocator.ensure_reg(dest, &[])?;
+        self.emit_spill_reload_ops();
+        if dest_reg != rax {
+            self.emit(X8664Instr::MovRR {
+                dest: dest_reg,
+                src: rax,
+            });
+        }
+        // Mark the destination as dirty after writing to it
+        self.allocator.schedule_store(dest, dest_reg);
+
+        Ok(())
+    }
+
+    /// Load i32 value to RAX with proper sign extension
+    fn load_i32_to_rax(&mut self, value: &Value) -> Result<(), LoweringError> {
+        match value {
+            Value::VReg(vreg) => {
+                let value_reg = self.allocator.ensure_reg(*vreg, &[])?;
+                self.emit_spill_reload_ops();
+                if value_reg != X86Register::Rax {
+                    // For i32 values loaded from memory, we need to ensure proper sign extension
+                    // Use MOVSXD to sign-extend from 32-bit to 64-bit
+                    self.emit(X8664Instr::Movsxd {
+                        dest: X86Register::Rax,
+                        src: value_reg,
+                    });
+                }
+            }
+            Value::SignedImm(imm) => {
+                // For signed immediates, MovRI32 already sign-extends properly
+                if *imm >= i32::MIN as i64 && *imm <= i32::MAX as i64 {
+                    self.emit(X8664Instr::MovRI32 {
+                        dest: X86Register::Rax,
+                        imm: *imm as i32,
+                    });
+                } else {
+                    self.emit(X8664Instr::MovRI64 {
+                        dest: X86Register::Rax,
+                        imm: *imm,
+                    });
+                }
+            }
+            Value::UnsignedImm(imm) => {
+                // For unsigned immediates that fit in i32 range, use MovRI32
+                if *imm <= i32::MAX as u64 {
+                    self.emit(X8664Instr::MovRI32 {
+                        dest: X86Register::Rax,
+                        imm: *imm as i32,
+                    });
+                } else {
+                    self.emit(X8664Instr::MovRI64 {
+                        dest: X86Register::Rax,
+                        imm: *imm as i64,
+                    });
+                }
+            }
+            Value::PhysicalReg(_) => {
+                return Err(LoweringError::UnsupportedValueType("i32 division"));
+            }
+        }
+        Ok(())
+    }
+
+    /// Load i32 value to a register with proper sign extension
+    fn load_i32_to_register(
+        &mut self,
+        value: &Value,
+        avoid: &[X86Register],
+    ) -> Result<X86Register, LoweringError> {
+        match value {
+            Value::VReg(vreg) => {
+                let value_reg = self.allocator.ensure_reg(*vreg, avoid)?;
+                self.emit_spill_reload_ops();
+                // For VReg values, we need to create a new register and sign-extend into it
+                let scratch = self.get_scratch_register(avoid)?;
+                self.emit(X8664Instr::Movsxd {
+                    dest: scratch,
+                    src: value_reg,
+                });
+                Ok(scratch)
+            }
+            Value::SignedImm(imm) => {
+                let scratch = self.get_scratch_register(avoid)?;
+                // For signed immediates, MovRI32 already sign-extends properly
+                if *imm >= i32::MIN as i64 && *imm <= i32::MAX as i64 {
+                    self.emit(X8664Instr::MovRI32 {
+                        dest: scratch,
+                        imm: *imm as i32,
+                    });
+                } else {
+                    self.emit(X8664Instr::MovRI64 {
+                        dest: scratch,
+                        imm: *imm,
+                    });
+                }
+                Ok(scratch)
+            }
+            Value::UnsignedImm(imm) => {
+                let scratch = self.get_scratch_register(avoid)?;
+                // For unsigned immediates that fit in i32 range, use MovRI32
+                if *imm <= i32::MAX as u64 {
+                    self.emit(X8664Instr::MovRI32 {
+                        dest: scratch,
+                        imm: *imm as i32,
+                    });
+                } else {
+                    self.emit(X8664Instr::MovRI64 {
+                        dest: scratch,
+                        imm: *imm as i64,
+                    });
+                }
+                Ok(scratch)
+            }
+            Value::PhysicalReg(_) => Err(LoweringError::UnsupportedValueType("i32 division")),
+        }
     }
 
     fn lower_comparison(
@@ -1236,6 +1784,8 @@ impl<'a> X8664Codegen<'a> {
         dest: Option<&VReg>,
         function: &str,
         args: &[VReg],
+        return_type: Option<&rue_ir::types::RueType>,
+        return_size: Option<&i64>,
     ) -> Result<(), LoweringError> {
         // Map built-in functions to runtime names
         let runtime_function = match function {
@@ -1278,11 +1828,26 @@ impl<'a> X8664Codegen<'a> {
         // that can lose track of VReg-to-register mappings
         let is_user_function = !runtime_function.starts_with("__rue_");
 
+        // Check if this is a user function that returns an aggregate
+        let returns_aggregate = dest.is_some()
+            && matches!(
+                return_type,
+                Some(rue_ir::types::RueType::Struct(_))
+                    | Some(rue_ir::types::RueType::Tuple(_))
+                    | Some(rue_ir::types::RueType::Array(_, _))
+            );
+
         if is_user_function {
             // CRITICAL: Force ALL VRegs in caller-saved registers to be spilled to memory
             // This is the safest approach for recursive function calls
+            // EXCEPTION: For aggregate returns, preserve RAX/RDX until after return value extraction
             for &reg in &caller_saved_regs {
                 if self.allocator.is_register_allocated(reg) {
+                    // Skip RAX and RDX if this function returns an aggregate
+                    // We need them to extract the return value
+                    if returns_aggregate && (reg == X86Register::Rax || reg == X86Register::Rdx) {
+                        continue;
+                    }
                     self.allocator.invalidate_register(reg);
                 }
             }
@@ -1447,10 +2012,10 @@ impl<'a> X8664Codegen<'a> {
             target: runtime_function.to_string(),
         });
 
-        // Handle return value preservation (only for runtime functions)
-        let rax_temp_reg =
-            if !is_user_function && dest.is_some() && regs_to_save.contains(&X86Register::Rax) {
-                // RAX will be overwritten when we restore, so save to temporary register first
+        // Handle return value preservation
+        let (rax_temp_reg, rdx_temp_reg) = if dest.is_some() {
+            if !is_user_function && regs_to_save.contains(&X86Register::Rax) {
+                // Runtime function: RAX will be overwritten when we restore, so save to temporary register first
                 // IMPORTANT: Include all regs_to_save and the argument registers in forbidden list
                 // to ensure the scratch register doesn't conflict with any register we're about to restore
                 let mut forbidden = regs_to_save.clone();
@@ -1460,10 +2025,45 @@ impl<'a> X8664Codegen<'a> {
                     dest: temp_reg,
                     src: X86Register::Rax,
                 });
-                Some(temp_reg)
+                (Some(temp_reg), None)
+            } else if is_user_function && returns_aggregate {
+                // User function returning aggregate: RAX/RDX contain return data that will be overwritten
+                // by subsequent function calls (like __rue_alloc), so save to temporary registers
+                let mut forbidden = vec![];
+
+                // Save RAX
+                let rax_temp = self.get_scratch_register(&forbidden)?;
+                forbidden.push(rax_temp);
+                self.emit(X8664Instr::MovRR {
+                    dest: rax_temp,
+                    src: X86Register::Rax,
+                });
+                debug!(target: "rue::codegen", "USER FUNC: Saved RAX to temp register {:?}", rax_temp);
+
+                // For 16-byte aggregates, also save RDX
+                let rdx_temp = if let Some(size) = return_size {
+                    if *size > 8 {
+                        let rdx_temp = self.get_scratch_register(&forbidden)?;
+                        self.emit(X8664Instr::MovRR {
+                            dest: rdx_temp,
+                            src: X86Register::Rdx,
+                        });
+                        debug!(target: "rue::codegen", "USER FUNC: Saved RDX to temp register {:?}", rdx_temp);
+                        Some(rdx_temp)
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
+
+                (Some(rax_temp), rdx_temp)
             } else {
-                None
-            };
+                (None, None)
+            }
+        } else {
+            (None, None)
+        };
 
         // Restore alignment padding if we added it (only for runtime functions)
         if !is_user_function && needs_padding {
@@ -1484,32 +2084,233 @@ impl<'a> X8664Codegen<'a> {
             }
         }
 
-        // Now move the return value to its destination
+        // Handle return value based on its type
         if let Some(dest_vreg) = dest {
-            // Use assign_reg_for_def since we're defining a new value (the return value)
-            let dest_reg = self.allocator.assign_reg_for_def(*dest_vreg, &[])?;
-            debug_assert!(
-                dest_reg != X86Register::Rsp && dest_reg != X86Register::Rbp,
-                "Cannot use RSP/RBP as destination register"
-            );
-            self.emit_spill_reload_ops();
+            match return_type {
+                Some(rue_ir::types::RueType::Struct(_))
+                | Some(rue_ir::types::RueType::Tuple(_))
+                | Some(rue_ir::types::RueType::Array(_, _)) => {
+                    // Aggregate return - need special handling
+                    let computed_size = return_size.copied(); // Use computed size if available
+                    self.handle_aggregate_return(
+                        *dest_vreg,
+                        return_type.unwrap(),
+                        rax_temp_reg,
+                        rdx_temp_reg,
+                        computed_size,
+                    )?;
 
-            // Determine where the return value is
-            let source_reg = if let Some(temp_reg) = rax_temp_reg {
-                temp_reg // We saved it to this temp register (runtime functions only)
-            } else {
-                X86Register::Rax // Still in RAX
-            };
+                    // For user functions returning aggregates, now invalidate RAX/RDX since we've extracted the return value
+                    if is_user_function && returns_aggregate {
+                        if self.allocator.is_register_allocated(X86Register::Rax) {
+                            self.allocator.invalidate_register(X86Register::Rax);
+                        }
+                        if self.allocator.is_register_allocated(X86Register::Rdx) {
+                            self.allocator.invalidate_register(X86Register::Rdx);
+                        }
+                        self.emit_spill_reload_ops();
+                    }
+                }
+                _ => {
+                    // Scalar return - existing behavior
+                    let dest_reg = self.allocator.assign_reg_for_def(*dest_vreg, &[])?;
+                    debug_assert!(
+                        dest_reg != X86Register::Rsp && dest_reg != X86Register::Rbp,
+                        "Cannot use RSP/RBP as destination register"
+                    );
+                    self.emit_spill_reload_ops();
 
-            if dest_reg != source_reg {
-                self.emit(X8664Instr::MovRR {
-                    dest: dest_reg,
-                    src: source_reg,
-                });
+                    // Determine where the return value is
+                    let source_reg = if let Some(temp_reg) = rax_temp_reg {
+                        temp_reg // We saved it to this temp register (runtime functions only)
+                    } else {
+                        X86Register::Rax // Still in RAX
+                    };
+
+                    if dest_reg != source_reg {
+                        self.emit(X8664Instr::MovRR {
+                            dest: dest_reg,
+                            src: source_reg,
+                        });
+                    }
+                    // Note: assign_reg_for_def already marks the register as dirty
+                }
             }
-            // Note: assign_reg_for_def already marks the register as dirty, so no need to schedule_store
         }
 
+        // CRITICAL FIX: For user functions, invalidate caller-saved registers AGAIN after the call
+        // This handles the case where VRegs were loaded into caller-saved registers for argument
+        // passing, but then those registers got clobbered by the function call
+        if is_user_function {
+            for &reg in &caller_saved_regs {
+                if self.allocator.is_register_allocated(reg) {
+                    self.allocator.invalidate_register(reg);
+                }
+            }
+            // Emit any spill operations generated by the invalidation
+            self.emit_spill_reload_ops();
+        }
+
+        Ok(())
+    }
+
+    /// Handle aggregate return values from function calls
+    fn handle_aggregate_return(
+        &mut self,
+        dest_vreg: VReg,
+        return_type: &rue_ir::types::RueType,
+        rax_temp_reg: Option<X86Register>,
+        rdx_temp_reg: Option<X86Register>,
+        computed_size: Option<i64>, // Use computed size if available
+    ) -> Result<(), LoweringError> {
+        use rue_ir::types::RueType;
+
+        // Use computed size if available, otherwise fall back to heuristic
+        let size = if let Some(computed) = computed_size {
+            computed
+        } else {
+            // Fallback heuristic if computed size not available
+            match return_type {
+                RueType::Struct(_struct_id) => {
+                    16 // Heuristic fallback: assume 2 x i64 fields = 16 bytes
+                }
+                RueType::Tuple(fields) => {
+                    // Compute tuple size based on field types
+                    fields
+                        .iter()
+                        .map(|field| {
+                            match field {
+                                RueType::I64 => 8,
+                                RueType::I32 => 4,
+                                RueType::Bool => 1,
+                                _ => 8, // Default fallback
+                            }
+                        })
+                        .sum::<i64>()
+                }
+                RueType::Array(elem_type, count) => {
+                    let elem_size = match **elem_type {
+                        RueType::I64 => 8,
+                        RueType::I32 => 4,
+                        RueType::Bool => 1,
+                        _ => 8, // Default fallback
+                    };
+                    elem_size * (*count as i64)
+                }
+                _ => return Err(LoweringError::UnsupportedValueType("aggregate return")),
+            }
+        };
+
+        debug!(
+            target: "rue::codegen",
+            ?dest_vreg,
+            ?return_type,
+            size,
+            "Handling aggregate return"
+        );
+
+        if size <= 16 {
+            // Small aggregate: returned in RAX/RDX registers
+            self.handle_small_aggregate_return(dest_vreg, size, rax_temp_reg, rdx_temp_reg)
+        } else {
+            // Large aggregate: should use hidden pointer mechanism
+            // For now, this is not fully implemented
+            warn!(
+                target: "rue::codegen",
+                size,
+                "Large aggregate return not fully implemented"
+            );
+            Err(LoweringError::InvalidAggregateSize(size))
+        }
+    }
+
+    /// Handle small aggregate return (≤16 bytes) from RAX/RDX registers  
+    fn handle_small_aggregate_return(
+        &mut self,
+        dest_vreg: VReg,
+        size: i64,
+        rax_temp_reg: Option<X86Register>,
+        rdx_temp_reg: Option<X86Register>,
+    ) -> Result<(), LoweringError> {
+        debug!(
+            target: "rue::codegen",
+            ?dest_vreg,
+            size,
+            ?rax_temp_reg,
+            ?rdx_temp_reg,
+            "Handling small aggregate return"
+        );
+
+        // Get the allocated aggregate pointer FIRST
+        // Make sure we don't overwrite the temp registers containing the saved RAX/RDX data
+        let mut forbidden = vec![];
+        if let Some(temp_reg) = rax_temp_reg {
+            forbidden.push(temp_reg);
+        }
+        if let Some(temp_reg) = rdx_temp_reg {
+            forbidden.push(temp_reg);
+        }
+        // For aggregates > 8 bytes, also avoid RDX if it's still live (not saved to temp)
+        if size > 8 && rdx_temp_reg.is_none() {
+            forbidden.push(X86Register::Rdx);
+        }
+        let agg_reg = self.allocator.assign_reg_for_def(dest_vreg, &forbidden)?;
+        self.emit_spill_reload_ops();
+
+        // Now allocate space for the aggregate, with the register already assigned
+        self.lower_allocate_aggregate_with_forbidden(dest_vreg, size, 8, &forbidden)?;
+
+        debug!(
+            target: "rue::codegen",
+            ?agg_reg,
+            "CALLER: Allocated memory for aggregate at register"
+        );
+
+        // Copy data from return registers to the allocated space
+        let rax_source = if let Some(temp_reg) = rax_temp_reg {
+            debug!(target: "rue::codegen", "CALLER: RAX was saved to temp register {:?}", temp_reg);
+            temp_reg // We saved RAX to this temp register
+        } else {
+            debug!(target: "rue::codegen", "CALLER: Using RAX directly (not saved)");
+            X86Register::Rax // Still in RAX
+        };
+
+        if size <= 8 {
+            // Fits entirely in RAX - copy 8 bytes
+            debug!(target: "rue::codegen", "CALLER: Storing 8 bytes from {:?} -> memory[{:?}+0]", rax_source, agg_reg);
+            self.emit(X8664Instr::MovMR {
+                base: agg_reg,
+                offset: 0,
+                src: rax_source,
+            });
+        } else if size <= 16 {
+            // Need both RAX and RDX - copy 16 bytes
+            debug!(target: "rue::codegen", "CALLER: Storing 8 bytes from {:?} -> memory[{:?}+0]", rax_source, agg_reg);
+            self.emit(X8664Instr::MovMR {
+                base: agg_reg,
+                offset: 0,
+                src: rax_source,
+            });
+
+            let rdx_source = if let Some(temp_reg) = rdx_temp_reg {
+                debug!(target: "rue::codegen", "CALLER: RDX was saved to temp register {:?}", temp_reg);
+                temp_reg // We saved RDX to this temp register
+            } else {
+                debug!(target: "rue::codegen", "CALLER: Using RDX directly (not saved)");
+                X86Register::Rdx // Still in RDX
+            };
+
+            debug!(target: "rue::codegen", "CALLER: Storing 8 bytes from {:?} -> memory[{:?}+8]", rdx_source, agg_reg);
+            self.emit(X8664Instr::MovMR {
+                base: agg_reg,
+                offset: 8,
+                src: rdx_source,
+            });
+        }
+
+        debug!(target: "rue::codegen", "CALLER: Aggregate return data copied to memory");
+
+        // The dest_vreg now points to the aggregate in memory
         Ok(())
     }
 
@@ -1525,6 +2326,18 @@ impl<'a> X8664Codegen<'a> {
                 ?vreg,
                 "Lowering return with value"
             );
+
+            // Check if this VReg represents an aggregate pointer
+            if let Some(&size) = self.aggregate_vregs.get(vreg) {
+                debug!(
+                    target: "rue::codegen",
+                    ?vreg,
+                    size,
+                    "Detected aggregate return, delegating to lower_return_small_aggregate"
+                );
+                return self.lower_return_small_aggregate(*vreg, size);
+            }
+
             // Now load the return value after all other values have been flushed
             // This ensures the return value register won't be used as a scratch register
             let value_reg = self.allocator.ensure_reg(*vreg, &[])?;
@@ -1551,6 +2364,116 @@ impl<'a> X8664Codegen<'a> {
 
         // Standard SysV epilogue
         self.emit(X8664Instr::LeaveFrame); // mov rsp, rbp ; pop rbp
+        self.emit(X8664Instr::Ret);
+
+        Ok(())
+    }
+
+    fn lower_return_small_aggregate(
+        &mut self,
+        value: VReg,
+        size: i64,
+    ) -> Result<(), LoweringError> {
+        debug!(
+            target: "rue::codegen",
+            ?value,
+            size,
+            "Lowering small aggregate return"
+        );
+
+        // Flush all dirty registers first
+        self.allocator.flush_stores();
+        self.emit_spill_reload_ops();
+
+        // Get the aggregate pointer
+        let agg_reg = self.allocator.ensure_reg(value, &[])?;
+        self.emit_spill_reload_ops();
+
+        debug!(
+            target: "rue::codegen",
+            ?agg_reg,
+            "CALLEE: Got aggregate pointer in register"
+        );
+
+        // For small aggregates (≤16 bytes), copy data into RAX and potentially RDX
+        // according to System V ABI
+        if size <= 8 {
+            // Fits entirely in RAX - LOAD from memory into RAX
+            debug!(target: "rue::codegen", "CALLEE: Loading 8 bytes from memory[{:?}+0] -> RAX", agg_reg);
+            self.emit(X8664Instr::MovRM {
+                dest: X86Register::Rax,
+                base: agg_reg,
+                offset: 0,
+            });
+        } else if size <= 16 {
+            // Need both RAX and RDX - LOAD from memory into registers
+            debug!(target: "rue::codegen", "CALLEE: Loading 8 bytes from memory[{:?}+0] -> RAX", agg_reg);
+            self.emit(X8664Instr::MovRM {
+                dest: X86Register::Rax,
+                base: agg_reg,
+                offset: 0,
+            });
+            debug!(target: "rue::codegen", "CALLEE: Loading 8 bytes from memory[{:?}+8] -> RDX", agg_reg);
+            self.emit(X8664Instr::MovRM {
+                dest: X86Register::Rdx,
+                base: agg_reg,
+                offset: 8,
+            });
+        } else {
+            return Err(LoweringError::InvalidAggregateSize(size));
+        }
+
+        debug!(target: "rue::codegen", "CALLEE: Aggregate data loaded into return registers RAX/RDX, returning");
+
+        // Standard SysV epilogue
+        self.emit(X8664Instr::LeaveFrame);
+        self.emit(X8664Instr::Ret);
+
+        Ok(())
+    }
+
+    fn lower_return_large_aggregate(
+        &mut self,
+        value: VReg,
+        size: i64,
+    ) -> Result<(), LoweringError> {
+        debug!(
+            target: "rue::codegen",
+            ?value,
+            size,
+            "Lowering large aggregate return"
+        );
+
+        // For large aggregates (>16 bytes), we should use the hidden return pointer
+        // mechanism, but this requires changes to the calling convention.
+        // For now, let's implement a simple memcpy-based approach that copies
+        // the aggregate to a caller-provided location.
+
+        // TODO: Implement proper hidden return pointer mechanism
+        // For now, fall back to treating it as a pointer return
+        warn!(
+            target: "rue::codegen",
+            size,
+            "Large aggregate return not fully implemented, falling back to pointer return"
+        );
+
+        // Flush all dirty registers first
+        self.allocator.flush_stores();
+        self.emit_spill_reload_ops();
+
+        // Get the aggregate pointer and return it in RAX
+        let agg_reg = self.allocator.ensure_reg(value, &[])?;
+        self.emit_spill_reload_ops();
+
+        if agg_reg != X86Register::Rax {
+            self.emit(X8664Instr::MovRR {
+                dest: X86Register::Rax,
+                src: agg_reg,
+            });
+        }
+
+        // Standard SysV epilogue
+        self.emit(X8664Instr::LeaveFrame);
         self.emit(X8664Instr::Ret);
 
         Ok(())
@@ -1775,8 +2698,19 @@ impl<'a> X8664Codegen<'a> {
         size: i64,
         _alignment: i64,
     ) -> Result<(), LoweringError> {
+        self.lower_allocate_aggregate_with_forbidden(dest, size, _alignment, &[])
+    }
+
+    /// Lower AllocateAggregate to x86-64 instructions with forbidden registers
+    fn lower_allocate_aggregate_with_forbidden(
+        &mut self,
+        dest: VReg,
+        size: i64,
+        _alignment: i64,
+        forbidden: &[X86Register],
+    ) -> Result<(), LoweringError> {
         // Call __rue_alloc(size) to allocate memory on the heap
-        let dest_reg = self.allocator.ensure_reg(dest, &[])?;
+        let dest_reg = self.allocator.ensure_reg(dest, forbidden)?;
         self.emit_spill_reload_ops();
 
         // Set up function call to __rue_alloc
@@ -1798,6 +2732,13 @@ impl<'a> X8664Codegen<'a> {
                 src: X86Register::Rax,
             });
         }
+
+        // CRITICAL FIX: Mark the destination as dirty after allocating
+        // This ensures the struct pointer gets written to memory and marked as initialized
+        self.allocator.schedule_store(dest, dest_reg);
+
+        // Track this VReg as representing an aggregate pointer
+        self.aggregate_vregs.insert(dest, size);
 
         Ok(())
     }
@@ -2036,18 +2977,48 @@ impl<'a> X8664Codegen<'a> {
         dest: VReg,
         base: VReg,
         offset: i64,
-        _field_type: &rue_ir::types::RueType,
+        field_type: &rue_ir::types::RueType,
     ) -> Result<(), LoweringError> {
+        // STRUCT FIELD ACCESS FIX: Ensure register state is stable before field access
+        // This prevents register corruption during struct field loading
+        self.allocator.flush_stores();
+        self.emit_spill_reload_ops();
+
         let dest_reg = self.allocator.ensure_reg(dest, &[])?;
         let base_reg = self.allocator.ensure_reg(base, &[dest_reg])?;
         self.emit_spill_reload_ops();
 
-        // Load field from [base + offset] - all loads are 64-bit for simplicity
-        self.emit(X8664Instr::MovRM {
-            dest: dest_reg,
-            base: base_reg,
-            offset: offset as i32, // Truncate to i32 for instruction encoding
-        });
+        // Use appropriate instruction based on field type
+        match field_type {
+            rue_ir::types::RueType::I32 => {
+                // 32-bit load with zero-extension to 64-bit
+                self.emit(X8664Instr::MovRM32 {
+                    dest: dest_reg,
+                    base: base_reg,
+                    offset: offset as i32,
+                });
+            }
+            rue_ir::types::RueType::Bool => {
+                // 8-bit load with zero-extension to 64-bit
+                self.emit(X8664Instr::MovRM8 {
+                    dest: dest_reg,
+                    base: base_reg,
+                    offset: offset as i32,
+                });
+            }
+            _ => {
+                // Default to 64-bit load for other types (i64, etc.)
+                self.emit(X8664Instr::MovRM {
+                    dest: dest_reg,
+                    base: base_reg,
+                    offset: offset as i32,
+                });
+            }
+        }
+
+        // CRITICAL FIX: Mark the destination as dirty after loading
+        // This ensures the loaded field value gets tracked by the register allocator
+        self.allocator.schedule_store(dest, dest_reg);
 
         Ok(())
     }
@@ -2058,7 +3029,7 @@ impl<'a> X8664Codegen<'a> {
         base: VReg,
         offset: i64,
         src: &Value,
-        _field_type: &rue_ir::types::RueType,
+        field_type: &rue_ir::types::RueType,
     ) -> Result<(), LoweringError> {
         let base_reg = self.allocator.ensure_reg(base, &[])?;
 
@@ -2067,42 +3038,135 @@ impl<'a> X8664Codegen<'a> {
                 let src_reg = self.allocator.ensure_reg(*src_vreg, &[base_reg])?;
                 self.emit_spill_reload_ops();
 
-                // Store field to [base + offset] - all stores are 64-bit for simplicity
-                self.emit(X8664Instr::MovMR {
-                    base: base_reg,
-                    offset: offset as i32, // Truncate to i32 for instruction encoding
-                    src: src_reg,
-                });
+                // Use appropriate instruction based on field type
+                match field_type {
+                    rue_ir::types::RueType::I32 => {
+                        // 32-bit store
+                        self.emit(X8664Instr::MovMR32 {
+                            base: base_reg,
+                            offset: offset as i32,
+                            src: src_reg,
+                        });
+                    }
+                    rue_ir::types::RueType::Bool => {
+                        // 8-bit store for bool
+                        self.emit(X8664Instr::MovMR8 {
+                            base: base_reg,
+                            offset: offset as i32,
+                            src: src_reg,
+                        });
+                    }
+                    _ => {
+                        // Default to 64-bit store for other types (i64, etc.)
+                        self.emit(X8664Instr::MovMR {
+                            base: base_reg,
+                            offset: offset as i32,
+                            src: src_reg,
+                        });
+                    }
+                }
             }
             Value::SignedImm(imm) => {
                 self.emit_spill_reload_ops();
 
                 // Load immediate into a register, then store to memory
                 let scratch = self.get_scratch_register(&[base_reg])?;
-                self.emit(X8664Instr::MovRI64 {
-                    dest: scratch,
-                    imm: *imm,
-                });
-                self.emit(X8664Instr::MovMR {
-                    base: base_reg,
-                    offset: offset as i32,
-                    src: scratch,
-                });
+
+                match field_type {
+                    rue_ir::types::RueType::I32 => {
+                        // For 32-bit fields, use 32-bit immediate if possible
+                        if *imm >= i32::MIN as i64 && *imm <= i32::MAX as i64 {
+                            self.emit(X8664Instr::MovRI32 {
+                                dest: scratch,
+                                imm: *imm as i32,
+                            });
+                        } else {
+                            self.emit(X8664Instr::MovRI64 {
+                                dest: scratch,
+                                imm: *imm,
+                            });
+                        }
+                        self.emit(X8664Instr::MovMR32 {
+                            base: base_reg,
+                            offset: offset as i32,
+                            src: scratch,
+                        });
+                    }
+                    rue_ir::types::RueType::Bool => {
+                        // For bool fields, store as 8-bit
+                        self.emit(X8664Instr::MovRI32 {
+                            dest: scratch,
+                            imm: *imm as i32,
+                        });
+                        self.emit(X8664Instr::MovMR8 {
+                            base: base_reg,
+                            offset: offset as i32,
+                            src: scratch,
+                        });
+                    }
+                    _ => {
+                        self.emit(X8664Instr::MovRI64 {
+                            dest: scratch,
+                            imm: *imm,
+                        });
+                        self.emit(X8664Instr::MovMR {
+                            base: base_reg,
+                            offset: offset as i32,
+                            src: scratch,
+                        });
+                    }
+                }
             }
             Value::UnsignedImm(imm) => {
                 self.emit_spill_reload_ops();
 
                 // Load immediate into a register, then store to memory
                 let scratch = self.get_scratch_register(&[base_reg])?;
-                self.emit(X8664Instr::MovRI64 {
-                    dest: scratch,
-                    imm: *imm as i64,
-                });
-                self.emit(X8664Instr::MovMR {
-                    base: base_reg,
-                    offset: offset as i32,
-                    src: scratch,
-                });
+
+                match field_type {
+                    rue_ir::types::RueType::I32 => {
+                        // For 32-bit fields, use 32-bit immediate if possible
+                        if *imm <= i32::MAX as u64 {
+                            self.emit(X8664Instr::MovRI32 {
+                                dest: scratch,
+                                imm: *imm as i32,
+                            });
+                        } else {
+                            self.emit(X8664Instr::MovRI64 {
+                                dest: scratch,
+                                imm: *imm as i64,
+                            });
+                        }
+                        self.emit(X8664Instr::MovMR32 {
+                            base: base_reg,
+                            offset: offset as i32,
+                            src: scratch,
+                        });
+                    }
+                    rue_ir::types::RueType::Bool => {
+                        // For bool fields, store as 8-bit
+                        self.emit(X8664Instr::MovRI32 {
+                            dest: scratch,
+                            imm: *imm as i32,
+                        });
+                        self.emit(X8664Instr::MovMR8 {
+                            base: base_reg,
+                            offset: offset as i32,
+                            src: scratch,
+                        });
+                    }
+                    _ => {
+                        self.emit(X8664Instr::MovRI64 {
+                            dest: scratch,
+                            imm: *imm as i64,
+                        });
+                        self.emit(X8664Instr::MovMR {
+                            base: base_reg,
+                            offset: offset as i32,
+                            src: scratch,
+                        });
+                    }
+                }
             }
             Value::PhysicalReg(_) => {
                 return Err(LoweringError::UnsupportedValueType("StoreField"));
@@ -2335,7 +3399,7 @@ impl<'a> X8664Codegen<'a> {
         // Load error code into rdi (first argument)
         self.emit(X8664Instr::MovRI32 {
             dest: X86Register::Rdi,
-            imm: 2, // Exit code 2 for bounds violation
+            imm: EXIT_CODE_BOUNDS_CHECK as i32, // Exit code for bounds violation
         });
 
         // System call

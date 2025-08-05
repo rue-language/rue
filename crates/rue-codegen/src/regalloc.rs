@@ -597,9 +597,17 @@ impl RegisterAllocator {
                 RegState::Dirty(vreg) => {
                     let store = self.gen_store(vreg, reg);
                     self.pending_ops.push(store);
+                    // CRITICAL FIX: Mark VReg as initialized immediately when we spill it
+                    // This ensures that subsequent ensure_reg calls will reload from memory
+                    self.initialized_vregs.insert(vreg);
                 }
-                _ => {
-                    // Clean or Empty register - no spill needed
+                RegState::Clean(vreg) => {
+                    // CRITICAL FIX: Even clean values need to be marked as initialized
+                    // when their register is invalidated, so they can be reloaded later
+                    self.initialized_vregs.insert(vreg);
+                }
+                RegState::Empty => {
+                    // Empty register - no spill needed
                 }
             }
         }

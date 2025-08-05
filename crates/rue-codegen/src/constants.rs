@@ -10,8 +10,11 @@ pub const EXIT_CODE_DIV_BY_ZERO: i64 = 250;
 /// Exit code for stack overflow or segmentation fault
 pub const EXIT_CODE_STACK_OVERFLOW: i64 = 251;
 
+/// Exit code for array bounds violation
+pub const EXIT_CODE_BOUNDS_CHECK: i64 = 252;
+
 /// Exit code for failed syscall
-pub const EXIT_CODE_SYSCALL_FAILED: i64 = 252;
+pub const EXIT_CODE_SYSCALL_FAILED: i64 = 253;
 
 // Linux x86-64 syscall numbers
 /// Read from file descriptor

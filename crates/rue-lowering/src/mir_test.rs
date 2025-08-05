@@ -448,6 +448,7 @@ fn test_mir_unary_ops() {
             rue_ir::mir::MirStatement::Assign { value, .. } => {
                 matches!(value, rue_ir::mir::MirValue::UnaryOp { .. })
             }
+            _ => false,
         })
     });
     assert!(has_unary);

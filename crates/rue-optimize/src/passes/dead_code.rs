@@ -176,6 +176,13 @@ impl MirVisitor for UseCollector {
                 // Only visit the value, not the destination
                 self.visit_value(value)
             }
+            MirStatement::Return { value, .. } => {
+                // Visit return value if present
+                if let Some(temp) = value {
+                    self.visit_temp(temp);
+                }
+                VisitorControl::Continue
+            }
         }
     }
 
@@ -204,6 +211,10 @@ impl MirFolder for DeadAssignmentRemover {
                     self.transformations += 1;
                     Ok(None)
                 }
+            }
+            MirStatement::Return { .. } => {
+                // Always keep return statements
+                Ok(Some(stmt))
             }
         }
     }
@@ -325,6 +336,7 @@ mod tests {
                 }],
             }],
             function_signatures: HashMap::new(),
+            type_context: rue_ir::types::TypeContext::new(),
         };
 
         // Run dead code elimination
@@ -387,6 +399,7 @@ mod tests {
                 }],
             }],
             function_signatures: HashMap::new(),
+            type_context: rue_ir::types::TypeContext::new(),
         };
 
         // Run dead code elimination
