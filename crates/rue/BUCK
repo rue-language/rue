@@ -55,3 +55,106 @@ rust_test(
         "CARGO_MANIFEST_DIR": ".",
     },
 )
+
+rust_test(
+    name = "aggregate_runtime_integration_tests",
+    srcs = glob(["tests/**/*.rs"]),
+    crate_root = "tests/aggregate_runtime_integration_tests.rs",
+    edition = "2024",
+    deps = [
+        "//crates/rue-compiler:rue-compiler",
+        "//crates/rue-codegen:rue-codegen",
+    ],
+    env = {
+        "CARGO_MANIFEST_DIR": ".",
+    },
+)
+
+rust_test(
+    name = "casting_tests",
+    srcs = glob(["tests/**/*.rs"]),
+    crate_root = "tests/casting_tests.rs",
+    edition = "2024",
+    deps = [
+        "//crates/rue-compiler:rue-compiler",
+        "//crates/rue-codegen:rue-codegen",
+        "//third-party/rust:tempfile",
+    ],
+    env = {
+        "CARGO_MANIFEST_DIR": ".",
+        "CARGO_BIN_EXE_rue": "$(location :rue)",
+    },
+)
+
+rust_test(
+    name = "compiler",
+    srcs = glob(["tests/**/*.rs"]),
+    crate_root = "tests/compiler.rs",
+    edition = "2024",
+    deps = [
+        "//crates/rue-compiler:rue-compiler",
+        "//crates/rue-codegen:rue-codegen",
+        "//third-party/rust:tempfile",
+    ],
+    env = {
+        "CARGO_MANIFEST_DIR": ".",
+        "CARGO_BIN_EXE_rue": "$(location :rue)",
+    },
+)
+
+rust_test(
+    name = "runtime_edge_cases",
+    srcs = glob(["tests/**/*.rs"]),
+    crate_root = "tests/runtime_edge_cases.rs",
+    edition = "2024",
+    deps = [
+        "//crates/rue-compiler:rue-compiler",
+        "//crates/rue-codegen:rue-codegen",
+        "//third-party/rust:tempfile",
+    ],
+    env = {
+        "CARGO_MANIFEST_DIR": ".",
+    },
+)
+
+rust_test(
+    name = "runtime_tests",
+    srcs = glob(["tests/**/*.rs"]),
+    crate_root = "tests/runtime_tests.rs",
+    edition = "2024",
+    deps = [
+        "//crates/rue-compiler:rue-compiler",
+        "//crates/rue-codegen:rue-codegen",
+    ],
+    env = {
+        "CARGO_MANIFEST_DIR": ".",
+    },
+)
+
+rust_test(
+    name = "test_recursive_debug",
+    srcs = glob(["tests/**/*.rs"]),
+    crate_root = "tests/test_recursive_debug.rs",
+    edition = "2024",
+    deps = [
+        "//crates/rue-compiler:rue-compiler",
+        "//crates/rue-codegen:rue-codegen",
+    ],
+    env = {
+        "CARGO_MANIFEST_DIR": ".",
+    },
+)
+
+rust_test(
+    name = "variable_shadowing_tests",
+    srcs = glob(["tests/**/*.rs"]),
+    crate_root = "tests/variable_shadowing_tests.rs",
+    edition = "2024",
+    deps = [
+        "//crates/rue-compiler:rue-compiler",
+        "//crates/rue-codegen:rue-codegen",
+    ],
+    env = {
+        "CARGO_MANIFEST_DIR": ".",
+    },
+)
