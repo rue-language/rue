@@ -1,0 +1,36 @@
+CstRoot {
+    items: [
+        Statement(
+            Expression(
+                ExpressionStatementNode {
+                    expression: Literal(
+                        Token {
+                            kind: Integer(
+                                42,
+                            ),
+                            span: Span {
+                                start: 0,
+                                end: 2,
+                            },
+                        },
+                    ),
+                    semicolon: Token {
+                        kind: Semicolon,
+                        span: Span {
+                            start: 2,
+                            end: 3,
+                        },
+                    },
+                    trivia: Trivia {
+                        leading: [],
+                        trailing: [],
+                    },
+                },
+            ),
+        ),
+    ],
+    trivia: Trivia {
+        leading: [],
+        trailing: [],
+    },
+}

@@ -86,7 +86,7 @@ jobs:
       run: buck2 test //crates/...
     
     - name: Buck2 run simple.rue
-      run: buck2 run //crates/rue:rue samples/simple.rue
+      run: buck2 run //crates/rue:rue examples/basic/simple.rue
 
     - name: Buck2 run compiler-example
       run: buck2 run //crates/rue-compiler:basic_usage
@@ -107,7 +107,7 @@ jobs:
     
     - name: Test rue binary
       run: |
-        ./target/release/rue samples/simple.rue || echo "Compilation test complete"
+        ./target/release/rue examples/basic/simple.rue || echo "Compilation test complete"
         echo "Integration tests will be added as features are implemented"
 
   # Security audit

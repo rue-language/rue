@@ -1,0 +1,4 @@
+exit_code = 42
+stdout = ""
+stderr = ""
+timeout = false

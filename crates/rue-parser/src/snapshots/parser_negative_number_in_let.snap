@@ -1,0 +1,60 @@
+CstRoot {
+    items: [
+        Statement(
+            Let(
+                LetStatementNode {
+                    let_token: Token {
+                        kind: Let,
+                        span: Span {
+                            start: 0,
+                            end: 3,
+                        },
+                    },
+                    name: Token {
+                        kind: Ident(
+                            "x",
+                        ),
+                        span: Span {
+                            start: 4,
+                            end: 5,
+                        },
+                    },
+                    type_annotation: None,
+                    equals: Token {
+                        kind: Assign,
+                        span: Span {
+                            start: 6,
+                            end: 7,
+                        },
+                    },
+                    value: Literal(
+                        Token {
+                            kind: Integer(
+                                -5,
+                            ),
+                            span: Span {
+                                start: 8,
+                                end: 10,
+                            },
+                        },
+                    ),
+                    semicolon: Token {
+                        kind: Semicolon,
+                        span: Span {
+                            start: 10,
+                            end: 11,
+                        },
+                    },
+                    trivia: Trivia {
+                        leading: [],
+                        trailing: [],
+                    },
+                },
+            ),
+        ),
+    ],
+    trivia: Trivia {
+        leading: [],
+        trailing: [],
+    },
+}

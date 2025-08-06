@@ -28,20 +28,6 @@ rust_test(
 )
 
 rust_test(
-    name = "aggregate_integration_tests",
-    srcs = glob(["tests/**/*.rs"]),
-    crate_root = "tests/aggregate_integration_tests.rs",
-    edition = "2024",
-    deps = [
-        ":rue-lowering",
-        "//crates/rue-ir:rue-ir",
-        "//crates/rue-lexer:rue-lexer",
-        "//crates/rue-target:rue-target",
-        "//third-party/rust:tracing",
-    ],
-)
-
-rust_test(
     name = "test_direct_returns",
     srcs = glob(["tests/**/*.rs"]),
     crate_root = "tests/test_direct_returns.rs",

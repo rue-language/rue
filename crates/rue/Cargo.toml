@@ -16,6 +16,7 @@ tracing.workspace = true
 [dev-dependencies]
 tempfile.workspace = true
 criterion.workspace = true
+rue-parser.workspace = true
 
 [[bench]]
 name = "compiler"

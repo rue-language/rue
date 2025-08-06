@@ -1,0 +1,71 @@
+CstRoot {
+    items: [
+        Statement(
+            Expression(
+                ExpressionStatementNode {
+                    expression: Call(
+                        CallExprNode {
+                            function: Identifier(
+                                Token {
+                                    kind: Ident(
+                                        "factorial",
+                                    ),
+                                    span: Span {
+                                        start: 0,
+                                        end: 9,
+                                    },
+                                },
+                            ),
+                            open_paren: Token {
+                                kind: LeftParen,
+                                span: Span {
+                                    start: 9,
+                                    end: 10,
+                                },
+                            },
+                            args: [
+                                Literal(
+                                    Token {
+                                        kind: Integer(
+                                            5,
+                                        ),
+                                        span: Span {
+                                            start: 10,
+                                            end: 11,
+                                        },
+                                    },
+                                ),
+                            ],
+                            close_paren: Token {
+                                kind: RightParen,
+                                span: Span {
+                                    start: 11,
+                                    end: 12,
+                                },
+                            },
+                            trivia: Trivia {
+                                leading: [],
+                                trailing: [],
+                            },
+                        },
+                    ),
+                    semicolon: Token {
+                        kind: Semicolon,
+                        span: Span {
+                            start: 12,
+                            end: 13,
+                        },
+                    },
+                    trivia: Trivia {
+                        leading: [],
+                        trailing: [],
+                    },
+                },
+            ),
+        ),
+    ],
+    trivia: Trivia {
+        leading: [],
+        trailing: [],
+    },
+}

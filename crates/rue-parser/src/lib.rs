@@ -1,6 +1,9 @@
 use rue_ast::*;
 use rue_lexer::{Span, TokenKind, format_error_with_context};
 
+pub mod simple_snapshot;
+pub mod snapshot;
+
 struct Parser {
     tokens: Vec<TokenNode>,
     current: usize,
@@ -1168,6 +1171,9 @@ impl Parser {
 pub fn parse(tokens: Vec<TokenNode>) -> ParseResult<CstRoot> {
     Parser::new(tokens).parse()
 }
+
+#[cfg(test)]
+mod snapshot_tests;
 
 #[cfg(test)]
 mod tests {

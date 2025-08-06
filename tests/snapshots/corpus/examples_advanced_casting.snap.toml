@@ -1,0 +1,8 @@
+exit_code = 0
+stdout = """
+42
+-100
+150
+"""
+stderr = ""
+timeout = false

@@ -15,13 +15,15 @@ cargo.rust_binary(
 )
 
 rust_test(
-    name = "corpus_tests",
+    name = "snapshot_corpus_tests",
     srcs = glob(["tests/**/*.rs"]),
-    crate_root = "tests/corpus_tests.rs",
+    crate_root = "tests/snapshot_corpus_tests.rs",
     edition = "2024",
     deps = [
         "//crates/rue-compiler:rue-compiler",
         "//crates/rue-codegen:rue-codegen",
+        "//crates/rue-parser:rue-parser",
+        "//third-party/rust:tempfile",
     ],
     env = {
         "CARGO_MANIFEST_DIR": ".",

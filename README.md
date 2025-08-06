@@ -168,38 +168,38 @@ Numeric literals default to `i32` unless the context requires a different type.
 
 ```bash
 # Compile a program to executable
-cargo run -p rue samples/simple.rue
+cargo run -p rue examples/basic/simple.rue
 
 # Run the compiled program (executable created in same directory as source)
-./samples/simple; echo $?  # Shows the program's return value
+./examples/basic/simple; echo $?  # Shows the program's return value
 
 # Generate assembly instead of executable
-cargo run -p rue samples/simple.rue -- --emit-asm
-# This creates samples/simple.s with x86-64 assembly
+cargo run -p rue examples/basic/simple.rue -- --emit-asm
+# This creates examples/basic/simple.s with x86-64 assembly
 
 # Specify output file
-cargo run -p rue samples/simple.rue -- -o myprogram
-cargo run -p rue samples/simple.rue -- --emit-asm -o myprogram.s
+cargo run -p rue examples/basic/simple.rue -- -o myprogram
+cargo run -p rue examples/basic/simple.rue -- --emit-asm -o myprogram.s
 
 # Try other example programs
-cargo run -p rue samples/factorial.rue && ./samples/factorial; echo $?
-cargo run -p rue samples/fibonacci.rue && ./samples/fibonacci; echo $?
-cargo run -p rue samples/while_demo.rue && ./samples/while_demo; echo $?
-cargo run -p rue examples/comments.rue && ./examples/comments; echo $?
-cargo run -p rue samples/countdown.rue && ./samples/countdown; echo $?
-cargo run -p rue samples/assignment_demo.rue && ./samples/assignment_demo; echo $?
+cargo run -p rue examples/basic/factorial.rue && ./examples/basic/factorial; echo $?
+cargo run -p rue examples/basic/fibonacci.rue && ./examples/basic/fibonacci; echo $?
+cargo run -p rue examples/control_flow/while_demo.rue && ./examples/control_flow/while_demo; echo $?
+cargo run -p rue examples/advanced/comments.rue && ./examples/advanced/comments; echo $?
+cargo run -p rue examples/control_flow/countdown.rue && ./examples/control_flow/countdown; echo $?
+cargo run -p rue examples/control_flow/assignment_demo.rue && ./examples/control_flow/assignment_demo; echo $?
 ```
 
 ### With Buck2
 
 ```bash
 # Compile to executable
-buck2 run //crates/rue:rue samples/simple.rue
-./samples/simple; echo $?
+buck2 run //crates/rue:rue examples/basic/simple.rue
+./examples/basic/simple; echo $?
 
 # Generate assembly
-buck2 run //crates/rue:rue samples/simple.rue -- --emit-asm
-# Creates samples/simple.s
+buck2 run //crates/rue:rue examples/basic/simple.rue -- --emit-asm
+# Creates examples/basic/simple.s
 ```
 
 ### Running Tests
@@ -208,7 +208,7 @@ buck2 run //crates/rue:rue samples/simple.rue -- --emit-asm
 # With Cargo
 cargo test                    # All tests
 cargo test -p rue-lexer       # Lexer tests
-cargo test -p rue-parser      # Parser tests
+cargo test -p rue-parser      # Parser tests (includes snapshot tests)
 cargo test -p rue-semantic    # Type checking tests
 cargo test -p rue-codegen     # Code generation tests
 cargo test -p rue             # Integration and type system tests
@@ -216,12 +216,16 @@ cargo test -p rue             # Integration and type system tests
 # With Buck2
 buck2 test //crates/...       # All tests
 buck2 test //crates/rue-lexer:test    # Lexer tests
-buck2 test //crates/rue-parser:test   # Parser tests
+buck2 test //crates/rue-parser:test   # Parser tests (includes snapshot tests)
 buck2 test //crates/rue-semantic:test # Type checking tests
 buck2 test //crates/rue-codegen:test  # Code generation tests
-buck2 test //crates/rue:corpus_tests # Corpus tests
+buck2 test //crates/rue:snapshot_corpus_tests # Snapshot-based corpus tests
 buck2 test //crates/rue:type_system_tests # Type system tests
-buck2 test //crates/rue:              # All rue tests (corpus + type system)
+buck2 test //crates/rue:              # All rue tests
+
+# Update snapshots when tests change
+UPDATE_SNAPSHOTS=1 cargo test -p rue-parser
+UPDATE_SNAPSHOTS=1 cargo test -p rue
 ```
 
 ## IDE Support
