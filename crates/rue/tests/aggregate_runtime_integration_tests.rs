@@ -30,15 +30,6 @@
 //! - 🔄 Struct field names are mapped to offsets via heuristics (x=0, y=8, z=16, etc.)
 //! - 🔄 Struct size assumes 2 x i64 fields (16 bytes) - needs proper struct definition lookup
 //!
-//! ### Testing Strategy:
-//!
-//! All tests are currently marked with `#[ignore]` and will be enabled once the semantic
-//! analysis phase is complete. To run these tests when aggregate support is ready:
-//!
-//! ```bash
-//! cargo test -p rue aggregate_runtime_integration_tests -- --ignored
-//! ```
-//!
 //! ### Test Organization:
 //!
 //! Tests are organized by aggregate type and operation category:
@@ -151,7 +142,7 @@ fn test_runtime_program(code: &str, expected_output: &str, expected_exit_code: i
 }
 
 // =============================================================================
-// INFRASTRUCTURE VERIFICATION TESTS (always enabled)
+// INFRASTRUCTURE VERIFICATION TESTS
 // =============================================================================
 
 /// Verify that the test infrastructure works correctly

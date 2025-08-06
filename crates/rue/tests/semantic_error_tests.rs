@@ -591,3 +591,67 @@ fn main() -> i32 {
         "Type mismatch",
     );
 }
+
+#[test]
+fn test_large_literal_errors() {
+    // Literal that doesn't fit in i32 (2^31 = 2147483648)
+    test_compile_error(
+        "large_literal_i32",
+        r#"
+fn main() -> i32 {
+    let x: i32 = 2147483648;
+    x
+}
+"#,
+        "literal out of range for `i32`",
+    );
+
+    // Large negative literal that doesn't fit in i32
+    test_compile_error(
+        "large_negative_literal_i32",
+        r#"
+fn main() -> i32 {
+    let x: i32 = -2147483649;
+    x
+}
+"#,
+        "literal out of range for `i32`",
+    );
+
+    // Large literal in arithmetic
+    test_compile_error(
+        "large_literal_in_arithmetic",
+        r#"
+fn main() -> i32 {
+    let x: i32 = 0;
+    x = x + 2147483648;
+    x
+}
+"#,
+        "literal out of range for `i32`",
+    );
+
+    // Large literal in division
+    test_compile_error(
+        "large_literal_in_division",
+        r#"
+fn main() -> i32 {
+    let x: i32 = 100;
+    x = x / 2147483648;
+    x
+}
+"#,
+        "literal out of range for `i32`",
+    );
+
+    // Large literal with default type inference
+    test_compile_error(
+        "large_literal_default_type",
+        r#"
+fn main() -> i32 {
+    2147483648
+}
+"#,
+        "literal out of range for `i32`",
+    );
+}

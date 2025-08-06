@@ -7,7 +7,7 @@ use std::collections::HashMap;
 pub use rue_ir::hir;
 
 mod hir_validator;
-mod type_checker;
+pub(crate) mod type_checker;
 
 #[cfg(test)]
 mod hir_control_flow_test;
@@ -23,6 +23,9 @@ mod hir_roundtrip_test;
 
 #[cfg(test)]
 mod aggregate_type_tests;
+
+#[cfg(test)]
+mod constraint_inference_test;
 
 // Semantic analysis types
 #[derive(Debug, Clone, PartialEq, thiserror::Error)]
