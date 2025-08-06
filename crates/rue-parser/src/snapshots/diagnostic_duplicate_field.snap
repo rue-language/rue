@@ -1,0 +1,7 @@
+error[E1002]: Duplicate field name 'x' in struct definition
+ -> test.rue:1:24
+   |
+1 | struct Point { x: i32, x: i32 }
+  |                        ^
+   |
+ help: Each field name must be unique

@@ -1,0 +1,147 @@
+Success: CstRoot {
+    items: [
+        Function(
+            FunctionNode {
+                fn_token: Token {
+                    kind: Fn,
+                    span: Span {
+                        start: 0,
+                        end: 2,
+                    },
+                },
+                name: Token {
+                    kind: Ident(
+                        "add",
+                    ),
+                    span: Span {
+                        start: 3,
+                        end: 6,
+                    },
+                },
+                param_list: ParamListNode {
+                    open_paren: Token {
+                        kind: LeftParen,
+                        span: Span {
+                            start: 6,
+                            end: 7,
+                        },
+                    },
+                    params: [
+                        ParameterNode {
+                            name: Token {
+                                kind: Ident(
+                                    "x",
+                                ),
+                                span: Span {
+                                    start: 7,
+                                    end: 8,
+                                },
+                            },
+                            type_annotation: None,
+                            trivia: Trivia {
+                                leading: [],
+                                trailing: [],
+                            },
+                        },
+                        ParameterNode {
+                            name: Token {
+                                kind: Ident(
+                                    "y",
+                                ),
+                                span: Span {
+                                    start: 10,
+                                    end: 11,
+                                },
+                            },
+                            type_annotation: None,
+                            trivia: Trivia {
+                                leading: [],
+                                trailing: [],
+                            },
+                        },
+                    ],
+                    close_paren: Token {
+                        kind: RightParen,
+                        span: Span {
+                            start: 11,
+                            end: 12,
+                        },
+                    },
+                    trivia: Trivia {
+                        leading: [],
+                        trailing: [],
+                    },
+                },
+                return_type: None,
+                body: BlockNode {
+                    open_brace: Token {
+                        kind: LeftBrace,
+                        span: Span {
+                            start: 13,
+                            end: 14,
+                        },
+                    },
+                    statements: [],
+                    final_expr: Some(
+                        Binary(
+                            BinaryExprNode {
+                                left: Identifier(
+                                    Token {
+                                        kind: Ident(
+                                            "x",
+                                        ),
+                                        span: Span {
+                                            start: 15,
+                                            end: 16,
+                                        },
+                                    },
+                                ),
+                                operator: Token {
+                                    kind: Plus,
+                                    span: Span {
+                                        start: 17,
+                                        end: 18,
+                                    },
+                                },
+                                right: Identifier(
+                                    Token {
+                                        kind: Ident(
+                                            "y",
+                                        ),
+                                        span: Span {
+                                            start: 19,
+                                            end: 20,
+                                        },
+                                    },
+                                ),
+                                trivia: Trivia {
+                                    leading: [],
+                                    trailing: [],
+                                },
+                            },
+                        ),
+                    ),
+                    close_brace: Token {
+                        kind: RightBrace,
+                        span: Span {
+                            start: 21,
+                            end: 22,
+                        },
+                    },
+                    trivia: Trivia {
+                        leading: [],
+                        trailing: [],
+                    },
+                },
+                trivia: Trivia {
+                    leading: [],
+                    trailing: [],
+                },
+            },
+        ),
+    ],
+    trivia: Trivia {
+        leading: [],
+        trailing: [],
+    },
+}

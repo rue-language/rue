@@ -6,26 +6,24 @@
 #[cfg(test)]
 mod tests {
     use crate::simple_snapshot::SnapshotTest;
-    use crate::{CstRoot, ParseResult, parse};
-    use rue_lexer::Lexer;
+    use crate::{CstRoot, parse_with_recovery};
 
-    fn lex_and_parse(source: &str) -> ParseResult<CstRoot> {
-        let mut lexer = Lexer::new(source);
-        let tokens = lexer.tokenize().map_err(|e| crate::ParseError {
-            message: format!("Lexical error: {}", e.message),
-            span: rue_lexer::Span {
-                start: e.position,
-                end: e.position + 1,
-            },
-        })?;
-        parse(tokens)
+    fn lex_and_parse(source: &str) -> Result<CstRoot, Vec<rue_diagnostic::Diagnostic>> {
+        parse_with_recovery(source, "test.rue")
     }
 
     fn assert_parse_snapshot(test_name: &str, source: &str) {
         let result = lex_and_parse(source);
         let output = match result {
             Ok(cst) => format!("{cst:#?}"),
-            Err(e) => format!("Error: {e}"),
+            Err(diagnostics) => format!(
+                "Errors:\n{}",
+                diagnostics
+                    .iter()
+                    .map(|d| format!("  - {}", d.message))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            ),
         };
 
         SnapshotTest::new(test_name).assert_snapshot(&output);

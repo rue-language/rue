@@ -1,4 +1,5 @@
 use rue_ast::CstRoot;
+use rue_diagnostic::Diagnostic;
 use rue_semantic::analyze_cst;
 use std::sync::Arc;
 
@@ -10,7 +11,9 @@ pub mod pipeline;
 pub use error::RueError;
 
 // Re-export the compilation functions for external use
-pub use pipeline::{compile_hir_via_mir_to_assembly, compile_hir_via_mir_to_executable};
+pub use pipeline::{
+    CompileError, compile_hir_via_mir_to_assembly, compile_hir_via_mir_to_executable,
+};
 
 // Input structs
 #[salsa::input]
@@ -28,18 +31,29 @@ pub fn parse_file(
     file: SourceFile,
 ) -> Result<Arc<CstRoot>, Arc<RueError>> {
     let text = file.text(db);
-    let mut lexer = rue_lexer::Lexer::new(text.as_str());
-    let tokens = match lexer.tokenize() {
-        Ok(tokens) => tokens,
-        Err(e) => {
-            return Err(Arc::new(e.into()));
-        }
-    };
+    let path = file.path(db);
 
-    match rue_parser::parse(tokens) {
-        Ok(cst) => Ok(Arc::new(cst)),
-        Err(e) => Err(Arc::new(e.into())),
-    }
+    // Use the new diagnostic-based parser internally
+    rue_parser::parse_with_recovery(&text, &path)
+        .map(Arc::new)
+        .map_err(|diagnostics| {
+            // Use the new unified diagnostic system
+            Arc::new(RueError::from_diagnostics(diagnostics))
+        })
+}
+
+/// Parse file with error recovery and collect diagnostics
+#[salsa::tracked]
+pub fn parse_file_with_diagnostics(
+    db: &dyn salsa::Database,
+    file: SourceFile,
+) -> (Option<Arc<CstRoot>>, Arc<Vec<Diagnostic>>) {
+    let text = file.text(db);
+    let path = file.path(db);
+
+    rue_parser::parse_with_recovery(&text, &path)
+        .map(|cst| (Some(Arc::new(cst)), Arc::new(Vec::new())))
+        .unwrap_or_else(|diagnostics| (None, Arc::new(diagnostics)))
 }
 
 #[salsa::tracked]
@@ -47,19 +61,11 @@ pub fn analyze_file(
     db: &dyn salsa::Database,
     file: SourceFile,
 ) -> Result<Arc<rue_semantic::AnalysisResult>, Arc<RueError>> {
-    // Parse the file first
-    let ast = match parse_file(db, file) {
-        Ok(ast) => ast,
-        Err(parse_error) => {
-            return Err(parse_error);
-        }
-    };
-
-    // Analyze the AST
-    match analyze_cst(&ast) {
-        Ok(result) => Ok(Arc::new(result)),
-        Err(e) => Err(Arc::new(e.into())),
-    }
+    // Parse and analyze with functional chaining
+    let ast = parse_file(db, file)?;
+    analyze_cst(&ast)
+        .map(Arc::new)
+        .map_err(|e| Arc::new(e.into()))
 }
 
 // Re-export Salsa's default database implementation
@@ -371,19 +377,11 @@ pub fn compile_file(
     db: &dyn salsa::Database,
     file: SourceFile,
 ) -> Result<Arc<Vec<u8>>, Arc<RueError>> {
-    // Parse and analyze the file first
-    let analysis = match analyze_file(db, file) {
-        Ok(analysis) => analysis,
-        Err(error) => {
-            return Err(error);
-        }
-    };
-
-    // Generate executable from HIR via MIR (without optimizations)
-    match pipeline::compile_hir_via_mir_to_executable(&analysis, false) {
-        Ok(executable) => Ok(Arc::new(executable)),
-        Err(e) => Err(Arc::new(RueError::Compile(e.to_string()))),
-    }
+    // Parse, analyze, and compile with functional chaining
+    let analysis = analyze_file(db, file)?;
+    pipeline::compile_hir_via_mir_to_executable(&analysis, false)
+        .map(Arc::new)
+        .map_err(|e| Arc::new(RueError::from(e)))
 }
 
 #[salsa::tracked]
@@ -402,7 +400,7 @@ pub fn compile_file_to_assembly(
     // Generate assembly from HIR via MIR (without optimizations)
     match pipeline::compile_hir_via_mir_to_assembly(&analysis, false) {
         Ok(assembly) => Ok(Arc::new(assembly)),
-        Err(e) => Err(Arc::new(RueError::Compile(e.to_string()))),
+        Err(e) => Err(Arc::new(RueError::from(e))),
     }
 }
 
@@ -423,7 +421,7 @@ pub fn compile_file_with_options(
     // Generate executable from HIR via MIR with optimization settings
     match pipeline::compile_hir_via_mir_to_executable(&analysis, options.optimize(db)) {
         Ok(executable) => Ok(Arc::new(executable)),
-        Err(e) => Err(Arc::new(RueError::Compile(e.to_string()))),
+        Err(e) => Err(Arc::new(RueError::from(e))),
     }
 }
 
@@ -444,6 +442,60 @@ pub fn compile_file_to_assembly_with_options(
     // Generate assembly from HIR via MIR with optimization settings
     match pipeline::compile_hir_via_mir_to_assembly(&analysis, options.optimize(db)) {
         Ok(assembly) => Ok(Arc::new(assembly)),
-        Err(e) => Err(Arc::new(RueError::Compile(e.to_string()))),
+        Err(e) => Err(Arc::new(RueError::from(e))),
+    }
+}
+
+/// Compile a file with diagnostic support
+pub fn compile_file_with_diagnostics(
+    db: &dyn salsa::Database,
+    file: SourceFile,
+    options: CompileOptions,
+) -> Result<Arc<Vec<u8>>, Vec<Diagnostic>> {
+    // Parse with error recovery
+    let (cst, parse_diagnostics) = parse_file_with_diagnostics(db, file);
+
+    // If we have parse errors, return them
+    if !parse_diagnostics.is_empty() {
+        return Err((*parse_diagnostics).clone());
+    }
+
+    // If no CST was produced (shouldn't happen if no diagnostics), create an error
+    let cst = match cst {
+        Some(cst) => cst,
+        None => {
+            let diagnostic = rue_diagnostic::DiagnosticBuilder::error(
+                "Failed to parse file",
+                rue_diagnostic::SourceId::new(file.path(db)),
+            )
+            .build();
+            return Err(vec![diagnostic]);
+        }
+    };
+
+    // Analyze the CST
+    match analyze_cst(&cst) {
+        Ok(analysis) => {
+            // Generate executable from HIR via MIR
+            match pipeline::compile_hir_via_mir_to_executable(&analysis, options.optimize(db)) {
+                Ok(executable) => Ok(Arc::new(executable)),
+                Err(e) => {
+                    let diagnostic = rue_diagnostic::DiagnosticBuilder::error(
+                        format!("Compilation error: {e}"),
+                        rue_diagnostic::SourceId::new(file.path(db)),
+                    )
+                    .build();
+                    Err(vec![diagnostic])
+                }
+            }
+        }
+        Err(semantic_error) => {
+            // Convert semantic error to diagnostic
+            let diagnostic = rue_semantic::semantic_error_to_diagnostic(
+                &semantic_error,
+                rue_diagnostic::SourceId::new(file.path(db)),
+            );
+            Err(vec![diagnostic])
+        }
     }
 }

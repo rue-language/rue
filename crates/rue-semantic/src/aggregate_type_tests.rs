@@ -12,21 +12,23 @@ mod tests {
     use crate::{AnalysisResult, SemanticError, analyze_cst};
     use rue_ir::hir::HirExpr;
     use rue_ir::types::{FieldId, RueType};
-    use rue_lexer::{Lexer, Span};
-    use rue_parser::parse;
+    use rue_lexer::Span;
+    use rue_parser::parse_with_recovery;
 
     fn parse_and_analyze(source: &str) -> Result<AnalysisResult, SemanticError> {
-        let mut lexer = Lexer::new(source);
-        let tokens = lexer.tokenize().map_err(|e| SemanticError {
-            message: format!("Lexical error: {}", e.message),
-            span: Span {
-                start: e.position,
-                end: e.position + 1,
-            },
-        })?;
-        let ast = parse(tokens).map_err(|e| SemanticError {
-            message: format!("Parse error: {}", e.message),
-            span: e.span,
+        let ast = parse_with_recovery(source, "test.rue").map_err(|diagnostics| {
+            // Convert first diagnostic to SemanticError for compatibility
+            if let Some(first) = diagnostics.first() {
+                SemanticError {
+                    message: first.message.clone(),
+                    span: first.primary_span().unwrap_or(Span::new(0, 0)),
+                }
+            } else {
+                SemanticError {
+                    message: "Parse error".to_string(),
+                    span: Span::new(0, 0),
+                }
+            }
         })?;
         analyze_cst(&ast)
     }

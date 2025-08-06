@@ -1,1 +1,5 @@
-Error: parse error: Unexpected token: LeftBrace
+Errors:
+  - Unexpected token: LeftBrace
+  - Unexpected token: LeftBrace
+  - Expected Semicolon, found RightBrace
+  - Unexpected token: RightBrace

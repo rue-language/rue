@@ -1,9 +1,10 @@
 use bpaf::{Parser, construct};
 use rue_compiler::{
     CompileOptions, RueDatabase, SourceFile, compile_file_to_assembly_with_options,
-    compile_file_with_options,
+    compile_file_with_diagnostics,
     logging::{LogConfig, LogFormat, init_tracing, verbosity_to_filter},
 };
+use rue_diagnostic::{DiagnosticFormatter, SourceManager};
 use std::fs;
 use std::path::PathBuf;
 use tracing::info;
@@ -125,20 +126,9 @@ fn main() {
     // Compile
     if opts.emit_asm {
         // Generate assembly
-        let result = compile_file_to_assembly_with_options(&db, file, options);
-        match result {
-            Ok(assembly) => match fs::write(&output_path, &*assembly) {
-                Ok(()) => {
-                    info!(
-                        "Successfully generated assembly to '{}'",
-                        output_path.display()
-                    );
-                    println!(
-                        "Successfully generated assembly to '{}'",
-                        output_path.display()
-                    );
-                }
-                Err(e) => {
+        match compile_file_to_assembly_with_options(&db, file, options) {
+            Ok(assembly) => {
+                if let Err(e) = fs::write(&output_path, &*assembly) {
                     eprintln!(
                         "Error writing output file '{}': {}",
                         output_path.display(),
@@ -146,61 +136,70 @@ fn main() {
                     );
                     std::process::exit(1);
                 }
-            },
+
+                info!(
+                    "Successfully generated assembly to '{}'",
+                    output_path.display()
+                );
+                println!(
+                    "Successfully generated assembly to '{}'",
+                    output_path.display()
+                );
+            }
             Err(error) => {
-                // Check if we have source code to show error with context
-                let source_file = file.text(&db);
-                if let Some(_span) = error.span() {
-                    eprintln!(
-                        "Compilation failed:\n{}",
-                        error.format_with_source(&source_file)
-                    );
-                } else {
-                    eprintln!("Compilation failed: {error}");
-                }
+                eprintln!("Compilation failed: {error}");
                 std::process::exit(1);
             }
         }
     } else {
-        // Generate executable
-        let result = compile_file_with_options(&db, file, options);
-        match result {
+        // Generate executable using diagnostic-enabled compilation
+        match compile_file_with_diagnostics(&db, file, options) {
             Ok(executable) => {
-                match fs::write(&output_path, &*executable) {
-                    Ok(()) => {
-                        // Make executable on Unix systems
-                        #[cfg(unix)]
-                        {
-                            use std::os::unix::fs::PermissionsExt;
-                            let mut perms = fs::metadata(&output_path).unwrap().permissions();
-                            perms.set_mode(0o755);
-                            fs::set_permissions(&output_path, perms).unwrap();
-                        }
-
-                        info!("Successfully compiled to '{}'", output_path.display());
-                        println!("Successfully compiled to '{}'", output_path.display());
-                    }
-                    Err(e) => {
-                        eprintln!(
-                            "Error writing output file '{}': {}",
-                            output_path.display(),
-                            e
-                        );
-                        std::process::exit(1);
-                    }
-                }
-            }
-            Err(error) => {
-                // Check if we have source code to show error with context
-                let source_file = file.text(&db);
-                if let Some(_span) = error.span() {
+                if let Err(e) = fs::write(&output_path, &*executable) {
                     eprintln!(
-                        "Compilation failed:\n{}",
-                        error.format_with_source(&source_file)
+                        "Error writing output file '{}': {}",
+                        output_path.display(),
+                        e
                     );
-                } else {
-                    eprintln!("Compilation failed: {error}");
+                    std::process::exit(1);
                 }
+
+                // Make executable on Unix systems
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    let mut perms = fs::metadata(&output_path)
+                        .expect("Failed to read file metadata")
+                        .permissions();
+                    perms.set_mode(0o755);
+                    fs::set_permissions(&output_path, perms)
+                        .expect("Failed to set executable permissions");
+                }
+
+                info!("Successfully compiled to '{}'", output_path.display());
+                println!("Successfully compiled to '{}'", output_path.display());
+            }
+            Err(diagnostics) => {
+                // Format and display diagnostics
+                let formatter = if atty::is(atty::Stream::Stderr) {
+                    DiagnosticFormatter::terminal()
+                } else {
+                    DiagnosticFormatter::plain()
+                };
+
+                let mut source_manager = SourceManager::new();
+                let source_text = file.text(&db);
+                let source_path = file.path(&db);
+                source_manager.add_source(source_path, source_text);
+
+                eprintln!("Compilation failed:\n");
+                for diagnostic in &diagnostics {
+                    if let Ok(formatted) = formatter.format_diagnostic(diagnostic, &source_manager)
+                    {
+                        eprintln!("{formatted}\n");
+                    }
+                }
+
                 std::process::exit(1);
             }
         }

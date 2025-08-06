@@ -10,6 +10,8 @@ path = "src/main.rs"
 [dependencies]
 rue-compiler.workspace = true
 rue-codegen.workspace = true
+rue-diagnostic.workspace = true
+atty.workspace = true
 bpaf.workspace = true
 tracing.workspace = true
 

@@ -1,1 +1,2 @@
-Error: parse error: Unexpected token: Assign
+Errors:
+  - Unexpected token: Assign

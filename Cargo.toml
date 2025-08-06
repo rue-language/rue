@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "crates/rue-ast",
+    "crates/rue-diagnostic",
     "crates/rue-lexer",
     "crates/rue-parser",
     "crates/rue-semantic",
@@ -21,6 +22,7 @@ version = "0.1.0"
 
 [workspace.dependencies]
 rue-ast = { path = "crates/rue-ast" }
+rue-diagnostic = { path = "crates/rue-diagnostic" }
 rue-lexer = { path = "crates/rue-lexer" }
 rue-parser = { path = "crates/rue-parser" }
 rue-semantic = { path = "crates/rue-semantic" }

@@ -3,8 +3,7 @@
 #[cfg(test)]
 mod tests {
     use crate::analyze_cst;
-    use rue_lexer::Lexer;
-    use rue_parser::parse;
+    use rue_parser::parse_with_recovery;
 
     #[test]
     fn test_hir_validation_catches_internal_inconsistency() {
@@ -20,9 +19,7 @@ mod tests {
             }
         "#;
 
-        let mut lexer = Lexer::new(source);
-        let tokens = lexer.tokenize().unwrap();
-        let ast = parse(tokens).unwrap();
+        let ast = parse_with_recovery(source, "test.rue").unwrap();
         let result = analyze_cst(&ast);
 
         assert!(result.is_ok());
@@ -42,9 +39,7 @@ mod tests {
             }
         "#;
 
-        let mut lexer = Lexer::new(source);
-        let tokens = lexer.tokenize().unwrap();
-        let ast = parse(tokens).unwrap();
+        let ast = parse_with_recovery(source, "test.rue").unwrap();
         let result = analyze_cst(&ast);
 
         assert!(result.is_err());
@@ -80,9 +75,7 @@ mod tests {
             }
         "#;
 
-        let mut lexer = Lexer::new(source);
-        let tokens = lexer.tokenize().unwrap();
-        let ast = parse(tokens).unwrap();
+        let ast = parse_with_recovery(source, "test.rue").unwrap();
         let result = analyze_cst(&ast);
 
         if let Err(e) = &result {

@@ -1,0 +1,6 @@
+error: Unexpected token: Semicolon
+ -> test.rue:1:21
+   |
+1 | fn main() { let x = ; }
+  |                     ^
+   |

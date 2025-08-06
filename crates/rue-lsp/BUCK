@@ -8,7 +8,8 @@ cargo.rust_library(
     edition = "2024",
     deps = [
         "//crates/rue-ast:rue-ast",
-        "//crates/rue-compiler:rue-compiler", 
+        "//crates/rue-compiler:rue-compiler",
+        "//crates/rue-diagnostic:rue-diagnostic",
         "//crates/rue-lexer:rue-lexer",
         "//crates/rue-lowering:rue-lowering",
         "//crates/rue-optimize:rue-optimize",
@@ -40,7 +41,8 @@ rust_test(
     edition = "2024",
     deps = [
         "//crates/rue-ast:rue-ast",
-        "//crates/rue-compiler:rue-compiler", 
+        "//crates/rue-compiler:rue-compiler",
+        "//crates/rue-diagnostic:rue-diagnostic",
         "//crates/rue-lexer:rue-lexer",
         "//crates/rue-lowering:rue-lowering",
         "//crates/rue-optimize:rue-optimize",

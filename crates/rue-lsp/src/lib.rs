@@ -1,8 +1,7 @@
 mod position;
 
 use position::PositionCalculator;
-use rue_lexer::Lexer;
-use rue_parser::{ParseError, parse};
+use rue_parser::parse_with_recovery;
 use rue_semantic::{SemanticError, analyze_cst};
 use std::collections::HashMap;
 use tokio::sync::RwLock;
@@ -24,65 +23,65 @@ impl RueLanguageServer {
         }
     }
 
-    async fn parse_document(&self, _uri: &Url, text: &str) -> Vec<Diagnostic> {
+    async fn parse_document(&self, uri: &Url, text: &str) -> Vec<Diagnostic> {
         let mut diagnostics = Vec::new();
-        let mut lexer = Lexer::new(text);
-        let tokens = match lexer.tokenize() {
-            Ok(tokens) => tokens,
-            Err(e) => {
-                let calc = PositionCalculator::new(text);
-                let (line, col) = calc.offset_to_position(e.position);
-                diagnostics.push(Diagnostic {
-                    range: Range {
-                        start: Position {
-                            line,
-                            character: col,
-                        },
-                        end: Position {
-                            line,
-                            character: col + 1,
-                        },
-                    },
-                    severity: Some(DiagnosticSeverity::ERROR),
-                    code: None,
-                    code_description: None,
-                    source: Some("rue".to_string()),
-                    message: e.message,
-                    related_information: None,
-                    tags: None,
-                    data: None,
-                });
-                return diagnostics;
-            }
-        };
 
-        match parse(tokens) {
+        // Use the new parse_with_recovery which handles everything
+        match parse_with_recovery(text, uri.path()) {
             Ok(ast) => {
                 // Parse succeeded, now run semantic analysis
                 if let Err(error) = analyze_cst(&ast) {
                     diagnostics.push(self.semantic_error_to_diagnostic(error, text));
                 }
             }
-            Err(error) => {
-                // Parse failed, report syntax error
-                diagnostics.push(self.parse_error_to_diagnostic(error, text));
+            Err(parse_diagnostics) => {
+                // Parse failed, convert diagnostics to LSP format
+                for diagnostic in parse_diagnostics {
+                    diagnostics.push(self.diagnostic_to_lsp_diagnostic(diagnostic, text));
+                }
             }
         }
 
         diagnostics
     }
 
-    fn parse_error_to_diagnostic(&self, error: ParseError, text: &str) -> Diagnostic {
+    fn diagnostic_to_lsp_diagnostic(
+        &self,
+        diagnostic: rue_diagnostic::Diagnostic,
+        text: &str,
+    ) -> Diagnostic {
         let calc = PositionCalculator::new(text);
-        let range = calc.span_to_range(error.span);
+        let range = if let Some(span) = diagnostic.primary_span() {
+            calc.span_to_range(span)
+        } else {
+            // Default to start of file if no span
+            Range {
+                start: Position {
+                    line: 0,
+                    character: 0,
+                },
+                end: Position {
+                    line: 0,
+                    character: 0,
+                },
+            }
+        };
 
         Diagnostic {
             range,
-            severity: Some(DiagnosticSeverity::ERROR),
-            code: None,
+            severity: Some(match diagnostic.severity {
+                rue_diagnostic::Severity::Error => DiagnosticSeverity::ERROR,
+                rue_diagnostic::Severity::Warning => DiagnosticSeverity::WARNING,
+                rue_diagnostic::Severity::Information => DiagnosticSeverity::INFORMATION,
+                rue_diagnostic::Severity::Hint => DiagnosticSeverity::HINT,
+            }),
+            code: diagnostic
+                .code
+                .as_ref()
+                .map(|c| NumberOrString::String(c.to_string())),
             code_description: None,
-            source: Some("rue-lsp".to_string()),
-            message: error.message,
+            source: Some("rue".to_string()),
+            message: diagnostic.message,
             related_information: None,
             tags: None,
             data: None,
@@ -354,8 +353,7 @@ pub async fn run_server() {
 
 #[cfg(test)]
 mod tests {
-    use rue_lexer::Lexer;
-    use rue_parser::parse;
+    use rue_parser::parse_with_recovery;
     use rue_semantic::analyze_cst;
 
     #[test]
@@ -373,9 +371,7 @@ fn main() {
 }
 "#;
 
-        let mut lexer = Lexer::new(text);
-        let tokens = lexer.tokenize().unwrap();
-        let result = parse(tokens);
+        let result = parse_with_recovery(text, "test.rue").map_err(|_| ());
 
         assert!(result.is_ok(), "While loop should parse without errors");
     }
@@ -390,9 +386,7 @@ fn test_invalid() {
 }
 "#;
 
-        let mut lexer = Lexer::new(text);
-        let tokens = lexer.tokenize().unwrap();
-        let result = parse(tokens);
+        let result = parse_with_recovery(text, "test.rue").map_err(|_| ());
 
         assert!(
             result.is_err(),
@@ -414,9 +408,7 @@ fn main() {
 }
 "#;
 
-        let mut lexer = Lexer::new(text);
-        let tokens = lexer.tokenize().unwrap();
-        let result = parse(tokens);
+        let result = parse_with_recovery(text, "test.rue").map_err(|_| ());
 
         assert!(result.is_ok(), "Assignment should parse without errors");
     }
@@ -429,9 +421,7 @@ fn test_undefined() {
 }
 "#;
 
-        let mut lexer = Lexer::new(text);
-        let tokens = lexer.tokenize().unwrap();
-        let ast = parse(tokens).expect("Should parse");
+        let ast = parse_with_recovery(text, "test.rue").expect("Should parse");
         let result = analyze_cst(&ast);
 
         assert!(result.is_err(), "Should detect undefined variable");
@@ -450,9 +440,7 @@ fn test_type_error() {
 }
 "#;
 
-        let mut lexer = Lexer::new(text);
-        let tokens = lexer.tokenize().unwrap();
-        let ast = parse(tokens).expect("Should parse");
+        let ast = parse_with_recovery(text, "test.rue").expect("Should parse");
         let result = analyze_cst(&ast);
 
         assert!(result.is_err(), "Should detect type mismatch");
@@ -475,9 +463,7 @@ fn test_comments() {
 }
 "#;
 
-        let mut lexer = Lexer::new(text);
-        let tokens = lexer.tokenize().unwrap();
-        let result = parse(tokens);
+        let result = parse_with_recovery(text, "test.rue").map_err(|_| ());
 
         assert!(result.is_ok(), "Comments should not affect parsing");
     }

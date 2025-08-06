@@ -68,13 +68,18 @@ pub struct Token {
     pub span: Span,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Span {
     pub start: usize,
     pub end: usize,
 }
 
 impl Span {
+    /// Create a new span with the given start and end positions
+    pub fn new(start: usize, end: usize) -> Self {
+        Span { start, end }
+    }
+
     /// Create a dummy span for testing
     pub fn dummy() -> Self {
         Span { start: 0, end: 0 }
