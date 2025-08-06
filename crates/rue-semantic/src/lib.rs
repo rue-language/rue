@@ -1,13 +1,21 @@
 use rue_ast::{CstRoot, StructDefinitionNode};
+use rue_diagnostic::{Diagnostic, DiagnosticBuilder, E2001, E2002, E3001, E3002, SourceId};
 use rue_ir::types::{RueType, StructDef, StructId, TypeContext};
-use rue_lexer::format_error_with_context;
 use std::collections::HashMap;
 
 // Re-export HIR types from rue-ir for convenience
 pub use rue_ir::hir;
 
+mod diagnostics;
 mod hir_validator;
 pub(crate) mod type_checker;
+mod type_checker_diagnostics;
+
+pub use diagnostics::{
+    SemanticDiagnostic, SemanticSeverity, semantic_error_to_diagnostic,
+    type_mismatch_with_locations, unreachable_code_warning,
+};
+pub use type_checker_diagnostics::DiagnosticTypeChecker;
 
 #[cfg(test)]
 mod hir_control_flow_test;
@@ -27,17 +35,86 @@ mod aggregate_type_tests;
 #[cfg(test)]
 mod constraint_inference_test;
 
-// Semantic analysis types
-#[derive(Debug, Clone, PartialEq, thiserror::Error)]
-#[error("{message}")]
+// Semantic analysis types - now unified with diagnostic system
+#[derive(Debug, Clone)]
 pub struct SemanticError {
     pub message: String,
     pub span: rue_lexer::Span,
 }
 
-impl SemanticError {
-    pub fn format_with_source(&self, source: &str) -> String {
-        format_error_with_context(source, self.span, &self.message, "error")
+/// Create a diagnostic for undefined variable errors
+pub fn create_undefined_variable_error(name: &str, span: rue_lexer::Span) -> Diagnostic {
+    DiagnosticBuilder::error(format!("Undefined variable '{name}'"), SourceId::stdin())
+        .with_code(E2001)
+        .with_primary_label(span, "not found in this scope")
+        .with_help(format!("Did you mean to declare '{name}' before using it?"))
+        .build()
+}
+
+/// Create a diagnostic for type mismatch errors
+pub fn create_type_mismatch_error(
+    expected: &RueType,
+    found: &RueType,
+    span: rue_lexer::Span,
+) -> Diagnostic {
+    DiagnosticBuilder::error(
+        format!("Type mismatch: expected '{expected}', found '{found}'"),
+        SourceId::stdin(),
+    )
+    .with_code(E3001)
+    .with_primary_label(span, format!("has type '{found}'"))
+    .with_help(format!(
+        "Expected type '{expected}', consider adding a cast or changing the value"
+    ))
+    .build()
+}
+
+/// Create a diagnostic for arity mismatch errors
+pub fn create_arity_mismatch_error(
+    expected: usize,
+    found: usize,
+    span: rue_lexer::Span,
+) -> Diagnostic {
+    DiagnosticBuilder::error(
+        format!("Arity mismatch: expected {expected} arguments, found {found}"),
+        SourceId::stdin(),
+    )
+    .with_code(E3002)
+    .with_primary_label(
+        span,
+        format!(
+            "{} {} provided",
+            found,
+            if found == 1 { "argument" } else { "arguments" }
+        ),
+    )
+    .with_help(format!("This function expects {expected} arguments"))
+    .build()
+}
+
+/// Create a diagnostic for duplicate definition errors
+pub fn create_duplicate_definition_error(
+    name: &str,
+    item_type: &str,
+    span: rue_lexer::Span,
+) -> Diagnostic {
+    DiagnosticBuilder::error(
+        format!("Duplicate {item_type} definition: '{name}'"),
+        SourceId::stdin(),
+    )
+    .with_code(E2002)
+    .with_primary_label(span, "duplicate definition")
+    .with_help(format!(
+        "Each {item_type} must have a unique name in its scope"
+    ))
+    .build()
+}
+
+/// Create a generic semantic error
+pub fn create_semantic_error(message: &str, span: rue_lexer::Span) -> SemanticError {
+    SemanticError {
+        message: message.to_string(),
+        span,
     }
 }
 

@@ -1,0 +1,7 @@
+error[E1001]: Expected RightBrace, found Eof
+ -> test.rue:1:15
+   |
+1 | fn main() { 42
+  |               ^
+   |
+ help: Check that you have the correct syntax for this construct

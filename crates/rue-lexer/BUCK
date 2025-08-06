@@ -16,11 +16,3 @@ rust_test(
     edition = "2021",
     deps = ["//third-party/rust:thiserror"],
 )
-
-rust_test(
-    name = "lexer_error_tests",
-    srcs = glob(["tests/**/*.rs"]),
-    crate_root = "tests/lexer_error_tests.rs",
-    edition = "2021",
-    deps = [":rue-lexer"],
-)

@@ -4,7 +4,6 @@
 //! multiple times, ensuring HIR generation is deterministic and consistent.
 
 use super::*;
-use rue_lexer::Lexer;
 
 /// Custom comparison for HIR programs
 fn hir_programs_equal(a: &hir::HirProgram, b: &hir::HirProgram) -> bool {
@@ -36,17 +35,19 @@ fn hir_programs_equal(a: &hir::HirProgram, b: &hir::HirProgram) -> bool {
 
 /// Parse and analyze source code, returning HIR
 fn parse_and_get_hir(source: &str) -> Result<hir::HirProgram, SemanticError> {
-    let mut lexer = Lexer::new(source);
-    let tokens = lexer.tokenize().map_err(|e| SemanticError {
-        message: format!("Lexical error: {}", e.message),
-        span: rue_lexer::Span {
-            start: e.position,
-            end: e.position + 1,
-        },
-    })?;
-    let ast = rue_parser::parse(tokens).map_err(|e| SemanticError {
-        message: format!("Parse error: {}", e.message),
-        span: e.span,
+    let ast = rue_parser::parse_with_recovery(source, "test.rue").map_err(|diagnostics| {
+        // Convert first diagnostic to SemanticError for compatibility
+        if let Some(first) = diagnostics.first() {
+            SemanticError {
+                message: first.message.clone(),
+                span: first.primary_span().unwrap_or(rue_lexer::Span::new(0, 0)),
+            }
+        } else {
+            SemanticError {
+                message: "Parse error".to_string(),
+                span: rue_lexer::Span::new(0, 0),
+            }
+        }
     })?;
     let analysis = analyze_cst(&ast)?;
     Ok(analysis.hir)

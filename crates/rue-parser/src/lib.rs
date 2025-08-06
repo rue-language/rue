@@ -1,12 +1,18 @@
 use rue_ast::*;
 use rue_lexer::{Span, TokenKind, format_error_with_context};
 
+mod diagnostic_impl;
+pub mod diagnostics;
+pub mod error_recovery;
 pub mod simple_snapshot;
 pub mod snapshot;
 
-struct Parser {
-    tokens: Vec<TokenNode>,
-    current: usize,
+pub use diagnostics::{parse_with_diagnostics, parse_with_recovery};
+pub use error_recovery::{ErrorRecoveryExt, RecoveringParser};
+
+pub struct Parser {
+    pub(crate) tokens: Vec<TokenNode>,
+    pub(crate) current: usize,
 }
 
 pub type ParseResult<T> = Result<T, ParseError>;
@@ -25,11 +31,11 @@ impl ParseError {
 }
 
 impl Parser {
-    fn new(tokens: Vec<TokenNode>) -> Self {
+    pub fn new(tokens: Vec<TokenNode>) -> Self {
         Self { tokens, current: 0 }
     }
 
-    fn parse(mut self) -> ParseResult<CstRoot> {
+    pub fn parse(mut self) -> ParseResult<CstRoot> {
         let mut items = Vec::new();
         let leading_trivia = self.consume_trivia();
 
@@ -59,7 +65,7 @@ impl Parser {
         }
     }
 
-    fn parse_function(&mut self) -> ParseResult<FunctionNode> {
+    pub(crate) fn parse_function(&mut self) -> ParseResult<FunctionNode> {
         let leading_trivia = self.consume_trivia();
         let fn_token = self.expect_kind(&TokenKind::Fn)?;
         let name = self.expect_ident()?;
@@ -87,7 +93,7 @@ impl Parser {
         })
     }
 
-    fn parse_struct_definition(&mut self) -> ParseResult<StructDefinitionNode> {
+    pub(crate) fn parse_struct_definition(&mut self) -> ParseResult<StructDefinitionNode> {
         let leading_trivia = self.consume_trivia();
         let struct_token = self.expect_kind(&TokenKind::Struct)?;
         let name = self.expect_ident()?;
@@ -298,7 +304,7 @@ impl Parser {
         }
     }
 
-    fn parse_statement(&mut self) -> ParseResult<StatementNode> {
+    pub(crate) fn parse_statement(&mut self) -> ParseResult<StatementNode> {
         match self.peek().kind {
             TokenKind::Let => Ok(StatementNode::Let(Box::new(self.parse_let_statement()?))),
             TokenKind::Return => Ok(StatementNode::Return(self.parse_return_statement()?)),
@@ -935,7 +941,7 @@ impl Parser {
     }
 
     // Helper methods
-    fn peek(&self) -> &TokenNode {
+    pub(crate) fn peek(&self) -> &TokenNode {
         self.tokens.get(self.current).unwrap_or(&TokenNode {
             kind: TokenKind::Eof,
             span: rue_lexer::Span { start: 0, end: 0 },
@@ -949,14 +955,14 @@ impl Parser {
         })
     }
 
-    fn advance(&mut self) -> TokenNode {
+    pub(crate) fn advance(&mut self) -> TokenNode {
         if !self.is_at_end() {
             self.current += 1;
         }
         self.tokens.get(self.current - 1).unwrap().clone()
     }
 
-    fn check_kind(&self, kind: &TokenKind) -> bool {
+    pub(crate) fn check_kind(&self, kind: &TokenKind) -> bool {
         std::mem::discriminant(&self.peek().kind) == std::mem::discriminant(kind)
     }
 
@@ -991,11 +997,16 @@ impl Parser {
         }
     }
 
-    fn is_at_end(&self) -> bool {
+    pub(crate) fn is_at_end(&self) -> bool {
         self.current >= self.tokens.len() || self.peek().kind == TokenKind::Eof
     }
 
-    fn consume_trivia(&mut self) -> Vec<TokenNode> {
+    /// Get the current position in the token stream
+    pub(crate) fn current_position(&self) -> usize {
+        self.current
+    }
+
+    pub(crate) fn consume_trivia(&mut self) -> Vec<TokenNode> {
         let mut trivia = Vec::new();
 
         // Consume any comment tokens
@@ -1174,6 +1185,9 @@ pub fn parse(tokens: Vec<TokenNode>) -> ParseResult<CstRoot> {
 
 #[cfg(test)]
 mod snapshot_tests;
+
+#[cfg(test)]
+mod diagnostic_snapshot_tests;
 
 #[cfg(test)]
 mod tests {

@@ -422,18 +422,18 @@ impl TypeChecker {
                     // by analyze_cst, so we skip them here
                 }
                 rue_ast::CstNode::Statement(_) => {
-                    return Err(SemanticError {
-                        message: "Top-level statements are not supported".to_string(),
-                        span: Span { start: 0, end: 0 },
-                    });
+                    return Err(crate::create_semantic_error(
+                        "Top-level statements are not supported",
+                        Span { start: 0, end: 0 },
+                    ));
                 }
                 rue_ast::CstNode::Expression(_)
                 | rue_ast::CstNode::Token(_)
                 | rue_ast::CstNode::Error(_) => {
-                    return Err(SemanticError {
-                        message: "Unexpected top-level node type".to_string(),
-                        span: Span { start: 0, end: 0 },
-                    });
+                    return Err(crate::create_semantic_error(
+                        "Unexpected top-level node type",
+                        Span { start: 0, end: 0 },
+                    ));
                 }
             }
         }

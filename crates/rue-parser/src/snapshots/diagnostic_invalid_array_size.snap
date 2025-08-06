@@ -1,0 +1,6 @@
+error: Array size must be non-negative, found -5
+ -> test.rue:1:16
+   |
+1 | let arr: [i32; -5];
+  |                ^^
+   |

@@ -8,6 +8,8 @@ cargo.rust_binary(
     deps = [
         "//crates/rue-compiler:rue-compiler",
         "//crates/rue-codegen:rue-codegen",
+        "//crates/rue-diagnostic:rue-diagnostic",
+        "//third-party/rust:atty",
         "//third-party/rust:bpaf",
         "//third-party/rust:tracing",
     ],

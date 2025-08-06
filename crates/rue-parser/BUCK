@@ -7,6 +7,7 @@ cargo.rust_library(
     edition = "2021",
     deps = [
         "//crates/rue-ast:rue-ast",
+        "//crates/rue-diagnostic:rue-diagnostic",
         "//crates/rue-lexer:rue-lexer",
         "//third-party/rust:thiserror",
         "//third-party/rust:serde",
@@ -23,6 +24,7 @@ rust_test(
     edition = "2021",
     deps = [
         "//crates/rue-ast:rue-ast",
+        "//crates/rue-diagnostic:rue-diagnostic",
         "//crates/rue-lexer:rue-lexer",
         "//third-party/rust:thiserror",
         "//third-party/rust:serde",

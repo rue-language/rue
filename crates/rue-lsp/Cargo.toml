@@ -13,6 +13,7 @@ rue-parser.workspace = true
 rue-lexer.workspace = true
 rue-ast.workspace = true
 rue-semantic.workspace = true
+rue-diagnostic.workspace = true
 tokio.workspace = true
 tower-lsp.workspace = true
 serde_json.workspace = true

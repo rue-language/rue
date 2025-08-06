@@ -4,12 +4,9 @@
 mod tests {
     use crate::analyze_cst;
     use rue_ir::hir::{HirExpr, HirStatement};
-    use rue_lexer::Lexer;
 
     fn parse_and_analyze(source: &str) -> (Option<rue_ir::hir::HirProgram>, Vec<String>) {
-        let mut lexer = Lexer::new(source);
-        let tokens = lexer.tokenize().unwrap();
-        let ast = rue_parser::parse(tokens).unwrap();
+        let ast = rue_parser::parse_with_recovery(source, "test.rue").unwrap();
         let result = analyze_cst(&ast);
         match result {
             Ok(analysis_result) => (Some(analysis_result.hir), vec![]),

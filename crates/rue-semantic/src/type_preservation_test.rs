@@ -7,9 +7,7 @@ mod tests {
     use rue_ir::types::RueType;
 
     fn parse_and_analyze(source: &str) -> Result<AnalysisResult, crate::SemanticError> {
-        let mut lexer = rue_lexer::Lexer::new(source);
-        let tokens = lexer.tokenize().expect("Failed to lex");
-        let ast = rue_parser::parse(tokens).expect("Failed to parse");
+        let ast = rue_parser::parse_with_recovery(source, "test.rue").expect("Failed to parse");
         analyze_cst(&ast)
     }
 

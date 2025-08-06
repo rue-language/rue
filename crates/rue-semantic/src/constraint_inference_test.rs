@@ -95,9 +95,7 @@ mod tests {
         "#;
 
         // This should compile successfully with constraint-based inference
-        let mut lexer = rue_lexer::Lexer::new(source);
-        let tokens = lexer.tokenize().expect("Failed to tokenize");
-        let ast = rue_parser::parse(tokens).expect("Failed to parse");
+        let ast = rue_parser::parse_with_recovery(source, "test.rue").expect("Failed to parse");
         let result = crate::analyze_cst(&ast);
 
         assert!(
@@ -113,9 +111,7 @@ mod tests {
             }
         "#;
 
-        let mut lexer2 = rue_lexer::Lexer::new(source2);
-        let tokens2 = lexer2.tokenize().expect("Failed to tokenize");
-        let ast2 = rue_parser::parse(tokens2).expect("Failed to parse");
+        let ast2 = rue_parser::parse_with_recovery(source2, "test2.rue").expect("Failed to parse");
         let result2 = crate::analyze_cst(&ast2);
 
         assert!(
@@ -132,9 +128,7 @@ mod tests {
             }
         "#;
 
-        let mut lexer3 = rue_lexer::Lexer::new(source3);
-        let tokens3 = lexer3.tokenize().expect("Failed to tokenize");
-        let ast3 = rue_parser::parse(tokens3).expect("Failed to parse");
+        let ast3 = rue_parser::parse_with_recovery(source3, "test3.rue").expect("Failed to parse");
         let result3 = crate::analyze_cst(&ast3);
 
         assert!(
