@@ -267,6 +267,11 @@ def update_third_party_rust_cargo_toml(
                             break
                         case _:
                             if src_current_sec:
+                                # Skip ALL local path dependencies when in dependencies section
+                                # These are workspace crates, not third-party dependencies
+                                if (src_current_sec == TomlSection.WorkspaceDependencies and 
+                                    "{ path = " in src_line):
+                                    continue
                                 print(src_line, end="", file=tmp)
 
                 if TomlSection.WorkspaceDependencies not in src_processed_secs:
