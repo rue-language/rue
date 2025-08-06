@@ -950,7 +950,11 @@ mod tests {
         assert!(result.is_err(), "Expected error for wrong index type");
 
         let error = result.unwrap_err();
-        assert!(error.message.contains("Array index must be integer type"));
+        assert!(
+            error
+                .message
+                .contains("Array index must be an integer type")
+        );
     }
 
     #[test]

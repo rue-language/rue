@@ -324,6 +324,7 @@ Rue supports the following primitive types:
 
 #### 4.3.3 Type Inference
 - Numeric literals without explicit type context default to `i32`
+- Numeric literals that do not fit in the range of `i32` (-2147483648 to 2147483647) are a compile error
 - Boolean literals (`true` and `false`) are always type `bool`
 - Expression types are derived from their operands
 

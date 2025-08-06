@@ -14,7 +14,296 @@ use rue_ir::hir::{
 };
 use rue_ir::types::{FieldId, RueType};
 use rue_lexer::{Span, TokenKind};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+
+/// Type constraint for unification-based type inference
+#[derive(Debug, Clone, PartialEq)]
+pub enum TypeConstraint {
+    /// Two types must be equal
+    Equal(TypeVarId, TypeVarId),
+    /// Type variable must equal a concrete type
+    Concrete(TypeVarId, RueType),
+    /// Binary operation constraint (op, lhs, rhs, result)
+    Binary(BinOp, TypeVarId, TypeVarId, TypeVarId),
+}
+
+/// Type variable identifier for constraint solving
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct TypeVarId(pub u32);
+
+/// Type inference context that tracks constraints and solutions
+///
+/// This structure improves type inference by:
+/// 1. Tracking type constraints during expression checking
+/// 2. Supporting bidirectional type inference (synthesis and checking modes)
+/// 3. Enabling better contextual type inference for literals and operations
+/// 4. Preparing for future features like type variables and generics
+#[derive(Debug, Clone)]
+pub struct TypeInferenceContext {
+    /// Counter for generating unique type variable IDs
+    next_var_id: u32,
+    /// Collected type constraints
+    constraints: Vec<TypeConstraint>,
+    /// Solved type variables (maps variable to concrete type)
+    solutions: HashMap<TypeVarId, RueType>,
+    /// Pending type variables that need resolution
+    pending_vars: HashSet<TypeVarId>,
+}
+
+impl TypeInferenceContext {
+    /// Create a new empty inference context
+    pub fn new() -> Self {
+        Self {
+            next_var_id: 0,
+            constraints: Vec::new(),
+            solutions: HashMap::new(),
+            pending_vars: HashSet::new(),
+        }
+    }
+
+    /// Create a fresh type variable
+    pub fn fresh_type_var(&mut self) -> TypeVarId {
+        let id = TypeVarId(self.next_var_id);
+        self.next_var_id += 1;
+        self.pending_vars.insert(id);
+        id
+    }
+
+    /// Add a constraint to the system
+    pub fn add_constraint(&mut self, constraint: TypeConstraint) {
+        self.constraints.push(constraint);
+    }
+
+    /// Add constraint that two type variables must be equal
+    pub fn add_equal_constraint(&mut self, var1: TypeVarId, var2: TypeVarId) {
+        self.add_constraint(TypeConstraint::Equal(var1, var2));
+    }
+
+    /// Add constraint that a type variable must be a concrete type
+    pub fn add_concrete_constraint(&mut self, var: TypeVarId, ty: RueType) {
+        self.add_constraint(TypeConstraint::Concrete(var, ty));
+    }
+
+    /// Add a binary operation constraint
+    pub fn add_binary_constraint(
+        &mut self,
+        op: BinOp,
+        lhs_var: TypeVarId,
+        rhs_var: TypeVarId,
+        result_var: TypeVarId,
+    ) {
+        self.add_constraint(TypeConstraint::Binary(op, lhs_var, rhs_var, result_var));
+    }
+
+    /// Solve a type variable to a concrete type
+    pub fn solve_type_var(&mut self, var: TypeVarId, ty: RueType) -> Result<(), String> {
+        if let Some(existing) = self.solutions.get(&var) {
+            if existing != &ty {
+                return Err(format!(
+                    "Type variable already solved to {existing}, cannot solve to {ty}"
+                ));
+            }
+        } else {
+            self.solutions.insert(var, ty);
+            self.pending_vars.remove(&var);
+        }
+        Ok(())
+    }
+
+    /// Get the solution for a type variable (if solved)
+    pub fn get_solution(&self, var: TypeVarId) -> Option<&RueType> {
+        self.solutions.get(&var)
+    }
+
+    /// Apply type inference rules for numeric literals
+    ///
+    /// This method implements smart numeric literal inference:
+    /// - If there's an expected type (i32/i64), use it
+    /// - Otherwise, check if value fits in i32 (default to i32)
+    /// - If value is too large for i32, use i64
+    pub fn infer_numeric_literal(&self, _value: i64, expected: Option<&RueType>) -> RueType {
+        match expected {
+            Some(RueType::I32) => RueType::I32,
+            Some(RueType::I64) => RueType::I64,
+            Some(other) => other.clone(), // Return the actual expected type for proper error handling
+            None => RueType::I32,         // Default to i32 when no hint
+        }
+    }
+
+    /// Infer types for binary operations with better constraint propagation
+    ///
+    /// This improves upon the current binary expression checking by:
+    /// 1. Propagating type information bidirectionally
+    /// 2. Using the expected type to guide operand type inference
+    /// 3. Supporting future constraint-based inference
+    pub fn infer_binary_operation(
+        &mut self,
+        op: BinOp,
+        lhs_hint: Option<&RueType>,
+        rhs_hint: Option<&RueType>,
+        expected_result: Option<&RueType>,
+    ) -> (Option<RueType>, Option<RueType>, RueType) {
+        match op {
+            // Arithmetic operations: result type matches operand types
+            BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod => {
+                // If we have an expected result type and it's numeric, use it for operands
+                let operand_hint = expected_result
+                    .filter(|ty| matches!(ty, RueType::I32 | RueType::I64))
+                    .or(lhs_hint)
+                    .or(rhs_hint);
+
+                let operand_type = operand_hint.cloned();
+                (
+                    operand_type.clone(),
+                    operand_type.clone(),
+                    operand_type.unwrap_or(RueType::I32),
+                )
+            }
+            // Comparison operations: operands match, result is bool
+            BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge | BinOp::Eq | BinOp::Ne => {
+                let operand_hint = lhs_hint.or(rhs_hint);
+                let operand_type = operand_hint.cloned();
+                (operand_type.clone(), operand_type, RueType::Bool)
+            }
+        }
+    }
+
+    /// Simple constraint solver (can be extended for full unification)
+    ///
+    /// Currently implements basic equality constraint solving.
+    /// Future versions can add:
+    /// - Full unification algorithm
+    /// - Subtyping constraints
+    /// - Type class constraints
+    pub fn solve_constraints(&mut self) -> Result<(), String> {
+        // Simple fixed-point iteration for now
+        let mut changed = true;
+        let mut iterations = 0;
+        const MAX_ITERATIONS: usize = 100;
+
+        while changed && iterations < MAX_ITERATIONS {
+            changed = false;
+            iterations += 1;
+
+            for constraint in self.constraints.clone() {
+                match constraint {
+                    TypeConstraint::Equal(var1, var2) => {
+                        // If either variable has a solution, propagate it to the other
+                        let sol1 = self.solutions.get(&var1).cloned();
+                        let sol2 = self.solutions.get(&var2).cloned();
+
+                        match (sol1, sol2) {
+                            (Some(ty1), Some(ty2)) => {
+                                if ty1 != ty2 {
+                                    return Err(format!("Type mismatch: {ty1} != {ty2}"));
+                                }
+                            }
+                            (Some(ty), None) => {
+                                self.solve_type_var(var2, ty)?;
+                                changed = true;
+                            }
+                            (None, Some(ty)) => {
+                                self.solve_type_var(var1, ty)?;
+                                changed = true;
+                            }
+                            (None, None) => {
+                                // Can't solve yet, wait for more information
+                            }
+                        }
+                    }
+                    TypeConstraint::Concrete(var, ty) => {
+                        if let Some(solution) = self.solutions.get(&var) {
+                            if solution != &ty {
+                                return Err(format!(
+                                    "Type variable constraint violated: {solution} != {ty}"
+                                ));
+                            }
+                        } else {
+                            self.solve_type_var(var, ty.clone())?;
+                            changed = true;
+                        }
+                    }
+                    TypeConstraint::Binary(op, lhs_var, rhs_var, result_var) => {
+                        // Try to solve based on known variables
+                        let lhs_ty = self.solutions.get(&lhs_var).cloned();
+                        let rhs_ty = self.solutions.get(&rhs_var).cloned();
+                        let result_ty = self.solutions.get(&result_var).cloned();
+
+                        match op {
+                            BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod => {
+                                // Arithmetic: all types must match
+                                if let Some(ty) =
+                                    lhs_ty.clone().or(rhs_ty.clone()).or(result_ty.clone())
+                                {
+                                    if !matches!(ty, RueType::I32 | RueType::I64) {
+                                        return Err(format!(
+                                            "Arithmetic operation requires numeric types, found {ty}"
+                                        ));
+                                    }
+                                    if lhs_ty.is_none() {
+                                        self.solve_type_var(lhs_var, ty.clone())?;
+                                        changed = true;
+                                    }
+                                    if rhs_ty.is_none() {
+                                        self.solve_type_var(rhs_var, ty.clone())?;
+                                        changed = true;
+                                    }
+                                    if result_ty.is_none() {
+                                        self.solve_type_var(result_var, ty)?;
+                                        changed = true;
+                                    }
+                                }
+                            }
+                            BinOp::Lt
+                            | BinOp::Le
+                            | BinOp::Gt
+                            | BinOp::Ge
+                            | BinOp::Eq
+                            | BinOp::Ne => {
+                                // Comparison: operands match, result is bool
+                                if result_ty.is_none() {
+                                    self.solve_type_var(result_var, RueType::Bool)?;
+                                    changed = true;
+                                }
+                                if let Some(ty) = lhs_ty.clone().or(rhs_ty.clone()) {
+                                    if lhs_ty.is_none() {
+                                        self.solve_type_var(lhs_var, ty.clone())?;
+                                        changed = true;
+                                    }
+                                    if rhs_ty.is_none() {
+                                        self.solve_type_var(rhs_var, ty)?;
+                                        changed = true;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if iterations >= MAX_ITERATIONS {
+            return Err("Type constraint solving did not converge".to_string());
+        }
+
+        // Check for unsolved variables
+        if !self.pending_vars.is_empty() {
+            // Default unsolved numeric variables to i32
+            for var in self.pending_vars.clone() {
+                self.solve_type_var(var, RueType::I32)?;
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Clear the context for reuse
+    pub fn clear(&mut self) {
+        self.constraints.clear();
+        self.solutions.clear();
+        self.pending_vars.clear();
+    }
+}
 
 /// Simple scope for variable type tracking
 #[derive(Debug, Clone)]
@@ -46,6 +335,8 @@ pub struct TypeChecker {
     function_signatures: HashMap<String, FunctionSignature>,
     /// Global scope containing struct definitions
     global_scope: Scope,
+    /// Type inference context for improved type inference
+    inference_context: TypeInferenceContext,
 }
 
 impl TypeChecker {
@@ -56,6 +347,7 @@ impl TypeChecker {
             variable_scopes: vec![VariableScope::new()],
             function_signatures,
             global_scope,
+            inference_context: TypeInferenceContext::new(),
         }
     }
 
@@ -149,6 +441,9 @@ impl TypeChecker {
         Ok(HirProgram { functions })
     }
 
+    // Removed unused constraint-based methods (build_hir_from_constraints, collect_expr_constraints_for_binary)
+    // Using simpler direct type inference approach for binary literals
+
     /// Type check a function and build HIR
     fn check_function(&mut self, func: &FunctionNode) -> Result<HirFunction, SemanticError> {
         // Extract function name
@@ -171,6 +466,8 @@ impl TypeChecker {
                 span: func.name.span,
             })?
             .clone();
+
+        // Push inference scope for this function with expected return type
 
         // Create new scope for function parameters
         self.push_scope();
@@ -198,6 +495,8 @@ impl TypeChecker {
 
         // Pop function scope
         self.pop_scope();
+
+        // Pop inference scope
 
         Ok(HirFunction {
             name,
@@ -232,7 +531,7 @@ impl TypeChecker {
                 // Use expected return type as hint for inference
                 self.check_expression_with_hint(final_expression, Some(expected_type))?
             } else {
-                self.check_expression(final_expression)?
+                self.check_expression_with_hint(final_expression, None)?
             };
             expr = Some(Box::new(hir_expr));
         }
@@ -300,11 +599,14 @@ impl TypeChecker {
                 let declared_type = if let Some(type_ann) = &let_stmt.type_annotation {
                     crate::convert_type_node_with_scope(&type_ann.ty, &self.global_scope)?
                 } else {
-                    // If we have an expected return type and the value is a numeric literal or expression
-                    // that could benefit from contextual inference, try using the return type as a hint
+                    // For let statements without type annotations, we need to be smart about type inference
+                    // If we have an expected return type and this might be used as a return value,
+                    // consider using the return type as a hint for numeric expressions
                     let type_hint = if let Some(ret_type) = expected_return_type {
                         match ret_type {
                             RueType::I32 | RueType::I64 => {
+                                // Use the return type as a hint for numeric expressions that could benefit
+                                // This helps when the variable will be returned directly (like `let y = ...; y`)
                                 if self.could_benefit_from_numeric_inference(&let_stmt.value) {
                                     Some(ret_type)
                                 } else {
@@ -320,7 +622,7 @@ impl TypeChecker {
                     let temp_expr = if let Some(hint) = type_hint {
                         self.check_expression_with_hint(&let_stmt.value, Some(hint))?
                     } else {
-                        self.check_expression(&let_stmt.value)?
+                        self.check_expression_with_hint(&let_stmt.value, None)?
                     };
                     temp_expr.ty().clone()
                 };
@@ -350,7 +652,7 @@ impl TypeChecker {
                     if let Some(hint) = type_hint {
                         self.check_expression_with_hint(&let_stmt.value, Some(hint))?
                     } else {
-                        self.check_expression(&let_stmt.value)?
+                        self.check_expression_with_hint(&let_stmt.value, None)?
                     }
                 };
 
@@ -419,7 +721,7 @@ impl TypeChecker {
                 })
             }
             StatementNode::Expression(expr_stmt) => {
-                let hir_expr = self.check_expression(&expr_stmt.expression)?;
+                let hir_expr = self.check_expression_with_hint(&expr_stmt.expression, None)?;
                 Ok(HirStatement::Expr(hir_expr))
             }
             StatementNode::Return(return_stmt) => {
@@ -428,7 +730,7 @@ impl TypeChecker {
                     let hir_expr = if let Some(expected_type) = expected_return_type {
                         self.check_expression_with_hint(expr, Some(expected_type))?
                     } else {
-                        self.check_expression(expr)?
+                        self.check_expression_with_hint(expr, None)?
                     };
 
                     // Validate that the return type matches the function's return type
@@ -468,9 +770,105 @@ impl TypeChecker {
         }
     }
 
-    /// Type check an expression and build HIR
-    fn check_expression(&mut self, expr: &ExpressionNode) -> Result<HirExpr, SemanticError> {
-        self.check_expression_with_hint(expr, None)
+    /// Collect type constraints from an expression without building HIR
+    fn collect_constraints_from_expression(
+        &mut self,
+        expr: &ExpressionNode,
+        expected_type: Option<TypeVarId>,
+    ) -> Result<TypeVarId, SemanticError> {
+        match expr {
+            ExpressionNode::Literal(lit) => {
+                let var = self.inference_context.fresh_type_var();
+                match &lit.kind {
+                    TokenKind::Integer(_value) => {
+                        // For integer literals, constrain based on value and context
+                        if let Some(expected) = expected_type {
+                            self.inference_context.add_equal_constraint(var, expected);
+                        } else {
+                            // Default to i32 for literals
+                            self.inference_context
+                                .add_concrete_constraint(var, RueType::I32);
+                        }
+                    }
+                    TokenKind::True | TokenKind::False => {
+                        self.inference_context
+                            .add_concrete_constraint(var, RueType::Bool);
+                    }
+                    TokenKind::Unit => {
+                        self.inference_context
+                            .add_concrete_constraint(var, RueType::Unit);
+                    }
+                    _ => {}
+                }
+                Ok(var)
+            }
+            ExpressionNode::Identifier(ident) => {
+                let var = self.inference_context.fresh_type_var();
+                if let TokenKind::Ident(name) = &ident.kind {
+                    // Clone the type to avoid borrow checker issues
+                    let var_type = self.current_scope_mut().variables.get(name).cloned();
+                    if let Some(ty) = var_type {
+                        self.inference_context.add_concrete_constraint(var, ty);
+                    }
+                }
+                Ok(var)
+            }
+            ExpressionNode::Binary(bin_expr) => {
+                let op = match &bin_expr.operator.kind {
+                    TokenKind::Plus => BinOp::Add,
+                    TokenKind::Minus => BinOp::Sub,
+                    TokenKind::Star => BinOp::Mul,
+                    TokenKind::Slash => BinOp::Div,
+                    TokenKind::Percent => BinOp::Mod,
+                    TokenKind::Less => BinOp::Lt,
+                    TokenKind::LessEqual => BinOp::Le,
+                    TokenKind::Greater => BinOp::Gt,
+                    TokenKind::GreaterEqual => BinOp::Ge,
+                    TokenKind::Equal => BinOp::Eq,
+                    TokenKind::NotEqual => BinOp::Ne,
+                    _ => {
+                        return Err(SemanticError {
+                            message: format!(
+                                "Invalid binary operator: {:?}",
+                                bin_expr.operator.kind
+                            ),
+                            span: bin_expr.operator.span,
+                        });
+                    }
+                };
+
+                // For arithmetic operations, propagate expected type to operands
+                // For comparison operations, operands are unconstrained initially
+                let operand_hint = match op {
+                    BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod => expected_type,
+                    BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge | BinOp::Eq | BinOp::Ne => None,
+                };
+
+                let lhs_var =
+                    self.collect_constraints_from_expression(&bin_expr.left, operand_hint)?;
+                let rhs_var =
+                    self.collect_constraints_from_expression(&bin_expr.right, operand_hint)?;
+                let result_var = self.inference_context.fresh_type_var();
+
+                self.inference_context
+                    .add_binary_constraint(op, lhs_var, rhs_var, result_var);
+
+                if let Some(expected) = expected_type {
+                    self.inference_context
+                        .add_equal_constraint(result_var, expected);
+                }
+
+                Ok(result_var)
+            }
+            _ => {
+                // For other expressions, fall back to simple type var for now
+                let var = self.inference_context.fresh_type_var();
+                if let Some(expected) = expected_type {
+                    self.inference_context.add_equal_constraint(var, expected);
+                }
+                Ok(var)
+            }
+        }
     }
 
     /// Type check an expression with an optional type hint for inference
@@ -479,10 +877,78 @@ impl TypeChecker {
         expr: &ExpressionNode,
         type_hint: Option<&RueType>,
     ) -> Result<HirExpr, SemanticError> {
+        // For simple binary expressions, try constraint-based inference
+        if matches!(expr, ExpressionNode::Binary(_)) {
+            // Clear previous constraints
+            self.inference_context.clear();
+
+            // Collect constraints
+            let expected_var = type_hint.map(|ty| {
+                let var = self.inference_context.fresh_type_var();
+                self.inference_context
+                    .add_concrete_constraint(var, ty.clone());
+                var
+            });
+
+            let result_var = self.collect_constraints_from_expression(expr, expected_var)?;
+
+            // Solve constraints
+            if let Err(_e) = self.inference_context.solve_constraints() {
+                // If constraint solving fails, fall back to direct checking
+                // Clear constraints for clean slate
+                self.inference_context.clear();
+            } else {
+                // If we have a solution, use it to guide type checking
+                if let Some(solved_type) = self.inference_context.get_solution(result_var) {
+                    // Use solved type as hint
+                    let hint_type = solved_type.clone();
+                    self.inference_context.clear();
+                    return self.check_expression_with_solved_hint(expr, Some(&hint_type));
+                }
+            }
+
+            // Clear constraints after use
+            self.inference_context.clear();
+        }
+
+        match expr {
+            ExpressionNode::Literal(lit) => {
+                // Use hint, don't also get from context to avoid double borrow
+                self.check_literal_with_hint(lit, type_hint)
+            }
+            ExpressionNode::Identifier(ident) => self.check_identifier(ident),
+            ExpressionNode::Binary(bin_expr) => {
+                self.check_binary_expression_with_hint(bin_expr, type_hint)
+            }
+            ExpressionNode::Unary(unary_expr) => {
+                self.check_unary_expression_with_hint(unary_expr, type_hint)
+            }
+            ExpressionNode::Call(call) => self.check_call_expression(call),
+            ExpressionNode::If(if_expr) => self.check_if_expression_with_hint(if_expr, type_hint),
+            ExpressionNode::While(while_expr) => self.check_while_expression(while_expr),
+            ExpressionNode::StructLiteral(struct_lit) => self.check_struct_literal(struct_lit),
+            ExpressionNode::FieldAccess(field_access) => self.check_field_access(field_access),
+            ExpressionNode::TupleLiteral(tuple_lit) => {
+                self.check_tuple_literal_with_hint(tuple_lit, type_hint)
+            }
+            ExpressionNode::ArrayLiteral(array_lit) => {
+                self.check_array_literal_with_hint(array_lit, type_hint)
+            }
+            ExpressionNode::ArrayAccess(array_access) => self.check_array_access(array_access),
+        }
+    }
+
+    /// Check expression with solved type from constraint solver
+    fn check_expression_with_solved_hint(
+        &mut self,
+        expr: &ExpressionNode,
+        type_hint: Option<&RueType>,
+    ) -> Result<HirExpr, SemanticError> {
         match expr {
             ExpressionNode::Literal(lit) => self.check_literal_with_hint(lit, type_hint),
             ExpressionNode::Identifier(ident) => self.check_identifier(ident),
             ExpressionNode::Binary(bin_expr) => {
+                // Use the direct checking with hint, not the recursive one
                 self.check_binary_expression_with_hint(bin_expr, type_hint)
             }
             ExpressionNode::Unary(unary_expr) => {
@@ -510,14 +976,32 @@ impl TypeChecker {
     ) -> Result<HirExpr, SemanticError> {
         let hir_lit = match &lit.kind {
             TokenKind::Integer(n) => {
-                // Use type hint for inference, default to i64 if no hint
-                match type_hint {
-                    Some(RueType::I64) | None => HirLiteral::Int64(*n),
-                    Some(RueType::I32) => HirLiteral::Int32(*n as i32),
-                    Some(other_type) => {
+                // Use TypeInferenceContext for better numeric literal inference
+                let inferred_type = self.inference_context.infer_numeric_literal(*n, type_hint);
+
+                match inferred_type {
+                    RueType::I32 => {
+                        // Check if value fits in i32
+                        if *n >= i32::MIN as i64 && *n <= i32::MAX as i64 {
+                            HirLiteral::Int32(*n as i32)
+                        } else {
+                            return Err(SemanticError {
+                                message: format!(
+                                    "literal out of range for `i32`\n\
+                                     help: the literal `{n}` does not fit into the type `i32` whose range is `-2147483648..=2147483647`"
+                                ),
+                                span: lit.span,
+                            });
+                        }
+                    }
+                    RueType::I64 => {
+                        // i64 literals should always fit since Token parsing already ensures this
+                        HirLiteral::Int64(*n)
+                    }
+                    _ => {
                         return Err(SemanticError {
                             message: format!(
-                                "Cannot use integer literal in context expecting {other_type}"
+                                "Cannot use integer literal in context expecting {inferred_type}"
                             ),
                             span: lit.span,
                         });
@@ -572,6 +1056,7 @@ impl TypeChecker {
         bin_expr: &rue_ast::BinaryExprNode,
         type_hint: Option<&RueType>,
     ) -> Result<HirExpr, SemanticError> {
+        // Direct checking with type hints
         // Convert operator first to determine what kinds of operands we need
         let op = match &bin_expr.operator.kind {
             TokenKind::Plus => BinOp::Add,
@@ -593,58 +1078,80 @@ impl TypeChecker {
             }
         };
 
-        // Determine operand hint based on operation type and type hint
+        // Use TypeInferenceContext for better type inference
+        // For arithmetic operations, pass the type hint to operands if available
         let operand_hint = match op {
-            BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod => {
-                // Arithmetic operations: if we have a type hint and it's numeric, use it for operands
-                if let Some(hint) = type_hint {
-                    match hint {
-                        RueType::I32 | RueType::I64 => Some(hint),
-                        _ => None, // Non-numeric hints don't apply to arithmetic operands
-                    }
-                } else {
-                    None
-                }
-            }
-            BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge | BinOp::Eq | BinOp::Ne => {
-                // Comparison operations: don't pass type hint to operands, as result is always bool
-                None
-            }
+            BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod => type_hint,
+            BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge | BinOp::Eq | BinOp::Ne => None,
         };
 
-        // Check operands with appropriate hints
-        let (lhs, rhs) = if let Some(hint) = operand_hint {
-            // Use the hint for both operands
-            let lhs = self.check_expression_with_hint(&bin_expr.left, Some(hint))?;
-            let rhs = self.check_expression_with_hint(&bin_expr.right, Some(hint))?;
-            (lhs, rhs)
+        // First, try to get initial types for operands with appropriate hints
+        let lhs_initial = if let Some(hint) = operand_hint {
+            self.check_expression_with_hint(&bin_expr.left, Some(hint))?
         } else {
-            // No hint for operands, use the old contextual inference logic
-            let lhs = self.check_expression(&bin_expr.left)?;
-            let rhs = self.check_expression(&bin_expr.right)?;
+            self.check_expression_with_hint(&bin_expr.left, None)?
+        };
+        let rhs_initial = if let Some(hint) = operand_hint {
+            self.check_expression_with_hint(&bin_expr.right, Some(hint))?
+        } else {
+            self.check_expression_with_hint(&bin_expr.right, None)?
+        };
 
-            // If operands have different types, try contextual inference for numeric literals
-            if lhs.ty() != rhs.ty() {
-                // Check if we can apply contextual inference
+        // Use inference context to determine the best types
+        let (lhs_hint, rhs_hint, _expected_result) = self.inference_context.infer_binary_operation(
+            op,
+            Some(lhs_initial.ty()),
+            Some(rhs_initial.ty()),
+            type_hint,
+        );
+
+        // Re-check operands with inferred hints if needed
+        let (lhs, rhs) = if lhs_initial.ty() == rhs_initial.ty() {
+            // Types already match, use them
+            (lhs_initial, rhs_initial)
+        } else {
+            // Types don't match, try to use hints for better inference
+            let lhs_final = if let Some(hint) = lhs_hint.as_ref() {
+                if self.could_benefit_from_numeric_inference(&bin_expr.left) {
+                    self.check_expression_with_hint(&bin_expr.left, Some(hint))?
+                } else {
+                    lhs_initial
+                }
+            } else {
+                lhs_initial
+            };
+
+            let rhs_final = if let Some(hint) = rhs_hint.as_ref() {
+                if self.could_benefit_from_numeric_inference(&bin_expr.right) {
+                    self.check_expression_with_hint(&bin_expr.right, Some(hint))?
+                } else {
+                    rhs_initial
+                }
+            } else {
+                rhs_initial
+            };
+
+            // If still mismatched, try contextual inference
+            if lhs_final.ty() != rhs_final.ty() {
                 if self.is_numeric_literal(&bin_expr.left)
-                    && matches!(rhs.ty(), RueType::I32 | RueType::I64)
+                    && matches!(rhs_final.ty(), RueType::I32 | RueType::I64)
                 {
                     // Re-check lhs with rhs type as hint
                     let lhs_with_hint =
-                        self.check_expression_with_hint(&bin_expr.left, Some(rhs.ty()))?;
-                    (lhs_with_hint, rhs)
+                        self.check_expression_with_hint(&bin_expr.left, Some(rhs_final.ty()))?;
+                    (lhs_with_hint, rhs_final)
                 } else if self.is_numeric_literal(&bin_expr.right)
-                    && matches!(lhs.ty(), RueType::I32 | RueType::I64)
+                    && matches!(lhs_final.ty(), RueType::I32 | RueType::I64)
                 {
                     // Re-check rhs with lhs type as hint
                     let rhs_with_hint =
-                        self.check_expression_with_hint(&bin_expr.right, Some(lhs.ty()))?;
-                    (lhs, rhs_with_hint)
+                        self.check_expression_with_hint(&bin_expr.right, Some(lhs_final.ty()))?;
+                    (lhs_final, rhs_with_hint)
                 } else {
-                    (lhs, rhs)
+                    (lhs_final, rhs_final)
                 }
             } else {
-                (lhs, rhs)
+                (lhs_final, rhs_final)
             }
         };
 
@@ -822,7 +1329,7 @@ impl TypeChecker {
         type_hint: Option<&RueType>,
     ) -> Result<HirExpr, SemanticError> {
         // Type check condition
-        let cond = self.check_expression(&if_expr.condition)?;
+        let cond = self.check_expression_with_hint(&if_expr.condition, None)?;
         if cond.ty() != &RueType::Bool {
             return Err(SemanticError {
                 message: format!("If condition must be bool, found {}", cond.ty()),
@@ -886,7 +1393,7 @@ impl TypeChecker {
         while_expr: &rue_ast::WhileStatementNode,
     ) -> Result<HirExpr, SemanticError> {
         // Type check condition
-        let cond = self.check_expression(&while_expr.condition)?;
+        let cond = self.check_expression_with_hint(&while_expr.condition, None)?;
         if cond.ty() != &RueType::Bool {
             return Err(SemanticError {
                 message: format!("While condition must be bool, found {}", cond.ty()),
@@ -1001,7 +1508,7 @@ impl TypeChecker {
         &mut self,
         field_access: &FieldAccessNode,
     ) -> Result<HirExpr, SemanticError> {
-        let base = self.check_expression(&field_access.base)?;
+        let base = self.check_expression_with_hint(&field_access.base, None)?;
 
         match base.ty() {
             RueType::Struct(struct_id) => {
@@ -1229,16 +1736,16 @@ impl TypeChecker {
         &mut self,
         array_access: &ArrayAccessNode,
     ) -> Result<HirExpr, SemanticError> {
-        let base = self.check_expression(&array_access.base)?;
-        // Array indices default to i32 for consistency with tests and common usage
-        let index = self.check_expression_with_hint(&array_access.index, Some(&RueType::I32))?;
+        let base = self.check_expression_with_hint(&array_access.base, None)?;
+        // Check array index without forcing a specific type, allow both i32 and i64
+        let index = self.check_expression_with_hint(&array_access.index, None)?;
 
-        // Validate index type
+        // Validate index type - must be an integer type
         match index.ty() {
             RueType::I32 | RueType::I64 => {}
             _ => {
                 return Err(SemanticError {
-                    message: "Array index must be integer type".to_string(),
+                    message: "Array index must be an integer type (i32 or i64)".to_string(),
                     span: array_access.index.span(),
                 });
             }
