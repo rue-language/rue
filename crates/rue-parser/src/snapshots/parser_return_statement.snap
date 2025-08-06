@@ -1,0 +1,45 @@
+CstRoot {
+    items: [
+        Statement(
+            Return(
+                ReturnStatementNode {
+                    return_token: Token {
+                        kind: Return,
+                        span: Span {
+                            start: 0,
+                            end: 6,
+                        },
+                    },
+                    expression: Some(
+                        Literal(
+                            Token {
+                                kind: Integer(
+                                    42,
+                                ),
+                                span: Span {
+                                    start: 7,
+                                    end: 9,
+                                },
+                            },
+                        ),
+                    ),
+                    semicolon: Token {
+                        kind: Semicolon,
+                        span: Span {
+                            start: 9,
+                            end: 10,
+                        },
+                    },
+                    trivia: Trivia {
+                        leading: [],
+                        trailing: [],
+                    },
+                },
+            ),
+        ),
+    ],
+    trivia: Trivia {
+        leading: [],
+        trailing: [],
+    },
+}

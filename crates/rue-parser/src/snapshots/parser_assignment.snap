@@ -1,0 +1,52 @@
+CstRoot {
+    items: [
+        Statement(
+            Assign(
+                AssignStatementNode {
+                    name: Token {
+                        kind: Ident(
+                            "x",
+                        ),
+                        span: Span {
+                            start: 0,
+                            end: 1,
+                        },
+                    },
+                    equals: Token {
+                        kind: Assign,
+                        span: Span {
+                            start: 2,
+                            end: 3,
+                        },
+                    },
+                    value: Literal(
+                        Token {
+                            kind: Integer(
+                                42,
+                            ),
+                            span: Span {
+                                start: 4,
+                                end: 6,
+                            },
+                        },
+                    ),
+                    semicolon: Token {
+                        kind: Semicolon,
+                        span: Span {
+                            start: 6,
+                            end: 7,
+                        },
+                    },
+                    trivia: Trivia {
+                        leading: [],
+                        trailing: [],
+                    },
+                },
+            ),
+        ),
+    ],
+    trivia: Trivia {
+        leading: [],
+        trailing: [],
+    },
+}

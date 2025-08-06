@@ -1,0 +1,62 @@
+CstRoot {
+    items: [
+        Statement(
+            Expression(
+                ExpressionStatementNode {
+                    expression: Binary(
+                        BinaryExprNode {
+                            left: Literal(
+                                Token {
+                                    kind: Integer(
+                                        2,
+                                    ),
+                                    span: Span {
+                                        start: 0,
+                                        end: 1,
+                                    },
+                                },
+                            ),
+                            operator: Token {
+                                kind: Plus,
+                                span: Span {
+                                    start: 2,
+                                    end: 3,
+                                },
+                            },
+                            right: Literal(
+                                Token {
+                                    kind: Integer(
+                                        3,
+                                    ),
+                                    span: Span {
+                                        start: 4,
+                                        end: 5,
+                                    },
+                                },
+                            ),
+                            trivia: Trivia {
+                                leading: [],
+                                trailing: [],
+                            },
+                        },
+                    ),
+                    semicolon: Token {
+                        kind: Semicolon,
+                        span: Span {
+                            start: 5,
+                            end: 6,
+                        },
+                    },
+                    trivia: Trivia {
+                        leading: [],
+                        trailing: [],
+                    },
+                },
+            ),
+        ),
+    ],
+    trivia: Trivia {
+        leading: [],
+        trailing: [],
+    },
+}

@@ -1,0 +1,216 @@
+CstRoot {
+    items: [
+        Function(
+            FunctionNode {
+                fn_token: Token {
+                    kind: Fn,
+                    span: Span {
+                        start: 0,
+                        end: 2,
+                    },
+                },
+                name: Token {
+                    kind: Ident(
+                        "add",
+                    ),
+                    span: Span {
+                        start: 3,
+                        end: 6,
+                    },
+                },
+                param_list: ParamListNode {
+                    open_paren: Token {
+                        kind: LeftParen,
+                        span: Span {
+                            start: 6,
+                            end: 7,
+                        },
+                    },
+                    params: [
+                        ParameterNode {
+                            name: Token {
+                                kind: Ident(
+                                    "a",
+                                ),
+                                span: Span {
+                                    start: 7,
+                                    end: 8,
+                                },
+                            },
+                            type_annotation: Some(
+                                TypeAnnotationNode {
+                                    colon: Token {
+                                        kind: Colon,
+                                        span: Span {
+                                            start: 8,
+                                            end: 9,
+                                        },
+                                    },
+                                    ty: I64(
+                                        Token {
+                                            kind: I64,
+                                            span: Span {
+                                                start: 10,
+                                                end: 13,
+                                            },
+                                        },
+                                    ),
+                                    trivia: Trivia {
+                                        leading: [],
+                                        trailing: [],
+                                    },
+                                },
+                            ),
+                            trivia: Trivia {
+                                leading: [],
+                                trailing: [],
+                            },
+                        },
+                        ParameterNode {
+                            name: Token {
+                                kind: Ident(
+                                    "b",
+                                ),
+                                span: Span {
+                                    start: 15,
+                                    end: 16,
+                                },
+                            },
+                            type_annotation: Some(
+                                TypeAnnotationNode {
+                                    colon: Token {
+                                        kind: Colon,
+                                        span: Span {
+                                            start: 16,
+                                            end: 17,
+                                        },
+                                    },
+                                    ty: I64(
+                                        Token {
+                                            kind: I64,
+                                            span: Span {
+                                                start: 18,
+                                                end: 21,
+                                            },
+                                        },
+                                    ),
+                                    trivia: Trivia {
+                                        leading: [],
+                                        trailing: [],
+                                    },
+                                },
+                            ),
+                            trivia: Trivia {
+                                leading: [],
+                                trailing: [],
+                            },
+                        },
+                    ],
+                    close_paren: Token {
+                        kind: RightParen,
+                        span: Span {
+                            start: 21,
+                            end: 22,
+                        },
+                    },
+                    trivia: Trivia {
+                        leading: [],
+                        trailing: [],
+                    },
+                },
+                return_type: Some(
+                    ReturnTypeNode {
+                        arrow: Token {
+                            kind: Arrow,
+                            span: Span {
+                                start: 23,
+                                end: 25,
+                            },
+                        },
+                        ty: I64(
+                            Token {
+                                kind: I64,
+                                span: Span {
+                                    start: 26,
+                                    end: 29,
+                                },
+                            },
+                        ),
+                        trivia: Trivia {
+                            leading: [],
+                            trailing: [],
+                        },
+                    },
+                ),
+                body: BlockNode {
+                    open_brace: Token {
+                        kind: LeftBrace,
+                        span: Span {
+                            start: 30,
+                            end: 31,
+                        },
+                    },
+                    statements: [],
+                    final_expr: Some(
+                        Binary(
+                            BinaryExprNode {
+                                left: Identifier(
+                                    Token {
+                                        kind: Ident(
+                                            "a",
+                                        ),
+                                        span: Span {
+                                            start: 32,
+                                            end: 33,
+                                        },
+                                    },
+                                ),
+                                operator: Token {
+                                    kind: Plus,
+                                    span: Span {
+                                        start: 34,
+                                        end: 35,
+                                    },
+                                },
+                                right: Identifier(
+                                    Token {
+                                        kind: Ident(
+                                            "b",
+                                        ),
+                                        span: Span {
+                                            start: 36,
+                                            end: 37,
+                                        },
+                                    },
+                                ),
+                                trivia: Trivia {
+                                    leading: [],
+                                    trailing: [],
+                                },
+                            },
+                        ),
+                    ),
+                    close_brace: Token {
+                        kind: RightBrace,
+                        span: Span {
+                            start: 38,
+                            end: 39,
+                        },
+                    },
+                    trivia: Trivia {
+                        leading: [],
+                        trailing: [],
+                    },
+                },
+                trivia: Trivia {
+                    leading: [],
+                    trailing: [],
+                },
+            },
+        ),
+    ],
+    trivia: Trivia {
+        leading: [],
+        trailing: [],
+    },
+}

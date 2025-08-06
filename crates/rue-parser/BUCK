@@ -9,6 +9,9 @@ cargo.rust_library(
         "//crates/rue-ast:rue-ast",
         "//crates/rue-lexer:rue-lexer",
         "//third-party/rust:thiserror",
+        "//third-party/rust:serde",
+        "//third-party/rust:serde_json",
+        "//third-party/rust:toml",
     ],
     visibility = ["PUBLIC"],
 )
@@ -22,5 +25,8 @@ rust_test(
         "//crates/rue-ast:rue-ast",
         "//crates/rue-lexer:rue-lexer",
         "//third-party/rust:thiserror",
+        "//third-party/rust:serde",
+        "//third-party/rust:serde_json",
+        "//third-party/rust:toml",
     ],
 )

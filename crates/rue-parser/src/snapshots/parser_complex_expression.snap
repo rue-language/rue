@@ -1,0 +1,166 @@
+CstRoot {
+    items: [
+        Statement(
+            Expression(
+                ExpressionStatementNode {
+                    expression: Binary(
+                        BinaryExprNode {
+                            left: Binary(
+                                BinaryExprNode {
+                                    left: Binary(
+                                        BinaryExprNode {
+                                            left: Literal(
+                                                Token {
+                                                    kind: Integer(
+                                                        2,
+                                                    ),
+                                                    span: Span {
+                                                        start: 1,
+                                                        end: 2,
+                                                    },
+                                                },
+                                            ),
+                                            operator: Token {
+                                                kind: Plus,
+                                                span: Span {
+                                                    start: 3,
+                                                    end: 4,
+                                                },
+                                            },
+                                            right: Literal(
+                                                Token {
+                                                    kind: Integer(
+                                                        3,
+                                                    ),
+                                                    span: Span {
+                                                        start: 5,
+                                                        end: 6,
+                                                    },
+                                                },
+                                            ),
+                                            trivia: Trivia {
+                                                leading: [],
+                                                trailing: [],
+                                            },
+                                        },
+                                    ),
+                                    operator: Token {
+                                        kind: Star,
+                                        span: Span {
+                                            start: 8,
+                                            end: 9,
+                                        },
+                                    },
+                                    right: Literal(
+                                        Token {
+                                            kind: Integer(
+                                                4,
+                                            ),
+                                            span: Span {
+                                                start: 10,
+                                                end: 11,
+                                            },
+                                        },
+                                    ),
+                                    trivia: Trivia {
+                                        leading: [],
+                                        trailing: [],
+                                    },
+                                },
+                            ),
+                            operator: Token {
+                                kind: Minus,
+                                span: Span {
+                                    start: 12,
+                                    end: 13,
+                                },
+                            },
+                            right: Binary(
+                                BinaryExprNode {
+                                    left: Literal(
+                                        Token {
+                                            kind: Integer(
+                                                5,
+                                            ),
+                                            span: Span {
+                                                start: 14,
+                                                end: 15,
+                                            },
+                                        },
+                                    ),
+                                    operator: Token {
+                                        kind: Slash,
+                                        span: Span {
+                                            start: 16,
+                                            end: 17,
+                                        },
+                                    },
+                                    right: Binary(
+                                        BinaryExprNode {
+                                            left: Literal(
+                                                Token {
+                                                    kind: Integer(
+                                                        6,
+                                                    ),
+                                                    span: Span {
+                                                        start: 19,
+                                                        end: 20,
+                                                    },
+                                                },
+                                            ),
+                                            operator: Token {
+                                                kind: Plus,
+                                                span: Span {
+                                                    start: 21,
+                                                    end: 22,
+                                                },
+                                            },
+                                            right: Literal(
+                                                Token {
+                                                    kind: Integer(
+                                                        7,
+                                                    ),
+                                                    span: Span {
+                                                        start: 23,
+                                                        end: 24,
+                                                    },
+                                                },
+                                            ),
+                                            trivia: Trivia {
+                                                leading: [],
+                                                trailing: [],
+                                            },
+                                        },
+                                    ),
+                                    trivia: Trivia {
+                                        leading: [],
+                                        trailing: [],
+                                    },
+                                },
+                            ),
+                            trivia: Trivia {
+                                leading: [],
+                                trailing: [],
+                            },
+                        },
+                    ),
+                    semicolon: Token {
+                        kind: Semicolon,
+                        span: Span {
+                            start: 25,
+                            end: 26,
+                        },
+                    },
+                    trivia: Trivia {
+                        leading: [],
+                        trailing: [],
+                    },
+                },
+            ),
+        ),
+    ],
+    trivia: Trivia {
+        leading: [],
+        trailing: [],
+    },
+}
