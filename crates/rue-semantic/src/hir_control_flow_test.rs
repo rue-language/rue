@@ -6,8 +6,8 @@ mod tests {
     use rue_ir::hir::{HirExpr, HirStatement};
 
     fn parse_and_analyze(source: &str) -> (Option<rue_ir::hir::HirProgram>, Vec<String>) {
-        let ast = rue_parser::parse_with_recovery(source, "test.rue").unwrap();
-        let result = analyze_cst(&ast);
+        let cst = rue_parser::parse_with_recovery(source, "test.rue").unwrap();
+        let result = analyze_cst(&cst);
         match result {
             Ok(analysis_result) => (Some(analysis_result.hir), vec![]),
             Err(e) => (None, vec![e.message]),

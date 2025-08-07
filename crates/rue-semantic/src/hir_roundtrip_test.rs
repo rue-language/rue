@@ -4,6 +4,7 @@
 //! multiple times, ensuring HIR generation is deterministic and consistent.
 
 use super::*;
+use crate::analyze_cst;
 
 /// Custom comparison for HIR programs
 fn hir_programs_equal(a: &hir::HirProgram, b: &hir::HirProgram) -> bool {

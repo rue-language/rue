@@ -19,8 +19,8 @@ mod tests {
             }
         "#;
 
-        let ast = parse_with_recovery(source, "test.rue").unwrap();
-        let result = analyze_cst(&ast);
+        let cst = parse_with_recovery(source, "test.rue").unwrap();
+        let result = analyze_cst(&cst);
 
         assert!(result.is_ok());
         let analysis = result.unwrap();
@@ -39,8 +39,8 @@ mod tests {
             }
         "#;
 
-        let ast = parse_with_recovery(source, "test.rue").unwrap();
-        let result = analyze_cst(&ast);
+        let cst = parse_with_recovery(source, "test.rue").unwrap();
+        let result = analyze_cst(&cst);
 
         assert!(result.is_err());
         let error = result.unwrap_err();
@@ -75,8 +75,8 @@ mod tests {
             }
         "#;
 
-        let ast = parse_with_recovery(source, "test.rue").unwrap();
-        let result = analyze_cst(&ast);
+        let cst = parse_with_recovery(source, "test.rue").unwrap();
+        let result = analyze_cst(&cst);
 
         if let Err(e) = &result {
             eprintln!("Error: {} at span {:?}", e.message, e.span);

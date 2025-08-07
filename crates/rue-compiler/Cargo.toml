@@ -23,3 +23,8 @@ thiserror.workspace = true
 
 [dev-dependencies]
 regex.workspace = true
+criterion.workspace = true
+
+[[bench]]
+name = "ast_performance"
+harness = false

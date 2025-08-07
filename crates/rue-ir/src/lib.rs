@@ -4,6 +4,7 @@
 //! used throughout the compilation pipeline. It contains only pure data structures
 //! and their basic operations - no transformations or analysis passes.
 
+pub mod ast;
 pub mod cfg;
 pub mod hir;
 pub mod mir;

@@ -61,15 +61,28 @@ pub fn analyze_file(
     db: &dyn salsa::Database,
     file: SourceFile,
 ) -> Result<Arc<rue_semantic::AnalysisResult>, Arc<RueError>> {
-    // Parse and analyze with functional chaining
-    let ast = parse_file(db, file)?;
-    analyze_cst(&ast)
+    // Parse and analyze with functional chaining - use CST path (AST2 pipeline)
+    let cst = parse_file(db, file)?;
+    analyze_cst(&cst)
         .map(Arc::new)
         .map_err(|e| Arc::new(e.into()))
 }
 
 // Re-export Salsa's default database implementation
 pub type RueDatabase = salsa::DatabaseImpl;
+
+/// Compile source code using the AST path
+pub fn compile_with_ast(source: &str) -> Result<Vec<u8>, RueError> {
+    // Parse the source
+    let cst = rue_parser::parse_with_recovery(source, "benchmark.rue")
+        .map_err(RueError::from_diagnostics)?;
+
+    // Analyze using CST path (AST2 pipeline)
+    let analysis = analyze_cst(&cst).map_err(RueError::from)?;
+
+    // Compile to executable
+    pipeline::compile_hir_via_mir_to_executable(&analysis, false).map_err(RueError::from)
+}
 
 #[cfg(test)]
 mod tests {
@@ -410,7 +423,7 @@ pub fn compile_file_with_options(
     file: SourceFile,
     options: CompileOptions,
 ) -> Result<Arc<Vec<u8>>, Arc<RueError>> {
-    // Parse and analyze the file first
+    // Parse and analyze the file first using AST path
     let analysis = match analyze_file(db, file) {
         Ok(analysis) => analysis,
         Err(error) => {
@@ -431,7 +444,7 @@ pub fn compile_file_to_assembly_with_options(
     file: SourceFile,
     options: CompileOptions,
 ) -> Result<Arc<String>, Arc<RueError>> {
-    // Parse and analyze the file first
+    // Parse and analyze the file first using AST path
     let analysis = match analyze_file(db, file) {
         Ok(analysis) => analysis,
         Err(error) => {
@@ -473,8 +486,10 @@ pub fn compile_file_with_diagnostics(
         }
     };
 
-    // Analyze the CST
-    match analyze_cst(&cst) {
+    // Analyze the CST using CST path (AST2 pipeline)
+    let analysis_result = analyze_cst(&cst);
+
+    match analysis_result {
         Ok(analysis) => {
             // Generate executable from HIR via MIR
             match pipeline::compile_hir_via_mir_to_executable(&analysis, options.optimize(db)) {
