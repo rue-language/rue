@@ -14,7 +14,7 @@ use rue_semantic::SemanticError;
 pub enum RueError {
     /// Single diagnostic error
     #[error("{0}")]
-    Diagnostic(Diagnostic),
+    Diagnostic(Box<Diagnostic>),
 
     /// Multiple diagnostics (e.g., from a phase that can recover and continue)
     #[error("compilation failed with {} errors", .0.len())]
@@ -28,14 +28,14 @@ pub enum RueError {
 impl RueError {
     /// Create a RueError from a single diagnostic
     pub fn from_diagnostic(diagnostic: Diagnostic) -> Self {
-        RueError::Diagnostic(diagnostic)
+        RueError::Diagnostic(Box::new(diagnostic))
     }
 
     /// Create a RueError from multiple diagnostics
     pub fn from_diagnostics(diagnostics: Vec<Diagnostic>) -> Self {
         match diagnostics.len() {
             0 => panic!("Cannot create RueError from empty diagnostics"),
-            1 => RueError::Diagnostic(diagnostics.into_iter().next().unwrap()),
+            1 => RueError::Diagnostic(Box::new(diagnostics.into_iter().next().unwrap())),
             _ => RueError::MultipleErrors(diagnostics),
         }
     }
@@ -43,7 +43,7 @@ impl RueError {
     /// Get all diagnostics from this error
     pub fn diagnostics(&self) -> Vec<&Diagnostic> {
         match self {
-            RueError::Diagnostic(d) => vec![d],
+            RueError::Diagnostic(d) => vec![d.as_ref()],
             RueError::MultipleErrors(diagnostics) => diagnostics.iter().collect(),
             RueError::Io(_) => vec![], // I/O errors don't have diagnostics
         }
@@ -52,7 +52,7 @@ impl RueError {
     /// Get the primary diagnostic (first one if multiple)
     pub fn primary_diagnostic(&self) -> Option<&Diagnostic> {
         match self {
-            RueError::Diagnostic(d) => Some(d),
+            RueError::Diagnostic(d) => Some(d.as_ref()),
             RueError::MultipleErrors(diagnostics) => diagnostics.first(),
             RueError::Io(_) => None,
         }

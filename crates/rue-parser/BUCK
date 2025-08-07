@@ -8,6 +8,7 @@ cargo.rust_library(
     deps = [
         "//crates/rue-ast:rue-ast",
         "//crates/rue-diagnostic:rue-diagnostic",
+        "//crates/rue-ir:rue-ir",
         "//crates/rue-lexer:rue-lexer",
         "//third-party/rust:thiserror",
         "//third-party/rust:serde",
@@ -25,6 +26,7 @@ rust_test(
     deps = [
         "//crates/rue-ast:rue-ast",
         "//crates/rue-diagnostic:rue-diagnostic",
+        "//crates/rue-ir:rue-ir",
         "//crates/rue-lexer:rue-lexer",
         "//third-party/rust:thiserror",
         "//third-party/rust:serde",

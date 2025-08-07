@@ -1,4 +1,4 @@
-use rue_ast::{CstRoot, StructDefinitionNode};
+use rue_ast::StructDefinitionNode;
 use rue_diagnostic::{Diagnostic, DiagnosticBuilder, E2001, E2002, E3001, E3002, SourceId};
 use rue_ir::types::{RueType, StructDef, StructId, TypeContext};
 use std::collections::HashMap;
@@ -10,11 +10,11 @@ mod diagnostics;
 mod hir_validator;
 pub(crate) mod type_checker;
 mod type_checker_diagnostics;
-
 pub use diagnostics::{
     SemanticDiagnostic, SemanticSeverity, semantic_error_to_diagnostic,
     type_mismatch_with_locations, unreachable_code_warning,
 };
+use rue_ast::CstRoot;
 pub use type_checker_diagnostics::DiagnosticTypeChecker;
 
 #[cfg(test)]
@@ -339,93 +339,6 @@ pub struct AnalysisResult {
     pub hir: hir::HirProgram,
 }
 
-// Clean semantic analysis pipeline
-pub fn analyze_cst(ast: &CstRoot) -> Result<AnalysisResult, SemanticError> {
-    let mut global_scope = Scope::default();
-
-    // Add built-in functions
-    add_builtin_functions(&mut global_scope);
-
-    // First pass: collect all struct definitions and function signatures
-    for item in &ast.items {
-        match item {
-            rue_ast::CstNode::StructDefinition(struct_def) => {
-                analyze_struct_definition(&mut global_scope, struct_def)?;
-            }
-            rue_ast::CstNode::Function(func) => {
-                // Extract function signature for later use
-                let func_name = if let rue_lexer::TokenKind::Ident(name) = &func.name.kind {
-                    name.clone()
-                } else {
-                    return Err(SemanticError {
-                        message: "Expected function name".to_string(),
-                        span: func.name.span,
-                    });
-                };
-
-                // Extract parameter types
-                let mut param_types = Vec::new();
-                for param in &func.param_list.params {
-                    let param_type = if let Some(type_ann) = &param.type_annotation {
-                        convert_type_node_with_scope(&type_ann.ty, &global_scope)?
-                    } else {
-                        RueType::I64 // Default to i64 if no type annotation
-                    };
-                    param_types.push(param_type);
-                }
-
-                // Extract return type
-                let return_type = if let Some(return_type_node) = &func.return_type {
-                    convert_type_node_with_scope(&return_type_node.ty, &global_scope)?
-                } else {
-                    RueType::Unit // Default to unit if no return type specified
-                };
-
-                let signature = FunctionSignature {
-                    param_types,
-                    return_type,
-                };
-
-                global_scope.functions.insert(func_name, signature);
-            }
-            rue_ast::CstNode::Statement(_) => {
-                // Top-level statements are not supported in current language design
-                return Err(SemanticError {
-                    message: "Top-level statements are not supported".to_string(),
-                    span: rue_lexer::Span { start: 0, end: 0 },
-                });
-            }
-            rue_ast::CstNode::Expression(_)
-            | rue_ast::CstNode::Token(_)
-            | rue_ast::CstNode::Error(_) => {
-                return Err(SemanticError {
-                    message: "Unexpected top-level node type".to_string(),
-                    span: rue_lexer::Span { start: 0, end: 0 },
-                });
-            }
-        }
-    }
-
-    // Phase 2: Type Checking + HIR Generation - all semantic analysis happens here
-    let mut type_checker = type_checker::TypeChecker::new(global_scope.clone());
-    let hir = type_checker.check_program(ast)?;
-
-    // Phase 3: HIR Validation - ensure HIR is well-formed and internally consistent
-    let mut hir_validator = hir_validator::HirValidator::new();
-    hir_validator.validate_program(&hir).map_err(|errors| {
-        // Return the first validation error if any occur
-        errors.into_iter().next().unwrap_or_else(|| SemanticError {
-            message: "HIR validation failed".to_string(),
-            span: rue_lexer::Span { start: 0, end: 0 },
-        })
-    })?;
-
-    Ok(AnalysisResult {
-        scope: global_scope,
-        hir,
-    })
-}
-
 /// Convert a Scope containing struct definitions to a TypeContext
 ///
 /// This function extracts struct definitions from the semantic analysis scope
@@ -444,4 +357,94 @@ pub fn scope_to_type_context(scope: &Scope) -> TypeContext {
     }
 
     type_context
+}
+
+/// Analyze a CST using the TypeChecker (AST2 pipeline)
+///
+/// This function uses the TypeChecker directly on the CST, which provides
+/// better struct literal support and more comprehensive type inference than
+/// the AST-based analyzer. This is the "AST2 pipeline" that integrates
+/// the type_checker module.
+pub fn analyze_cst(cst: &CstRoot) -> Result<AnalysisResult, SemanticError> {
+    use crate::hir_validator::HirValidator;
+    use crate::type_checker::TypeChecker;
+
+    // Create global scope and add built-in functions
+    let mut global_scope = Scope::default();
+    add_builtin_functions(&mut global_scope);
+
+    // Phase 1: Process struct definitions from CST first
+    for item in &cst.items {
+        if let rue_ast::CstNode::StructDefinition(struct_def) = item {
+            analyze_struct_definition(&mut global_scope, struct_def)?;
+        }
+    }
+
+    // Phase 2: Collect function signatures from CST
+    for item in &cst.items {
+        if let rue_ast::CstNode::Function(func) = item {
+            // Extract function name
+            let func_name = match &func.name.kind {
+                rue_lexer::TokenKind::Ident(name) => name.clone(),
+                _ => {
+                    return Err(SemanticError {
+                        message: "Expected function name".to_string(),
+                        span: func.name.span,
+                    });
+                }
+            };
+
+            // Extract parameter types
+            let mut param_types = Vec::new();
+            for param in &func.param_list.params {
+                if let Some(ref type_annotation) = param.type_annotation {
+                    let param_type =
+                        convert_type_node_with_scope(&type_annotation.ty, &global_scope)?;
+                    param_types.push(param_type);
+                } else {
+                    return Err(SemanticError {
+                        message: "Function parameters must have type annotations".to_string(),
+                        span: param.name.span,
+                    });
+                }
+            }
+
+            // Extract return type
+            let return_type = if let Some(ref return_type_annotation) = func.return_type {
+                convert_type_node_with_scope(&return_type_annotation.ty, &global_scope)?
+            } else {
+                RueType::Unit
+            };
+
+            // Register function signature
+            global_scope.functions.insert(
+                func_name,
+                FunctionSignature {
+                    param_types,
+                    return_type,
+                },
+            );
+        }
+    }
+
+    // Phase 3: Create TypeChecker with the global scope containing all signatures
+    let mut type_checker = TypeChecker::new(global_scope.clone());
+
+    // Use TypeChecker to analyze the CST and produce HIR
+    let hir = type_checker.check_program(cst)?;
+
+    // Phase 4: Validate the generated HIR
+    let mut validator = HirValidator::new();
+    if let Err(errors) = validator.validate_program(&hir) {
+        // Return the first validation error
+        if let Some(first_error) = errors.first() {
+            return Err(first_error.clone());
+        }
+    }
+
+    // Return the analysis result
+    Ok(AnalysisResult {
+        scope: global_scope,
+        hir,
+    })
 }

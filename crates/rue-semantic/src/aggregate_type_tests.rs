@@ -16,7 +16,7 @@ mod tests {
     use rue_parser::parse_with_recovery;
 
     fn parse_and_analyze(source: &str) -> Result<AnalysisResult, SemanticError> {
-        let ast = parse_with_recovery(source, "test.rue").map_err(|diagnostics| {
+        let cst = parse_with_recovery(source, "test.rue").map_err(|diagnostics| {
             // Convert first diagnostic to SemanticError for compatibility
             if let Some(first) = diagnostics.first() {
                 SemanticError {
@@ -30,7 +30,7 @@ mod tests {
                 }
             }
         })?;
-        analyze_cst(&ast)
+        analyze_cst(&cst)
     }
 
     // ============================================================================

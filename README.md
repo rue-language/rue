@@ -181,6 +181,10 @@ cargo run -p rue examples/basic/simple.rue -- --emit-asm
 cargo run -p rue examples/basic/simple.rue -- -o myprogram
 cargo run -p rue examples/basic/simple.rue -- --emit-asm -o myprogram.s
 
+# Use experimental AST-based semantic analysis path (for testing)
+cargo run -p rue examples/basic/simple.rue -- --use-ast
+# The default path is CST→HIR; --use-ast enables CST→AST→HIR
+
 # Try other example programs
 cargo run -p rue examples/basic/factorial.rue && ./examples/basic/factorial; echo $?
 cargo run -p rue examples/basic/fibonacci.rue && ./examples/basic/fibonacci; echo $?

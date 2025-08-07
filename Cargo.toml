@@ -51,3 +51,4 @@ tower-lsp = "0.20"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "json"] }
 tracing-tree = "0.3"
+rustc-hash = "2.0"

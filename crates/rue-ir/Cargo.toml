@@ -7,3 +7,4 @@ version.workspace = true
 rue-lexer.workspace = true
 rue-target.workspace = true
 tracing.workspace = true
+rustc-hash.workspace = true

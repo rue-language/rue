@@ -2724,6 +2724,12 @@ cargo.rust_library(
     visibility = [],
 )
 
+alias(
+    name = "rustc-hash",
+    actual = ":rustc-hash-2.1.1",
+    visibility = ["PUBLIC"],
+)
+
 http_archive(
     name = "rustc-hash-2.1.1.crate",
     sha256 = "357703d41365b4b27c590e3ed91eabb1b663f07c4c084095e60cbed4362dff0d",

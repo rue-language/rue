@@ -1,12 +1,15 @@
 use rue_ast::*;
 use rue_lexer::{Span, TokenKind, format_error_with_context};
 
+pub mod ast_builder;
+pub mod ast_builder_tests;
 mod diagnostic_impl;
 pub mod diagnostics;
 pub mod error_recovery;
 pub mod simple_snapshot;
 pub mod snapshot;
 
+pub use ast_builder::lower_cst_to_ast;
 pub use diagnostics::{parse_with_diagnostics, parse_with_recovery};
 pub use error_recovery::{ErrorRecoveryExt, RecoveringParser};
 
