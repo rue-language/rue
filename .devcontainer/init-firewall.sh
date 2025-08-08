@@ -68,6 +68,19 @@ while read -r cidr; do
     ipset add allowed-domains "$cidr"
 done
 
+# Fetch Fastly IP ranges for crates.io CDN
+echo "Fetching Fastly IP ranges..."
+fastly_ranges=$(curl -s https://api.fastly.com/public-ip-list)
+if [ -z "$fastly_ranges" ]; then
+    echo "ERROR: Failed to fetch Fastly IP ranges"
+    exit 1
+fi
+echo "Processing Fastly IPs..."
+echo "$fastly_ranges" | jq -r '.addresses[]' | aggregate -q |
+while read -r cidr; do
+    echo "Adding Fastly range $cidr"
+    ipset add allowed-domains "$cidr"
+done
 
 # Resolve and add other allowed domains
 for domain in \
@@ -76,7 +89,6 @@ for domain in \
     "sentry.io" \
     "statsig.anthropic.com" \
     "crates.io" \
-    "static.crates.io" \
     "statsig.com"; do
     echo "Resolving $domain..."
     ips=$(host -t A "$domain" | awk '/has address/ { print $4 }')
