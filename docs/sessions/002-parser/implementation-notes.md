@@ -209,7 +209,7 @@ cargo.rust_library(
     name = "rue-ast",
     srcs = glob(["src/**/*.rs"]),
     crate_root = "src/lib.rs",
-    edition = "2021",
+    edition = "2024",
     deps = [
         "//crates/rue-lexer:rue-lexer",  # Added this line
     ],

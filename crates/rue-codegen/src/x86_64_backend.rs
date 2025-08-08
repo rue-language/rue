@@ -2591,10 +2591,10 @@ impl<'a> X8664Codegen<'a> {
 
     fn get_or_create_label(&mut self, label_id: Label) -> u32 {
         // First check external label map if provided
-        if let Some(external_map) = self.external_label_map {
-            if let Some(&machine_id) = external_map.get(&label_id) {
-                return machine_id;
-            }
+        if let Some(external_map) = self.external_label_map
+            && let Some(&machine_id) = external_map.get(&label_id)
+        {
+            return machine_id;
         }
 
         // Check if we already have this label
@@ -2651,18 +2651,17 @@ impl<'a> X8664Codegen<'a> {
             base,
             offset,
         } = &instr
+            && *base == X86Register::Rbp
         {
-            if *base == X86Register::Rbp {
-                // This is a store to stack - find which VReg this corresponds to
-                if let Some(vreg) = self.allocator.find_vreg_for_slot(*offset as i64) {
-                    self.allocator.mark_vreg_initialized(vreg);
-                    trace!(
-                        target: "rue::codegen::regalloc",
-                        ?vreg,
-                        offset,
-                        "Marking VReg as initialized (stored to stack)"
-                    );
-                }
+            // This is a store to stack - find which VReg this corresponds to
+            if let Some(vreg) = self.allocator.find_vreg_for_slot(*offset as i64) {
+                self.allocator.mark_vreg_initialized(vreg);
+                trace!(
+                    target: "rue::codegen::regalloc",
+                    ?vreg,
+                    offset,
+                    "Marking VReg as initialized (stored to stack)"
+                );
             }
         }
 

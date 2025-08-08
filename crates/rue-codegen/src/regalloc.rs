@@ -477,10 +477,10 @@ impl RegisterAllocator {
         // CRITICAL: Mark excepted dirty registers as Clean after the flush
         // This prevents them from being stored again in a later flush_stores()
         for state in &mut self.scratch_states {
-            if except.contains(&state.reg) {
-                if let RegState::Dirty(vreg) = state.state {
-                    state.state = RegState::Clean(vreg);
-                }
+            if except.contains(&state.reg)
+                && let RegState::Dirty(vreg) = state.state
+            {
+                state.state = RegState::Clean(vreg);
             }
         }
     }
@@ -1056,11 +1056,11 @@ mod tests {
         // Find the spill of v1
         let mut found_v1_spill = false;
         for op in &ops {
-            if let X8664Instr::MovMR { offset, .. } = op {
-                if *offset == -8 {
-                    // VReg(1)'s slot
-                    found_v1_spill = true;
-                }
+            if let X8664Instr::MovMR { offset, .. } = op
+                && *offset == -8
+            {
+                // VReg(1)'s slot
+                found_v1_spill = true;
             }
         }
         assert!(found_v1_spill, "VReg(1) should have been spilled");

@@ -269,12 +269,12 @@ impl RecoveringParser {
         let current_pos = self.parser.current_position();
 
         // If we're at the same position as last recovery, force advance
-        if let Some(last_pos) = self.last_recovery_position {
-            if current_pos == last_pos {
-                // We're stuck at the same position, force advance to prevent infinite loop
-                if !self.parser.is_at_end() {
-                    self.parser.advance();
-                }
+        if let Some(last_pos) = self.last_recovery_position
+            && current_pos == last_pos
+        {
+            // We're stuck at the same position, force advance to prevent infinite loop
+            if !self.parser.is_at_end() {
+                self.parser.advance();
             }
         }
 

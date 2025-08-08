@@ -224,11 +224,11 @@ impl MirMutVisitor for ConstProp {
             }
             MirStatement::Return { value, .. } => {
                 // Propagate constants in return value if present
-                if let Some(temp) = value {
-                    if let Some(_const_val) = self.constants.get(temp) {
-                        // Could optimize by replacing return temp with constant,
-                        // but this doesn't affect correctness, just efficiency
-                    }
+                if let Some(temp) = value
+                    && let Some(_const_val) = self.constants.get(temp)
+                {
+                    // Could optimize by replacing return temp with constant,
+                    // but this doesn't affect correctness, just efficiency
                 }
             }
         }
@@ -242,10 +242,10 @@ impl MirMutVisitor for ConstProp {
 
     fn visit_terminator(&mut self, term: &mut MirTerminator) -> VisitorControl {
         // First propagate constants in the terminator
-        if let MirTerminator::Branch { condition, .. } = term {
-            if let Some(_const_val) = self.constants.get(condition) {
-                // We know the condition value, but we need to let optimize_terminator handle the transformation
-            }
+        if let MirTerminator::Branch { condition, .. } = term
+            && let Some(_const_val) = self.constants.get(condition)
+        {
+            // We know the condition value, but we need to let optimize_terminator handle the transformation
         }
         self.optimize_terminator(term);
         VisitorControl::Continue

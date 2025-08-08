@@ -393,16 +393,16 @@ impl HirValidator {
                 // Validate each argument
                 for (i, arg) in args.iter().enumerate() {
                     let arg_type = self.validate_expression(arg);
-                    if let Some(expected_type) = param_types.get(i) {
-                        if arg_type != *expected_type {
-                            self.errors.push(SemanticError {
+                    if let Some(expected_type) = param_types.get(i)
+                        && arg_type != *expected_type
+                    {
+                        self.errors.push(SemanticError {
                                 message: format!(
                                     "Argument {} to function '{func}': expected {expected_type}, found {arg_type}",
                                     i + 1
                                 ),
                                 span: arg.span(),
                             });
-                        }
                     }
                 }
 

@@ -49,16 +49,15 @@ fn discover_function_boundaries(
     let mut current_start = 0;
 
     for (i, instr) in instructions.iter().enumerate() {
-        if let PIR::Label(label) = instr {
-            if function_labels
+        if let PIR::Label(label) = instr
+            && function_labels
                 .values()
                 .any(|&func_label| func_label == *label)
-            {
-                if current_start < i {
-                    function_boundaries.push((current_start, i));
-                }
-                current_start = i;
+        {
+            if current_start < i {
+                function_boundaries.push((current_start, i));
             }
+            current_start = i;
         }
     }
     if current_start < instructions.len() {
