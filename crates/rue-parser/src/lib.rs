@@ -108,15 +108,13 @@ impl Parser {
             let field = self.parse_struct_field_def()?;
 
             // Check for duplicate field names
-            if let TokenKind::Ident(field_name) = &field.name.kind {
-                if !field_names.insert(field_name.clone()) {
-                    return Err(ParseError {
-                        message: format!(
-                            "Duplicate field name '{field_name}' in struct definition"
-                        ),
-                        span: field.name.span,
-                    });
-                }
+            if let TokenKind::Ident(field_name) = &field.name.kind
+                && !field_names.insert(field_name.clone())
+            {
+                return Err(ParseError {
+                    message: format!("Duplicate field name '{field_name}' in struct definition"),
+                    span: field.name.span,
+                });
             }
 
             fields.push(field);
@@ -726,13 +724,13 @@ impl Parser {
             let field = self.parse_struct_field_init()?;
 
             // Check for duplicate field names
-            if let TokenKind::Ident(field_name) = &field.name.kind {
-                if !field_names.insert(field_name.clone()) {
-                    return Err(ParseError {
-                        message: format!("Duplicate field name '{field_name}' in struct literal"),
-                        span: field.name.span,
-                    });
-                }
+            if let TokenKind::Ident(field_name) = &field.name.kind
+                && !field_names.insert(field_name.clone())
+            {
+                return Err(ParseError {
+                    message: format!("Duplicate field name '{field_name}' in struct literal"),
+                    span: field.name.span,
+                });
             }
 
             fields.push(field);
@@ -1138,13 +1136,13 @@ impl Parser {
         let size = self.expect_integer()?;
 
         // Validate array size is non-negative
-        if let TokenKind::Integer(size_value) = &size.kind {
-            if *size_value < 0 {
-                return Err(ParseError {
-                    message: format!("Array size must be non-negative, found {size_value}"),
-                    span: size.span,
-                });
-            }
+        if let TokenKind::Integer(size_value) = &size.kind
+            && *size_value < 0
+        {
+            return Err(ParseError {
+                message: format!("Array size must be non-negative, found {size_value}"),
+                span: size.span,
+            });
         }
 
         self.skip_comments();

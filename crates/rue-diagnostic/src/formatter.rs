@@ -45,20 +45,19 @@ impl DiagnosticFormatter {
         self.write_header(&mut output, diagnostic)?;
 
         // Write source location and context
-        if let Some(source) = source_manager.get_source(&diagnostic.source_id) {
-            if let Some(primary_label) = diagnostic
+        if let Some(source) = source_manager.get_source(&diagnostic.source_id)
+            && let Some(primary_label) = diagnostic
                 .labels
                 .iter()
                 .find(|l| l.style == LabelStyle::Primary)
-            {
-                self.write_location(
-                    &mut output,
-                    &diagnostic.source_id,
-                    primary_label.span,
-                    &source.line_starts,
-                )?;
-                self.write_source_context(&mut output, diagnostic, source_manager)?;
-            }
+        {
+            self.write_location(
+                &mut output,
+                &diagnostic.source_id,
+                primary_label.span,
+                &source.line_starts,
+            )?;
+            self.write_source_context(&mut output, diagnostic, source_manager)?;
         }
 
         // Write help text

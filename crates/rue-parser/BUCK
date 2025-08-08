@@ -4,7 +4,7 @@ cargo.rust_library(
     name = "rue-parser",
     srcs = glob(["src/**/*.rs"]),
     crate_root = "src/lib.rs",
-    edition = "2021",
+    edition = "2024",
     deps = [
         "//crates/rue-ast:rue-ast",
         "//crates/rue-diagnostic:rue-diagnostic",
@@ -21,7 +21,7 @@ rust_test(
     name = "test",
     srcs = glob(["src/**/*.rs"]),
     crate_root = "src/lib.rs",
-    edition = "2021",
+    edition = "2024",
     deps = [
         "//crates/rue-ast:rue-ast",
         "//crates/rue-diagnostic:rue-diagnostic",

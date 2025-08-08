@@ -734,30 +734,30 @@ impl TypeChecker {
                     };
 
                     // Validate that the return type matches the function's return type
-                    if let Some(expected_type) = expected_return_type {
-                        if hir_expr.ty() != expected_type {
-                            return Err(SemanticError {
-                                message: format!(
-                                    "Return type mismatch: expected {expected_type}, found {}",
-                                    hir_expr.ty()
-                                ),
-                                span: expr.span(),
-                            });
-                        }
+                    if let Some(expected_type) = expected_return_type
+                        && hir_expr.ty() != expected_type
+                    {
+                        return Err(SemanticError {
+                            message: format!(
+                                "Return type mismatch: expected {expected_type}, found {}",
+                                hir_expr.ty()
+                            ),
+                            span: expr.span(),
+                        });
                     }
 
                     Some(hir_expr)
                 } else {
                     // Bare return; - should be unit type
-                    if let Some(expected_type) = expected_return_type {
-                        if *expected_type != RueType::Unit {
-                            return Err(SemanticError {
-                                message: format!(
-                                    "Return type mismatch: expected {expected_type}, found unit (bare return)"
-                                ),
-                                span: return_stmt.return_token.span,
-                            });
-                        }
+                    if let Some(expected_type) = expected_return_type
+                        && *expected_type != RueType::Unit
+                    {
+                        return Err(SemanticError {
+                            message: format!(
+                                "Return type mismatch: expected {expected_type}, found unit (bare return)"
+                            ),
+                            span: return_stmt.return_token.span,
+                        });
                     }
                     None
                 };
