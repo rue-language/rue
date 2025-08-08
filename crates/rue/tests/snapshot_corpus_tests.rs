@@ -28,13 +28,27 @@ fn compile_and_run(source_path: &Path) -> Result<ExecutionSnapshot, String> {
     let temp_dir = TempDir::new().map_err(|e| format!("Failed to create temp dir: {e}"))?;
     let exe_path = temp_dir.path().join("test_exe");
 
-    // Compile the program
-    let compile_output = Command::new("cargo")
-        .arg("run")
+    // Always build rue to ensure we're using the latest version
+    // Cargo will skip the build if nothing has changed
+    let build_output = Command::new("cargo")
+        .arg("build")
         .arg("--release")
         .arg("--bin")
         .arg("rue")
-        .arg("--")
+        .current_dir(project_root)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .output()
+        .map_err(|e| format!("Failed to build rue compiler: {e}"))?;
+
+    if !build_output.status.success() {
+        return Err("Failed to build rue compiler".to_string());
+    }
+
+    let rue_binary = project_root.join("target/release/rue");
+
+    // Compile the program using the rue binary directly
+    let compile_output = Command::new(&rue_binary)
         .arg(&absolute_path)
         .arg("-o")
         .arg(&exe_path)

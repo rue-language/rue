@@ -7,14 +7,13 @@
 pub mod ast;
 pub mod cfg;
 pub mod hir;
-pub mod hir2;
-pub mod hir2_builder;
+pub mod hir_builder;
 pub mod mir;
+pub mod mir_verifier;
 pub mod pir;
 pub mod types;
 
 #[cfg(test)]
 mod debug_offsets_test;
-
 #[cfg(test)]
-mod hir2_tests;
+mod hir_tests;

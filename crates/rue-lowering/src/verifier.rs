@@ -362,6 +362,12 @@ impl MirVerifier {
                     self.add_error(format!("Return value {val:?} is undefined"), Some(block_id));
                 }
             }
+            MirTerminator::Uninit => {
+                self.add_error(
+                    "Block has uninitialized terminator".to_string(),
+                    Some(block_id),
+                );
+            }
         }
     }
 
@@ -459,6 +465,9 @@ impl MirVerifier {
                         worklist.push(*default);
                     }
                     MirTerminator::Return { .. } | MirTerminator::Unreachable { .. } => {}
+                    MirTerminator::Uninit => {
+                        // This will be caught by the earlier validation
+                    }
                 }
             }
         }

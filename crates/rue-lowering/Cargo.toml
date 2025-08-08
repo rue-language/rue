@@ -10,3 +10,5 @@ rue-target.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
+rue-parser.workspace = true
+rue-semantic.workspace = true

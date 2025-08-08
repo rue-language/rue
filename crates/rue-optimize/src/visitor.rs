@@ -397,6 +397,12 @@ pub fn walk_terminator<V: MirVisitor + ?Sized>(
             VisitorControl::Continue
         }
         MirTerminator::Unreachable { .. } => VisitorControl::Continue,
+        MirTerminator::Uninit => {
+            // Uninit terminators should not exist in optimized MIR
+            panic!(
+                "Encountered Uninit terminator during MIR visitor - this indicates a lowering bug"
+            );
+        }
     }
 }
 
@@ -631,6 +637,12 @@ pub fn walk_terminator_mut<V: MirMutVisitor + ?Sized>(
             VisitorControl::Continue
         }
         MirTerminator::Unreachable { .. } => VisitorControl::Continue,
+        MirTerminator::Uninit => {
+            // Uninit terminators should not exist in optimized MIR
+            panic!(
+                "Encountered Uninit terminator during MIR visitor - this indicates a lowering bug"
+            );
+        }
     }
 }
 
@@ -821,6 +833,12 @@ pub fn fold_terminator<F: MirFolder + ?Sized>(
             }
         }
         MirTerminator::Unreachable { .. } => {}
+        MirTerminator::Uninit => {
+            // Uninit terminators should not exist in optimized MIR
+            panic!(
+                "Encountered Uninit terminator during MIR folding - this indicates a lowering bug"
+            );
+        }
     }
     Ok(term)
 }

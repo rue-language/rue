@@ -357,7 +357,7 @@ fn main() -> i32 {
     }
 }
 "#,
-        "Type mismatch",
+        "incompatible types",
     );
 }
 
@@ -378,19 +378,18 @@ fn main() -> i32 {
         "Cannot use integer literal in context expecting bool",
     );
 
-    // Missing return in function
     test_compile_error(
         "missing_return",
         r#"
-fn get_number() -> i32 {
-    let x: i32 = 5;
-    // forgot to return
-}
-
-fn main() -> i32 {
-    get_number()
-}
-"#,
+    fn get_number() -> i32 {
+        let x: i32 = 5;
+        // forgot to return
+    }
+    
+    fn main() -> i32 {
+        get_number()
+    }
+    "#,
         "Type mismatch",
     );
 
@@ -402,7 +401,7 @@ fn main() -> i32 {
     true
 }
 "#,
-        "Type mismatch",
+        "Return type mismatch",
     );
 }
 

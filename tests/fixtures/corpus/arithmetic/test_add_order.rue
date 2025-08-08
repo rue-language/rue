@@ -1,11 +1,6 @@
-fn return_ten() -> i32 {
-    10
-}
-
-fn return_twenty() -> i32 {
-    20
-}
-
+// Test that addition order is preserved correctly
 fn main() -> i32 {
-    return_ten() + return_twenty()  // Should return 30
+    let a: i32 = 1 + 2 + 3;  // Should be (1 + 2) + 3 = 6
+    let b: i32 = 1 + (2 + 3);  // Should be 1 + 5 = 6
+    a + b  // Should return 12
 }

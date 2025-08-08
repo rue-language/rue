@@ -29,6 +29,3 @@ criterion.workspace = true
 name = "ast_performance"
 harness = false
 
-[[bench]]
-name = "hir_comparison"
-harness = false

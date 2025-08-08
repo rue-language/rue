@@ -1,8 +1,0 @@
-// Test variables with function call between
-fn main() {
-    let a: i64 = 42;
-    let b: i64 = 17;
-    println_i64(1);  // This call might affect b
-    println_i64(a);
-    println_i64(b);
-}

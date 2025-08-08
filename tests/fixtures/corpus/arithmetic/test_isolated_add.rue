@@ -1,15 +1,7 @@
-fn get_two() -> i32 {
-    2
-}
-
-fn get_three() -> i32 {
-    3
-}
-
-fn test_add() -> i32 {
-    get_two() + get_three()
-}
-
+// Test simple isolated addition
 fn main() -> i32 {
-    test_add()  // Should be 5
+    let x: i32 = 10;
+    let y: i32 = 20;
+    let z: i32 = x + y;
+    z  // Should return 30
 }

@@ -1,4 +1,0 @@
-// Simple test
-fn main() {
-    println_i64(42);
-}

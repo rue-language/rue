@@ -1,6 +1,38 @@
 use std::collections::HashMap;
 use std::fmt;
 
+/// Unique identifier for a variable binding
+///
+/// This represents a unique binding site in the program, allowing us to distinguish
+/// between different variables with the same name (e.g., due to shadowing).
+/// Each `let` statement allocates a new BindingId, even if it shadows an existing variable.
+///
+/// # Design Notes
+/// - Uses newtype pattern for type safety (can't mix with other u32s)
+/// - Derives standard traits for use in collections
+/// - Display implementation shows human-readable format for debugging
+/// - Ord trait allows stable ordering based on allocation order
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct BindingId(pub u32);
+
+impl fmt::Display for BindingId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "binding#{}", self.0)
+    }
+}
+
+impl BindingId {
+    /// Create a new BindingId with the given numeric value
+    pub fn new(id: u32) -> Self {
+        Self(id)
+    }
+
+    /// Get the raw numeric ID
+    pub fn as_u32(self) -> u32 {
+        self.0
+    }
+}
+
 /// Unique identifier for a struct type definition
 ///
 /// This is an opaque handle that references a struct definition in a type registry.

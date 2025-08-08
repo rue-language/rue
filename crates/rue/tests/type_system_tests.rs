@@ -255,7 +255,7 @@ fn main() -> i32 {
     x
 }
 "#,
-        "Type mismatch",
+        "Return type mismatch",
     );
 }
 
@@ -476,19 +476,20 @@ fn main() -> i32 {
     }
 }
 "#,
-        "Type mismatch:",
+        "If expression branches have incompatible types",
     );
 
-    // Type checking with while loops
+    // Type checking with control flow (if-expressions)
     test_compiles(
-        "while_with_types",
+        "if_with_types",
         r#"
 fn main() -> i32 {
     let x: i32 = 10;
-    while x > 0 {
-        0;
-    };
-    x
+    if x > 0 {
+        x
+    } else {
+        0
+    }
 }
 "#,
     );

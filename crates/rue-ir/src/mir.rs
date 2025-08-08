@@ -317,6 +317,9 @@ pub enum MirTerminator {
         /// Source span for debugging and error reporting
         span: Option<Span>,
     },
+    /// Uninitialized terminator (sentinel value for blocks under construction)
+    /// This should never remain in the final MIR and indicates a lowering bug
+    Uninit,
 }
 
 // Helper methods
@@ -725,6 +728,9 @@ impl fmt::Display for MirTerminator {
                     write!(f, " {val}")?;
                 }
                 Ok(())
+            }
+            MirTerminator::Uninit => {
+                write!(f, "uninit")
             }
         }
     }

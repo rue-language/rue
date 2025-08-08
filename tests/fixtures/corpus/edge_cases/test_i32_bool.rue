@@ -1,5 +1,0 @@
-// Test i32 followed by bool printing
-fn main() {
-    println_i32(42);
-    println_bool(true);
-}

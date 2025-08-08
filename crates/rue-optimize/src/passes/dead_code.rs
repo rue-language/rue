@@ -138,6 +138,12 @@ impl DeadCodeElimination {
                         worklist.push(*default);
                     }
                     MirTerminator::Return { .. } | MirTerminator::Unreachable { .. } => {}
+                    MirTerminator::Uninit => {
+                        // Uninit terminators should not exist in optimized MIR
+                        panic!(
+                            "Encountered Uninit terminator during dead code analysis - this indicates a lowering bug"
+                        );
+                    }
                 }
             }
         }

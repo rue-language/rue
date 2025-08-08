@@ -1,6 +1,6 @@
 use rue_ast::CstRoot;
 use rue_diagnostic::Diagnostic;
-use rue_semantic::analyze_cst;
+use rue_semantic::{analyze_cst, scope_to_type_context};
 use std::sync::Arc;
 
 pub mod error;
@@ -13,7 +13,6 @@ pub use error::RueError;
 // Re-export the compilation functions for external use
 pub use pipeline::{
     CompileError, compile_hir_via_mir_to_assembly, compile_hir_via_mir_to_executable,
-    compile_hir2_via_mir_to_assembly, compile_hir2_via_mir_to_executable,
 };
 
 // Input structs
@@ -59,11 +58,11 @@ pub fn parse_file_with_diagnostics(
 
 #[salsa::tracked]
 pub fn analyze_file(
-    db: &dyn salsa::Database,
+    _db: &dyn salsa::Database,
     file: SourceFile,
 ) -> Result<Arc<rue_semantic::AnalysisResult>, Arc<RueError>> {
     // Parse and analyze with functional chaining - use CST path (AST2 pipeline)
-    let cst = parse_file(db, file)?;
+    let cst = parse_file(_db, file)?;
     analyze_cst(&cst)
         .map(Arc::new)
         .map_err(|e| Arc::new(e.into()))
@@ -81,8 +80,10 @@ pub fn compile_with_ast(source: &str) -> Result<Vec<u8>, RueError> {
     // Analyze using CST path (AST2 pipeline)
     let analysis = analyze_cst(&cst).map_err(RueError::from)?;
 
-    // Compile to executable
-    pipeline::compile_hir_via_mir_to_executable(&analysis, false).map_err(RueError::from)
+    // Compile to executable using the HIR
+    let type_context = rue_semantic::scope_to_type_context(&analysis.scope);
+    pipeline::compile_hir_via_mir_to_executable(&analysis.hir, type_context, false)
+        .map_err(RueError::from)
 }
 
 #[cfg(test)]
@@ -141,6 +142,36 @@ fn factorial(n: i32) -> i32 {
         let result2 = parse_file(&db, file);
         assert!(result.is_ok());
         assert!(Arc::ptr_eq(&result.unwrap(), &result2.unwrap())); // Same Arc = cached
+    }
+
+    #[test]
+    fn test_incremental_analysis() {
+        let db = RueDatabase::default();
+
+        let file = SourceFile::new(
+            &db,
+            "test.rue".to_string(),
+            r#"
+fn main() -> i32 {
+    42
+}
+"#
+            .to_string(),
+        );
+
+        // Analyze it
+        let result = analyze_file(&db, file);
+        assert!(result.is_ok());
+
+        // Analyze again without changes (should be cached)
+        let result2 = analyze_file(&db, file);
+        assert!(result2.is_ok());
+
+        // Check that we got the same Arc back (meaning it was cached)
+        assert!(
+            Arc::ptr_eq(&result.unwrap(), &result2.unwrap()),
+            "analyze_file should return cached result for unchanged input"
+        );
     }
 
     #[test]
@@ -246,6 +277,49 @@ fn main() -> i32 {
             error
                 .to_string()
                 .contains("Undefined function: undefined_func")
+        );
+    }
+
+    #[test]
+    fn test_implicit_return_final_expression() {
+        let db = RueDatabase::default();
+
+        let file = SourceFile::new(
+            &db,
+            "test.rue".to_string(),
+            r#"
+fn main() -> i32 {
+    42
+}
+"#
+            .to_string(),
+        );
+
+        let result = analyze_file(&db, file);
+        assert!(
+            result.is_ok(),
+            "Should successfully analyze function with implicit return"
+        );
+
+        // The HIR should contain a return instruction for the final expression
+        let analysis_result = result.unwrap();
+        let hir = &analysis_result.hir;
+
+        // Check that we have a main function
+        assert!(hir.main_function.is_some(), "Should have a main function");
+
+        // Get the main function
+        let main_func = hir
+            .get_function_by_index(hir.main_function.unwrap())
+            .expect("Main function should exist");
+
+        // Check that the main function's body block has a Return terminator
+        let found_return = matches!(main_func.body.term, rue_ir::hir::Terminator::Return { .. });
+
+        assert!(
+            found_return,
+            "Main function should have a return terminator for implicit return, found: {:?}",
+            main_func.body.term
         );
     }
 
@@ -393,7 +467,8 @@ pub fn compile_file(
 ) -> Result<Arc<Vec<u8>>, Arc<RueError>> {
     // Parse, analyze, and compile with functional chaining
     let analysis = analyze_file(db, file)?;
-    pipeline::compile_hir_via_mir_to_executable(&analysis, false)
+    let type_context = scope_to_type_context(&analysis.scope);
+    pipeline::compile_hir_via_mir_to_executable(&analysis.hir, type_context, false)
         .map(Arc::new)
         .map_err(|e| Arc::new(RueError::from(e)))
 }
@@ -412,7 +487,8 @@ pub fn compile_file_to_assembly(
     };
 
     // Generate assembly from HIR via MIR (without optimizations)
-    match pipeline::compile_hir_via_mir_to_assembly(&analysis, false) {
+    let type_context = scope_to_type_context(&analysis.scope);
+    match pipeline::compile_hir_via_mir_to_assembly(&analysis.hir, type_context, false) {
         Ok(assembly) => Ok(Arc::new(assembly)),
         Err(e) => Err(Arc::new(RueError::from(e))),
     }
@@ -433,7 +509,12 @@ pub fn compile_file_with_options(
     };
 
     // Generate executable from HIR via MIR with optimization settings
-    match pipeline::compile_hir_via_mir_to_executable(&analysis, options.optimize(db)) {
+    let type_context = scope_to_type_context(&analysis.scope);
+    match pipeline::compile_hir_via_mir_to_executable(
+        &analysis.hir,
+        type_context,
+        options.optimize(db),
+    ) {
         Ok(executable) => Ok(Arc::new(executable)),
         Err(e) => Err(Arc::new(RueError::from(e))),
     }
@@ -454,7 +535,12 @@ pub fn compile_file_to_assembly_with_options(
     };
 
     // Generate assembly from HIR via MIR with optimization settings
-    match pipeline::compile_hir_via_mir_to_assembly(&analysis, options.optimize(db)) {
+    let type_context = scope_to_type_context(&analysis.scope);
+    match pipeline::compile_hir_via_mir_to_assembly(
+        &analysis.hir,
+        type_context,
+        options.optimize(db),
+    ) {
         Ok(assembly) => Ok(Arc::new(assembly)),
         Err(e) => Err(Arc::new(RueError::from(e))),
     }
@@ -493,7 +579,12 @@ pub fn compile_file_with_diagnostics(
     match analysis_result {
         Ok(analysis) => {
             // Generate executable from HIR via MIR
-            match pipeline::compile_hir_via_mir_to_executable(&analysis, options.optimize(db)) {
+            let type_context = rue_semantic::scope_to_type_context(&analysis.scope);
+            match pipeline::compile_hir_via_mir_to_executable(
+                &analysis.hir,
+                type_context,
+                options.optimize(db),
+            ) {
                 Ok(executable) => Ok(Arc::new(executable)),
                 Err(e) => {
                     let diagnostic = rue_diagnostic::DiagnosticBuilder::error(

@@ -1,0 +1,48 @@
+// Demonstrate struct support in Rue
+// This shows struct definitions, struct literals, and field access
+
+struct Point {
+    x: i32,
+    y: i32,
+}
+
+struct Rectangle {
+    top_left: Point,
+    width: i32,
+    height: i32,
+}
+
+struct Person {
+    age: i32,
+    id: i64,
+}
+
+fn main() -> i32 {
+    // Create a simple point
+    let p1 = Point { x: 10, y: 20 };
+    
+    // Access fields
+    let x_coord = p1.x;
+    let y_coord = p1.y;
+    
+    // Create another point
+    let p2 = Point { x: 5, y: 15 };
+    
+    // Create a rectangle using a point
+    let rect = Rectangle { 
+        top_left: p2,
+        width: 100,
+        height: 50
+    };
+    
+    // Access nested fields
+    let rect_x = rect.top_left.x;
+    let rect_width = rect.width;
+    
+    // Create a person
+    let person = Person { age: 25, id: 12345 };
+    let person_age = person.age;
+    
+    // Return a computed value based on struct fields
+    x_coord + y_coord + rect_x + person_age  // 10 + 20 + 5 + 25 = 60
+}
