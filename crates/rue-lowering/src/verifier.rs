@@ -108,15 +108,13 @@ impl MirVerifier {
     ) {
         // Add block parameters as defined
         for (temp, ty) in &block.params {
-            if let Some(existing_ty) = defined_temps.insert(*temp, ty.clone()) {
-                if existing_ty != *ty {
-                    self.add_error(
-                        format!(
-                            "Block parameter {temp:?} type mismatch: {existing_ty:?} vs {ty:?}"
-                        ),
-                        Some(block.id),
-                    );
-                }
+            if let Some(existing_ty) = defined_temps.insert(*temp, ty.clone())
+                && existing_ty != *ty
+            {
+                self.add_error(
+                    format!("Block parameter {temp:?} type mismatch: {existing_ty:?} vs {ty:?}"),
+                    Some(block.id),
+                );
             }
         }
 
@@ -165,13 +163,13 @@ impl MirVerifier {
             }
             MirStatement::Return { value, .. } => {
                 // Verify that return value temp is defined if present
-                if let Some(temp) = value {
-                    if !defined_temps.contains_key(temp) {
-                        self.add_error(
-                            format!("Return statement uses undefined temporary {temp:?}"),
-                            Some(block_id),
-                        );
-                    }
+                if let Some(temp) = value
+                    && !defined_temps.contains_key(temp)
+                {
+                    self.add_error(
+                        format!("Return statement uses undefined temporary {temp:?}"),
+                        Some(block_id),
+                    );
                 }
                 // Type checking for return statements was already done in semantic analysis
             }
@@ -358,13 +356,10 @@ impl MirVerifier {
                 // Unreachable terminators are always valid (they should never be reached)
             }
             MirTerminator::Return { value, .. } => {
-                if let Some(val) = value {
-                    if !defined_temps.contains_key(val) {
-                        self.add_error(
-                            format!("Return value {val:?} is undefined"),
-                            Some(block_id),
-                        );
-                    }
+                if let Some(val) = value
+                    && !defined_temps.contains_key(val)
+                {
+                    self.add_error(format!("Return value {val:?} is undefined"), Some(block_id));
                 }
             }
         }

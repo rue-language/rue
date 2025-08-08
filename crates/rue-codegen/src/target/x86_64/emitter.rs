@@ -821,22 +821,22 @@ impl X86Emitter {
             rex |= 0x08; // REX.W
         }
 
-        if let Some(reg) = r_reg {
-            if self.needs_rex_r(reg) {
-                rex |= 0x04; // REX.R
-            }
+        if let Some(reg) = r_reg
+            && self.needs_rex_r(reg)
+        {
+            rex |= 0x04; // REX.R
         }
 
-        if let Some(reg) = x_reg {
-            if reg.needs_rex() {
-                rex |= 0x02; // REX.X for SIB index
-            }
+        if let Some(reg) = x_reg
+            && reg.needs_rex()
+        {
+            rex |= 0x02; // REX.X for SIB index
         }
 
-        if let Some(reg) = b_reg {
-            if self.needs_rex_b(reg) {
-                rex |= 0x01; // REX.B
-            }
+        if let Some(reg) = b_reg
+            && self.needs_rex_b(reg)
+        {
+            rex |= 0x01; // REX.B
         }
 
         // For SetCC and other 8-bit operations on RSP, RBP, RSI, RDI,
@@ -943,10 +943,10 @@ impl X86Emitter {
         // Add function names to symbol table
         for (name, label_id) in &self.function_labels {
             let machine_id = label_id.to_machine_id(self.runtime_label_count);
-            if let Some((section, pos)) = self.label_positions.get(&machine_id) {
-                if *section == SectionType::Text {
-                    symbols.insert(name.clone(), *pos);
-                }
+            if let Some((section, pos)) = self.label_positions.get(&machine_id)
+                && *section == SectionType::Text
+            {
+                symbols.insert(name.clone(), *pos);
             }
         }
 

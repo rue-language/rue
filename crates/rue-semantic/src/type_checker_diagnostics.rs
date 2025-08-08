@@ -204,10 +204,10 @@ impl DiagnosticTypeChecker {
 
     /// Extract variable name from error message
     fn extract_variable_name(&self, message: &str) -> Option<String> {
-        if let Some(start) = message.find('\'') {
-            if let Some(end) = message[start + 1..].find('\'') {
-                return Some(message[start + 1..start + 1 + end].to_string());
-            }
+        if let Some(start) = message.find('\'')
+            && let Some(end) = message[start + 1..].find('\'')
+        {
+            return Some(message[start + 1..start + 1 + end].to_string());
         }
         None
     }
