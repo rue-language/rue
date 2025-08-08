@@ -4,7 +4,7 @@ cargo.rust_library(
     name = "rue-lexer",
     srcs = glob(["src/**/*.rs"]),
     crate_root = "src/lib.rs",
-    edition = "2021",
+    edition = "2024",
     visibility = ["PUBLIC"],
     deps = ["//third-party/rust:thiserror"],
 )
@@ -13,6 +13,6 @@ rust_test(
     name = "test",
     srcs = glob(["src/**/*.rs"]),
     crate_root = "src/lib.rs",
-    edition = "2021",
+    edition = "2024",
     deps = ["//third-party/rust:thiserror"],
 )
