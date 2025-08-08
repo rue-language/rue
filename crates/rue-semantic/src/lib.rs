@@ -9,6 +9,7 @@ pub use rue_ir::hir;
 mod diagnostics;
 mod hir_validator;
 pub(crate) mod type_checker;
+pub mod type_checker2;
 mod type_checker_diagnostics;
 pub use diagnostics::{
     SemanticDiagnostic, SemanticSeverity, semantic_error_to_diagnostic,
@@ -16,6 +17,7 @@ pub use diagnostics::{
 };
 use rue_ast::CstRoot;
 pub use type_checker_diagnostics::DiagnosticTypeChecker;
+pub use type_checker2::analyze_cst_v2;
 
 #[cfg(test)]
 mod hir_control_flow_test;
@@ -214,7 +216,7 @@ fn convert_type_node_with_scope(
 }
 
 // Helper function to analyze a struct definition
-fn analyze_struct_definition(
+pub fn analyze_struct_definition(
     scope: &mut Scope,
     struct_def: &StructDefinitionNode,
 ) -> Result<(), SemanticError> {
@@ -258,7 +260,7 @@ fn analyze_struct_definition(
 }
 
 // Add built-in functions to the scope
-fn add_builtin_functions(scope: &mut Scope) {
+pub fn add_builtin_functions(scope: &mut Scope) {
     // exit(code: i64) -> ()
     scope.functions.insert(
         "exit".to_string(),

@@ -13,6 +13,7 @@ pub use error::RueError;
 // Re-export the compilation functions for external use
 pub use pipeline::{
     CompileError, compile_hir_via_mir_to_assembly, compile_hir_via_mir_to_executable,
+    compile_hir2_via_mir_to_assembly, compile_hir2_via_mir_to_executable,
 };
 
 // Input structs
