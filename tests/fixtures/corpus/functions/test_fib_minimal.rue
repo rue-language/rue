@@ -1,3 +1,4 @@
+// Minimal fibonacci test
 fn fib(n: i32) -> i32 {
     if n <= 1 {
         n
@@ -7,5 +8,5 @@ fn fib(n: i32) -> i32 {
 }
 
 fn main() -> i32 {
-    fib(5)  // Should return 5
+    fib(5)  // Should return 5 (0,1,1,2,3,5)
 }

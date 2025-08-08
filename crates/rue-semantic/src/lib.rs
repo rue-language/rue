@@ -1,41 +1,19 @@
 use rue_ast::StructDefinitionNode;
 use rue_diagnostic::{Diagnostic, DiagnosticBuilder, E2001, E2002, E3001, E3002, SourceId};
 use rue_ir::types::{RueType, StructDef, StructId, TypeContext};
+use rue_lexer::Span;
 use std::collections::HashMap;
 
 // Re-export HIR types from rue-ir for convenience
 pub use rue_ir::hir;
 
 mod diagnostics;
-mod hir_validator;
 pub(crate) mod type_checker;
-pub mod type_checker2;
-mod type_checker_diagnostics;
 pub use diagnostics::{
     SemanticDiagnostic, SemanticSeverity, semantic_error_to_diagnostic,
     type_mismatch_with_locations, unreachable_code_warning,
 };
 use rue_ast::CstRoot;
-pub use type_checker_diagnostics::DiagnosticTypeChecker;
-pub use type_checker2::analyze_cst_v2;
-
-#[cfg(test)]
-mod hir_control_flow_test;
-
-#[cfg(test)]
-mod type_preservation_test;
-
-#[cfg(test)]
-mod hir_validation_integration_test;
-
-#[cfg(test)]
-mod hir_roundtrip_test;
-
-#[cfg(test)]
-mod aggregate_type_tests;
-
-#[cfg(test)]
-mod constraint_inference_test;
 
 // Semantic analysis types - now unified with diagnostic system
 #[derive(Debug, Clone)]
@@ -335,10 +313,10 @@ pub fn add_builtin_functions(scope: &mut Scope) {
 }
 
 /// Result of semantic analysis including both scope and HIR
-#[derive(Debug, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct AnalysisResult {
     pub scope: Scope,
-    pub hir: hir::HirProgram,
+    pub hir: rue_ir::hir::Hir,
 }
 
 /// Convert a Scope containing struct definitions to a TypeContext
@@ -361,16 +339,12 @@ pub fn scope_to_type_context(scope: &Scope) -> TypeContext {
     type_context
 }
 
-/// Analyze a CST using the TypeChecker (AST2 pipeline)
+/// Analyze a CST using the HIR TypeChecker
 ///
-/// This function uses the TypeChecker directly on the CST, which provides
-/// better struct literal support and more comprehensive type inference than
-/// the AST-based analyzer. This is the "AST2 pipeline" that integrates
-/// the type_checker module.
+/// This function uses the TypeChecker directly on the CST, which produces
+/// instruction-based HIR representation. This is the primary pipeline
+/// for the Rue compiler.
 pub fn analyze_cst(cst: &CstRoot) -> Result<AnalysisResult, SemanticError> {
-    use crate::hir_validator::HirValidator;
-    use crate::type_checker::TypeChecker;
-
     // Create global scope and add built-in functions
     let mut global_scope = Scope::default();
     add_builtin_functions(&mut global_scope);
@@ -429,22 +403,26 @@ pub fn analyze_cst(cst: &CstRoot) -> Result<AnalysisResult, SemanticError> {
         }
     }
 
-    // Phase 3: Create TypeChecker with the global scope containing all signatures
-    let mut type_checker = TypeChecker::new(global_scope.clone());
+    // Phase 3: Use HIR pipeline and create AnalysisResult
+    let hir = {
+        use crate::type_checker::TypeChecker;
+        use rue_ir::hir_builder::HirBuilder;
 
-    // Use TypeChecker to analyze the CST and produce HIR
-    let hir = type_checker.check_program(cst)?;
+        // Create TypeChecker and HirBuilder
+        let mut type_checker = TypeChecker::new(global_scope.clone());
+        let mut builder = HirBuilder::new();
 
-    // Phase 4: Validate the generated HIR
-    let mut validator = HirValidator::new();
-    if let Err(errors) = validator.validate_program(&hir) {
-        // Return the first validation error
-        if let Some(first_error) = errors.first() {
-            return Err(first_error.clone());
-        }
-    }
+        // Use TypeChecker to analyze the CST and produce HIR
+        type_checker.check_program(cst, &mut builder)?;
 
-    // Return the analysis result
+        // Finish building and return HIR
+        builder.finish().map_err(|e| SemanticError {
+            message: e,
+            span: Span { start: 0, end: 0 },
+        })?
+    };
+
+    // Return the analysis result with HIR
     Ok(AnalysisResult {
         scope: global_scope,
         hir,

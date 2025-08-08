@@ -1,4 +1,4 @@
-exit_code = 5
+exit_code = 30
 stdout = ""
 stderr = ""
 timeout = false

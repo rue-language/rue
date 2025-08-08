@@ -631,6 +631,11 @@ impl MirToPir {
                     self.emit(PIR::Return { value: None });
                 }
             }
+            MirTerminator::Uninit => {
+                panic!(
+                    "Encountered Uninit terminator during MIR to PIR lowering - this indicates a lowering bug"
+                );
+            }
         }
     }
 

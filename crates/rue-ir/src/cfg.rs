@@ -114,7 +114,9 @@ impl ControlFlowGraph {
                 successors.push(*default);
                 successors
             }
-            MirTerminator::Return { .. } | MirTerminator::Unreachable { .. } => vec![],
+            MirTerminator::Return { .. }
+            | MirTerminator::Unreachable { .. }
+            | MirTerminator::Uninit => vec![],
         }
     }
 }

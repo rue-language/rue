@@ -1,311 +1,32 @@
 //! Type checker that builds HIR during semantic analysis
 //!
-//! This module provides a unified type checker that performs semantic analysis
-//! and HIR construction in a single pass, ensuring that all type information
-//! is accurately preserved in the HIR.
+//! This module provides a type checker that performs semantic analysis
+//! and HIR instruction construction in a single pass, emitting a flat
+//! sequence of instructions instead of building tree structures.
 
-use crate::{FunctionSignature, Scope, SemanticError};
+use crate::{FunctionSignature, Scope, SemanticError, convert_type_node_with_scope};
 use rue_ast::{
     ArrayAccessNode, ArrayLiteralNode, CstRoot, ExpressionNode, FieldAccessNode, FieldKindNode,
     FunctionNode, StatementNode, StructLiteralNode, TupleLiteralNode,
 };
-use rue_ir::hir::{
-    BinOp, HirBlock, HirExpr, HirFunction, HirLiteral, HirProgram, HirStatement, UnaryOp,
-};
-use rue_ir::types::{FieldId, RueType};
+use rue_ir::hir::{BinOp, BlockParam, BlockParamIndex, UnaryOp, ValueRef};
+use rue_ir::hir_builder::HirBuilder;
+use rue_ir::types::{BindingId, RueType};
 use rue_lexer::{Span, TokenKind};
 use std::collections::{HashMap, HashSet};
+use tracing::debug;
 
-/// Type constraint for unification-based type inference
-#[derive(Debug, Clone, PartialEq)]
-pub enum TypeConstraint {
-    /// Two types must be equal
-    Equal(TypeVarId, TypeVarId),
-    /// Type variable must equal a concrete type
-    Concrete(TypeVarId, RueType),
-    /// Binary operation constraint (op, lhs, rhs, result)
-    Binary(BinOp, TypeVarId, TypeVarId, TypeVarId),
+/// Trait for AST nodes that can compute write sets
+trait ComputeWrites {
+    fn compute_writes(&self, builder: &HirBuilder) -> HashSet<BindingId>;
 }
 
-/// Type variable identifier for constraint solving
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct TypeVarId(pub u32);
-
-/// Type inference context that tracks constraints and solutions
-///
-/// This structure improves type inference by:
-/// 1. Tracking type constraints during expression checking
-/// 2. Supporting bidirectional type inference (synthesis and checking modes)
-/// 3. Enabling better contextual type inference for literals and operations
-/// 4. Preparing for future features like type variables and generics
-#[derive(Debug, Clone)]
-pub struct TypeInferenceContext {
-    /// Counter for generating unique type variable IDs
-    next_var_id: u32,
-    /// Collected type constraints
-    constraints: Vec<TypeConstraint>,
-    /// Solved type variables (maps variable to concrete type)
-    solutions: HashMap<TypeVarId, RueType>,
-    /// Pending type variables that need resolution
-    pending_vars: HashSet<TypeVarId>,
+/// Trait for AST nodes that can compute read sets
+trait ComputeReads {
+    fn compute_reads(&self, builder: &HirBuilder) -> HashSet<BindingId>;
 }
 
-impl TypeInferenceContext {
-    /// Create a new empty inference context
-    pub fn new() -> Self {
-        Self {
-            next_var_id: 0,
-            constraints: Vec::new(),
-            solutions: HashMap::new(),
-            pending_vars: HashSet::new(),
-        }
-    }
-
-    /// Create a fresh type variable
-    pub fn fresh_type_var(&mut self) -> TypeVarId {
-        let id = TypeVarId(self.next_var_id);
-        self.next_var_id += 1;
-        self.pending_vars.insert(id);
-        id
-    }
-
-    /// Add a constraint to the system
-    pub fn add_constraint(&mut self, constraint: TypeConstraint) {
-        self.constraints.push(constraint);
-    }
-
-    /// Add constraint that two type variables must be equal
-    pub fn add_equal_constraint(&mut self, var1: TypeVarId, var2: TypeVarId) {
-        self.add_constraint(TypeConstraint::Equal(var1, var2));
-    }
-
-    /// Add constraint that a type variable must be a concrete type
-    pub fn add_concrete_constraint(&mut self, var: TypeVarId, ty: RueType) {
-        self.add_constraint(TypeConstraint::Concrete(var, ty));
-    }
-
-    /// Add a binary operation constraint
-    pub fn add_binary_constraint(
-        &mut self,
-        op: BinOp,
-        lhs_var: TypeVarId,
-        rhs_var: TypeVarId,
-        result_var: TypeVarId,
-    ) {
-        self.add_constraint(TypeConstraint::Binary(op, lhs_var, rhs_var, result_var));
-    }
-
-    /// Solve a type variable to a concrete type
-    pub fn solve_type_var(&mut self, var: TypeVarId, ty: RueType) -> Result<(), String> {
-        if let Some(existing) = self.solutions.get(&var) {
-            if existing != &ty {
-                return Err(format!(
-                    "Type variable already solved to {existing}, cannot solve to {ty}"
-                ));
-            }
-        } else {
-            self.solutions.insert(var, ty);
-            self.pending_vars.remove(&var);
-        }
-        Ok(())
-    }
-
-    /// Get the solution for a type variable (if solved)
-    pub fn get_solution(&self, var: TypeVarId) -> Option<&RueType> {
-        self.solutions.get(&var)
-    }
-
-    /// Apply type inference rules for numeric literals
-    ///
-    /// This method implements smart numeric literal inference:
-    /// - If there's an expected type (i32/i64), use it
-    /// - Otherwise, check if value fits in i32 (default to i32)
-    /// - If value is too large for i32, use i64
-    pub fn infer_numeric_literal(&self, _value: i64, expected: Option<&RueType>) -> RueType {
-        match expected {
-            Some(RueType::I32) => RueType::I32,
-            Some(RueType::I64) => RueType::I64,
-            Some(other) => other.clone(), // Return the actual expected type for proper error handling
-            None => RueType::I32,         // Default to i32 when no hint
-        }
-    }
-
-    /// Infer types for binary operations with better constraint propagation
-    ///
-    /// This improves upon the current binary expression checking by:
-    /// 1. Propagating type information bidirectionally
-    /// 2. Using the expected type to guide operand type inference
-    /// 3. Supporting future constraint-based inference
-    pub fn infer_binary_operation(
-        &mut self,
-        op: BinOp,
-        lhs_hint: Option<&RueType>,
-        rhs_hint: Option<&RueType>,
-        expected_result: Option<&RueType>,
-    ) -> (Option<RueType>, Option<RueType>, RueType) {
-        match op {
-            // Arithmetic operations: result type matches operand types
-            BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod => {
-                // If we have an expected result type and it's numeric, use it for operands
-                let operand_hint = expected_result
-                    .filter(|ty| matches!(ty, RueType::I32 | RueType::I64))
-                    .or(lhs_hint)
-                    .or(rhs_hint);
-
-                let operand_type = operand_hint.cloned();
-                (
-                    operand_type.clone(),
-                    operand_type.clone(),
-                    operand_type.unwrap_or(RueType::I32),
-                )
-            }
-            // Comparison operations: operands match, result is bool
-            BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge | BinOp::Eq | BinOp::Ne => {
-                let operand_hint = lhs_hint.or(rhs_hint);
-                let operand_type = operand_hint.cloned();
-                (operand_type.clone(), operand_type, RueType::Bool)
-            }
-        }
-    }
-
-    /// Simple constraint solver (can be extended for full unification)
-    ///
-    /// Currently implements basic equality constraint solving.
-    /// Future versions can add:
-    /// - Full unification algorithm
-    /// - Subtyping constraints
-    /// - Type class constraints
-    pub fn solve_constraints(&mut self) -> Result<(), String> {
-        // Simple fixed-point iteration for now
-        let mut changed = true;
-        let mut iterations = 0;
-        const MAX_ITERATIONS: usize = 100;
-
-        while changed && iterations < MAX_ITERATIONS {
-            changed = false;
-            iterations += 1;
-
-            for constraint in self.constraints.clone() {
-                match constraint {
-                    TypeConstraint::Equal(var1, var2) => {
-                        // If either variable has a solution, propagate it to the other
-                        let sol1 = self.solutions.get(&var1).cloned();
-                        let sol2 = self.solutions.get(&var2).cloned();
-
-                        match (sol1, sol2) {
-                            (Some(ty1), Some(ty2)) => {
-                                if ty1 != ty2 {
-                                    return Err(format!("Type mismatch: {ty1} != {ty2}"));
-                                }
-                            }
-                            (Some(ty), None) => {
-                                self.solve_type_var(var2, ty)?;
-                                changed = true;
-                            }
-                            (None, Some(ty)) => {
-                                self.solve_type_var(var1, ty)?;
-                                changed = true;
-                            }
-                            (None, None) => {
-                                // Can't solve yet, wait for more information
-                            }
-                        }
-                    }
-                    TypeConstraint::Concrete(var, ty) => {
-                        if let Some(solution) = self.solutions.get(&var) {
-                            if solution != &ty {
-                                return Err(format!(
-                                    "Type variable constraint violated: {solution} != {ty}"
-                                ));
-                            }
-                        } else {
-                            self.solve_type_var(var, ty.clone())?;
-                            changed = true;
-                        }
-                    }
-                    TypeConstraint::Binary(op, lhs_var, rhs_var, result_var) => {
-                        // Try to solve based on known variables
-                        let lhs_ty = self.solutions.get(&lhs_var).cloned();
-                        let rhs_ty = self.solutions.get(&rhs_var).cloned();
-                        let result_ty = self.solutions.get(&result_var).cloned();
-
-                        match op {
-                            BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod => {
-                                // Arithmetic: all types must match
-                                if let Some(ty) =
-                                    lhs_ty.clone().or(rhs_ty.clone()).or(result_ty.clone())
-                                {
-                                    if !matches!(ty, RueType::I32 | RueType::I64) {
-                                        return Err(format!(
-                                            "Arithmetic operation requires numeric types, found {ty}"
-                                        ));
-                                    }
-                                    if lhs_ty.is_none() {
-                                        self.solve_type_var(lhs_var, ty.clone())?;
-                                        changed = true;
-                                    }
-                                    if rhs_ty.is_none() {
-                                        self.solve_type_var(rhs_var, ty.clone())?;
-                                        changed = true;
-                                    }
-                                    if result_ty.is_none() {
-                                        self.solve_type_var(result_var, ty)?;
-                                        changed = true;
-                                    }
-                                }
-                            }
-                            BinOp::Lt
-                            | BinOp::Le
-                            | BinOp::Gt
-                            | BinOp::Ge
-                            | BinOp::Eq
-                            | BinOp::Ne => {
-                                // Comparison: operands match, result is bool
-                                if result_ty.is_none() {
-                                    self.solve_type_var(result_var, RueType::Bool)?;
-                                    changed = true;
-                                }
-                                if let Some(ty) = lhs_ty.clone().or(rhs_ty.clone()) {
-                                    if lhs_ty.is_none() {
-                                        self.solve_type_var(lhs_var, ty.clone())?;
-                                        changed = true;
-                                    }
-                                    if rhs_ty.is_none() {
-                                        self.solve_type_var(rhs_var, ty)?;
-                                        changed = true;
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        if iterations >= MAX_ITERATIONS {
-            return Err("Type constraint solving did not converge".to_string());
-        }
-
-        // Check for unsolved variables
-        if !self.pending_vars.is_empty() {
-            // Default unsolved numeric variables to i32
-            for var in self.pending_vars.clone() {
-                self.solve_type_var(var, RueType::I32)?;
-            }
-        }
-
-        Ok(())
-    }
-
-    /// Clear the context for reuse
-    pub fn clear(&mut self) {
-        self.constraints.clear();
-        self.solutions.clear();
-        self.pending_vars.clear();
-    }
-}
-
-/// Simple scope for variable type tracking
+/// Simple scope for variable type tracking (compatible with HirBuilder)
 #[derive(Debug, Clone)]
 struct VariableScope {
     variables: HashMap<String, RueType>,
@@ -335,8 +56,6 @@ pub struct TypeChecker {
     function_signatures: HashMap<String, FunctionSignature>,
     /// Global scope containing struct definitions
     global_scope: Scope,
-    /// Type inference context for improved type inference
-    inference_context: TypeInferenceContext,
 }
 
 impl TypeChecker {
@@ -347,7 +66,6 @@ impl TypeChecker {
             variable_scopes: vec![VariableScope::new()],
             function_signatures,
             global_scope,
-            inference_context: TypeInferenceContext::new(),
         }
     }
 
@@ -381,41 +99,63 @@ impl TypeChecker {
         None
     }
 
-    /// Check if an expression is a numeric literal that can be contextually inferred
-    fn is_numeric_literal(&self, expr: &ExpressionNode) -> bool {
-        match expr {
-            ExpressionNode::Literal(lit) => matches!(lit.kind, TokenKind::Integer(_)),
-            _ => false,
+    /// Replace the current (top) variable scope with whatever the HirBuilder
+    /// says is visible *right now*. This keeps names->types aligned.
+    fn sync_scope_from_builder(&mut self, builder: &HirBuilder) {
+        // Build a fresh scope with just names -> types (TypeChecker only needs types)
+        let mut synced = VariableScope::new();
+        // Only variables visible in the builder's current block will appear here
+        let captured = builder.capture_environment();
+        debug!(
+            "Syncing scope from builder, captured {} variables",
+            captured.len()
+        );
+        for (_bid, name, _val, ty) in captured {
+            debug!("  Adding variable {} with type {:?}", name, ty);
+            synced.insert(name, ty);
         }
+        // Replace the top frame; do NOT push/pop (preserves nesting)
+        *self.current_scope_mut() = synced;
+        debug!(
+            "Scope sync complete, current scope has {} variables",
+            self.current_scope_mut().variables.len()
+        );
     }
 
-    /// Check if an expression could benefit from numeric type inference hints
-    #[allow(clippy::only_used_in_recursion)] // this is about &self, which we kind of need
-    fn could_benefit_from_numeric_inference(&self, expr: &ExpressionNode) -> bool {
-        match expr {
-            ExpressionNode::Literal(lit) => matches!(lit.kind, TokenKind::Integer(_)),
-            ExpressionNode::Unary(unary_expr) => {
-                // Unary operations like negation can benefit if their operand can
-                self.could_benefit_from_numeric_inference(&unary_expr.operand)
-            }
-            ExpressionNode::Binary(bin_expr) => {
-                // Binary operations can benefit if either operand can benefit
-                self.could_benefit_from_numeric_inference(&bin_expr.left)
-                    || self.could_benefit_from_numeric_inference(&bin_expr.right)
-            }
-            _ => false,
-        }
+    #[cfg(debug_assertions)]
+    fn debug_assert_scopes_match(&self, builder: &HirBuilder) {
+        use std::collections::HashSet;
+        let tc_names: HashSet<_> = self
+            .variable_scopes
+            .last()
+            .unwrap()
+            .variables
+            .keys()
+            .cloned()
+            .collect();
+        let b_names: HashSet<_> = builder
+            .capture_environment()
+            .into_iter()
+            .map(|(_, n, _, _)| n)
+            .collect();
+        // The two sets don't have to be identical if you allow extra helper params,
+        // but in typical Rue scoping they should match.
+        assert_eq!(
+            tc_names, b_names,
+            "TypeChecker and HirBuilder scopes diverged"
+        );
     }
 
     /// Type check the entire program and build HIR
-    pub fn check_program(&mut self, ast: &CstRoot) -> Result<HirProgram, SemanticError> {
-        let mut functions = Vec::new();
-
+    pub fn check_program(
+        &mut self,
+        ast: &CstRoot,
+        builder: &mut HirBuilder,
+    ) -> Result<(), SemanticError> {
         for item in &ast.items {
             match item {
                 rue_ast::CstNode::Function(func) => {
-                    let hir_func = self.check_function(func)?;
-                    functions.push(hir_func);
+                    self.check_function(func, builder)?;
                 }
                 rue_ast::CstNode::StructDefinition(_) => {
                     // Struct definitions are already processed in the first pass
@@ -438,14 +178,15 @@ impl TypeChecker {
             }
         }
 
-        Ok(HirProgram { functions })
+        Ok(())
     }
 
-    // Removed unused constraint-based methods (build_hir_from_constraints, collect_expr_constraints_for_binary)
-    // Using simpler direct type inference approach for binary literals
-
-    /// Type check a function and build HIR
-    fn check_function(&mut self, func: &FunctionNode) -> Result<HirFunction, SemanticError> {
+    /// Type check a function and build HIR instructions
+    fn check_function(
+        &mut self,
+        func: &FunctionNode,
+        builder: &mut HirBuilder,
+    ) -> Result<(), SemanticError> {
         // Extract function name
         let name = match &func.name.kind {
             TokenKind::Ident(name) => name.clone(),
@@ -467,13 +208,15 @@ impl TypeChecker {
             })?
             .clone();
 
-        // Push inference scope for this function with expected return type
+        // Set source span for error reporting
+        builder.set_span(func.name.span);
 
         // Create new scope for function parameters
         self.push_scope();
 
-        // Add parameters to current scope
+        // Collect parameters and add to scope
         let mut params = Vec::new();
+        let mut block_params = Vec::new();
         for (i, param) in func.param_list.params.iter().enumerate() {
             let param_name = match &param.name.kind {
                 TokenKind::Ident(name) => name.clone(),
@@ -487,103 +230,149 @@ impl TypeChecker {
 
             let param_type = signature.param_types[i].clone();
             params.push((param_name.clone(), param_type.clone()));
-            self.current_scope_mut().insert(param_name, param_type);
+
+            // Create block parameter for the function body
+            block_params.push(rue_ir::hir::BlockParam {
+                name: builder.intern_string(&param_name),
+                ty: param_type.clone(),
+            });
+
+            // Add to semantic analyzer scope
+            self.current_scope_mut()
+                .insert(param_name.clone(), param_type.clone());
+        }
+
+        // Start function body block with parameters as the entry point
+        let entry_block_id = builder.start_block_with_params(block_params);
+
+        // Add parameters to HirBuilder scope as block parameters
+        for (i, (param_name, param_type)) in params.iter().enumerate() {
+            let param_ref = rue_ir::hir::ValueRef::from_block_param_with_id(
+                entry_block_id,
+                rue_ir::hir::BlockParamIndex::new(i as u32),
+            );
+            // Allocate a BindingId for this function parameter
+            let binding_id = builder.alloc_binding_id();
+            builder.current_scope_mut().declare_var(
+                param_name.clone(),
+                binding_id,
+                param_ref,
+                param_type.clone(),
+            );
         }
 
         // Type check function body
-        let body = self.check_block(&func.body, Some(&signature.return_type))?;
+        self.check_block(&func.body, builder, Some(&signature.return_type))?;
 
         // Pop function scope
         self.pop_scope();
 
-        // Pop inference scope
+        // End the current block (might be different from entry if body is an if-expression)
+        builder.end_block();
 
-        Ok(HirFunction {
-            name,
-            params,
-            return_type: signature.return_type,
-            body,
-            span: func.name.span,
-        })
+        // Create the function using the entry block as the body
+        // This ensures the function starts at the condition evaluation, not the merge block
+        builder
+            .create_function(&name, params, signature.return_type, entry_block_id)
+            .map_err(|e| SemanticError {
+                message: e,
+                span: func.name.span,
+            })?;
+
+        Ok(())
     }
 
-    /// Type check a block and build HIR
+    /// Type check a block and emit instructions
     fn check_block(
         &mut self,
         block: &rue_ast::BlockNode,
+        builder: &mut HirBuilder,
         expected_return_type: Option<&RueType>,
-    ) -> Result<HirBlock, SemanticError> {
+    ) -> Result<(), SemanticError> {
+        self.check_block_internal(block, builder, expected_return_type, true)
+    }
+
+    /// Internal block checking with control over return emission
+    fn check_block_internal(
+        &mut self,
+        block: &rue_ast::BlockNode,
+        builder: &mut HirBuilder,
+        type_hint: Option<&RueType>,
+        emit_return: bool,
+    ) -> Result<(), SemanticError> {
         // Create new scope for the block
         self.push_scope();
 
-        let mut statements = Vec::new();
-        let mut expr = None;
-
         // Process all statements
         for stmt in &block.statements {
-            let hir_stmt = self.check_statement(stmt, expected_return_type)?;
-            statements.push(hir_stmt);
+            self.check_statement(stmt, builder, type_hint)?;
         }
 
         // Process final expression if present
         if let Some(final_expression) = &block.final_expr {
-            let hir_expr = if let Some(expected_type) = expected_return_type {
-                // Use expected return type as hint for inference
-                self.check_expression_with_hint(final_expression, Some(expected_type))?
+            let expr_inst = if let Some(hint_type) = type_hint {
+                // Use type hint for inference
+                self.check_expression_with_hint(final_expression, builder, Some(hint_type))?
             } else {
-                self.check_expression_with_hint(final_expression, None)?
-            };
-            expr = Some(Box::new(hir_expr));
-        }
-
-        // Validate return type if expected
-        if let Some(expected_type) = expected_return_type {
-            let block_type = if let Some(ref final_expr) = expr {
-                final_expr.ty()
-            } else {
-                &RueType::Unit
+                self.check_expression_with_hint(final_expression, builder, None)?
             };
 
-            // Check if any statement is a return statement that matches the expected type
-            let has_valid_return = statements.iter().any(|stmt| {
-                if let HirStatement::Return {
-                    expr: Some(return_expr),
-                    ..
-                } = stmt
-                {
-                    return_expr.ty() == expected_type
-                } else if let HirStatement::Return { expr: None, .. } = stmt {
-                    *expected_type == RueType::Unit
-                } else {
-                    false
+            // Validate the final expression type matches the expected type (for function returns)
+            if emit_return && let Some(expected_type) = type_hint {
+                let expr_type = builder.get_value_type(expr_inst).unwrap_or(RueType::Unit);
+
+                if expr_type != *expected_type {
+                    return Err(SemanticError {
+                        message: format!(
+                            "Return type mismatch: expected {expected_type}, found {expr_type}"
+                        ),
+                        span: final_expression.span(),
+                    });
                 }
-            });
 
-            // If there's a valid return statement, don't require the block's final expression to match
-            if !has_valid_return && block_type != expected_type {
-                return Err(SemanticError {
-                    message: format!(
-                        "Type mismatch: Expected return type {expected_type}, found {block_type}"
-                    ),
-                    span: block.open_brace.span,
-                });
+                builder.set_return_terminator(Some(expr_inst));
             }
+        } else {
+            // No final expression means the block returns Unit
+            // UNLESS the block has already been terminated (e.g., by a return statement)
+
+            // Check if the block has already been explicitly terminated
+            if !builder.current_block_has_terminator() {
+                // Block hasn't been terminated, so it returns Unit
+                if emit_return && let Some(expected_type) = type_hint {
+                    if *expected_type != RueType::Unit {
+                        return Err(SemanticError {
+                            message: format!(
+                                "Type mismatch: function expects to return {expected_type}, but block returns () (unit)"
+                            ),
+                            span: block.close_brace.span,
+                        });
+                    }
+                    // Set empty return for Unit-returning functions
+                    builder.set_return_terminator(None);
+                }
+            }
+            // If the block has been terminated (e.g., by return statement), we don't need to check
+            // or add another terminator
         }
 
         // Pop block scope
         self.pop_scope();
 
-        Ok(HirBlock { statements, expr })
+        Ok(())
     }
 
-    /// Type check a statement and build HIR
+    /// Type check a statement and emit instructions
     fn check_statement(
         &mut self,
         stmt: &StatementNode,
+        builder: &mut HirBuilder,
         expected_return_type: Option<&RueType>,
-    ) -> Result<HirStatement, SemanticError> {
+    ) -> Result<(), SemanticError> {
         match stmt {
             StatementNode::Let(let_stmt) => {
+                builder.set_span(let_stmt.let_token.span);
+
                 // Extract variable name
                 let var_name = match &let_stmt.name.kind {
                     TokenKind::Ident(name) => name.clone(),
@@ -595,73 +384,31 @@ impl TypeChecker {
                     }
                 };
 
-                // Get declared type from type annotation first
-                let declared_type = if let Some(type_ann) = &let_stmt.type_annotation {
-                    crate::convert_type_node_with_scope(&type_ann.ty, &self.global_scope)?
-                } else {
-                    // For let statements without type annotations, we need to be smart about type inference
-                    // If we have an expected return type and this might be used as a return value,
-                    // consider using the return type as a hint for numeric expressions
-                    let type_hint = if let Some(ret_type) = expected_return_type {
-                        match ret_type {
-                            RueType::I32 | RueType::I64 => {
-                                // Use the return type as a hint for numeric expressions that could benefit
-                                // This helps when the variable will be returned directly (like `let y = ...; y`)
-                                if self.could_benefit_from_numeric_inference(&let_stmt.value) {
-                                    Some(ret_type)
-                                } else {
-                                    None
-                                }
-                            }
-                            _ => None,
-                        }
-                    } else {
-                        None
-                    };
-
-                    let temp_expr = if let Some(hint) = type_hint {
-                        self.check_expression_with_hint(&let_stmt.value, Some(hint))?
-                    } else {
-                        self.check_expression_with_hint(&let_stmt.value, None)?
-                    };
-                    temp_expr.ty().clone()
-                };
-
-                // Type check initialization expression with type hint
-                let init_expr = if let_stmt.type_annotation.is_some() {
+                // Get declared type and initialization instruction
+                let (declared_type, init_inst) = if let Some(type_ann) = &let_stmt.type_annotation {
+                    let declared_type =
+                        convert_type_node_with_scope(&type_ann.ty, &self.global_scope)?;
                     // Use declared type as hint for inference
-                    self.check_expression_with_hint(&let_stmt.value, Some(&declared_type))?
+                    let init_inst = self.check_expression_with_hint(
+                        &let_stmt.value,
+                        builder,
+                        Some(&declared_type),
+                    )?;
+                    (declared_type, init_inst)
                 } else {
-                    // No type annotation, but we might have used a hint to infer the declared type
-                    // Check with the same hint we used for inference
-                    let type_hint = if let Some(ret_type) = expected_return_type {
-                        match ret_type {
-                            RueType::I32 | RueType::I64 => {
-                                if self.could_benefit_from_numeric_inference(&let_stmt.value) {
-                                    Some(ret_type)
-                                } else {
-                                    None
-                                }
-                            }
-                            _ => None,
-                        }
-                    } else {
-                        None
-                    };
-
-                    if let Some(hint) = type_hint {
-                        self.check_expression_with_hint(&let_stmt.value, Some(hint))?
-                    } else {
-                        self.check_expression_with_hint(&let_stmt.value, None)?
-                    }
+                    // For let statements without type annotations, infer from initializer
+                    let init_inst =
+                        self.check_expression_with_hint(&let_stmt.value, builder, None)?;
+                    let inferred_type = builder.get_value_type(init_inst).unwrap_or(RueType::Unit);
+                    (inferred_type, init_inst)
                 };
 
                 // Validate type compatibility
-                if init_expr.ty() != &declared_type {
+                let init_type = builder.get_value_type(init_inst).unwrap_or(RueType::Unit);
+                if init_type != declared_type {
                     return Err(SemanticError {
                         message: format!(
-                            "Type mismatch: expected {declared_type}, found {}",
-                            init_expr.ty()
+                            "Type mismatch: expected {declared_type}, found {init_type}"
                         ),
                         span: let_stmt.value.span(),
                     });
@@ -671,14 +418,14 @@ impl TypeChecker {
                 self.current_scope_mut()
                     .insert(var_name.clone(), declared_type.clone());
 
-                Ok(HirStatement::Let {
-                    name: var_name,
-                    ty: declared_type,
-                    init: init_expr,
-                    span: let_stmt.let_token.span,
-                })
+                // Emit let instruction
+                builder.emit_let(&var_name, init_inst, declared_type);
+
+                Ok(())
             }
             StatementNode::Assign(assign_stmt) => {
+                builder.set_span(assign_stmt.name.span);
+
                 // Extract variable name
                 let var_name = match &assign_stmt.name.kind {
                     TokenKind::Ident(name) => name.clone(),
@@ -700,53 +447,60 @@ impl TypeChecker {
                         })?;
 
                 // Type check value expression with type hint
-                let value_expr =
-                    self.check_expression_with_hint(&assign_stmt.value, Some(&var_type))?;
+                let value_inst =
+                    self.check_expression_with_hint(&assign_stmt.value, builder, Some(&var_type))?;
 
                 // Validate type compatibility
-                if value_expr.ty() != &var_type {
+                let value_type = builder.get_value_type(value_inst).unwrap_or(RueType::Unit);
+                if value_type != var_type {
                     return Err(SemanticError {
                         message: format!(
-                            "Type mismatch in assignment: expected {var_type}, found {}",
-                            value_expr.ty()
+                            "Type mismatch in assignment: expected {var_type}, found {value_type}"
                         ),
                         span: assign_stmt.value.span(),
                     });
                 }
 
-                Ok(HirStatement::Assign {
-                    name: var_name,
-                    value: value_expr,
-                    span: assign_stmt.name.span,
-                })
+                // Emit assign instruction
+                builder
+                    .emit_assign(&var_name, value_inst)
+                    .map_err(|e| SemanticError {
+                        message: e,
+                        span: assign_stmt.name.span,
+                    })?;
+
+                Ok(())
             }
             StatementNode::Expression(expr_stmt) => {
-                let hir_expr = self.check_expression_with_hint(&expr_stmt.expression, None)?;
-                Ok(HirStatement::Expr(hir_expr))
+                let _expr_inst =
+                    self.check_expression_with_hint(&expr_stmt.expression, builder, None)?;
+                Ok(())
             }
             StatementNode::Return(return_stmt) => {
-                let return_expr = if let Some(expr) = &return_stmt.expression {
+                builder.set_span(return_stmt.return_token.span);
+
+                let return_inst = if let Some(expr) = &return_stmt.expression {
                     // Type check the return expression with the expected return type as hint
-                    let hir_expr = if let Some(expected_type) = expected_return_type {
-                        self.check_expression_with_hint(expr, Some(expected_type))?
+                    let expr_inst = if let Some(expected_type) = expected_return_type {
+                        self.check_expression_with_hint(expr, builder, Some(expected_type))?
                     } else {
-                        self.check_expression_with_hint(expr, None)?
+                        self.check_expression_with_hint(expr, builder, None)?
                     };
 
                     // Validate that the return type matches the function's return type
-                    if let Some(expected_type) = expected_return_type
-                        && hir_expr.ty() != expected_type
-                    {
-                        return Err(SemanticError {
-                            message: format!(
-                                "Return type mismatch: expected {expected_type}, found {}",
-                                hir_expr.ty()
-                            ),
-                            span: expr.span(),
-                        });
+                    if let Some(expected_type) = expected_return_type {
+                        let expr_type = builder.get_value_type(expr_inst).unwrap_or(RueType::Unit);
+                        if expr_type != *expected_type {
+                            return Err(SemanticError {
+                                message: format!(
+                                    "Return type mismatch: expected {expected_type}, found {expr_type}"
+                                ),
+                                span: expr.span(),
+                            });
+                        }
                     }
 
-                    Some(hir_expr)
+                    Some(expr_inst)
                 } else {
                     // Bare return; - should be unit type
                     if let Some(expected_type) = expected_return_type
@@ -762,270 +516,115 @@ impl TypeChecker {
                     None
                 };
 
-                Ok(HirStatement::Return {
-                    expr: return_expr,
-                    span: return_stmt.return_token.span,
-                })
+                builder.set_return_terminator(return_inst);
+                Ok(())
             }
         }
     }
 
-    /// Collect type constraints from an expression without building HIR
-    fn collect_constraints_from_expression(
-        &mut self,
-        expr: &ExpressionNode,
-        expected_type: Option<TypeVarId>,
-    ) -> Result<TypeVarId, SemanticError> {
-        match expr {
-            ExpressionNode::Literal(lit) => {
-                let var = self.inference_context.fresh_type_var();
-                match &lit.kind {
-                    TokenKind::Integer(_value) => {
-                        // For integer literals, constrain based on value and context
-                        if let Some(expected) = expected_type {
-                            self.inference_context.add_equal_constraint(var, expected);
-                        } else {
-                            // Default to i32 for literals
-                            self.inference_context
-                                .add_concrete_constraint(var, RueType::I32);
-                        }
-                    }
-                    TokenKind::True | TokenKind::False => {
-                        self.inference_context
-                            .add_concrete_constraint(var, RueType::Bool);
-                    }
-                    TokenKind::Unit => {
-                        self.inference_context
-                            .add_concrete_constraint(var, RueType::Unit);
-                    }
-                    _ => {}
-                }
-                Ok(var)
-            }
-            ExpressionNode::Identifier(ident) => {
-                let var = self.inference_context.fresh_type_var();
-                if let TokenKind::Ident(name) = &ident.kind {
-                    // Clone the type to avoid borrow checker issues
-                    let var_type = self.current_scope_mut().variables.get(name).cloned();
-                    if let Some(ty) = var_type {
-                        self.inference_context.add_concrete_constraint(var, ty);
-                    }
-                }
-                Ok(var)
-            }
-            ExpressionNode::Binary(bin_expr) => {
-                let op = match &bin_expr.operator.kind {
-                    TokenKind::Plus => BinOp::Add,
-                    TokenKind::Minus => BinOp::Sub,
-                    TokenKind::Star => BinOp::Mul,
-                    TokenKind::Slash => BinOp::Div,
-                    TokenKind::Percent => BinOp::Mod,
-                    TokenKind::Less => BinOp::Lt,
-                    TokenKind::LessEqual => BinOp::Le,
-                    TokenKind::Greater => BinOp::Gt,
-                    TokenKind::GreaterEqual => BinOp::Ge,
-                    TokenKind::Equal => BinOp::Eq,
-                    TokenKind::NotEqual => BinOp::Ne,
-                    _ => {
-                        return Err(SemanticError {
-                            message: format!(
-                                "Invalid binary operator: {:?}",
-                                bin_expr.operator.kind
-                            ),
-                            span: bin_expr.operator.span,
-                        });
-                    }
-                };
-
-                // For arithmetic operations, propagate expected type to operands
-                // For comparison operations, operands are unconstrained initially
-                let operand_hint = match op {
-                    BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod => expected_type,
-                    BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge | BinOp::Eq | BinOp::Ne => None,
-                };
-
-                let lhs_var =
-                    self.collect_constraints_from_expression(&bin_expr.left, operand_hint)?;
-                let rhs_var =
-                    self.collect_constraints_from_expression(&bin_expr.right, operand_hint)?;
-                let result_var = self.inference_context.fresh_type_var();
-
-                self.inference_context
-                    .add_binary_constraint(op, lhs_var, rhs_var, result_var);
-
-                if let Some(expected) = expected_type {
-                    self.inference_context
-                        .add_equal_constraint(result_var, expected);
-                }
-
-                Ok(result_var)
-            }
-            _ => {
-                // For other expressions, fall back to simple type var for now
-                let var = self.inference_context.fresh_type_var();
-                if let Some(expected) = expected_type {
-                    self.inference_context.add_equal_constraint(var, expected);
-                }
-                Ok(var)
-            }
-        }
-    }
-
-    /// Type check an expression with an optional type hint for inference
+    /// Type check an expression with an optional type hint and emit instructions
     fn check_expression_with_hint(
         &mut self,
         expr: &ExpressionNode,
+        builder: &mut HirBuilder,
         type_hint: Option<&RueType>,
-    ) -> Result<HirExpr, SemanticError> {
-        // For simple binary expressions, try constraint-based inference
-        if matches!(expr, ExpressionNode::Binary(_)) {
-            // Clear previous constraints
-            self.inference_context.clear();
-
-            // Collect constraints
-            let expected_var = type_hint.map(|ty| {
-                let var = self.inference_context.fresh_type_var();
-                self.inference_context
-                    .add_concrete_constraint(var, ty.clone());
-                var
-            });
-
-            let result_var = self.collect_constraints_from_expression(expr, expected_var)?;
-
-            // Solve constraints
-            if let Err(_e) = self.inference_context.solve_constraints() {
-                // If constraint solving fails, fall back to direct checking
-                // Clear constraints for clean slate
-                self.inference_context.clear();
-            } else {
-                // If we have a solution, use it to guide type checking
-                if let Some(solved_type) = self.inference_context.get_solution(result_var) {
-                    // Use solved type as hint
-                    let hint_type = solved_type.clone();
-                    self.inference_context.clear();
-                    return self.check_expression_with_solved_hint(expr, Some(&hint_type));
-                }
-            }
-
-            // Clear constraints after use
-            self.inference_context.clear();
-        }
-
+    ) -> Result<ValueRef, SemanticError> {
+        debug!(
+            "check_expression_with_hint: processing {:?} with hint {:?}",
+            std::mem::discriminant(expr),
+            type_hint
+        );
+        println!(
+            "*** DEBUG: processing expression: {:?}",
+            std::mem::discriminant(expr)
+        );
         match expr {
-            ExpressionNode::Literal(lit) => {
-                // Use hint, don't also get from context to avoid double borrow
-                self.check_literal_with_hint(lit, type_hint)
-            }
-            ExpressionNode::Identifier(ident) => self.check_identifier(ident),
+            ExpressionNode::Literal(lit) => self.check_literal_with_hint(lit, builder, type_hint),
+            ExpressionNode::Identifier(ident) => self.check_identifier(ident, builder),
             ExpressionNode::Binary(bin_expr) => {
-                self.check_binary_expression_with_hint(bin_expr, type_hint)
+                self.check_binary_expression_with_hint(bin_expr, builder, type_hint)
             }
             ExpressionNode::Unary(unary_expr) => {
-                self.check_unary_expression_with_hint(unary_expr, type_hint)
+                self.check_unary_expression_with_hint(unary_expr, builder, type_hint)
             }
-            ExpressionNode::Call(call) => self.check_call_expression(call),
-            ExpressionNode::If(if_expr) => self.check_if_expression_with_hint(if_expr, type_hint),
-            ExpressionNode::While(while_expr) => self.check_while_expression(while_expr),
-            ExpressionNode::StructLiteral(struct_lit) => self.check_struct_literal(struct_lit),
-            ExpressionNode::FieldAccess(field_access) => self.check_field_access(field_access),
+            ExpressionNode::Call(call) => self.check_call_expression(call, builder),
+            ExpressionNode::If(if_expr) => {
+                println!("*** DEBUG: Found If ExpressionNode");
+                self.check_if_expression_with_hint(if_expr, builder, type_hint)
+            }
+            ExpressionNode::While(while_expr) => self.check_while_expression(while_expr, builder),
+            ExpressionNode::StructLiteral(struct_lit) => {
+                self.check_struct_literal(struct_lit, builder)
+            }
+            ExpressionNode::FieldAccess(field_access) => {
+                self.check_field_access(field_access, builder)
+            }
             ExpressionNode::TupleLiteral(tuple_lit) => {
-                self.check_tuple_literal_with_hint(tuple_lit, type_hint)
+                self.check_tuple_literal_with_hint(tuple_lit, builder, type_hint)
             }
             ExpressionNode::ArrayLiteral(array_lit) => {
-                self.check_array_literal_with_hint(array_lit, type_hint)
+                self.check_array_literal_with_hint(array_lit, builder, type_hint)
             }
-            ExpressionNode::ArrayAccess(array_access) => self.check_array_access(array_access),
-        }
-    }
-
-    /// Check expression with solved type from constraint solver
-    fn check_expression_with_solved_hint(
-        &mut self,
-        expr: &ExpressionNode,
-        type_hint: Option<&RueType>,
-    ) -> Result<HirExpr, SemanticError> {
-        match expr {
-            ExpressionNode::Literal(lit) => self.check_literal_with_hint(lit, type_hint),
-            ExpressionNode::Identifier(ident) => self.check_identifier(ident),
-            ExpressionNode::Binary(bin_expr) => {
-                // Use the direct checking with hint, not the recursive one
-                self.check_binary_expression_with_hint(bin_expr, type_hint)
+            ExpressionNode::ArrayAccess(array_access) => {
+                self.check_array_access(array_access, builder)
             }
-            ExpressionNode::Unary(unary_expr) => {
-                self.check_unary_expression_with_hint(unary_expr, type_hint)
-            }
-            ExpressionNode::Call(call) => self.check_call_expression(call),
-            ExpressionNode::If(if_expr) => self.check_if_expression_with_hint(if_expr, type_hint),
-            ExpressionNode::While(while_expr) => self.check_while_expression(while_expr),
-            ExpressionNode::StructLiteral(struct_lit) => self.check_struct_literal(struct_lit),
-            ExpressionNode::FieldAccess(field_access) => self.check_field_access(field_access),
-            ExpressionNode::TupleLiteral(tuple_lit) => {
-                self.check_tuple_literal_with_hint(tuple_lit, type_hint)
-            }
-            ExpressionNode::ArrayLiteral(array_lit) => {
-                self.check_array_literal_with_hint(array_lit, type_hint)
-            }
-            ExpressionNode::ArrayAccess(array_access) => self.check_array_access(array_access),
         }
     }
 
     fn check_literal_with_hint(
         &mut self,
         lit: &rue_lexer::Token,
+        builder: &mut HirBuilder,
         type_hint: Option<&RueType>,
-    ) -> Result<HirExpr, SemanticError> {
-        let hir_lit = match &lit.kind {
+    ) -> Result<ValueRef, SemanticError> {
+        builder.set_span(lit.span);
+
+        match &lit.kind {
             TokenKind::Integer(n) => {
-                // Use TypeInferenceContext for better numeric literal inference
-                let inferred_type = self.inference_context.infer_numeric_literal(*n, type_hint);
+                // Use type hint or default to i32
+                let inferred_type = type_hint.cloned().unwrap_or(RueType::I32);
 
                 match inferred_type {
                     RueType::I32 => {
                         // Check if value fits in i32
                         if *n >= i32::MIN as i64 && *n <= i32::MAX as i64 {
-                            HirLiteral::Int32(*n as i32)
+                            Ok(builder.emit_literal(*n as u64, RueType::I32))
                         } else {
-                            return Err(SemanticError {
+                            Err(SemanticError {
                                 message: format!(
                                     "literal out of range for `i32`\n\
                                      help: the literal `{n}` does not fit into the type `i32` whose range is `-2147483648..=2147483647`"
                                 ),
                                 span: lit.span,
-                            });
+                            })
                         }
                     }
-                    RueType::I64 => {
-                        // i64 literals should always fit since Token parsing already ensures this
-                        HirLiteral::Int64(*n)
-                    }
-                    _ => {
-                        return Err(SemanticError {
-                            message: format!(
-                                "Cannot use integer literal in context expecting {inferred_type}"
-                            ),
-                            span: lit.span,
-                        });
-                    }
+                    RueType::I64 => Ok(builder.emit_literal(*n as u64, RueType::I64)),
+                    _ => Err(SemanticError {
+                        message: format!(
+                            "Cannot use integer literal in context expecting {inferred_type}"
+                        ),
+                        span: lit.span,
+                    }),
                 }
             }
-            TokenKind::True => HirLiteral::Bool(true),
-            TokenKind::False => HirLiteral::Bool(false),
-            TokenKind::Unit => HirLiteral::Unit,
-            _ => {
-                return Err(SemanticError {
-                    message: format!("Invalid literal: {:?}", lit.kind),
-                    span: lit.span,
-                });
-            }
-        };
-
-        Ok(HirExpr::Literal {
-            lit: hir_lit,
-            span: lit.span,
-        })
+            TokenKind::True => Ok(builder.emit_literal(1, RueType::Bool)),
+            TokenKind::False => Ok(builder.emit_literal(0, RueType::Bool)),
+            TokenKind::Unit => Ok(builder.emit_literal(0, RueType::Unit)),
+            _ => Err(SemanticError {
+                message: format!("Invalid literal: {:?}", lit.kind),
+                span: lit.span,
+            }),
+        }
     }
 
-    fn check_identifier(&mut self, ident: &rue_lexer::Token) -> Result<HirExpr, SemanticError> {
+    fn check_identifier(
+        &mut self,
+        ident: &rue_lexer::Token,
+        builder: &mut HirBuilder,
+    ) -> Result<ValueRef, SemanticError> {
+        builder.set_span(ident.span);
+
         let name = match &ident.kind {
             TokenKind::Ident(name) => name.clone(),
             _ => {
@@ -1036,17 +635,9 @@ impl TypeChecker {
             }
         };
 
-        let var_type = self
-            .lookup_variable(&name)
-            .cloned()
-            .ok_or_else(|| SemanticError {
-                message: format!("Undefined variable: {name}"),
-                span: ident.span,
-            })?;
-
-        Ok(HirExpr::Var {
-            name,
-            ty: var_type,
+        // Look up variable in scope and emit load instruction
+        builder.emit_load(&name).map_err(|e| SemanticError {
+            message: e,
             span: ident.span,
         })
     }
@@ -1054,10 +645,12 @@ impl TypeChecker {
     fn check_binary_expression_with_hint(
         &mut self,
         bin_expr: &rue_ast::BinaryExprNode,
+        builder: &mut HirBuilder,
         type_hint: Option<&RueType>,
-    ) -> Result<HirExpr, SemanticError> {
-        // Direct checking with type hints
-        // Convert operator first to determine what kinds of operands we need
+    ) -> Result<ValueRef, SemanticError> {
+        builder.set_span(bin_expr.operator.span);
+
+        // Convert operator
         let op = match &bin_expr.operator.kind {
             TokenKind::Plus => BinOp::Add,
             TokenKind::Minus => BinOp::Sub,
@@ -1078,100 +671,55 @@ impl TypeChecker {
             }
         };
 
-        // Use TypeInferenceContext for better type inference
-        // For arithmetic operations, pass the type hint to operands if available
-        let operand_hint = match op {
-            BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod => type_hint,
-            BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge | BinOp::Eq | BinOp::Ne => None,
-        };
+        // Check operands with improved type inference for arithmetic operations
+        let (lhs_inst, rhs_inst) = match op {
+            BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod => {
+                // For arithmetic operations, use two-pass type inference:
+                // 1. Check left operand first with any available type hint
+                let lhs_inst =
+                    self.check_expression_with_hint(&bin_expr.left, builder, type_hint)?;
 
-        // First, try to get initial types for operands with appropriate hints
-        let lhs_initial = if let Some(hint) = operand_hint {
-            self.check_expression_with_hint(&bin_expr.left, Some(hint))?
-        } else {
-            self.check_expression_with_hint(&bin_expr.left, None)?
-        };
-        let rhs_initial = if let Some(hint) = operand_hint {
-            self.check_expression_with_hint(&bin_expr.right, Some(hint))?
-        } else {
-            self.check_expression_with_hint(&bin_expr.right, None)?
-        };
+                // 2. Get left operand's type to guide right operand inference
+                let lhs_type = builder.get_value_type(lhs_inst).unwrap_or(RueType::Unit);
 
-        // Use inference context to determine the best types
-        let (lhs_hint, rhs_hint, _expected_result) = self.inference_context.infer_binary_operation(
-            op,
-            Some(lhs_initial.ty()),
-            Some(rhs_initial.ty()),
-            type_hint,
-        );
+                // 3. Use left operand's type as hint for right operand, but only for numeric types
+                let right_hint = match lhs_type {
+                    RueType::I32 | RueType::I64 => Some(&lhs_type),
+                    _ => type_hint,
+                };
 
-        // Re-check operands with inferred hints if needed
-        let (lhs, rhs) = if lhs_initial.ty() == rhs_initial.ty() {
-            // Types already match, use them
-            (lhs_initial, rhs_initial)
-        } else {
-            // Types don't match, try to use hints for better inference
-            let lhs_final = if let Some(hint) = lhs_hint.as_ref() {
-                if self.could_benefit_from_numeric_inference(&bin_expr.left) {
-                    self.check_expression_with_hint(&bin_expr.left, Some(hint))?
-                } else {
-                    lhs_initial
-                }
-            } else {
-                lhs_initial
-            };
+                let rhs_inst =
+                    self.check_expression_with_hint(&bin_expr.right, builder, right_hint)?;
 
-            let rhs_final = if let Some(hint) = rhs_hint.as_ref() {
-                if self.could_benefit_from_numeric_inference(&bin_expr.right) {
-                    self.check_expression_with_hint(&bin_expr.right, Some(hint))?
-                } else {
-                    rhs_initial
-                }
-            } else {
-                rhs_initial
-            };
-
-            // If still mismatched, try contextual inference
-            if lhs_final.ty() != rhs_final.ty() {
-                if self.is_numeric_literal(&bin_expr.left)
-                    && matches!(rhs_final.ty(), RueType::I32 | RueType::I64)
-                {
-                    // Re-check lhs with rhs type as hint
-                    let lhs_with_hint =
-                        self.check_expression_with_hint(&bin_expr.left, Some(rhs_final.ty()))?;
-                    (lhs_with_hint, rhs_final)
-                } else if self.is_numeric_literal(&bin_expr.right)
-                    && matches!(lhs_final.ty(), RueType::I32 | RueType::I64)
-                {
-                    // Re-check rhs with lhs type as hint
-                    let rhs_with_hint =
-                        self.check_expression_with_hint(&bin_expr.right, Some(lhs_final.ty()))?;
-                    (lhs_final, rhs_with_hint)
-                } else {
-                    (lhs_final, rhs_final)
-                }
-            } else {
-                (lhs_final, rhs_final)
+                (lhs_inst, rhs_inst)
+            }
+            BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge | BinOp::Eq | BinOp::Ne => {
+                // For comparison operations, don't pass type hints to operands
+                let lhs_inst = self.check_expression_with_hint(&bin_expr.left, builder, None)?;
+                let rhs_inst = self.check_expression_with_hint(&bin_expr.right, builder, None)?;
+                (lhs_inst, rhs_inst)
             }
         };
+
+        // Get operand types
+        let lhs_ty = builder.get_value_type(lhs_inst).unwrap_or(RueType::Unit);
+        let rhs_ty = builder.get_value_type(rhs_inst).unwrap_or(RueType::Unit);
 
         // Type checking for binary operations
         let result_type = match op {
             BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod => {
                 // Arithmetic operations: operands must be same numeric type
-                if lhs.ty() != rhs.ty() {
+                if lhs_ty != rhs_ty {
                     return Err(SemanticError {
                         message: format!(
-                            "Type mismatch in binary operation: {} {} {}",
-                            lhs.ty(),
-                            op,
-                            rhs.ty()
+                            "Type mismatch in binary operation: {lhs_ty} {:?} {rhs_ty}",
+                            op
                         ),
                         span: bin_expr.operator.span,
                     });
                 }
-                match lhs.ty() {
-                    RueType::I32 | RueType::I64 => lhs.ty().clone(),
+                match lhs_ty {
+                    RueType::I32 | RueType::I64 => lhs_ty,
                     _ => {
                         return Err(SemanticError {
                             message: "Arithmetic operators require numeric types".to_string(),
@@ -1182,14 +730,9 @@ impl TypeChecker {
             }
             BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge | BinOp::Eq | BinOp::Ne => {
                 // Comparison operations: operands must be same type, result is bool
-                if lhs.ty() != rhs.ty() {
+                if lhs_ty != rhs_ty {
                     return Err(SemanticError {
-                        message: format!(
-                            "Type mismatch in comparison: {} {} {}",
-                            lhs.ty(),
-                            op,
-                            rhs.ty()
-                        ),
+                        message: format!("Type mismatch in comparison: {lhs_ty} {:?} {rhs_ty}", op),
                         span: bin_expr.operator.span,
                     });
                 }
@@ -1197,22 +740,21 @@ impl TypeChecker {
             }
         };
 
-        Ok(HirExpr::Binary {
-            op,
-            lhs: Box::new(lhs),
-            rhs: Box::new(rhs),
-            ty: result_type,
-            span: bin_expr.operator.span,
-        })
+        // Emit binary instruction
+        Ok(builder.emit_binary(lhs_inst, rhs_inst, op, result_type))
     }
 
     fn check_unary_expression_with_hint(
         &mut self,
         unary_expr: &rue_ast::UnaryExprNode,
+        builder: &mut HirBuilder,
         type_hint: Option<&RueType>,
-    ) -> Result<HirExpr, SemanticError> {
+    ) -> Result<ValueRef, SemanticError> {
+        builder.set_span(unary_expr.operator.span);
+
         // For unary operations, we can pass the type hint to the operand
-        let expr = self.check_expression_with_hint(&unary_expr.operand, type_hint)?;
+        let operand_inst =
+            self.check_expression_with_hint(&unary_expr.operand, builder, type_hint)?;
 
         let op = match &unary_expr.operator.kind {
             TokenKind::Minus => UnaryOp::Neg,
@@ -1224,31 +766,35 @@ impl TypeChecker {
             }
         };
 
+        // Get operand type
+        let operand_ty = builder
+            .get_value_type(operand_inst)
+            .unwrap_or(RueType::Unit);
+
         // Type checking for unary operations
         let result_type = match op {
-            UnaryOp::Neg => match expr.ty() {
-                RueType::I32 | RueType::I64 => expr.ty().clone(),
+            UnaryOp::Neg => match operand_ty {
+                RueType::I32 | RueType::I64 => operand_ty,
                 _ => {
                     return Err(SemanticError {
-                        message: format!("Unary negation not supported for type: {}", expr.ty()),
+                        message: format!("Unary negation not supported for type: {operand_ty}"),
                         span: unary_expr.operator.span,
                     });
                 }
             },
         };
 
-        Ok(HirExpr::Unary {
-            op,
-            expr: Box::new(expr),
-            ty: result_type,
-            span: unary_expr.operator.span,
-        })
+        // Emit unary instruction
+        Ok(builder.emit_unary(operand_inst, op, result_type))
     }
 
     fn check_call_expression(
         &mut self,
         call: &rue_ast::CallExprNode,
-    ) -> Result<HirExpr, SemanticError> {
+        builder: &mut HirBuilder,
+    ) -> Result<ValueRef, SemanticError> {
+        builder.set_span(call.open_paren.span);
+
         // Extract function name
         let func_name = match call.function.as_ref() {
             ExpressionNode::Identifier(token) => match &token.kind {
@@ -1295,126 +841,608 @@ impl TypeChecker {
         }
 
         // Type check arguments with type hints for inference
-        let mut args = Vec::new();
+        let mut arg_insts = Vec::new();
         for (i, arg_expr) in call.args.iter().enumerate() {
             let expected_type = &signature.param_types[i];
-            let arg = self.check_expression_with_hint(arg_expr, Some(expected_type))?;
+            let arg_inst =
+                self.check_expression_with_hint(arg_expr, builder, Some(expected_type))?;
 
-            if arg.ty() != expected_type {
+            let arg_type = builder.get_value_type(arg_inst).unwrap_or(RueType::Unit);
+            if arg_type != *expected_type {
                 return Err(SemanticError {
                     message: format!(
-                        "Type mismatch: Argument {} of function {}: expected {expected_type}, found {}",
+                        "Type mismatch: Argument {} of function {}: expected {expected_type}, found {arg_type}",
                         i + 1,
                         func_name,
-                        arg.ty()
                     ),
                     span: arg_expr.span(),
                 });
             }
 
-            args.push(arg);
+            arg_insts.push(arg_inst);
         }
 
-        Ok(HirExpr::Call {
-            func: func_name,
-            args,
-            ty: signature.return_type,
-            span: call.open_paren.span,
-        })
+        // Emit call instruction
+        Ok(builder.emit_call(&func_name, arg_insts, signature.return_type))
     }
 
     fn check_if_expression_with_hint(
         &mut self,
         if_expr: &rue_ast::IfStatementNode,
+        builder: &mut HirBuilder,
         type_hint: Option<&RueType>,
-    ) -> Result<HirExpr, SemanticError> {
-        // Type check condition
-        let cond = self.check_expression_with_hint(&if_expr.condition, None)?;
-        if cond.ty() != &RueType::Bool {
+    ) -> Result<ValueRef, SemanticError> {
+        debug!(
+            "check_if_expression_with_hint called with type_hint: {:?}",
+            type_hint
+        );
+        builder.set_span(if_expr.if_token.span);
+
+        // STEP 1: Evaluate condition in current block
+        debug!("Type checking if condition");
+        let cond_inst = self.check_expression_with_hint(&if_expr.condition, builder, None)?;
+        debug!("Condition instruction: {:?}", cond_inst);
+        let cond_type = builder.get_value_type(cond_inst).unwrap_or(RueType::Unit);
+        debug!("Condition type: {:?}", cond_type);
+        if cond_type != RueType::Bool {
+            debug!(
+                "Condition type check failed - expected Bool, got {:?}",
+                cond_type
+            );
             return Err(SemanticError {
-                message: format!("If condition must be bool, found {}", cond.ty()),
+                message: format!("If condition must be bool, found {cond_type}"),
                 span: if_expr.condition.span(),
             });
         }
+        debug!("Condition type check passed");
 
-        // Type check then block with type hint
-        let then_block = self.check_block(&if_expr.then_block, type_hint)?;
+        // STEP 2: Capture incoming environment after checking condition
+        let incoming = builder.capture_environment(); // Vec<(BindingId, String, ValueRef, RueType)>
+        let order: Vec<BindingId> = incoming.iter().map(|(b, _, _, _)| *b).collect();
+        debug!(
+            "Captured incoming environment with {} variables",
+            incoming.len()
+        );
 
-        // Type check else block if present
-        let (else_block, result_type) = if let Some(else_clause) = &if_expr.else_clause {
-            let else_block_node = match &else_clause.body {
-                rue_ast::ElseBodyNode::Block(block) => block.as_ref(),
-                rue_ast::ElseBodyNode::If(_) => {
-                    return Err(SemanticError {
-                        message: "Else-if chains not yet supported in expressions".to_string(),
-                        span: if_expr.if_token.span,
-                    });
-                }
-            };
-            let else_block = self.check_block(else_block_node, type_hint)?;
+        // STEP 3: Create then/else blocks with explicit parameters from captured environment
+        let params: Vec<BlockParam> = incoming
+            .iter()
+            .map(|(_, n, _, ty)| BlockParam {
+                name: builder.intern_string(n),
+                ty: ty.clone(),
+            })
+            .collect();
 
-            // Determine result type by combining both branches
-            let then_type = if let Some(ref then_expr) = then_block.expr {
-                then_expr.ty()
-            } else {
-                &RueType::Unit
-            };
+        let then_block_id = builder.start_block_with_params(params.clone());
+        builder.set_block_binding_order(then_block_id, order.clone());
+        builder.end_block();
 
-            let else_type = if let Some(ref else_expr) = else_block.expr {
-                else_expr.ty()
-            } else {
-                &RueType::Unit
-            };
+        let else_block_id = builder.start_block_with_params(params.clone());
+        builder.set_block_binding_order(else_block_id, order.clone());
+        builder.end_block();
 
-            if then_type != else_type {
-                return Err(SemanticError {
-                    message: "If branches have incompatible types".to_string(),
-                    span: if_expr.if_token.span,
-                });
-            }
+        // STEP 3: We'll create the merge block after processing branches to get correct type
 
-            (Some(else_block), then_type.clone())
+        // STEP 4: Pass environment args explicitly to set_if_terminator
+        let env_args: Vec<ValueRef> = incoming.iter().map(|(_, _, v, _)| *v).collect();
+        builder.set_if_terminator(
+            cond_inst,
+            then_block_id,
+            env_args.clone(),
+            else_block_id,
+            env_args,
+        );
+
+        // STEP 5: Process then branch and track updates
+        debug!("Processing then branch");
+        builder.set_insertion_point(then_block_id);
+        self.push_scope();
+
+        // Track updates to incoming bindings during this branch (TODO: implement assignment tracking)
+        use std::collections::HashMap;
+        let _updates_then: HashMap<BindingId, ValueRef> = HashMap::new();
+
+        for stmt in &if_expr.then_block.statements {
+            self.check_statement(stmt, builder, None)?;
+            // TODO: Track assignments to incoming variables here
+            // For now, we'll capture the updated environment at the end
+        }
+
+        let then_value = if let Some(then_expr) = &if_expr.then_block.final_expr {
+            self.check_expression_with_hint(then_expr, builder, type_hint)?
         } else {
-            // No else block means result is unit type
-            (None, RueType::Unit)
+            builder.emit_literal(0, RueType::Unit)
         };
 
-        Ok(HirExpr::If {
-            cond: Box::new(cond),
-            then_block,
-            else_block,
-            ty: result_type,
-            span: if_expr.if_token.span,
+        let then_type = builder.get_value_type(then_value).unwrap_or(RueType::Unit);
+        self.pop_scope();
+
+        // IMPORTANT: Capture where the then branch actually ended
+        // After processing nested expressions, we might be in a different block
+        let then_end_block = builder
+            .get_current_block_id()
+            .expect("Should have a current block after processing then branch");
+
+        // STEP 5: Process else branch and track updates
+        debug!("Processing else branch");
+        builder.set_insertion_point(else_block_id);
+
+        let (else_value, else_type, else_end_block, _updates_else) =
+            if let Some(else_clause) = &if_expr.else_clause {
+                let else_block_node = match &else_clause.body {
+                    rue_ast::ElseBodyNode::Block(block) => block.as_ref(),
+                    rue_ast::ElseBodyNode::If(_) => {
+                        return Err(SemanticError {
+                            message: "Else-if chains not yet supported in expressions".to_string(),
+                            span: if_expr.if_token.span,
+                        });
+                    }
+                };
+
+                self.push_scope();
+
+                // Track updates to incoming bindings during this branch (TODO: implement assignment tracking)
+                let _updates_else: HashMap<BindingId, ValueRef> = HashMap::new();
+
+                for stmt in &else_block_node.statements {
+                    self.check_statement(stmt, builder, None)?;
+                    // TODO: Track assignments to incoming variables here
+                    // For now, we'll capture the updated environment at the end
+                }
+
+                let else_val = if let Some(else_expr) = &else_block_node.final_expr {
+                    self.check_expression_with_hint(else_expr, builder, type_hint)?
+                } else {
+                    builder.emit_literal(0, RueType::Unit)
+                };
+
+                let else_ty = builder.get_value_type(else_val).unwrap_or(RueType::Unit);
+                self.pop_scope();
+
+                // Capture where the else branch actually ended
+                let else_end = builder
+                    .get_current_block_id()
+                    .expect("Should have a current block after processing else branch");
+
+                (else_val, else_ty, else_end, _updates_else)
+            } else {
+                // No else clause - use unit value and current block, no updates
+                let unit_val = builder.emit_literal(0, RueType::Unit);
+                let current_block = builder
+                    .get_current_block_id()
+                    .expect("Should have a current block");
+                let _no_updates: HashMap<BindingId, ValueRef> = HashMap::new();
+                (unit_val, RueType::Unit, current_block, _no_updates)
+            };
+
+        // STEP 6: Unify result types and validate
+        let result_type = if then_type == else_type {
+            then_type
+        } else {
+            return Err(SemanticError {
+                message: format!(
+                    "If expression branches have incompatible types: {} vs {}",
+                    then_type, else_type
+                ),
+                span: if_expr.if_token.span,
+            });
+        };
+
+        // STEP 6: Determine which variables are live in both branches
+        // Only variables that are live (not shadowed) in ALL branches will be passed to merge
+
+        builder.set_insertion_point(then_end_block);
+        let then_env = builder.capture_environment();
+
+        builder.set_insertion_point(else_end_block);
+        let else_env = builder.capture_environment();
+
+        // Find variables that are live in both branches
+        let then_bindings: std::collections::HashSet<BindingId> =
+            then_env.iter().map(|(bid, _, _, _)| *bid).collect();
+        let else_bindings: std::collections::HashSet<BindingId> =
+            else_env.iter().map(|(bid, _, _, _)| *bid).collect();
+
+        let live_in_both: Vec<BindingId> = order
+            .iter()
+            .filter(|bid| then_bindings.contains(bid) && else_bindings.contains(bid))
+            .cloned()
+            .collect();
+
+        debug!("Original variables: {:?}", order);
+        debug!("Live in then: {:?}", then_bindings);
+        debug!("Live in else: {:?}", else_bindings);
+        debug!("Live in both: {:?}", live_in_both);
+
+        // STEP 7: Create merge block with only live-in-both variables + result parameters
+        let mut merge_params = Vec::new();
+        for bid in &live_in_both {
+            // Find the parameter info from the original environment
+            let (_, name, _, ty) = incoming
+                .iter()
+                .find(|(orig_bid, _, _, _)| orig_bid == bid)
+                .expect("Live variable should be in original environment");
+            merge_params.push(BlockParam {
+                name: builder.intern_string(name),
+                ty: ty.clone(),
+            });
+        }
+        merge_params.push(BlockParam {
+            name: builder.intern_string("__if_result"),
+            ty: result_type.clone(),
+        });
+
+        let merge_block_id = builder.start_block_with_params(merge_params);
+        builder.set_block_binding_order(merge_block_id, live_in_both.clone());
+        builder.end_block();
+
+        // STEP 8: Set goto terminators from the ACTUAL END blocks to merge
+        // Only pass variables that are live in both branches
+
+        // For then branch: only pass live-in-both variables
+        builder.set_insertion_point(then_end_block);
+        let mut then_args = Vec::new();
+
+        for bid in &live_in_both {
+            let val = then_env
+                .iter()
+                .find(|(env_bid, _, _, _)| env_bid == bid)
+                .map(|(_, _, val, _)| *val)
+                .expect("Variable should be live in then branch");
+            then_args.push(val);
+        }
+        then_args.push(then_value);
+        builder.set_goto_terminator(merge_block_id, then_args);
+
+        // For else branch: only pass live-in-both variables
+        builder.set_insertion_point(else_end_block);
+        let mut else_args = Vec::new();
+
+        for bid in &live_in_both {
+            let val = else_env
+                .iter()
+                .find(|(env_bid, _, _, _)| env_bid == bid)
+                .map(|(_, _, val, _)| *val)
+                .expect("Variable should be live in else branch");
+            else_args.push(val);
+        }
+        else_args.push(else_value);
+        builder.set_goto_terminator(merge_block_id, else_args);
+
+        // STEP 9: Continue in merge block and return the parameter
+        builder.set_insertion_point(merge_block_id);
+
+        // STEP 10: Sync TypeChecker scope with HIR builder scope
+        // The HIR builder has captured the environment, but our TypeChecker scope is out of sync
+        // We need to rebuild our scope to match what's available in the merge block
+        self.sync_scope_from_builder(builder);
+
+        #[cfg(debug_assertions)]
+        self.debug_assert_scopes_match(builder);
+
+        // Return the merge block's __if_result parameter (it's the last parameter)
+        let result_param_index = live_in_both.len() as u32;
+        Ok(ValueRef::BlockParam {
+            block_id: merge_block_id,
+            index: BlockParamIndex::new(result_param_index),
         })
+    }
+
+    /// Compute the set of BindingIds that are written to in an AST node
+    fn compute_writes(
+        &self,
+        node: &impl ComputeWrites,
+        builder: &HirBuilder,
+    ) -> HashSet<BindingId> {
+        node.compute_writes(builder)
+    }
+
+    /// Compute the set of BindingIds that are read from in an AST node
+    fn compute_reads(&self, node: &impl ComputeReads, builder: &HirBuilder) -> HashSet<BindingId> {
+        node.compute_reads(builder)
     }
 
     fn check_while_expression(
         &mut self,
         while_expr: &rue_ast::WhileStatementNode,
-    ) -> Result<HirExpr, SemanticError> {
-        // Type check condition
-        let cond = self.check_expression_with_hint(&while_expr.condition, None)?;
-        if cond.ty() != &RueType::Bool {
-            return Err(SemanticError {
-                message: format!("While condition must be bool, found {}", cond.ty()),
-                span: while_expr.condition.span(),
-            });
+        builder: &mut HirBuilder,
+    ) -> Result<ValueRef, SemanticError> {
+        builder.set_span(while_expr.while_token.span);
+        debug!("Starting while loop semantic analysis");
+
+        // First, compute WRITES and READS to determine loop-carried variables
+        let writes = self.compute_writes(&while_expr.body, builder);
+        let reads_cond = self.compute_reads(&while_expr.condition, builder);
+        let reads_body = self.compute_reads(&while_expr.body, builder);
+
+        // LC = WRITES ∪ READS (from both condition and body)
+        let mut lc_set: HashSet<BindingId> = writes.clone();
+        lc_set.extend(reads_cond);
+        lc_set.extend(reads_body);
+
+        debug!(
+            "Loop analysis: {} writes, {} total loop-carried variables",
+            writes.len(),
+            lc_set.len()
+        );
+
+        // Get current environment and filter to only loop-carried variables
+        let all_env = builder.capture_environment();
+
+        // Filter to only loop-carried variables and maintain stable order
+        let loop_carried_env: Vec<(BindingId, String, ValueRef, RueType)> = all_env
+            .iter()
+            .filter(|(bid, _, _, _)| lc_set.contains(bid))
+            .cloned()
+            .collect();
+
+        // Keep track of the BindingIds in order for later use
+        let loop_carried_bindings: Vec<BindingId> =
+            loop_carried_env.iter().map(|(id, _, _, _)| *id).collect();
+        let loop_carried_vars: Vec<String> = loop_carried_env
+            .iter()
+            .map(|(_, name, _, _)| name.clone())
+            .collect();
+        let _loop_carried_types: Vec<RueType> = loop_carried_env
+            .iter()
+            .map(|(_, _, _, ty)| ty.clone())
+            .collect();
+
+        debug!(
+            "Captured {} variables for while loop",
+            loop_carried_env.len()
+        );
+
+        // Pass the full carried environment with BindingIds to preserve identity
+        let ctx = builder.while_begin(loop_carried_env.clone());
+        debug!(
+            "Created while loop context with {} captured variables",
+            loop_carried_vars.len()
+        );
+
+        // Set up condition evaluation in header block
+        // First, switch to header and set up scope
+        builder.set_insertion_point(ctx.header_block_id);
+
+        // Use the HIR builder method to set up the loop condition and branching
+        let _header_values = builder.while_set_cond(&ctx, |builder, _header_vals| {
+            // The header block has parameters for loop-carried variables
+            // They're automatically in scope via set_insertion_point
+            self.check_expression_with_hint(&while_expr.condition, builder, Some(&RueType::Bool))
+                .unwrap()
+        });
+
+        // No need to prepare exit from header - args are passed explicitly in while_set_cond
+        debug!("Set while loop condition and prepared exit");
+
+        // Process the body block
+        // Switch to body block
+        builder.set_insertion_point(ctx.body_block_id);
+
+        // Get body parameter values - these are the loop-carried values passed from the header
+        // We need these to pass through unmodified variables
+        let body_param_values: Vec<ValueRef> = (0..loop_carried_vars.len())
+            .map(|i| {
+                ValueRef::from_block_param_with_id(
+                    ctx.body_block_id,
+                    BlockParamIndex::new(i as u32),
+                )
+            })
+            .collect();
+
+        // Track variable updates in the loop body
+        // Don't create a new scope - the loop body shares the function's scope
+        let updated_values =
+            self.check_block_with_loop_updates(&while_expr.body, builder, &loop_carried_bindings)?;
+
+        // Build backedge args in the SAME order as loop_carried_bindings, using updates when present.
+        let backedge_values: Vec<ValueRef> = loop_carried_bindings
+            .iter()
+            .enumerate()
+            .map(|(i, binding_id)| {
+                if let Some(&updated_value) = updated_values.get(binding_id) {
+                    debug!(
+                        "Using UPDATED value for loop var {:?} at idx {}: {:?}",
+                        binding_id, i, updated_value
+                    );
+                    updated_value
+                } else {
+                    debug!(
+                        "Passing through body param for UNMODIFIED loop var {:?} at idx {}",
+                        binding_id, i
+                    );
+                    body_param_values[i]
+                }
+            })
+            .collect();
+
+        // Optional: quick arity/type check against body param types
+        debug_assert_eq!(
+            backedge_values.len(),
+            body_param_values.len(),
+            "backedge arity mismatch"
+        );
+        for (i, arg) in backedge_values.iter().enumerate() {
+            let got = builder.get_value_type(*arg).unwrap_or(RueType::Unit);
+            let expect = builder
+                .get_value_type(body_param_values[i])
+                .unwrap_or(RueType::Unit);
+            debug_assert_eq!(
+                got, expect,
+                "backedge type mismatch at index {}: got {:?}, expected {:?}",
+                i, got, expect
+            );
         }
 
-        // Type check body
-        let body = self.check_block(&while_expr.body, None)?;
+        // If there were any writes in the loop body, at least one carried binding must be updated
+        if !loop_carried_bindings.is_empty() {
+            let _any_update = loop_carried_bindings
+                .iter()
+                .any(|b| updated_values.contains_key(b));
+            debug!(
+                "Loop has {} carried vars, {} have updates",
+                loop_carried_bindings.len(),
+                updated_values.len()
+            );
+        }
 
-        Ok(HirExpr::While {
-            cond: Box::new(cond),
-            body,
-            span: while_expr.while_token.span,
-        })
+        // Ensure at least one arg differs if an update was recorded for that binding
+        for (i, binding_id) in loop_carried_bindings.iter().enumerate() {
+            if updated_values.contains_key(binding_id) {
+                debug_assert_ne!(
+                    backedge_values[i], body_param_values[i],
+                    "Updated value not used on backedge at idx {} for binding {:?}",
+                    i, binding_id
+                );
+            }
+        }
+
+        // Complete the loop with the backedge
+        builder.while_backedge(&ctx, backedge_values);
+        debug!(
+            "Created loop backedge with {} values",
+            loop_carried_vars.len()
+        );
+
+        // Switch to exit block to continue
+        builder.set_insertion_point(ctx.exit_block_id);
+        debug!("Completed while loop, continuing at exit block");
+
+        // Sync TypeChecker scope with HIR builder scope after exiting the while loop
+        // The HIR builder has captured the environment and created exit block parameters
+        self.sync_scope_from_builder(builder);
+
+        #[cfg(debug_assertions)]
+        self.debug_assert_scopes_match(builder);
+
+        // While loops evaluate to unit
+        Ok(builder.emit_literal(0, RueType::Unit))
+    }
+
+    /// Process a block's statements and track variable updates for loop-carried dependencies
+    fn check_block_with_loop_updates(
+        &mut self,
+        block: &rue_ast::BlockNode,
+        builder: &mut HirBuilder,
+        loop_carried: &[BindingId],
+    ) -> Result<HashMap<BindingId, ValueRef>, SemanticError> {
+        let mut updates = HashMap::new();
+
+        // Process statements
+        for stmt in &block.statements {
+            match stmt {
+                StatementNode::Let(_) => {
+                    // Let statements create new bindings (shadowing)
+                    // They should NOT be treated as updates to loop-carried variables
+                    // Process normally to create the new binding
+                    self.check_statement(stmt, builder, None)?;
+                    debug!("Let statement creates new binding, not a loop update");
+                }
+                StatementNode::Assign(assign_stmt) => {
+                    // Get the variable name
+                    let var_name = match &assign_stmt.name.kind {
+                        TokenKind::Ident(name) => name.clone(),
+                        _ => {
+                            return Err(SemanticError {
+                                message: "Expected variable name".to_string(),
+                                span: assign_stmt.name.span,
+                            });
+                        }
+                    };
+
+                    // Look up the BindingId for this variable
+                    let (binding_id, var_type) =
+                        if let Some((bid, _, ty)) = builder.lookup_variable(&var_name) {
+                            (bid, ty)
+                        } else {
+                            // Fall back to semantic scope lookup
+                            let _var_type =
+                                self.lookup_variable(&var_name).cloned().ok_or_else(|| {
+                                    SemanticError {
+                                        message: format!("Undefined variable: {var_name}"),
+                                        span: assign_stmt.name.span,
+                                    }
+                                })?;
+                            // We don't have the binding ID from the semantic scope,
+                            // so we can't track this update properly
+                            // This shouldn't happen if builder scope is properly maintained
+                            return Err(SemanticError {
+                                message: format!(
+                                    "Internal error: variable {} not found in builder scope",
+                                    var_name
+                                ),
+                                span: assign_stmt.name.span,
+                            });
+                        };
+
+                    // Type check the value
+                    let value_inst = self.check_expression_with_hint(
+                        &assign_stmt.value,
+                        builder,
+                        Some(&var_type),
+                    )?;
+
+                    // Validate type compatibility
+                    let value_type = builder.get_value_type(value_inst).unwrap_or(RueType::Unit);
+                    if value_type != var_type {
+                        return Err(SemanticError {
+                            message: format!(
+                                "Type mismatch in assignment: expected {var_type}, found {value_type}"
+                            ),
+                            span: assign_stmt.value.span(),
+                        });
+                    }
+
+                    // Always emit assign instruction so the variable is updated in the current iteration
+                    builder
+                        .emit_assign(&var_name, value_inst)
+                        .map_err(|e| SemanticError {
+                            message: e,
+                            span: assign_stmt.name.span,
+                        })?;
+
+                    // Check if this is a loop-carried variable that we're writing to
+                    debug!(
+                        "Assignment to {} (BindingId: {:?}), checking if in loop-carried set",
+                        var_name, binding_id
+                    );
+                    debug!("Loop-carried set contains: {:?}", loop_carried);
+                    if loop_carried.contains(&binding_id) {
+                        // Track the updated value for backedge
+                        updates.insert(binding_id, value_inst);
+                        debug!(
+                            "Tracking update to loop-carried variable: {} (BindingId: {:?})",
+                            var_name, binding_id
+                        );
+                    } else {
+                        debug!(
+                            "Assignment to non-carried binding {:?} ({}), not threading through backedge",
+                            binding_id, var_name
+                        );
+                    }
+                }
+                _ => {
+                    // Handle other statements normally
+                    self.check_statement(stmt, builder, None)?;
+                }
+            }
+        }
+
+        // Process final expression if present
+        if let Some(final_expr) = &block.final_expr {
+            self.check_expression_with_hint(final_expr, builder, None)?;
+        }
+
+        Ok(updates)
     }
 
     fn check_struct_literal(
         &mut self,
         struct_lit: &StructLiteralNode,
-    ) -> Result<HirExpr, SemanticError> {
+        builder: &mut HirBuilder,
+    ) -> Result<ValueRef, SemanticError> {
+        builder.set_span(struct_lit.name.span);
+
         let struct_name = match &struct_lit.name.kind {
             TokenKind::Ident(name) => name.clone(),
             _ => {
@@ -1442,8 +1470,8 @@ impl TypeChecker {
             .map(|(name, ty)| (name.clone(), ty.clone()))
             .collect();
 
-        // Type check each field and collect them
-        let mut hir_fields = Vec::new();
+        // Type check each field and collect them in a map
+        let mut field_insts_map = HashMap::new();
         let mut provided_fields = std::collections::HashSet::new();
 
         for field in &struct_lit.fields {
@@ -1466,20 +1494,21 @@ impl TypeChecker {
                 })?;
 
             // Type check field value with expected type as hint
-            let field_value = self.check_expression_with_hint(&field.value, Some(expected_type))?;
-            if field_value.ty() != expected_type {
+            let field_inst =
+                self.check_expression_with_hint(&field.value, builder, Some(expected_type))?;
+            let field_type = builder.get_value_type(field_inst).unwrap_or(RueType::Unit);
+            if field_type != *expected_type {
                 return Err(SemanticError {
                     message: format!(
-                        "Type mismatch: Field {} expected {expected_type}, found {}",
+                        "Type mismatch: Field {} expected {expected_type}, found {field_type}",
                         field_name,
-                        field_value.ty()
                     ),
                     span: field.value.span(),
                 });
             }
 
             provided_fields.insert(field_name.clone());
-            hir_fields.push((field_name, field_value));
+            field_insts_map.insert(field_name, field_inst);
         }
 
         // Check that all expected fields are provided
@@ -1496,133 +1525,126 @@ impl TypeChecker {
             });
         }
 
-        Ok(HirExpr::StructLiteral {
-            struct_name,
-            fields: hir_fields,
-            ty: RueType::Struct(struct_def.id),
-            span: struct_lit.name.span,
-        })
+        // Collect field values in the correct order (as defined in the struct)
+        let mut field_values = Vec::new();
+        for (field_name, _) in &struct_def.fields {
+            let field_inst = field_insts_map
+                .get(field_name)
+                .expect("Field should exist, we already validated all fields are present");
+            field_values.push(*field_inst);
+        }
+
+        // Create the struct type and emit the struct literal instruction
+        let struct_type = RueType::Struct(struct_def.id);
+        Ok(builder.build_struct_literal(struct_def.id, field_values, struct_type))
     }
 
     fn check_field_access(
         &mut self,
         field_access: &FieldAccessNode,
-    ) -> Result<HirExpr, SemanticError> {
-        let base = self.check_expression_with_hint(&field_access.base, None)?;
+        builder: &mut HirBuilder,
+    ) -> Result<ValueRef, SemanticError> {
+        builder.set_span(field_access.dot.span);
 
-        match base.ty() {
+        let base_inst = self.check_expression_with_hint(&field_access.base, builder, None)?;
+        let base_type = builder.get_value_type(base_inst).unwrap_or(RueType::Unit);
+
+        match base_type {
             RueType::Struct(struct_id) => {
-                // Look up struct definition
-                let struct_def =
-                    self.global_scope
-                        .get_struct_by_id(*struct_id)
-                        .ok_or_else(|| SemanticError {
-                            message: format!("Unknown struct with ID: {struct_id:?}"),
-                            span: field_access.dot.span,
-                        })?;
-
-                let field_name = match &field_access.field {
-                    FieldKindNode::Named(name_token) => {
-                        if let TokenKind::Ident(name) = &name_token.kind {
-                            name.clone()
-                        } else {
-                            return Err(SemanticError {
-                                message: "Expected field name".to_string(),
-                                span: name_token.span,
-                            });
-                        }
-                    }
-                    FieldKindNode::Positional(_) => {
-                        return Err(SemanticError {
-                            message: "Structs must use field names, not numeric indices"
-                                .to_string(),
-                            span: match &field_access.field {
-                                FieldKindNode::Named(token) | FieldKindNode::Positional(token) => {
-                                    token.span
-                                }
-                            },
-                        });
-                    }
-                };
-
-                // Find field in struct definition
-                let field_type = struct_def
-                    .fields
-                    .iter()
-                    .find(|(name, _)| name == &field_name)
-                    .map(|(_, ty)| ty.clone())
-                    .ok_or_else(|| SemanticError {
-                        message: format!(
-                            "Struct {} has no field named {}",
-                            struct_def.name, field_name
-                        ),
-                        span: match &field_access.field {
-                            FieldKindNode::Named(token) | FieldKindNode::Positional(token) => {
-                                token.span
+                // Handle struct field access (e.g., struct.field_name)
+                match &field_access.field {
+                    FieldKindNode::Named(token) => {
+                        // Extract field name from the token
+                        let field_name = match &token.kind {
+                            rue_lexer::TokenKind::Ident(name) => name.clone(),
+                            _ => {
+                                return Err(SemanticError {
+                                    message: "Expected field name for struct field access"
+                                        .to_string(),
+                                    span: token.span,
+                                });
                             }
-                        },
-                    })?;
+                        };
 
-                Ok(HirExpr::FieldAccess {
-                    base: Box::new(base),
-                    field: FieldId::Named(field_name),
-                    ty: field_type,
-                    span: field_access.dot.span,
-                })
+                        // Look up the struct definition
+                        let struct_def =
+                            self.global_scope
+                                .get_struct_by_id(struct_id)
+                                .ok_or_else(|| SemanticError {
+                                    message: format!(
+                                        "Internal error: struct with ID {} not found",
+                                        struct_id
+                                    ),
+                                    span: field_access.dot.span,
+                                })?;
+
+                        // Find the field index and type
+                        let (field_index, field_type) = struct_def
+                            .fields
+                            .iter()
+                            .enumerate()
+                            .find(|(_, (name, _))| name == &field_name)
+                            .map(|(idx, (_, ty))| (idx, ty.clone()))
+                            .ok_or_else(|| SemanticError {
+                                message: format!(
+                                    "Field '{}' not found in struct '{}'",
+                                    field_name, struct_def.name
+                                ),
+                                span: token.span,
+                            })?;
+
+                        // Create the FieldAccess instruction
+                        Ok(builder.emit_field_access(base_inst, field_index as u32, field_type))
+                    }
+                    FieldKindNode::Positional(_) => Err(SemanticError {
+                        message: "Positional field access is not supported for structs".to_string(),
+                        span: field_access.dot.span,
+                    }),
+                }
             }
             RueType::Tuple(element_types) => {
-                let field_index = match &field_access.field {
-                    FieldKindNode::Positional(index_token) => {
-                        if let TokenKind::Integer(index) = index_token.kind {
-                            index as usize
-                        } else {
+                // Handle tuple field access (e.g., tuple.0, tuple.1)
+                match &field_access.field {
+                    FieldKindNode::Positional(token) => {
+                        // Extract field index from the token
+                        let field_index = match &token.kind {
+                            rue_lexer::TokenKind::Integer(n) => *n as usize,
+                            _ => {
+                                return Err(SemanticError {
+                                    message: "Expected integer literal for tuple field access"
+                                        .to_string(),
+                                    span: token.span,
+                                });
+                            }
+                        };
+
+                        // Check if the field index is valid
+                        if field_index >= element_types.len() {
                             return Err(SemanticError {
-                                message: "Expected numeric index for tuple".to_string(),
-                                span: index_token.span,
+                                message: format!(
+                                    "Tuple field index out of bounds: tuple has {} fields, but tried to access field {}",
+                                    element_types.len(),
+                                    field_index
+                                ),
+                                span: token.span,
                             });
                         }
-                    }
-                    FieldKindNode::Named(_) => {
-                        return Err(SemanticError {
-                            message: "Tuples must use integer literal indices, not field names"
-                                .to_string(),
-                            span: match &field_access.field {
-                                FieldKindNode::Named(token) | FieldKindNode::Positional(token) => {
-                                    token.span
-                                }
-                            },
-                        });
-                    }
-                };
 
-                if field_index >= element_types.len() {
-                    return Err(SemanticError {
-                        message: format!(
-                            "Tuple index {} out of bounds (tuple has {} elements)",
-                            field_index,
-                            element_types.len()
-                        ),
-                        span: match &field_access.field {
-                            FieldKindNode::Named(token) | FieldKindNode::Positional(token) => {
-                                token.span
-                            }
-                        },
-                    });
+                        // Get the type of the accessed field
+                        let field_type = element_types[field_index].clone();
+
+                        // Create the FieldAccess instruction
+                        Ok(builder.emit_field_access(base_inst, field_index as u32, field_type))
+                    }
+                    FieldKindNode::Named(_) => Err(SemanticError {
+                        message: "Named field access is not supported for tuples".to_string(),
+                        span: field_access.dot.span,
+                    }),
                 }
-
-                let field_type = element_types[field_index].clone();
-
-                Ok(HirExpr::FieldAccess {
-                    base: Box::new(base),
-                    field: FieldId::Index(field_index),
-                    ty: field_type,
-                    span: field_access.dot.span,
-                })
             }
             _ => Err(SemanticError {
                 message: format!(
-                    "Cannot access field on type {}, expected struct or tuple",
-                    base.ty()
+                    "Cannot access field on type {base_type}, expected struct or tuple"
                 ),
                 span: field_access.base.span(),
             }),
@@ -1632,10 +1654,10 @@ impl TypeChecker {
     fn check_tuple_literal_with_hint(
         &mut self,
         tuple_lit: &TupleLiteralNode,
+        builder: &mut HirBuilder,
         type_hint: Option<&RueType>,
-    ) -> Result<HirExpr, SemanticError> {
-        let mut elements = Vec::new();
-        let mut element_types = Vec::new();
+    ) -> Result<ValueRef, SemanticError> {
+        builder.set_span(tuple_lit.open_paren.span);
 
         // Extract element type hints from the tuple type hint
         let element_hints: Vec<Option<&RueType>> =
@@ -1645,29 +1667,51 @@ impl TypeChecker {
                 vec![None; tuple_lit.elements.len()]
             };
 
+        let mut element_insts = Vec::new();
+        let mut element_types = Vec::new();
+
         for (i, element_expr) in tuple_lit.elements.iter().enumerate() {
             let element_hint = element_hints.get(i).and_then(|h| *h);
-            let element = self.check_expression_with_hint(element_expr, element_hint)?;
-            element_types.push(element.ty().clone());
-            elements.push(element);
+            let element_inst =
+                self.check_expression_with_hint(element_expr, builder, element_hint)?;
+            let element_type = builder
+                .get_value_type(element_inst)
+                .unwrap_or(RueType::Unit);
+            element_types.push(element_type);
+            element_insts.push(element_inst);
         }
 
-        Ok(HirExpr::TupleLiteral {
-            elements,
-            ty: RueType::Tuple(element_types),
-            span: tuple_lit.open_paren.span,
-        })
+        // Create the tuple type and build the literal
+        let tuple_type = RueType::Tuple(element_types);
+
+        // Validate against type hint if provided
+        if let Some(expected_type) = type_hint
+            && tuple_type != *expected_type
+        {
+            return Err(SemanticError {
+                message: format!(
+                    "Tuple literal type mismatch: expected {}, found {}",
+                    expected_type, tuple_type
+                ),
+                span: tuple_lit.open_paren.span,
+            });
+        }
+
+        Ok(builder.build_tuple_literal(element_insts, tuple_type))
     }
 
     fn check_array_literal_with_hint(
         &mut self,
         array_lit: &ArrayLiteralNode,
+        builder: &mut HirBuilder,
         type_hint: Option<&RueType>,
-    ) -> Result<HirExpr, SemanticError> {
+    ) -> Result<ValueRef, SemanticError> {
+        builder.set_span(array_lit.open_bracket.span);
+
         // Handle empty array literals with type inference
         if array_lit.elements.is_empty() {
             // For empty arrays, we need a type hint to infer the element type
-            if let Some(RueType::Array(element_type, size)) = type_hint {
+            if let Some(RueType::Array(_element_type, size)) = type_hint {
                 // Verify that the size matches (should be 0 for empty array)
                 if *size != 0 {
                     return Err(SemanticError {
@@ -1676,13 +1720,9 @@ impl TypeChecker {
                     });
                 }
 
-                // Create empty array with inferred type
-                let array_type = RueType::Array(element_type.clone(), 0);
-                return Ok(HirExpr::ArrayLiteral {
-                    elements: Vec::new(),
-                    ty: array_type,
-                    span: array_lit.open_bracket.span,
-                });
+                // Create empty array literal with the correct type
+                let array_type = type_hint.unwrap().clone();
+                return Ok(builder.build_array_literal(vec![], array_type));
             } else {
                 return Err(SemanticError {
                     message: "Cannot infer type of empty array literal without type annotation"
@@ -1692,7 +1732,7 @@ impl TypeChecker {
             }
         }
 
-        let mut elements = Vec::new();
+        let mut element_insts = Vec::new();
         let mut element_type: Option<RueType> = None;
 
         // Extract element type hint from the array type hint
@@ -1703,45 +1743,64 @@ impl TypeChecker {
         };
 
         for element_expr in &array_lit.elements {
-            let element = self.check_expression_with_hint(element_expr, element_hint)?;
+            let element_inst =
+                self.check_expression_with_hint(element_expr, builder, element_hint)?;
+            let elem_type = builder
+                .get_value_type(element_inst)
+                .unwrap_or(RueType::Unit);
 
             // Check that all elements have the same type
             if let Some(ref expected_type) = element_type {
-                if element.ty() != expected_type {
+                if elem_type != *expected_type {
                     return Err(SemanticError {
                         message: format!(
-                            "Array elements must have the same type: expected {expected_type}, found {}",
-                            element.ty()
+                            "Array elements must have the same type: expected {expected_type}, found {elem_type}"
                         ),
                         span: element_expr.span(),
                     });
                 }
             } else {
-                element_type = Some(element.ty().clone());
+                element_type = Some(elem_type);
             }
 
-            elements.push(element);
+            element_insts.push(element_inst);
         }
 
-        let array_type = RueType::Array(Box::new(element_type.unwrap()), array_lit.elements.len());
+        // Create the array type and build the literal
+        let element_type = element_type.unwrap(); // We know this is Some because we validated elements
+        let array_size = element_insts.len();
+        let array_type = RueType::Array(Box::new(element_type), array_size);
 
-        Ok(HirExpr::ArrayLiteral {
-            elements,
-            ty: array_type,
-            span: array_lit.open_bracket.span,
-        })
+        // Validate against type hint if provided
+        if let Some(expected_type) = type_hint
+            && array_type != *expected_type
+        {
+            return Err(SemanticError {
+                message: format!(
+                    "Array literal type mismatch: expected {}, found {}",
+                    expected_type, array_type
+                ),
+                span: array_lit.open_bracket.span,
+            });
+        }
+
+        Ok(builder.build_array_literal(element_insts, array_type))
     }
 
     fn check_array_access(
         &mut self,
         array_access: &ArrayAccessNode,
-    ) -> Result<HirExpr, SemanticError> {
-        let base = self.check_expression_with_hint(&array_access.base, None)?;
+        builder: &mut HirBuilder,
+    ) -> Result<ValueRef, SemanticError> {
+        builder.set_span(array_access.open_bracket.span);
+
+        let base_inst = self.check_expression_with_hint(&array_access.base, builder, None)?;
         // Check array index without forcing a specific type, allow both i32 and i64
-        let index = self.check_expression_with_hint(&array_access.index, None)?;
+        let index_inst = self.check_expression_with_hint(&array_access.index, builder, None)?;
 
         // Validate index type - must be an integer type
-        match index.ty() {
+        let index_type = builder.get_value_type(index_inst).unwrap_or(RueType::Unit);
+        match index_type {
             RueType::I32 | RueType::I64 => {}
             _ => {
                 return Err(SemanticError {
@@ -1752,21 +1811,281 @@ impl TypeChecker {
         }
 
         // Validate base type and extract element type
-        let element_type = match base.ty() {
-            RueType::Array(element_type, _) => (**element_type).clone(),
+        let base_type = builder.get_value_type(base_inst).unwrap_or(RueType::Unit);
+        let element_type = match base_type {
+            RueType::Array(element_type, _) => (*element_type).clone(),
             _ => {
                 return Err(SemanticError {
-                    message: format!("Cannot index into type {}, expected array", base.ty()),
+                    message: format!("Cannot index into type {base_type}, expected array"),
                     span: array_access.base.span(),
                 });
             }
         };
 
-        Ok(HirExpr::ArrayAccess {
-            base: Box::new(base),
-            index: Box::new(index),
-            ty: element_type,
-            span: array_access.open_bracket.span,
-        })
+        // Create the IndexAccess instruction using HIRBuilder
+        Ok(builder.emit_index_access(base_inst, index_inst, element_type))
+    }
+}
+// Implementations of ComputeWrites trait
+
+impl ComputeWrites for rue_ast::BlockNode {
+    fn compute_writes(&self, builder: &HirBuilder) -> HashSet<BindingId> {
+        let mut writes = HashSet::new();
+        for stmt in &self.statements {
+            writes.extend(stmt.compute_writes(builder));
+        }
+        if let Some(expr) = &self.final_expr {
+            writes.extend(expr.compute_writes(builder));
+        }
+        writes
+    }
+}
+
+impl ComputeWrites for StatementNode {
+    fn compute_writes(&self, builder: &HirBuilder) -> HashSet<BindingId> {
+        match self {
+            StatementNode::Assign(assign) => {
+                // Assignment writes to a variable
+                if let TokenKind::Ident(name) = &assign.name.kind {
+                    // Look up the BindingId for this variable name
+                    if let Some((binding_id, _, _)) = builder.lookup_variable(name) {
+                        let mut writes = HashSet::new();
+                        writes.insert(binding_id);
+                        // Also check for writes in the RHS expression
+                        writes.extend(assign.value.compute_writes(builder));
+                        return writes;
+                    }
+                }
+                // If we can't find the binding, just check the RHS
+                assign.value.compute_writes(builder)
+            }
+            StatementNode::Let(let_stmt) => {
+                // Let creates a new binding, not a write to existing
+                // But check the initializer for writes
+                let_stmt.value.compute_writes(builder)
+            }
+            StatementNode::Expression(expr_stmt) => expr_stmt.expression.compute_writes(builder),
+            StatementNode::Return(ret_stmt) => {
+                if let Some(expr) = &ret_stmt.expression {
+                    expr.compute_writes(builder)
+                } else {
+                    HashSet::new()
+                }
+            }
+        }
+    }
+}
+
+impl ComputeWrites for ExpressionNode {
+    fn compute_writes(&self, builder: &HirBuilder) -> HashSet<BindingId> {
+        match self {
+            ExpressionNode::Binary(bin) => {
+                let mut writes = bin.left.compute_writes(builder);
+                writes.extend(bin.right.compute_writes(builder));
+                writes
+            }
+            ExpressionNode::Unary(un) => un.operand.compute_writes(builder),
+            ExpressionNode::Call(call) => {
+                let mut writes = call.function.compute_writes(builder);
+                for arg in &call.args {
+                    writes.extend(arg.compute_writes(builder));
+                }
+                writes
+            }
+            ExpressionNode::If(if_expr) => {
+                let mut writes = if_expr.condition.compute_writes(builder);
+                writes.extend(if_expr.then_block.compute_writes(builder));
+                if let Some(else_clause) = &if_expr.else_clause {
+                    // else_clause is ElseClauseNode which contains a BlockNode
+                    writes.extend(else_clause.body.compute_writes(builder));
+                }
+                writes
+            }
+            ExpressionNode::While(while_expr) => {
+                let mut writes = while_expr.condition.compute_writes(builder);
+                writes.extend(while_expr.body.compute_writes(builder));
+                writes
+            }
+            ExpressionNode::StructLiteral(struct_lit) => {
+                let mut writes = HashSet::new();
+                for field in &struct_lit.fields {
+                    writes.extend(field.value.compute_writes(builder));
+                }
+                writes
+            }
+            ExpressionNode::FieldAccess(field_acc) => field_acc.base.compute_writes(builder),
+            ExpressionNode::ArrayAccess(array_acc) => {
+                let mut writes = array_acc.base.compute_writes(builder);
+                writes.extend(array_acc.index.compute_writes(builder));
+                writes
+            }
+            ExpressionNode::TupleLiteral(tuple_lit) => {
+                let mut writes = HashSet::new();
+                for elem in &tuple_lit.elements {
+                    writes.extend(elem.compute_writes(builder));
+                }
+                writes
+            }
+            ExpressionNode::ArrayLiteral(array_lit) => {
+                let mut writes = HashSet::new();
+                for elem in &array_lit.elements {
+                    writes.extend(elem.compute_writes(builder));
+                }
+                writes
+            }
+            // Literals and identifiers don't write
+            ExpressionNode::Literal(_) | ExpressionNode::Identifier(_) => HashSet::new(),
+        }
+    }
+}
+
+// Implementations of ComputeReads trait
+
+impl ComputeReads for rue_ast::BlockNode {
+    fn compute_reads(&self, builder: &HirBuilder) -> HashSet<BindingId> {
+        let mut reads = HashSet::new();
+        for stmt in &self.statements {
+            reads.extend(stmt.compute_reads(builder));
+        }
+        if let Some(expr) = &self.final_expr {
+            reads.extend(expr.compute_reads(builder));
+        }
+        reads
+    }
+}
+
+impl ComputeReads for StatementNode {
+    fn compute_reads(&self, builder: &HirBuilder) -> HashSet<BindingId> {
+        match self {
+            StatementNode::Assign(assign) => {
+                // Assignment reads from the RHS
+                assign.value.compute_reads(builder)
+            }
+            StatementNode::Let(let_stmt) => {
+                // Let reads from the initializer
+                let_stmt.value.compute_reads(builder)
+            }
+            StatementNode::Expression(expr_stmt) => expr_stmt.expression.compute_reads(builder),
+            StatementNode::Return(ret_stmt) => {
+                if let Some(expr) = &ret_stmt.expression {
+                    expr.compute_reads(builder)
+                } else {
+                    HashSet::new()
+                }
+            }
+        }
+    }
+}
+
+impl ComputeReads for ExpressionNode {
+    fn compute_reads(&self, builder: &HirBuilder) -> HashSet<BindingId> {
+        match self {
+            ExpressionNode::Identifier(ident) => {
+                // Identifier is a read
+                if let TokenKind::Ident(name) = &ident.kind {
+                    // Look up in builder's scope
+                    if let Some((binding_id, _, _)) = builder.lookup_variable(name) {
+                        let mut reads = HashSet::new();
+                        reads.insert(binding_id);
+                        return reads;
+                    }
+                }
+                HashSet::new()
+            }
+            ExpressionNode::Binary(bin) => {
+                let mut reads = bin.left.compute_reads(builder);
+                reads.extend(bin.right.compute_reads(builder));
+                reads
+            }
+            ExpressionNode::Unary(un) => un.operand.compute_reads(builder),
+            ExpressionNode::Call(call) => {
+                let mut reads = call.function.compute_reads(builder);
+                for arg in &call.args {
+                    reads.extend(arg.compute_reads(builder));
+                }
+                reads
+            }
+            ExpressionNode::If(if_expr) => {
+                let mut reads = if_expr.condition.compute_reads(builder);
+                reads.extend(if_expr.then_block.compute_reads(builder));
+                if let Some(else_clause) = &if_expr.else_clause {
+                    reads.extend(else_clause.body.compute_reads(builder));
+                }
+                reads
+            }
+            ExpressionNode::While(while_expr) => {
+                let mut reads = while_expr.condition.compute_reads(builder);
+                reads.extend(while_expr.body.compute_reads(builder));
+                reads
+            }
+            ExpressionNode::StructLiteral(struct_lit) => {
+                let mut reads = HashSet::new();
+                for field in &struct_lit.fields {
+                    reads.extend(field.value.compute_reads(builder));
+                }
+                reads
+            }
+            ExpressionNode::FieldAccess(field_acc) => field_acc.base.compute_reads(builder),
+            ExpressionNode::ArrayAccess(array_acc) => {
+                let mut reads = array_acc.base.compute_reads(builder);
+                reads.extend(array_acc.index.compute_reads(builder));
+                reads
+            }
+            ExpressionNode::TupleLiteral(tuple_lit) => {
+                let mut reads = HashSet::new();
+                for elem in &tuple_lit.elements {
+                    reads.extend(elem.compute_reads(builder));
+                }
+                reads
+            }
+            ExpressionNode::ArrayLiteral(array_lit) => {
+                let mut reads = HashSet::new();
+                for elem in &array_lit.elements {
+                    reads.extend(elem.compute_reads(builder));
+                }
+                reads
+            }
+            // Literals don't read
+            ExpressionNode::Literal(_) => HashSet::new(),
+        }
+    }
+}
+
+impl ComputeWrites for rue_ast::ElseBodyNode {
+    fn compute_writes(&self, builder: &HirBuilder) -> HashSet<BindingId> {
+        match self {
+            rue_ast::ElseBodyNode::Block(block) => block.compute_writes(builder),
+            rue_ast::ElseBodyNode::If(if_stmt) => if_stmt.compute_writes(builder),
+        }
+    }
+}
+
+impl ComputeReads for rue_ast::ElseBodyNode {
+    fn compute_reads(&self, builder: &HirBuilder) -> HashSet<BindingId> {
+        match self {
+            rue_ast::ElseBodyNode::Block(block) => block.compute_reads(builder),
+            rue_ast::ElseBodyNode::If(if_stmt) => if_stmt.compute_reads(builder),
+        }
+    }
+}
+
+impl ComputeWrites for rue_ast::IfStatementNode {
+    fn compute_writes(&self, builder: &HirBuilder) -> HashSet<BindingId> {
+        let mut writes = self.then_block.compute_writes(builder);
+        if let Some(ref else_clause) = self.else_clause {
+            writes.extend(else_clause.body.compute_writes(builder));
+        }
+        writes
+    }
+}
+
+impl ComputeReads for rue_ast::IfStatementNode {
+    fn compute_reads(&self, builder: &HirBuilder) -> HashSet<BindingId> {
+        let mut reads = self.condition.compute_reads(builder);
+        reads.extend(self.then_block.compute_reads(builder));
+        if let Some(ref else_clause) = self.else_clause {
+            reads.extend(else_clause.body.compute_reads(builder));
+        }
+        reads
     }
 }

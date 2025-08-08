@@ -13,6 +13,7 @@ cargo.rust_library(
         "//crates/rue-parser:rue-parser",
         "//third-party/rust:salsa",
         "//third-party/rust:thiserror",
+        "//third-party/rust:tracing",
     ],
     visibility = ["PUBLIC"],
 )
@@ -30,5 +31,6 @@ rust_test(
         "//crates/rue-parser:rue-parser",
         "//third-party/rust:salsa",
         "//third-party/rust:thiserror",
+        "//third-party/rust:tracing",
     ],
 )

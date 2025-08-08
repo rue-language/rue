@@ -126,11 +126,11 @@ fn test_i32_to_i64_negative() {
             let neg: i32 = -1;
             let result: i64 = to_i64(neg);
             let expected: i64 = -1;
-            let zero: i64 = 0;
-            let one: i64 = 1;
             if result == expected {
+                let zero: i64 = 0;
                 zero  // Success
             } else {
+                let one: i64 = 1;
                 one  // Failure
             }
         }

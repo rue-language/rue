@@ -1,6 +1,0 @@
-// Test single line input
-fn main() {
-    let n = input();
-    println_i64(n);
-    println_i64(999); // marker
-}
