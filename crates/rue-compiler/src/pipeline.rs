@@ -6,11 +6,12 @@
 use rue_codegen::backend::RuntimeProvider;
 use rue_codegen::target::TargetRegistry;
 use rue_codegen::{CodegenError, LoweringError, RegisterAllocator, X8664Codegen};
+use rue_ir::hir2::Hir;
 use rue_ir::mir::MirProgram;
 use rue_ir::pir::{Label, PIR};
 #[cfg(debug_assertions)]
 use rue_lowering::MirVerifier;
-use rue_lowering::{MirBuilder, MirToPir};
+use rue_lowering::{MirBuilder, MirToPir, lower_hir2_to_mir};
 use rue_optimize::{OptimizationLevel, OptimizationProfileFactory};
 use rue_semantic::{AnalysisResult, scope_to_type_context};
 use rue_target::X8664Instr;
@@ -344,6 +345,132 @@ pub fn compile_hir_via_mir_to_assembly(
         &intermediate.all_function_labels,
         intermediate.runtime_label_count,
     ))
+}
+
+/// Unified HIR2 compilation pipeline via MIR that produces intermediate results
+///
+/// This function is the HIR2 parallel to compile_hir_via_mir_to_intermediate.
+/// It performs HIR2 → MIR → optimizations → instructions → machine code generation.
+#[instrument(skip_all, fields(optimize = enable_optimizations))]
+pub fn compile_hir2_via_mir_to_intermediate(
+    hir2: &Hir,
+    type_context: rue_ir::types::TypeContext,
+    enable_optimizations: bool,
+) -> Result<CompilationIntermediateResult, CompileError> {
+    // Step 1: Lower HIR2 to MIR
+    info!(target: "rue::mir", "Lowering HIR2 to MIR");
+    let mut mir = lower_hir2_to_mir(hir2, type_context);
+
+    // Step 2: Print MIR for debugging
+    debug!(target: "rue::mir", mir = %mir, "MIR from HIR2 before optimization");
+
+    // Step 3: Apply MIR optimizations and verify
+    if enable_optimizations {
+        info!(target: "rue::optimize", "Running optimization passes");
+    }
+    optimize_and_verify_mir(&mut mir, enable_optimizations)?;
+
+    // Step 4: Lower MIR to Instructions
+    info!(target: "rue::codegen", "Lowering MIR to instructions");
+    let mut mir_lowerer = MirToPir::with_type_context(mir.type_context.clone());
+    let instructions = mir_lowerer.lower_program(&mir);
+    let function_labels = mir_lowerer.get_function_labels();
+
+    // Step 5: Create runtime provider
+    let runtime_provider = RuntimeProvider::new()?;
+
+    // Step 6: Identify function boundaries
+    let function_boundaries = discover_function_boundaries(&instructions, &function_labels);
+
+    // Step 7: Assign machine label IDs starting after runtime labels
+    let runtime_label_count = runtime_provider.runtime_label_count();
+    let (ir_to_machine_labels, _) = assign_label_ids(&instructions, runtime_label_count);
+
+    // Step 8: Lower functions to machine instructions
+    let final_instructions = lower_functions(
+        &instructions,
+        &function_labels,
+        function_boundaries,
+        &ir_to_machine_labels,
+        runtime_label_count,
+        &mir_lowerer,
+    )?;
+
+    // Step 9: Build final function labels including runtime and user functions
+    let all_function_labels =
+        build_final_labels(&runtime_provider, &function_labels, &ir_to_machine_labels);
+
+    Ok(CompilationIntermediateResult {
+        final_instructions,
+        all_function_labels,
+        runtime_label_count,
+    })
+}
+
+/// Compile HIR2 to assembly via MIR
+///
+/// This function is the HIR2 parallel to compile_hir_via_mir_to_assembly.
+/// HIR2 → MIR → (optimizations) → Instructions → Assembly
+#[instrument(skip_all, fields(optimize = enable_optimizations))]
+pub fn compile_hir2_via_mir_to_assembly(
+    hir2: &Hir,
+    type_context: rue_ir::types::TypeContext,
+    enable_optimizations: bool,
+) -> Result<String, CompileError> {
+    // Use the HIR2 compilation pipeline
+    let intermediate =
+        compile_hir2_via_mir_to_intermediate(hir2, type_context, enable_optimizations)?;
+
+    // Generate assembly from intermediate results
+    info!(target: "rue::codegen", "Generating assembly");
+    let formatter = TargetRegistry::create_assembly_formatter(TargetRegistry::default_target());
+    Ok(formatter.format_assembly(
+        &intermediate.final_instructions,
+        &intermediate.all_function_labels,
+        intermediate.runtime_label_count,
+    ))
+}
+
+/// Compile HIR2 to executable via MIR
+///
+/// This function is the HIR2 parallel to compile_hir_via_mir_to_executable.
+#[instrument(skip_all, fields(optimize = enable_optimizations))]
+pub fn compile_hir2_via_mir_to_executable(
+    hir2: &Hir,
+    type_context: rue_ir::types::TypeContext,
+    enable_optimizations: bool,
+) -> Result<Vec<u8>, CompileError> {
+    // Use the HIR2 compilation pipeline
+    let intermediate =
+        compile_hir2_via_mir_to_intermediate(hir2, type_context, enable_optimizations)?;
+
+    // Generate machine code from intermediate results using trait abstraction
+    info!(target: "rue::elf", "Generating ELF executable");
+    let mut emitter = TargetRegistry::create_emitter(TargetRegistry::default_target());
+    emitter.set_function_labels(
+        intermediate.all_function_labels.clone(),
+        intermediate.runtime_label_count,
+    );
+    let code = emitter
+        .emit_all(&intermediate.final_instructions)
+        .map_err(rue_codegen::CodegenError::InvalidOperation)?;
+
+    // Extract symbol positions from emitter
+    let (_, symbols) = emitter.get_output();
+
+    // Validate that _start symbol exists
+    if !symbols.contains_key("_start") {
+        return Err(CompileError::Codegen(CodegenError::InvalidOperation(
+            "_start symbol not found in symbol table - runtime initialization failed".to_string(),
+        )));
+    }
+
+    // Get data and BSS section information
+    let (data_section, bss_size) = emitter.get_data_and_bss();
+
+    // Generate ELF executable using trait abstraction with section support
+    let elf_writer = TargetRegistry::create_executable_writer(TargetRegistry::default_target());
+    Ok(elf_writer.generate_executable_with_sections(&code, &symbols, data_section, bss_size))
 }
 
 /// Compile HIR to executable via MIR

@@ -28,3 +28,7 @@ criterion.workspace = true
 [[bench]]
 name = "ast_performance"
 harness = false
+
+[[bench]]
+name = "hir_comparison"
+harness = false

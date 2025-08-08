@@ -304,7 +304,7 @@ impl NodeList {
 /// String pool for deduplication
 pub struct StringPool {
     strings: Vec<String>,
-    lookup: rustc_hash::FxHashMap<String, StringIndex>,
+    lookup: std::collections::HashMap<String, StringIndex>,
 }
 
 impl Default for StringPool {
@@ -317,7 +317,7 @@ impl StringPool {
     pub fn new() -> Self {
         Self {
             strings: Vec::with_capacity(256),
-            lookup: rustc_hash::FxHashMap::default(),
+            lookup: std::collections::HashMap::new(),
         }
     }
 

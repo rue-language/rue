@@ -42,67 +42,27 @@ fn gcd(a: i32, b: i32) -> i32 {
 }
 
 fn lcm(a: i32, b: i32) -> i32 {
-    (a * b) / gcd(a, b)
+    a * b / gcd(a, b)
 }
 
-fn is_prime(n: i32) -> bool {
+fn is_prime(n: i32) -> i32 {
     if n <= 1 {
-        false
+        0
     } else {
-        let i: i32 = 2;
-        while i * i <= n {
-            if n % i == 0 {
-                return false;
-            }
-            i = i + 1;
-        }
-        true
+        is_prime_helper(n, 2)
     }
 }
 
-fn nth_prime(n: i32) -> i32 {
-    let count: i32 = 0;
-    let candidate: i32 = 2;
-    while count < n {
-        if is_prime(candidate) {
-            count = count + 1;
-            if count == n {
-                return candidate;
-            }
-        }
-        candidate = candidate + 1;
-    }
-    0
-}
-
-fn collatz_length(n: i32) -> i32 {
-    let steps: i32 = 0;
-    let current: i32 = n;
-    while current != 1 {
-        if current % 2 == 0 {
-            current = current / 2;
+fn is_prime_helper(n: i32, div: i32) -> i32 {
+    if div * div > n {
+        1
+    } else {
+        if n % div == 0 {
+            0
         } else {
-            current = current * 3 + 1;
+            is_prime_helper(n, div + 1)
         }
-        steps = steps + 1;
     }
-    steps
-}
-
-fn sum_of_divisors(n: i32) -> i32 {
-    let sum: i32 = 0;
-    let i: i32 = 1;
-    while i <= n / 2 {
-        if n % i == 0 {
-            sum = sum + i;
-        }
-        i = i + 1;
-    }
-    sum + n
-}
-
-fn is_perfect(n: i32) -> bool {
-    sum_of_divisors(n) - n == n
 }
 
 fn factorial(n: i32) -> i32 {
@@ -113,32 +73,71 @@ fn factorial(n: i32) -> i32 {
     }
 }
 
-fn power(base: i32, exp: i32) -> i32 {
-    if exp == 0 {
-        1
-    } else if exp % 2 == 0 {
-        let half: i32 = power(base, exp / 2);
-        half * half
+fn fibonacci(n: i32) -> i32 {
+    if n <= 1 {
+        n
     } else {
-        base * power(base, exp - 1)
+        fibonacci(n - 1) + fibonacci(n - 2)
+    }
+}
+
+fn ackermann(m: i32, n: i32) -> i32 {
+    if m == 0 {
+        n + 1
+    } else {
+        if n == 0 {
+            ackermann(m - 1, 1)
+        } else {
+            ackermann(m - 1, ackermann(m, n - 1))
+        }
+    }
+}
+
+fn collatz(n: i32) -> i32 {
+    if n == 1 {
+        0
+    } else {
+        if n % 2 == 0 {
+            1 + collatz(n / 2)
+        } else {
+            1 + collatz(3 * n + 1)
+        }
+    }
+}
+
+fn sum_of_divisors(n: i32) -> i32 {
+    sum_of_divisors_helper(n, 1, 0)
+}
+
+fn sum_of_divisors_helper(n: i32, div: i32, acc: i32) -> i32 {
+    if div >= n {
+        acc
+    } else {
+        if n % div == 0 {
+            sum_of_divisors_helper(n, div + 1, acc + div)
+        } else {
+            sum_of_divisors_helper(n, div + 1, acc)
+        }
     }
 }
 
 fn main() -> i32 {
-    let a: i32 = gcd(48, 18);
-    let b: i32 = lcm(12, 8);
-    let c: i32 = nth_prime(10);
-    let d: i32 = collatz_length(27);
-    let e: i32 = sum_of_divisors(28);
-    let f: i32 = factorial(6);
-    let g: i32 = power(2, 10);
+    let a: i32 = factorial(5);
+    let b: i32 = fibonacci(10);
+    let c: i32 = gcd(48, 18);
+    let d: i32 = lcm(12, 18);
+    let e: i32 = is_prime(17);
+    let f: i32 = ackermann(2, 2);
+    let g: i32 = collatz(27);
+    let h: i32 = sum_of_divisors(28);
     
-    a + b + c + d + e + f + g
+    a + b + c + d + e + f + g + h
 }
 "#;
 
-fn bench_compilation_paths(c: &mut Criterion) {
+fn bench_compilation(c: &mut Criterion) {
     let mut group = c.benchmark_group("compilation");
+    group.warm_up_time(Duration::from_secs(1));
     group.measurement_time(Duration::from_secs(10));
 
     for (name, source) in &[
@@ -218,8 +217,8 @@ fn main() -> i32 {
 
 criterion_group!(
     benches,
-    bench_compilation_paths,
-    bench_memory_usage,
-    bench_throughput
+    bench_compilation,
+    bench_throughput,
+    bench_memory_usage
 );
 criterion_main!(benches);
