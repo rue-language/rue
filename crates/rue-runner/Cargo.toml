@@ -26,3 +26,4 @@ indexmap.workspace = true
 # Rue workspace dependencies
 rue-compiler = { workspace = true }
 rue-diagnostic = { workspace = true }
+rue-snapshot = { workspace = true }

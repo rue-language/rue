@@ -1,0 +1,13 @@
+//!@ id T-FUNC-PARAM-SHADOW-001
+//!@ kind run-pass
+//!@ spec §4.1.1 Basic Scoping Principles
+//!@ expect exit 100
+
+fn test(x: i32) -> i32 {
+    let x: i32 = 100;  // Shadow parameter with local variable
+    x
+}
+
+fn main() -> i32 {
+    test(50)  // Should return 100, not 50
+}

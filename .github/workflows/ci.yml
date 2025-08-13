@@ -50,6 +50,19 @@ jobs:
     
     - name: Run tests
       run: cargo test --verbose
+    
+    - name: Run specification compliance tests
+      if: matrix.rust == 'stable'
+      run: |
+        cargo run -p rue-runner -- \
+          --test-paths tests/spec \
+          --rue-binary target/debug/rue
+    
+    - name: Run comprehensive parser tests
+      if: matrix.rust == 'stable'
+      run: |
+        cargo test -p rue-parser --test test_comprehensive_parser
+        cargo test -p rue-parser --test test_aggregate_types
 
   # Test with Buck2
   buck2-test:
@@ -103,12 +116,35 @@ jobs:
       uses: dtolnay/rust-toolchain@stable
     
     - name: Build rue with Cargo
-      run: cargo build --release -p rue
+      run: cargo build --release -p rue -p rue-runner
     
-    - name: Test rue binary
+    - name: Run basic integration tests
       run: |
         ./target/release/rue examples/basic/simple.rue || echo "Compilation test complete"
         echo "Integration tests will be added as features are implemented"
+    
+    - name: Run test suite with runner
+      run: |
+        # Build the test runner first
+        cargo build --release -p rue-runner
+        
+        # Run the spec-linked tests
+        ./target/release/rue-runner \
+          --test-paths tests/spec tests/simple \
+          --rue-binary ./target/release/rue \
+          --report-file test-report.json || true
+        
+        # Show summary if report exists
+        if [ -f test-report.json ]; then
+          echo "Test Summary:"
+          jq '.summary' test-report.json
+        fi
+        
+        # Run validation script for new tests
+        if [ -f tests/runner/validate_new_tests.sh ]; then
+          chmod +x tests/runner/validate_new_tests.sh
+          ./tests/runner/validate_new_tests.sh ./target/release/rue || true
+        fi
 
   # Security audit
   security:

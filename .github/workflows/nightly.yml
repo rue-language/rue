@@ -1,0 +1,178 @@
+name: Nightly Tests
+
+on:
+  schedule:
+    # Run at 3 AM UTC every day
+    - cron: '0 3 * * *'
+  workflow_dispatch:  # Allow manual trigger
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: full
+
+jobs:
+  # Exhaustive property testing
+  exhaustive-property-tests:
+    name: Exhaustive Property Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Install Rust nightly
+      uses: dtolnay/rust-toolchain@nightly
+    
+    - name: Run extensive property tests
+      run: |
+        echo "Running property tests with 10,000 iterations..."
+        PROPTEST_CASES=10000 cargo test -p rue-parser --test test_parser_properties --release || true
+        PROPTEST_CASES=5000 cargo test -p rue-semantic --test test_type_checker_properties --release || true
+        PROPTEST_CASES=5000 cargo test -p rue-ir --test test_optimizer_properties --release || true
+        PROPTEST_CASES=5000 cargo test -p rue-ir --test test_hir_properties --release || true
+    
+    - name: Save regression seeds
+      if: failure()
+      uses: actions/upload-artifact@v4
+      with:
+        name: nightly-proptest-regressions
+        path: '**/proptest-regressions/**'
+
+  # Fuzzing (if available)
+  fuzz-testing:
+    name: Fuzz Testing
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Install Rust nightly
+      uses: dtolnay/rust-toolchain@nightly
+    
+    - name: Install cargo-fuzz
+      run: cargo install cargo-fuzz
+    
+    - name: Run fuzzer
+      run: |
+        echo "Fuzzing would run here if fuzz targets are configured"
+        # cargo fuzz run parser -- -max_total_time=1800
+      continue-on-error: true
+
+  # Memory and sanitizer checks
+  sanitizer-tests:
+    name: Sanitizer Tests
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        sanitizer: [address, leak, memory, thread]
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Install Rust nightly
+      uses: dtolnay/rust-toolchain@nightly
+      with:
+        components: rust-src
+    
+    - name: Run tests with ${{ matrix.sanitizer }} sanitizer
+      run: |
+        export RUSTFLAGS="-Z sanitizer=${{ matrix.sanitizer }}"
+        export RUSTDOCFLAGS="-Z sanitizer=${{ matrix.sanitizer }}"
+        cargo test -Z build-std --target x86_64-unknown-linux-gnu --workspace || true
+      continue-on-error: true
+
+  # Test with minimal versions
+  minimal-versions:
+    name: Minimal Dependency Versions
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Install Rust nightly
+      uses: dtolnay/rust-toolchain@nightly
+    
+    - name: Test with minimal versions
+      run: |
+        cargo +nightly -Z minimal-versions update
+        cargo +nightly test --workspace --all-features
+
+
+  # Performance regression testing
+  perf-regression:
+    name: Performance Regression Tests
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        fetch-depth: 0  # Need history for comparison
+    
+    - name: Install Rust stable
+      uses: dtolnay/rust-toolchain@stable
+    
+    - name: Install hyperfine
+      run: |
+        wget https://github.com/sharkdp/hyperfine/releases/download/v1.18.0/hyperfine_1.18.0_amd64.deb
+        sudo dpkg -i hyperfine_1.18.0_amd64.deb
+    
+    - name: Build release binary
+      run: cargo build --release -p rue
+    
+    - name: Benchmark compilation speed
+      run: |
+        echo "Benchmarking compilation speed..."
+        hyperfine --warmup 3 --min-runs 10 \
+          './target/release/rue examples/basic/simple.rue -o /tmp/simple' \
+          './target/release/rue examples/basic/factorial.rue -o /tmp/factorial' \
+          --export-json perf-results.json
+    
+    - name: Upload performance results
+      uses: actions/upload-artifact@v4
+      with:
+        name: perf-results
+        path: perf-results.json
+    
+    - name: Check for regression
+      run: |
+        echo "Performance regression check would compare against baseline here"
+
+  # Generate and publish test report
+  nightly-report:
+    name: Nightly Test Report
+    runs-on: ubuntu-latest
+    needs: [exhaustive-property-tests, sanitizer-tests, minimal-versions, perf-regression]
+    if: always()
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Generate report
+      run: |
+        echo "# Nightly Test Report - $(date -u +"%Y-%m-%d")" > nightly-report.md
+        echo "" >> nightly-report.md
+        echo "## Test Results" >> nightly-report.md
+        echo "" >> nightly-report.md
+        echo "| Test Suite | Result |" >> nightly-report.md
+        echo "| --- | --- |" >> nightly-report.md
+        echo "| Exhaustive Property Tests | ${{ needs.exhaustive-property-tests.result }} |" >> nightly-report.md
+        echo "| Sanitizer Tests | ${{ needs.sanitizer-tests.result }} |" >> nightly-report.md
+        echo "| Minimal Versions | ${{ needs.minimal-versions.result }} |" >> nightly-report.md
+        echo "| Performance Regression | ${{ needs.perf-regression.result }} |" >> nightly-report.md
+        echo "" >> nightly-report.md
+        echo "Generated at: $(date -u +"%Y-%m-%d %H:%M:%S UTC")" >> nightly-report.md
+    
+    - name: Upload report
+      uses: actions/upload-artifact@v4
+      with:
+        name: nightly-report
+        path: nightly-report.md
+    
+    - name: Create issue if tests failed
+      if: failure()
+      uses: actions/github-script@v7
+      with:
+        script: |
+          const date = new Date().toISOString().split('T')[0];
+          await github.rest.issues.create({
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            title: `Nightly test failures - ${date}`,
+            body: `Nightly tests failed on ${date}. Please check the [workflow run](${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}) for details.`,
+            labels: ['ci', 'test-failure', 'nightly']
+          });

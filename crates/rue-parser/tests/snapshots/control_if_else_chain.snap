@@ -1,0 +1,492 @@
+Ok(
+    CstRoot {
+        items: [
+            Function(
+                FunctionNode {
+                    fn_token: Token {
+                        kind: Fn,
+                        span: Span {
+                            start: 1,
+                            end: 3,
+                        },
+                    },
+                    name: Token {
+                        kind: Ident(
+                            "main",
+                        ),
+                        span: Span {
+                            start: 4,
+                            end: 8,
+                        },
+                    },
+                    param_list: ParamListNode {
+                        open_paren: Token {
+                            kind: LeftParen,
+                            span: Span {
+                                start: 8,
+                                end: 9,
+                            },
+                        },
+                        params: [],
+                        close_paren: Token {
+                            kind: RightParen,
+                            span: Span {
+                                start: 9,
+                                end: 10,
+                            },
+                        },
+                        trivia: Trivia {
+                            leading: [],
+                            trailing: [],
+                        },
+                    },
+                    return_type: Some(
+                        ReturnTypeNode {
+                            arrow: Token {
+                                kind: Arrow,
+                                span: Span {
+                                    start: 11,
+                                    end: 13,
+                                },
+                            },
+                            ty: I32(
+                                Token {
+                                    kind: I32,
+                                    span: Span {
+                                        start: 14,
+                                        end: 17,
+                                    },
+                                },
+                            ),
+                            trivia: Trivia {
+                                leading: [],
+                                trailing: [],
+                            },
+                        },
+                    ),
+                    body: BlockNode {
+                        open_brace: Token {
+                            kind: LeftBrace,
+                            span: Span {
+                                start: 18,
+                                end: 19,
+                            },
+                        },
+                        statements: [
+                            Let(
+                                LetStatementNode {
+                                    let_token: Token {
+                                        kind: Let,
+                                        span: Span {
+                                            start: 24,
+                                            end: 27,
+                                        },
+                                    },
+                                    name: Token {
+                                        kind: Ident(
+                                            "x",
+                                        ),
+                                        span: Span {
+                                            start: 28,
+                                            end: 29,
+                                        },
+                                    },
+                                    type_annotation: None,
+                                    equals: Token {
+                                        kind: Assign,
+                                        span: Span {
+                                            start: 30,
+                                            end: 31,
+                                        },
+                                    },
+                                    value: Literal(
+                                        Token {
+                                            kind: Integer(
+                                                10,
+                                            ),
+                                            span: Span {
+                                                start: 32,
+                                                end: 34,
+                                            },
+                                        },
+                                    ),
+                                    semicolon: Token {
+                                        kind: Semicolon,
+                                        span: Span {
+                                            start: 34,
+                                            end: 35,
+                                        },
+                                    },
+                                    trivia: Trivia {
+                                        leading: [],
+                                        trailing: [],
+                                    },
+                                },
+                            ),
+                        ],
+                        final_expr: Some(
+                            If(
+                                IfStatementNode {
+                                    if_token: Token {
+                                        kind: If,
+                                        span: Span {
+                                            start: 45,
+                                            end: 47,
+                                        },
+                                    },
+                                    condition: Binary(
+                                        BinaryExprNode {
+                                            left: Identifier(
+                                                Token {
+                                                    kind: Ident(
+                                                        "x",
+                                                    ),
+                                                    span: Span {
+                                                        start: 48,
+                                                        end: 49,
+                                                    },
+                                                },
+                                            ),
+                                            operator: Token {
+                                                kind: Less,
+                                                span: Span {
+                                                    start: 50,
+                                                    end: 51,
+                                                },
+                                            },
+                                            right: Literal(
+                                                Token {
+                                                    kind: Integer(
+                                                        5,
+                                                    ),
+                                                    span: Span {
+                                                        start: 52,
+                                                        end: 53,
+                                                    },
+                                                },
+                                            ),
+                                            trivia: Trivia {
+                                                leading: [],
+                                                trailing: [],
+                                            },
+                                        },
+                                    ),
+                                    then_block: BlockNode {
+                                        open_brace: Token {
+                                            kind: LeftBrace,
+                                            span: Span {
+                                                start: 54,
+                                                end: 55,
+                                            },
+                                        },
+                                        statements: [],
+                                        final_expr: Some(
+                                            Literal(
+                                                Token {
+                                                    kind: Integer(
+                                                        1,
+                                                    ),
+                                                    span: Span {
+                                                        start: 64,
+                                                        end: 65,
+                                                    },
+                                                },
+                                            ),
+                                        ),
+                                        close_brace: Token {
+                                            kind: RightBrace,
+                                            span: Span {
+                                                start: 70,
+                                                end: 71,
+                                            },
+                                        },
+                                        trivia: Trivia {
+                                            leading: [],
+                                            trailing: [],
+                                        },
+                                    },
+                                    else_clause: Some(
+                                        ElseClauseNode {
+                                            else_token: Token {
+                                                kind: Else,
+                                                span: Span {
+                                                    start: 72,
+                                                    end: 76,
+                                                },
+                                            },
+                                            body: If(
+                                                IfStatementNode {
+                                                    if_token: Token {
+                                                        kind: If,
+                                                        span: Span {
+                                                            start: 77,
+                                                            end: 79,
+                                                        },
+                                                    },
+                                                    condition: Binary(
+                                                        BinaryExprNode {
+                                                            left: Identifier(
+                                                                Token {
+                                                                    kind: Ident(
+                                                                        "x",
+                                                                    ),
+                                                                    span: Span {
+                                                                        start: 80,
+                                                                        end: 81,
+                                                                    },
+                                                                },
+                                                            ),
+                                                            operator: Token {
+                                                                kind: Less,
+                                                                span: Span {
+                                                                    start: 82,
+                                                                    end: 83,
+                                                                },
+                                                            },
+                                                            right: Literal(
+                                                                Token {
+                                                                    kind: Integer(
+                                                                        10,
+                                                                    ),
+                                                                    span: Span {
+                                                                        start: 84,
+                                                                        end: 86,
+                                                                    },
+                                                                },
+                                                            ),
+                                                            trivia: Trivia {
+                                                                leading: [],
+                                                                trailing: [],
+                                                            },
+                                                        },
+                                                    ),
+                                                    then_block: BlockNode {
+                                                        open_brace: Token {
+                                                            kind: LeftBrace,
+                                                            span: Span {
+                                                                start: 87,
+                                                                end: 88,
+                                                            },
+                                                        },
+                                                        statements: [],
+                                                        final_expr: Some(
+                                                            Literal(
+                                                                Token {
+                                                                    kind: Integer(
+                                                                        2,
+                                                                    ),
+                                                                    span: Span {
+                                                                        start: 97,
+                                                                        end: 98,
+                                                                    },
+                                                                },
+                                                            ),
+                                                        ),
+                                                        close_brace: Token {
+                                                            kind: RightBrace,
+                                                            span: Span {
+                                                                start: 103,
+                                                                end: 104,
+                                                            },
+                                                        },
+                                                        trivia: Trivia {
+                                                            leading: [],
+                                                            trailing: [],
+                                                        },
+                                                    },
+                                                    else_clause: Some(
+                                                        ElseClauseNode {
+                                                            else_token: Token {
+                                                                kind: Else,
+                                                                span: Span {
+                                                                    start: 105,
+                                                                    end: 109,
+                                                                },
+                                                            },
+                                                            body: If(
+                                                                IfStatementNode {
+                                                                    if_token: Token {
+                                                                        kind: If,
+                                                                        span: Span {
+                                                                            start: 110,
+                                                                            end: 112,
+                                                                        },
+                                                                    },
+                                                                    condition: Binary(
+                                                                        BinaryExprNode {
+                                                                            left: Identifier(
+                                                                                Token {
+                                                                                    kind: Ident(
+                                                                                        "x",
+                                                                                    ),
+                                                                                    span: Span {
+                                                                                        start: 113,
+                                                                                        end: 114,
+                                                                                    },
+                                                                                },
+                                                                            ),
+                                                                            operator: Token {
+                                                                                kind: Equal,
+                                                                                span: Span {
+                                                                                    start: 115,
+                                                                                    end: 117,
+                                                                                },
+                                                                            },
+                                                                            right: Literal(
+                                                                                Token {
+                                                                                    kind: Integer(
+                                                                                        10,
+                                                                                    ),
+                                                                                    span: Span {
+                                                                                        start: 118,
+                                                                                        end: 120,
+                                                                                    },
+                                                                                },
+                                                                            ),
+                                                                            trivia: Trivia {
+                                                                                leading: [],
+                                                                                trailing: [],
+                                                                            },
+                                                                        },
+                                                                    ),
+                                                                    then_block: BlockNode {
+                                                                        open_brace: Token {
+                                                                            kind: LeftBrace,
+                                                                            span: Span {
+                                                                                start: 121,
+                                                                                end: 122,
+                                                                            },
+                                                                        },
+                                                                        statements: [],
+                                                                        final_expr: Some(
+                                                                            Literal(
+                                                                                Token {
+                                                                                    kind: Integer(
+                                                                                        3,
+                                                                                    ),
+                                                                                    span: Span {
+                                                                                        start: 131,
+                                                                                        end: 132,
+                                                                                    },
+                                                                                },
+                                                                            ),
+                                                                        ),
+                                                                        close_brace: Token {
+                                                                            kind: RightBrace,
+                                                                            span: Span {
+                                                                                start: 137,
+                                                                                end: 138,
+                                                                            },
+                                                                        },
+                                                                        trivia: Trivia {
+                                                                            leading: [],
+                                                                            trailing: [],
+                                                                        },
+                                                                    },
+                                                                    else_clause: Some(
+                                                                        ElseClauseNode {
+                                                                            else_token: Token {
+                                                                                kind: Else,
+                                                                                span: Span {
+                                                                                    start: 139,
+                                                                                    end: 143,
+                                                                                },
+                                                                            },
+                                                                            body: Block(
+                                                                                BlockNode {
+                                                                                    open_brace: Token {
+                                                                                        kind: LeftBrace,
+                                                                                        span: Span {
+                                                                                            start: 144,
+                                                                                            end: 145,
+                                                                                        },
+                                                                                    },
+                                                                                    statements: [],
+                                                                                    final_expr: Some(
+                                                                                        Literal(
+                                                                                            Token {
+                                                                                                kind: Integer(
+                                                                                                    4,
+                                                                                                ),
+                                                                                                span: Span {
+                                                                                                    start: 154,
+                                                                                                    end: 155,
+                                                                                                },
+                                                                                            },
+                                                                                        ),
+                                                                                    ),
+                                                                                    close_brace: Token {
+                                                                                        kind: RightBrace,
+                                                                                        span: Span {
+                                                                                            start: 160,
+                                                                                            end: 161,
+                                                                                        },
+                                                                                    },
+                                                                                    trivia: Trivia {
+                                                                                        leading: [],
+                                                                                        trailing: [],
+                                                                                    },
+                                                                                },
+                                                                            ),
+                                                                            trivia: Trivia {
+                                                                                leading: [],
+                                                                                trailing: [],
+                                                                            },
+                                                                        },
+                                                                    ),
+                                                                    trivia: Trivia {
+                                                                        leading: [],
+                                                                        trailing: [],
+                                                                    },
+                                                                },
+                                                            ),
+                                                            trivia: Trivia {
+                                                                leading: [],
+                                                                trailing: [],
+                                                            },
+                                                        },
+                                                    ),
+                                                    trivia: Trivia {
+                                                        leading: [],
+                                                        trailing: [],
+                                                    },
+                                                },
+                                            ),
+                                            trivia: Trivia {
+                                                leading: [],
+                                                trailing: [],
+                                            },
+                                        },
+                                    ),
+                                    trivia: Trivia {
+                                        leading: [],
+                                        trailing: [],
+                                    },
+                                },
+                            ),
+                        ),
+                        close_brace: Token {
+                            kind: RightBrace,
+                            span: Span {
+                                start: 162,
+                                end: 163,
+                            },
+                        },
+                        trivia: Trivia {
+                            leading: [],
+                            trailing: [],
+                        },
+                    },
+                    trivia: Trivia {
+                        leading: [],
+                        trailing: [],
+                    },
+                },
+            ),
+        ],
+        trivia: Trivia {
+            leading: [],
+            trailing: [],
+        },
+    },
+)

@@ -1,0 +1,35 @@
+//!@ id T-COMP-OPS-001
+//!@ kind run-pass
+//!@ spec §3.1 Grammar - binary_operator
+//!@ expect exit 6
+
+fn main() -> i32 {
+    // Test that all comparison operators work correctly
+    // Using nested ifs since assignment in if branches has issues
+    
+    if 5 < 10 {
+        if 10 > 5 {
+            if 5 <= 5 {
+                if 10 >= 10 {
+                    if 5 == 5 {
+                        if 5 != 10 {
+                            6  // All conditions passed
+                        } else {
+                            5
+                        }
+                    } else {
+                        4
+                    }
+                } else {
+                    3
+                }
+            } else {
+                2
+            }
+        } else {
+            1
+        }
+    } else {
+        0
+    }
+}

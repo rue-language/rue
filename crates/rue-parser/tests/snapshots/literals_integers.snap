@@ -1,0 +1,374 @@
+Ok(
+    CstRoot {
+        items: [
+            Function(
+                FunctionNode {
+                    fn_token: Token {
+                        kind: Fn,
+                        span: Span {
+                            start: 1,
+                            end: 3,
+                        },
+                    },
+                    name: Token {
+                        kind: Ident(
+                            "main",
+                        ),
+                        span: Span {
+                            start: 4,
+                            end: 8,
+                        },
+                    },
+                    param_list: ParamListNode {
+                        open_paren: Token {
+                            kind: LeftParen,
+                            span: Span {
+                                start: 8,
+                                end: 9,
+                            },
+                        },
+                        params: [],
+                        close_paren: Token {
+                            kind: RightParen,
+                            span: Span {
+                                start: 9,
+                                end: 10,
+                            },
+                        },
+                        trivia: Trivia {
+                            leading: [],
+                            trailing: [],
+                        },
+                    },
+                    return_type: Some(
+                        ReturnTypeNode {
+                            arrow: Token {
+                                kind: Arrow,
+                                span: Span {
+                                    start: 11,
+                                    end: 13,
+                                },
+                            },
+                            ty: I32(
+                                Token {
+                                    kind: I32,
+                                    span: Span {
+                                        start: 14,
+                                        end: 17,
+                                    },
+                                },
+                            ),
+                            trivia: Trivia {
+                                leading: [],
+                                trailing: [],
+                            },
+                        },
+                    ),
+                    body: BlockNode {
+                        open_brace: Token {
+                            kind: LeftBrace,
+                            span: Span {
+                                start: 18,
+                                end: 19,
+                            },
+                        },
+                        statements: [
+                            Let(
+                                LetStatementNode {
+                                    let_token: Token {
+                                        kind: Let,
+                                        span: Span {
+                                            start: 24,
+                                            end: 27,
+                                        },
+                                    },
+                                    name: Token {
+                                        kind: Ident(
+                                            "a",
+                                        ),
+                                        span: Span {
+                                            start: 28,
+                                            end: 29,
+                                        },
+                                    },
+                                    type_annotation: None,
+                                    equals: Token {
+                                        kind: Assign,
+                                        span: Span {
+                                            start: 30,
+                                            end: 31,
+                                        },
+                                    },
+                                    value: Literal(
+                                        Token {
+                                            kind: Integer(
+                                                0,
+                                            ),
+                                            span: Span {
+                                                start: 32,
+                                                end: 33,
+                                            },
+                                        },
+                                    ),
+                                    semicolon: Token {
+                                        kind: Semicolon,
+                                        span: Span {
+                                            start: 33,
+                                            end: 34,
+                                        },
+                                    },
+                                    trivia: Trivia {
+                                        leading: [],
+                                        trailing: [],
+                                    },
+                                },
+                            ),
+                            Let(
+                                LetStatementNode {
+                                    let_token: Token {
+                                        kind: Let,
+                                        span: Span {
+                                            start: 39,
+                                            end: 42,
+                                        },
+                                    },
+                                    name: Token {
+                                        kind: Ident(
+                                            "b",
+                                        ),
+                                        span: Span {
+                                            start: 43,
+                                            end: 44,
+                                        },
+                                    },
+                                    type_annotation: None,
+                                    equals: Token {
+                                        kind: Assign,
+                                        span: Span {
+                                            start: 45,
+                                            end: 46,
+                                        },
+                                    },
+                                    value: Literal(
+                                        Token {
+                                            kind: Integer(
+                                                42,
+                                            ),
+                                            span: Span {
+                                                start: 47,
+                                                end: 49,
+                                            },
+                                        },
+                                    ),
+                                    semicolon: Token {
+                                        kind: Semicolon,
+                                        span: Span {
+                                            start: 49,
+                                            end: 50,
+                                        },
+                                    },
+                                    trivia: Trivia {
+                                        leading: [],
+                                        trailing: [],
+                                    },
+                                },
+                            ),
+                            Let(
+                                LetStatementNode {
+                                    let_token: Token {
+                                        kind: Let,
+                                        span: Span {
+                                            start: 55,
+                                            end: 58,
+                                        },
+                                    },
+                                    name: Token {
+                                        kind: Ident(
+                                            "c",
+                                        ),
+                                        span: Span {
+                                            start: 59,
+                                            end: 60,
+                                        },
+                                    },
+                                    type_annotation: None,
+                                    equals: Token {
+                                        kind: Assign,
+                                        span: Span {
+                                            start: 61,
+                                            end: 62,
+                                        },
+                                    },
+                                    value: Literal(
+                                        Token {
+                                            kind: Integer(
+                                                999999999,
+                                            ),
+                                            span: Span {
+                                                start: 63,
+                                                end: 72,
+                                            },
+                                        },
+                                    ),
+                                    semicolon: Token {
+                                        kind: Semicolon,
+                                        span: Span {
+                                            start: 72,
+                                            end: 73,
+                                        },
+                                    },
+                                    trivia: Trivia {
+                                        leading: [],
+                                        trailing: [],
+                                    },
+                                },
+                            ),
+                            Let(
+                                LetStatementNode {
+                                    let_token: Token {
+                                        kind: Let,
+                                        span: Span {
+                                            start: 78,
+                                            end: 81,
+                                        },
+                                    },
+                                    name: Token {
+                                        kind: Ident(
+                                            "d",
+                                        ),
+                                        span: Span {
+                                            start: 82,
+                                            end: 83,
+                                        },
+                                    },
+                                    type_annotation: None,
+                                    equals: Token {
+                                        kind: Assign,
+                                        span: Span {
+                                            start: 84,
+                                            end: 85,
+                                        },
+                                    },
+                                    value: Literal(
+                                        Token {
+                                            kind: Integer(
+                                                -1,
+                                            ),
+                                            span: Span {
+                                                start: 86,
+                                                end: 88,
+                                            },
+                                        },
+                                    ),
+                                    semicolon: Token {
+                                        kind: Semicolon,
+                                        span: Span {
+                                            start: 88,
+                                            end: 89,
+                                        },
+                                    },
+                                    trivia: Trivia {
+                                        leading: [],
+                                        trailing: [],
+                                    },
+                                },
+                            ),
+                            Let(
+                                LetStatementNode {
+                                    let_token: Token {
+                                        kind: Let,
+                                        span: Span {
+                                            start: 94,
+                                            end: 97,
+                                        },
+                                    },
+                                    name: Token {
+                                        kind: Ident(
+                                            "e",
+                                        ),
+                                        span: Span {
+                                            start: 98,
+                                            end: 99,
+                                        },
+                                    },
+                                    type_annotation: None,
+                                    equals: Token {
+                                        kind: Assign,
+                                        span: Span {
+                                            start: 100,
+                                            end: 101,
+                                        },
+                                    },
+                                    value: Literal(
+                                        Token {
+                                            kind: Integer(
+                                                -2147483648,
+                                            ),
+                                            span: Span {
+                                                start: 102,
+                                                end: 113,
+                                            },
+                                        },
+                                    ),
+                                    semicolon: Token {
+                                        kind: Semicolon,
+                                        span: Span {
+                                            start: 113,
+                                            end: 114,
+                                        },
+                                    },
+                                    trivia: Trivia {
+                                        leading: [],
+                                        trailing: [
+                                            Token {
+                                                kind: Comment(
+                                                    " i32::MIN",
+                                                ),
+                                                span: Span {
+                                                    start: 116,
+                                                    end: 127,
+                                                },
+                                            },
+                                        ],
+                                    },
+                                },
+                            ),
+                        ],
+                        final_expr: Some(
+                            Literal(
+                                Token {
+                                    kind: Integer(
+                                        42,
+                                    ),
+                                    span: Span {
+                                        start: 132,
+                                        end: 134,
+                                    },
+                                },
+                            ),
+                        ),
+                        close_brace: Token {
+                            kind: RightBrace,
+                            span: Span {
+                                start: 135,
+                                end: 136,
+                            },
+                        },
+                        trivia: Trivia {
+                            leading: [],
+                            trailing: [],
+                        },
+                    },
+                    trivia: Trivia {
+                        leading: [],
+                        trailing: [],
+                    },
+                },
+            ),
+        ],
+        trivia: Trivia {
+            leading: [],
+            trailing: [],
+        },
+    },
+)

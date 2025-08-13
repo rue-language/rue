@@ -1,0 +1,10 @@
+//!@ id T-TYPE-OPERATOR-FAIL-001
+//!@ kind compile-fail
+//!@ spec §4 Static Semantics
+//!@ expect stderr "type mismatch"
+
+fn main() -> i32 {
+    let x: bool = true;
+    let y: i32 = 5;
+    x + y  // Type error: cannot add bool and i32
+}

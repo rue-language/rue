@@ -1,0 +1,12 @@
+//!@ id T-FUNC-PARAMS-001
+//!@ kind run-pass
+//!@ spec §3.1 Grammar - parameters
+//!@ expect exit 30
+
+fn add3(a: i32, b: i32, c: i32) -> i32 {
+    a + b + c
+}
+
+fn main() -> i32 {
+    add3(5, 10, 15)  // 5 + 10 + 15 = 30
+}

@@ -62,11 +62,12 @@ build_tools() {
 run_basic_tests() {
     log_info "Running basic test suite..."
     
+    cd "$PROJECT_ROOT"
     "$RUNNER_BINARY" \
         --rue-binary "$RUE_BINARY" \
-        --test-paths tests/runner \
+        --test-paths tests \
         --spec-file spec/norms.toml \
-        --snapshot-dir tests/runner/snapshots \
+        --snapshot-dir tests/snapshots \
         --verbose
     
     local exit_code=$?
@@ -84,11 +85,12 @@ run_tests_with_report() {
     
     log_info "Running tests with JSON report output..."
     
+    cd "$PROJECT_ROOT"
     "$RUNNER_BINARY" \
         --rue-binary "$RUE_BINARY" \
-        --test-paths tests/runner \
+        --test-paths tests \
         --spec-file spec/norms.toml \
-        --snapshot-dir tests/runner/snapshots \
+        --snapshot-dir tests/snapshots \
         --report-file "$report_file" \
         --verbose
         
@@ -108,11 +110,12 @@ run_tests_with_report() {
 update_snapshots() {
     log_info "Updating golden snapshots..."
     
+    cd "$PROJECT_ROOT"
     "$RUNNER_BINARY" \
         --rue-binary "$RUE_BINARY" \
-        --test-paths tests/runner \
+        --test-paths tests \
         --spec-file spec/norms.toml \
-        --snapshot-dir tests/runner/snapshots \
+        --snapshot-dir tests/snapshots \
         --update-snapshots \
         --verbose
         
@@ -125,11 +128,12 @@ run_filtered_tests() {
     
     log_info "Running filtered tests (pattern: $filter)..."
     
+    cd "$PROJECT_ROOT"
     "$RUNNER_BINARY" \
         --rue-binary "$RUE_BINARY" \
-        --test-paths tests/runner \
+        --test-paths tests \
         --spec-file spec/norms.toml \
-        --snapshot-dir tests/runner/snapshots \
+        --snapshot-dir tests/snapshots \
         --filter "$filter" \
         --verbose
 }
@@ -141,11 +145,12 @@ run_spec_compliance() {
     # Run all tests and generate detailed report
     local report_file="spec-compliance-report.json"
     
+    cd "$PROJECT_ROOT"
     "$RUNNER_BINARY" \
         --rue-binary "$RUE_BINARY" \
-        --test-paths tests/runner examples \
+        --test-paths tests examples \
         --spec-file spec/norms.toml \
-        --snapshot-dir tests/runner/snapshots \
+        --snapshot-dir tests/snapshots \
         --report-file "$report_file" \
         --verbose
         
@@ -169,6 +174,7 @@ benchmark_tests() {
     local iterations=3
     local total_time=0
     
+    cd "$PROJECT_ROOT"
     for i in $(seq 1 $iterations); do
         log_info "Iteration $i/$iterations..."
         
@@ -176,9 +182,9 @@ benchmark_tests() {
         
         "$RUNNER_BINARY" \
             --rue-binary "$RUE_BINARY" \
-            --test-paths tests/runner \
+            --test-paths tests \
             --spec-file spec/norms.toml \
-            --snapshot-dir tests/runner/snapshots \
+            --snapshot-dir tests/snapshots \
             --ignore-failures > /dev/null 2>&1
             
         local end_time=$(date +%s%N)

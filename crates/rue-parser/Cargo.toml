@@ -12,3 +12,9 @@ thiserror.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 toml.workspace = true
+
+[dev-dependencies]
+rue-snapshot.workspace = true
+anyhow.workspace = true
+proptest.workspace = true
+regex.workspace = true

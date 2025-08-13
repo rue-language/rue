@@ -1,0 +1,20 @@
+//!@ id T-CONTROL-WHILE-002
+//!@ kind run-pass
+//!@ spec §3.1 Grammar - while_expression
+//!@ expect exit 20
+//!@ skip https://github.com/steveklabnik/rue/issues/143
+
+fn main() -> i32 {
+    let x: i32 = 0;
+    let y: i32 = 0;
+    
+    while x < 2 {
+        y = 0;
+        while y < 10 {
+            y = y + 1;
+        };
+        x = x + 1;
+    };
+    
+    y * x  // 10 * 2 = 20
+}

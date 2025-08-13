@@ -19,6 +19,8 @@ tracing.workspace = true
 tempfile.workspace = true
 criterion.workspace = true
 rue-parser.workspace = true
+rue-snapshot.workspace = true
+rue-test-utils = { path = "../rue-test-utils" }
 
 [[bench]]
 name = "compiler"

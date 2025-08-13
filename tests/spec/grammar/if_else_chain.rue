@@ -1,0 +1,23 @@
+//!@ id T-CONTROL-IF-CHAIN-001
+//!@ kind run-pass
+//!@ spec §3.1 Grammar - else_clause
+//!@ expect exit 3
+
+fn main() -> i32 {
+    let x: i32 = 15;
+    
+    // Nested if-else since else-if chains aren't supported yet
+    if x < 10 {
+        1
+    } else {
+        if x < 20 {
+            3
+        } else {
+            if x < 30 {
+                5
+            } else {
+                7
+            }
+        }
+    }
+}

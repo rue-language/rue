@@ -5,8 +5,8 @@
 
 #[cfg(test)]
 mod tests {
-    use crate::simple_snapshot::SnapshotTest;
     use crate::{CstRoot, parse_with_recovery};
+    use rue_snapshot::Snapshot;
 
     fn lex_and_parse(source: &str) -> Result<CstRoot, Vec<rue_diagnostic::Diagnostic>> {
         parse_with_recovery(source, "test.rue")
@@ -26,7 +26,10 @@ mod tests {
             ),
         };
 
-        SnapshotTest::new(test_name).assert_snapshot(&output);
+        // Use the new snapshot system - these go in src/snapshots
+        Snapshot::new(test_name)
+            .assert(&output)
+            .expect("Snapshot assertion failed");
     }
 
     #[test]

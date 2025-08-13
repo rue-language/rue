@@ -1,0 +1,825 @@
+Ok(
+    CstRoot {
+        items: [
+            Function(
+                FunctionNode {
+                    fn_token: Token {
+                        kind: Fn,
+                        span: Span {
+                            start: 1,
+                            end: 3,
+                        },
+                    },
+                    name: Token {
+                        kind: Ident(
+                            "main",
+                        ),
+                        span: Span {
+                            start: 4,
+                            end: 8,
+                        },
+                    },
+                    param_list: ParamListNode {
+                        open_paren: Token {
+                            kind: LeftParen,
+                            span: Span {
+                                start: 8,
+                                end: 9,
+                            },
+                        },
+                        params: [],
+                        close_paren: Token {
+                            kind: RightParen,
+                            span: Span {
+                                start: 9,
+                                end: 10,
+                            },
+                        },
+                        trivia: Trivia {
+                            leading: [],
+                            trailing: [],
+                        },
+                    },
+                    return_type: Some(
+                        ReturnTypeNode {
+                            arrow: Token {
+                                kind: Arrow,
+                                span: Span {
+                                    start: 11,
+                                    end: 13,
+                                },
+                            },
+                            ty: I32(
+                                Token {
+                                    kind: I32,
+                                    span: Span {
+                                        start: 14,
+                                        end: 17,
+                                    },
+                                },
+                            ),
+                            trivia: Trivia {
+                                leading: [],
+                                trailing: [],
+                            },
+                        },
+                    ),
+                    body: BlockNode {
+                        open_brace: Token {
+                            kind: LeftBrace,
+                            span: Span {
+                                start: 18,
+                                end: 19,
+                            },
+                        },
+                        statements: [
+                            Let(
+                                LetStatementNode {
+                                    let_token: Token {
+                                        kind: Let,
+                                        span: Span {
+                                            start: 24,
+                                            end: 27,
+                                        },
+                                    },
+                                    name: Token {
+                                        kind: Ident(
+                                            "tuple",
+                                        ),
+                                        span: Span {
+                                            start: 28,
+                                            end: 33,
+                                        },
+                                    },
+                                    type_annotation: None,
+                                    equals: Token {
+                                        kind: Assign,
+                                        span: Span {
+                                            start: 34,
+                                            end: 35,
+                                        },
+                                    },
+                                    value: TupleLiteral(
+                                        TupleLiteralNode {
+                                            open_paren: Token {
+                                                kind: LeftParen,
+                                                span: Span {
+                                                    start: 36,
+                                                    end: 37,
+                                                },
+                                            },
+                                            elements: [
+                                                Literal(
+                                                    Token {
+                                                        kind: Integer(
+                                                            10,
+                                                        ),
+                                                        span: Span {
+                                                            start: 37,
+                                                            end: 39,
+                                                        },
+                                                    },
+                                                ),
+                                                Literal(
+                                                    Token {
+                                                        kind: Integer(
+                                                            20,
+                                                        ),
+                                                        span: Span {
+                                                            start: 41,
+                                                            end: 43,
+                                                        },
+                                                    },
+                                                ),
+                                                Literal(
+                                                    Token {
+                                                        kind: Integer(
+                                                            30,
+                                                        ),
+                                                        span: Span {
+                                                            start: 45,
+                                                            end: 47,
+                                                        },
+                                                    },
+                                                ),
+                                                Literal(
+                                                    Token {
+                                                        kind: Integer(
+                                                            40,
+                                                        ),
+                                                        span: Span {
+                                                            start: 49,
+                                                            end: 51,
+                                                        },
+                                                    },
+                                                ),
+                                                Literal(
+                                                    Token {
+                                                        kind: Integer(
+                                                            50,
+                                                        ),
+                                                        span: Span {
+                                                            start: 53,
+                                                            end: 55,
+                                                        },
+                                                    },
+                                                ),
+                                            ],
+                                            close_paren: Token {
+                                                kind: RightParen,
+                                                span: Span {
+                                                    start: 55,
+                                                    end: 56,
+                                                },
+                                            },
+                                            trivia: Trivia {
+                                                leading: [],
+                                                trailing: [],
+                                            },
+                                        },
+                                    ),
+                                    semicolon: Token {
+                                        kind: Semicolon,
+                                        span: Span {
+                                            start: 56,
+                                            end: 57,
+                                        },
+                                    },
+                                    trivia: Trivia {
+                                        leading: [],
+                                        trailing: [
+                                            Token {
+                                                kind: Comment(
+                                                    " Tuple indexing",
+                                                ),
+                                                span: Span {
+                                                    start: 67,
+                                                    end: 84,
+                                                },
+                                            },
+                                        ],
+                                    },
+                                },
+                            ),
+                            Let(
+                                LetStatementNode {
+                                    let_token: Token {
+                                        kind: Let,
+                                        span: Span {
+                                            start: 89,
+                                            end: 92,
+                                        },
+                                    },
+                                    name: Token {
+                                        kind: Ident(
+                                            "first",
+                                        ),
+                                        span: Span {
+                                            start: 93,
+                                            end: 98,
+                                        },
+                                    },
+                                    type_annotation: None,
+                                    equals: Token {
+                                        kind: Assign,
+                                        span: Span {
+                                            start: 99,
+                                            end: 100,
+                                        },
+                                    },
+                                    value: FieldAccess(
+                                        FieldAccessNode {
+                                            base: Identifier(
+                                                Token {
+                                                    kind: Ident(
+                                                        "tuple",
+                                                    ),
+                                                    span: Span {
+                                                        start: 101,
+                                                        end: 106,
+                                                    },
+                                                },
+                                            ),
+                                            dot: Token {
+                                                kind: Dot,
+                                                span: Span {
+                                                    start: 106,
+                                                    end: 107,
+                                                },
+                                            },
+                                            field: Positional(
+                                                Token {
+                                                    kind: Integer(
+                                                        0,
+                                                    ),
+                                                    span: Span {
+                                                        start: 107,
+                                                        end: 108,
+                                                    },
+                                                },
+                                            ),
+                                            trivia: Trivia {
+                                                leading: [],
+                                                trailing: [],
+                                            },
+                                        },
+                                    ),
+                                    semicolon: Token {
+                                        kind: Semicolon,
+                                        span: Span {
+                                            start: 108,
+                                            end: 109,
+                                        },
+                                    },
+                                    trivia: Trivia {
+                                        leading: [],
+                                        trailing: [],
+                                    },
+                                },
+                            ),
+                            Let(
+                                LetStatementNode {
+                                    let_token: Token {
+                                        kind: Let,
+                                        span: Span {
+                                            start: 114,
+                                            end: 117,
+                                        },
+                                    },
+                                    name: Token {
+                                        kind: Ident(
+                                            "second",
+                                        ),
+                                        span: Span {
+                                            start: 118,
+                                            end: 124,
+                                        },
+                                    },
+                                    type_annotation: None,
+                                    equals: Token {
+                                        kind: Assign,
+                                        span: Span {
+                                            start: 125,
+                                            end: 126,
+                                        },
+                                    },
+                                    value: FieldAccess(
+                                        FieldAccessNode {
+                                            base: Identifier(
+                                                Token {
+                                                    kind: Ident(
+                                                        "tuple",
+                                                    ),
+                                                    span: Span {
+                                                        start: 127,
+                                                        end: 132,
+                                                    },
+                                                },
+                                            ),
+                                            dot: Token {
+                                                kind: Dot,
+                                                span: Span {
+                                                    start: 132,
+                                                    end: 133,
+                                                },
+                                            },
+                                            field: Positional(
+                                                Token {
+                                                    kind: Integer(
+                                                        1,
+                                                    ),
+                                                    span: Span {
+                                                        start: 133,
+                                                        end: 134,
+                                                    },
+                                                },
+                                            ),
+                                            trivia: Trivia {
+                                                leading: [],
+                                                trailing: [],
+                                            },
+                                        },
+                                    ),
+                                    semicolon: Token {
+                                        kind: Semicolon,
+                                        span: Span {
+                                            start: 134,
+                                            end: 135,
+                                        },
+                                    },
+                                    trivia: Trivia {
+                                        leading: [],
+                                        trailing: [],
+                                    },
+                                },
+                            ),
+                            Let(
+                                LetStatementNode {
+                                    let_token: Token {
+                                        kind: Let,
+                                        span: Span {
+                                            start: 140,
+                                            end: 143,
+                                        },
+                                    },
+                                    name: Token {
+                                        kind: Ident(
+                                            "last",
+                                        ),
+                                        span: Span {
+                                            start: 144,
+                                            end: 148,
+                                        },
+                                    },
+                                    type_annotation: None,
+                                    equals: Token {
+                                        kind: Assign,
+                                        span: Span {
+                                            start: 149,
+                                            end: 150,
+                                        },
+                                    },
+                                    value: FieldAccess(
+                                        FieldAccessNode {
+                                            base: Identifier(
+                                                Token {
+                                                    kind: Ident(
+                                                        "tuple",
+                                                    ),
+                                                    span: Span {
+                                                        start: 151,
+                                                        end: 156,
+                                                    },
+                                                },
+                                            ),
+                                            dot: Token {
+                                                kind: Dot,
+                                                span: Span {
+                                                    start: 156,
+                                                    end: 157,
+                                                },
+                                            },
+                                            field: Positional(
+                                                Token {
+                                                    kind: Integer(
+                                                        4,
+                                                    ),
+                                                    span: Span {
+                                                        start: 157,
+                                                        end: 158,
+                                                    },
+                                                },
+                                            ),
+                                            trivia: Trivia {
+                                                leading: [],
+                                                trailing: [],
+                                            },
+                                        },
+                                    ),
+                                    semicolon: Token {
+                                        kind: Semicolon,
+                                        span: Span {
+                                            start: 158,
+                                            end: 159,
+                                        },
+                                    },
+                                    trivia: Trivia {
+                                        leading: [],
+                                        trailing: [
+                                            Token {
+                                                kind: Comment(
+                                                    " Nested tuple access",
+                                                ),
+                                                span: Span {
+                                                    start: 169,
+                                                    end: 191,
+                                                },
+                                            },
+                                        ],
+                                    },
+                                },
+                            ),
+                            Let(
+                                LetStatementNode {
+                                    let_token: Token {
+                                        kind: Let,
+                                        span: Span {
+                                            start: 196,
+                                            end: 199,
+                                        },
+                                    },
+                                    name: Token {
+                                        kind: Ident(
+                                            "nested",
+                                        ),
+                                        span: Span {
+                                            start: 200,
+                                            end: 206,
+                                        },
+                                    },
+                                    type_annotation: None,
+                                    equals: Token {
+                                        kind: Assign,
+                                        span: Span {
+                                            start: 207,
+                                            end: 208,
+                                        },
+                                    },
+                                    value: TupleLiteral(
+                                        TupleLiteralNode {
+                                            open_paren: Token {
+                                                kind: LeftParen,
+                                                span: Span {
+                                                    start: 209,
+                                                    end: 210,
+                                                },
+                                            },
+                                            elements: [
+                                                TupleLiteral(
+                                                    TupleLiteralNode {
+                                                        open_paren: Token {
+                                                            kind: LeftParen,
+                                                            span: Span {
+                                                                start: 210,
+                                                                end: 211,
+                                                            },
+                                                        },
+                                                        elements: [
+                                                            Literal(
+                                                                Token {
+                                                                    kind: Integer(
+                                                                        1,
+                                                                    ),
+                                                                    span: Span {
+                                                                        start: 211,
+                                                                        end: 212,
+                                                                    },
+                                                                },
+                                                            ),
+                                                            Literal(
+                                                                Token {
+                                                                    kind: Integer(
+                                                                        2,
+                                                                    ),
+                                                                    span: Span {
+                                                                        start: 214,
+                                                                        end: 215,
+                                                                    },
+                                                                },
+                                                            ),
+                                                        ],
+                                                        close_paren: Token {
+                                                            kind: RightParen,
+                                                            span: Span {
+                                                                start: 215,
+                                                                end: 216,
+                                                            },
+                                                        },
+                                                        trivia: Trivia {
+                                                            leading: [],
+                                                            trailing: [],
+                                                        },
+                                                    },
+                                                ),
+                                                TupleLiteral(
+                                                    TupleLiteralNode {
+                                                        open_paren: Token {
+                                                            kind: LeftParen,
+                                                            span: Span {
+                                                                start: 218,
+                                                                end: 219,
+                                                            },
+                                                        },
+                                                        elements: [
+                                                            Literal(
+                                                                Token {
+                                                                    kind: Integer(
+                                                                        3,
+                                                                    ),
+                                                                    span: Span {
+                                                                        start: 219,
+                                                                        end: 220,
+                                                                    },
+                                                                },
+                                                            ),
+                                                            Literal(
+                                                                Token {
+                                                                    kind: Integer(
+                                                                        4,
+                                                                    ),
+                                                                    span: Span {
+                                                                        start: 222,
+                                                                        end: 223,
+                                                                    },
+                                                                },
+                                                            ),
+                                                        ],
+                                                        close_paren: Token {
+                                                            kind: RightParen,
+                                                            span: Span {
+                                                                start: 223,
+                                                                end: 224,
+                                                            },
+                                                        },
+                                                        trivia: Trivia {
+                                                            leading: [],
+                                                            trailing: [],
+                                                        },
+                                                    },
+                                                ),
+                                            ],
+                                            close_paren: Token {
+                                                kind: RightParen,
+                                                span: Span {
+                                                    start: 224,
+                                                    end: 225,
+                                                },
+                                            },
+                                            trivia: Trivia {
+                                                leading: [],
+                                                trailing: [],
+                                            },
+                                        },
+                                    ),
+                                    semicolon: Token {
+                                        kind: Semicolon,
+                                        span: Span {
+                                            start: 225,
+                                            end: 226,
+                                        },
+                                    },
+                                    trivia: Trivia {
+                                        leading: [],
+                                        trailing: [],
+                                    },
+                                },
+                            ),
+                            Let(
+                                LetStatementNode {
+                                    let_token: Token {
+                                        kind: Let,
+                                        span: Span {
+                                            start: 231,
+                                            end: 234,
+                                        },
+                                    },
+                                    name: Token {
+                                        kind: Ident(
+                                            "val",
+                                        ),
+                                        span: Span {
+                                            start: 235,
+                                            end: 238,
+                                        },
+                                    },
+                                    type_annotation: None,
+                                    equals: Token {
+                                        kind: Assign,
+                                        span: Span {
+                                            start: 239,
+                                            end: 240,
+                                        },
+                                    },
+                                    value: FieldAccess(
+                                        FieldAccessNode {
+                                            base: FieldAccess(
+                                                FieldAccessNode {
+                                                    base: Identifier(
+                                                        Token {
+                                                            kind: Ident(
+                                                                "nested",
+                                                            ),
+                                                            span: Span {
+                                                                start: 241,
+                                                                end: 247,
+                                                            },
+                                                        },
+                                                    ),
+                                                    dot: Token {
+                                                        kind: Dot,
+                                                        span: Span {
+                                                            start: 247,
+                                                            end: 248,
+                                                        },
+                                                    },
+                                                    field: Positional(
+                                                        Token {
+                                                            kind: Integer(
+                                                                0,
+                                                            ),
+                                                            span: Span {
+                                                                start: 248,
+                                                                end: 249,
+                                                            },
+                                                        },
+                                                    ),
+                                                    trivia: Trivia {
+                                                        leading: [],
+                                                        trailing: [],
+                                                    },
+                                                },
+                                            ),
+                                            dot: Token {
+                                                kind: Dot,
+                                                span: Span {
+                                                    start: 249,
+                                                    end: 250,
+                                                },
+                                            },
+                                            field: Positional(
+                                                Token {
+                                                    kind: Integer(
+                                                        1,
+                                                    ),
+                                                    span: Span {
+                                                        start: 250,
+                                                        end: 251,
+                                                    },
+                                                },
+                                            ),
+                                            trivia: Trivia {
+                                                leading: [],
+                                                trailing: [],
+                                            },
+                                        },
+                                    ),
+                                    semicolon: Token {
+                                        kind: Semicolon,
+                                        span: Span {
+                                            start: 251,
+                                            end: 252,
+                                        },
+                                    },
+                                    trivia: Trivia {
+                                        leading: [],
+                                        trailing: [
+                                            Token {
+                                                kind: Comment(
+                                                    " Should be 2",
+                                                ),
+                                                span: Span {
+                                                    start: 254,
+                                                    end: 268,
+                                                },
+                                            },
+                                        ],
+                                    },
+                                },
+                            ),
+                        ],
+                        final_expr: Some(
+                            Binary(
+                                BinaryExprNode {
+                                    left: Binary(
+                                        BinaryExprNode {
+                                            left: Binary(
+                                                BinaryExprNode {
+                                                    left: Identifier(
+                                                        Token {
+                                                            kind: Ident(
+                                                                "first",
+                                                            ),
+                                                            span: Span {
+                                                                start: 278,
+                                                                end: 283,
+                                                            },
+                                                        },
+                                                    ),
+                                                    operator: Token {
+                                                        kind: Plus,
+                                                        span: Span {
+                                                            start: 284,
+                                                            end: 285,
+                                                        },
+                                                    },
+                                                    right: Identifier(
+                                                        Token {
+                                                            kind: Ident(
+                                                                "second",
+                                                            ),
+                                                            span: Span {
+                                                                start: 286,
+                                                                end: 292,
+                                                            },
+                                                        },
+                                                    ),
+                                                    trivia: Trivia {
+                                                        leading: [],
+                                                        trailing: [],
+                                                    },
+                                                },
+                                            ),
+                                            operator: Token {
+                                                kind: Plus,
+                                                span: Span {
+                                                    start: 293,
+                                                    end: 294,
+                                                },
+                                            },
+                                            right: Identifier(
+                                                Token {
+                                                    kind: Ident(
+                                                        "last",
+                                                    ),
+                                                    span: Span {
+                                                        start: 295,
+                                                        end: 299,
+                                                    },
+                                                },
+                                            ),
+                                            trivia: Trivia {
+                                                leading: [],
+                                                trailing: [],
+                                            },
+                                        },
+                                    ),
+                                    operator: Token {
+                                        kind: Plus,
+                                        span: Span {
+                                            start: 300,
+                                            end: 301,
+                                        },
+                                    },
+                                    right: Identifier(
+                                        Token {
+                                            kind: Ident(
+                                                "val",
+                                            ),
+                                            span: Span {
+                                                start: 302,
+                                                end: 305,
+                                            },
+                                        },
+                                    ),
+                                    trivia: Trivia {
+                                        leading: [],
+                                        trailing: [],
+                                    },
+                                },
+                            ),
+                        ),
+                        close_brace: Token {
+                            kind: RightBrace,
+                            span: Span {
+                                start: 306,
+                                end: 307,
+                            },
+                        },
+                        trivia: Trivia {
+                            leading: [],
+                            trailing: [],
+                        },
+                    },
+                    trivia: Trivia {
+                        leading: [],
+                        trailing: [],
+                    },
+                },
+            ),
+        ],
+        trivia: Trivia {
+            leading: [],
+            trailing: [],
+        },
+    },
+)

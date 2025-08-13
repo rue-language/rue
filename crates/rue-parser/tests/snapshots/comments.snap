@@ -1,0 +1,24 @@
+Err(
+    [
+        Diagnostic {
+            severity: Error,
+            code: None,
+            message: "Unexpected token: Comment(\" inline comment \")",
+            labels: [
+                Label {
+                    span: Span {
+                        start: 222,
+                        end: 242,
+                    },
+                    message: None,
+                    style: Primary,
+                },
+            ],
+            help: None,
+            related: [],
+            source_id: SourceId(
+                "test.rue",
+            ),
+        },
+    ],
+)

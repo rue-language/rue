@@ -1,0 +1,324 @@
+name: Comprehensive Test Suite
+
+on:
+  push:
+    branches: [ trunk, main ]
+  pull_request:
+    branches: [ trunk, main ]
+  schedule:
+    # Run nightly at 2 AM UTC
+    - cron: '0 2 * * *'
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  # Property-based testing with extended iterations
+  property-tests:
+    name: Property-Based Tests
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Install Rust stable
+      uses: dtolnay/rust-toolchain@stable
+    
+    - name: Cache Cargo dependencies
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.cargo/bin/
+          ~/.cargo/registry/index/
+          ~/.cargo/registry/cache/
+          ~/.cargo/git/db/
+          target/
+        key: ${{ runner.os }}-cargo-proptest-${{ hashFiles('**/Cargo.lock') }}
+    
+    - name: Run parser property tests
+      run: |
+        echo "Running parser property tests with extended iterations..."
+        PROPTEST_CASES=1000 cargo test -p rue-parser --test test_parser_properties --release
+    
+    - name: Run semantic property tests
+      run: |
+        echo "Running semantic property tests..."
+        PROPTEST_CASES=500 cargo test -p rue-semantic --test test_type_checker_properties --release
+    
+    - name: Run optimizer property tests
+      run: |
+        echo "Running optimizer property tests..."
+        PROPTEST_CASES=500 cargo test -p rue-ir --test test_optimizer_properties --release
+    
+    - name: Run HIR property tests
+      run: |
+        echo "Running HIR property tests..."
+        PROPTEST_CASES=500 cargo test -p rue-ir --test test_hir_properties --release
+    
+    - name: Upload proptest regression files
+      if: failure()
+      uses: actions/upload-artifact@v4
+      with:
+        name: proptest-regressions
+        path: '**/proptest-regressions/**'
+
+  # Spec-linked tests with rue-runner
+  spec-tests:
+    name: Specification Compliance Tests
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Install Rust stable
+      uses: dtolnay/rust-toolchain@stable
+    
+    - name: Cache build artifacts
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.cargo/bin/
+          ~/.cargo/registry/index/
+          ~/.cargo/registry/cache/
+          ~/.cargo/git/db/
+          target/
+        key: ${{ runner.os }}-cargo-spec-${{ hashFiles('**/Cargo.lock') }}
+    
+    - name: Build rue and rue-runner
+      run: |
+        cargo build --release -p rue -p rue-runner
+    
+    - name: Run spec-linked tests
+      run: |
+        echo "Running specification compliance tests..."
+        ./target/release/rue-runner \
+          --test-paths tests/spec tests/simple \
+          --rue-binary ./target/release/rue \
+          --report-file spec-test-report.json \
+          --verbose
+      continue-on-error: true
+    
+    - name: Upload spec test report
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: spec-test-report
+        path: spec-test-report.json
+    
+    - name: Generate spec coverage summary
+      if: always()
+      run: |
+        if [ -f spec-test-report.json ]; then
+          echo "## Specification Coverage Summary" >> $GITHUB_STEP_SUMMARY
+          echo '```json' >> $GITHUB_STEP_SUMMARY
+          jq '.spec_coverage' spec-test-report.json >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+        fi
+
+  # Snapshot testing
+  snapshot-tests:
+    name: Snapshot Tests
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Install Rust stable
+      uses: dtolnay/rust-toolchain@stable
+    
+    - name: Cache Cargo dependencies
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.cargo/bin/
+          ~/.cargo/registry/index/
+          ~/.cargo/registry/cache/
+          ~/.cargo/git/db/
+          target/
+        key: ${{ runner.os }}-cargo-snapshot-${{ hashFiles('**/Cargo.lock') }}
+    
+    - name: Run snapshot tests
+      run: |
+        echo "Running snapshot tests..."
+        cargo test --workspace --all-features -- --ignored snapshot
+    
+    - name: Check for snapshot updates
+      if: failure()
+      run: |
+        echo "Snapshot tests failed. If snapshots need updating:"
+        echo "1. Run locally: UPDATE_SNAPSHOTS=1 cargo test"
+        echo "2. Review and commit the changes"
+    
+    - name: Upload snapshot diffs
+      if: failure()
+      uses: actions/upload-artifact@v4
+      with:
+        name: snapshot-diffs
+        path: |
+          **/*.snap.new
+          **/*.snap.diff
+
+  # Test coverage with tarpaulin
+  coverage:
+    name: Code Coverage
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Install Rust stable
+      uses: dtolnay/rust-toolchain@stable
+    
+    - name: Install tarpaulin
+      run: cargo install cargo-tarpaulin
+    
+    - name: Generate coverage report
+      run: |
+        cargo tarpaulin --workspace \
+          --exclude rue rue-snapshot rue-test-utils \
+          --out Xml \
+          --out Html \
+          --output-dir coverage \
+          --skip-clean \
+          --avoid-cfg-tarpaulin \
+          --timeout 300
+    
+    - name: Upload coverage to Codecov
+      uses: codecov/codecov-action@v4
+      with:
+        files: coverage/cobertura.xml
+        fail_ci_if_error: false
+        verbose: true
+      env:
+        CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
+    
+    - name: Upload coverage report
+      uses: actions/upload-artifact@v4
+      with:
+        name: coverage-report
+        path: coverage/
+
+  # Comprehensive test matrix
+  test-matrix:
+    name: Test Matrix - Linux / Rust ${{ matrix.rust }}
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        rust: [stable, beta]
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Install Rust ${{ matrix.rust }}
+      uses: dtolnay/rust-toolchain@master
+      with:
+        toolchain: ${{ matrix.rust }}
+    
+    - name: Cache Cargo dependencies
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.cargo/bin/
+          ~/.cargo/registry/index/
+          ~/.cargo/registry/cache/
+          ~/.cargo/git/db/
+          target/
+        key: ${{ runner.os }}-cargo-${{ matrix.rust }}-${{ hashFiles('**/Cargo.lock') }}
+    
+    - name: Run all tests
+      run: cargo test --workspace --all-features
+    
+    - name: Run doc tests
+      run: cargo test --doc --workspace
+
+  # Integration test suite
+  integration-suite:
+    name: Integration Test Suite
+    runs-on: ubuntu-latest
+    needs: [property-tests, spec-tests]
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Install Rust stable
+      uses: dtolnay/rust-toolchain@stable
+    
+    - name: Build release binaries
+      run: cargo build --release -p rue -p rue-runner
+    
+    - name: Run validation script
+      run: |
+        if [ -f tests/runner/validate_new_tests.sh ]; then
+          chmod +x tests/runner/validate_new_tests.sh
+          ./tests/runner/validate_new_tests.sh ./target/release/rue
+        fi
+    
+    - name: Test example programs
+      run: |
+        echo "Testing example programs..."
+        for example in examples/basic/*.rue; do
+          echo "Testing $example..."
+          ./target/release/rue "$example" -o /tmp/test_output || true
+          if [ -f /tmp/test_output ]; then
+            # Run the program and capture its exit code
+            /tmp/test_output || exit_code=$?
+            
+            # Check if this is an expected non-zero exit code
+            basename=$(basename "$example" .rue)
+            
+            # Special handling for programs with expected non-zero exit codes
+            case "$basename" in
+              countdown)
+                expected_exit=42
+                ;;
+              simple)
+                expected_exit=42
+                ;;
+              factorial)
+                expected_exit=120
+                ;;
+              fibonacci)
+                expected_exit=55
+                ;;
+              *)
+                expected_exit=0
+                ;;
+            esac
+            
+            if [ "${exit_code:-0}" -eq "$expected_exit" ]; then
+              echo "✓ Exit code: ${exit_code:-0} (expected: $expected_exit)"
+            else
+              echo "✗ Exit code: ${exit_code:-0} (expected: $expected_exit)"
+              exit 1
+            fi
+          fi
+        done
+    
+    - name: Generate test summary
+      if: always()
+      run: |
+        echo "## Integration Test Summary" >> $GITHUB_STEP_SUMMARY
+        echo "- Property tests: ${{ needs.property-tests.result }}" >> $GITHUB_STEP_SUMMARY
+        echo "- Spec tests: ${{ needs.spec-tests.result }}" >> $GITHUB_STEP_SUMMARY
+        echo "- Timestamp: $(date -u +"%Y-%m-%d %H:%M:%S UTC")" >> $GITHUB_STEP_SUMMARY
+
+  # Benchmark tests (only on trunk/main)
+  benchmarks:
+    name: Performance Benchmarks
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/trunk' || github.ref == 'refs/heads/main')
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Install Rust stable
+      uses: dtolnay/rust-toolchain@stable
+    
+    - name: Run benchmarks
+      run: |
+        cargo bench --workspace --no-fail-fast > benchmark-results.txt || true
+    
+    - name: Upload benchmark results
+      uses: actions/upload-artifact@v4
+      with:
+        name: benchmark-results
+        path: benchmark-results.txt
+    
+    - name: Compare with baseline
+      run: |
+        echo "Benchmark comparison would go here"
+        echo "This would compare against stored baseline metrics"

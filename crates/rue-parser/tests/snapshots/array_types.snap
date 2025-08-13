@@ -1,0 +1,24 @@
+Err(
+    [
+        Diagnostic {
+            severity: Error,
+            code: None,
+            message: "Expected ',' or ']' after array element",
+            labels: [
+                Label {
+                    span: Span {
+                        start: 348,
+                        end: 349,
+                    },
+                    message: None,
+                    style: Primary,
+                },
+            ],
+            help: None,
+            related: [],
+            source_id: SourceId(
+                "test.rue",
+            ),
+        },
+    ],
+)

@@ -1,14 +1,3 @@
-  TIMESTAMP.175799Z  INFO rue: Starting compilation of tests/simple/snapshot_mir.rue
-    at crates/rue/src/main.rs:139
-
-*** DEBUG: processing expression: Discriminant(0)
-*** DEBUG: processing expression: Discriminant(0)
-*** DEBUG: processing expression: Discriminant(6)
-*** DEBUG: processing expression: Discriminant(6)
-*** DEBUG: processing expression: Discriminant(6)
-  TIMESTAMP.176118Z  INFO rue: Successfully emitted MIR to 'tests/simple/snapshot_mir.mir'
-    at crates/rue/src/main.rs:171
-
 // Function signatures:
 // main() -> i32
 

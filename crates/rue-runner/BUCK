@@ -9,6 +9,7 @@ rust_library(
     deps = [
         "//crates/rue-compiler:rue-compiler",
         "//crates/rue-diagnostic:rue-diagnostic",
+        "//crates/rue-snapshot:rue-snapshot",
         "//third-party/rust:anyhow",
         "//third-party/rust:camino",
         "//third-party/rust:clap",
@@ -55,6 +56,7 @@ rust_test(
     deps = [
         "//crates/rue-compiler:rue-compiler",
         "//crates/rue-diagnostic:rue-diagnostic",
+        "//crates/rue-snapshot:rue-snapshot",
         "//third-party/rust:anyhow",
         "//third-party/rust:camino",
         "//third-party/rust:clap",

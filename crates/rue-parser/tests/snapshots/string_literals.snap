@@ -1,0 +1,29 @@
+Err(
+    [
+        Diagnostic {
+            severity: Error,
+            code: Some(
+                DiagnosticCode {
+                    namespace: "E",
+                    number: 1001,
+                },
+            ),
+            message: "Lexical error: Unexpected character '\"'",
+            labels: [
+                Label {
+                    span: Span {
+                        start: 36,
+                        end: 37,
+                    },
+                    message: None,
+                    style: Primary,
+                },
+            ],
+            help: None,
+            related: [],
+            source_id: SourceId(
+                "test.rue",
+            ),
+        },
+    ],
+)

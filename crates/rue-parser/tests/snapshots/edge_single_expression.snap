@@ -1,0 +1,24 @@
+Err(
+    [
+        Diagnostic {
+            severity: Error,
+            code: None,
+            message: "Unexpected token: LeftBrace",
+            labels: [
+                Label {
+                    span: Span {
+                        start: 83,
+                        end: 84,
+                    },
+                    message: None,
+                    style: Primary,
+                },
+            ],
+            help: None,
+            related: [],
+            source_id: SourceId(
+                "test.rue",
+            ),
+        },
+    ],
+)

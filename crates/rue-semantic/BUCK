@@ -34,3 +34,50 @@ rust_test(
         "//third-party/rust:tracing",
     ],
 )
+
+rust_test(
+    name = "hir_integration",
+    srcs = glob(["tests/**/*.rs", "src/**/*.rs"]),
+    crate_root = "tests/hir_integration.rs",
+    edition = "2024",
+    deps = [
+        ":rue-semantic",
+        "//crates/rue-ir:rue-ir",
+        "//crates/rue-parser:rue-parser",
+    ],
+)
+
+rust_test(
+    name = "struct_support_test",
+    srcs = glob(["tests/**/*.rs", "src/**/*.rs"]),
+    crate_root = "tests/struct_support_test.rs",
+    edition = "2024",
+    deps = [
+        ":rue-semantic",
+        "//crates/rue-ir:rue-ir",
+        "//crates/rue-parser:rue-parser",
+    ],
+)
+
+rust_test(
+    name = "test_type_checker_properties",
+    srcs = glob(["tests/**/*.rs", "src/**/*.rs"]),
+    crate_root = "tests/test_type_checker_properties.rs",
+    edition = "2024",
+    deps = [
+        ":rue-semantic",
+        "//crates/rue-parser:rue-parser",
+        "//third-party/rust:proptest",
+    ],
+)
+
+rust_test(
+    name = "test_while_loop",
+    srcs = glob(["tests/**/*.rs", "src/**/*.rs"]),
+    crate_root = "tests/test_while_loop.rs",
+    edition = "2024",
+    deps = [
+        ":rue-semantic",
+        "//crates/rue-parser:rue-parser",
+    ],
+)

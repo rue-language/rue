@@ -6,8 +6,6 @@ pub mod ast_builder_tests;
 mod diagnostic_impl;
 pub mod diagnostics;
 pub mod error_recovery;
-pub mod simple_snapshot;
-pub mod snapshot;
 
 pub use ast_builder::lower_cst_to_ast;
 pub use diagnostics::{parse_with_diagnostics, parse_with_recovery};

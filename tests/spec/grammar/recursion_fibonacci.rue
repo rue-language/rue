@@ -1,0 +1,16 @@
+//!@ id T-FUNC-RECURSION-002
+//!@ kind run-pass
+//!@ spec §3.1 Grammar - function
+//!@ expect exit 55
+
+fn fib(n: i32) -> i32 {
+    if n <= 1 {
+        n
+    } else {
+        fib(n - 1) + fib(n - 2)
+    }
+}
+
+fn main() -> i32 {
+    fib(10)  // 10th Fibonacci number = 55
+}
