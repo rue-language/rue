@@ -1,0 +1,13 @@
+//!@ id T-CONTROL-001
+//!@ kind run-pass
+//!@ spec control-flow.if-semantics
+//!@ expect exit 5
+
+fn main() -> i32 {
+    let x = 10;
+    if x > 5 {
+        5
+    } else {
+        0
+    }
+}

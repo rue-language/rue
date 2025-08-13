@@ -1,0 +1,12 @@
+//!@ id T-MULTI-001
+//!@ kind compile-pass
+//!@ spec type-system.type-inference
+//!@ spec variables.scoping
+//!@ spec functions.main-signature
+
+fn main() -> i32 {
+    let x = 10;
+    let y = 20;
+    let z = x + y;
+    z
+}

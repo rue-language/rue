@@ -1,0 +1,9 @@
+//!@ id T-COMP-FAIL-001
+//!@ kind compile-fail
+//!@ spec type-system.assignment-strictness
+//!@ expect stderr "type"
+
+fn main() -> i32 {
+    let x: i32 = true;  // Type error: bool assigned to i32
+    x
+}

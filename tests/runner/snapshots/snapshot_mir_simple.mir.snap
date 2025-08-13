@@ -1,0 +1,18 @@
+  TIMESTAMP  INFO rue: Starting compilation of tests/runner/snapshot_mir_simple.rue
+    at crates/rue/src/main.rs:139
+
+*** DEBUG: processing expression: Discriminant(0)
+*** DEBUG: processing expression: Discriminant(6)
+*** DEBUG: processing expression: Discriminant(6)
+  TIMESTAMP  INFO rue: Successfully emitted MIR to 'tests/runner/snapshot_mir_simple.mir'
+    at crates/rue/src/main.rs:171
+
+// Function signatures:
+// main() -> i32
+
+fn main() -> i32:
+  B0:
+    t0 = 1_i32
+    t1 = 2_i32
+    t2 = t0 + t1
+    return t2

@@ -14,6 +14,7 @@ members = [
     "crates/rue-lowering",
     "crates/rue-optimize",
     "crates/rue-target",
+    "crates/rue-runner",
 ]
 
 [workspace.package]
@@ -34,10 +35,11 @@ rue-ir = { path = "crates/rue-ir" }
 rue-lowering = { path = "crates/rue-lowering" }
 rue-optimize = { path = "crates/rue-optimize" }
 rue-target = { path = "crates/rue-target" }
+rue-runner = { path = "crates/rue-runner" }
 atty = "0.2"
 bpaf = "0.9.20"
 criterion = "0.5.0"
-indexmap = "2.0.0"
+indexmap = { version = "2.0.0", features = ["serde"] }
 object = { version = "0.37.1", features = ["write"] }
 regex = "1.0.0"
 salsa = "0.22"
@@ -52,3 +54,9 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "json"] }
 tracing-tree = "0.3"
 rustc-hash = "2.0"
+anyhow = "1.0.99"
+camino = "1.1"
+bstr = "1.6"
+similar = "2.2"
+walkdir = "2.4"
+clap = { version = "4.4", features = ["derive"] }

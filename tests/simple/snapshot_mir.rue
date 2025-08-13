@@ -1,0 +1,7 @@
+//!@ id T-MIR-CONST-001
+//!@ spec integers.arithmetic
+//!@ kind snapshot-mir
+
+fn main() -> i32 {
+    1 + 2 + 3  // Should be constant-propagated in MIR
+}

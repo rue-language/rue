@@ -1,0 +1,9 @@
+//!@ id T-RT-BOUNDS-001
+//!@ spec runtime.bounds-checking
+//!@ kind run-fail
+//!@ expect exit 252
+
+fn main() -> i32 {
+    let arr: [i32; 3] = [1, 2, 3];
+    arr[5]  // Out of bounds access - should exit with code 252
+}

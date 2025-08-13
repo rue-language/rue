@@ -15,6 +15,8 @@ pub use pipeline::{
     CompileError, compile_hir_via_mir_to_assembly, compile_hir_via_mir_to_executable,
 };
 
+// MIR emission functions are defined in this module
+
 // Input structs
 #[salsa::input]
 pub struct SourceFile {
@@ -595,6 +597,97 @@ pub fn compile_file_with_diagnostics(
                     Err(vec![diagnostic])
                 }
             }
+        }
+        Err(semantic_error) => {
+            // Convert semantic error to diagnostic
+            let diagnostic = rue_semantic::semantic_error_to_diagnostic(
+                &semantic_error,
+                rue_diagnostic::SourceId::new(file.path(db)),
+            );
+            Err(vec![diagnostic])
+        }
+    }
+}
+
+/// Emit MIR representation for a file
+#[salsa::tracked]
+pub fn emit_mir_for_file(
+    db: &dyn salsa::Database,
+    file: SourceFile,
+    options: CompileOptions,
+) -> Result<Arc<String>, Arc<RueError>> {
+    // Parse and analyze the file first using AST path
+    let analysis = match analyze_file(db, file) {
+        Ok(analysis) => analysis,
+        Err(error) => {
+            return Err(error);
+        }
+    };
+
+    // Generate MIR from HIR
+    let type_context = scope_to_type_context(&analysis.scope);
+    let mut mir = rue_lowering::lower_hir_to_mir(&analysis.hir, type_context);
+
+    // Apply optimizations if requested
+    if options.optimize(db) {
+        rue_optimize::OptimizationProfileFactory::optimize_program(
+            &mut mir,
+            rue_optimize::OptimizationLevel::Full,
+        );
+    }
+
+    // Format MIR as string
+    let mir_string = format!("{}", mir);
+    Ok(Arc::new(mir_string))
+}
+
+/// Emit MIR with diagnostic support
+pub fn emit_mir_with_diagnostics(
+    db: &dyn salsa::Database,
+    file: SourceFile,
+    options: CompileOptions,
+) -> Result<String, Vec<Diagnostic>> {
+    // Parse with error recovery
+    let (cst, parse_diagnostics) = parse_file_with_diagnostics(db, file);
+
+    // If we have parse errors, return them
+    if !parse_diagnostics.is_empty() {
+        return Err((*parse_diagnostics).clone());
+    }
+
+    // If no CST was produced (shouldn't happen if no diagnostics), create an error
+    let cst = match cst {
+        Some(cst) => cst,
+        None => {
+            let diagnostic = rue_diagnostic::DiagnosticBuilder::error(
+                "Failed to parse file",
+                rue_diagnostic::SourceId::new(file.path(db)),
+            )
+            .build();
+            return Err(vec![diagnostic]);
+        }
+    };
+
+    // Analyze the CST using CST path (AST2 pipeline)
+    let analysis_result = analyze_cst(&cst);
+
+    match analysis_result {
+        Ok(analysis) => {
+            // Generate MIR from HIR
+            let type_context = rue_semantic::scope_to_type_context(&analysis.scope);
+            let mut mir = rue_lowering::lower_hir_to_mir(&analysis.hir, type_context);
+
+            // Apply optimizations if requested
+            if options.optimize(db) {
+                rue_optimize::OptimizationProfileFactory::optimize_program(
+                    &mut mir,
+                    rue_optimize::OptimizationLevel::Full,
+                );
+            }
+
+            // Format MIR as string
+            let mir_string = format!("{}", mir);
+            Ok(mir_string)
         }
         Err(semantic_error) => {
             // Convert semantic error to diagnostic

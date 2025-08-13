@@ -1,0 +1,10 @@
+//!@ id T-RUN-PASS-001
+//!@ kind run-pass
+//!@ spec integers.arithmetic
+//!@ expect exit 0
+
+fn main() -> i32 {
+    let result = (10 + 5) * 4 + 24;
+    // Result is 84
+    0
+}

@@ -1,0 +1,8 @@
+//!@ id T-RT-BASIC-001
+//!@ spec functions.main-signature
+//!@ kind run-pass
+//!@ expect exit 42
+
+fn main() -> i32 {
+    42  // Exit code will be the return value
+}
