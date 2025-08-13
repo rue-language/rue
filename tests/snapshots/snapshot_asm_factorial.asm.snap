@@ -1,0 +1,610 @@
+  TIMESTAMP.178317Z  INFO rue: Starting compilation of tests/runner/snapshot_asm_factorial.rue
+    at crates/rue/src/main.rs:139
+
+*** DEBUG: processing expression: Discriminant(3)
+*** DEBUG: Found If ExpressionNode
+*** DEBUG: processing expression: Discriminant(0)
+*** DEBUG: processing expression: Discriminant(5)
+*** DEBUG: processing expression: Discriminant(6)
+*** DEBUG: processing expression: Discriminant(6)
+*** DEBUG: processing expression: Discriminant(0)
+*** DEBUG: processing expression: Discriminant(5)
+*** DEBUG: processing expression: Discriminant(2)
+*** DEBUG: processing expression: Discriminant(0)
+*** DEBUG: processing expression: Discriminant(5)
+*** DEBUG: processing expression: Discriminant(6)
+*** DEBUG: processing expression: Discriminant(2)
+*** DEBUG: processing expression: Discriminant(6)
+  TIMESTAMP.178703Z  INFO rue::mir: Lowering HIR to MIR
+    at crates/rue-compiler/src/pipeline.rs:273
+    in rue_compiler::pipeline::compile_hir_via_mir_to_intermediate with optimize: false
+    in rue_compiler::pipeline::compile_hir_via_mir_to_assembly with optimize: false
+
+  TIMESTAMP.178870Z  INFO rue::codegen: Lowering MIR to instructions
+    at crates/rue-compiler/src/pipeline.rs:286
+    in rue_compiler::pipeline::compile_hir_via_mir_to_intermediate with optimize: false
+    in rue_compiler::pipeline::compile_hir_via_mir_to_assembly with optimize: false
+
+  TIMESTAMP.179059Z  INFO rue::codegen: Generating assembly
+    at crates/rue-compiler/src/pipeline.rs:340
+    in rue_compiler::pipeline::compile_hir_via_mir_to_assembly with optimize: false
+
+  TIMESTAMP.179245Z  INFO rue: Successfully generated assembly to 'tests/runner/snapshot_asm_factorial.s'
+    at crates/rue/src/main.rs:196
+
+.section .text
+.global _start
+
+_start:
+    xorq %rbp, %rbp
+    call __rue_main
+    movq %rax, %rdi
+    movabsq $60, %rax
+    syscall
+    ud2
+__rue_main:
+    pushq %rbp
+    movq %rsp, %rbp
+    call __rue_setup_signal_handlers
+    call __rue_heap_init
+    call main
+    movq %rbp, %rsp
+    popq %rbp
+    ret
+    jmp .L2
+__rue_newline:
+    .byte 10
+__rue_true_str:
+    .byte 116
+    .byte 114
+    .byte 117
+    .byte 101
+__rue_false_str:
+    .byte 102
+    .byte 97
+    .byte 108
+    .byte 115
+    .byte 101
+__rue_unit_str:
+    .byte 40
+    .byte 41
+__rue_input_buffer:
+    .space 1024
+.L2:
+.section .bss
+__rue_heap_start:
+    .space 65536
+__rue_heap_end:
+__rue_heap_ptr:
+    .space 8
+.section .text
+__rue_memcpy:
+    pushq %rcx
+    cmpq $0, %rdx
+    je .L15
+    cmpq $256, %rdx
+    jge .L14
+    cmpq $8, %rdx
+    jl .L12
+.L13:
+    movq (%rsi), %rax
+    movq %rax, (%rdi)
+    addq $8, %rsi
+    addq $8, %rdi
+    subq $8, %rdx
+    cmpq $8, %rdx
+    jge .L13
+    cmpq $0, %rdx
+    je .L15
+.L12:
+    movb (%rsi), %al
+    movb %al, (%rdi)
+    addq $1, %rsi
+    addq $1, %rdi
+    subq $1, %rdx
+    jne .L12
+    jmp .L15
+.L14:
+    movq %rdx, %rcx
+    cld
+    rep movsb
+.L15:
+    popq %rcx
+    ret
+__rue_memmove:
+    pushq %rcx
+    pushq %r8
+    cmpq $0, %rdx
+    je .L20
+    cmpq %rsi, %rdi
+    jle .L17
+    movq %rsi, %r8
+    addq %rdx, %r8
+    cmpq %r8, %rdi
+    jge .L17
+    jmp .L18
+.L17:
+    call __rue_memcpy
+    jmp .L20
+.L18:
+    addq %rdx, %rdi
+    subq $1, %rdi
+    addq %rdx, %rsi
+    subq $1, %rsi
+.L19:
+    movb (%rsi), %al
+    movb %al, (%rdi)
+    subq $1, %rsi
+    subq $1, %rdi
+    subq $1, %rdx
+    jne .L19
+.L20:
+    popq %r8
+    popq %rcx
+    ret
+__rue_memzero:
+    pushq %rcx
+    cmpq $0, %rsi
+    je .L22
+    xorq %rax, %rax
+    movq %rsi, %rcx
+    cld
+    rep stosb
+.L22:
+    popq %rcx
+    ret
+__rue_heap_init:
+    leaq __rue_heap_start(%rip), %rax
+    leaq __rue_heap_ptr(%rip), %rdx
+    movq %rax, (%rdx)
+    ret
+__rue_alloc:
+    leaq __rue_heap_ptr(%rip), %rdx
+    movq (%rdx), %rax
+    movq %rax, %rcx
+    addq $7, %rdi
+    andq $-8, %rdi
+    addq %rdi, %rax
+    leaq __rue_heap_end(%rip), %rsi
+    cmpq %rsi, %rax
+    jge .L25
+    movq %rax, (%rdx)
+    movq %rcx, %rax
+    ret
+.L25:
+    xorq %rax, %rax
+    ret
+__rue_free:
+    ret
+__rue_heap_reset:
+    leaq __rue_heap_start(%rip), %rax
+    leaq __rue_heap_ptr(%rip), %rdx
+    movq %rax, (%rdx)
+    ret
+__rue_exit:
+    movq %rdi, %rdi
+    movabsq $60, %rax
+    syscall
+__rue_itoa:
+    pushq %rbx
+    pushq %rcx
+    pushq %rdx
+    pushq %r8
+    pushq %r9
+    pushq %r10
+    pushq %r11
+    movq %rsi, %r8
+    movq %rdi, %rbx
+    movabsq $0, %r9
+    cmpq $0, %rbx
+    jl .L30
+    jmp .L31
+.L30:
+    movabsq $45, %rax
+    movb %al, (%r8)
+    addq $1, %r8
+    addq $1, %r9
+    movabsq $-9223372036854775808, %rax
+    cmpq %rax, %rbx
+    jne .L37
+    movabsq $57, %rax
+    movb %al, (%r8)
+    movabsq $50, %rax
+    movb %al, +1(%r8)
+    movabsq $50, %rax
+    movb %al, +2(%r8)
+    movabsq $51, %rax
+    movb %al, +3(%r8)
+    movabsq $51, %rax
+    movb %al, +4(%r8)
+    movabsq $55, %rax
+    movb %al, +5(%r8)
+    movabsq $50, %rax
+    movb %al, +6(%r8)
+    movabsq $48, %rax
+    movb %al, +7(%r8)
+    movabsq $51, %rax
+    movb %al, +8(%r8)
+    movabsq $54, %rax
+    movb %al, +9(%r8)
+    movabsq $56, %rax
+    movb %al, +10(%r8)
+    movabsq $53, %rax
+    movb %al, +11(%r8)
+    movabsq $52, %rax
+    movb %al, +12(%r8)
+    movabsq $55, %rax
+    movb %al, +13(%r8)
+    movabsq $55, %rax
+    movb %al, +14(%r8)
+    movabsq $53, %rax
+    movb %al, +15(%r8)
+    movabsq $56, %rax
+    movb %al, +16(%r8)
+    movabsq $48, %rax
+    movb %al, +17(%r8)
+    movabsq $56, %rax
+    movb %al, +18(%r8)
+    addq $19, %r9
+    jmp .L36
+.L37:
+    movabsq $0, %rax
+    subq %rbx, %rax
+    movq %rax, %rbx
+.L31:
+    movq %r8, %r10
+.L32:
+    movq %rbx, %rax
+    movabsq $0, %rdx
+    movabsq $10, %rcx
+    idivq %rcx
+    addq $48, %rdx
+    movb %dl, (%r10)
+    addq $1, %r10
+    addq $1, %r9
+    movq %rax, %rbx
+    cmpq $0, %rbx
+    jne .L32
+.L33:
+    movq %r8, %r11
+    subq $1, %r10
+.L34:
+    cmpq %r10, %r11
+    jge .L35
+    movb (%r11), %al
+    movb (%r10), %bl
+    movb %bl, (%r11)
+    movb %al, (%r10)
+    addq $1, %r11
+    subq $1, %r10
+    jmp .L34
+.L35:
+.L36:
+    movq %r9, %rax
+    popq %r11
+    popq %r10
+    popq %r9
+    popq %r8
+    popq %rdx
+    popq %rcx
+    popq %rbx
+    ret
+__rue_println_i64:
+    pushq %rbp
+    movq %rsp, %rbp
+    subq $32, %rsp
+    movq %rsp, %rsi
+    call __rue_itoa
+    movabsq $1, %rdi
+    movq %rsp, %rsi
+    movq %rax, %rdx
+    movabsq $1, %rax
+    syscall
+    cmpq $0, %rax
+    jge syscall_success_255
+    movabsq $253, %rdi
+    movabsq $60, %rax
+    syscall
+syscall_success_255:
+    leaq __rue_newline(%rip), %rsi
+    movabsq $1, %rdx
+    movabsq $1, %rdi
+    movq %rsi, %rsi
+    movq %rdx, %rdx
+    movabsq $1, %rax
+    syscall
+    cmpq $0, %rax
+    jge syscall_success_268
+    movabsq $253, %rdi
+    movabsq $60, %rax
+    syscall
+syscall_success_268:
+    movq %rbp, %rsp
+    popq %rbp
+    ret
+__rue_println_i32:
+    movq %rdi, %rax
+    movabsq $32, %rcx
+    shlq %cl, %rax
+    sarq %cl, %rax
+    movq %rax, %rdi
+    call __rue_println_i64
+    ret
+__rue_println_bool:
+    pushq %rbp
+    movq %rsp, %rbp
+    cmpq $0, %rdi
+    je .L43
+    movabsq $1, %rdi
+    leaq __rue_true_str(%rip), %rsi
+    movabsq $4, %rdx
+    movabsq $1, %rax
+    syscall
+    cmpq $0, %rax
+    jge syscall_success_293
+    movabsq $253, %rdi
+    movabsq $60, %rax
+    syscall
+syscall_success_293:
+    jmp .L44
+.L43:
+    movabsq $1, %rdi
+    leaq __rue_false_str(%rip), %rsi
+    movabsq $5, %rdx
+    movabsq $1, %rax
+    syscall
+    cmpq $0, %rax
+    jge syscall_success_306
+    movabsq $253, %rdi
+    movabsq $60, %rax
+    syscall
+syscall_success_306:
+.L44:
+    movabsq $1, %rdi
+    leaq __rue_newline(%rip), %rsi
+    movabsq $1, %rdx
+    movabsq $1, %rax
+    syscall
+    cmpq $0, %rax
+    jge syscall_success_318
+    movabsq $253, %rdi
+    movabsq $60, %rax
+    syscall
+syscall_success_318:
+    movq %rbp, %rsp
+    popq %rbp
+    ret
+__rue_println_unit:
+    pushq %rbp
+    movq %rsp, %rbp
+    movabsq $1, %rdi
+    leaq __rue_unit_str(%rip), %rsi
+    movabsq $2, %rdx
+    movabsq $1, %rax
+    syscall
+    cmpq $0, %rax
+    jge syscall_success_333
+    movabsq $253, %rdi
+    movabsq $60, %rax
+    syscall
+syscall_success_333:
+    movabsq $1, %rdi
+    leaq __rue_newline(%rip), %rsi
+    movabsq $1, %rdx
+    movabsq $1, %rax
+    syscall
+    cmpq $0, %rax
+    jge syscall_success_344
+    movabsq $253, %rdi
+    movabsq $60, %rax
+    syscall
+syscall_success_344:
+    movq %rbp, %rsp
+    popq %rbp
+    ret
+__rue_atoi:
+    pushq %rbx
+    pushq %rcx
+    pushq %r8
+    pushq %r9
+    pushq %r10
+    pushq %r11
+    movq %rsi, %r8
+    movq %rdx, %r9
+.L52:
+    cmpq $0, %r9
+    je .L53
+    movb (%r8), %al
+    cmpq $32, %rax
+    je .L54
+    cmpq $9, %rax
+    je .L54
+    cmpq $10, %rax
+    je .L54
+    cmpq $13, %rax
+    je .L54
+    jmp .L53
+.L54:
+    addq $1, %r8
+    subq $1, %r9
+    jmp .L52
+.L53:
+    cmpq $0, %r9
+    je .L59
+    movabsq $1, %r10
+.L55:
+    movb (%r8), %al
+    cmpq $45, %rax
+    je .L56
+    cmpq $43, %rax
+    jne .L57
+    addq $1, %r8
+    subq $1, %r9
+    jmp .L57
+.L56:
+    movabsq $-1, %r10
+    addq $1, %r8
+    subq $1, %r9
+.L57:
+    movabsq $0, %rbx
+.L58:
+    cmpq $0, %r9
+    je .L60
+    movb (%r8), %al
+    cmpq $48, %rax
+    jl .L60
+    cmpq $57, %rax
+    jg .L60
+    subq $48, %rax
+    movabsq $922337203685477580, %rcx
+    cmpq %rcx, %rbx
+    jle .L62
+    movabsq $0, %rax
+    jmp .L61
+.L62:
+    imulq $10, %rbx
+    addq %rax, %rbx
+    addq $1, %r8
+    subq $1, %r9
+    jmp .L58
+.L59:
+    movabsq $0, %rax
+    jmp .L61
+.L60:
+    movq %rbx, %rax
+    imulq %r10, %rax
+.L61:
+    popq %r11
+    popq %r10
+    popq %r9
+    popq %r8
+    popq %rcx
+    popq %rbx
+    ret
+__rue_input:
+    pushq %rbp
+    movq %rsp, %rbp
+    subq $1024, %rsp
+    movabsq $0, %rdi
+    movq %rsp, %rsi
+    movabsq $1024, %rdx
+    movabsq $0, %rax
+    syscall
+    cmpq $0, %rax
+    jge .L64
+    movabsq $253, %rdi
+    movabsq $60, %rax
+    syscall
+.L64:
+    movq %rsp, %rsi
+    movq %rax, %rdx
+    call __rue_atoi
+    movq %rbp, %rsp
+    popq %rbp
+    ret
+__rue_to_i32:
+    movq %rdi, %rax
+    ret
+__rue_to_i64:
+    movslq %edi, %rax
+    ret
+__rue_sigfpe_handler:
+    movabsq $250, %rdi
+    movq %rdi, %rdi
+    movabsq $60, %rax
+    syscall
+__rue_sigsegv_handler:
+    movabsq $251, %rdi
+    movq %rdi, %rdi
+    movabsq $60, %rax
+    syscall
+__rue_setup_signal_handlers:
+    pushq %rbp
+    movq %rsp, %rbp
+    movq %rbp, %rsp
+    popq %rbp
+    ret
+factorial:
+    pushq %rbp
+    movq %rsp, %rbp
+    subq $144, %rsp
+    movq %rdi, %r10
+.L71:
+    movq $1, %r11
+    cmpq %r11, %r10
+    setle %r8b
+    movzbq %r8b, %r8
+    cmpq $0, %r8
+    movq %r10, -48(%rbp)
+    movq %r11, -64(%rbp)
+    movq %r8, -56(%rbp)
+    jne .L72
+    jmp .L73
+.L72:
+    movq -48(%rbp), %r10
+    movq %r10, -16(%rbp)
+    jmp .L74
+.L73:
+    movq -48(%rbp), %r10
+    movq %r10, -40(%rbp)
+    jmp .L76
+.L74:
+    movq -16(%rbp), %r10
+    movq $1, %r11
+    movq %r10, -24(%rbp)
+    movq %r11, -32(%rbp)
+    movq %r10, -72(%rbp)
+    movq %r11, -80(%rbp)
+    jmp .L75
+.L75:
+    movq -24(%rbp), %r10
+    movq -32(%rbp), %r11
+    movq %r10, -88(%rbp)
+    movq %r11, -96(%rbp)
+    movq -96(%rbp), %r10
+    movq %r10, %rax
+    movq %rbp, %rsp
+    popq %rbp
+    ret
+.L76:
+    movq -40(%rbp), %r11
+    movq $1, %r8
+    movq %r11, -104(%rbp)
+    movq %r8, -112(%rbp)
+    movq -104(%rbp), %r11
+    movq %r11, %r8
+    movq %r8, -120(%rbp)
+    movq -112(%rbp), %r9
+    subl %r9d, %r8d
+    movq %r8, -120(%rbp)
+    movq -120(%rbp), %r10
+    movq %r10, %rdi
+    call factorial
+    movq %rax, %r11
+    movq %r11, -128(%rbp)
+    movq -104(%rbp), %r10
+    movq %r10, %r11
+    movq %r11, -136(%rbp)
+    movq -128(%rbp), %r8
+    imull %r8d, %r11d
+    movq %r10, -24(%rbp)
+    movq %r11, -32(%rbp)
+    movq %r11, -136(%rbp)
+    jmp .L75
+main:
+    pushq %rbp
+    movq %rsp, %rbp
+    subq $32, %rsp
+.L78:
+    movq $5, %r10
+    movq %r10, -16(%rbp)
+    movq -16(%rbp), %r10
+    movq %r10, %rdi
+    call factorial
+    movq %rax, %r11
+    movq %r11, -24(%rbp)
+    movq -24(%rbp), %r10
+    movq %r10, %rax
+    movq %rbp, %rsp
+    popq %rbp
+    ret

@@ -1,0 +1,10 @@
+//!@ id T-RUN-FAIL-002
+//!@ kind run-fail
+//!@ spec integers.division-by-zero
+//!@ expect exit 250
+
+fn main() -> i32 {
+    let a = 10;
+    let b = 0;
+    a / b  // Division by zero
+}

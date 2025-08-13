@@ -1,0 +1,75 @@
+load("@prelude//rust:cargo_package.bzl", "cargo")
+
+rust_library(
+    name = "rue-runner-lib",
+    crate = "rue_runner",  
+    srcs = glob(["src/**/*.rs"], exclude = ["src/main.rs"]),
+    crate_root = "src/lib.rs",
+    edition = "2024",
+    deps = [
+        "//crates/rue-compiler:rue-compiler",
+        "//crates/rue-diagnostic:rue-diagnostic",
+        "//third-party/rust:anyhow",
+        "//third-party/rust:camino",
+        "//third-party/rust:clap",
+        "//third-party/rust:indexmap",
+        "//third-party/rust:regex",
+        "//third-party/rust:serde",
+        "//third-party/rust:serde_json",
+        "//third-party/rust:similar",
+        "//third-party/rust:tempfile",
+        "//third-party/rust:toml",
+        "//third-party/rust:tracing",
+        "//third-party/rust:walkdir",
+        "//third-party/rust:bstr",
+    ],
+    env = {
+        "CARGO_PKG_VERSION": "0.1.0",
+    },
+    visibility = ["PUBLIC"],
+)
+
+rust_binary(
+    name = "rue-runner",
+    srcs = ["src/main.rs"],
+    crate_root = "src/main.rs",
+    edition = "2024",
+    deps = [
+        ":rue-runner-lib",
+        "//third-party/rust:anyhow",
+        "//third-party/rust:clap",
+        "//third-party/rust:tracing",
+        "//third-party/rust:tracing-subscriber",
+    ],
+    env = {
+        "CARGO_PKG_VERSION": "0.1.0",
+    },
+    visibility = ["PUBLIC"],
+)
+
+rust_test(
+    name = "spec_tests",
+    srcs = glob(["src/**/*.rs"]),
+    crate_root = "src/lib.rs",
+    edition = "2024",
+    deps = [
+        "//crates/rue-compiler:rue-compiler",
+        "//crates/rue-diagnostic:rue-diagnostic",
+        "//third-party/rust:anyhow",
+        "//third-party/rust:camino",
+        "//third-party/rust:clap",
+        "//third-party/rust:indexmap",
+        "//third-party/rust:regex",
+        "//third-party/rust:serde",
+        "//third-party/rust:serde_json",
+        "//third-party/rust:similar",
+        "//third-party/rust:tempfile",
+        "//third-party/rust:toml",
+        "//third-party/rust:tracing",
+        "//third-party/rust:walkdir",
+        "//third-party/rust:bstr",
+    ],
+    env = {
+        "CARGO_PKG_VERSION": "0.1.0",
+    },
+)

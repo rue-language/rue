@@ -1,7 +1,7 @@
 use bpaf::{Parser, construct};
 use rue_compiler::{
     CompileOptions, RueDatabase, SourceFile, compile_file_to_assembly_with_options,
-    compile_file_with_diagnostics,
+    compile_file_with_diagnostics, emit_mir_with_diagnostics,
     logging::{LogConfig, LogFormat, init_tracing, verbosity_to_filter},
 };
 use rue_diagnostic::{DiagnosticFormatter, SourceManager};
@@ -14,6 +14,8 @@ struct Args {
     output: Option<PathBuf>,
     input: PathBuf,
     emit_asm: bool,
+    emit_mir: bool,
+    compile_only: bool,
     optimize: bool,
     verbose: u8,
     log_format: Option<String>,
@@ -30,6 +32,14 @@ fn parser() -> impl Parser<Args> {
     let emit_asm = bpaf::short('S')
         .long("emit-asm")
         .help("Emit assembly instead of executable")
+        .switch();
+
+    let emit_mir = bpaf::long("emit-mir")
+        .help("Emit MIR representation")
+        .switch();
+
+    let compile_only = bpaf::long("compile-only")
+        .help("Check compilation without generating output")
         .switch();
 
     let optimize = bpaf::short('O').help("Enable MIR optimizations").switch();
@@ -56,6 +66,8 @@ fn parser() -> impl Parser<Args> {
     construct!(Args {
         output,
         emit_asm,
+        emit_mir,
+        compile_only,
         optimize,
         verbose,
         log_format,
@@ -104,10 +116,20 @@ fn main() {
 
     let input_path = opts.input;
     let output_path = if opts.emit_asm {
-        opts.output
-            .unwrap_or_else(|| input_path.with_extension("s"))
+        Some(
+            opts.output
+                .unwrap_or_else(|| input_path.with_extension("s")),
+        )
+    } else if opts.emit_mir {
+        Some(
+            opts.output
+                .unwrap_or_else(|| input_path.with_extension("mir")),
+        )
+    } else if opts.compile_only {
+        // No output file for compile-only mode
+        None
     } else {
-        opts.output.unwrap_or_else(|| input_path.with_extension(""))
+        Some(opts.output.unwrap_or_else(|| input_path.with_extension("")))
     };
 
     // Read source file
@@ -125,11 +147,46 @@ fn main() {
     let file = SourceFile::new(&db, input_path.to_string_lossy().to_string(), source);
     let options = CompileOptions::new(&db, opts.optimize);
 
-    // Compile
-    if opts.emit_asm {
+    // Compile based on mode
+    if opts.compile_only {
+        // Just check compilation without generating output
+        match compile_file_with_diagnostics(&db, file, options) {
+            Ok(_) => {
+                info!("Compilation check passed");
+                println!("Compilation check passed");
+            }
+            Err(diagnostics) => {
+                print_diagnostics(&diagnostics, &file, &db);
+                std::process::exit(1);
+            }
+        }
+    } else if opts.emit_mir {
+        // Emit MIR representation
+        match emit_mir_with_diagnostics(&db, file, options) {
+            Ok(mir_output) => {
+                let output_path = output_path.unwrap(); // Safe because we set it above
+                if let Err(e) = fs::write(&output_path, &mir_output) {
+                    eprintln!(
+                        "Error writing output file '{}': {}",
+                        output_path.display(),
+                        e
+                    );
+                    std::process::exit(1);
+                }
+
+                info!("Successfully emitted MIR to '{}'", output_path.display());
+                println!("{}", mir_output); // Also print to stdout for test runner
+            }
+            Err(diagnostics) => {
+                print_diagnostics(&diagnostics, &file, &db);
+                std::process::exit(1);
+            }
+        }
+    } else if opts.emit_asm {
         // Generate assembly
         match compile_file_to_assembly_with_options(&db, file, options) {
             Ok(assembly) => {
+                let output_path = output_path.unwrap(); // Safe because we set it above
                 if let Err(e) = fs::write(&output_path, &*assembly) {
                     error!(
                         "Error writing output file '{}': {}",
@@ -151,6 +208,7 @@ fn main() {
         }
     } else {
         // Generate executable using diagnostic-enabled compilation
+        let output_path = output_path.unwrap(); // Safe because we set it above
         match compile_file_with_diagnostics(&db, file, options) {
             Ok(executable) => {
                 if let Err(e) = fs::write(&output_path, &*executable) {
@@ -177,28 +235,34 @@ fn main() {
                 info!("Successfully compiled to '{}'", output_path.display());
             }
             Err(diagnostics) => {
-                // Format and display diagnostics
-                let formatter = if atty::is(atty::Stream::Stderr) {
-                    DiagnosticFormatter::terminal()
-                } else {
-                    DiagnosticFormatter::plain()
-                };
-
-                let mut source_manager = SourceManager::new();
-                let source_text = file.text(&db);
-                let source_path = file.path(&db);
-                source_manager.add_source(source_path, source_text);
-
-                error!("Compilation failed:\n");
-                for diagnostic in &diagnostics {
-                    if let Ok(formatted) = formatter.format_diagnostic(diagnostic, &source_manager)
-                    {
-                        error!("{formatted}\n");
-                    }
-                }
-
+                print_diagnostics(&diagnostics, &file, &db);
                 std::process::exit(1);
             }
+        }
+    }
+}
+
+fn print_diagnostics(
+    diagnostics: &[rue_diagnostic::Diagnostic],
+    file: &SourceFile,
+    db: &RueDatabase,
+) {
+    // Format and display diagnostics
+    let formatter = if atty::is(atty::Stream::Stderr) {
+        DiagnosticFormatter::terminal()
+    } else {
+        DiagnosticFormatter::plain()
+    };
+
+    let mut source_manager = SourceManager::new();
+    let source_text = file.text(db);
+    let source_path = file.path(db);
+    source_manager.add_source(source_path, source_text);
+
+    eprintln!("Compilation failed:\n");
+    for diagnostic in diagnostics {
+        if let Ok(formatted) = formatter.format_diagnostic(diagnostic, &source_manager) {
+            eprintln!("{formatted}\n");
         }
     }
 }

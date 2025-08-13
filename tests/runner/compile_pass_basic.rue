@@ -1,0 +1,8 @@
+//!@ id T-COMP-BASIC-001
+//!@ kind compile-pass
+//!@ spec type-system.type-inference
+
+fn main() -> i32 {
+    let x = 42;  // Type inferred as i32
+    x + 10
+}

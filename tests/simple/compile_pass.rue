@@ -1,0 +1,7 @@
+//!@ id T-COMP-BASIC-001
+//!@ spec type-system.function-signatures
+//!@ kind compile-pass
+
+fn main() -> i32 {
+    0
+}

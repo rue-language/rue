@@ -1,0 +1,265 @@
+{
+  "metadata": {
+    "start_time": 1755091367,
+    "end_time": 1755091368,
+    "command_line": [
+      "/workspace/target/release/rue-runner",
+      "--rue-binary",
+      "/workspace/target/release/rue",
+      "--test-paths",
+      "tests/runner",
+      "--test-paths",
+      "examples",
+      "--spec-file",
+      "spec/norms.toml",
+      "--snapshot-dir",
+      "tests/runner/snapshots",
+      "--report-file",
+      "ci-test-report.json",
+      "--verbose"
+    ],
+    "runner_version": "0.1.0",
+    "compiler_version": null,
+    "environment": {
+      "RUST_LOG": "rue=info",
+      "os": "linux",
+      "TERM": "xterm-256color",
+      "arch": "x86_64"
+    }
+  },
+  "summary": {
+    "total": 19,
+    "passed": 10,
+    "failed": 0,
+    "skipped": 9,
+    "duration_ms": 1000
+  },
+  "results": [
+    {
+      "path": "examples/advanced/assignment_demo.rue",
+      "result": {
+        "status": "Skip",
+        "details": {
+          "reason": "No test directives found"
+        }
+      },
+      "duration_ms": 0,
+      "directives": [],
+      "spec_references": [],
+      "metadata": {}
+    },
+    {
+      "path": "examples/advanced/casting.rue",
+      "result": {
+        "status": "Skip",
+        "details": {
+          "reason": "No test directives found"
+        }
+      },
+      "duration_ms": 0,
+      "directives": [],
+      "spec_references": [],
+      "metadata": {}
+    },
+    {
+      "path": "examples/advanced/structs.rue",
+      "result": {
+        "status": "Skip",
+        "details": {
+          "reason": "No test directives found"
+        }
+      },
+      "duration_ms": 0,
+      "directives": [],
+      "spec_references": [],
+      "metadata": {}
+    },
+    {
+      "path": "examples/basic/countdown.rue",
+      "result": {
+        "status": "Skip",
+        "details": {
+          "reason": "No test directives found"
+        }
+      },
+      "duration_ms": 0,
+      "directives": [],
+      "spec_references": [],
+      "metadata": {}
+    },
+    {
+      "path": "examples/basic/factorial.rue",
+      "result": {
+        "status": "Skip",
+        "details": {
+          "reason": "No test directives found"
+        }
+      },
+      "duration_ms": 0,
+      "directives": [],
+      "spec_references": [],
+      "metadata": {}
+    },
+    {
+      "path": "examples/basic/fibonacci.rue",
+      "result": {
+        "status": "Skip",
+        "details": {
+          "reason": "No test directives found"
+        }
+      },
+      "duration_ms": 0,
+      "directives": [],
+      "spec_references": [],
+      "metadata": {}
+    },
+    {
+      "path": "examples/basic/simple.rue",
+      "result": {
+        "status": "Skip",
+        "details": {
+          "reason": "No test directives found"
+        }
+      },
+      "duration_ms": 0,
+      "directives": [],
+      "spec_references": [],
+      "metadata": {}
+    },
+    {
+      "path": "examples/control_flow/if_demo.rue",
+      "result": {
+        "status": "Skip",
+        "details": {
+          "reason": "No test directives found"
+        }
+      },
+      "duration_ms": 0,
+      "directives": [],
+      "spec_references": [],
+      "metadata": {}
+    },
+    {
+      "path": "examples/control_flow/while_demo.rue",
+      "result": {
+        "status": "Skip",
+        "details": {
+          "reason": "No test directives found"
+        }
+      },
+      "duration_ms": 0,
+      "directives": [],
+      "spec_references": [],
+      "metadata": {}
+    },
+    {
+      "path": "tests/runner/array_operations.rue",
+      "result": {
+        "status": "Pass"
+      },
+      "duration_ms": 0,
+      "directives": [],
+      "spec_references": [],
+      "metadata": {}
+    },
+    {
+      "path": "tests/runner/compile_fail_type_error.rue",
+      "result": {
+        "status": "Pass"
+      },
+      "duration_ms": 0,
+      "directives": [],
+      "spec_references": [],
+      "metadata": {}
+    },
+    {
+      "path": "tests/runner/compile_pass_basic.rue",
+      "result": {
+        "status": "Pass"
+      },
+      "duration_ms": 0,
+      "directives": [],
+      "spec_references": [],
+      "metadata": {}
+    },
+    {
+      "path": "tests/runner/control_flow_if.rue",
+      "result": {
+        "status": "Pass"
+      },
+      "duration_ms": 0,
+      "directives": [],
+      "spec_references": [],
+      "metadata": {}
+    },
+    {
+      "path": "tests/runner/multiple_directives.rue",
+      "result": {
+        "status": "Pass"
+      },
+      "duration_ms": 0,
+      "directives": [],
+      "spec_references": [],
+      "metadata": {}
+    },
+    {
+      "path": "tests/runner/run_fail_bounds_check.rue",
+      "result": {
+        "status": "Pass"
+      },
+      "duration_ms": 0,
+      "directives": [],
+      "spec_references": [],
+      "metadata": {}
+    },
+    {
+      "path": "tests/runner/run_fail_division_by_zero.rue",
+      "result": {
+        "status": "Pass"
+      },
+      "duration_ms": 0,
+      "directives": [],
+      "spec_references": [],
+      "metadata": {}
+    },
+    {
+      "path": "tests/runner/run_pass_arithmetic.rue",
+      "result": {
+        "status": "Pass"
+      },
+      "duration_ms": 0,
+      "directives": [],
+      "spec_references": [],
+      "metadata": {}
+    },
+    {
+      "path": "tests/runner/snapshot_asm_factorial.rue",
+      "result": {
+        "status": "Pass"
+      },
+      "duration_ms": 0,
+      "directives": [],
+      "spec_references": [],
+      "metadata": {}
+    },
+    {
+      "path": "tests/runner/snapshot_mir_simple.rue",
+      "result": {
+        "status": "Pass"
+      },
+      "duration_ms": 0,
+      "directives": [],
+      "spec_references": [],
+      "metadata": {}
+    }
+  ],
+  "performance": {
+    "discovery_ms": 0,
+    "execution_ms": 0,
+    "snapshot_ms": 0,
+    "memory": {
+      "peak_bytes": 0,
+      "average_bytes": 0
+    }
+  }
+}

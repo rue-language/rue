@@ -1,0 +1,9 @@
+//!@ id T-RUN-FAIL-001
+//!@ kind run-fail
+//!@ spec runtime.bounds-checking
+//!@ expect exit 252
+
+fn main() -> i32 {
+    let arr: [i32; 3] = [1, 2, 3];
+    arr[10]  // Out of bounds
+}

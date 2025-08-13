@@ -1,0 +1,9 @@
+//!@ id T-TYP-ASSIGN-001
+//!@ spec type-system.assignment-strictness
+//!@ kind compile-fail
+//!@ expect stderr "type mismatch"
+
+fn main() -> i32 {
+    let x: i32 = true;  // Type error: bool cannot be assigned to i32
+    x
+}

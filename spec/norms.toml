@@ -1,0 +1,338 @@
+# Rue Language Normative Specification
+# 
+# This file defines the normative behavior of the Rue programming language.
+# Test cases reference these rules to ensure implementation compliance.
+
+[metadata]
+version = "1.0.0"
+description = "Rue Language Normative Specification"
+language_version = "0.1.0"
+
+# Type System Rules
+[rules.type-system.assignment-strictness]
+description = "Variable assignment type checking"
+requirement = "Assignments must maintain type compatibility without implicit conversions"
+rationale = "Type safety prevents runtime errors and ensures predictable behavior"
+references = []
+
+[[rules.type-system.assignment-strictness.examples]]
+description = "Valid assignment to typed variable"
+code = "let x: i64 = 42;"
+expected = "compile-pass"
+
+[[rules.type-system.assignment-strictness.examples]]
+description = "Invalid assignment of incompatible type"  
+code = "let x: i64; x = \"hello\";"
+expected = "compile-fail"
+
+[rules.type-system.type-inference]
+description = "Type inference for untyped variables"
+requirement = "Variables without explicit types must be inferred from their initial value"
+rationale = "Reduces verbosity while maintaining type safety"
+references = ["type-system.assignment-strictness"]
+
+[[rules.type-system.type-inference.examples]]
+description = "Integer literal inference"
+code = "let x = 42; // inferred as i64"
+expected = "compile-pass"
+
+[[rules.type-system.type-inference.examples]]
+description = "Cannot infer type without initializer"
+code = "let x; // no type annotation or initializer"
+expected = "compile-fail"
+
+[rules.type-system.function-signatures]
+description = "Function parameter and return type checking"
+requirement = "Function calls must match parameter types exactly, return types must match declaration"
+rationale = "Ensures function interface contracts are maintained"
+references = []
+
+[[rules.type-system.function-signatures.examples]]
+description = "Valid function call with correct types"
+code = "fn add(a: i64, b: i64) -> i64 { a + b } let result = add(1, 2);"
+expected = "compile-pass"
+
+[[rules.type-system.function-signatures.examples]]
+description = "Invalid function call with wrong types"
+code = "fn add(a: i64, b: i64) -> i64 { a + b } let result = add(\"a\", \"b\");"
+expected = "compile-fail"
+
+# Runtime Behavior Rules
+[rules.runtime.bounds-checking]
+description = "Array bounds checking"
+requirement = "Array access must check bounds at runtime and panic on out-of-bounds access"
+rationale = "Memory safety requires bounds checking to prevent buffer overflows"
+references = []
+
+[[rules.runtime.bounds-checking.examples]]
+description = "Valid array access within bounds"
+code = "let arr = [1, 2, 3]; let x = arr[1];"
+expected = "run-pass"
+
+[[rules.runtime.bounds-checking.examples]]
+description = "Out-of-bounds access should panic"
+code = "let arr = [1, 2, 3]; let x = arr[5];"
+expected = "run-fail"
+
+[rules.runtime.arithmetic-overflow]
+description = "Integer arithmetic overflow behavior"
+requirement = "Integer overflow must be detected and cause a runtime panic in debug mode"
+rationale = "Overflow detection prevents silent corruption of calculations"
+references = []
+
+[[rules.runtime.arithmetic-overflow.examples]]
+description = "Valid arithmetic within bounds"
+code = "let x = 1000 + 2000;"
+expected = "run-pass"
+
+[[rules.runtime.arithmetic-overflow.examples]]
+description = "Overflow should panic in debug mode"
+code = "let x = 9223372036854775807 + 1; // i64::MAX + 1"
+expected = "run-fail"
+
+[rules.runtime.initialization]
+description = "Variable initialization requirements"
+requirement = "Variables must be initialized before use"
+rationale = "Prevents use of uninitialized memory which could contain arbitrary values"
+references = []
+
+[[rules.runtime.initialization.examples]]
+description = "Initialized variable usage"
+code = "let x = 42; let y = x + 1;"
+expected = "compile-pass"
+
+[[rules.runtime.initialization.examples]]
+description = "Use of uninitialized variable"
+code = "let x: i64; let y = x + 1;"
+expected = "compile-fail"
+
+# Control Flow Rules
+[rules.control-flow.if-semantics]
+description = "If statement condition evaluation"
+requirement = "If conditions must evaluate to boolean expressions"
+rationale = "Explicit boolean conditions prevent ambiguity and errors"
+references = []
+
+[[rules.control-flow.if-semantics.examples]]
+description = "Valid boolean condition"
+code = "if true { let x = 1; }"
+expected = "compile-pass"
+
+[[rules.control-flow.if-semantics.examples]]
+description = "Invalid non-boolean condition"
+code = "if 42 { let x = 1; }"
+expected = "compile-fail"
+
+[rules.control-flow.while-semantics]
+description = "While loop condition evaluation"
+requirement = "While conditions must evaluate to boolean expressions"
+rationale = "Consistent with if statement requirements"
+references = ["control-flow.if-semantics"]
+
+[[rules.control-flow.while-semantics.examples]]
+description = "Valid while loop with boolean condition"
+code = "let mut i = 0; while i < 10 { i = i + 1; }"
+expected = "compile-pass"
+
+[[rules.control-flow.while-semantics.examples]]
+description = "Invalid while loop with non-boolean condition"
+code = "while 42 { break; }"
+expected = "compile-fail"
+
+[rules.control-flow.return-values]
+description = "Function return value requirements"
+requirement = "Functions with return types must return a value on all code paths"
+rationale = "Ensures all functions fulfill their interface contracts"
+references = []
+
+[[rules.control-flow.return-values.examples]]
+description = "Function with explicit return"
+code = "fn get_value() -> i64 { return 42; }"
+expected = "compile-pass"
+
+[[rules.control-flow.return-values.examples]]
+description = "Function missing return statement"
+code = "fn get_value() -> i64 { let x = 42; }"
+expected = "compile-fail"
+
+# Function Rules
+[rules.functions.calling-convention]
+description = "Function call parameter passing"
+requirement = "Function parameters are passed by value"
+rationale = "Simple ownership semantics without borrowing complexity"
+references = []
+
+[[rules.functions.calling-convention.examples]]
+description = "Parameter passed by value"
+code = "fn modify(x: i64) { x = x + 1; } let y = 5; modify(y); // y is still 5"
+expected = "compile-pass"
+
+[rules.functions.recursion]
+description = "Recursive function calls"
+requirement = "Functions may call themselves recursively"
+rationale = "Recursion is a fundamental programming construct"
+references = []
+
+[[rules.functions.recursion.examples]]
+description = "Valid recursive function"
+code = "fn factorial(n: i64) -> i64 { if n <= 1 { 1 } else { n * factorial(n - 1) } }"
+expected = "compile-pass"
+
+[rules.functions.main-signature]
+description = "Main function requirements"
+requirement = "The main function must have signature 'fn main()' with no parameters or return type"
+rationale = "Standardized entry point for program execution"
+references = []
+
+[[rules.functions.main-signature.examples]]
+description = "Valid main function"
+code = "fn main() { let x = 42; }"
+expected = "compile-pass"
+
+[[rules.functions.main-signature.examples]]
+description = "Invalid main function with parameters"
+code = "fn main(args: i64) { let x = 42; }"
+expected = "compile-fail"
+
+# Array and Indexing Rules
+[rules.arrays.indexing]
+description = "Array indexing syntax and semantics"
+requirement = "Arrays are indexed with integer expressions in square brackets"
+rationale = "Standard array access syntax familiar to most programmers"
+references = ["runtime.bounds-checking"]
+
+[[rules.arrays.indexing.examples]]
+description = "Valid array indexing"
+code = "let arr = [1, 2, 3]; let x = arr[0];"
+expected = "compile-pass"
+
+[[rules.arrays.indexing.examples]]
+description = "Invalid array indexing with non-integer"
+code = "let arr = [1, 2, 3]; let x = arr[\"hello\"];"
+expected = "compile-fail"
+
+[rules.arrays.literals]
+description = "Array literal syntax"
+requirement = "Array literals are written as comma-separated values in square brackets"
+rationale = "Clear, unambiguous syntax for array creation"
+references = []
+
+[[rules.arrays.literals.examples]]
+description = "Valid array literal"
+code = "let arr = [1, 2, 3, 4];"
+expected = "compile-pass"
+
+[[rules.arrays.literals.examples]]
+description = "Empty array literal"
+code = "let arr: [i64; 0] = [];"
+expected = "compile-pass"
+
+[rules.arrays.homogeneous-types]
+description = "Array element type uniformity"
+requirement = "All elements in an array must have the same type"
+rationale = "Type safety and memory layout predictability"
+references = []
+
+[[rules.arrays.homogeneous-types.examples]]
+description = "Valid homogeneous array"
+code = "let arr = [1, 2, 3];"
+expected = "compile-pass"
+
+[[rules.arrays.homogeneous-types.examples]]
+description = "Invalid heterogeneous array"
+code = "let arr = [1, \"hello\", true];"
+expected = "compile-fail"
+
+# Integer Operations Rules
+[rules.integers.arithmetic]
+description = "Integer arithmetic operations"
+requirement = "Standard arithmetic operators (+, -, *, /) must work on integer types"
+rationale = "Basic mathematical operations are fundamental to computation"
+references = ["runtime.arithmetic-overflow"]
+
+[[rules.integers.arithmetic.examples]]
+description = "Valid arithmetic operations"
+code = "let result = (10 + 5) * 2 - 3 / 1;"
+expected = "compile-pass"
+
+[rules.integers.comparison]
+description = "Integer comparison operations"
+requirement = "Comparison operators (<, <=, >, >=, ==, !=) must work on integer types and return boolean"
+rationale = "Comparison operations are essential for control flow"
+references = []
+
+[[rules.integers.comparison.examples]]
+description = "Valid integer comparisons"
+code = "let a = 5; let b = 10; let c = a < b && b >= a;"
+expected = "compile-pass"
+
+[rules.integers.division-by-zero]
+description = "Division by zero behavior"
+requirement = "Division by zero must cause a runtime panic"
+rationale = "Division by zero is mathematically undefined and must be handled"
+references = []
+
+[[rules.integers.division-by-zero.examples]]
+description = "Valid division"
+code = "let result = 10 / 2;"
+expected = "run-pass"
+
+[[rules.integers.division-by-zero.examples]]
+description = "Division by zero should panic"
+code = "let result = 10 / 0;"
+expected = "run-fail"
+
+[rules.integers.bitwise]
+description = "Bitwise operations on integers"
+requirement = "Bitwise operators (&, |, ^, <<, >>) must work on integer types"
+rationale = "Bitwise operations are important for system programming"
+references = []
+
+[[rules.integers.bitwise.examples]]
+description = "Valid bitwise operations"
+code = "let result = (5 & 3) | (2 << 1);"
+expected = "compile-pass"
+
+# Variables and Scoping Rules
+[rules.variables.scoping]
+description = "Variable scoping rules"
+requirement = "Variables are scoped to their declaration block"
+rationale = "Block scoping provides predictable variable lifetime"
+references = []
+
+[[rules.variables.scoping.examples]]
+description = "Valid variable scoping"
+code = "{ let x = 1; } { let x = 2; } // separate scopes"
+expected = "compile-pass"
+
+[[rules.variables.scoping.examples]]
+description = "Variable not accessible outside scope"
+code = "{ let x = 1; } let y = x; // x not in scope"
+expected = "compile-fail"
+
+[rules.variables.mutability]
+description = "Variable mutability semantics"
+requirement = "Variables are immutable by default, must be explicitly marked 'mut' for mutation"
+rationale = "Immutability by default prevents accidental modification"
+references = []
+
+[[rules.variables.mutability.examples]]
+description = "Valid mutable variable"
+code = "let mut x = 1; x = 2;"
+expected = "compile-pass"
+
+[[rules.variables.mutability.examples]]
+description = "Invalid mutation of immutable variable"
+code = "let x = 1; x = 2;"
+expected = "compile-fail"
+
+[rules.variables.shadowing]
+description = "Variable shadowing behavior"
+requirement = "Variables may shadow previous declarations in outer scopes"
+rationale = "Allows variable reuse with different types or values"
+references = []
+
+[[rules.variables.shadowing.examples]]
+description = "Valid variable shadowing"
+code = "let x = 1; { let x = \"hello\"; } // inner x shadows outer"
+expected = "compile-pass"

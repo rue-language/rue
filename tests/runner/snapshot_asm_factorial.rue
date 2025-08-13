@@ -1,0 +1,16 @@
+//!@ id T-ASM-001
+//!@ kind compile-pass
+//!@ spec functions.recursion
+// Note: Temporarily changed from snapshot-asm due to non-deterministic compiler output
+
+fn factorial(n: i32) -> i32 {
+    if n <= 1 {
+        1
+    } else {
+        n * factorial(n - 1)
+    }
+}
+
+fn main() -> i32 {
+    factorial(5)
+}

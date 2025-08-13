@@ -1,0 +1,10 @@
+//!@ id T-ARRAY-001
+//!@ kind run-pass
+//!@ spec arrays.indexing
+//!@ expect exit 6
+
+fn main() -> i32 {
+    let arr: [i32; 5] = [1, 2, 3, 4, 5];
+    let sum = arr[0] + arr[4];  // 1 + 5 = 6
+    sum
+}

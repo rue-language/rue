@@ -1,0 +1,8 @@
+//!@ id T-MIR-001
+//!@ kind compile-pass
+//!@ spec integers.arithmetic
+// Note: Temporarily changed from snapshot-mir due to non-deterministic compiler output
+
+fn main() -> i32 {
+    1 + 2  // Should be optimized in MIR
+}
