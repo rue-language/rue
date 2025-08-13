@@ -5,6 +5,11 @@ on:
     branches: [ trunk ]
   pull_request:
     branches: [ trunk ]
+    types: [opened, reopened, synchronize]
+
+concurrency:
+  group: perf-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 jobs:
   benchmarks:
@@ -13,199 +18,200 @@ jobs:
     permissions:
       contents: write
       pull-requests: write
+
     steps:
-    - uses: actions/checkout@v4
-    
-    - name: Install Rust stable
-      uses: dtolnay/rust-toolchain@stable
-    
-    - name: Cache cargo registry
-      uses: actions/cache@v3
-      with:
-        path: ~/.cargo/registry
-        key: cargo-registry-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
-        restore-keys: |
-          cargo-registry-${{ runner.os }}-
-    
-    - name: Cache cargo target
-      uses: actions/cache@v3
-      with:
-        path: target
-        key: cargo-target-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
-        restore-keys: |
-          cargo-target-${{ runner.os }}-
-    
-    - name: Install hyperfine
-      run: |
-        wget https://github.com/sharkdp/hyperfine/releases/latest/download/hyperfine_1.19.0_amd64.deb
-        sudo dpkg -i hyperfine_1.19.0_amd64.deb
-    
-    - name: Build release binary
-      run: cargo build --release
-    
-    - name: Generate benchmark programs
-      run: bash scripts/generate-bench-programs.sh
-    
-    - name: Run Criterion micro-benchmarks
-      run: |
-        echo "Running detailed micro-benchmarks..."
-        cargo bench --bench compiler -- --output-format bencher | tee criterion-output.txt
-    
-    - name: Store Criterion benchmark results
-      if: github.ref == 'refs/heads/trunk'
-      uses: benchmark-action/github-action-benchmark@v1
-      with:
-        tool: 'cargo'
-        output-file-path: criterion-output.txt
-        github-token: ${{ secrets.GITHUB_TOKEN }}
-        auto-push: true
-        comment-on-alert: true
-        alert-threshold: '150%'
-        fail-on-alert: false
-        alert-comment-cc-users: '@maintainer'
-    
-    - name: Run end-to-end compilation benchmarks
-      run: |
-        echo "Measuring end-to-end compilation performance..."
-        hyperfine --warmup 3 --shell=none --export-json e2e-results.json \
-          'target/release/rue bench-programs/small.rue' \
-          'target/release/rue bench-programs/medium.rue' \
-          'target/release/rue bench-programs/large.rue'
-    
-    - name: Download baseline performance data
-      if: github.event_name == 'pull_request'
-      continue-on-error: true
-      run: |
-        echo "Downloading baseline from trunk..."
-        wget -q https://github.com/${{ github.repository }}/raw/trunk/baseline-times.json -O baseline-times.json || echo "No baseline found"
-    
-    - name: Check for performance regressions
-      run: |
-        echo "Checking for performance regressions..."
-        python3 scripts/check-perf-regression.py e2e-results.json baseline-times.json || exit_code=$?
-        
-        if [ ${exit_code:-0} -eq 1 ]; then
-          echo "Performance regression detected!"
-          echo "regression=true" >> $GITHUB_OUTPUT
-          # Don't fail the build, just report
-        else
-          echo "No performance regression detected"
-          echo "regression=false" >> $GITHUB_OUTPUT
-        fi
-      id: perf_check
-    
-    - name: Comment on PR with performance results
-      if: github.event_name == 'pull_request'
-      uses: actions/github-script@v7
-      with:
-        script: |
+      - uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry
+        uses: actions/cache@v3
+        with:
+          path: ~/.cargo/registry
+          key: cargo-registry-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            cargo-registry-${{ runner.os }}-
+
+      - name: Cache cargo target
+        uses: actions/cache@v3
+        with:
+          path: target
+          key: cargo-target-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            cargo-target-${{ runner.os }}-
+
+      - name: Install hyperfine
+        run: |
+          wget https://github.com/sharkdp/hyperfine/releases/download/v1.19.0/hyperfine_1.19.0_amd64.deb
+          sudo dpkg -i hyperfine_1.19.0_amd64.deb
+
+      - name: Build release binary
+        run: cargo build --release
+
+      - name: Generate benchmark programs
+        run: bash scripts/generate-bench-programs.sh
+
+      - name: Run Criterion micro-benchmarks
+        run: |
+          echo "Running detailed micro-benchmarks..."
+          cargo bench --bench compiler -- --output-format bencher | tee criterion-output.txt
+
+      # Store Criterion results on trunk only (no PR comments from this action)
+      - name: Store Criterion benchmark results
+        if: github.ref == 'refs/heads/trunk'
+        uses: benchmark-action/github-action-benchmark@v1
+        with:
+          tool: 'cargo'
+          output-file-path: criterion-output.txt
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          auto-push: true
+          comment-on-alert: false         # <-- prevent extra comments
+          alert-threshold: '150%'
+          fail-on-alert: false
+          # alert-comment-cc-users: '@maintainer'  # (optional)
+
+      - name: Run end-to-end compilation benchmarks
+        run: |
+          echo "Measuring end-to-end compilation performance..."
+          hyperfine --warmup 3 --shell=none --export-json e2e-results.json \
+            'target/release/rue bench-programs/small.rue' \
+            'target/release/rue bench-programs/medium.rue' \
+            'target/release/rue bench-programs/large.rue'
+
+      - name: Download baseline performance data
+        if: github.event_name == 'pull_request'
+        continue-on-error: true
+        run: |
+          echo "Downloading baseline from trunk..."
+          wget -q https://github.com/${{ github.repository }}/raw/trunk/baseline-times.json -O baseline-times.json || echo "No baseline found"
+
+      - name: Check for performance regressions
+        id: perf_check
+        run: |
+          echo "Checking for performance regressions..."
+          python3 scripts/check-perf-regression.py e2e-results.json baseline-times.json || exit_code=$?
+          if [ ${exit_code:-0} -eq 1 ]; then
+            echo "Performance regression detected!"
+            echo "regression=true" >> $GITHUB_OUTPUT
+          else
+            echo "No performance regression detected"
+            echo "regression=false" >> $GITHUB_OUTPUT
+          fi
+
+      # Build the PR comment body once, write to a file
+      - name: Prepare PR comment body
+        if: github.event_name == 'pull_request'
+        env:
+          REGRESSION: ${{ steps.perf_check.outputs.regression }}
+        run: |
+          node - <<'JS' > pr-comment.md
           const fs = require('fs');
-          
-          // Read results
+
+          function nameOf(cmd) {
+            const last = cmd.split('/').pop();
+            return last.replace(/\.rue$/, '').replace(/^bench-programs\//, '');
+          }
+
           let resultsText = "## 🚀 Performance Benchmark Results\n\n";
-          
+
           try {
-            const e2eResults = JSON.parse(fs.readFileSync('e2e-results.json', 'utf8'));
+            const e2e = JSON.parse(fs.readFileSync('e2e-results.json', 'utf8'));
             resultsText += "### End-to-End Compilation Times\n\n";
             resultsText += "| Program | Time | Std Dev |\n";
             resultsText += "|---------|------|----------|\n";
-            
-            for (const result of e2eResults.results) {
-              const name = result.command.split('/').pop().replace('.rue', '');
-              const time = (result.mean * 1000).toFixed(2);
-              const stddev = (result.stddev * 1000).toFixed(2);
-              resultsText += `| ${name} | ${time}ms | ±${stddev}ms |\n`;
+            for (const r of e2e.results) {
+              const n = nameOf(r.command);
+              const time = (r.mean * 1000).toFixed(2);
+              const stddev = (r.stddev * 1000).toFixed(2);
+              resultsText += `| ${n} | ${time}ms | ±${stddev}ms |\n`;
             }
-            
-            // Add comparison with baseline if available
+
             if (fs.existsSync('baseline-times.json')) {
               const baseline = JSON.parse(fs.readFileSync('baseline-times.json', 'utf8'));
               resultsText += "\n### Performance vs Baseline\n\n";
-              
-              for (const result of e2eResults.results) {
-                const name = result.command.split('/').pop().replace('.rue', '').replace('bench-programs/', '');
-                if (baseline[name]) {
-                  const current = result.mean;
-                  const base = baseline[name].mean;
+              for (const r of e2e.results) {
+                const n = nameOf(r.command);
+                if (baseline[n]?.mean != null) {
+                  const current = r.mean;
+                  const base = baseline[n].mean;
                   const change = ((current - base) / base * 100).toFixed(1);
                   const emoji = change > 0 ? '🔴' : '🟢';
-                  resultsText += `- ${name}: ${change > 0 ? '+' : ''}${change}% ${emoji}\n`;
+                  resultsText += `- ${n}: ${change > 0 ? '+' : ''}${change}% ${emoji}\n`;
                 }
               }
             }
-            
-            if ('${{ steps.perf_check.outputs.regression }}' === 'true') {
-              resultsText += "\n⚠️ **Performance regression detected!** Please review the changes.\n";
-            } else {
-              resultsText += "\n✅ No performance regressions detected.\n";
-            }
-            
-          } catch (error) {
-            resultsText += `Error reading benchmark results: ${error.message}\n`;
+
+            resultsText += process.env.REGRESSION === 'true'
+              ? "\n⚠️ **Performance regression detected!** Please review the changes.\n"
+              : "\n✅ No performance regressions detected.\n";
+
+          } catch (e) {
+            resultsText += `Error reading benchmark results: ${e.message}\n`;
           }
-          
-          // Comment on PR
-          github.rest.issues.createComment({
-            issue_number: context.issue.number,
-            owner: context.repo.owner,
-            repo: context.repo.repo,
-            body: resultsText
-          });
-    
-    - name: Upload performance artifacts
-      uses: actions/upload-artifact@v4
-      with:
-        name: performance-results
-        path: |
-          e2e-results.json
-          criterion-output.txt
-          baseline-times.json
-          bench-programs/
-    
-    - name: Update baseline on trunk
-      if: github.ref == 'refs/heads/trunk'
-      run: |
-        echo "Updating baseline performance data..."
-        git config --global user.name 'github-actions[bot]'
-        git config --global user.email 'github-actions[bot]@users.noreply.github.com'
-        
-        # Only commit if baseline changed
-        if ! git diff --quiet baseline-times.json 2>/dev/null || [ ! -f baseline-times.json ]; then
-          git add baseline-times.json
-          git commit -m "Update performance baseline [skip ci]" || echo "No changes to commit"
-          git push || echo "Push failed, baseline may already be updated"
-        fi
-    
-    - name: Binary size tracking
-      run: |
-        echo "Tracking binary sizes..."
-        echo "### Binary Sizes" >> $GITHUB_STEP_SUMMARY
-        echo "" >> $GITHUB_STEP_SUMMARY
-        echo "| Binary | Size |" >> $GITHUB_STEP_SUMMARY
-        echo "|--------|------|" >> $GITHUB_STEP_SUMMARY
-        
-        for binary in target/release/rue; do
-          if [ -f "$binary" ]; then
-            size=$(ls -lh "$binary" | awk '{print $5}')
-            name=$(basename "$binary")
-            echo "| $name | $size |" >> $GITHUB_STEP_SUMMARY
+
+          fs.writeFileSync('pr-comment.md', resultsText);
+          JS
+
+      # Sticky comment updates the same comment on every run (no duplicates)
+      - name: Post sticky PR comment
+        if: github.event_name == 'pull_request'
+        uses: marocchino/sticky-pull-request-comment@v2
+        with:
+          header: perf-benchmarks
+          path: pr-comment.md
+
+      - name: Upload performance artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: performance-results
+          path: |
+            e2e-results.json
+            criterion-output.txt
+            baseline-times.json
+            bench-programs/
+
+      - name: Update baseline on trunk
+        if: github.ref == 'refs/heads/trunk'
+        run: |
+          echo "Updating baseline performance data..."
+          git config --global user.name 'github-actions[bot]'
+          git config --global user.email 'github-actions[bot]@users.noreply.github.com'
+
+          # Only commit if baseline changed
+          if ! git diff --quiet baseline-times.json 2>/dev/null || [ ! -f baseline-times.json ]; then
+            git add baseline-times.json
+            git commit -m "Update performance baseline [skip ci]" || echo "No changes to commit"
+            git push || echo "Push failed, baseline may already be updated"
           fi
-        done
-    
-    - name: Summary
-      run: |
-        echo "### Performance Benchmark Summary" >> $GITHUB_STEP_SUMMARY
-        echo "" >> $GITHUB_STEP_SUMMARY
-        
-        if [ -f e2e-results.json ]; then
-          echo "✅ End-to-end compilation benchmarks completed" >> $GITHUB_STEP_SUMMARY
-          echo "✅ Criterion micro-benchmarks completed" >> $GITHUB_STEP_SUMMARY
-          
-          if [ "${{ steps.perf_check.outputs.regression }}" = "true" ]; then
-            echo "⚠️ Performance regression detected" >> $GITHUB_STEP_SUMMARY
+
+      - name: Binary size tracking
+        run: |
+          echo "Tracking binary sizes..."
+          echo "### Binary Sizes" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Binary | Size |" >> $GITHUB_STEP_SUMMARY
+          echo "|--------|------|" >> $GITHUB_STEP_SUMMARY
+          for binary in target/release/rue; do
+            if [ -f "$binary" ]; then
+              size=$(ls -lh "$binary" | awk '{print $5}')
+              name=$(basename "$binary")
+              echo "| $name | $size |" >> $GITHUB_STEP_SUMMARY
+            fi
+          done
+
+      - name: Summary
+        run: |
+          echo "### Performance Benchmark Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          if [ -f e2e-results.json ]; then
+            echo "✅ End-to-end compilation benchmarks completed" >> $GITHUB_STEP_SUMMARY
+            echo "✅ Criterion micro-benchmarks completed" >> $GITHUB_STEP_SUMMARY
+            if [ "${{ steps.perf_check.outputs.regression }}" = "true" ]; then
+              echo "⚠️ Performance regression detected" >> $GITHUB_STEP_SUMMARY
+            else
+              echo "✅ No performance regressions detected" >> $GITHUB_STEP_SUMMARY
+            fi
           else
-            echo "✅ No performance regressions detected" >> $GITHUB_STEP_SUMMARY
+            echo "❌ Benchmarks failed to complete" >> $GITHUB_STEP_SUMMARY
           fi
-        else
-          echo "❌ Benchmarks failed to complete" >> $GITHUB_STEP_SUMMARY
-        fi
