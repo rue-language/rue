@@ -115,6 +115,7 @@ rust_test(
         "//crates/rue-compiler:rue-compiler",
         "//crates/rue-codegen:rue-codegen",
         "//third-party/rust:tempfile",
+        "//third-party/rust:tracing",
     ],
     env = {
         "CARGO_MANIFEST_DIR": ".",
@@ -143,6 +144,7 @@ rust_test(
     deps = [
         "//crates/rue-compiler:rue-compiler",
         "//crates/rue-codegen:rue-codegen",
+        "//third-party/rust:tracing",
     ],
     env = {
         "CARGO_MANIFEST_DIR": ".",

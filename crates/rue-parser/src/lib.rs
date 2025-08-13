@@ -1817,9 +1817,6 @@ fn main() -> i32 {
     #[test]
     fn test_explicit_unit_return() {
         let result = lex_and_parse("fn noop() -> () { }");
-        if let Err(e) = &result {
-            eprintln!("Parse error: {e:?}");
-        }
         assert!(result.is_ok());
         let cst = result.unwrap();
         assert_eq!(cst.items.len(), 1);
@@ -1888,9 +1885,6 @@ fn main() -> i32 {
     #[test]
     fn test_unit_literal() {
         let result = lex_and_parse("let x: () = ();");
-        if let Err(e) = &result {
-            eprintln!("Parse error: {e:?}");
-        }
         assert!(result.is_ok());
         let cst = result.unwrap();
         assert_eq!(cst.items.len(), 1);
@@ -1970,10 +1964,6 @@ fn main() -> i32 {
             let closes = ")".repeat(depth);
             let test_str = format!("{opens}42{closes};");
             let result = lex_and_parse(&test_str);
-            if let Err(e) = &result {
-                eprintln!("Failed at depth {depth}: {test_str}");
-                eprintln!("Error: {e:?}");
-            }
             assert!(result.is_ok(), "Failed to parse {depth} levels of nesting");
         }
 
@@ -1990,16 +1980,6 @@ fn main() -> i32 {
 
         // Now test the deeply nested version
         let result = lex_and_parse("f(g(h(i(j(k(l(m(n(o(p(q())))))))))));");
-        if let Err(e) = &result {
-            eprintln!("Error parsing deeply nested function calls: {e:?}");
-            eprintln!("Let's count the parens in the test string");
-            let s = "f(g(h(i(j(k(l(m(n(o(p(q())))))))))));";
-            eprintln!(
-                "Opens: {}, Closes: {}",
-                s.matches('(').count(),
-                s.matches(')').count()
-            );
-        }
         assert!(result.is_ok());
 
         // Test deeply nested if expressions
@@ -2042,9 +2022,6 @@ fn complex(x: i32) -> i32 {
     }
 }"#;
         let result = lex_and_parse(complex);
-        if let Err(e) = &result {
-            eprintln!("Error parsing complex mixed nesting: {e:?}");
-        }
         assert!(result.is_ok());
     }
 

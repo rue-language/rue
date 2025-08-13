@@ -73,8 +73,6 @@ fn test_struct_literal_lowering_to_mir() {
         "Should have found struct construction in MIR"
     );
     assert!(found_field_access, "Should have found field access in MIR");
-
-    println!("Test passed: struct literals and field access are correctly lowered to MIR");
 }
 
 #[test]
@@ -106,6 +104,4 @@ fn test_empty_struct_lowering() {
         !mir.functions.is_empty(),
         "Should have at least one function"
     );
-
-    println!("Test passed: empty structs are correctly handled");
 }

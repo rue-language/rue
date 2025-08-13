@@ -44,7 +44,6 @@ fn test_struct_literal_and_field_access_in_hir() {
 
     // We can't easily check specific instruction types without walking the HIR,
     // but the fact that it compiles without errors is a good sign
-    println!("Test passed: struct literals and field access are supported in HIR");
 }
 
 #[test]
@@ -93,6 +92,4 @@ fn test_nested_struct_field_access() {
     assert!(matches!(outer_struct.fields[0].1, RueType::Struct(_)));
     assert_eq!(outer_struct.fields[1].0, "other");
     assert_eq!(outer_struct.fields[1].1, RueType::I32);
-
-    println!("Test passed: nested structs are properly handled");
 }

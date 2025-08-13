@@ -1,4 +1,3 @@
-use rue_diagnostic::{DiagnosticFormatter, SourceManager};
 use rue_parser::parse_with_diagnostics;
 
 #[test]
@@ -14,17 +13,7 @@ fn test_parser_error_diagnostic() {
         Err(diagnostics) => {
             assert!(!diagnostics.is_empty());
 
-            // Format the diagnostic for display
-            let formatter = DiagnosticFormatter::terminal();
-            let mut source_manager = SourceManager::new();
-            source_manager.add_source("test.rue", source);
-
             for diagnostic in &diagnostics {
-                let output = formatter
-                    .format_diagnostic(diagnostic, &source_manager)
-                    .unwrap();
-                println!("{output}");
-
                 // Check that it's an error
                 assert!(diagnostic.is_error());
                 // Check that it has a helpful message
@@ -43,16 +32,7 @@ fn test_unclosed_brace_diagnostic() {
         Err(diagnostics) => {
             assert!(!diagnostics.is_empty());
 
-            let formatter = DiagnosticFormatter::plain();
-            let mut source_manager = SourceManager::new();
-            source_manager.add_source("test.rue", source);
-
             for diagnostic in &diagnostics {
-                let output = formatter
-                    .format_diagnostic(diagnostic, &source_manager)
-                    .unwrap();
-                println!("{output}");
-
                 assert!(diagnostic.is_error());
             }
         }

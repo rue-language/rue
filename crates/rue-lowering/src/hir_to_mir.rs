@@ -1506,7 +1506,7 @@ impl<'hir> HirToMirLowerer<'hir> {
         if !function.body.params.is_empty() {
             // The function body has block params - this could mean the body is an expression
             // that produces a value via block params
-            eprintln!(
+            trace!(
                 "Function body has {} block params - checking if expression body",
                 function.body.params.len()
             );
@@ -1522,31 +1522,31 @@ impl<'hir> HirToMirLowerer<'hir> {
                     rue_ir::hir::BlockParamIndex::new(last_param_idx),
                 );
 
-                eprintln!(
+                trace!(
                     "Looking for result temp with key ({}, {})",
                     function.body.id.raw(),
                     last_param_idx
                 );
 
                 if let Some(&result_temp) = self.block_param_to_temp.get(&result_param_key) {
-                    eprintln!("Found result temp: {:?}", result_temp);
+                    trace!("Found result temp: {:?}", result_temp);
                     // Check if the current block's terminator needs to be patched
                     if let Some(ref mut current_block) = self.current_block {
-                        eprintln!("Current block terminator: {:?}", current_block.terminator);
+                        trace!("Current block terminator: {:?}", current_block.terminator);
                         if matches!(current_block.terminator, MirTerminator::Unreachable { .. }) {
                             // Replace the placeholder terminator with a return of the expression result
                             current_block.terminator = MirTerminator::Return {
                                 value: Some(result_temp),
                                 span: Some(function.body.span),
                             };
-                            eprintln!(
+                            trace!(
                                 "Patched function body to return expression result {:?}",
                                 result_temp
                             );
                         }
                     }
                 } else {
-                    eprintln!("No temp found for result param key");
+                    trace!("No temp found for result param key");
                 }
             }
         }
@@ -1784,7 +1784,7 @@ impl<'hir> HirToMirLowerer<'hir> {
         if !function.body.params.is_empty() {
             // The function body has block params - this could mean the body is an expression
             // that produces a value via block params
-            eprintln!(
+            trace!(
                 "Function body has {} block params - checking if expression body",
                 function.body.params.len()
             );
@@ -1800,31 +1800,31 @@ impl<'hir> HirToMirLowerer<'hir> {
                     rue_ir::hir::BlockParamIndex::new(last_param_idx),
                 );
 
-                eprintln!(
+                trace!(
                     "Looking for result temp with key ({}, {})",
                     function.body.id.raw(),
                     last_param_idx
                 );
 
                 if let Some(&result_temp) = self.block_param_to_temp.get(&result_param_key) {
-                    eprintln!("Found result temp: {:?}", result_temp);
+                    trace!("Found result temp: {:?}", result_temp);
                     // Check if the current block's terminator needs to be patched
                     if let Some(ref mut current_block) = self.current_block {
-                        eprintln!("Current block terminator: {:?}", current_block.terminator);
+                        trace!("Current block terminator: {:?}", current_block.terminator);
                         if matches!(current_block.terminator, MirTerminator::Unreachable { .. }) {
                             // Replace the placeholder terminator with a return of the expression result
                             current_block.terminator = MirTerminator::Return {
                                 value: Some(result_temp),
                                 span: Some(function.body.span),
                             };
-                            eprintln!(
+                            trace!(
                                 "Patched function body to return expression result {:?}",
                                 result_temp
                             );
                         }
                     }
                 } else {
-                    eprintln!("No temp found for result param key");
+                    trace!("No temp found for result param key");
                 }
             }
         }
@@ -2149,14 +2149,14 @@ mod tests {
         });
 
         // Debug: check HIR structure
-        println!("HIR functions count: {}", hir.functions.len());
-        println!("HIR function_arena count: {}", hir.function_arena.len());
+        trace!("HIR functions count: {}", hir.functions.len());
+        trace!("HIR function_arena count: {}", hir.function_arena.len());
 
         // Lower to MIR
         let type_context = TypeContext::new();
         let mir = lower_hir_to_mir(&hir, type_context);
 
-        println!("MIR functions count: {}", mir.functions.len());
+        trace!("MIR functions count: {}", mir.functions.len());
 
         // Verify the result
         assert_eq!(mir.functions.len(), 1);
@@ -2164,21 +2164,6 @@ mod tests {
         let main_func = &mir.functions[0];
         assert_eq!(main_func.name, "main");
         assert_eq!(main_func.return_type, RueType::I64);
-
-        // Debug: Print the blocks and terminator
-        println!("Number of blocks: {}", main_func.blocks.len());
-        for (i, block) in main_func.blocks.iter().enumerate() {
-            println!(
-                "Block {}: {:?} with {} statements",
-                i,
-                block.id,
-                block.statements.len()
-            );
-            for (j, stmt) in block.statements.iter().enumerate() {
-                println!("  Statement {}: {:?}", j, stmt);
-            }
-            println!("  Terminator: {:?}", block.terminator);
-        }
 
         // Should have exactly one block
         assert_eq!(main_func.blocks.len(), 1);
@@ -2251,18 +2236,6 @@ mod tests {
         let test_func = &mir.functions[0];
         assert_eq!(test_func.name, "test");
 
-        println!("Function has {} blocks", test_func.blocks.len());
-        for (i, block) in test_func.blocks.iter().enumerate() {
-            println!(
-                "Block {}: {} params, {} statements",
-                i,
-                block.params.len(),
-                block.statements.len()
-            );
-            println!("  Params: {:?}", block.params);
-            println!("  Terminator: {:?}", block.terminator);
-        }
-
         // Should have exactly one block with one parameter (function param becomes block param)
         assert_eq!(test_func.blocks.len(), 1);
         let entry_block = &test_func.blocks[0];
@@ -2271,7 +2244,7 @@ mod tests {
         // The terminator should return the block parameter
         match &entry_block.terminator {
             MirTerminator::Return { value: Some(_), .. } => {
-                println!("SUCCESS: Block parameter resolved correctly!");
+                trace!("SUCCESS: Block parameter resolved correctly!");
             }
             _ => panic!("Expected return with block parameter value"),
         }

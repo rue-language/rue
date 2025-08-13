@@ -14,8 +14,6 @@ fn debug_mixed_type_struct_offsets() {
         ],
     );
 
-    println!("Struct ID: {record_id}");
-
     // Compute field offsets
     let id_offset = type_ctx
         .compute_field_offset(record_id, &FieldId::Named("id".to_string()))
@@ -27,42 +25,23 @@ fn debug_mixed_type_struct_offsets() {
         .compute_field_offset(record_id, &FieldId::Named("score".to_string()))
         .unwrap();
 
-    println!("Field offsets:");
-    println!("  id (i64): {id_offset}");
-    println!("  active (bool): {active_offset}");
-    println!("  score (i32): {score_offset}");
-
     // Compute struct layout
     let layout = type_ctx
         .compute_layout(&RueType::Struct(record_id))
         .unwrap();
-    println!("Struct layout:");
-    println!("  size: {}", layout.size);
-    println!("  align: {}", layout.align);
 
     // Verify individual type layouts
-    println!("Individual type layouts:");
     let i64_layout = type_ctx.compute_layout(&RueType::I64).unwrap();
-    println!(
-        "  i64: size={}, align={}",
-        i64_layout.size, i64_layout.align
-    );
     let bool_layout = type_ctx.compute_layout(&RueType::Bool).unwrap();
-    println!(
-        "  bool: size={}, align={}",
-        bool_layout.size, bool_layout.align
-    );
     let i32_layout = type_ctx.compute_layout(&RueType::I32).unwrap();
-    println!(
-        "  i32: size={}, align={}",
-        i32_layout.size, i32_layout.align
-    );
 
-    // Expected offsets:
-    // id (i64): offset 0, size 8, align 8
-    // active (bool): offset 8, size 1, align 1
-    // score (i32): offset 12 (8 + 1 + 3 padding), size 4, align 4
-    // Total struct size: 16 (aligned to 8 bytes for i64)
+    // Verify individual type layouts match expectations
+    assert_eq!(i64_layout.size, 8, "i64 should be 8 bytes");
+    assert_eq!(i64_layout.align, 8, "i64 should be aligned to 8 bytes");
+    assert_eq!(bool_layout.size, 1, "bool should be 1 byte");
+    assert_eq!(bool_layout.align, 1, "bool should be aligned to 1 byte");
+    assert_eq!(i32_layout.size, 4, "i32 should be 4 bytes");
+    assert_eq!(i32_layout.align, 4, "i32 should be aligned to 4 bytes");
 
     assert_eq!(id_offset, 0, "id field should be at offset 0");
     assert_eq!(active_offset, 8, "active field should be at offset 8");

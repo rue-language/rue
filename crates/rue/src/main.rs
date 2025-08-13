@@ -7,7 +7,7 @@ use rue_compiler::{
 use rue_diagnostic::{DiagnosticFormatter, SourceManager};
 use std::fs;
 use std::path::PathBuf;
-use tracing::info;
+use tracing::{error, info, warn};
 
 #[derive(Debug, Clone)]
 struct Args {
@@ -78,7 +78,7 @@ fn main() {
             Some("tree") => LogFormat::Tree,
             Some("pretty") | None => LogFormat::Pretty,
             Some(fmt) => {
-                eprintln!("Unknown log format: {fmt}, using 'pretty'");
+                warn!("Unknown log format: {fmt}, using 'pretty'");
                 LogFormat::Pretty
             }
         },
@@ -96,6 +96,8 @@ fn main() {
     };
 
     if let Err(e) = init_tracing(log_config) {
+        // this is using eprintln because we didn't set up logging, so we can't
+        // use warn!
         eprintln!("Failed to initialize logging: {e}");
         // Continue without logging
     }
@@ -112,7 +114,7 @@ fn main() {
     let source = match fs::read_to_string(&input_path) {
         Ok(content) => content,
         Err(e) => {
-            eprintln!("Error reading file '{}': {}", input_path.display(), e);
+            error!("Error reading file '{}': {}", input_path.display(), e);
             std::process::exit(1);
         }
     };
@@ -129,7 +131,7 @@ fn main() {
         match compile_file_to_assembly_with_options(&db, file, options) {
             Ok(assembly) => {
                 if let Err(e) = fs::write(&output_path, &*assembly) {
-                    eprintln!(
+                    error!(
                         "Error writing output file '{}': {}",
                         output_path.display(),
                         e
@@ -141,13 +143,9 @@ fn main() {
                     "Successfully generated assembly to '{}'",
                     output_path.display()
                 );
-                println!(
-                    "Successfully generated assembly to '{}'",
-                    output_path.display()
-                );
             }
             Err(error) => {
-                eprintln!("Compilation failed: {error}");
+                error!("Compilation failed: {error}");
                 std::process::exit(1);
             }
         }
@@ -156,7 +154,7 @@ fn main() {
         match compile_file_with_diagnostics(&db, file, options) {
             Ok(executable) => {
                 if let Err(e) = fs::write(&output_path, &*executable) {
-                    eprintln!(
+                    error!(
                         "Error writing output file '{}': {}",
                         output_path.display(),
                         e
@@ -177,7 +175,6 @@ fn main() {
                 }
 
                 info!("Successfully compiled to '{}'", output_path.display());
-                println!("Successfully compiled to '{}'", output_path.display());
             }
             Err(diagnostics) => {
                 // Format and display diagnostics
@@ -192,11 +189,11 @@ fn main() {
                 let source_path = file.path(&db);
                 source_manager.add_source(source_path, source_text);
 
-                eprintln!("Compilation failed:\n");
+                error!("Compilation failed:\n");
                 for diagnostic in &diagnostics {
                     if let Ok(formatted) = formatter.format_diagnostic(diagnostic, &source_manager)
                     {
-                        eprintln!("{formatted}\n");
+                        error!("{formatted}\n");
                     }
                 }
 
