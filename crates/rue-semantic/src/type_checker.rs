@@ -534,10 +534,6 @@ impl TypeChecker {
             std::mem::discriminant(expr),
             type_hint
         );
-        println!(
-            "*** DEBUG: processing expression: {:?}",
-            std::mem::discriminant(expr)
-        );
         match expr {
             ExpressionNode::Literal(lit) => self.check_literal_with_hint(lit, builder, type_hint),
             ExpressionNode::Identifier(ident) => self.check_identifier(ident, builder),
@@ -549,7 +545,6 @@ impl TypeChecker {
             }
             ExpressionNode::Call(call) => self.check_call_expression(call, builder),
             ExpressionNode::If(if_expr) => {
-                println!("*** DEBUG: Found If ExpressionNode");
                 self.check_if_expression_with_hint(if_expr, builder, type_hint)
             }
             ExpressionNode::While(while_expr) => self.check_while_expression(while_expr, builder),

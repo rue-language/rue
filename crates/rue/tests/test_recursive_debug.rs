@@ -1,3 +1,5 @@
+use tracing::info;
+
 #[test]
 fn test_recursive_factorial_debug() {
     use rue_compiler::{RueDatabase, SourceFile, compile_file};
@@ -25,15 +27,14 @@ fn main() -> i32 {
 
     match compile_file(&db, file) {
         Ok(executable) => {
-            println!("\nGenerated {} bytes of executable", executable.len());
+            info!("\nGenerated {} bytes of executable", executable.len());
             // Dump hex of code section (starts at offset 0x78)
-            println!("\nCode section:");
+            info!("\nCode section:");
             for (i, chunk) in executable[0x78..].chunks(16).enumerate() {
                 print!("{:04x}: ", i * 16);
                 for byte in chunk {
                     print!("{byte:02x} ");
                 }
-                println!();
             }
         }
         Err(e) => {

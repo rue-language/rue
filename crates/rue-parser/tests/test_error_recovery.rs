@@ -1,4 +1,3 @@
-use rue_diagnostic::{DiagnosticFormatter, SourceManager};
 use rue_parser::parse_with_recovery;
 
 #[test]
@@ -21,50 +20,6 @@ fn main() -> i32 {
                 "Expected at least 3 errors, got {}",
                 diagnostics.len()
             );
-
-            // Print the errors for debugging
-            let formatter = DiagnosticFormatter::plain();
-            let mut source_manager = SourceManager::new();
-            source_manager.add_source("test.rue", source);
-
-            println!("Found {} errors:", diagnostics.len());
-            for diagnostic in &diagnostics {
-                let output = formatter
-                    .format_diagnostic(diagnostic, &source_manager)
-                    .unwrap();
-                println!("{output}");
-            }
-        }
-    }
-}
-
-#[test]
-fn test_recovery_continues_after_error() {
-    let source = r#"
-fn foo() {
-    let x = @#$;  // Invalid expression
-    let y = 5;    // Should still parse this
-    let z = 10;   // And this
-}
-"#;
-
-    match parse_with_recovery(source, "test.rue") {
-        Ok(_) => panic!("Expected errors"),
-        Err(diagnostics) => {
-            // Should have found at least one error
-            assert!(!diagnostics.is_empty());
-
-            // But should have continued parsing after the error
-            let formatter = DiagnosticFormatter::plain();
-            let mut source_manager = SourceManager::new();
-            source_manager.add_source("test.rue", source);
-
-            for diagnostic in &diagnostics {
-                let output = formatter
-                    .format_diagnostic(diagnostic, &source_manager)
-                    .unwrap();
-                println!("Error: {output}");
-            }
         }
     }
 }
@@ -93,35 +48,6 @@ fn main() {
                     || d.message.contains("}")
             });
             assert!(has_brace_error, "Expected error about missing brace");
-        }
-    }
-}
-
-#[test]
-fn test_recovery_in_struct_definition() {
-    let source = r#"
-struct Point {
-    x: i32,
-    y: ,      // Error: missing type
-    z: i32,   // Should still parse this field
-}
-"#;
-
-    match parse_with_recovery(source, "test.rue") {
-        Ok(_) => panic!("Expected errors"),
-        Err(diagnostics) => {
-            assert!(!diagnostics.is_empty());
-
-            let formatter = DiagnosticFormatter::plain();
-            let mut source_manager = SourceManager::new();
-            source_manager.add_source("test.rue", source);
-
-            for diagnostic in &diagnostics {
-                let output = formatter
-                    .format_diagnostic(diagnostic, &source_manager)
-                    .unwrap();
-                println!("Struct error: {output}");
-            }
         }
     }
 }

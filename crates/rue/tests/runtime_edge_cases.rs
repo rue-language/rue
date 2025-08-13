@@ -11,6 +11,7 @@ use std::fs;
 use std::io::Write;
 use std::process::{Command, Stdio};
 use tempfile::{NamedTempFile, TempDir};
+use tracing::warn;
 
 fn compile_and_run(source: &str, input: Option<&str>) -> Result<(i32, String), String> {
     // Create a temporary directory to hold files
@@ -82,7 +83,7 @@ fn compile_and_run(source: &str, input: Option<&str>) -> Result<(i32, String), S
     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
 
     if !stderr.is_empty() {
-        eprintln!("STDERR: {stderr}");
+        warn!("STDERR: {stderr}");
     }
 
     Ok((exit_code, stdout))

@@ -25,6 +25,8 @@
 //! - `RUST_LOG=rue::mir=trace` - Enable trace logging for MIR
 //! - `RUST_LOG=rue::mir::vars=trace` - Very detailed variable tracking
 
+use std::io;
+
 use tracing_subscriber::{EnvFilter, Layer, layer::SubscriberExt, util::SubscriberInitExt};
 
 /// Output format for logs
@@ -76,7 +78,7 @@ impl Default for LogConfig {
 /// Subsequent calls will be ignored.
 pub fn init_tracing(config: LogConfig) -> Result<(), Box<dyn std::error::Error>> {
     // Create the env filter
-    let filter = config.filter.as_deref().unwrap_or("rue=info");
+    let filter = config.filter.as_deref().unwrap_or("rue=warn");
     let env_filter = EnvFilter::try_new(filter)?;
 
     match config.format {
@@ -87,6 +89,7 @@ pub fn init_tracing(config: LogConfig) -> Result<(), Box<dyn std::error::Error>>
                 .with_file(config.with_source_location)
                 .with_line_number(config.with_source_location)
                 .with_ansi(atty::is(atty::Stream::Stderr))
+                .with_writer(io::stderr)
                 .pretty()
                 .with_filter(env_filter);
 
@@ -101,6 +104,7 @@ pub fn init_tracing(config: LogConfig) -> Result<(), Box<dyn std::error::Error>>
                 .with_file(config.with_source_location)
                 .with_line_number(config.with_source_location)
                 .with_thread_ids(config.with_thread_ids)
+                .with_writer(io::stderr)
                 .with_filter(env_filter);
 
             tracing_subscriber::registry().with(fmt_layer).try_init()?;
@@ -113,6 +117,7 @@ pub fn init_tracing(config: LogConfig) -> Result<(), Box<dyn std::error::Error>>
                 .with_file(config.with_source_location)
                 .with_line_number(config.with_source_location)
                 .with_ansi(atty::is(atty::Stream::Stderr))
+                .with_writer(io::stderr)
                 .with_filter(env_filter);
 
             tracing_subscriber::registry().with(fmt_layer).try_init()?;
@@ -127,6 +132,7 @@ pub fn init_tracing(config: LogConfig) -> Result<(), Box<dyn std::error::Error>>
                 .with_verbose_entry(false)
                 .with_indent_amount(2)
                 .with_ansi(atty::is(atty::Stream::Stderr))
+                .with_writer(io::stderr)
                 .with_filter(env_filter);
 
             tracing_subscriber::registry().with(tree_layer).try_init()?;

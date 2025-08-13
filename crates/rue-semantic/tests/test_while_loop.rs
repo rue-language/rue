@@ -21,10 +21,6 @@ fn main() -> i32 {
     // Analyze with HIR - this should succeed with our new implementation
     let hir = analyze_cst(&cst).expect("Semantic analysis should succeed");
 
-    // Print HIR for debugging
-    println!("HIR output for while loop test:");
-    println!("{}", hir.hir);
-
     // Verify we have the expected structure
     assert!(
         !hir.hir.function_arena.is_empty(),

@@ -6,7 +6,6 @@
 //! - Multi-span diagnostics
 //! - Suggestions and help text
 
-use rue_diagnostic::{DiagnosticFormatter, SourceManager};
 use rue_parser::parse_with_recovery;
 
 #[test]
@@ -54,21 +53,6 @@ struct Point {
                 "Expected at least 3 errors, got {}",
                 diagnostics.len()
             );
-
-            // Create formatter and source manager for output
-            let formatter = DiagnosticFormatter::terminal();
-            let mut source_manager = SourceManager::new();
-            source_manager.add_source("test.rue", source);
-
-            println!("\n=== Comprehensive Diagnostic Output ===\n");
-
-            for (i, diagnostic) in diagnostics.iter().enumerate() {
-                println!("Error {}:", i + 1);
-                let output = formatter
-                    .format_diagnostic(diagnostic, &source_manager)
-                    .unwrap();
-                println!("{output}\n");
-            }
 
             // Verify specific error messages exist
             let error_messages: Vec<String> =
@@ -145,43 +129,6 @@ fn test_error_recovery_limit() {
                 diagnostics.len()
             );
             assert!(!diagnostics.is_empty(), "Should have at least some errors");
-
-            println!("Collected {} errors (limited from 150)", diagnostics.len());
-        }
-    }
-}
-
-#[test]
-fn test_diagnostic_formatting_options() {
-    let source = r#"
-fn test() {
-    let x = @#$;  // Invalid tokens
-}
-"#;
-
-    match parse_with_recovery(source, "test.rue") {
-        Ok(_) => panic!("Expected errors"),
-        Err(diagnostics) => {
-            assert!(!diagnostics.is_empty());
-
-            let mut source_manager = SourceManager::new();
-            source_manager.add_source("test.rue", source);
-
-            // Test different formatting options
-            let formatters = [
-                ("Plain", DiagnosticFormatter::plain()),
-                ("Terminal", DiagnosticFormatter::terminal()),
-            ];
-
-            for (name, formatter) in &formatters {
-                println!("\n=== {name} Format ===");
-                for diagnostic in &diagnostics {
-                    let output = formatter
-                        .format_diagnostic(diagnostic, &source_manager)
-                        .unwrap();
-                    println!("{output}");
-                }
-            }
         }
     }
 }

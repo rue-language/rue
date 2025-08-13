@@ -177,10 +177,6 @@ fn test_hir_display() {
     // Analyze with HIR
     let hir = analyze_cst(&cst).expect("HIR analysis should succeed");
 
-    // Print HIR for manual inspection
-    println!("HIR output:");
-    println!("{}", hir.hir);
-
     // Basic validation - should have emitted various instruction types
     assert!(
         !hir.hir.function_arena.is_empty() && hir.hir.function_arena[0].body.body.len() > 3,
@@ -309,10 +305,6 @@ fn test_tuple_literal_hir() {
     // Analyze with HIR
     let hir = analyze_cst(&cst).expect("HIR analysis should succeed");
 
-    // Print HIR for debugging
-    println!("HIR output for tuple literal test:");
-    println!("{}", hir.hir);
-
     // Check that we have a TupleLit instruction using helper
     assert!(
         has_instruction_type(&hir.hir, InstTag::TupleLit),
@@ -343,10 +335,6 @@ fn test_tuple_field_access_hir() {
 
     // Analyze with HIR
     let hir = analyze_cst(&cst).expect("HIR analysis should succeed");
-
-    // Print HIR for debugging
-    println!("HIR output for tuple field access test:");
-    println!("{}", hir.hir);
 
     // Check that we have FieldAccess instructions using helper
     let field_access_count = count_instruction_type(&hir.hir, InstTag::FieldAccess);
@@ -381,10 +369,6 @@ fn test_nested_tuple_hir() {
     // Analyze with HIR
     let hir = analyze_cst(&cst).expect("HIR analysis should succeed");
 
-    // Print HIR for debugging
-    println!("HIR output for nested tuple test:");
-    println!("{}", hir.hir);
-
     // Count TupleLit instructions (should have 3: two inner tuples and one outer) using helper
     let tuple_lit_count = count_instruction_type(&hir.hir, InstTag::TupleLit);
     // The compiler may generate duplicate tuple constructions, so we expect at least 3
@@ -418,10 +402,6 @@ fn test_tuple_with_type_annotation_hir() {
 
     // Analyze with HIR
     let hir = analyze_cst(&cst).expect("HIR analysis should succeed");
-
-    // Print HIR for debugging
-    println!("HIR output for tuple with type annotation test:");
-    println!("{}", hir.hir);
 
     // Check that we have a TupleLit instruction using helper
     assert!(
@@ -460,10 +440,6 @@ fn test_tuple_in_expression_hir() {
     // Analyze with HIR
     let hir = analyze_cst(&cst).expect("HIR analysis should succeed");
 
-    // Print HIR for debugging
-    println!("HIR output for tuple in expression test:");
-    println!("{}", hir.hir);
-
     // Count TupleLit instructions (compiler may generate duplicates) using helper
     let tuple_lit_count = count_instruction_type(&hir.hir, InstTag::TupleLit);
     assert!(
@@ -495,10 +471,6 @@ fn test_empty_tuple_hir() {
 
     // Analyze with HIR
     let hir = analyze_cst(&cst).expect("HIR analysis should succeed");
-
-    // Print HIR for debugging
-    println!("HIR output for empty tuple test:");
-    println!("{}", hir.hir);
 
     // Empty tuples are represented as Literal instructions with Unit type
     // Check that we have Literal instructions with Unit type
