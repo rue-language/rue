@@ -1,0 +1,24 @@
+Err(
+    [
+        Diagnostic {
+            severity: Error,
+            code: None,
+            message: "Unexpected token: Semicolon",
+            labels: [
+                Label {
+                    span: Span {
+                        start: 32,
+                        end: 33,
+                    },
+                    message: None,
+                    style: Primary,
+                },
+            ],
+            help: None,
+            related: [],
+            source_id: SourceId(
+                "test.rue",
+            ),
+        },
+    ],
+)

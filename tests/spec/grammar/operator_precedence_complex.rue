@@ -1,0 +1,13 @@
+//!@ id T-PREC-COMPLEX-001
+//!@ kind run-pass
+//!@ spec §3.2 Operator Precedence
+//!@ expect exit 1
+
+fn main() -> i32 {
+    // Complex precedence: comparison has lower precedence than arithmetic
+    if 2 + 3 * 4 > 10 {  // (2 + (3 * 4)) > 10 = 14 > 10 = true
+        1
+    } else {
+        0
+    }
+}

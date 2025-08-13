@@ -27,3 +27,15 @@ rust_test(
     ],
 )
 
+rust_test(
+    name = "struct_lowering_test",
+    srcs = glob(["tests/**/*.rs", "src/**/*.rs"]),
+    crate_root = "tests/struct_lowering_test.rs",
+    edition = "2024",
+    deps = [
+        ":rue-lowering",
+        "//crates/rue-ir:rue-ir",
+        "//crates/rue-parser:rue-parser",
+        "//crates/rue-semantic:rue-semantic",
+    ],
+)

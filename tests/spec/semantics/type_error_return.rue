@@ -1,0 +1,8 @@
+//!@ id T-TYPE-RETURN-FAIL-001
+//!@ kind compile-fail
+//!@ spec §4 Static Semantics
+//!@ expect stderr "type mismatch"
+
+fn main() -> i32 {
+    true  // Type error: returning bool when i32 is expected
+}

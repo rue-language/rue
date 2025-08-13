@@ -1,0 +1,31 @@
+Err(
+    [
+        Diagnostic {
+            severity: Error,
+            code: Some(
+                DiagnosticCode {
+                    namespace: "E",
+                    number: 1001,
+                },
+            ),
+            message: "Expected Semicolon, found Comment(\" Missing semicolon\")",
+            labels: [
+                Label {
+                    span: Span {
+                        start: 36,
+                        end: 56,
+                    },
+                    message: None,
+                    style: Primary,
+                },
+            ],
+            help: Some(
+                "Check that you have the correct syntax for this construct",
+            ),
+            related: [],
+            source_id: SourceId(
+                "test.rue",
+            ),
+        },
+    ],
+)

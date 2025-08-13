@@ -1,0 +1,41 @@
+load("@prelude//rust:cargo_package.bzl", "cargo")
+
+cargo.rust_library(
+    name = "rue-test-utils",
+    srcs = glob(["src/**/*.rs"]),
+    crate_root = "src/lib.rs",
+    crate = "rue_test_utils",
+    edition = "2024",
+    deps = [
+        "//crates/rue-ast:rue-ast",
+        "//crates/rue-lowering:rue-lowering",
+        "//crates/rue-parser:rue-parser",
+        "//crates/rue-semantic:rue-semantic",
+        "//crates/rue-ir:rue-ir",
+        "//third-party/rust:anyhow",
+        "//third-party/rust:camino",
+        "//third-party/rust:tempfile",
+        "//third-party/rust:regex",
+        "//third-party/rust:once_cell",
+    ],
+    visibility = ["PUBLIC"],
+)
+    
+rust_test(
+    name = "test",
+    srcs = glob(["src/**/*.rs"]),
+    crate_root = "src/lib.rs",
+    edition = "2024",
+    deps = [
+        "//crates/rue-ast:rue-ast",
+        "//crates/rue-lowering:rue-lowering",
+        "//crates/rue-parser:rue-parser",
+        "//crates/rue-semantic:rue-semantic",
+        "//crates/rue-ir:rue-ir",
+        "//third-party/rust:anyhow",
+        "//third-party/rust:camino",
+        "//third-party/rust:tempfile",
+        "//third-party/rust:regex",
+        "//third-party/rust:once_cell",
+    ],
+)

@@ -13,6 +13,7 @@ pub enum TestDirective {
     ExpectStdout(String),
     ExpectStderr(String),
     Flags(Vec<String>),
+    Skip(String),
 }
 
 /// Complete test specification built from directives
@@ -25,6 +26,7 @@ pub struct TestSpec {
     pub expected_stdout: Vec<String>,
     pub expected_stderr: Vec<String>,
     pub compiler_flags: Vec<String>,
+    pub skip_reason: Option<String>,
 }
 
 /// Types of tests supported by the runner
@@ -103,6 +105,7 @@ pub fn build_test_spec(directives: &[TestDirective]) -> Result<TestSpec> {
     let mut expected_stdout = Vec::new();
     let mut expected_stderr = Vec::new();
     let mut compiler_flags = Vec::new();
+    let mut skip_reason: Option<String> = None;
 
     for directive in directives {
         match directive {
@@ -136,6 +139,12 @@ pub fn build_test_spec(directives: &[TestDirective]) -> Result<TestSpec> {
             TestDirective::Flags(flags) => {
                 compiler_flags.extend(flags.clone());
             }
+            TestDirective::Skip(reason) => {
+                if skip_reason.is_some() {
+                    return Err(anyhow!("Duplicate 'skip' directive"));
+                }
+                skip_reason = Some(reason.clone());
+            }
         }
     }
 
@@ -151,6 +160,7 @@ pub fn build_test_spec(directives: &[TestDirective]) -> Result<TestSpec> {
         expected_stdout,
         expected_stderr,
         compiler_flags,
+        skip_reason,
     })
 }
 
@@ -195,6 +205,10 @@ fn parse_single_directive_line(text: &str) -> Result<TestDirective> {
                 .collect();
             Ok(TestDirective::Flags(flags))
         }
+        "skip" => {
+            let skip_reason = value.unwrap_or("Test skipped").to_string();
+            Ok(TestDirective::Skip(skip_reason))
+        }
         _ => Err(anyhow!("Unknown directive key: {}", key)),
     }
 }
@@ -213,6 +227,12 @@ fn parse_expect_directive(value: &str) -> Result<TestDirective> {
         "exit" => {
             let exit_code_str =
                 expect_value.ok_or_else(|| anyhow!("'expect exit' requires a code value"))?;
+            // Strip inline comments (anything after //)
+            let exit_code_str = if let Some(comment_pos) = exit_code_str.find("//") {
+                exit_code_str[..comment_pos].trim()
+            } else {
+                exit_code_str
+            };
             let exit_code = exit_code_str
                 .parse::<i32>()
                 .with_context(|| format!("Invalid exit code: {}", exit_code_str))?;

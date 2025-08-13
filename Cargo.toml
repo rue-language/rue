@@ -15,6 +15,8 @@ members = [
     "crates/rue-optimize",
     "crates/rue-target",
     "crates/rue-runner",
+    "crates/rue-snapshot",
+    "crates/rue-test-utils",
 ]
 
 [workspace.package]
@@ -36,6 +38,8 @@ rue-lowering = { path = "crates/rue-lowering" }
 rue-optimize = { path = "crates/rue-optimize" }
 rue-target = { path = "crates/rue-target" }
 rue-runner = { path = "crates/rue-runner" }
+rue-snapshot = { path = "crates/rue-snapshot" }
+rue-test-utils = { path = "crates/rue-test-utils" }
 atty = "0.2"
 bpaf = "0.9.20"
 criterion = "0.5.0"
@@ -60,3 +64,5 @@ bstr = "1.6"
 similar = "2.2"
 walkdir = "2.4"
 clap = { version = "4.4", features = ["derive"] }
+once_cell = "1.19"
+proptest = "1.5"

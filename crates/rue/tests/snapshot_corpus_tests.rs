@@ -6,7 +6,7 @@
 mod common;
 
 use common::get_project_root;
-use rue_parser::snapshot::{ExecutionSnapshot, SnapshotFormat, SnapshotTestBuilder};
+use rue_snapshot::{ExecSnapshotFormat as SnapshotFormat, ExecutionSnapshot, SnapshotTestBuilder};
 use std::fs;
 use std::path::Path;
 use std::process::{Command, Stdio};
@@ -83,14 +83,19 @@ fn compile_and_run(source_path: &Path) -> Result<ExecutionSnapshot, String> {
         .output()
         .map_err(|e| format!("Failed to execute program: {e}"))?;
 
-    let timed_out = start.elapsed() > timeout_duration;
+    let elapsed = start.elapsed();
+    let timeout = if elapsed > timeout_duration {
+        Some(elapsed)
+    } else {
+        None
+    };
 
     Ok(ExecutionSnapshot {
         exit_code: run_output.status.code().unwrap_or(-1),
         stdout: String::from_utf8_lossy(&run_output.stdout).to_string(),
         stderr: String::from_utf8_lossy(&run_output.stderr).to_string(),
         compilation_warnings: warnings,
-        timeout: Some(timed_out),
+        timeout,
     })
 }
 
@@ -117,7 +122,7 @@ macro_rules! corpus_test {
             SnapshotTestBuilder::new(&test_name)
                 .with_snapshot_dir(project_root.join("tests/snapshots/corpus"))
                 .with_format(SnapshotFormat::Toml)
-                .assert(result)
+                .test_execution(&result)
                 .expect("Snapshot test failed");
         }
     };
@@ -178,7 +183,7 @@ mod batch_tests {
                         SnapshotTestBuilder::new(&test_name)
                             .with_snapshot_dir(project_root.join("tests/snapshots/corpus"))
                             .with_format(SnapshotFormat::Toml)
-                            .assert(result)
+                            .test_execution(&result)
                             .unwrap_or_else(|_| {
                                 panic!("Snapshot test failed for: {}", path.display())
                             });

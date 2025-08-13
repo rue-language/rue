@@ -1,0 +1,9 @@
+//!@ id T-PREC-BASIC-001
+//!@ kind run-pass
+//!@ spec §3.2 Operator Precedence
+//!@ expect exit 23
+
+fn main() -> i32 {
+    // Multiplication has higher precedence than addition
+    3 + 4 * 5  // Should be 3 + (4 * 5) = 3 + 20 = 23
+}

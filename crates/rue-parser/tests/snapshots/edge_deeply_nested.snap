@@ -1,0 +1,24 @@
+Err(
+    [
+        Diagnostic {
+            severity: Error,
+            code: None,
+            message: "Unexpected token: Fn",
+            labels: [
+                Label {
+                    span: Span {
+                        start: 140,
+                        end: 142,
+                    },
+                    message: None,
+                    style: Primary,
+                },
+            ],
+            help: None,
+            related: [],
+            source_id: SourceId(
+                "test.rue",
+            ),
+        },
+    ],
+)

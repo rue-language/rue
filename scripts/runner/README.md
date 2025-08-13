@@ -69,14 +69,14 @@ Continuous Integration script designed for automated testing environments. Provi
 The test runner expects the following directory structure:
 
 ```
-tests/runner/                    # Test files
-├── compile_pass_basic.rue      # Compilation success tests
-├── compile_fail_type_error.rue # Compilation failure tests  
-├── run_pass_arithmetic.rue     # Runtime success tests
-├── run_fail_bounds_check.rue   # Runtime failure tests
-├── snapshot_mir_simple.rue     # MIR snapshot tests
-├── snapshot_asm_factorial.rue  # Assembly snapshot tests
-└── snapshots/                  # Golden snapshots
+tests/                           # Root test directory
+├── spec/                        # Specification-linked tests
+│   ├── grammar/                 # Grammar tests
+│   ├── runtime/                 # Runtime behavior tests
+│   └── semantics/               # Semantic analysis tests
+├── fixtures/                    # Test fixtures
+│   └── corpus/                  # Test corpus files
+└── snapshots/                   # Golden snapshots
     ├── simple.mir.snap
     └── factorial.asm.snap
 ```

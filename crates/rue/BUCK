@@ -25,6 +25,7 @@ rust_test(
         "//crates/rue-compiler:rue-compiler",
         "//crates/rue-codegen:rue-codegen",
         "//crates/rue-parser:rue-parser",
+        "//crates/rue-snapshot:rue-snapshot",
         "//third-party/rust:tempfile",
     ],
     env = {
@@ -98,6 +99,7 @@ rust_test(
     deps = [
         "//crates/rue-compiler:rue-compiler",
         "//crates/rue-codegen:rue-codegen",
+        "//crates/rue-test-utils:rue-test-utils",
         "//third-party/rust:tempfile",
     ],
     env = {
@@ -162,5 +164,37 @@ rust_test(
     ],
     env = {
         "CARGO_MANIFEST_DIR": ".",
+    },
+)
+
+rust_test(
+    name = "arithmetic",
+    srcs = glob(["tests/**/*.rs"]),
+    crate_root = "tests/arithmetic.rs",
+    edition = "2024",
+    deps = [
+        "//crates/rue-compiler:rue-compiler",
+        "//crates/rue-codegen:rue-codegen",
+        "//crates/rue-test-utils:rue-test-utils",
+    ],
+    env = {
+        "CARGO_MANIFEST_DIR": ".",
+        "CARGO_BIN_EXE_rue": "$(location :rue)",
+    },
+)
+
+rust_test(
+    name = "type_system",
+    srcs = glob(["tests/**/*.rs"]),
+    crate_root = "tests/type_system.rs",
+    edition = "2024",
+    deps = [
+        "//crates/rue-compiler:rue-compiler",
+        "//crates/rue-codegen:rue-codegen",
+        "//crates/rue-test-utils:rue-test-utils",
+    ],
+    env = {
+        "CARGO_MANIFEST_DIR": ".",
+        "CARGO_BIN_EXE_rue": "$(location :rue)",
     },
 )

@@ -5,8 +5,8 @@
 #[cfg(test)]
 mod tests {
     use crate::diagnostics::parse_with_diagnostics;
-    use crate::simple_snapshot::SnapshotTest;
     use rue_diagnostic::{DiagnosticFormatter, SourceManager};
+    use rue_snapshot::{Snapshot, SnapshotConfig, normalize::CompositeNormalizer};
 
     fn assert_diagnostic_snapshot(test_name: &str, source: &str) {
         let result = parse_with_diagnostics(source, "test.rue");
@@ -32,7 +32,12 @@ mod tests {
             }
         };
 
-        SnapshotTest::new(test_name).assert_snapshot(&output);
+        // Use the new snapshot system with normalization for consistent output
+        let config = SnapshotConfig::default().with_normalizer(CompositeNormalizer::standard());
+
+        Snapshot::with_config(test_name, config)
+            .assert(&output)
+            .expect("Snapshot assertion failed");
     }
 
     #[test]

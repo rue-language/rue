@@ -1,0 +1,15 @@
+//!@ id T-SCOPE-SHADOW-003
+//!@ kind run-pass
+//!@ spec §4.1.3 Variable Shadowing
+//!@ expect exit 100
+
+fn main() -> i32 {
+    let x: i32 = 42;      // x is i32
+    let x: bool = true;   // x is now bool, previous x is shadowed
+    if x {                // Uses the bool x
+        let x: i32 = 100; // x is i32 again in this scope
+        x                 // Returns 100
+    } else {
+        0
+    }
+}

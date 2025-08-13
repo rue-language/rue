@@ -1,0 +1,8 @@
+//!@ id T-ARITH-MOD-001
+//!@ kind run-pass
+//!@ spec §3.2 Operator Precedence
+//!@ expect exit 2
+
+fn main() -> i32 {
+    17 % 5  // 17 modulo 5 = 2
+}

@@ -1,0 +1,9 @@
+//!@ id T-TYPE-ASSIGN-FAIL-001
+//!@ kind compile-fail
+//!@ spec §4 Static Semantics
+//!@ expect stderr "type mismatch"
+
+fn main() -> i32 {
+    let x: i32 = true;  // Type error: assigning bool to i32
+    x
+}

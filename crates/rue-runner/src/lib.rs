@@ -9,6 +9,7 @@
 // - JSON report generation
 
 use anyhow::Result;
+use rue_snapshot::SnapshotConfig;
 use tracing::{error, info};
 
 pub mod cli;
@@ -16,7 +17,6 @@ pub mod directives;
 pub mod discover;
 pub mod exec;
 pub mod report;
-pub mod snapshot;
 pub mod spec;
 
 pub use cli::Args;
@@ -24,7 +24,6 @@ pub use directives::{TestDirective, TestKind, TestSpec, build_test_spec};
 pub use discover::TestDiscoverer;
 pub use exec::TestExecutor;
 pub use report::TestReport;
-pub use snapshot::SnapshotManager;
 pub use spec::SpecLoader;
 
 /// Main entry point for running tests
@@ -56,16 +55,15 @@ pub fn run(args: Args) -> Result<()> {
 
     // Execute tests
     let executor = TestExecutor::new(&args.rue_binary, &spec_loader)?;
-    let snapshot_manager = if args.update_snapshots {
-        SnapshotManager::with_update_mode(&args.snapshot_dir)?
-    } else {
-        SnapshotManager::new(&args.snapshot_dir)?
-    };
+    let snapshot_config = SnapshotConfig::default()
+        .with_snapshot_dir(args.snapshot_dir.clone())
+        .with_update_snapshots(args.update_snapshots)
+        .with_review_mode(false);
 
     let mut report = TestReport::new();
 
     for test in filtered_tests {
-        match executor.execute_test(&test, &snapshot_manager)? {
+        match executor.execute_test(&test, &snapshot_config)? {
             exec::TestResult::Pass => {
                 report.add_pass(&test.path);
                 info!("PASS: {}", test.path);

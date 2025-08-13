@@ -1,0 +1,834 @@
+Ok(
+    CstRoot {
+        items: [
+            StructDefinition(
+                StructDefinitionNode {
+                    struct_token: Token {
+                        kind: Struct,
+                        span: Span {
+                            start: 1,
+                            end: 7,
+                        },
+                    },
+                    name: Token {
+                        kind: Ident(
+                            "Point",
+                        ),
+                        span: Span {
+                            start: 8,
+                            end: 13,
+                        },
+                    },
+                    open_brace: Token {
+                        kind: LeftBrace,
+                        span: Span {
+                            start: 14,
+                            end: 15,
+                        },
+                    },
+                    fields: [
+                        StructFieldDefNode {
+                            name: Token {
+                                kind: Ident(
+                                    "x",
+                                ),
+                                span: Span {
+                                    start: 16,
+                                    end: 17,
+                                },
+                            },
+                            type_annotation: TypeAnnotationNode {
+                                colon: Token {
+                                    kind: Colon,
+                                    span: Span {
+                                        start: 17,
+                                        end: 18,
+                                    },
+                                },
+                                ty: I32(
+                                    Token {
+                                        kind: I32,
+                                        span: Span {
+                                            start: 19,
+                                            end: 22,
+                                        },
+                                    },
+                                ),
+                                trivia: Trivia {
+                                    leading: [],
+                                    trailing: [],
+                                },
+                            },
+                            trivia: Trivia {
+                                leading: [],
+                                trailing: [],
+                            },
+                        },
+                        StructFieldDefNode {
+                            name: Token {
+                                kind: Ident(
+                                    "y",
+                                ),
+                                span: Span {
+                                    start: 24,
+                                    end: 25,
+                                },
+                            },
+                            type_annotation: TypeAnnotationNode {
+                                colon: Token {
+                                    kind: Colon,
+                                    span: Span {
+                                        start: 25,
+                                        end: 26,
+                                    },
+                                },
+                                ty: I32(
+                                    Token {
+                                        kind: I32,
+                                        span: Span {
+                                            start: 27,
+                                            end: 30,
+                                        },
+                                    },
+                                ),
+                                trivia: Trivia {
+                                    leading: [],
+                                    trailing: [],
+                                },
+                            },
+                            trivia: Trivia {
+                                leading: [],
+                                trailing: [],
+                            },
+                        },
+                    ],
+                    close_brace: Token {
+                        kind: RightBrace,
+                        span: Span {
+                            start: 31,
+                            end: 32,
+                        },
+                    },
+                    trivia: Trivia {
+                        leading: [],
+                        trailing: [],
+                    },
+                },
+            ),
+            Function(
+                FunctionNode {
+                    fn_token: Token {
+                        kind: Fn,
+                        span: Span {
+                            start: 34,
+                            end: 36,
+                        },
+                    },
+                    name: Token {
+                        kind: Ident(
+                            "main",
+                        ),
+                        span: Span {
+                            start: 37,
+                            end: 41,
+                        },
+                    },
+                    param_list: ParamListNode {
+                        open_paren: Token {
+                            kind: LeftParen,
+                            span: Span {
+                                start: 41,
+                                end: 42,
+                            },
+                        },
+                        params: [],
+                        close_paren: Token {
+                            kind: RightParen,
+                            span: Span {
+                                start: 42,
+                                end: 43,
+                            },
+                        },
+                        trivia: Trivia {
+                            leading: [],
+                            trailing: [],
+                        },
+                    },
+                    return_type: Some(
+                        ReturnTypeNode {
+                            arrow: Token {
+                                kind: Arrow,
+                                span: Span {
+                                    start: 44,
+                                    end: 46,
+                                },
+                            },
+                            ty: I32(
+                                Token {
+                                    kind: I32,
+                                    span: Span {
+                                        start: 47,
+                                        end: 50,
+                                    },
+                                },
+                            ),
+                            trivia: Trivia {
+                                leading: [],
+                                trailing: [],
+                            },
+                        },
+                    ),
+                    body: BlockNode {
+                        open_brace: Token {
+                            kind: LeftBrace,
+                            span: Span {
+                                start: 51,
+                                end: 52,
+                            },
+                        },
+                        statements: [
+                            Let(
+                                LetStatementNode {
+                                    let_token: Token {
+                                        kind: Let,
+                                        span: Span {
+                                            start: 57,
+                                            end: 60,
+                                        },
+                                    },
+                                    name: Token {
+                                        kind: Ident(
+                                            "origin",
+                                        ),
+                                        span: Span {
+                                            start: 61,
+                                            end: 67,
+                                        },
+                                    },
+                                    type_annotation: None,
+                                    equals: Token {
+                                        kind: Assign,
+                                        span: Span {
+                                            start: 68,
+                                            end: 69,
+                                        },
+                                    },
+                                    value: StructLiteral(
+                                        StructLiteralNode {
+                                            name: Token {
+                                                kind: Ident(
+                                                    "Point",
+                                                ),
+                                                span: Span {
+                                                    start: 70,
+                                                    end: 75,
+                                                },
+                                            },
+                                            open_brace: Token {
+                                                kind: LeftBrace,
+                                                span: Span {
+                                                    start: 76,
+                                                    end: 77,
+                                                },
+                                            },
+                                            fields: [
+                                                StructFieldInitNode {
+                                                    name: Token {
+                                                        kind: Ident(
+                                                            "x",
+                                                        ),
+                                                        span: Span {
+                                                            start: 78,
+                                                            end: 79,
+                                                        },
+                                                    },
+                                                    colon: Token {
+                                                        kind: Colon,
+                                                        span: Span {
+                                                            start: 79,
+                                                            end: 80,
+                                                        },
+                                                    },
+                                                    value: Literal(
+                                                        Token {
+                                                            kind: Integer(
+                                                                0,
+                                                            ),
+                                                            span: Span {
+                                                                start: 81,
+                                                                end: 82,
+                                                            },
+                                                        },
+                                                    ),
+                                                    trivia: Trivia {
+                                                        leading: [],
+                                                        trailing: [],
+                                                    },
+                                                },
+                                                StructFieldInitNode {
+                                                    name: Token {
+                                                        kind: Ident(
+                                                            "y",
+                                                        ),
+                                                        span: Span {
+                                                            start: 84,
+                                                            end: 85,
+                                                        },
+                                                    },
+                                                    colon: Token {
+                                                        kind: Colon,
+                                                        span: Span {
+                                                            start: 85,
+                                                            end: 86,
+                                                        },
+                                                    },
+                                                    value: Literal(
+                                                        Token {
+                                                            kind: Integer(
+                                                                0,
+                                                            ),
+                                                            span: Span {
+                                                                start: 87,
+                                                                end: 88,
+                                                            },
+                                                        },
+                                                    ),
+                                                    trivia: Trivia {
+                                                        leading: [],
+                                                        trailing: [],
+                                                    },
+                                                },
+                                            ],
+                                            close_brace: Token {
+                                                kind: RightBrace,
+                                                span: Span {
+                                                    start: 89,
+                                                    end: 90,
+                                                },
+                                            },
+                                            trivia: Trivia {
+                                                leading: [],
+                                                trailing: [],
+                                            },
+                                        },
+                                    ),
+                                    semicolon: Token {
+                                        kind: Semicolon,
+                                        span: Span {
+                                            start: 90,
+                                            end: 91,
+                                        },
+                                    },
+                                    trivia: Trivia {
+                                        leading: [],
+                                        trailing: [],
+                                    },
+                                },
+                            ),
+                            Let(
+                                LetStatementNode {
+                                    let_token: Token {
+                                        kind: Let,
+                                        span: Span {
+                                            start: 96,
+                                            end: 99,
+                                        },
+                                    },
+                                    name: Token {
+                                        kind: Ident(
+                                            "p1",
+                                        ),
+                                        span: Span {
+                                            start: 100,
+                                            end: 102,
+                                        },
+                                    },
+                                    type_annotation: None,
+                                    equals: Token {
+                                        kind: Assign,
+                                        span: Span {
+                                            start: 103,
+                                            end: 104,
+                                        },
+                                    },
+                                    value: StructLiteral(
+                                        StructLiteralNode {
+                                            name: Token {
+                                                kind: Ident(
+                                                    "Point",
+                                                ),
+                                                span: Span {
+                                                    start: 105,
+                                                    end: 110,
+                                                },
+                                            },
+                                            open_brace: Token {
+                                                kind: LeftBrace,
+                                                span: Span {
+                                                    start: 111,
+                                                    end: 112,
+                                                },
+                                            },
+                                            fields: [
+                                                StructFieldInitNode {
+                                                    name: Token {
+                                                        kind: Ident(
+                                                            "x",
+                                                        ),
+                                                        span: Span {
+                                                            start: 113,
+                                                            end: 114,
+                                                        },
+                                                    },
+                                                    colon: Token {
+                                                        kind: Colon,
+                                                        span: Span {
+                                                            start: 114,
+                                                            end: 115,
+                                                        },
+                                                    },
+                                                    value: Literal(
+                                                        Token {
+                                                            kind: Integer(
+                                                                10,
+                                                            ),
+                                                            span: Span {
+                                                                start: 116,
+                                                                end: 118,
+                                                            },
+                                                        },
+                                                    ),
+                                                    trivia: Trivia {
+                                                        leading: [],
+                                                        trailing: [],
+                                                    },
+                                                },
+                                                StructFieldInitNode {
+                                                    name: Token {
+                                                        kind: Ident(
+                                                            "y",
+                                                        ),
+                                                        span: Span {
+                                                            start: 120,
+                                                            end: 121,
+                                                        },
+                                                    },
+                                                    colon: Token {
+                                                        kind: Colon,
+                                                        span: Span {
+                                                            start: 121,
+                                                            end: 122,
+                                                        },
+                                                    },
+                                                    value: Literal(
+                                                        Token {
+                                                            kind: Integer(
+                                                                20,
+                                                            ),
+                                                            span: Span {
+                                                                start: 123,
+                                                                end: 125,
+                                                            },
+                                                        },
+                                                    ),
+                                                    trivia: Trivia {
+                                                        leading: [],
+                                                        trailing: [],
+                                                    },
+                                                },
+                                            ],
+                                            close_brace: Token {
+                                                kind: RightBrace,
+                                                span: Span {
+                                                    start: 126,
+                                                    end: 127,
+                                                },
+                                            },
+                                            trivia: Trivia {
+                                                leading: [],
+                                                trailing: [],
+                                            },
+                                        },
+                                    ),
+                                    semicolon: Token {
+                                        kind: Semicolon,
+                                        span: Span {
+                                            start: 127,
+                                            end: 128,
+                                        },
+                                    },
+                                    trivia: Trivia {
+                                        leading: [],
+                                        trailing: [
+                                            Token {
+                                                kind: Comment(
+                                                    " Struct with expression fields",
+                                                ),
+                                                span: Span {
+                                                    start: 138,
+                                                    end: 170,
+                                                },
+                                            },
+                                        ],
+                                    },
+                                },
+                            ),
+                            Let(
+                                LetStatementNode {
+                                    let_token: Token {
+                                        kind: Let,
+                                        span: Span {
+                                            start: 175,
+                                            end: 178,
+                                        },
+                                    },
+                                    name: Token {
+                                        kind: Ident(
+                                            "p2",
+                                        ),
+                                        span: Span {
+                                            start: 179,
+                                            end: 181,
+                                        },
+                                    },
+                                    type_annotation: None,
+                                    equals: Token {
+                                        kind: Assign,
+                                        span: Span {
+                                            start: 182,
+                                            end: 183,
+                                        },
+                                    },
+                                    value: StructLiteral(
+                                        StructLiteralNode {
+                                            name: Token {
+                                                kind: Ident(
+                                                    "Point",
+                                                ),
+                                                span: Span {
+                                                    start: 184,
+                                                    end: 189,
+                                                },
+                                            },
+                                            open_brace: Token {
+                                                kind: LeftBrace,
+                                                span: Span {
+                                                    start: 190,
+                                                    end: 191,
+                                                },
+                                            },
+                                            fields: [
+                                                StructFieldInitNode {
+                                                    name: Token {
+                                                        kind: Ident(
+                                                            "x",
+                                                        ),
+                                                        span: Span {
+                                                            start: 201,
+                                                            end: 202,
+                                                        },
+                                                    },
+                                                    colon: Token {
+                                                        kind: Colon,
+                                                        span: Span {
+                                                            start: 202,
+                                                            end: 203,
+                                                        },
+                                                    },
+                                                    value: Binary(
+                                                        BinaryExprNode {
+                                                            left: FieldAccess(
+                                                                FieldAccessNode {
+                                                                    base: Identifier(
+                                                                        Token {
+                                                                            kind: Ident(
+                                                                                "p1",
+                                                                            ),
+                                                                            span: Span {
+                                                                                start: 204,
+                                                                                end: 206,
+                                                                            },
+                                                                        },
+                                                                    ),
+                                                                    dot: Token {
+                                                                        kind: Dot,
+                                                                        span: Span {
+                                                                            start: 206,
+                                                                            end: 207,
+                                                                        },
+                                                                    },
+                                                                    field: Named(
+                                                                        Token {
+                                                                            kind: Ident(
+                                                                                "x",
+                                                                            ),
+                                                                            span: Span {
+                                                                                start: 207,
+                                                                                end: 208,
+                                                                            },
+                                                                        },
+                                                                    ),
+                                                                    trivia: Trivia {
+                                                                        leading: [],
+                                                                        trailing: [],
+                                                                    },
+                                                                },
+                                                            ),
+                                                            operator: Token {
+                                                                kind: Plus,
+                                                                span: Span {
+                                                                    start: 209,
+                                                                    end: 210,
+                                                                },
+                                                            },
+                                                            right: Literal(
+                                                                Token {
+                                                                    kind: Integer(
+                                                                        5,
+                                                                    ),
+                                                                    span: Span {
+                                                                        start: 211,
+                                                                        end: 212,
+                                                                    },
+                                                                },
+                                                            ),
+                                                            trivia: Trivia {
+                                                                leading: [],
+                                                                trailing: [],
+                                                            },
+                                                        },
+                                                    ),
+                                                    trivia: Trivia {
+                                                        leading: [],
+                                                        trailing: [],
+                                                    },
+                                                },
+                                                StructFieldInitNode {
+                                                    name: Token {
+                                                        kind: Ident(
+                                                            "y",
+                                                        ),
+                                                        span: Span {
+                                                            start: 222,
+                                                            end: 223,
+                                                        },
+                                                    },
+                                                    colon: Token {
+                                                        kind: Colon,
+                                                        span: Span {
+                                                            start: 223,
+                                                            end: 224,
+                                                        },
+                                                    },
+                                                    value: Binary(
+                                                        BinaryExprNode {
+                                                            left: FieldAccess(
+                                                                FieldAccessNode {
+                                                                    base: Identifier(
+                                                                        Token {
+                                                                            kind: Ident(
+                                                                                "p1",
+                                                                            ),
+                                                                            span: Span {
+                                                                                start: 225,
+                                                                                end: 227,
+                                                                            },
+                                                                        },
+                                                                    ),
+                                                                    dot: Token {
+                                                                        kind: Dot,
+                                                                        span: Span {
+                                                                            start: 227,
+                                                                            end: 228,
+                                                                        },
+                                                                    },
+                                                                    field: Named(
+                                                                        Token {
+                                                                            kind: Ident(
+                                                                                "y",
+                                                                            ),
+                                                                            span: Span {
+                                                                                start: 228,
+                                                                                end: 229,
+                                                                            },
+                                                                        },
+                                                                    ),
+                                                                    trivia: Trivia {
+                                                                        leading: [],
+                                                                        trailing: [],
+                                                                    },
+                                                                },
+                                                            ),
+                                                            operator: Token {
+                                                                kind: Star,
+                                                                span: Span {
+                                                                    start: 230,
+                                                                    end: 231,
+                                                                },
+                                                            },
+                                                            right: Literal(
+                                                                Token {
+                                                                    kind: Integer(
+                                                                        2,
+                                                                    ),
+                                                                    span: Span {
+                                                                        start: 232,
+                                                                        end: 233,
+                                                                    },
+                                                                },
+                                                            ),
+                                                            trivia: Trivia {
+                                                                leading: [],
+                                                                trailing: [],
+                                                            },
+                                                        },
+                                                    ),
+                                                    trivia: Trivia {
+                                                        leading: [],
+                                                        trailing: [],
+                                                    },
+                                                },
+                                            ],
+                                            close_brace: Token {
+                                                kind: RightBrace,
+                                                span: Span {
+                                                    start: 239,
+                                                    end: 240,
+                                                },
+                                            },
+                                            trivia: Trivia {
+                                                leading: [],
+                                                trailing: [],
+                                            },
+                                        },
+                                    ),
+                                    semicolon: Token {
+                                        kind: Semicolon,
+                                        span: Span {
+                                            start: 240,
+                                            end: 241,
+                                        },
+                                    },
+                                    trivia: Trivia {
+                                        leading: [],
+                                        trailing: [],
+                                    },
+                                },
+                            ),
+                        ],
+                        final_expr: Some(
+                            Binary(
+                                BinaryExprNode {
+                                    left: FieldAccess(
+                                        FieldAccessNode {
+                                            base: Identifier(
+                                                Token {
+                                                    kind: Ident(
+                                                        "p2",
+                                                    ),
+                                                    span: Span {
+                                                        start: 251,
+                                                        end: 253,
+                                                    },
+                                                },
+                                            ),
+                                            dot: Token {
+                                                kind: Dot,
+                                                span: Span {
+                                                    start: 253,
+                                                    end: 254,
+                                                },
+                                            },
+                                            field: Named(
+                                                Token {
+                                                    kind: Ident(
+                                                        "x",
+                                                    ),
+                                                    span: Span {
+                                                        start: 254,
+                                                        end: 255,
+                                                    },
+                                                },
+                                            ),
+                                            trivia: Trivia {
+                                                leading: [],
+                                                trailing: [],
+                                            },
+                                        },
+                                    ),
+                                    operator: Token {
+                                        kind: Plus,
+                                        span: Span {
+                                            start: 256,
+                                            end: 257,
+                                        },
+                                    },
+                                    right: FieldAccess(
+                                        FieldAccessNode {
+                                            base: Identifier(
+                                                Token {
+                                                    kind: Ident(
+                                                        "p2",
+                                                    ),
+                                                    span: Span {
+                                                        start: 258,
+                                                        end: 260,
+                                                    },
+                                                },
+                                            ),
+                                            dot: Token {
+                                                kind: Dot,
+                                                span: Span {
+                                                    start: 260,
+                                                    end: 261,
+                                                },
+                                            },
+                                            field: Named(
+                                                Token {
+                                                    kind: Ident(
+                                                        "y",
+                                                    ),
+                                                    span: Span {
+                                                        start: 261,
+                                                        end: 262,
+                                                    },
+                                                },
+                                            ),
+                                            trivia: Trivia {
+                                                leading: [],
+                                                trailing: [],
+                                            },
+                                        },
+                                    ),
+                                    trivia: Trivia {
+                                        leading: [],
+                                        trailing: [],
+                                    },
+                                },
+                            ),
+                        ),
+                        close_brace: Token {
+                            kind: RightBrace,
+                            span: Span {
+                                start: 263,
+                                end: 264,
+                            },
+                        },
+                        trivia: Trivia {
+                            leading: [],
+                            trailing: [],
+                        },
+                    },
+                    trivia: Trivia {
+                        leading: [],
+                        trailing: [],
+                    },
+                },
+            ),
+        ],
+        trivia: Trivia {
+            leading: [],
+            trailing: [],
+        },
+    },
+)

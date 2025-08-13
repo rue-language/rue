@@ -1,40 +1,6 @@
 //! Integration tests for the compiler
 
-use std::process::Command;
-use tempfile::TempDir;
-
-fn compile_and_run(source: &str) -> Result<i32, String> {
-    // Create a temporary directory for our files
-    let temp_dir = TempDir::new().map_err(|e| e.to_string())?;
-
-    // Write source to temporary file
-    let source_path = temp_dir.path().join("test.rue");
-    std::fs::write(&source_path, source).map_err(|e| e.to_string())?;
-
-    // Create output path
-    let output_path = temp_dir.path().join("test_output");
-
-    // Compile
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_rue"));
-    cmd.arg(&source_path).arg("-o").arg(&output_path);
-
-    let compile_output = cmd.output().map_err(|e| e.to_string())?;
-
-    if !compile_output.status.success() {
-        return Err(format!(
-            "Compilation failed: {}",
-            String::from_utf8_lossy(&compile_output.stderr)
-        ));
-    }
-
-    // Run the compiled program
-    let run_output = Command::new(&output_path)
-        .output()
-        .map_err(|e| e.to_string())?;
-
-    // Return the exit code
-    Ok(run_output.status.code().unwrap_or(-1))
-}
+use rue_test_utils::assert_runs_with_exit_code;
 
 #[test]
 fn test_simple_return() {
@@ -44,8 +10,7 @@ fn main() -> i32 {
 }
 "#;
 
-    let result = compile_and_run(source).unwrap();
-    assert_eq!(result, 42);
+    assert_runs_with_exit_code(source, 42).unwrap();
 }
 
 #[test]
@@ -58,8 +23,7 @@ fn main() -> i32 {
 }
 "#;
 
-    let result = compile_and_run(source).unwrap();
-    assert_eq!(result, 50); // 10 + 20 * 2
+    assert_runs_with_exit_code(source, 50).unwrap(); // 10 + 20 * 2
 }
 
 #[test]
@@ -75,8 +39,7 @@ fn main() -> i32 {
 }
 "#;
 
-    let result = compile_and_run(source).unwrap();
-    assert_eq!(result, 100);
+    assert_runs_with_exit_code(source, 100).unwrap();
 }
 
 #[test]
@@ -93,8 +56,7 @@ fn main() -> i32 {
 }
 "#;
 
-    let result = compile_and_run(source).unwrap();
-    assert_eq!(result, 15); // 5 + 4 + 3 + 2 + 1
+    assert_runs_with_exit_code(source, 15).unwrap(); // 5 + 4 + 3 + 2 + 1
 }
 
 #[test]
@@ -109,8 +71,7 @@ fn main() -> i32 {
 }
 "#;
 
-    let result = compile_and_run(source).unwrap();
-    assert_eq!(result, 38); // 30 + 8
+    assert_runs_with_exit_code(source, 38).unwrap(); // 30 + 8
 }
 
 #[test]
@@ -129,8 +90,7 @@ fn main() -> i32 {
 }
 "#;
 
-    let result = compile_and_run(source).unwrap();
-    assert_eq!(result, 120); // 5!
+    assert_runs_with_exit_code(source, 120).unwrap(); // 5!
 }
 
 #[test]
@@ -145,8 +105,7 @@ fn main() -> i32 {
 }
 "#;
 
-    let result = compile_and_run(source).unwrap();
-    assert_eq!(result, 60);
+    assert_runs_with_exit_code(source, 60).unwrap();
 }
 
 #[test]
@@ -162,8 +121,7 @@ fn main() -> i32 {
 }
 "#;
 
-    let result = compile_and_run(source).unwrap();
-    assert_eq!(result, 60); // 30 + 30
+    assert_runs_with_exit_code(source, 60).unwrap(); // 30 + 30
 }
 
 #[test]
@@ -178,6 +136,5 @@ fn main() -> i32 {
 }
 "#;
 
-    let result = compile_and_run(source).unwrap();
-    assert_eq!(result, 50);
+    assert_runs_with_exit_code(source, 50).unwrap();
 }

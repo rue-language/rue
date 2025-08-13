@@ -1,0 +1,14 @@
+//!@ id T-SCOPE-SHADOW-002
+//!@ kind run-pass
+//!@ spec §4.1.3 Variable Shadowing
+//!@ expect exit 20
+
+fn main() -> i32 {
+    let x: i32 = 10;      // Outer x
+    if true {
+        let x: i32 = 20;  // Inner x shadows outer x
+        x                 // Returns 20
+    } else {
+        x                 // Would return 10 (outer x)
+    }
+}

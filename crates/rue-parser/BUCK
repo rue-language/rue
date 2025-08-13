@@ -14,6 +14,7 @@ cargo.rust_library(
         "//third-party/rust:serde",
         "//third-party/rust:serde_json",
         "//third-party/rust:toml",
+        "//third-party/rust:regex",
     ],
     visibility = ["PUBLIC"],
 )
@@ -23,14 +24,119 @@ rust_test(
     srcs = glob(["src/**/*.rs"]),
     crate_root = "src/lib.rs",
     edition = "2024",
+    resources = glob([
+        "src/snapshots/**/*.snap",
+        "tests/snapshots/**/*.snap",
+    ]),
+    env = {
+        "RUE_SNAPSHOT_DIR": "src/snapshots",
+    },
     deps = [
         "//crates/rue-ast:rue-ast",
         "//crates/rue-diagnostic:rue-diagnostic",
         "//crates/rue-ir:rue-ir",
         "//crates/rue-lexer:rue-lexer",
+        "//crates/rue-snapshot:rue-snapshot",
         "//third-party/rust:thiserror",
         "//third-party/rust:serde",
         "//third-party/rust:serde_json",
         "//third-party/rust:toml",
+        "//third-party/rust:regex",
+    ],
+)
+
+rust_test(
+    name = "test_aggregate_types",
+    srcs = glob(["tests/**/*.rs", "src/**/*.rs"]),
+    crate_root = "tests/test_aggregate_types.rs",
+    edition = "2024",
+    resources = glob([
+        "tests/snapshots/**/*.snap",
+    ]),
+    env = {
+        "RUE_SNAPSHOT_DIR": "tests/snapshots",
+    },
+    deps = [
+        ":rue-parser",
+        "//crates/rue-snapshot:rue-snapshot",
+        "//third-party/rust:anyhow",
+    ],
+)
+
+rust_test(
+    name = "test_comprehensive_diagnostics",
+    srcs = glob(["tests/**/*.rs", "src/**/*.rs"]),
+    crate_root = "tests/test_comprehensive_diagnostics.rs",
+    edition = "2024",
+    deps = [
+        ":rue-parser",
+    ],
+)
+
+rust_test(
+    name = "test_comprehensive_parser",
+    srcs = glob(["tests/**/*.rs", "src/**/*.rs"]),
+    crate_root = "tests/test_comprehensive_parser.rs",
+    edition = "2024",
+    resources = glob([
+        "tests/snapshots/**/*.snap",
+    ]),
+    env = {
+        "RUE_SNAPSHOT_DIR": "tests/snapshots",
+    },
+    deps = [
+        ":rue-parser",
+        "//crates/rue-snapshot:rue-snapshot",
+        "//third-party/rust:anyhow",
+    ],
+)
+
+rust_test(
+    name = "test_diagnostics",
+    srcs = glob(["tests/**/*.rs", "src/**/*.rs"]),
+    crate_root = "tests/test_diagnostics.rs",
+    edition = "2024",
+    deps = [
+        ":rue-parser",
+    ],
+)
+
+rust_test(
+    name = "test_error_recovery",
+    srcs = glob(["tests/**/*.rs", "src/**/*.rs"]),
+    crate_root = "tests/test_error_recovery.rs",
+    edition = "2024",
+    deps = [
+        ":rue-parser",
+    ],
+)
+
+rust_test(
+    name = "test_parser_properties",
+    srcs = glob(["tests/**/*.rs", "src/**/*.rs"]),
+    crate_root = "tests/test_parser_properties.rs",
+    edition = "2024",
+    deps = [
+        ":rue-parser",
+        "//third-party/rust:proptest",
+        "//third-party/rust:regex",
+    ],
+)
+
+rust_test(
+    name = "test_parser_snapshots",
+    srcs = glob(["tests/**/*.rs", "src/**/*.rs"]),
+    crate_root = "tests/test_parser_snapshots.rs",
+    edition = "2024",
+    resources = glob([
+        "tests/snapshots/**/*.snap",
+    ]),
+    env = {
+        "RUE_SNAPSHOT_DIR": "tests/snapshots",
+    },
+    deps = [
+        ":rue-parser",
+        "//crates/rue-snapshot:rue-snapshot",
+        "//third-party/rust:anyhow",
     ],
 )

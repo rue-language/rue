@@ -1,0 +1,31 @@
+Err(
+    [
+        Diagnostic {
+            severity: Error,
+            code: Some(
+                DiagnosticCode {
+                    namespace: "E",
+                    number: 1001,
+                },
+            ),
+            message: "Expected LeftParen, found Less",
+            labels: [
+                Label {
+                    span: Span {
+                        start: 12,
+                        end: 13,
+                    },
+                    message: None,
+                    style: Primary,
+                },
+            ],
+            help: Some(
+                "Check that you have the correct syntax for this construct",
+            ),
+            related: [],
+            source_id: SourceId(
+                "test.rue",
+            ),
+        },
+    ],
+)

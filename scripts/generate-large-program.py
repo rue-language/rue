@@ -75,7 +75,13 @@ def generate_main_function(helper_count):
     return main_func
 
 def main():
-    helper_count = 50  # Generate 50 helper functions
+    import sys
+    # Allow configuring size via environment variable or argument
+    if len(sys.argv) > 1:
+        helper_count = int(sys.argv[1])
+    else:
+        import os
+        helper_count = int(os.environ.get('BENCH_HELPER_COUNT', '500'))  # Default to 500 functions
     
     print("// Large Rue program for performance testing")
     print("// Generated automatically - do not edit manually")

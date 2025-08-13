@@ -1,0 +1,9 @@
+//!@ id T-ARITH-MOD-002
+//!@ kind run-pass
+//!@ spec §3.2 Operator Precedence
+//!@ expect exit 253  // -3 as i32 exit code wraps to 253
+//!@ skip https://github.com/steveklabnik/rue/issues/144
+
+fn main() -> i32 {
+    -17 % 5  // -17 modulo 5 = -2 in Rust semantics
+}

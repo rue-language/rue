@@ -1,0 +1,29 @@
+Err(
+    [
+        Diagnostic {
+            severity: Error,
+            code: Some(
+                DiagnosticCode {
+                    namespace: "E",
+                    number: 1001,
+                },
+            ),
+            message: "Lexical error: Unexpected character '&'",
+            labels: [
+                Label {
+                    span: Span {
+                        start: 93,
+                        end: 94,
+                    },
+                    message: None,
+                    style: Primary,
+                },
+            ],
+            help: None,
+            related: [],
+            source_id: SourceId(
+                "test.rue",
+            ),
+        },
+    ],
+)
