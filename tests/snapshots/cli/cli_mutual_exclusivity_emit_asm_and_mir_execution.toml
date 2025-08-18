@@ -1,0 +1,5 @@
+exit_code = 1
+stdout = ""
+stderr = """
+Error: --emit-asm, --emit-mir, and --compile-only are mutually exclusive
+"""

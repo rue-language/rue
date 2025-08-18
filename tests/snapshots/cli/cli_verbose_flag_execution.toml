@@ -1,0 +1,26 @@
+exit_code = 0
+stdout = """
+Compilation check passed
+"""
+stderr = """
+  [TIMESTAMP]  INFO rue: Starting compilation of [TEMP_DIR]
+    at crates/rue/src/main.rs:229
+
+  [TIMESTAMP]  INFO rue::mir: Lowering HIR to MIR
+    at crates/rue-compiler/src/pipeline.rs:273
+    in rue_compiler::pipeline::compile_hir_via_mir_to_intermediate with optimize: false
+    in rue_compiler::pipeline::compile_hir_via_mir_to_executable with optimize: false
+
+  [TIMESTAMP]  INFO rue::codegen: Lowering MIR to instructions
+    at crates/rue-compiler/src/pipeline.rs:286
+    in rue_compiler::pipeline::compile_hir_via_mir_to_intermediate with optimize: false
+    in rue_compiler::pipeline::compile_hir_via_mir_to_executable with optimize: false
+
+  [TIMESTAMP]  INFO rue::elf: Generating ELF executable
+    at crates/rue-compiler/src/pipeline.rs:363
+    in rue_compiler::pipeline::compile_hir_via_mir_to_executable with optimize: false
+
+  [TIMESTAMP]  INFO rue: Compilation check passed
+    at crates/rue/src/main.rs:241
+
+"""

@@ -1,0 +1,12 @@
+exit_code = 0
+stdout = """
+// Function signatures:
+// main() -> i64
+
+fn main() -> i64:
+  B0:
+    t0 = 42_i64
+    return t0
+
+"""
+stderr = ""

@@ -1,0 +1,26 @@
+exit_code = 1
+stdout = ""
+stderr = """
+Compilation failed:
+
+error[E1001]: Expected Semicolon, found Comment(" Missing semicolon")
+ -> [TEMP_DIR]
+   |
+1 | fn main() -> i64 {
+2 |     return 42  // Missing semicolon
+  |                ^^^^^^^^^^^^^^^^^^^^
+3 | }
+   |
+ help: Check that you have the correct syntax for this construct
+
+
+error: Unexpected token: RightBrace
+ -> [TEMP_DIR]
+   |
+2 |     return 42  // Missing semicolon
+3 | }
+  | ^
+   |
+
+
+"""

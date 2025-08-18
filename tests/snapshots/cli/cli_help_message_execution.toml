@@ -1,0 +1,24 @@
+exit_code = 0
+stdout = """
+The Rue programming language compiler
+
+Usage: rue [-o=OUTPUT] [-S] [--emit-mir] [--compile-only] [-O=LEVEL] [-v]... [-q] [--log-format=
+FORMAT] [--log-filter=FILTER] [INPUT]
+
+Available positional items:
+    INPUT                    Input Rue source file (use '-' for stdin)
+
+Available options:
+    -o, --output=OUTPUT      Output filename (use '-' for stdout with --emit-mir)
+    -S, --emit-asm           Emit assembly instead of executable
+        --emit-mir           Emit MIR representation
+        --compile-only       Check compilation without generating output
+    -O=LEVEL                 Optimization level (0-3): 0=none, 1=basic, 2=aggressive, 3=experimental
+    -v, --verbose            Increase verbosity (can be repeated: -v, -vv, -vvv)
+    -q, --quiet              Suppress info logs (only show warnings and errors)
+        --log-format=FORMAT  Log output format: pretty, json, compact, tree
+        --log-filter=FILTER  Custom log filter (overrides -v)
+    -h, --help               Prints help information
+
+"""
+stderr = ""
