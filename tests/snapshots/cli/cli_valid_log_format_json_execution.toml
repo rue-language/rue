@@ -1,0 +1,5 @@
+exit_code = 0
+stdout = """
+Compilation check passed
+"""
+stderr = ""

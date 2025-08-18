@@ -1,0 +1,5 @@
+exit_code = 1
+stdout = ""
+stderr = """
+Error: No input file specified (use '-' for stdin)
+"""

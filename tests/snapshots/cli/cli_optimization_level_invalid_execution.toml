@@ -1,0 +1,5 @@
+exit_code = 1
+stdout = ""
+stderr = """
+Error: `5`: Optimization level must be 0-3
+"""
