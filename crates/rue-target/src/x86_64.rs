@@ -228,6 +228,12 @@ pub enum X8664Instr {
     /// cld - Clear direction flag
     Cld,
 
+    /// cpuid - CPU identification instruction
+    Cpuid,
+
+    /// bt reg, imm8 - Bit test
+    BtRI { reg: X86Register, bit: u8 },
+
     /// rep stosb - Repeat store byte (fill memory)
     RepStosb,
 

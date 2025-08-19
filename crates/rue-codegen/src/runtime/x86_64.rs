@@ -14,6 +14,10 @@ pub fn generate_runtime() -> Result<(Vec<X8664Instr>, HashMap<String, u32>), Str
     // Generate data section
     ctx.generate_data_section();
 
+    // Generate CPU feature detection and dispatch
+    ctx.generate_cpu_feature_detection();
+    ctx.generate_erms_stubs();
+
     // Generate memory management functions
     ctx.generate_memory_functions();
 

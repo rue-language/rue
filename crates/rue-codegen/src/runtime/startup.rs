@@ -57,6 +57,11 @@ impl RuntimeContext {
         // Standard function prologue
         self.instructions.push(X8664Instr::EnterFrame);
 
+        // Detect CPU features and initialize function pointers
+        self.instructions.push(X8664Instr::Call {
+            target: "__rue_detect_cpu_features".to_string(),
+        });
+
         // Set up signal handlers
         self.instructions.push(X8664Instr::Call {
             target: "__rue_setup_signal_handlers".to_string(),
