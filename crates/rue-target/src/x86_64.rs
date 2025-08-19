@@ -234,6 +234,50 @@ pub enum X8664Instr {
     /// bt reg, imm8 - Bit test
     BtRI { reg: X86Register, bit: u8 },
 
+    /// test reg, reg - Test (sets flags without modifying)
+    TestRR {
+        left: X86Register,
+        right: X86Register,
+    },
+
+    /// loop target - Decrement RCX and jump if not zero
+    Loop { target: LabelRef },
+
+    /// inc reg - Increment register
+    IncR { reg: X86Register },
+
+    /// dec reg - Decrement register
+    DecR { reg: X86Register },
+
+    /// shr reg, imm8 - Shift right immediate
+    ShrRI { dest: X86Register, imm: u8 },
+
+    /// rep movsq - Repeat move qword (8-byte copy)
+    RepMovsq,
+
+    /// rep stosq - Repeat store qword (8-byte fill)
+    RepStosq,
+
+    /// movzx dest32, src8 - Move with zero extension (byte to dword)
+    Movzx8to32 { dest: X86Register, src: X86Register },
+
+    /// imul reg, reg, imm64 - Multiply by large immediate
+    ImulRI64 { dest: X86Register, imm64: i64 },
+
+    /// mov word ptr [base + offset], src (16-bit store)
+    MovMR16 {
+        base: X86Register,
+        offset: i32,
+        src: X86Register,
+    },
+
+    /// mov dest, word ptr [base + offset] (16-bit load)
+    MovRM16 {
+        dest: X86Register,
+        base: X86Register,
+        offset: i32,
+    },
+
     /// rep stosb - Repeat store byte (fill memory)
     RepStosb,
 

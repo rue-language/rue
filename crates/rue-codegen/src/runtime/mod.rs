@@ -11,6 +11,7 @@ pub mod cpuid;
 pub mod data;
 pub mod io;
 pub mod memory;
+pub mod memory_optimized;
 pub mod startup;
 pub mod syscalls;
 pub mod x86_64;
