@@ -1,3 +1,4 @@
+use super::symbols::{SymbolExport, SymbolExporter, SymbolInfo};
 use crate::util::align_to_16;
 use rue_ir::pir::Label;
 use rue_target::{ConditionCode, LabelRef, X86Register, X8664Instr};
@@ -102,8 +103,13 @@ impl X86Emitter {
             }
 
             X8664Instr::MovRI32 { dest, imm } => {
-                self.emit_rex_if_needed(true, None, Some(dest));
-                self.current_section_data().push(0xc7); // MOV r/m64, imm32
+                // For 32-bit immediate move, we DON'T want REX.W (64-bit operand size)
+                // But we might need REX if accessing R8-R15
+                if self.needs_rex_b(dest) {
+                    // REX prefix without W bit for accessing extended registers
+                    self.current_section_data().push(0x41); // REX.B
+                }
+                self.current_section_data().push(0xc7); // MOV r/m32, imm32
                 let modrm = 0xc0 | self.register_code(dest);
                 self.current_section_data().push(modrm);
                 self.current_section_data()
@@ -386,10 +392,19 @@ impl X86Emitter {
                     ConditionCode::AboveEqual => 0x93,   // SETAE
                 };
 
-                // Need a REX prefix when the destination is r8-r15 so that
-                // the low-byte form (r8b…r15b) is addressable.
-                // W=0 (8-bit op), R=0, X=0, B = dest.needs_rex()
-                self.emit_rex_if_needed(false, None, Some(dest));
+                // For byte operations, we need REX prefix if:
+                // 1. Using R8-R15 (as usual)
+                // 2. Using RSP/RBP/RSI/RDI to access SPL/BPL/SIL/DIL instead of AH/CH/DH/BH
+                let needs_rex = dest.needs_rex() || self.needs_byte_rex(dest);
+
+                if needs_rex {
+                    let mut rex = 0x40; // REX prefix (no W for byte operations)
+                    if dest.needs_rex() {
+                        rex |= 0x01; // REX.B
+                    }
+                    self.current_section_data().push(rex);
+                }
+
                 self.current_section_data().push(0x0f);
                 self.current_section_data().push(opcode);
                 // SetCC uses /0 encoding, so reg field must be 000
@@ -398,11 +413,31 @@ impl X86Emitter {
             }
 
             X8664Instr::Movzx { dest, src } => {
-                // While REX.W=1 is not canonical for MOVZX (should use REX.W=0),
-                // we keep it for compatibility as some code may depend on this behavior
-                self.emit_rex_if_needed(true, Some(dest), Some(src));
+                // MOVZX reads from byte register, so use w=false to trigger byte REX logic
+                // But we still need to consider the destination for R8-R15 encoding
+                let mut rex = 0x40;
+                let mut needs_rex = false;
+
+                // Check if we need REX for destination (R8-R15)
+                if dest.needs_rex() {
+                    rex |= 0x04; // REX.R
+                    needs_rex = true;
+                }
+
+                // Check if we need REX for source byte register (RSP/RBP/RSI/RDI)
+                if src.needs_rex() || self.needs_byte_rex(src) {
+                    if src.needs_rex() {
+                        rex |= 0x01; // REX.B for R8-R15
+                    }
+                    needs_rex = true;
+                }
+
+                if needs_rex {
+                    self.current_section_data().push(rex);
+                }
+
                 self.current_section_data().push(0x0f);
-                self.current_section_data().push(0xb6); // MOVZX r64, r/m8 (with REX.W=1)
+                self.current_section_data().push(0xb6); // MOVZX r64, r/m8
                 let modrm = 0xc0 | (self.register_code(dest) << 3) | self.register_code(src);
                 self.current_section_data().push(modrm);
             }
@@ -432,6 +467,7 @@ impl X86Emitter {
 
             X8664Instr::Call { target } => {
                 // For now, we only support relative calls
+                tracing::debug!("Emitting CALL to target: {}", target);
                 self.current_section_data().push(0xe8); // CALL rel32
                 let fixup_pos = self.current_section_data().len();
                 self.current_section_data().extend_from_slice(&[0, 0, 0, 0]); // Placeholder
@@ -440,6 +476,11 @@ impl X86Emitter {
                     fixup_pos,
                     LabelRef::Global(target.clone()),
                 ));
+                tracing::debug!(
+                    "Added pending fixup for {} at position 0x{:x}",
+                    target,
+                    fixup_pos
+                );
             }
 
             X8664Instr::CallIndirect { reg } => {
@@ -635,7 +676,18 @@ impl X86Emitter {
 
             X8664Instr::Movzx8to32 { dest, src } => {
                 // movzx eax, bl - 0F B6 /r
-                // No REX needed for 32-bit operation
+                // REX prefix needed for byte register access (RSP/RBP/RSI/RDI -> SPL/BPL/SIL/DIL)
+                let needs_rex = dest.needs_rex() || src.needs_rex() || self.needs_byte_rex(src);
+                if needs_rex {
+                    let mut rex = 0x40;
+                    if dest.needs_rex() {
+                        rex |= 0x04; // REX.R
+                    }
+                    if src.needs_rex() {
+                        rex |= 0x01; // REX.B
+                    }
+                    self.current_section_data().push(rex);
+                }
                 self.current_section_data().extend_from_slice(&[0x0f, 0xb6]);
                 let modrm = 0xc0 | (self.register_code(dest) << 3) | self.register_code(src);
                 self.current_section_data().push(modrm);
@@ -815,18 +867,35 @@ impl X86Emitter {
                     .cloned()
                     .ok_or_else(|| format!("Undefined label: {id}"))?,
                 LabelRef::Global(name) => {
-                    // Look up the function name to get its label ID
-                    let label_id = self
-                        .function_labels
-                        .get(name)
-                        .ok_or_else(|| format!("Unknown function: {name}"))?;
+                    // First check if this is a local runtime symbol (defined in this compilation unit)
+                    if name.starts_with("__rue_") {
+                        // Check if we have this symbol defined locally in our function_labels
+                        if let Some(label_id) = self.function_labels.get(name) {
+                            // This is a local runtime symbol - resolve it normally
+                            let machine_id = label_id.to_machine_id(self.runtime_label_count);
+                            self.label_positions
+                                .get(&machine_id)
+                                .cloned()
+                                .ok_or_else(|| format!("Undefined local runtime label: {name}"))?
+                        } else {
+                            // This is an external runtime function - skip fixup as it will be resolved by the linker
+                            // Leave the displacement as 0x00000000, which will be filled in during linking
+                            continue;
+                        }
+                    } else {
+                        // Look up the function name to get its label ID
+                        let label_id = self
+                            .function_labels
+                            .get(name)
+                            .ok_or_else(|| format!("Unknown function: {name}"))?;
 
-                    // Get the position of this label
-                    let machine_id = label_id.to_machine_id(self.runtime_label_count);
-                    self.label_positions
-                        .get(&machine_id)
-                        .cloned()
-                        .ok_or_else(|| format!("Undefined label for function: {name}"))?
+                        // Get the position of this label
+                        let machine_id = label_id.to_machine_id(self.runtime_label_count);
+                        self.label_positions
+                            .get(&machine_id)
+                            .cloned()
+                            .ok_or_else(|| format!("Undefined label for function: {name}"))?
+                    }
                 }
             };
 
@@ -977,6 +1046,21 @@ impl X86Emitter {
         self.emit_rex_with_sib(w, r_reg, b_reg, None)
     }
 
+    /// Check if a register needs REX prefix for byte operations
+    /// This is only for RSP/RBP/RSI/RDI to access SPL/BPL/SIL/DIL instead of AH/CH/DH/BH
+    /// R8-R15 already need REX through needs_rex() so they're not included here
+    fn needs_byte_rex(&self, reg: &X86Register) -> bool {
+        matches!(
+            reg,
+            X86Register::Rsp | X86Register::Rbp | X86Register::Rsi | X86Register::Rdi
+        )
+    }
+
+    /// Check if a register requires SIB byte as base
+    fn needs_sib_byte(&self, reg: &X86Register) -> bool {
+        matches!(reg, X86Register::Rsp | X86Register::R12)
+    }
+
     /// Emit REX prefix with support for SIB byte index register
     /// w: 64-bit operand size (REX.W)
     /// r_reg: X86Register in ModR/M reg field (REX.R)
@@ -1016,15 +1100,11 @@ impl X86Emitter {
         // For SetCC and other 8-bit operations on RSP, RBP, RSI, RDI,
         // we need REX even if it's just the base prefix to access the
         // low byte (SPL, BPL, SIL, DIL instead of AH, CH, DH, BH)
-        if rex != 0x40
-            || (!w
-                && b_reg.is_some_and(|r| {
-                    matches!(
-                        r,
-                        X86Register::Rsp | X86Register::Rbp | X86Register::Rsi | X86Register::Rdi
-                    )
-                }))
-        {
+        let needs_rex_for_byte = !w
+            && (r_reg.is_some_and(|r| self.needs_byte_rex(r))
+                || b_reg.is_some_and(|r| self.needs_byte_rex(r)));
+
+        if rex != 0x40 || needs_rex_for_byte {
             self.current_section_data().push(rex);
         }
     }
@@ -1047,15 +1127,25 @@ impl X86Emitter {
     ) -> Result<(), String> {
         // Emit REX prefix if needed
         if is_byte {
-            // For byte operations, we need REX if using R8-R15 or accessing high byte regs
-            if reg.needs_rex() || base.needs_rex() {
-                let mut rex = 0x40;
-                if reg.needs_rex() {
+            // For byte operations, we need REX prefix if:
+            // 1. Using R8-R15 (as usual)
+            // 2. Using RSP/RBP/RSI/RDI to access SPL/BPL/SIL/DIL instead of AH/CH/DH/BH
+            let needs_rex = reg.needs_rex()
+                || base.needs_rex()
+                || self.needs_byte_rex(reg)
+                || self.needs_byte_rex(base);
+
+            if needs_rex {
+                let mut rex = 0x40; // REX prefix (no W for byte operations)
+                // For byte operations, we need to check register encoding, not just R8-R15
+                // The REX.R and REX.B bits must be set based on the actual register encoding
+                if self.needs_rex_r(reg) {
                     rex |= 0x04; // REX.R
                 }
-                if base.needs_rex() {
+                if self.needs_rex_b(base) {
                     rex |= 0x01; // REX.B
                 }
+
                 self.current_section_data().push(rex);
             }
         } else {
@@ -1067,7 +1157,7 @@ impl X86Emitter {
 
         // Special handling for RSP/R12 which require SIB byte
         let base_code = self.register_code(base);
-        let needs_sib = base_code == 4; // RSP or R12
+        let needs_sib = self.needs_sib_byte(base);
         let needs_disp32_for_rbp = base_code == 5; // RBP or R13
 
         // Choose between mod values based on offset
@@ -1233,5 +1323,121 @@ impl X86Emitter {
 impl Default for X86Emitter {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+impl SymbolExporter for X86Emitter {
+    fn export_symbols(&self) -> SymbolExport {
+        let mut export = SymbolExport::new();
+
+        // Export all sections
+        for (section_type, section_info) in &self.sections {
+            export.add_section(section_type.clone(), section_info.data.clone());
+        }
+
+        // Export function symbols as global
+        for (name, label_id) in &self.function_labels {
+            let machine_id = label_id.to_machine_id(self.runtime_label_count);
+            if let Some((section, pos)) = self.label_positions.get(&machine_id) {
+                let info = SymbolInfo::global(name.clone(), *pos, section.clone());
+                export.add_global(info);
+            }
+        }
+
+        // Export local labels
+        for (id, (section, pos)) in &self.label_positions {
+            // Skip if this is already a function label
+            let is_function = self
+                .function_labels
+                .values()
+                .any(|label| label.to_machine_id(self.runtime_label_count) == *id);
+
+            if !is_function {
+                let info = SymbolInfo::local(format!("L{}", id), *pos, section.clone());
+                export.add_local(info);
+            }
+        }
+
+        export
+    }
+
+    fn export_global_symbols(&self) -> HashMap<String, usize> {
+        let mut symbols = HashMap::new();
+
+        for (name, label_id) in &self.function_labels {
+            let machine_id = label_id.to_machine_id(self.runtime_label_count);
+            if let Some((section, pos)) = self.label_positions.get(&machine_id)
+                && *section == SectionType::Text
+            {
+                symbols.insert(name.clone(), *pos);
+            }
+        }
+
+        symbols
+    }
+
+    fn export_local_symbols(&self) -> HashMap<String, usize> {
+        let mut symbols = HashMap::new();
+
+        for (id, (section, pos)) in &self.label_positions {
+            if *section == SectionType::Text {
+                // Skip if this is a function label
+                let is_function = self
+                    .function_labels
+                    .values()
+                    .any(|label| label.to_machine_id(self.runtime_label_count) == *id);
+
+                if !is_function {
+                    symbols.insert(format!("L{}", id), *pos);
+                }
+            }
+        }
+
+        symbols
+    }
+}
+
+impl X86Emitter {
+    /// Get external symbol references that need relocations
+    /// Returns a list of (symbol_name, offset) pairs for external symbols
+    pub fn get_external_references(&self) -> Vec<(String, usize)> {
+        let mut external_refs = Vec::new();
+
+        tracing::debug!(
+            "Getting external references from {} pending fixups",
+            self.pending_fixups.len()
+        );
+
+        for (section, fixup_pos, target) in &self.pending_fixups {
+            if let LabelRef::Global(name) = target {
+                tracing::debug!(
+                    "Processing pending fixup: section={:?}, pos=0x{:x}, name={}",
+                    section,
+                    fixup_pos,
+                    name
+                );
+
+                // Check if this is an external runtime symbol (not locally defined)
+                if name.starts_with("__rue_") {
+                    let is_local = self.function_labels.contains_key(name);
+                    tracing::debug!("Runtime symbol '{}': is_local={}", name, is_local);
+
+                    // Check if we DON'T have this symbol defined locally
+                    if !is_local {
+                        // This is an external symbol reference that needs a relocation
+                        // The fixup_pos points to the displacement field (after the call opcode)
+                        tracing::info!(
+                            "Adding external reference: {} at position 0x{:x}",
+                            name,
+                            fixup_pos
+                        );
+                        external_refs.push((name.clone(), *fixup_pos));
+                    }
+                }
+            }
+        }
+
+        tracing::info!("Found {} external references", external_refs.len());
+        external_refs
     }
 }

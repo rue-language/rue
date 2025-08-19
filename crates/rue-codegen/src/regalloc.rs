@@ -786,7 +786,7 @@ impl crate::x86_64_backend::RegisterAllocator for RegisterAllocator {
     }
 
     fn get_stack_size(&self) -> u64 {
-        self.get_stack_usage() as u64
+        self.aligned_stack_size() as u64
     }
 }
 

@@ -1,0 +1,6 @@
+# Rue compiler wrapper that sets up environment variables and calls the actual rue binary
+sh_binary(
+    name = "rue",
+    main = "rue_wrapper.sh",
+    visibility = ["PUBLIC"],
+)

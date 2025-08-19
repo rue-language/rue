@@ -7,7 +7,7 @@ use rue_compiler::{
 use rue_diagnostic::{DiagnosticFormatter, SourceManager};
 use std::fs;
 use std::path::{Path, PathBuf};
-use tracing::{error, info, warn};
+use tracing::{error, info, trace, warn};
 
 #[derive(Debug, Clone, PartialEq)]
 enum EmitMode {
@@ -242,7 +242,8 @@ fn run(opts: Args) -> anyhow::Result<i32> {
             // Just check compilation without generating output
             match compile_file_with_diagnostics(&db, file, options) {
                 Ok(_) => {
-                    info!("Compilation check passed");
+                    // UNIX programs should have no output on success
+                    // Do not output anything for --compile-only mode
                 }
                 Err(diagnostics) => {
                     print_diagnostics(&diagnostics, &file, &db, use_color);

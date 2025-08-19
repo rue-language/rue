@@ -8,7 +8,8 @@ use rue_target::{ConditionCode, LabelRef, X86Register, X8664Instr};
 use std::collections::HashMap;
 use tracing::{debug, trace, warn};
 
-use crate::constants::{EXIT_CODE_BOUNDS_CHECK, EXIT_CODE_DIV_BY_ZERO};
+const EXIT_CODE_BOUNDS_CHECK: i64 = 252;
+const EXIT_CODE_DIV_BY_ZERO: i64 = 252;
 
 /// Errors that can occur during lowering
 #[derive(Debug, Clone, PartialEq, thiserror::Error)]
@@ -261,6 +262,7 @@ impl<'a> X8664Codegen<'a> {
                 return_size.as_ref(),
             ),
             PIR::Return { value } => self.lower_return(value.as_ref()),
+            PIR::TypedReturn { value, ty } => self.lower_typed_return(value.as_ref(), ty),
             PIR::ReturnSmallAggregate { value, size } => {
                 self.lower_return_small_aggregate(*value, *size)
             }
@@ -328,14 +330,32 @@ impl<'a> X8664Codegen<'a> {
     fn lower_copy(&mut self, dest: VReg, src: &Value) -> Result<(), LoweringError> {
         match src {
             Value::SignedImm(imm) => {
+                debug!(target: "rue::x86_backend", "lower_copy: SignedImm({}) -> VReg({:?})", imm, dest);
                 let dest_reg = self.allocator.ensure_reg(dest, &[])?;
                 self.emit_spill_reload_ops();
+                trace!(
+                    target: "rue::codegen",
+                    ?dest,
+                    ?dest_reg,
+                    imm = *imm,
+                    "Loading immediate into register"
+                );
                 if *imm >= i32::MIN as i64 && *imm <= i32::MAX as i64 {
+                    debug!(
+                        target: "rue::x86_backend",
+                        ?dest_reg,
+                        imm = *imm as i32,
+                        "Emitting MovRI32 for immediate"
+                    );
                     self.emit(X8664Instr::MovRI32 {
                         dest: dest_reg,
                         imm: *imm as i32,
                     });
                 } else {
+                    debug!(
+                        target: "rue::x86_backend",
+                        "Emitting MovRI64 for immediate"
+                    );
                     self.emit(X8664Instr::MovRI64 {
                         dest: dest_reg,
                         imm: *imm,
@@ -1080,12 +1100,10 @@ impl<'a> X8664Codegen<'a> {
             dest: X86Register::Rdi,
             imm: EXIT_CODE_DIV_BY_ZERO,
         });
-        self.emit(X8664Instr::MovRI64 {
-            dest: X86Register::Rax,
-            imm: 60, // sys_exit
+        self.emit(X8664Instr::Call {
+            target: "__rue_flush_and_exit".to_string(),
         });
-        self.emit(X8664Instr::Syscall);
-        // Mark unreachable - sys_exit never returns
+        // Mark unreachable - flush_and_exit never returns
         self.emit(X8664Instr::Ud2);
 
         // Continue with division
@@ -1231,12 +1249,10 @@ impl<'a> X8664Codegen<'a> {
             dest: X86Register::Rdi,
             imm: EXIT_CODE_DIV_BY_ZERO,
         });
-        self.emit(X8664Instr::MovRI64 {
-            dest: X86Register::Rax,
-            imm: 60, // sys_exit
+        self.emit(X8664Instr::Call {
+            target: "__rue_flush_and_exit".to_string(),
         });
-        self.emit(X8664Instr::Syscall);
-        // Mark unreachable - sys_exit never returns
+        // Mark unreachable - flush_and_exit never returns
         self.emit(X8664Instr::Ud2);
 
         // Continue with division
@@ -1304,12 +1320,10 @@ impl<'a> X8664Codegen<'a> {
             dest: X86Register::Rdi,
             imm: EXIT_CODE_DIV_BY_ZERO,
         });
-        self.emit(X8664Instr::MovRI64 {
-            dest: X86Register::Rax,
-            imm: 60, // sys_exit
+        self.emit(X8664Instr::Call {
+            target: "__rue_flush_and_exit".to_string(),
         });
-        self.emit(X8664Instr::Syscall);
-        // Mark unreachable - sys_exit never returns
+        // Mark unreachable - flush_and_exit never returns
         self.emit(X8664Instr::Ud2);
 
         // Continue with division
@@ -1377,12 +1391,10 @@ impl<'a> X8664Codegen<'a> {
             dest: X86Register::Rdi,
             imm: EXIT_CODE_DIV_BY_ZERO,
         });
-        self.emit(X8664Instr::MovRI64 {
-            dest: X86Register::Rax,
-            imm: 60, // sys_exit
+        self.emit(X8664Instr::Call {
+            target: "__rue_flush_and_exit".to_string(),
         });
-        self.emit(X8664Instr::Syscall);
-        // Mark unreachable - sys_exit never returns
+        // Mark unreachable - flush_and_exit never returns
         self.emit(X8664Instr::Ud2);
 
         // Continue with division
@@ -2318,6 +2330,79 @@ impl<'a> X8664Codegen<'a> {
     }
 
     fn lower_return(&mut self, value: Option<&VReg>) -> Result<(), LoweringError> {
+        debug!(target: "rue::x86_backend", "lower_return called with value: {:?}", value);
+        // CRITICAL: Flush all dirty registers FIRST, then load return value
+        // This prevents the return value from being corrupted by flush operations
+        self.allocator.flush_stores();
+        self.emit_spill_reload_ops();
+
+        if let Some(vreg) = value {
+            debug!(
+                target: "rue::x86_backend",
+                ?vreg,
+                "Lowering return with value"
+            );
+
+            // Check if this VReg represents an aggregate pointer
+            if let Some(&size) = self.aggregate_vregs.get(vreg) {
+                debug!(
+                    target: "rue::codegen",
+                    ?vreg,
+                    size,
+                    "Detected aggregate return, delegating to lower_return_small_aggregate"
+                );
+                return self.lower_return_small_aggregate(*vreg, size);
+            }
+
+            // Now load the return value after all other values have been flushed
+            // This ensures the return value register won't be used as a scratch register
+            let value_reg = self.allocator.ensure_reg(*vreg, &[])?;
+            self.emit_spill_reload_ops();
+            debug!(
+                target: "rue::x86_backend",
+                ?vreg,
+                ?value_reg,
+                "Return: vreg in register"
+            );
+            if value_reg != X86Register::Rax {
+                debug!(
+                    target: "rue::x86_backend",
+                    ?value_reg,
+                    "Moving return value from {:?} to RAX", value_reg
+                );
+                debug!(target: "rue::x86_backend", "Emitting MovRR: {:?} -> RAX", value_reg);
+                self.emit(X8664Instr::MovRR {
+                    dest: X86Register::Rax,
+                    src: value_reg,
+                });
+            } else {
+                debug!(
+                    target: "rue::x86_backend",
+                    "Return value already in RAX"
+                );
+            }
+        } else {
+            // No explicit return value - return 0 (unit type)
+            self.emit(X8664Instr::MovRI64 {
+                dest: X86Register::Rax,
+                imm: 0,
+            });
+        }
+
+        // Standard SysV epilogue
+        self.emit(X8664Instr::LeaveFrame); // mov rsp, rbp ; pop rbp
+        self.emit(X8664Instr::Ret);
+
+        Ok(())
+    }
+
+    fn lower_typed_return(
+        &mut self,
+        value: Option<&VReg>,
+        ty: &rue_ir::types::RueType,
+    ) -> Result<(), LoweringError> {
+        use rue_ir::types::RueType;
+
         // CRITICAL: Flush all dirty registers FIRST, then load return value
         // This prevents the return value from being corrupted by flush operations
         self.allocator.flush_stores();
@@ -2327,7 +2412,8 @@ impl<'a> X8664Codegen<'a> {
             debug!(
                 target: "rue::codegen",
                 ?vreg,
-                "Lowering return with value"
+                ?ty,
+                "Lowering typed return with value"
             );
 
             // Check if this VReg represents an aggregate pointer
@@ -2349,20 +2435,56 @@ impl<'a> X8664Codegen<'a> {
                 target: "rue::codegen",
                 ?vreg,
                 ?value_reg,
-                "Return: vreg in register"
+                ?ty,
+                "Typed return: vreg in register"
             );
+
             if value_reg != X86Register::Rax {
-                self.emit(X8664Instr::MovRR {
-                    dest: X86Register::Rax,
-                    src: value_reg,
-                });
+                match ty {
+                    RueType::I32 => {
+                        // For i32 return values, the value should already be properly computed
+                        // by 32-bit arithmetic instructions. Use regular 64-bit move since
+                        // x86-64 doesn't have a register-to-register 32-bit move instruction.
+                        // The 32-bit arithmetic operations ensure proper 32-bit semantics.
+                        self.emit(X8664Instr::MovRR {
+                            dest: X86Register::Rax,
+                            src: value_reg,
+                        });
+                    }
+                    RueType::I64 => {
+                        // Use 64-bit move for i64 return values
+                        self.emit(X8664Instr::MovRR {
+                            dest: X86Register::Rax,
+                            src: value_reg,
+                        });
+                    }
+                    _ => {
+                        // For other types, fall back to 64-bit move
+                        self.emit(X8664Instr::MovRR {
+                            dest: X86Register::Rax,
+                            src: value_reg,
+                        });
+                    }
+                }
             }
         } else {
             // No explicit return value - return 0 (unit type)
-            self.emit(X8664Instr::MovRI64 {
-                dest: X86Register::Rax,
-                imm: 0,
-            });
+            match ty {
+                RueType::I32 => {
+                    // Use 32-bit move for i32 zero
+                    self.emit(X8664Instr::MovRI32 {
+                        dest: X86Register::Rax,
+                        imm: 0,
+                    });
+                }
+                _ => {
+                    // Use 64-bit move for other types
+                    self.emit(X8664Instr::MovRI64 {
+                        dest: X86Register::Rax,
+                        imm: 0,
+                    });
+                }
+            }
         }
 
         // Standard SysV epilogue
@@ -2794,21 +2916,9 @@ impl<'a> X8664Codegen<'a> {
             imm: size,
         });
 
-        // Load function pointer and call indirectly
-        // Load the memcpy function pointer from __rue_memcpy_ptr into R11
-        self.emit(X8664Instr::LeaLabel {
-            dest: X86Register::R11,
-            label: "__rue_memcpy_ptr".to_string(),
-        });
-        self.emit(X8664Instr::MovRM {
-            dest: X86Register::R11,
-            base: X86Register::R11,
-            offset: 0,
-        });
-
-        // Call through the function pointer
-        self.emit(X8664Instr::CallIndirect {
-            reg: X86Register::R11,
+        // Call memcpy directly (no longer using indirect pointer)
+        self.emit(X8664Instr::Call {
+            target: "__rue_memcpy".to_string(),
         });
 
         // Mark caller-saved registers as clobbered after the call
@@ -2857,21 +2967,9 @@ impl<'a> X8664Codegen<'a> {
             imm: size,
         });
 
-        // Load function pointer and call indirectly
-        // Load the memzero function pointer from __rue_memzero_ptr into R11
-        self.emit(X8664Instr::LeaLabel {
-            dest: X86Register::R11,
-            label: "__rue_memzero_ptr".to_string(),
-        });
-        self.emit(X8664Instr::MovRM {
-            dest: X86Register::R11,
-            base: X86Register::R11,
-            offset: 0,
-        });
-
-        // Call through the function pointer
-        self.emit(X8664Instr::CallIndirect {
-            reg: X86Register::R11,
+        // Call memzero directly (no longer using indirect pointer)
+        self.emit(X8664Instr::Call {
+            target: "__rue_memzero".to_string(),
         });
 
         // Mark caller-saved registers as clobbered after the call
@@ -3466,22 +3564,18 @@ impl<'a> X8664Codegen<'a> {
         self.allocator.flush_stores();
         self.emit_spill_reload_ops();
 
-        // Load exit code for array bounds violation into rax (system call number)
-        self.emit(X8664Instr::MovRI32 {
-            dest: X86Register::Rax,
-            imm: 60, // sys_exit
-        });
-
-        // Load error code into rdi (first argument)
+        // Load error code into rdi (first argument for flush_and_exit)
         self.emit(X8664Instr::MovRI32 {
             dest: X86Register::Rdi,
             imm: EXIT_CODE_BOUNDS_CHECK as i32, // Exit code for bounds violation
         });
 
-        // System call
-        self.emit(X8664Instr::Syscall);
+        // Call flush_and_exit instead of direct syscall
+        self.emit(X8664Instr::Call {
+            target: "__rue_flush_and_exit".to_string(),
+        });
 
-        // Mark as unreachable - sys_exit never returns
+        // Mark as unreachable - flush_and_exit never returns
         self.emit(X8664Instr::Ud2);
 
         // Add a comment for debugging

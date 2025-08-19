@@ -9,6 +9,29 @@ cargo.rust_library(
     crate_root = "src/lib.rs",
     preferred_linkage = "static",
     visibility = ["PUBLIC"],
+    rustc_flags = [
+        "-Cpanic=abort",
+        "-Copt-level=2",
+        "-Clto=thin",
+        "-Ccodegen-units=1",
+    ],
+)
+
+# Static library version for linking with the Rue compiler
+# This builds a staticlib (.a) for linking with Rue executables
+cargo.rust_library(
+    name = "rue-runtime-static",
+    srcs = glob(["src/**/*.rs"]),
+    edition = "2024",
+    crate_root = "src/lib.rs",
+    preferred_linkage = "static",
+    visibility = ["PUBLIC"],
+    rustc_flags = [
+        "-Cpanic=abort",
+        "-Copt-level=2",
+        "-Clto=thin",
+        "-Ccodegen-units=1",
+    ],
 )
 
 # Clippy version of the library target
@@ -19,4 +42,10 @@ clippy_rust_library(
     crate_root = "src/lib.rs",
     preferred_linkage = "static",
     visibility = ["PUBLIC"],
+    rustc_flags = [
+        "-Cpanic=abort",
+        "-Copt-level=2",
+        "-Clto=thin",
+        "-Ccodegen-units=1",
+    ],
 )

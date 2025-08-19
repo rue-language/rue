@@ -386,11 +386,17 @@ RUST_LOG=debug cargo test
 
 ### Update Snapshots
 ```bash
-# Update all snapshots
-UPDATE_SNAPSHOTS=1 cargo test
+# Update CLI test snapshots
+./buck2 test //crates/rue:cli_tests_update
 
-# Update specific test snapshots
-UPDATE_SNAPSHOTS=1 cargo test -p rue-parser test_name
+# Update parser snapshots
+./buck2 test //crates/rue-parser:test_parser_snapshots_update
+
+# Update corpus snapshots
+./buck2 test //crates/rue:snapshot_corpus_tests_update
+
+# Find all update targets
+./buck2 query "kind(rust_test, //...)" | grep "_update$"
 ```
 
 ## Continuous Integration

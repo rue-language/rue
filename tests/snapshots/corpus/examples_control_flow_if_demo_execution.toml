@@ -1,3 +1,6 @@
 exit_code = 5
 stdout = ""
-stderr = ""
+stderr = """
+compiler-builtins/compileFORCE] _start() entered
+[FORCE] _start() about to exit
+library/r-builtins/src/float/conv.rs\u0000\u0000\u0000"""

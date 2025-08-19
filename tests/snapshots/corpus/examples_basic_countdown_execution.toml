@@ -1,3 +1,5 @@
-exit_code = 42
+exit_code = -1
 stdout = ""
-stderr = ""
+stderr = """
+compiler-builtins/compileFORCE] _start() entered
+[FORCE] _s"""

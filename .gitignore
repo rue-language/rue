@@ -11,4 +11,4 @@
 rust-project.json
 
 # Claude
-.claude/settings.local.json
+.claude/settings.local.json/crates/rue-crt0/build/

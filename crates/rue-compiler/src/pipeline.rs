@@ -5,7 +5,7 @@
 
 use rue_codegen::backend::RuntimeProvider;
 use rue_codegen::target::TargetRegistry;
-use rue_codegen::{CodegenError, LoweringError, RegisterAllocator, X8664Codegen};
+use rue_codegen::{CodegenError, Linker, LoweringError, RegisterAllocator, X8664Codegen};
 use rue_ir::hir::Hir;
 use rue_ir::mir::MirProgram;
 use rue_ir::pir::{Label, PIR};
@@ -36,9 +36,8 @@ pub enum CompileError {
 
 /// Intermediate compilation result containing all the data needed for final output generation
 pub struct CompilationIntermediateResult {
-    pub final_instructions: Vec<X8664Instr>,
-    pub all_function_labels: HashMap<String, Label>,
-    pub runtime_label_count: u32,
+    pub instructions: Vec<X8664Instr>,
+    pub function_labels: HashMap<String, Label>,
 }
 
 /// Discover function boundaries by scanning for labels that correspond to function entry points
@@ -194,35 +193,6 @@ fn lower_functions(
     Ok(all_machine_instructions)
 }
 
-/// Build the final function labels map, combining runtime and user labels
-fn build_final_labels(
-    runtime_provider: &RuntimeProvider,
-    function_labels: &HashMap<String, Label>,
-    ir_to_machine_labels: &HashMap<Label, u32>,
-) -> HashMap<String, Label> {
-    let mut all_function_labels = HashMap::new();
-
-    // Add runtime labels
-    for (name, &id) in runtime_provider.runtime_labels() {
-        all_function_labels.insert(name.clone(), Label::runtime(id));
-    }
-
-    // Add user function labels
-    let runtime_label_count = runtime_provider.runtime_label_count();
-    for (name, ir_label_id) in function_labels {
-        if let Some(&machine_label_id) = ir_to_machine_labels.get(ir_label_id) {
-            // The machine_label_id already includes the runtime offset from assign_label_ids
-            // Use from_machine_id to create the correct label with proper space
-            all_function_labels.insert(
-                name.clone(),
-                Label::from_machine_id(machine_label_id, runtime_label_count),
-            );
-        }
-    }
-
-    all_function_labels
-}
-
 /// Helper function to optimize and verify MIR
 #[instrument(skip_all, fields(optimize = enable_optimizations))]
 fn optimize_and_verify_mir(
@@ -288,16 +258,11 @@ pub fn compile_hir_via_mir_to_intermediate(
     let instructions = mir_lowerer.lower_program(&mir);
     let function_labels = mir_lowerer.get_function_labels();
 
-    // Step 5: Create runtime provider
-    let runtime_provider = RuntimeProvider::new()?;
-
-    // Step 6: Identify function boundaries
+    // Step 5: Identify function boundaries
     let function_boundaries = discover_function_boundaries(&instructions, &function_labels);
 
-    // Step 7: Get runtime label count and assign label IDs
-    let runtime_label_count = runtime_provider.runtime_label_count();
-    let (ir_to_machine_labels, label_id_counter) =
-        assign_label_ids(&instructions, runtime_label_count);
+    // Step 6: Assign label IDs (starting from 0 for user code)
+    let (ir_to_machine_labels, label_id_counter) = assign_label_ids(&instructions, 0);
     let all_machine_instructions = lower_functions(
         &instructions,
         &function_labels,
@@ -307,18 +272,9 @@ pub fn compile_hir_via_mir_to_intermediate(
         &mir_lowerer,
     )?;
 
-    // Step 8: Combine runtime and user code
-    let final_instructions =
-        runtime_provider.combine_runtime_and_user_code(all_machine_instructions);
-
-    // Step 9: Build final labels
-    let all_function_labels =
-        build_final_labels(&runtime_provider, &function_labels, &ir_to_machine_labels);
-
     Ok(CompilationIntermediateResult {
-        final_instructions,
-        all_function_labels,
-        runtime_label_count,
+        instructions: all_machine_instructions,
+        function_labels: function_labels.clone(),
     })
 }
 
@@ -340,9 +296,9 @@ pub fn compile_hir_via_mir_to_assembly(
     info!(target: "rue::codegen", "Generating assembly");
     let formatter = TargetRegistry::create_assembly_formatter(TargetRegistry::default_target());
     Ok(formatter.format_assembly(
-        &intermediate.final_instructions,
-        &intermediate.all_function_labels,
-        intermediate.runtime_label_count,
+        &intermediate.instructions,
+        &intermediate.function_labels,
+        0, // No runtime label count needed
     ))
 }
 
@@ -359,31 +315,58 @@ pub fn compile_hir_via_mir_to_executable(
     let intermediate =
         compile_hir_via_mir_to_intermediate(hir, type_context, enable_optimizations)?;
 
-    // Generate machine code from intermediate results using trait abstraction
-    info!(target: "rue::elf", "Generating ELF executable");
+    // Generate user code machine code from intermediate results
+    info!(target: "rue::codegen", "Generating user code");
     let mut emitter = TargetRegistry::create_emitter(TargetRegistry::default_target());
-    emitter.set_function_labels(
-        intermediate.all_function_labels,
-        intermediate.runtime_label_count,
-    );
-    let code = emitter
-        .emit_all(&intermediate.final_instructions)
+    emitter.set_function_labels(intermediate.function_labels.clone(), 0);
+    let user_code = emitter
+        .emit_all(&intermediate.instructions)
         .map_err(rue_codegen::CodegenError::InvalidOperation)?;
 
-    // Extract symbol positions from emitter
-    let (_, symbols) = emitter.get_output();
+    // Extract user symbol positions from emitter
+    let (_, user_symbols) = emitter.get_output();
 
-    // Validate that _start symbol exists
-    if !symbols.contains_key("_start") {
-        return Err(CompileError::Codegen(CodegenError::InvalidOperation(
-            "_start symbol not found in symbol table - runtime initialization failed".to_string(),
-        )));
-    }
+    // Extract external symbol references from emitter
+    // We need to cast to the concrete type to access the external references method
+    let external_refs = if let Some(x86_emitter) = emitter
+        .as_any()
+        .downcast_ref::<rue_codegen::target::x86_64::X86Emitter>(
+    ) {
+        let refs = x86_emitter.get_external_references();
+        info!(target: "rue::elf", "X86 emitter found, extracted {} external references", refs.len());
+        for (name, offset) in &refs {
+            info!(target: "rue::elf", "External reference: {} at offset 0x{:x}", name, offset);
+        }
+        refs
+    } else {
+        info!(target: "rue::elf", "Non-X86 emitter found, no external references extracted");
+        Vec::new() // No external references for other emitters
+    };
 
-    // Get data and BSS section information
-    let (data_section, bss_size) = emitter.get_data_and_bss();
+    // Now link with the runtime library
+    info!(target: "rue::elf", "Linking with runtime library");
+    let mut linker = Linker::new();
 
-    // Generate ELF executable using trait abstraction with section support
-    let elf_writer = TargetRegistry::create_executable_writer(TargetRegistry::default_target());
-    Ok(elf_writer.generate_executable_with_sections(&code, &symbols, data_section, bss_size))
+    // Add the runtime library
+    let lib_path = std::env::var("RUE_RUNTIME_LIB").map_err(|_| {
+        CompileError::Codegen(CodegenError::InvalidOperation(
+            "RUE_RUNTIME_LIB environment variable not set - cannot find runtime library"
+                .to_string(),
+        ))
+    })?;
+
+    linker.add_object_file_from_path(&lib_path)?;
+
+    // Add user code as an object file with external references
+    info!(target: "rue::elf", "Adding user code as object file (code size: {}, symbols: {}, external refs: {})", 
+          user_code.len(), user_symbols.len(), external_refs.len());
+    linker.add_user_code_object_with_externals(&user_code, &user_symbols, &external_refs)?;
+
+    // Link everything together and generate the executable
+    info!(target: "rue::elf", "Linking and generating executable");
+    let executable = linker.link_executable()?;
+
+    info!(target: "rue::elf", "Generated executable size: {} bytes", executable.len());
+
+    Ok(executable)
 }

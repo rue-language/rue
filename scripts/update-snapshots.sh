@@ -61,19 +61,75 @@ EOF
 # Function to update all snapshots
 update_all() {
     echo -e "${BLUE}Updating all snapshots...${NC}"
-    ./buck2 bxl //tools/bxl:snapshots.bxl:update_all
+    
+    # Find all update targets and run them
+    local targets=$(./buck2 query "kind(rust_test, //...)" 2>/dev/null | grep "_update$" || true)
+    
+    if [[ -z "$targets" ]]; then
+        echo -e "${YELLOW}No snapshot update targets found${NC}"
+        return 1
+    fi
+    
+    local failed=0
+    for target in $targets; do
+        echo -e "${BLUE}Updating: $target${NC}"
+        if ./buck2 test "$target" 2>&1 | tail -1 | grep -q "Pass 1"; then
+            echo -e "${GREEN}✓ Updated${NC}"
+        else
+            echo -e "${RED}✗ Failed${NC}"
+            failed=$((failed + 1))
+        fi
+    done
+    
+    if [[ $failed -eq 0 ]]; then
+        echo -e "${GREEN}✓ All snapshots updated successfully${NC}"
+    else
+        echo -e "${RED}✗ $failed snapshot updates failed${NC}"
+        return 1
+    fi
 }
 
 # Function to check all snapshots
 check_all() {
     echo -e "${BLUE}Checking all snapshots...${NC}"
-    ./buck2 bxl //tools/bxl:snapshots.bxl:check_all
+    
+    # Find all snapshot test targets (non-update ones)
+    local targets=$(./buck2 query "kind(rust_test, //...)" 2>/dev/null | grep -E "snapshot|cli_tests" | grep -v "_update$" || true)
+    
+    if [[ -z "$targets" ]]; then
+        echo -e "${YELLOW}No snapshot test targets found${NC}"
+        return 1
+    fi
+    
+    local failed=0
+    for target in $targets; do
+        echo -e "${BLUE}Checking: $target${NC}"
+        if ./buck2 test "$target" 2>&1 | tail -1 | grep -q "Pass 1"; then
+            echo -e "${GREEN}✓ Passed${NC}"
+        else
+            echo -e "${RED}✗ Failed${NC}"
+            failed=$((failed + 1))
+        fi
+    done
+    
+    if [[ $failed -eq 0 ]]; then
+        echo -e "${GREEN}✓ All snapshots are up to date${NC}"
+    else
+        echo -e "${RED}✗ $failed snapshot tests failed${NC}"
+        echo "Run $(basename "$0") to update snapshots"
+        return 1
+    fi
 }
 
 # Function to list targets
 list_targets() {
     echo -e "${BLUE}Available snapshot test targets:${NC}"
-    ./buck2 bxl //tools/bxl:snapshots.bxl:list_targets
+    echo
+    echo -e "${YELLOW}Regular test targets (fail on mismatch):${NC}"
+    ./buck2 query "kind(rust_test, //...)" 2>/dev/null | grep -E "snapshot|cli_tests" | grep -v "_update$" | sort
+    echo
+    echo -e "${YELLOW}Update targets (update snapshots):${NC}"
+    ./buck2 query "kind(rust_test, //...)" 2>/dev/null | grep "_update$" | sort
 }
 
 # Function to update specific target

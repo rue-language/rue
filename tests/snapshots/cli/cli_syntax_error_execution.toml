@@ -2,7 +2,7 @@ exit_code = 1
 stdout = ""
 stderr = """
   [TIMESTAMP] ERROR rue: Compilation failed
-    at crates/rue/src/main.rs:409
+    at crates/rue/src/main.rs:410
 
 
 error[E1001]: Expected Semicolon, found Comment(" Missing semicolon")

@@ -6,87 +6,36 @@
 //! - Non-numeric input handling
 //! - Very long input lines
 
-use rue_compiler::{RueDatabase, SourceFile, compile_file};
-use std::fs;
-use std::io::Write;
-use std::process::{Command, Stdio};
-use tempfile::{NamedTempFile, TempDir};
-use tracing::warn;
+use rue_test_utils::RueCompiler;
 
 fn compile_and_run(source: &str, input: Option<&str>) -> Result<(i32, String), String> {
-    // Create a temporary directory to hold files
-    let temp_dir = TempDir::new().unwrap();
+    let compiler = RueCompiler::new().map_err(|e| format!("Failed to create compiler: {e}"))?;
 
-    let mut source_file = NamedTempFile::new_in(&temp_dir).unwrap();
-    write!(source_file, "{source}").unwrap();
-    source_file.flush().unwrap();
+    // Compile the source
+    let compilation = compiler
+        .compile_source(source)
+        .map_err(|e| format!("Compilation failed: {e}"))?;
 
-    let output_path = temp_dir.path().join("test_executable");
-
-    // Set up Salsa database
-    let db = RueDatabase::default();
-    let file = SourceFile::new(
-        &db,
-        source_file.path().to_string_lossy().to_string(),
-        source.to_string(),
-    );
-
-    // Compile
-    let executable = compile_file(&db, file).map_err(|e| format!("Compilation failed: {e}"))?;
-
-    // Write executable
-    fs::write(&output_path, &*executable)
-        .map_err(|e| format!("Failed to write executable: {e}"))?;
-
-    // Make executable on Unix systems
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let mut perms = fs::metadata(&output_path).unwrap().permissions();
-        perms.set_mode(0o755);
-        fs::set_permissions(&output_path, perms).unwrap();
+    if !compilation.success {
+        return Err(format!("Compilation failed: {}", compilation.stderr));
     }
 
-    // Ensure file is fully written and synced to disk
-    // This helps avoid "Text file busy" errors in CI
-    std::fs::File::open(&output_path)
-        .and_then(|f| f.sync_all())
-        .map_err(|e| format!("Failed to sync executable: {e}"))?;
+    let binary_path = compilation
+        .output_path
+        .ok_or("No output path from compilation")?;
 
-    // Small delay to ensure filesystem has released the file
-    std::thread::sleep(std::time::Duration::from_millis(10));
+    // Run the binary with optional input
+    let result = if let Some(input_data) = input {
+        compiler
+            .run_with_input(&binary_path, input_data)
+            .map_err(|e| format!("Failed to run with input: {e}"))?
+    } else {
+        compiler
+            .run_binary(&binary_path)
+            .map_err(|e| format!("Failed to run: {e}"))?
+    };
 
-    let mut cmd = Command::new(&output_path);
-    if input.is_some() {
-        cmd.stdin(Stdio::piped());
-    }
-    cmd.stdout(Stdio::piped());
-    cmd.stderr(Stdio::piped());
-
-    let mut child = cmd
-        .spawn()
-        .map_err(|e| format!("Failed to run program: {e}"))?;
-
-    if let Some(input_data) = input {
-        let stdin = child.stdin.as_mut().unwrap();
-        stdin
-            .write_all(input_data.as_bytes())
-            .map_err(|e| format!("Failed to write input: {e}"))?;
-    }
-
-    let output = child
-        .wait_with_output()
-        .map_err(|e| format!("Failed to wait for program: {e}"))?;
-
-    let exit_code = output.status.code().unwrap_or(-1);
-    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-
-    if !stderr.is_empty() {
-        warn!("STDERR: {stderr}");
-    }
-
-    Ok((exit_code, stdout))
+    Ok((result.exit_code, result.stdout))
 }
 
 #[test]

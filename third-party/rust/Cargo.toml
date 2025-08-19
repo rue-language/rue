@@ -1,6 +1,4 @@
 # Definitions of third-party libraries used for buck2 builds of rue
-#
-# Note: This file is **not** used by a regular Cargo build of rue
 
 [workspace]
 
@@ -15,8 +13,6 @@ edition = "2024"
 [[bin]]
 name = "top"
 path = "top/main.rs"
-
-# BEGIN: DEPENDENCIES
 
 [workspace.package]
 edition = "2024"
@@ -38,7 +34,11 @@ toml = "0.8"
 tokio = { version = "1.0", features = ["full"] }
 tower-lsp = "0.20"
 tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "json"] }
+tracing-subscriber = { version = "0.3", features = [
+    "env-filter",
+    "fmt",
+    "json",
+] }
 tracing-tree = "0.3"
 rustc-hash = "2.0"
 anyhow = "1.0.99"
@@ -49,4 +49,4 @@ walkdir = "2.4"
 clap = { version = "4.4", features = ["derive"] }
 once_cell = "1.19"
 proptest = "1.5"
-# END: DEPENDENCIES
+goblin = "0.8"

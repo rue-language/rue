@@ -131,7 +131,8 @@ def rust_test(name, env = None, rustc_flags = None, **kwargs):
     test_env = {
         # Test-specific environment variables
         "RUST_TEST_THREADS": "1",  # Deterministic test execution
-        "RUST_BACKTRACE": "full",  # Full backtraces in tests
+        "RUST_BACKTRACE": "0",  # Suppress backtraces in tests
+        "RUST_LOG": "rue=warn",  # Suppress debug/trace logs in tests
     }
     
     if env:
@@ -246,7 +247,8 @@ def rust_snapshot_test(name, env = None, rustc_flags = None, snapshot_dir = None
     """
     test_env = {
         "RUST_TEST_THREADS": "1",  # Deterministic test execution
-        "RUST_BACKTRACE": "full",  # Full backtraces in tests
+        "RUST_BACKTRACE": "0",  # Suppress backtraces in tests
+        "RUST_LOG": "rue=warn",  # Suppress debug/trace logs in tests
     }
     
     if snapshot_dir:
@@ -285,7 +287,8 @@ def rust_snapshot_update(name, env = None, rustc_flags = None, snapshot_dir = No
     test_env = {
         "UPDATE_SNAPSHOTS": "1",  # Enable snapshot updates
         "RUST_TEST_THREADS": "1",  # Deterministic test execution
-        "RUST_BACKTRACE": "full",  # Full backtraces in tests
+        "RUST_BACKTRACE": "0",  # Suppress backtraces in tests
+        "RUST_LOG": "rue=warn",  # Suppress debug/trace logs in tests
     }
     
     if snapshot_dir:

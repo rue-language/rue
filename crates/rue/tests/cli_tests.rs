@@ -52,10 +52,23 @@ fn run_rue_cli(args: &[&str], stdin_content: Option<&str>) -> Result<ExecutionSn
 
     // Set up the command
     let mut cmd = Command::new(&rue_binary);
+
+    // Check if verbose flag is present to set appropriate log level
+    let log_level = if args.contains(&"-v")
+        || args.contains(&"--verbose")
+        || args.contains(&"-vv")
+        || args.contains(&"-vvv")
+    {
+        "rue=info" // Allow verbose output when requested
+    } else {
+        "rue=warn" // Suppress debug logs for normal tests
+    };
+
     cmd.args(args)
         .current_dir(project_root)
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
+        .stderr(Stdio::piped())
+        .env("RUST_LOG", log_level);
 
     // Handle stdin if provided
     if stdin_content.is_some() {

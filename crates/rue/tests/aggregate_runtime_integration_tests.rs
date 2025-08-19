@@ -83,8 +83,9 @@ fn compile_rue_code(code: &str, output_path: &Path) -> Result<(), String> {
             .map_err(|e| format!("Failed to remove existing executable: {e}"))?;
     }
 
-    // Compile the rue program
+    // Compile the rue program using the wrapper script
     let rue_binary = get_rue_binary();
+
     let compile_output = Command::new(&rue_binary)
         .arg(&temp_source)
         .arg("-o")

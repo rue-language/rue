@@ -15,6 +15,7 @@ cargo.rust_library(
         "//crates/rue-semantic:rue-semantic",
         "//crates/rue-ir:rue-ir",
         "//crates/rue-target:rue-target",
+        "//third-party/rust:goblin",
         "//third-party/rust:object",
         "//third-party/rust:indexmap",
         "//third-party/rust:thiserror",
@@ -38,6 +39,7 @@ clippy_rust_library(
         "//crates/rue-semantic:rue-semantic",
         "//crates/rue-ir:rue-ir",
         "//crates/rue-target:rue-target",
+        "//third-party/rust:goblin",
         "//third-party/rust:object",
         "//third-party/rust:indexmap",
         "//third-party/rust:thiserror",
@@ -60,6 +62,7 @@ rust_test(
         "//crates/rue-semantic:rue-semantic",
         "//crates/rue-ir:rue-ir",
         "//crates/rue-target:rue-target",
+        "//third-party/rust:goblin",
         "//third-party/rust:indexmap",
         "//third-party/rust:regex",
         "//third-party/rust:thiserror",
@@ -67,6 +70,11 @@ rust_test(
         "//third-party/rust:thiserror",
         "//third-party/rust:object",
     ],
+    env = {
+        # Pass runtime library paths so the compiler can find them
+        "RUE_CRT0_LIB": "$(location //crates/rue-runtime:rue-runtime-static[staticlib])",
+        "RUE_RUNTIME_LIB": "$(location //crates/rue-runtime:rue-runtime-static[staticlib])",
+    },
 )
 
 rust_test(

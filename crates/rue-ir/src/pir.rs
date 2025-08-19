@@ -172,6 +172,11 @@ pub enum PIR {
     Return {
         value: Option<VReg>,
     },
+    /// Type-aware return for proper i32/i64 instruction selection
+    TypedReturn {
+        value: Option<VReg>,
+        ty: RueType,
+    },
     /// Return small aggregate (≤16 bytes) in registers
     ReturnSmallAggregate {
         value: VReg, // VReg pointing to aggregate memory

@@ -16,6 +16,7 @@ cargo.rust_library(
         "//crates/rue-codegen:rue-codegen",
         "//crates/rue-lowering:rue-lowering",
         "//crates/rue-optimize:rue-optimize",
+        "//crates/rue-runtime:rue-runtime",
         "//crates/rue-target:rue-target",
         "//third-party/rust:salsa",
         "//third-party/rust:tracing",
@@ -59,6 +60,9 @@ rust_test(
     srcs = glob(["src/**/*.rs"]),
     crate_root = "src/lib.rs",
     edition = "2024",
+    env = {
+        "RUE_RUNTIME_LIB": "$(location //crates/rue-runtime:rue-runtime-static[staticlib])",
+    },
     deps = [
         "//crates/rue-ast:rue-ast",
         "//crates/rue-diagnostic:rue-diagnostic",
@@ -69,6 +73,7 @@ rust_test(
         "//crates/rue-codegen:rue-codegen",
         "//crates/rue-lowering:rue-lowering",
         "//crates/rue-optimize:rue-optimize",
+        "//crates/rue-runtime:rue-runtime",
         "//crates/rue-target:rue-target",
         "//third-party/rust:regex",
         "//third-party/rust:salsa",
@@ -77,6 +82,7 @@ rust_test(
         "//third-party/rust:atty",
         "//third-party/rust:tracing-tree",
         "//third-party/rust:thiserror",
+        "//third-party/rust:tempfile",
     ],
 )
 

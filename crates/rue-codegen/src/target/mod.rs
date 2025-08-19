@@ -25,6 +25,9 @@ pub trait InstructionEmitter<Instr> {
 
     /// Get data section content and BSS size for ELF generation
     fn get_data_and_bss(&self) -> (&[u8], usize);
+
+    /// Enable downcasting to concrete types
+    fn as_any(&self) -> &dyn std::any::Any;
 }
 
 /// Trait for target-specific executable format writers

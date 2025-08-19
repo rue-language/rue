@@ -6,6 +6,9 @@ cargo.rust_binary(
     srcs = glob(["src/**/*.rs"]),
     crate_root = "src/main.rs",
     edition = "2024",
+    env = {
+        "RUE_RUNTIME_LIB": "$(location //crates/rue-runtime:rue-runtime-static[staticlib])",
+    },
     deps = [
         "//crates/rue-compiler:rue-compiler",
         "//crates/rue-codegen:rue-codegen",
@@ -49,9 +52,11 @@ rust_snapshot_tests(
         "//third-party/rust:tempfile",
     ],
     env = {
-        "CARGO_MANIFEST_DIR": ".",
-        "CARGO_BIN_EXE_rue": "$(location :rue)",
+        "RUE_RUNTIME_LIB": "$(location //crates/rue-runtime:rue-runtime-static[staticlib])",
     },
+    resources = [
+        "//crates/rue:rue",
+    ],
     snapshot_dir = "tests/snapshots/corpus",
 )
 
@@ -65,9 +70,11 @@ rust_test(
         "//crates/rue-codegen:rue-codegen",
     ],
     env = {
-        "CARGO_MANIFEST_DIR": ".",
-        "CARGO_BIN_EXE_rue": "$(location :rue)",
+        "RUE_RUNTIME_LIB": "$(location //crates/rue-runtime:rue-runtime-static[staticlib])",
     },
+    resources = [
+        "//crates/rue:rue",
+    ],
 )
 
 rust_test(
@@ -80,9 +87,11 @@ rust_test(
         "//crates/rue-codegen:rue-codegen",
     ],
     env = {
-        "CARGO_MANIFEST_DIR": ".",
-        "CARGO_BIN_EXE_rue": "$(location :rue)",
+        "RUE_RUNTIME_LIB": "$(location //crates/rue-runtime:rue-runtime-static[staticlib])",
     },
+    resources = [
+        "//crates/rue:rue",
+    ],
 )
 
 rust_test(
@@ -95,9 +104,11 @@ rust_test(
         "//crates/rue-codegen:rue-codegen",
     ],
     env = {
-        "CARGO_MANIFEST_DIR": ".",
-        "CARGO_BIN_EXE_rue": "$(location :rue)",
+        "RUE_RUNTIME_LIB": "$(location //crates/rue-runtime:rue-runtime-static[staticlib])",
     },
+    resources = [
+        "//crates/rue:rue",
+    ],
 )
 
 rust_test(
@@ -111,9 +122,11 @@ rust_test(
         "//third-party/rust:tempfile",
     ],
     env = {
-        "CARGO_MANIFEST_DIR": ".",
-        "CARGO_BIN_EXE_rue": "$(location :rue)",
+        "RUE_RUNTIME_LIB": "$(location //crates/rue-runtime:rue-runtime-static[staticlib])",
     },
+    resources = [
+        "//crates/rue:rue",
+    ],
 )
 
 rust_test(
@@ -128,26 +141,13 @@ rust_test(
         "//third-party/rust:tempfile",
     ],
     env = {
-        "CARGO_MANIFEST_DIR": ".",
-        "CARGO_BIN_EXE_rue": "$(location :rue)",
+        "RUE_RUNTIME_LIB": "$(location //crates/rue-runtime:rue-runtime-static[staticlib])",
     },
+    resources = [
+        "//crates/rue:rue",
+    ],
 )
 
-rust_test(
-    name = "runtime_edge_cases",
-    srcs = glob(["tests/**/*.rs"]),
-    crate_root = "tests/runtime_edge_cases.rs",
-    edition = "2024",
-    deps = [
-        "//crates/rue-compiler:rue-compiler",
-        "//crates/rue-codegen:rue-codegen",
-        "//third-party/rust:tempfile",
-        "//third-party/rust:tracing",
-    ],
-    env = {
-        "CARGO_MANIFEST_DIR": ".",
-    },
-)
 
 rust_test(
     name = "runtime_tests",
@@ -159,9 +159,11 @@ rust_test(
         "//crates/rue-codegen:rue-codegen",
     ],
     env = {
-        "CARGO_MANIFEST_DIR": ".",
-        "CARGO_BIN_EXE_rue": "$(location :rue)",
+        "RUE_RUNTIME_LIB": "$(location //crates/rue-runtime:rue-runtime-static[staticlib])",
     },
+    resources = [
+        "//crates/rue:rue",
+    ],
 )
 
 rust_test(
@@ -175,7 +177,7 @@ rust_test(
         "//third-party/rust:tracing",
     ],
     env = {
-        "CARGO_MANIFEST_DIR": ".",
+        "RUE_RUNTIME_LIB": "$(location //crates/rue-runtime:rue-runtime-static[staticlib])",
     },
 )
 
@@ -189,9 +191,11 @@ rust_test(
         "//crates/rue-codegen:rue-codegen",
     ],
     env = {
-        "CARGO_MANIFEST_DIR": ".",
-        "CARGO_BIN_EXE_rue": "$(location :rue)",
+        "RUE_RUNTIME_LIB": "$(location //crates/rue-runtime:rue-runtime-static[staticlib])",
     },
+    resources = [
+        "//crates/rue:rue",
+    ],
 )
 
 rust_test(
@@ -205,9 +209,11 @@ rust_test(
         "//crates/rue-test-utils:rue-test-utils",
     ],
     env = {
-        "CARGO_MANIFEST_DIR": ".",
-        "CARGO_BIN_EXE_rue": "$(location :rue)",
+        "RUE_RUNTIME_LIB": "$(location //crates/rue-runtime:rue-runtime-static[staticlib])",
     },
+    resources = [
+        "//crates/rue:rue",
+    ],
 )
 
 rust_test(
@@ -221,9 +227,11 @@ rust_test(
         "//crates/rue-test-utils:rue-test-utils",
     ],
     env = {
-        "CARGO_MANIFEST_DIR": ".",
-        "CARGO_BIN_EXE_rue": "$(location :rue)",
+        "RUE_RUNTIME_LIB": "$(location //crates/rue-runtime:rue-runtime-static[staticlib])",
     },
+    resources = [
+        "//crates/rue:rue",
+    ],
 )
 
 rust_snapshot_tests(
@@ -236,8 +244,10 @@ rust_snapshot_tests(
         "//third-party/rust:tempfile",
     ],
     env = {
-        "CARGO_MANIFEST_DIR": ".",
-        "CARGO_BIN_EXE_rue": "$(location :rue)",
+        "RUE_RUNTIME_LIB": "$(location //crates/rue-runtime:rue-runtime-static[staticlib])",
     },
+    resources = [
+        "//crates/rue:rue",
+    ],
     snapshot_dir = "tests/snapshots/cli",
 )

@@ -37,9 +37,9 @@ pub fn format_instructions_as_assembly(
                 ));
             }
             X8664Instr::MovRI32 { dest, imm } => {
-                // MovRI32 is encoded as sign-extending mov imm32 → r64 with REX.W
-                // Use movq to reflect the actual 64-bit sign-extending behavior
-                output.push_str(&format!("    movq ${}, %{}\n", imm, reg_name(dest)));
+                // MovRI32 loads a 32-bit immediate, zero-extending to 64 bits
+                // Use movl to load into 32-bit register portion (automatic zero-extension)
+                output.push_str(&format!("    movl ${}, %{}\n", imm, reg_name_32(dest)));
             }
             X8664Instr::MovRI64 { dest, imm } => {
                 output.push_str(&format!("    movabsq ${}, %{}\n", imm, reg_name(dest)));

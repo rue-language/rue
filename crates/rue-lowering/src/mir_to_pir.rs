@@ -335,6 +335,7 @@ impl MirToPir {
                 });
             }
             MirValue::Const(c) => {
+                debug!(target: "rue::mir_to_pir", "Lowering MirValue::Const: {:?} to dest {:?}", c, dest);
                 let imm = match c {
                     MirConst::Int32(n) => *n as i64,
                     MirConst::Int64(n) => *n,
@@ -352,6 +353,7 @@ impl MirToPir {
                         return; // Already handled, don't emit additional Copy instruction
                     }
                 };
+                debug!(target: "rue::mir_to_pir", "Emitting PIR::Copy with immediate value: {}", imm);
                 self.emit(PIR::Copy {
                     dest,
                     src: Value::SignedImm(imm),
@@ -591,9 +593,10 @@ impl MirToPir {
                 self.emit(PIR::Jump(unreachable_label)); // Infinite loop
             }
             MirTerminator::Return { value, .. } => {
+                debug!(target: "rue::mir_to_pir", "Processing return terminator with value: {:?}", value);
                 if let Some(val) = value {
                     let vreg = self.get_vreg(*val);
-                    debug!(target: "rue::codegen", ?val, ?vreg, "Return terminator: temp -> vreg");
+                    debug!(target: "rue::mir_to_pir", ?val, ?vreg, "Return terminator: temp -> vreg");
 
                     // Check if this is an aggregate return
                     if let Some(return_type) = self.current_temp_types.get(val).cloned() {
@@ -615,8 +618,12 @@ impl MirToPir {
                                 self.emit(PIR::ReturnLargeAggregate { value: vreg, size });
                             }
                         } else {
-                            // Scalar return value
-                            self.emit(PIR::Return { value: Some(vreg) });
+                            // Scalar return value with type information
+                            debug!(target: "rue::codegen", ?vreg, ?return_type, "Emitting TypedReturn");
+                            self.emit(PIR::TypedReturn {
+                                value: Some(vreg),
+                                ty: return_type,
+                            });
                         }
                     } else {
                         // No type information available, assume scalar

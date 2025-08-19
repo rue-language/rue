@@ -7,11 +7,13 @@
 mod assembler;
 mod elf;
 mod emitter;
+mod symbols;
 
 // Re-export the main types with appropriate names
 pub use assembler::format_instructions_as_assembly;
 pub use elf::ElfWriter;
 pub use emitter::{SectionType, X86Emitter};
+pub use symbols::{SymbolExport, SymbolExporter, SymbolInfo};
 
 use crate::target::{AssemblyFormatter, ExecutableWriter, InstructionEmitter};
 use rue_ir::pir::Label;
@@ -37,6 +39,10 @@ impl InstructionEmitter<X8664Instr> for X86Emitter {
 
     fn get_data_and_bss(&self) -> (&[u8], usize) {
         self.get_data_and_bss()
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
     }
 }
 

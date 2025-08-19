@@ -7,44 +7,37 @@ This guide covers snapshot testing in the Rue project using Buck2.
 ### Update Snapshots
 
 ```bash
-# Update all snapshots
-./scripts/update-snapshots.sh
-
-# Update specific test snapshots
-./scripts/update-snapshots.sh cli       # CLI tests only
-./scripts/update-snapshots.sh parser    # Parser tests only
-./scripts/update-snapshots.sh corpus    # Corpus tests only
-
-# Check snapshots without updating
-./scripts/update-snapshots.sh --check
-
-# List available snapshot targets
-./scripts/update-snapshots.sh --list
-```
-
-### Direct Buck2 Commands
-
-```bash
-# Update specific test snapshots
+# Update CLI test snapshots
 ./buck2 test //crates/rue:cli_tests_update
+
+# Update parser snapshots
 ./buck2 test //crates/rue-parser:test_parser_snapshots_update
 
+# Update corpus test snapshots
+./buck2 test //crates/rue:snapshot_corpus_tests_update
+
+# Update all parser-related snapshots
+./buck2 test //crates/rue-parser:test_aggregate_types_update
+./buck2 test //crates/rue-parser:test_comprehensive_parser_update
+```
+
+### Run Tests (Check Snapshots)
+
+```bash
 # Run regular tests (fail on mismatch)
 ./buck2 test //crates/rue:cli_tests
 ./buck2 test //crates/rue-parser:test_parser_snapshots
+./buck2 test //crates/rue:snapshot_corpus_tests
 ```
 
-### BXL Commands
+### Find All Snapshot Targets
 
 ```bash
-# Update all snapshots project-wide
-./buck2 bxl //tools/bxl:snapshots.bxl:update_all
+# List all snapshot test targets
+./buck2 query "kind(rust_test, //...)" | grep -E "(snapshot|update)"
 
-# Check all snapshots
-./buck2 bxl //tools/bxl:snapshots.bxl:check_all
-
-# List all snapshot targets
-./buck2 bxl //tools/bxl:snapshots.bxl:list_targets
+# List just the update targets
+./buck2 query "kind(rust_test, //...)" | grep "_update$"
 ```
 
 ## Implementation Details
@@ -127,23 +120,27 @@ Ensure you're using the `_update` target variant:
 
 Check that your BUCK file uses `rust_snapshot_tests()` instead of `rust_test()`.
 
-### BXL Script Not Finding Targets
+The `rust_snapshot_tests()` macro automatically creates both:
+- The regular test target (fails on mismatch)
+- The `_update` variant (updates snapshots)
 
-The BXL script looks for targets with specific naming patterns:
+## Important Notes
 
-- Ending with `_update`
-- Containing `update_snapshot`
-- Containing `snapshot` in the name
+### No Environment Variable Support
 
-Ensure your test names follow these conventions.
+Buck2 does **not** support passing environment variables at runtime like:
+```bash
+# This DOES NOT work with Buck2:
+UPDATE_SNAPSHOTS=1 ./buck2 test //crates/rue:cli_tests  # ❌ Won't work
+```
 
-## Migration from Cargo
+Instead, use the dedicated `_update` targets that have `UPDATE_SNAPSHOTS=1` pre-configured.
 
-If migrating from Cargo where you used `UPDATE_SNAPSHOTS=1 cargo test`:
+### Finding Update Targets
 
-1. Update BUCK files to use `rust_snapshot_tests()`
-2. Use `./scripts/update-snapshots.sh` instead of the cargo command
-3. Snapshot files remain in the same location and format
+Every snapshot test created with `rust_snapshot_tests()` automatically gets an `_update` variant:
+- `//crates/rue:cli_tests` → `//crates/rue:cli_tests_update`
+- `//crates/rue-parser:test_parser_snapshots` → `//crates/rue-parser:test_parser_snapshots_update`
 
 ## CI Integration
 
@@ -151,10 +148,11 @@ For CI pipelines:
 
 ```yaml
 # Check snapshots are up to date
-- run: ./buck2 bxl //tools/bxl:snapshots.bxl:check_all
-
-# Or use specific tests
 - run: ./buck2 test //crates/rue:cli_tests
+- run: ./buck2 test //crates/rue-parser:test_parser_snapshots
+
+# Run all tests
+- run: ./buck2 test //crates/...
 ```
 
 Never run snapshot updates in CI - they should only be updated locally and committed.

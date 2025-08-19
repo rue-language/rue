@@ -4,11 +4,10 @@
 // The old AST-based code generation has been removed in favor of HIR-based compilation.
 
 // Internal modules
+pub mod assembler;
 pub mod backend;
-mod constants;
 pub mod linker;
 mod regalloc;
-pub mod runtime;
 mod util;
 mod x86_64_backend;
 
@@ -28,10 +27,13 @@ pub use regalloc::RegisterAllocator;
 pub use x86_64_backend::{LoweringError, X8664Codegen};
 
 // Re-export linker types
-pub use linker::{
-    LinkedResult, Linker, ObjectFile, RelocationEntry, RelocationKind, Symbol, SymbolKind,
-    SymbolTable,
-};
+pub use linker::{ObjectFile, RelocationEntry, RelocationKind, Symbol, SymbolKind, SymbolTable};
+
+// Re-export linker and assembler types
+pub use assembler::Assembler;
+pub use linker::archive::Archive;
+pub use linker::asm_object::{AsmObject, AsmObjectBuilder};
+pub use linker::{LinkedExecutable, Linker};
 
 // Internals are now private - removed since they're unused
 

@@ -1,7 +1,5 @@
-exit_code = 0
-stdout = """
-42
--100
-150
-"""
-stderr = ""
+exit_code = -1
+stdout = ""
+stderr = """
+compiler-builtins/compileFORCE] _start() entered
+[FORCE] _s"""

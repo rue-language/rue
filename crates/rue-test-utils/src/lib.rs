@@ -152,7 +152,10 @@ impl RueCompiler {
         let project_root = get_project_root();
 
         // Find the rue binary
-        let rue_binary = if let Ok(path) = std::env::var("RUE_BINARY") {
+        let rue_binary = if let Ok(path) = std::env::var("CARGO_BIN_EXE_rue") {
+            // Use the path from Buck2 test environment (points to wrapper script)
+            Utf8PathBuf::from(path)
+        } else if let Ok(path) = std::env::var("RUE_BINARY") {
             Utf8PathBuf::from(path)
         } else {
             // Try to build with Buck2
@@ -163,7 +166,7 @@ impl RueCompiler {
             };
 
             let output = Command::new(buck_cmd)
-                .args(["build", "--show-output", "//crates/rue:rue"])
+                .args(["build", "--show-output", "//tools/rue:rue"])
                 .output()
                 .ok();
 
@@ -172,7 +175,7 @@ impl RueCompiler {
                     let output_str = String::from_utf8_lossy(&output.stdout);
                     if let Some(path) = output_str
                         .lines()
-                        .find(|line| line.contains("//crates/rue:rue"))
+                        .find(|line| line.contains("//tools/rue:rue"))
                         .and_then(|line| line.split_whitespace().last())
                     {
                         return Ok(Self {
@@ -183,14 +186,14 @@ impl RueCompiler {
                 }
             }
 
-            // Last resort: search for rue binary in buck-out
+            // Last resort: search for rue wrapper script in buck-out
             // The hash in the path changes, so we need to search for it
             let buck_out = project_root.join("buck-out/v2/gen/root");
             if buck_out.exists() {
-                // Find any rue binary in the buck-out directory
+                // Find the wrapper script in the buck-out directory
                 for entry in std::fs::read_dir(&buck_out).ok().into_iter().flatten() {
                     if let Ok(entry) = entry {
-                        let rue_path = entry.path().join("crates/rue/__rue__/rue");
+                        let rue_path = entry.path().join("tools/rue/__rue__/rue_wrapper.sh");
                         if rue_path.exists() {
                             return Ok(Self {
                                 rue_binary: Utf8PathBuf::try_from(rue_path)?,
@@ -200,7 +203,9 @@ impl RueCompiler {
                     }
                 }
             }
-            panic!("Could not find rue binary. Please build with: ./buck2 build //crates/rue:rue");
+            panic!(
+                "Could not find rue wrapper script. Please build with: ./buck2 build //tools/rue:rue"
+            );
         };
 
         Ok(Self {

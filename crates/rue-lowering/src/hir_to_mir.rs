@@ -1037,15 +1037,32 @@ impl<'hir> HirToMirLowerer<'hir> {
                     _ => panic!("Literal instruction with non-literal data"),
                 };
 
+                debug!(target: "rue::hir_to_mir", "Lowering literal: value={}, ty={:?}", value, ty);
+
                 // Use the type information to create the correct constant type
                 let const_val = match ty {
-                    Some(RueType::I32) => MirConst::Int32(value as i32),
-                    Some(RueType::I64) => MirConst::Int64(value as i64),
-                    Some(RueType::Bool) => MirConst::Bool(value != 0),
-                    _ => MirConst::Int64(value as i64), // Default to i64
+                    Some(RueType::I32) => {
+                        debug!("Creating MirConst::Int32({})", value);
+                        MirConst::Int32(value as i32)
+                    }
+                    Some(RueType::I64) => {
+                        debug!("Creating MirConst::Int64({})", value);
+                        MirConst::Int64(value as i64)
+                    }
+                    Some(RueType::Bool) => {
+                        debug!("Creating MirConst::Bool({})", value != 0);
+                        MirConst::Bool(value != 0)
+                    }
+                    _ => {
+                        debug!("No type info, defaulting to MirConst::Int64({})", value);
+                        MirConst::Int64(value as i64) // Default to i64
+                    }
                 };
 
+                debug!(target: "rue::hir_to_mir", "Created MirConst: {:?}", const_val);
+
                 let temp = self.emit_const(const_val, span);
+                debug!(target: "rue::hir_to_mir", "Emitted const to temp: {:?}", temp);
                 Some(temp)
             }
 
