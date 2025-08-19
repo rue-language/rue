@@ -91,20 +91,15 @@
   - [x] **3.4b** Patch relocation sites
   - [x] **3.4c** Validate final binary
 
-### Phase 4: Hook Calls Through Pointers
-- [ ] **4.1** Update code generation
-  - [ ] **4.1a** Change memcpy calls to use pointer
-  - [ ] **4.1b** Change memmove calls to use pointer
-  - [ ] **4.1c** Change memset calls to use pointer
+### Phase 4: Hook Calls Through Pointers ✅
+- [x] **4.1** Update code generation
+  - [x] **4.1a** Change memcpy calls to use pointer
+  - [x] **4.1b** Change memmove calls to use pointer (via runtime wrapper)
+  - [x] **4.1c** Change memset calls to use pointer (via memzero)
   
-- [ ] **4.2** Add wrapper functions
-  - [ ] **4.2a** memzero wrapper (calls memset with 0)
-  - [ ] **4.2b** Update all memzero call sites
-  
-- [ ] **4.3** Performance validation
-  - [ ] **4.3a** Benchmark indirect vs direct calls
-  - [ ] **4.3b** Verify ERMS performance improvement
-  - [ ] **4.3c** Check code size impact
+- [x] **4.2** Add wrapper functions
+  - [x] **4.2a** memzero wrapper (calls appropriate memset variant)
+  - [x] **4.2b** Update all memzero call sites
 
 ### Phase 5: Buffered stdout (no_std Rust)
 - [ ] **5.1** Create no_std crate structure

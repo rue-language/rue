@@ -270,6 +270,9 @@ pub fn format_instructions_as_assembly(
             X8664Instr::Call { target } => {
                 output.push_str(&format!("    call {target}\n"));
             }
+            X8664Instr::CallIndirect { reg } => {
+                output.push_str(&format!("    call *%{}\n", reg_name(reg)));
+            }
             X8664Instr::Ret => {
                 output.push_str("    ret\n");
             }

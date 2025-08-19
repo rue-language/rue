@@ -7,6 +7,10 @@
 use crate::runtime::context::RuntimeContext;
 use rue_target::{ConditionCode, LabelRef, X86Register, X8664Instr};
 
+// These enhanced ERMS implementations are preserved for future use when
+// we link external assembly files through the object file linker (Phase 3).
+// Currently, the runtime uses function pointer dispatch (Phase 4) to select
+// between baseline and ERMS versions at runtime.
 #[expect(
     dead_code,
     reason = "Reserved for future use when linking external assembly files"

@@ -210,6 +210,9 @@ pub enum X8664Instr {
     /// call label
     Call { target: String },
 
+    /// call [reg] (indirect call through register)
+    CallIndirect { reg: X86Register },
+
     /// ret
     Ret,
 
