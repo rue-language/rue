@@ -6,6 +6,7 @@
 // Internal modules
 pub mod backend;
 mod constants;
+pub mod linker;
 mod regalloc;
 mod runtime;
 mod util;
@@ -25,6 +26,12 @@ pub use regalloc::RegisterAllocator;
 
 // Re-export x86-64 backend types
 pub use x86_64_backend::{LoweringError, X8664Codegen};
+
+// Re-export linker types
+pub use linker::{
+    LinkedResult, Linker, ObjectFile, RelocationEntry, RelocationKind, Symbol, SymbolKind,
+    SymbolTable,
+};
 
 // Internals are now private - removed since they're unused
 

@@ -14,6 +14,7 @@ cargo.rust_library(
         "//crates/rue-semantic:rue-semantic",
         "//crates/rue-ir:rue-ir",
         "//crates/rue-target:rue-target",
+        "//third-party/rust:object",
         "//third-party/rust:indexmap",
         "//third-party/rust:thiserror",
         "//third-party/rust:tracing",
@@ -40,6 +41,7 @@ rust_test(
         "//third-party/rust:thiserror",
         "//third-party/rust:tracing",
         "//third-party/rust:thiserror",
+        "//third-party/rust:object",
     ],
 )
 
