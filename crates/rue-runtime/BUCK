@@ -1,0 +1,11 @@
+load("@prelude//rust:cargo_package.bzl", "cargo")
+
+# Rust library for runtime functions
+cargo.rust_library(
+    name = "rue-runtime",
+    srcs = glob(["src/**/*.rs"]),
+    edition = "2024",
+    crate_root = "src/lib.rs",
+    preferred_linkage = "static",
+    visibility = ["PUBLIC"],
+)

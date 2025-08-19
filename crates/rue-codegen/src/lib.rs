@@ -8,7 +8,7 @@ pub mod backend;
 mod constants;
 pub mod linker;
 mod regalloc;
-mod runtime;
+pub mod runtime;
 mod util;
 mod x86_64_backend;
 

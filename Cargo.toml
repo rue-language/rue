@@ -17,11 +17,28 @@ members = [
     "crates/rue-runner",
     "crates/rue-snapshot",
     "crates/rue-test-utils",
+    "crates/rue-runtime",
 ]
 
 [workspace.package]
 edition = "2024"
 version = "0.1.0"
+
+# Set panic=abort for all profiles to support no_std runtime crate
+# This is appropriate for a systems-level compiler project
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+panic = "abort"
+
+# Optimized profile for runtime builds
+[profile.runtime]
+inherits = "release"
+panic = "abort"
+opt-level = 3
+lto = true
+codegen-units = 1
 
 [workspace.dependencies]
 rue-ast = { path = "crates/rue-ast" }
