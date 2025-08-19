@@ -331,6 +331,74 @@ pub fn format_instructions_as_assembly(
             X8664Instr::BtRI { reg, bit } => {
                 output.push_str(&format!("    btq ${}, %{}\n", bit, reg_name(reg)));
             }
+            X8664Instr::TestRR { left, right } => {
+                output.push_str(&format!(
+                    "    testq %{}, %{}\n",
+                    reg_name(right),
+                    reg_name(left)
+                ));
+            }
+            X8664Instr::Loop { target } => match target {
+                LabelRef::Local(id) => output.push_str(&format!("    loop .L{}\n", id)),
+                LabelRef::Global(name) => output.push_str(&format!("    loop {}\n", name)),
+            },
+            X8664Instr::IncR { reg } => {
+                output.push_str(&format!("    incq %{}\n", reg_name(reg)));
+            }
+            X8664Instr::DecR { reg } => {
+                output.push_str(&format!("    decq %{}\n", reg_name(reg)));
+            }
+            X8664Instr::ShrRI { dest, imm } => {
+                output.push_str(&format!("    shrq ${}, %{}\n", imm, reg_name(dest)));
+            }
+            X8664Instr::RepMovsq => {
+                output.push_str("    rep movsq\n");
+            }
+            X8664Instr::RepStosq => {
+                output.push_str("    rep stosq\n");
+            }
+            X8664Instr::Movzx8to32 { dest, src } => {
+                output.push_str(&format!(
+                    "    movzbl %{}, %{}\n",
+                    reg_name_8(src),
+                    reg_name_32(dest)
+                ));
+            }
+            X8664Instr::ImulRI64 { dest, imm64 } => {
+                output.push_str(&format!("    imulq ${}, %{}\n", imm64, reg_name(dest)));
+            }
+            X8664Instr::MovMR16 { base, offset, src } => {
+                if *offset == 0 {
+                    output.push_str(&format!(
+                        "    movw %{}, (%{})\n",
+                        reg_name_16(src),
+                        reg_name(base)
+                    ));
+                } else {
+                    output.push_str(&format!(
+                        "    movw %{}, {}(%{})\n",
+                        reg_name_16(src),
+                        offset,
+                        reg_name(base)
+                    ));
+                }
+            }
+            X8664Instr::MovRM16 { dest, base, offset } => {
+                if *offset == 0 {
+                    output.push_str(&format!(
+                        "    movw (%{}), %{}\n",
+                        reg_name(base),
+                        reg_name_16(dest)
+                    ));
+                } else {
+                    output.push_str(&format!(
+                        "    movw {}(%{}), %{}\n",
+                        offset,
+                        reg_name(base),
+                        reg_name_16(dest)
+                    ));
+                }
+            }
             X8664Instr::RepStosb => {
                 output.push_str("    rep stosb\n");
             }
@@ -381,7 +449,7 @@ pub fn format_instructions_as_assembly(
 macro_rules! register_names {
     (
         $(
-            $reg:ident => { r64: $r64:literal, r32: $r32:literal, r8: $r8:literal }
+            $reg:ident => { r64: $r64:literal, r32: $r32:literal, r16: $r16:literal, r8: $r8:literal }
         ),+ $(,)?
     ) => {
         fn reg_name(reg: &X86Register) -> &'static str {
@@ -396,6 +464,12 @@ macro_rules! register_names {
             }
         }
 
+        fn reg_name_16(reg: &X86Register) -> &'static str {
+            match reg {
+                $(X86Register::$reg => $r16,)+
+            }
+        }
+
         fn reg_name_32(reg: &X86Register) -> &'static str {
             match reg {
                 $(X86Register::$reg => $r32,)+
@@ -406,20 +480,20 @@ macro_rules! register_names {
 
 // Define all register names in one place
 register_names! {
-    Rax => { r64: "rax", r32: "eax", r8: "al" },
-    Rbx => { r64: "rbx", r32: "ebx", r8: "bl" },
-    Rcx => { r64: "rcx", r32: "ecx", r8: "cl" },
-    Rdx => { r64: "rdx", r32: "edx", r8: "dl" },
-    Rsi => { r64: "rsi", r32: "esi", r8: "sil" },
-    Rdi => { r64: "rdi", r32: "edi", r8: "dil" },
-    Rbp => { r64: "rbp", r32: "ebp", r8: "bpl" },
-    Rsp => { r64: "rsp", r32: "esp", r8: "spl" },
-    R8  => { r64: "r8",  r32: "r8d", r8: "r8b" },
-    R9  => { r64: "r9",  r32: "r9d", r8: "r9b" },
-    R10 => { r64: "r10", r32: "r10d", r8: "r10b" },
-    R11 => { r64: "r11", r32: "r11d", r8: "r11b" },
-    R12 => { r64: "r12", r32: "r12d", r8: "r12b" },
-    R13 => { r64: "r13", r32: "r13d", r8: "r13b" },
-    R14 => { r64: "r14", r32: "r14d", r8: "r14b" },
-    R15 => { r64: "r15", r32: "r15d", r8: "r15b" },
+    Rax => { r64: "rax", r32: "eax", r16: "ax", r8: "al" },
+    Rbx => { r64: "rbx", r32: "ebx", r16: "bx", r8: "bl" },
+    Rcx => { r64: "rcx", r32: "ecx", r16: "cx", r8: "cl" },
+    Rdx => { r64: "rdx", r32: "edx", r16: "dx", r8: "dl" },
+    Rsi => { r64: "rsi", r32: "esi", r16: "si", r8: "sil" },
+    Rdi => { r64: "rdi", r32: "edi", r16: "di", r8: "dil" },
+    Rbp => { r64: "rbp", r32: "ebp", r16: "bp", r8: "bpl" },
+    Rsp => { r64: "rsp", r32: "esp", r16: "sp", r8: "spl" },
+    R8  => { r64: "r8",  r32: "r8d", r16: "r8w", r8: "r8b" },
+    R9  => { r64: "r9",  r32: "r9d", r16: "r9w", r8: "r9b" },
+    R10 => { r64: "r10", r32: "r10d", r16: "r10w", r8: "r10b" },
+    R11 => { r64: "r11", r32: "r11d", r16: "r11w", r8: "r11b" },
+    R12 => { r64: "r12", r32: "r12d", r16: "r12w", r8: "r12b" },
+    R13 => { r64: "r13", r32: "r13d", r16: "r13w", r8: "r13b" },
+    R14 => { r64: "r14", r32: "r14d", r16: "r14w", r8: "r14b" },
+    R15 => { r64: "r15", r32: "r15d", r16: "r15w", r8: "r15b" },
 }

@@ -570,6 +570,156 @@ impl X86Emitter {
                 self.current_section_data().push(*bit);
             }
 
+            X8664Instr::TestRR { left, right } => {
+                // test reg, reg
+                self.emit_rex_if_needed(true, Some(right), Some(left));
+                self.current_section_data().push(0x85);
+                let modrm = 0xc0 | (self.register_code(right) << 3) | self.register_code(left);
+                self.current_section_data().push(modrm);
+            }
+
+            X8664Instr::Loop { target: _ } => {
+                // loop rel8 - simplified for now, just emit placeholder
+                self.current_section_data().push(0xe2);
+                // TODO: Proper relocation support for loop
+                self.current_section_data().push(0xfe); // -2 (loop back 2 bytes as placeholder)
+            }
+
+            X8664Instr::IncR { reg } => {
+                // inc reg - REX.W + FF /0
+                self.emit_rex_if_needed(true, None, Some(reg));
+                self.current_section_data().push(0xff);
+                let modrm = 0xc0 | self.register_code(reg);
+                self.current_section_data().push(modrm);
+            }
+
+            X8664Instr::DecR { reg } => {
+                // dec reg - REX.W + FF /1
+                self.emit_rex_if_needed(true, None, Some(reg));
+                self.current_section_data().push(0xff);
+                let modrm = 0xc8 | self.register_code(reg);
+                self.current_section_data().push(modrm);
+            }
+
+            X8664Instr::ShrRI { dest, imm } => {
+                // shr reg, imm8 - REX.W + C1 /5 ib
+                self.emit_rex_if_needed(true, None, Some(dest));
+                self.current_section_data().push(0xc1);
+                let modrm = 0xe8 | self.register_code(dest);
+                self.current_section_data().push(modrm);
+                self.current_section_data().push(*imm);
+            }
+
+            X8664Instr::RepMovsq => {
+                // rep movsq
+                self.current_section_data().push(0xf3); // REP prefix
+                self.emit_rex_if_needed(true, None, None);
+                self.current_section_data().push(0xa5); // MOVSQ
+            }
+
+            X8664Instr::RepStosq => {
+                // rep stosq
+                self.current_section_data().push(0xf3); // REP prefix
+                self.emit_rex_if_needed(true, None, None);
+                self.current_section_data().push(0xab); // STOSQ
+            }
+
+            X8664Instr::Movzx8to32 { dest, src } => {
+                // movzx eax, bl - 0F B6 /r
+                // No REX needed for 32-bit operation
+                self.current_section_data().extend_from_slice(&[0x0f, 0xb6]);
+                let modrm = 0xc0 | (self.register_code(dest) << 3) | self.register_code(src);
+                self.current_section_data().push(modrm);
+            }
+
+            X8664Instr::ImulRI64 { dest, imm64 } => {
+                // imul reg, reg, imm32 (sign-extended to 64)
+                // For now, truncate to 32-bit
+                self.emit_rex_if_needed(true, Some(dest), Some(dest));
+                self.current_section_data().push(0x69);
+                let modrm = 0xc0 | (self.register_code(dest) << 3) | self.register_code(dest);
+                self.current_section_data().push(modrm);
+                let imm32 = *imm64 as i32;
+                self.current_section_data()
+                    .extend_from_slice(&imm32.to_le_bytes());
+            }
+
+            X8664Instr::MovMR16 { base, offset, src } => {
+                // mov word ptr [base + offset], src
+                // 66 REX 89 /r
+                self.current_section_data().push(0x66); // Operand size prefix
+                self.emit_rex_if_needed(false, Some(src), Some(base));
+                self.current_section_data().push(0x89);
+
+                let base_code = self.register_code(base);
+                let src_code = self.register_code(src);
+
+                if *offset == 0 {
+                    // ModRM: mod=00, reg=src, r/m=base
+                    let modrm = (src_code << 3) | base_code;
+                    self.current_section_data().push(modrm);
+                    // Handle RSP/R12 which require SIB byte
+                    if base_code == 4 {
+                        self.current_section_data().push(0x24);
+                    }
+                } else if (-128..=127).contains(offset) {
+                    // ModRM: mod=01 (disp8), reg=src, r/m=base
+                    let modrm = 0x40 | (src_code << 3) | base_code;
+                    self.current_section_data().push(modrm);
+                    if base_code == 4 {
+                        self.current_section_data().push(0x24);
+                    }
+                    self.current_section_data().push(*offset as u8);
+                } else {
+                    // ModRM: mod=10 (disp32), reg=src, r/m=base
+                    let modrm = 0x80 | (src_code << 3) | base_code;
+                    self.current_section_data().push(modrm);
+                    if base_code == 4 {
+                        self.current_section_data().push(0x24);
+                    }
+                    self.current_section_data()
+                        .extend_from_slice(&offset.to_le_bytes());
+                }
+            }
+
+            X8664Instr::MovRM16 { dest, base, offset } => {
+                // mov dest, word ptr [base + offset]
+                // 66 REX 8B /r
+                self.current_section_data().push(0x66); // Operand size prefix
+                self.emit_rex_if_needed(false, Some(dest), Some(base));
+                self.current_section_data().push(0x8b);
+
+                let base_code = self.register_code(base);
+                let dest_code = self.register_code(dest);
+
+                if *offset == 0 {
+                    // ModRM: mod=00, reg=dest, r/m=base
+                    let modrm = (dest_code << 3) | base_code;
+                    self.current_section_data().push(modrm);
+                    // Handle RSP/R12 which require SIB byte
+                    if base_code == 4 {
+                        self.current_section_data().push(0x24);
+                    }
+                } else if (-128..=127).contains(offset) {
+                    // ModRM: mod=01 (disp8), reg=dest, r/m=base
+                    let modrm = 0x40 | (dest_code << 3) | base_code;
+                    self.current_section_data().push(modrm);
+                    if base_code == 4 {
+                        self.current_section_data().push(0x24);
+                    }
+                    self.current_section_data().push(*offset as u8);
+                } else {
+                    // ModRM: mod=10 (disp32), reg=dest, r/m=base
+                    let modrm = 0x80 | (dest_code << 3) | base_code;
+                    self.current_section_data().push(modrm);
+                    if base_code == 4 {
+                        self.current_section_data().push(0x24);
+                    }
+                    self.current_section_data()
+                        .extend_from_slice(&offset.to_le_bytes());
+                }
+            }
+
             X8664Instr::RepStosb => {
                 // rep stosb - Repeat store byte
                 self.current_section_data().push(0xf3); // REP prefix
