@@ -175,10 +175,10 @@ impl RuntimeContext {
             src: X86Register::Rax,
         });
 
-        // Set memzero_ptr to ERMS version (same as memset_erms for now)
+        // Set memzero_ptr to ERMS version
         self.instructions.push(X8664Instr::LeaLabel {
             dest: X86Register::Rax,
-            label: "__rue_memset_erms".to_string(),
+            label: "__rue_memzero_erms".to_string(),
         });
         self.instructions.push(X8664Instr::LeaLabel {
             dest: X86Register::Rdx,
@@ -289,5 +289,32 @@ impl RuntimeContext {
 
         self.instructions.push(X8664Instr::Label { id: done2 });
         self.instructions.push(X8664Instr::Ret);
+
+        // Generate memzero_erms stub - wrapper around memset_erms with value=0
+        // This matches the calling convention of __rue_memzero: (dest, size) in RDI, RSI
+        let memzero_erms_label = self.define_label("__rue_memzero_erms");
+        self.instructions.push(X8664Instr::Label {
+            id: memzero_erms_label,
+        });
+
+        // Parameters: RDI = dest, RSI = size
+        // Need to set up for memset_erms: RDI = dest, RSI = 0, RDX = size
+
+        // Move size from RSI to RDX
+        self.instructions.push(X8664Instr::MovRR {
+            dest: X86Register::Rdx,
+            src: X86Register::Rsi,
+        });
+
+        // Set RSI to 0 (the byte value to set)
+        self.instructions.push(X8664Instr::XorRR {
+            dest: X86Register::Rsi,
+            src: X86Register::Rsi,
+        });
+
+        // Jump to memset_erms (tail call)
+        self.instructions.push(X8664Instr::Jmp {
+            target: LabelRef::Global("__rue_memset_erms".to_string()),
+        });
     }
 }

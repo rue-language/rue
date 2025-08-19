@@ -233,11 +233,24 @@ impl RuntimeContext {
             target: LabelRef::Local(backward_copy),
         });
 
-        // Forward copy - same as memcpy
+        // Forward copy - use memcpy function pointer
         self.instructions
             .push(X8664Instr::Label { id: forward_copy });
-        self.instructions.push(X8664Instr::Call {
-            target: "__rue_memcpy".to_string(),
+
+        // Load the memcpy function pointer from __rue_memcpy_ptr into R11
+        self.instructions.push(X8664Instr::LeaLabel {
+            dest: X86Register::R11,
+            label: "__rue_memcpy_ptr".to_string(),
+        });
+        self.instructions.push(X8664Instr::MovRM {
+            dest: X86Register::R11,
+            base: X86Register::R11,
+            offset: 0,
+        });
+
+        // Call through the function pointer
+        self.instructions.push(X8664Instr::CallIndirect {
+            reg: X86Register::R11,
         });
         self.instructions.push(X8664Instr::Jmp {
             target: LabelRef::Local(done),

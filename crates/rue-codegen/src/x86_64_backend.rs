@@ -120,6 +120,9 @@ pub trait RegisterAllocator {
     /// Mark a VReg as initialized
     fn mark_vreg_initialized(&mut self, vreg: VReg);
 
+    /// Handle clobbered registers by spilling any dirty values
+    fn handle_clobbers(&mut self, clobbered_regs: &[X86Register]);
+
     /// Get the total stack size needed
     fn get_stack_size(&self) -> u64;
 }
@@ -2749,6 +2752,25 @@ impl<'a> X8664Codegen<'a> {
         src: VReg,
         size: i64,
     ) -> Result<(), LoweringError> {
+        // Define caller-saved registers that will be clobbered by the call
+        let caller_saved_regs = [
+            X86Register::Rax,
+            X86Register::Rcx,
+            X86Register::Rdx,
+            X86Register::Rsi,
+            X86Register::Rdi,
+            X86Register::R8,
+            X86Register::R9,
+            X86Register::R10,
+            X86Register::R11,
+        ];
+
+        // CRITICAL: Force spill any dirty values in caller-saved registers BEFORE we load arguments
+        // This prevents the indirect call from clobbering live values
+        self.allocator.handle_clobbers(&caller_saved_regs);
+        self.emit_spill_reload_ops();
+
+        // Now safe to load our arguments - they won't conflict with any live values
         let dest_reg = self.allocator.ensure_reg(dest, &[])?;
         let src_reg = self.allocator.ensure_reg(src, &[dest_reg])?;
         self.emit_spill_reload_ops();
@@ -2772,16 +2794,53 @@ impl<'a> X8664Codegen<'a> {
             imm: size,
         });
 
-        // Call memory copy function
-        self.emit(X8664Instr::Call {
-            target: "__rue_memcpy".to_string(),
+        // Load function pointer and call indirectly
+        // Load the memcpy function pointer from __rue_memcpy_ptr into R11
+        self.emit(X8664Instr::LeaLabel {
+            dest: X86Register::R11,
+            label: "__rue_memcpy_ptr".to_string(),
         });
+        self.emit(X8664Instr::MovRM {
+            dest: X86Register::R11,
+            base: X86Register::R11,
+            offset: 0,
+        });
+
+        // Call through the function pointer
+        self.emit(X8664Instr::CallIndirect {
+            reg: X86Register::R11,
+        });
+
+        // Mark caller-saved registers as clobbered after the call
+        // This tells the allocator these registers no longer contain valid values
+        for &reg in &caller_saved_regs {
+            self.allocator.invalidate_register(reg);
+        }
 
         Ok(())
     }
 
     /// Lower ZeroAggregate to x86-64 instructions using runtime helper
     fn lower_zero_aggregate(&mut self, dest: VReg, size: i64) -> Result<(), LoweringError> {
+        // Define caller-saved registers that will be clobbered by the call
+        let caller_saved_regs = [
+            X86Register::Rax,
+            X86Register::Rcx,
+            X86Register::Rdx,
+            X86Register::Rsi,
+            X86Register::Rdi,
+            X86Register::R8,
+            X86Register::R9,
+            X86Register::R10,
+            X86Register::R11,
+        ];
+
+        // CRITICAL: Force spill any dirty values in caller-saved registers BEFORE we load arguments
+        // This prevents the indirect call from clobbering live values
+        self.allocator.handle_clobbers(&caller_saved_regs);
+        self.emit_spill_reload_ops();
+
+        // Now safe to load our argument
         let dest_reg = self.allocator.ensure_reg(dest, &[])?;
         self.emit_spill_reload_ops();
 
@@ -2798,10 +2857,28 @@ impl<'a> X8664Codegen<'a> {
             imm: size,
         });
 
-        // Call memory zero function
-        self.emit(X8664Instr::Call {
-            target: "__rue_memzero".to_string(),
+        // Load function pointer and call indirectly
+        // Load the memzero function pointer from __rue_memzero_ptr into R11
+        self.emit(X8664Instr::LeaLabel {
+            dest: X86Register::R11,
+            label: "__rue_memzero_ptr".to_string(),
         });
+        self.emit(X8664Instr::MovRM {
+            dest: X86Register::R11,
+            base: X86Register::R11,
+            offset: 0,
+        });
+
+        // Call through the function pointer
+        self.emit(X8664Instr::CallIndirect {
+            reg: X86Register::R11,
+        });
+
+        // Mark caller-saved registers as clobbered after the call
+        // This tells the allocator these registers no longer contain valid values
+        for &reg in &caller_saved_regs {
+            self.allocator.invalidate_register(reg);
+        }
 
         Ok(())
     }

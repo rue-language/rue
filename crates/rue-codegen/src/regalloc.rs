@@ -781,6 +781,10 @@ impl crate::x86_64_backend::RegisterAllocator for RegisterAllocator {
         self.mark_vreg_initialized(vreg)
     }
 
+    fn handle_clobbers(&mut self, clobbered_regs: &[X86Register]) {
+        self.handle_clobbers(clobbered_regs)
+    }
+
     fn get_stack_size(&self) -> u64 {
         self.get_stack_usage() as u64
     }

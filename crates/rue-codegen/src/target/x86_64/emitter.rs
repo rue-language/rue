@@ -442,6 +442,15 @@ impl X86Emitter {
                 ));
             }
 
+            X8664Instr::CallIndirect { reg } => {
+                // call *reg - Indirect call through register
+                // FF /2 - CALL r/m64
+                self.emit_rex_if_needed(true, None, Some(reg));
+                self.current_section_data().push(0xff);
+                let modrm = 0xd0 | self.register_code(reg); // ModRM: 11 010 reg
+                self.current_section_data().push(modrm);
+            }
+
             X8664Instr::Ret => {
                 self.current_section_data().push(0xc3); // RET
             }
