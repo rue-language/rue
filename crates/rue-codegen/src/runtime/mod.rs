@@ -7,6 +7,7 @@
 pub mod alloc;
 pub mod context;
 pub mod conversion;
+pub mod cpuid;
 pub mod data;
 pub mod io;
 pub mod memory;

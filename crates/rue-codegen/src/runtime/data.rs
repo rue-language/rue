@@ -89,6 +89,49 @@ impl RuntimeContext {
         self.instructions
             .push(X8664Instr::ReserveBytes { count: 8 });
 
+        // Memory operation function pointers for CPU dispatch (in .bss)
+        // These will be initialized at runtime based on CPU features
+
+        // __rue_memcpy_ptr - pointer to memcpy implementation
+        let memcpy_ptr_label = self.define_label("__rue_memcpy_ptr");
+        self.instructions.push(X8664Instr::Label {
+            id: memcpy_ptr_label,
+        });
+        self.instructions
+            .push(X8664Instr::ReserveBytes { count: 8 });
+
+        // __rue_memmove_ptr - pointer to memmove implementation
+        let memmove_ptr_label = self.define_label("__rue_memmove_ptr");
+        self.instructions.push(X8664Instr::Label {
+            id: memmove_ptr_label,
+        });
+        self.instructions
+            .push(X8664Instr::ReserveBytes { count: 8 });
+
+        // __rue_memset_ptr - pointer to memset implementation
+        let memset_ptr_label = self.define_label("__rue_memset_ptr");
+        self.instructions.push(X8664Instr::Label {
+            id: memset_ptr_label,
+        });
+        self.instructions
+            .push(X8664Instr::ReserveBytes { count: 8 });
+
+        // __rue_memzero_ptr - pointer to memzero implementation
+        let memzero_ptr_label = self.define_label("__rue_memzero_ptr");
+        self.instructions.push(X8664Instr::Label {
+            id: memzero_ptr_label,
+        });
+        self.instructions
+            .push(X8664Instr::ReserveBytes { count: 8 });
+
+        // CPU feature flags storage (for debugging/future use)
+        let cpu_features_label = self.define_label("__rue_cpu_features");
+        self.instructions.push(X8664Instr::Label {
+            id: cpu_features_label,
+        });
+        self.instructions
+            .push(X8664Instr::ReserveBytes { count: 8 });
+
         // Switch back to .text section
         self.instructions.push(X8664Instr::Section {
             name: ".text".to_string(),

@@ -555,6 +555,21 @@ impl X86Emitter {
                 self.current_section_data().push(0xfc);
             }
 
+            X8664Instr::Cpuid => {
+                // cpuid - CPU identification
+                self.current_section_data().extend_from_slice(&[0x0f, 0xa2]);
+            }
+
+            X8664Instr::BtRI { reg, bit } => {
+                // bt reg, imm8 - Bit test
+                // REX.W + 0F BA /4 ib
+                self.emit_rex_if_needed(true, None, Some(reg));
+                self.current_section_data().extend_from_slice(&[0x0f, 0xba]);
+                let modrm = 0xe0 | self.register_code(reg); // ModRM: 11 100 reg
+                self.current_section_data().push(modrm);
+                self.current_section_data().push(*bit);
+            }
+
             X8664Instr::RepStosb => {
                 // rep stosb - Repeat store byte
                 self.current_section_data().push(0xf3); // REP prefix

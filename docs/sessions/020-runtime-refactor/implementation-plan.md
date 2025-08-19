@@ -20,26 +20,26 @@
   
 - [x] **0.4** Run tests to verify no regressions
 
-### Phase 1: CPU Feature Detection & Vtable
-- [ ] **1.1** Add vtable data structures
-  - [ ] **1.1a** Define function pointer slots in data section
-  - [ ] **1.1b** Add labels for each pointer
-  - [ ] **1.1c** Initialize with baseline function addresses
+### Phase 1: CPU Feature Detection & Vtable ✅
+- [x] **1.1** Add vtable data structures
+  - [x] **1.1a** Define function pointer slots in data section
+  - [x] **1.1b** Add labels for each pointer
+  - [x] **1.1c** Initialize with baseline function addresses
   
-- [ ] **1.2** Implement CPUID detection
-  - [ ] **1.2a** Add CPUID instruction wrapper
-  - [ ] **1.2b** Check for ERMS support (CPUID.7:EBX[9])
-  - [ ] **1.2c** Store CPU features in runtime context
+- [x] **1.2** Implement CPUID detection
+  - [x] **1.2a** Add CPUID instruction wrapper
+  - [x] **1.2b** Check for ERMS support (CPUID.7:EBX[9])
+  - [x] **1.2c** Store CPU features in runtime context
   
-- [ ] **1.3** Wire up dynamic dispatch
-  - [ ] **1.3a** Set function pointers based on CPU features
-  - [ ] **1.3b** Update __rue_main to call CPU detection
-  - [ ] **1.3c** Test dispatch works correctly
+- [x] **1.3** Wire up dynamic dispatch
+  - [x] **1.3a** Set function pointers based on CPU features
+  - [x] **1.3b** Update __rue_main to call CPU detection
+  - [x] **1.3c** Test dispatch works correctly
   
-- [ ] **1.4** Create stub ERMS functions (temporary)
-  - [ ] **1.4a** __rue_memcpy_erms stub
-  - [ ] **1.4b** __rue_memmove_erms stub
-  - [ ] **1.4c** __rue_memset_erms stub
+- [x] **1.4** Create stub ERMS functions (temporary)
+  - [x] **1.4a** __rue_memcpy_erms stub
+  - [x] **1.4b** __rue_memmove_erms stub
+  - [x] **1.4c** __rue_memset_erms stub
 
 ### Phase 2: Assembly Blobs
 - [ ] **2.1** Set up assembly infrastructure

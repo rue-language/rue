@@ -325,6 +325,12 @@ pub fn format_instructions_as_assembly(
             X8664Instr::Cld => {
                 output.push_str("    cld\n");
             }
+            X8664Instr::Cpuid => {
+                output.push_str("    cpuid\n");
+            }
+            X8664Instr::BtRI { reg, bit } => {
+                output.push_str(&format!("    btq ${}, %{}\n", bit, reg_name(reg)));
+            }
             X8664Instr::RepStosb => {
                 output.push_str("    rep stosb\n");
             }
