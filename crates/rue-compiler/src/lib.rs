@@ -7,6 +7,9 @@ pub mod error;
 pub mod logging;
 pub mod pipeline;
 
+#[cfg(test)]
+mod runtime_tests;
+
 // Re-export the error type for convenience
 pub use error::RueError;
 

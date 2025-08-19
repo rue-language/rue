@@ -49,6 +49,7 @@ rust_test(
         "//third-party/rust:atty",
         "//third-party/rust:tracing-tree",
         "//third-party/rust:thiserror",
+        "//third-party/rust:proptest",
     ],
 )
 
