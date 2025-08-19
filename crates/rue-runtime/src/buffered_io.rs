@@ -4,6 +4,7 @@
 //! from assembly code. It uses direct Linux syscalls for maximum performance and
 //! minimal dependencies.
 
+use core::cell::UnsafeCell;
 use core::sync::atomic::{AtomicUsize, Ordering};
 
 /// Buffer size for stdout buffering (4KB)
@@ -19,106 +20,138 @@ const STDOUT_FD: i32 = 1;
 /// Exit codes
 const EXIT_CODE_SYSCALL_FAILED: i32 = 253;
 
-/// Global buffered stdout instance
-static mut STDOUT_BUFFER: [u8; STDOUT_BUFFER_SIZE] = [0; STDOUT_BUFFER_SIZE];
-static STDOUT_POS: AtomicUsize = AtomicUsize::new(0);
+/// A wrapper that provides interior mutability for the buffer
+struct BufferWrapper {
+    buffer: UnsafeCell<[u8; STDOUT_BUFFER_SIZE]>,
+    position: AtomicUsize,
+}
+
+// Safety: We ensure single-threaded access in Rue runtime
+unsafe impl Sync for BufferWrapper {}
+
+/// Global buffered stdout state
+///
+/// We use an UnsafeCell wrapper to provide interior mutability while avoiding
+/// direct static mut access. The atomic position ensures we can track the buffer
+/// position safely.
+static STDOUT_STATE: BufferWrapper = BufferWrapper {
+    buffer: UnsafeCell::new([0; STDOUT_BUFFER_SIZE]),
+    position: AtomicUsize::new(0),
+};
 
 /// Buffered stdout implementation
 ///
-/// Uses raw pointers to avoid issues with multiple mutable borrows
-/// and to comply with Clippy's recommendations for accessing static mutable data.
-pub struct BufferedStdout {
-    buffer: *mut [u8; STDOUT_BUFFER_SIZE],
-    position: &'static AtomicUsize,
-}
+/// This design uses UnsafeCell to centralize all unsafe access in one place,
+/// providing better safety guarantees and easier auditing of unsafe code.
+///
+/// # Design Rationale
+///
+/// We use UnsafeCell here for several reasons:
+/// 1. **Safety Centralization**: All unsafe buffer access happens through a single
+///    controlled access point
+/// 2. **Clippy Compliance**: Avoids direct static mut access which Clippy warns about
+/// 3. **Interior Mutability**: Allows mutation through shared references, which is
+///    needed for the C ABI functions
+/// 4. **Clear Safety Boundaries**: Makes it explicit where unsafe operations occur
+///
+/// # Safety Invariants
+///
+/// - The buffer is only accessed through the with_buffer method
+/// - Access is synchronized through the atomic position counter
+/// - The implementation assumes single-threaded execution (as per Rue's design)
+/// - Buffer bounds are always checked before access
+pub struct BufferedStdout;
 
 impl BufferedStdout {
-    /// Get a reference to the global buffered stdout instance
+    /// Perform an operation with the global buffer
     ///
-    /// # Safety
-    /// This function is unsafe because it provides mutable access to global state.
-    /// The caller must ensure this is only called from a single thread or properly
-    /// synchronized.
-    unsafe fn get_instance() -> Self {
-        Self {
-            buffer: &raw mut STDOUT_BUFFER,
-            position: &STDOUT_POS,
+    /// This approach encapsulates all unsafe access in one place
+    #[inline]
+    fn with_buffer<F, R>(f: F) -> R
+    where
+        F: FnOnce(&mut [u8], &AtomicUsize) -> R,
+    {
+        unsafe {
+            let buffer = &mut *STDOUT_STATE.buffer.get();
+            f(buffer, &STDOUT_STATE.position)
         }
     }
 
     /// Write a single byte to the buffer
     ///
     /// Auto-flushes if the buffer becomes full or if a newline is written.
-    fn write_byte(&mut self, byte: u8) -> Result<(), i32> {
-        let pos = self.position.load(Ordering::Relaxed);
+    pub fn write_byte(byte: u8) -> Result<(), i32> {
+        Self::with_buffer(|buffer, position| {
+            let pos = position.load(Ordering::Relaxed);
 
-        // Check if buffer is full
-        if pos >= STDOUT_BUFFER_SIZE {
-            self.flush()?;
-        }
+            if pos >= STDOUT_BUFFER_SIZE {
+                Self::flush_internal(buffer, position)?;
+            }
 
-        // Write the byte
-        let current_pos = self.position.load(Ordering::Relaxed);
-        unsafe {
-            (*self.buffer)[current_pos] = byte;
-        }
-        self.position.store(current_pos + 1, Ordering::Relaxed);
+            let current_pos = position.load(Ordering::Relaxed);
+            buffer[current_pos] = byte;
+            position.store(current_pos + 1, Ordering::Relaxed);
 
-        // Auto-flush on newline
-        if byte == b'\n' {
-            self.flush()?;
-        }
+            if byte == b'\n' {
+                Self::flush_internal(buffer, position)?;
+            }
 
-        Ok(())
+            Ok(())
+        })
     }
 
     /// Write multiple bytes to the buffer
     ///
     /// For large writes that exceed the buffer size, this will write directly
     /// to stdout without buffering to avoid multiple flushes.
-    fn write_bytes(&mut self, data: &[u8]) -> Result<(), i32> {
-        let current_pos = self.position.load(Ordering::Relaxed);
-
-        // If the data is larger than our buffer or would fill it completely,
-        // flush current buffer and write directly
-        if data.len() > STDOUT_BUFFER_SIZE || current_pos + data.len() >= STDOUT_BUFFER_SIZE {
-            self.flush()?;
-            return self.write_direct(data);
+    pub fn write_bytes(data: &[u8]) -> Result<(), i32> {
+        if data.is_empty() {
+            return Ok(());
         }
 
-        // Write to buffer
-        let new_pos = current_pos + data.len();
-        unsafe {
-            let buffer_slice = &mut (&mut (*self.buffer))[current_pos..new_pos];
-            buffer_slice.copy_from_slice(data);
-        }
-        self.position.store(new_pos, Ordering::Relaxed);
+        Self::with_buffer(|buffer, position| {
+            let current_pos = position.load(Ordering::Relaxed);
 
-        // Check if we need to auto-flush on newline
-        if data.contains(&b'\n') {
-            self.flush()?;
-        }
+            // If the data is larger than our buffer or would fill it completely,
+            // flush current buffer and write directly
+            if data.len() > STDOUT_BUFFER_SIZE || current_pos + data.len() >= STDOUT_BUFFER_SIZE {
+                Self::flush_internal(buffer, position)?;
+                return Self::write_direct(data);
+            }
 
-        Ok(())
+            // Write to buffer
+            let new_pos = current_pos + data.len();
+            buffer[current_pos..new_pos].copy_from_slice(data);
+            position.store(new_pos, Ordering::Relaxed);
+
+            // Check if we need to auto-flush on newline
+            if data.contains(&b'\n') {
+                Self::flush_internal(buffer, position)?;
+            }
+
+            Ok(())
+        })
     }
 
     /// Flush the buffer to stdout
-    fn flush(&mut self) -> Result<(), i32> {
-        let pos = self.position.load(Ordering::Relaxed);
+    pub fn flush() -> Result<(), i32> {
+        Self::with_buffer(|buffer, position| Self::flush_internal(buffer, position))
+    }
+
+    /// Internal flush implementation that works with the buffer directly
+    fn flush_internal(buffer: &[u8], position: &AtomicUsize) -> Result<(), i32> {
+        let pos = position.load(Ordering::Relaxed);
         if pos == 0 {
             return Ok(()); // Nothing to flush
         }
 
-        let result = unsafe {
-            let buffer_slice = &(&(*self.buffer))[..pos];
-            self.write_direct(buffer_slice)
-        };
-        self.position.store(0, Ordering::Relaxed);
+        let result = Self::write_direct(&buffer[..pos]);
+        position.store(0, Ordering::Relaxed);
         result
     }
 
     /// Write data directly to stdout using syscall
-    fn write_direct(&self, data: &[u8]) -> Result<(), i32> {
+    fn write_direct(data: &[u8]) -> Result<(), i32> {
         if data.is_empty() {
             return Ok(());
         }
@@ -190,10 +223,7 @@ unsafe fn syscall3(syscall_num: i64, arg1: i64, arg2: i64, arg3: i64) -> i64 {
 /// C calling conventions.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn __rue_write_byte(byte: u8) {
-    unsafe {
-        let mut stdout = BufferedStdout::get_instance();
-        let _ = stdout.write_byte(byte);
-    }
+    let _ = BufferedStdout::write_byte(byte);
 }
 
 /// C ABI function: Write multiple bytes to buffered stdout
@@ -204,15 +234,12 @@ pub unsafe extern "C" fn __rue_write_byte(byte: u8) {
 /// memory of at least `len` bytes.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn __rue_write_bytes(ptr: *const u8, len: usize) {
-    unsafe {
-        if ptr.is_null() || len == 0 {
-            return;
-        }
-
-        let data = core::slice::from_raw_parts(ptr, len);
-        let mut stdout = BufferedStdout::get_instance();
-        let _ = stdout.write_bytes(data);
+    if ptr.is_null() || len == 0 {
+        return;
     }
+
+    let data = unsafe { core::slice::from_raw_parts(ptr, len) };
+    let _ = BufferedStdout::write_bytes(data);
 }
 
 /// C ABI function: Flush the stdout buffer
@@ -222,8 +249,5 @@ pub unsafe extern "C" fn __rue_write_bytes(ptr: *const u8, len: usize) {
 /// C calling conventions.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn __rue_flush_stdout() {
-    unsafe {
-        let mut stdout = BufferedStdout::get_instance();
-        let _ = stdout.flush();
-    }
+    let _ = BufferedStdout::flush();
 }
