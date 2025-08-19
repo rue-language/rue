@@ -119,13 +119,10 @@ impl RuntimeContext {
         self.instructions
             .push(X8664Instr::Label { id: setup_label });
 
-        // Set up stack frame
-        self.instructions.push(X8664Instr::EnterFrame);
-
         // For now, just a minimal setup that returns successfully
         // TODO: Full signal handler setup implementation needed
+        // Note: This is a leaf function, no frame needed
 
-        self.instructions.push(X8664Instr::LeaveFrame);
         self.instructions.push(X8664Instr::Ret);
     }
 }

@@ -38,11 +38,6 @@ impl RuntimeContext {
         self.instructions
             .push(X8664Instr::Label { id: memcpy_label });
 
-        // Save used registers
-        self.instructions.push(X8664Instr::Push {
-            reg: X86Register::Rcx,
-        });
-
         // Check if len == 0
         self.instructions.push(X8664Instr::CmpRI {
             reg: X86Register::Rdx,
@@ -171,9 +166,6 @@ impl RuntimeContext {
 
         // Done
         self.instructions.push(X8664Instr::Label { id: done });
-        self.instructions.push(X8664Instr::Pop {
-            reg: X86Register::Rcx,
-        });
         self.instructions.push(X8664Instr::Ret);
     }
 
@@ -195,14 +187,6 @@ impl RuntimeContext {
 
         self.instructions
             .push(X8664Instr::Label { id: memmove_label });
-
-        // Save used registers
-        self.instructions.push(X8664Instr::Push {
-            reg: X86Register::Rcx,
-        });
-        self.instructions.push(X8664Instr::Push {
-            reg: X86Register::R8,
-        });
 
         // Check if len == 0
         self.instructions.push(X8664Instr::CmpRI {
@@ -322,12 +306,6 @@ impl RuntimeContext {
 
         // Done
         self.instructions.push(X8664Instr::Label { id: done });
-        self.instructions.push(X8664Instr::Pop {
-            reg: X86Register::R8,
-        });
-        self.instructions.push(X8664Instr::Pop {
-            reg: X86Register::Rcx,
-        });
         self.instructions.push(X8664Instr::Ret);
     }
 
@@ -344,11 +322,6 @@ impl RuntimeContext {
 
         self.instructions
             .push(X8664Instr::Label { id: memzero_label });
-
-        // Save used registers
-        self.instructions.push(X8664Instr::Push {
-            reg: X86Register::Rcx,
-        });
 
         // Check if len == 0
         self.instructions.push(X8664Instr::CmpRI {
@@ -379,9 +352,6 @@ impl RuntimeContext {
 
         // Done
         self.instructions.push(X8664Instr::Label { id: done });
-        self.instructions.push(X8664Instr::Pop {
-            reg: X86Register::Rcx,
-        });
         self.instructions.push(X8664Instr::Ret);
     }
 }

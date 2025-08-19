@@ -3,7 +3,7 @@
 //! This module provides a basic bump allocator using static memory:
 //! - Fixed 64KB heap allocated in .bss section
 //! - Allocation only (no free) - suitable for aggregates and temporary data
-//! - 8-byte alignment for all allocations
+//! - 16-byte alignment for all allocations (SSE/AVX compatible)
 //! - Can be upgraded to sys_brk or mmap later
 //!
 //! The allocator is designed for the initial aggregate type support and can
@@ -56,7 +56,7 @@ impl RuntimeContext {
     /// Generate __rue_alloc function
     ///
     /// Implements a simple bump allocator that allocates memory from a fixed heap.
-    /// All allocations are 8-byte aligned. Returns NULL if out of memory.
+    /// All allocations are 16-byte aligned. Returns NULL if out of memory.
     ///
     /// Parameters: RDI = size (bytes to allocate)
     /// Returns: RAX = pointer to allocated memory, or NULL if out of memory
@@ -83,15 +83,15 @@ impl RuntimeContext {
             src: X86Register::Rax,
         });
 
-        // Align the requested size to 8-byte boundary
-        // size = (size + 7) & ~7
+        // Align the requested size to 16-byte boundary
+        // size = (size + 15) & ~15
         self.instructions.push(X8664Instr::AddRI {
             dest: X86Register::Rdi,
-            imm: 7,
+            imm: 15,
         });
         self.instructions.push(X8664Instr::AndRI {
             dest: X86Register::Rdi,
-            imm: -8, // 0xFFFFFFFFFFFFFFF8 for proper 64-bit alignment mask
+            imm: -16, // 0xFFFFFFFFFFFFFFF0 for proper 16-byte alignment mask
         });
 
         // Calculate new heap pointer: current + aligned_size

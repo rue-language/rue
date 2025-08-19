@@ -2,23 +2,23 @@
 
 ## Implementation Checklist
 
-### Phase 0: Builder Hygiene [Immediate Quick Wins]
-- [ ] **0.1** Update allocator alignment to 16 bytes
-  - [ ] **0.1a** Modify alignment calculation in `generate_alloc_function`
-  - [ ] **0.1b** Update alignment mask from -8 to -16
-  - [ ] **0.1c** Test allocator with various sizes
+### Phase 0: Builder Hygiene [Immediate Quick Wins] ✅
+- [x] **0.1** Update allocator alignment to 16 bytes
+  - [x] **0.1a** Modify alignment calculation in `generate_alloc_function`
+  - [x] **0.1b** Update alignment mask from -8 to -16
+  - [x] **0.1c** Test allocator with various sizes
   
-- [ ] **0.2** Remove excessive register saves
-  - [ ] **0.2a** Audit all runtime functions for unnecessary push/pop
-  - [ ] **0.2b** Remove caller-saved register preservation (RCX, RDX, R8-R11)
-  - [ ] **0.2c** Keep only callee-saved registers where needed
+- [x] **0.2** Remove excessive register saves
+  - [x] **0.2a** Audit all runtime functions for unnecessary push/pop
+  - [x] **0.2b** Remove caller-saved register preservation (RCX, RDX, R8-R11)
+  - [x] **0.2c** Keep only callee-saved registers where needed
   
-- [ ] **0.3** Implement red zone usage
-  - [ ] **0.3a** Identify leaf functions (no calls)
-  - [ ] **0.3b** Use RSP-128 to RSP for scratch space
-  - [ ] **0.3c** Remove unnecessary frame setup in leaf functions
+- [x] **0.3** Implement red zone usage
+  - [x] **0.3a** Identify leaf functions (no calls)
+  - [x] **0.3b** Use RSP-128 to RSP for scratch space (N/A - no scratch needed)
+  - [x] **0.3c** Remove unnecessary frame setup in leaf functions
   
-- [ ] **0.4** Run tests to verify no regressions
+- [x] **0.4** Run tests to verify no regressions
 
 ### Phase 1: CPU Feature Detection & Vtable
 - [ ] **1.1** Add vtable data structures
