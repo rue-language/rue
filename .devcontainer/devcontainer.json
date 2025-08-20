@@ -26,5 +26,55 @@
   },
   "workspaceMount": "source=${localWorkspaceFolder},target=/workspace,type=bind,consistency=delegated",
   "workspaceFolder": "/workspace",
-  "postCreateCommand": "sudo /usr/local/bin/init-firewall.sh"
+  "postCreateCommand": "sudo /usr/local/bin/init-firewall.sh",
+
+  // Auto-install VS Code extensions in the container context
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        // Core
+        "rust-lang.rust-analyzer",
+        "anthropic.claude-code",
+
+        // jj (Jujutsu) VCS
+        "jjk.jjk",                            // Jujutsu for VS Code :contentReference[oaicite:0]{index=0}
+
+        // Rust project hygiene
+        "tamasfe.even-better-toml",           // TOML language support (Taplo) :contentReference[oaicite:1]{index=1}
+        "citreae535.sparse-crates",           // Highlights outdated crates in Cargo.toml (OSS) :contentReference[oaicite:2]{index=2}
+        // (Alternative: "fill-labs.dependi" – successor to 'crates', freemium) :contentReference[oaicite:3]{index=3}
+
+        // Docs / specs / snapshots
+        "yzhang.markdown-all-in-one",         // Markdown authoring QoL :contentReference[oaicite:4]{index=4}
+        "DavidAnson.vscode-markdownlint",     // Markdown lint rules :contentReference[oaicite:5]{index=5}
+        "esbenp.prettier-vscode",
+        "streetsidesoftware.code-spell-checker",
+
+        // CI & containers
+        "GitHub.vscode-github-actions",       // GH Actions authoring + run view :contentReference[oaicite:6]{index=6}
+        "ms-azuretools.vscode-docker",
+
+        // Low-level inspection
+        "ms-vscode.hexeditor",                // Inspect linked/ELF outputs in hex :contentReference[oaicite:7]{index=7}
+
+        // Misc quality-of-life
+        "EditorConfig.EditorConfig"
+      ],
+      "settings": {
+        // Rust-analyzer: keep it snappy but useful for compiler work
+        "rust-analyzer.cargo.targetDir": "/workspace/target",
+        "rust-analyzer.files.watcher": "client",
+        "rust-analyzer.cargo.features": "all",
+
+        // Keep extensions current unless you decide to pin versions
+        "extensions.autoUpdate": true,
+
+        // Markdown / docs niceties
+        "markdownlint.config": {
+          "MD013": false,   // line length off (keeps diffs tighter)
+          "MD033": false    // inline HTML allowed for spec formatting
+        }
+      }
+    }
+  }
 }
