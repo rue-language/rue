@@ -30,6 +30,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
   software-properties-common \
   wget \
   gnupg \
+  gdb \
   && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # Add the LLVM APT repository key
@@ -102,6 +103,9 @@ RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
 
 # Install jj
 RUN cargo install --locked jj-cli
+
+# Install reindeer
+RUN cargo install --locked --git https://github.com/facebookincubator/reindeer reindeer
 
 # Install Buck2 (prebuilt binary)
 USER root
