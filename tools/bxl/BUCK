@@ -1,0 +1,39 @@
+# BXL scripts for the Rue project
+# These scripts provide enhanced Buck2 functionality for development workflows
+
+export_file(
+    name = "clippy.bxl",
+    src = "clippy.bxl",
+    visibility = ["PUBLIC"],
+)
+
+export_file(
+    name = "deps.bxl",
+    src = "deps.bxl",
+    visibility = ["PUBLIC"],
+)
+
+export_file(
+    name = "rust_project.bxl",
+    src = "rust_project.bxl", 
+    visibility = ["PUBLIC"],
+)
+
+# Convenience aliases for common BXL operations
+alias(
+    name = "clippy",
+    actual = ":clippy.bxl",
+    visibility = ["PUBLIC"],
+)
+
+alias(
+    name = "deps",
+    actual = ":deps.bxl",
+    visibility = ["PUBLIC"],
+)
+
+alias(
+    name = "rust-project",
+    actual = ":rust_project.bxl",
+    visibility = ["PUBLIC"],
+)

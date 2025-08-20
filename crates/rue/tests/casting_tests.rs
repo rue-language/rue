@@ -1,8 +1,11 @@
 //! Integration tests for type casting functions
 
+mod test_utils;
+
 use std::fs;
 use std::process::Command;
 use tempfile::tempdir;
+use test_utils::get_rue_binary;
 
 #[test]
 fn test_i64_to_i32_truncation() {
@@ -21,7 +24,8 @@ fn test_i64_to_i32_truncation() {
     fs::write(&source_path, code).unwrap();
 
     // Compile
-    let output = Command::new(env!("CARGO_BIN_EXE_rue"))
+    let rue_binary = get_rue_binary();
+    let output = Command::new(&rue_binary)
         .arg(&source_path)
         .arg("-o")
         .arg(&output_path)
@@ -59,7 +63,8 @@ fn test_i64_to_i32_negative() {
     fs::write(&source_path, code).unwrap();
 
     // Compile
-    let output = Command::new(env!("CARGO_BIN_EXE_rue"))
+    let rue_binary = get_rue_binary();
+    let output = Command::new(&rue_binary)
         .arg(&source_path)
         .arg("-o")
         .arg(&output_path)
@@ -98,7 +103,8 @@ fn test_i32_to_i64_positive() {
     fs::write(&source_path, code).unwrap();
 
     // Compile
-    let output = Command::new(env!("CARGO_BIN_EXE_rue"))
+    let rue_binary = get_rue_binary();
+    let output = Command::new(&rue_binary)
         .arg(&source_path)
         .arg("-o")
         .arg(&output_path)
@@ -143,7 +149,8 @@ fn test_i32_to_i64_negative() {
     fs::write(&source_path, code).unwrap();
 
     // Compile
-    let output = Command::new(env!("CARGO_BIN_EXE_rue"))
+    let rue_binary = get_rue_binary();
+    let output = Command::new(&rue_binary)
         .arg(&source_path)
         .arg("-o")
         .arg(&output_path)
@@ -191,7 +198,8 @@ fn test_casting_with_operations() {
     fs::write(&source_path, code).unwrap();
 
     // Compile
-    let output = Command::new(env!("CARGO_BIN_EXE_rue"))
+    let rue_binary = get_rue_binary();
+    let output = Command::new(&rue_binary)
         .arg(&source_path)
         .arg("-o")
         .arg(&output_path)
@@ -236,7 +244,8 @@ fn test_casting_chain() {
     fs::write(&source_path, code).unwrap();
 
     // Compile
-    let output = Command::new(env!("CARGO_BIN_EXE_rue"))
+    let rue_binary = get_rue_binary();
+    let output = Command::new(&rue_binary)
         .arg(&source_path)
         .arg("-o")
         .arg(&output_path)
@@ -280,7 +289,8 @@ fn test_casting_with_print() {
     fs::write(&source_path, code).unwrap();
 
     // Compile
-    let output = Command::new(env!("CARGO_BIN_EXE_rue"))
+    let rue_binary = get_rue_binary();
+    let output = Command::new(&rue_binary)
         .arg(&source_path)
         .arg("-o")
         .arg(&output_path)

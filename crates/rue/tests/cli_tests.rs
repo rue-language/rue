@@ -4,6 +4,7 @@
 //! the existing snapshot testing infrastructure.
 
 mod common;
+mod test_utils;
 
 use common::get_project_root;
 use rue_snapshot::{
@@ -15,6 +16,7 @@ use rue_snapshot::{
 use std::fs;
 use std::process::{Command, Stdio};
 use tempfile::TempDir;
+use test_utils::get_rue_binary;
 
 /// Normalize an execution snapshot for stable testing
 fn normalize_execution_snapshot(snapshot: &ExecutionSnapshot) -> ExecutionSnapshot {
@@ -45,23 +47,8 @@ fn test_cli_snapshot(name: &str, snapshot: &ExecutionSnapshot) -> Result<(), Str
 fn run_rue_cli(args: &[&str], stdin_content: Option<&str>) -> Result<ExecutionSnapshot, String> {
     let project_root = get_project_root();
 
-    // Always build rue to ensure we're using the latest version
-    let build_output = Command::new("cargo")
-        .arg("build")
-        .arg("--release")
-        .arg("--bin")
-        .arg("rue")
-        .current_dir(project_root)
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .output()
-        .map_err(|e| format!("Failed to build rue compiler: {e}"))?;
-
-    if !build_output.status.success() {
-        return Err("Failed to build rue compiler".to_string());
-    }
-
-    let rue_binary = project_root.join("target/release/rue");
+    // Get the rue binary
+    let rue_binary = get_rue_binary();
 
     // Set up the command
     let mut cmd = Command::new(&rue_binary);

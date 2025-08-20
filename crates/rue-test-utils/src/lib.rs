@@ -18,10 +18,16 @@ use tempfile::{NamedTempFile, TempDir};
 pub fn get_project_root() -> Utf8PathBuf {
     // Try different strategies to find project root
 
-    // Strategy 1: Look for Cargo.toml in parent directories
+    // Strategy 1: Check if we're running under Buck2 (CI or buck2 test)
+    if std::env::var("BUCK_BUILD_ID").is_ok() {
+        // Buck2 sets the working directory to the project root
+        return Utf8PathBuf::from(".");
+    }
+
+    // Strategy 2: Look for .buckroot in parent directories (local development)
     let mut current = std::env::current_dir().unwrap();
     loop {
-        if current.join("Cargo.toml").exists() && current.join("crates").exists() {
+        if current.join(".buckroot").exists() {
             return Utf8PathBuf::try_from(current).unwrap();
         }
         if !current.pop() {
@@ -29,12 +35,12 @@ pub fn get_project_root() -> Utf8PathBuf {
         }
     }
 
-    // Strategy 2: Use environment variable if set
+    // Strategy 3: Use environment variable if set
     if let Ok(root) = std::env::var("RUE_PROJECT_ROOT") {
         return Utf8PathBuf::from(root);
     }
 
-    // Strategy 3: Assume we're in a subdirectory of the project
+    // Strategy 4: Assume we're in a subdirectory of the project
     Utf8PathBuf::from(".")
 }
 
@@ -149,23 +155,52 @@ impl RueCompiler {
         let rue_binary = if let Ok(path) = std::env::var("RUE_BINARY") {
             Utf8PathBuf::from(path)
         } else {
-            // Try common locations
-            for path in [
-                "target/debug/rue",
-                "target/release/rue",
-                "buck-out/v2/gen/root/crates/rue/__rue__/rue",
-            ] {
-                let full_path = project_root.join(path);
-                if full_path.exists() {
-                    return Ok(Self {
-                        rue_binary: full_path,
-                        temp_dir: TempDir::new()?,
-                    });
+            // Try to build with Buck2
+            let buck_cmd = if std::env::var("BUCK_BUILD_ID").is_ok() {
+                "buck2"
+            } else {
+                "./buck2"
+            };
+
+            let output = Command::new(buck_cmd)
+                .args(["build", "--show-output", "//crates/rue:rue"])
+                .output()
+                .ok();
+
+            if let Some(output) = output {
+                if output.status.success() {
+                    let output_str = String::from_utf8_lossy(&output.stdout);
+                    if let Some(path) = output_str
+                        .lines()
+                        .find(|line| line.contains("//crates/rue:rue"))
+                        .and_then(|line| line.split_whitespace().last())
+                    {
+                        return Ok(Self {
+                            rue_binary: Utf8PathBuf::from(path),
+                            temp_dir: TempDir::new()?,
+                        });
+                    }
                 }
             }
 
-            // Fall back to cargo run
-            Utf8PathBuf::from("cargo")
+            // Last resort: search for rue binary in buck-out
+            // The hash in the path changes, so we need to search for it
+            let buck_out = project_root.join("buck-out/v2/gen/root");
+            if buck_out.exists() {
+                // Find any rue binary in the buck-out directory
+                for entry in std::fs::read_dir(&buck_out).ok().into_iter().flatten() {
+                    if let Ok(entry) = entry {
+                        let rue_path = entry.path().join("crates/rue/__rue__/rue");
+                        if rue_path.exists() {
+                            return Ok(Self {
+                                rue_binary: Utf8PathBuf::try_from(rue_path)?,
+                                temp_dir: TempDir::new()?,
+                            });
+                        }
+                    }
+                }
+            }
+            panic!("Could not find rue binary. Please build with: ./buck2 build //crates/rue:rue");
         };
 
         Ok(Self {
@@ -189,26 +224,14 @@ impl RueCompiler {
         let output_path = self.temp_dir.path().join("test_output");
         let output_path = Utf8PathBuf::try_from(output_path)?;
 
-        let output = if self.rue_binary.ends_with("cargo") {
-            // Use cargo run
-            Command::new(&self.rue_binary)
-                .args(["run", "-p", "rue", "--quiet", "--"])
-                .arg(source_path)
-                .arg("-o")
-                .arg(&output_path)
-                .stdout(Stdio::piped())
-                .stderr(Stdio::piped())
-                .output()?
-        } else {
-            // Use binary directly
-            Command::new(&self.rue_binary)
-                .arg(source_path)
-                .arg("-o")
-                .arg(&output_path)
-                .stdout(Stdio::piped())
-                .stderr(Stdio::piped())
-                .output()?
-        };
+        // Direct binary execution
+        let output = Command::new(&self.rue_binary)
+            .arg(source_path)
+            .arg("-o")
+            .arg(&output_path)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .output()?;
 
         Ok(CompilationResult {
             success: output.status.success(),
@@ -438,7 +461,7 @@ mod tests {
     #[test]
     fn test_project_root() {
         let root = get_project_root();
-        assert!(root.join("Cargo.toml").exists() || root.as_str() == ".");
+        assert!(root.join(".buckroot").exists() || root.as_str() == ".");
     }
 
     #[test]

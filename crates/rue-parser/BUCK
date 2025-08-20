@@ -1,7 +1,28 @@
 load("@prelude//rust:cargo_package.bzl", "cargo")
+load("//tools/rust:defs.bzl", "clippy_rust_library")
 
 cargo.rust_library(
     name = "rue-parser",
+    srcs = glob(["src/**/*.rs"]),
+    crate_root = "src/lib.rs",
+    edition = "2024",
+    deps = [
+        "//crates/rue-ast:rue-ast",
+        "//crates/rue-diagnostic:rue-diagnostic",
+        "//crates/rue-ir:rue-ir",
+        "//crates/rue-lexer:rue-lexer",
+        "//third-party/rust:thiserror",
+        "//third-party/rust:serde",
+        "//third-party/rust:serde_json",
+        "//third-party/rust:toml",
+        "//third-party/rust:regex",
+    ],
+    visibility = ["PUBLIC"],
+)
+
+# Clippy version of the library target
+clippy_rust_library(
+    name = "clippy",
     srcs = glob(["src/**/*.rs"]),
     crate_root = "src/lib.rs",
     edition = "2024",

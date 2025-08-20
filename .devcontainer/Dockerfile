@@ -98,21 +98,11 @@ ENV RUSTUP_HOME=/home/$USERNAME/.rustup
 ENV PATH="$CARGO_HOME/bin:$PATH"
 
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
-    | sh -s -- -y --default-toolchain stable \
-    && rustup component add clippy rustfmt
+  | sh -s -- -y --default-toolchain stable \
+  && rustup component add clippy rustfmt
 
 # Install jj
 RUN cargo install --locked jj-cli
-
-# Install reindeer
-RUN cargo install --locked --git https://github.com/facebookincubator/reindeer reindeer
-
-# Install Buck2 (prebuilt binary)
-USER root
-RUN curl -LO https://github.com/facebook/buck2/releases/download/latest/buck2-x86_64-unknown-linux-gnu.zst \
-    && zstd -d buck2-x86_64-unknown-linux-gnu.zst -o /usr/local/bin/buck2 \
-    && chmod +x /usr/local/bin/buck2 \
-    && rm buck2-x86_64-unknown-linux-gnu.zst
 
 # Switch back to node for dev work
 USER $USERNAME

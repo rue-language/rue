@@ -1,8 +1,8 @@
 //! Parser error handling with rich diagnostics
 
 use rue_diagnostic::{
-    Diagnostic, DiagnosticBuilder, DiagnosticCollector, DiagnosticCode, 
-    SourceId, SuggestionEngine, E1001, E1002, E1003,
+    Diagnostic, DiagnosticBuilder, DiagnosticCode, DiagnosticCollector, E1001, E1002, E1003,
+    SourceId, SuggestionEngine,
 };
 use rue_lexer::{Span, TokenKind};
 use std::fmt;
@@ -35,8 +35,12 @@ impl ParseError {
                 format!("`{}` or `{}`", tokens[0], tokens[1])
             } else {
                 let (last, rest) = tokens.split_last().unwrap();
-                format!("one of {}, or `{}`", 
-                    rest.iter().map(|t| format!("`{}`", t)).collect::<Vec<_>>().join(", "),
+                format!(
+                    "one of {}, or `{}`",
+                    rest.iter()
+                        .map(|t| format!("`{}`", t))
+                        .collect::<Vec<_>>()
+                        .join(", "),
                     last
                 )
             }
@@ -54,44 +58,58 @@ impl ParseError {
 
         // Add context-specific help
         if let Some(ctx) = context {
-            builder = builder.with_help(format!("while parsing {}, expected {}", ctx, expected_str));
+            builder =
+                builder.with_help(format!("while parsing {}, expected {}", ctx, expected_str));
         }
 
         Self::new(builder.build())
     }
 
     /// Create an "expected identifier" error
-    pub fn expected_identifier(found: &TokenKind, span: Span, source_id: SourceId, context: &str) -> Self {
-        let diagnostic = DiagnosticBuilder::error(
-            format!("expected identifier {}", context),
-            source_id,
-        )
-        .with_code(E1001)
-        .with_primary_label(span, format!("expected identifier, found `{}`", token_display(found)))
-        .with_help("identifiers must start with a letter or underscore")
-        .build();
+    pub fn expected_identifier(
+        found: &TokenKind,
+        span: Span,
+        source_id: SourceId,
+        context: &str,
+    ) -> Self {
+        let diagnostic =
+            DiagnosticBuilder::error(format!("expected identifier {}", context), source_id)
+                .with_code(E1001)
+                .with_primary_label(
+                    span,
+                    format!("expected identifier, found `{}`", token_display(found)),
+                )
+                .with_help("identifiers must start with a letter or underscore")
+                .build();
 
         Self::new(diagnostic)
     }
 
     /// Create an "unexpected end of input" error
     pub fn unexpected_eof(expected: &str, span: Span, source_id: SourceId) -> Self {
-        let diagnostic = DiagnosticBuilder::error(
-            "unexpected end of input",
-            source_id,
-        )
-        .with_code(E1001)
-        .with_primary_label(span, format!("expected {}", expected))
-        .with_help(format!("add {} to complete the expression", expected))
-        .build();
+        let diagnostic = DiagnosticBuilder::error("unexpected end of input", source_id)
+            .with_code(E1001)
+            .with_primary_label(span, format!("expected {}", expected))
+            .with_help(format!("add {} to complete the expression", expected))
+            .build();
 
         Self::new(diagnostic)
     }
 
     /// Create a "duplicate field" error
-    pub fn duplicate_field(field_name: &str, span: Span, previous_span: Span, source_id: SourceId, in_struct: bool) -> Self {
-        let context = if in_struct { "struct definition" } else { "struct literal" };
-        
+    pub fn duplicate_field(
+        field_name: &str,
+        span: Span,
+        previous_span: Span,
+        source_id: SourceId,
+        in_struct: bool,
+    ) -> Self {
+        let context = if in_struct {
+            "struct definition"
+        } else {
+            "struct literal"
+        };
+
         let diagnostic = DiagnosticBuilder::error(
             format!("duplicate field `{}` in {}", field_name, context),
             source_id,
@@ -112,29 +130,27 @@ impl ParseError {
         current_span: Span,
         source_id: SourceId,
     ) -> Self {
-        let diagnostic = DiagnosticBuilder::error(
-            format!("unclosed `{}`", delimiter),
-            source_id,
-        )
-        .with_code(E1003)
-        .with_primary_label(open_span, format!("`{}` opened here", delimiter))
-        .with_secondary_label(current_span, "expected closing delimiter here")
-        .with_help(format!("add `{}` to close the delimiter", closing_delimiter(delimiter)))
-        .build();
+        let diagnostic = DiagnosticBuilder::error(format!("unclosed `{}`", delimiter), source_id)
+            .with_code(E1003)
+            .with_primary_label(open_span, format!("`{}` opened here", delimiter))
+            .with_secondary_label(current_span, "expected closing delimiter here")
+            .with_help(format!(
+                "add `{}` to close the delimiter",
+                closing_delimiter(delimiter)
+            ))
+            .build();
 
         Self::new(diagnostic)
     }
 
     /// Create an "invalid array size" error
     pub fn invalid_array_size(size: i64, span: Span, source_id: SourceId) -> Self {
-        let diagnostic = DiagnosticBuilder::error(
-            format!("invalid array size: {}", size),
-            source_id,
-        )
-        .with_code(E1002)
-        .with_primary_label(span, "array size must be non-negative")
-        .with_help("use a positive integer for the array size")
-        .build();
+        let diagnostic =
+            DiagnosticBuilder::error(format!("invalid array size: {}", size), source_id)
+                .with_code(E1002)
+                .with_primary_label(span, "array size must be non-negative")
+                .with_help("use a positive integer for the array size")
+                .build();
 
         Self::new(diagnostic)
     }

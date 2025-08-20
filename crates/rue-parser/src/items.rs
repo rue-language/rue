@@ -12,12 +12,13 @@ impl Parser {
         let leading_trivia = self.consume_trivia();
         let fn_token = self.expect_kind(&TokenKind::Fn)?;
         let name = self.expect_ident()?;
-        
+
         // Add function name to suggestions
         if let TokenKind::Ident(fn_name) = &name.kind {
-            self.suggestions.add_identifier("functions", fn_name.clone());
+            self.suggestions
+                .add_identifier("functions", fn_name.clone());
         }
-        
+
         self.push_context(ParserContext::FunctionParameters);
         let param_list = self.parse_param_list()?;
         self.pop_context();
@@ -51,12 +52,13 @@ impl Parser {
         let leading_trivia = self.consume_trivia();
         let struct_token = self.expect_kind(&TokenKind::Struct)?;
         let name = self.expect_ident()?;
-        
+
         // Add struct name to suggestions
         if let TokenKind::Ident(struct_name) = &name.kind {
-            self.suggestions.add_identifier("types", struct_name.clone());
+            self.suggestions
+                .add_identifier("types", struct_name.clone());
         }
-        
+
         let open_brace = self.expect_kind(&TokenKind::LeftBrace)?;
 
         self.push_context(ParserContext::StructFields);
@@ -66,7 +68,7 @@ impl Parser {
         // Parse struct fields
         let mut field_names = HashSet::new();
         let mut field_spans = std::collections::HashMap::new();
-        
+
         while !self.check_kind(&TokenKind::RightBrace) && !self.is_at_end() {
             let field = self.parse_struct_field_def()?;
 
@@ -156,24 +158,24 @@ impl Parser {
         let leading_trivia = self.consume_trivia();
         let open_paren = self.expect_kind(&TokenKind::LeftParen)?;
         let mut params = Vec::new();
-        
+
         // Track parameter names for better error messages
         let mut param_names = HashSet::new();
 
         while !self.check_kind(&TokenKind::RightParen) && !self.is_at_end() {
             let param = self.parse_parameter()?;
-            
+
             // Check for duplicate parameter names
             if let TokenKind::Ident(param_name) = &param.name.kind {
                 if !param_names.insert(param_name.clone()) {
                     // We could make this an error, but for now just track it
                     // The semantic analyzer will catch this
                 }
-                
+
                 // Add parameter to local scope suggestions
                 self.suggestions.add_identifier("local", param_name.clone());
             }
-            
+
             params.push(param);
 
             if !self.check_kind(&TokenKind::RightParen) {
@@ -215,7 +217,7 @@ impl Parser {
     fn parse_type_annotation(&mut self) -> ParseResult<TypeAnnotationNode> {
         let leading_trivia = self.consume_trivia();
         let colon = self.expect_kind(&TokenKind::Colon)?;
-        
+
         self.push_context(ParserContext::Type);
         let ty = self.parse_type()?;
         self.pop_context();

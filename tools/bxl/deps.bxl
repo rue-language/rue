@@ -1,0 +1,173 @@
+"""
+Dependency management BXL script for updating Rust dependencies with Reindeer.
+
+This script automates the process of updating dependencies in third-party/rust/
+using Reindeer to convert Cargo.toml dependencies to Buck2 build files.
+"""
+
+def _update_impl(ctx):
+    """Update Rust dependencies using Reindeer."""
+    ctx.output.print("📦 Updating Rust dependencies...")
+    ctx.output.print("")
+    
+    # Check if reindeer is available
+    reindeer_path = "./reindeer"
+    
+    ctx.output.print("Step 1: Checking for dependency changes in third-party/rust/Cargo.toml")
+    ctx.output.print("")
+    
+    # Run reindeer buckify to regenerate Buck2 build files
+    ctx.output.print("Step 2: Running reindeer buckify to regenerate Buck2 build files...")
+    ctx.output.print("")
+    ctx.output.print("Please run the following commands:")
+    ctx.output.print("")
+    ctx.output.print("  # Change to the third-party/rust directory")
+    ctx.output.print("  cd third-party/rust")
+    ctx.output.print("")
+    ctx.output.print("  # Update Cargo.lock if needed")
+    ctx.output.print("  cargo update")
+    ctx.output.print("")
+    ctx.output.print("  # Regenerate Buck2 build files from Cargo.toml")
+    ctx.output.print("  ../../reindeer buckify")
+    ctx.output.print("")
+    ctx.output.print("  # Return to project root")
+    ctx.output.print("  cd ../..")
+    ctx.output.print("")
+    ctx.output.print("Step 3: Test the changes")
+    ctx.output.print("")
+    ctx.output.print("  # Build all targets to verify dependencies work")
+    ctx.output.print("  ./buck2 build //...")
+    ctx.output.print("")
+    ctx.output.print("  # Run tests to ensure nothing broke")
+    ctx.output.print("  ./buck2 test //crates/...")
+    ctx.output.print("")
+    ctx.output.print("📝 Note: If you see warnings about build scripts, you may need to")
+    ctx.output.print("   create fixup files in third-party/rust/fixups/<crate>/fixups.toml")
+    ctx.output.print("   See existing fixups for examples, then run 'reindeer buckify' again.")
+
+def _add_impl(ctx):
+    """Add a new Rust dependency."""
+    crate_name = ctx.cli_args.crate if hasattr(ctx.cli_args, "crate") else None
+    version = ctx.cli_args.version if hasattr(ctx.cli_args, "version") and ctx.cli_args.version else None
+    
+    if not crate_name:
+        ctx.output.print("❌ Error: Please specify a crate name with --crate=<name>")
+        return
+    
+    ctx.output.print("➕ Adding new dependency: {}{}".format(
+        crate_name,
+        " v{}".format(version) if version else ""
+    ))
+    ctx.output.print("")
+    ctx.output.print("Step 1: Add the dependency to third-party/rust/Cargo.toml")
+    ctx.output.print("")
+    ctx.output.print("  Add the following line in the [dependencies] section:")
+    if version:
+        ctx.output.print('  {} = "{}"'.format(crate_name, version))
+    else:
+        ctx.output.print('  {} = "*"  # Specify a version'.format(crate_name))
+    ctx.output.print("")
+    ctx.output.print("Step 2: Add the dependency to your crate's BUCK file")
+    ctx.output.print("")
+    ctx.output.print("  In the deps array, add:")
+    ctx.output.print('  "//third-party/rust:{}",'.format(crate_name.replace("-", "_")))
+    ctx.output.print("")
+    ctx.output.print("Step 3: Run the update command")
+    ctx.output.print("")
+    ctx.output.print("  ./buck2 bxl //tools/bxl:deps.bxl:update")
+    ctx.output.print("")
+    ctx.output.print("📝 Note: After adding, you'll need to run the update command")
+    ctx.output.print("   to regenerate the Buck2 build files with reindeer.")
+
+def _check_impl(ctx):
+    """Check if dependencies are up to date."""
+    ctx.output.print("🔍 Checking dependency status...")
+    ctx.output.print("")
+    ctx.output.print("To check if your dependencies are up to date:")
+    ctx.output.print("")
+    ctx.output.print("  # Check for outdated dependencies")
+    ctx.output.print("  cd third-party/rust && cargo outdated")
+    ctx.output.print("")
+    ctx.output.print("  # Verify Buck2 files are in sync")
+    ctx.output.print("  ../../reindeer verify")
+    ctx.output.print("")
+    ctx.output.print("📝 Note: You may need to install 'cargo-outdated' first:")
+    ctx.output.print("   cargo install cargo-outdated")
+
+def _fixup_impl(ctx):
+    """Create a fixup file for a problematic dependency."""
+    crate_name = ctx.cli_args.crate if hasattr(ctx.cli_args, "crate") else None
+    
+    if not crate_name:
+        ctx.output.print("❌ Error: Please specify a crate name with --crate=<name>")
+        return
+    
+    ctx.output.print("🔧 Creating fixup for crate: {}".format(crate_name))
+    ctx.output.print("")
+    ctx.output.print("Step 1: Create the fixup directory")
+    ctx.output.print("")
+    ctx.output.print("  mkdir -p third-party/rust/fixups/{}".format(crate_name))
+    ctx.output.print("")
+    ctx.output.print("Step 2: Create fixups.toml file")
+    ctx.output.print("")
+    ctx.output.print("  Create third-party/rust/fixups/{}/fixups.toml with:".format(crate_name))
+    ctx.output.print("")
+    ctx.output.print("  # Common fixup patterns:")
+    ctx.output.print("")
+    ctx.output.print("  # For build scripts that need configuration:")
+    ctx.output.print("  [[buildscript]]")
+    ctx.output.print('  [buildscript.rustc_env]')
+    ctx.output.print('  # KEY = "value"')
+    ctx.output.print("")
+    ctx.output.print("  # For platform-specific dependencies:")
+    ctx.output.print('  [platform_fixup."cfg(...)"]')
+    ctx.output.print("  extra_deps = []")
+    ctx.output.print("")
+    ctx.output.print("  # To exclude certain source files:")
+    ctx.output.print("  omit_srcs = []")
+    ctx.output.print("")
+    ctx.output.print("Step 3: Regenerate Buck2 files")
+    ctx.output.print("")
+    ctx.output.print("  cd third-party/rust && ../../reindeer buckify")
+    ctx.output.print("")
+    ctx.output.print("📝 Look at existing fixups in third-party/rust/fixups/ for examples")
+
+# Register the BXL functions
+update = bxl_main(
+    impl = _update_impl,
+    cli_args = {
+        # No arguments needed for update
+    },
+)
+
+add = bxl_main(
+    impl = _add_impl,
+    cli_args = {
+        "crate": cli_args.string(
+            doc = "Name of the crate to add",
+        ),
+        "version": cli_args.string(
+            default = "",
+            doc = "Version of the crate (optional, defaults to latest)",
+        ),
+    },
+)
+
+check = bxl_main(
+    impl = _check_impl,
+    cli_args = {
+        # No arguments needed for check
+    },
+)
+
+fixup = bxl_main(
+    impl = _fixup_impl,
+    cli_args = {
+        "crate": cli_args.string(
+            doc = "Name of the crate to create a fixup for",
+        ),
+    },
+)
+
+# Convenience alias for the most common operation
+all = update

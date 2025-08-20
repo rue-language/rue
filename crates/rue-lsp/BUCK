@@ -1,7 +1,31 @@
 load("@prelude//rust:cargo_package.bzl", "cargo")
+load("//tools/rust:defs.bzl", "clippy_rust_library")
 
 cargo.rust_library(
     name = "rue-lsp-lib",
+    srcs = glob(["src/**/*.rs"]),
+    crate = "rue_lsp",
+    crate_root = "src/lib.rs",
+    edition = "2024",
+    deps = [
+        "//crates/rue-ast:rue-ast",
+        "//crates/rue-compiler:rue-compiler",
+        "//crates/rue-diagnostic:rue-diagnostic",
+        "//crates/rue-lexer:rue-lexer",
+        "//crates/rue-lowering:rue-lowering",
+        "//crates/rue-optimize:rue-optimize",
+        "//crates/rue-parser:rue-parser",
+        "//crates/rue-semantic:rue-semantic",
+        "//third-party/rust:tokio",
+        "//third-party/rust:tower-lsp",
+        "//third-party/rust:serde_json",
+    ],
+    visibility = ["PUBLIC"],
+)
+
+# Clippy version of the library target
+clippy_rust_library(
+    name = "clippy",
     srcs = glob(["src/**/*.rs"]),
     crate = "rue_lsp",
     crate_root = "src/lib.rs",

@@ -1,8 +1,10 @@
 mod common;
+mod test_utils;
 
 use common::get_project_root;
 use std::fs;
 use std::process::Command;
+use test_utils::get_rue_binary;
 
 /// Test that a rue program compiles successfully
 fn test_compiles(name: &str, program: &str) {
@@ -19,23 +21,12 @@ fn test_compiles(name: &str, program: &str) {
     }
 
     // Compile the rue program
-    let compile_output = if std::env::var("CARGO_MANIFEST_DIR").is_err() {
-        // Buck2 build environment
-        Command::new("buck2")
-            .args(["run", "//crates/rue:rue", "--"])
-            .arg(&test_file)
-            .current_dir(project_root)
-            .output()
-            .expect("Failed to execute rue compiler via Buck2")
-    } else {
-        // Cargo build environment
-        Command::new("cargo")
-            .args(["run", "-p", "rue", "--"])
-            .arg(&test_file)
-            .current_dir(project_root)
-            .output()
-            .expect("Failed to execute rue compiler via Cargo")
-    };
+    let rue_binary = get_rue_binary();
+    let compile_output = Command::new(&rue_binary)
+        .arg(&test_file)
+        .current_dir(project_root)
+        .output()
+        .expect("Failed to execute rue compiler");
 
     // Clean up test file
     fs::remove_file(&test_file).expect("Failed to remove test file");
@@ -71,23 +62,12 @@ fn test_compile_error(name: &str, program: &str, expected_error: &str) {
     fs::write(&test_file, program).expect("Failed to write test file");
 
     // Try to compile the rue program
-    let compile_output = if std::env::var("CARGO_MANIFEST_DIR").is_err() {
-        // Buck2 build environment
-        Command::new("buck2")
-            .args(["run", "//crates/rue:rue", "--"])
-            .arg(&test_file)
-            .current_dir(project_root)
-            .output()
-            .expect("Failed to execute rue compiler via Buck2")
-    } else {
-        // Cargo build environment
-        Command::new("cargo")
-            .args(["run", "-p", "rue", "--"])
-            .arg(&test_file)
-            .current_dir(project_root)
-            .output()
-            .expect("Failed to execute rue compiler via Cargo")
-    };
+    let rue_binary = get_rue_binary();
+    let compile_output = Command::new(&rue_binary)
+        .arg(&test_file)
+        .current_dir(project_root)
+        .output()
+        .expect("Failed to execute rue compiler");
 
     // Clean up test file
     fs::remove_file(&test_file).expect("Failed to remove test file");
@@ -119,23 +99,12 @@ fn test_runs_with_exit_code(name: &str, program: &str, expected_exit_code: i32) 
     }
 
     // Compile the rue program
-    let compile_output = if std::env::var("CARGO_MANIFEST_DIR").is_err() {
-        // Buck2 build environment
-        Command::new("buck2")
-            .args(["run", "//crates/rue:rue", "--"])
-            .arg(&test_file)
-            .current_dir(project_root)
-            .output()
-            .expect("Failed to execute rue compiler via Buck2")
-    } else {
-        // Cargo build environment
-        Command::new("cargo")
-            .args(["run", "-p", "rue", "--"])
-            .arg(&test_file)
-            .current_dir(project_root)
-            .output()
-            .expect("Failed to execute rue compiler via Cargo")
-    };
+    let rue_binary = get_rue_binary();
+    let compile_output = Command::new(&rue_binary)
+        .arg(&test_file)
+        .current_dir(project_root)
+        .output()
+        .expect("Failed to execute rue compiler");
 
     // Clean up test file
     fs::remove_file(&test_file).expect("Failed to remove test file");

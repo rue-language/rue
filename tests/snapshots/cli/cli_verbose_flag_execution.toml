@@ -4,7 +4,7 @@ Compilation check passed
 """
 stderr = """
   [TIMESTAMP]  INFO rue: Starting compilation of [TEMP_DIR]
-    at crates/rue/src/main.rs:229
+    at crates/rue/src/main.rs:233
 
   [TIMESTAMP]  INFO rue::mir: Lowering HIR to MIR
     at crates/rue-compiler/src/pipeline.rs:273
@@ -21,6 +21,6 @@ stderr = """
     in rue_compiler::pipeline::compile_hir_via_mir_to_executable with optimize: false
 
   [TIMESTAMP]  INFO rue: Compilation check passed
-    at crates/rue/src/main.rs:241
+    at crates/rue/src/main.rs:245
 
 """

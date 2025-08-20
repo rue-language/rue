@@ -1,8 +1,19 @@
 load("@prelude//rust:cargo_package.bzl", "cargo")
+load("//tools/rust:defs.bzl", "clippy_rust_library")
 
 # Rust library for runtime functions
 cargo.rust_library(
     name = "rue-runtime",
+    srcs = glob(["src/**/*.rs"]),
+    edition = "2024",
+    crate_root = "src/lib.rs",
+    preferred_linkage = "static",
+    visibility = ["PUBLIC"],
+)
+
+# Clippy version of the library target
+clippy_rust_library(
+    name = "clippy",
     srcs = glob(["src/**/*.rs"]),
     edition = "2024",
     crate_root = "src/lib.rs",

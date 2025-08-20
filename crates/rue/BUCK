@@ -1,7 +1,26 @@
 load("@prelude//rust:cargo_package.bzl", "cargo")
+load("//tools/rust:defs.bzl", "clippy_rust_library")
 
 cargo.rust_binary(
     name = "rue",
+    srcs = glob(["src/**/*.rs"]),
+    crate_root = "src/main.rs",
+    edition = "2024",
+    deps = [
+        "//crates/rue-compiler:rue-compiler",
+        "//crates/rue-codegen:rue-codegen",
+        "//crates/rue-diagnostic:rue-diagnostic",
+        "//third-party/rust:anyhow",
+        "//third-party/rust:atty",
+        "//third-party/rust:bpaf",
+        "//third-party/rust:tracing",
+    ],
+    visibility = ["PUBLIC"],
+)
+
+# Clippy version for linting the binary
+clippy_rust_library(
+    name = "clippy",
     srcs = glob(["src/**/*.rs"]),
     crate_root = "src/main.rs",
     edition = "2024",
@@ -31,6 +50,7 @@ rust_test(
     ],
     env = {
         "CARGO_MANIFEST_DIR": ".",
+        "CARGO_BIN_EXE_rue": "$(location :rue)",
     },
 )
 
@@ -45,6 +65,7 @@ rust_test(
     ],
     env = {
         "CARGO_MANIFEST_DIR": ".",
+        "CARGO_BIN_EXE_rue": "$(location :rue)",
     },
 )
 
@@ -59,6 +80,7 @@ rust_test(
     ],
     env = {
         "CARGO_MANIFEST_DIR": ".",
+        "CARGO_BIN_EXE_rue": "$(location :rue)",
     },
 )
 
@@ -73,6 +95,7 @@ rust_test(
     ],
     env = {
         "CARGO_MANIFEST_DIR": ".",
+        "CARGO_BIN_EXE_rue": "$(location :rue)",
     },
 )
 
@@ -136,6 +159,7 @@ rust_test(
     ],
     env = {
         "CARGO_MANIFEST_DIR": ".",
+        "CARGO_BIN_EXE_rue": "$(location :rue)",
     },
 )
 
@@ -165,6 +189,7 @@ rust_test(
     ],
     env = {
         "CARGO_MANIFEST_DIR": ".",
+        "CARGO_BIN_EXE_rue": "$(location :rue)",
     },
 )
 
@@ -211,5 +236,6 @@ rust_test(
     ],
     env = {
         "CARGO_MANIFEST_DIR": ".",
+        "CARGO_BIN_EXE_rue": "$(location :rue)",
     },
 )

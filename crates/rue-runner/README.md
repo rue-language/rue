@@ -35,17 +35,7 @@ rue-runner --test-paths tests --rue-binary target/debug/rue --ignore-failures
 rue-runner --test-paths tests --rue-binary target/debug/rue --verbose
 ```
 
-### Using with Cargo
-
-```bash
-# Build both compiler and test runner
-cargo build -p rue -p rue-runner
-
-# Run tests
-cargo run -p rue-runner -- --test-paths tests --rue-binary target/debug/rue
-```
-
-### Using with Buck2
+### Building and Running
 
 ```bash
 # Build and run tests
@@ -234,10 +224,11 @@ Snapshots are normalized before comparison:
 ```yaml
 - name: Run Rue Tests
   run: |
-    cargo build -p rue -p rue-runner
-    target/debug/rue-runner \
+    ./buck2 build //crates/rue:rue //crates/rue-runner:rue-runner
+    RUE_BINARY=$(./buck2 build --show-output //crates/rue:rue | awk '{print $2}')
+    ./buck2 run //crates/rue-runner:rue-runner -- \
       --test-paths tests \
-      --rue-binary target/debug/rue \
+      --rue-binary $RUE_BINARY \
       --spec-file spec/norms.toml \
       --report-file test-report.json
 ```

@@ -18,8 +18,8 @@ A Language Server Protocol implementation for the Rue programming language.
 ### Starting the Server
 
 ```bash
-# With Cargo
-cargo run -p rue-lsp --bin rue-lsp
+# With Buck2
+./buck2 run //crates/rue-lsp
 
 # The server communicates via stdin/stdout using JSON-RPC
 ```

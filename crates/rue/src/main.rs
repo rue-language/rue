@@ -12,7 +12,7 @@ use tracing::{error, info, warn};
 #[derive(Debug, Clone, PartialEq)]
 enum EmitMode {
     Executable,
-    Assembly,
+    Assembly { stdout_only: bool },
     Mir { stdout_only: bool },
     CompileOnly,
 }
@@ -53,7 +53,7 @@ fn parser() -> impl Parser<Args> {
     let emit_mode =
         bpaf::construct!(emit_asm, emit_mir, compile_only).map(|(asm, mir, compile)| {
             match (asm, mir, compile) {
-                (true, false, false) => EmitMode::Assembly,
+                (true, false, false) => EmitMode::Assembly { stdout_only: false },
                 (false, true, false) => EmitMode::Mir { stdout_only: false },
                 (false, false, true) => EmitMode::CompileOnly,
                 (false, false, false) => EmitMode::Executable,
@@ -193,19 +193,23 @@ fn run(opts: Args) -> anyhow::Result<i32> {
         ));
     };
 
-    // Determine emit mode based on output flag for MIR
+    // Determine emit mode based on output flag for MIR or Assembly
     let emit_mode = match (&opts.emit_mode, &opts.output) {
         (EmitMode::Mir { .. }, Some(path)) if path.as_os_str() == "-" => {
             EmitMode::Mir { stdout_only: true }
+        }
+        (EmitMode::Assembly { .. }, Some(path)) if path.as_os_str() == "-" => {
+            EmitMode::Assembly { stdout_only: true }
         }
         _ => opts.emit_mode,
     };
 
     let output_path = match &emit_mode {
-        EmitMode::Assembly => Some(
+        EmitMode::Assembly { stdout_only: false } => Some(
             opts.output
                 .unwrap_or_else(|| input_path.with_extension("s")),
         ),
+        EmitMode::Assembly { stdout_only: true } => None,
         EmitMode::Mir { stdout_only: false } => Some(
             opts.output
                 .unwrap_or_else(|| input_path.with_extension("mir")),
@@ -271,21 +275,26 @@ fn run(opts: Args) -> anyhow::Result<i32> {
                 }
             }
         }
-        EmitMode::Assembly => {
+        EmitMode::Assembly { stdout_only } => {
             // Generate assembly
             match compile_file_to_assembly_with_options(&db, file, options) {
                 Ok(assembly) => {
-                    let output_path = output_path.unwrap(); // Safe because we set it above
-                    if let Err(e) = write_file_atomic(&output_path, assembly.as_bytes()) {
-                        return Err(anyhow::anyhow!(
-                            "Error writing output file '{}': {e}",
+                    if stdout_only {
+                        print!("{}", assembly);
+                        info!("Successfully generated assembly to stdout");
+                    } else {
+                        let output_path = output_path.unwrap(); // Safe because we set it above
+                        if let Err(e) = write_file_atomic(&output_path, assembly.as_bytes()) {
+                            return Err(anyhow::anyhow!(
+                                "Error writing output file '{}': {e}",
+                                output_path.display()
+                            ));
+                        }
+                        info!(
+                            "Successfully generated assembly to '{}'",
                             output_path.display()
-                        ));
+                        );
                     }
-                    info!(
-                        "Successfully generated assembly to '{}'",
-                        output_path.display()
-                    );
                 }
                 Err(error) => {
                     error!("Compilation failed: {error}");

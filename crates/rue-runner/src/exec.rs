@@ -333,6 +333,8 @@ impl TestExecutor {
     fn emit_mir(&self, file_path: &Utf8Path) -> Result<TestOutput> {
         let output = Command::new(&self.rue_binary)
             .arg("--emit-mir")
+            .arg("-o")
+            .arg("-")
             .arg(file_path)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -349,6 +351,8 @@ impl TestExecutor {
     fn emit_assembly(&self, file_path: &Utf8Path) -> Result<TestOutput> {
         let output = Command::new(&self.rue_binary)
             .arg("-S")
+            .arg("-o")
+            .arg("-")
             .arg(file_path)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())

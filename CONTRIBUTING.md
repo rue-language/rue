@@ -4,7 +4,9 @@ This guide is for human developers contributing to the Rue programming language.
 
 ## Project Overview
 
-Rue is a programming language that starts as a minimal subset of Rust, designed to explore cutting-edge compiler implementation techniques. The compiler is written in Rust and uses Buck2 as its build system.
+Rue is a programming language that starts as a minimal subset of Rust, designed
+to explore cutting-edge compiler implementation techniques. The compiler is
+written in Rust and uses Buck2 as its build system.
 
 **Platform Support**: Linux x86-64 only (generates ELF executables)
 
@@ -21,40 +23,39 @@ For implementation details, see [docs/implementation.md](./docs/implementation.m
 
 ## Development Commands
 
+### Installing dotslash (Buck2 dependency)
+
+```bash
+# Install dotslash (required for Buck2)
+curl -L https://github.com/facebook/dotslash/releases/latest/download/dotslash-linux.tar.xz | tar -xJ
+sudo install dotslash /usr/local/bin/
+```
+
 ### Building
-- `buck2 build //crates/rue:rue` - Build the main rue compiler
-- `buck2 build //crates/...` - Build all crates
-- `cargo build -p rue` - Build the compiler with Cargo
-- `cargo build --workspace` - Build all workspace crates
+- `./buck2 build //crates/rue:rue` - Build the main rue compiler
+- `./buck2 build //crates/...` - Build all crates
 
 ### Testing  
-- `buck2 test //crates/rue-lexer:test` - Run lexer tests
-- `buck2 test //crates/rue-parser:test` - Run parser tests
-- `buck2 test //crates/rue-semantic:test` - Run semantic analysis tests
-- `buck2 test //crates/rue-codegen:test` - Run code generation tests
-- `buck2 test //crates/rue-compiler:test` - Run compiler tests
-- `buck2 test //crates/rue:corpus_tests` - Run corpus tests
-- `buck2 test //crates/rue:type_system_tests` - Run type system tests
-- `buck2 test //crates/rue:` - Run all rue tests (integration + type system)
-- `buck2 test //crates/rue-runtime:test` - Run runtime tests
-- `cargo test -p rue` - Run integration and type system tests (compile and execute samples)
-- `cargo test -p rue-lsp` - Run LSP server tests (Buck2 has third-party dependency compilation issues)
-- `cargo test` - Run all tests across all packages
-- `buck2 test //crates/rue-runtime:test` - Run runtime tests
+- `./buck2 test //crates/rue-lexer:test` - Run lexer tests
+- `./buck2 test //crates/rue-parser:test` - Run parser tests
+- `./buck2 test //crates/rue-semantic:test` - Run semantic analysis tests
+- `./buck2 test //crates/rue-codegen:test` - Run code generation tests
+- `./buck2 test //crates/rue-compiler:test` - Run compiler tests
+- `./buck2 test //crates/rue:corpus_tests` - Run corpus tests
+- `./buck2 test //crates/rue:type_system_tests` - Run type system tests
+- `./buck2 test //crates/rue:` - Run all rue tests (integration + type system)
+- `./buck2 test //crates/rue-runtime:test` - Run runtime tests
+- `./buck2 test //crates/...` - Run all tests across all packages
 
 **Running Specific Test Subsets:**
-- `cargo test -p rue-lexer test_name` - Run specific lexer test
-- `cargo test -p rue-parser parse_` - Run all parser tests matching pattern
-- `buck2 test //crates/rue-lexer:test -- --filter keyword` - Filter Buck2 tests by keyword
-- `cargo test -p rue corpus_tests` - Run only corpus tests
-- `cargo test -p rue type_system_tests` - Run only type system tests
-- `cargo test -p rue runtime_tests` - Run only runtime tests
-- `cargo test -- --nocapture` - Show println! output during tests
+- `./buck2 test //crates/rue-lexer:test -- --filter keyword` - Filter Buck2 tests by keyword
+- `./buck2 test //crates/rue:corpus_tests` - Run only corpus tests
+- `./buck2 test //crates/rue:type_system_tests` - Run only type system tests
+- `./buck2 test //crates/rue-runtime:test` - Run only runtime tests
 
 ### Compiling and Running Programs
-- `buck2 run //crates/rue:rue samples/simple.rue` - Compile simple.rue to executable
-- `cargo run -p rue samples/simple.rue` - Compile with Cargo
-- `buck2 run //crates/rue:rue <source.rue>` - Compile any rue source file
+- `./buck2 run //crates/rue:rue samples/simple.rue` - Compile simple.rue to executable
+- `./buck2 run //crates/rue:rue <source.rue>` - Compile any rue source file
 - `./samples/simple` - Run the compiled executable (created in same directory as source)
 - `echo $?` - Check the exit code of the last program
 
@@ -62,9 +63,9 @@ For implementation details, see [docs/implementation.md](./docs/implementation.m
 - `-o <output>` - Specify output file name (defaults to input name without extension)
 - `--emit-asm` - Generate assembly file (.s) instead of executable
 - Examples:
-  - `cargo run -p rue samples/simple.rue -- --emit-asm` - Creates samples/simple.s
-  - `cargo run -p rue samples/simple.rue -- -o myprogram` - Creates executable named myprogram
-  - `cargo run -p rue samples/simple.rue -- --emit-asm -o output.s` - Creates assembly file output.s
+  - `./buck2 run //crates/rue:rue samples/simple.rue -- --emit-asm` - Creates samples/simple.s
+  - `./buck2 run //crates/rue:rue samples/simple.rue -- -o myprogram` - Creates executable named myprogram
+  - `./buck2 run //crates/rue:rue samples/simple.rue -- --emit-asm -o output.s` - Creates assembly file output.s
 
 ### Example Programs
 - `samples/simple.rue` - Basic program that returns 42
@@ -76,25 +77,44 @@ For implementation details, see [docs/implementation.md](./docs/implementation.m
 - `samples/while_demo.rue` - Advanced while loop patterns including nested control flow
 - `samples/if_demo.rue` - Conditional expression examples
 - `examples/comments.rue` - Demonstrates single-line and nested multi-line comments
-- Test compilation: `buck2 run //crates/rue:rue samples/simple.rue; ./samples/simple; echo "Exit code: $?"`
+- Test compilation: `./buck2 run //crates/rue:rue samples/simple.rue; ./samples/simple; echo "Exit code: $?"`
 
 ### LSP and IDE Support
-- `cargo run -p rue-lsp` - Start the Language Server Protocol server
+- `./buck2 run //crates/rue-lsp` - Start the Language Server Protocol server
 - `./install-extension.sh` - Install VS Code extension for syntax highlighting and error detection
 - The LSP provides real-time syntax error detection in any compatible editor
-- **Note**: LSP currently only works with Cargo due to Buck2 third-party dependency compilation issues
+- **Note**: LSP may have limitations with Buck2 due to third-party dependency compilation issues
+
+### Setting up rust-analyzer with Buck2
+
+For IDE support with rust-analyzer and Buck2:
+
+1. **Generate rust-project.json**:
+   ```bash
+   # Generate rust-project.json for rust-analyzer
+   ./buck2 run support/buck2:rust-project
+   ```
+
+2. **Configure your IDE**: 
+   - For VS Code: Install the rust-analyzer extension
+   - For other editors: Configure rust-analyzer to use the generated rust-project.json
+   
+3. **Keep rust-project.json updated**:
+   - Re-run `./buck2 run support/buck2:rust-project` after adding dependencies or crates
+   - Consider setting up a git hook to regenerate it automatically
+
+See [docs/buck2-ide-setup.md](docs/buck2-ide-setup.md) for detailed IDE configuration instructions.
 
 ### Managing Third-Party Dependencies
 
-All crates use `foo.workspace = true` for dependencies, and so all dependencies
-go into the root Cargo.toml.
+For Buck2, use the dependency management BXL scripts:
 
-For buck, you should then:
+- `./buck2 bxl //tools/bxl:deps.bxl:add -- --crate=<name>` - Get instructions for adding a dependency
+- `./buck2 bxl //tools/bxl:deps.bxl:update` - Update and regenerate Buck2 build files with reindeer
+- `./buck2 bxl //tools/bxl:deps.bxl:check` - Check dependency status
+- `./buck2 bxl //tools/bxl:deps.bxl:fixup -- --crate=<name>` - Create a fixup for a problematic crate
 
-- `buck2 run support/buck2:sync-cargo-deps`
-
-To sync up the Cargo.toml that lives in `third-party`. This will invoke reineer
-for you as well. At that point, you can add dependencies in BUCK files like
+See [docs/dev/dependencies.md](docs/dev/dependencies.md) for detailed instructions. After updating, you can add dependencies in BUCK files like
 this:
 
     "//third-party/rust:salsa",
@@ -102,6 +122,9 @@ this:
 Use `third-party/rust/fixups/<crate>/fixups.toml` to configure reindeer. This is
 often just `buildscript.run = false`, but you can take a look at
 https://github.com/gilescope/buck2-fixups/tree/main/fixups for some example fixups.
+
+See the [Buck2 Build System Guide](docs/buck2-guide.md) for detailed information about
+the Buck2 workflow and command mappings.
 
 ### Debugging Compiled Programs
 When compiled programs crash or behave unexpectedly:
@@ -127,12 +150,11 @@ When compiled programs crash or behave unexpectedly:
 When the rue compiler crashes, fails to compile, or produces incorrect output:
 
 **Compiler Crashes:**
-- `RUST_BACKTRACE=1 buck2 run //crates/rue:rue samples/simple.rue` - Get Rust backtrace
-- `RUST_BACKTRACE=full buck2 run //crates/rue:rue samples/simple.rue` - Get full backtrace with line numbers
-- `gdb --args ./target/debug/rue samples/simple.rue` - Debug with gdb if using cargo build
+- `RUST_BACKTRACE=1 ./buck2 run //crates/rue:rue samples/simple.rue` - Get Rust backtrace
+- `RUST_BACKTRACE=full ./buck2 run //crates/rue:rue samples/simple.rue` - Get full backtrace with line numbers
 
 **Compilation Issues:**
-- `buck2 run //crates/rue:rue samples/simple.rue -- --verbose` - Enable verbose output (if supported)
+- `./buck2 run //crates/rue:rue samples/simple.rue -- --verbose` - Enable verbose output (if supported)
 - Add `dbg!()` or `println!()` statements in compiler source for tracing
 - Check lexer output by examining `rue-lexer` tests
 - Check parser output by examining `rue-parser` tests
@@ -154,9 +176,9 @@ When the rue compiler crashes, fails to compile, or produces incorrect output:
 
 ### CI/CD Notes
 - The rue compiler requires a source file argument - it cannot run with no arguments
-- CI tests should use: `buck2 run //crates/rue:rue samples/simple.rue` 
+- CI tests should use: `./buck2 run //crates/rue:rue samples/simple.rue` 
 - Integration tests should compile and run programs to verify correctness
-- Always test both buck2 and cargo build systems for consistency
+- See [Buck2 IDE Setup Guide](docs/buck2-ide-setup.md) for IDE configuration
 
 ## Reindeer and Buck2 Dependency Management
 
@@ -165,6 +187,7 @@ Reindeer is used to convert Cargo.toml dependencies to Buck2 build files. Key co
 **Basic Usage:**
 - `reindeer buckify` - Generate Buck2 build files from Cargo dependencies
 - Must be run after any changes to Cargo.toml or fixups/
+- Must be run in the third-party/rust directory
 - Warnings about build scripts indicate missing fixups
 
 **Fixup Management:**
@@ -179,9 +202,9 @@ When adding new dependencies or getting build script warnings from `reindeer buc
 - `cargo_env = true` - Provide Cargo environment variables (e.g., CARGO_PKG_NAME) to build scripts
 
 **Workflow for new dependencies:**
-1. Add dependency to Cargo.toml
-2. Run `reindeer buckify` - note any warnings
-3. Create fixups/ directories and fixups.toml files for warned crates
-4. Run `reindeer buckify` again to apply fixups
-5. Test with `buck2 test //crates/...`
+1. Add dependency to third-party/rust/Cargo.toml
+2. Run `./buck2 bxl //tools/bxl:deps.bxl:update` and follow instructions
+3. Create fixups/ directories and fixups.toml files for any warnings
+4. Run `cd third-party/rust && ../../reindeer buckify` to apply fixups
+5. Test with `./buck2 test //crates/...`
 

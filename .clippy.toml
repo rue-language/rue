@@ -1,0 +1,31 @@
+# Clippy configuration for Rue compiler project
+# https://doc.rust-lang.org/clippy/configuration.html
+
+# Allow these lints that are too noisy for a compiler project
+avoid-breaking-exported-api = false
+msrv = "1.70.0"
+
+# Disable some pedantic lints that conflict with compiler patterns
+doc-valid-idents = [
+    "BXL", "AST", "HIR", "MIR", "PIR", "IR", "Rue", "LLVM"
+]
+
+# Type complexity is expected in compiler code
+type-complexity-threshold = 250
+
+# Allow longer function names for compiler phases
+max-fn-params-bools = 5
+max-struct-bools = 5
+
+# Compiler code often has deeply nested match expressions
+match-arm-blocks = true
+single-match-else = true
+
+# Allow some common patterns in compiler/language development
+module-name-repetitions = true
+struct-excessive-bools = true
+similar-names = true
+
+# Performance-related configuration
+vec-box-size-threshold = 4096
+trivial-copy-size-limit = 128

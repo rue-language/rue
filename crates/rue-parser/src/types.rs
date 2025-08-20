@@ -180,13 +180,13 @@ impl Parser {
         let open_span = open_bracket.span;
 
         let element_type = Box::new(self.parse_type()?);
-        
+
         // Expect semicolon separator
         self.expect_kind(&TokenKind::Semicolon)?;
 
         // Parse array size
         let size = self.expect_integer()?;
-        
+
         // Validate array size
         if let TokenKind::Integer(size_value) = size.kind {
             if size_value < 0 {
