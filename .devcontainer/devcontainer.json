@@ -27,6 +27,9 @@
   "workspaceMount": "source=${localWorkspaceFolder},target=/workspace,type=bind,consistency=delegated",
   "workspaceFolder": "/workspace",
   "postCreateCommand": "sudo /usr/local/bin/init-firewall.sh",
+  "features": {
+    "ghcr.io/facebook/devcontainers/features/dotslash:latest": {}
+  },
 
   // Auto-install VS Code extensions in the container context
   "customizations": {

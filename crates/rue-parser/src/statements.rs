@@ -53,7 +53,7 @@ impl Parser {
 
         // Skip comments before expecting closing brace
         self.skip_comments();
-        
+
         // Check for unclosed brace
         if self.is_at_end() && !self.check_kind(&TokenKind::RightBrace) {
             return Err(ParseError::unclosed_delimiter(
@@ -63,7 +63,7 @@ impl Parser {
                 self.source_id.clone(),
             ));
         }
-        
+
         let close_brace = self.expect_kind(&TokenKind::RightBrace)?;
         self.pop_context();
 
@@ -101,7 +101,7 @@ impl Parser {
     /// Parse a statement
     pub(crate) fn parse_statement(&mut self) -> ParseResult<StatementNode> {
         self.skip_comments();
-        
+
         match self.peek_kind() {
             TokenKind::Let => Ok(StatementNode::Let(self.parse_let_statement()?)),
             TokenKind::Return => Ok(StatementNode::Return(self.parse_return_statement()?)),
@@ -140,7 +140,7 @@ impl Parser {
         let leading_trivia = self.consume_trivia();
         let let_token = self.expect_kind(&TokenKind::Let)?;
         let pattern = self.expect_ident()?;
-        
+
         // Add variable to local scope for suggestions
         if let TokenKind::Ident(var_name) = &pattern.kind {
             self.suggestions.add_identifier("local", var_name.clone());
@@ -220,11 +220,11 @@ impl Parser {
     fn parse_if_statement(&mut self) -> ParseResult<IfStatementNode> {
         let leading_trivia = self.consume_trivia();
         let if_token = self.expect_kind(&TokenKind::If)?;
-        
+
         self.push_context(ParserContext::IfCondition);
         let condition = self.parse_expression()?;
         self.pop_context();
-        
+
         let then_branch = self.parse_block()?;
         let else_clause = if self.check_kind(&TokenKind::Else) {
             Some(self.parse_else_clause()?)
@@ -268,11 +268,11 @@ impl Parser {
     fn parse_while_statement(&mut self) -> ParseResult<WhileStatementNode> {
         let leading_trivia = self.consume_trivia();
         let while_token = self.expect_kind(&TokenKind::While)?;
-        
+
         self.push_context(ParserContext::WhileCondition);
         let condition = self.parse_expression()?;
         self.pop_context();
-        
+
         let body = self.parse_block()?;
 
         Ok(WhileStatementNode {

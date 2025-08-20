@@ -1,6 +1,0 @@
-[package]
-name = "rue-target"
-version.workspace = true
-edition.workspace = true
-
-[dependencies]

@@ -875,6 +875,19 @@ cargo.rust_library(
     crate = "criterion",
     crate_root = "criterion-0.5.1.crate/src/lib.rs",
     edition = "2018",
+    env = {
+        "CARGO_CRATE_NAME": "criterion",
+        "CARGO_MANIFEST_DIR": "criterion-0.5.1.crate",
+        "CARGO_PKG_AUTHORS": "Jorge Aparicio <japaricious@gmail.com>:Brook Heisler <brookheisler@gmail.com>",
+        "CARGO_PKG_DESCRIPTION": "Statistics-driven micro-benchmarking library",
+        "CARGO_PKG_NAME": "criterion",
+        "CARGO_PKG_REPOSITORY": "https://github.com/bheisler/criterion.rs",
+        "CARGO_PKG_VERSION": "0.5.1",
+        "CARGO_PKG_VERSION_MAJOR": "0",
+        "CARGO_PKG_VERSION_MINOR": "5",
+        "CARGO_PKG_VERSION_PATCH": "1",
+        "CARGO_PKG_VERSION_PRE": "",
+    },
     features = [
         "cargo_bench_support",
         "default",
@@ -1151,6 +1164,7 @@ cargo.rust_library(
         ),
     },
     visibility = [],
+    deps = [":libc-0.2.174"],
 )
 
 http_archive(
@@ -5078,10 +5092,6 @@ http_archive(
     name = "winapi-x86_64-pc-windows-gnu-0.4.0.crate",
     sha256 = "712e227841d057c1ee1cd2fb22fa7e5a5461ae8e48fa2ca79ec42cfc1931183f",
     strip_prefix = "winapi-x86_64-pc-windows-gnu-0.4.0",
-    sub_targets = [
-        "lib/libwinapi_ole32.a",
-        "lib/libwinapi_shell32.a",
-    ],
     urls = ["https://static.crates.io/crates/winapi-x86_64-pc-windows-gnu/0.4.0/download"],
     visibility = [],
 )
@@ -5092,22 +5102,6 @@ cargo.rust_library(
     crate = "winapi_x86_64_pc_windows_gnu",
     crate_root = "winapi-x86_64-pc-windows-gnu-0.4.0.crate/src/lib.rs",
     edition = "2015",
-    visibility = [],
-    deps = [
-        ":winapi-x86_64-pc-windows-gnu-0.4.0-extra_libraries-libwinapi_ole32.a",
-        ":winapi-x86_64-pc-windows-gnu-0.4.0-extra_libraries-libwinapi_shell32.a",
-    ],
-)
-
-prebuilt_cxx_library(
-    name = "winapi-x86_64-pc-windows-gnu-0.4.0-extra_libraries-libwinapi_ole32.a",
-    static_lib = ":winapi-x86_64-pc-windows-gnu-0.4.0.crate[lib/libwinapi_ole32.a]",
-    visibility = [],
-)
-
-prebuilt_cxx_library(
-    name = "winapi-x86_64-pc-windows-gnu-0.4.0-extra_libraries-libwinapi_shell32.a",
-    static_lib = ":winapi-x86_64-pc-windows-gnu-0.4.0.crate[lib/libwinapi_shell32.a]",
     visibility = [],
 )
 

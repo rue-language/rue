@@ -22,7 +22,7 @@ Key architectural decisions:
 - **Self-contained toolchain** generating ELF executables without external dependencies
 - **Multi-stage pipeline**: Lexer → Parser → Semantic Analysis → HIR → IR → x86-64 → ELF
 
-The compiler supports both Cargo and Buck2 build systems.
+The compiler uses Buck2 exclusively as its build system.
 
 ## Current Status
 
@@ -35,7 +35,7 @@ Rue is a fully functional compiler with a complete implementation pipeline:
 - **Executable Output**: Native ELF binaries (no external linker)
 - **Runtime**: Built-in functions for I/O, program control, and error handling
 - **IDE Support**: LSP server with diagnostics and VS Code extension
-- **Build Systems**: Both Cargo and Buck2 supported
+- **Build System**: Buck2 exclusively (via dotslash)
 
 **Platform Support**: Linux x86-64 only (generates ELF executables)
 
@@ -162,74 +162,75 @@ fn do_something(x: i32) {
 
 Numeric literals default to `i32` unless the context requires a different type.
 
-## Building and Running
+## Quick Start
+
+### Installing dotslash (Buck2 dependency)
+
+```bash
+# Install dotslash (required for Buck2)
+curl -L https://github.com/facebook/dotslash/releases/latest/download/dotslash-linux.tar.xz | tar -xJ
+sudo install dotslash /usr/local/bin/
+```
+
+### Building and Running
+
+```bash
+# Build the Rue compiler
+./buck2 build //crates/rue:rue
+
+# Compile a Rue program to executable
+./buck2 run //crates/rue:rue examples/basic/simple.rue
+
+# Run the compiled program (executable created in same directory as source)
+./examples/basic/simple; echo $?  # Shows the program's return value
+
+# Run all tests
+./buck2 test //crates/...
+```
+
+## Building and Running (Detailed)
 
 ### Compile Rue programs
 
 ```bash
 # Compile a program to executable
-cargo run -p rue examples/basic/simple.rue
+./buck2 run //crates/rue:rue examples/basic/simple.rue
 
 # Run the compiled program (executable created in same directory as source)
 ./examples/basic/simple; echo $?  # Shows the program's return value
 
 # Generate assembly instead of executable
-cargo run -p rue examples/basic/simple.rue -- --emit-asm
+./buck2 run //crates/rue:rue examples/basic/simple.rue -- --emit-asm
 # This creates examples/basic/simple.s with x86-64 assembly
 
 # Specify output file
-cargo run -p rue examples/basic/simple.rue -- -o myprogram
-cargo run -p rue examples/basic/simple.rue -- --emit-asm -o myprogram.s
+./buck2 run //crates/rue:rue examples/basic/simple.rue -- -o myprogram
+./buck2 run //crates/rue:rue examples/basic/simple.rue -- --emit-asm -o myprogram.s
 
 # Use experimental AST-based semantic analysis path (for testing)
-cargo run -p rue examples/basic/simple.rue -- --use-ast
+./buck2 run //crates/rue:rue examples/basic/simple.rue -- --use-ast
 # The default path is CST→HIR; --use-ast enables CST→AST→HIR
 
 # Try other example programs
-cargo run -p rue examples/basic/factorial.rue && ./examples/basic/factorial; echo $?
-cargo run -p rue examples/basic/fibonacci.rue && ./examples/basic/fibonacci; echo $?
-cargo run -p rue examples/control_flow/while_demo.rue && ./examples/control_flow/while_demo; echo $?
-cargo run -p rue examples/advanced/comments.rue && ./examples/advanced/comments; echo $?
-cargo run -p rue examples/control_flow/countdown.rue && ./examples/control_flow/countdown; echo $?
-cargo run -p rue examples/control_flow/assignment_demo.rue && ./examples/control_flow/assignment_demo; echo $?
-```
-
-### With Buck2
-
-```bash
-# Compile to executable
-buck2 run //crates/rue:rue examples/basic/simple.rue
-./examples/basic/simple; echo $?
-
-# Generate assembly
-buck2 run //crates/rue:rue examples/basic/simple.rue -- --emit-asm
-# Creates examples/basic/simple.s
+./buck2 run //crates/rue:rue examples/basic/factorial.rue && ./examples/basic/factorial; echo $?
+./buck2 run //crates/rue:rue examples/basic/fibonacci.rue && ./examples/basic/fibonacci; echo $?
+./buck2 run //crates/rue:rue examples/control_flow/while_demo.rue && ./examples/control_flow/while_demo; echo $?
+./buck2 run //crates/rue:rue examples/advanced/comments.rue && ./examples/advanced/comments; echo $?
+./buck2 run //crates/rue:rue examples/control_flow/countdown.rue && ./examples/control_flow/countdown; echo $?
+./buck2 run //crates/rue:rue examples/control_flow/assignment_demo.rue && ./examples/control_flow/assignment_demo; echo $?
 ```
 
 ### Running Tests
 
 ```bash
-# With Cargo
-cargo test                    # All tests
-cargo test -p rue-lexer       # Lexer tests
-cargo test -p rue-parser      # Parser tests (includes snapshot tests)
-cargo test -p rue-semantic    # Type checking tests
-cargo test -p rue-codegen     # Code generation tests
-cargo test -p rue             # Integration and type system tests
-
-# With Buck2
-buck2 test //crates/...       # All tests
-buck2 test //crates/rue-lexer:test    # Lexer tests
-buck2 test //crates/rue-parser:test   # Parser tests (includes snapshot tests)
-buck2 test //crates/rue-semantic:test # Type checking tests
-buck2 test //crates/rue-codegen:test  # Code generation tests
-buck2 test //crates/rue:snapshot_corpus_tests # Snapshot-based corpus tests
-buck2 test //crates/rue:type_system_tests # Type system tests
-buck2 test //crates/rue:              # All rue tests
-
-# Update snapshots when tests change
-UPDATE_SNAPSHOTS=1 cargo test -p rue-parser
-UPDATE_SNAPSHOTS=1 cargo test -p rue
+./buck2 test //crates/...       # All tests
+./buck2 test //crates/rue-lexer:test    # Lexer tests
+./buck2 test //crates/rue-parser:test   # Parser tests (includes snapshot tests)
+./buck2 test //crates/rue-semantic:test # Type checking tests
+./buck2 test //crates/rue-codegen:test  # Code generation tests
+./buck2 test //crates/rue:snapshot_corpus_tests # Snapshot-based corpus tests
+./buck2 test //crates/rue:type_system_tests # Type system tests
+./buck2 test //crates/rue:              # All rue tests
 ```
 
 ## IDE Support
@@ -247,8 +248,7 @@ Rue includes a Language Server Protocol (LSP) implementation providing:
 ./install-extension.sh
 
 # Start the language server for other editors
-cargo run -p rue-lsp          # With Cargo
-buck2 run //crates/rue-lsp    # With Buck2
+./buck2 run //crates/rue-lsp
 ```
 
 The VS Code extension provides:

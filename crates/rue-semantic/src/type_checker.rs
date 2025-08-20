@@ -977,7 +977,7 @@ impl TypeChecker {
                 self.push_scope();
 
                 // Track updates to incoming bindings during this branch (TODO: implement assignment tracking)
-                let _updates_else: HashMap<BindingId, ValueRef> = HashMap::new();
+                let updates_else: HashMap<BindingId, ValueRef> = HashMap::new();
 
                 for stmt in &else_block_node.statements {
                     self.check_statement(stmt, builder, None)?;
@@ -999,7 +999,7 @@ impl TypeChecker {
                     .get_current_block_id()
                     .expect("Should have a current block after processing else branch");
 
-                (else_val, else_ty, else_end, _updates_else)
+                (else_val, else_ty, else_end, updates_else)
             } else {
                 // No else clause - use unit value and current block, no updates
                 let unit_val = builder.emit_literal(0, RueType::Unit);

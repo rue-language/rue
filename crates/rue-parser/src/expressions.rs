@@ -147,7 +147,7 @@ impl Parser {
         let leading_trivia = self.consume_trivia();
         let open_paren = self.advance(); // consume '('
         let open_span = open_paren.span;
-        
+
         let mut arguments = Vec::new();
 
         while !self.check_kind(&TokenKind::RightParen) && !self.is_at_end() {
@@ -227,7 +227,7 @@ impl Parser {
         let leading_trivia = self.consume_trivia();
         let open_bracket = self.advance(); // consume '['
         let open_span = open_bracket.span;
-        
+
         let index = self.parse_expression()?;
 
         // Check for unclosed bracket
@@ -304,9 +304,7 @@ impl Parser {
                     }))
                 }
             }
-            TokenKind::LeftParen => {
-                self.parse_parenthesized_expression_or_tuple()
-            }
+            TokenKind::LeftParen => self.parse_parenthesized_expression_or_tuple(),
             TokenKind::LeftBracket => {
                 self.push_context(ParserContext::ArrayLiteral);
                 let result = self.parse_array_literal();

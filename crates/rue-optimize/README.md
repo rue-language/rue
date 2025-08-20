@@ -188,13 +188,13 @@ The framework provides comprehensive logging through the `tracing` crate:
 
 ```bash
 # Enable detailed optimization logging
-RUST_LOG=rue::optimize=debug cargo run
+RUST_LOG=rue::optimize=debug ./buck2 run //crates/rue:rue -- <file.rue>
 
 # Enable trace-level logging for specific components
-RUST_LOG=rue::optimize::stats=trace cargo run
+RUST_LOG=rue::optimize::stats=trace ./buck2 run //crates/rue:rue -- <file.rue>
 
 # Use structured logging with tree format
-RUST_LOG=rue::optimize=debug cargo run -- --log-format=tree
+RUST_LOG=rue::optimize=debug ./buck2 run //crates/rue:rue -- --log-format=tree <file.rue>
 ```
 
 ### Log Targets
@@ -245,7 +245,7 @@ The framework includes comprehensive tests covering:
 Run tests with:
 
 ```bash
-cargo test -p rue-optimize
+./buck2 test //crates/rue-optimize:test
 ```
 
 ## Future Extensions

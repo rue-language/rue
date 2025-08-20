@@ -4,6 +4,7 @@
 //! and comparing against snapshots.
 
 mod common;
+mod test_utils;
 
 use common::get_project_root;
 use rue_snapshot::{ExecSnapshotFormat as SnapshotFormat, ExecutionSnapshot, SnapshotTestBuilder};
@@ -12,6 +13,7 @@ use std::path::Path;
 use std::process::{Command, Stdio};
 use std::time::Duration;
 use tempfile::TempDir;
+use test_utils::get_rue_binary;
 
 /// Compile and run a Rue program, capturing output
 fn compile_and_run(source_path: &Path) -> Result<ExecutionSnapshot, String> {
@@ -28,24 +30,8 @@ fn compile_and_run(source_path: &Path) -> Result<ExecutionSnapshot, String> {
     let temp_dir = TempDir::new().map_err(|e| format!("Failed to create temp dir: {e}"))?;
     let exe_path = temp_dir.path().join("test_exe");
 
-    // Always build rue to ensure we're using the latest version
-    // Cargo will skip the build if nothing has changed
-    let build_output = Command::new("cargo")
-        .arg("build")
-        .arg("--release")
-        .arg("--bin")
-        .arg("rue")
-        .current_dir(project_root)
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .output()
-        .map_err(|e| format!("Failed to build rue compiler: {e}"))?;
-
-    if !build_output.status.success() {
-        return Err("Failed to build rue compiler".to_string());
-    }
-
-    let rue_binary = project_root.join("target/release/rue");
+    // Get the rue binary
+    let rue_binary = get_rue_binary();
 
     // Compile the program using the rue binary directly
     let compile_output = Command::new(&rue_binary)

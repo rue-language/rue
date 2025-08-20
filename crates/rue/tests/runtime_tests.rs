@@ -1,10 +1,12 @@
 mod common;
+mod test_utils;
 
 use common::get_project_root;
 use std::fs;
 use std::io::Write;
 use std::path::Path;
 use std::process::{Command, Stdio};
+use test_utils::get_rue_binary;
 
 /// Compile a Rue program from a string
 fn compile_rue_code(code: &str, output_path: &Path) -> Result<(), String> {
@@ -38,8 +40,8 @@ fn compile_rue_code(code: &str, output_path: &Path) -> Result<(), String> {
     }
 
     // Compile the rue program
-    let compile_output = Command::new("cargo")
-        .args(["run", "-p", "rue", "--quiet", "--"])
+    let rue_binary = get_rue_binary();
+    let compile_output = Command::new(&rue_binary)
         .arg(&temp_source)
         .arg("-o")
         .arg(output_path)

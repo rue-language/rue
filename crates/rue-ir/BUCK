@@ -1,7 +1,23 @@
 load("@prelude//rust:cargo_package.bzl", "cargo")
+load("//tools/rust:defs.bzl", "clippy_rust_library")
 
 cargo.rust_library(
     name = "rue-ir",
+    srcs = glob(["src/**/*.rs"]),
+    crate_root = "src/lib.rs",
+    edition = "2024",
+    deps = [
+        "//crates/rue-lexer:rue-lexer",
+        "//crates/rue-target:rue-target",
+        "//third-party/rust:rustc-hash",
+        "//third-party/rust:tracing",
+    ],
+    visibility = ["PUBLIC"],
+)
+
+# Clippy version of the library target
+clippy_rust_library(
+    name = "clippy",
     srcs = glob(["src/**/*.rs"]),
     crate_root = "src/lib.rs",
     edition = "2024",

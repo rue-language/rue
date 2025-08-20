@@ -1,0 +1,19 @@
+#!/usr/bin/env dotslash
+
+{
+  "name": "buck2",
+  "platforms": {
+    "linux-x86_64": {
+      "size": 31201052,
+      "hash": "blake3",
+      "digest": "a16921502a705c507617453d34988a77d0448c9a99b5f4364b00597b5f6fe646",
+      "format": "zst",
+      "path": "buck2-x86_64-unknown-linux-musl",
+      "providers": [
+        {
+          "url": "https://github.com/facebook/buck2/releases/download/2025-08-15/buck2-x86_64-unknown-linux-musl.zst"
+        }
+      ]
+    }
+  }
+}

@@ -1,0 +1,21 @@
+# Macro definitions for the Rue project
+load("@prelude//platforms:defs.bzl", "execution_platform")
+
+# Export our macro definitions
+export_file(
+    name = "rust_utils.bzl",
+    src = "rust_utils.bzl",
+    visibility = ["PUBLIC"],
+)
+
+export_file(
+    name = "clippy_utils.bzl", 
+    src = "clippy_utils.bzl",
+    visibility = ["PUBLIC"],
+)
+
+export_file(
+    name = "fmt_utils.bzl",
+    src = "fmt_utils.bzl", 
+    visibility = ["PUBLIC"],
+)

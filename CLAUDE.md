@@ -27,8 +27,15 @@ Example: "Clients are marked as failed in the `connectToServer` function in src/
 
 - **Platform**: Linux x86-64 only (generates ELF executables)
 - **Variables**: All variables are 64-bit integers
-- **Build System**: Buck2 primary, Cargo as fallback
+- **Build System**: Buck2 exclusively (requires dotslash)
 - **Version Control**: jj (Jujutsu) exclusively, never use git commands
+
+### Buck2 Setup Notes
+
+- Use `./buck2` with the dotslash bootstrap (requires dotslash installation)
+- Run `./buck2 run support/buck2:rust-project` to generate rust-project.json for IDE support
+- See [docs/buck2-ide-setup.md](docs/buck2-ide-setup.md) for complete IDE configuration
+- Refer to [docs/buck2-guide.md](docs/buck2-guide.md) for Buck2 command reference
 
 ### Documentation Workflow
 
@@ -36,21 +43,39 @@ When working on features:
 1. Check for existing `implementation-plan.md` in session directories
 2. Follow the Implementation Checklist with small, numbered tasks
 3. Update task checkboxes as work progresses
-4. Commit frequently with concise messages
+4. Use `./buck2 test //crates/...` to run tests after changes
+5. Commit frequently with concise messages using `jj commit -m "message"`
+
+### Dependency Management Quick Reference
+
+- `./buck2 bxl //tools/bxl:deps.bxl:update` - Update all dependencies
+- `./buck2 bxl //tools/bxl:deps.bxl:add -- --crate=<name>` - Add new dependency
+- `./buck2 bxl //tools/bxl:deps.bxl:check` - Check dependency status
+- `./buck2 bxl //tools/bxl:deps.bxl:fixup -- --crate=<name>` - Create fixup
+- See [docs/dev/dependencies.md](docs/dev/dependencies.md) for detailed instructions
 
 ### Testing Commands Quick Reference
 
-- `buck2 test //crates/rue-lexer:test` - Lexer tests
-- `buck2 test //crates/rue-parser:test` - Parser tests  
-- `buck2 test //crates/rue-semantic:test` - Semantic tests
-- `buck2 test //crates/rue-codegen:test` - Codegen tests
-- `buck2 test //crates/rue-compiler:test` - Compiler tests
-- `buck2 test //crates/rue:corpus_tests` - Corpus tests
-- `buck2 test //crates/rue:type_system_tests` - Type system tests
-- `buck2 test //crates/rue:` - All rue tests (corpus + type system)
-- `buck2 test //crates/...` - **All tests (equivalent to `cargo test`)**
-- `cargo test -p rue` - Integration tests
-- `cargo test` - All tests
+**Buck2 Commands:**
+- `./buck2 test //crates/rue-lexer:test` - Lexer tests
+- `./buck2 test //crates/rue-parser:test` - Parser tests  
+- `./buck2 test //crates/rue-semantic:test` - Semantic tests
+- `./buck2 test //crates/rue-codegen:test` - Codegen tests
+- `./buck2 test //crates/rue-compiler:test` - Compiler tests
+- `./buck2 test //crates/rue:corpus_tests` - Corpus tests
+- `./buck2 test //crates/rue:type_system_tests` - Type system tests
+- `./buck2 test //crates/rue:` - All rue tests (corpus + type system)
+- `./buck2 test //crates/...` - **All tests**
+
+### Code Formatting and Linting
+
+**Formatting (rustfmt):**
+- `./buck2 test //tools/rustfmt:fmt_check_test` - Check formatting without making changes
+- `./buck2 run //tools/rustfmt:fmt_fix` - Apply formatting fixes to all files
+
+**Linting (clippy):**
+- `./buck2 bxl //tools/bxl:clippy.bxl:all` - Run clippy on all crates
+- `./buck2 bxl //tools/bxl:clippy.bxl:check -- --targets //crates/rue-lexer:clippy` - Check specific target
 
 ### Debugging and Logging
 
@@ -67,11 +92,11 @@ The compiler uses structured logging via the `tracing` crate. Control logging wi
 - `RUST_LOG=rue::optimize=debug` - Optimization passes
 
 **CLI Flags:**
-- `rue -v` - Info level logging
-- `rue -vv` - Debug level logging  
-- `rue -vvv` - Trace level logging
-- `rue --log-format=tree` - Hierarchical log output (good for compiler phases)
-- `rue --log-filter="rue::mir=trace"` - Custom filter
+- `./buck2 run //crates/rue:rue <file.rue> -- -v` - Info level logging
+- `./buck2 run //crates/rue:rue <file.rue> -- -vv` - Debug level logging  
+- `./buck2 run //crates/rue:rue <file.rue> -- -vvv` - Trace level logging
+- `./buck2 run //crates/rue:rue <file.rue> -- --log-format=tree` - Hierarchical log output (good for compiler phases)
+- `./buck2 run //crates/rue:rue <file.rue> -- --log-filter="rue::mir=trace"` - Custom filter
 
 ## Version Control
 
@@ -151,7 +176,7 @@ When making significant changes to the project:
 
 1. **Update README.md** - Keep the README accurate with current features and capabilities
 2. **Verify technical accuracy** - Test all code examples and commands in the README
-3. **Update build instructions** - Ensure both Cargo and Buck2 examples work correctly
+3. **Update build instructions** - Ensure examples work correctly
 4. **Language feature updates** - When adding/removing language features, update the feature list
 5. **Sample programs** - Verify example programs still compile and run as described
 

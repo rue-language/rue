@@ -21,21 +21,24 @@ impl Parser {
     /// Create a new parser
     pub fn new(tokens: Vec<TokenNode>, source_id: SourceId) -> Self {
         let mut suggestions = SuggestionEngine::new();
-        
+
         // Add built-in identifiers for suggestions
-        suggestions.add_scope("builtins", vec![
-            "fn".to_string(),
-            "let".to_string(),
-            "if".to_string(),
-            "else".to_string(),
-            "while".to_string(),
-            "return".to_string(),
-            "true".to_string(),
-            "false".to_string(),
-            "i32".to_string(),
-            "i64".to_string(),
-            "bool".to_string(),
-        ]);
+        suggestions.add_scope(
+            "builtins",
+            vec![
+                "fn".to_string(),
+                "let".to_string(),
+                "if".to_string(),
+                "else".to_string(),
+                "while".to_string(),
+                "return".to_string(),
+                "true".to_string(),
+                "false".to_string(),
+                "i32".to_string(),
+                "i64".to_string(),
+                "bool".to_string(),
+            ],
+        );
 
         Self {
             tokens,
@@ -169,7 +172,7 @@ impl Parser {
                 self.peek().span,
                 self.source_id.clone(),
                 Some("expected integer literal"),
-            ))
+            )),
         }
     }
 
@@ -225,7 +228,7 @@ impl Parser {
 
     // These methods are implemented in other modules via impl blocks:
     // - parse_function() in items.rs
-    // - parse_struct_definition() in items.rs  
+    // - parse_struct_definition() in items.rs
     // - parse_statement() in statements.rs
     // - parse_expression() in expressions.rs
     // - parse_type() in types.rs

@@ -1,0 +1,19 @@
+#!/usr/bin/env dotslash
+
+{
+  "name": "rust-project",
+  "platforms": {
+    "linux-x86_64": {
+      "size": 1477086,
+      "hash": "sha256",
+      "digest": "145f965af627bc6bc0150dce6df5974e1e8b7a43445d3160d9ac6ca665f8ec07",
+      "format": "zst",
+      "path": "rust-project",
+      "providers": [
+        {
+          "url": "https://github.com/facebook/buck2/releases/download/latest/rust-project-x86_64-unknown-linux-gnu.zst"
+        }
+      ]
+    }
+  }
+}

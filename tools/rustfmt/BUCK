@@ -1,0 +1,17 @@
+sh_binary(
+    name = "fmt_check",
+    main = "fmt_check.sh",
+    visibility = ["PUBLIC"],
+)
+
+sh_binary(
+    name = "fmt_fix",
+    main = "fmt_fix.sh",
+    visibility = ["PUBLIC"],
+)
+
+sh_test(
+    name = "fmt_check_test",
+    test = ":fmt_check",   # treat the binary as a test
+    visibility = ["PUBLIC"],
+)

@@ -3,6 +3,7 @@
   prelude = prelude
   toolchains = toolchains
   none = none
+  macros = tools/macros
 
 [cell_aliases]
   config = prelude
@@ -22,10 +23,60 @@
 
 [build]
   execution_platforms = prelude//platforms:default
+  # Enable build optimizations
+  metadata_storage = sqlite
+  # Enable incremental builds
+  file_watcher = notify
+  # Optimize for development workflow
+  default_build_file_name = BUCK
+
+[cache]
+  # Enable local caching for faster rebuilds
+  mode = readwrite
+  # Cache directory (relative to project root)
+  dir = .buck-cache
+  # Enable action cache for faster repeated builds
+  action_cache = true
+  # Cache size limits (in MB)
+  max_cache_size_mb = 4096
+  # Enable artifact caching
+  artifact_cache = true
+
+[build_file_processing]
+  # Enable parallel processing of build files
+  enable_package_boundary_checks = true
+  # Optimize build file parsing
+  watchman_merge_base = true
 
 [rust]
   toolchain = toolchains//:rust
+  # Enable Rust-specific optimizations
+  failure_filter = true
+  # Enable incremental compilation
+  incremental = true
 
 [python_bootstrap]
   toolchain = toolchains//:python_bootstrap
+
+[project]
+  # Project-specific settings
+  check_user_defined_attributes = true
+  # Enable more detailed error reporting
+  enable_target_compatible_with = true
+
+[log]
+  # Enable structured logging for better debugging
+  build_id_dir = .buck-logs
+  # Keep recent build logs
+  max_log_size_bytes = 104857600  # 100MB
+
+[cli]
+  # Default CLI behavior optimizations
+  alias_all_targets_in_directory = true
+  # Enable command completion hints
+  color = auto
+
+[bxl]
+  # BXL (Buck Extension Language) settings
+  enable_bxl_function_serialization = true
 

@@ -1,0 +1,3 @@
+# Fix criterion to provide CARGO_PKG_VERSION environment variables
+# These are used by criterion to communicate protocol versions
+cargo_env = true

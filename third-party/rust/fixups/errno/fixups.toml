@@ -1,0 +1,2 @@
+# Fix errno to include libc dependency on all Unix platforms
+extra_deps = [":libc-0.2.174"]
