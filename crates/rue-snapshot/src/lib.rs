@@ -18,6 +18,7 @@ use std::fs;
 use std::io::{self, Write};
 use std::path::PathBuf;
 use tempfile::NamedTempFile;
+use tracing::{debug, trace};
 
 pub mod execution;
 pub mod inline;
@@ -262,10 +263,10 @@ impl Snapshot {
 
         // Debug logging for troubleshooting
         if env::var("RUE_DEBUG_SNAPSHOTS").is_ok() {
-            eprintln!("Looking for snapshot at: {}", snapshot_path);
-            eprintln!("File exists: {}", snapshot_path.exists());
-            eprintln!("CWD: {:?}", env::current_dir());
-            eprintln!(
+            debug!("Looking for snapshot at: {}", snapshot_path);
+            debug!("File exists: {}", snapshot_path.exists());
+            debug!("CWD: {:?}", env::current_dir());
+            debug!(
                 "RUST_TEST_RESOURCES_JSON: {:?}",
                 env::var("RUST_TEST_RESOURCES_JSON")
             );
@@ -426,7 +427,7 @@ impl Snapshot {
             };
 
             if env::var("RUE_DEBUG_SNAPSHOTS").is_ok() {
-                eprintln!("Buck2: Found {} -> {}", logical_path, resolved_path);
+                debug!("Buck2: Found {} -> {}", logical_path, resolved_path);
             }
 
             return Ok(resolved_path);
@@ -482,10 +483,10 @@ impl Snapshot {
 
         // Debug output for Buck2 troubleshooting
         if env::var("BUCK_BUILD_ID").is_ok() && env::var("RUE_DEBUG_SNAPSHOTS").is_ok() {
-            eprintln!("Buck2 snapshot path: {}", path);
-            eprintln!("Snapshot dir: {}", self.config.snapshot_dir);
-            eprintln!("CWD: {:?}", env::current_dir());
-            eprintln!(
+            debug!("Buck2 snapshot path: {}", path);
+            debug!("Snapshot dir: {}", self.config.snapshot_dir);
+            debug!("CWD: {:?}", env::current_dir());
+            debug!(
                 "RUST_TEST_RESOURCES_JSON: {:?}",
                 env::var("RUST_TEST_RESOURCES_JSON")
             );

@@ -19,6 +19,13 @@ export_file(
     visibility = ["PUBLIC"],
 )
 
+# Snapshot testing BXL script
+export_file(
+    name = "snapshots.bxl",
+    src = "snapshots.bxl",
+    visibility = ["PUBLIC"],
+)
+
 # Convenience aliases for common BXL operations
 alias(
     name = "clippy",
@@ -35,5 +42,11 @@ alias(
 alias(
     name = "rust-project",
     actual = ":rust_project.bxl",
+    visibility = ["PUBLIC"],
+)
+
+alias(
+    name = "snapshots",
+    actual = ":snapshots.bxl",
     visibility = ["PUBLIC"],
 )

@@ -1,5 +1,5 @@
 load("@prelude//rust:cargo_package.bzl", "cargo")
-load("//tools/rust:defs.bzl", "clippy_rust_library")
+load("//tools/rust:defs.bzl", "clippy_rust_library", "rust_snapshot_tests", "rust_test")
 
 cargo.rust_binary(
     name = "rue",
@@ -36,7 +36,7 @@ clippy_rust_library(
     visibility = ["PUBLIC"],
 )
 
-rust_test(
+rust_snapshot_tests(
     name = "snapshot_corpus_tests",
     srcs = glob(["tests/**/*.rs"]),
     crate_root = "tests/snapshot_corpus_tests.rs",
@@ -52,6 +52,7 @@ rust_test(
         "CARGO_MANIFEST_DIR": ".",
         "CARGO_BIN_EXE_rue": "$(location :rue)",
     },
+    snapshot_dir = "tests/snapshots/corpus",
 )
 
 rust_test(
@@ -225,7 +226,7 @@ rust_test(
     },
 )
 
-rust_test(
+rust_snapshot_tests(
     name = "cli_tests",
     srcs = glob(["tests/**/*.rs"]),
     crate_root = "tests/cli_tests.rs",
@@ -238,4 +239,5 @@ rust_test(
         "CARGO_MANIFEST_DIR": ".",
         "CARGO_BIN_EXE_rue": "$(location :rue)",
     },
+    snapshot_dir = "tests/snapshots/cli",
 )

@@ -143,7 +143,7 @@ def rust_test(name, env = None, rustc_flags = None, **kwargs):
         optimization = "0",  # Debug builds for tests
     )
     
-    cargo.rust_test(
+    native.rust_test(
         name = name,
         env = attrs["env"],
         rustc_flags = attrs["rustc_flags"],
@@ -229,5 +229,112 @@ def rust_corpus_test(name, srcs, corpus_dir, **kwargs):
         resources = [corpus_dir],
         env = attrs["env"],
         rustc_flags = attrs["rustc_flags"],
+        **kwargs
+    )
+
+# Snapshot testing utilities
+def rust_snapshot_test(name, env = None, rustc_flags = None, snapshot_dir = None, **kwargs):
+    """
+    Create a standard Rust snapshot test that fails when snapshots don't match.
+    
+    Args:
+        name: Target name
+        env: Additional environment variables
+        rustc_flags: Additional rustc flags
+        snapshot_dir: Directory containing snapshot files (auto-detected if not provided)
+        **kwargs: Additional arguments passed to rust_test
+    """
+    test_env = {
+        "RUST_TEST_THREADS": "1",  # Deterministic test execution
+        "RUST_BACKTRACE": "full",  # Full backtraces in tests
+    }
+    
+    if snapshot_dir:
+        test_env["RUE_SNAPSHOT_DIR"] = snapshot_dir
+    
+    if env:
+        test_env.update(env)
+    
+    attrs = _common_rust_attrs(
+        env = test_env,
+        rustc_flags = rustc_flags,
+        optimization = "0",
+    )
+    
+    native.rust_test(
+        name = name,
+        env = attrs["env"],
+        rustc_flags = attrs["rustc_flags"],
+        **kwargs
+    )
+
+def rust_snapshot_update(name, env = None, rustc_flags = None, snapshot_dir = None, **kwargs):
+    """
+    Create a Rust snapshot test target that updates snapshots when run.
+    This is equivalent to running the test with UPDATE_SNAPSHOTS=1.
+    
+    Usage: ./buck2 test //crates/rue-parser:update_snapshots
+    
+    Args:
+        name: Target name (typically "update_snapshots" or similar)
+        env: Additional environment variables
+        rustc_flags: Additional rustc flags
+        snapshot_dir: Directory containing snapshot files (auto-detected if not provided)
+        **kwargs: Additional arguments passed to rust_test
+    """
+    test_env = {
+        "UPDATE_SNAPSHOTS": "1",  # Enable snapshot updates
+        "RUST_TEST_THREADS": "1",  # Deterministic test execution
+        "RUST_BACKTRACE": "full",  # Full backtraces in tests
+    }
+    
+    if snapshot_dir:
+        test_env["RUE_SNAPSHOT_DIR"] = snapshot_dir
+    
+    if env:
+        test_env.update(env)
+    
+    attrs = _common_rust_attrs(
+        env = test_env,
+        rustc_flags = rustc_flags,
+        optimization = "0",
+    )
+    
+    native.rust_test(
+        name = name,
+        env = attrs["env"],
+        rustc_flags = attrs["rustc_flags"],
+        **kwargs
+    )
+
+def rust_snapshot_tests(name, env = None, rustc_flags = None, snapshot_dir = None, **kwargs):
+    """
+    Create both regular snapshot tests and snapshot update targets.
+    This creates two targets:
+    - {name}: Regular test that fails on snapshot mismatch
+    - {name}_update: Test that updates snapshots when run
+    
+    Args:
+        name: Base target name
+        env: Additional environment variables
+        rustc_flags: Additional rustc flags
+        snapshot_dir: Directory containing snapshot files (auto-detected if not provided)
+        **kwargs: Additional arguments passed to both test targets
+    """
+    # Regular snapshot test
+    rust_snapshot_test(
+        name = name,
+        env = env,
+        rustc_flags = rustc_flags,
+        snapshot_dir = snapshot_dir,
+        **kwargs
+    )
+    
+    # Snapshot update test
+    rust_snapshot_update(
+        name = name + "_update",
+        env = env,
+        rustc_flags = rustc_flags,
+        snapshot_dir = snapshot_dir,
         **kwargs
     )

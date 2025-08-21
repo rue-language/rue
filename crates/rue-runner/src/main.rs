@@ -18,13 +18,11 @@ fn main() -> Result<()> {
             Ok(())
         }
         Err(e) => {
-            error!("Test run failed: {:?}", e);
-            // Print the full error chain
-            eprintln!("\nError details:");
-            eprintln!("  {}", e);
+            // Log the full error chain
+            error!("Test run failed: {}", e);
             let mut source = e.source();
             while let Some(err) = source {
-                eprintln!("  Caused by: {}", err);
+                error!("  Caused by: {}", err);
                 source = err.source();
             }
             std::process::exit(1);

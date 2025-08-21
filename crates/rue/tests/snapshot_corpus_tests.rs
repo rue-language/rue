@@ -158,7 +158,7 @@ mod batch_tests {
                     if path.is_dir() {
                         test_directory(&path);
                     } else if path.extension().and_then(|s| s.to_str()) == Some("rue") {
-                        println!("Testing: {}", path.display());
+                        eprintln!("Testing: {}", path.display());
 
                         let test_name = test_name_from_path(&path);
                         let result = compile_and_run(&path).unwrap_or_else(|_| {
