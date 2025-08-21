@@ -3,12 +3,9 @@ set -euo pipefail
 
 edition="${1:-2024}"
 
-# Prefer git for speed and correctness; fall back to find if not a git repo.
-if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-  mapfile -t files < <(git ls-files 'crates/**/*.rs')
-else
-  mapfile -t files < <(find crates -type f -name '*.rs')
-fi
+# Always use find to get actual files on disk
+# This works correctly with both git and jj
+mapfile -t files < <(find crates -type f -name '*.rs')
 
 if [[ ${#files[@]} -eq 0 ]]; then
   echo "No Rust files under crates/."
