@@ -243,7 +243,6 @@ fn run(opts: Args) -> anyhow::Result<i32> {
             match compile_file_with_diagnostics(&db, file, options) {
                 Ok(_) => {
                     info!("Compilation check passed");
-                    println!("Compilation check passed");
                 }
                 Err(diagnostics) => {
                     print_diagnostics(&diagnostics, &file, &db, use_color);
@@ -407,7 +406,8 @@ fn print_diagnostics(
     let source_path = file.path(db);
     source_manager.add_source(source_path, source_text);
 
-    eprintln!("Compilation failed:\n");
+    error!("Compilation failed");
+    eprintln!(); // Keep blank line for formatting
     for diagnostic in diagnostics {
         if let Ok(formatted) = formatter.format_diagnostic(diagnostic, &source_manager) {
             eprintln!("{formatted}\n");

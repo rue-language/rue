@@ -32,6 +32,4 @@ fn main() -> i32 {
         hir.hir.block_arena.len() >= 4,
         "Should have at least 4 blocks (entry, header, body, exit)"
     );
-
-    println!("✓ While loop semantic analysis passed!");
 }

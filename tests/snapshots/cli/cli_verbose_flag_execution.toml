@@ -1,7 +1,5 @@
 exit_code = 0
-stdout = """
-Compilation check passed
-"""
+stdout = ""
 stderr = """
   [TIMESTAMP]  INFO rue: Starting compilation of [TEMP_DIR]
     at crates/rue/src/main.rs:233

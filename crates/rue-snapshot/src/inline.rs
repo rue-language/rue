@@ -6,6 +6,7 @@
 use anyhow::{Context, Result};
 use once_cell::sync::Lazy;
 use std::sync::Mutex;
+use tracing::debug;
 
 /// Registry of inline snapshots for updating
 static INLINE_SNAPSHOTS: Lazy<Mutex<Vec<InlineSnapshotUpdate>>> =
@@ -57,8 +58,8 @@ impl InlineSnapshot {
                 new_value: actual.to_string(),
             });
 
-            eprintln!(
-                "Inline snapshot update queued: {}:{}\n  old: {:?}\n  new: {:?}",
+            debug!(
+                "Inline snapshot update queued: {}:{} old: {:?} new: {:?}",
                 self.file, self.line, expected, actual
             );
 
