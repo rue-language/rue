@@ -128,7 +128,7 @@ impl TypeChecker {
         let tc_names: HashSet<_> = self
             .variable_scopes
             .last()
-            .unwrap()
+            .expect("variable_scopes should have at least one scope")
             .variables
             .keys()
             .cloned()
@@ -1204,7 +1204,7 @@ impl TypeChecker {
             // The header block has parameters for loop-carried variables
             // They're automatically in scope via set_insertion_point
             self.check_expression_with_hint(&while_expr.condition, builder, Some(&RueType::Bool))
-                .unwrap()
+                .expect("while loop condition should type check successfully")
         });
 
         // No need to prepare exit from header - args are passed explicitly in while_set_cond
@@ -1716,7 +1716,7 @@ impl TypeChecker {
                 }
 
                 // Create empty array literal with the correct type
-                let array_type = type_hint.unwrap().clone();
+                let array_type = type_hint.expect("type_hint should be Some(Array) in this branch").clone();
                 return Ok(builder.build_array_literal(vec![], array_type));
             } else {
                 return Err(SemanticError {
@@ -1762,7 +1762,7 @@ impl TypeChecker {
         }
 
         // Create the array type and build the literal
-        let element_type = element_type.unwrap(); // We know this is Some because we validated elements
+        let element_type = element_type.expect("element_type should be Some after validating elements");
         let array_size = element_insts.len();
         let array_type = RueType::Array(Box::new(element_type), array_size);
 

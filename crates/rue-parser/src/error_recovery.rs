@@ -321,7 +321,7 @@ mod tests {
 
     fn tokenize(source: &str) -> Vec<TokenNode> {
         let mut lexer = Lexer::new(source);
-        lexer.tokenize().unwrap()
+        lexer.tokenize().expect("tokenization should succeed in tests")
     }
 
     #[test]

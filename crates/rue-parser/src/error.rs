@@ -34,7 +34,7 @@ impl ParseError {
             if tokens.len() == 2 {
                 format!("`{}` or `{}`", tokens[0], tokens[1])
             } else {
-                let (last, rest) = tokens.split_last().unwrap();
+                let (last, rest) = tokens.split_last().expect("tokens should have at least 3 elements");
                 format!(
                     "one of {}, or `{}`",
                     rest.iter()

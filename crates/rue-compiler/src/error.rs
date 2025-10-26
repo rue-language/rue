@@ -35,7 +35,7 @@ impl RueError {
     pub fn from_diagnostics(diagnostics: Vec<Diagnostic>) -> Self {
         match diagnostics.len() {
             0 => panic!("Cannot create RueError from empty diagnostics"),
-            1 => RueError::Diagnostic(Box::new(diagnostics.into_iter().next().unwrap())),
+            1 => RueError::Diagnostic(Box::new(diagnostics.into_iter().next().expect("diagnostics should have exactly one element"))),
             _ => RueError::MultipleErrors(diagnostics),
         }
     }

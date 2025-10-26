@@ -958,7 +958,10 @@ impl Parser {
         if !self.is_at_end() {
             self.current += 1;
         }
-        self.tokens.get(self.current - 1).unwrap().clone()
+        self.tokens.get(self.current.saturating_sub(1)).cloned().unwrap_or_else(|| TokenNode {
+            kind: TokenKind::Eof,
+            span: rue_lexer::Span { start: 0, end: 0 },
+        })
     }
 
     pub(crate) fn check_kind(&self, kind: &TokenKind) -> bool {

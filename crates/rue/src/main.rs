@@ -258,7 +258,7 @@ fn run(opts: Args) -> anyhow::Result<i32> {
                         println!("{}", mir_output);
                         info!("Successfully emitted MIR to stdout");
                     } else {
-                        let output_path = output_path.unwrap(); // Safe because we set it above
+                        let output_path = output_path.expect("output_path should be Some for non-stdout MIR emission");
                         if let Err(e) = write_file_atomic(&output_path, mir_output.as_bytes()) {
                             return Err(anyhow::anyhow!(
                                 "Error writing output file '{}': {e}",
@@ -282,7 +282,7 @@ fn run(opts: Args) -> anyhow::Result<i32> {
                         print!("{}", assembly);
                         info!("Successfully generated assembly to stdout");
                     } else {
-                        let output_path = output_path.unwrap(); // Safe because we set it above
+                        let output_path = output_path.expect("output_path should be Some for non-stdout assembly emission");
                         if let Err(e) = write_file_atomic(&output_path, assembly.as_bytes()) {
                             return Err(anyhow::anyhow!(
                                 "Error writing output file '{}': {e}",
@@ -303,7 +303,7 @@ fn run(opts: Args) -> anyhow::Result<i32> {
         }
         EmitMode::Executable => {
             // Generate executable using diagnostic-enabled compilation
-            let output_path = output_path.unwrap(); // Safe because we set it above
+            let output_path = output_path.expect("output_path should be Some for executable emission");
             match compile_file_with_diagnostics(&db, file, options) {
                 Ok(executable) => {
                     if let Err(e) = write_executable_atomic(&output_path, &executable) {
@@ -339,7 +339,7 @@ fn write_file_atomic(path: &Path, data: &[u8]) -> std::io::Result<()> {
         parent.join(format!(
             ".tmp.{}.{}",
             std::process::id(),
-            path.file_name().unwrap().to_string_lossy()
+            path.file_name().expect("path should have a file name").to_string_lossy()
         ))
     } else {
         PathBuf::from(format!(

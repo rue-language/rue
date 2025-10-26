@@ -133,7 +133,7 @@ impl Parser {
         if !self.check_kind(&TokenKind::Comma) {
             // Single type in parentheses - just return it unwrapped
             let close_paren = self.expect_kind(&TokenKind::RightParen)?;
-            return Ok(element_types.into_iter().next().unwrap());
+            return Ok(element_types.into_iter().next().expect("element_types should have exactly one element"));
         }
 
         // It's a tuple - parse remaining elements

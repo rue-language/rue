@@ -178,7 +178,7 @@ pub mod text {
                 ]
                 .into_iter()
                 .min()
-                .unwrap();
+                .expect("min of non-empty array should always return Some");
             }
         }
 

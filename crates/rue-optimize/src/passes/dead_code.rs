@@ -80,7 +80,7 @@ impl DeadCodeElimination {
             used_temps: self.used_temps.clone(),
             transformations: 0,
         };
-        *func = remover.fold_function(func.clone()).unwrap();
+        *func = remover.fold_function(func.clone()).expect("dead assignment removal should not fail");
         self.transformations += remover.transformations;
 
         // Third pass: remove unreachable blocks

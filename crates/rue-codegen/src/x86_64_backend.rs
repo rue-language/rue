@@ -2097,7 +2097,7 @@ impl<'a> X8664Codegen<'a> {
                     let computed_size = return_size.copied(); // Use computed size if available
                     self.handle_aggregate_return(
                         *dest_vreg,
-                        return_type.unwrap(),
+                        return_type.expect("return_type should be Some in this match arm"),
                         rax_temp_reg,
                         rdx_temp_reg,
                         computed_size,

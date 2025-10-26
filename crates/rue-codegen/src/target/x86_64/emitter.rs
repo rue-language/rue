@@ -83,13 +83,23 @@ impl X86Emitter {
         self.resolve_fixups()?;
 
         // Return .text section data
-        let text_data = &self.sections.get(&SectionType::Text).unwrap().data;
+        let text_data = &self.sections
+            .get(&SectionType::Text)
+            .ok_or_else(|| "Internal error: .text section not found".to_string())?
+            .data;
         Ok(text_data.clone())
     }
 
     /// Get the current section's data buffer for writing
     fn current_section_data(&mut self) -> &mut Vec<u8> {
-        &mut self.sections.get_mut(&self.current_section).unwrap().data
+        &mut self.sections
+            .entry(self.current_section.clone())
+            .or_insert_with(|| SectionInfo {
+                section_type: self.current_section.clone(),
+                data: Vec::new(),
+                labels: HashMap::new(),
+            })
+            .data
     }
 
     fn emit_instruction(&mut self, instr: &X8664Instr) -> Result<(), String> {
@@ -486,14 +496,17 @@ impl X86Emitter {
             }
 
             X8664Instr::Label { id } => {
-                let current_pos = self.sections.get(&self.current_section).unwrap().data.len();
+                let current_pos = self.sections
+                    .get(&self.current_section)
+                    .ok_or_else(|| format!("Internal error: current section {:?} not found", self.current_section))?
+                    .data.len();
                 self.label_positions
                     .insert(*id, (self.current_section.clone(), current_pos));
 
                 // Update section labels
                 self.sections
                     .get_mut(&self.current_section)
-                    .unwrap()
+                    .ok_or_else(|| format!("Internal error: current section {:?} not found", self.current_section))?
                     .labels
                     .insert(*id, current_pos);
             }
@@ -783,13 +796,25 @@ impl X86Emitter {
                         // In .bss, just track the size - no actual data in file
                         // For BSS sections, we use the data.len() to track the virtual size
                         // but we don't store actual bytes
-                        let section = self.sections.get_mut(&SectionType::Bss).unwrap();
+                        let section = self.sections
+                            .entry(SectionType::Bss)
+                            .or_insert_with(|| SectionInfo {
+                                section_type: SectionType::Bss,
+                                data: Vec::new(),
+                                labels: HashMap::new(),
+                            });
                         // Extend data field to track size, but this data won't be written to file
                         section.data.resize(section.data.len() + *count as usize, 0);
                     }
                     _ => {
                         // In other sections, reserve actual zero bytes
-                        let section = self.sections.get_mut(&self.current_section).unwrap();
+                        let section = self.sections
+                            .entry(self.current_section.clone())
+                            .or_insert_with(|| SectionInfo {
+                                section_type: self.current_section.clone(),
+                                data: Vec::new(),
+                                labels: HashMap::new(),
+                            });
                         section.data.resize(section.data.len() + *count as usize, 0);
                     }
                 }
@@ -846,7 +871,10 @@ impl X86Emitter {
             };
 
             let offset_bytes = offset.to_le_bytes();
-            let section_data = &mut self.sections.get_mut(section).unwrap().data;
+            let section_data = &mut self.sections
+                .get_mut(section)
+                .ok_or_else(|| format!("Internal error: section {:?} not found during fixup", section))?
+                .data;
             for (i, &byte) in offset_bytes.iter().enumerate() {
                 section_data[fixup_pos + i] = byte;
             }
@@ -1129,7 +1157,10 @@ impl X86Emitter {
         // The actual function positions are already added above in the function_labels loop.
 
         // Return .text section data
-        let text_data = &self.sections.get(&SectionType::Text).unwrap().data;
+        let text_data = self.sections
+            .get(&SectionType::Text)
+            .map(|s| s.data.as_slice())
+            .unwrap_or(&[]);
         (text_data, symbols)
     }
 

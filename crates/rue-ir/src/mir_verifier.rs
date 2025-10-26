@@ -427,7 +427,7 @@ impl<'ctx> MirVerifier<'ctx> {
 
         for (&child, &parent_opt) in &idom {
             if let Some(parent) = parent_opt {
-                dom_children.get_mut(&parent).unwrap().push(child);
+                dom_children.get_mut(&parent).expect("parent should exist in dom_children").push(child);
             }
         }
 
