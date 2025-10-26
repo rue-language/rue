@@ -27,8 +27,7 @@
 //! - ✅ Memory allocation strategies
 //!
 //! ### Known Limitations:
-//! - 🔄 Struct field names are mapped to offsets via heuristics (x=0, y=8, z=16, etc.)
-//! - 🔄 Struct size assumes 2 x i64 fields (16 bytes) - needs proper struct definition lookup
+//! - None! Struct layout is fully implemented with proper field offset and size calculation
 //!
 //! ### Test Organization:
 //!
