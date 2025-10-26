@@ -1,5 +1,5 @@
 load("@prelude//rust:cargo_package.bzl", "cargo")
-load("//tools/rust:defs.bzl", "clippy_rust_library", "rust_snapshot_tests", "rust_snapshot_update")
+load("//tools/rust:defs.bzl", "clippy_rust_library")
 
 cargo.rust_library(
     name = "rue-parser",
@@ -50,23 +50,25 @@ rust_test(
         "tests/snapshots/**/*.snap",
     ]),
     env = {
-        "RUE_SNAPSHOT_DIR": "src/snapshots",
+        "INSTA_UPDATE": "no",
     },
     deps = [
         "//crates/rue-ast:rue-ast",
         "//crates/rue-diagnostic:rue-diagnostic",
+        "//crates/rue-insta-utils:rue-insta-utils",
         "//crates/rue-ir:rue-ir",
         "//crates/rue-lexer:rue-lexer",
-        "//crates/rue-snapshot:rue-snapshot",
-        "//third-party/rust:thiserror",
+        "//third-party/rust:insta",
+        "//third-party/rust:regex",
         "//third-party/rust:serde",
         "//third-party/rust:serde_json",
+        "//third-party/rust:thiserror",
         "//third-party/rust:toml",
-        "//third-party/rust:regex",
     ],
 )
 
-rust_snapshot_tests(
+# Aggregate types tests
+rust_test(
     name = "test_aggregate_types",
     srcs = glob(["tests/**/*.rs", "src/**/*.rs"]),
     crate_root = "tests/test_aggregate_types.rs",
@@ -74,14 +76,35 @@ rust_snapshot_tests(
     resources = glob([
         "tests/snapshots/**/*.snap",
     ]),
-    snapshot_dir = "tests/snapshots",
+    env = {
+        "INSTA_UPDATE": "no",
+    },
     deps = [
         ":rue-parser",
-        "//crates/rue-snapshot:rue-snapshot",
-        "//third-party/rust:anyhow",
+        "//crates/rue-insta-utils:rue-insta-utils",
+        "//third-party/rust:insta",
     ],
 )
 
+rust_test(
+    name = "test_aggregate_types_update",
+    srcs = glob(["tests/**/*.rs", "src/**/*.rs"]),
+    crate_root = "tests/test_aggregate_types.rs",
+    edition = "2024",
+    resources = glob([
+        "tests/snapshots/**/*.snap",
+    ]),
+    env = {
+        "INSTA_UPDATE": "always",
+    },
+    deps = [
+        ":rue-parser",
+        "//crates/rue-insta-utils:rue-insta-utils",
+        "//third-party/rust:insta",
+    ],
+)
+
+# Diagnostics tests (no snapshots)
 rust_test(
     name = "test_comprehensive_diagnostics",
     srcs = glob(["tests/**/*.rs", "src/**/*.rs"]),
@@ -92,7 +115,8 @@ rust_test(
     ],
 )
 
-rust_snapshot_tests(
+# Comprehensive parser tests
+rust_test(
     name = "test_comprehensive_parser",
     srcs = glob(["tests/**/*.rs", "src/**/*.rs"]),
     crate_root = "tests/test_comprehensive_parser.rs",
@@ -100,14 +124,35 @@ rust_snapshot_tests(
     resources = glob([
         "tests/snapshots/**/*.snap",
     ]),
-    snapshot_dir = "tests/snapshots",
+    env = {
+        "INSTA_UPDATE": "no",
+    },
     deps = [
         ":rue-parser",
-        "//crates/rue-snapshot:rue-snapshot",
-        "//third-party/rust:anyhow",
+        "//crates/rue-insta-utils:rue-insta-utils",
+        "//third-party/rust:insta",
     ],
 )
 
+rust_test(
+    name = "test_comprehensive_parser_update",
+    srcs = glob(["tests/**/*.rs", "src/**/*.rs"]),
+    crate_root = "tests/test_comprehensive_parser.rs",
+    edition = "2024",
+    resources = glob([
+        "tests/snapshots/**/*.snap",
+    ]),
+    env = {
+        "INSTA_UPDATE": "always",
+    },
+    deps = [
+        ":rue-parser",
+        "//crates/rue-insta-utils:rue-insta-utils",
+        "//third-party/rust:insta",
+    ],
+)
+
+# Diagnostics tests (no snapshots)
 rust_test(
     name = "test_diagnostics",
     srcs = glob(["tests/**/*.rs", "src/**/*.rs"]),
@@ -118,6 +163,7 @@ rust_test(
     ],
 )
 
+# Error recovery tests (no snapshots)
 rust_test(
     name = "test_error_recovery",
     srcs = glob(["tests/**/*.rs", "src/**/*.rs"]),
@@ -128,6 +174,7 @@ rust_test(
     ],
 )
 
+# Property-based tests (no snapshots)
 rust_test(
     name = "test_parser_properties",
     srcs = glob(["tests/**/*.rs", "src/**/*.rs"]),
@@ -140,74 +187,11 @@ rust_test(
     ],
 )
 
-rust_snapshot_tests(
-    name = "test_parser_snapshots",
-    srcs = glob(["tests/**/*.rs", "src/**/*.rs"]),
-    crate_root = "tests/test_parser_snapshots.rs",
-    edition = "2024",
-    resources = glob([
-        "tests/snapshots/**/*.snap",
-    ]),
-    snapshot_dir = "tests/snapshots",
-    deps = [
-        ":rue-parser",
-        "//crates/rue-snapshot:rue-snapshot",
-        "//third-party/rust:anyhow",
-    ],
-)
-
-# Insta-based snapshot tests (proof-of-concept)
-rust_test(
-    name = "test_parser_snapshots_insta",
-    srcs = glob(["tests/**/*.rs", "src/**/*.rs"]),
-    crate_root = "tests/test_parser_snapshots_insta.rs",
-    edition = "2024",
-    resources = glob([
-        "tests/snapshots/**/*.snap",
-    ]),
-    env = {
-        "INSTA_UPDATE": "no",
-    },
-    deps = [
-        ":rue-parser",
-        "//third-party/rust:insta",
-        "//third-party/rust:serde_json",
-    ],
-)
-
-# Insta snapshot update target
-rust_test(
-    name = "test_parser_snapshots_insta_update",
-    srcs = glob(["tests/**/*.rs", "src/**/*.rs"]),
-    crate_root = "tests/test_parser_snapshots_insta.rs",
-    edition = "2024",
-    resources = glob([
-        "tests/snapshots/**/*.snap",
-    ]),
-    env = {
-        "INSTA_UPDATE": "always",
-    },
-    deps = [
-        ":rue-parser",
-        "//third-party/rust:insta",
-        "//third-party/rust:serde_json",
-    ],
-)
-
-# Convenience target to update all snapshots at once
+# Convenience target to update all snapshots
 test_suite(
     name = "update_all_snapshots",
     tests = [
         ":test_aggregate_types_update",
         ":test_comprehensive_parser_update",
-        ":test_parser_snapshots_update",
-    ],
-)
-
-# Convenience target to update insta snapshots
-test_suite(
-    name = "update_all_insta_snapshots",
-    tests = [
-        ":test_parser_snapshots_insta_update",
     ],
 )

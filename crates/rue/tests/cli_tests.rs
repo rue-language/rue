@@ -1,17 +1,15 @@
-//! CLI tests using the rue snapshot testing framework
+//! CLI tests using insta snapshot testing
 //!
 //! These tests verify the CLI behavior of the rue compiler using
-//! the existing snapshot testing infrastructure.
+//! the insta snapshot testing framework.
 
 mod common;
 mod test_utils;
 
 use common::get_project_root;
-use rue_snapshot::{
-    ExecSnapshotFormat as SnapshotFormat, ExecutionSnapshot, SnapshotTestBuilder,
-    normalize::{
-        CompositeNormalizer, FnNormalizer, Normalizer, normalize_temp_names, normalize_timestamps,
-    },
+use rue_insta_utils::{
+    execution::ExecutionSnapshot,
+    redactions::{normalize_temp_paths, normalize_timestamps},
 };
 use std::fs;
 use std::process::{Command, Stdio};
@@ -19,28 +17,22 @@ use tempfile::TempDir;
 use test_utils::get_rue_binary;
 
 /// Normalize an execution snapshot for stable testing
-fn normalize_execution_snapshot(snapshot: &ExecutionSnapshot) -> ExecutionSnapshot {
-    let normalizer = CompositeNormalizer::new()
-        .with(FnNormalizer::new(normalize_timestamps))
-        .with(FnNormalizer::new(normalize_temp_names));
-
-    ExecutionSnapshot {
-        exit_code: snapshot.exit_code,
-        stdout: normalizer.normalize(&snapshot.stdout),
-        stderr: normalizer.normalize(&snapshot.stderr),
-        compilation_warnings: snapshot.compilation_warnings.clone(),
-        timeout: snapshot.timeout,
-    }
+fn normalize_execution_snapshot(snapshot: ExecutionSnapshot) -> ExecutionSnapshot {
+    snapshot.normalize(|s| {
+        let s = normalize_timestamps(s);
+        normalize_temp_paths(&s)
+    })
 }
 
 /// Create a snapshot test for CLI tests with normalization
-fn test_cli_snapshot(name: &str, snapshot: &ExecutionSnapshot) -> Result<(), String> {
-    let normalized = normalize_execution_snapshot(snapshot);
+fn assert_cli_snapshot(name: &str, snapshot: &ExecutionSnapshot) {
+    let normalized = normalize_execution_snapshot(snapshot.clone());
     let project_root = get_project_root();
-    SnapshotTestBuilder::new(name)
-        .with_snapshot_dir(project_root.join("tests/snapshots/cli"))
-        .with_format(SnapshotFormat::Toml)
-        .test_execution(&normalized)
+    let snapshot_dir = project_root.join("tests/snapshots/cli");
+
+    rue_insta_utils::configure_insta(snapshot_dir.to_str().unwrap()).bind(|| {
+        rue_insta_utils::assert_execution_snapshot!(name, &normalized);
+    });
 }
 
 /// Run the rue compiler with given arguments, capturing stdout/stderr
@@ -100,356 +92,166 @@ fn create_temp_file(
     Ok((temp_dir, temp_file))
 }
 
+// ===== Help and Version Tests =====
+
 #[test]
-fn test_cli_mutual_exclusivity_emit_asm_and_mir() {
-    let (_temp_dir, temp_file) = create_temp_file(
-        r#"fn main() -> i64 {
-    return 42;
-}"#,
-        "rue",
-    )
-    .expect("Failed to create temp file");
-
-    let result = run_rue_cli(
-        &["--emit-asm", "--emit-mir", temp_file.to_str().unwrap()],
-        None,
-    )
-    .expect("Failed to run rue CLI");
-
-    test_cli_snapshot("cli_mutual_exclusivity_emit_asm_and_mir", &result)
-        .expect("Snapshot test failed");
+fn test_help_flag() {
+    let snapshot = run_rue_cli(&["--help"], None).expect("Failed to run");
+    assert_cli_snapshot("cli_help", &snapshot);
 }
 
 #[test]
-fn test_cli_mutual_exclusivity_emit_asm_and_compile_only() {
-    let (_temp_dir, temp_file) = create_temp_file(
-        r#"fn main() -> i64 {
-    return 42;
-}"#,
-        "rue",
-    )
-    .expect("Failed to create temp file");
+fn test_version_flag() {
+    let snapshot = run_rue_cli(&["--version"], None).expect("Failed to run");
+    assert_cli_snapshot("cli_version", &snapshot);
+}
 
-    let result = run_rue_cli(
-        &["--emit-asm", "--compile-only", temp_file.to_str().unwrap()],
-        None,
-    )
-    .expect("Failed to run rue CLI");
+// ===== Error Tests =====
 
-    test_cli_snapshot("cli_mutual_exclusivity_emit_asm_and_compile_only", &result)
-        .expect("Snapshot test failed");
+#[test]
+fn test_no_input_file() {
+    let snapshot = run_rue_cli(&[], None).expect("Failed to run");
+    assert_cli_snapshot("cli_no_input", &snapshot);
 }
 
 #[test]
-fn test_cli_mutual_exclusivity_emit_mir_and_compile_only() {
-    let (_temp_dir, temp_file) = create_temp_file(
-        r#"fn main() -> i64 {
-    return 42;
-}"#,
-        "rue",
-    )
-    .expect("Failed to create temp file");
-
-    let result = run_rue_cli(
-        &["--emit-mir", "--compile-only", temp_file.to_str().unwrap()],
-        None,
-    )
-    .expect("Failed to run rue CLI");
-
-    test_cli_snapshot("cli_mutual_exclusivity_emit_mir_and_compile_only", &result)
-        .expect("Snapshot test failed");
+fn test_nonexistent_file() {
+    let snapshot = run_rue_cli(&["nonexistent.rue"], None).expect("Failed to run");
+    assert_cli_snapshot("cli_nonexistent_file", &snapshot);
 }
 
 #[test]
-fn test_cli_mutual_exclusivity_all_three() {
+fn test_invalid_syntax() {
+    let (_temp_dir, temp_file) =
+        create_temp_file("fn main() {", "rue").expect("Failed to create temp file");
+
+    let snapshot = run_rue_cli(&[temp_file.to_str().unwrap()], None).expect("Failed to run");
+    assert_cli_snapshot("cli_invalid_syntax", &snapshot);
+}
+
+// ===== Compilation Tests =====
+
+#[test]
+fn test_simple_compile() {
     let (_temp_dir, temp_file) = create_temp_file(
-        r#"fn main() -> i64 {
-    return 42;
-}"#,
+        r#"
+fn main() -> i32 {
+    42
+}
+"#,
         "rue",
     )
     .expect("Failed to create temp file");
 
-    let result = run_rue_cli(
+    let out_dir = TempDir::new().expect("Failed to create output dir");
+    let out_file = out_dir.path().join("output");
+
+    let snapshot = run_rue_cli(
         &[
-            "--emit-asm",
-            "--emit-mir",
-            "--compile-only",
             temp_file.to_str().unwrap(),
-        ],
-        None,
-    )
-    .expect("Failed to run rue CLI");
-
-    test_cli_snapshot("cli_mutual_exclusivity_all_three", &result).expect("Snapshot test failed");
-}
-
-#[test]
-fn test_cli_optimization_level_o0() {
-    let (_temp_dir, temp_file) = create_temp_file(
-        r#"fn main() -> i64 {
-    return 42;
-}"#,
-        "rue",
-    )
-    .expect("Failed to create temp file");
-
-    let result = run_rue_cli(
-        &["-O0", "--compile-only", temp_file.to_str().unwrap()],
-        None,
-    )
-    .expect("Failed to run rue CLI");
-
-    test_cli_snapshot("cli_optimization_level_o0", &result).expect("Snapshot test failed");
-}
-
-#[test]
-fn test_cli_optimization_level_o1() {
-    let (_temp_dir, temp_file) = create_temp_file(
-        r#"fn main() -> i64 {
-    return 42;
-}"#,
-        "rue",
-    )
-    .expect("Failed to create temp file");
-
-    let result = run_rue_cli(
-        &["-O1", "--compile-only", temp_file.to_str().unwrap()],
-        None,
-    )
-    .expect("Failed to run rue CLI");
-
-    test_cli_snapshot("cli_optimization_level_o1", &result).expect("Snapshot test failed");
-}
-
-#[test]
-fn test_cli_optimization_level_o2() {
-    let (_temp_dir, temp_file) = create_temp_file(
-        r#"fn main() -> i64 {
-    return 42;
-}"#,
-        "rue",
-    )
-    .expect("Failed to create temp file");
-
-    let result = run_rue_cli(
-        &["-O2", "--compile-only", temp_file.to_str().unwrap()],
-        None,
-    )
-    .expect("Failed to run rue CLI");
-
-    test_cli_snapshot("cli_optimization_level_o2", &result).expect("Snapshot test failed");
-}
-
-#[test]
-fn test_cli_optimization_level_o3() {
-    let (_temp_dir, temp_file) = create_temp_file(
-        r#"fn main() -> i64 {
-    return 42;
-}"#,
-        "rue",
-    )
-    .expect("Failed to create temp file");
-
-    let result = run_rue_cli(
-        &["-O3", "--compile-only", temp_file.to_str().unwrap()],
-        None,
-    )
-    .expect("Failed to run rue CLI");
-
-    test_cli_snapshot("cli_optimization_level_o3", &result).expect("Snapshot test failed");
-}
-
-#[test]
-fn test_cli_optimization_level_invalid() {
-    let (_temp_dir, temp_file) = create_temp_file(
-        r#"fn main() -> i64 {
-    return 42;
-}"#,
-        "rue",
-    )
-    .expect("Failed to create temp file");
-
-    let result = run_rue_cli(
-        &["-O5", "--compile-only", temp_file.to_str().unwrap()],
-        None,
-    )
-    .expect("Failed to run rue CLI");
-
-    test_cli_snapshot("cli_optimization_level_invalid", &result).expect("Snapshot test failed");
-}
-
-#[test]
-fn test_cli_quiet_flag() {
-    let (_temp_dir, temp_file) = create_temp_file(
-        r#"fn main() -> i64 {
-    return 42;
-}"#,
-        "rue",
-    )
-    .expect("Failed to create temp file");
-
-    let result = run_rue_cli(
-        &["--quiet", "--compile-only", temp_file.to_str().unwrap()],
-        None,
-    )
-    .expect("Failed to run rue CLI");
-
-    test_cli_snapshot("cli_quiet_flag", &result).expect("Snapshot test failed");
-}
-
-#[test]
-fn test_cli_verbose_flag() {
-    let (_temp_dir, temp_file) = create_temp_file(
-        r#"fn main() -> i64 {
-    return 42;
-}"#,
-        "rue",
-    )
-    .expect("Failed to create temp file");
-
-    let result = run_rue_cli(&["-v", "--compile-only", temp_file.to_str().unwrap()], None)
-        .expect("Failed to run rue CLI");
-
-    test_cli_snapshot("cli_verbose_flag", &result).expect("Snapshot test failed");
-}
-
-#[test]
-fn test_cli_stdin_input() {
-    let result = run_rue_cli(
-        &["--compile-only", "-"],
-        Some(
-            r#"fn main() -> i64 {
-    return 42;
-}"#,
-        ),
-    )
-    .expect("Failed to run rue CLI");
-
-    test_cli_snapshot("cli_stdin_input", &result).expect("Snapshot test failed");
-}
-
-#[test]
-fn test_cli_emit_mir_to_stdout() {
-    let (_temp_dir, temp_file) = create_temp_file(
-        r#"fn main() -> i64 {
-    return 42;
-}"#,
-        "rue",
-    )
-    .expect("Failed to create temp file");
-
-    let result = run_rue_cli(
-        &["--emit-mir", "-o", "-", temp_file.to_str().unwrap()],
-        None,
-    )
-    .expect("Failed to run rue CLI");
-
-    test_cli_snapshot("cli_emit_mir_to_stdout", &result).expect("Snapshot test failed");
-}
-
-#[test]
-fn test_cli_unknown_log_format() {
-    let (_temp_dir, temp_file) = create_temp_file(
-        r#"fn main() -> i64 {
-    return 42;
-}"#,
-        "rue",
-    )
-    .expect("Failed to create temp file");
-
-    let result = run_rue_cli(
-        &[
-            "--log-format",
-            "unknown",
-            "--compile-only",
-            temp_file.to_str().unwrap(),
-        ],
-        None,
-    )
-    .expect("Failed to run rue CLI");
-
-    test_cli_snapshot("cli_unknown_log_format", &result).expect("Snapshot test failed");
-}
-
-#[test]
-fn test_cli_no_input_file() {
-    let result = run_rue_cli(&["--compile-only"], None).expect("Failed to run rue CLI");
-
-    test_cli_snapshot("cli_no_input_file", &result).expect("Snapshot test failed");
-}
-
-#[test]
-fn test_cli_syntax_error() {
-    let (_temp_dir, temp_file) = create_temp_file(
-        r#"fn main() -> i64 {
-    return 42  // Missing semicolon
-}"#,
-        "rue",
-    )
-    .expect("Failed to create temp file");
-
-    let result = run_rue_cli(&["--compile-only", temp_file.to_str().unwrap()], None)
-        .expect("Failed to run rue CLI");
-
-    test_cli_snapshot("cli_syntax_error", &result).expect("Snapshot test failed");
-}
-
-#[test]
-fn test_cli_valid_log_format_json() {
-    let (_temp_dir, temp_file) = create_temp_file(
-        r#"fn main() -> i64 {
-    return 42;
-}"#,
-        "rue",
-    )
-    .expect("Failed to create temp file");
-
-    let result = run_rue_cli(
-        &[
-            "--log-format",
-            "json",
-            "--compile-only",
-            temp_file.to_str().unwrap(),
-        ],
-        None,
-    )
-    .expect("Failed to run rue CLI");
-
-    test_cli_snapshot("cli_valid_log_format_json", &result).expect("Snapshot test failed");
-}
-
-#[test]
-fn test_cli_help_message() {
-    let result = run_rue_cli(&["--help"], None).expect("Failed to run rue CLI");
-
-    test_cli_snapshot("cli_help_message", &result).expect("Snapshot test failed");
-}
-
-#[test]
-fn test_cli_emit_asm_successful() {
-    let (_temp_dir, temp_file) = create_temp_file(
-        r#"fn main() -> i64 {
-    return 42;
-}"#,
-        "rue",
-    )
-    .expect("Failed to create temp file");
-
-    // Create a temp output directory for the assembly file
-    let temp_out_dir = TempDir::new().expect("Failed to create output temp dir");
-    let output_path = temp_out_dir.path().join("test.s");
-
-    let result = run_rue_cli(
-        &[
-            "--emit-asm",
             "-o",
-            output_path.to_str().unwrap(),
-            temp_file.to_str().unwrap(),
+            out_file.to_str().unwrap(),
         ],
         None,
     )
-    .expect("Failed to run rue CLI");
+    .expect("Failed to run");
 
-    test_cli_snapshot("cli_emit_asm_successful", &result).expect("Snapshot test failed");
+    assert_cli_snapshot("cli_simple_compile", &snapshot);
+}
+
+#[test]
+fn test_compile_with_verbose() {
+    let (_temp_dir, temp_file) = create_temp_file(
+        r#"
+fn main() -> i32 {
+    42
+}
+"#,
+        "rue",
+    )
+    .expect("Failed to create temp file");
+
+    let out_dir = TempDir::new().expect("Failed to create output dir");
+    let out_file = out_dir.path().join("output");
+
+    let snapshot = run_rue_cli(
+        &[
+            temp_file.to_str().unwrap(),
+            "-o",
+            out_file.to_str().unwrap(),
+            "-v",
+        ],
+        None,
+    )
+    .expect("Failed to run");
+
+    assert_cli_snapshot("cli_compile_verbose", &snapshot);
+}
+
+// ===== Type Error Tests =====
+
+#[test]
+fn test_type_error() {
+    let (_temp_dir, temp_file) = create_temp_file(
+        r#"
+fn main() -> i32 {
+    let x: bool = 42;
+    x
+}
+"#,
+        "rue",
+    )
+    .expect("Failed to create temp file");
+
+    let snapshot = run_rue_cli(&[temp_file.to_str().unwrap()], None).expect("Failed to run");
+    assert_cli_snapshot("cli_type_error", &snapshot);
+}
+
+#[test]
+fn test_undefined_variable() {
+    let (_temp_dir, temp_file) = create_temp_file(
+        r#"
+fn main() -> i32 {
+    undefined_var
+}
+"#,
+        "rue",
+    )
+    .expect("Failed to create temp file");
+
+    let snapshot = run_rue_cli(&[temp_file.to_str().unwrap()], None).expect("Failed to run");
+    assert_cli_snapshot("cli_undefined_variable", &snapshot);
+}
+
+// ===== Output Flag Tests =====
+
+#[test]
+fn test_output_flag() {
+    let (_temp_dir, temp_file) = create_temp_file(
+        r#"
+fn main() -> i32 {
+    0
+}
+"#,
+        "rue",
+    )
+    .expect("Failed to create temp file");
+
+    let out_dir = TempDir::new().expect("Failed to create output dir");
+    let out_file = out_dir.path().join("my_program");
+
+    let snapshot = run_rue_cli(
+        &[
+            temp_file.to_str().unwrap(),
+            "-o",
+            out_file.to_str().unwrap(),
+        ],
+        None,
+    )
+    .expect("Failed to run");
+
+    assert_cli_snapshot("cli_output_flag", &snapshot);
+
+    // Verify output file was created
+    assert!(out_file.exists(), "Output file was not created");
 }

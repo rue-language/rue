@@ -1,5 +1,5 @@
 load("@prelude//rust:cargo_package.bzl", "cargo")
-load("//tools/rust:defs.bzl", "clippy_rust_library", "rust_snapshot_tests", "rust_test")
+load("//tools/rust:defs.bzl", "clippy_rust_library", "rust_test")
 
 cargo.rust_binary(
     name = "rue",
@@ -36,23 +36,54 @@ clippy_rust_library(
     visibility = ["PUBLIC"],
 )
 
-rust_snapshot_tests(
+rust_test(
     name = "snapshot_corpus_tests",
     srcs = glob(["tests/**/*.rs"]),
     crate_root = "tests/snapshot_corpus_tests.rs",
     edition = "2024",
+    resources = glob([
+        "tests/snapshots/corpus/**/*.snap",
+    ]),
     deps = [
         "//crates/rue-compiler:rue-compiler",
         "//crates/rue-codegen:rue-codegen",
+        "//crates/rue-insta-utils:rue-insta-utils",
         "//crates/rue-parser:rue-parser",
-        "//crates/rue-snapshot:rue-snapshot",
+        "//third-party/rust:insta",
         "//third-party/rust:tempfile",
+        "//third-party/rust:toml",
+        "//third-party/rust:walkdir",
     ],
     env = {
         "CARGO_MANIFEST_DIR": ".",
         "CARGO_BIN_EXE_rue": "$(location :rue)",
+        "INSTA_UPDATE": "no",
     },
-    snapshot_dir = "tests/snapshots/corpus",
+)
+
+rust_test(
+    name = "snapshot_corpus_tests_update",
+    srcs = glob(["tests/**/*.rs"]),
+    crate_root = "tests/snapshot_corpus_tests.rs",
+    edition = "2024",
+    resources = glob([
+        "tests/snapshots/corpus/**/*.snap",
+    ]),
+    deps = [
+        "//crates/rue-compiler:rue-compiler",
+        "//crates/rue-codegen:rue-codegen",
+        "//crates/rue-insta-utils:rue-insta-utils",
+        "//crates/rue-parser:rue-parser",
+        "//third-party/rust:insta",
+        "//third-party/rust:tempfile",
+        "//third-party/rust:toml",
+        "//third-party/rust:walkdir",
+    ],
+    env = {
+        "CARGO_MANIFEST_DIR": ".",
+        "CARGO_BIN_EXE_rue": "$(location :rue)",
+        "INSTA_UPDATE": "always",
+    },
 )
 
 rust_test(
@@ -226,18 +257,44 @@ rust_test(
     },
 )
 
-rust_snapshot_tests(
+rust_test(
     name = "cli_tests",
     srcs = glob(["tests/**/*.rs"]),
     crate_root = "tests/cli_tests.rs",
     edition = "2024",
+    resources = glob([
+        "tests/snapshots/cli/**/*.snap",
+    ]),
     deps = [
-        "//crates/rue-snapshot:rue-snapshot",
+        "//crates/rue-insta-utils:rue-insta-utils",
+        "//third-party/rust:insta",
         "//third-party/rust:tempfile",
+        "//third-party/rust:toml",
     ],
     env = {
         "CARGO_MANIFEST_DIR": ".",
         "CARGO_BIN_EXE_rue": "$(location :rue)",
+        "INSTA_UPDATE": "no",
     },
-    snapshot_dir = "tests/snapshots/cli",
+)
+
+rust_test(
+    name = "cli_tests_update",
+    srcs = glob(["tests/**/*.rs"]),
+    crate_root = "tests/cli_tests.rs",
+    edition = "2024",
+    resources = glob([
+        "tests/snapshots/cli/**/*.snap",
+    ]),
+    deps = [
+        "//crates/rue-insta-utils:rue-insta-utils",
+        "//third-party/rust:insta",
+        "//third-party/rust:tempfile",
+        "//third-party/rust:toml",
+    ],
+    env = {
+        "CARGO_MANIFEST_DIR": ".",
+        "CARGO_BIN_EXE_rue": "$(location :rue)",
+        "INSTA_UPDATE": "always",
+    },
 )

@@ -1,4 +1,4 @@
-//! Corpus tests using the new snapshot testing framework
+//! Corpus tests using insta snapshot testing
 //!
 //! These tests compile and run Rue programs, capturing their output
 //! and comparing against snapshots.
@@ -7,7 +7,7 @@ mod common;
 mod test_utils;
 
 use common::get_project_root;
-use rue_snapshot::{ExecSnapshotFormat as SnapshotFormat, ExecutionSnapshot, SnapshotTestBuilder};
+use rue_insta_utils::execution::ExecutionSnapshot;
 use std::fs;
 use std::path::Path;
 use std::process::{Command, Stdio};
@@ -94,6 +94,16 @@ fn test_name_from_path(path: &Path) -> String {
         .replace('/', "_")
 }
 
+/// Helper to assert execution snapshot using insta
+fn assert_corpus_snapshot(name: &str, snapshot: &ExecutionSnapshot) {
+    let project_root = get_project_root();
+    let snapshot_dir = project_root.join("tests/snapshots/corpus");
+
+    rue_insta_utils::configure_insta(snapshot_dir.to_str().unwrap()).bind(|| {
+        rue_insta_utils::assert_execution_snapshot!(name, snapshot);
+    });
+}
+
 // Macro to generate tests for all corpus files
 macro_rules! corpus_test {
     ($name:ident, $path:expr) => {
@@ -103,13 +113,7 @@ macro_rules! corpus_test {
             let test_name = test_name_from_path(path);
 
             let result = compile_and_run(path).expect("Failed to compile and run program");
-
-            let project_root = get_project_root();
-            SnapshotTestBuilder::new(&test_name)
-                .with_snapshot_dir(project_root.join("tests/snapshots/corpus"))
-                .with_format(SnapshotFormat::Toml)
-                .test_execution(&result)
-                .expect("Snapshot test failed");
+            assert_corpus_snapshot(&test_name, &result);
         }
     };
 }
@@ -149,35 +153,48 @@ mod batch_tests {
     #[test]
     #[ignore] // Run with --ignored to test all corpus files
     fn test_all_corpus_files() {
-        let corpus_dir = PathBuf::from("tests/fixtures/corpus");
+        let project_root = get_project_root();
+        let corpus_dir = project_root.join("tests/fixtures/corpus");
 
-        fn test_directory(dir: &Path) {
-            if let Ok(entries) = fs::read_dir(dir) {
-                for entry in entries.flatten() {
-                    let path = entry.path();
-                    if path.is_dir() {
-                        test_directory(&path);
-                    } else if path.extension().and_then(|s| s.to_str()) == Some("rue") {
-                        eprintln!("Testing: {}", path.display());
+        if !corpus_dir.exists() {
+            eprintln!("Corpus directory not found: {:?}", corpus_dir);
+            return;
+        }
 
-                        let test_name = test_name_from_path(&path);
-                        let result = compile_and_run(&path).unwrap_or_else(|_| {
-                            panic!("Failed to compile and run: {}", path.display())
-                        });
+        let mut failures = Vec::new();
+        let mut successes = 0;
 
-                        let project_root = get_project_root();
-                        SnapshotTestBuilder::new(&test_name)
-                            .with_snapshot_dir(project_root.join("tests/snapshots/corpus"))
-                            .with_format(SnapshotFormat::Toml)
-                            .test_execution(&result)
-                            .unwrap_or_else(|_| {
-                                panic!("Snapshot test failed for: {}", path.display())
-                            });
+        for entry in walkdir::WalkDir::new(&corpus_dir)
+            .into_iter()
+            .filter_map(|e| e.ok())
+        {
+            let path = entry.path();
+            if path.extension().and_then(|s| s.to_str()) == Some("rue") {
+                let test_name = test_name_from_path(path);
+                println!("Testing: {}", test_name);
+
+                match compile_and_run(path) {
+                    Ok(snapshot) => {
+                        assert_corpus_snapshot(&test_name, &snapshot);
+                        successes += 1;
+                    }
+                    Err(e) => {
+                        failures.push((test_name, e));
                     }
                 }
             }
         }
 
-        test_directory(&corpus_dir);
+        println!("\n=== Batch Test Results ===");
+        println!("Successes: {}", successes);
+        println!("Failures: {}", failures.len());
+
+        if !failures.is_empty() {
+            println!("\nFailed tests:");
+            for (name, error) in &failures {
+                println!("  - {}: {}", name, error);
+            }
+            panic!("Some corpus tests failed");
+        }
     }
 }

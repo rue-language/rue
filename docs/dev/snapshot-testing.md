@@ -1,160 +1,355 @@
-# Snapshot Testing Guide
+# Snapshot Testing in Rue
 
-This guide covers snapshot testing in the Rue project using Buck2.
+Rue uses the [insta](https://insta.rs) crate for snapshot testing, with Buck2 integration provided by the `rue-insta-utils` crate.
+
+## Overview
+
+Snapshot testing captures the output of a function/program and compares it against a previously saved "snapshot". This is particularly useful for:
+
+- **Parser tests**: Verifying AST structure
+- **Compiler tests**: Checking error messages and diagnostics
+- **Corpus tests**: Validating program execution results
+- **CLI tests**: Testing command-line behavior
 
 ## Quick Start
 
-### Update Snapshots
+### Writing a Snapshot Test
 
-```bash
-# Update all snapshots
-./scripts/update-snapshots.sh
+```rust
+use rue_insta_utils::configure_insta;
 
-# Update specific test snapshots
-./scripts/update-snapshots.sh cli       # CLI tests only
-./scripts/update-snapshots.sh parser    # Parser tests only
-./scripts/update-snapshots.sh corpus    # Corpus tests only
+#[test]
+fn test_parser() {
+    let ast = parse("fn main() { 42 }");
 
-# Check snapshots without updating
-./scripts/update-snapshots.sh --check
-
-# List available snapshot targets
-./scripts/update-snapshots.sh --list
+    configure_insta("tests/snapshots").bind(|| {
+        insta::assert_debug_snapshot!("test_parser_simple", ast);
+    });
+}
 ```
 
-### Direct Buck2 Commands
+### Running Tests
 
 ```bash
-# Update specific test snapshots
-./buck2 test //crates/rue:cli_tests_update
-./buck2 test //crates/rue-parser:test_parser_snapshots_update
+# Run tests (verify mode - will fail if snapshots don't match)
+./buck2 test //crates/rue-parser:test_aggregate_types
 
-# Run regular tests (fail on mismatch)
-./buck2 test //crates/rue:cli_tests
-./buck2 test //crates/rue-parser:test_parser_snapshots
+# Update snapshots (creates/updates .snap files)
+./buck2 test //crates/rue-parser:test_aggregate_types_update
+
+# Update all snapshots in a crate
+INSTA_UPDATE=always ./buck2 test //crates/rue-parser:...
 ```
 
-### BXL Commands
+## API Reference
 
-```bash
-# Update all snapshots project-wide
-./buck2 bxl //tools/bxl:snapshots.bxl:update_all
+### Basic Snapshots
 
-# Check all snapshots
-./buck2 bxl //tools/bxl:snapshots.bxl:check_all
+For simple text or debug output:
 
-# List all snapshot targets
-./buck2 bxl //tools/bxl:snapshots.bxl:list_targets
+```rust
+use rue_insta_utils::configure_insta;
+
+#[test]
+fn test_output() {
+    let output = compile("fn main() { 42 }");
+
+    configure_insta("tests/snapshots").bind(|| {
+        insta::assert_debug_snapshot!("test_name", output);
+    });
+}
 ```
 
-## Implementation Details
+### Execution Snapshots
 
-### How It Works
+For program execution results (exit code, stdout, stderr):
 
-The snapshot testing system uses environment variables to control behavior:
+```rust
+use rue_insta_utils::execution::ExecutionSnapshot;
 
-- `UPDATE_SNAPSHOTS=1` - When set, tests update snapshots instead of failing
-- `RUE_SNAPSHOT_DIR` - Override the default snapshot directory location
+#[test]
+fn test_execution() {
+    let snapshot = ExecutionSnapshot {
+        exit_code: 0,
+        stdout: "Hello, world!\n".to_string(),
+        stderr: String::new(),
+        compilation_warnings: None,
+        timeout: None,
+    };
 
-Buck2 doesn't support passing environment variables at runtime like `UPDATE_SNAPSHOTS=1 buck2 test`, so we create dedicated targets with the environment variable pre-configured.
+    let project_root = get_project_root();
+    let snapshot_dir = project_root.join("tests/snapshots/corpus");
+
+    rue_insta_utils::configure_insta(snapshot_dir.to_str().unwrap()).bind(|| {
+        rue_insta_utils::assert_execution_snapshot!("test_hello", &snapshot);
+    });
+}
+```
+
+Execution snapshots are automatically serialized to TOML format for human readability.
+
+### Inline Snapshots
+
+Store simple snapshots directly in your test code:
+
+```rust
+#[test]
+fn test_inline() {
+    let result = parse("42");
+
+    configure_insta("tests/snapshots").bind(|| {
+        insta::assert_snapshot!(format!("{:?}", result), @"Number(42)");
+    });
+}
+```
+
+When you run with `INSTA_UPDATE=always`, insta will update the `@"..."` content automatically!
+
+### Normalizations/Redactions
+
+Remove non-deterministic output before snapshotting:
+
+```rust
+use rue_insta_utils::redactions::{normalize_timestamps, normalize_temp_paths};
+
+#[test]
+fn test_with_normalization() {
+    let snapshot = get_execution_snapshot();
+
+    let normalized = snapshot.normalize(|s| {
+        let s = normalize_timestamps(s);
+        normalize_temp_paths(&s)
+    });
+
+    assert_execution_snapshot!("test_name", &normalized);
+}
+```
+
+Available normalizers:
+- `normalize_timestamps()` - Replaces ISO 8601 timestamps with `[TIMESTAMP]`
+- `normalize_temp_paths()` - Replaces `/tmp/...` with `[TEMP_PATH]`
+- `normalize_temp_names()` - Replaces `t0`, `t1` with `[TEMP_VAR]`
+- `normalize_addresses()` - Replaces `0x...` with `[ADDRESS]`
+- `normalize_all()` - Applies all standard normalizations
+
+You can also use insta's built-in redactions:
+
+```rust
+let mut settings = configure_insta("tests/snapshots");
+settings.add_redaction(r"\b0x[0-9a-fA-F]+\b", "[ADDRESS]");
+settings.add_redaction(r"/tmp/[^\s\"']+", "[TEMP_PATH]");
+
+settings.bind(|| {
+    insta::assert_snapshot!("test_name", output);
+});
+```
+
+## Buck2 Integration
 
 ### BUCK File Configuration
 
-Use the `rust_snapshot_tests()` function to create both regular and update targets:
+For tests using snapshots, declare them in your BUCK file:
 
-```starlark
-load("//tools/rust:defs.bzl", "rust_snapshot_tests")
-
-rust_snapshot_tests(
-    name = "cli_tests",
-    srcs = glob(["tests/**/*.rs"]),
-    crate_root = "tests/cli_tests.rs",
+```python
+rust_test(
+    name = "test_parser_snapshots",
+    srcs = glob(["tests/**/*.rs", "src/**/*.rs"]),
+    crate_root = "tests/test_parser_snapshots.rs",
+    edition = "2024",
+    resources = glob([
+        "tests/snapshots/**/*.snap",
+    ]),
+    env = {
+        "INSTA_UPDATE": "no",
+    },
     deps = [
-        "//crates/rue-snapshot:rue-snapshot",
-        # ... other deps
+        ":rue-parser",
+        "//crates/rue-insta-utils:rue-insta-utils",
+        "//third-party/rust:insta",
     ],
-    snapshot_dir = "tests/snapshots/cli",
+)
+
+rust_test(
+    name = "test_parser_snapshots_update",
+    srcs = glob(["tests/**/*.rs", "src/**/*.rs"]),
+    crate_root = "tests/test_parser_snapshots.rs",
+    edition = "2024",
+    resources = glob([
+        "tests/snapshots/**/*.snap",
+    ]),
+    env = {
+        "INSTA_UPDATE": "always",
+    },
+    deps = [
+        ":rue-parser",
+        "//crates/rue-insta-utils:rue-insta-utils",
+        "//third-party/rust:insta",
+    ],
 )
 ```
 
 This creates two targets:
+- `test_parser_snapshots` - Runs tests, fails if snapshots don't match
+- `test_parser_snapshots_update` - Updates snapshots
 
-- `//crates/rue:cli_tests` - Regular test (fails on snapshot mismatch)
-- `//crates/rue:cli_tests_update` - Update test (updates snapshots)
+### Path Resolution
 
-### Creating New Snapshot Tests
+The `rue-insta-utils` crate handles Buck2's sandboxed build environment automatically:
 
-1. Use `rust_snapshot_tests()` in your BUCK file
-2. Import the snapshot testing utilities in your test:
+1. Checks for `BUCK_RESOURCES_JSON` environment variable
+2. Uses resource mapping to resolve snapshot paths
+3. Falls back to filesystem traversal if needed
 
-   ```rust
-   use rue_snapshot::{ExecutionSnapshot, SnapshotTestBuilder};
-   ```
+You don't need to worry about Buck2 paths - just use `configure_insta("tests/snapshots")` and it works.
 
-3. Run the test with `_update` suffix to create initial snapshots
+## Environment Variables
+
+Control snapshot behavior with environment variables:
+
+- `INSTA_UPDATE=no` - Don't update snapshots (default, causes test to fail on mismatch)
+- `INSTA_UPDATE=always` - Always update snapshots
+- `INSTA_UPDATE=new` - Only create new snapshots, don't update existing ones
+- `INSTA_UPDATE=unseen` - Update snapshots that haven't been reviewed
+
+## Snapshot File Formats
+
+### Debug Snapshots (`.snap`)
+
+Plain text files with Rust's Debug representation:
+
+```
+tests/snapshots/test_name.snap:
+---
+source: crates/rue-parser/tests/test_parser_snapshots.rs
+expression: ast
+---
+Ok(
+    Program {
+        functions: [
+            Function {
+                name: "main",
+                return_type: I32,
+                body: Number(42),
+            },
+        ],
+    },
+)
+```
+
+### Execution Snapshots (`.snap`)
+
+TOML format for program execution results:
+
+```toml
+tests/snapshots/corpus/test_factorial.snap:
+exit_code = 0
+stdout = "120\n"
+stderr = ""
+```
 
 ## Best Practices
 
-1. **Commit snapshots** - Always commit snapshot files to version control
-2. **Review changes** - Carefully review snapshot changes before committing
-3. **Use descriptive names** - Name snapshots clearly to indicate what they test
-4. **Normalize output** - Remove non-deterministic output (timestamps, paths) before snapshots
-5. **Group related tests** - Use test suites to group related snapshot updates
+### 1. Use Descriptive Names
+
+```rust
+// Good
+assert_debug_snapshot!("parser_function_with_params", ast);
+
+// Bad
+assert_debug_snapshot!("test1", ast);
+```
+
+### 2. Keep Snapshots Focused
+
+Test one thing per snapshot. Split complex tests into multiple focused snapshots.
+
+### 3. Review Snapshots Carefully
+
+When updating snapshots:
+1. Run the update command
+2. Review the git diff to see what changed
+3. Ensure changes are intentional
+4. Commit snapshot files with your changes
+
+### 4. Normalize Non-Deterministic Output
+
+Always normalize timestamps, addresses, temp paths, etc.
+
+```rust
+// Before snapshotting, normalize:
+let normalized = snapshot.normalize(normalize_all);
+assert_execution_snapshot!("test", &normalized);
+```
+
+### 5. Use Inline Snapshots for Simple Cases
+
+For small, stable outputs, inline snapshots keep everything in one place:
+
+```rust
+assert_snapshot!(format!("{:?}", result), @"Expected(Value)");
+```
+
+## Migrating from rue-snapshot
+
+If you have tests using the old `rue-snapshot` crate:
+
+**Before:**
+```rust
+use rue_snapshot::{Snapshot, SnapshotConfig};
+
+fn assert_parser_snapshot(name: &str, source: &str) -> Result<()> {
+    let ast = parse(source);
+    let output = format!("{:#?}", ast);
+    Snapshot::with_config(name, SnapshotConfig::default()).assert(&output)?;
+    Ok(())
+}
+```
+
+**After:**
+```rust
+use rue_insta_utils::configure_insta;
+
+fn assert_parser_snapshot(name: &str, source: &str) {
+    let ast = parse(source);
+    configure_insta("tests/snapshots").bind(|| {
+        insta::assert_debug_snapshot!(name, ast);
+    });
+}
+```
+
+Benefits:
+- No need for `Result<()>` returns
+- No manual `format!("{:#?}")`
+- Direct AST snapshots
+- Simpler API
 
 ## Troubleshooting
 
-### "No snapshot found" Error
+### Snapshots not found
 
-Run the test with the `_update` suffix to create the initial snapshot:
+Make sure:
+1. Snapshot files are listed in `resources = glob([...])` in BUCK
+2. Snapshot directory path is correct in `configure_insta(...)`
+3. You've run the `_update` target at least once to create initial snapshots
 
-```bash
-./buck2 test //crates/rue:test_name_update
-```
+### Path resolution issues
 
-### Snapshots Not Updating
+If snapshots can't be found in Buck2 builds:
+1. Check that `resources.json` is being generated
+2. Verify snapshot directory structure matches what's declared in BUCK
+3. Use absolute paths as a fallback: `configure_insta(project_root.join("tests/snapshots").to_str().unwrap())`
 
-Ensure you're using the `_update` target variant:
+### Snapshots differ on CI vs local
 
-```bash
-# Wrong - this just runs the test
-./buck2 test //crates/rue:cli_tests
+This usually means non-deterministic output. Add normalizations:
+- Timestamps
+- Temporary paths
+- Memory addresses
+- Generated IDs
 
-# Correct - this updates snapshots
-./buck2 test //crates/rue:cli_tests_update
-```
+## Resources
 
-### Can't Find Update Target
-
-Check that your BUCK file uses `rust_snapshot_tests()` instead of `rust_test()`.
-
-### BXL Script Not Finding Targets
-
-The BXL script looks for targets with specific naming patterns:
-
-- Ending with `_update`
-- Containing `update_snapshot`
-- Containing `snapshot` in the name
-
-Ensure your test names follow these conventions.
-
-## Migration from Cargo
-
-If migrating from Cargo where you used `UPDATE_SNAPSHOTS=1 cargo test`:
-
-1. Update BUCK files to use `rust_snapshot_tests()`
-2. Use `./scripts/update-snapshots.sh` instead of the cargo command
-3. Snapshot files remain in the same location and format
-
-## CI Integration
-
-For CI pipelines:
-
-```yaml
-# Check snapshots are up to date
-- run: ./buck2 bxl //tools/bxl:snapshots.bxl:check_all
-
-# Or use specific tests
-- run: ./buck2 test //crates/rue:cli_tests
-```
-
-Never run snapshot updates in CI - they should only be updated locally and committed.
+- [Insta documentation](https://insta.rs/docs/)
+- [Insta GitHub repository](https://github.com/mitsuhiko/insta)
+- `rue-insta-utils` source: `crates/rue-insta-utils/src/lib.rs`
+- Example tests: `crates/rue-parser/tests/test_aggregate_types.rs`
