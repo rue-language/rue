@@ -1,14 +1,13 @@
-//! Parser snapshot tests using the new rue-snapshot infrastructure
+//! Parser snapshot tests using insta
 //!
-//! This demonstrates how to use the enhanced snapshot testing framework
+//! This demonstrates the migrated snapshot testing using insta
 //! for AST validation.
 
-use anyhow::Result;
+use rue_insta_utils::configure_insta;
 use rue_parser::parse_with_diagnostics;
-use rue_snapshot::{Snapshot, SnapshotConfig, normalize::CompositeNormalizer};
 
 #[test]
-fn test_simple_function_ast() -> Result<()> {
+fn test_simple_function_ast() {
     let source = r#"
 fn main() -> i32 {
     42
@@ -21,13 +20,14 @@ fn main() -> i32 {
     // Use the new snapshot testing with normalization
     let config = SnapshotConfig::default().with_normalizer(CompositeNormalizer::standard());
 
-    Snapshot::with_config("integration_parser_simple_function", config).assert(&ast_debug)?;
-
-    Ok(())
+    configure_insta("tests/snapshots").bind(|| {
+        insta::assert_debug_snapshot!(name, ast);
+    });
+}
 }
 
 #[test]
-fn test_binary_expression_ast() -> Result<()> {
+fn test_binary_expression_ast() {
     let source = r#"
 fn main() -> i32 {
     let x = 10;
@@ -39,17 +39,14 @@ fn main() -> i32 {
     let ast = parse_with_diagnostics(source, "test.rue").unwrap();
     let ast_debug = format!("{:#?}", ast);
 
-    Snapshot::with_config(
-        "integration_parser_binary_expression",
-        SnapshotConfig::default(),
-    )
-    .assert(&ast_debug)?;
-
-    Ok(())
+    configure_insta("tests/snapshots").bind(|| {
+        insta::assert_debug_snapshot!(name, ast);
+    });
+}
 }
 
 #[test]
-fn test_if_expression_ast() -> Result<()> {
+fn test_if_expression_ast() {
     let source = r#"
 fn main() -> i32 {
     let x = 10;
@@ -64,17 +61,14 @@ fn main() -> i32 {
     let ast = parse_with_diagnostics(source, "test.rue").unwrap();
     let ast_debug = format!("{:#?}", ast);
 
-    Snapshot::with_config(
-        "integration_parser_if_expression",
-        SnapshotConfig::default(),
-    )
-    .assert(&ast_debug)?;
-
-    Ok(())
+    configure_insta("tests/snapshots").bind(|| {
+        insta::assert_debug_snapshot!(name, ast);
+    });
+}
 }
 
 #[test]
-fn test_while_loop_ast() -> Result<()> {
+fn test_while_loop_ast() {
     let source = r#"
 fn main() -> i32 {
     let count = 5;
@@ -88,14 +82,14 @@ fn main() -> i32 {
     let ast = parse_with_diagnostics(source, "test.rue").unwrap();
     let ast_debug = format!("{:#?}", ast);
 
-    Snapshot::with_config("integration_parser_while_loop", SnapshotConfig::default())
-        .assert(&ast_debug)?;
-
-    Ok(())
+    configure_insta("tests/snapshots").bind(|| {
+        insta::assert_debug_snapshot!(name, ast);
+    });
+}
 }
 
 #[test]
-fn test_function_call_ast() -> Result<()> {
+fn test_function_call_ast() {
     let source = r#"
 fn add(a: i32, b: i32) -> i32 {
     a + b
@@ -109,17 +103,14 @@ fn main() -> i32 {
     let ast = parse_with_diagnostics(source, "test.rue").unwrap();
     let ast_debug = format!("{:#?}", ast);
 
-    Snapshot::with_config(
-        "integration_parser_function_call",
-        SnapshotConfig::default(),
-    )
-    .assert(&ast_debug)?;
-
-    Ok(())
+    configure_insta("tests/snapshots").bind(|| {
+        insta::assert_debug_snapshot!(name, ast);
+    });
+}
 }
 
 #[test]
-fn test_type_annotations_ast() -> Result<()> {
+fn test_type_annotations_ast() {
     let source = r#"
 fn main() -> i32 {
     let x: i32 = 42;
@@ -132,17 +123,14 @@ fn main() -> i32 {
     let ast = parse_with_diagnostics(source, "test.rue").unwrap();
     let ast_debug = format!("{:#?}", ast);
 
-    Snapshot::with_config(
-        "integration_parser_type_annotations",
-        SnapshotConfig::default(),
-    )
-    .assert(&ast_debug)?;
-
-    Ok(())
+    configure_insta("tests/snapshots").bind(|| {
+        insta::assert_debug_snapshot!(name, ast);
+    });
+}
 }
 
 #[test]
-fn test_parser_error_recovery() -> Result<()> {
+fn test_parser_error_recovery() {
     // Test that parser can recover from errors
     let source = r#"
 fn main() -> i32 {
@@ -154,17 +142,14 @@ fn main() -> i32 {
     let result = parse_with_diagnostics(source, "test.rue");
     let error_debug = format!("{:#?}", result);
 
-    Snapshot::with_config(
-        "integration_parser_error_recovery",
-        SnapshotConfig::default(),
-    )
-    .assert(&error_debug)?;
-
-    Ok(())
+    configure_insta("tests/snapshots").bind(|| {
+        insta::assert_debug_snapshot!(name, ast);
+    });
+}
 }
 
 #[test]
-fn test_complex_nested_expressions() -> Result<()> {
+fn test_complex_nested_expressions() {
     let source = r#"
 fn factorial(n: i32) -> i32 {
     if n <= 1 {
@@ -183,11 +168,8 @@ fn main() -> i32 {
     let ast = parse_with_diagnostics(source, "test.rue").unwrap();
     let ast_debug = format!("{:#?}", ast);
 
-    Snapshot::with_config(
-        "integration_parser_complex_nested",
-        SnapshotConfig::default(),
-    )
-    .assert(&ast_debug)?;
-
-    Ok(())
+    configure_insta("tests/snapshots").bind(|| {
+        insta::assert_debug_snapshot!(name, ast);
+    });
+}
 }

@@ -2,23 +2,21 @@
 //!
 //! This test suite aims to cover all AST node types and edge cases
 
-use anyhow::Result;
+use rue_insta_utils::configure_insta;
 use rue_parser::parse_with_diagnostics;
-use rue_snapshot::{Snapshot, SnapshotConfig};
 
-fn assert_parser_snapshot(name: &str, source: &str) -> Result<()> {
+fn assert_parser_snapshot(name: &str, source: &str) {
     let result = parse_with_diagnostics(source, "test.rue");
-    let output = format!("{:#?}", result);
 
-    Snapshot::with_config(name, SnapshotConfig::default()).assert(&output)?;
-
-    Ok(())
+    configure_insta("tests/snapshots").bind(|| {
+        insta::assert_debug_snapshot!(name, result);
+    });
 }
 
 // ===== Literal Tests =====
 
 #[test]
-fn test_integer_literals() -> Result<()> {
+fn test_integer_literals() {
     assert_parser_snapshot(
         "literals_integers",
         r#"
@@ -35,7 +33,7 @@ fn main() -> i32 {
 }
 
 #[test]
-fn test_boolean_literals() -> Result<()> {
+fn test_boolean_literals() {
     assert_parser_snapshot(
         "literals_booleans",
         r#"
@@ -51,7 +49,7 @@ fn main() -> bool {
 // ===== Binary Expression Tests =====
 
 #[test]
-fn test_arithmetic_operators() -> Result<()> {
+fn test_arithmetic_operators() {
     assert_parser_snapshot(
         "operators_arithmetic",
         r#"
@@ -68,7 +66,7 @@ fn main() -> i32 {
 }
 
 #[test]
-fn test_comparison_operators() -> Result<()> {
+fn test_comparison_operators() {
     assert_parser_snapshot(
         "operators_comparison",
         r#"
@@ -88,7 +86,7 @@ fn main() -> bool {
 }
 
 #[test]
-fn test_logical_operators() -> Result<()> {
+fn test_logical_operators() {
     assert_parser_snapshot(
         "operators_logical",
         r#"
@@ -105,7 +103,7 @@ fn main() -> bool {
 }
 
 #[test]
-fn test_operator_precedence() -> Result<()> {
+fn test_operator_precedence() {
     assert_parser_snapshot(
         "operators_precedence",
         r#"
@@ -132,7 +130,7 @@ fn main() -> i32 {
 // ===== Control Flow Tests =====
 
 #[test]
-fn test_if_else_chain() -> Result<()> {
+fn test_if_else_chain() {
     assert_parser_snapshot(
         "control_if_else_chain",
         r#"
@@ -154,7 +152,7 @@ fn main() -> i32 {
 }
 
 #[test]
-fn test_nested_if() -> Result<()> {
+fn test_nested_if() {
     assert_parser_snapshot(
         "control_nested_if",
         r#"
@@ -181,7 +179,7 @@ fn main() -> i32 {
 }
 
 #[test]
-fn test_while_loop_variations() -> Result<()> {
+fn test_while_loop_variations() {
     assert_parser_snapshot(
         "control_while_variations",
         r#"
@@ -215,7 +213,7 @@ fn main() -> i32 {
 }
 
 #[test]
-fn test_for_loop() -> Result<()> {
+fn test_for_loop() {
     assert_parser_snapshot(
         "control_for_loop",
         r#"
@@ -242,7 +240,7 @@ fn main() -> i32 {
 // ===== Function Tests =====
 
 #[test]
-fn test_function_parameters() -> Result<()> {
+fn test_function_parameters() {
     assert_parser_snapshot(
         "functions_parameters",
         r#"
@@ -277,7 +275,7 @@ fn main() -> i32 {
 }
 
 #[test]
-fn test_recursive_functions() -> Result<()> {
+fn test_recursive_functions() {
     assert_parser_snapshot(
         "functions_recursive",
         r#"
@@ -305,7 +303,7 @@ fn main() -> i32 {
 }
 
 #[test]
-fn test_nested_function_calls() -> Result<()> {
+fn test_nested_function_calls() {
     assert_parser_snapshot(
         "functions_nested_calls",
         r#"
@@ -331,7 +329,7 @@ fn main() -> i32 {
 // ===== Statement Tests =====
 
 #[test]
-fn test_let_statements() -> Result<()> {
+fn test_let_statements() {
     assert_parser_snapshot(
         "statements_let",
         r#"
@@ -356,7 +354,7 @@ fn main() -> i32 {
 }
 
 #[test]
-fn test_assignment_statements() -> Result<()> {
+fn test_assignment_statements() {
     assert_parser_snapshot(
         "statements_assignment",
         r#"
@@ -379,7 +377,7 @@ fn main() -> i32 {
 }
 
 #[test]
-fn test_return_statements() -> Result<()> {
+fn test_return_statements() {
     assert_parser_snapshot(
         "statements_return",
         r#"
@@ -413,7 +411,7 @@ fn main() -> i32 {
 // ===== Type Tests =====
 
 #[test]
-fn test_type_annotations() -> Result<()> {
+fn test_type_annotations() {
     assert_parser_snapshot(
         "types_annotations",
         r#"
@@ -443,7 +441,7 @@ fn main() -> i32 {
 }
 
 #[test]
-fn test_cast_expressions() -> Result<()> {
+fn test_cast_expressions() {
     assert_parser_snapshot(
         "types_cast",
         r#"
@@ -465,7 +463,7 @@ fn main() -> i32 {
 // ===== Complex/Edge Case Tests =====
 
 #[test]
-fn test_deeply_nested_expressions() -> Result<()> {
+fn test_deeply_nested_expressions() {
     assert_parser_snapshot(
         "edge_deeply_nested",
         r#"
@@ -503,7 +501,7 @@ fn main() -> i32 {
 }
 
 #[test]
-fn test_empty_blocks() -> Result<()> {
+fn test_empty_blocks() {
     assert_parser_snapshot(
         "edge_empty_blocks",
         r#"
@@ -531,7 +529,7 @@ fn main() -> i32 {
 }
 
 #[test]
-fn test_single_expression_blocks() -> Result<()> {
+fn test_single_expression_blocks() {
     assert_parser_snapshot(
         "edge_single_expression",
         r#"
@@ -560,7 +558,7 @@ fn main() -> i32 {
 // ===== Error Recovery Tests =====
 
 #[test]
-fn test_error_recovery_missing_semicolon() -> Result<()> {
+fn test_error_recovery_missing_semicolon() {
     assert_parser_snapshot(
         "error_recovery_missing_semi",
         r#"
@@ -574,7 +572,7 @@ fn main() -> i32 {
 }
 
 #[test]
-fn test_error_recovery_missing_type() -> Result<()> {
+fn test_error_recovery_missing_type() {
     assert_parser_snapshot(
         "error_recovery_missing_type",
         r#"
@@ -590,7 +588,7 @@ fn add(a: i32, b) -> i32 {  // Missing parameter type
 }
 
 #[test]
-fn test_error_recovery_unclosed_delimiter() -> Result<()> {
+fn test_error_recovery_unclosed_delimiter() {
     assert_parser_snapshot(
         "error_recovery_unclosed",
         r#"
@@ -603,7 +601,7 @@ fn main() -> i32 {
 }
 
 #[test]
-fn test_error_recovery_multiple_errors() -> Result<()> {
+fn test_error_recovery_multiple_errors() {
     assert_parser_snapshot(
         "error_recovery_multiple",
         r#"
@@ -622,7 +620,7 @@ fn main() -> i32 {
 // ===== Unicode and Special Character Tests =====
 
 #[test]
-fn test_unicode_identifiers() -> Result<()> {
+fn test_unicode_identifiers() {
     assert_parser_snapshot(
         "unicode_identifiers",
         r#"
@@ -639,7 +637,7 @@ fn main() -> i32 {
 }
 
 #[test]
-fn test_string_literals() -> Result<()> {
+fn test_string_literals() {
     assert_parser_snapshot(
         "string_literals",
         r#"
@@ -659,7 +657,7 @@ fn main() -> i32 {
 // ===== Comments Tests =====
 
 #[test]
-fn test_comments() -> Result<()> {
+fn test_comments() {
     assert_parser_snapshot(
         "comments",
         r#"

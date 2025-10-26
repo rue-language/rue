@@ -1,22 +1,20 @@
 //! Parser tests for aggregate types (structs, enums, arrays, tuples)
 
-use anyhow::Result;
+use rue_insta_utils::configure_insta;
 use rue_parser::parse_with_diagnostics;
-use rue_snapshot::{Snapshot, SnapshotConfig};
 
-fn assert_parser_snapshot(name: &str, source: &str) -> Result<()> {
+fn assert_parser_snapshot(name: &str, source: &str) {
     let result = parse_with_diagnostics(source, "test.rue");
-    let output = format!("{:#?}", result);
 
-    Snapshot::with_config(name, SnapshotConfig::default()).assert(&output)?;
-
-    Ok(())
+    configure_insta("tests/snapshots").bind(|| {
+        insta::assert_debug_snapshot!(name, result);
+    });
 }
 
 // ===== Struct Tests =====
 
 #[test]
-fn test_struct_definition() -> Result<()> {
+fn test_struct_definition() {
     assert_parser_snapshot(
         "struct_basic",
         r#"
@@ -43,7 +41,7 @@ struct Complex {
 }
 
 #[test]
-fn test_struct_instantiation() -> Result<()> {
+fn test_struct_instantiation() {
     assert_parser_snapshot(
         "struct_instantiation",
         r#"
@@ -66,7 +64,7 @@ fn main() -> i32 {
 }
 
 #[test]
-fn test_struct_field_access() -> Result<()> {
+fn test_struct_field_access() {
     assert_parser_snapshot(
         "struct_field_access",
         r#"
@@ -103,7 +101,7 @@ fn main() -> i32 {
 // ===== Enum Tests =====
 
 #[test]
-fn test_enum_definition() -> Result<()> {
+fn test_enum_definition() {
     assert_parser_snapshot(
         "enum_basic",
         r#"
@@ -134,7 +132,7 @@ enum Message {
 }
 
 #[test]
-fn test_enum_usage() -> Result<()> {
+fn test_enum_usage() {
     assert_parser_snapshot(
         "enum_usage",
         r#"
@@ -157,7 +155,7 @@ fn main() -> i32 {
 }
 
 #[test]
-fn test_match_expressions() -> Result<()> {
+fn test_match_expressions() {
     assert_parser_snapshot(
         "match_expressions",
         r#"
@@ -194,7 +192,7 @@ fn main() -> i32 {
 // ===== Array Tests =====
 
 #[test]
-fn test_array_types() -> Result<()> {
+fn test_array_types() {
     assert_parser_snapshot(
         "array_types",
         r#"
@@ -220,7 +218,7 @@ fn main() -> i32 {
 }
 
 #[test]
-fn test_array_operations() -> Result<()> {
+fn test_array_operations() {
     assert_parser_snapshot(
         "array_operations",
         r#"
@@ -249,7 +247,7 @@ fn main() -> i32 {
 }
 
 #[test]
-fn test_slice_operations() -> Result<()> {
+fn test_slice_operations() {
     assert_parser_snapshot(
         "slice_operations",
         r#"
@@ -275,7 +273,7 @@ fn main() -> i32 {
 // ===== Tuple Tests =====
 
 #[test]
-fn test_tuple_types() -> Result<()> {
+fn test_tuple_types() {
     assert_parser_snapshot(
         "tuple_types",
         r#"
@@ -302,7 +300,7 @@ fn main() -> i32 {
 }
 
 #[test]
-fn test_tuple_access() -> Result<()> {
+fn test_tuple_access() {
     assert_parser_snapshot(
         "tuple_access",
         r#"
@@ -327,7 +325,7 @@ fn main() -> i32 {
 // ===== Generic Tests =====
 
 #[test]
-fn test_generic_functions() -> Result<()> {
+fn test_generic_functions() {
     assert_parser_snapshot(
         "generic_functions",
         r#"
@@ -360,7 +358,7 @@ fn main() -> i32 {
 }
 
 #[test]
-fn test_generic_structs() -> Result<()> {
+fn test_generic_structs() {
     assert_parser_snapshot(
         "generic_structs",
         r#"
@@ -396,7 +394,7 @@ fn main() -> i32 {
 // ===== Complex Nested Types =====
 
 #[test]
-fn test_complex_nested_types() -> Result<()> {
+fn test_complex_nested_types() {
     assert_parser_snapshot(
         "complex_nested_types",
         r#"
@@ -459,7 +457,7 @@ fn main() -> i32 {
 // ===== Type Alias Tests =====
 
 #[test]
-fn test_type_aliases() -> Result<()> {
+fn test_type_aliases() {
     assert_parser_snapshot(
         "type_aliases",
         r#"
@@ -488,7 +486,7 @@ fn main() -> Int {
 // ===== Pattern Matching Tests =====
 
 #[test]
-fn test_pattern_matching() -> Result<()> {
+fn test_pattern_matching() {
     assert_parser_snapshot(
         "pattern_matching",
         r#"
@@ -516,7 +514,7 @@ fn main() -> i32 {
 }
 
 #[test]
-fn test_destructuring_patterns() -> Result<()> {
+fn test_destructuring_patterns() {
     assert_parser_snapshot(
         "destructuring_patterns",
         r#"

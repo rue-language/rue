@@ -1,0 +1,47 @@
+load("@prelude//rust:cargo_package.bzl", "cargo")
+load("//tools/rust:defs.bzl", "clippy_rust_library")
+
+cargo.rust_library(
+    name = "rue-insta-utils",
+    srcs = glob(["src/**/*.rs"]),
+    crate_root = "src/lib.rs",
+    edition = "2024",
+    visibility = ["PUBLIC"],
+    deps = [
+        "//third-party/rust:insta",
+        "//third-party/rust:serde",
+        "//third-party/rust:serde_json",
+        "//third-party/rust:toml",
+        "//third-party/rust:regex",
+    ],
+)
+
+# Clippy version of the library target
+clippy_rust_library(
+    name = "clippy",
+    srcs = glob(["src/**/*.rs"]),
+    crate_root = "src/lib.rs",
+    edition = "2024",
+    visibility = ["PUBLIC"],
+    deps = [
+        "//third-party/rust:insta",
+        "//third-party/rust:serde",
+        "//third-party/rust:serde_json",
+        "//third-party/rust:toml",
+        "//third-party/rust:regex",
+    ],
+)
+
+rust_test(
+    name = "test",
+    srcs = glob(["src/**/*.rs"]),
+    crate_root = "src/lib.rs",
+    edition = "2024",
+    deps = [
+        "//third-party/rust:insta",
+        "//third-party/rust:serde",
+        "//third-party/rust:serde_json",
+        "//third-party/rust:toml",
+        "//third-party/rust:regex",
+    ],
+)
