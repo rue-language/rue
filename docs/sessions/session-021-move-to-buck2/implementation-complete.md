@@ -79,12 +79,12 @@ Successfully implemented the core infrastructure for migrating Rue from a dual C
 - Test CI changes in a pull request
 - Ensure CI passes on all platforms
 
-### Phase 6: Cargo Removal (Not Yet Done)
-- Remove root Cargo.toml
-- Remove crate-level Cargo.toml files  
-- Keep third-party/rust/Cargo.toml for reindeer
-- Remove Cargo.lock
-- Update .gitignore
+### ✅ Phase 6: Cargo Removal (Completed Aug 20, 2025)
+- ✅ Removed root Cargo.toml
+- ✅ Removed all crate-level Cargo.toml files (18 files)
+- ✅ Kept third-party/rust/Cargo.toml for reindeer
+- ✅ Removed Cargo.lock from root (kept in third-party for reindeer)
+- ✅ Updated .gitignore to remove Cargo-specific entries
 
 ### Phase 7: Additional Enhancements
 - Add shell completion for Buck2 targets
@@ -141,7 +141,7 @@ Successfully implemented the core infrastructure for migrating Rue from a dual C
 
 ## Migration Status
 
-The Buck2 migration infrastructure is **95% complete**. The only blocking requirement is dotslash installation, after which all systems are ready for use. The implementation prioritizes developer experience while maintaining backward compatibility during the transition period.
+The Buck2 migration is **100% complete** as of August 20, 2025. All Cargo files have been removed, the build system is Buck2-only, and CI/CD has been fully migrated. The implementation prioritizes developer experience while providing a clean, single-source-of-truth build system.
 
 ### Ready for Production Use ✅
 - Buck2 bootstrap infrastructure

@@ -60,11 +60,15 @@ The migration follows a careful, phased approach:
 
 ## Next Steps
 
-1. Create dotslash bootstrap files for buck2 and rust-project
-2. Test rust-analyzer integration with generated rust-project.json
-3. Update CI/CD pipelines incrementally
-4. Create developer documentation and migration guide
-5. Remove Cargo infrastructure after validation
+~~1. Create dotslash bootstrap files for buck2 and rust-project~~ ✅ Completed
+~~2. Test rust-analyzer integration with generated rust-project.json~~ ✅ Completed
+~~3. Update CI/CD pipelines incrementally~~ ✅ Completed
+~~4. Create developer documentation and migration guide~~ ✅ Completed
+~~5. Remove Cargo infrastructure after validation~~ ✅ Completed Aug 20, 2025
+
+## Migration Completed
+
+The Buck2 migration was successfully completed on August 20, 2025 (commit 974b0e9). All phases including Cargo removal have been finished, making Rue a Buck2-only project.
 
 ## Lessons Learned
 
