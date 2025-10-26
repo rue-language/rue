@@ -45,6 +45,7 @@ anyhow = "1.0.99"
 camino = "1.1"
 bstr = "1.6"
 similar = "2.2"
+insta = { version = "1.41", features = ["json", "yaml"] }
 walkdir = "2.4"
 clap = { version = "4.4", features = ["derive"] }
 once_cell = "1.19"
