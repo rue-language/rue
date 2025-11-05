@@ -267,6 +267,7 @@ fn test_undefined_symbol_error() {
             data: vec![0; 16],
             alignment: 1,
             base_address: 0x1000,
+            size: 16,
         },
     );
 

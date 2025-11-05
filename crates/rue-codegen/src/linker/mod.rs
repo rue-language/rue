@@ -43,6 +43,8 @@ pub struct MergedSection {
     pub data: Vec<u8>,
     pub alignment: u64,
     pub base_address: u64,
+    /// Total size of the section in memory (for BSS, this is the uninitialized space)
+    pub size: u64,
 }
 
 /// Result of the linking process
@@ -132,8 +134,8 @@ impl Linker {
                 current_addr = align_to(current_addr, section.alignment);
                 section.base_address = current_addr;
 
-                // Move to next section (BSS doesn't take file space but needs memory address)
-                current_addr += section.data.len() as u64;
+                // Move to next section using size (for BSS, size > data.len())
+                current_addr += section.size;
 
                 // Align to reasonable boundary between sections
                 current_addr = align_to(current_addr, 8);
@@ -153,7 +155,7 @@ impl Linker {
             if let Some(section) = self.merged_sections.get_mut(&section_name) {
                 current_addr = align_to(current_addr, section.alignment);
                 section.base_address = current_addr;
-                current_addr += section.data.len() as u64;
+                current_addr += section.size;
                 current_addr = align_to(current_addr, 8);
             }
         }
@@ -163,6 +165,8 @@ impl Linker {
     fn merge_sections(&mut self) -> Result<(), CodegenError> {
         for object_file in &self.object_files {
             for section in &object_file.sections {
+                let is_bss = section.kind == SectionKind::UninitializedData;
+
                 let entry = self
                     .merged_sections
                     .entry(section.name.clone())
@@ -172,22 +176,33 @@ impl Linker {
                         data: Vec::new(),
                         alignment: section.alignment,
                         base_address: 0, // Will be set later
+                        size: 0,
                     });
 
-                // Align the current data to the section's alignment
-                let current_size = entry.data.len() as u64;
-                let aligned_size = align_to(current_size, section.alignment);
-                entry.data.resize(aligned_size as usize, 0);
+                // Align the current position to the section's alignment
+                let current_pos = if is_bss {
+                    entry.size
+                } else {
+                    entry.data.len() as u64
+                };
+                let aligned_pos = align_to(current_pos, section.alignment);
+
+                if is_bss {
+                    // For BSS, we only track size, not data
+                    entry.size = aligned_pos + section.size;
+                } else {
+                    // For regular sections, pad data and append
+                    entry.data.resize(aligned_pos as usize, 0);
+                    entry.data.extend_from_slice(&section.data);
+                    entry.size = entry.data.len() as u64;
+                }
 
                 // Record where this section was placed in the merged section
                 self.section_placements.push(SectionPlacement {
                     object_file_name: object_file.name.clone(),
                     section_name: section.name.clone(),
-                    offset_in_merged: aligned_size,
+                    offset_in_merged: aligned_pos,
                 });
-
-                // Append the section data
-                entry.data.extend_from_slice(&section.data);
 
                 // Use the maximum alignment
                 entry.alignment = entry.alignment.max(section.alignment);
@@ -332,7 +347,7 @@ impl Linker {
         let bss_size = self
             .merged_sections
             .get(".bss")
-            .map(|s| s.data.len() as u64)
+            .map(|s| s.size)
             .unwrap_or(0);
 
         LinkedResult {
