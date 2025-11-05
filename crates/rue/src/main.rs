@@ -27,6 +27,7 @@ struct Args {
     quiet: bool,
     log_format: Option<String>,
     log_filter: Option<String>,
+    use_rust_runtime: bool,
 }
 
 fn parser() -> impl Parser<Args> {
@@ -94,6 +95,10 @@ fn parser() -> impl Parser<Args> {
         .help("Suppress info logs (only show warnings and errors)")
         .switch();
 
+    let use_rust_runtime = bpaf::long("use-rust-runtime")
+        .help("Use Rust-based runtime instead of generated assembly runtime")
+        .switch();
+
     let input = bpaf::positional::<PathBuf>("INPUT")
         .help("Input Rue source file (use '-' for stdin)")
         .optional();
@@ -106,6 +111,7 @@ fn parser() -> impl Parser<Args> {
         quiet,
         log_format,
         log_filter,
+        use_rust_runtime,
         input,
     })
 }
@@ -234,7 +240,7 @@ fn run(opts: Args) -> anyhow::Result<i32> {
     let db = RueDatabase::default();
     let file = SourceFile::new(&db, input_path.to_string_lossy().to_string(), source);
     let optimize_enabled = opts.optimize > 0;
-    let options = CompileOptions::new(&db, optimize_enabled);
+    let options = CompileOptions::new(&db, optimize_enabled, opts.use_rust_runtime);
 
     // Compile based on mode
     match emit_mode {
