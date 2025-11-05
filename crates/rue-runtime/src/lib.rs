@@ -70,7 +70,9 @@ pub use io::{
 };
 
 #[cfg(not(test))]
-pub use memory::{__rue_memcpy, __rue_memmove, __rue_memset, __rue_memzero};
+pub use memory::{
+    __rue_detect_cpu_features, __rue_memcpy, __rue_memmove, __rue_memset, __rue_memzero,
+};
 
 /// Panic handler for no_std
 ///
