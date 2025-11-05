@@ -279,24 +279,36 @@ impl Linker {
                 // R_X86_64_64: 64-bit absolute address
                 let value = (target_address as i64 + relocation.addend) as u64;
                 let offset = relocation.offset as usize;
-                if offset + 8 > section.data.len() {
+
+                // Check for overflow and bounds
+                let end_offset = offset.checked_add(8).ok_or_else(|| {
+                    CodegenError::InvalidOperation("Relocation offset would overflow".to_string())
+                })?;
+
+                if end_offset > section.data.len() {
                     return Err(CodegenError::InvalidOperation(
                         "Relocation offset out of bounds".to_string(),
                     ));
                 }
-                section.data[offset..offset + 8].copy_from_slice(&value.to_le_bytes());
+                section.data[offset..end_offset].copy_from_slice(&value.to_le_bytes());
             }
             RelocationKind::PC32 => {
                 // R_X86_64_PC32: 32-bit PC-relative address
                 let pc = section.base_address + relocation.offset;
                 let value = (target_address as i64 - pc as i64 + relocation.addend) as i32;
                 let offset = relocation.offset as usize;
-                if offset + 4 > section.data.len() {
+
+                // Check for overflow and bounds
+                let end_offset = offset.checked_add(4).ok_or_else(|| {
+                    CodegenError::InvalidOperation("Relocation offset would overflow".to_string())
+                })?;
+
+                if end_offset > section.data.len() {
                     return Err(CodegenError::InvalidOperation(
                         "Relocation offset out of bounds".to_string(),
                     ));
                 }
-                section.data[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
+                section.data[offset..end_offset].copy_from_slice(&value.to_le_bytes());
             }
         }
 
