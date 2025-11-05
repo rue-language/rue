@@ -81,36 +81,36 @@
   - [x] **4.2d** Benchmark if relevant
 
 ### Phase 5: Memory Operations (Performance Critical)
-- [ ] **5.1** Implement basic memory operations
-  - [ ] **5.1a** Implement `__rue_memcpy(dst: *mut u8, src: *const u8, len: usize)`
+- [x] **5.1** Implement basic memory operations
+  - [x] **5.1a** Implement `__rue_memcpy(dst: *mut u8, src: *const u8, len: usize)`
     - Use `ptr::copy_nonoverlapping` for now
-  - [ ] **5.1b** Implement `__rue_memmove(dst: *mut u8, src: *const u8, len: usize)`
+  - [x] **5.1b** Implement `__rue_memmove(dst: *mut u8, src: *const u8, len: usize)`
     - Use `ptr::copy` (handles overlap)
-  - [ ] **5.1c** Implement `__rue_memset(dst: *mut u8, value: u8, len: usize)`
+  - [x] **5.1c** Implement `__rue_memset(dst: *mut u8, value: u8, len: usize)`
     - Use `ptr::write_bytes`
-  - [ ] **5.1d** Implement `__rue_memzero(dst: *mut u8, len: usize)`
+  - [x] **5.1d** Implement `__rue_memzero(dst: *mut u8, len: usize)`
     - Delegate to memset with 0
-  - [ ] **5.1e** Write correctness tests (various sizes, alignments)
-  - [ ] **5.1f** Write edge case tests (size 0, overlapping)
-- [ ] **5.2** Add CPU feature detection
-  - [ ] **5.2a** Create `cpuid.rs` module
-  - [ ] **5.2b** Implement CPUID detection using inline asm
-  - [ ] **5.2c** Detect ERMS support bit
-  - [ ] **5.2d** Initialize feature flags at startup
-  - [ ] **5.2e** Test on CPUs with/without ERMS (or mock)
-- [ ] **5.3** Add optimized memory operations
-  - [ ] **5.3a** Implement ERMS memcpy using inline asm
-  - [ ] **5.3b** Implement ERMS memmove using inline asm
-  - [ ] **5.3c** Implement ERMS memset using inline asm
-  - [ ] **5.3d** Add threshold logic (use ERMS for size > 4KB)
-  - [ ] **5.3e** Set up function pointer vtable
-  - [ ] **5.3f** Initialize vtable based on CPU features
-- [ ] **5.4** Benchmark and validate performance
-  - [ ] **5.4a** Benchmark small copies (16, 64, 256 bytes)
-  - [ ] **5.4b** Benchmark large copies (4KB, 64KB, 1MB)
-  - [ ] **5.4c** Compare to old implementation
-  - [ ] **5.4d** Verify within 5% or better
-  - [ ] **5.4e** Profile with `perf` if needed
+  - [x] **5.1e** Write correctness tests (various sizes, alignments)
+  - [x] **5.1f** Write edge case tests (size 0, overlapping)
+- [x] **5.2** Add CPU feature detection
+  - [x] **5.2a** Create `cpuid.rs` module
+  - [x] **5.2b** Implement CPUID detection using inline asm
+  - [x] **5.2c** Detect ERMS support bit
+  - [x] **5.2d** Initialize feature flags at startup
+  - [x] **5.2e** Test on CPUs with/without ERMS (or mock)
+- [x] **5.3** Add optimized memory operations
+  - [x] **5.3a** Implement ERMS memcpy using inline asm
+  - [x] **5.3b** Implement ERMS memmove using inline asm
+  - [x] **5.3c** Implement ERMS memset using inline asm
+  - [x] **5.3d** Add threshold logic (use ERMS for size > 4KB)
+  - [x] **5.3e** Set up function pointer vtable
+  - [x] **5.3f** Initialize vtable based on CPU features
+- [x] **5.4** Benchmark and validate performance
+  - [x] **5.4a** Benchmark small copies (16, 64, 256 bytes)
+  - [x] **5.4b** Benchmark large copies (4KB, 64KB, 1MB)
+  - [x] **5.4c** Compare to old implementation
+  - [x] **5.4d** Verify within 5% or better
+  - [x] **5.4e** Profile with `perf` if needed
 
 ### Phase 6: Compiler Integration (Link Runtime)
 - [ ] **6.1** Update Buck2 build configuration
