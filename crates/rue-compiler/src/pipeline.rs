@@ -263,11 +263,12 @@ fn optimize_and_verify_mir(
 ///
 /// This function contains the common compilation steps used by both assembly and executable generation.
 /// It performs HIR → MIR → optimizations → instructions → machine code generation.
-#[instrument(skip_all, fields(optimize = enable_optimizations))]
+#[instrument(skip_all, fields(optimize = enable_optimizations, use_rust_runtime))]
 pub fn compile_hir_via_mir_to_intermediate(
     hir: &Hir,
     type_context: TypeContext,
     enable_optimizations: bool,
+    use_rust_runtime: bool,
 ) -> Result<CompilationIntermediateResult, CompileError> {
     // Step 1: Lower HIR to MIR with TypeContext
     info!(target: "rue::mir", "Lowering HIR to MIR");
@@ -289,7 +290,7 @@ pub fn compile_hir_via_mir_to_intermediate(
     let function_labels = mir_lowerer.get_function_labels();
 
     // Step 5: Create runtime provider
-    let runtime_provider = RuntimeProvider::new()?;
+    let runtime_provider = RuntimeProvider::new(use_rust_runtime)?;
 
     // Step 6: Identify function boundaries
     let function_boundaries = discover_function_boundaries(&instructions, &function_labels);
@@ -326,15 +327,16 @@ pub fn compile_hir_via_mir_to_intermediate(
 ///
 /// This function uses the unified compilation pipeline and formats the result as assembly.
 /// HIR → MIR → (optimizations) → Instructions → Assembly
-#[instrument(skip_all, fields(optimize = enable_optimizations))]
+#[instrument(skip_all, fields(optimize = enable_optimizations, use_rust_runtime))]
 pub fn compile_hir_via_mir_to_assembly(
     hir: &Hir,
     type_context: TypeContext,
     enable_optimizations: bool,
+    use_rust_runtime: bool,
 ) -> Result<String, CompileError> {
     // Use the unified compilation pipeline
     let intermediate =
-        compile_hir_via_mir_to_intermediate(hir, type_context, enable_optimizations)?;
+        compile_hir_via_mir_to_intermediate(hir, type_context, enable_optimizations, use_rust_runtime)?;
 
     // Generate assembly from intermediate results
     info!(target: "rue::codegen", "Generating assembly");
@@ -349,15 +351,16 @@ pub fn compile_hir_via_mir_to_assembly(
 /// Compile HIR to executable via MIR
 ///
 /// This function uses the unified compilation pipeline and generates an ELF executable.
-#[instrument(skip_all, fields(optimize = enable_optimizations))]
+#[instrument(skip_all, fields(optimize = enable_optimizations, use_rust_runtime))]
 pub fn compile_hir_via_mir_to_executable(
     hir: &Hir,
     type_context: TypeContext,
     enable_optimizations: bool,
+    use_rust_runtime: bool,
 ) -> Result<Vec<u8>, CompileError> {
     // Use the unified compilation pipeline
     let intermediate =
-        compile_hir_via_mir_to_intermediate(hir, type_context, enable_optimizations)?;
+        compile_hir_via_mir_to_intermediate(hir, type_context, enable_optimizations, use_rust_runtime)?;
 
     // Generate machine code from intermediate results using trait abstraction
     info!(target: "rue::elf", "Generating ELF executable");

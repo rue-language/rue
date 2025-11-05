@@ -11,13 +11,26 @@ pub struct RuntimeProvider {
 
 impl RuntimeProvider {
     /// Create a new RuntimeProvider with runtime instructions loaded
-    pub fn new() -> Result<Self, CodegenError> {
-        let (runtime_instructions, runtime_labels) =
-            crate::runtime::generate_runtime().map_err(|_| CodegenError::Io)?;
-        Ok(Self {
-            runtime_instructions,
-            runtime_labels,
-        })
+    ///
+    /// If `use_rust_runtime` is true, returns empty vectors since runtime functions
+    /// will be provided by linking with librue_runtime.a instead.
+    pub fn new(use_rust_runtime: bool) -> Result<Self, CodegenError> {
+        if use_rust_runtime {
+            // When using Rust runtime, we don't generate runtime instructions
+            // The runtime functions will be provided by linking with librue_runtime.a
+            Ok(Self {
+                runtime_instructions: Vec::new(),
+                runtime_labels: HashMap::new(),
+            })
+        } else {
+            // Generate runtime instructions as before
+            let (runtime_instructions, runtime_labels) =
+                crate::runtime::generate_runtime().map_err(|_| CodegenError::Io)?;
+            Ok(Self {
+                runtime_instructions,
+                runtime_labels,
+            })
+        }
     }
 
     /// Get the runtime label count
