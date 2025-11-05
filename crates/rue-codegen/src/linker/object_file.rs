@@ -99,6 +99,12 @@ impl ObjectFile {
 
     /// Parse symbols from the object file
     fn parse_symbols(&mut self, obj_file: &object::File) -> Result<(), CodegenError> {
+        // Build a lookup table of section names by index for O(1) access
+        let section_names: Vec<String> = obj_file
+            .sections()
+            .map(|s| s.name().unwrap_or("<unknown>").to_string())
+            .collect();
+
         for symbol in obj_file.symbols() {
             let name = symbol.name().unwrap_or("<unknown>").to_string();
 
@@ -121,12 +127,11 @@ impl ObjectFile {
             // Determine section name if symbol is defined
             let section_name = match symbol.section() {
                 object::SymbolSection::Section(section_index) => {
-                    // Find the section by index
-                    if let Some(section) = obj_file.sections().nth(section_index.0) {
-                        section.name().unwrap_or("<unknown>").to_string()
-                    } else {
-                        String::new()
-                    }
+                    // Look up the section name by index in O(1) time
+                    section_names
+                        .get(section_index.0)
+                        .cloned()
+                        .unwrap_or_default()
                 }
                 _ => String::new(), // Undefined symbol or special section
             };
