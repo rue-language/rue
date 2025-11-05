@@ -25,6 +25,8 @@ pub struct Section {
     pub data: Vec<u8>,
     pub alignment: u64,
     pub address: u64,
+    /// Size of the section in bytes (for BSS, this may be larger than data.len())
+    pub size: u64,
 }
 
 impl ObjectFile {
@@ -80,6 +82,7 @@ impl ObjectFile {
             let data = section.data().unwrap_or(&[]).to_vec();
             let alignment = section.align();
             let address = section.address();
+            let size = section.size();
 
             self.sections.push(Section {
                 name,
@@ -87,6 +90,7 @@ impl ObjectFile {
                 data,
                 alignment,
                 address,
+                size,
             });
         }
 
