@@ -60,25 +60,25 @@
   - [x] **3.2g** Benchmark against old implementation
 
 ### Phase 4: I/O Functions (Build on Buffering)
-- [ ] **4.1** Implement `println` variants
-  - [ ] **4.1a** Implement `__rue_println_i64(value: i64)`
+- [x] **4.1** Implement `println` variants
+  - [x] **4.1a** Implement `__rue_println_i64(value: i64)`
     - Uses `__rue_itoa` + `__rue_write_bytes` + newline
-  - [ ] **4.1b** Implement `__rue_println_i32(value: i32)`
+  - [x] **4.1b** Implement `__rue_println_i32(value: i32)`
     - Cast to i64 and delegate
-  - [ ] **4.1c** Implement `__rue_println_bool(value: bool)`
+  - [x] **4.1c** Implement `__rue_println_bool(value: bool)`
     - Write "true" or "false" + newline
-  - [ ] **4.1d** Implement `__rue_println_unit()`
+  - [x] **4.1d** Implement `__rue_println_unit()`
     - Write "()" + newline
-  - [ ] **4.1e** Write unit tests for each variant
-  - [ ] **4.1f** Write integration tests (verify output)
-- [ ] **4.2** Implement input function
-  - [ ] **4.2a** Write TDD test cases (various inputs)
-  - [ ] **4.2b** Implement `__rue_input() -> i64`
+  - [x] **4.1e** Write unit tests for each variant
+  - [x] **4.1f** Write integration tests (verify output)
+- [x] **4.2** Implement input function
+  - [x] **4.2a** Write TDD test cases (various inputs)
+  - [x] **4.2b** Implement `__rue_input() -> i64`
     - Read from stdin (fd 0)
     - Parse using `__rue_atoi`
     - Handle newlines and whitespace
-  - [ ] **4.2c** Test with valid and invalid inputs
-  - [ ] **4.2d** Benchmark if relevant
+  - [x] **4.2c** Test with valid and invalid inputs
+  - [x] **4.2d** Benchmark if relevant
 
 ### Phase 5: Memory Operations (Performance Critical)
 - [ ] **5.1** Implement basic memory operations
