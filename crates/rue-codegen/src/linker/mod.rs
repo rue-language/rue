@@ -100,14 +100,63 @@ impl Linker {
         // Step 1: Merge sections from all object files
         self.merge_sections()?;
 
-        // Step 2: Build unified symbol table
+        // Step 2: Calculate base addresses for merged sections
+        self.calculate_base_addresses();
+
+        // Step 3: Build unified symbol table
         self.build_symbol_table()?;
 
-        // Step 3: Apply relocations
+        // Step 4: Apply relocations
         self.apply_relocations()?;
 
-        // Step 4: Build final result
+        // Step 5: Build final result
         Ok(self.build_result())
+    }
+
+    /// Calculate base addresses for merged sections based on standard executable layout
+    fn calculate_base_addresses(&mut self) {
+        // Standard ELF executable base address
+        const BASE_ADDR: u64 = 0x400000;
+        const ELF_HEADER_SIZE: u64 = 64;
+        const PROGRAM_HEADER_SIZE: u64 = 56;
+        const PAGE_SIZE: u64 = 0x1000;
+
+        // Calculate starting offset (after headers)
+        let headers_size = ELF_HEADER_SIZE + PROGRAM_HEADER_SIZE;
+        let mut current_addr = BASE_ADDR + align_to(headers_size, 16);
+
+        // Assign addresses to sections in standard order: .text, .rodata, .data, .bss
+        for section_name in [".text", ".rodata", ".data", ".bss"] {
+            if let Some(section) = self.merged_sections.get_mut(section_name) {
+                // Align to section's required alignment
+                current_addr = align_to(current_addr, section.alignment);
+                section.base_address = current_addr;
+
+                // Move to next section (BSS doesn't take file space but needs memory address)
+                current_addr += section.data.len() as u64;
+
+                // Align to reasonable boundary between sections
+                current_addr = align_to(current_addr, 8);
+            }
+        }
+
+        // Handle any other sections not in the standard list
+        let mut other_sections: Vec<String> = self
+            .merged_sections
+            .keys()
+            .filter(|name| !matches!(name.as_str(), ".text" | ".rodata" | ".data" | ".bss"))
+            .cloned()
+            .collect();
+        other_sections.sort();
+
+        for section_name in other_sections {
+            if let Some(section) = self.merged_sections.get_mut(&section_name) {
+                current_addr = align_to(current_addr, section.alignment);
+                section.base_address = current_addr;
+                current_addr += section.data.len() as u64;
+                current_addr = align_to(current_addr, 8);
+            }
+        }
     }
 
     /// Merge sections from all object files
@@ -163,9 +212,16 @@ impl Linker {
                     .map(|placement| placement.offset_in_merged)
                     .unwrap_or(0);
 
-                // Create adjusted symbol with corrected address
+                // Get the base address of the merged section
+                let base_address = self
+                    .merged_sections
+                    .get(&symbol.section_name)
+                    .map(|section| section.base_address)
+                    .unwrap_or(0);
+
+                // Create adjusted symbol with corrected absolute address
                 let mut adjusted_symbol = symbol.clone();
-                adjusted_symbol.address += offset;
+                adjusted_symbol.address = base_address + offset + symbol.address;
 
                 self.symbol_table.add_symbol(adjusted_symbol);
             }
