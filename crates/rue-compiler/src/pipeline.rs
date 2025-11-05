@@ -370,31 +370,122 @@ pub fn compile_hir_via_mir_to_executable(
         use_rust_runtime,
     )?;
 
-    // Generate machine code from intermediate results using trait abstraction
-    info!(target: "rue::elf", "Generating ELF executable");
-    let mut emitter = TargetRegistry::create_emitter(TargetRegistry::default_target());
-    emitter.set_function_labels(
-        intermediate.all_function_labels,
-        intermediate.runtime_label_count,
-    );
-    let code = emitter
-        .emit_all(&intermediate.final_instructions)
-        .map_err(rue_codegen::CodegenError::InvalidOperation)?;
+    if use_rust_runtime {
+        // Generate relocatable object file and link with Rust runtime
+        info!(target: "rue::elf", "Generating object file for Rust runtime linking");
 
-    // Extract symbol positions from emitter
-    let (_, symbols) = emitter.get_output();
+        let mut emitter = TargetRegistry::create_emitter(TargetRegistry::default_target());
+        emitter.set_function_labels(
+            intermediate.all_function_labels,
+            intermediate.runtime_label_count,
+        );
+        emitter.set_use_rust_runtime(true);
 
-    // Validate that _start symbol exists
-    if !symbols.contains_key("_start") {
-        return Err(CompileError::Codegen(CodegenError::InvalidOperation(
-            "_start symbol not found in symbol table - runtime initialization failed".to_string(),
-        )));
+        // First emit the instructions to generate section data
+        let _ = emitter
+            .emit_all(&intermediate.final_instructions)
+            .map_err(rue_codegen::CodegenError::InvalidOperation)?;
+
+        // Then generate object file with external runtime symbols
+        let object_bytes = emitter
+            .emit_as_object_file()
+            .map_err(rue_codegen::CodegenError::InvalidOperation)?;
+
+        // Link with Rust runtime
+        info!(target: "rue::elf", "Linking with Rust runtime");
+        let mut linker = rue_codegen::Linker::new();
+
+        // Add user object file
+        linker
+            .add_object_file("user_code.o".to_string(), &object_bytes)
+            .map_err(CompileError::Codegen)?;
+
+        // Add runtime library
+        // Check RUE_RUNTIME_PATH environment variable, otherwise use default Buck2 path
+        let default_runtime_path = "buck-out/v2/gen/root/2c621926a02f7469/crates/rue-runtime/__rue-runtime__/out/librue_runtime.a";
+        let runtime_path =
+            std::env::var("RUE_RUNTIME_PATH").unwrap_or_else(|_| default_runtime_path.to_string());
+
+        // Verify the runtime library exists
+        if !std::path::Path::new(&runtime_path).exists() {
+            return Err(CompileError::Codegen(
+                rue_codegen::CodegenError::InvalidOperation(format!(
+                    "Runtime library not found at: {}\n\
+                     Try rebuilding with: ./buck2 build //crates/rue-runtime:rue-runtime\n\
+                     Or set RUE_RUNTIME_PATH environment variable to the library path",
+                    runtime_path
+                )),
+            ));
+        }
+
+        debug!(target: "rue::elf", "Using runtime library: {}", runtime_path);
+        linker
+            .add_object_file_from_path(&runtime_path)
+            .map_err(CompileError::Codegen)?;
+
+        // Link all object files
+        let linked = linker.link().map_err(CompileError::Codegen)?;
+
+        // Convert symbol table to HashMap<String, usize> for ELF writer
+        let symbols: std::collections::HashMap<String, usize> = linked
+            .symbols
+            .global_symbols()
+            .iter()
+            .map(|(name, sym)| (name.clone(), sym.address as usize))
+            .chain(
+                linked
+                    .symbols
+                    .local_symbols()
+                    .iter()
+                    .map(|(name, sym)| (name.clone(), sym.address as usize)),
+            )
+            .collect();
+
+        // Validate that _start symbol exists
+        if !symbols.contains_key("_start") {
+            return Err(CompileError::Codegen(CodegenError::InvalidOperation(
+                "_start symbol not found in symbol table - runtime initialization failed"
+                    .to_string(),
+            )));
+        }
+
+        // Generate ELF executable from linked result
+        info!(target: "rue::elf", "Generating final ELF executable");
+        let elf_writer = TargetRegistry::create_executable_writer(TargetRegistry::default_target());
+        Ok(elf_writer.generate_executable_with_sections(
+            &linked.text_section,
+            &symbols,
+            &linked.rodata_section,
+            linked.bss_size as usize,
+        ))
+    } else {
+        // Generate machine code from intermediate results using trait abstraction
+        info!(target: "rue::elf", "Generating ELF executable");
+        let mut emitter = TargetRegistry::create_emitter(TargetRegistry::default_target());
+        emitter.set_function_labels(
+            intermediate.all_function_labels,
+            intermediate.runtime_label_count,
+        );
+        let code = emitter
+            .emit_all(&intermediate.final_instructions)
+            .map_err(rue_codegen::CodegenError::InvalidOperation)?;
+
+        // Extract symbol positions from emitter
+        let (_, symbols) = emitter.get_output();
+
+        // Validate that _start symbol exists
+        if !symbols.contains_key("_start") {
+            return Err(CompileError::Codegen(CodegenError::InvalidOperation(
+                "_start symbol not found in symbol table - runtime initialization failed"
+                    .to_string(),
+            )));
+        }
+
+        // Get data and BSS section information
+        let (data_section, bss_size) = emitter.get_data_and_bss();
+
+        // Generate ELF executable using trait abstraction with section support
+        let elf_writer = TargetRegistry::create_executable_writer(TargetRegistry::default_target());
+        Ok(elf_writer.generate_executable_with_sections(&code, &symbols, data_section, bss_size))
     }
-
-    // Get data and BSS section information
-    let (data_section, bss_size) = emitter.get_data_and_bss();
-
-    // Generate ELF executable using trait abstraction with section support
-    let elf_writer = TargetRegistry::create_executable_writer(TargetRegistry::default_target());
-    Ok(elf_writer.generate_executable_with_sections(&code, &symbols, data_section, bss_size))
 }

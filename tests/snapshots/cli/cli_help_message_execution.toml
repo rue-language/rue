@@ -3,7 +3,7 @@ stdout = """
 The Rue programming language compiler
 
 Usage: rue [-o=OUTPUT] [-S] [--emit-mir] [--compile-only] [-O=LEVEL] [-v]... [-q] [--log-format=
-FORMAT] [--log-filter=FILTER] [INPUT]
+FORMAT] [--log-filter=FILTER] [--use-rust-runtime] [INPUT]
 
 Available positional items:
     INPUT                    Input Rue source file (use '-' for stdin)
@@ -18,6 +18,7 @@ Available options:
     -q, --quiet              Suppress info logs (only show warnings and errors)
         --log-format=FORMAT  Log output format: pretty, json, compact, tree
         --log-filter=FILTER  Custom log filter (overrides -v)
+        --use-rust-runtime   Use Rust-based runtime instead of generated assembly runtime
     -h, --help               Prints help information
 
 """

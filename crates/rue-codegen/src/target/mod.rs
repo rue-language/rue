@@ -25,6 +25,23 @@ pub trait InstructionEmitter<Instr> {
 
     /// Get data section content and BSS size for ELF generation
     fn get_data_and_bss(&self) -> (&[u8], usize);
+
+    /// Configure emitter to use external Rust runtime (marks runtime symbols as external)
+    ///
+    /// Default implementation does nothing. Emitters that support linking with external
+    /// runtime should override this method.
+    fn set_use_rust_runtime(&mut self, _use_rust_runtime: bool) {
+        // Default: no-op
+    }
+
+    /// Emit as relocatable object file (.o) instead of raw machine code
+    ///
+    /// This should be called after emit_all() to generate an ELF object file with
+    /// proper sections, symbols, and relocations suitable for linking with external
+    /// libraries. Default implementation panics as not all emitters support this mode.
+    fn emit_as_object_file(&self) -> Result<Vec<u8>, Self::Error> {
+        panic!("emit_as_object_file not implemented for this emitter")
+    }
 }
 
 /// Trait for target-specific executable format writers

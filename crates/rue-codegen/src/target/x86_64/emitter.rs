@@ -97,9 +97,14 @@ impl X86Emitter {
                 "__rue_memmove",
                 "__rue_memset",
                 "__rue_memzero",
+                "__rue_memzero_ptr",
                 "__rue_write_byte",
                 "__rue_write_bytes",
                 "__rue_flush_stdout",
+                "__rue_heap_init",
+                "__rue_setup_signal_handlers",
+                "__rue_alloc",
+                "__rue_free",
             ];
 
             for sym in runtime_symbols {

@@ -2,6 +2,6 @@ exit_code = 0
 stdout = ""
 stderr = """
   [TIMESTAMP]  WARN rue: Unknown log format: unknown, using 'pretty'
-    at crates/rue/src/main.rs:169
+    at crates/rue/src/main.rs:175
 
 """

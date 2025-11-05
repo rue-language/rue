@@ -41,6 +41,14 @@ impl InstructionEmitter<X8664Instr> for X86Emitter {
     fn get_data_and_bss(&self) -> (&[u8], usize) {
         self.get_data_and_bss()
     }
+
+    fn set_use_rust_runtime(&mut self, use_rust_runtime: bool) {
+        self.set_use_rust_runtime(use_rust_runtime);
+    }
+
+    fn emit_as_object_file(&self) -> Result<Vec<u8>, Self::Error> {
+        self.emit_as_object_file()
+    }
 }
 
 impl ExecutableWriter for ElfWriter {

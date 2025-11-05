@@ -87,3 +87,75 @@ fn panic(_info: &core::panic::PanicInfo) -> ! {
         )
     }
 }
+
+/// Stub heap initialization
+///
+/// The current Rue implementation doesn't use heap allocation, so this is a no-op.
+/// Kept for compatibility with the startup sequence.
+#[cfg(not(test))]
+#[unsafe(no_mangle)]
+pub extern "C" fn __rue_heap_init() {
+    // No-op: Rue doesn't currently use heap allocation
+}
+
+/// Stub signal handler setup
+///
+/// Signal handlers are currently set up in the generated startup code.
+/// This stub is provided for compatibility.
+#[cfg(not(test))]
+#[unsafe(no_mangle)]
+pub extern "C" fn __rue_setup_signal_handlers() {
+    // No-op: Signal handlers are set up in generated code
+}
+
+/// Stub allocation function
+///
+/// Currently returns a simple bump allocator using a static buffer.
+/// This is a minimal implementation for basic struct support.
+///
+/// # Safety
+/// Caller must ensure size is reasonable and doesn't exhaust the heap.
+#[cfg(not(test))]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn __rue_alloc(size: usize) -> *mut u8 {
+    use core::sync::atomic::{AtomicUsize, Ordering};
+
+    // Simple bump allocator with 1MB static buffer
+    static mut HEAP: [u8; 1024 * 1024] = [0; 1024 * 1024];
+    static HEAP_POS: AtomicUsize = AtomicUsize::new(0);
+
+    let offset = HEAP_POS.fetch_add(size, Ordering::SeqCst);
+
+    // Check if we've exceeded heap size
+    const HEAP_SIZE: usize = 1024 * 1024;
+    if offset + size > HEAP_SIZE {
+        // Out of memory - exit with error
+        syscall::sys_exit(254);
+    }
+
+    unsafe {
+        let heap_ptr = core::ptr::addr_of_mut!(HEAP) as *mut u8;
+        heap_ptr.add(offset)
+    }
+}
+
+/// Stub free function
+///
+/// Current allocator is a simple bump allocator that doesn't support freeing.
+/// This is a no-op for compatibility.
+///
+/// # Safety
+/// This is safe to call but does nothing.
+#[cfg(not(test))]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn __rue_free(_ptr: *mut u8) {
+    // No-op: bump allocator doesn't support freeing
+}
+
+/// Function pointer to memzero implementation
+///
+/// This is used by generated code to call memzero indirectly.
+/// Points to __rue_memzero which handles ERMS detection internally.
+#[cfg(not(test))]
+#[unsafe(no_mangle)]
+pub static __rue_memzero_ptr: unsafe extern "C" fn(*mut u8, usize) = __rue_memzero;

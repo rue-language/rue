@@ -81,10 +81,40 @@ impl Linker {
     }
 
     /// Add an object file to the linker from a file path
+    ///
+    /// Supports both individual .o files and .a archive files.
+    /// If the file is an archive, all object files within it will be added.
     pub fn add_object_file_from_path(&mut self, path: &str) -> Result<(), CodegenError> {
         let data = std::fs::read(path).map_err(|_| CodegenError::Io)?;
-        let name = path.to_string();
-        self.add_object_file(name, &data)
+
+        // Try to parse as an archive first
+        if let Ok(archive) = object::read::archive::ArchiveFile::parse(&*data) {
+            // It's an archive - extract and add each member
+            for member_result in archive.members() {
+                let member = member_result.map_err(|e| {
+                    CodegenError::InvalidOperation(format!("Failed to read archive member: {}", e))
+                })?;
+
+                let member_name = String::from_utf8_lossy(member.name()).to_string();
+                let member_data = member.data(&*data).map_err(|e| {
+                    CodegenError::InvalidOperation(format!(
+                        "Failed to extract archive member data: {}",
+                        e
+                    ))
+                })?;
+
+                // Skip non-object files (like symbol tables)
+                if member_name.ends_with(".o") || member_data.starts_with(b"\x7fELF") {
+                    let full_name = format!("{}:{}", path, member_name);
+                    self.add_object_file(full_name, member_data)?;
+                }
+            }
+            Ok(())
+        } else {
+            // Not an archive - treat as a single object file
+            let name = path.to_string();
+            self.add_object_file(name, &data)
+        }
     }
 
     /// Get a reference to the symbol table

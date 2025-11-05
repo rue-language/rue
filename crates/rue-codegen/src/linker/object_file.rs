@@ -151,15 +151,9 @@ impl ObjectFile {
     /// Parse relocations from the object file
     fn parse_relocations(&mut self, obj_file: &object::File) -> Result<(), CodegenError> {
         for section in obj_file.sections() {
-            // Look for relocation sections (.rela.*)
             let section_name = section.name().unwrap_or("");
-            if !section_name.starts_with(".rela.") {
-                continue;
-            }
 
-            // Get the target section name (remove .rela. prefix)
-            let target_section = &section_name[6..];
-
+            // Process relocations for this section
             for (offset, relocation) in section.relocations() {
                 let kind = match relocation.kind() {
                     object::RelocationKind::Absolute => {
@@ -197,7 +191,7 @@ impl ObjectFile {
                 let addend = relocation.addend();
 
                 self.relocations.push(RelocationEntry {
-                    section_name: target_section.to_string(),
+                    section_name: section_name.to_string(),
                     offset,
                     kind,
                     symbol_name,
