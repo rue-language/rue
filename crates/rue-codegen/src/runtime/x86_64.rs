@@ -9,7 +9,9 @@ use std::collections::HashMap;
 /// If `use_rust_runtime` is true, only generates startup infrastructure (_start, __rue_main)
 /// and signal handlers. Runtime I/O and conversion functions are expected to come from
 /// librue_runtime.a instead.
-pub fn generate_runtime(use_rust_runtime: bool) -> Result<(Vec<X8664Instr>, HashMap<String, u32>), String> {
+pub fn generate_runtime(
+    use_rust_runtime: bool,
+) -> Result<(Vec<X8664Instr>, HashMap<String, u32>), String> {
     let mut ctx = RuntimeContext::new();
 
     // Always generate startup function (entry point)
