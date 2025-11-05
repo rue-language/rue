@@ -1,6 +1,7 @@
 load("@prelude//toolchains:rust.bzl", "system_rust_toolchain")
 load("@prelude//toolchains:python.bzl", "system_python_bootstrap_toolchain")
 load("@prelude//toolchains:cxx.bzl", "system_cxx_toolchain")
+load("@prelude//toolchains:genrule.bzl", "system_genrule_toolchain")
 load("@prelude//tests:test_toolchain.bzl", "noop_test_toolchain")
 load(":remote_test_execution.bzl", "noop_remote_test_execution_toolchain")
 
@@ -16,6 +17,11 @@ system_python_bootstrap_toolchain(
 
 system_cxx_toolchain(
     name = "cxx",
+    visibility = ["PUBLIC"],
+)
+
+system_genrule_toolchain(
+    name = "genrule",
     visibility = ["PUBLIC"],
 )
 

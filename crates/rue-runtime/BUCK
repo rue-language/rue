@@ -1,13 +1,27 @@
 load("@prelude//rust:cargo_package.bzl", "cargo")
 load("//tools/rust:defs.bzl", "clippy_rust_library")
 
-# Rust library for runtime functions
+# Rust library for runtime functions (generates .rlib for Rust-to-Rust linking)
 cargo.rust_library(
-    name = "rue-runtime",
+    name = "rue-runtime-rlib",
     srcs = glob(["src/**/*.rs"]),
     edition = "2024",
     crate_root = "src/lib.rs",
     preferred_linkage = "static",
+    rustc_flags = ["-Cpanic=abort"],
+    visibility = ["PUBLIC"],
+)
+
+# Static library (.a file) for linking with assembly code and C ABI
+# Use this target when you need a C-linkable static library
+#
+# This uses a genrule to invoke rustc directly with --crate-type=staticlib
+# because Buck2's rust_library doesn't support building .a files for C FFI.
+genrule(
+    name = "rue-runtime",
+    srcs = glob(["src/**/*.rs"]),
+    out = "librue_runtime.a",
+    cmd = "cd $SRCDIR && rustc --crate-type=staticlib --crate-name=rue_runtime --edition=2024 -Cpanic=abort -O src/lib.rs -o $OUT",
     visibility = ["PUBLIC"],
 )
 
