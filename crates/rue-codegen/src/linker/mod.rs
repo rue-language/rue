@@ -364,6 +364,12 @@ fn align_to(value: u64, alignment: u64) -> u64 {
     if alignment == 0 {
         value
     } else {
+        // Alignment must be a power of 2 for bitwise alignment to work correctly
+        debug_assert!(
+            alignment.is_power_of_two(),
+            "Alignment must be a power of 2, got {}",
+            alignment
+        );
         (value + alignment - 1) & !(alignment - 1)
     }
 }
