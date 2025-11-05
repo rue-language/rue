@@ -460,6 +460,7 @@ fn main() -> i32 {
 #[salsa::input]
 pub struct CompileOptions {
     pub optimize: bool,
+    pub use_rust_runtime: bool,
 }
 
 #[salsa::tracked]
