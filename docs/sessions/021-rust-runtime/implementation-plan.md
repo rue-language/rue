@@ -112,12 +112,14 @@
   - [x] **5.4d** Verify within 5% or better
   - [x] **5.4e** Profile with `perf` if needed
 
-### Phase 6: Compiler Integration (Link Runtime)
-- [ ] **6.1** Update Buck2 build configuration
-  - [ ] **6.1a** Ensure rue-runtime builds to static library
+### Phase 6: Compiler Integration (Link Runtime) - IN PROGRESS
+**Status**: Runtime complete, integration design documented in `phase-6-integration-notes.md`
+
+- [x] **6.1** Update Buck2 build configuration
+  - [x] **6.1a** Ensure rue-runtime builds to static library
   - [ ] **6.1b** Add rue-runtime as dependency to compiler
   - [ ] **6.1c** Configure linker to include runtime library
-  - [ ] **6.1d** Test that library builds correctly
+  - [x] **6.1d** Test that library builds correctly
 - [ ] **6.2** Update codegen to emit calls instead of definitions
   - [ ] **6.2a** Modify codegen to emit `call __rue_println_i64` etc.
   - [ ] **6.2b** Remove function body generation (keep both for now)
