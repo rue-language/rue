@@ -10,20 +10,20 @@
 - [x] **0.5** Document current performance baselines (run benchmarks)
 
 ### Phase 1: Runtime Library Foundation (Core Structure)
-- [ ] **1.1** Set up new `rue-runtime` structure
-  - [ ] **1.1a** Review existing `crates/rue-runtime/` structure
-  - [ ] **1.1b** Create module organization (`lib.rs`, `io.rs`, `memory.rs`, `conversion.rs`, etc.)
-  - [ ] **1.1c** Set up `#![no_std]` configuration
-  - [ ] **1.1d** Define panic handler
-  - [ ] **1.1e** Update Buck2 BUCK file for static library build
-- [ ] **1.2** Define core ABI types and constants
-  - [ ] **1.2a** Create `abi.rs` module with function signatures
-  - [ ] **1.2b** Define constants (buffer sizes, alignment, etc.)
-  - [ ] **1.2c** Document calling convention expectations
-- [ ] **1.3** Set up testing infrastructure
-  - [ ] **1.3a** Create unit test structure in rue-runtime
-  - [ ] **1.3b** Set up test harness for no_std tests
-  - [ ] **1.3c** Create integration test plan
+- [x] **1.1** Set up new `rue-runtime` structure
+  - [x] **1.1a** Review existing `crates/rue-runtime/` structure
+  - [x] **1.1b** Create module organization (`lib.rs`, `io.rs`, `memory.rs`, `conversion.rs`, etc.)
+  - [x] **1.1c** Set up `#![no_std]` configuration
+  - [x] **1.1d** Define panic handler
+  - [x] **1.1e** Update Buck2 BUCK file for static library build
+- [x] **1.2** Define core ABI types and constants
+  - [x] **1.2a** Create `abi.rs` module with function signatures
+  - [x] **1.2b** Define constants (buffer sizes, alignment, etc.)
+  - [x] **1.2c** Document calling convention expectations
+- [x] **1.3** Set up testing infrastructure
+  - [x] **1.3a** Create unit test structure in rue-runtime
+  - [x] **1.3b** Set up test harness for no_std tests
+  - [x] **1.3c** Create integration test plan
 
 ### Phase 2: Syscall Foundation (Building Blocks)
 - [ ] **2.1** Implement syscall wrappers
