@@ -48,14 +48,11 @@
 
 // Module declarations
 pub mod abi;
+pub mod buffered_io;
 pub mod conversion;
 pub mod io;
 pub mod memory;
 pub mod syscall;
-
-// Buffered I/O (current implementation from Session 020)
-#[cfg(not(test))]
-pub mod buffered_io;
 
 // Re-export C ABI functions at crate root for easier linking
 #[cfg(not(test))]

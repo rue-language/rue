@@ -20,3 +20,11 @@ clippy_rust_library(
     preferred_linkage = "static",
     visibility = ["PUBLIC"],
 )
+
+# Test target
+rust_test(
+    name = "test",
+    srcs = glob(["src/**/*.rs"]),
+    crate_root = "src/lib.rs",
+    edition = "2024",
+)
