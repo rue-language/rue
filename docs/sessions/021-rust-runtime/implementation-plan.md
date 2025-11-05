@@ -6,8 +6,8 @@
 - [x] **0.1** Create session documentation directory
 - [x] **0.2** Write design-decisions.md
 - [x] **0.3** Write implementation-plan.md
-- [ ] **0.4** Audit current runtime functionality (list all functions)
-- [ ] **0.5** Document current performance baselines (run benchmarks)
+- [x] **0.4** Audit current runtime functionality (list all functions)
+- [x] **0.5** Document current performance baselines (run benchmarks)
 
 ### Phase 1: Runtime Library Foundation (Core Structure)
 - [ ] **1.1** Set up new `rue-runtime` structure
