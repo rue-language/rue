@@ -58,6 +58,9 @@
 [python_bootstrap]
   toolchain = toolchains//:python_bootstrap
 
+[genrule]
+  toolchain = toolchains//:genrule
+
 [project]
   # Project-specific settings
   check_user_defined_attributes = true
