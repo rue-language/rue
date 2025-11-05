@@ -74,7 +74,7 @@ impl ObjectFile {
             let name = section.name().unwrap_or("<unknown>").to_string();
 
             // Skip sections we don't care about
-            if name.is_empty() || name.starts_with('.') && !self.is_important_section(&name) {
+            if name.is_empty() || (name.starts_with('.') && !self.is_important_section(&name)) {
                 continue;
             }
 
