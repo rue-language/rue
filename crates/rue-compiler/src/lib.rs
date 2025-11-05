@@ -84,7 +84,7 @@ pub fn compile_with_ast(source: &str) -> Result<Vec<u8>, RueError> {
 
     // Compile to executable using the HIR
     let type_context = rue_semantic::scope_to_type_context(&analysis.scope);
-    pipeline::compile_hir_via_mir_to_executable(&analysis.hir, type_context, false)
+    pipeline::compile_hir_via_mir_to_executable(&analysis.hir, type_context, false, false)
         .map_err(RueError::from)
 }
 
@@ -471,7 +471,7 @@ pub fn compile_file(
     // Parse, analyze, and compile with functional chaining
     let analysis = analyze_file(db, file)?;
     let type_context = scope_to_type_context(&analysis.scope);
-    pipeline::compile_hir_via_mir_to_executable(&analysis.hir, type_context, false)
+    pipeline::compile_hir_via_mir_to_executable(&analysis.hir, type_context, false, false)
         .map(Arc::new)
         .map_err(|e| Arc::new(RueError::from(e)))
 }
@@ -491,7 +491,7 @@ pub fn compile_file_to_assembly(
 
     // Generate assembly from HIR via MIR (without optimizations)
     let type_context = scope_to_type_context(&analysis.scope);
-    match pipeline::compile_hir_via_mir_to_assembly(&analysis.hir, type_context, false) {
+    match pipeline::compile_hir_via_mir_to_assembly(&analysis.hir, type_context, false, false) {
         Ok(assembly) => Ok(Arc::new(assembly)),
         Err(e) => Err(Arc::new(RueError::from(e))),
     }
@@ -517,6 +517,7 @@ pub fn compile_file_with_options(
         &analysis.hir,
         type_context,
         options.optimize(db),
+        options.use_rust_runtime(db),
     ) {
         Ok(executable) => Ok(Arc::new(executable)),
         Err(e) => Err(Arc::new(RueError::from(e))),
@@ -543,6 +544,7 @@ pub fn compile_file_to_assembly_with_options(
         &analysis.hir,
         type_context,
         options.optimize(db),
+        options.use_rust_runtime(db),
     ) {
         Ok(assembly) => Ok(Arc::new(assembly)),
         Err(e) => Err(Arc::new(RueError::from(e))),
@@ -587,6 +589,7 @@ pub fn compile_file_with_diagnostics(
                 &analysis.hir,
                 type_context,
                 options.optimize(db),
+                options.use_rust_runtime(db),
             ) {
                 Ok(executable) => Ok(Arc::new(executable)),
                 Err(e) => {
