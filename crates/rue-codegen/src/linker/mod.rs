@@ -19,11 +19,20 @@ pub use object_file::ObjectFile;
 pub use relocation::{RelocationEntry, RelocationKind};
 pub use symbol::{Symbol, SymbolKind, SymbolTable};
 
+/// Tracks where a section from a specific object file was placed in the merged section
+#[derive(Debug, Clone)]
+struct SectionPlacement {
+    object_file_name: String,
+    section_name: String,
+    offset_in_merged: u64,
+}
+
 /// A minimal object file linker that can link assembly object files into Rue executables.
 pub struct Linker {
     object_files: Vec<ObjectFile>,
     merged_sections: HashMap<String, MergedSection>,
     symbol_table: SymbolTable,
+    section_placements: Vec<SectionPlacement>,
 }
 
 /// Represents a merged section from multiple object files
@@ -58,6 +67,7 @@ impl Linker {
             object_files: Vec::new(),
             merged_sections: HashMap::new(),
             symbol_table: SymbolTable::new(),
+            section_placements: Vec::new(),
         }
     }
 
@@ -120,6 +130,13 @@ impl Linker {
                 let aligned_size = align_to(current_size, section.alignment);
                 entry.data.resize(aligned_size as usize, 0);
 
+                // Record where this section was placed in the merged section
+                self.section_placements.push(SectionPlacement {
+                    object_file_name: object_file.name.clone(),
+                    section_name: section.name.clone(),
+                    offset_in_merged: aligned_size,
+                });
+
                 // Append the section data
                 entry.data.extend_from_slice(&section.data);
 
@@ -135,7 +152,22 @@ impl Linker {
     fn build_symbol_table(&mut self) -> Result<(), CodegenError> {
         for object_file in &self.object_files {
             for symbol in &object_file.symbols {
-                self.symbol_table.add_symbol(symbol.clone());
+                // Find the offset where this symbol's section was placed
+                let offset = self
+                    .section_placements
+                    .iter()
+                    .find(|placement| {
+                        placement.object_file_name == object_file.name
+                            && placement.section_name == symbol.section_name
+                    })
+                    .map(|placement| placement.offset_in_merged)
+                    .unwrap_or(0);
+
+                // Create adjusted symbol with corrected address
+                let mut adjusted_symbol = symbol.clone();
+                adjusted_symbol.address += offset;
+
+                self.symbol_table.add_symbol(adjusted_symbol);
             }
         }
         Ok(())
