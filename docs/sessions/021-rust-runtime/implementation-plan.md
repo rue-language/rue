@@ -43,21 +43,21 @@
   - [x] **2.2g** Test edge cases (full buffer, large writes, etc.)
 
 ### Phase 3: String Conversion Functions (Simple, Testable)
-- [ ] **3.1** Implement `itoa` (integer to ASCII)
-  - [ ] **3.1a** Write TDD test cases (positive, negative, zero, MIN, MAX)
-  - [ ] **3.1b** Implement `__rue_itoa(value: i64, buf: *mut u8) -> usize`
-  - [ ] **3.1c** Handle negative numbers with `-` prefix
-  - [ ] **3.1d** Optimize for common cases
-  - [ ] **3.1e** Verify all tests pass
-  - [ ] **3.1f** Benchmark against old implementation
-- [ ] **3.2** Implement `atoi` (ASCII to integer)
-  - [ ] **3.2a** Write TDD test cases (valid, invalid, overflow, whitespace)
-  - [ ] **3.2b** Implement `__rue_atoi(buf: *const u8, len: usize) -> i64`
-  - [ ] **3.2c** Handle leading whitespace
-  - [ ] **3.2d** Handle negative numbers
-  - [ ] **3.2e** Handle overflow/underflow (return 0 or error?)
-  - [ ] **3.2f** Verify all tests pass
-  - [ ] **3.2g** Benchmark against old implementation
+- [x] **3.1** Implement `itoa` (integer to ASCII)
+  - [x] **3.1a** Write TDD test cases (positive, negative, zero, MIN, MAX)
+  - [x] **3.1b** Implement `__rue_itoa(value: i64, buf: *mut u8) -> usize`
+  - [x] **3.1c** Handle negative numbers with `-` prefix
+  - [x] **3.1d** Optimize for common cases
+  - [x] **3.1e** Verify all tests pass
+  - [x] **3.1f** Benchmark against old implementation
+- [x] **3.2** Implement `atoi` (ASCII to integer)
+  - [x] **3.2a** Write TDD test cases (valid, invalid, overflow, whitespace)
+  - [x] **3.2b** Implement `__rue_atoi(buf: *const u8, len: usize) -> i64`
+  - [x] **3.2c** Handle leading whitespace
+  - [x] **3.2d** Handle negative numbers
+  - [x] **3.2e** Handle overflow/underflow (return 0 or error?)
+  - [x] **3.2f** Verify all tests pass
+  - [x] **3.2g** Benchmark against old implementation
 
 ### Phase 4: I/O Functions (Build on Buffering)
 - [ ] **4.1** Implement `println` variants
