@@ -7,18 +7,8 @@
 use core::cell::UnsafeCell;
 use core::sync::atomic::{AtomicUsize, Ordering};
 
-/// Buffer size for stdout buffering (4KB)
-const STDOUT_BUFFER_SIZE: usize = 4096;
-
-/// Linux syscall numbers
-const SYS_WRITE: i64 = 1;
-const SYS_EXIT: i64 = 60;
-
-/// File descriptors
-const STDOUT_FD: i32 = 1;
-
-/// Exit codes
-const EXIT_CODE_SYSCALL_FAILED: i32 = 253;
+use crate::abi::*;
+use crate::syscall::{sys_exit, sys_write};
 
 /// A wrapper that provides interior mutability for the buffer
 struct BufferWrapper {
@@ -156,64 +146,18 @@ impl BufferedStdout {
             return Ok(());
         }
 
-        let result = unsafe {
-            syscall3(
-                SYS_WRITE,
-                STDOUT_FD as i64,
-                data.as_ptr() as i64,
-                data.len() as i64,
-            )
-        };
+        let result = unsafe { sys_write(STDOUT_FD, data.as_ptr(), data.len()) };
 
-        if result < 0 {
-            // Exit on syscall failure
-            unsafe {
-                syscall1(SYS_EXIT, EXIT_CODE_SYSCALL_FAILED as i64);
+        match result {
+            Ok(_) => Ok(()),
+            Err(_) => {
+                // Exit on syscall failure
+                unsafe {
+                    sys_exit(EXIT_SYSCALL_FAILED);
+                }
             }
-            // This should never be reached, but return error for completeness
-            Err(EXIT_CODE_SYSCALL_FAILED)
-        } else {
-            Ok(())
         }
     }
-}
-
-/// Raw syscall wrapper for 1 argument
-#[inline(always)]
-unsafe fn syscall1(syscall_num: i64, arg1: i64) -> i64 {
-    let ret: i64;
-    unsafe {
-        core::arch::asm!(
-            "syscall",
-            in("rax") syscall_num,
-            in("rdi") arg1,
-            lateout("rax") ret,
-            out("rcx") _,
-            out("r11") _,
-            options(nostack, preserves_flags)
-        );
-    }
-    ret
-}
-
-/// Raw syscall wrapper for 3 arguments
-#[inline(always)]
-unsafe fn syscall3(syscall_num: i64, arg1: i64, arg2: i64, arg3: i64) -> i64 {
-    let ret: i64;
-    unsafe {
-        core::arch::asm!(
-            "syscall",
-            in("rax") syscall_num,
-            in("rdi") arg1,
-            in("rsi") arg2,
-            in("rdx") arg3,
-            lateout("rax") ret,
-            out("rcx") _,
-            out("r11") _,
-            options(nostack, preserves_flags)
-        );
-    }
-    ret
 }
 
 /// C ABI function: Write a single byte to buffered stdout
