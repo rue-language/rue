@@ -26,21 +26,21 @@
   - [x] **1.3c** Create integration test plan
 
 ### Phase 2: Syscall Foundation (Building Blocks)
-- [ ] **2.1** Implement syscall wrappers
-  - [ ] **2.1a** Create `syscall.rs` module
-  - [ ] **2.1b** Implement `sys_write(fd, buf, len) -> Result<usize, i32>`
-  - [ ] **2.1c** Implement `sys_read(fd, buf, len) -> Result<usize, i32>`
-  - [ ] **2.1d** Implement `sys_exit(code) -> !`
-  - [ ] **2.1e** Add error type and Result helpers
-  - [ ] **2.1f** Write unit tests for syscall wrappers
-- [ ] **2.2** Implement buffered stdout (migrate from existing)
-  - [ ] **2.2a** Review existing `buffered_io.rs` implementation
-  - [ ] **2.2b** Create new version with improvements
-  - [ ] **2.2c** Implement `__rue_write_byte(byte: u8)`
-  - [ ] **2.2d** Implement `__rue_write_bytes(buf: *const u8, len: usize)`
-  - [ ] **2.2e** Implement `__rue_flush_stdout()`
-  - [ ] **2.2f** Write unit tests for buffering logic
-  - [ ] **2.2g** Test edge cases (full buffer, large writes, etc.)
+- [x] **2.1** Implement syscall wrappers
+  - [x] **2.1a** Create `syscall.rs` module
+  - [x] **2.1b** Implement `sys_write(fd, buf, len) -> Result<usize, i32>`
+  - [x] **2.1c** Implement `sys_read(fd, buf, len) -> Result<usize, i32>`
+  - [x] **2.1d** Implement `sys_exit(code) -> !`
+  - [x] **2.1e** Add error type and Result helpers
+  - [x] **2.1f** Write unit tests for syscall wrappers
+- [x] **2.2** Implement buffered stdout (migrate from existing)
+  - [x] **2.2a** Review existing `buffered_io.rs` implementation
+  - [x] **2.2b** Create new version with improvements
+  - [x] **2.2c** Implement `__rue_write_byte(byte: u8)`
+  - [x] **2.2d** Implement `__rue_write_bytes(buf: *const u8, len: usize)`
+  - [x] **2.2e** Implement `__rue_flush_stdout()`
+  - [x] **2.2f** Write unit tests for buffering logic
+  - [x] **2.2g** Test edge cases (full buffer, large writes, etc.)
 
 ### Phase 3: String Conversion Functions (Simple, Testable)
 - [ ] **3.1** Implement `itoa` (integer to ASCII)
