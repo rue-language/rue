@@ -38,6 +38,10 @@ pub struct X86Emitter {
     pending_fixups: Vec<(SectionType, usize, LabelRef)>, // (section, offset, target)
     function_labels: HashMap<String, Label>,
     runtime_label_count: u32,
+
+    // External symbols (for object file emission)
+    external_symbols: std::collections::HashSet<String>,
+    use_rust_runtime: bool,
 }
 
 impl X86Emitter {
@@ -59,6 +63,8 @@ impl X86Emitter {
             pending_fixups: Vec::new(),
             function_labels: HashMap::new(),
             runtime_label_count: 0,
+            external_symbols: std::collections::HashSet::new(),
+            use_rust_runtime: false,
         }
     }
 
@@ -70,6 +76,36 @@ impl X86Emitter {
         // We'll use this to map function names to their label IDs
         self.function_labels = labels;
         self.runtime_label_count = runtime_label_count;
+    }
+
+    /// Set whether we're using the Rust runtime (affects symbol resolution)
+    pub fn set_use_rust_runtime(&mut self, use_rust_runtime: bool) {
+        self.use_rust_runtime = use_rust_runtime;
+
+        // When using Rust runtime, mark known runtime symbols as external
+        if use_rust_runtime {
+            let runtime_symbols = vec![
+                "__rue_detect_cpu_features",
+                "__rue_println_i64",
+                "__rue_println_i32",
+                "__rue_println_bool",
+                "__rue_println_unit",
+                "__rue_input",
+                "__rue_itoa",
+                "__rue_atoi",
+                "__rue_memcpy",
+                "__rue_memmove",
+                "__rue_memset",
+                "__rue_memzero",
+                "__rue_write_byte",
+                "__rue_write_bytes",
+                "__rue_flush_stdout",
+            ];
+
+            for sym in runtime_symbols {
+                self.external_symbols.insert(sym.to_string());
+            }
+        }
     }
 
     /// Emit machine instructions to bytes
@@ -815,6 +851,13 @@ impl X86Emitter {
                     .cloned()
                     .ok_or_else(|| format!("Undefined label: {id}"))?,
                 LabelRef::Global(name) => {
+                    // If this is an external symbol and we're using Rust runtime, skip fixup
+                    // (will be resolved during linking)
+                    if self.use_rust_runtime && self.external_symbols.contains(name) {
+                        // Leave the placeholder zeros - will be filled by linker
+                        continue;
+                    }
+
                     // Look up the function name to get its label ID
                     let label_id = self
                         .function_labels
@@ -1227,6 +1270,60 @@ impl X86Emitter {
         }
 
         Ok(())
+    }
+
+    /// Emit as a relocatable object file (.o) for linking
+    ///
+    /// This is used when --use-rust-runtime is set to generate an object file
+    /// that can be linked with librue_runtime.a
+    pub fn emit_as_object_file(&self) -> Result<Vec<u8>, String> {
+        use super::object::{ObjectFileEmitter, RelocationInfo};
+
+        let mut object = ObjectFileEmitter::new();
+
+        // Add section data
+        for (section_type, section_info) in &self.sections {
+            object.add_section_data(section_type.clone(), section_info.data.clone());
+        }
+
+        // Add defined symbols from our label_positions
+        for (label_id, (section, offset)) in &self.label_positions {
+            // Try to find the symbol name from function_labels
+            let symbol_name = self
+                .function_labels
+                .iter()
+                .find(|(_, label)| {
+                    let machine_id = label.to_machine_id(self.runtime_label_count);
+                    &machine_id == label_id
+                })
+                .map(|(name, _)| name.clone());
+
+            if let Some(name) = symbol_name {
+                // Check if this is a global symbol (starts with certain patterns)
+                let is_global = name == "_start"
+                    || name == "main"
+                    || name == "__rue_main"
+                    || name.starts_with("__rue_");
+
+                object.add_defined_symbol(name, section.clone(), *offset as u64, is_global);
+            }
+        }
+
+        // Add relocations for external symbols
+        for (section, offset, target) in &self.pending_fixups {
+            if let LabelRef::Global(name) = target {
+                if self.external_symbols.contains(name) {
+                    object.add_relocation(RelocationInfo {
+                        section: section.clone(),
+                        offset: *offset as u64,
+                        symbol_name: name.clone(),
+                        addend: -4, // PC-relative call: addend is -4 (size of displacement field)
+                    });
+                }
+            }
+        }
+
+        object.write()
     }
 }
 

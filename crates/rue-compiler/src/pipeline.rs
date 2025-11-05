@@ -335,8 +335,12 @@ pub fn compile_hir_via_mir_to_assembly(
     use_rust_runtime: bool,
 ) -> Result<String, CompileError> {
     // Use the unified compilation pipeline
-    let intermediate =
-        compile_hir_via_mir_to_intermediate(hir, type_context, enable_optimizations, use_rust_runtime)?;
+    let intermediate = compile_hir_via_mir_to_intermediate(
+        hir,
+        type_context,
+        enable_optimizations,
+        use_rust_runtime,
+    )?;
 
     // Generate assembly from intermediate results
     info!(target: "rue::codegen", "Generating assembly");
@@ -359,8 +363,12 @@ pub fn compile_hir_via_mir_to_executable(
     use_rust_runtime: bool,
 ) -> Result<Vec<u8>, CompileError> {
     // Use the unified compilation pipeline
-    let intermediate =
-        compile_hir_via_mir_to_intermediate(hir, type_context, enable_optimizations, use_rust_runtime)?;
+    let intermediate = compile_hir_via_mir_to_intermediate(
+        hir,
+        type_context,
+        enable_optimizations,
+        use_rust_runtime,
+    )?;
 
     // Generate machine code from intermediate results using trait abstraction
     info!(target: "rue::elf", "Generating ELF executable");

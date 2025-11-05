@@ -2,16 +2,19 @@
 ///
 /// This module provides x86_64-specific implementations for:
 /// - Instruction emission (machine code generation)
-/// - ELF executable generation  
+/// - ELF executable generation
 /// - Assembly formatting
+/// - Object file generation (relocatable .o files)
 mod assembler;
 mod elf;
 mod emitter;
+pub mod object;
 
 // Re-export the main types with appropriate names
 pub use assembler::format_instructions_as_assembly;
 pub use elf::ElfWriter;
 pub use emitter::{SectionType, X86Emitter};
+pub use object::{ObjectFileEmitter, RelocationInfo};
 
 use crate::target::{AssemblyFormatter, ExecutableWriter, InstructionEmitter};
 use rue_ir::pir::Label;
