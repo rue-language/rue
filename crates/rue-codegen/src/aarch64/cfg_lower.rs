@@ -1019,11 +1019,11 @@ mod tests {
         let astgen = AstGen::new(&ast, &mut interner);
         let rir = astgen.generate();
 
-        let mut sema = Sema::new(&rir, &interner);
-        let functions = sema.analyze_all().unwrap();
-        let struct_defs = sema.struct_defs();
+        let sema = Sema::new(&rir, &interner);
+        let output = sema.analyze_all().unwrap();
 
-        let func = &functions[0];
+        let func = &output.functions[0];
+        let struct_defs = &output.struct_defs;
         let cfg = CfgBuilder::build(&func.air, func.num_locals, func.num_param_slots, &func.name);
 
         CfgLower::new(&cfg, struct_defs).lower()

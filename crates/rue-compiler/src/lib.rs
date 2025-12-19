@@ -1,7 +1,7 @@
 //! Rue compiler driver.
 //!
 //! This crate orchestrates the compilation pipeline:
-//! Source → Lexer → Parser → AstGen → Sema → CodeGen → ELF
+//! Source -> Lexer -> Parser -> AstGen -> Sema -> CodeGen -> ELF
 //!
 //! It re-exports types from the component crates for convenience.
 
@@ -27,7 +27,7 @@ pub fn validate_runtime() -> Result<(), String> {
 }
 
 // Re-export commonly used types
-pub use rue_air::{Air, AnalyzedFunction, Sema, StructDef, Type};
+pub use rue_air::{Air, AnalyzedFunction, Sema, SemaOutput, StructDef, Type};
 pub use rue_codegen::{CodeGen, X86Mir};
 pub use rue_error::{CompileError, CompileResult, CompileWarning, ErrorKind, WarningKind};
 pub use rue_intern::{Interner, Symbol};
@@ -37,56 +37,6 @@ pub use rue_parser::{Ast, Expr, Function, Parser};
 pub use rue_rir::{AstGen, Rir, RirPrinter};
 pub use rue_span::Span;
 pub use rue_target::{Arch, Target};
-
-/// Intermediate compilation state, allowing inspection at each stage.
-pub struct CompileState {
-    pub interner: Interner,
-    pub rir: Rir,
-    pub functions: Vec<AnalyzedFunction>,
-    pub struct_defs: Vec<StructDef>,
-    /// Warnings generated during compilation.
-    pub warnings: Vec<CompileWarning>,
-}
-
-/// Compile source code through all phases up to (but not including) codegen.
-///
-/// Returns the compile state which can be inspected for debugging.
-pub fn compile_to_air(source: &str) -> CompileResult<CompileState> {
-    // Phase 1: Lexing
-    let mut lexer = Lexer::new(source);
-    let tokens = lexer.tokenize()?;
-
-    // Phase 2: Parsing
-    let mut parser = Parser::new(tokens);
-    let ast = parser.parse()?;
-
-    // Phase 3: AST to RIR (untyped IR)
-    let mut interner = Interner::new();
-    let astgen = AstGen::new(&ast, &mut interner);
-    let rir = astgen.generate();
-
-    // Phase 4: Semantic analysis (RIR to AIR)
-    let mut sema = Sema::new(&rir, &interner);
-    let functions = sema.analyze_all()?;
-    let struct_defs = sema.struct_defs().to_vec();
-    let warnings = sema.take_warnings();
-
-    Ok(CompileState {
-        interner,
-        rir,
-        functions,
-        struct_defs,
-        warnings,
-    })
-}
-
-/// Output from successful compilation.
-pub struct CompileOutput {
-    /// The compiled ELF binary.
-    pub elf: Vec<u8>,
-    /// Warnings generated during compilation.
-    pub warnings: Vec<CompileWarning>,
-}
 
 /// Which linker to use for final linking.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -119,6 +69,61 @@ impl Default for CompileOptions {
             linker: LinkerMode::Internal,
         }
     }
+}
+
+/// Intermediate compilation state after semantic analysis.
+///
+/// This allows inspection of the IR at each stage, useful for
+/// debugging and the `--dump-*` CLI flags.
+pub struct CompileState {
+    /// String interner used during compilation.
+    pub interner: Interner,
+    /// The untyped IR (RIR).
+    pub rir: Rir,
+    /// Analyzed functions with typed IR (AIR).
+    pub functions: Vec<AnalyzedFunction>,
+    /// Struct definitions.
+    pub struct_defs: Vec<StructDef>,
+    /// Warnings collected during semantic analysis.
+    pub warnings: Vec<CompileWarning>,
+}
+
+/// Output from successful compilation.
+pub struct CompileOutput {
+    /// The compiled ELF binary.
+    pub elf: Vec<u8>,
+    /// Warnings generated during compilation.
+    pub warnings: Vec<CompileWarning>,
+}
+
+/// Compile source code through all phases up to (but not including) codegen.
+///
+/// Returns the compile state which can be inspected for debugging.
+pub fn compile_to_air(source: &str) -> CompileResult<CompileState> {
+    // Phase 1: Lexing
+    let mut lexer = Lexer::new(source);
+    let tokens = lexer.tokenize()?;
+
+    // Phase 2: Parsing
+    let mut parser = Parser::new(tokens);
+    let ast = parser.parse()?;
+
+    // Phase 3: AST to RIR (untyped IR)
+    let mut interner = Interner::new();
+    let astgen = AstGen::new(&ast, &mut interner);
+    let rir = astgen.generate();
+
+    // Phase 4: Semantic analysis (RIR to AIR)
+    let sema = Sema::new(&rir, &interner);
+    let sema_output = sema.analyze_all()?;
+
+    Ok(CompileState {
+        interner,
+        rir,
+        functions: sema_output.functions,
+        struct_defs: sema_output.struct_defs,
+        warnings: sema_output.warnings,
+    })
 }
 
 /// Compile source code to an ELF binary.
@@ -283,7 +288,6 @@ fn link_system(
     let output_path = temp_dir.join("output");
 
     // Build the linker command
-    // We support common linkers: clang, gcc, ld
     let mut cmd = Command::new(linker_cmd);
 
     // Add common flags for static linking
@@ -310,7 +314,6 @@ fn link_system(
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        // Clean up temp directory before returning error
         let _ = std::fs::remove_dir_all(&temp_dir);
         return Err(CompileError::without_span(ErrorKind::LinkError(format!(
             "linker '{}' failed: {}",
@@ -349,8 +352,6 @@ fn compile_aarch64(state: &CompileState, options: &CompileOptions) -> CompileRes
             &func.name,
         );
 
-        // Build object file for this function
-        // Use the appropriate relocation type for ARM64
         let mut obj_builder =
             ObjectBuilder::new(options.target, &func.name).code(machine_code.code);
 
@@ -358,7 +359,7 @@ fn compile_aarch64(state: &CompileState, options: &CompileOptions) -> CompileRes
             obj_builder = obj_builder.relocation(CodeRelocation {
                 offset: reloc.offset,
                 symbol: reloc.symbol,
-                rel_type: RelocationType::Call26, // ARM64 branch instruction
+                rel_type: RelocationType::Call26,
                 addend: reloc.addend,
             });
         }
@@ -366,8 +367,7 @@ fn compile_aarch64(state: &CompileState, options: &CompileOptions) -> CompileRes
         object_files.push(obj_builder.build());
     }
 
-    // For macOS/ARM64, we always use the system linker since we don't have
-    // a Mach-O linker implementation
+    // For macOS/ARM64, we always use the system linker
     link_system_macos(state, options, &object_files)
 }
 
@@ -378,7 +378,6 @@ fn link_system_macos(
     object_files: &[Vec<u8>],
 ) -> CompileResult<CompileOutput> {
     // Create a temporary directory for object files.
-    // Use pid + atomic counter to ensure uniqueness even in parallel test execution.
     let unique_id = TEMP_DIR_COUNTER.fetch_add(1, Ordering::Relaxed);
     let temp_dir = std::env::temp_dir().join(format!("rue-{}-{}", std::process::id(), unique_id));
     std::fs::create_dir_all(&temp_dir).map_err(|e| {
@@ -425,7 +424,7 @@ fn link_system_macos(
     // macOS-specific flags for static linking without libc
     cmd.arg("-nostdlib");
     cmd.arg("-arch").arg("arm64");
-    cmd.arg("-e").arg("__main"); // Entry point (macOS uses underscore prefix)
+    cmd.arg("-e").arg("__main");
     cmd.arg("-o");
     cmd.arg(&output_path);
 
@@ -450,7 +449,6 @@ fn link_system_macos(
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        // Clean up temp directory before returning error
         let _ = std::fs::remove_dir_all(&temp_dir);
         return Err(CompileError::without_span(ErrorKind::LinkError(format!(
             "linker failed: {}",
@@ -459,7 +457,7 @@ fn link_system_macos(
     }
 
     // Read the resulting executable
-    let executable = std::fs::read(&output_path).map_err(|e| {
+    let elf = std::fs::read(&output_path).map_err(|e| {
         CompileError::without_span(ErrorKind::LinkError(format!(
             "failed to read linked executable: {}",
             e
@@ -470,7 +468,7 @@ fn link_system_macos(
     let _ = std::fs::remove_dir_all(&temp_dir);
 
     Ok(CompileOutput {
-        elf: executable, // It's actually Mach-O, but we reuse the field name
+        elf,
         warnings: state.warnings.clone(),
     })
 }
@@ -492,8 +490,6 @@ mod tests {
 
     #[test]
     fn test_embedded_runtime_is_valid() {
-        // Validate that the embedded runtime archive parses correctly.
-        // This catches issues with the embedded archive at test time.
         validate_runtime().expect("embedded runtime should be valid");
     }
 
@@ -503,7 +499,7 @@ mod tests {
         // Should produce a valid executable (ELF on Linux, Mach-O on macOS)
         let magic = &output.elf[0..4];
         let is_elf = magic == &[0x7F, b'E', b'L', b'F'];
-        let is_macho = magic == &0xFEEDFACF_u32.to_le_bytes(); // Mach-O 64-bit
+        let is_macho = magic == &0xFEEDFACF_u32.to_le_bytes();
         assert!(
             is_elf || is_macho,
             "should produce valid ELF or Mach-O binary"
@@ -534,5 +530,12 @@ mod tests {
     fn test_used_variable_no_warning() {
         let output = compile("fn main() -> i32 { let x = 42; x }").unwrap();
         assert_eq!(output.warnings.len(), 0);
+    }
+
+    #[test]
+    fn test_compile_to_air_includes_warnings() {
+        let state = compile_to_air("fn main() -> i32 { let x = 42; 0 }").unwrap();
+        assert_eq!(state.warnings.len(), 1);
+        assert!(state.warnings[0].to_string().contains("unused variable"));
     }
 }

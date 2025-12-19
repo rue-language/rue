@@ -25,6 +25,20 @@ pub struct AnalyzedFunction {
     pub num_param_slots: u32,
 }
 
+/// Output from semantic analysis.
+///
+/// Contains all analyzed functions, struct definitions, and any warnings
+/// generated during analysis.
+#[derive(Debug)]
+pub struct SemaOutput {
+    /// Analyzed functions with typed IR.
+    pub functions: Vec<AnalyzedFunction>,
+    /// Struct definitions.
+    pub struct_defs: Vec<StructDef>,
+    /// Warnings collected during analysis.
+    pub warnings: Vec<CompileWarning>,
+}
+
 /// Information about a local variable.
 #[derive(Debug, Clone)]
 struct LocalVar {
@@ -102,11 +116,6 @@ impl<'a> Sema<'a> {
         }
     }
 
-    /// Take the collected warnings, leaving an empty vector.
-    pub fn take_warnings(&mut self) -> Vec<CompileWarning> {
-        std::mem::take(&mut self.warnings)
-    }
-
     /// Check for unused local variables in the current scope.
     /// `saved_locals` contains the locals from the outer scope before this scope started.
     /// We check variables that are in `ctx.locals` but not in `saved_locals` (i.e., new in this scope).
@@ -142,13 +151,11 @@ impl<'a> Sema<'a> {
         }
     }
 
-    /// Get struct definitions for codegen.
-    pub fn struct_defs(&self) -> &[StructDef] {
-        &self.struct_defs
-    }
-
     /// Analyze all functions in the RIR.
-    pub fn analyze_all(&mut self) -> CompileResult<Vec<AnalyzedFunction>> {
+    ///
+    /// Consumes the Sema and returns a [`SemaOutput`] containing all analyzed
+    /// functions, struct definitions, and any warnings generated during analysis.
+    pub fn analyze_all(mut self) -> CompileResult<SemaOutput> {
         // First pass: collect struct definitions (needed for type resolution)
         self.collect_struct_definitions()?;
 
@@ -156,7 +163,7 @@ impl<'a> Sema<'a> {
         self.collect_function_signatures()?;
 
         // Third pass: analyze function bodies
-        let mut result = Vec::new();
+        let mut functions = Vec::new();
 
         for (_, inst) in self.rir.iter() {
             if let InstData::FnDecl {
@@ -181,7 +188,7 @@ impl<'a> Sema<'a> {
                 let (air, num_locals, num_param_slots) =
                     self.analyze_function(ret_type, &param_info, *body)?;
 
-                result.push(AnalyzedFunction {
+                functions.push(AnalyzedFunction {
                     name: fn_name,
                     air,
                     num_locals,
@@ -190,7 +197,11 @@ impl<'a> Sema<'a> {
             }
         }
 
-        Ok(result)
+        Ok(SemaOutput {
+            functions,
+            struct_defs: self.struct_defs,
+            warnings: self.warnings,
+        })
     }
 
     /// Collect all struct definitions from the RIR.
@@ -1528,7 +1539,7 @@ mod tests {
     use rue_parser::Parser;
     use rue_rir::AstGen;
 
-    fn compile_to_air(source: &str) -> CompileResult<Vec<AnalyzedFunction>> {
+    fn compile_to_air(source: &str) -> CompileResult<SemaOutput> {
         let mut lexer = Lexer::new(source);
         let tokens = lexer.tokenize()?;
         let mut parser = Parser::new(tokens);
@@ -1538,13 +1549,14 @@ mod tests {
         let astgen = AstGen::new(&ast, &mut interner);
         let rir = astgen.generate();
 
-        let mut sema = Sema::new(&rir, &interner);
+        let sema = Sema::new(&rir, &interner);
         sema.analyze_all()
     }
 
     #[test]
     fn test_analyze_simple_function() {
-        let functions = compile_to_air("fn main() -> i32 { 42 }").unwrap();
+        let output = compile_to_air("fn main() -> i32 { 42 }").unwrap();
+        let functions = &output.functions;
 
         assert_eq!(functions.len(), 1);
         assert_eq!(functions[0].name, "main");
@@ -1556,9 +1568,9 @@ mod tests {
 
     #[test]
     fn test_analyze_addition() {
-        let functions = compile_to_air("fn main() -> i32 { 1 + 2 }").unwrap();
+        let output = compile_to_air("fn main() -> i32 { 1 + 2 }").unwrap();
 
-        let air = &functions[0].air;
+        let air = &output.functions[0].air;
         assert_eq!(air.return_type(), Type::I32);
         // Const(1) + Const(2) + Add + Ret = 4 instructions
         assert_eq!(air.len(), 4);
@@ -1581,9 +1593,9 @@ mod tests {
 
     #[test]
     fn test_analyze_negation() {
-        let functions = compile_to_air("fn main() -> i32 { -42 }").unwrap();
+        let output = compile_to_air("fn main() -> i32 { -42 }").unwrap();
 
-        let air = &functions[0].air;
+        let air = &output.functions[0].air;
         // Const(42) + Neg + Ret = 3 instructions
         assert_eq!(air.len(), 3);
 
@@ -1594,9 +1606,9 @@ mod tests {
 
     #[test]
     fn test_analyze_complex_expr() {
-        let functions = compile_to_air("fn main() -> i32 { (1 + 2) * 3 }").unwrap();
+        let output = compile_to_air("fn main() -> i32 { (1 + 2) * 3 }").unwrap();
 
-        let air = &functions[0].air;
+        let air = &output.functions[0].air;
         // Const(1) + Const(2) + Add + Const(3) + Mul + Ret = 6 instructions
         assert_eq!(air.len(), 6);
 
@@ -1607,12 +1619,12 @@ mod tests {
 
     #[test]
     fn test_analyze_let_binding() {
-        let functions = compile_to_air("fn main() -> i32 { let x = 42; x }").unwrap();
+        let output = compile_to_air("fn main() -> i32 { let x = 42; x }").unwrap();
 
-        assert_eq!(functions.len(), 1);
-        assert_eq!(functions[0].num_locals, 1);
+        assert_eq!(output.functions.len(), 1);
+        assert_eq!(output.functions[0].num_locals, 1);
 
-        let air = &functions[0].air;
+        let air = &output.functions[0].air;
         // Const(42) + Alloc + Load + Block([Alloc], Load) + Ret = 5 instructions
         assert_eq!(air.len(), 5);
 
@@ -1634,9 +1646,9 @@ mod tests {
 
     #[test]
     fn test_analyze_let_mut_assignment() {
-        let functions = compile_to_air("fn main() -> i32 { let mut x = 10; x = 20; x }").unwrap();
+        let output = compile_to_air("fn main() -> i32 { let mut x = 10; x = 20; x }").unwrap();
 
-        let air = &functions[0].air;
+        let air = &output.functions[0].air;
         // Const(10) + Alloc + Const(20) + Store + Load + Block([Alloc, Store], Load) + Ret = 7 instructions
         assert_eq!(air.len(), 7);
 
@@ -1670,9 +1682,8 @@ mod tests {
 
     #[test]
     fn test_multiple_variables() {
-        let functions =
-            compile_to_air("fn main() -> i32 { let x = 10; let y = 20; x + y }").unwrap();
+        let output = compile_to_air("fn main() -> i32 { let x = 10; let y = 20; x + y }").unwrap();
 
-        assert_eq!(functions[0].num_locals, 2);
+        assert_eq!(output.functions[0].num_locals, 2);
     }
 }

@@ -769,10 +769,10 @@ mod tests {
         let astgen = AstGen::new(&ast, &mut interner);
         let rir = astgen.generate();
 
-        let mut sema = Sema::new(&rir, &interner);
-        let functions = sema.analyze_all().unwrap();
+        let sema = Sema::new(&rir, &interner);
+        let output = sema.analyze_all().unwrap();
 
-        let func = &functions[0];
+        let func = &output.functions[0];
         CfgBuilder::build(&func.air, func.num_locals, func.num_param_slots, &func.name)
     }
 
