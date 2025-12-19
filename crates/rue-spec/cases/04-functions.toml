@@ -361,3 +361,66 @@ fn double(x: i32) -> i32 { x + x }
 fn main() -> i32 { double(add7(1, 2, 3, 4, 5, 6, 0)) }
 """
 exit_code = 42
+
+# =========================================================================
+# Unit-returning functions (implicit return type)
+# =========================================================================
+
+[[case]]
+name = "implicit_unit_return"
+description = "Function without return type annotation implicitly returns ()"
+source = """
+fn do_nothing() { }
+fn main() -> i32 { do_nothing(); 0 }
+"""
+exit_code = 0
+
+[[case]]
+name = "implicit_unit_with_statements"
+description = "Unit-returning function with statements"
+source = """
+fn setup() {
+    let x = 1;
+    let y = 2;
+}
+fn main() -> i32 { setup(); 0 }
+"""
+exit_code = 0
+
+[[case]]
+name = "explicit_unit_return"
+description = "Explicit -> () return type"
+source = """
+fn explicit() -> () { }
+fn main() -> i32 { explicit(); 0 }
+"""
+exit_code = 0
+
+[[case]]
+name = "unit_main"
+description = "Main function can return unit (exits with 0)"
+source = "fn main() { }"
+exit_code = 0
+
+[[case]]
+name = "unit_main_with_statements"
+description = "Main returning unit with statements"
+source = """
+fn main() {
+    let x = 42;
+}
+"""
+exit_code = 0
+
+[[case]]
+name = "call_unit_function_in_expression"
+description = "Can call unit-returning function and ignore result"
+source = """
+fn side_effect() { let x = 1; }
+fn main() -> i32 {
+    side_effect();
+    side_effect();
+    42
+}
+"""
+exit_code = 42

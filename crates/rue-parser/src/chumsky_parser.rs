@@ -34,6 +34,25 @@ where
     }
 }
 
+/// Parser for type expressions: either an identifier (i32, bool, etc.) or () for unit
+fn type_parser<'src, I>() -> impl Parser<'src, I, Ident, extra::Err<Rich<'src, TokenKind>>> + Clone
+where
+    I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
+{
+    // Unit type: ()
+    let unit_type = just(TokenKind::LParen)
+        .then(just(TokenKind::RParen))
+        .map_with(|_, e| Ident {
+            name: "()".to_string(),
+            span: to_rue_span(e.span()),
+        });
+
+    // Named type: i32, bool, MyStruct, etc.
+    let named_type = ident_parser();
+
+    unit_type.or(named_type)
+}
+
 /// Parser for function parameters: name: type
 fn param_parser<'src, I>() -> impl Parser<'src, I, Param, extra::Err<Rich<'src, TokenKind>>> + Clone
 where
@@ -41,7 +60,7 @@ where
 {
     ident_parser()
         .then_ignore(just(TokenKind::Colon))
-        .then(ident_parser())
+        .then(type_parser())
         .map_with(|(name, ty), e| Param {
             name,
             ty,
@@ -57,7 +76,7 @@ where
 {
     ident_parser()
         .then_ignore(just(TokenKind::Colon))
-        .then(ident_parser())
+        .then(type_parser())
         .map_with(|(name, ty), e| FieldDecl {
             name,
             ty,
@@ -670,8 +689,7 @@ where
     just(TokenKind::Fn)
         .ignore_then(ident_parser())
         .then(params_parser().delimited_by(just(TokenKind::LParen), just(TokenKind::RParen)))
-        .then_ignore(just(TokenKind::Arrow))
-        .then(ident_parser())
+        .then(just(TokenKind::Arrow).ignore_then(type_parser()).or_not())
         .then(block_parser(expr))
         .map_with(|(((name, params), return_type), body), e| Function {
             name,
@@ -837,7 +855,7 @@ mod tests {
         match &ast.items[0] {
             Item::Function(f) => {
                 assert_eq!(f.name.name, "main");
-                assert_eq!(f.return_type.name, "i32");
+                assert_eq!(f.return_type.as_ref().unwrap().name, "i32");
                 match &f.body {
                     Expr::Block(block) => match block.expr.as_ref() {
                         Expr::Int(lit) => assert_eq!(lit.value, 42),

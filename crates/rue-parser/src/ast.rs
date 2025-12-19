@@ -48,8 +48,8 @@ pub struct Function {
     pub name: Ident,
     /// Function parameters
     pub params: Vec<Param>,
-    /// Return type
-    pub return_type: Ident,
+    /// Return type (None means implicit unit `()`)
+    pub return_type: Option<Ident>,
     /// Function body
     pub body: Expr,
     /// Span covering the entire function

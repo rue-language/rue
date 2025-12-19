@@ -1375,6 +1375,8 @@ impl<'a> Sema<'a> {
             Ok(Type::U64)
         } else if type_sym == well_known.bool {
             Ok(Type::Bool)
+        } else if type_sym == well_known.unit {
+            Ok(Type::Unit)
         } else if let Some(&struct_id) = self.structs.get(&type_sym) {
             Ok(Type::Struct(struct_id))
         } else {

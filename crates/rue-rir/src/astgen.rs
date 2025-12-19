@@ -70,7 +70,10 @@ impl<'a> AstGen<'a> {
     fn gen_function(&mut self, func: &Function) -> InstRef {
         // Intern the function name and return type
         let name = self.interner.intern(&func.name.name);
-        let return_type = self.interner.intern(&func.return_type.name);
+        let return_type = match &func.return_type {
+            Some(ident) => self.interner.intern(&ident.name),
+            None => self.interner.intern("()"), // Default to unit type
+        };
 
         // Intern parameters
         let params: Vec<_> = func

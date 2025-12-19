@@ -12,19 +12,6 @@ error: no main function found
 """
 
 [[case]]
-name = "missing_return_type_error"
-source = "fn main() { 42 }"
-compile_fail = true
-expected_error = """
-error: expected 'Arrow', found '{'
- --> <source>:1:11
-  |
-1 | fn main() { 42 }
-  |           ^
-  |
-"""
-
-[[case]]
 name = "unexpected_character_dollar"
 source = "fn main() -> i32 { $ }"
 compile_fail = true
