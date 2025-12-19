@@ -7,8 +7,11 @@ on:
     branches: [trunk]
 
 jobs:
-  test-linux:
-    runs-on: ubuntu-latest
+  test:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
 
@@ -23,33 +26,3 @@ jobs:
 
       - name: Run tests
         run: ./test.sh
-
-  test-macos:
-    runs-on: macos-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Install dotslash
-        run: cargo install dotslash
-
-      - name: Vendor dependencies
-        run: cd third-party && dotslash ../reindeer vendor
-
-      - name: Run macOS-compatible tests
-        run: |
-          # Run tests for crates that work on macOS aarch64
-          # Note: rue-compiler, rue-linker, rue-codegen, and rue-spec tests
-          # require aarch64 codegen which is not yet implemented
-          ./buck2 test \
-            //crates/rue-target:rue-target-test \
-            //crates/rue-runtime:rue-runtime-test \
-            //crates/rue-lexer:rue-lexer-test \
-            //crates/rue-parser:rue-parser-test \
-            //crates/rue-rir:rue-rir-test \
-            //crates/rue-air:rue-air-test \
-            //crates/rue-intern:rue-intern-test \
-            //crates/rue-span:rue-span-test \
-            //crates/rue-error:rue-error-test

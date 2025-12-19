@@ -7,6 +7,10 @@
 
 use std::io::Write;
 use std::process::Command;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+/// Counter for generating unique temp directory names.
+static TEMP_DIR_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// The rue-runtime staticlib archive bytes, embedded at compile time.
 /// This is linked into every Rue executable.
@@ -144,13 +148,7 @@ pub fn compile_with_options(
     // Dispatch to the appropriate backend based on target architecture
     match options.target.arch() {
         Arch::X86_64 => compile_x86_64(&state, options),
-        Arch::Aarch64 => {
-            // aarch64 backend not yet implemented
-            Err(CompileError::without_span(ErrorKind::LinkError(format!(
-                "aarch64 backend not yet implemented (target: {})",
-                options.target
-            ))))
-        }
+        Arch::Aarch64 => compile_aarch64(&state, options),
     }
 }
 
@@ -242,8 +240,10 @@ fn link_system(
     object_files: &[Vec<u8>],
     linker_cmd: &str,
 ) -> CompileResult<CompileOutput> {
-    // Create a temporary directory for object files
-    let temp_dir = std::env::temp_dir().join(format!("rue-{}", std::process::id()));
+    // Create a temporary directory for object files.
+    // Use pid + atomic counter to ensure uniqueness even in parallel test execution.
+    let unique_id = TEMP_DIR_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let temp_dir = std::env::temp_dir().join(format!("rue-{}-{}", std::process::id(), unique_id));
     std::fs::create_dir_all(&temp_dir).map_err(|e| {
         CompileError::without_span(ErrorKind::LinkError(format!(
             "failed to create temp directory: {}",
@@ -335,6 +335,146 @@ fn link_system(
     })
 }
 
+/// Compile for AArch64 target.
+fn compile_aarch64(state: &CompileState, options: &CompileOptions) -> CompileResult<CompileOutput> {
+    // Generate machine code for all functions using the aarch64 backend
+    let mut object_files: Vec<Vec<u8>> = Vec::new();
+
+    for func in &state.functions {
+        let machine_code = rue_codegen::aarch64::generate(
+            &func.air,
+            &state.struct_defs,
+            func.num_locals,
+            func.num_param_slots,
+            &func.name,
+        );
+
+        // Build object file for this function
+        // Use the appropriate relocation type for ARM64
+        let mut obj_builder =
+            ObjectBuilder::new(options.target, &func.name).code(machine_code.code);
+
+        for reloc in machine_code.relocations {
+            obj_builder = obj_builder.relocation(CodeRelocation {
+                offset: reloc.offset,
+                symbol: reloc.symbol,
+                rel_type: RelocationType::Call26, // ARM64 branch instruction
+                addend: reloc.addend,
+            });
+        }
+
+        object_files.push(obj_builder.build());
+    }
+
+    // For macOS/ARM64, we always use the system linker since we don't have
+    // a Mach-O linker implementation
+    link_system_macos(state, options, &object_files)
+}
+
+/// Link using the macOS system linker (clang).
+fn link_system_macos(
+    state: &CompileState,
+    _options: &CompileOptions,
+    object_files: &[Vec<u8>],
+) -> CompileResult<CompileOutput> {
+    // Create a temporary directory for object files.
+    // Use pid + atomic counter to ensure uniqueness even in parallel test execution.
+    let unique_id = TEMP_DIR_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let temp_dir = std::env::temp_dir().join(format!("rue-{}-{}", std::process::id(), unique_id));
+    std::fs::create_dir_all(&temp_dir).map_err(|e| {
+        CompileError::without_span(ErrorKind::LinkError(format!(
+            "failed to create temp directory: {}",
+            e
+        )))
+    })?;
+
+    // Write object files to temp directory
+    let mut obj_paths = Vec::new();
+    for (i, obj_bytes) in object_files.iter().enumerate() {
+        let path = temp_dir.join(format!("obj{}.o", i));
+        let mut file = std::fs::File::create(&path).map_err(|e| {
+            CompileError::without_span(ErrorKind::LinkError(format!(
+                "failed to create temp object file: {}",
+                e
+            )))
+        })?;
+        file.write_all(obj_bytes).map_err(|e| {
+            CompileError::without_span(ErrorKind::LinkError(format!(
+                "failed to write temp object file: {}",
+                e
+            )))
+        })?;
+        obj_paths.push(path);
+    }
+
+    // Write the runtime archive to temp directory
+    let runtime_path = temp_dir.join("librue_runtime.a");
+    std::fs::write(&runtime_path, RUNTIME_BYTES).map_err(|e| {
+        CompileError::without_span(ErrorKind::LinkError(format!(
+            "failed to write runtime archive: {}",
+            e
+        )))
+    })?;
+
+    // Output path for linked executable
+    let output_path = temp_dir.join("output");
+
+    // Use clang as the linker on macOS
+    let mut cmd = Command::new("clang");
+
+    // macOS-specific flags for static linking without libc
+    cmd.arg("-nostdlib");
+    cmd.arg("-arch").arg("arm64");
+    cmd.arg("-e").arg("__main"); // Entry point (macOS uses underscore prefix)
+    cmd.arg("-o");
+    cmd.arg(&output_path);
+
+    // Add object files
+    for path in &obj_paths {
+        cmd.arg(path);
+    }
+
+    // Add the runtime library
+    cmd.arg(&runtime_path);
+
+    // Link with libSystem for syscalls on macOS
+    cmd.arg("-lSystem");
+
+    // Run the linker
+    let output = cmd.output().map_err(|e| {
+        CompileError::without_span(ErrorKind::LinkError(format!(
+            "failed to execute linker 'clang': {}",
+            e
+        )))
+    })?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        // Clean up temp directory before returning error
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        return Err(CompileError::without_span(ErrorKind::LinkError(format!(
+            "linker failed: {}",
+            stderr
+        ))));
+    }
+
+    // Read the resulting executable
+    let executable = std::fs::read(&output_path).map_err(|e| {
+        CompileError::without_span(ErrorKind::LinkError(format!(
+            "failed to read linked executable: {}",
+            e
+        )))
+    })?;
+
+    // Clean up temp directory
+    let _ = std::fs::remove_dir_all(&temp_dir);
+
+    Ok(CompileOutput {
+        elf: executable, // It's actually Mach-O, but we reuse the field name
+        warnings: state.warnings.clone(),
+    })
+}
+
 /// Generate X86Mir from AIR (for debugging/inspection).
 pub fn generate_mir(
     air: &Air,
@@ -360,8 +500,11 @@ mod tests {
     #[test]
     fn test_compile_simple() {
         let output = compile("fn main() -> i32 { 42 }").unwrap();
-        // Should produce a valid ELF
-        assert_eq!(&output.elf[0..4], &[0x7F, b'E', b'L', b'F']);
+        // Should produce a valid executable (ELF on Linux, Mach-O on macOS)
+        let magic = &output.elf[0..4];
+        let is_elf = magic == &[0x7F, b'E', b'L', b'F'];
+        let is_macho = magic == &0xFEEDFACF_u32.to_le_bytes(); // Mach-O 64-bit
+        assert!(is_elf || is_macho, "should produce valid ELF or Mach-O binary");
     }
 
     #[test]

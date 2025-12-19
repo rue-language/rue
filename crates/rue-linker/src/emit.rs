@@ -54,8 +54,19 @@ impl ObjectBuilder {
         self
     }
 
-    /// Build the ELF64 relocatable object file.
+    /// Build a relocatable object file for the target.
+    ///
+    /// Generates ELF64 for Linux targets and Mach-O for macOS targets.
     pub fn build(self) -> Vec<u8> {
+        if self.target.is_macho() {
+            self.build_macho()
+        } else {
+            self.build_elf()
+        }
+    }
+
+    /// Build an ELF64 relocatable object file.
+    fn build_elf(self) -> Vec<u8> {
         let mut elf = Vec::new();
 
         // We'll create a minimal ELF with:
@@ -145,6 +156,7 @@ impl ObjectBuilder {
                 RelocationType::Plt32 => 4,
                 RelocationType::Abs32 => 10,
                 RelocationType::Abs32S => 11,
+                RelocationType::Call26 => 283, // R_AARCH64_CALL26
                 RelocationType::Unknown(t) => t,
             };
             let r_info = ((sym_idx as u64) << 32) | (r_type as u64);
@@ -294,6 +306,249 @@ impl ObjectBuilder {
 
         elf
     }
+
+    /// Build a Mach-O relocatable object file.
+    ///
+    /// This creates a minimal Mach-O object file for AArch64 macOS with:
+    /// - Mach-O header
+    /// - LC_SEGMENT_64 load command containing __TEXT,__text section
+    /// - LC_SYMTAB load command
+    /// - Code section data
+    /// - Relocation entries
+    /// - Symbol table
+    /// - String table
+    fn build_macho(self) -> Vec<u8> {
+        let mut macho = Vec::new();
+
+        // Mach-O constants
+        const MH_MAGIC_64: u32 = 0xFEEDFACF;
+        const MH_OBJECT: u32 = 0x1;
+        const CPU_TYPE_ARM64: u32 = 0x0100000C; // CPU_TYPE_ARM | CPU_ARCH_ABI64
+        const CPU_SUBTYPE_ARM64_ALL: u32 = 0;
+        const LC_SEGMENT_64: u32 = 0x19;
+        const LC_SYMTAB: u32 = 0x2;
+        const LC_BUILD_VERSION: u32 = 0x32;
+        const S_ATTR_PURE_INSTRUCTIONS: u32 = 0x80000000;
+        const S_ATTR_SOME_INSTRUCTIONS: u32 = 0x00000400;
+
+        // Platform constants for LC_BUILD_VERSION
+        const PLATFORM_MACOS: u32 = 1;
+
+        // ARM64 relocation types
+        const ARM64_RELOC_BRANCH26: u32 = 2;
+
+        // Calculate sizes and offsets
+        const HEADER_SIZE: usize = 32;
+        const SEGMENT_CMD_SIZE: usize = 72;
+        const SECTION_SIZE: usize = 80;
+        const SYMTAB_CMD_SIZE: usize = 24;
+        const BUILD_VERSION_CMD_SIZE: usize = 24; // Without tool entries
+        const NLIST_SIZE: usize = 16;
+        const RELOC_SIZE: usize = 8;
+
+        let num_sections = 1; // __text
+        let segment_cmd_total = SEGMENT_CMD_SIZE + (SECTION_SIZE * num_sections);
+        // Three load commands: LC_SEGMENT_64, LC_BUILD_VERSION, LC_SYMTAB
+        let load_commands_size = segment_cmd_total + BUILD_VERSION_CMD_SIZE + SYMTAB_CMD_SIZE;
+        let header_and_commands = HEADER_SIZE + load_commands_size;
+
+        // Align section data to 4 bytes (required for ARM64)
+        let section_offset = align_up(header_and_commands, 4);
+        let section_size = self.code.len();
+
+        // Relocations follow section data
+        let reloc_offset = align_up(section_offset + section_size, 4);
+        let num_relocs = self.relocations.len();
+
+        // On macOS, all external C symbols get a leading underscore prefix.
+        // This applies to ALL symbols, regardless of their original name.
+        // e.g., "main" -> "_main", "__rue_exit" -> "___rue_exit"
+        let macho_name = format!("_{}", self.name);
+
+        // Build string table
+        // Format: starts with a space for empty string, then null-terminated strings
+        let mut strtab = vec![0x20, 0x00]; // Start with " \0" (space + null)
+
+        // The function symbol name (with underscore prefix for macOS)
+        let func_name_offset = strtab.len();
+        strtab.extend_from_slice(macho_name.as_bytes());
+        strtab.push(0);
+
+        // External symbol names (for relocations)
+        // All symbols need underscore prefix for macOS
+        let mut extern_symbols: Vec<String> = Vec::new();
+        let mut extern_name_offsets: Vec<usize> = Vec::new();
+        for reloc in &self.relocations {
+            // Always add underscore prefix for macOS
+            let macho_sym = format!("_{}", reloc.symbol);
+            if !extern_symbols.contains(&macho_sym) {
+                extern_name_offsets.push(strtab.len());
+                strtab.extend_from_slice(macho_sym.as_bytes());
+                strtab.push(0);
+                extern_symbols.push(macho_sym);
+            }
+        }
+
+        // Symbol table follows relocations
+        let symtab_offset = align_up(reloc_offset + (num_relocs * RELOC_SIZE), 4);
+        let num_local_syms = 1; // Just our function
+        let num_extern_syms = extern_symbols.len();
+        let num_syms = num_local_syms + num_extern_syms;
+
+        // String table follows symbol table
+        let strtab_offset = symtab_offset + (num_syms * NLIST_SIZE);
+        let strtab_size = strtab.len();
+
+        // === Mach-O Header ===
+        macho.extend_from_slice(&MH_MAGIC_64.to_le_bytes()); // magic
+        macho.extend_from_slice(&CPU_TYPE_ARM64.to_le_bytes()); // cputype
+        macho.extend_from_slice(&CPU_SUBTYPE_ARM64_ALL.to_le_bytes()); // cpusubtype
+        macho.extend_from_slice(&MH_OBJECT.to_le_bytes()); // filetype
+        macho.extend_from_slice(&3_u32.to_le_bytes()); // ncmds (LC_SEGMENT_64 + LC_BUILD_VERSION + LC_SYMTAB)
+        macho.extend_from_slice(&(load_commands_size as u32).to_le_bytes()); // sizeofcmds
+        macho.extend_from_slice(&0_u32.to_le_bytes()); // flags
+        macho.extend_from_slice(&0_u32.to_le_bytes()); // reserved (64-bit padding)
+
+        // === LC_SEGMENT_64 ===
+        macho.extend_from_slice(&LC_SEGMENT_64.to_le_bytes()); // cmd
+        macho.extend_from_slice(&(segment_cmd_total as u32).to_le_bytes()); // cmdsize
+
+        // segname: 16-byte null-padded string (empty for object files)
+        let mut segname = [0u8; 16];
+        macho.extend_from_slice(&segname);
+
+        macho.extend_from_slice(&0_u64.to_le_bytes()); // vmaddr
+        macho.extend_from_slice(&(section_size as u64).to_le_bytes()); // vmsize
+        macho.extend_from_slice(&(section_offset as u64).to_le_bytes()); // fileoff
+        macho.extend_from_slice(&(section_size as u64).to_le_bytes()); // filesize
+        macho.extend_from_slice(&0x7_u32.to_le_bytes()); // maxprot (rwx)
+        macho.extend_from_slice(&0x5_u32.to_le_bytes()); // initprot (rx)
+        macho.extend_from_slice(&(num_sections as u32).to_le_bytes()); // nsects
+        macho.extend_from_slice(&0_u32.to_le_bytes()); // flags
+
+        // === Section: __text ===
+        // sectname: 16-byte null-padded
+        let mut sectname = [0u8; 16];
+        sectname[..6].copy_from_slice(b"__text");
+        macho.extend_from_slice(&sectname);
+
+        // segname: 16-byte null-padded
+        segname[..6].copy_from_slice(b"__TEXT");
+        macho.extend_from_slice(&segname);
+
+        macho.extend_from_slice(&0_u64.to_le_bytes()); // addr
+        macho.extend_from_slice(&(section_size as u64).to_le_bytes()); // size
+        macho.extend_from_slice(&(section_offset as u32).to_le_bytes()); // offset
+        macho.extend_from_slice(&2_u32.to_le_bytes()); // align (2^2 = 4 byte alignment)
+        macho.extend_from_slice(&(reloc_offset as u32).to_le_bytes()); // reloff
+        macho.extend_from_slice(&(num_relocs as u32).to_le_bytes()); // nreloc
+        macho.extend_from_slice(&(S_ATTR_PURE_INSTRUCTIONS | S_ATTR_SOME_INSTRUCTIONS).to_le_bytes()); // flags
+        macho.extend_from_slice(&0_u32.to_le_bytes()); // reserved1
+        macho.extend_from_slice(&0_u32.to_le_bytes()); // reserved2
+        macho.extend_from_slice(&0_u32.to_le_bytes()); // reserved3 (64-bit only)
+
+        // === LC_BUILD_VERSION ===
+        // This tells the linker which macOS version this was built for
+        macho.extend_from_slice(&LC_BUILD_VERSION.to_le_bytes()); // cmd
+        macho.extend_from_slice(&(BUILD_VERSION_CMD_SIZE as u32).to_le_bytes()); // cmdsize
+        macho.extend_from_slice(&PLATFORM_MACOS.to_le_bytes()); // platform
+        // minos: macOS 11.0.0 (Big Sur) - encoded as major.minor.patch in nibbles
+        // 11.0.0 = 0x000B0000
+        macho.extend_from_slice(&0x000B0000_u32.to_le_bytes()); // minos (11.0.0)
+        macho.extend_from_slice(&0x000B0000_u32.to_le_bytes()); // sdk (11.0.0)
+        macho.extend_from_slice(&0_u32.to_le_bytes()); // ntools
+
+        // === LC_SYMTAB ===
+        macho.extend_from_slice(&LC_SYMTAB.to_le_bytes()); // cmd
+        macho.extend_from_slice(&(SYMTAB_CMD_SIZE as u32).to_le_bytes()); // cmdsize
+        macho.extend_from_slice(&(symtab_offset as u32).to_le_bytes()); // symoff
+        macho.extend_from_slice(&(num_syms as u32).to_le_bytes()); // nsyms
+        macho.extend_from_slice(&(strtab_offset as u32).to_le_bytes()); // stroff
+        macho.extend_from_slice(&(strtab_size as u32).to_le_bytes()); // strsize
+
+        // === Section Data ===
+        // Pad to section offset
+        while macho.len() < section_offset {
+            macho.push(0);
+        }
+        macho.extend_from_slice(&self.code);
+
+        // === Relocations ===
+        // Pad to relocation offset
+        while macho.len() < reloc_offset {
+            macho.push(0);
+        }
+
+        // Mach-O relocation format for ARM64:
+        // r_address: 32-bit offset
+        // r_symbolnum: 24-bit symbol index
+        // r_pcrel: 1-bit (PC-relative)
+        // r_length: 2-bit (0=byte, 1=word, 2=long, 3=quad)
+        // r_extern: 1-bit (1 = symbol index, 0 = section ordinal)
+        // r_type: 4-bit relocation type
+        for reloc in &self.relocations {
+            // Look up the underscore-prefixed version of the symbol
+            let macho_sym = format!("_{}", reloc.symbol);
+            let sym_idx = extern_symbols.iter().position(|s| s == &macho_sym).unwrap();
+            // External symbols start after local symbols
+            let sym_num = (num_local_syms + sym_idx) as u32;
+
+            // r_address (4 bytes)
+            macho.extend_from_slice(&(reloc.offset as u32).to_le_bytes());
+
+            // r_symbolnum (24 bits) | r_pcrel (1) | r_length (2) | r_extern (1) | r_type (4)
+            // For ARM64_RELOC_BRANCH26: pcrel=1, length=2 (4 bytes), extern=1
+            let r_type = match reloc.rel_type {
+                RelocationType::Call26 => ARM64_RELOC_BRANCH26,
+                _ => ARM64_RELOC_BRANCH26, // Default to branch for now
+            };
+            let info: u32 = (sym_num & 0x00FFFFFF)  // r_symbolnum (bits 0-23)
+                | (1 << 24)  // r_pcrel (bit 24)
+                | (2 << 25)  // r_length (bits 25-26) - 2 means 4 bytes
+                | (1 << 27)  // r_extern (bit 27)
+                | (r_type << 28);  // r_type (bits 28-31)
+            macho.extend_from_slice(&info.to_le_bytes());
+        }
+
+        // === Symbol Table ===
+        // Pad to symbol table offset
+        while macho.len() < symtab_offset {
+            macho.push(0);
+        }
+
+        // nlist_64 structure:
+        // n_strx: 4 bytes (string table index)
+        // n_type: 1 byte
+        // n_sect: 1 byte (1-indexed section number)
+        // n_desc: 2 bytes
+        // n_value: 8 bytes
+
+        // Symbol constants
+        const N_EXT: u8 = 0x01;  // External symbol
+        const N_SECT: u8 = 0x0E; // Defined in section
+
+        // Local symbol: the function itself
+        macho.extend_from_slice(&(func_name_offset as u32).to_le_bytes()); // n_strx
+        macho.push(N_EXT | N_SECT); // n_type: external, defined in section
+        macho.push(1); // n_sect: section 1 (__text)
+        macho.extend_from_slice(&0_u16.to_le_bytes()); // n_desc
+        macho.extend_from_slice(&0_u64.to_le_bytes()); // n_value (offset in section)
+
+        // External symbols (undefined)
+        const N_UNDF: u8 = 0x00; // Undefined symbol
+        for (i, _sym) in extern_symbols.iter().enumerate() {
+            macho.extend_from_slice(&(extern_name_offsets[i] as u32).to_le_bytes()); // n_strx
+            macho.push(N_EXT | N_UNDF); // n_type: external, undefined
+            macho.push(0); // n_sect: NO_SECT
+            macho.extend_from_slice(&0_u16.to_le_bytes()); // n_desc
+            macho.extend_from_slice(&0_u64.to_le_bytes()); // n_value
+        }
+
+        // === String Table ===
+        macho.extend_from_slice(&strtab);
+
+        macho
+    }
 }
 
 fn align_up(value: usize, align: usize) -> usize {
@@ -306,10 +561,13 @@ mod tests {
     use crate::elf::ObjectFile;
     use rue_target::Target;
 
+    // Use X86_64Linux explicitly for ELF tests since ObjectFile only parses ELF
+    const ELF_TARGET: Target = Target::X86_64Linux;
+
     #[test]
-    fn test_simple_object() {
-        // Create a simple object with just a ret instruction
-        let obj = ObjectBuilder::new(Target::host(), "main")
+    fn test_simple_elf_object() {
+        // Create a simple ELF object with just a ret instruction
+        let obj = ObjectBuilder::new(ELF_TARGET, "main")
             .code(vec![0xC3]) // ret
             .build();
 
@@ -320,9 +578,22 @@ mod tests {
     }
 
     #[test]
-    fn test_object_with_relocation() {
-        // Create object that calls an external function
-        let obj = ObjectBuilder::new(Target::host(), "main")
+    fn test_simple_macho_object() {
+        // Create a simple Mach-O object
+        let obj = ObjectBuilder::new(Target::Aarch64Macos, "main")
+            .code(vec![0xD6, 0x5F, 0x03, 0xC0]) // ret (ARM64)
+            .build();
+
+        // Check Mach-O magic (little-endian)
+        assert_eq!(&obj[0..4], &0xFEEDFACF_u32.to_le_bytes());
+        // Check it's MH_OBJECT (file type at offset 12)
+        assert_eq!(&obj[12..16], &0x1_u32.to_le_bytes());
+    }
+
+    #[test]
+    fn test_elf_object_with_relocation() {
+        // Create ELF object that calls an external function
+        let obj = ObjectBuilder::new(ELF_TARGET, "main")
             .code(vec![
                 0xE8, 0x00, 0x00, 0x00, 0x00, // call (placeholder)
                 0xC3, // ret
@@ -340,6 +611,26 @@ mod tests {
     }
 
     #[test]
+    fn test_macho_object_with_relocation() {
+        // Create Mach-O object that calls an external function
+        let obj = ObjectBuilder::new(Target::Aarch64Macos, "_main")
+            .code(vec![
+                0x00, 0x00, 0x00, 0x94, // bl (placeholder)
+                0xD6, 0x5F, 0x03, 0xC0, // ret
+            ])
+            .relocation(CodeRelocation {
+                offset: 0,
+                symbol: "_external_func".into(),
+                rel_type: RelocationType::Call26,
+                addend: 0,
+            })
+            .build();
+
+        // Basic Mach-O validation
+        assert_eq!(&obj[0..4], &0xFEEDFACF_u32.to_le_bytes());
+    }
+
+    #[test]
     fn test_align_up() {
         assert_eq!(align_up(0, 8), 0);
         assert_eq!(align_up(1, 8), 8);
@@ -352,8 +643,8 @@ mod tests {
 
     #[test]
     fn test_roundtrip_simple() {
-        // Create an object and verify we can parse it back
-        let built = ObjectBuilder::new(Target::host(), "test_func")
+        // Create an ELF object and verify we can parse it back
+        let built = ObjectBuilder::new(ELF_TARGET, "test_func")
             .code(vec![0x48, 0x89, 0xC0, 0xC3]) // mov rax, rax; ret
             .build();
 
@@ -368,7 +659,7 @@ mod tests {
 
     #[test]
     fn test_roundtrip_with_relocation() {
-        let built = ObjectBuilder::new(Target::host(), "caller")
+        let built = ObjectBuilder::new(ELF_TARGET, "caller")
             .code(vec![
                 0xE8, 0x00, 0x00, 0x00, 0x00, // call (placeholder)
                 0xC3, // ret
@@ -404,7 +695,7 @@ mod tests {
 
     #[test]
     fn test_multiple_relocations() {
-        let built = ObjectBuilder::new(Target::host(), "multi_caller")
+        let built = ObjectBuilder::new(ELF_TARGET, "multi_caller")
             .code(vec![
                 0xE8, 0x00, 0x00, 0x00, 0x00, // call func1
                 0xE8, 0x00, 0x00, 0x00, 0x00, // call func2
@@ -448,7 +739,7 @@ mod tests {
 
     #[test]
     fn test_empty_code() {
-        let built = ObjectBuilder::new(Target::host(), "empty_func")
+        let built = ObjectBuilder::new(ELF_TARGET, "empty_func")
             .code(vec![])
             .build();
 
@@ -459,7 +750,7 @@ mod tests {
 
     #[test]
     fn test_various_relocation_types() {
-        let built = ObjectBuilder::new(Target::host(), "reloc_test")
+        let built = ObjectBuilder::new(ELF_TARGET, "reloc_test")
             .code(vec![0u8; 32])
             .relocation(CodeRelocation {
                 offset: 0,

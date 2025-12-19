@@ -29,30 +29,8 @@ pub use regalloc::RegAlloc;
 use rue_air::{Air, StructDef};
 use rue_cfg::CfgBuilder;
 
-/// A relocation emitted during code generation.
-///
-/// This represents a location in the generated machine code that needs to be
-/// patched by the linker to reference an external symbol. The relocation type
-/// is not included here - it's determined by the compiler when converting to
-/// linker relocations based on the context (e.g., call instructions use PLT32).
-#[derive(Debug, Clone)]
-pub struct EmittedRelocation {
-    /// Offset in the code section where the relocation applies.
-    pub offset: u64,
-    /// Symbol name to reference.
-    pub symbol: String,
-    /// Addend for the relocation (typically -4 for PC-relative relocations
-    /// to account for the displacement being relative to the next instruction).
-    pub addend: i64,
-}
-
-/// Generated machine code for a function.
-pub struct MachineCode {
-    /// The raw machine code bytes.
-    pub code: Vec<u8>,
-    /// Relocations needed in the code (for external symbol references).
-    pub relocations: Vec<EmittedRelocation>,
-}
+// Re-export from parent
+pub use super::{EmittedRelocation, MachineCode};
 
 /// Generate machine code from AIR.
 ///

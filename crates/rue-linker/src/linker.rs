@@ -423,6 +423,32 @@ impl Linker {
                     merged_code[patch_offset..patch_offset + 4]
                         .copy_from_slice(&(value as i32).to_le_bytes());
                 }
+                RelocationType::Call26 => {
+                    // AArch64 branch with link - 26-bit PC-relative offset
+                    // This is used for BL instructions
+                    let value = target_addr as i64 + addend - pc as i64;
+                    // Offset is in units of 4 bytes (instructions)
+                    let offset = value >> 2;
+                    // Check for overflow: must fit in 26 bits signed
+                    if offset < -(1 << 25) || offset >= (1 << 25) {
+                        return Err(LinkError::RelocationOverflow {
+                            symbol: sym_name.clone(),
+                            rel_type: "Call26".to_string(),
+                        });
+                    }
+                    if patch_offset + 4 > merged_code.len() {
+                        return Err(LinkError::UnsupportedRelocation(
+                            format!("patch offset {} out of bounds", patch_offset)
+                        ));
+                    }
+                    // Read existing instruction and patch the immediate field
+                    let mut inst = u32::from_le_bytes(
+                        merged_code[patch_offset..patch_offset + 4].try_into().unwrap()
+                    );
+                    inst = (inst & 0xFC000000) | ((offset as u32) & 0x03FFFFFF);
+                    merged_code[patch_offset..patch_offset + 4]
+                        .copy_from_slice(&inst.to_le_bytes());
+                }
                 RelocationType::Unknown(t) => {
                     return Err(LinkError::UnsupportedRelocation(format!("unknown type {}", t)));
                 }
@@ -495,6 +521,10 @@ mod tests {
     use crate::emit::{ObjectBuilder, CodeRelocation};
     use crate::elf::ObjectFile;
 
+    // Use X86_64Linux explicitly for ELF tests since ObjectFile only parses ELF
+    // and the Linker produces ELF executables
+    const ELF_TARGET: Target = Target::X86_64Linux;
+
     #[test]
     fn test_align_up() {
         assert_eq!(align_up(0, 16), 0);
@@ -504,8 +534,8 @@ mod tests {
     }
 
     #[test]
-    fn test_linker_default() {
-        let linker = Linker::default();
+    fn test_linker_x86_64_linux() {
+        let linker = Linker::new(ELF_TARGET);
         assert_eq!(linker.base_addr, 0x400000);
         assert!(linker.objects.is_empty());
         assert!(linker.global_symbols.is_empty());
@@ -537,7 +567,7 @@ mod tests {
     #[test]
     fn test_simple_link() {
         // Build a simple object with main that just returns
-        let obj_bytes = ObjectBuilder::new(Target::host(), "main")
+        let obj_bytes = ObjectBuilder::new(ELF_TARGET, "main")
             .code(vec![
                 0xB8, 0x2A, 0x00, 0x00, 0x00, // mov eax, 42
                 0xC3,                         // ret
@@ -546,7 +576,7 @@ mod tests {
 
         let obj = ObjectFile::parse(&obj_bytes).unwrap();
 
-        let mut linker = Linker::default();
+        let mut linker = Linker::new(ELF_TARGET);
         linker.add_object(obj).unwrap();
 
         let elf = linker.link("main").unwrap();
@@ -559,13 +589,13 @@ mod tests {
 
     #[test]
     fn test_undefined_entry_point() {
-        let obj_bytes = ObjectBuilder::new(Target::host(), "not_main")
+        let obj_bytes = ObjectBuilder::new(ELF_TARGET, "not_main")
             .code(vec![0xC3])
             .build();
 
         let obj = ObjectFile::parse(&obj_bytes).unwrap();
 
-        let mut linker = Linker::default();
+        let mut linker = Linker::new(ELF_TARGET);
         linker.add_object(obj).unwrap();
 
         let result = linker.link("main");
@@ -575,7 +605,7 @@ mod tests {
     #[test]
     fn test_link_two_objects() {
         // Build callee object
-        let callee_bytes = ObjectBuilder::new(Target::host(), "callee")
+        let callee_bytes = ObjectBuilder::new(ELF_TARGET, "callee")
             .code(vec![
                 0xB8, 0x01, 0x00, 0x00, 0x00, // mov eax, 1
                 0xC3,                         // ret
@@ -583,7 +613,7 @@ mod tests {
             .build();
 
         // Build caller object (main) that calls callee
-        let caller_bytes = ObjectBuilder::new(Target::host(), "main")
+        let caller_bytes = ObjectBuilder::new(ELF_TARGET, "main")
             .code(vec![
                 0xE8, 0x00, 0x00, 0x00, 0x00, // call callee (placeholder)
                 0xC3,                         // ret
@@ -599,7 +629,7 @@ mod tests {
         let callee = ObjectFile::parse(&callee_bytes).unwrap();
         let caller = ObjectFile::parse(&caller_bytes).unwrap();
 
-        let mut linker = Linker::default();
+        let mut linker = Linker::new(ELF_TARGET);
         linker.add_object(callee).unwrap();
         linker.add_object(caller).unwrap();
 
@@ -612,18 +642,18 @@ mod tests {
 
     #[test]
     fn test_duplicate_symbol_error() {
-        let obj1_bytes = ObjectBuilder::new(Target::host(), "duplicate")
+        let obj1_bytes = ObjectBuilder::new(ELF_TARGET, "duplicate")
             .code(vec![0xC3])
             .build();
 
-        let obj2_bytes = ObjectBuilder::new(Target::host(), "duplicate")
+        let obj2_bytes = ObjectBuilder::new(ELF_TARGET, "duplicate")
             .code(vec![0x90, 0xC3]) // nop, ret
             .build();
 
         let obj1 = ObjectFile::parse(&obj1_bytes).unwrap();
         let obj2 = ObjectFile::parse(&obj2_bytes).unwrap();
 
-        let mut linker = Linker::default();
+        let mut linker = Linker::new(ELF_TARGET);
         linker.add_object(obj1).unwrap();
 
         let result = linker.add_object(obj2);
@@ -633,7 +663,7 @@ mod tests {
     #[test]
     fn test_undefined_symbol_in_relocation() {
         // Build object that references undefined symbol
-        let obj_bytes = ObjectBuilder::new(Target::host(), "main")
+        let obj_bytes = ObjectBuilder::new(ELF_TARGET, "main")
             .code(vec![
                 0xE8, 0x00, 0x00, 0x00, 0x00, // call undefined_func
                 0xC3,
@@ -648,7 +678,7 @@ mod tests {
 
         let obj = ObjectFile::parse(&obj_bytes).unwrap();
 
-        let mut linker = Linker::default();
+        let mut linker = Linker::new(ELF_TARGET);
         linker.add_object(obj).unwrap();
 
         let result = linker.link("main");
@@ -657,13 +687,13 @@ mod tests {
 
     #[test]
     fn test_elf_header_structure() {
-        let obj_bytes = ObjectBuilder::new(Target::host(), "main")
+        let obj_bytes = ObjectBuilder::new(ELF_TARGET, "main")
             .code(vec![0xC3])
             .build();
 
         let obj = ObjectFile::parse(&obj_bytes).unwrap();
 
-        let mut linker = Linker::default();
+        let mut linker = Linker::new(ELF_TARGET);
         linker.add_object(obj).unwrap();
 
         let elf = linker.link("main").unwrap();
@@ -683,13 +713,13 @@ mod tests {
 
     #[test]
     fn test_program_header_structure() {
-        let obj_bytes = ObjectBuilder::new(Target::host(), "main")
+        let obj_bytes = ObjectBuilder::new(ELF_TARGET, "main")
             .code(vec![0xC3])
             .build();
 
         let obj = ObjectFile::parse(&obj_bytes).unwrap();
 
-        let mut linker = Linker::default();
+        let mut linker = Linker::new(ELF_TARGET);
         linker.add_object(obj).unwrap();
 
         let elf = linker.link("main").unwrap();
@@ -721,7 +751,7 @@ mod tests {
         // Create three functions: main calls helper1 and helper2
 
         // helper1: returns 10
-        let helper1_bytes = ObjectBuilder::new(Target::host(), "helper1")
+        let helper1_bytes = ObjectBuilder::new(ELF_TARGET, "helper1")
             .code(vec![
                 0xB8, 0x0A, 0x00, 0x00, 0x00, // mov eax, 10
                 0xC3,                         // ret
@@ -729,7 +759,7 @@ mod tests {
             .build();
 
         // helper2: returns 32
-        let helper2_bytes = ObjectBuilder::new(Target::host(), "helper2")
+        let helper2_bytes = ObjectBuilder::new(ELF_TARGET, "helper2")
             .code(vec![
                 0xB8, 0x20, 0x00, 0x00, 0x00, // mov eax, 32
                 0xC3,                         // ret
@@ -738,7 +768,7 @@ mod tests {
 
         // main: calls helper1, saves result, calls helper2, adds results
         // This tests multiple relocations and cross-object references
-        let main_bytes = ObjectBuilder::new(Target::host(), "main")
+        let main_bytes = ObjectBuilder::new(ELF_TARGET, "main")
             .code(vec![
                 // call helper1
                 0xE8, 0x00, 0x00, 0x00, 0x00, // call helper1 (offset 1)
@@ -778,7 +808,7 @@ mod tests {
         assert!(main.find_symbol("main").is_some());
 
         // Link all together
-        let mut linker = Linker::default();
+        let mut linker = Linker::new(ELF_TARGET);
         linker.add_object(helper1).expect("add helper1");
         linker.add_object(helper2).expect("add helper2");
         linker.add_object(main).expect("add main");
@@ -801,7 +831,7 @@ mod tests {
     /// Test that unknown relocation types are rejected
     #[test]
     fn test_unknown_relocation_type() {
-        let obj_bytes = ObjectBuilder::new(Target::host(), "main")
+        let obj_bytes = ObjectBuilder::new(ELF_TARGET, "main")
             .code(vec![0x00; 8])
             .relocation(CodeRelocation {
                 offset: 0,
@@ -812,14 +842,14 @@ mod tests {
             .build();
 
         // Also need a target object
-        let target_bytes = ObjectBuilder::new(Target::host(), "target_sym")
+        let target_bytes = ObjectBuilder::new(ELF_TARGET, "target_sym")
             .code(vec![0xC3])
             .build();
 
         let obj = ObjectFile::parse(&obj_bytes).unwrap();
         let target = ObjectFile::parse(&target_bytes).unwrap();
 
-        let mut linker = Linker::default();
+        let mut linker = Linker::new(ELF_TARGET);
         linker.add_object(obj).unwrap();
         linker.add_object(target).unwrap();
 

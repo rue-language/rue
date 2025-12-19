@@ -151,7 +151,7 @@ pub struct Relocation {
     pub addend: i64,
 }
 
-/// x86-64 relocation types we support.
+/// Relocation types we support (x86-64 and AArch64).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RelocationType {
     /// R_X86_64_64: 64-bit absolute address.
@@ -164,6 +164,8 @@ pub enum RelocationType {
     Abs32,
     /// R_X86_64_32S: 32-bit signed absolute address.
     Abs32S,
+    /// R_AARCH64_CALL26: AArch64 branch with link instruction.
+    Call26,
     /// Unknown relocation type.
     Unknown(u32),
 }
