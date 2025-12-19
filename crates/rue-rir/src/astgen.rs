@@ -193,6 +193,13 @@ impl<'a> AstGen<'a> {
                 data: InstData::Continue,
                 span: continue_expr.span,
             }),
+            Expr::Return(return_expr) => {
+                let value = self.gen_expr(&return_expr.value);
+                self.rir.add_inst(Inst {
+                    data: InstData::Ret(value),
+                    span: return_expr.span,
+                })
+            }
             Expr::StructLit(struct_lit) => {
                 let type_name = self.interner.intern(&struct_lit.name.name);
                 let fields: Vec<_> = struct_lit

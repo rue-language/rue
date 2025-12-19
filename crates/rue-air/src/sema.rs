@@ -78,6 +78,8 @@ struct AnalysisContext<'a> {
     loop_depth: u32,
     /// Local variables that have been read (for unused variable detection)
     used_locals: HashSet<Symbol>,
+    /// Return type of the current function (for explicit return validation)
+    return_type: Type,
 }
 
 /// Information about a function.
@@ -293,17 +295,21 @@ impl<'a> Sema<'a> {
             next_slot: 0,
             loop_depth: 0,
             used_locals: HashSet::new(),
+            return_type,
         };
 
         // Analyze the body expression
         let body_ref = self.analyze_inst(&mut air, body, return_type, &mut ctx)?;
 
-        // Add implicit return
-        air.add_inst(AirInst {
-            data: AirInstData::Ret(body_ref),
-            ty: return_type,
-            span: self.rir.get(body).span,
-        });
+        // Add implicit return only if body doesn't already diverge (e.g., explicit return)
+        let body_type = air.get(body_ref).ty;
+        if body_type != Type::Never {
+            air.add_inst(AirInst {
+                data: AirInstData::Ret(body_ref),
+                ty: return_type,
+                span: self.rir.get(body).span,
+            });
+        }
 
         Ok((air, ctx.next_slot, num_param_slots))
     }
@@ -891,10 +897,31 @@ impl<'a> Sema<'a> {
             }
 
             InstData::Ret(inner) => {
-                let inner_ref = self.analyze_inst(air, *inner, expected_type, ctx)?;
+                // Explicit return: analyze with the function's return type, result is Never
+                let inner_ref = self.analyze_inst(air, *inner, ctx.return_type, ctx)?;
+                let inner_ty = air.get(inner_ref).ty;
+
+                // Type check: returned value must match function's return type.
+                // We check for error types first to avoid cascading errors - if either
+                // type is already an error, we skip the mismatch check since there's
+                // already an error reported. Note: can_coerce_to handles inner_ty being
+                // Error (returns true), but we also need to handle return_type being Error.
+                if !ctx.return_type.is_error()
+                    && !inner_ty.is_error()
+                    && !inner_ty.can_coerce_to(&ctx.return_type)
+                {
+                    return Err(CompileError::new(
+                        ErrorKind::TypeMismatch {
+                            expected: ctx.return_type.name().to_string(),
+                            found: inner_ty.name().to_string(),
+                        },
+                        inst.span,
+                    ));
+                }
+
                 Ok(air.add_inst(AirInst {
                     data: AirInstData::Ret(inner_ref),
-                    ty: expected_type,
+                    ty: Type::Never, // Return expressions have Never type (they diverge)
                     span: inst.span,
                 }))
             }
@@ -1479,11 +1506,10 @@ impl<'a> Sema<'a> {
                 })?;
                 Ok(param_info.ty)
             }
-            InstData::Alloc { .. }
-            | InstData::Assign { .. }
-            | InstData::Ret(_)
-            | InstData::Loop { .. } => Ok(Type::Unit),
-            InstData::Break | InstData::Continue => Ok(Type::Never),
+            InstData::Alloc { .. } | InstData::Assign { .. } | InstData::Loop { .. } => {
+                Ok(Type::Unit)
+            }
+            InstData::Break | InstData::Continue | InstData::Ret(_) => Ok(Type::Never),
             InstData::FnDecl { .. } | InstData::StructDecl { .. } => {
                 unreachable!("FnDecl/StructDecl should not appear in expression context")
             }

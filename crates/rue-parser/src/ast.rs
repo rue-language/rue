@@ -101,6 +101,8 @@ pub enum Expr {
     Break(BreakExpr),
     /// Continue statement (skips to the next iteration of the innermost loop)
     Continue(ContinueExpr),
+    /// Return statement (returns a value from the current function)
+    Return(ReturnExpr),
     /// Struct literal (e.g., `Point { x: 1, y: 2 }`)
     StructLit(StructLitExpr),
     /// Field access (e.g., `point.x`)
@@ -313,6 +315,14 @@ pub struct ContinueExpr {
     pub span: Span,
 }
 
+/// A return expression (returns a value from the current function).
+#[derive(Debug, Clone)]
+pub struct ReturnExpr {
+    /// The value to return
+    pub value: Box<Expr>,
+    pub span: Span,
+}
+
 impl Expr {
     /// Get the span of this expression.
     pub fn span(&self) -> Span {
@@ -329,6 +339,7 @@ impl Expr {
             Expr::Call(call) => call.span,
             Expr::Break(break_expr) => break_expr.span,
             Expr::Continue(continue_expr) => continue_expr.span,
+            Expr::Return(return_expr) => return_expr.span,
             Expr::StructLit(struct_lit) => struct_lit.span,
             Expr::Field(field_expr) => field_expr.span,
             Expr::IntrinsicCall(intrinsic) => intrinsic.span,

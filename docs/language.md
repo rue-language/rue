@@ -26,6 +26,7 @@ Rue is in early development. The implemented feature set is minimal:
 | Logical operators | ✓ Implemented |
 | While loops | ✓ Implemented |
 | Break/continue | ✓ Implemented |
+| Return statement | ✓ Implemented |
 
 ## Specification Tests
 
@@ -46,6 +47,7 @@ The executable specification lives in `crates/rue-spec/cases/`:
 | `11-logical-operators.toml` | 11.1 | Logical operators (!, &&, \|\|) |
 | `12-while-loops.toml` | 12.1 | While loops |
 | `13-break-continue.toml` | 13.1 | Break and continue statements |
+| `14-return.toml` | 14.1 | Return statement |
 
 Each `.toml` file contains test cases that define expected behavior:
 
@@ -371,6 +373,71 @@ fn main() -> i32 {
 }
 ```
 
+### Return Statement
+
+The `return` keyword explicitly returns a value from the current function:
+
+```rue
+fn main() -> i32 {
+    return 42;
+}
+```
+
+`return` is useful for early exits from functions:
+
+```rue
+fn abs(x: i32) -> i32 {
+    if x < 0 {
+        return 0 - x;
+    }
+    x
+}
+
+fn main() -> i32 {
+    abs(-5)  // returns 5
+}
+```
+
+The returned expression must match the function's declared return type:
+
+```rue
+fn main() -> i32 {
+    return true;  // ERROR: type mismatch: expected i32, found bool
+}
+```
+
+`return` can be used inside loops to exit the function:
+
+```rue
+fn find_first_even(start: i32) -> i32 {
+    let mut x = start;
+    while x < 100 {
+        if x % 2 == 0 {
+            return x;
+        }
+        x = x + 1;
+    }
+    return 0;  // not found
+}
+
+fn main() -> i32 {
+    find_first_even(5)  // returns 6
+}
+```
+
+The `return` expression has the never type (`!`) because it diverges - it never produces a local value. This allows `return` to be used in either branch of an if/else:
+
+```rue
+fn test(x: i32) -> i32 {
+    let y = if x > 5 { return 100 } else { x };
+    y * 2
+}
+
+fn main() -> i32 {
+    test(3) + test(10)  // 6 + 100 = 106
+}
+```
+
 ### Runtime Errors
 
 Division by zero and integer overflow cause runtime errors:
@@ -402,7 +469,8 @@ unary          = "-" unary | "!" unary | postfix ;
 postfix        = primary [ "(" [ args ] ")" ] ;
 args           = expression { "," expression } ;
 primary        = INTEGER | BOOL | IDENT | "(" expression ")" | block_expr
-               | if_expr | while_expr | "break" | "continue" ;
+               | if_expr | while_expr | "break" | "continue" | return_expr ;
+return_expr    = "return" expression ;
 block_expr     = "{" block "}" ;
 if_expr        = "if" expression "{" block "}" [ "else" "{" block "}" ] ;
 while_expr     = "while" expression "{" block "}" ;

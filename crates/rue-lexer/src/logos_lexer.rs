@@ -38,6 +38,8 @@ pub enum LogosTokenKind {
     Break,
     #[token("continue")]
     Continue,
+    #[token("return")]
+    Return,
     #[token("true")]
     True,
     #[token("false")]
@@ -123,6 +125,7 @@ impl From<LogosTokenKind> for TokenKind {
             LogosTokenKind::While => TokenKind::While,
             LogosTokenKind::Break => TokenKind::Break,
             LogosTokenKind::Continue => TokenKind::Continue,
+            LogosTokenKind::Return => TokenKind::Return,
             LogosTokenKind::True => TokenKind::True,
             LogosTokenKind::False => TokenKind::False,
             LogosTokenKind::Struct => TokenKind::Struct,

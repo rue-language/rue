@@ -6,8 +6,8 @@
 use crate::ast::{
     AssignStatement, AssignTarget, Ast, BinaryExpr, BinaryOp, BlockExpr, BoolLit, BreakExpr,
     CallExpr, ContinueExpr, Expr, FieldDecl, FieldExpr, FieldInit, Function, Ident, IfExpr, IntLit,
-    IntrinsicCallExpr, Item, LetStatement, Param, ParenExpr, Statement, StructDecl, StructLitExpr,
-    UnaryExpr, UnaryOp, WhileExpr,
+    IntrinsicCallExpr, Item, LetStatement, Param, ParenExpr, ReturnExpr, Statement, StructDecl,
+    StructLitExpr, UnaryExpr, UnaryOp, WhileExpr,
 };
 use chumsky::input::{Input as ChumskyInput, Stream, ValueInput};
 use chumsky::pratt::{infix, left, prefix};
@@ -266,6 +266,17 @@ where
         TokenKind::Continue = e => Expr::Continue(ContinueExpr { span: to_rue_span(e.span()) }),
     };
 
+    // Return expression: return <expr>
+    // See tree1-0l7 for `return;` without expression (needs unit-returning functions first)
+    let return_expr = just(TokenKind::Return)
+        .ignore_then(expr.clone())
+        .map_with(|value, e| {
+            Expr::Return(ReturnExpr {
+                value: Box::new(value),
+                span: to_rue_span(e.span()),
+            })
+        });
+
     // If expression
     let if_expr = just(TokenKind::If)
         .ignore_then(expr.clone())
@@ -369,6 +380,7 @@ where
         bool_false,
         break_expr,
         continue_expr,
+        return_expr,
         if_expr,
         while_expr,
         intrinsic_call,
@@ -485,12 +497,20 @@ where
         })
 }
 
-/// Returns true if the expression can be used as a statement without a semicolon
+/// Returns true if the expression is a control flow construct that can appear
+/// as a statement without a trailing semicolon (if, while, break, continue, return).
 fn is_control_flow_expr(e: &Expr) -> bool {
     matches!(
         e,
-        Expr::If(_) | Expr::While(_) | Expr::Break(_) | Expr::Continue(_)
+        Expr::If(_) | Expr::While(_) | Expr::Break(_) | Expr::Continue(_) | Expr::Return(_)
     )
+}
+
+/// Returns true if the expression diverges (has the Never type).
+/// These expressions can be promoted to the final expression of a block
+/// since Never coerces to any type.
+fn is_diverging_expr(e: &Expr) -> bool {
+    matches!(e, Expr::Break(_) | Expr::Continue(_) | Expr::Return(_))
 }
 
 /// Parser for a single block item (statement or expression).
@@ -573,7 +593,19 @@ fn process_block_items(items: Vec<BlockItem>, block_span: Span) -> (Vec<Statemen
     }
 
     let expr = final_expr.unwrap_or_else(|| {
-        // No final expression - use a dummy false value (unit type placeholder)
+        // No explicit final expression. Check if the last statement is a diverging
+        // expression (break, continue, return) - if so, promote it to the final
+        // expression since it has type Never which coerces to any type.
+        if let Some(Statement::Expr(e)) = statements.last() {
+            if is_diverging_expr(e) {
+                // Safe to unwrap: we just checked last() is Some(Statement::Expr(_))
+                let Statement::Expr(e) = statements.pop().unwrap() else {
+                    unreachable!()
+                };
+                return e;
+            }
+        }
+        // Fallback: use a dummy false value (unit type placeholder)
         Expr::Bool(BoolLit {
             value: false,
             span: Span::new(block_span.end, block_span.end),
