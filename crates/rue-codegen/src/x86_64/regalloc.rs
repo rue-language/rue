@@ -240,30 +240,28 @@ impl RegAlloc {
                 }
             }
 
-            X86Inst::MovRI64 { dst, imm } => {
-                match self.get_allocation(dst) {
-                    Some(Allocation::Register(reg)) => {
-                        mir.push(X86Inst::MovRI64 {
-                            dst: Operand::Physical(reg),
-                            imm,
-                        });
-                    }
-                    Some(Allocation::Spill(offset)) => {
-                        mir.push(X86Inst::MovRI64 {
-                            dst: Operand::Physical(Reg::Rax),
-                            imm,
-                        });
-                        mir.push(X86Inst::MovMR {
-                            base: Reg::Rbp,
-                            offset,
-                            src: Operand::Physical(Reg::Rax),
-                        });
-                    }
-                    None => {
-                        mir.push(X86Inst::MovRI64 { dst, imm });
-                    }
+            X86Inst::MovRI64 { dst, imm } => match self.get_allocation(dst) {
+                Some(Allocation::Register(reg)) => {
+                    mir.push(X86Inst::MovRI64 {
+                        dst: Operand::Physical(reg),
+                        imm,
+                    });
                 }
-            }
+                Some(Allocation::Spill(offset)) => {
+                    mir.push(X86Inst::MovRI64 {
+                        dst: Operand::Physical(Reg::Rax),
+                        imm,
+                    });
+                    mir.push(X86Inst::MovMR {
+                        base: Reg::Rbp,
+                        offset,
+                        src: Operand::Physical(Reg::Rax),
+                    });
+                }
+                None => {
+                    mir.push(X86Inst::MovRI64 { dst, imm });
+                }
+            },
 
             X86Inst::MovRR { dst, src } => {
                 let src_op = self.load_operand(mir, src, Reg::Rax);
@@ -573,28 +571,26 @@ impl RegAlloc {
                 }
             }
 
-            X86Inst::Pop { dst } => {
-                match self.get_allocation(dst) {
-                    Some(Allocation::Register(reg)) => {
-                        mir.push(X86Inst::Pop {
-                            dst: Operand::Physical(reg),
-                        });
-                    }
-                    Some(Allocation::Spill(offset)) => {
-                        mir.push(X86Inst::Pop {
-                            dst: Operand::Physical(Reg::Rax),
-                        });
-                        mir.push(X86Inst::MovMR {
-                            base: Reg::Rbp,
-                            offset,
-                            src: Operand::Physical(Reg::Rax),
-                        });
-                    }
-                    None => {
-                        mir.push(X86Inst::Pop { dst });
-                    }
+            X86Inst::Pop { dst } => match self.get_allocation(dst) {
+                Some(Allocation::Register(reg)) => {
+                    mir.push(X86Inst::Pop {
+                        dst: Operand::Physical(reg),
+                    });
                 }
-            }
+                Some(Allocation::Spill(offset)) => {
+                    mir.push(X86Inst::Pop {
+                        dst: Operand::Physical(Reg::Rax),
+                    });
+                    mir.push(X86Inst::MovMR {
+                        base: Reg::Rbp,
+                        offset,
+                        src: Operand::Physical(Reg::Rax),
+                    });
+                }
+                None => {
+                    mir.push(X86Inst::Pop { dst });
+                }
+            },
 
             X86Inst::Push { src } => {
                 let src_op = self.load_operand(mir, src, Reg::Rax);

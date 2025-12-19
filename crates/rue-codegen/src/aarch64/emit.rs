@@ -145,7 +145,12 @@ pub struct Emitter<'a> {
 
 impl<'a> Emitter<'a> {
     /// Create a new emitter.
-    pub fn new(mir: &'a Aarch64Mir, num_locals: u32, num_params: u32, callee_saved: &[Reg]) -> Self {
+    pub fn new(
+        mir: &'a Aarch64Mir,
+        num_locals: u32,
+        num_params: u32,
+        callee_saved: &[Reg],
+    ) -> Self {
         Self {
             mir,
             code: Vec::new(),
@@ -223,7 +228,14 @@ impl<'a> Emitter<'a> {
         //
         // AAPCS64: first 8 args in x0-x7
         let param_regs = [
-            Reg::X0, Reg::X1, Reg::X2, Reg::X3, Reg::X4, Reg::X5, Reg::X6, Reg::X7,
+            Reg::X0,
+            Reg::X1,
+            Reg::X2,
+            Reg::X3,
+            Reg::X4,
+            Reg::X5,
+            Reg::X6,
+            Reg::X7,
         ];
         let callee_saved_size = self.callee_saved_stack_size();
         for i in 0..self.num_params.min(8) as usize {
@@ -557,16 +569,22 @@ impl<'a> Emitter<'a> {
                 match fixup.kind {
                     FixupKind::Branch => {
                         // B instruction: imm26
-                        let inst =
-                            u32::from_le_bytes(self.code[fixup.offset..fixup.offset + 4].try_into().unwrap());
+                        let inst = u32::from_le_bytes(
+                            self.code[fixup.offset..fixup.offset + 4]
+                                .try_into()
+                                .unwrap(),
+                        );
                         let new_inst = (inst & 0xFC000000) | ((offset as u32) & 0x03FFFFFF);
                         self.code[fixup.offset..fixup.offset + 4]
                             .copy_from_slice(&new_inst.to_le_bytes());
                     }
                     FixupKind::CondBranch => {
                         // Conditional branch: imm19
-                        let inst =
-                            u32::from_le_bytes(self.code[fixup.offset..fixup.offset + 4].try_into().unwrap());
+                        let inst = u32::from_le_bytes(
+                            self.code[fixup.offset..fixup.offset + 4]
+                                .try_into()
+                                .unwrap(),
+                        );
                         let new_inst = (inst & 0xFF00001F) | (((offset as u32) & 0x7FFFF) << 5);
                         self.code[fixup.offset..fixup.offset + 4]
                             .copy_from_slice(&new_inst.to_le_bytes());
@@ -622,7 +640,8 @@ impl<'a> Emitter<'a> {
 
             // MOVN Xd, #imm16, LSL #(first_idx * 16)
             let hw = first_idx as u32;
-            let inst = OPCODE_MOVN_X | (hw << 21) | ((first_val as u32) << 5) | rd.encoding() as u32;
+            let inst =
+                OPCODE_MOVN_X | (hw << 21) | ((first_val as u32) << 5) | rd.encoding() as u32;
             self.emit_u32(inst);
 
             // Use MOVK for remaining non-0xFFFF chunks in original value
@@ -646,18 +665,21 @@ impl<'a> Emitter<'a> {
 
             // If more bits needed, use MOVK
             if (uimm >> 16) & 0xFFFF != 0 {
-                let inst =
-                    OPCODE_MOVK_X_LSL16 | (((uimm >> 16) & 0xFFFF) << 5) as u32 | rd.encoding() as u32;
+                let inst = OPCODE_MOVK_X_LSL16
+                    | (((uimm >> 16) & 0xFFFF) << 5) as u32
+                    | rd.encoding() as u32;
                 self.emit_u32(inst);
             }
             if (uimm >> 32) & 0xFFFF != 0 {
-                let inst =
-                    OPCODE_MOVK_X_LSL32 | (((uimm >> 32) & 0xFFFF) << 5) as u32 | rd.encoding() as u32;
+                let inst = OPCODE_MOVK_X_LSL32
+                    | (((uimm >> 32) & 0xFFFF) << 5) as u32
+                    | rd.encoding() as u32;
                 self.emit_u32(inst);
             }
             if (uimm >> 48) & 0xFFFF != 0 {
-                let inst =
-                    OPCODE_MOVK_X_LSL48 | (((uimm >> 48) & 0xFFFF) << 5) as u32 | rd.encoding() as u32;
+                let inst = OPCODE_MOVK_X_LSL48
+                    | (((uimm >> 48) & 0xFFFF) << 5) as u32
+                    | rd.encoding() as u32;
                 self.emit_u32(inst);
             }
         }
@@ -690,10 +712,8 @@ impl<'a> Emitter<'a> {
         } else {
             // Use unscaled offset (LDUR)
             let imm9 = (offset as u32) & 0x1FF;
-            let inst = OPCODE_LDUR
-                | (imm9 << 12)
-                | (base.encoding() as u32) << 5
-                | rd.encoding() as u32;
+            let inst =
+                OPCODE_LDUR | (imm9 << 12) | (base.encoding() as u32) << 5 | rd.encoding() as u32;
             self.emit_u32(inst);
         }
     }
@@ -710,10 +730,8 @@ impl<'a> Emitter<'a> {
         } else {
             // Use unscaled offset (STUR)
             let imm9 = (offset as u32) & 0x1FF;
-            let inst = OPCODE_STUR
-                | (imm9 << 12)
-                | (base.encoding() as u32) << 5
-                | rs.encoding() as u32;
+            let inst =
+                OPCODE_STUR | (imm9 << 12) | (base.encoding() as u32) << 5 | rs.encoding() as u32;
             self.emit_u32(inst);
         }
     }
@@ -721,10 +739,8 @@ impl<'a> Emitter<'a> {
     fn emit_str_pre(&mut self, rs: Reg, offset: i32) {
         // STR Xt, [SP, #imm]!
         let imm9 = (offset as u32) & 0x1FF;
-        let inst = OPCODE_STR_PRE
-            | (imm9 << 12)
-            | (Reg::Sp.encoding() as u32) << 5
-            | rs.encoding() as u32;
+        let inst =
+            OPCODE_STR_PRE | (imm9 << 12) | (Reg::Sp.encoding() as u32) << 5 | rs.encoding() as u32;
         self.emit_u32(inst);
     }
 
@@ -762,7 +778,11 @@ impl<'a> Emitter<'a> {
 
     fn emit_add_rr(&mut self, rd: Reg, rn: Reg, rm: Reg, set_flags: bool) {
         // When set_flags is true, use 32-bit (W) form for proper i32 overflow detection.
-        let base = if set_flags { OPCODE_ADDS_W } else { OPCODE_ADD_X };
+        let base = if set_flags {
+            OPCODE_ADDS_W
+        } else {
+            OPCODE_ADD_X
+        };
         let inst = base
             | (rm.encoding() as u32) << 16
             | (rn.encoding() as u32) << 5
@@ -781,7 +801,11 @@ impl<'a> Emitter<'a> {
 
     fn emit_sub_rr(&mut self, rd: Reg, rn: Reg, rm: Reg, set_flags: bool) {
         // When set_flags is true, use 32-bit (W) form for proper i32 overflow detection.
-        let base = if set_flags { OPCODE_SUBS_W } else { OPCODE_SUB_X };
+        let base = if set_flags {
+            OPCODE_SUBS_W
+        } else {
+            OPCODE_SUB_X
+        };
         let inst = base
             | (rm.encoding() as u32) << 16
             | (rn.encoding() as u32) << 5
@@ -791,7 +815,11 @@ impl<'a> Emitter<'a> {
 
     fn emit_sub64_rr(&mut self, rd: Reg, rn: Reg, rm: Reg, set_flags: bool) {
         // 64-bit subtract for comparing 64-bit values (e.g., SMULL results).
-        let base = if set_flags { OPCODE_SUBS_X } else { OPCODE_SUB_X };
+        let base = if set_flags {
+            OPCODE_SUBS_X
+        } else {
+            OPCODE_SUB_X
+        };
         let inst = base
             | (rm.encoding() as u32) << 16
             | (rn.encoding() as u32) << 5
@@ -1052,7 +1080,8 @@ mod tests {
                     .unwrap_or((0, 0));
 
                 let hw = first_idx as u32;
-                let inst = OPCODE_MOVN_X | (hw << 21) | ((first_val as u32) << 5) | rd.encoding() as u32;
+                let inst =
+                    OPCODE_MOVN_X | (hw << 21) | ((first_val as u32) << 5) | rd.encoding() as u32;
                 self.emit_u32(inst);
 
                 for (i, &chunk) in chunks.iter().enumerate() {
@@ -1073,18 +1102,21 @@ mod tests {
                 self.emit_u32(inst);
 
                 if (uimm >> 16) & 0xFFFF != 0 {
-                    let inst =
-                        OPCODE_MOVK_X_LSL16 | (((uimm >> 16) & 0xFFFF) << 5) as u32 | rd.encoding() as u32;
+                    let inst = OPCODE_MOVK_X_LSL16
+                        | (((uimm >> 16) & 0xFFFF) << 5) as u32
+                        | rd.encoding() as u32;
                     self.emit_u32(inst);
                 }
                 if (uimm >> 32) & 0xFFFF != 0 {
-                    let inst =
-                        OPCODE_MOVK_X_LSL32 | (((uimm >> 32) & 0xFFFF) << 5) as u32 | rd.encoding() as u32;
+                    let inst = OPCODE_MOVK_X_LSL32
+                        | (((uimm >> 32) & 0xFFFF) << 5) as u32
+                        | rd.encoding() as u32;
                     self.emit_u32(inst);
                 }
                 if (uimm >> 48) & 0xFFFF != 0 {
-                    let inst =
-                        OPCODE_MOVK_X_LSL48 | (((uimm >> 48) & 0xFFFF) << 5) as u32 | rd.encoding() as u32;
+                    let inst = OPCODE_MOVK_X_LSL48
+                        | (((uimm >> 48) & 0xFFFF) << 5) as u32
+                        | rd.encoding() as u32;
                     self.emit_u32(inst);
                 }
             }
@@ -1115,7 +1147,11 @@ mod tests {
         let mut emitter = TestEmitter::new();
         emitter.emit_mov_imm(Reg::X1, 42);
 
-        assert_eq!(emitter.code.len(), 4, "Small immediate should be 1 instruction");
+        assert_eq!(
+            emitter.code.len(),
+            4,
+            "Small immediate should be 1 instruction"
+        );
 
         let inst = u32::from_le_bytes(emitter.code[0..4].try_into().unwrap());
         // MOVZ: 0xD2800000
@@ -1148,7 +1184,11 @@ mod tests {
         emitter.emit_mov_imm(Reg::X3, 0x12345678);
 
         // Should be MOVZ for low 16 bits + MOVK for high 16 bits
-        assert_eq!(emitter.code.len(), 8, "Large positive should be 2 instructions");
+        assert_eq!(
+            emitter.code.len(),
+            8,
+            "Large positive should be 2 instructions"
+        );
 
         let inst1 = u32::from_le_bytes(emitter.code[0..4].try_into().unwrap());
         let inst2 = u32::from_le_bytes(emitter.code[4..8].try_into().unwrap());
@@ -1161,7 +1201,11 @@ mod tests {
 
         // Second instruction: MOVK X3, #0x1234, LSL #16
         // MOVK LSL#16 uses top bits 0xF2A (sf=1, opc=11, hw=01)
-        assert_eq!(inst2 & 0xFFE00000, 0xF2A00000, "Second should be MOVK LSL#16");
+        assert_eq!(
+            inst2 & 0xFFE00000,
+            0xF2A00000,
+            "Second should be MOVK LSL#16"
+        );
         assert_eq!((inst2 >> 5) & 0xFFFF, 0x1234, "High 16 bits");
         assert_eq!(inst2 & 0x1F, 3, "Destination should be X3");
     }

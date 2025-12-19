@@ -500,7 +500,11 @@ pub enum Aarch64Inst {
     },
 
     /// `eor dst, src, #imm` - XOR with immediate.
-    EorImm { dst: Operand, src: Operand, imm: u64 },
+    EorImm {
+        dst: Operand,
+        src: Operand,
+        imm: u64,
+    },
 
     // === Comparison instructions ===
     /// `cmp src1, src2` - Compare (subtract and set flags, discard result). Uses 32-bit form.

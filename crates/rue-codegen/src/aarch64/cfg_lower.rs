@@ -595,7 +595,9 @@ impl<'a> CfgLower<'a> {
                 }
 
                 // Call the function - the linker will add the underscore prefix for macOS
-                self.mir.push(Aarch64Inst::Bl { symbol: name.clone() });
+                self.mir.push(Aarch64Inst::Bl {
+                    symbol: name.clone(),
+                });
 
                 // Clean up stack space after call
                 if stack_space > 0 {

@@ -45,11 +45,13 @@ pub fn generate(
 
     // Phase 3: Allocate physical registers
     let existing_slots = num_locals + num_params;
-    let (mir, num_spills, used_callee_saved) = RegAlloc::new(mir, existing_slots).allocate_with_spills();
+    let (mir, num_spills, used_callee_saved) =
+        RegAlloc::new(mir, existing_slots).allocate_with_spills();
 
     // Phase 4: Emit machine code bytes
     let total_locals = num_locals + num_spills;
-    let (code, relocations) = Emitter::new(&mir, total_locals, num_params, &used_callee_saved).emit();
+    let (code, relocations) =
+        Emitter::new(&mir, total_locals, num_params, &used_callee_saved).emit();
 
     MachineCode { code, relocations }
 }

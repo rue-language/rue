@@ -23,7 +23,7 @@ mod regalloc;
 pub use cfg_lower::CfgLower;
 pub use emit::Emitter;
 pub use lower::Lower;
-pub use mir::{Operand, Reg, VReg, X86Mir, X86Inst};
+pub use mir::{Operand, Reg, VReg, X86Inst, X86Mir};
 pub use regalloc::RegAlloc;
 
 use rue_air::{Air, StructDef};
@@ -52,12 +52,14 @@ pub fn generate(
     // Phase 3: Allocate physical registers (may add spill slots)
     // Spill slots go after both locals AND parameters to avoid conflicts
     let existing_slots = num_locals + num_params;
-    let (mir, num_spills, used_callee_saved) = RegAlloc::new(mir, existing_slots).allocate_with_spills();
+    let (mir, num_spills, used_callee_saved) =
+        RegAlloc::new(mir, existing_slots).allocate_with_spills();
 
     // Phase 4: Emit machine code bytes (with prologue for stack frame setup)
     // Total local slots = local variables + spill slots (params handled separately)
     let total_locals = num_locals + num_spills;
-    let (code, relocations) = Emitter::new(&mir, total_locals, num_params, &used_callee_saved).emit();
+    let (code, relocations) =
+        Emitter::new(&mir, total_locals, num_params, &used_callee_saved).emit();
 
     MachineCode { code, relocations }
 }

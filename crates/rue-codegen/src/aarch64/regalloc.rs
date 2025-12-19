@@ -23,7 +23,15 @@ use super::mir::{Aarch64Inst, Aarch64Mir, Operand, Reg, VReg};
 /// - X30 (LR): Link register
 /// - SP: Stack pointer
 const ALLOCATABLE_REGS: &[Reg] = &[
-    Reg::X19, Reg::X20, Reg::X21, Reg::X22, Reg::X23, Reg::X24, Reg::X25, Reg::X26, Reg::X27,
+    Reg::X19,
+    Reg::X20,
+    Reg::X21,
+    Reg::X22,
+    Reg::X23,
+    Reg::X24,
+    Reg::X25,
+    Reg::X26,
+    Reg::X27,
     Reg::X28,
 ];
 
@@ -217,32 +225,30 @@ impl RegAlloc {
                 }
             }
 
-            Aarch64Inst::Ldr { dst, base, offset } => {
-                match self.get_allocation(dst) {
-                    Some(Allocation::Register(reg)) => {
-                        mir.push(Aarch64Inst::Ldr {
-                            dst: Operand::Physical(reg),
-                            base,
-                            offset,
-                        });
-                    }
-                    Some(Allocation::Spill(spill_offset)) => {
-                        mir.push(Aarch64Inst::Ldr {
-                            dst: Operand::Physical(Reg::X9),
-                            base,
-                            offset,
-                        });
-                        mir.push(Aarch64Inst::Str {
-                            src: Operand::Physical(Reg::X9),
-                            base: Reg::Fp,
-                            offset: spill_offset,
-                        });
-                    }
-                    None => {
-                        mir.push(Aarch64Inst::Ldr { dst, base, offset });
-                    }
+            Aarch64Inst::Ldr { dst, base, offset } => match self.get_allocation(dst) {
+                Some(Allocation::Register(reg)) => {
+                    mir.push(Aarch64Inst::Ldr {
+                        dst: Operand::Physical(reg),
+                        base,
+                        offset,
+                    });
                 }
-            }
+                Some(Allocation::Spill(spill_offset)) => {
+                    mir.push(Aarch64Inst::Ldr {
+                        dst: Operand::Physical(Reg::X9),
+                        base,
+                        offset,
+                    });
+                    mir.push(Aarch64Inst::Str {
+                        src: Operand::Physical(Reg::X9),
+                        base: Reg::Fp,
+                        offset: spill_offset,
+                    });
+                }
+                None => {
+                    mir.push(Aarch64Inst::Ldr { dst, base, offset });
+                }
+            },
 
             Aarch64Inst::Str { src, base, offset } => {
                 let src_op = self.load_operand(mir, src, Reg::X9);
@@ -424,7 +430,11 @@ impl RegAlloc {
                         });
                     }
                     None => {
-                        mir.push(Aarch64Inst::EorImm { dst, src: src_op, imm });
+                        mir.push(Aarch64Inst::EorImm {
+                            dst,
+                            src: src_op,
+                            imm,
+                        });
                     }
                 }
             }
@@ -454,44 +464,36 @@ impl RegAlloc {
 
             Aarch64Inst::Cbz { src, label } => {
                 let src_op = self.load_operand(mir, src, Reg::X9);
-                mir.push(Aarch64Inst::Cbz {
-                    src: src_op,
-                    label,
-                });
+                mir.push(Aarch64Inst::Cbz { src: src_op, label });
             }
 
             Aarch64Inst::Cbnz { src, label } => {
                 let src_op = self.load_operand(mir, src, Reg::X9);
-                mir.push(Aarch64Inst::Cbnz {
-                    src: src_op,
-                    label,
-                });
+                mir.push(Aarch64Inst::Cbnz { src: src_op, label });
             }
 
-            Aarch64Inst::Cset { dst, cond } => {
-                match self.get_allocation(dst) {
-                    Some(Allocation::Register(reg)) => {
-                        mir.push(Aarch64Inst::Cset {
-                            dst: Operand::Physical(reg),
-                            cond,
-                        });
-                    }
-                    Some(Allocation::Spill(offset)) => {
-                        mir.push(Aarch64Inst::Cset {
-                            dst: Operand::Physical(Reg::X9),
-                            cond,
-                        });
-                        mir.push(Aarch64Inst::Str {
-                            src: Operand::Physical(Reg::X9),
-                            base: Reg::Fp,
-                            offset,
-                        });
-                    }
-                    None => {
-                        mir.push(Aarch64Inst::Cset { dst, cond });
-                    }
+            Aarch64Inst::Cset { dst, cond } => match self.get_allocation(dst) {
+                Some(Allocation::Register(reg)) => {
+                    mir.push(Aarch64Inst::Cset {
+                        dst: Operand::Physical(reg),
+                        cond,
+                    });
                 }
-            }
+                Some(Allocation::Spill(offset)) => {
+                    mir.push(Aarch64Inst::Cset {
+                        dst: Operand::Physical(Reg::X9),
+                        cond,
+                    });
+                    mir.push(Aarch64Inst::Str {
+                        src: Operand::Physical(Reg::X9),
+                        base: Reg::Fp,
+                        offset,
+                    });
+                }
+                None => {
+                    mir.push(Aarch64Inst::Cset { dst, cond });
+                }
+            },
 
             Aarch64Inst::TstRR { src1, src2 } => {
                 let src1_op = self.load_operand(mir, src1, Reg::X9);
@@ -768,10 +770,14 @@ mod tests {
         let result = RegAlloc::new(mir, 0).allocate();
 
         // Verify the Msub instruction was generated
-        let has_msub = result.instructions().iter().any(|inst| {
-            matches!(inst, Aarch64Inst::Msub { .. })
-        });
-        assert!(has_msub, "MSUB instruction should be present after allocation");
+        let has_msub = result
+            .instructions()
+            .iter()
+            .any(|inst| matches!(inst, Aarch64Inst::Msub { .. }));
+        assert!(
+            has_msub,
+            "MSUB instruction should be present after allocation"
+        );
     }
 
     #[test]
@@ -841,7 +847,11 @@ mod tests {
         let (mir, num_spills, _) = RegAlloc::new(mir, 0).allocate_with_spills();
 
         // With 15 vregs and 10 allocatable registers, we should have spills
-        assert!(num_spills >= 5, "Should have at least 5 spills, got {}", num_spills);
+        assert!(
+            num_spills >= 5,
+            "Should have at least 5 spills, got {}",
+            num_spills
+        );
 
         // Verify all virtual registers are replaced with physical
         for inst in mir.instructions() {

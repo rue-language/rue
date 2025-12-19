@@ -85,11 +85,7 @@ pub fn write(fd: u64, buf: *const u8, len: usize) -> i64 {
     }
 
     // If carry flag was set, result is errno (positive), negate it
-    if err_flag != 0 {
-        -result
-    } else {
-        result
-    }
+    if err_flag != 0 { -result } else { result }
 }
 
 /// Write all bytes to a file descriptor, handling partial writes.

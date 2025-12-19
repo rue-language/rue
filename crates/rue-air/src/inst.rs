@@ -144,10 +144,7 @@ pub enum AirInstData {
     },
 
     /// While loop
-    Loop {
-        cond: AirRef,
-        body: AirRef,
-    },
+    Loop { cond: AirRef, body: AirRef },
 
     /// Break: exits the innermost loop
     Break,
@@ -275,16 +272,18 @@ impl fmt::Display for Air {
                 AirInstData::Or(lhs, rhs) => writeln!(f, "or {}, {}", lhs, rhs)?,
                 AirInstData::Neg(operand) => writeln!(f, "neg {}", operand)?,
                 AirInstData::Not(operand) => writeln!(f, "not {}", operand)?,
-                AirInstData::Branch { cond, then_value, else_value } => {
+                AirInstData::Branch {
+                    cond,
+                    then_value,
+                    else_value,
+                } => {
                     if let Some(else_v) = else_value {
                         writeln!(f, "branch {}, {}, {}", cond, then_value, else_v)?
                     } else {
                         writeln!(f, "branch {}, {}", cond, then_value)?
                     }
                 }
-                AirInstData::Loop { cond, body } => {
-                    writeln!(f, "loop {}, {}", cond, body)?
-                }
+                AirInstData::Loop { cond, body } => writeln!(f, "loop {}, {}", cond, body)?,
                 AirInstData::Break => writeln!(f, "break")?,
                 AirInstData::Continue => writeln!(f, "continue")?,
                 AirInstData::Alloc { slot, init } => writeln!(f, "alloc ${} = {}", slot, init)?,
@@ -332,11 +331,24 @@ impl fmt::Display for Air {
                     }
                     writeln!(f, "}}")?;
                 }
-                AirInstData::FieldGet { base, struct_id, field_index } => {
+                AirInstData::FieldGet {
+                    base,
+                    struct_id,
+                    field_index,
+                } => {
                     writeln!(f, "field_get {}.#{}.{}", base, struct_id.0, field_index)?;
                 }
-                AirInstData::FieldSet { slot, struct_id, field_index, value } => {
-                    writeln!(f, "field_set ${}.#{}.{} = {}", slot, struct_id.0, field_index, value)?;
+                AirInstData::FieldSet {
+                    slot,
+                    struct_id,
+                    field_index,
+                    value,
+                } => {
+                    writeln!(
+                        f,
+                        "field_set ${}.#{}.{} = {}",
+                        slot, struct_id.0, field_index, value
+                    )?;
                 }
             }
         }

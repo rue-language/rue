@@ -141,7 +141,11 @@ impl Target {
 
     /// Returns all supported targets.
     pub fn all() -> &'static [Target] {
-        &[Target::X86_64Linux, Target::Aarch64Linux, Target::Aarch64Macos]
+        &[
+            Target::X86_64Linux,
+            Target::Aarch64Linux,
+            Target::Aarch64Macos,
+        ]
     }
 }
 
@@ -183,15 +187,11 @@ impl FromStr for Target {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
-            "x86-64-linux" | "x86_64-linux" | "x86_64-unknown-linux-gnu" => {
-                Ok(Target::X86_64Linux)
-            }
+            "x86-64-linux" | "x86_64-linux" | "x86_64-unknown-linux-gnu" => Ok(Target::X86_64Linux),
             "aarch64-linux" | "arm64-linux" | "aarch64-unknown-linux-gnu" => {
                 Ok(Target::Aarch64Linux)
             }
-            "aarch64-macos" | "arm64-macos" | "aarch64-apple-darwin" => {
-                Ok(Target::Aarch64Macos)
-            }
+            "aarch64-macos" | "arm64-macos" | "aarch64-apple-darwin" => Ok(Target::Aarch64Macos),
             _ => Err(ParseTargetError {
                 input: s.to_string(),
             }),
@@ -241,13 +241,34 @@ mod tests {
 
     #[test]
     fn test_target_parsing() {
-        assert_eq!("x86-64-linux".parse::<Target>().unwrap(), Target::X86_64Linux);
-        assert_eq!("x86_64-linux".parse::<Target>().unwrap(), Target::X86_64Linux);
-        assert_eq!("aarch64-linux".parse::<Target>().unwrap(), Target::Aarch64Linux);
-        assert_eq!("arm64-linux".parse::<Target>().unwrap(), Target::Aarch64Linux);
-        assert_eq!("aarch64-macos".parse::<Target>().unwrap(), Target::Aarch64Macos);
-        assert_eq!("arm64-macos".parse::<Target>().unwrap(), Target::Aarch64Macos);
-        assert_eq!("aarch64-apple-darwin".parse::<Target>().unwrap(), Target::Aarch64Macos);
+        assert_eq!(
+            "x86-64-linux".parse::<Target>().unwrap(),
+            Target::X86_64Linux
+        );
+        assert_eq!(
+            "x86_64-linux".parse::<Target>().unwrap(),
+            Target::X86_64Linux
+        );
+        assert_eq!(
+            "aarch64-linux".parse::<Target>().unwrap(),
+            Target::Aarch64Linux
+        );
+        assert_eq!(
+            "arm64-linux".parse::<Target>().unwrap(),
+            Target::Aarch64Linux
+        );
+        assert_eq!(
+            "aarch64-macos".parse::<Target>().unwrap(),
+            Target::Aarch64Macos
+        );
+        assert_eq!(
+            "arm64-macos".parse::<Target>().unwrap(),
+            Target::Aarch64Macos
+        );
+        assert_eq!(
+            "aarch64-apple-darwin".parse::<Target>().unwrap(),
+            Target::Aarch64Macos
+        );
     }
 
     #[test]

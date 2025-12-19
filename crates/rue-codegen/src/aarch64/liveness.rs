@@ -284,10 +284,7 @@ fn uses(inst: &Aarch64Inst) -> Vec<VReg> {
             add_if_virtual(src, &mut result);
         }
         Aarch64Inst::Msub {
-            src1,
-            src2,
-            src3,
-            ..
+            src1, src2, src3, ..
         } => {
             add_if_virtual(src1, &mut result);
             add_if_virtual(src2, &mut result);
@@ -554,7 +551,10 @@ mod tests {
         // v0 should be live from definition (0) through use in CBZ (1) and MOV (2)
         let v0_range = info.ranges.get(&v0).expect("v0 should have a range");
         assert_eq!(v0_range.start, 0);
-        assert!(v0_range.end >= 2, "v0 should be live through its last use at instruction 2");
+        assert!(
+            v0_range.end >= 2,
+            "v0 should be live through its last use at instruction 2"
+        );
 
         // v1 should be live from first definition through final use
         let v1_range = info.ranges.get(&v1).expect("v1 should have a range");

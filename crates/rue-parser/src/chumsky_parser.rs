@@ -10,8 +10,8 @@ use crate::ast::{
     UnaryExpr, UnaryOp, WhileExpr,
 };
 use chumsky::input::{Input as ChumskyInput, Stream, ValueInput};
-use chumsky::prelude::*;
 use chumsky::pratt::{infix, left, prefix};
+use chumsky::prelude::*;
 use rue_error::{CompileError, CompileResult, ErrorKind};
 use rue_lexer::TokenKind;
 use rue_span::Span;
@@ -50,8 +50,8 @@ where
 }
 
 /// Parser for struct field declarations: name: type
-fn field_decl_parser<'src, I>(
-) -> impl Parser<'src, I, FieldDecl, extra::Err<Rich<'src, TokenKind>>> + Clone
+fn field_decl_parser<'src, I>()
+-> impl Parser<'src, I, FieldDecl, extra::Err<Rich<'src, TokenKind>>> + Clone
 where
     I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
 {
@@ -66,8 +66,8 @@ where
 }
 
 /// Parser for comma-separated struct field declarations
-fn field_decls_parser<'src, I>(
-) -> impl Parser<'src, I, Vec<FieldDecl>, extra::Err<Rich<'src, TokenKind>>> + Clone
+fn field_decls_parser<'src, I>()
+-> impl Parser<'src, I, Vec<FieldDecl>, extra::Err<Rich<'src, TokenKind>>> + Clone
 where
     I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
 {
@@ -78,8 +78,8 @@ where
 }
 
 /// Parser for comma-separated parameters
-fn params_parser<'src, I>(
-) -> impl Parser<'src, I, Vec<Param>, extra::Err<Rich<'src, TokenKind>>> + Clone
+fn params_parser<'src, I>()
+-> impl Parser<'src, I, Vec<Param>, extra::Err<Rich<'src, TokenKind>>> + Clone
 where
     I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
 {
@@ -95,8 +95,7 @@ fn args_parser<'src, I>(
 where
     I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
 {
-    expr.separated_by(just(TokenKind::Comma))
-        .collect()
+    expr.separated_by(just(TokenKind::Comma)).collect()
 }
 
 /// Parser for struct field initializers: name: expr
@@ -354,10 +353,7 @@ where
     // Intrinsic call: @name(args)
     let intrinsic_call = just(TokenKind::At)
         .ignore_then(ident_parser())
-        .then(
-            args_parser(expr)
-                .delimited_by(just(TokenKind::LParen), just(TokenKind::RParen)),
-        )
+        .then(args_parser(expr).delimited_by(just(TokenKind::LParen), just(TokenKind::RParen)))
         .map_with(|(name, args), e| {
             Expr::IntrinsicCall(IntrinsicCallExpr {
                 name,
@@ -384,9 +380,7 @@ where
     // Field access suffix: .field
     // Handles chains like a.b.c
     primary.foldl(
-        just(TokenKind::Dot)
-            .ignore_then(ident_parser())
-            .repeated(),
+        just(TokenKind::Dot).ignore_then(ident_parser()).repeated(),
         |base, field| {
             let span = Span::new(base.span().start, field.span.end);
             Expr::Field(FieldExpr {
@@ -432,8 +426,8 @@ where
 
 /// Parser for assignment target: either a simple variable or field access chain
 /// Parses: name or name.field or name.field.field...
-fn assign_target_parser<'src, I>(
-) -> impl Parser<'src, I, AssignTarget, extra::Err<Rich<'src, TokenKind>>> + Clone
+fn assign_target_parser<'src, I>()
+-> impl Parser<'src, I, AssignTarget, extra::Err<Rich<'src, TokenKind>>> + Clone
 where
     I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
 {
@@ -493,7 +487,10 @@ where
 
 /// Returns true if the expression can be used as a statement without a semicolon
 fn is_control_flow_expr(e: &Expr) -> bool {
-    matches!(e, Expr::If(_) | Expr::While(_) | Expr::Break(_) | Expr::Continue(_))
+    matches!(
+        e,
+        Expr::If(_) | Expr::While(_) | Expr::Break(_) | Expr::Continue(_)
+    )
 }
 
 /// Parser for a single block item (statement or expression).
@@ -538,7 +535,13 @@ where
         .then_ignore(just(TokenKind::RBrace).rewind())
         .map(BlockItem::Expr);
 
-    choice((let_stmt, assign_stmt, expr_with_semi, control_flow_stmt, final_expr))
+    choice((
+        let_stmt,
+        assign_stmt,
+        expr_with_semi,
+        control_flow_stmt,
+        final_expr,
+    ))
 }
 
 /// Process block items into statements and final expression
@@ -625,8 +628,8 @@ where
 }
 
 /// Parser for function definitions: fn name(params) -> Type { body }
-fn function_parser<'src, I>(
-) -> impl Parser<'src, I, Function, extra::Err<Rich<'src, TokenKind>>> + Clone
+fn function_parser<'src, I>()
+-> impl Parser<'src, I, Function, extra::Err<Rich<'src, TokenKind>>> + Clone
 where
     I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
 {
@@ -648,8 +651,8 @@ where
 }
 
 /// Parser for struct definitions: struct Name { field: Type, ... }
-fn struct_parser<'src, I>(
-) -> impl Parser<'src, I, StructDecl, extra::Err<Rich<'src, TokenKind>>> + Clone
+fn struct_parser<'src, I>()
+-> impl Parser<'src, I, StructDecl, extra::Err<Rich<'src, TokenKind>>> + Clone
 where
     I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
 {
@@ -736,10 +739,7 @@ pub struct ChumskyParser {
 impl ChumskyParser {
     /// Create a new parser from tokens produced by the lexer.
     pub fn new(tokens: Vec<rue_lexer::Token>) -> Self {
-        let source_len = tokens
-            .last()
-            .map(|t| t.span.end as usize)
-            .unwrap_or(0);
+        let source_len = tokens.last().map(|t| t.span.end as usize).unwrap_or(0);
 
         let spanned_tokens: Vec<(TokenKind, SimpleSpan)> = tokens
             .into_iter()
@@ -895,7 +895,8 @@ mod tests {
 
     #[test]
     fn test_function_calls() {
-        let ast = parse("fn add(a: i32, b: i32) -> i32 { a + b } fn main() -> i32 { add(1, 2) }").unwrap();
+        let ast = parse("fn add(a: i32, b: i32) -> i32 { a + b } fn main() -> i32 { add(1, 2) }")
+            .unwrap();
         assert_eq!(ast.items.len(), 2);
     }
 
@@ -907,7 +908,8 @@ mod tests {
 
     #[test]
     fn test_nested_control_flow() {
-        let ast = parse("fn main() -> i32 { let mut x = 0; while x < 10 { x = x + 1; } x }").unwrap();
+        let ast =
+            parse("fn main() -> i32 { let mut x = 0; while x < 10 { x = x + 1; } x }").unwrap();
         assert_eq!(ast.items.len(), 1);
     }
 }

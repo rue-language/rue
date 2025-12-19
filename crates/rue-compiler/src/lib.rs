@@ -504,7 +504,10 @@ mod tests {
         let magic = &output.elf[0..4];
         let is_elf = magic == &[0x7F, b'E', b'L', b'F'];
         let is_macho = magic == &0xFEEDFACF_u32.to_le_bytes(); // Mach-O 64-bit
-        assert!(is_elf || is_macho, "should produce valid ELF or Mach-O binary");
+        assert!(
+            is_elf || is_macho,
+            "should produce valid ELF or Mach-O binary"
+        );
     }
 
     #[test]

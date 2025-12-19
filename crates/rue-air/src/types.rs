@@ -60,10 +60,7 @@ pub struct StructField {
 impl StructDef {
     /// Find a field by name and return its index and definition.
     pub fn find_field(&self, name: &str) -> Option<(usize, &StructField)> {
-        self.fields
-            .iter()
-            .enumerate()
-            .find(|(_, f)| f.name == name)
+        self.fields.iter().enumerate().find(|(_, f)| f.name == name)
     }
 
     /// Get the number of fields in this struct.

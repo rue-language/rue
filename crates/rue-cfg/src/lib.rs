@@ -16,13 +16,11 @@
 //! AIR (structured) → CFG (explicit control flow) → X86Mir (machine code)
 //! ```
 
-mod inst;
 mod build;
+mod inst;
 
-pub use inst::{
-    BlockId, Cfg, BasicBlock, CfgInst, CfgInstData, CfgValue, Terminator,
-};
 pub use build::CfgBuilder;
+pub use inst::{BasicBlock, BlockId, Cfg, CfgInst, CfgInstData, CfgValue, Terminator};
 
 // Re-export types from rue-air that we use
 pub use rue_air::{StructDef, StructId, Type};

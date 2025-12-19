@@ -73,7 +73,10 @@ fn load_spec_files(cases_dir: &Path) -> Vec<(String, SpecFile)> {
     let mut specs = Vec::new();
 
     if !cases_dir.exists() {
-        eprintln!("Warning: cases directory not found: {}", cases_dir.display());
+        eprintln!(
+            "Warning: cases directory not found: {}",
+            cases_dir.display()
+        );
         return specs;
     }
 
@@ -146,7 +149,8 @@ fn check_golden(actual: &str, expected: &str, label: &str) -> Result<(), Failed>
         return Err(format!(
             "{} mismatch:\n--- expected ---\n{}\n--- actual ---\n{}\n",
             label, expected_normalized, actual_normalized
-        ).into());
+        )
+        .into());
     }
     Ok(())
 }
@@ -159,8 +163,8 @@ fn run_test_case(case: &Case, rue_binary: &Path) -> Result<(), Failed> {
     let output_path = temp_dir.path().join("test");
 
     // Write source to file
-    let mut source_file =
-        fs::File::create(&source_path).map_err(|e| format!("Failed to create source file: {}", e))?;
+    let mut source_file = fs::File::create(&source_path)
+        .map_err(|e| format!("Failed to create source file: {}", e))?;
     source_file
         .write_all(case.source.as_bytes())
         .map_err(|e| format!("Failed to write source: {}", e))?;
@@ -179,7 +183,8 @@ fn run_test_case(case: &Case, rue_binary: &Path) -> Result<(), Failed> {
                 return Err(format!(
                     "rue --dump-rir failed:\n{}",
                     String::from_utf8_lossy(&output.stderr)
-                ).into());
+                )
+                .into());
             }
 
             let actual = String::from_utf8_lossy(&output.stdout);
@@ -197,7 +202,8 @@ fn run_test_case(case: &Case, rue_binary: &Path) -> Result<(), Failed> {
                 return Err(format!(
                     "rue --dump-air failed:\n{}",
                     String::from_utf8_lossy(&output.stderr)
-                ).into());
+                )
+                .into());
             }
 
             let actual = String::from_utf8_lossy(&output.stdout);
@@ -215,7 +221,8 @@ fn run_test_case(case: &Case, rue_binary: &Path) -> Result<(), Failed> {
                 return Err(format!(
                     "rue --dump-mir failed:\n{}",
                     String::from_utf8_lossy(&output.stderr)
-                ).into());
+                )
+                .into());
             }
 
             let actual = String::from_utf8_lossy(&output.stdout);
@@ -253,7 +260,8 @@ fn run_test_case(case: &Case, rue_binary: &Path) -> Result<(), Failed> {
                 return Err(format!(
                     "Error mismatch:\n--- expected ---\n{}\n--- actual ---\n{}\n",
                     expected_normalized, actual_normalized
-                ).into());
+                )
+                .into());
             }
         }
 
@@ -391,10 +399,7 @@ fn main() {
                     }
                 }
             }
-            let possible_paths = [
-                "../rue/rue",
-                "./rue",
-            ];
+            let possible_paths = ["../rue/rue", "./rue"];
             for path in possible_paths {
                 let p = Path::new(path);
                 if p.exists() {
@@ -410,11 +415,7 @@ fn main() {
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|_| {
             // Try to find it relative to the current directory
-            let possible_paths = [
-                "crates/rue-spec/cases",
-                "cases",
-                "../rue-spec/cases",
-            ];
+            let possible_paths = ["crates/rue-spec/cases", "cases", "../rue-spec/cases"];
             for path in possible_paths {
                 let p = Path::new(path);
                 if p.exists() {

@@ -16,6 +16,6 @@ mod emit;
 mod linker;
 
 pub use archive::{Archive, ArchiveError};
-pub use elf::{ObjectFile, Section, Symbol, Relocation, RelocationType};
-pub use emit::{ObjectBuilder, CodeRelocation};
-pub use linker::{Linker, LinkError};
+pub use elf::{ObjectFile, Relocation, RelocationType, Section, Symbol};
+pub use emit::{CodeRelocation, ObjectBuilder};
+pub use linker::{LinkError, Linker};

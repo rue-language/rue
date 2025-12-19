@@ -25,7 +25,10 @@ impl Span {
     /// Create an empty span at a single position.
     #[inline]
     pub const fn point(pos: u32) -> Self {
-        Self { start: pos, end: pos }
+        Self {
+            start: pos,
+            end: pos,
+        }
     }
 
     /// Create a span covering two spans (from start of first to end of second).

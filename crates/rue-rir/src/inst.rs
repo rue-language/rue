@@ -161,10 +161,7 @@ pub enum InstData {
     },
 
     /// While loop: while cond { body }
-    Loop {
-        cond: InstRef,
-        body: InstRef,
-    },
+    Loop { cond: InstRef, body: InstRef },
 
     /// Break: exits the innermost loop
     Break,
@@ -356,7 +353,11 @@ impl<'a, 'b> RirPrinter<'a, 'b> {
                 InstData::Not { operand } => {
                     out.push_str(&format!("not {}\n", operand));
                 }
-                InstData::Branch { cond, then_block, else_block } => {
+                InstData::Branch {
+                    cond,
+                    then_block,
+                    else_block,
+                } => {
                     if let Some(else_b) = else_block {
                         out.push_str(&format!("branch {}, {}, {}\n", cond, then_block, else_b));
                     } else {
@@ -372,7 +373,12 @@ impl<'a, 'b> RirPrinter<'a, 'b> {
                 InstData::Continue => {
                     out.push_str("continue\n");
                 }
-                InstData::FnDecl { name, params, return_type, body } => {
+                InstData::FnDecl {
+                    name,
+                    params,
+                    return_type,
+                    body,
+                } => {
                     let name_str = self.interner.get(*name);
                     let ret_str = self.interner.get(*return_type);
                     let params_str: Vec<String> = params
@@ -405,7 +411,11 @@ impl<'a, 'b> RirPrinter<'a, 'b> {
                 InstData::Intrinsic { name, args } => {
                     let name_str = self.interner.get(*name);
                     let args_str: Vec<String> = args.iter().map(|a| format!("{}", a)).collect();
-                    out.push_str(&format!("intrinsic @{}({})\n", name_str, args_str.join(", ")));
+                    out.push_str(&format!(
+                        "intrinsic @{}({})\n",
+                        name_str,
+                        args_str.join(", ")
+                    ));
                 }
                 InstData::ParamRef { index, name } => {
                     let name_str = self.interner.get(*name);
@@ -414,11 +424,21 @@ impl<'a, 'b> RirPrinter<'a, 'b> {
                 InstData::Block { extra_start, len } => {
                     out.push_str(&format!("block({}, {})\n", extra_start, len));
                 }
-                InstData::Alloc { name, is_mut, ty, init } => {
+                InstData::Alloc {
+                    name,
+                    is_mut,
+                    ty,
+                    init,
+                } => {
                     let name_str = self.interner.get(*name);
                     let mut_str = if *is_mut { "mut " } else { "" };
-                    let ty_str = ty.map(|t| format!(": {}", self.interner.get(t))).unwrap_or_default();
-                    out.push_str(&format!("alloc {}{}{}= {}\n", mut_str, name_str, ty_str, init));
+                    let ty_str = ty
+                        .map(|t| format!(": {}", self.interner.get(t)))
+                        .unwrap_or_default();
+                    out.push_str(&format!(
+                        "alloc {}{}{}= {}\n",
+                        mut_str, name_str, ty_str, init
+                    ));
                 }
                 InstData::VarRef { name } => {
                     let name_str = self.interner.get(*name);
@@ -450,9 +470,7 @@ impl<'a, 'b> RirPrinter<'a, 'b> {
                     let type_str = self.interner.get(*type_name);
                     let fields_str: Vec<String> = fields
                         .iter()
-                        .map(|(fname, value)| {
-                            format!("{}: {}", self.interner.get(*fname), value)
-                        })
+                        .map(|(fname, value)| format!("{}: {}", self.interner.get(*fname), value))
                         .collect();
                     out.push_str(&format!(
                         "struct_init {} {{ {} }}\n",

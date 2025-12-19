@@ -164,18 +164,44 @@ impl fmt::Display for ErrorKind {
                     write!(f, "expected {} arguments, found {}", expected, found)
                 }
             }
-            ErrorKind::WrongFieldCount { struct_name, expected, found } => {
+            ErrorKind::WrongFieldCount {
+                struct_name,
+                expected,
+                found,
+            } => {
                 if *expected == 1 {
-                    write!(f, "struct '{}' has {} field, but {} were supplied", struct_name, expected, found)
+                    write!(
+                        f,
+                        "struct '{}' has {} field, but {} were supplied",
+                        struct_name, expected, found
+                    )
                 } else {
-                    write!(f, "struct '{}' has {} fields, but {} were supplied", struct_name, expected, found)
+                    write!(
+                        f,
+                        "struct '{}' has {} fields, but {} were supplied",
+                        struct_name, expected, found
+                    )
                 }
             }
-            ErrorKind::MissingField { struct_name, field_name } => {
-                write!(f, "missing field '{}' in struct '{}'", field_name, struct_name)
+            ErrorKind::MissingField {
+                struct_name,
+                field_name,
+            } => {
+                write!(
+                    f,
+                    "missing field '{}' in struct '{}'",
+                    field_name, struct_name
+                )
             }
-            ErrorKind::UnknownField { struct_name, field_name } => {
-                write!(f, "unknown field '{}' in struct '{}'", field_name, struct_name)
+            ErrorKind::UnknownField {
+                struct_name,
+                field_name,
+            } => {
+                write!(
+                    f,
+                    "unknown field '{}' in struct '{}'",
+                    field_name, struct_name
+                )
             }
             ErrorKind::FieldAccessOnNonStruct { found } => {
                 write!(f, "field access on non-struct type '{}'", found)
@@ -186,7 +212,11 @@ impl fmt::Display for ErrorKind {
             ErrorKind::BreakOutsideLoop => write!(f, "'break' outside of loop"),
             ErrorKind::ContinueOutsideLoop => write!(f, "'continue' outside of loop"),
             ErrorKind::UnknownIntrinsic(name) => write!(f, "unknown intrinsic '@{}'", name),
-            ErrorKind::IntrinsicWrongArgCount { name, expected, found } => {
+            ErrorKind::IntrinsicWrongArgCount {
+                name,
+                expected,
+                found,
+            } => {
                 if *expected == 1 {
                     write!(
                         f,
@@ -201,7 +231,11 @@ impl fmt::Display for ErrorKind {
                     )
                 }
             }
-            ErrorKind::IntrinsicTypeMismatch { name, expected, found } => {
+            ErrorKind::IntrinsicTypeMismatch {
+                name,
+                expected,
+                found,
+            } => {
                 write!(
                     f,
                     "intrinsic '@{}' expects {}, found {}",
@@ -326,9 +360,7 @@ mod tests {
 
     #[test]
     fn test_unexpected_eof_message() {
-        let error = CompileError::without_span(ErrorKind::UnexpectedEof {
-            expected: "'}'",
-        });
+        let error = CompileError::without_span(ErrorKind::UnexpectedEof { expected: "'}'" });
         assert_eq!(error.to_string(), "unexpected end of file, expected '}'");
     }
 
@@ -385,7 +417,8 @@ mod tests {
 
     #[test]
     fn test_link_error_message() {
-        let error = CompileError::without_span(ErrorKind::LinkError("undefined symbol".to_string()));
+        let error =
+            CompileError::without_span(ErrorKind::LinkError("undefined symbol".to_string()));
         assert_eq!(error.to_string(), "link error: undefined symbol");
     }
 

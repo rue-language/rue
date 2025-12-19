@@ -45,15 +45,15 @@ pub struct CfgBuilder<'a> {
 
 impl<'a> CfgBuilder<'a> {
     /// Build a CFG from AIR.
-    pub fn build(
-        air: &'a Air,
-        num_locals: u32,
-        num_params: u32,
-        fn_name: &str,
-    ) -> Cfg {
+    pub fn build(air: &'a Air, num_locals: u32, num_params: u32, fn_name: &str) -> Cfg {
         let mut builder = CfgBuilder {
             air,
-            cfg: Cfg::new(air.return_type(), num_locals, num_params, fn_name.to_string()),
+            cfg: Cfg::new(
+                air.return_type(),
+                num_locals,
+                num_params,
+                fn_name.to_string(),
+            ),
             current_block: BlockId(0),
             loop_stack: Vec::new(),
             value_cache: vec![None; air.len()],
@@ -251,21 +251,27 @@ impl<'a> CfgBuilder<'a> {
 
                 // Branch: if lhs is false, go to join with false; else evaluate rhs
                 let false_val = self.emit(CfgInstData::BoolConst(false), Type::Bool, span);
-                self.cfg.set_terminator(self.current_block, Terminator::Branch {
-                    cond: lhs_val,
-                    then_block: rhs_block,
-                    then_args: vec![],
-                    else_block: join_block,
-                    else_args: vec![false_val],
-                });
+                self.cfg.set_terminator(
+                    self.current_block,
+                    Terminator::Branch {
+                        cond: lhs_val,
+                        then_block: rhs_block,
+                        then_args: vec![],
+                        else_block: join_block,
+                        else_args: vec![false_val],
+                    },
+                );
 
                 // In rhs_block, evaluate rhs and go to join
                 self.current_block = rhs_block;
                 let rhs_val = self.lower_inst(*rhs).value.unwrap();
-                self.cfg.set_terminator(self.current_block, Terminator::Goto {
-                    target: join_block,
-                    args: vec![rhs_val],
-                });
+                self.cfg.set_terminator(
+                    self.current_block,
+                    Terminator::Goto {
+                        target: join_block,
+                        args: vec![rhs_val],
+                    },
+                );
 
                 // Continue in join block
                 self.current_block = join_block;
@@ -288,21 +294,27 @@ impl<'a> CfgBuilder<'a> {
 
                 // Branch: if lhs is true, go to join with true; else evaluate rhs
                 let true_val = self.emit(CfgInstData::BoolConst(true), Type::Bool, span);
-                self.cfg.set_terminator(self.current_block, Terminator::Branch {
-                    cond: lhs_val,
-                    then_block: join_block,
-                    then_args: vec![true_val],
-                    else_block: rhs_block,
-                    else_args: vec![],
-                });
+                self.cfg.set_terminator(
+                    self.current_block,
+                    Terminator::Branch {
+                        cond: lhs_val,
+                        then_block: join_block,
+                        then_args: vec![true_val],
+                        else_block: rhs_block,
+                        else_args: vec![],
+                    },
+                );
 
                 // In rhs_block, evaluate rhs and go to join
                 self.current_block = rhs_block;
                 let rhs_val = self.lower_inst(*rhs).value.unwrap();
-                self.cfg.set_terminator(self.current_block, Terminator::Goto {
-                    target: join_block,
-                    args: vec![rhs_val],
-                });
+                self.cfg.set_terminator(
+                    self.current_block,
+                    Terminator::Goto {
+                        target: join_block,
+                        args: vec![rhs_val],
+                    },
+                );
 
                 // Continue in join block
                 self.current_block = join_block;
@@ -336,10 +348,17 @@ impl<'a> CfgBuilder<'a> {
             AirInstData::Alloc { slot, init } => {
                 let init_result = self.lower_inst(*init);
                 // If init produces a value, use it; otherwise use a dummy Unit value
-                let init_val = init_result.value.unwrap_or_else(|| {
-                    self.emit(CfgInstData::Const(0), Type::Unit, span)
-                });
-                self.emit(CfgInstData::Alloc { slot: *slot, init: init_val }, Type::Unit, span);
+                let init_val = init_result
+                    .value
+                    .unwrap_or_else(|| self.emit(CfgInstData::Const(0), Type::Unit, span));
+                self.emit(
+                    CfgInstData::Alloc {
+                        slot: *slot,
+                        init: init_val,
+                    },
+                    Type::Unit,
+                    span,
+                );
                 ExprResult {
                     value: None,
                     continuation: Continuation::Continues,
@@ -357,7 +376,14 @@ impl<'a> CfgBuilder<'a> {
 
             AirInstData::Store { slot, value } => {
                 let val = self.lower_inst(*value).value.unwrap();
-                self.emit(CfgInstData::Store { slot: *slot, value: val }, Type::Unit, span);
+                self.emit(
+                    CfgInstData::Store {
+                        slot: *slot,
+                        value: val,
+                    },
+                    Type::Unit,
+                    span,
+                );
                 ExprResult {
                     value: None,
                     continuation: Continuation::Continues,
@@ -370,7 +396,10 @@ impl<'a> CfgBuilder<'a> {
                     arg_vals.push(self.lower_inst(*arg).value.unwrap());
                 }
                 let value = self.emit(
-                    CfgInstData::Call { name: name.clone(), args: arg_vals },
+                    CfgInstData::Call {
+                        name: name.clone(),
+                        args: arg_vals,
+                    },
                     ty,
                     span,
                 );
@@ -387,7 +416,10 @@ impl<'a> CfgBuilder<'a> {
                     arg_vals.push(self.lower_inst(*arg).value.unwrap());
                 }
                 let value = self.emit(
-                    CfgInstData::Intrinsic { name: name.clone(), args: arg_vals },
+                    CfgInstData::Intrinsic {
+                        name: name.clone(),
+                        args: arg_vals,
+                    },
                     ty,
                     span,
                 );
@@ -403,7 +435,10 @@ impl<'a> CfgBuilder<'a> {
                     field_vals.push(self.lower_inst(*field).value.unwrap());
                 }
                 let value = self.emit(
-                    CfgInstData::StructInit { struct_id: *struct_id, fields: field_vals },
+                    CfgInstData::StructInit {
+                        struct_id: *struct_id,
+                        fields: field_vals,
+                    },
                     ty,
                     span,
                 );
@@ -414,7 +449,11 @@ impl<'a> CfgBuilder<'a> {
                 }
             }
 
-            AirInstData::FieldGet { base, struct_id, field_index } => {
+            AirInstData::FieldGet {
+                base,
+                struct_id,
+                field_index,
+            } => {
                 let base_val = self.lower_inst(*base).value.unwrap();
                 let value = self.emit(
                     CfgInstData::FieldGet {
@@ -431,7 +470,12 @@ impl<'a> CfgBuilder<'a> {
                 }
             }
 
-            AirInstData::FieldSet { slot, struct_id, field_index, value } => {
+            AirInstData::FieldSet {
+                slot,
+                struct_id,
+                field_index,
+                value,
+            } => {
                 let val = self.lower_inst(*value).value.unwrap();
                 self.emit(
                     CfgInstData::FieldSet {
@@ -465,7 +509,11 @@ impl<'a> CfgBuilder<'a> {
                 self.lower_inst(*value)
             }
 
-            AirInstData::Branch { cond, then_value, else_value } => {
+            AirInstData::Branch {
+                cond,
+                then_value,
+                else_value,
+            } => {
                 let cond_val = self.lower_inst(*cond).value.unwrap();
 
                 let then_block = self.cfg.new_block();
@@ -477,13 +525,16 @@ impl<'a> CfgBuilder<'a> {
                 let else_type = else_value.map(|e| self.air.get(e).ty);
 
                 // Branch to then/else
-                self.cfg.set_terminator(self.current_block, Terminator::Branch {
-                    cond: cond_val,
-                    then_block,
-                    then_args: vec![],
-                    else_block,
-                    else_args: vec![],
-                });
+                self.cfg.set_terminator(
+                    self.current_block,
+                    Terminator::Branch {
+                        cond: cond_val,
+                        then_block,
+                        then_args: vec![],
+                        else_block,
+                        else_args: vec![],
+                    },
+                );
 
                 // Lower then branch
                 self.current_block = then_block;
@@ -532,26 +583,40 @@ impl<'a> CfgBuilder<'a> {
                 // Wire up non-divergent branches to join
                 if !then_diverged {
                     let args = if let Some(val) = then_result.value {
-                        if result_param.is_some() { vec![val] } else { vec![] }
+                        if result_param.is_some() {
+                            vec![val]
+                        } else {
+                            vec![]
+                        }
                     } else {
                         vec![]
                     };
-                    self.cfg.set_terminator(then_exit_block, Terminator::Goto {
-                        target: join_block,
-                        args,
-                    });
+                    self.cfg.set_terminator(
+                        then_exit_block,
+                        Terminator::Goto {
+                            target: join_block,
+                            args,
+                        },
+                    );
                 }
 
                 if !else_diverged {
                     let args = if let Some(val) = else_result.value {
-                        if result_param.is_some() { vec![val] } else { vec![] }
+                        if result_param.is_some() {
+                            vec![val]
+                        } else {
+                            vec![]
+                        }
                     } else {
                         vec![]
                     };
-                    self.cfg.set_terminator(else_exit_block, Terminator::Goto {
-                        target: join_block,
-                        args,
-                    });
+                    self.cfg.set_terminator(
+                        else_exit_block,
+                        Terminator::Goto {
+                            target: join_block,
+                            args,
+                        },
+                    );
                 }
 
                 self.current_block = join_block;
@@ -572,10 +637,13 @@ impl<'a> CfgBuilder<'a> {
                 let exit_block = self.cfg.new_block();
 
                 // Jump to header
-                self.cfg.set_terminator(self.current_block, Terminator::Goto {
-                    target: header_block,
-                    args: vec![],
-                });
+                self.cfg.set_terminator(
+                    self.current_block,
+                    Terminator::Goto {
+                        target: header_block,
+                        args: vec![],
+                    },
+                );
 
                 // Push loop context
                 self.loop_stack.push(LoopContext {
@@ -588,13 +656,16 @@ impl<'a> CfgBuilder<'a> {
                 let cond_val = self.lower_inst(*cond).value.unwrap();
 
                 // Branch: if true go to body, if false exit
-                self.cfg.set_terminator(self.current_block, Terminator::Branch {
-                    cond: cond_val,
-                    then_block: body_block,
-                    then_args: vec![],
-                    else_block: exit_block,
-                    else_args: vec![],
-                });
+                self.cfg.set_terminator(
+                    self.current_block,
+                    Terminator::Branch {
+                        cond: cond_val,
+                        then_block: body_block,
+                        then_args: vec![],
+                        else_block: exit_block,
+                        else_args: vec![],
+                    },
+                );
 
                 // Lower body
                 self.current_block = body_block;
@@ -602,10 +673,13 @@ impl<'a> CfgBuilder<'a> {
 
                 // After body, go back to header (unless diverged)
                 if !matches!(body_result.continuation, Continuation::Diverged) {
-                    self.cfg.set_terminator(self.current_block, Terminator::Goto {
-                        target: header_block,
-                        args: vec![],
-                    });
+                    self.cfg.set_terminator(
+                        self.current_block,
+                        Terminator::Goto {
+                            target: header_block,
+                            args: vec![],
+                        },
+                    );
                 }
 
                 self.loop_stack.pop();
@@ -621,10 +695,13 @@ impl<'a> CfgBuilder<'a> {
 
             AirInstData::Break => {
                 let ctx = self.loop_stack.last().expect("break outside loop");
-                self.cfg.set_terminator(self.current_block, Terminator::Goto {
-                    target: ctx.exit,
-                    args: vec![],
-                });
+                self.cfg.set_terminator(
+                    self.current_block,
+                    Terminator::Goto {
+                        target: ctx.exit,
+                        args: vec![],
+                    },
+                );
 
                 ExprResult {
                     value: None,
@@ -634,10 +711,13 @@ impl<'a> CfgBuilder<'a> {
 
             AirInstData::Continue => {
                 let ctx = self.loop_stack.last().expect("continue outside loop");
-                self.cfg.set_terminator(self.current_block, Terminator::Goto {
-                    target: ctx.header,
-                    args: vec![],
-                });
+                self.cfg.set_terminator(
+                    self.current_block,
+                    Terminator::Goto {
+                        target: ctx.header,
+                        args: vec![],
+                    },
+                );
 
                 ExprResult {
                     value: None,
@@ -647,7 +727,8 @@ impl<'a> CfgBuilder<'a> {
 
             AirInstData::Ret(value) => {
                 let val = self.lower_inst(*value).value.unwrap();
-                self.cfg.set_terminator(self.current_block, Terminator::Return { value: val });
+                self.cfg
+                    .set_terminator(self.current_block, Terminator::Return { value: val });
 
                 ExprResult {
                     value: None,
@@ -659,7 +740,8 @@ impl<'a> CfgBuilder<'a> {
 
     /// Emit an instruction in the current block.
     fn emit(&mut self, data: CfgInstData, ty: Type, span: rue_span::Span) -> CfgValue {
-        self.cfg.add_inst_to_block(self.current_block, CfgInst { data, ty, span })
+        self.cfg
+            .add_inst_to_block(self.current_block, CfgInst { data, ty, span })
     }
 
     /// Cache a value for an AIR ref.

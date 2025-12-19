@@ -5,8 +5,8 @@ use std::path::Path;
 
 use annotate_snippets::{Level, Renderer, Snippet};
 use rue_compiler::{
-    compile_to_air, compile_with_options, generate_mir, CompileError, CompileOptions,
-    CompileWarning, LinkerMode,
+    CompileError, CompileOptions, CompileWarning, LinkerMode, compile_to_air, compile_with_options,
+    generate_mir,
 };
 use rue_rir::RirPrinter;
 use rue_target::Target;

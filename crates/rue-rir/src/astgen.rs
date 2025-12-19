@@ -4,7 +4,9 @@
 //! This is analogous to Zig's AstGen phase.
 
 use rue_intern::Interner;
-use rue_parser::{AssignTarget, Ast, BinaryOp, Expr, Function, Item, Statement, StructDecl, UnaryOp};
+use rue_parser::{
+    AssignTarget, Ast, BinaryOp, Expr, Function, Item, Statement, StructDecl, UnaryOp,
+};
 
 use crate::inst::{Inst, InstData, InstRef, Rir};
 
@@ -151,9 +153,7 @@ impl<'a> AstGen<'a> {
                 // Parentheses are transparent in the IR - just generate the inner expression
                 self.gen_expr(&paren.inner)
             }
-            Expr::Block(block) => {
-                self.gen_block(block)
-            }
+            Expr::Block(block) => self.gen_block(block),
             Expr::If(if_expr) => {
                 let cond = self.gen_expr(&if_expr.cond);
                 let then_block = self.gen_block(&if_expr.then_block);
@@ -303,7 +303,6 @@ impl<'a> AstGen<'a> {
             }
         }
     }
-
 }
 
 #[cfg(test)]
@@ -443,19 +442,34 @@ mod tests {
     fn test_gen_all_binary_ops() {
         // Test all binary operators generate correct instructions
         let (rir, _) = gen_rir("fn main() -> i32 { 1 + 2 }");
-        assert!(matches!(rir.get(InstRef::from_raw(2)).data, InstData::Add { .. }));
+        assert!(matches!(
+            rir.get(InstRef::from_raw(2)).data,
+            InstData::Add { .. }
+        ));
 
         let (rir, _) = gen_rir("fn main() -> i32 { 1 - 2 }");
-        assert!(matches!(rir.get(InstRef::from_raw(2)).data, InstData::Sub { .. }));
+        assert!(matches!(
+            rir.get(InstRef::from_raw(2)).data,
+            InstData::Sub { .. }
+        ));
 
         let (rir, _) = gen_rir("fn main() -> i32 { 1 * 2 }");
-        assert!(matches!(rir.get(InstRef::from_raw(2)).data, InstData::Mul { .. }));
+        assert!(matches!(
+            rir.get(InstRef::from_raw(2)).data,
+            InstData::Mul { .. }
+        ));
 
         let (rir, _) = gen_rir("fn main() -> i32 { 1 / 2 }");
-        assert!(matches!(rir.get(InstRef::from_raw(2)).data, InstData::Div { .. }));
+        assert!(matches!(
+            rir.get(InstRef::from_raw(2)).data,
+            InstData::Div { .. }
+        ));
 
         let (rir, _) = gen_rir("fn main() -> i32 { 1 % 2 }");
-        assert!(matches!(rir.get(InstRef::from_raw(2)).data, InstData::Mod { .. }));
+        assert!(matches!(
+            rir.get(InstRef::from_raw(2)).data,
+            InstData::Mod { .. }
+        ));
     }
 
     #[test]
@@ -463,14 +477,19 @@ mod tests {
         let (rir, interner) = gen_rir("fn main() -> i32 { let x = 42; x }");
 
         // Find the Alloc instruction
-        let alloc_inst = rir.iter().find(|(_, inst)| {
-            matches!(inst.data, InstData::Alloc { .. })
-        });
+        let alloc_inst = rir
+            .iter()
+            .find(|(_, inst)| matches!(inst.data, InstData::Alloc { .. }));
         assert!(alloc_inst.is_some());
 
         let (_, inst) = alloc_inst.unwrap();
         match &inst.data {
-            InstData::Alloc { name, is_mut, ty, init } => {
+            InstData::Alloc {
+                name,
+                is_mut,
+                ty,
+                init,
+            } => {
                 assert_eq!(interner.get(*name), "x");
                 assert!(!is_mut);
                 assert!(ty.is_none());
@@ -484,9 +503,9 @@ mod tests {
     fn test_gen_let_mut() {
         let (rir, interner) = gen_rir("fn main() -> i32 { let mut x = 10; x }");
 
-        let alloc_inst = rir.iter().find(|(_, inst)| {
-            matches!(inst.data, InstData::Alloc { .. })
-        });
+        let alloc_inst = rir
+            .iter()
+            .find(|(_, inst)| matches!(inst.data, InstData::Alloc { .. }));
         assert!(alloc_inst.is_some());
 
         let (_, inst) = alloc_inst.unwrap();
@@ -534,9 +553,9 @@ mod tests {
         let (rir, interner) = gen_rir("fn main() -> i32 { let mut x = 10; x = 20; x }");
 
         // Find the Assign instruction
-        let assign_inst = rir.iter().find(|(_, inst)| {
-            matches!(inst.data, InstData::Assign { .. })
-        });
+        let assign_inst = rir
+            .iter()
+            .find(|(_, inst)| matches!(inst.data, InstData::Assign { .. }));
         assert!(assign_inst.is_some());
 
         let (_, inst) = assign_inst.unwrap();
@@ -554,9 +573,10 @@ mod tests {
         let (rir, _interner) = gen_rir("fn main() -> i32 { let x = 1; let y = 2; x + y }");
 
         // Count Alloc instructions
-        let alloc_count = rir.iter().filter(|(_, inst)| {
-            matches!(inst.data, InstData::Alloc { .. })
-        }).count();
+        let alloc_count = rir
+            .iter()
+            .filter(|(_, inst)| matches!(inst.data, InstData::Alloc { .. }))
+            .count();
         assert_eq!(alloc_count, 2);
 
         // Check the body is a Block containing the allocs and the Add

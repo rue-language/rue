@@ -5,7 +5,9 @@
 
 use std::collections::HashMap;
 
-use rue_cfg::{BasicBlock, BlockId, Cfg, CfgInstData, CfgValue, StructDef, StructId, Terminator, Type};
+use rue_cfg::{
+    BasicBlock, BlockId, Cfg, CfgInstData, CfgValue, StructDef, StructId, Terminator, Type,
+};
 
 use super::mir::{Operand, Reg, VReg, X86Inst, X86Mir};
 
@@ -54,7 +56,7 @@ impl<'a> CfgLower<'a> {
             num_locals,
             num_params,
             fn_name: cfg.fn_name().to_string(),
-        struct_field_vregs: HashMap::new(),
+            struct_field_vregs: HashMap::new(),
         }
     }
 
@@ -100,7 +102,8 @@ impl<'a> CfgLower<'a> {
         for block in self.cfg.blocks() {
             for (param_idx, (param_val, _ty)) in block.params.iter().enumerate() {
                 let vreg = self.mir.alloc_vreg();
-                self.block_param_vregs.insert((block.id, param_idx as u32), vreg);
+                self.block_param_vregs
+                    .insert((block.id, param_idx as u32), vreg);
                 self.value_map.insert(*param_val, vreg);
             }
         }
@@ -213,8 +216,12 @@ impl<'a> CfgLower<'a> {
 
                 // Overflow check
                 let ok_label = self.new_label("add_ok");
-                self.mir.push(X86Inst::Jno { label: ok_label.clone() });
-                self.mir.push(X86Inst::CallRel { symbol: "__rue_overflow".to_string() });
+                self.mir.push(X86Inst::Jno {
+                    label: ok_label.clone(),
+                });
+                self.mir.push(X86Inst::CallRel {
+                    symbol: "__rue_overflow".to_string(),
+                });
                 self.mir.push(X86Inst::Label { name: ok_label });
             }
 
@@ -235,8 +242,12 @@ impl<'a> CfgLower<'a> {
                 });
 
                 let ok_label = self.new_label("sub_ok");
-                self.mir.push(X86Inst::Jno { label: ok_label.clone() });
-                self.mir.push(X86Inst::CallRel { symbol: "__rue_overflow".to_string() });
+                self.mir.push(X86Inst::Jno {
+                    label: ok_label.clone(),
+                });
+                self.mir.push(X86Inst::CallRel {
+                    symbol: "__rue_overflow".to_string(),
+                });
                 self.mir.push(X86Inst::Label { name: ok_label });
             }
 
@@ -257,8 +268,12 @@ impl<'a> CfgLower<'a> {
                 });
 
                 let ok_label = self.new_label("mul_ok");
-                self.mir.push(X86Inst::Jno { label: ok_label.clone() });
-                self.mir.push(X86Inst::CallRel { symbol: "__rue_overflow".to_string() });
+                self.mir.push(X86Inst::Jno {
+                    label: ok_label.clone(),
+                });
+                self.mir.push(X86Inst::CallRel {
+                    symbol: "__rue_overflow".to_string(),
+                });
                 self.mir.push(X86Inst::Label { name: ok_label });
             }
 
@@ -275,8 +290,12 @@ impl<'a> CfgLower<'a> {
                     src1: Operand::Virtual(rhs_vreg),
                     src2: Operand::Virtual(rhs_vreg),
                 });
-                self.mir.push(X86Inst::Jnz { label: ok_label.clone() });
-                self.mir.push(X86Inst::CallRel { symbol: "__rue_div_by_zero".to_string() });
+                self.mir.push(X86Inst::Jnz {
+                    label: ok_label.clone(),
+                });
+                self.mir.push(X86Inst::CallRel {
+                    symbol: "__rue_div_by_zero".to_string(),
+                });
                 self.mir.push(X86Inst::Label { name: ok_label });
 
                 self.mir.push(X86Inst::MovRR {
@@ -305,8 +324,12 @@ impl<'a> CfgLower<'a> {
                     src1: Operand::Virtual(rhs_vreg),
                     src2: Operand::Virtual(rhs_vreg),
                 });
-                self.mir.push(X86Inst::Jnz { label: ok_label.clone() });
-                self.mir.push(X86Inst::CallRel { symbol: "__rue_div_by_zero".to_string() });
+                self.mir.push(X86Inst::Jnz {
+                    label: ok_label.clone(),
+                });
+                self.mir.push(X86Inst::CallRel {
+                    symbol: "__rue_div_by_zero".to_string(),
+                });
                 self.mir.push(X86Inst::Label { name: ok_label });
 
                 self.mir.push(X86Inst::MovRR {
@@ -338,8 +361,12 @@ impl<'a> CfgLower<'a> {
                 });
 
                 let ok_label = self.new_label("neg_ok");
-                self.mir.push(X86Inst::Jno { label: ok_label.clone() });
-                self.mir.push(X86Inst::CallRel { symbol: "__rue_overflow".to_string() });
+                self.mir.push(X86Inst::Jno {
+                    label: ok_label.clone(),
+                });
+                self.mir.push(X86Inst::CallRel {
+                    symbol: "__rue_overflow".to_string(),
+                });
                 self.mir.push(X86Inst::Label { name: ok_label });
             }
 
@@ -361,37 +388,49 @@ impl<'a> CfgLower<'a> {
 
             CfgInstData::Eq(lhs, rhs) => {
                 self.emit_comparison(value, *lhs, *rhs, |mir, vreg| {
-                    mir.push(X86Inst::Sete { dst: Operand::Virtual(vreg) });
+                    mir.push(X86Inst::Sete {
+                        dst: Operand::Virtual(vreg),
+                    });
                 });
             }
 
             CfgInstData::Ne(lhs, rhs) => {
                 self.emit_comparison(value, *lhs, *rhs, |mir, vreg| {
-                    mir.push(X86Inst::Setne { dst: Operand::Virtual(vreg) });
+                    mir.push(X86Inst::Setne {
+                        dst: Operand::Virtual(vreg),
+                    });
                 });
             }
 
             CfgInstData::Lt(lhs, rhs) => {
                 self.emit_comparison(value, *lhs, *rhs, |mir, vreg| {
-                    mir.push(X86Inst::Setl { dst: Operand::Virtual(vreg) });
+                    mir.push(X86Inst::Setl {
+                        dst: Operand::Virtual(vreg),
+                    });
                 });
             }
 
             CfgInstData::Gt(lhs, rhs) => {
                 self.emit_comparison(value, *lhs, *rhs, |mir, vreg| {
-                    mir.push(X86Inst::Setg { dst: Operand::Virtual(vreg) });
+                    mir.push(X86Inst::Setg {
+                        dst: Operand::Virtual(vreg),
+                    });
                 });
             }
 
             CfgInstData::Le(lhs, rhs) => {
                 self.emit_comparison(value, *lhs, *rhs, |mir, vreg| {
-                    mir.push(X86Inst::Setle { dst: Operand::Virtual(vreg) });
+                    mir.push(X86Inst::Setle {
+                        dst: Operand::Virtual(vreg),
+                    });
                 });
             }
 
             CfgInstData::Ge(lhs, rhs) => {
                 self.emit_comparison(value, *lhs, *rhs, |mir, vreg| {
-                    mir.push(X86Inst::Setge { dst: Operand::Virtual(vreg) });
+                    mir.push(X86Inst::Setge {
+                        dst: Operand::Virtual(vreg),
+                    });
                 });
             }
 
@@ -701,7 +740,10 @@ impl<'a> CfgLower<'a> {
                 }
             }
 
-            CfgInstData::StructInit { struct_id: _, fields } => {
+            CfgInstData::StructInit {
+                struct_id: _,
+                fields,
+            } => {
                 let vreg = self.mir.alloc_vreg();
                 self.value_map.insert(value, vreg);
 
@@ -726,7 +768,11 @@ impl<'a> CfgLower<'a> {
                 self.struct_field_vregs.insert(value, field_vregs);
             }
 
-            CfgInstData::FieldGet { base, struct_id: _, field_index } => {
+            CfgInstData::FieldGet {
+                base,
+                struct_id: _,
+                field_index,
+            } => {
                 let vreg = self.mir.alloc_vreg();
                 self.value_map.insert(value, vreg);
 
@@ -760,7 +806,12 @@ impl<'a> CfgLower<'a> {
                 }
             }
 
-            CfgInstData::FieldSet { slot, struct_id: _, field_index, value: val } => {
+            CfgInstData::FieldSet {
+                slot,
+                struct_id: _,
+                field_index,
+                value: val,
+            } => {
                 let val_vreg = self.get_vreg(*val);
                 let actual_slot = slot + field_index;
                 let offset = self.local_offset(actual_slot);
@@ -818,7 +869,13 @@ impl<'a> CfgLower<'a> {
                 }
             }
 
-            Terminator::Branch { cond, then_block, then_args, else_block, else_args } => {
+            Terminator::Branch {
+                cond,
+                then_block,
+                then_args,
+                else_block,
+                else_args,
+            } => {
                 let cond_vreg = self.get_vreg(*cond);
 
                 // Test condition
@@ -955,7 +1012,9 @@ impl<'a> CfgLower<'a> {
         // Not yet lowered - lower it now
         self.lower_value(value);
 
-        self.value_map.get(&value).copied()
+        self.value_map
+            .get(&value)
+            .copied()
             .expect("value should have been lowered")
     }
 }
@@ -963,8 +1022,8 @@ impl<'a> CfgLower<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rue_cfg::CfgBuilder;
     use rue_air::Sema;
+    use rue_cfg::CfgBuilder;
     use rue_intern::Interner;
     use rue_lexer::Lexer;
     use rue_parser::Parser;

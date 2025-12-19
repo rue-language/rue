@@ -126,7 +126,9 @@ impl Interner {
     /// Get the well-known symbols.
     #[inline]
     pub fn well_known(&self) -> &WellKnown {
-        self.well_known.as_ref().expect("well_known not initialized")
+        self.well_known
+            .as_ref()
+            .expect("well_known not initialized")
     }
 
     /// Internal interning used during initialization.

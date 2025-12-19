@@ -186,10 +186,18 @@ pub enum X86Inst {
     MovRR { dst: Operand, src: Operand },
 
     /// `mov dst, [base + offset]` - Load from memory (stack local).
-    MovRM { dst: Operand, base: Reg, offset: i32 },
+    MovRM {
+        dst: Operand,
+        base: Reg,
+        offset: i32,
+    },
 
     /// `mov [base + offset], src` - Store to memory (stack local).
-    MovMR { base: Reg, offset: i32, src: Operand },
+    MovMR {
+        base: Reg,
+        offset: i32,
+        src: Operand,
+    },
 
     // Arithmetic instructions
     /// `add dst, src` - Add src to dst (dst = dst + src).

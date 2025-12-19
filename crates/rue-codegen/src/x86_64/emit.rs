@@ -5,8 +5,8 @@
 
 use std::collections::HashMap;
 
-use super::mir::{Reg, X86Inst, X86Mir};
 use super::EmittedRelocation;
+use super::mir::{Reg, X86Inst, X86Mir};
 
 /// Kind of jump fixup (rel8 or rel32).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -169,7 +169,9 @@ impl<'a> Emitter<'a> {
     /// Apply all fixups for forward jumps.
     fn apply_fixups(&mut self) {
         for fixup in &self.fixups {
-            let target_offset = self.labels.get(&fixup.label)
+            let target_offset = self
+                .labels
+                .get(&fixup.label)
                 .unwrap_or_else(|| panic!("undefined label: {}", fixup.label));
 
             match fixup.kind {
@@ -1159,8 +1161,8 @@ impl<'a> Emitter<'a> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::mir::Operand;
+    use super::*;
 
     fn emit_single(inst: X86Inst) -> Vec<u8> {
         let mut mir = X86Mir::new();
@@ -1297,9 +1299,9 @@ mod tests {
             code,
             vec![
                 0x41, 0xBA, 0x2A, 0x00, 0x00, 0x00, // mov r10d, 42
-                0x4C, 0x89, 0xD7,                   // mov rdi, r10
-                0xB8, 0x3C, 0x00, 0x00, 0x00,       // mov eax, 60
-                0x0F, 0x05                          // syscall
+                0x4C, 0x89, 0xD7, // mov rdi, r10
+                0xB8, 0x3C, 0x00, 0x00, 0x00, // mov eax, 60
+                0x0F, 0x05 // syscall
             ]
         );
     }
@@ -1536,8 +1538,8 @@ mod tests {
         assert_eq!(
             code,
             vec![
-                0x55,                               // push rbp
-                0x48, 0x89, 0xE5,                   // mov rbp, rsp
+                0x55, // push rbp
+                0x48, 0x89, 0xE5, // mov rbp, rsp
                 0x48, 0x81, 0xEC, 0x10, 0x00, 0x00, 0x00, // sub rsp, 16
             ]
         );

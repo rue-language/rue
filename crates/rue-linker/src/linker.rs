@@ -67,21 +67,24 @@ impl Linker {
 
         // Collect global symbols
         for sym in &obj.symbols {
-            if sym.section_index.is_some() &&
-               (sym.binding == SymbolBinding::Global || sym.binding == SymbolBinding::Weak) &&
-               !sym.name.is_empty()
+            if sym.section_index.is_some()
+                && (sym.binding == SymbolBinding::Global || sym.binding == SymbolBinding::Weak)
+                && !sym.name.is_empty()
             {
                 if let Some((_, existing)) = self.global_symbols.get(&sym.name) {
                     // Allow weak symbols to be overridden
-                    if existing.binding != SymbolBinding::Weak && sym.binding != SymbolBinding::Weak {
+                    if existing.binding != SymbolBinding::Weak && sym.binding != SymbolBinding::Weak
+                    {
                         return Err(LinkError::DuplicateSymbol(sym.name.clone()));
                     }
                     // Keep the non-weak one
                     if existing.binding == SymbolBinding::Weak {
-                        self.global_symbols.insert(sym.name.clone(), (obj_index, sym.clone()));
+                        self.global_symbols
+                            .insert(sym.name.clone(), (obj_index, sym.clone()));
                     }
                 } else {
-                    self.global_symbols.insert(sym.name.clone(), (obj_index, sym.clone()));
+                    self.global_symbols
+                        .insert(sym.name.clone(), (obj_index, sym.clone()));
                 }
             }
         }
@@ -132,11 +135,8 @@ impl Linker {
 
         // Track which archive objects we've selected and which symbols are defined
         let mut selected: Vec<bool> = vec![false; archive_objects.len()];
-        let mut defined_symbols: std::collections::HashSet<String> = self
-            .global_symbols
-            .keys()
-            .cloned()
-            .collect();
+        let mut defined_symbols: std::collections::HashSet<String> =
+            self.global_symbols.keys().cloned().collect();
 
         // Iterate until we reach a fixed point
         loop {
@@ -268,7 +268,8 @@ impl Linker {
                 }
 
                 let align = section.align.max(1);
-                let padding = align_up(merged_rodata.len() as u64, align) - merged_rodata.len() as u64;
+                let padding =
+                    align_up(merged_rodata.len() as u64, align) - merged_rodata.len() as u64;
                 merged_rodata.extend(std::iter::repeat(0).take(padding as usize));
 
                 let offset = merged_rodata.len() as u64;
@@ -305,9 +306,10 @@ impl Linker {
                         let addr = base + section_offset + sym.value;
 
                         // Only add global symbols, or section symbols for relocation
-                        if sym.binding == SymbolBinding::Global ||
-                           sym.binding == SymbolBinding::Weak ||
-                           !symbol_addresses.contains_key(&sym.name) {
+                        if sym.binding == SymbolBinding::Global
+                            || sym.binding == SymbolBinding::Weak
+                            || !symbol_addresses.contains_key(&sym.name)
+                        {
                             symbol_addresses.insert(sym.name.clone(), addr);
                         }
                     }
@@ -329,7 +331,8 @@ impl Linker {
         }
 
         // Find entry point
-        let entry_addr = *symbol_addresses.get(entry_point)
+        let entry_addr = *symbol_addresses
+            .get(entry_point)
             .ok_or_else(|| LinkError::UndefinedSymbol(entry_point.to_string()))?;
 
         // Apply relocations
@@ -372,9 +375,10 @@ impl Linker {
                         });
                     }
                     if patch_offset + 4 > merged_code.len() {
-                        return Err(LinkError::UnsupportedRelocation(
-                            format!("patch offset {} out of bounds", patch_offset)
-                        ));
+                        return Err(LinkError::UnsupportedRelocation(format!(
+                            "patch offset {} out of bounds",
+                            patch_offset
+                        )));
                     }
                     merged_code[patch_offset..patch_offset + 4]
                         .copy_from_slice(&(value as i32).to_le_bytes());
@@ -382,9 +386,10 @@ impl Linker {
                 RelocationType::Abs64 => {
                     let value = (target_addr as i64 + addend) as u64;
                     if patch_offset + 8 > merged_code.len() {
-                        return Err(LinkError::UnsupportedRelocation(
-                            format!("patch offset {} out of bounds", patch_offset)
-                        ));
+                        return Err(LinkError::UnsupportedRelocation(format!(
+                            "patch offset {} out of bounds",
+                            patch_offset
+                        )));
                     }
                     merged_code[patch_offset..patch_offset + 8]
                         .copy_from_slice(&value.to_le_bytes());
@@ -399,9 +404,10 @@ impl Linker {
                         });
                     }
                     if patch_offset + 4 > merged_code.len() {
-                        return Err(LinkError::UnsupportedRelocation(
-                            format!("patch offset {} out of bounds", patch_offset)
-                        ));
+                        return Err(LinkError::UnsupportedRelocation(format!(
+                            "patch offset {} out of bounds",
+                            patch_offset
+                        )));
                     }
                     merged_code[patch_offset..patch_offset + 4]
                         .copy_from_slice(&(value as u32).to_le_bytes());
@@ -416,9 +422,10 @@ impl Linker {
                         });
                     }
                     if patch_offset + 4 > merged_code.len() {
-                        return Err(LinkError::UnsupportedRelocation(
-                            format!("patch offset {} out of bounds", patch_offset)
-                        ));
+                        return Err(LinkError::UnsupportedRelocation(format!(
+                            "patch offset {} out of bounds",
+                            patch_offset
+                        )));
                     }
                     merged_code[patch_offset..patch_offset + 4]
                         .copy_from_slice(&(value as i32).to_le_bytes());
@@ -437,20 +444,26 @@ impl Linker {
                         });
                     }
                     if patch_offset + 4 > merged_code.len() {
-                        return Err(LinkError::UnsupportedRelocation(
-                            format!("patch offset {} out of bounds", patch_offset)
-                        ));
+                        return Err(LinkError::UnsupportedRelocation(format!(
+                            "patch offset {} out of bounds",
+                            patch_offset
+                        )));
                     }
                     // Read existing instruction and patch the immediate field
                     let mut inst = u32::from_le_bytes(
-                        merged_code[patch_offset..patch_offset + 4].try_into().unwrap()
+                        merged_code[patch_offset..patch_offset + 4]
+                            .try_into()
+                            .unwrap(),
                     );
                     inst = (inst & 0xFC000000) | ((offset as u32) & 0x03FFFFFF);
                     merged_code[patch_offset..patch_offset + 4]
                         .copy_from_slice(&inst.to_le_bytes());
                 }
                 RelocationType::Unknown(t) => {
-                    return Err(LinkError::UnsupportedRelocation(format!("unknown type {}", t)));
+                    return Err(LinkError::UnsupportedRelocation(format!(
+                        "unknown type {}",
+                        t
+                    )));
                 }
             }
         }
@@ -518,8 +531,8 @@ fn align_up(value: u64, align: u64) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::emit::{ObjectBuilder, CodeRelocation};
     use crate::elf::ObjectFile;
+    use crate::emit::{CodeRelocation, ObjectBuilder};
 
     // Use X86_64Linux explicitly for ELF tests since ObjectFile only parses ELF
     // and the Linker produces ELF executables
@@ -559,7 +572,8 @@ mod tests {
             LinkError::RelocationOverflow {
                 symbol: "sym".into(),
                 rel_type: "Pc32".into(),
-            }.to_string(),
+            }
+            .to_string(),
             "relocation overflow for sym (Pc32)"
         );
     }
@@ -570,7 +584,7 @@ mod tests {
         let obj_bytes = ObjectBuilder::new(ELF_TARGET, "main")
             .code(vec![
                 0xB8, 0x2A, 0x00, 0x00, 0x00, // mov eax, 42
-                0xC3,                         // ret
+                0xC3, // ret
             ])
             .build();
 
@@ -608,7 +622,7 @@ mod tests {
         let callee_bytes = ObjectBuilder::new(ELF_TARGET, "callee")
             .code(vec![
                 0xB8, 0x01, 0x00, 0x00, 0x00, // mov eax, 1
-                0xC3,                         // ret
+                0xC3, // ret
             ])
             .build();
 
@@ -616,7 +630,7 @@ mod tests {
         let caller_bytes = ObjectBuilder::new(ELF_TARGET, "main")
             .code(vec![
                 0xE8, 0x00, 0x00, 0x00, 0x00, // call callee (placeholder)
-                0xC3,                         // ret
+                0xC3, // ret
             ])
             .relocation(CodeRelocation {
                 offset: 1,
@@ -699,16 +713,19 @@ mod tests {
         let elf = linker.link("main").unwrap();
 
         // Check ELF header fields
-        assert_eq!(&elf[0..4], b"\x7FELF");  // Magic
-        assert_eq!(elf[4], 2);               // 64-bit
-        assert_eq!(elf[5], 1);               // Little endian
-        assert_eq!(elf[6], 1);               // ELF version
-        assert_eq!(elf[16], 2);              // ET_EXEC
+        assert_eq!(&elf[0..4], b"\x7FELF"); // Magic
+        assert_eq!(elf[4], 2); // 64-bit
+        assert_eq!(elf[5], 1); // Little endian
+        assert_eq!(elf[6], 1); // ELF version
+        assert_eq!(elf[16], 2); // ET_EXEC
         assert_eq!(u16::from_le_bytes([elf[18], elf[19]]), 0x3E); // x86-64
 
         // Check entry point is set (bytes 24-31)
         let entry = u64::from_le_bytes(elf[24..32].try_into().unwrap());
-        assert!(entry >= 0x400000, "entry point should be at or above base address");
+        assert!(
+            entry >= 0x400000,
+            "entry point should be at or above base address"
+        );
     }
 
     #[test]
@@ -728,11 +745,11 @@ mod tests {
         let ph_offset = 64;
 
         // p_type = PT_LOAD (1)
-        let p_type = u32::from_le_bytes(elf[ph_offset..ph_offset+4].try_into().unwrap());
+        let p_type = u32::from_le_bytes(elf[ph_offset..ph_offset + 4].try_into().unwrap());
         assert_eq!(p_type, 1);
 
         // p_flags = PF_R | PF_W | PF_X (7)
-        let p_flags = u32::from_le_bytes(elf[ph_offset+4..ph_offset+8].try_into().unwrap());
+        let p_flags = u32::from_le_bytes(elf[ph_offset + 4..ph_offset + 8].try_into().unwrap());
         assert_eq!(p_flags, 7);
     }
 
@@ -754,7 +771,7 @@ mod tests {
         let helper1_bytes = ObjectBuilder::new(ELF_TARGET, "helper1")
             .code(vec![
                 0xB8, 0x0A, 0x00, 0x00, 0x00, // mov eax, 10
-                0xC3,                         // ret
+                0xC3, // ret
             ])
             .build();
 
@@ -762,7 +779,7 @@ mod tests {
         let helper2_bytes = ObjectBuilder::new(ELF_TARGET, "helper2")
             .code(vec![
                 0xB8, 0x20, 0x00, 0x00, 0x00, // mov eax, 32
-                0xC3,                         // ret
+                0xC3, // ret
             ])
             .build();
 
@@ -773,14 +790,11 @@ mod tests {
                 // call helper1
                 0xE8, 0x00, 0x00, 0x00, 0x00, // call helper1 (offset 1)
                 // push rax (save result)
-                0x50,
-                // call helper2
+                0x50, // call helper2
                 0xE8, 0x00, 0x00, 0x00, 0x00, // call helper2 (offset 7)
                 // pop rbx
-                0x5B,
-                // add eax, ebx
-                0x01, 0xD8,
-                // ret
+                0x5B, // add eax, ebx
+                0x01, 0xD8, // ret
                 0xC3,
             ])
             .relocation(CodeRelocation {

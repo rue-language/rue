@@ -92,9 +92,9 @@ impl Archive {
             let size_str = std::str::from_utf8(&header[48..58])
                 .map_err(|_| ArchiveError::InvalidHeader("invalid size encoding".into()))?
                 .trim();
-            let size: usize = size_str
-                .parse()
-                .map_err(|_| ArchiveError::InvalidHeader(format!("invalid size: '{}'", size_str)))?;
+            let size: usize = size_str.parse().map_err(|_| {
+                ArchiveError::InvalidHeader(format!("invalid size: '{}'", size_str))
+            })?;
 
             // Header terminator should be "`\n"
             if &header[58..60] != b"`\n" {

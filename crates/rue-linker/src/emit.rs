@@ -76,7 +76,7 @@ impl ObjectBuilder {
 
         // String tables
         let mut shstrtab = vec![0u8]; // Section header string table
-        let mut strtab = vec![0u8];   // Symbol string table
+        let mut strtab = vec![0u8]; // Symbol string table
 
         // Add section names to shstrtab
         let shstrtab_text = shstrtab.len();
@@ -122,7 +122,7 @@ impl ObjectBuilder {
         // Symbol 1: .text section symbol
         symtab.extend_from_slice(&0_u32.to_le_bytes()); // st_name (empty)
         symtab.push(0x03); // st_info: STB_LOCAL, STT_SECTION
-        symtab.push(0);    // st_other
+        symtab.push(0); // st_other
         symtab.extend_from_slice(&1_u16.to_le_bytes()); // st_shndx: .text section
         symtab.extend_from_slice(&0_u64.to_le_bytes()); // st_value
         symtab.extend_from_slice(&0_u64.to_le_bytes()); // st_size
@@ -130,7 +130,7 @@ impl ObjectBuilder {
         // Symbol 2: the function (global)
         symtab.extend_from_slice(&(strtab_name as u32).to_le_bytes()); // st_name
         symtab.push(0x12); // st_info: STB_GLOBAL, STT_FUNC
-        symtab.push(0);    // st_other
+        symtab.push(0); // st_other
         symtab.extend_from_slice(&1_u16.to_le_bytes()); // st_shndx: .text
         symtab.extend_from_slice(&0_u64.to_le_bytes()); // st_value
         symtab.extend_from_slice(&(self.code.len() as u64).to_le_bytes()); // st_size
@@ -140,7 +140,7 @@ impl ObjectBuilder {
         for (i, _sym) in extern_symbols.iter().enumerate() {
             symtab.extend_from_slice(&(extern_symbol_offsets[i] as u32).to_le_bytes()); // st_name
             symtab.push(0x10); // st_info: STB_GLOBAL, STT_NOTYPE
-            symtab.push(0);    // st_other
+            symtab.push(0); // st_other
             symtab.extend_from_slice(&0_u16.to_le_bytes()); // st_shndx: SHN_UNDEF
             symtab.extend_from_slice(&0_u64.to_le_bytes()); // st_value
             symtab.extend_from_slice(&0_u64.to_le_bytes()); // st_size
@@ -149,7 +149,11 @@ impl ObjectBuilder {
         // Build relocation table
         let mut rela = Vec::new();
         for reloc in &self.relocations {
-            let sym_idx = extern_symbols.iter().position(|s| s == &reloc.symbol).unwrap() + first_extern_sym;
+            let sym_idx = extern_symbols
+                .iter()
+                .position(|s| s == &reloc.symbol)
+                .unwrap()
+                + first_extern_sym;
             let r_type: u32 = match reloc.rel_type {
                 RelocationType::Abs64 => 1,
                 RelocationType::Pc32 => 2,
@@ -442,7 +446,9 @@ impl ObjectBuilder {
         macho.extend_from_slice(&2_u32.to_le_bytes()); // align (2^2 = 4 byte alignment)
         macho.extend_from_slice(&(reloc_offset as u32).to_le_bytes()); // reloff
         macho.extend_from_slice(&(num_relocs as u32).to_le_bytes()); // nreloc
-        macho.extend_from_slice(&(S_ATTR_PURE_INSTRUCTIONS | S_ATTR_SOME_INSTRUCTIONS).to_le_bytes()); // flags
+        macho.extend_from_slice(
+            &(S_ATTR_PURE_INSTRUCTIONS | S_ATTR_SOME_INSTRUCTIONS).to_le_bytes(),
+        ); // flags
         macho.extend_from_slice(&0_u32.to_le_bytes()); // reserved1
         macho.extend_from_slice(&0_u32.to_le_bytes()); // reserved2
         macho.extend_from_slice(&0_u32.to_le_bytes()); // reserved3 (64-bit only)
@@ -506,7 +512,7 @@ impl ObjectBuilder {
                 | (1 << 24)  // r_pcrel (bit 24)
                 | (2 << 25)  // r_length (bits 25-26) - 2 means 4 bytes
                 | (1 << 27)  // r_extern (bit 27)
-                | (r_type << 28);  // r_type (bits 28-31)
+                | (r_type << 28); // r_type (bits 28-31)
             macho.extend_from_slice(&info.to_le_bytes());
         }
 
@@ -524,7 +530,7 @@ impl ObjectBuilder {
         // n_value: 8 bytes
 
         // Symbol constants
-        const N_EXT: u8 = 0x01;  // External symbol
+        const N_EXT: u8 = 0x01; // External symbol
         const N_SECT: u8 = 0x0E; // Defined in section
 
         // Local symbol: the function itself
@@ -685,10 +691,16 @@ mod tests {
         assert!(callee.section_index.is_none(), "callee should be undefined");
 
         // Verify relocations exist
-        let text_section = parsed.sections.iter()
+        let text_section = parsed
+            .sections
+            .iter()
             .find(|s| s.name == ".text")
             .expect("should have .text section");
-        assert_eq!(text_section.relocations.len(), 1, "should have one relocation");
+        assert_eq!(
+            text_section.relocations.len(),
+            1,
+            "should have one relocation"
+        );
         assert_eq!(text_section.relocations[0].offset, 1);
         assert_eq!(text_section.relocations[0].addend, -4);
     }
@@ -725,15 +737,19 @@ mod tests {
         let parsed = ObjectFile::parse(&built).expect("should parse built object");
 
         // Verify the text section has 3 relocations
-        let text_section = parsed.sections.iter()
+        let text_section = parsed
+            .sections
+            .iter()
             .find(|s| s.name == ".text")
             .expect("should have .text section");
-        assert_eq!(text_section.relocations.len(), 3, "should have three relocations");
+        assert_eq!(
+            text_section.relocations.len(),
+            3,
+            "should have three relocations"
+        );
 
         // func1 should only appear once in the symbol table
-        let func1_count = parsed.symbols.iter()
-            .filter(|s| s.name == "func1")
-            .count();
+        let func1_count = parsed.symbols.iter().filter(|s| s.name == "func1").count();
         assert_eq!(func1_count, 1, "func1 should appear once in symbol table");
     }
 
@@ -772,9 +788,12 @@ mod tests {
             })
             .build();
 
-        let parsed = ObjectFile::parse(&built).expect("should parse object with various reloc types");
+        let parsed =
+            ObjectFile::parse(&built).expect("should parse object with various reloc types");
 
-        let text_section = parsed.sections.iter()
+        let text_section = parsed
+            .sections
+            .iter()
             .find(|s| s.name == ".text")
             .expect("should have .text section");
         assert_eq!(text_section.relocations.len(), 3);

@@ -7,6 +7,19 @@ on:
     branches: [trunk]
 
 jobs:
+  fmt:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+
+      - name: Check formatting
+        run: ./fmt.sh check
+
   test:
     strategy:
       matrix:

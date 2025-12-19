@@ -77,11 +77,15 @@ pub enum CfgInstData {
     BoolConst(bool),
 
     /// Reference to a function parameter
-    Param { index: u32 },
+    Param {
+        index: u32,
+    },
 
     /// Block parameter (like phi, but explicit)
     /// Only valid at the start of a block
-    BlockParam { index: u32 },
+    BlockParam {
+        index: u32,
+    },
 
     // Binary arithmetic operations
     Add(CfgValue, CfgValue),
@@ -108,22 +112,48 @@ pub enum CfgInstData {
 
     // Variable operations
     /// Allocate local variable with initial value
-    Alloc { slot: u32, init: CfgValue },
+    Alloc {
+        slot: u32,
+        init: CfgValue,
+    },
     /// Load value from local variable
-    Load { slot: u32 },
+    Load {
+        slot: u32,
+    },
     /// Store value to local variable
-    Store { slot: u32, value: CfgValue },
+    Store {
+        slot: u32,
+        value: CfgValue,
+    },
 
     // Function calls
-    Call { name: String, args: Vec<CfgValue> },
+    Call {
+        name: String,
+        args: Vec<CfgValue>,
+    },
 
     /// Intrinsic call (e.g., @dbg)
-    Intrinsic { name: String, args: Vec<CfgValue> },
+    Intrinsic {
+        name: String,
+        args: Vec<CfgValue>,
+    },
 
     // Struct operations
-    StructInit { struct_id: StructId, fields: Vec<CfgValue> },
-    FieldGet { base: CfgValue, struct_id: StructId, field_index: u32 },
-    FieldSet { slot: u32, struct_id: StructId, field_index: u32, value: CfgValue },
+    StructInit {
+        struct_id: StructId,
+        fields: Vec<CfgValue>,
+    },
+    FieldGet {
+        base: CfgValue,
+        struct_id: StructId,
+        field_index: u32,
+    },
+    FieldSet {
+        slot: u32,
+        struct_id: StructId,
+        field_index: u32,
+        value: CfgValue,
+    },
 }
 
 /// Block terminator - how control leaves a basic block.
@@ -331,7 +361,11 @@ impl Cfg {
                 Terminator::Goto { target, .. } => {
                     edges.push((block.id, *target));
                 }
-                Terminator::Branch { then_block, else_block, .. } => {
+                Terminator::Branch {
+                    then_block,
+                    else_block,
+                    ..
+                } => {
                     edges.push((block.id, *then_block));
                     edges.push((block.id, *else_block));
                 }
@@ -348,7 +382,12 @@ impl Cfg {
 
 impl fmt::Display for Cfg {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        writeln!(f, "cfg {} (return_type: {}) {{", self.fn_name, self.return_type.name())?;
+        writeln!(
+            f,
+            "cfg {} (return_type: {}) {{",
+            self.fn_name,
+            self.return_type.name()
+        )?;
         for block in &self.blocks {
             write!(f, "  {}:", block.id)?;
             if !block.params.is_empty() {
@@ -399,7 +438,13 @@ impl fmt::Display for Cfg {
                         write!(f, ")")?;
                     }
                 }
-                Terminator::Branch { cond, then_block, then_args, else_block, else_args } => {
+                Terminator::Branch {
+                    cond,
+                    then_block,
+                    then_args,
+                    else_block,
+                    else_args,
+                } => {
                     write!(f, "branch {}, {}", cond, then_block)?;
                     if !then_args.is_empty() {
                         write!(f, "(")?;
@@ -495,11 +540,24 @@ impl Cfg {
                 }
                 write!(f, "}}")
             }
-            CfgInstData::FieldGet { base, struct_id, field_index } => {
+            CfgInstData::FieldGet {
+                base,
+                struct_id,
+                field_index,
+            } => {
                 write!(f, "field_get {}.#{}.{}", base, struct_id.0, field_index)
             }
-            CfgInstData::FieldSet { slot, struct_id, field_index, value } => {
-                write!(f, "field_set ${}.#{}.{} = {}", slot, struct_id.0, field_index, value)
+            CfgInstData::FieldSet {
+                slot,
+                struct_id,
+                field_index,
+                value,
+            } => {
+                write!(
+                    f,
+                    "field_set ${}.#{}.{} = {}",
+                    slot, struct_id.0, field_index, value
+                )
             }
         }
     }
@@ -525,11 +583,14 @@ mod tests {
         let entry = cfg.new_block();
         cfg.entry = entry;
 
-        let const_val = cfg.add_inst_to_block(entry, CfgInst {
-            data: CfgInstData::Const(42),
-            ty: Type::I32,
-            span: Span::new(0, 2),
-        });
+        let const_val = cfg.add_inst_to_block(
+            entry,
+            CfgInst {
+                data: CfgInstData::Const(42),
+                ty: Type::I32,
+                span: Span::new(0, 2),
+            },
+        );
 
         cfg.set_terminator(entry, Terminator::Return { value: const_val });
 

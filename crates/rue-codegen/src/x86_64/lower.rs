@@ -185,8 +185,12 @@ impl<'a> Lower<'a> {
                 });
                 // Check for overflow and call error handler if set
                 let ok_label = self.new_label("add_ok");
-                self.mir.push(X86Inst::Jno { label: ok_label.clone() });
-                self.mir.push(X86Inst::CallRel { symbol: "__rue_overflow".to_string() });
+                self.mir.push(X86Inst::Jno {
+                    label: ok_label.clone(),
+                });
+                self.mir.push(X86Inst::CallRel {
+                    symbol: "__rue_overflow".to_string(),
+                });
                 self.mir.push(X86Inst::Label { name: ok_label });
             }
 
@@ -207,8 +211,12 @@ impl<'a> Lower<'a> {
                 });
                 // Check for overflow and call error handler if set
                 let ok_label = self.new_label("sub_ok");
-                self.mir.push(X86Inst::Jno { label: ok_label.clone() });
-                self.mir.push(X86Inst::CallRel { symbol: "__rue_overflow".to_string() });
+                self.mir.push(X86Inst::Jno {
+                    label: ok_label.clone(),
+                });
+                self.mir.push(X86Inst::CallRel {
+                    symbol: "__rue_overflow".to_string(),
+                });
                 self.mir.push(X86Inst::Label { name: ok_label });
             }
 
@@ -230,8 +238,12 @@ impl<'a> Lower<'a> {
                 });
                 // Check for overflow and call error handler if set
                 let ok_label = self.new_label("mul_ok");
-                self.mir.push(X86Inst::Jno { label: ok_label.clone() });
-                self.mir.push(X86Inst::CallRel { symbol: "__rue_overflow".to_string() });
+                self.mir.push(X86Inst::Jno {
+                    label: ok_label.clone(),
+                });
+                self.mir.push(X86Inst::CallRel {
+                    symbol: "__rue_overflow".to_string(),
+                });
                 self.mir.push(X86Inst::Label { name: ok_label });
             }
 
@@ -248,8 +260,12 @@ impl<'a> Lower<'a> {
                     src1: Operand::Virtual(rhs_vreg),
                     src2: Operand::Virtual(rhs_vreg),
                 });
-                self.mir.push(X86Inst::Jnz { label: ok_label.clone() });
-                self.mir.push(X86Inst::CallRel { symbol: "__rue_div_by_zero".to_string() });
+                self.mir.push(X86Inst::Jnz {
+                    label: ok_label.clone(),
+                });
+                self.mir.push(X86Inst::CallRel {
+                    symbol: "__rue_div_by_zero".to_string(),
+                });
                 self.mir.push(X86Inst::Label { name: ok_label });
 
                 // Division on x86 uses EDX:EAX / divisor -> quotient in EAX, remainder in EDX
@@ -288,8 +304,12 @@ impl<'a> Lower<'a> {
                     src1: Operand::Virtual(rhs_vreg),
                     src2: Operand::Virtual(rhs_vreg),
                 });
-                self.mir.push(X86Inst::Jnz { label: ok_label.clone() });
-                self.mir.push(X86Inst::CallRel { symbol: "__rue_div_by_zero".to_string() });
+                self.mir.push(X86Inst::Jnz {
+                    label: ok_label.clone(),
+                });
+                self.mir.push(X86Inst::CallRel {
+                    symbol: "__rue_div_by_zero".to_string(),
+                });
                 self.mir.push(X86Inst::Label { name: ok_label });
 
                 // Modulo uses the same idiv instruction, but takes remainder from EDX
@@ -327,8 +347,12 @@ impl<'a> Lower<'a> {
                 });
                 // Check for overflow (only happens when negating i32::MIN)
                 let ok_label = self.new_label("neg_ok");
-                self.mir.push(X86Inst::Jno { label: ok_label.clone() });
-                self.mir.push(X86Inst::CallRel { symbol: "__rue_overflow".to_string() });
+                self.mir.push(X86Inst::Jno {
+                    label: ok_label.clone(),
+                });
+                self.mir.push(X86Inst::CallRel {
+                    symbol: "__rue_overflow".to_string(),
+                });
                 self.mir.push(X86Inst::Label { name: ok_label });
             }
 
@@ -579,7 +603,9 @@ impl<'a> Lower<'a> {
                     src: Operand::Virtual(lhs_vreg),
                     imm: 0,
                 });
-                self.mir.push(X86Inst::Jz { label: false_label.clone() });
+                self.mir.push(X86Inst::Jz {
+                    label: false_label.clone(),
+                });
 
                 // LHS was true - evaluate RHS (demand-driven, only lowered here)
                 let rhs_vreg = self.get_vreg(*rhs);
@@ -587,7 +613,9 @@ impl<'a> Lower<'a> {
                     dst: Operand::Virtual(vreg),
                     src: Operand::Virtual(rhs_vreg),
                 });
-                self.mir.push(X86Inst::Jmp { label: end_label.clone() });
+                self.mir.push(X86Inst::Jmp {
+                    label: end_label.clone(),
+                });
 
                 // Short-circuit path: result is false
                 self.mir.push(X86Inst::Label { name: false_label });
@@ -617,7 +645,9 @@ impl<'a> Lower<'a> {
                     src: Operand::Virtual(lhs_vreg),
                     imm: 0,
                 });
-                self.mir.push(X86Inst::Jnz { label: true_label.clone() });
+                self.mir.push(X86Inst::Jnz {
+                    label: true_label.clone(),
+                });
 
                 // LHS was false - evaluate RHS (demand-driven, only lowered here)
                 let rhs_vreg = self.get_vreg(*rhs);
@@ -625,7 +655,9 @@ impl<'a> Lower<'a> {
                     dst: Operand::Virtual(vreg),
                     src: Operand::Virtual(rhs_vreg),
                 });
-                self.mir.push(X86Inst::Jmp { label: end_label.clone() });
+                self.mir.push(X86Inst::Jmp {
+                    label: end_label.clone(),
+                });
 
                 // Short-circuit path: result is true
                 self.mir.push(X86Inst::Label { name: true_label });
@@ -637,7 +669,11 @@ impl<'a> Lower<'a> {
                 self.mir.push(X86Inst::Label { name: end_label });
             }
 
-            AirInstData::Branch { cond, then_value, else_value } => {
+            AirInstData::Branch {
+                cond,
+                then_value,
+                else_value,
+            } => {
                 let vreg = self.mir.alloc_vreg();
                 self.value_map[air_ref.as_u32() as usize] = Some(vreg);
 
@@ -657,7 +693,9 @@ impl<'a> Lower<'a> {
                         src: Operand::Virtual(cond_vreg),
                         imm: 0,
                     });
-                    self.mir.push(X86Inst::Jz { label: else_label.clone() });
+                    self.mir.push(X86Inst::Jz {
+                        label: else_label.clone(),
+                    });
 
                     // Then branch
                     // If then is Never (divergent), just lower it for side effects (the jump)
@@ -671,7 +709,9 @@ impl<'a> Lower<'a> {
                             dst: Operand::Virtual(vreg),
                             src: Operand::Virtual(then_vreg),
                         });
-                        self.mir.push(X86Inst::Jmp { label: end_label.clone() });
+                        self.mir.push(X86Inst::Jmp {
+                            label: end_label.clone(),
+                        });
                     }
 
                     // Else branch
@@ -699,7 +739,9 @@ impl<'a> Lower<'a> {
                         src: Operand::Virtual(cond_vreg),
                         imm: 0,
                     });
-                    self.mir.push(X86Inst::Jz { label: end_label.clone() });
+                    self.mir.push(X86Inst::Jz {
+                        label: end_label.clone(),
+                    });
 
                     // Then branch - even if it's Never, we still lower it
                     if then_type.is_never() {
@@ -742,7 +784,9 @@ impl<'a> Lower<'a> {
                 });
 
                 // Loop start label
-                self.mir.push(X86Inst::Label { name: loop_start.clone() });
+                self.mir.push(X86Inst::Label {
+                    name: loop_start.clone(),
+                });
 
                 // Evaluate condition fresh each iteration
                 // We need to re-lower it each time, but since we're in a loop,
@@ -757,15 +801,17 @@ impl<'a> Lower<'a> {
                 // Solution: Generate the condition check inline each iteration
                 // by re-lowering the condition instructions.
                 self.demand_lower(*cond);
-                let cond_vreg = self.value_map[cond.as_u32() as usize]
-                    .expect("condition should be lowered");
+                let cond_vreg =
+                    self.value_map[cond.as_u32() as usize].expect("condition should be lowered");
 
                 // If condition is false (zero), exit loop
                 self.mir.push(X86Inst::CmpRI {
                     src: Operand::Virtual(cond_vreg),
                     imm: 0,
                 });
-                self.mir.push(X86Inst::Jz { label: loop_end.clone() });
+                self.mir.push(X86Inst::Jz {
+                    label: loop_end.clone(),
+                });
 
                 // Execute body
                 self.demand_lower(*body);
@@ -807,7 +853,10 @@ impl<'a> Lower<'a> {
             AirInstData::Break => {
                 // Break: exit the innermost loop by jumping to its end label.
                 // The loop context was validated by Sema, so we know we're in a loop.
-                let ctx = self.loop_stack.last().expect("break outside loop should be caught by sema");
+                let ctx = self
+                    .loop_stack
+                    .last()
+                    .expect("break outside loop should be caught by sema");
                 let break_label = ctx.break_label.clone();
 
                 // Jump to loop end. No vreg allocation needed - break is a diverging
@@ -821,12 +870,17 @@ impl<'a> Lower<'a> {
                 // The values will be cleared when we reach the jump back at the normal
                 // end of the loop body. If we cleared here, we'd corrupt the ongoing
                 // lowering process.
-                let ctx = self.loop_stack.last().expect("continue outside loop should be caught by sema");
+                let ctx = self
+                    .loop_stack
+                    .last()
+                    .expect("continue outside loop should be caught by sema");
                 let continue_label = ctx.continue_label.clone();
 
                 // Jump to loop start (condition check). No vreg allocation needed -
                 // continue is a diverging control flow statement.
-                self.mir.push(X86Inst::Jmp { label: continue_label });
+                self.mir.push(X86Inst::Jmp {
+                    label: continue_label,
+                });
             }
 
             AirInstData::Ret(value_ref) => {
@@ -869,7 +923,9 @@ impl<'a> Lower<'a> {
                         AirInstData::StructInit { .. } => {
                             // Returning a struct literal - get field vregs from struct_field_vregs
                             self.demand_lower(*value_ref);
-                            if let Some(field_vregs) = self.struct_field_vregs.get(value_ref).cloned() {
+                            if let Some(field_vregs) =
+                                self.struct_field_vregs.get(value_ref).cloned()
+                            {
                                 // Move each field to the corresponding return register
                                 for (i, field_vreg) in field_vregs.iter().enumerate() {
                                     if i < RET_REGS.len() {
@@ -910,7 +966,9 @@ impl<'a> Lower<'a> {
                             // Returning result of another function call that returns a struct
                             // The call will have already set up struct_field_vregs for us
                             self.demand_lower(*value_ref);
-                            if let Some(field_vregs) = self.struct_field_vregs.get(value_ref).cloned() {
+                            if let Some(field_vregs) =
+                                self.struct_field_vregs.get(value_ref).cloned()
+                            {
                                 for (i, field_vreg) in field_vregs.iter().enumerate() {
                                     if i < RET_REGS.len() {
                                         self.mir.push(X86Inst::MovRR {
@@ -927,7 +985,9 @@ impl<'a> Lower<'a> {
                             // For now, just lower the branch and use its result
                             // (this works for single-field structs but needs more work for multi-field)
                             self.demand_lower(*value_ref);
-                            if let Some(field_vregs) = self.struct_field_vregs.get(value_ref).cloned() {
+                            if let Some(field_vregs) =
+                                self.struct_field_vregs.get(value_ref).cloned()
+                            {
                                 for (i, field_vreg) in field_vregs.iter().enumerate() {
                                     if i < RET_REGS.len() {
                                         self.mir.push(X86Inst::MovRR {
@@ -1326,7 +1386,10 @@ impl<'a> Lower<'a> {
                 }
             }
 
-            AirInstData::StructInit { struct_id: _, fields } => {
+            AirInstData::StructInit {
+                struct_id: _,
+                fields,
+            } => {
                 // Struct initialization: evaluate all fields and save their vregs.
                 // The actual storage to stack slots is handled by Alloc.
                 let vreg = self.mir.alloc_vreg();
@@ -1357,7 +1420,11 @@ impl<'a> Lower<'a> {
                 self.struct_field_vregs.insert(air_ref, field_vregs);
             }
 
-            AirInstData::FieldGet { base, struct_id: _, field_index } => {
+            AirInstData::FieldGet {
+                base,
+                struct_id: _,
+                field_index,
+            } => {
                 // Field access: load from base_slot + field_index.
                 // The base can be:
                 // - Load: struct is a local variable
@@ -1403,7 +1470,12 @@ impl<'a> Lower<'a> {
                 }
             }
 
-            AirInstData::FieldSet { slot, struct_id: _, field_index, value } => {
+            AirInstData::FieldSet {
+                slot,
+                struct_id: _,
+                field_index,
+                value,
+            } => {
                 // Field assignment: store value to slot + field_index
                 let value_vreg = self.get_vreg(*value);
 
@@ -1452,8 +1524,7 @@ impl<'a> Lower<'a> {
         self.lower_inst(air_ref, &data);
 
         // Should be lowered now
-        self.value_map[air_ref.as_u32() as usize]
-            .expect("instruction should have been lowered")
+        self.value_map[air_ref.as_u32() as usize].expect("instruction should have been lowered")
     }
 
     /// Lower an instruction for its side effects only, not expecting a value.
@@ -1536,7 +1607,11 @@ impl<'a> Lower<'a> {
                 }
                 self.clear_transitive_deps(value);
             }
-            AirInstData::Branch { cond, then_value, else_value } => {
+            AirInstData::Branch {
+                cond,
+                then_value,
+                else_value,
+            } => {
                 self.clear_transitive_deps(cond);
                 self.clear_transitive_deps(then_value);
                 if let Some(else_v) = else_value {

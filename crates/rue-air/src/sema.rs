@@ -178,7 +178,8 @@ impl<'a> Sema<'a> {
                     })
                     .collect::<CompileResult<Vec<_>>>()?;
 
-                let (air, num_locals, num_param_slots) = self.analyze_function(ret_type, &param_info, *body)?;
+                let (air, num_locals, num_param_slots) =
+                    self.analyze_function(ret_type, &param_info, *body)?;
 
                 result.push(AnalyzedFunction {
                     name: fn_name,
@@ -356,7 +357,11 @@ impl<'a> Sema<'a> {
 
             InstData::Add { lhs, rhs } => {
                 // Use expected type if it's an integer, otherwise default to i32
-                let op_type = if expected_type.is_integer() { expected_type } else { Type::I32 };
+                let op_type = if expected_type.is_integer() {
+                    expected_type
+                } else {
+                    Type::I32
+                };
                 let lhs_ref = self.analyze_inst(air, *lhs, op_type, ctx)?;
                 let rhs_ref = self.analyze_inst(air, *rhs, op_type, ctx)?;
 
@@ -368,7 +373,11 @@ impl<'a> Sema<'a> {
             }
 
             InstData::Sub { lhs, rhs } => {
-                let op_type = if expected_type.is_integer() { expected_type } else { Type::I32 };
+                let op_type = if expected_type.is_integer() {
+                    expected_type
+                } else {
+                    Type::I32
+                };
                 let lhs_ref = self.analyze_inst(air, *lhs, op_type, ctx)?;
                 let rhs_ref = self.analyze_inst(air, *rhs, op_type, ctx)?;
 
@@ -380,7 +389,11 @@ impl<'a> Sema<'a> {
             }
 
             InstData::Mul { lhs, rhs } => {
-                let op_type = if expected_type.is_integer() { expected_type } else { Type::I32 };
+                let op_type = if expected_type.is_integer() {
+                    expected_type
+                } else {
+                    Type::I32
+                };
                 let lhs_ref = self.analyze_inst(air, *lhs, op_type, ctx)?;
                 let rhs_ref = self.analyze_inst(air, *rhs, op_type, ctx)?;
 
@@ -392,7 +405,11 @@ impl<'a> Sema<'a> {
             }
 
             InstData::Div { lhs, rhs } => {
-                let op_type = if expected_type.is_integer() { expected_type } else { Type::I32 };
+                let op_type = if expected_type.is_integer() {
+                    expected_type
+                } else {
+                    Type::I32
+                };
                 let lhs_ref = self.analyze_inst(air, *lhs, op_type, ctx)?;
                 let rhs_ref = self.analyze_inst(air, *rhs, op_type, ctx)?;
 
@@ -404,7 +421,11 @@ impl<'a> Sema<'a> {
             }
 
             InstData::Mod { lhs, rhs } => {
-                let op_type = if expected_type.is_integer() { expected_type } else { Type::I32 };
+                let op_type = if expected_type.is_integer() {
+                    expected_type
+                } else {
+                    Type::I32
+                };
                 let lhs_ref = self.analyze_inst(air, *lhs, op_type, ctx)?;
                 let rhs_ref = self.analyze_inst(air, *rhs, op_type, ctx)?;
 
@@ -506,7 +527,11 @@ impl<'a> Sema<'a> {
             }
 
             InstData::Neg { operand } => {
-                let op_type = if expected_type.is_integer() { expected_type } else { Type::I32 };
+                let op_type = if expected_type.is_integer() {
+                    expected_type
+                } else {
+                    Type::I32
+                };
 
                 // Special case: -2147483648 (MIN_I32)
                 // The literal 2147483648 exceeds i32::MAX, but -2147483648 is valid.
@@ -542,7 +567,11 @@ impl<'a> Sema<'a> {
                 }))
             }
 
-            InstData::Branch { cond, then_block, else_block } => {
+            InstData::Branch {
+                cond,
+                then_block,
+                else_block,
+            } => {
                 // Condition must be bool
                 let cond_ref = self.analyze_inst(air, *cond, Type::Bool, ctx)?;
 
@@ -562,7 +591,11 @@ impl<'a> Sema<'a> {
                     // If then branch is Never, use expected_type for else (so it determines the result)
                     // Otherwise use then_type as the expectation
                     ctx.locals = saved_locals.clone();
-                    let else_expected = if then_type.is_never() { expected_type } else { then_type };
+                    let else_expected = if then_type.is_never() {
+                        expected_type
+                    } else {
+                        then_type
+                    };
                     let else_ref = self.analyze_inst(air, *else_b, else_expected, ctx)?;
                     let else_type = air.get(else_ref).ty;
 
@@ -576,7 +609,10 @@ impl<'a> Sema<'a> {
                         (false, true) => then_type,
                         (false, false) => {
                             // Neither diverges - types must match exactly
-                            if then_type != else_type && !then_type.is_error() && !else_type.is_error() {
+                            if then_type != else_type
+                                && !then_type.is_error()
+                                && !else_type.is_error()
+                            {
                                 return Err(CompileError::new(
                                     ErrorKind::TypeMismatch {
                                         expected: then_type.name().to_string(),
@@ -661,7 +697,12 @@ impl<'a> Sema<'a> {
                 }))
             }
 
-            InstData::Alloc { name, is_mut, ty, init } => {
+            InstData::Alloc {
+                name,
+                is_mut,
+                ty,
+                init,
+            } => {
                 // Determine the type from annotation or infer from initializer
                 let var_type = if let Some(type_sym) = ty {
                     // Resolve the type annotation (supports structs too)
@@ -677,7 +718,9 @@ impl<'a> Sema<'a> {
                 // Allocate slots - structs need multiple slots (one per field)
                 let slot = ctx.next_slot;
                 let num_slots = match var_type {
-                    Type::Struct(struct_id) => self.struct_defs[struct_id.0 as usize].field_count() as u32,
+                    Type::Struct(struct_id) => {
+                        self.struct_defs[struct_id.0 as usize].field_count() as u32
+                    }
                     _ => 1,
                 };
                 ctx.next_slot += num_slots;
@@ -695,7 +738,10 @@ impl<'a> Sema<'a> {
 
                 // Emit the alloc instruction
                 Ok(air.add_inst(AirInst {
-                    data: AirInstData::Alloc { slot, init: init_ref },
+                    data: AirInstData::Alloc {
+                        slot,
+                        init: init_ref,
+                    },
                     ty: Type::Unit,
                     span: inst.span,
                 }))
@@ -707,7 +753,10 @@ impl<'a> Sema<'a> {
                     let ty = param_info.ty;
 
                     // Type check - allow Unit context (value is discarded)
-                    if ty != expected_type && expected_type != Type::Unit && !expected_type.is_error() {
+                    if ty != expected_type
+                        && expected_type != Type::Unit
+                        && !expected_type.is_error()
+                    {
                         return Err(CompileError::new(
                             ErrorKind::TypeMismatch {
                                 expected: expected_type.name().to_string(),
@@ -788,7 +837,10 @@ impl<'a> Sema<'a> {
 
                 // Emit store instruction
                 Ok(air.add_inst(AirInst {
-                    data: AirInstData::Store { slot, value: value_ref },
+                    data: AirInstData::Store {
+                        slot,
+                        value: value_ref,
+                    },
                     ty: Type::Unit,
                     span: inst.span,
                 }))
@@ -797,10 +849,7 @@ impl<'a> Sema<'a> {
             InstData::Break => {
                 // Validate that we're inside a loop
                 if ctx.loop_depth == 0 {
-                    return Err(CompileError::new(
-                        ErrorKind::BreakOutsideLoop,
-                        inst.span,
-                    ));
+                    return Err(CompileError::new(ErrorKind::BreakOutsideLoop, inst.span));
                 }
 
                 // Break has the never type - it diverges (doesn't produce a value)
@@ -814,10 +863,7 @@ impl<'a> Sema<'a> {
             InstData::Continue => {
                 // Validate that we're inside a loop
                 if ctx.loop_depth == 0 {
-                    return Err(CompileError::new(
-                        ErrorKind::ContinueOutsideLoop,
-                        inst.span,
-                    ));
+                    return Err(CompileError::new(ErrorKind::ContinueOutsideLoop, inst.span));
                 }
 
                 // Continue has the never type - it diverges (doesn't produce a value)
@@ -916,10 +962,7 @@ impl<'a> Sema<'a> {
                 // Look up the function
                 let fn_name_str = self.interner.get(*name).to_string();
                 let fn_info = self.functions.get(name).ok_or_else(|| {
-                    CompileError::new(
-                        ErrorKind::UndefinedFunction(fn_name_str.clone()),
-                        inst.span,
-                    )
+                    CompileError::new(ErrorKind::UndefinedFunction(fn_name_str.clone()), inst.span)
                 })?;
 
                 // Check argument count
@@ -944,7 +987,10 @@ impl<'a> Sema<'a> {
                 }
 
                 // Check that return type matches expected type (if we have an expectation)
-                if expected_type != Type::Unit && return_type != expected_type && !return_type.is_error() {
+                if expected_type != Type::Unit
+                    && return_type != expected_type
+                    && !return_type.is_error()
+                {
                     return Err(CompileError::new(
                         ErrorKind::TypeMismatch {
                             expected: expected_type.name().to_string(),
@@ -989,14 +1035,14 @@ impl<'a> Sema<'a> {
                 unreachable!("StructDecl should not appear in expression context")
             }
 
-            InstData::StructInit { type_name, fields: field_inits } => {
+            InstData::StructInit {
+                type_name,
+                fields: field_inits,
+            } => {
                 // Look up the struct type
                 let type_name_str = self.interner.get(*type_name);
                 let struct_id = *self.structs.get(type_name).ok_or_else(|| {
-                    CompileError::new(
-                        ErrorKind::UnknownType(type_name_str.to_string()),
-                        inst.span,
-                    )
+                    CompileError::new(ErrorKind::UnknownType(type_name_str.to_string()), inst.span)
                 })?;
 
                 // Clone struct def data before mutable borrow
@@ -1004,7 +1050,10 @@ impl<'a> Sema<'a> {
                 let struct_type = Type::Struct(struct_id);
 
                 // Type check: verify expected type matches
-                if struct_type != expected_type && expected_type != Type::Unit && !expected_type.is_error() {
+                if struct_type != expected_type
+                    && expected_type != Type::Unit
+                    && !expected_type.is_error()
+                {
                     return Err(CompileError::new(
                         ErrorKind::TypeMismatch {
                             expected: expected_type.name().to_string(),
@@ -1095,20 +1144,24 @@ impl<'a> Sema<'a> {
                 let struct_def = &self.struct_defs[struct_id.0 as usize];
                 let field_name_str = self.interner.get(*field).to_string();
 
-                let (field_index, struct_field) = struct_def.find_field(&field_name_str).ok_or_else(|| {
-                    CompileError::new(
-                        ErrorKind::UnknownField {
-                            struct_name: struct_def.name.clone(),
-                            field_name: field_name_str.clone(),
-                        },
-                        inst.span,
-                    )
-                })?;
+                let (field_index, struct_field) =
+                    struct_def.find_field(&field_name_str).ok_or_else(|| {
+                        CompileError::new(
+                            ErrorKind::UnknownField {
+                                struct_name: struct_def.name.clone(),
+                                field_name: field_name_str.clone(),
+                            },
+                            inst.span,
+                        )
+                    })?;
 
                 let field_type = struct_field.ty;
 
                 // Type check
-                if field_type != expected_type && expected_type != Type::Unit && !expected_type.is_error() {
+                if field_type != expected_type
+                    && expected_type != Type::Unit
+                    && !expected_type.is_error()
+                {
                     return Err(CompileError::new(
                         ErrorKind::TypeMismatch {
                             expected: expected_type.name().to_string(),
@@ -1178,15 +1231,16 @@ impl<'a> Sema<'a> {
                 let struct_def = &self.struct_defs[struct_id.0 as usize];
                 let field_name_str = self.interner.get(*field).to_string();
 
-                let (field_index, struct_field) = struct_def.find_field(&field_name_str).ok_or_else(|| {
-                    CompileError::new(
-                        ErrorKind::UnknownField {
-                            struct_name: struct_def.name.clone(),
-                            field_name: field_name_str.clone(),
-                        },
-                        inst.span,
-                    )
-                })?;
+                let (field_index, struct_field) =
+                    struct_def.find_field(&field_name_str).ok_or_else(|| {
+                        CompileError::new(
+                            ErrorKind::UnknownField {
+                                struct_name: struct_def.name.clone(),
+                                field_name: field_name_str.clone(),
+                            },
+                            inst.span,
+                        )
+                    })?;
 
                 let field_type = struct_field.ty;
 
@@ -1372,7 +1426,11 @@ impl<'a> Sema<'a> {
                     self.infer_type(last_ref, locals, params)
                 }
             }
-            InstData::Branch { then_block, else_block, .. } => {
+            InstData::Branch {
+                then_block,
+                else_block,
+                ..
+            } => {
                 // The type of an if/else comes from the non-divergent branch.
                 // If both branches diverge (both Never), the result is Never.
                 // If one branch is Never, the result is the other branch's type.
@@ -1410,7 +1468,10 @@ impl<'a> Sema<'a> {
                 })?;
                 Ok(param_info.ty)
             }
-            InstData::Alloc { .. } | InstData::Assign { .. } | InstData::Ret(_) | InstData::Loop { .. } => Ok(Type::Unit),
+            InstData::Alloc { .. }
+            | InstData::Assign { .. }
+            | InstData::Ret(_)
+            | InstData::Loop { .. } => Ok(Type::Unit),
             InstData::Break | InstData::Continue => Ok(Type::Never),
             InstData::FnDecl { .. } | InstData::StructDecl { .. } => {
                 unreachable!("FnDecl/StructDecl should not appear in expression context")
@@ -1419,10 +1480,7 @@ impl<'a> Sema<'a> {
                 // Look up the struct type
                 let struct_id = self.structs.get(type_name).ok_or_else(|| {
                     let type_name_str = self.interner.get(*type_name);
-                    CompileError::new(
-                        ErrorKind::UnknownType(type_name_str.to_string()),
-                        inst.span,
-                    )
+                    CompileError::new(ErrorKind::UnknownType(type_name_str.to_string()), inst.span)
                 })?;
                 Ok(Type::Struct(*struct_id))
             }
@@ -1444,15 +1502,16 @@ impl<'a> Sema<'a> {
                 let struct_def = &self.struct_defs[struct_id.0 as usize];
                 let field_name_str = self.interner.get(*field).to_string();
 
-                let (_, struct_field) = struct_def.find_field(&field_name_str).ok_or_else(|| {
-                    CompileError::new(
-                        ErrorKind::UnknownField {
-                            struct_name: struct_def.name.clone(),
-                            field_name: field_name_str.clone(),
-                        },
-                        inst.span,
-                    )
-                })?;
+                let (_, struct_field) =
+                    struct_def.find_field(&field_name_str).ok_or_else(|| {
+                        CompileError::new(
+                            ErrorKind::UnknownField {
+                                struct_name: struct_def.name.clone(),
+                                field_name: field_name_str.clone(),
+                            },
+                            inst.span,
+                        )
+                    })?;
 
                 Ok(struct_field.ty)
             }
@@ -1559,7 +1618,10 @@ mod tests {
 
         // Check alloc instruction
         let alloc_inst = air.get(AirRef::from_raw(1));
-        assert!(matches!(alloc_inst.data, AirInstData::Alloc { slot: 0, .. }));
+        assert!(matches!(
+            alloc_inst.data,
+            AirInstData::Alloc { slot: 0, .. }
+        ));
 
         // Check load instruction
         let load_inst = air.get(AirRef::from_raw(2));
@@ -1580,7 +1642,10 @@ mod tests {
 
         // Check store instruction
         let store_inst = air.get(AirRef::from_raw(3));
-        assert!(matches!(store_inst.data, AirInstData::Store { slot: 0, .. }));
+        assert!(matches!(
+            store_inst.data,
+            AirInstData::Store { slot: 0, .. }
+        ));
 
         // Check block instruction groups statements
         let block_inst = air.get(AirRef::from_raw(5));
@@ -1605,7 +1670,8 @@ mod tests {
 
     #[test]
     fn test_multiple_variables() {
-        let functions = compile_to_air("fn main() -> i32 { let x = 10; let y = 20; x + y }").unwrap();
+        let functions =
+            compile_to_air("fn main() -> i32 { let x = 10; let y = 20; x + y }").unwrap();
 
         assert_eq!(functions[0].num_locals, 2);
     }
