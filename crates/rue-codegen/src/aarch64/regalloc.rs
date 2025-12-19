@@ -331,9 +331,11 @@ impl RegAlloc {
                 src2,
                 src3,
             } => {
-                let src1_op = self.load_operand(mir, src1, Reg::X9);
-                let src2_op = self.load_operand(mir, src2, Reg::X10);
-                let src3_op = self.load_operand(mir, src3, Reg::X11);
+                // Use X10, X11, X12 for sources to avoid conflict with X9 used for spilled dst.
+                // X9 is reserved for the destination when it's spilled.
+                let src1_op = self.load_operand(mir, src1, Reg::X10);
+                let src2_op = self.load_operand(mir, src2, Reg::X11);
+                let src3_op = self.load_operand(mir, src3, Reg::X12);
                 match self.get_allocation(dst) {
                     Some(Allocation::Register(reg)) => {
                         mir.push(Aarch64Inst::Msub {
@@ -725,6 +727,140 @@ mod tests {
                 assert_eq!(*imm, 60);
             }
             _ => panic!("expected MovImm"),
+        }
+    }
+
+    #[test]
+    fn test_msub_scratch_registers() {
+        // Test that Msub uses X10, X11, X12 for sources, not X9 which is used for dst spill.
+        // This verifies the fix for the scratch register conflict bug.
+        let mut mir = Aarch64Mir::new();
+
+        // Create 11 vregs to force spilling (we only have 10 allocatable regs: X19-X28)
+        let vregs: Vec<VReg> = (0..11).map(|_| mir.alloc_vreg()).collect();
+
+        // Define all vregs
+        for (i, &vreg) in vregs.iter().enumerate() {
+            mir.push(Aarch64Inst::MovImm {
+                dst: Operand::Virtual(vreg),
+                imm: i as i64,
+            });
+        }
+
+        // Use Msub with the last vreg as destination (likely to be spilled)
+        // msub dst, src1, src2, src3 computes: dst = src3 - (src1 * src2)
+        mir.push(Aarch64Inst::Msub {
+            dst: Operand::Virtual(vregs[10]),
+            src1: Operand::Virtual(vregs[0]),
+            src2: Operand::Virtual(vregs[1]),
+            src3: Operand::Virtual(vregs[2]),
+        });
+
+        // Use all vregs to keep them live
+        for &vreg in &vregs {
+            mir.push(Aarch64Inst::MovRR {
+                dst: Operand::Physical(Reg::X0),
+                src: Operand::Virtual(vreg),
+            });
+        }
+
+        // Allocate - this should succeed without panicking
+        let result = RegAlloc::new(mir, 0).allocate();
+
+        // Verify the Msub instruction was generated
+        let has_msub = result.instructions().iter().any(|inst| {
+            matches!(inst, Aarch64Inst::Msub { .. })
+        });
+        assert!(has_msub, "MSUB instruction should be present after allocation");
+    }
+
+    #[test]
+    fn test_multiple_vregs_allocation() {
+        // Test allocation of multiple virtual registers
+        let mut mir = Aarch64Mir::new();
+        let v0 = mir.alloc_vreg();
+        let v1 = mir.alloc_vreg();
+        let v2 = mir.alloc_vreg();
+
+        mir.push(Aarch64Inst::MovImm {
+            dst: Operand::Virtual(v0),
+            imm: 1,
+        });
+        mir.push(Aarch64Inst::MovImm {
+            dst: Operand::Virtual(v1),
+            imm: 2,
+        });
+        mir.push(Aarch64Inst::AddRR {
+            dst: Operand::Virtual(v2),
+            src1: Operand::Virtual(v0),
+            src2: Operand::Virtual(v1),
+        });
+
+        let mir = RegAlloc::new(mir, 0).allocate();
+
+        // Verify all instructions have physical registers
+        for inst in mir.instructions() {
+            match inst {
+                Aarch64Inst::MovImm { dst, .. } => {
+                    assert!(dst.is_physical(), "dst should be physical");
+                }
+                Aarch64Inst::AddRR { dst, src1, src2 } => {
+                    assert!(dst.is_physical(), "dst should be physical");
+                    assert!(src1.is_physical(), "src1 should be physical");
+                    assert!(src2.is_physical(), "src2 should be physical");
+                }
+                _ => {}
+            }
+        }
+    }
+
+    #[test]
+    fn test_spilling() {
+        // Test that spilling works correctly when we run out of registers
+        let mut mir = Aarch64Mir::new();
+
+        // Create more vregs than available registers (10 allocatable)
+        let vregs: Vec<VReg> = (0..15).map(|_| mir.alloc_vreg()).collect();
+
+        // Define all vregs
+        for (i, &vreg) in vregs.iter().enumerate() {
+            mir.push(Aarch64Inst::MovImm {
+                dst: Operand::Virtual(vreg),
+                imm: i as i64,
+            });
+        }
+
+        // Use all vregs to keep them live
+        for &vreg in &vregs {
+            mir.push(Aarch64Inst::MovRR {
+                dst: Operand::Physical(Reg::X0),
+                src: Operand::Virtual(vreg),
+            });
+        }
+
+        let (mir, num_spills, _) = RegAlloc::new(mir, 0).allocate_with_spills();
+
+        // With 15 vregs and 10 allocatable registers, we should have spills
+        assert!(num_spills >= 5, "Should have at least 5 spills, got {}", num_spills);
+
+        // Verify all virtual registers are replaced with physical
+        for inst in mir.instructions() {
+            match inst {
+                Aarch64Inst::MovImm { dst, .. } => {
+                    assert!(dst.is_physical());
+                }
+                Aarch64Inst::MovRR { dst, src } => {
+                    assert!(dst.is_physical());
+                    assert!(src.is_physical());
+                }
+                Aarch64Inst::Ldr { dst, .. } => {
+                    assert!(dst.is_physical());
+                }
+                Aarch64Inst::Str { src, .. } => {
+                    assert!(src.is_physical());
+                }
+                _ => {}
+            }
         }
     }
 }

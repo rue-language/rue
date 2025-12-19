@@ -3,6 +3,11 @@
 //! This module computes which virtual registers are "live" (their values may still
 //! be used) at each program point. This information is used by the register
 //! allocator to determine when registers can be reused.
+//!
+//! The analysis handles control flow by:
+//! 1. Building a CFG from labels and branch instructions
+//! 2. Computing live-out sets using backward dataflow analysis
+//! 3. Extending live ranges to account for values live across branches
 
 use std::collections::{HashMap, HashSet};
 
@@ -72,48 +77,165 @@ impl LivenessInfo {
 }
 
 /// Compute liveness information for Aarch64Mir.
+///
+/// This performs proper dataflow analysis that handles control flow:
+/// 1. Build a map of labels to instruction indices
+/// 2. For each instruction, compute successors (next instruction or branch targets)
+/// 3. Do backward dataflow to compute live-in/live-out sets
+/// 4. Build live ranges from the dataflow results
 pub fn analyze(mir: &Aarch64Mir) -> LivenessInfo {
     let instructions = mir.instructions();
     let num_insts = instructions.len();
 
-    let mut first_def: HashMap<VReg, usize> = HashMap::new();
-    let mut last_use: HashMap<VReg, usize> = HashMap::new();
-    let mut clobbers_at: Vec<Vec<Reg>> = Vec::with_capacity(num_insts);
-
-    for (idx, inst) in instructions.iter().enumerate() {
-        // Record uses first
-        for vreg in uses(inst) {
-            last_use.insert(vreg, idx);
-            if !first_def.contains_key(&vreg) {
-                first_def.insert(vreg, 0);
-            }
-        }
-
-        // Record definitions
-        for vreg in defs(inst) {
-            first_def.entry(vreg).or_insert(idx);
-            last_use.entry(vreg).or_insert(idx);
-        }
-
-        clobbers_at.push(inst.clobbers().to_vec());
+    if num_insts == 0 {
+        return LivenessInfo {
+            ranges: HashMap::new(),
+            live_at: Vec::new(),
+            clobbers_at: Vec::new(),
+        };
     }
 
-    // Build live ranges
+    // Step 1: Build label -> instruction index map
+    let mut label_to_idx: HashMap<&str, usize> = HashMap::new();
+    for (idx, inst) in instructions.iter().enumerate() {
+        if let Aarch64Inst::Label { name } = inst {
+            label_to_idx.insert(name.as_str(), idx);
+        }
+    }
+
+    // Step 2: Build successor lists for each instruction
+    let mut successors: Vec<Vec<usize>> = vec![Vec::new(); num_insts];
+    for (idx, inst) in instructions.iter().enumerate() {
+        match inst {
+            // Unconditional branch - only successor is the target
+            Aarch64Inst::B { label } => {
+                if let Some(&target) = label_to_idx.get(label.as_str()) {
+                    successors[idx].push(target);
+                }
+            }
+            // Conditional branches - successor is both target and fall-through
+            Aarch64Inst::BCond { label, .. }
+            | Aarch64Inst::Bvs { label }
+            | Aarch64Inst::Bvc { label }
+            | Aarch64Inst::Cbz { label, .. }
+            | Aarch64Inst::Cbnz { label, .. } => {
+                // Fall-through to next instruction
+                if idx + 1 < num_insts {
+                    successors[idx].push(idx + 1);
+                }
+                // Branch target
+                if let Some(&target) = label_to_idx.get(label.as_str()) {
+                    successors[idx].push(target);
+                }
+            }
+            // Return has no successors
+            Aarch64Inst::Ret => {}
+            // Function calls fall through (callee returns)
+            Aarch64Inst::Bl { .. } => {
+                if idx + 1 < num_insts {
+                    successors[idx].push(idx + 1);
+                }
+            }
+            // All other instructions fall through to the next
+            _ => {
+                if idx + 1 < num_insts {
+                    successors[idx].push(idx + 1);
+                }
+            }
+        }
+    }
+
+    // Step 3: Backward dataflow analysis to compute live sets
+    // live_out[i] = union of live_in[s] for all successors s of i
+    // live_in[i] = uses[i] ∪ (live_out[i] - defs[i])
+    let mut live_in: Vec<HashSet<VReg>> = vec![HashSet::new(); num_insts];
+    let mut live_out: Vec<HashSet<VReg>> = vec![HashSet::new(); num_insts];
+
+    // Pre-compute uses and defs for each instruction
+    let inst_uses: Vec<Vec<VReg>> = instructions.iter().map(uses).collect();
+    let inst_defs: Vec<Vec<VReg>> = instructions.iter().map(defs).collect();
+
+    // Iterate until fixed point
+    let mut changed = true;
+    while changed {
+        changed = false;
+
+        // Process instructions in reverse order for faster convergence
+        for idx in (0..num_insts).rev() {
+            // Compute live_out as union of live_in of all successors
+            let mut new_live_out = HashSet::new();
+            for &succ in &successors[idx] {
+                new_live_out.extend(&live_in[succ]);
+            }
+
+            // Compute live_in = uses ∪ (live_out - defs)
+            let mut new_live_in: HashSet<VReg> = new_live_out.clone();
+            for vreg in &inst_defs[idx] {
+                new_live_in.remove(vreg);
+            }
+            for vreg in &inst_uses[idx] {
+                new_live_in.insert(*vreg);
+            }
+
+            // Check if anything changed
+            if new_live_in != live_in[idx] || new_live_out != live_out[idx] {
+                changed = true;
+                live_in[idx] = new_live_in;
+                live_out[idx] = new_live_out;
+            }
+        }
+    }
+
+    // Step 4: Build live ranges from dataflow results
+    // A vreg is live at instruction i if it's in live_in[i] or live_out[i] or defined/used at i
+    let mut first_live: HashMap<VReg, usize> = HashMap::new();
+    let mut last_live: HashMap<VReg, usize> = HashMap::new();
+
+    for idx in 0..num_insts {
+        // Check definitions
+        for vreg in &inst_defs[idx] {
+            first_live.entry(*vreg).or_insert(idx);
+            last_live.insert(*vreg, idx);
+        }
+        // Check uses
+        for vreg in &inst_uses[idx] {
+            first_live.entry(*vreg).or_insert(idx);
+            last_live.insert(*vreg, idx);
+        }
+        // Check live_in
+        for vreg in &live_in[idx] {
+            first_live.entry(*vreg).or_insert(idx);
+            if last_live.get(vreg).map_or(true, |&last| idx > last) {
+                last_live.insert(*vreg, idx);
+            }
+        }
+        // Check live_out
+        for vreg in &live_out[idx] {
+            first_live.entry(*vreg).or_insert(idx);
+            if last_live.get(vreg).map_or(true, |&last| idx > last) {
+                last_live.insert(*vreg, idx);
+            }
+        }
+    }
+
+    // Build ranges
     let mut ranges: HashMap<VReg, LiveRange> = HashMap::new();
     for vreg_idx in 0..mir.vreg_count() {
         let vreg = VReg::new(vreg_idx);
-        if let (Some(&start), Some(&end)) = (first_def.get(&vreg), last_use.get(&vreg)) {
+        if let (Some(&start), Some(&end)) = (first_live.get(&vreg), last_live.get(&vreg)) {
             ranges.insert(vreg, LiveRange { start, end });
         }
     }
 
-    // Compute live_at for each instruction
+    // Compute live_at for each instruction (union of live_in and live_out)
     let mut live_at = vec![HashSet::new(); num_insts];
-    for (&vreg, range) in &ranges {
-        for i in range.start..=range.end.min(num_insts.saturating_sub(1)) {
-            live_at[i].insert(vreg);
-        }
+    for (idx, (li, lo)) in live_in.iter().zip(live_out.iter()).enumerate() {
+        live_at[idx].extend(li);
+        live_at[idx].extend(lo);
     }
+
+    // Collect clobbers
+    let clobbers_at: Vec<Vec<Reg>> = instructions.iter().map(|i| i.clobbers().to_vec()).collect();
 
     LivenessInfo {
         ranges,
@@ -304,6 +426,7 @@ fn defs(inst: &Aarch64Inst) -> Vec<VReg> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::aarch64::mir::Cond;
 
     #[test]
     fn test_simple_liveness() {
@@ -350,5 +473,186 @@ mod tests {
         let info = analyze(&mir);
 
         assert!(info.interferes(v0, v1));
+    }
+
+    #[test]
+    fn test_empty_mir() {
+        let mir = Aarch64Mir::new();
+        let info = analyze(&mir);
+
+        assert!(info.ranges.is_empty());
+        assert!(info.live_at.is_empty());
+        assert!(info.clobbers_at.is_empty());
+    }
+
+    #[test]
+    fn test_liveness_across_branch() {
+        // Test that liveness analysis correctly handles control flow.
+        // Code pattern:
+        //   v0 = 1
+        //   cbz v0, label_else
+        //   v1 = v0  ; v0 used in then branch
+        //   b label_end
+        // label_else:
+        //   v1 = 2
+        // label_end:
+        //   ret
+
+        let mut mir = Aarch64Mir::new();
+        let v0 = mir.alloc_vreg();
+        let v1 = mir.alloc_vreg();
+
+        // v0 = 1
+        mir.push(Aarch64Inst::MovImm {
+            dst: Operand::Virtual(v0),
+            imm: 1,
+        });
+
+        // cbz v0, label_else
+        mir.push(Aarch64Inst::Cbz {
+            src: Operand::Virtual(v0),
+            label: "label_else".to_string(),
+        });
+
+        // v1 = v0 (then branch)
+        mir.push(Aarch64Inst::MovRR {
+            dst: Operand::Virtual(v1),
+            src: Operand::Virtual(v0),
+        });
+
+        // b label_end
+        mir.push(Aarch64Inst::B {
+            label: "label_end".to_string(),
+        });
+
+        // label_else:
+        mir.push(Aarch64Inst::Label {
+            name: "label_else".to_string(),
+        });
+
+        // v1 = 2 (else branch)
+        mir.push(Aarch64Inst::MovImm {
+            dst: Operand::Virtual(v1),
+            imm: 2,
+        });
+
+        // label_end:
+        mir.push(Aarch64Inst::Label {
+            name: "label_end".to_string(),
+        });
+
+        // Use v1 at the end
+        mir.push(Aarch64Inst::MovRR {
+            dst: Operand::Physical(Reg::X0),
+            src: Operand::Virtual(v1),
+        });
+
+        mir.push(Aarch64Inst::Ret);
+
+        let info = analyze(&mir);
+
+        // v0 should be live from definition (0) through use in CBZ (1) and MOV (2)
+        let v0_range = info.ranges.get(&v0).expect("v0 should have a range");
+        assert_eq!(v0_range.start, 0);
+        assert!(v0_range.end >= 2, "v0 should be live through its last use at instruction 2");
+
+        // v1 should be live from first definition through final use
+        let v1_range = info.ranges.get(&v1).expect("v1 should have a range");
+        assert!(v1_range.end >= 7, "v1 should be live until the MOV to X0");
+    }
+
+    #[test]
+    fn test_liveness_with_conditional_branch() {
+        // Test B.cond handling
+        let mut mir = Aarch64Mir::new();
+        let v0 = mir.alloc_vreg();
+
+        mir.push(Aarch64Inst::MovImm {
+            dst: Operand::Virtual(v0),
+            imm: 42,
+        });
+
+        mir.push(Aarch64Inst::CmpImm {
+            src: Operand::Virtual(v0),
+            imm: 0,
+        });
+
+        mir.push(Aarch64Inst::BCond {
+            cond: Cond::Eq,
+            label: "skip".to_string(),
+        });
+
+        // v0 is used after the conditional branch
+        mir.push(Aarch64Inst::MovRR {
+            dst: Operand::Physical(Reg::X0),
+            src: Operand::Virtual(v0),
+        });
+
+        mir.push(Aarch64Inst::Label {
+            name: "skip".to_string(),
+        });
+
+        mir.push(Aarch64Inst::Ret);
+
+        let info = analyze(&mir);
+
+        // v0 should be live from 0 through at least instruction 3 (use in MOV)
+        let v0_range = info.ranges.get(&v0).expect("v0 should have a range");
+        assert_eq!(v0_range.start, 0);
+        assert!(v0_range.end >= 3);
+    }
+
+    #[test]
+    fn test_liveness_loop_pattern() {
+        // Test a simple loop pattern where a value is used across a back edge
+        //   v0 = 10
+        // loop:
+        //   v1 = v0
+        //   v0 = v0 - 1
+        //   cbnz v0, loop
+        //   ret
+
+        let mut mir = Aarch64Mir::new();
+        let v0 = mir.alloc_vreg();
+        let v1 = mir.alloc_vreg();
+
+        // v0 = 10
+        mir.push(Aarch64Inst::MovImm {
+            dst: Operand::Virtual(v0),
+            imm: 10,
+        });
+
+        // loop:
+        mir.push(Aarch64Inst::Label {
+            name: "loop".to_string(),
+        });
+
+        // v1 = v0
+        mir.push(Aarch64Inst::MovRR {
+            dst: Operand::Virtual(v1),
+            src: Operand::Virtual(v0),
+        });
+
+        // v0 = v0 - 1 (using SubImm)
+        mir.push(Aarch64Inst::SubImm {
+            dst: Operand::Virtual(v0),
+            src: Operand::Virtual(v0),
+            imm: 1,
+        });
+
+        // cbnz v0, loop
+        mir.push(Aarch64Inst::Cbnz {
+            src: Operand::Virtual(v0),
+            label: "loop".to_string(),
+        });
+
+        mir.push(Aarch64Inst::Ret);
+
+        let info = analyze(&mir);
+
+        // v0 should be live throughout the loop (from def to last use in CBNZ)
+        let v0_range = info.ranges.get(&v0).expect("v0 should have a range");
+        assert_eq!(v0_range.start, 0);
+        assert!(v0_range.end >= 4, "v0 should be live through CBNZ");
     }
 }

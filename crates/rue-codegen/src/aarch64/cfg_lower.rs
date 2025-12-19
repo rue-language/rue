@@ -46,8 +46,6 @@ pub struct CfgLower<'a> {
     block_param_vregs: HashMap<(BlockId, u32), VReg>,
     /// Label counter for generating unique labels
     label_counter: u32,
-    /// Whether this function has a stack frame
-    has_frame: bool,
     /// Number of local variable slots
     num_locals: u32,
     /// Number of parameter slots
@@ -70,7 +68,6 @@ impl<'a> CfgLower<'a> {
             value_map: HashMap::new(),
             block_param_vregs: HashMap::new(),
             label_counter: 0,
-            has_frame: num_locals > 0 || num_params > 0,
             num_locals,
             num_params,
             fn_name: cfg.fn_name().to_string(),
@@ -852,14 +849,17 @@ impl<'a> CfgLower<'a> {
                 then_block,
                 then_args,
                 else_block,
-                else_args: _,
+                else_args,
             } => {
                 let cond_vreg = self.get_vreg(*cond);
 
-                // If zero, jump to else block
+                // Generate a unique label for the else path argument setup
+                let else_setup_label = self.new_label("else_setup");
+
+                // If zero, jump to else setup (where we copy else_args)
                 self.mir.push(Aarch64Inst::Cbz {
                     src: Operand::Virtual(cond_vreg),
-                    label: self.block_label(*else_block),
+                    label: else_setup_label.clone(),
                 });
 
                 // Copy then_args to then_block's params
@@ -872,11 +872,29 @@ impl<'a> CfgLower<'a> {
                     });
                 }
 
-                // Jump to then block (or fall through if next)
+                // Jump to then block
+                self.mir.push(Aarch64Inst::B {
+                    label: self.block_label(*then_block),
+                });
+
+                // Else setup: copy else_args to else_block's params
+                self.mir.push(Aarch64Inst::Label {
+                    name: else_setup_label,
+                });
+                for (i, &arg) in else_args.iter().enumerate() {
+                    let arg_vreg = self.get_vreg(arg);
+                    let param_vreg = self.block_param_vregs[&(*else_block, i as u32)];
+                    self.mir.push(Aarch64Inst::MovRR {
+                        dst: Operand::Virtual(param_vreg),
+                        src: Operand::Virtual(arg_vreg),
+                    });
+                }
+
+                // Jump to else block (or fall through if next)
                 let next_block_id = BlockId::from_raw(block.id.as_u32() + 1);
-                if *then_block != next_block_id {
+                if *else_block != next_block_id {
                     self.mir.push(Aarch64Inst::B {
-                        label: self.block_label(*then_block),
+                        label: self.block_label(*else_block),
                     });
                 }
             }

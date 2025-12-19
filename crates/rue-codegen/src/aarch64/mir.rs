@@ -291,10 +291,13 @@ impl From<Reg> for Operand {
 /// Condition code for conditional operations.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Cond {
+    // === Equality conditions ===
     /// Equal (Z=1)
     Eq,
     /// Not equal (Z=0)
     Ne,
+
+    // === Signed comparison conditions ===
     /// Signed less than (N!=V)
     Lt,
     /// Signed greater than (Z=0 && N=V)
@@ -303,6 +306,16 @@ pub enum Cond {
     Le,
     /// Signed greater than or equal (N=V)
     Ge,
+
+    // === Unsigned comparison conditions ===
+    /// Unsigned higher (C=1 && Z=0) - strictly greater than
+    Hi,
+    /// Unsigned lower or same (C=0 || Z=1) - less than or equal
+    Ls,
+    /// Unsigned higher or same / Carry set (C=1) - greater than or equal
+    Hs,
+    /// Unsigned lower / Carry clear (C=0) - strictly less than
+    Lo,
 }
 
 impl Cond {
@@ -311,10 +324,14 @@ impl Cond {
         match self {
             Cond::Eq => 0b0000,
             Cond::Ne => 0b0001,
+            Cond::Hs => 0b0010, // CS (Carry Set)
+            Cond::Lo => 0b0011, // CC (Carry Clear)
+            Cond::Hi => 0b1000,
+            Cond::Ls => 0b1001,
+            Cond::Ge => 0b1010,
             Cond::Lt => 0b1011,
             Cond::Gt => 0b1100,
             Cond::Le => 0b1101,
-            Cond::Ge => 0b1010,
         }
     }
 
@@ -327,7 +344,16 @@ impl Cond {
             Cond::Gt => Cond::Le,
             Cond::Le => Cond::Gt,
             Cond::Ge => Cond::Lt,
+            Cond::Hi => Cond::Ls,
+            Cond::Ls => Cond::Hi,
+            Cond::Hs => Cond::Lo,
+            Cond::Lo => Cond::Hs,
         }
+    }
+
+    /// Returns true if this is an unsigned comparison condition.
+    pub const fn is_unsigned(self) -> bool {
+        matches!(self, Cond::Hi | Cond::Ls | Cond::Hs | Cond::Lo)
     }
 }
 
@@ -340,6 +366,10 @@ impl fmt::Display for Cond {
             Cond::Gt => write!(f, "gt"),
             Cond::Le => write!(f, "le"),
             Cond::Ge => write!(f, "ge"),
+            Cond::Hi => write!(f, "hi"),
+            Cond::Ls => write!(f, "ls"),
+            Cond::Hs => write!(f, "hs"),
+            Cond::Lo => write!(f, "lo"),
         }
     }
 }
@@ -797,9 +827,30 @@ mod tests {
 
     #[test]
     fn test_condition_codes() {
+        // Signed conditions
         assert_eq!(Cond::Eq.encoding(), 0b0000);
         assert_eq!(Cond::Ne.encoding(), 0b0001);
+        assert_eq!(Cond::Lt.encoding(), 0b1011);
+        assert_eq!(Cond::Gt.encoding(), 0b1100);
+        assert_eq!(Cond::Le.encoding(), 0b1101);
+        assert_eq!(Cond::Ge.encoding(), 0b1010);
+
+        // Unsigned conditions
+        assert_eq!(Cond::Hi.encoding(), 0b1000);
+        assert_eq!(Cond::Ls.encoding(), 0b1001);
+        assert_eq!(Cond::Hs.encoding(), 0b0010);
+        assert_eq!(Cond::Lo.encoding(), 0b0011);
+
+        // Inversions
         assert_eq!(Cond::Lt.invert(), Cond::Ge);
         assert_eq!(Cond::Eq.invert(), Cond::Ne);
+        assert_eq!(Cond::Hi.invert(), Cond::Ls);
+        assert_eq!(Cond::Hs.invert(), Cond::Lo);
+
+        // is_unsigned
+        assert!(!Cond::Lt.is_unsigned());
+        assert!(!Cond::Eq.is_unsigned());
+        assert!(Cond::Hi.is_unsigned());
+        assert!(Cond::Lo.is_unsigned());
     }
 }

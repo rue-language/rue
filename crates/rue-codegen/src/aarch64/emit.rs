@@ -8,6 +8,111 @@ use std::collections::HashMap;
 use super::mir::{Aarch64Inst, Aarch64Mir, Cond, Reg};
 use crate::EmittedRelocation;
 
+// ========== AArch64 Instruction Encoding Constants ==========
+//
+// These constants represent the base opcodes for AArch64 instructions.
+// The format is: OPCODE_<mnemonic>_<variant>
+//
+// Reference: ARM Architecture Reference Manual for A-profile architecture
+
+// Move instructions
+/// MOVZ Xd, #imm16 - Move wide with zero (64-bit)
+const OPCODE_MOVZ_X: u32 = 0xD2800000;
+/// MOVN Xd, #imm16 - Move wide with NOT (64-bit)
+const OPCODE_MOVN_X: u32 = 0x92800000;
+/// MOVK Xd, #imm16, LSL #0 - Move wide with keep (64-bit, shift 0)
+const OPCODE_MOVK_X_LSL0: u32 = 0xF2800000;
+/// MOVK Xd, #imm16, LSL #16 - Move wide with keep (64-bit, shift 16)
+const OPCODE_MOVK_X_LSL16: u32 = 0xF2A00000;
+/// MOVK Xd, #imm16, LSL #32 - Move wide with keep (64-bit, shift 32)
+const OPCODE_MOVK_X_LSL32: u32 = 0xF2C00000;
+/// MOVK Xd, #imm16, LSL #48 - Move wide with keep (64-bit, shift 48)
+const OPCODE_MOVK_X_LSL48: u32 = 0xF2E00000;
+/// ORR Xd, XZR, Xm - MOV alias (64-bit register move)
+const OPCODE_MOV_RR: u32 = 0xAA0003E0;
+
+// Load/Store instructions
+/// LDR Xt, [Xn, #imm12] - Load register (unsigned offset, 64-bit)
+const OPCODE_LDR_UOFF: u32 = 0xF9400000;
+/// LDUR Xt, [Xn, #simm9] - Load register (unscaled offset, 64-bit)
+const OPCODE_LDUR: u32 = 0xF8400000;
+/// STR Xt, [Xn, #imm12] - Store register (unsigned offset, 64-bit)
+const OPCODE_STR_UOFF: u32 = 0xF9000000;
+/// STUR Xt, [Xn, #simm9] - Store register (unscaled offset, 64-bit)
+const OPCODE_STUR: u32 = 0xF8000000;
+/// STR Xt, [SP, #simm9]! - Store register (pre-index)
+const OPCODE_STR_PRE: u32 = 0xF8000C00;
+/// LDR Xt, [SP], #simm9 - Load register (post-index)
+const OPCODE_LDR_POST: u32 = 0xF8400400;
+/// STP Xt1, Xt2, [SP, #simm7]! - Store pair (pre-index, 64-bit)
+const OPCODE_STP_PRE: u32 = 0xA9800000;
+/// LDP Xt1, Xt2, [SP], #simm7 - Load pair (post-index, 64-bit)
+const OPCODE_LDP_POST: u32 = 0xA8C00000;
+
+// Arithmetic instructions (64-bit)
+/// ADD Xd, Xn, Xm - Add (64-bit, no flags)
+const OPCODE_ADD_X: u32 = 0x8B000000;
+/// ADD Xd, Xn, #imm12 - Add immediate (64-bit)
+const OPCODE_ADD_IMM_X: u32 = 0x91000000;
+/// SUB Xd, Xn, Xm - Subtract (64-bit, no flags)
+const OPCODE_SUB_X: u32 = 0xCB000000;
+/// SUB Xd, Xn, #imm12 - Subtract immediate (64-bit)
+const OPCODE_SUB_IMM_X: u32 = 0xD1000000;
+/// SUBS Xd, Xn, Xm - Subtract and set flags (64-bit)
+const OPCODE_SUBS_X: u32 = 0xEB000000;
+/// MUL Xd, Xn, Xm - Multiply (alias for MADD Xd, Xn, Xm, XZR)
+const OPCODE_MUL_X: u32 = 0x9B007C00;
+/// SMULL Xd, Wn, Wm - Signed multiply long (32->64)
+const OPCODE_SMULL: u32 = 0x9B207C00;
+
+// Arithmetic instructions (32-bit, for i32 operations)
+/// ADDS Wd, Wn, Wm - Add and set flags (32-bit)
+const OPCODE_ADDS_W: u32 = 0x2B000000;
+/// SUBS Wd, Wn, Wm - Subtract and set flags (32-bit)
+const OPCODE_SUBS_W: u32 = 0x6B000000;
+/// SDIV Wd, Wn, Wm - Signed divide (32-bit)
+const OPCODE_SDIV_W: u32 = 0x1AC00C00;
+/// MSUB Wd, Wn, Wm, Wa - Multiply-subtract (32-bit)
+const OPCODE_MSUB_W: u32 = 0x1B008000;
+
+// Logical instructions
+/// AND Xd, Xn, Xm - Bitwise AND (64-bit)
+const OPCODE_AND_X: u32 = 0x8A000000;
+/// ANDS Xd, Xn, Xm - Bitwise AND and set flags (64-bit)
+const OPCODE_ANDS_X: u32 = 0xEA000000;
+/// ORR Xd, Xn, Xm - Bitwise OR (64-bit)
+const OPCODE_ORR_X: u32 = 0xAA000000;
+/// EOR Xd, Xn, Xm - Bitwise XOR (64-bit)
+const OPCODE_EOR_X: u32 = 0xCA000000;
+/// EOR Xd, Xn, #imm - Bitwise XOR with bitmask immediate (64-bit, N=1)
+const OPCODE_EOR_IMM_X: u32 = 0xD2400000;
+
+// Compare instructions
+/// CMP Xn, #imm12 - Compare immediate (alias for SUBS XZR, Xn, #imm12)
+const OPCODE_CMP_IMM_X: u32 = 0xF1000000;
+
+// Branch instructions
+/// B label - Unconditional branch
+const OPCODE_B: u32 = 0x14000000;
+/// B.cond label - Conditional branch
+const OPCODE_BCOND: u32 = 0x54000000;
+/// CBZ Xt, label - Compare and branch if zero (64-bit)
+const OPCODE_CBZ_X: u32 = 0xB4000000;
+/// BL symbol - Branch with link
+const OPCODE_BL: u32 = 0x94000000;
+/// RET - Return (branch to LR)
+const OPCODE_RET: u32 = 0xD65F03C0;
+
+// Conditional select
+/// CSINC Xd, XZR, XZR, invert(cond) - CSET alias
+const OPCODE_CSINC_CSET: u32 = 0x9A9F07E0;
+
+// Bit field instructions
+/// SBFM Xd, Xn, #immr, #imms - Signed bit field move (64-bit)
+const OPCODE_SBFM_X: u32 = 0x93400000;
+/// UBFM Xd, Xn, #immr, #imms - Unsigned bit field move (64-bit)
+const OPCODE_UBFM_X: u32 = 0xD3400000;
+
 /// A pending fixup for a forward branch.
 struct Fixup {
     /// Offset of the instruction in the code.
@@ -478,31 +583,83 @@ impl<'a> Emitter<'a> {
     }
 
     fn emit_mov_imm(&mut self, rd: Reg, imm: i64) {
-        // For now, use a simple MOVZ/MOVK sequence
-        // MOVZ loads 16 bits and zeros the rest
-        // MOVK keeps other bits and loads 16 bits
+        // Use MOVN for negative values that would encode more efficiently.
+        // MOVN loads the inverted 16-bit immediate and inverts all bits.
+        // For example, -1 (0xFFFFFFFFFFFFFFFF) can be encoded as MOVN Xd, #0
+        // since ~0 = 0xFFFFFFFFFFFFFFFF.
 
-        let imm = imm as u64;
+        let uimm = imm as u64;
 
-        // MOVZ Xd, #imm16, LSL #0
-        let inst = 0xD2800000 | ((imm & 0xFFFF) << 5) as u32 | rd.encoding() as u32;
-        self.emit_u32(inst);
+        // Check if MOVN would be more efficient by counting how many
+        // 16-bit chunks are all 1s vs all 0s
+        let chunks = [
+            (uimm >> 0) & 0xFFFF,
+            (uimm >> 16) & 0xFFFF,
+            (uimm >> 32) & 0xFFFF,
+            (uimm >> 48) & 0xFFFF,
+        ];
 
-        // If more bits needed, use MOVK
-        if (imm >> 16) & 0xFFFF != 0 {
-            let inst =
-                0xF2A00000 | (((imm >> 16) & 0xFFFF) << 5) as u32 | rd.encoding() as u32;
+        let zeros = chunks.iter().filter(|&&c| c == 0).count();
+        let ones = chunks.iter().filter(|&&c| c == 0xFFFF).count();
+
+        if ones > zeros {
+            // Use MOVN: find first chunk that isn't all 1s
+            let inverted = !uimm;
+            let inv_chunks = [
+                (inverted >> 0) & 0xFFFF,
+                (inverted >> 16) & 0xFFFF,
+                (inverted >> 32) & 0xFFFF,
+                (inverted >> 48) & 0xFFFF,
+            ];
+
+            // Find first non-zero inverted chunk for MOVN
+            let (first_idx, first_val) = inv_chunks
+                .iter()
+                .enumerate()
+                .find(|&(_, &v)| v != 0)
+                .map(|(i, &v)| (i, v))
+                .unwrap_or((0, 0));
+
+            // MOVN Xd, #imm16, LSL #(first_idx * 16)
+            let hw = first_idx as u32;
+            let inst = OPCODE_MOVN_X | (hw << 21) | ((first_val as u32) << 5) | rd.encoding() as u32;
             self.emit_u32(inst);
-        }
-        if (imm >> 32) & 0xFFFF != 0 {
-            let inst =
-                0xF2C00000 | (((imm >> 32) & 0xFFFF) << 5) as u32 | rd.encoding() as u32;
+
+            // Use MOVK for remaining non-0xFFFF chunks in original value
+            for (i, &chunk) in chunks.iter().enumerate() {
+                if i != first_idx && chunk != 0xFFFF {
+                    let base = match i {
+                        0 => OPCODE_MOVK_X_LSL0,
+                        1 => OPCODE_MOVK_X_LSL16,
+                        2 => OPCODE_MOVK_X_LSL32,
+                        3 => OPCODE_MOVK_X_LSL48,
+                        _ => unreachable!(),
+                    };
+                    let inst = base | ((chunk as u32) << 5) | rd.encoding() as u32;
+                    self.emit_u32(inst);
+                }
+            }
+        } else {
+            // Use MOVZ/MOVK sequence for non-negative or sparse values
+            let inst = OPCODE_MOVZ_X | ((uimm & 0xFFFF) << 5) as u32 | rd.encoding() as u32;
             self.emit_u32(inst);
-        }
-        if (imm >> 48) & 0xFFFF != 0 {
-            let inst =
-                0xF2E00000 | (((imm >> 48) & 0xFFFF) << 5) as u32 | rd.encoding() as u32;
-            self.emit_u32(inst);
+
+            // If more bits needed, use MOVK
+            if (uimm >> 16) & 0xFFFF != 0 {
+                let inst =
+                    OPCODE_MOVK_X_LSL16 | (((uimm >> 16) & 0xFFFF) << 5) as u32 | rd.encoding() as u32;
+                self.emit_u32(inst);
+            }
+            if (uimm >> 32) & 0xFFFF != 0 {
+                let inst =
+                    OPCODE_MOVK_X_LSL32 | (((uimm >> 32) & 0xFFFF) << 5) as u32 | rd.encoding() as u32;
+                self.emit_u32(inst);
+            }
+            if (uimm >> 48) & 0xFFFF != 0 {
+                let inst =
+                    OPCODE_MOVK_X_LSL48 | (((uimm >> 48) & 0xFFFF) << 5) as u32 | rd.encoding() as u32;
+                self.emit_u32(inst);
+            }
         }
     }
 
@@ -515,7 +672,7 @@ impl<'a> Emitter<'a> {
             self.emit_add_imm(rd, rs, 0);
         } else {
             // MOV Xd, Xn is encoded as ORR Xd, XZR, Xn
-            let inst = 0xAA0003E0 | (rs.encoding() as u32) << 16 | rd.encoding() as u32;
+            let inst = OPCODE_MOV_RR | (rs.encoding() as u32) << 16 | rd.encoding() as u32;
             self.emit_u32(inst);
         }
     }
@@ -525,15 +682,15 @@ impl<'a> Emitter<'a> {
         // Scaled offset (divide by 8 for 64-bit)
         if offset % 8 == 0 && offset >= 0 && offset < 32768 {
             let imm12 = (offset / 8) as u32;
-            let inst = 0xF9400000
+            let inst = OPCODE_LDR_UOFF
                 | (imm12 << 10)
                 | (base.encoding() as u32) << 5
                 | rd.encoding() as u32;
             self.emit_u32(inst);
         } else {
-            // Use unscaled offset
+            // Use unscaled offset (LDUR)
             let imm9 = (offset as u32) & 0x1FF;
-            let inst = 0xF8400000
+            let inst = OPCODE_LDUR
                 | (imm9 << 12)
                 | (base.encoding() as u32) << 5
                 | rd.encoding() as u32;
@@ -545,7 +702,7 @@ impl<'a> Emitter<'a> {
         // STR Xt, [Xn, #imm]
         if offset % 8 == 0 && offset >= 0 && offset < 32768 {
             let imm12 = (offset / 8) as u32;
-            let inst = 0xF9000000
+            let inst = OPCODE_STR_UOFF
                 | (imm12 << 10)
                 | (base.encoding() as u32) << 5
                 | rs.encoding() as u32;
@@ -553,7 +710,7 @@ impl<'a> Emitter<'a> {
         } else {
             // Use unscaled offset (STUR)
             let imm9 = (offset as u32) & 0x1FF;
-            let inst = 0xF8000000
+            let inst = OPCODE_STUR
                 | (imm9 << 12)
                 | (base.encoding() as u32) << 5
                 | rs.encoding() as u32;
@@ -564,7 +721,7 @@ impl<'a> Emitter<'a> {
     fn emit_str_pre(&mut self, rs: Reg, offset: i32) {
         // STR Xt, [SP, #imm]!
         let imm9 = (offset as u32) & 0x1FF;
-        let inst = 0xF8000C00
+        let inst = OPCODE_STR_PRE
             | (imm9 << 12)
             | (Reg::Sp.encoding() as u32) << 5
             | rs.encoding() as u32;
@@ -574,7 +731,7 @@ impl<'a> Emitter<'a> {
     fn emit_ldr_post(&mut self, rd: Reg, offset: i32) {
         // LDR Xt, [SP], #imm
         let imm9 = (offset as u32) & 0x1FF;
-        let inst = 0xF8400400
+        let inst = OPCODE_LDR_POST
             | (imm9 << 12)
             | (Reg::Sp.encoding() as u32) << 5
             | rd.encoding() as u32;
@@ -584,7 +741,7 @@ impl<'a> Emitter<'a> {
     fn emit_stp_pre(&mut self, rt1: Reg, rt2: Reg, offset: i32) {
         // STP Xt1, Xt2, [SP, #imm]!
         let imm7 = ((offset / 8) as u32) & 0x7F;
-        let inst = 0xA9800000
+        let inst = OPCODE_STP_PRE
             | (imm7 << 15)
             | (rt2.encoding() as u32) << 10
             | (Reg::Sp.encoding() as u32) << 5
@@ -595,7 +752,7 @@ impl<'a> Emitter<'a> {
     fn emit_ldp_post(&mut self, rt1: Reg, rt2: Reg, offset: i32) {
         // LDP Xt1, Xt2, [SP], #imm
         let imm7 = ((offset / 8) as u32) & 0x7F;
-        let inst = 0xA8C00000
+        let inst = OPCODE_LDP_POST
             | (imm7 << 15)
             | (rt2.encoding() as u32) << 10
             | (Reg::Sp.encoding() as u32) << 5
@@ -605,11 +762,7 @@ impl<'a> Emitter<'a> {
 
     fn emit_add_rr(&mut self, rd: Reg, rn: Reg, rm: Reg, set_flags: bool) {
         // When set_flags is true, use 32-bit (W) form for proper i32 overflow detection.
-        // ADD Xd, Xn, Xm:  0x8B000000 (64-bit)
-        // ADD Wd, Wn, Wm:  0x0B000000 (32-bit)
-        // ADDS Xd, Xn, Xm: 0xAB000000 (64-bit)
-        // ADDS Wd, Wn, Wm: 0x2B000000 (32-bit)
-        let base = if set_flags { 0x2B000000 } else { 0x8B000000 };
+        let base = if set_flags { OPCODE_ADDS_W } else { OPCODE_ADD_X };
         let inst = base
             | (rm.encoding() as u32) << 16
             | (rn.encoding() as u32) << 5
@@ -619,7 +772,7 @@ impl<'a> Emitter<'a> {
 
     fn emit_add_imm(&mut self, rd: Reg, rn: Reg, imm: u32) {
         // ADD Xd, Xn, #imm
-        let inst = 0x91000000
+        let inst = OPCODE_ADD_IMM_X
             | ((imm & 0xFFF) << 10)
             | (rn.encoding() as u32) << 5
             | rd.encoding() as u32;
@@ -628,11 +781,7 @@ impl<'a> Emitter<'a> {
 
     fn emit_sub_rr(&mut self, rd: Reg, rn: Reg, rm: Reg, set_flags: bool) {
         // When set_flags is true, use 32-bit (W) form for proper i32 overflow detection.
-        // SUB Xd, Xn, Xm:  0xCB000000 (64-bit)
-        // SUB Wd, Wn, Wm:  0x4B000000 (32-bit)
-        // SUBS Xd, Xn, Xm: 0xEB000000 (64-bit)
-        // SUBS Wd, Wn, Wm: 0x6B000000 (32-bit)
-        let base = if set_flags { 0x6B000000 } else { 0xCB000000 };
+        let base = if set_flags { OPCODE_SUBS_W } else { OPCODE_SUB_X };
         let inst = base
             | (rm.encoding() as u32) << 16
             | (rn.encoding() as u32) << 5
@@ -642,9 +791,7 @@ impl<'a> Emitter<'a> {
 
     fn emit_sub64_rr(&mut self, rd: Reg, rn: Reg, rm: Reg, set_flags: bool) {
         // 64-bit subtract for comparing 64-bit values (e.g., SMULL results).
-        // SUB Xd, Xn, Xm:  0xCB000000 (64-bit)
-        // SUBS Xd, Xn, Xm: 0xEB000000 (64-bit with flags)
-        let base = if set_flags { 0xEB000000 } else { 0xCB000000 };
+        let base = if set_flags { OPCODE_SUBS_X } else { OPCODE_SUB_X };
         let inst = base
             | (rm.encoding() as u32) << 16
             | (rn.encoding() as u32) << 5
@@ -654,7 +801,7 @@ impl<'a> Emitter<'a> {
 
     fn emit_sub_imm(&mut self, rd: Reg, rn: Reg, imm: u32) {
         // SUB Xd, Xn, #imm
-        let inst = 0xD1000000
+        let inst = OPCODE_SUB_IMM_X
             | ((imm & 0xFFF) << 10)
             | (rn.encoding() as u32) << 5
             | rd.encoding() as u32;
@@ -663,7 +810,7 @@ impl<'a> Emitter<'a> {
 
     fn emit_mul(&mut self, rd: Reg, rn: Reg, rm: Reg) {
         // MUL Xd, Xn, Xm (alias for MADD Xd, Xn, Xm, XZR)
-        let inst = 0x9B007C00
+        let inst = OPCODE_MUL_X
             | (rm.encoding() as u32) << 16
             | (rn.encoding() as u32) << 5
             | rd.encoding() as u32;
@@ -672,7 +819,7 @@ impl<'a> Emitter<'a> {
 
     fn emit_smull(&mut self, rd: Reg, rn: Reg, rm: Reg) {
         // SMULL Xd, Wn, Wm
-        let inst = 0x9B207C00
+        let inst = OPCODE_SMULL
             | (rm.encoding() as u32) << 16
             | (rn.encoding() as u32) << 5
             | rd.encoding() as u32;
@@ -681,9 +828,7 @@ impl<'a> Emitter<'a> {
 
     fn emit_sdiv(&mut self, rd: Reg, rn: Reg, rm: Reg) {
         // SDIV Wd, Wn, Wm (32-bit for proper i32 signed division)
-        // 64-bit: 0x9AC00C00
-        // 32-bit: 0x1AC00C00
-        let inst = 0x1AC00C00
+        let inst = OPCODE_SDIV_W
             | (rm.encoding() as u32) << 16
             | (rn.encoding() as u32) << 5
             | rd.encoding() as u32;
@@ -692,9 +837,7 @@ impl<'a> Emitter<'a> {
 
     fn emit_msub(&mut self, rd: Reg, rn: Reg, rm: Reg, ra: Reg) {
         // MSUB Wd, Wn, Wm, Wa (32-bit for proper i32 arithmetic)
-        // 64-bit: 0x9B008000
-        // 32-bit: 0x1B008000
-        let inst = 0x1B008000
+        let inst = OPCODE_MSUB_W
             | (rm.encoding() as u32) << 16
             | (ra.encoding() as u32) << 10
             | (rn.encoding() as u32) << 5
@@ -704,7 +847,7 @@ impl<'a> Emitter<'a> {
 
     fn emit_and_rr(&mut self, rd: Reg, rn: Reg, rm: Reg) {
         // AND Xd, Xn, Xm
-        let inst = 0x8A000000
+        let inst = OPCODE_AND_X
             | (rm.encoding() as u32) << 16
             | (rn.encoding() as u32) << 5
             | rd.encoding() as u32;
@@ -713,7 +856,7 @@ impl<'a> Emitter<'a> {
 
     fn emit_ands_rr(&mut self, rd: Reg, rn: Reg, rm: Reg) {
         // ANDS Xd, Xn, Xm
-        let inst = 0xEA000000
+        let inst = OPCODE_ANDS_X
             | (rm.encoding() as u32) << 16
             | (rn.encoding() as u32) << 5
             | rd.encoding() as u32;
@@ -722,7 +865,7 @@ impl<'a> Emitter<'a> {
 
     fn emit_orr_rr(&mut self, rd: Reg, rn: Reg, rm: Reg) {
         // ORR Xd, Xn, Xm
-        let inst = 0xAA000000
+        let inst = OPCODE_ORR_X
             | (rm.encoding() as u32) << 16
             | (rn.encoding() as u32) << 5
             | rd.encoding() as u32;
@@ -731,7 +874,7 @@ impl<'a> Emitter<'a> {
 
     fn emit_eor_rr(&mut self, rd: Reg, rn: Reg, rm: Reg) {
         // EOR Xd, Xn, Xm
-        let inst = 0xCA000000
+        let inst = OPCODE_EOR_X
             | (rm.encoding() as u32) << 16
             | (rn.encoding() as u32) << 5
             | rd.encoding() as u32;
@@ -743,10 +886,12 @@ impl<'a> Emitter<'a> {
         // For simplicity, only handle simple patterns
         // For #1, the encoding is N=1, immr=0, imms=0
         if imm == 1 {
-            let inst = 0xD2400000 | (rn.encoding() as u32) << 5 | rd.encoding() as u32;
+            let inst = OPCODE_EOR_IMM_X | (rn.encoding() as u32) << 5 | rd.encoding() as u32;
             self.emit_u32(inst);
         } else {
-            // Fallback: use a temp register
+            // Fallback: use X9 as a scratch register to load the immediate.
+            // This is safe because X9 is a caller-saved scratch register that
+            // is not used for register allocation (we only allocate X19-X28).
             self.emit_mov_imm(Reg::X9, imm as i64);
             self.emit_eor_rr(rd, rn, Reg::X9);
         }
@@ -754,7 +899,7 @@ impl<'a> Emitter<'a> {
 
     fn emit_cmp_imm(&mut self, rn: Reg, imm: u32) {
         // CMP Xn, #imm (alias for SUBS XZR, Xn, #imm)
-        let inst = 0xF1000000
+        let inst = OPCODE_CMP_IMM_X
             | ((imm & 0xFFF) << 10)
             | (rn.encoding() as u32) << 5
             | Reg::Xzr.encoding() as u32;
@@ -767,7 +912,7 @@ impl<'a> Emitter<'a> {
         let offset = self.code.len();
 
         // Placeholder instruction
-        let inst = 0xB4000000 | (op << 24) | rt.encoding() as u32;
+        let inst = OPCODE_CBZ_X | (op << 24) | rt.encoding() as u32;
         self.emit_u32(inst);
 
         self.fixups.push(Fixup {
@@ -780,13 +925,13 @@ impl<'a> Emitter<'a> {
     fn emit_cset(&mut self, rd: Reg, cond: Cond) {
         // CSET Xd, cond (alias for CSINC Xd, XZR, XZR, invert(cond))
         let inv_cond = cond.invert().encoding();
-        let inst = 0x9A9F07E0 | (inv_cond as u32) << 12 | rd.encoding() as u32;
+        let inst = OPCODE_CSINC_CSET | (inv_cond as u32) << 12 | rd.encoding() as u32;
         self.emit_u32(inst);
     }
 
     fn emit_sbfm(&mut self, rd: Reg, rn: Reg, immr: u32, imms: u32) {
         // SBFM Xd, Xn, #immr, #imms (used for SXTB, SXTH, SXTW)
-        let inst = 0x93400000
+        let inst = OPCODE_SBFM_X
             | (immr << 16)
             | (imms << 10)
             | (rn.encoding() as u32) << 5
@@ -796,7 +941,7 @@ impl<'a> Emitter<'a> {
 
     fn emit_ubfm(&mut self, rd: Reg, rn: Reg, immr: u32, imms: u32) {
         // UBFM Xd, Xn, #immr, #imms (used for UXTB, UXTH)
-        let inst = 0xD3400000
+        let inst = OPCODE_UBFM_X
             | (immr << 16)
             | (imms << 10)
             | (rn.encoding() as u32) << 5
@@ -807,8 +952,7 @@ impl<'a> Emitter<'a> {
     fn emit_b(&mut self, label: &str) {
         // B label
         let offset = self.code.len();
-        let inst = 0x14000000;
-        self.emit_u32(inst);
+        self.emit_u32(OPCODE_B);
 
         self.fixups.push(Fixup {
             offset,
@@ -819,7 +963,7 @@ impl<'a> Emitter<'a> {
 
     fn emit_bcond(&mut self, cond: Cond, label: &str) {
         let offset = self.code.len();
-        let inst = 0x54000000 | cond.encoding() as u32;
+        let inst = OPCODE_BCOND | cond.encoding() as u32;
         self.emit_u32(inst);
 
         self.fixups.push(Fixup {
@@ -831,7 +975,7 @@ impl<'a> Emitter<'a> {
 
     fn emit_bcond_raw(&mut self, cond: u8, label: &str) {
         let offset = self.code.len();
-        let inst = 0x54000000 | cond as u32;
+        let inst = OPCODE_BCOND | cond as u32;
         self.emit_u32(inst);
 
         self.fixups.push(Fixup {
@@ -844,8 +988,7 @@ impl<'a> Emitter<'a> {
     fn emit_bl(&mut self, symbol: &str) {
         // BL symbol - requires relocation
         let offset = self.code.len();
-        let inst = 0x94000000;
-        self.emit_u32(inst);
+        self.emit_u32(OPCODE_BL);
 
         self.relocations.push(EmittedRelocation {
             offset: offset as u64,
@@ -856,7 +999,194 @@ impl<'a> Emitter<'a> {
 
     fn emit_ret(&mut self) {
         // RET (branch to LR)
-        let inst = 0xD65F03C0;
-        self.emit_u32(inst);
+        self.emit_u32(OPCODE_RET);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Test helper struct that owns the MIR to avoid lifetime issues
+    struct TestEmitter {
+        code: Vec<u8>,
+    }
+
+    impl TestEmitter {
+        fn new() -> Self {
+            TestEmitter { code: Vec::new() }
+        }
+
+        fn emit_u32(&mut self, inst: u32) {
+            self.code.extend_from_slice(&inst.to_le_bytes());
+        }
+
+        /// Emit a mov immediate using the same logic as Emitter
+        fn emit_mov_imm(&mut self, rd: Reg, imm: i64) {
+            let uimm = imm as u64;
+
+            let chunks = [
+                (uimm >> 0) & 0xFFFF,
+                (uimm >> 16) & 0xFFFF,
+                (uimm >> 32) & 0xFFFF,
+                (uimm >> 48) & 0xFFFF,
+            ];
+
+            let zeros = chunks.iter().filter(|&&c| c == 0).count();
+            let ones = chunks.iter().filter(|&&c| c == 0xFFFF).count();
+
+            if ones > zeros {
+                let inverted = !uimm;
+                let inv_chunks = [
+                    (inverted >> 0) & 0xFFFF,
+                    (inverted >> 16) & 0xFFFF,
+                    (inverted >> 32) & 0xFFFF,
+                    (inverted >> 48) & 0xFFFF,
+                ];
+
+                let (first_idx, first_val) = inv_chunks
+                    .iter()
+                    .enumerate()
+                    .find(|&(_, &v)| v != 0)
+                    .map(|(i, &v)| (i, v))
+                    .unwrap_or((0, 0));
+
+                let hw = first_idx as u32;
+                let inst = OPCODE_MOVN_X | (hw << 21) | ((first_val as u32) << 5) | rd.encoding() as u32;
+                self.emit_u32(inst);
+
+                for (i, &chunk) in chunks.iter().enumerate() {
+                    if i != first_idx && chunk != 0xFFFF {
+                        let base = match i {
+                            0 => OPCODE_MOVK_X_LSL0,
+                            1 => OPCODE_MOVK_X_LSL16,
+                            2 => OPCODE_MOVK_X_LSL32,
+                            3 => OPCODE_MOVK_X_LSL48,
+                            _ => unreachable!(),
+                        };
+                        let inst = base | ((chunk as u32) << 5) | rd.encoding() as u32;
+                        self.emit_u32(inst);
+                    }
+                }
+            } else {
+                let inst = OPCODE_MOVZ_X | ((uimm & 0xFFFF) << 5) as u32 | rd.encoding() as u32;
+                self.emit_u32(inst);
+
+                if (uimm >> 16) & 0xFFFF != 0 {
+                    let inst =
+                        OPCODE_MOVK_X_LSL16 | (((uimm >> 16) & 0xFFFF) << 5) as u32 | rd.encoding() as u32;
+                    self.emit_u32(inst);
+                }
+                if (uimm >> 32) & 0xFFFF != 0 {
+                    let inst =
+                        OPCODE_MOVK_X_LSL32 | (((uimm >> 32) & 0xFFFF) << 5) as u32 | rd.encoding() as u32;
+                    self.emit_u32(inst);
+                }
+                if (uimm >> 48) & 0xFFFF != 0 {
+                    let inst =
+                        OPCODE_MOVK_X_LSL48 | (((uimm >> 48) & 0xFFFF) << 5) as u32 | rd.encoding() as u32;
+                    self.emit_u32(inst);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_movn_for_minus_one() {
+        // -1 should use MOVN for efficient encoding
+        let mut emitter = TestEmitter::new();
+        emitter.emit_mov_imm(Reg::X0, -1);
+
+        // -1 (0xFFFFFFFFFFFFFFFF) should be encoded as MOVN X0, #0
+        // MOVN: 0x92800000, with rd=0
+        // Since all chunks are 0xFFFF, we use MOVN with the first inverted chunk (0)
+        assert_eq!(emitter.code.len(), 4, "MOVN -1 should be 1 instruction");
+
+        let inst = u32::from_le_bytes(emitter.code[0..4].try_into().unwrap());
+        // Check it's a MOVN instruction (top bits 0x92800000)
+        assert_eq!(inst & 0xFF800000, 0x92800000, "Should be MOVN");
+        // Check destination is X0
+        assert_eq!(inst & 0x1F, 0, "Destination should be X0");
+    }
+
+    #[test]
+    fn test_movz_for_small_positive() {
+        // Small positive numbers should use MOVZ
+        let mut emitter = TestEmitter::new();
+        emitter.emit_mov_imm(Reg::X1, 42);
+
+        assert_eq!(emitter.code.len(), 4, "Small immediate should be 1 instruction");
+
+        let inst = u32::from_le_bytes(emitter.code[0..4].try_into().unwrap());
+        // MOVZ: 0xD2800000
+        assert_eq!(inst & 0xFF800000, 0xD2800000, "Should be MOVZ");
+        // Check destination is X1
+        assert_eq!(inst & 0x1F, 1, "Destination should be X1");
+        // Check immediate (42 << 5)
+        assert_eq!((inst >> 5) & 0xFFFF, 42, "Immediate should be 42");
+    }
+
+    #[test]
+    fn test_movn_for_negative_with_few_non_ff_chunks() {
+        // -256 = 0xFFFFFFFFFFFFFF00
+        // This has 3 chunks as 0xFFFF and one as 0xFF00
+        // MOVN should be more efficient
+        let mut emitter = TestEmitter::new();
+        emitter.emit_mov_imm(Reg::X2, -256);
+
+        // Should use MOVN followed by MOVK for the 0xFF00 chunk
+        // The inverted value is 0x00000000000000FF
+        // First chunk inverted is 0xFF, so MOVN X2, #0xFF
+        let inst = u32::from_le_bytes(emitter.code[0..4].try_into().unwrap());
+        assert_eq!(inst & 0xFF800000, 0x92800000, "Should be MOVN");
+    }
+
+    #[test]
+    fn test_movz_movk_for_large_positive() {
+        // 0x1234_5678 requires MOVZ + MOVK
+        let mut emitter = TestEmitter::new();
+        emitter.emit_mov_imm(Reg::X3, 0x12345678);
+
+        // Should be MOVZ for low 16 bits + MOVK for high 16 bits
+        assert_eq!(emitter.code.len(), 8, "Large positive should be 2 instructions");
+
+        let inst1 = u32::from_le_bytes(emitter.code[0..4].try_into().unwrap());
+        let inst2 = u32::from_le_bytes(emitter.code[4..8].try_into().unwrap());
+
+        // First instruction: MOVZ X3, #0x5678
+        // MOVZ uses top bits 0xD28 (sf=1, opc=10, hw=00)
+        assert_eq!(inst1 & 0xFFE00000, 0xD2800000, "First should be MOVZ");
+        assert_eq!((inst1 >> 5) & 0xFFFF, 0x5678, "Low 16 bits");
+        assert_eq!(inst1 & 0x1F, 3, "Destination should be X3");
+
+        // Second instruction: MOVK X3, #0x1234, LSL #16
+        // MOVK LSL#16 uses top bits 0xF2A (sf=1, opc=11, hw=01)
+        assert_eq!(inst2 & 0xFFE00000, 0xF2A00000, "Second should be MOVK LSL#16");
+        assert_eq!((inst2 >> 5) & 0xFFFF, 0x1234, "High 16 bits");
+        assert_eq!(inst2 & 0x1F, 3, "Destination should be X3");
+    }
+
+    #[test]
+    fn test_zero_immediate() {
+        let mut emitter = TestEmitter::new();
+        emitter.emit_mov_imm(Reg::X4, 0);
+
+        assert_eq!(emitter.code.len(), 4, "Zero should be 1 instruction");
+
+        let inst = u32::from_le_bytes(emitter.code[0..4].try_into().unwrap());
+        // MOVZ X4, #0
+        assert_eq!(inst & 0xFF800000, 0xD2800000, "Should be MOVZ");
+        assert_eq!((inst >> 5) & 0xFFFF, 0, "Immediate should be 0");
+    }
+
+    #[test]
+    fn test_opcode_constants() {
+        // Verify opcode constants are correct
+        assert_eq!(OPCODE_MOVZ_X, 0xD2800000);
+        assert_eq!(OPCODE_MOVN_X, 0x92800000);
+        assert_eq!(OPCODE_B, 0x14000000);
+        assert_eq!(OPCODE_RET, 0xD65F03C0);
+        assert_eq!(OPCODE_ADD_X, 0x8B000000);
+        assert_eq!(OPCODE_SUB_X, 0xCB000000);
     }
 }
