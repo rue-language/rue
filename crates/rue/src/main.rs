@@ -5,8 +5,8 @@ use std::path::Path;
 
 use annotate_snippets::{Level, Renderer, Snippet};
 use rue_compiler::{
-    CompileError, CompileOptions, CompileWarning, LinkerMode, compile_to_air, compile_with_options,
-    generate_mir,
+    CompileError, CompileOptions, CompileWarning, LinkerMode, compile_frontend,
+    compile_with_options, generate_mir,
 };
 use rue_rir::RirPrinter;
 use rue_target::Target;
@@ -135,7 +135,7 @@ fn main() {
 
     // Handle dump modes
     if options.dump_mode != DumpMode::None {
-        match compile_to_air(&source) {
+        match compile_frontend(&source) {
             Ok(state) => match options.dump_mode {
                 DumpMode::Rir => {
                     let printer = RirPrinter::new(&state.rir, &state.interner);
@@ -143,20 +143,14 @@ fn main() {
                 }
                 DumpMode::Air => {
                     for func in &state.functions {
-                        println!("function {}:", func.name);
-                        println!("{}", func.air);
+                        println!("function {}:", func.analyzed.name);
+                        println!("{}", func.analyzed.air);
                     }
                 }
                 DumpMode::Mir => {
                     for func in &state.functions {
-                        let mir = generate_mir(
-                            &func.air,
-                            &state.struct_defs,
-                            func.num_locals,
-                            func.num_param_slots,
-                            &func.name,
-                        );
-                        println!("function {}:", func.name);
+                        let mir = generate_mir(&func.cfg, &state.struct_defs);
+                        println!("function {}:", func.analyzed.name);
                         println!("{}", mir);
                     }
                 }

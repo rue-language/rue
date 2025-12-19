@@ -124,7 +124,7 @@ The linker supports standard x86-64 relocation types (PC32, PLT32, Abs64, Abs32,
 ### `rue-compiler`
 Orchestrates the full pipeline. Provides:
 - `compile(source) -> ELF bytes` - Full compilation
-- `compile_to_air(source) -> CompileState` - Partial compilation for debugging
+- `compile_frontend(source) -> CompileState` - Frontend compilation (through CFG) for debugging
 
 ### `rue-error`
 Shared error types and reporting infrastructure.

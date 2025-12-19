@@ -3,7 +3,7 @@
 //! This module implements the full x86-64 code generation pipeline:
 //!
 //! ```text
-//! AIR → CFG → X86Mir (virtual registers) → Register Allocation → Machine Code
+//! CFG → X86Mir (virtual registers) → Register Allocation → Machine Code
 //! ```
 //!
 //! The pipeline is split into distinct phases:
@@ -26,36 +26,30 @@ pub use lower::Lower;
 pub use mir::{Operand, Reg, VReg, X86Inst, X86Mir};
 pub use regalloc::RegAlloc;
 
-use rue_air::{Air, StructDef};
-use rue_cfg::CfgBuilder;
+use rue_air::StructDef;
+use rue_cfg::Cfg;
 
 // Re-export from parent
 pub use super::{EmittedRelocation, MachineCode};
 
-/// Generate machine code from AIR.
+/// Generate machine code from CFG.
 ///
 /// This is the main entry point for x86-64 code generation.
-/// The pipeline is: AIR → CFG → X86Mir → Machine Code
-pub fn generate(
-    air: &Air,
-    struct_defs: &[StructDef],
-    num_locals: u32,
-    num_params: u32,
-    fn_name: &str,
-) -> MachineCode {
-    // Phase 1: Build CFG from AIR
-    let cfg = CfgBuilder::build(air, num_locals, num_params, fn_name);
+/// The pipeline is: CFG → X86Mir → Machine Code
+pub fn generate(cfg: &Cfg, struct_defs: &[StructDef]) -> MachineCode {
+    let num_locals = cfg.num_locals();
+    let num_params = cfg.num_params();
 
-    // Phase 2: Lower CFG to X86Mir with virtual registers
-    let mir = CfgLower::new(&cfg, struct_defs).lower();
+    // Lower CFG to X86Mir with virtual registers
+    let mir = CfgLower::new(cfg, struct_defs).lower();
 
-    // Phase 3: Allocate physical registers (may add spill slots)
+    // Allocate physical registers (may add spill slots)
     // Spill slots go after both locals AND parameters to avoid conflicts
     let existing_slots = num_locals + num_params;
     let (mir, num_spills, used_callee_saved) =
         RegAlloc::new(mir, existing_slots).allocate_with_spills();
 
-    // Phase 4: Emit machine code bytes (with prologue for stack frame setup)
+    // Emit machine code bytes (with prologue for stack frame setup)
     // Total local slots = local variables + spill slots (params handled separately)
     let total_locals = num_locals + num_spills;
     let (code, relocations) =

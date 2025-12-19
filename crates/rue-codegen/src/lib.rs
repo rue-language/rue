@@ -1,12 +1,12 @@
 //! Code generation for the Rue compiler.
 //!
-//! This crate converts AIR (Analyzed Intermediate Representation) to machine code.
+//! This crate converts CFG (Control Flow Graph) to machine code.
 //! Supports x86-64 and AArch64.
 //!
 //! ## Pipeline
 //!
 //! ```text
-//! AIR → MIR (virtual registers) → Register Allocation → Machine Code
+//! CFG → MIR (virtual registers) → Register Allocation → Machine Code
 //! ```
 //!
 //! Each backend uses a Machine IR (MIR) that closely matches the target
@@ -45,57 +45,15 @@ pub use x86_64::generate;
 // Re-export commonly used types for convenience
 pub use x86_64::{Operand, Reg, VReg, X86Inst, X86Mir};
 
-use rue_air::{Air, StructDef};
-
-/// Code generator that wraps the x86-64 backend.
-///
-/// This provides a similar API to the old CodeGen for compatibility.
-pub struct CodeGen<'a> {
-    air: &'a Air,
-    struct_defs: &'a [StructDef],
-    num_locals: u32,
-    num_params: u32,
-    fn_name: String,
-}
-
-impl<'a> CodeGen<'a> {
-    /// Create a new code generator for the given AIR.
-    pub fn new(
-        air: &'a Air,
-        struct_defs: &'a [StructDef],
-        num_locals: u32,
-        num_params: u32,
-        fn_name: &str,
-    ) -> Self {
-        Self {
-            air,
-            struct_defs,
-            num_locals,
-            num_params,
-            fn_name: fn_name.to_string(),
-        }
-    }
-
-    /// Generate machine code from the AIR.
-    pub fn generate(self) -> MachineCode {
-        x86_64::generate(
-            self.air,
-            self.struct_defs,
-            self.num_locals,
-            self.num_params,
-            &self.fn_name,
-        )
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rue_air::{AirInst, AirInstData, Type};
+    use rue_air::{Air, AirInst, AirInstData, Type};
+    use rue_cfg::CfgBuilder;
     use rue_span::Span;
 
     #[test]
-    fn test_codegen_api_compatibility() {
+    fn test_generate_x86_64() {
         let mut air = Air::new(Type::I32);
 
         let const_ref = air.add_inst(AirInst {
@@ -110,9 +68,11 @@ mod tests {
             span: Span::new(0, 2),
         });
 
-        // Test the old-style API
-        let codegen = CodeGen::new(&air, &[], 0, 0, "main");
-        let machine_code = codegen.generate();
+        // Build CFG from AIR
+        let cfg = CfgBuilder::build(&air, 0, 0, "main");
+
+        // Test the generate function
+        let machine_code = generate(&cfg, &[]);
 
         // Should generate working code
         assert!(!machine_code.code.is_empty());
@@ -126,26 +86,5 @@ mod tests {
         // Should have one relocation for __rue_exit
         assert_eq!(machine_code.relocations.len(), 1);
         assert_eq!(machine_code.relocations[0].symbol, "__rue_exit");
-    }
-
-    #[test]
-    fn test_generate_function() {
-        let mut air = Air::new(Type::I32);
-
-        let const_ref = air.add_inst(AirInst {
-            data: AirInstData::Const(42),
-            ty: Type::I32,
-            span: Span::new(0, 2),
-        });
-
-        air.add_inst(AirInst {
-            data: AirInstData::Ret(const_ref),
-            ty: Type::I32,
-            span: Span::new(0, 2),
-        });
-
-        // Test the new direct API
-        let machine_code = generate(&air, &[], 0, 0, "main");
-        assert!(!machine_code.code.is_empty());
     }
 }

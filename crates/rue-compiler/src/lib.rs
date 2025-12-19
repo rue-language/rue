@@ -28,7 +28,8 @@ pub fn validate_runtime() -> Result<(), String> {
 
 // Re-export commonly used types
 pub use rue_air::{Air, AnalyzedFunction, Sema, SemaOutput, StructDef, Type};
-pub use rue_codegen::{CodeGen, X86Mir};
+pub use rue_cfg::{Cfg, CfgBuilder};
+pub use rue_codegen::X86Mir;
 pub use rue_error::{CompileError, CompileResult, CompileWarning, ErrorKind, WarningKind};
 pub use rue_intern::{Interner, Symbol};
 pub use rue_lexer::{Lexer, Token, TokenKind};
@@ -71,7 +72,17 @@ impl Default for CompileOptions {
     }
 }
 
-/// Intermediate compilation state after semantic analysis.
+/// A function with its typed IR (AIR) and control flow graph (CFG).
+///
+/// This combines the output of semantic analysis with CFG construction.
+pub struct FunctionWithCfg {
+    /// The analyzed function from semantic analysis.
+    pub analyzed: AnalyzedFunction,
+    /// The control flow graph built from the AIR.
+    pub cfg: Cfg,
+}
+
+/// Intermediate compilation state after frontend processing.
 ///
 /// This allows inspection of the IR at each stage, useful for
 /// debugging and the `--dump-*` CLI flags.
@@ -80,11 +91,11 @@ pub struct CompileState {
     pub interner: Interner,
     /// The untyped IR (RIR).
     pub rir: Rir,
-    /// Analyzed functions with typed IR (AIR).
-    pub functions: Vec<AnalyzedFunction>,
+    /// Analyzed functions with typed IR and control flow graphs.
+    pub functions: Vec<FunctionWithCfg>,
     /// Struct definitions.
     pub struct_defs: Vec<StructDef>,
-    /// Warnings collected during semantic analysis.
+    /// Warnings collected during compilation.
     pub warnings: Vec<CompileWarning>,
 }
 
@@ -96,31 +107,46 @@ pub struct CompileOutput {
     pub warnings: Vec<CompileWarning>,
 }
 
-/// Compile source code through all phases up to (but not including) codegen.
+/// Compile source code through all frontend phases (up to but not including codegen).
 ///
+/// This runs: lexing → parsing → AST to RIR → semantic analysis → CFG construction.
 /// Returns the compile state which can be inspected for debugging.
-pub fn compile_to_air(source: &str) -> CompileResult<CompileState> {
-    // Phase 1: Lexing
+pub fn compile_frontend(source: &str) -> CompileResult<CompileState> {
+    // Lexing
     let mut lexer = Lexer::new(source);
     let tokens = lexer.tokenize()?;
 
-    // Phase 2: Parsing
+    // Parsing
     let mut parser = Parser::new(tokens);
     let ast = parser.parse()?;
 
-    // Phase 3: AST to RIR (untyped IR)
+    // AST to RIR (untyped IR)
     let mut interner = Interner::new();
     let astgen = AstGen::new(&ast, &mut interner);
     let rir = astgen.generate();
 
-    // Phase 4: Semantic analysis (RIR to AIR)
+    // Semantic analysis (RIR to AIR)
     let sema = Sema::new(&rir, &interner);
     let sema_output = sema.analyze_all()?;
+
+    // Build CFGs from AIR (one per function)
+    let functions: Vec<FunctionWithCfg> = sema_output
+        .functions
+        .into_iter()
+        .map(|func| {
+            let cfg =
+                CfgBuilder::build(&func.air, func.num_locals, func.num_param_slots, &func.name);
+            FunctionWithCfg {
+                analyzed: func,
+                cfg,
+            }
+        })
+        .collect();
 
     Ok(CompileState {
         interner,
         rir,
-        functions: sema_output.functions,
+        functions,
         struct_defs: sema_output.struct_defs,
         warnings: sema_output.warnings,
     })
@@ -141,13 +167,13 @@ pub fn compile_with_options(
     source: &str,
     options: &CompileOptions,
 ) -> CompileResult<CompileOutput> {
-    let state = compile_to_air(source)?;
+    let state = compile_frontend(source)?;
 
     // Check for main function
     let _main_fn = state
         .functions
         .iter()
-        .find(|f| f.name == "main")
+        .find(|f| f.analyzed.name == "main")
         .ok_or_else(|| CompileError::without_span(ErrorKind::NoMainFunction))?;
 
     // Dispatch to the appropriate backend based on target architecture
@@ -159,23 +185,15 @@ pub fn compile_with_options(
 
 /// Compile for x86-64 target.
 fn compile_x86_64(state: &CompileState, options: &CompileOptions) -> CompileResult<CompileOutput> {
-    // Phase 5: Code generation (AIR to machine code) for ALL functions
-    // Build object files for all functions
+    // Generate machine code for all functions
     let mut object_files: Vec<Vec<u8>> = Vec::new();
 
     for func in &state.functions {
-        let codegen = CodeGen::new(
-            &func.air,
-            &state.struct_defs,
-            func.num_locals,
-            func.num_param_slots,
-            &func.name,
-        );
-        let machine_code = codegen.generate();
+        let machine_code = rue_codegen::x86_64::generate(&func.cfg, &state.struct_defs);
 
         // Build object file for this function
         let mut obj_builder =
-            ObjectBuilder::new(options.target, &func.name).code(machine_code.code);
+            ObjectBuilder::new(options.target, &func.analyzed.name).code(machine_code.code);
 
         // Add relocations from codegen (convert emitted relocations to linker relocations).
         // We use PLT32 for call instructions since this is the standard relocation type
@@ -194,7 +212,7 @@ fn compile_x86_64(state: &CompileState, options: &CompileOptions) -> CompileResu
         object_files.push(obj_builder.build());
     }
 
-    // Phase 6 & 7: Link to executable
+    // Link to executable
     match &options.linker {
         LinkerMode::Internal => link_internal(state, options, &object_files),
         LinkerMode::System(linker_cmd) => link_system(state, options, &object_files, linker_cmd),
@@ -344,16 +362,10 @@ fn compile_aarch64(state: &CompileState, options: &CompileOptions) -> CompileRes
     let mut object_files: Vec<Vec<u8>> = Vec::new();
 
     for func in &state.functions {
-        let machine_code = rue_codegen::aarch64::generate(
-            &func.air,
-            &state.struct_defs,
-            func.num_locals,
-            func.num_param_slots,
-            &func.name,
-        );
+        let machine_code = rue_codegen::aarch64::generate(&func.cfg, &state.struct_defs);
 
         let mut obj_builder =
-            ObjectBuilder::new(options.target, &func.name).code(machine_code.code);
+            ObjectBuilder::new(options.target, &func.analyzed.name).code(machine_code.code);
 
         for reloc in machine_code.relocations {
             obj_builder = obj_builder.relocation(CodeRelocation {
@@ -473,15 +485,9 @@ fn link_system_macos(
     })
 }
 
-/// Generate X86Mir from AIR (for debugging/inspection).
-pub fn generate_mir(
-    air: &Air,
-    struct_defs: &[StructDef],
-    num_locals: u32,
-    num_params: u32,
-    fn_name: &str,
-) -> X86Mir {
-    rue_codegen::x86_64::Lower::new(air, struct_defs, num_locals, num_params, fn_name).lower()
+/// Generate X86Mir from CFG (for debugging/inspection).
+pub fn generate_mir(cfg: &Cfg, struct_defs: &[StructDef]) -> X86Mir {
+    rue_codegen::x86_64::CfgLower::new(cfg, struct_defs).lower()
 }
 
 #[cfg(test)]
@@ -533,8 +539,8 @@ mod tests {
     }
 
     #[test]
-    fn test_compile_to_air_includes_warnings() {
-        let state = compile_to_air("fn main() -> i32 { let x = 42; 0 }").unwrap();
+    fn test_compile_frontend_includes_warnings() {
+        let state = compile_frontend("fn main() -> i32 { let x = 42; 0 }").unwrap();
         assert_eq!(state.warnings.len(), 1);
         assert!(state.warnings[0].to_string().contains("unused variable"));
     }

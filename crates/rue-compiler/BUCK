@@ -7,6 +7,7 @@ rust_library(
     },
     deps = [
         "//crates/rue-air:rue-air",
+        "//crates/rue-cfg:rue-cfg",
         "//crates/rue-codegen:rue-codegen",
         "//crates/rue-error:rue-error",
         "//crates/rue-intern:rue-intern",
@@ -28,6 +29,7 @@ rust_test(
     },
     deps = [
         "//crates/rue-air:rue-air",
+        "//crates/rue-cfg:rue-cfg",
         "//crates/rue-codegen:rue-codegen",
         "//crates/rue-error:rue-error",
         "//crates/rue-intern:rue-intern",
