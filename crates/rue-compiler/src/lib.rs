@@ -28,7 +28,7 @@ pub fn validate_runtime() -> Result<(), String> {
 
 // Re-export commonly used types
 pub use rue_air::{Air, AnalyzedFunction, Sema, SemaOutput, StructDef, Type};
-pub use rue_cfg::{Cfg, CfgBuilder};
+pub use rue_cfg::{Cfg, CfgBuilder, CfgOutput};
 pub use rue_codegen::X86Mir;
 pub use rue_error::{CompileError, CompileResult, CompileWarning, ErrorKind, WarningKind};
 pub use rue_intern::{Interner, Symbol};
@@ -129,26 +129,26 @@ pub fn compile_frontend(source: &str) -> CompileResult<CompileState> {
     let sema = Sema::new(&rir, &interner);
     let sema_output = sema.analyze_all()?;
 
-    // Build CFGs from AIR (one per function)
-    let functions: Vec<FunctionWithCfg> = sema_output
-        .functions
-        .into_iter()
-        .map(|func| {
-            let cfg =
-                CfgBuilder::build(&func.air, func.num_locals, func.num_param_slots, &func.name);
-            FunctionWithCfg {
-                analyzed: func,
-                cfg,
-            }
-        })
-        .collect();
+    // Build CFGs from AIR (one per function), collecting warnings
+    let mut functions = Vec::with_capacity(sema_output.functions.len());
+    let mut warnings = sema_output.warnings;
+
+    for func in sema_output.functions {
+        let cfg_output =
+            CfgBuilder::build(&func.air, func.num_locals, func.num_param_slots, &func.name);
+        warnings.extend(cfg_output.warnings);
+        functions.push(FunctionWithCfg {
+            analyzed: func,
+            cfg: cfg_output.cfg,
+        });
+    }
 
     Ok(CompileState {
         interner,
         rir,
         functions,
         struct_defs: sema_output.struct_defs,
-        warnings: sema_output.warnings,
+        warnings,
     })
 }
 

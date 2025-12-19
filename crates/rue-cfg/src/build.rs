@@ -4,7 +4,9 @@
 //! into explicit basic blocks with terminators.
 
 use rue_air::{Air, AirInstData, AirRef, Type};
+use rue_error::{CompileWarning, WarningKind};
 
+use crate::CfgOutput;
 use crate::inst::{BlockId, Cfg, CfgInst, CfgInstData, CfgValue, Terminator};
 
 /// Result of lowering an expression.
@@ -41,11 +43,13 @@ pub struct CfgBuilder<'a> {
     loop_stack: Vec<LoopContext>,
     /// Cache: maps AIR refs to CFG values (for already-lowered instructions)
     value_cache: Vec<Option<CfgValue>>,
+    /// Warnings collected during CFG construction (e.g., unreachable code)
+    warnings: Vec<CompileWarning>,
 }
 
 impl<'a> CfgBuilder<'a> {
-    /// Build a CFG from AIR.
-    pub fn build(air: &'a Air, num_locals: u32, num_params: u32, fn_name: &str) -> Cfg {
+    /// Build a CFG from AIR, returning the CFG and any warnings.
+    pub fn build(air: &'a Air, num_locals: u32, num_params: u32, fn_name: &str) -> CfgOutput {
         let mut builder = CfgBuilder {
             air,
             cfg: Cfg::new(
@@ -57,6 +61,7 @@ impl<'a> CfgBuilder<'a> {
             current_block: BlockId(0),
             loop_stack: Vec::new(),
             value_cache: vec![None; air.len()],
+            warnings: Vec::new(),
         };
 
         // Create entry block
@@ -72,7 +77,10 @@ impl<'a> CfgBuilder<'a> {
         // Compute predecessor lists
         builder.cfg.compute_predecessors();
 
-        builder.cfg
+        CfgOutput {
+            cfg: builder.cfg,
+            warnings: builder.warnings,
+        }
     }
 
     /// Lower an AIR instruction, returning its result.
@@ -494,10 +502,43 @@ impl<'a> CfgBuilder<'a> {
             }
 
             AirInstData::Block { statements, value } => {
-                // Lower each statement
-                for stmt in statements {
+                // Lower each statement.
+                //
+                // Design decision: When a statement diverges (break/continue/return), we only
+                // warn about the *first* unreachable statement or value expression following it.
+                // This matches Rust's behavior and avoids flooding the user with redundant
+                // warnings for code like:
+                //   break;
+                //   x = 1;  // warn about this
+                //   y = 2;  // don't warn about this (already covered by first warning)
+                for (i, stmt) in statements.iter().enumerate() {
                     let result = self.lower_inst(*stmt);
                     if matches!(result.continuation, Continuation::Diverged) {
+                        // Check if there are remaining statements or a value expression
+                        // that will never be executed
+                        let remaining = &statements[i + 1..];
+                        if !remaining.is_empty() {
+                            // Warn about the first unreachable statement
+                            let unreachable_stmt = remaining[0];
+                            let unreachable_span = self.air.get(unreachable_stmt).span;
+                            self.warnings.push(CompileWarning::new(
+                                WarningKind::UnreachableCode,
+                                unreachable_span,
+                            ));
+                        } else {
+                            // The final value expression is unreachable.
+                            // However, don't warn about synthetic unit values (created by parser
+                            // when a block has no trailing expression). These have zero-length
+                            // spans pointing at the closing brace.
+                            let value_span = self.air.get(*value).span;
+                            let is_synthetic = value_span.start == value_span.end;
+                            if !is_synthetic {
+                                self.warnings.push(CompileWarning::new(
+                                    WarningKind::UnreachableCode,
+                                    value_span,
+                                ));
+                            }
+                        }
                         return ExprResult {
                             value: None,
                             continuation: Continuation::Diverged,
@@ -773,7 +814,7 @@ mod tests {
         let output = sema.analyze_all().unwrap();
 
         let func = &output.functions[0];
-        CfgBuilder::build(&func.air, func.num_locals, func.num_param_slots, &func.name)
+        CfgBuilder::build(&func.air, func.num_locals, func.num_param_slots, &func.name).cfg
     }
 
     #[test]

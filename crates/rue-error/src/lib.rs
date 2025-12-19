@@ -257,6 +257,8 @@ pub enum WarningKind {
     UnusedVariable(String),
     /// A function was declared but never called.
     UnusedFunction(String),
+    /// Code that will never be executed.
+    UnreachableCode,
 }
 
 /// A compilation warning with optional source location information.
@@ -308,6 +310,7 @@ impl fmt::Display for WarningKind {
         match self {
             WarningKind::UnusedVariable(name) => write!(f, "unused variable '{}'", name),
             WarningKind::UnusedFunction(name) => write!(f, "unused function '{}'", name),
+            WarningKind::UnreachableCode => write!(f, "unreachable code"),
         }
     }
 }

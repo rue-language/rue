@@ -206,3 +206,260 @@ fn main() -> i32 {
 """
 exit_code = 42
 expected_warning_count = 2
+
+# =============================================================================
+# Unreachable Code Warnings
+# =============================================================================
+
+[[case]]
+name = "unreachable_after_break_in_loop"
+description = "Code after break in a loop block is unreachable"
+source = """
+fn main() -> i32 {
+    let mut result = 0;
+    while true {
+        result = 42;
+        break;
+        result = 100;
+    }
+    result
+}
+"""
+exit_code = 42
+warning_contains = ["unreachable code"]
+expected_warning_count = 1
+
+[[case]]
+name = "unreachable_after_break"
+description = "Code after break statement is unreachable"
+source = """
+fn main() -> i32 {
+    let mut i = 0;
+    while true {
+        i = i + 1;
+        if i == 5 {
+            break;
+            i = 100;
+        }
+    }
+    i
+}
+"""
+exit_code = 5
+warning_contains = ["unreachable code"]
+expected_warning_count = 1
+
+[[case]]
+name = "unreachable_after_continue"
+description = "Code after continue statement is unreachable"
+source = """
+fn main() -> i32 {
+    let mut sum = 0;
+    let mut i = 0;
+    while i < 5 {
+        i = i + 1;
+        if i == 3 {
+            continue;
+            sum = sum + 100;
+        }
+        sum = sum + i;
+    }
+    sum
+}
+"""
+exit_code = 12
+warning_contains = ["unreachable code"]
+expected_warning_count = 1
+
+[[case]]
+name = "no_warning_when_reachable"
+description = "No warning when all code is reachable"
+source = """
+fn main() -> i32 {
+    let x = 1;
+    let y = 2;
+    x + y
+}
+"""
+exit_code = 3
+no_warnings = true
+
+[[case]]
+name = "unreachable_value_in_block"
+description = "Block value unreachable after break in statements"
+source = """
+fn main() -> i32 {
+    let mut x = 0;
+    while true {
+        {
+            x = 42;
+            break;
+            x  // This is unreachable - it's the block value after break
+        }
+    }
+    x
+}
+"""
+exit_code = 42
+warning_contains = ["unreachable code"]
+expected_warning_count = 1
+
+[[case]]
+name = "no_warning_implicit_unit_after_break"
+description = "No warning for implicit unit value in block ending with break"
+source = """
+fn main() -> i32 {
+    let mut x = 0;
+    while true {
+        x = 42;
+        break;
+    }
+    x
+}
+"""
+exit_code = 42
+no_warnings = true
+
+[[case]]
+name = "unreachable_in_nested_block"
+description = "Unreachable code in nested blocks is detected"
+source = """
+fn main() -> i32 {
+    let mut _x = 0;
+    while true {
+        {
+            {
+                break;
+                _x = 100;
+            }
+        }
+    }
+    42
+}
+"""
+exit_code = 42
+warning_contains = ["unreachable code"]
+expected_warning_count = 1
+
+[[case]]
+name = "unreachable_after_both_branches_break"
+description = "Code after if where both branches break is unreachable"
+source = """
+fn main() -> i32 {
+    let mut x = 0;
+    while true {
+        if x == 0 {
+            break;
+        } else {
+            break;
+        }
+        x = 100;
+    }
+    42
+}
+"""
+exit_code = 42
+warning_contains = ["unreachable code"]
+expected_warning_count = 1
+
+[[case]]
+name = "reachable_when_one_branch_continues"
+description = "No warning when only one branch of if breaks"
+source = """
+fn main() -> i32 {
+    let mut x = 0;
+    let mut sum = 0;
+    while x < 5 {
+        x = x + 1;
+        if x == 3 {
+            continue;
+        } else {
+            sum = sum + x;
+        }
+    }
+    sum
+}
+"""
+exit_code = 12
+no_warnings = true
+
+[[case]]
+name = "unreachable_after_nested_divergence"
+description = "Code after if with break/continue in both branches is unreachable"
+source = """
+fn main() -> i32 {
+    let mut x = 0;
+    while x < 10 {
+        x = x + 1;
+        if x == 5 {
+            break;
+        } else {
+            continue;
+        }
+        x = 100;
+    }
+    x
+}
+"""
+exit_code = 5
+warning_contains = ["unreachable code"]
+expected_warning_count = 1
+
+[[case]]
+name = "multiple_functions_one_unreachable"
+description = "Unreachable code warning only in function that has it"
+source = """
+fn foo() -> i32 {
+    let mut _result = 0;
+    while true {
+        _result = 1;
+        break;
+        _result = 2;
+    }
+    _result
+}
+
+fn bar() -> i32 {
+    let x = 3;
+    x
+}
+
+fn main() -> i32 {
+    foo() + bar()
+}
+"""
+exit_code = 4
+warning_contains = ["unreachable code"]
+expected_warning_count = 1
+
+[[case]]
+name = "multiple_functions_multiple_unreachable"
+description = "Each function with unreachable code gets its own warning"
+source = """
+fn foo() -> i32 {
+    let mut _x = 0;
+    while true {
+        _x = 1;
+        break;
+        _x = 100;
+    }
+    _x
+}
+
+fn bar() -> i32 {
+    let mut _y = 0;
+    while true {
+        _y = 3;
+        break;
+        _y = 200;
+    }
+    _y
+}
+
+fn main() -> i32 {
+    foo() + bar()
+}
+"""
+exit_code = 4
+warning_contains = ["unreachable code"]
+expected_warning_count = 2

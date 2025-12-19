@@ -1044,9 +1044,10 @@ mod tests {
 
         let func = &output.functions[0];
         let struct_defs = &output.struct_defs;
-        let cfg = CfgBuilder::build(&func.air, func.num_locals, func.num_param_slots, &func.name);
+        let cfg_output =
+            CfgBuilder::build(&func.air, func.num_locals, func.num_param_slots, &func.name);
 
-        CfgLower::new(&cfg, struct_defs).lower()
+        CfgLower::new(&cfg_output.cfg, struct_defs).lower()
     }
 
     #[test]

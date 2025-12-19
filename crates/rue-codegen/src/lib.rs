@@ -69,10 +69,10 @@ mod tests {
         });
 
         // Build CFG from AIR
-        let cfg = CfgBuilder::build(&air, 0, 0, "main");
+        let cfg_output = CfgBuilder::build(&air, 0, 0, "main");
 
         // Test the generate function
-        let machine_code = generate(&cfg, &[]);
+        let machine_code = generate(&cfg_output.cfg, &[]);
 
         // Should generate working code
         assert!(!machine_code.code.is_empty());
