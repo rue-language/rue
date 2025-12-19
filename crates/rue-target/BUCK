@@ -1,0 +1,10 @@
+rust_library(
+    name = "rue-target",
+    srcs = glob(["src/**/*.rs"]),
+    visibility = ["PUBLIC"],
+)
+
+rust_test(
+    name = "rue-target-test",
+    srcs = glob(["src/**/*.rs"]),
+)

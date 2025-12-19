@@ -2,10 +2,14 @@
 //!
 //! Creates ELF64 relocatable object files from machine code and relocation info.
 
+use rue_target::Target;
+
 use crate::elf::RelocationType;
 
 /// Information needed to create an object file.
 pub struct ObjectBuilder {
+    /// The target architecture and OS.
+    target: Target,
     /// Name of the function being compiled.
     pub name: String,
     /// The machine code bytes.
@@ -28,9 +32,10 @@ pub struct CodeRelocation {
 }
 
 impl ObjectBuilder {
-    /// Create a new object builder.
-    pub fn new(name: impl Into<String>) -> Self {
+    /// Create a new object builder for the given target.
+    pub fn new(target: Target, name: impl Into<String>) -> Self {
         ObjectBuilder {
+            target,
             name: name.into(),
             code: Vec::new(),
             relocations: Vec::new(),
@@ -182,7 +187,7 @@ impl ObjectBuilder {
             0, 0, 0, 0, 0, 0, 0, 0, // Padding
         ]);
         elf.extend_from_slice(&1_u16.to_le_bytes()); // e_type: ET_REL
-        elf.extend_from_slice(&0x3E_u16.to_le_bytes()); // e_machine: x86-64
+        elf.extend_from_slice(&self.target.elf_machine().to_le_bytes()); // e_machine
         elf.extend_from_slice(&1_u32.to_le_bytes()); // e_version
         elf.extend_from_slice(&0_u64.to_le_bytes()); // e_entry (none for relocatable)
         elf.extend_from_slice(&0_u64.to_le_bytes()); // e_phoff (no program headers)
@@ -299,11 +304,12 @@ fn align_up(value: usize, align: usize) -> usize {
 mod tests {
     use super::*;
     use crate::elf::ObjectFile;
+    use rue_target::Target;
 
     #[test]
     fn test_simple_object() {
         // Create a simple object with just a ret instruction
-        let obj = ObjectBuilder::new("main")
+        let obj = ObjectBuilder::new(Target::host(), "main")
             .code(vec![0xC3]) // ret
             .build();
 
@@ -316,7 +322,7 @@ mod tests {
     #[test]
     fn test_object_with_relocation() {
         // Create object that calls an external function
-        let obj = ObjectBuilder::new("main")
+        let obj = ObjectBuilder::new(Target::host(), "main")
             .code(vec![
                 0xE8, 0x00, 0x00, 0x00, 0x00, // call (placeholder)
                 0xC3, // ret
@@ -347,7 +353,7 @@ mod tests {
     #[test]
     fn test_roundtrip_simple() {
         // Create an object and verify we can parse it back
-        let built = ObjectBuilder::new("test_func")
+        let built = ObjectBuilder::new(Target::host(), "test_func")
             .code(vec![0x48, 0x89, 0xC0, 0xC3]) // mov rax, rax; ret
             .build();
 
@@ -362,7 +368,7 @@ mod tests {
 
     #[test]
     fn test_roundtrip_with_relocation() {
-        let built = ObjectBuilder::new("caller")
+        let built = ObjectBuilder::new(Target::host(), "caller")
             .code(vec![
                 0xE8, 0x00, 0x00, 0x00, 0x00, // call (placeholder)
                 0xC3, // ret
@@ -398,7 +404,7 @@ mod tests {
 
     #[test]
     fn test_multiple_relocations() {
-        let built = ObjectBuilder::new("multi_caller")
+        let built = ObjectBuilder::new(Target::host(), "multi_caller")
             .code(vec![
                 0xE8, 0x00, 0x00, 0x00, 0x00, // call func1
                 0xE8, 0x00, 0x00, 0x00, 0x00, // call func2
@@ -442,7 +448,7 @@ mod tests {
 
     #[test]
     fn test_empty_code() {
-        let built = ObjectBuilder::new("empty_func")
+        let built = ObjectBuilder::new(Target::host(), "empty_func")
             .code(vec![])
             .build();
 
@@ -453,7 +459,7 @@ mod tests {
 
     #[test]
     fn test_various_relocation_types() {
-        let built = ObjectBuilder::new("reloc_test")
+        let built = ObjectBuilder::new(Target::host(), "reloc_test")
             .code(vec![0u8; 32])
             .relocation(CodeRelocation {
                 offset: 0,

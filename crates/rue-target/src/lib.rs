@@ -1,0 +1,267 @@
+//! Target architecture and OS definitions for the Rue compiler.
+//!
+//! This crate provides the `Target` enum and related types that define
+//! compilation targets. It is a leaf crate with no dependencies, designed
+//! to be used by the CLI, compiler, codegen, and linker crates.
+
+use std::fmt;
+use std::str::FromStr;
+
+/// A compilation target consisting of an architecture and operating system.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Target {
+    /// x86-64 Linux (System V AMD64 ABI)
+    X86_64Linux,
+    /// AArch64 Linux (AAPCS64 ABI)
+    Aarch64Linux,
+}
+
+impl Target {
+    /// Detect the host target at compile time.
+    ///
+    /// Returns the target that matches the current compilation environment.
+    /// This is useful for defaulting to native compilation.
+    #[cfg(all(target_arch = "x86_64", target_os = "linux"))]
+    pub fn host() -> Self {
+        Target::X86_64Linux
+    }
+
+    #[cfg(all(target_arch = "aarch64", target_os = "linux"))]
+    pub fn host() -> Self {
+        Target::Aarch64Linux
+    }
+
+    #[cfg(not(any(
+        all(target_arch = "x86_64", target_os = "linux"),
+        all(target_arch = "aarch64", target_os = "linux")
+    )))]
+    pub fn host() -> Self {
+        // For unsupported hosts (e.g., macOS during development),
+        // default to x86-64 Linux as a reasonable cross-compilation target.
+        // This allows the compiler to be built and tested on any platform.
+        Target::X86_64Linux
+    }
+
+    /// Returns the architecture component of this target.
+    pub fn arch(&self) -> Arch {
+        match self {
+            Target::X86_64Linux => Arch::X86_64,
+            Target::Aarch64Linux => Arch::Aarch64,
+        }
+    }
+
+    /// Returns the operating system component of this target.
+    pub fn os(&self) -> Os {
+        match self {
+            Target::X86_64Linux | Target::Aarch64Linux => Os::Linux,
+        }
+    }
+
+    /// Returns the ELF e_machine value for this target.
+    ///
+    /// This is used when generating ELF object files and executables.
+    pub fn elf_machine(&self) -> u16 {
+        match self.arch() {
+            Arch::X86_64 => 0x3E,  // EM_X86_64
+            Arch::Aarch64 => 0xB7, // EM_AARCH64
+        }
+    }
+
+    /// Returns the default page size for this target in bytes.
+    ///
+    /// This is used for ELF segment alignment.
+    pub fn page_size(&self) -> u64 {
+        match self {
+            // Both x86-64 and AArch64 Linux typically use 4KB pages.
+            // Note: Some AArch64 systems use 16KB or 64KB pages,
+            // but 4KB is the common default and works everywhere.
+            Target::X86_64Linux | Target::Aarch64Linux => 0x1000, // 4KB
+        }
+    }
+
+    /// Returns the default base address for executables on this target.
+    ///
+    /// This is the virtual address where the executable is loaded.
+    pub fn default_base_addr(&self) -> u64 {
+        match self {
+            // Standard Linux load address for both architectures.
+            Target::X86_64Linux | Target::Aarch64Linux => 0x400000,
+        }
+    }
+
+    /// Returns the pointer size in bytes for this target.
+    pub fn pointer_size(&self) -> u32 {
+        match self.arch() {
+            Arch::X86_64 | Arch::Aarch64 => 8, // 64-bit architectures
+        }
+    }
+
+    /// Returns the required stack alignment in bytes for this target.
+    ///
+    /// This is the alignment required at function call boundaries.
+    pub fn stack_alignment(&self) -> u32 {
+        match self {
+            // Both System V AMD64 and AAPCS64 require 16-byte stack alignment.
+            Target::X86_64Linux | Target::Aarch64Linux => 16,
+        }
+    }
+
+    /// Returns the triple string for this target (e.g., "x86_64-unknown-linux-gnu").
+    ///
+    /// This can be useful for invoking external tools like system linkers.
+    pub fn triple(&self) -> &'static str {
+        match self {
+            Target::X86_64Linux => "x86_64-unknown-linux-gnu",
+            Target::Aarch64Linux => "aarch64-unknown-linux-gnu",
+        }
+    }
+
+    /// Returns all supported targets.
+    pub fn all() -> &'static [Target] {
+        &[Target::X86_64Linux, Target::Aarch64Linux]
+    }
+}
+
+impl fmt::Display for Target {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Target::X86_64Linux => write!(f, "x86-64-linux"),
+            Target::Aarch64Linux => write!(f, "aarch64-linux"),
+        }
+    }
+}
+
+/// Error returned when parsing an invalid target string.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ParseTargetError {
+    input: String,
+}
+
+impl fmt::Display for ParseTargetError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "unknown target '{}'. Valid targets: {}",
+            self.input,
+            Target::all()
+                .iter()
+                .map(|t| t.to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
+    }
+}
+
+impl std::error::Error for ParseTargetError {}
+
+impl FromStr for Target {
+    type Err = ParseTargetError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "x86-64-linux" | "x86_64-linux" | "x86_64-unknown-linux-gnu" => {
+                Ok(Target::X86_64Linux)
+            }
+            "aarch64-linux" | "arm64-linux" | "aarch64-unknown-linux-gnu" => {
+                Ok(Target::Aarch64Linux)
+            }
+            _ => Err(ParseTargetError {
+                input: s.to_string(),
+            }),
+        }
+    }
+}
+
+/// The CPU architecture of a target.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Arch {
+    /// x86-64 (AMD64)
+    X86_64,
+    /// AArch64 (ARM64)
+    Aarch64,
+}
+
+impl fmt::Display for Arch {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Arch::X86_64 => write!(f, "x86-64"),
+            Arch::Aarch64 => write!(f, "aarch64"),
+        }
+    }
+}
+
+/// The operating system of a target.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Os {
+    /// Linux
+    Linux,
+}
+
+impl fmt::Display for Os {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Os::Linux => write!(f, "linux"),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_target_parsing() {
+        assert_eq!("x86-64-linux".parse::<Target>().unwrap(), Target::X86_64Linux);
+        assert_eq!("x86_64-linux".parse::<Target>().unwrap(), Target::X86_64Linux);
+        assert_eq!("aarch64-linux".parse::<Target>().unwrap(), Target::Aarch64Linux);
+        assert_eq!("arm64-linux".parse::<Target>().unwrap(), Target::Aarch64Linux);
+    }
+
+    #[test]
+    fn test_target_display() {
+        assert_eq!(Target::X86_64Linux.to_string(), "x86-64-linux");
+        assert_eq!(Target::Aarch64Linux.to_string(), "aarch64-linux");
+    }
+
+    #[test]
+    fn test_invalid_target() {
+        assert!("windows".parse::<Target>().is_err());
+        assert!("riscv64".parse::<Target>().is_err());
+    }
+
+    #[test]
+    fn test_elf_machine() {
+        assert_eq!(Target::X86_64Linux.elf_machine(), 0x3E);
+        assert_eq!(Target::Aarch64Linux.elf_machine(), 0xB7);
+    }
+
+    #[test]
+    fn test_arch_decomposition() {
+        assert_eq!(Target::X86_64Linux.arch(), Arch::X86_64);
+        assert_eq!(Target::Aarch64Linux.arch(), Arch::Aarch64);
+    }
+
+    #[test]
+    fn test_os_decomposition() {
+        assert_eq!(Target::X86_64Linux.os(), Os::Linux);
+        assert_eq!(Target::Aarch64Linux.os(), Os::Linux);
+    }
+
+    #[test]
+    fn test_pointer_size() {
+        assert_eq!(Target::X86_64Linux.pointer_size(), 8);
+        assert_eq!(Target::Aarch64Linux.pointer_size(), 8);
+    }
+
+    #[test]
+    fn test_stack_alignment() {
+        assert_eq!(Target::X86_64Linux.stack_alignment(), 16);
+        assert_eq!(Target::Aarch64Linux.stack_alignment(), 16);
+    }
+
+    #[test]
+    fn test_triple() {
+        assert_eq!(Target::X86_64Linux.triple(), "x86_64-unknown-linux-gnu");
+        assert_eq!(Target::Aarch64Linux.triple(), "aarch64-unknown-linux-gnu");
+    }
+}

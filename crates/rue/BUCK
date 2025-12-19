@@ -4,6 +4,7 @@ rust_binary(
     deps = [
         "//crates/rue-compiler:rue-compiler",
         "//crates/rue-rir:rue-rir",
+        "//crates/rue-target:rue-target",
         "//third-party:annotate-snippets",
     ],
     visibility = ["PUBLIC"],

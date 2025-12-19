@@ -4,8 +4,12 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 
 use annotate_snippets::{Level, Renderer, Snippet};
-use rue_compiler::{compile, compile_to_air, generate_mir, CompileError, CompileWarning};
+use rue_compiler::{
+    compile_to_air, compile_with_options, generate_mir, CompileError, CompileOptions,
+    CompileWarning, LinkerMode,
+};
 use rue_rir::RirPrinter;
+use rue_target::Target;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum DumpMode {
@@ -19,16 +23,23 @@ struct Options {
     source_path: String,
     output_path: String,
     dump_mode: DumpMode,
+    target: Target,
+    linker: LinkerMode,
 }
 
 fn print_usage() {
     eprintln!("Usage: rue [options] <source.rue> [output]");
     eprintln!();
     eprintln!("Options:");
-    eprintln!("  --dump-rir    Dump RIR (untyped intermediate representation)");
-    eprintln!("  --dump-air    Dump AIR (typed intermediate representation)");
-    eprintln!("  --dump-mir    Dump MIR (machine intermediate representation)");
-    eprintln!("  --help        Show this help message");
+    eprintln!("  --target <target>  Set compilation target (default: host)");
+    eprintln!("                     Valid targets: x86-64-linux, aarch64-linux");
+    eprintln!("  --linker <linker>  Set linker to use (default: internal)");
+    eprintln!("                     Use 'internal' for built-in linker, or a command");
+    eprintln!("                     like 'clang', 'gcc', or 'ld' for system linker");
+    eprintln!("  --dump-rir         Dump RIR (untyped intermediate representation)");
+    eprintln!("  --dump-air         Dump AIR (typed intermediate representation)");
+    eprintln!("  --dump-mir         Dump MIR (machine intermediate representation)");
+    eprintln!("  --help             Show this help message");
 }
 
 fn parse_args() -> Option<Options> {
@@ -40,13 +51,42 @@ fn parse_args() -> Option<Options> {
     }
 
     let mut dump_mode = DumpMode::None;
+    let mut target: Option<Target> = None;
+    let mut linker: Option<LinkerMode> = None;
     let mut positional = Vec::new();
+    let mut args_iter = args.iter().peekable();
 
-    for arg in &args {
+    while let Some(arg) = args_iter.next() {
         match arg.as_str() {
             "--dump-rir" => dump_mode = DumpMode::Rir,
             "--dump-air" => dump_mode = DumpMode::Air,
             "--dump-mir" => dump_mode = DumpMode::Mir,
+            "--target" => {
+                let Some(target_str) = args_iter.next() else {
+                    eprintln!("Error: --target requires a value");
+                    eprintln!("Valid targets: x86-64-linux, aarch64-linux");
+                    return None;
+                };
+                match target_str.parse::<Target>() {
+                    Ok(t) => target = Some(t),
+                    Err(e) => {
+                        eprintln!("Error: {}", e);
+                        return None;
+                    }
+                }
+            }
+            "--linker" => {
+                let Some(linker_str) = args_iter.next() else {
+                    eprintln!("Error: --linker requires a value");
+                    eprintln!("Use 'internal' or a system linker command like 'clang'");
+                    return None;
+                };
+                linker = Some(if linker_str == "internal" {
+                    LinkerMode::Internal
+                } else {
+                    LinkerMode::System(linker_str.clone())
+                });
+            }
             "--help" | "-h" => {
                 print_usage();
                 return None;
@@ -67,12 +107,17 @@ fn parse_args() -> Option<Options> {
     }
 
     let source_path = positional[0].clone();
-    let output_path = positional.get(1).cloned().unwrap_or_else(|| "a.out".to_string());
+    let output_path = positional
+        .get(1)
+        .cloned()
+        .unwrap_or_else(|| "a.out".to_string());
 
     Some(Options {
         source_path,
         output_path,
         dump_mode,
+        target: target.unwrap_or_else(Target::host),
+        linker: linker.unwrap_or_default(),
     })
 }
 
@@ -91,34 +136,32 @@ fn main() {
     // Handle dump modes
     if options.dump_mode != DumpMode::None {
         match compile_to_air(&source) {
-            Ok(state) => {
-                match options.dump_mode {
-                    DumpMode::Rir => {
-                        let printer = RirPrinter::new(&state.rir, &state.interner);
-                        println!("{}", printer);
-                    }
-                    DumpMode::Air => {
-                        for func in &state.functions {
-                            println!("function {}:", func.name);
-                            println!("{}", func.air);
-                        }
-                    }
-                    DumpMode::Mir => {
-                        for func in &state.functions {
-                            let mir = generate_mir(
-                                &func.air,
-                                &state.struct_defs,
-                                func.num_locals,
-                                func.num_param_slots,
-                                &func.name,
-                            );
-                            println!("function {}:", func.name);
-                            println!("{}", mir);
-                        }
-                    }
-                    DumpMode::None => unreachable!(),
+            Ok(state) => match options.dump_mode {
+                DumpMode::Rir => {
+                    let printer = RirPrinter::new(&state.rir, &state.interner);
+                    println!("{}", printer);
                 }
-            }
+                DumpMode::Air => {
+                    for func in &state.functions {
+                        println!("function {}:", func.name);
+                        println!("{}", func.air);
+                    }
+                }
+                DumpMode::Mir => {
+                    for func in &state.functions {
+                        let mir = generate_mir(
+                            &func.air,
+                            &state.struct_defs,
+                            func.num_locals,
+                            func.num_param_slots,
+                            &func.name,
+                        );
+                        println!("function {}:", func.name);
+                        println!("{}", mir);
+                    }
+                }
+                DumpMode::None => unreachable!(),
+            },
             Err(e) => {
                 print_error(&e, &source, &options.source_path);
                 std::process::exit(1);
@@ -128,7 +171,11 @@ fn main() {
     }
 
     // Normal compilation
-    match compile(&source) {
+    let compile_options = CompileOptions {
+        target: options.target,
+        linker: options.linker.clone(),
+    };
+    match compile_with_options(&source, &compile_options) {
         Ok(output) => {
             // Print warnings first
             for warning in &output.warnings {
@@ -158,11 +205,18 @@ fn main() {
                     eprintln!(
                         "Warning: could not read file metadata for {}: {}",
                         options.output_path, e
-                        );
+                    );
                 }
             }
 
-            println!("Compiled {} -> {}", options.source_path, options.output_path);
+            let linker_str = match &options.linker {
+                LinkerMode::Internal => "internal".to_string(),
+                LinkerMode::System(cmd) => cmd.clone(),
+            };
+            println!(
+                "Compiled {} -> {} (target: {}, linker: {})",
+                options.source_path, options.output_path, options.target, linker_str
+            );
         }
         Err(e) => {
             print_error(&e, &source, &options.source_path);

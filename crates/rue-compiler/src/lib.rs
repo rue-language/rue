@@ -5,6 +5,9 @@
 //!
 //! It re-exports types from the component crates for convenience.
 
+use std::io::Write;
+use std::process::Command;
+
 /// The rue-runtime staticlib archive bytes, embedded at compile time.
 /// This is linked into every Rue executable.
 static RUNTIME_BYTES: &[u8] = include_bytes!("librue_runtime.a");
@@ -22,14 +25,14 @@ pub fn validate_runtime() -> Result<(), String> {
 // Re-export commonly used types
 pub use rue_air::{Air, AnalyzedFunction, Sema, StructDef, Type};
 pub use rue_codegen::{CodeGen, X86Mir};
-pub use rue_linker::{Archive, CodeRelocation, Linker, ObjectBuilder, ObjectFile};
-use rue_linker::RelocationType;
 pub use rue_error::{CompileError, CompileResult, CompileWarning, ErrorKind, WarningKind};
 pub use rue_intern::{Interner, Symbol};
 pub use rue_lexer::{Lexer, Token, TokenKind};
+pub use rue_linker::{Archive, CodeRelocation, Linker, ObjectBuilder, ObjectFile, RelocationType};
 pub use rue_parser::{Ast, Expr, Function, Parser};
 pub use rue_rir::{AstGen, Rir, RirPrinter};
 pub use rue_span::Span;
+pub use rue_target::{Arch, Target};
 
 /// Intermediate compilation state, allowing inspection at each stage.
 pub struct CompileState {
@@ -81,11 +84,54 @@ pub struct CompileOutput {
     pub warnings: Vec<CompileWarning>,
 }
 
+/// Which linker to use for final linking.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LinkerMode {
+    /// Use the internal linker (default).
+    Internal,
+    /// Use an external system linker (e.g., "clang", "ld", "gcc").
+    System(String),
+}
+
+impl Default for LinkerMode {
+    fn default() -> Self {
+        LinkerMode::Internal
+    }
+}
+
+/// Options for compilation.
+#[derive(Debug, Clone)]
+pub struct CompileOptions {
+    /// The target architecture and OS.
+    pub target: Target,
+    /// Which linker to use.
+    pub linker: LinkerMode,
+}
+
+impl Default for CompileOptions {
+    fn default() -> Self {
+        Self {
+            target: Target::host(),
+            linker: LinkerMode::Internal,
+        }
+    }
+}
+
 /// Compile source code to an ELF binary.
 ///
 /// This is the main entry point for compilation.
 /// Returns the ELF binary along with any warnings generated during compilation.
 pub fn compile(source: &str) -> CompileResult<CompileOutput> {
+    compile_with_options(source, &CompileOptions::default())
+}
+
+/// Compile source code to an ELF binary with the given options.
+///
+/// This allows specifying the target architecture and other compilation options.
+pub fn compile_with_options(
+    source: &str,
+    options: &CompileOptions,
+) -> CompileResult<CompileOutput> {
     let state = compile_to_air(source)?;
 
     // Check for main function
@@ -95,9 +141,25 @@ pub fn compile(source: &str) -> CompileResult<CompileOutput> {
         .find(|f| f.name == "main")
         .ok_or_else(|| CompileError::without_span(ErrorKind::NoMainFunction))?;
 
-    let mut linker = Linker::new();
+    // Dispatch to the appropriate backend based on target architecture
+    match options.target.arch() {
+        Arch::X86_64 => compile_x86_64(&state, options),
+        Arch::Aarch64 => {
+            // aarch64 backend not yet implemented
+            Err(CompileError::without_span(ErrorKind::LinkError(format!(
+                "aarch64 backend not yet implemented (target: {})",
+                options.target
+            ))))
+        }
+    }
+}
 
+/// Compile for x86-64 target.
+fn compile_x86_64(state: &CompileState, options: &CompileOptions) -> CompileResult<CompileOutput> {
     // Phase 5: Code generation (AIR to machine code) for ALL functions
+    // Build object files for all functions
+    let mut object_files: Vec<Vec<u8>> = Vec::new();
+
     for func in &state.functions {
         let codegen = CodeGen::new(
             &func.air,
@@ -109,7 +171,8 @@ pub fn compile(source: &str) -> CompileResult<CompileOutput> {
         let machine_code = codegen.generate();
 
         // Build object file for this function
-        let mut obj_builder = ObjectBuilder::new(&func.name).code(machine_code.code);
+        let mut obj_builder =
+            ObjectBuilder::new(options.target, &func.name).code(machine_code.code);
 
         // Add relocations from codegen (convert emitted relocations to linker relocations).
         // We use PLT32 for call instructions since this is the standard relocation type
@@ -125,10 +188,27 @@ pub fn compile(source: &str) -> CompileResult<CompileOutput> {
             });
         }
 
-        let obj_bytes = obj_builder.build();
+        object_files.push(obj_builder.build());
+    }
 
-        // Phase 6: Parse and add object file to linker
-        let obj = ObjectFile::parse(&obj_bytes)
+    // Phase 6 & 7: Link to executable
+    match &options.linker {
+        LinkerMode::Internal => link_internal(state, options, &object_files),
+        LinkerMode::System(linker_cmd) => link_system(state, options, &object_files, linker_cmd),
+    }
+}
+
+/// Link using the internal linker.
+fn link_internal(
+    state: &CompileState,
+    options: &CompileOptions,
+    object_files: &[Vec<u8>],
+) -> CompileResult<CompileOutput> {
+    let mut linker = Linker::new(options.target);
+
+    // Add all object files to the linker
+    for obj_bytes in object_files {
+        let obj = ObjectFile::parse(obj_bytes)
             .map_err(|e| CompileError::without_span(ErrorKind::LinkError(e.to_string())))?;
 
         linker
@@ -143,7 +223,7 @@ pub fn compile(source: &str) -> CompileResult<CompileOutput> {
         .add_archive(runtime)
         .map_err(|e| CompileError::without_span(ErrorKind::LinkError(e.to_string())))?;
 
-    // Phase 7: Link to executable
+    // Link to executable
     // Use _start from the runtime as the entry point (it will call main)
     let elf = linker
         .link("_start")
@@ -151,7 +231,107 @@ pub fn compile(source: &str) -> CompileResult<CompileOutput> {
 
     Ok(CompileOutput {
         elf,
-        warnings: state.warnings,
+        warnings: state.warnings.clone(),
+    })
+}
+
+/// Link using an external system linker.
+fn link_system(
+    state: &CompileState,
+    _options: &CompileOptions,
+    object_files: &[Vec<u8>],
+    linker_cmd: &str,
+) -> CompileResult<CompileOutput> {
+    // Create a temporary directory for object files
+    let temp_dir = std::env::temp_dir().join(format!("rue-{}", std::process::id()));
+    std::fs::create_dir_all(&temp_dir).map_err(|e| {
+        CompileError::without_span(ErrorKind::LinkError(format!(
+            "failed to create temp directory: {}",
+            e
+        )))
+    })?;
+
+    // Write object files to temp directory
+    let mut obj_paths = Vec::new();
+    for (i, obj_bytes) in object_files.iter().enumerate() {
+        let path = temp_dir.join(format!("obj{}.o", i));
+        let mut file = std::fs::File::create(&path).map_err(|e| {
+            CompileError::without_span(ErrorKind::LinkError(format!(
+                "failed to create temp object file: {}",
+                e
+            )))
+        })?;
+        file.write_all(obj_bytes).map_err(|e| {
+            CompileError::without_span(ErrorKind::LinkError(format!(
+                "failed to write temp object file: {}",
+                e
+            )))
+        })?;
+        obj_paths.push(path);
+    }
+
+    // Write the runtime archive to temp directory
+    let runtime_path = temp_dir.join("librue_runtime.a");
+    std::fs::write(&runtime_path, RUNTIME_BYTES).map_err(|e| {
+        CompileError::without_span(ErrorKind::LinkError(format!(
+            "failed to write runtime archive: {}",
+            e
+        )))
+    })?;
+
+    // Output path for linked executable
+    let output_path = temp_dir.join("output");
+
+    // Build the linker command
+    // We support common linkers: clang, gcc, ld
+    let mut cmd = Command::new(linker_cmd);
+
+    // Add common flags for static linking
+    cmd.arg("-static");
+    cmd.arg("-nostdlib");
+    cmd.arg("-o");
+    cmd.arg(&output_path);
+
+    // Add object files
+    for path in &obj_paths {
+        cmd.arg(path);
+    }
+
+    // Add the runtime library
+    cmd.arg(&runtime_path);
+
+    // Run the linker
+    let output = cmd.output().map_err(|e| {
+        CompileError::without_span(ErrorKind::LinkError(format!(
+            "failed to execute linker '{}': {}",
+            linker_cmd, e
+        )))
+    })?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        // Clean up temp directory before returning error
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        return Err(CompileError::without_span(ErrorKind::LinkError(format!(
+            "linker '{}' failed: {}",
+            linker_cmd, stderr
+        ))));
+    }
+
+    // Read the resulting executable
+    let elf = std::fs::read(&output_path).map_err(|e| {
+        CompileError::without_span(ErrorKind::LinkError(format!(
+            "failed to read linked executable: {}",
+            e
+        )))
+    })?;
+
+    // Clean up temp directory
+    let _ = std::fs::remove_dir_all(&temp_dir);
+
+    Ok(CompileOutput {
+        elf,
+        warnings: state.warnings.clone(),
     })
 }
 
