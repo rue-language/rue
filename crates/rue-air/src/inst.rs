@@ -176,8 +176,8 @@ pub enum AirInstData {
         value: AirRef,
     },
 
-    /// Return from function
-    Ret(AirRef),
+    /// Return from function (None for `return;` in unit-returning functions)
+    Ret(Option<AirRef>),
 
     /// Function call
     Call {
@@ -289,7 +289,13 @@ impl fmt::Display for Air {
                 AirInstData::Alloc { slot, init } => writeln!(f, "alloc ${} = {}", slot, init)?,
                 AirInstData::Load { slot } => writeln!(f, "load ${}", slot)?,
                 AirInstData::Store { slot, value } => writeln!(f, "store ${} = {}", slot, value)?,
-                AirInstData::Ret(inner) => writeln!(f, "ret {}", inner)?,
+                AirInstData::Ret(inner) => {
+                    if let Some(inner) = inner {
+                        writeln!(f, "ret {}", inner)?
+                    } else {
+                        writeln!(f, "ret")?
+                    }
+                }
                 AirInstData::Call { name, args } => {
                     write!(f, "call {}(", name)?;
                     for (i, arg) in args.iter().enumerate() {

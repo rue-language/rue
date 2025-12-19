@@ -197,7 +197,7 @@ impl<'a> AstGen<'a> {
                 span: continue_expr.span,
             }),
             Expr::Return(return_expr) => {
-                let value = self.gen_expr(&return_expr.value);
+                let value = return_expr.value.as_ref().map(|v| self.gen_expr(v));
                 self.rir.add_inst(Inst {
                     data: InstData::Ret(value),
                     span: return_expr.span,

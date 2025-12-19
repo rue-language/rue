@@ -285,13 +285,12 @@ where
         TokenKind::Continue = e => Expr::Continue(ContinueExpr { span: to_rue_span(e.span()) }),
     };
 
-    // Return expression: return <expr>
-    // See tree1-0l7 for `return;` without expression (needs unit-returning functions first)
+    // Return expression: return <expr>? (expression is optional for unit-returning functions)
     let return_expr = just(TokenKind::Return)
-        .ignore_then(expr.clone())
+        .ignore_then(expr.clone().or_not())
         .map_with(|value, e| {
             Expr::Return(ReturnExpr {
-                value: Box::new(value),
+                value: value.map(Box::new),
                 span: to_rue_span(e.span()),
             })
         });

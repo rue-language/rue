@@ -305,7 +305,7 @@ impl<'a> Sema<'a> {
         let body_type = air.get(body_ref).ty;
         if body_type != Type::Never {
             air.add_inst(AirInst {
-                data: AirInstData::Ret(body_ref),
+                data: AirInstData::Ret(Some(body_ref)),
                 ty: return_type,
                 span: self.rir.get(body).span,
             });
@@ -897,27 +897,43 @@ impl<'a> Sema<'a> {
             }
 
             InstData::Ret(inner) => {
-                // Explicit return: analyze with the function's return type, result is Never
-                let inner_ref = self.analyze_inst(air, *inner, ctx.return_type, ctx)?;
-                let inner_ty = air.get(inner_ref).ty;
+                // Handle `return;` without expression (only valid for unit-returning functions)
+                let inner_ref = if let Some(inner) = inner {
+                    // Explicit return with value: analyze with the function's return type
+                    let inner_ref = self.analyze_inst(air, *inner, ctx.return_type, ctx)?;
+                    let inner_ty = air.get(inner_ref).ty;
 
-                // Type check: returned value must match function's return type.
-                // We check for error types first to avoid cascading errors - if either
-                // type is already an error, we skip the mismatch check since there's
-                // already an error reported. Note: can_coerce_to handles inner_ty being
-                // Error (returns true), but we also need to handle return_type being Error.
-                if !ctx.return_type.is_error()
-                    && !inner_ty.is_error()
-                    && !inner_ty.can_coerce_to(&ctx.return_type)
-                {
-                    return Err(CompileError::new(
-                        ErrorKind::TypeMismatch {
-                            expected: ctx.return_type.name().to_string(),
-                            found: inner_ty.name().to_string(),
-                        },
-                        inst.span,
-                    ));
-                }
+                    // Type check: returned value must match function's return type.
+                    // We check for error types first to avoid cascading errors - if either
+                    // type is already an error, we skip the mismatch check since there's
+                    // already an error reported. Note: can_coerce_to handles inner_ty being
+                    // Error (returns true), but we also need to handle return_type being Error.
+                    if !ctx.return_type.is_error()
+                        && !inner_ty.is_error()
+                        && !inner_ty.can_coerce_to(&ctx.return_type)
+                    {
+                        return Err(CompileError::new(
+                            ErrorKind::TypeMismatch {
+                                expected: ctx.return_type.name().to_string(),
+                                found: inner_ty.name().to_string(),
+                            },
+                            inst.span,
+                        ));
+                    }
+                    Some(inner_ref)
+                } else {
+                    // `return;` without expression - only valid for unit-returning functions
+                    if ctx.return_type != Type::Unit && !ctx.return_type.is_error() {
+                        return Err(CompileError::new(
+                            ErrorKind::TypeMismatch {
+                                expected: ctx.return_type.name().to_string(),
+                                found: "()".to_string(),
+                            },
+                            inst.span,
+                        ));
+                    }
+                    None
+                };
 
                 Ok(air.add_inst(AirInst {
                     data: AirInstData::Ret(inner_ref),

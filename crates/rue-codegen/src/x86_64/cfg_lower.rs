@@ -913,6 +913,15 @@ impl<'a> CfgLower<'a> {
             }
 
             Terminator::Return { value } => {
+                // Handle `return;` without expression (unit-returning functions)
+                let Some(value) = value else {
+                    if self.has_frame {
+                        self.emit_epilogue();
+                    }
+                    self.mir.push(X86Inst::Ret);
+                    return;
+                };
+
                 let return_type = self.cfg.return_type();
 
                 if self.fn_name == "main" {

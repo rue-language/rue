@@ -177,8 +177,8 @@ pub enum Terminator {
         else_args: Vec<CfgValue>,
     },
 
-    /// Return from function.
-    Return { value: CfgValue },
+    /// Return from function (None for unit-returning functions).
+    Return { value: Option<CfgValue> },
 
     /// Unreachable - control never reaches here.
     /// Used after diverging expressions.
@@ -469,7 +469,11 @@ impl fmt::Display for Cfg {
                     }
                 }
                 Terminator::Return { value } => {
-                    write!(f, "return {}", value)?;
+                    if let Some(value) = value {
+                        write!(f, "return {}", value)?;
+                    } else {
+                        write!(f, "return")?;
+                    }
                 }
                 Terminator::Unreachable => {
                     write!(f, "unreachable")?;
@@ -592,7 +596,12 @@ mod tests {
             },
         );
 
-        cfg.set_terminator(entry, Terminator::Return { value: const_val });
+        cfg.set_terminator(
+            entry,
+            Terminator::Return {
+                value: Some(const_val),
+            },
+        );
 
         assert_eq!(cfg.block_count(), 1);
     }

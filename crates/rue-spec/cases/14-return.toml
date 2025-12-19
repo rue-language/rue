@@ -600,3 +600,106 @@ air (return_type: i32) {
     %10 : i32 = ret %9
 }
 """
+
+# =============================================================================
+# Return Without Expression (for unit-returning functions)
+# =============================================================================
+
+[[case]]
+name = "return_unit_basic"
+description = "return; without expression in unit-returning function"
+source = """
+fn helper() {
+    return;
+}
+
+fn main() -> i32 {
+    helper();
+    42
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "return_unit_early"
+description = "Early return; in unit-returning function"
+source = """
+fn helper(x: i32) {
+    if x > 0 {
+        return;
+    }
+    @dbg(x);
+}
+
+fn main() -> i32 {
+    helper(5);
+    1
+}
+"""
+exit_code = 1
+
+[[case]]
+name = "return_unit_in_loop"
+description = "return; inside a loop in unit-returning function"
+source = """
+fn count_up(n: i32) {
+    let mut i = 0;
+    while i < n {
+        if i >= 3 {
+            return;
+        }
+        i = i + 1;
+    }
+}
+
+fn main() -> i32 {
+    count_up(10);
+    99
+}
+"""
+exit_code = 99
+
+[[case]]
+name = "return_unit_type_error"
+description = "return; without expression is an error in non-unit function"
+source = """
+fn main() -> i32 {
+    return;
+}
+"""
+compile_fail = true
+error_contains = "type mismatch"
+
+[[case]]
+name = "return_unit_type_error_bool"
+description = "return; without expression is an error in bool-returning function"
+source = """
+fn check() -> bool {
+    return;
+}
+
+fn main() -> i32 {
+    if check() { 1 } else { 0 }
+}
+"""
+compile_fail = true
+error_contains = "type mismatch"
+
+[[case]]
+name = "return_unit_golden_air"
+description = "AIR representation of return; in unit-returning function"
+source = "fn helper() { return; } fn main() -> i32 { helper(); 0 }"
+expected_air = """
+function helper:
+air (return_type: ()) {
+    %0 : ! = ret
+}
+
+function main:
+air (return_type: i32) {
+    %0 : () = call helper()
+    %1 : i32 = const 0
+    %2 : i32 = block [%0], %1
+    %3 : i32 = ret %2
+}
+"""

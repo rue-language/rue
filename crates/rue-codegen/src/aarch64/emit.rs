@@ -141,6 +141,8 @@ pub struct Emitter<'a> {
     num_locals: u32,
     num_params: u32,
     callee_saved: Vec<Reg>,
+    /// Whether a stack frame was emitted (prologue was executed).
+    has_frame: bool,
 }
 
 impl<'a> Emitter<'a> {
@@ -160,6 +162,7 @@ impl<'a> Emitter<'a> {
             num_locals,
             num_params,
             callee_saved: callee_saved.to_vec(),
+            has_frame: false,
         }
     }
 
@@ -175,6 +178,7 @@ impl<'a> Emitter<'a> {
     /// Emit machine code for all instructions.
     pub fn emit(mut self) -> (Vec<u8>, Vec<EmittedRelocation>) {
         if self.num_locals > 0 || self.num_params > 0 || !self.callee_saved.is_empty() {
+            self.has_frame = true;
             self.emit_prologue();
         }
 
@@ -499,7 +503,9 @@ impl<'a> Emitter<'a> {
             }
 
             Aarch64Inst::Ret => {
-                self.emit_epilogue();
+                if self.has_frame {
+                    self.emit_epilogue();
+                }
                 self.emit_ret();
             }
 

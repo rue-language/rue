@@ -884,6 +884,16 @@ impl<'a> Lower<'a> {
             }
 
             AirInstData::Ret(value_ref) => {
+                // Handle `return;` without expression (unit-returning functions)
+                let Some(value_ref) = value_ref else {
+                    // For `return;` in unit-returning functions, just emit epilogue and ret
+                    if self.has_frame {
+                        self.emit_epilogue();
+                    }
+                    self.mir.push(X86Inst::Ret);
+                    return;
+                };
+
                 // Check if we're returning a struct
                 let return_type = self.air.return_type();
                 let is_struct_return = matches!(return_type, Type::Struct(_));
@@ -1666,7 +1676,7 @@ mod tests {
 
         // Add return
         air.add_inst(AirInst {
-            data: AirInstData::Ret(const_ref),
+            data: AirInstData::Ret(Some(const_ref)),
             ty: Type::I32,
             span: Span::new(0, 2),
         });
@@ -1709,7 +1719,7 @@ mod tests {
         });
 
         air.add_inst(AirInst {
-            data: AirInstData::Ret(const_ref),
+            data: AirInstData::Ret(Some(const_ref)),
             ty: Type::I32,
             span: Span::new(0, 2),
         });

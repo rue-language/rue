@@ -203,8 +203,8 @@ pub enum InstData {
         name: Symbol,
     },
 
-    /// Return value from function
-    Ret(InstRef),
+    /// Return value from function (None for `return;` in unit-returning functions)
+    Ret(Option<InstRef>),
 
     /// Block of instructions (for function bodies)
     /// The result is the last instruction in the block
@@ -401,7 +401,11 @@ impl<'a, 'b> RirPrinter<'a, 'b> {
                     out.push_str("}\n");
                 }
                 InstData::Ret(inner) => {
-                    out.push_str(&format!("ret {}\n", inner));
+                    if let Some(inner) = inner {
+                        out.push_str(&format!("ret {}\n", inner));
+                    } else {
+                        out.push_str("ret\n");
+                    }
                 }
                 InstData::Call { name, args } => {
                     let name_str = self.interner.get(*name);

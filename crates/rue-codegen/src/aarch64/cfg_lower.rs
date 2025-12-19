@@ -902,6 +902,12 @@ impl<'a> CfgLower<'a> {
             }
 
             Terminator::Return { value } => {
+                // Handle `return;` without expression (unit-returning functions)
+                let Some(value) = value else {
+                    self.mir.push(Aarch64Inst::Ret);
+                    return;
+                };
+
                 let return_type = self.cfg.return_type();
 
                 if self.fn_name == "main" {

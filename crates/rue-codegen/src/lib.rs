@@ -63,7 +63,7 @@ mod tests {
         });
 
         air.add_inst(AirInst {
-            data: AirInstData::Ret(const_ref),
+            data: AirInstData::Ret(Some(const_ref)),
             ty: Type::I32,
             span: Span::new(0, 2),
         });

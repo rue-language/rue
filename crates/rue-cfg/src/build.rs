@@ -728,8 +728,10 @@ impl<'a> CfgBuilder<'a> {
                 // Continue after loop
                 self.current_block = exit_block;
 
+                // Loops produce a unit value (for use in unit-returning functions)
+                let unit_val = self.emit(CfgInstData::Const(0), Type::Unit, span);
                 ExprResult {
-                    value: None,
+                    value: Some(unit_val),
                     continuation: Continuation::Continues,
                 }
             }
@@ -767,7 +769,7 @@ impl<'a> CfgBuilder<'a> {
             }
 
             AirInstData::Ret(value) => {
-                let val = self.lower_inst(*value).value.unwrap();
+                let val = value.as_ref().map(|v| self.lower_inst(*v).value.unwrap());
                 self.cfg
                     .set_terminator(self.current_block, Terminator::Return { value: val });
 

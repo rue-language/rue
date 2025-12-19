@@ -318,8 +318,8 @@ pub struct ContinueExpr {
 /// A return expression (returns a value from the current function).
 #[derive(Debug, Clone)]
 pub struct ReturnExpr {
-    /// The value to return
-    pub value: Box<Expr>,
+    /// The value to return (None for `return;` in unit-returning functions)
+    pub value: Option<Box<Expr>>,
     pub span: Span,
 }
 
