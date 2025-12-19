@@ -14,6 +14,8 @@ pub enum Target {
     X86_64Linux,
     /// AArch64 Linux (AAPCS64 ABI)
     Aarch64Linux,
+    /// AArch64 macOS (Apple Silicon, AAPCS64 with Apple extensions)
+    Aarch64Macos,
 }
 
 impl Target {
@@ -31,14 +33,20 @@ impl Target {
         Target::Aarch64Linux
     }
 
+    #[cfg(all(target_arch = "aarch64", target_os = "macos"))]
+    pub fn host() -> Self {
+        Target::Aarch64Macos
+    }
+
     #[cfg(not(any(
         all(target_arch = "x86_64", target_os = "linux"),
-        all(target_arch = "aarch64", target_os = "linux")
+        all(target_arch = "aarch64", target_os = "linux"),
+        all(target_arch = "aarch64", target_os = "macos")
     )))]
     pub fn host() -> Self {
-        // For unsupported hosts (e.g., macOS during development),
-        // default to x86-64 Linux as a reasonable cross-compilation target.
-        // This allows the compiler to be built and tested on any platform.
+        // For unsupported hosts, default to x86-64 Linux as a reasonable
+        // cross-compilation target. This allows the compiler to be built
+        // and tested on any platform.
         Target::X86_64Linux
     }
 
@@ -46,7 +54,7 @@ impl Target {
     pub fn arch(&self) -> Arch {
         match self {
             Target::X86_64Linux => Arch::X86_64,
-            Target::Aarch64Linux => Arch::Aarch64,
+            Target::Aarch64Linux | Target::Aarch64Macos => Arch::Aarch64,
         }
     }
 
@@ -54,6 +62,7 @@ impl Target {
     pub fn os(&self) -> Os {
         match self {
             Target::X86_64Linux | Target::Aarch64Linux => Os::Linux,
+            Target::Aarch64Macos => Os::Macos,
         }
     }
 
@@ -69,13 +78,13 @@ impl Target {
 
     /// Returns the default page size for this target in bytes.
     ///
-    /// This is used for ELF segment alignment.
+    /// This is used for executable segment alignment.
     pub fn page_size(&self) -> u64 {
         match self {
-            // Both x86-64 and AArch64 Linux typically use 4KB pages.
-            // Note: Some AArch64 systems use 16KB or 64KB pages,
-            // but 4KB is the common default and works everywhere.
+            // x86-64 and AArch64 Linux typically use 4KB pages.
             Target::X86_64Linux | Target::Aarch64Linux => 0x1000, // 4KB
+            // macOS on Apple Silicon uses 16KB pages.
+            Target::Aarch64Macos => 0x4000, // 16KB
         }
     }
 
@@ -86,6 +95,9 @@ impl Target {
         match self {
             // Standard Linux load address for both architectures.
             Target::X86_64Linux | Target::Aarch64Linux => 0x400000,
+            // macOS uses a different address space layout; the dynamic linker
+            // handles placement. We use a conventional address.
+            Target::Aarch64Macos => 0x100000000,
         }
     }
 
@@ -101,8 +113,8 @@ impl Target {
     /// This is the alignment required at function call boundaries.
     pub fn stack_alignment(&self) -> u32 {
         match self {
-            // Both System V AMD64 and AAPCS64 require 16-byte stack alignment.
-            Target::X86_64Linux | Target::Aarch64Linux => 16,
+            // System V AMD64, AAPCS64, and Apple's ABI all require 16-byte alignment.
+            Target::X86_64Linux | Target::Aarch64Linux | Target::Aarch64Macos => 16,
         }
     }
 
@@ -113,12 +125,23 @@ impl Target {
         match self {
             Target::X86_64Linux => "x86_64-unknown-linux-gnu",
             Target::Aarch64Linux => "aarch64-unknown-linux-gnu",
+            Target::Aarch64Macos => "aarch64-apple-darwin",
         }
+    }
+
+    /// Returns whether this target uses Mach-O object format (macOS).
+    pub fn is_macho(&self) -> bool {
+        matches!(self, Target::Aarch64Macos)
+    }
+
+    /// Returns whether this target uses ELF object format (Linux).
+    pub fn is_elf(&self) -> bool {
+        matches!(self, Target::X86_64Linux | Target::Aarch64Linux)
     }
 
     /// Returns all supported targets.
     pub fn all() -> &'static [Target] {
-        &[Target::X86_64Linux, Target::Aarch64Linux]
+        &[Target::X86_64Linux, Target::Aarch64Linux, Target::Aarch64Macos]
     }
 }
 
@@ -127,6 +150,7 @@ impl fmt::Display for Target {
         match self {
             Target::X86_64Linux => write!(f, "x86-64-linux"),
             Target::Aarch64Linux => write!(f, "aarch64-linux"),
+            Target::Aarch64Macos => write!(f, "aarch64-macos"),
         }
     }
 }
@@ -165,6 +189,9 @@ impl FromStr for Target {
             "aarch64-linux" | "arm64-linux" | "aarch64-unknown-linux-gnu" => {
                 Ok(Target::Aarch64Linux)
             }
+            "aarch64-macos" | "arm64-macos" | "aarch64-apple-darwin" => {
+                Ok(Target::Aarch64Macos)
+            }
             _ => Err(ParseTargetError {
                 input: s.to_string(),
             }),
@@ -195,12 +222,15 @@ impl fmt::Display for Arch {
 pub enum Os {
     /// Linux
     Linux,
+    /// macOS (Darwin)
+    Macos,
 }
 
 impl fmt::Display for Os {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Os::Linux => write!(f, "linux"),
+            Os::Macos => write!(f, "macos"),
         }
     }
 }
@@ -215,12 +245,16 @@ mod tests {
         assert_eq!("x86_64-linux".parse::<Target>().unwrap(), Target::X86_64Linux);
         assert_eq!("aarch64-linux".parse::<Target>().unwrap(), Target::Aarch64Linux);
         assert_eq!("arm64-linux".parse::<Target>().unwrap(), Target::Aarch64Linux);
+        assert_eq!("aarch64-macos".parse::<Target>().unwrap(), Target::Aarch64Macos);
+        assert_eq!("arm64-macos".parse::<Target>().unwrap(), Target::Aarch64Macos);
+        assert_eq!("aarch64-apple-darwin".parse::<Target>().unwrap(), Target::Aarch64Macos);
     }
 
     #[test]
     fn test_target_display() {
         assert_eq!(Target::X86_64Linux.to_string(), "x86-64-linux");
         assert_eq!(Target::Aarch64Linux.to_string(), "aarch64-linux");
+        assert_eq!(Target::Aarch64Macos.to_string(), "aarch64-macos");
     }
 
     #[test]
@@ -239,29 +273,52 @@ mod tests {
     fn test_arch_decomposition() {
         assert_eq!(Target::X86_64Linux.arch(), Arch::X86_64);
         assert_eq!(Target::Aarch64Linux.arch(), Arch::Aarch64);
+        assert_eq!(Target::Aarch64Macos.arch(), Arch::Aarch64);
     }
 
     #[test]
     fn test_os_decomposition() {
         assert_eq!(Target::X86_64Linux.os(), Os::Linux);
         assert_eq!(Target::Aarch64Linux.os(), Os::Linux);
+        assert_eq!(Target::Aarch64Macos.os(), Os::Macos);
     }
 
     #[test]
     fn test_pointer_size() {
         assert_eq!(Target::X86_64Linux.pointer_size(), 8);
         assert_eq!(Target::Aarch64Linux.pointer_size(), 8);
+        assert_eq!(Target::Aarch64Macos.pointer_size(), 8);
     }
 
     #[test]
     fn test_stack_alignment() {
         assert_eq!(Target::X86_64Linux.stack_alignment(), 16);
         assert_eq!(Target::Aarch64Linux.stack_alignment(), 16);
+        assert_eq!(Target::Aarch64Macos.stack_alignment(), 16);
     }
 
     #[test]
     fn test_triple() {
         assert_eq!(Target::X86_64Linux.triple(), "x86_64-unknown-linux-gnu");
         assert_eq!(Target::Aarch64Linux.triple(), "aarch64-unknown-linux-gnu");
+        assert_eq!(Target::Aarch64Macos.triple(), "aarch64-apple-darwin");
+    }
+
+    #[test]
+    fn test_is_elf_macho() {
+        assert!(Target::X86_64Linux.is_elf());
+        assert!(Target::Aarch64Linux.is_elf());
+        assert!(!Target::Aarch64Macos.is_elf());
+
+        assert!(!Target::X86_64Linux.is_macho());
+        assert!(!Target::Aarch64Linux.is_macho());
+        assert!(Target::Aarch64Macos.is_macho());
+    }
+
+    #[test]
+    fn test_page_size() {
+        assert_eq!(Target::X86_64Linux.page_size(), 0x1000);
+        assert_eq!(Target::Aarch64Linux.page_size(), 0x1000);
+        assert_eq!(Target::Aarch64Macos.page_size(), 0x4000);
     }
 }
