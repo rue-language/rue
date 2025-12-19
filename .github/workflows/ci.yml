@@ -1,0 +1,25 @@
+name: CI
+
+on:
+  push:
+    branches: [trunk]
+  pull_request:
+    branches: [trunk]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install dotslash
+        run: cargo install dotslash
+
+      - name: Vendor dependencies
+        run: cd third-party && dotslash ../reindeer vendor
+
+      - name: Run tests
+        run: ./test.sh
