@@ -47,6 +47,9 @@ pub struct Linker {
     global_symbols: HashMap<String, (usize, Symbol)>,
     /// All object files we're linking.
     objects: Vec<ObjectFile>,
+    /// Symbols that must be resolved (e.g., entry point).
+    /// These are treated as undefined during archive linking.
+    required_symbols: Vec<String>,
 }
 
 impl Linker {
@@ -58,7 +61,17 @@ impl Linker {
             page_size: target.page_size(),
             global_symbols: HashMap::new(),
             objects: Vec::new(),
+            required_symbols: Vec::new(),
         }
+    }
+
+    /// Mark a symbol as required.
+    ///
+    /// Required symbols are treated as undefined during archive linking,
+    /// ensuring that objects defining them are pulled in from archives.
+    /// This is typically used for the entry point symbol.
+    pub fn require_symbol(&mut self, name: impl Into<String>) {
+        self.required_symbols.push(name.into());
     }
 
     /// Add an object file to be linked.
@@ -142,6 +155,13 @@ impl Linker {
         loop {
             // Collect undefined symbols from currently linked objects and selected archive objects
             let mut undefined: Vec<String> = Vec::new();
+
+            // Add required symbols (e.g., entry point) that aren't yet defined
+            for sym_name in &self.required_symbols {
+                if !defined_symbols.contains(sym_name) {
+                    undefined.push(sym_name.clone());
+                }
+            }
 
             // From already-linked objects
             for obj in &self.objects {

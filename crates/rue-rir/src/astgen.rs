@@ -179,6 +179,13 @@ impl<'a> AstGen<'a> {
                     span: while_expr.span,
                 })
             }
+            Expr::Loop(loop_expr) => {
+                let body = self.gen_block(&loop_expr.body);
+                self.rir.add_inst(Inst {
+                    data: InstData::InfiniteLoop { body },
+                    span: loop_expr.span,
+                })
+            }
             Expr::Call(call) => {
                 let name = self.interner.intern(&call.name.name);
                 let args: Vec<_> = call.args.iter().map(|a| self.gen_expr(a)).collect();

@@ -146,6 +146,9 @@ pub enum AirInstData {
     /// While loop
     Loop { cond: AirRef, body: AirRef },
 
+    /// Infinite loop (produces Never type)
+    InfiniteLoop { body: AirRef },
+
     /// Break: exits the innermost loop
     Break,
 
@@ -284,6 +287,7 @@ impl fmt::Display for Air {
                     }
                 }
                 AirInstData::Loop { cond, body } => writeln!(f, "loop {}, {}", cond, body)?,
+                AirInstData::InfiniteLoop { body } => writeln!(f, "infinite_loop {}", body)?,
                 AirInstData::Break => writeln!(f, "break")?,
                 AirInstData::Continue => writeln!(f, "continue")?,
                 AirInstData::Alloc { slot, init } => writeln!(f, "alloc ${} = {}", slot, init)?,

@@ -95,6 +95,8 @@ pub enum Expr {
     If(IfExpr),
     /// While expression (e.g., `while cond { body }`)
     While(WhileExpr),
+    /// Loop expression - infinite loop (e.g., `loop { body }`)
+    Loop(LoopExpr),
     /// Function call (e.g., `foo(1, 2)`)
     Call(CallExpr),
     /// Break statement (exits the innermost loop)
@@ -303,6 +305,14 @@ pub struct WhileExpr {
     pub span: Span,
 }
 
+/// An infinite loop expression.
+#[derive(Debug, Clone)]
+pub struct LoopExpr {
+    /// Loop body
+    pub body: BlockExpr,
+    pub span: Span,
+}
+
 /// A break expression (exits the innermost loop).
 #[derive(Debug, Clone)]
 pub struct BreakExpr {
@@ -336,6 +346,7 @@ impl Expr {
             Expr::Block(block) => block.span,
             Expr::If(if_expr) => if_expr.span,
             Expr::While(while_expr) => while_expr.span,
+            Expr::Loop(loop_expr) => loop_expr.span,
             Expr::Call(call) => call.span,
             Expr::Break(break_expr) => break_expr.span,
             Expr::Continue(continue_expr) => continue_expr.span,

@@ -54,6 +54,8 @@ pub struct WellKnown {
     pub bool: Symbol,
     /// The `()` unit type (currently not used in syntax)
     pub unit: Symbol,
+    /// The `!` never type
+    pub never: Symbol,
 }
 
 impl WellKnown {
@@ -70,6 +72,7 @@ impl WellKnown {
             u64: interner.intern_inner("u64"),
             bool: interner.intern_inner("bool"),
             unit: interner.intern_inner("()"),
+            never: interner.intern_inner("!"),
         }
     }
 }
@@ -236,9 +239,9 @@ mod tests {
     #[test]
     fn test_len() {
         let mut interner = Interner::new();
-        // Well-known symbols (i8, i16, i32, i64, u8, u16, u32, u64, bool, ()) are pre-interned
+        // Well-known symbols (i8, i16, i32, i64, u8, u16, u32, u64, bool, (), !) are pre-interned
         let initial_len = interner.len();
-        assert_eq!(initial_len, 10);
+        assert_eq!(initial_len, 11);
 
         interner.intern("a");
         assert_eq!(interner.len(), initial_len + 1);

@@ -736,6 +736,69 @@ impl<'a> CfgBuilder<'a> {
                 }
             }
 
+            AirInstData::InfiniteLoop { body } => {
+                // Infinite loop: loop { body }
+                //
+                // Structure (2 blocks, not 3):
+                //   body_block: execute body, then goto body_block
+                //   exit_block: only reachable via break
+                //
+                // Unlike while loops, there's no condition check, so we don't need
+                // a separate header block. The body_block serves as both the loop
+                // entry point and the continue target.
+                let body_block = self.cfg.new_block();
+                let exit_block = self.cfg.new_block();
+
+                // Jump to body
+                self.cfg.set_terminator(
+                    self.current_block,
+                    Terminator::Goto {
+                        target: body_block,
+                        args: vec![],
+                    },
+                );
+
+                // Push loop context (body_block is the continue target)
+                self.loop_stack.push(LoopContext {
+                    header: body_block,
+                    exit: exit_block,
+                });
+
+                // Lower body
+                self.current_block = body_block;
+                let body_result = self.lower_inst(*body);
+
+                // After body, go back to start (unless diverged via return/break/continue)
+                if !matches!(body_result.continuation, Continuation::Diverged) {
+                    self.cfg.set_terminator(
+                        self.current_block,
+                        Terminator::Goto {
+                            target: body_block,
+                            args: vec![],
+                        },
+                    );
+                }
+
+                self.loop_stack.pop();
+
+                // Continue after loop (only reachable via break).
+                // Set Unreachable as the initial terminator. If there's code after the loop
+                // (which requires a break to be reachable), the subsequent Ret instruction
+                // will overwrite this with the correct Return terminator. If there's no break,
+                // the block is truly unreachable and Unreachable is correct.
+                self.current_block = exit_block;
+                self.cfg
+                    .set_terminator(self.current_block, Terminator::Unreachable);
+
+                // Infinite loops have Never type, but if we reach exit_block via break,
+                // we need a dummy unit value for the loop expression result.
+                let unit_val = self.emit(CfgInstData::Const(0), Type::Unit, span);
+                ExprResult {
+                    value: Some(unit_val),
+                    continuation: Continuation::Continues,
+                }
+            }
+
             AirInstData::Break => {
                 let ctx = self.loop_stack.last().expect("break outside loop");
                 self.cfg.set_terminator(

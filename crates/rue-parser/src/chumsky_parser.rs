@@ -6,8 +6,8 @@
 use crate::ast::{
     AssignStatement, AssignTarget, Ast, BinaryExpr, BinaryOp, BlockExpr, BoolLit, BreakExpr,
     CallExpr, ContinueExpr, Expr, FieldDecl, FieldExpr, FieldInit, Function, Ident, IfExpr, IntLit,
-    IntrinsicCallExpr, Item, LetStatement, Param, ParenExpr, ReturnExpr, Statement, StructDecl,
-    StructLitExpr, UnaryExpr, UnaryOp, WhileExpr,
+    IntrinsicCallExpr, Item, LetStatement, LoopExpr, Param, ParenExpr, ReturnExpr, Statement,
+    StructDecl, StructLitExpr, UnaryExpr, UnaryOp, WhileExpr,
 };
 use chumsky::input::{Input as ChumskyInput, Stream, ValueInput};
 use chumsky::pratt::{infix, left, prefix};
@@ -34,7 +34,7 @@ where
     }
 }
 
-/// Parser for type expressions: either an identifier (i32, bool, etc.) or () for unit
+/// Parser for type expressions: identifier (i32, bool, etc.), () for unit, or ! for never
 fn type_parser<'src, I>() -> impl Parser<'src, I, Ident, extra::Err<Rich<'src, TokenKind>>> + Clone
 where
     I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
@@ -47,10 +47,16 @@ where
             span: to_rue_span(e.span()),
         });
 
+    // Never type: !
+    let never_type = just(TokenKind::Bang).map_with(|_, e| Ident {
+        name: "!".to_string(),
+        span: to_rue_span(e.span()),
+    });
+
     // Named type: i32, bool, MyStruct, etc.
     let named_type = ident_parser();
 
-    unit_type.or(named_type)
+    unit_type.or(never_type).or(named_type)
 }
 
 /// Parser for function parameters: name: type
@@ -327,6 +333,17 @@ where
         })
         .boxed();
 
+    // Loop expression (infinite loop)
+    let loop_expr = just(TokenKind::Loop)
+        .ignore_then(maybe_unit_block_parser(expr.clone()))
+        .map_with(|body, e| {
+            Expr::Loop(LoopExpr {
+                body,
+                span: to_rue_span(e.span()),
+            })
+        })
+        .boxed();
+
     // What can follow an identifier: call args, struct fields, or nothing
     #[derive(Clone)]
     enum IdentSuffix {
@@ -401,6 +418,7 @@ where
         return_expr,
         if_expr,
         while_expr,
+        loop_expr,
         intrinsic_call,
         ident_or_call_or_struct,
         paren_expr,
@@ -520,7 +538,12 @@ where
 fn is_control_flow_expr(e: &Expr) -> bool {
     matches!(
         e,
-        Expr::If(_) | Expr::While(_) | Expr::Break(_) | Expr::Continue(_) | Expr::Return(_)
+        Expr::If(_)
+            | Expr::While(_)
+            | Expr::Loop(_)
+            | Expr::Break(_)
+            | Expr::Continue(_)
+            | Expr::Return(_)
     )
 }
 
@@ -528,7 +551,10 @@ fn is_control_flow_expr(e: &Expr) -> bool {
 /// These expressions can be promoted to the final expression of a block
 /// since Never coerces to any type.
 fn is_diverging_expr(e: &Expr) -> bool {
-    matches!(e, Expr::Break(_) | Expr::Continue(_) | Expr::Return(_))
+    matches!(
+        e,
+        Expr::Break(_) | Expr::Continue(_) | Expr::Return(_) | Expr::Loop(_)
+    )
 }
 
 /// Parser for a single block item (statement or expression).

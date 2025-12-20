@@ -557,3 +557,236 @@ fn main() -> i32 {
 }
 """
 exit_code = 6
+
+# =============================================================================
+# Explicit Never Type in Function Return Position
+# =============================================================================
+
+[[case]]
+name = "never_return_type_with_loop"
+description = "function with explicit ! return type and loop {}"
+source = """
+fn diverge() -> ! {
+    loop { }
+}
+
+fn main() -> i32 {
+    0
+}
+"""
+compile_only = true
+
+[[case]]
+name = "never_return_type_called"
+description = "calling a function that returns ! - compile only since it would loop forever"
+source = """
+fn abort() -> ! {
+    loop { }
+}
+
+fn main() -> i32 {
+    let x = if false { abort() } else { 42 };
+    x
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "never_return_type_in_if_branch"
+description = "function returning ! can be used in if branch where other branch has value"
+source = """
+fn diverge() -> ! {
+    loop { }
+}
+
+fn main() -> i32 {
+    let x = if false { diverge() } else { 42 };
+    x
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "never_return_type_coerces_to_any_type"
+description = "never-returning function result coerces to any expected type"
+source = """
+fn diverge() -> ! {
+    loop { }
+}
+
+fn takes_i32(x: i32) -> i32 {
+    x
+}
+
+fn main() -> i32 {
+    let result = if false {
+        takes_i32(diverge())
+    } else {
+        42
+    };
+    result
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "never_return_type_error_non_diverging_body"
+description = "error if function with ! return type has non-diverging body"
+source = """
+fn not_divergent() -> ! {
+    42
+}
+
+fn main() -> i32 {
+    0
+}
+"""
+compile_fail = true
+error_contains = "type mismatch"
+
+[[case]]
+name = "never_return_type_error_unit_body"
+description = "error if function with ! return type has unit body"
+source = """
+fn not_divergent() -> ! {
+}
+
+fn main() -> i32 {
+    0
+}
+"""
+compile_fail = true
+error_contains = "type mismatch"
+
+[[case]]
+name = "never_return_type_error_while_true_is_unit"
+description = "while true {} produces () not !, matching Rust's semantics"
+source = """
+fn diverge() -> ! {
+    while true { }
+}
+
+fn main() -> i32 {
+    0
+}
+"""
+compile_fail = true
+error_contains = "type mismatch"
+
+# =============================================================================
+# Loop Expression
+# =============================================================================
+
+[[case]]
+name = "loop_basic"
+description = "basic loop with break"
+source = """
+fn main() -> i32 {
+    let mut x = 0;
+    loop {
+        x = x + 1;
+        if x == 10 {
+            break;
+        }
+    }
+    x
+}
+"""
+exit_code = 10
+
+[[case]]
+name = "loop_with_continue"
+description = "loop with continue skips to next iteration"
+source = """
+fn main() -> i32 {
+    let mut x = 0;
+    let mut sum = 0;
+    loop {
+        x = x + 1;
+        if x > 10 {
+            break;
+        }
+        if x % 2 == 0 {
+            continue;
+        }
+        sum = sum + x;
+    }
+    sum
+}
+"""
+exit_code = 25
+
+[[case]]
+name = "loop_nested"
+description = "nested loops with break"
+source = """
+fn main() -> i32 {
+    let mut total = 0;
+    let mut outer = 0;
+    loop {
+        outer = outer + 1;
+        if outer > 3 {
+            break;
+        }
+        let mut inner = 0;
+        loop {
+            inner = inner + 1;
+            if inner > 4 {
+                break;
+            }
+            total = total + 1;
+        }
+    }
+    total
+}
+"""
+exit_code = 12
+
+[[case]]
+name = "loop_infinite_compile_only"
+description = "infinite loop that never breaks - compile only test"
+source = """
+fn main() -> i32 {
+    loop { }
+}
+"""
+compile_only = true
+
+[[case]]
+name = "loop_produces_never_type"
+description = "loop {} has never type, can be used where never is expected"
+source = """
+fn diverge() -> ! {
+    loop { }
+}
+
+fn main() -> i32 {
+    let x = if false { loop { } } else { 42 };
+    x
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "loop_break_outside_error"
+description = "break outside loop is an error"
+source = """
+fn main() -> i32 {
+    break;
+    0
+}
+"""
+compile_fail = true
+error_contains = "outside of loop"
+
+[[case]]
+name = "loop_continue_outside_error"
+description = "continue outside loop is an error"
+source = """
+fn main() -> i32 {
+    continue;
+    0
+}
+"""
+compile_fail = true
+error_contains = "outside of loop"

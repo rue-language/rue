@@ -850,6 +850,55 @@ impl<'a> Lower<'a> {
                 });
             }
 
+            AirInstData::InfiniteLoop { body } => {
+                // Infinite loop: `loop { body }` - never terminates normally
+                //
+                // Structure:
+                //   loop_start:
+                //     evaluate body
+                //     jump to loop_start
+                //
+                // Note: This loop only exits via break (which is handled separately)
+
+                let loop_start = self.new_label("loop_start");
+                let loop_end = self.new_label("loop_end");
+
+                // Push the loop context for break/continue support
+                self.loop_stack.push(LoopContext {
+                    continue_label: loop_start.clone(),
+                    break_label: loop_end.clone(),
+                });
+
+                // Loop start label
+                self.mir.push(X86Inst::Label {
+                    name: loop_start.clone(),
+                });
+
+                // Execute body
+                self.demand_lower(*body);
+
+                // Clear values that need to be re-evaluated on next iteration
+                self.clear_transitive_deps(*body);
+
+                // Jump back to start (unconditional)
+                self.mir.push(X86Inst::Jmp { label: loop_start });
+
+                // Loop end label (only reachable via break)
+                self.mir.push(X86Inst::Label { name: loop_end });
+
+                // Pop the loop context now that the loop is done
+                self.loop_stack.pop();
+
+                // Loop doesn't produce a value, but we need something in the value_map
+                // since it has Never type. Use a dummy vreg.
+                let vreg = self.mir.alloc_vreg();
+                self.value_map[air_ref.as_u32() as usize] = Some(vreg);
+                self.mir.push(X86Inst::MovRI32 {
+                    dst: Operand::Virtual(vreg),
+                    imm: 0,
+                });
+            }
+
             AirInstData::Break => {
                 // Break: exit the innermost loop by jumping to its end label.
                 // The loop context was validated by Sema, so we know we're in a loop.
@@ -1630,6 +1679,9 @@ impl<'a> Lower<'a> {
             }
             AirInstData::Loop { cond, body } => {
                 self.clear_transitive_deps(cond);
+                self.clear_transitive_deps(body);
+            }
+            AirInstData::InfiniteLoop { body } => {
                 self.clear_transitive_deps(body);
             }
             // Struct operations

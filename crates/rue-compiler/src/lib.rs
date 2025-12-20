@@ -237,6 +237,11 @@ fn link_internal(
             .map_err(|e| CompileError::without_span(ErrorKind::LinkError(e.to_string())))?;
     }
 
+    // Mark _start as required so it gets pulled from the archive.
+    // The entry point must be marked before adding the archive because
+    // archive linking only includes objects that define needed symbols.
+    linker.require_symbol("_start");
+
     // Add the runtime library
     let runtime = Archive::parse(RUNTIME_BYTES)
         .map_err(|e| CompileError::without_span(ErrorKind::LinkError(e.to_string())))?;

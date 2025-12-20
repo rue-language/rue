@@ -714,6 +714,29 @@ impl<'a> Sema<'a> {
                 }))
             }
 
+            InstData::InfiniteLoop { body } => {
+                // Infinite loop: `loop { body }` - always produces Never type
+                // The loop never terminates normally (only via break, which is handled separately)
+
+                // Save locals before loop body
+                let saved_locals = ctx.locals.clone();
+
+                // Analyze body - loop body is Unit type
+                // Increment loop_depth so break/continue inside the body are valid
+                ctx.loop_depth += 1;
+                let body_ref = self.analyze_inst(air, *body, Type::Unit, ctx)?;
+                ctx.loop_depth -= 1;
+
+                // Restore locals (loop body is its own scope)
+                ctx.locals = saved_locals;
+
+                Ok(air.add_inst(AirInst {
+                    data: AirInstData::InfiniteLoop { body: body_ref },
+                    ty: Type::Never,
+                    span: inst.span,
+                }))
+            }
+
             InstData::Alloc {
                 name,
                 is_mut,
@@ -1040,9 +1063,17 @@ impl<'a> Sema<'a> {
                     arg_refs.push(arg_ref);
                 }
 
-                // Check that return type matches expected type (if we have an expectation)
+                // Check that return type matches expected type (if we have an expectation).
+                // Never type can coerce to any type, so skip the check if return_type is Never.
+                //
+                // NOTE: This check is unidirectional - we only check if return_type is Never,
+                // not if expected_type is Never. The reverse case (expected Never, got non-Never)
+                // is handled correctly by falling through to the type mismatch error below.
+                // A future type checker improvement could make this more symmetric by having
+                // a dedicated coercion system that handles Never in both directions.
                 if expected_type != Type::Unit
                     && return_type != expected_type
+                    && !return_type.is_never()
                     && !return_type.is_error()
                 {
                     return Err(CompileError::new(
@@ -1393,6 +1424,8 @@ impl<'a> Sema<'a> {
             Ok(Type::Bool)
         } else if type_sym == well_known.unit {
             Ok(Type::Unit)
+        } else if type_sym == well_known.never {
+            Ok(Type::Never)
         } else if let Some(&struct_id) = self.structs.get(&type_sym) {
             Ok(Type::Struct(struct_id))
         } else {
@@ -1527,6 +1560,7 @@ impl<'a> Sema<'a> {
             InstData::Alloc { .. } | InstData::Assign { .. } | InstData::Loop { .. } => {
                 Ok(Type::Unit)
             }
+            InstData::InfiniteLoop { .. } => Ok(Type::Never),
             InstData::Break | InstData::Continue | InstData::Ret(_) => Ok(Type::Never),
             InstData::FnDecl { .. } | InstData::StructDecl { .. } => {
                 unreachable!("FnDecl/StructDecl should not appear in expression context")

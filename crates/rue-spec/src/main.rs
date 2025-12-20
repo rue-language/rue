@@ -26,6 +26,9 @@ struct Case {
     /// If true, compilation should fail
     #[serde(default)]
     compile_fail: bool,
+    /// If true, only compile (don't run) - useful for infinite loops
+    #[serde(default)]
+    compile_only: bool,
     /// Optional substring that should appear in the error message
     #[serde(default)]
     error_contains: Option<String>,
@@ -326,6 +329,11 @@ fn run_test_case(case: &Case, rue_binary: &Path) -> Result<(), Failed> {
                 .into());
             }
         }
+    }
+
+    // If compile_only, we're done after successful compilation
+    if case.compile_only {
+        return Ok(());
     }
 
     // Run the compiled binary

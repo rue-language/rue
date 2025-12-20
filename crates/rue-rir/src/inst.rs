@@ -163,6 +163,9 @@ pub enum InstData {
     /// While loop: while cond { body }
     Loop { cond: InstRef, body: InstRef },
 
+    /// Infinite loop: loop { body }
+    InfiniteLoop { body: InstRef },
+
     /// Break: exits the innermost loop
     Break,
 
@@ -366,6 +369,9 @@ impl<'a, 'b> RirPrinter<'a, 'b> {
                 }
                 InstData::Loop { cond, body } => {
                     out.push_str(&format!("loop {}, {}\n", cond, body));
+                }
+                InstData::InfiniteLoop { body } => {
+                    out.push_str(&format!("infinite_loop {}\n", body));
                 }
                 InstData::Break => {
                     out.push_str("break\n");

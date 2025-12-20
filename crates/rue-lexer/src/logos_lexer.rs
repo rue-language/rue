@@ -34,6 +34,8 @@ pub enum LogosTokenKind {
     Else,
     #[token("while")]
     While,
+    #[token("loop")]
+    Loop,
     #[token("break")]
     Break,
     #[token("continue")]
@@ -123,6 +125,7 @@ impl From<LogosTokenKind> for TokenKind {
             LogosTokenKind::If => TokenKind::If,
             LogosTokenKind::Else => TokenKind::Else,
             LogosTokenKind::While => TokenKind::While,
+            LogosTokenKind::Loop => TokenKind::Loop,
             LogosTokenKind::Break => TokenKind::Break,
             LogosTokenKind::Continue => TokenKind::Continue,
             LogosTokenKind::Return => TokenKind::Return,
