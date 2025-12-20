@@ -832,7 +832,22 @@ impl<'a> CfgBuilder<'a> {
             }
 
             AirInstData::Ret(value) => {
-                let val = value.as_ref().map(|v| self.lower_inst(*v).value.unwrap());
+                let val = match value {
+                    Some(v) => {
+                        let result = self.lower_inst(*v);
+                        if matches!(result.continuation, Continuation::Diverged) {
+                            // The return value expression itself diverged (e.g., a block
+                            // containing an earlier return). The terminator was already set
+                            // by the inner diverging expression, so just propagate divergence.
+                            return ExprResult {
+                                value: None,
+                                continuation: Continuation::Diverged,
+                            };
+                        }
+                        Some(result.value.unwrap())
+                    }
+                    None => None,
+                };
                 self.cfg
                     .set_terminator(self.current_block, Terminator::Return { value: val });
 
