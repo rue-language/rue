@@ -253,6 +253,7 @@ fn main() -> i32 {
 - Array length must match the declared size
 - All elements must have the same type
 - Immutable arrays cannot be assigned to
+- Constant indices are bounds-checked at compile time
 
 ```rue
 fn main() -> i32 {
@@ -261,6 +262,36 @@ fn main() -> i32 {
     let arr: [i32; 1] = [42];
     arr[0] = 10;                    // ERROR: cannot assign to immutable array
     0
+}
+```
+
+**Bounds checking:**
+
+Array indices are checked against the array length. For constant indices, this check happens at compile time:
+
+```rue
+fn main() -> i32 {
+    let arr: [i32; 3] = [1, 2, 3];
+    arr[5]  // ERROR: index out of bounds: the length is 3 but the index is 5
+}
+```
+
+For variable indices, bounds checking happens at runtime:
+
+```rue
+fn main() -> i32 {
+    let arr: [i32; 3] = [1, 2, 3];
+    let idx = 5;
+    arr[idx]  // Runtime error: index out of bounds (exit code 101)
+}
+```
+
+Negative indices are also caught (they're treated as large unsigned values):
+
+```rue
+fn main() -> i32 {
+    let arr: [i32; 3] = [1, 2, 3];
+    arr[-1]  // ERROR: index out of bounds
 }
 ```
 
@@ -734,11 +765,16 @@ fn main() -> i32 {
 
 ### Runtime Errors
 
-Division by zero and integer overflow cause runtime errors:
+Division by zero, integer overflow, and array bounds violations cause runtime errors (exit code 101):
 
 ```rue
 fn main() -> i32 { 10 / 0 }           // runtime error: division by zero
 fn main() -> i32 { 2147483647 + 1 }   // runtime error: integer overflow
+fn main() -> i32 {
+    let arr: [i32; 3] = [1, 2, 3];
+    let idx = 10;
+    arr[idx]                          // runtime error: index out of bounds
+}
 ```
 
 ### Grammar (Current)

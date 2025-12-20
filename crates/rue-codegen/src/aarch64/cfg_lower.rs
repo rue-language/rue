@@ -5,6 +5,7 @@
 
 use std::collections::HashMap;
 
+use rue_air::{ArrayTypeDef, ArrayTypeId};
 use rue_cfg::{
     BasicBlock, BlockId, Cfg, CfgInstData, CfgValue, StructDef, StructId, Terminator, Type,
 };
@@ -39,6 +40,8 @@ const RET_REGS: [Reg; 8] = [
 pub struct CfgLower<'a> {
     cfg: &'a Cfg,
     struct_defs: &'a [StructDef],
+    /// Array type definitions for bounds checking.
+    array_types: &'a [ArrayTypeDef],
     mir: Aarch64Mir,
     /// Maps CFG values to vregs
     value_map: HashMap<CfgValue, VReg>,
@@ -58,12 +61,13 @@ pub struct CfgLower<'a> {
 
 impl<'a> CfgLower<'a> {
     /// Create a new CFG lowering pass.
-    pub fn new(cfg: &'a Cfg, struct_defs: &'a [StructDef]) -> Self {
+    pub fn new(cfg: &'a Cfg, struct_defs: &'a [StructDef], array_types: &'a [ArrayTypeDef]) -> Self {
         let num_locals = cfg.num_locals();
         let num_params = cfg.num_params();
         Self {
             cfg,
             struct_defs,
+            array_types,
             mir: Aarch64Mir::new(),
             value_map: HashMap::new(),
             block_param_vregs: HashMap::new(),
@@ -83,10 +87,52 @@ impl<'a> CfgLower<'a> {
             .unwrap_or(1)
     }
 
+    /// Get the length of an array type.
+    fn array_length(&self, array_type_id: ArrayTypeId) -> u64 {
+        self.array_types
+            .get(array_type_id.0 as usize)
+            .map(|def| def.length)
+            .unwrap_or(0)
+    }
+
     /// Calculate the stack offset for a local variable slot.
     /// On AArch64, we use negative offsets from FP (x29).
     fn local_offset(&self, slot: u32) -> i32 {
         -((slot as i32 + 1) * 8)
+    }
+
+    /// Emit a bounds check for array indexing.
+    ///
+    /// Generates code to check that `index_vreg < length` and calls `__rue_bounds_check`
+    /// if the check fails. Uses unsigned comparison so negative indices also fail.
+    fn emit_bounds_check(&mut self, index_vreg: VReg, length: u64) {
+        // Load the array length into a temporary register
+        let length_vreg = self.mir.alloc_vreg();
+        self.mir.push(Aarch64Inst::MovImm {
+            dst: Operand::Virtual(length_vreg),
+            imm: length as i64,
+        });
+
+        // Compare index (unsigned) against length
+        self.mir.push(Aarch64Inst::CmpRR {
+            src1: Operand::Virtual(index_vreg),
+            src2: Operand::Virtual(length_vreg),
+        });
+
+        // If index < length (unsigned), branch to ok label; otherwise call bounds check
+        let ok_label = self.new_label("bounds_ok");
+        self.mir.push(Aarch64Inst::BCond {
+            cond: Cond::Lo, // Lower (unsigned <)
+            label: ok_label.clone(),
+        });
+
+        // Call the bounds check error handler (never returns)
+        self.mir.push(Aarch64Inst::Bl {
+            symbol: "__rue_bounds_check".to_string(),
+        });
+
+        // Continue with valid access
+        self.mir.push(Aarch64Inst::Label { name: ok_label });
     }
 
     /// Generate a unique label name.
@@ -964,7 +1010,7 @@ impl<'a> CfgLower<'a> {
 
             CfgInstData::IndexGet {
                 base,
-                array_type_id: _,
+                array_type_id,
                 index,
             } => {
                 let vreg = self.mir.alloc_vreg();
@@ -975,6 +1021,11 @@ impl<'a> CfgLower<'a> {
                     CfgInstData::Load { slot } => {
                         // Base is a load from a local variable - use dynamic indexing
                         let index_vreg = self.get_vreg(*index);
+
+                        // Emit runtime bounds check
+                        let array_length = self.array_length(*array_type_id);
+                        self.emit_bounds_check(index_vreg, array_length);
+
                         let base_offset = self.local_offset(*slot);
 
                         // Calculate effective address: base_ptr - index * 8
@@ -1036,12 +1087,16 @@ impl<'a> CfgLower<'a> {
 
             CfgInstData::IndexSet {
                 slot,
-                array_type_id: _,
+                array_type_id,
                 index,
                 value: val,
             } => {
                 let val_vreg = self.get_vreg(*val);
                 let index_vreg = self.get_vreg(*index);
+
+                // Emit runtime bounds check
+                let array_length = self.array_length(*array_type_id);
+                self.emit_bounds_check(index_vreg, array_length);
 
                 // Shift left by 3 (multiply by 8)
                 let scaled_index = self.mir.alloc_vreg();
@@ -1364,10 +1419,11 @@ mod tests {
 
         let func = &output.functions[0];
         let struct_defs = &output.struct_defs;
+        let array_types = &output.array_types;
         let cfg_output =
             CfgBuilder::build(&func.air, func.num_locals, func.num_param_slots, &func.name);
 
-        CfgLower::new(&cfg_output.cfg, struct_defs).lower()
+        CfgLower::new(&cfg_output.cfg, struct_defs, array_types).lower()
     }
 
     #[test]

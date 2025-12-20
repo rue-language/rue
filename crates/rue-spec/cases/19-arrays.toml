@@ -324,3 +324,125 @@ fn main() -> i32 {
 """
 compile_fail = true
 error_contains = "type annotation required"
+
+# =============================================================================
+# Bounds Checking - Compile-Time
+# =============================================================================
+
+[[case]]
+name = "array_bounds_const_out_of_range"
+description = "Compile-time error for constant index out of bounds"
+source = """
+fn main() -> i32 {
+    let arr: [i32; 3] = [1, 2, 3];
+    arr[5]
+}
+"""
+compile_fail = true
+error_contains = "index out of bounds"
+
+[[case]]
+name = "array_bounds_const_negative"
+description = "Compile-time error for negative constant index"
+source = """
+fn main() -> i32 {
+    let arr: [i32; 3] = [1, 2, 3];
+    arr[-1]
+}
+"""
+compile_fail = true
+error_contains = "index out of bounds"
+
+[[case]]
+name = "array_bounds_const_exact_length"
+description = "Compile-time error for index equal to length"
+source = """
+fn main() -> i32 {
+    let arr: [i32; 3] = [1, 2, 3];
+    arr[3]
+}
+"""
+compile_fail = true
+error_contains = "index out of bounds"
+
+[[case]]
+name = "array_bounds_set_const_out_of_range"
+description = "Compile-time error for constant index out of bounds in assignment"
+source = """
+fn main() -> i32 {
+    let mut arr: [i32; 3] = [1, 2, 3];
+    arr[5] = 42;
+    0
+}
+"""
+compile_fail = true
+error_contains = "index out of bounds"
+
+# =============================================================================
+# Bounds Checking - Runtime
+# =============================================================================
+
+[[case]]
+name = "array_bounds_runtime_out_of_range"
+description = "Runtime error for variable index out of bounds"
+source = """
+fn main() -> i32 {
+    let arr: [i32; 3] = [1, 2, 3];
+    let idx = 5;
+    arr[idx]
+}
+"""
+runtime_error = "index out of bounds"
+runtime_exit_code = 101
+
+[[case]]
+name = "array_bounds_runtime_exact_length"
+description = "Runtime error for variable index equal to length"
+source = """
+fn main() -> i32 {
+    let arr: [i32; 3] = [1, 2, 3];
+    let idx = 3;
+    arr[idx]
+}
+"""
+runtime_error = "index out of bounds"
+runtime_exit_code = 101
+
+[[case]]
+name = "array_bounds_runtime_negative_cast"
+description = "Runtime error for negative value treated as unsigned"
+source = """
+fn main() -> i32 {
+    let arr: [i32; 3] = [1, 2, 3];
+    let idx: i64 = -1;
+    arr[idx]
+}
+"""
+runtime_error = "index out of bounds"
+runtime_exit_code = 101
+
+[[case]]
+name = "array_bounds_runtime_set_out_of_range"
+description = "Runtime error for variable index out of bounds in assignment"
+source = """
+fn main() -> i32 {
+    let mut arr: [i32; 3] = [1, 2, 3];
+    let idx = 5;
+    arr[idx] = 42;
+    0
+}
+"""
+runtime_error = "index out of bounds"
+runtime_exit_code = 101
+
+[[case]]
+name = "array_bounds_valid_last_element"
+description = "Accessing last valid element should succeed"
+source = """
+fn main() -> i32 {
+    let arr: [i32; 3] = [10, 20, 42];
+    let idx = 2;
+    arr[idx]
+}
+"""
+exit_code = 42

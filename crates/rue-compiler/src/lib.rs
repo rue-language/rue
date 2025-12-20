@@ -27,7 +27,7 @@ pub fn validate_runtime() -> Result<(), String> {
 }
 
 // Re-export commonly used types
-pub use rue_air::{Air, AnalyzedFunction, Sema, SemaOutput, StructDef, Type};
+pub use rue_air::{Air, AnalyzedFunction, ArrayTypeDef, Sema, SemaOutput, StructDef, Type};
 pub use rue_cfg::{Cfg, CfgBuilder, CfgOutput};
 pub use rue_codegen::X86Mir;
 pub use rue_error::{CompileError, CompileResult, CompileWarning, ErrorKind, WarningKind};
@@ -95,6 +95,8 @@ pub struct CompileState {
     pub functions: Vec<FunctionWithCfg>,
     /// Struct definitions.
     pub struct_defs: Vec<StructDef>,
+    /// Array type definitions (element type and length).
+    pub array_types: Vec<ArrayTypeDef>,
     /// Warnings collected during compilation.
     pub warnings: Vec<CompileWarning>,
 }
@@ -148,6 +150,7 @@ pub fn compile_frontend(source: &str) -> CompileResult<CompileState> {
         rir,
         functions,
         struct_defs: sema_output.struct_defs,
+        array_types: sema_output.array_types,
         warnings,
     })
 }
@@ -189,7 +192,8 @@ fn compile_x86_64(state: &CompileState, options: &CompileOptions) -> CompileResu
     let mut object_files: Vec<Vec<u8>> = Vec::new();
 
     for func in &state.functions {
-        let machine_code = rue_codegen::x86_64::generate(&func.cfg, &state.struct_defs);
+        let machine_code =
+            rue_codegen::x86_64::generate(&func.cfg, &state.struct_defs, &state.array_types);
 
         // Build object file for this function
         let mut obj_builder =
@@ -367,7 +371,8 @@ fn compile_aarch64(state: &CompileState, options: &CompileOptions) -> CompileRes
     let mut object_files: Vec<Vec<u8>> = Vec::new();
 
     for func in &state.functions {
-        let machine_code = rue_codegen::aarch64::generate(&func.cfg, &state.struct_defs);
+        let machine_code =
+            rue_codegen::aarch64::generate(&func.cfg, &state.struct_defs, &state.array_types);
 
         let mut obj_builder =
             ObjectBuilder::new(options.target, &func.analyzed.name).code(machine_code.code);
@@ -493,20 +498,20 @@ fn link_system_macos(
 /// Generate X86Mir from CFG (for debugging/inspection).
 ///
 /// This returns the MIR before register allocation, with virtual registers.
-pub fn generate_mir(cfg: &Cfg, struct_defs: &[StructDef]) -> X86Mir {
-    rue_codegen::x86_64::CfgLower::new(cfg, struct_defs).lower()
+pub fn generate_mir(cfg: &Cfg, struct_defs: &[StructDef], array_types: &[ArrayTypeDef]) -> X86Mir {
+    rue_codegen::x86_64::CfgLower::new(cfg, struct_defs, array_types).lower()
 }
 
 /// Generate X86Mir after register allocation (for debugging/inspection).
 ///
 /// This returns the MIR after register allocation, with physical registers.
 /// This is closer to the final assembly that will be emitted.
-pub fn generate_allocated_mir(cfg: &Cfg, struct_defs: &[StructDef]) -> X86Mir {
+pub fn generate_allocated_mir(cfg: &Cfg, struct_defs: &[StructDef], array_types: &[ArrayTypeDef]) -> X86Mir {
     let num_locals = cfg.num_locals();
     let num_params = cfg.num_params();
 
     // Lower CFG to X86Mir with virtual registers
-    let mir = rue_codegen::x86_64::CfgLower::new(cfg, struct_defs).lower();
+    let mir = rue_codegen::x86_64::CfgLower::new(cfg, struct_defs, array_types).lower();
 
     // Allocate physical registers
     let existing_slots = num_locals + num_params;

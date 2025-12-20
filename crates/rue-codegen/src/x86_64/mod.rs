@@ -22,7 +22,7 @@ pub use emit::Emitter;
 pub use mir::{Operand, Reg, VReg, X86Inst, X86Mir};
 pub use regalloc::RegAlloc;
 
-use rue_air::StructDef;
+use rue_air::{ArrayTypeDef, StructDef};
 use rue_cfg::Cfg;
 
 // Re-export from parent
@@ -32,12 +32,12 @@ pub use super::{EmittedRelocation, MachineCode};
 ///
 /// This is the main entry point for x86-64 code generation.
 /// The pipeline is: CFG → X86Mir → Machine Code
-pub fn generate(cfg: &Cfg, struct_defs: &[StructDef]) -> MachineCode {
+pub fn generate(cfg: &Cfg, struct_defs: &[StructDef], array_types: &[ArrayTypeDef]) -> MachineCode {
     let num_locals = cfg.num_locals();
     let num_params = cfg.num_params();
 
     // Lower CFG to X86Mir with virtual registers
-    let mir = CfgLower::new(cfg, struct_defs).lower();
+    let mir = CfgLower::new(cfg, struct_defs, array_types).lower();
 
     // Allocate physical registers (may add spill slots)
     // Spill slots go after both locals AND parameters to avoid conflicts

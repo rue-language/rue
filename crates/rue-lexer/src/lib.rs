@@ -182,6 +182,8 @@ impl std::fmt::Display for TokenKind {
             TokenKind::RParen => write!(f, "RPAREN"),
             TokenKind::LBrace => write!(f, "LBRACE"),
             TokenKind::RBrace => write!(f, "RBRACE"),
+            TokenKind::LBracket => write!(f, "LBRACKET"),
+            TokenKind::RBracket => write!(f, "RBRACKET"),
             TokenKind::Arrow => write!(f, "ARROW"),
             TokenKind::FatArrow => write!(f, "FATARROW"),
             TokenKind::Colon => write!(f, "COLON"),

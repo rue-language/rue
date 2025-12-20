@@ -306,6 +306,12 @@ pub enum X86Inst {
     /// `jno label` - Jump if overflow flag is not set.
     Jno { label: String },
 
+    /// `jb label` - Jump if below (unsigned: CF=1).
+    Jb { label: String },
+
+    /// `jae label` - Jump if above or equal (unsigned: CF=0).
+    Jae { label: String },
+
     /// `jmp label` - Unconditional jump.
     Jmp { label: String },
 
@@ -442,6 +448,8 @@ impl fmt::Display for X86Inst {
             X86Inst::Jnz { label } => write!(f, "jnz {}", label),
             X86Inst::Jo { label } => write!(f, "jo {}", label),
             X86Inst::Jno { label } => write!(f, "jno {}", label),
+            X86Inst::Jb { label } => write!(f, "jb {}", label),
+            X86Inst::Jae { label } => write!(f, "jae {}", label),
             X86Inst::Jmp { label } => write!(f, "jmp {}", label),
             X86Inst::Label { name } => write!(f, "{}:", name),
             X86Inst::CallRel { symbol } => write!(f, "call {}", symbol),

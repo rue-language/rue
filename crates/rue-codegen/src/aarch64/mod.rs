@@ -22,7 +22,7 @@ pub use emit::Emitter;
 pub use mir::{Aarch64Inst, Aarch64Mir, Cond, Operand, Reg, VReg};
 pub use regalloc::RegAlloc;
 
-use rue_air::StructDef;
+use rue_air::{ArrayTypeDef, StructDef};
 use rue_cfg::Cfg;
 
 use crate::MachineCode;
@@ -30,12 +30,12 @@ use crate::MachineCode;
 /// Generate machine code from CFG.
 ///
 /// This is the main entry point for AArch64 code generation.
-pub fn generate(cfg: &Cfg, struct_defs: &[StructDef]) -> MachineCode {
+pub fn generate(cfg: &Cfg, struct_defs: &[StructDef], array_types: &[ArrayTypeDef]) -> MachineCode {
     let num_locals = cfg.num_locals();
     let num_params = cfg.num_params();
 
     // Lower CFG to Aarch64Mir with virtual registers
-    let mir = CfgLower::new(cfg, struct_defs).lower();
+    let mir = CfgLower::new(cfg, struct_defs, array_types).lower();
 
     // Allocate physical registers
     let existing_slots = num_locals + num_params;

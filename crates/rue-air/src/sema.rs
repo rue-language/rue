@@ -1660,7 +1660,22 @@ impl<'a> Sema<'a> {
                     ));
                 }
 
-                let element_type = self.array_type_defs[array_type_id.0 as usize].element_type;
+                let array_def = &self.array_type_defs[array_type_id.0 as usize];
+                let element_type = array_def.element_type;
+                let array_length = array_def.length;
+
+                // Compile-time bounds check for constant indices
+                if let Some(const_index) = self.try_get_const_index(*index) {
+                    if const_index < 0 || const_index as u64 >= array_length {
+                        return Err(CompileError::new(
+                            ErrorKind::IndexOutOfBounds {
+                                index: const_index,
+                                length: array_length,
+                            },
+                            self.rir.get(*index).span,
+                        ));
+                    }
+                }
 
                 // Type check against expectation
                 expectation.check(element_type, inst.span)?;
@@ -1732,7 +1747,22 @@ impl<'a> Sema<'a> {
                     ));
                 }
 
-                let element_type = self.array_type_defs[array_type_id.0 as usize].element_type;
+                let array_def = &self.array_type_defs[array_type_id.0 as usize];
+                let element_type = array_def.element_type;
+                let array_length = array_def.length;
+
+                // Compile-time bounds check for constant indices
+                if let Some(const_index) = self.try_get_const_index(*index) {
+                    if const_index < 0 || const_index as u64 >= array_length {
+                        return Err(CompileError::new(
+                            ErrorKind::IndexOutOfBounds {
+                                index: const_index,
+                                length: array_length,
+                            },
+                            self.rir.get(*index).span,
+                        ));
+                    }
+                }
 
                 // Analyze the value with the expected element type
                 let value_result =
@@ -1995,6 +2025,27 @@ impl<'a> Sema<'a> {
             span,
         });
         Ok(AnalysisResult::new(air_ref, Type::Bool))
+    }
+
+    /// Try to extract a constant integer value from an RIR index expression.
+    ///
+    /// This is used for compile-time bounds checking. Returns `Some(value)` if
+    /// the index is a simple integer constant or a negation of one, otherwise `None`.
+    fn try_get_const_index(&self, inst_ref: InstRef) -> Option<i64> {
+        let inst = self.rir.get(inst_ref);
+        match &inst.data {
+            InstData::IntConst(value) => Some(*value),
+            InstData::Neg { operand } => {
+                // Handle negative literal: -N
+                let operand_inst = self.rir.get(*operand);
+                if let InstData::IntConst(value) = &operand_inst.data {
+                    Some(-value)
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        }
     }
 }
 

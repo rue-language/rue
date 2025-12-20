@@ -287,6 +287,45 @@ pub extern "C" fn __rue_overflow() -> ! {
     platform::exit(101)
 }
 
+/// Runtime error: index out of bounds.
+///
+/// Called when an array index operation accesses an element outside the
+/// valid range [0, length). The compiler inserts a bounds check before
+/// each array access that compares the index against the array length.
+///
+/// # Behavior
+///
+/// 1. Writes `"error: index out of bounds\n"` to stderr (best-effort)
+/// 2. Exits with code 101
+///
+/// # ABI
+///
+/// ```text
+/// extern "C" fn __rue_bounds_check() -> !
+/// ```
+///
+/// No arguments. Never returns.
+///
+/// # Design Notes
+///
+/// Unlike some languages that include the index and length in the error
+/// message, we keep this simple for minimal runtime size. The compiler
+/// already performs compile-time checks for constant indices, so this
+/// handler is only reached for dynamic indices that fail at runtime.
+#[cfg(all(target_arch = "x86_64", target_os = "linux"))]
+#[unsafe(no_mangle)]
+pub extern "C" fn __rue_bounds_check() -> ! {
+    platform::write_stderr(b"error: index out of bounds\n");
+    platform::exit(101)
+}
+
+#[cfg(all(target_arch = "aarch64", target_os = "macos"))]
+#[unsafe(no_mangle)]
+pub extern "C" fn __rue_bounds_check() -> ! {
+    platform::write_stderr(b"error: index out of bounds\n");
+    platform::exit(101)
+}
+
 /// Debug intrinsic: print a signed 64-bit integer.
 ///
 /// Called by `@dbg(expr)` when the expression is a signed integer type.

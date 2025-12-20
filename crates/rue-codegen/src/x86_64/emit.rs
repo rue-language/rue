@@ -401,6 +401,12 @@ impl<'a> Emitter<'a> {
             X86Inst::Jno { label } => {
                 self.emit_jcc(0x71, label); // JNO rel8 opcode
             }
+            X86Inst::Jb { label } => {
+                self.emit_jcc(0x72, label); // JB rel8 opcode (CF=1)
+            }
+            X86Inst::Jae { label } => {
+                self.emit_jcc(0x73, label); // JAE rel8 opcode (CF=0)
+            }
             X86Inst::Jmp { label } => {
                 self.emit_jmp(label);
             }

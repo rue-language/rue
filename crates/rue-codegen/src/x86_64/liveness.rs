@@ -258,6 +258,8 @@ fn uses(inst: &X86Inst) -> Vec<VReg> {
         | X86Inst::Jnz { .. }
         | X86Inst::Jo { .. }
         | X86Inst::Jno { .. }
+        | X86Inst::Jb { .. }
+        | X86Inst::Jae { .. }
         | X86Inst::Jmp { .. }
         | X86Inst::Label { .. }
         | X86Inst::CallRel { .. }
@@ -355,6 +357,8 @@ fn defs(inst: &X86Inst) -> Vec<VReg> {
         | X86Inst::Jnz { .. }
         | X86Inst::Jo { .. }
         | X86Inst::Jno { .. }
+        | X86Inst::Jb { .. }
+        | X86Inst::Jae { .. }
         | X86Inst::Jmp { .. }
         | X86Inst::Label { .. }
         | X86Inst::CallRel { .. }

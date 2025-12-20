@@ -96,6 +96,10 @@ pub enum ErrorKind {
         expected: u64,
         found: u64,
     },
+    IndexOutOfBounds {
+        index: i64,
+        length: u64,
+    },
     TypeAnnotationRequired,
 
     // Linker errors
@@ -279,6 +283,13 @@ impl fmt::Display for ErrorKind {
                         expected, found
                     )
                 }
+            }
+            ErrorKind::IndexOutOfBounds { index, length } => {
+                write!(
+                    f,
+                    "index out of bounds: the length is {} but the index is {}",
+                    length, index
+                )
             }
             ErrorKind::TypeAnnotationRequired => {
                 write!(f, "type annotation required for empty array")
