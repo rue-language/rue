@@ -1482,11 +1482,11 @@ impl<'a> Sema<'a> {
 
     /// Infer the type of an RIR instruction without analyzing it fully.
     ///
-    /// This is used for type inference in `let` bindings without type annotations.
+    /// This is used for type inference in `let` bindings without type annotations,
+    /// and for bidirectional type inference in expressions like comparisons.
     ///
-    /// Note: Arithmetic operations (Add, Sub, etc.) return i32 because that's currently
-    /// the only numeric type. When more numeric types are added, this will need to
-    /// perform actual type unification.
+    /// Arithmetic operations infer their type from the left operand (or operand for
+    /// unary negation), enabling proper type propagation through expressions.
     fn infer_type(
         &self,
         inst_ref: InstRef,
@@ -1498,12 +1498,18 @@ impl<'a> Sema<'a> {
         match &inst.data {
             InstData::IntConst(_) => Ok(Type::I32),
             InstData::BoolConst(_) => Ok(Type::Bool),
-            InstData::Add { .. }
-            | InstData::Sub { .. }
-            | InstData::Mul { .. }
-            | InstData::Div { .. }
-            | InstData::Mod { .. }
-            | InstData::Neg { .. } => Ok(Type::I32),
+            InstData::Add { lhs, .. }
+            | InstData::Sub { lhs, .. }
+            | InstData::Mul { lhs, .. }
+            | InstData::Div { lhs, .. }
+            | InstData::Mod { lhs, .. } => {
+                // Infer arithmetic result type from left operand
+                self.infer_type(*lhs, locals, params)
+            }
+            InstData::Neg { operand } => {
+                // Infer negation result type from operand
+                self.infer_type(*operand, locals, params)
+            }
             InstData::Eq { .. }
             | InstData::Ne { .. }
             | InstData::Lt { .. }
