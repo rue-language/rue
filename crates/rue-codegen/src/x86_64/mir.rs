@@ -206,6 +206,11 @@ pub enum X86Inst {
     /// `sub dst, src` - Subtract src from dst (dst = dst - src).
     SubRR { dst: Operand, src: Operand },
 
+    /// `sub dst, src` (64-bit) - Subtract src from dst treating operands as 64-bit.
+    ///
+    /// Used for pointer arithmetic where 32-bit truncation would break addresses.
+    SubRR64 { dst: Operand, src: Operand },
+
     /// `add dst, imm` - Add immediate to register (dst = dst + imm).
     AddRI { dst: Operand, imm: i32 },
 
@@ -324,6 +329,32 @@ pub enum X86Inst {
 
     /// `push src` - Push value from register onto stack.
     Push { src: Operand },
+
+    /// `lea dst, [base + disp]` - Load effective address.
+    Lea {
+        dst: Operand,
+        base: Reg,
+        index: Option<VReg>,
+        scale: u8,
+        disp: i32,
+    },
+
+    /// `shl dst, count` - Shift left (multiply by 2^count).
+    Shl { dst: Operand, count: Operand },
+
+    /// `mov dst, [base]` - Load from memory via register.
+    MovRMIndexed {
+        dst: Operand,
+        base: VReg,
+        offset: i32,
+    },
+
+    /// `mov [base], src` - Store to memory via register.
+    MovMRIndexed {
+        base: VReg,
+        offset: i32,
+        src: Operand,
+    },
 }
 
 impl X86Inst {
@@ -380,6 +411,7 @@ impl fmt::Display for X86Inst {
             X86Inst::AddRR { dst, src } => write!(f, "add {}, {}", dst, src),
             X86Inst::AddRI { dst, imm } => write!(f, "add {}, {}", dst, imm),
             X86Inst::SubRR { dst, src } => write!(f, "sub {}, {}", dst, src),
+            X86Inst::SubRR64 { dst, src } => write!(f, "subq {}, {}", dst, src),
             X86Inst::ImulRR { dst, src } => write!(f, "imul {}, {}", dst, src),
             X86Inst::Neg { dst } => write!(f, "neg {}", dst),
             X86Inst::XorRI { dst, imm } => write!(f, "xor {}, {}", dst, imm),
@@ -417,6 +449,45 @@ impl fmt::Display for X86Inst {
             X86Inst::Ret => write!(f, "ret"),
             X86Inst::Pop { dst } => write!(f, "pop {}", dst),
             X86Inst::Push { src } => write!(f, "push {}", src),
+            X86Inst::Lea {
+                dst,
+                base,
+                index,
+                scale: _,
+                disp,
+            } => {
+                if let Some(_idx) = index {
+                    // With index register
+                    if *disp >= 0 {
+                        write!(f, "lea {}, [{}+{}]", dst, base, disp)
+                    } else {
+                        write!(f, "lea {}, [{}-{}]", dst, base, -disp)
+                    }
+                } else if *disp >= 0 {
+                    write!(f, "lea {}, [{}+{}]", dst, base, disp)
+                } else {
+                    write!(f, "lea {}, [{}-{}]", dst, base, -disp)
+                }
+            }
+            X86Inst::Shl { dst, count } => write!(f, "shl {}, {}", dst, count),
+            X86Inst::MovRMIndexed { dst, base, offset } => {
+                if *offset == 0 {
+                    write!(f, "mov {}, [{}]", dst, base)
+                } else if *offset > 0 {
+                    write!(f, "mov {}, [{}+{}]", dst, base, offset)
+                } else {
+                    write!(f, "mov {}, [{}-{}]", dst, base, -offset)
+                }
+            }
+            X86Inst::MovMRIndexed { base, offset, src } => {
+                if *offset == 0 {
+                    write!(f, "mov [{}], {}", base, src)
+                } else if *offset > 0 {
+                    write!(f, "mov [{}+{}], {}", base, offset, src)
+                } else {
+                    write!(f, "mov [{}-{}], {}", base, -offset, src)
+                }
+            }
         }
     }
 }

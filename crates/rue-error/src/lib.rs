@@ -88,6 +88,16 @@ pub enum ErrorKind {
         found: String,
     },
 
+    // Array errors
+    IndexOnNonArray {
+        found: String,
+    },
+    ArrayLengthMismatch {
+        expected: u64,
+        found: u64,
+    },
+    TypeAnnotationRequired,
+
     // Linker errors
     LinkError(String),
 }
@@ -251,6 +261,27 @@ impl fmt::Display for ErrorKind {
                     "intrinsic '@{}' expects {}, found {}",
                     name, expected, found
                 )
+            }
+            ErrorKind::IndexOnNonArray { found } => {
+                write!(f, "cannot index into non-array type '{}'", found)
+            }
+            ErrorKind::ArrayLengthMismatch { expected, found } => {
+                if *expected == 1 {
+                    write!(
+                        f,
+                        "expected array of {} element, found {} elements",
+                        expected, found
+                    )
+                } else {
+                    write!(
+                        f,
+                        "expected array of {} elements, found {} elements",
+                        expected, found
+                    )
+                }
+            }
+            ErrorKind::TypeAnnotationRequired => {
+                write!(f, "type annotation required for empty array")
             }
             ErrorKind::LinkError(msg) => write!(f, "link error: {}", msg),
         }

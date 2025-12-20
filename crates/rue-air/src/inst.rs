@@ -4,7 +4,7 @@
 
 use std::fmt;
 
-use crate::types::{StructId, Type};
+use crate::types::{ArrayTypeId, StructId, Type};
 use rue_span::Span;
 
 /// A pattern in a match expression (AIR level - typed).
@@ -263,6 +263,37 @@ pub enum AirInstData {
         /// Value to store
         value: AirRef,
     },
+
+    // Array operations
+    /// Create a new array with initialized elements
+    ArrayInit {
+        /// The array type
+        array_type_id: ArrayTypeId,
+        /// Element values
+        elements: Vec<AirRef>,
+    },
+
+    /// Load an element from an array
+    IndexGet {
+        /// The array value
+        base: AirRef,
+        /// The array type
+        array_type_id: ArrayTypeId,
+        /// Index expression
+        index: AirRef,
+    },
+
+    /// Store a value to an array element
+    IndexSet {
+        /// The array variable slot
+        slot: u32,
+        /// The array type
+        array_type_id: ArrayTypeId,
+        /// Index expression
+        index: AirRef,
+        /// Value to store
+        value: AirRef,
+    },
 }
 
 impl fmt::Display for AirRef {
@@ -392,6 +423,38 @@ impl fmt::Display for Air {
                         f,
                         "field_set ${}.#{}.{} = {}",
                         slot, struct_id.0, field_index, value
+                    )?;
+                }
+                AirInstData::ArrayInit {
+                    array_type_id,
+                    elements,
+                } => {
+                    write!(f, "array_init @{} [", array_type_id.0)?;
+                    for (i, elem) in elements.iter().enumerate() {
+                        if i > 0 {
+                            write!(f, ", ")?;
+                        }
+                        write!(f, "{}", elem)?;
+                    }
+                    writeln!(f, "]")?;
+                }
+                AirInstData::IndexGet {
+                    base,
+                    array_type_id,
+                    index,
+                } => {
+                    writeln!(f, "index_get {}(@{})[{}]", base, array_type_id.0, index)?;
+                }
+                AirInstData::IndexSet {
+                    slot,
+                    array_type_id,
+                    index,
+                    value,
+                } => {
+                    writeln!(
+                        f,
+                        "index_set ${}(@{})[{}] = {}",
+                        slot, array_type_id.0, index, value
                     )?;
                 }
             }

@@ -327,7 +327,15 @@ impl<'a> Emitter<'a> {
             Aarch64Inst::SubImm { dst, src, imm } => {
                 let rd = dst.as_physical();
                 let rn = src.as_physical();
-                self.emit_sub_imm(rd, rn, *imm as u32);
+                // Adjust immediate for FP-relative addresses to account for callee-saved registers.
+                // When computing addresses relative to FP, we need to skip past the callee-saved
+                // register save area.
+                let adjusted_imm = if rn == Reg::Fp {
+                    *imm as u32 + self.callee_saved_stack_size() as u32
+                } else {
+                    *imm as u32
+                };
+                self.emit_sub_imm(rd, rn, adjusted_imm);
             }
 
             Aarch64Inst::MulRR { dst, src1, src2 } => {
@@ -519,6 +527,28 @@ impl<'a> Emitter<'a> {
                 let rt1 = dst1.as_physical();
                 let rt2 = dst2.as_physical();
                 self.emit_ldp_post(rt1, rt2, *offset);
+            }
+
+            Aarch64Inst::LdrIndexed { dst, base } => {
+                let rd = dst.as_physical();
+                // base is a VReg; after regalloc it should be allocated to a physical register
+                // We need to look it up in the allocation. For now, assume it's already physical
+                // after regalloc rewrites.
+                // Actually, the regalloc phase should have rewritten this instruction.
+                // For now, emit a simple load from the register
+                self.emit_ldr(rd, Reg::X9, 0); // Temporary - should use allocated base reg
+            }
+
+            Aarch64Inst::StrIndexed { src, base: _ } => {
+                let rs = src.as_physical();
+                // Same as above - regalloc should handle this
+                self.emit_str(rs, Reg::X9, 0);
+            }
+
+            Aarch64Inst::LslImm { dst, src, imm } => {
+                let rd = dst.as_physical();
+                let rn = src.as_physical();
+                self.emit_lsl_imm(rd, rn, *imm);
             }
         }
     }
@@ -1034,6 +1064,22 @@ impl<'a> Emitter<'a> {
     fn emit_ret(&mut self) {
         // RET (branch to LR)
         self.emit_u32(OPCODE_RET);
+    }
+
+    fn emit_lsl_imm(&mut self, rd: Reg, rn: Reg, shift: u8) {
+        // LSL Xd, Xn, #shift is an alias for UBFM Xd, Xn, #(-shift mod 64), #(63-shift)
+        // For 64-bit: UBFM with sf=1, N=1
+        // immr = -shift mod 64 = (64 - shift) mod 64
+        // imms = 63 - shift
+        let shift = shift as u32;
+        let immr = (64 - shift) & 0x3F;
+        let imms = 63 - shift;
+        let inst = OPCODE_UBFM_X
+            | (immr << 16)
+            | (imms << 10)
+            | (rn.encoding() as u32) << 5
+            | rd.encoding() as u32;
+        self.emit_u32(inst);
     }
 }
 

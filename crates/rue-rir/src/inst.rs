@@ -298,6 +298,31 @@ pub enum InstData {
         /// Value to store
         value: InstRef,
     },
+
+    // Array operations
+    /// Array literal: creates a new array from element values
+    ArrayInit {
+        /// Element values
+        elements: Vec<InstRef>,
+    },
+
+    /// Array index read: reads an element from an array
+    IndexGet {
+        /// Base array value
+        base: InstRef,
+        /// Index expression
+        index: InstRef,
+    },
+
+    /// Array index write: writes a value to an array element
+    IndexSet {
+        /// Base array value (must be a VarRef to a mutable variable)
+        base: InstRef,
+        /// Index expression
+        index: InstRef,
+        /// Value to store
+        value: InstRef,
+    },
 }
 
 impl fmt::Display for InstRef {
@@ -532,6 +557,17 @@ impl<'a, 'b> RirPrinter<'a, 'b> {
                 InstData::FieldSet { base, field, value } => {
                     let field_str = self.interner.get(*field);
                     out.push_str(&format!("field_set {}.{} = {}\n", base, field_str, value));
+                }
+                InstData::ArrayInit { elements } => {
+                    let elems_str: Vec<String> =
+                        elements.iter().map(|e| format!("{}", e)).collect();
+                    out.push_str(&format!("array_init [{}]\n", elems_str.join(", ")));
+                }
+                InstData::IndexGet { base, index } => {
+                    out.push_str(&format!("index_get {}[{}]\n", base, index));
+                }
+                InstData::IndexSet { base, index, value } => {
+                    out.push_str(&format!("index_set {}[{}] = {}\n", base, index, value));
                 }
             }
         }

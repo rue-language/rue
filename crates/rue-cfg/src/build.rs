@@ -982,6 +982,75 @@ impl<'a> CfgBuilder<'a> {
                     continuation: Continuation::Diverged,
                 }
             }
+
+            AirInstData::ArrayInit {
+                array_type_id,
+                elements,
+            } => {
+                let mut element_vals = Vec::new();
+                for elem in elements {
+                    element_vals.push(self.lower_inst(*elem).value.unwrap());
+                }
+                let value = self.emit(
+                    CfgInstData::ArrayInit {
+                        array_type_id: *array_type_id,
+                        elements: element_vals,
+                    },
+                    ty,
+                    span,
+                );
+                self.cache(air_ref, value);
+                ExprResult {
+                    value: Some(value),
+                    continuation: Continuation::Continues,
+                }
+            }
+
+            AirInstData::IndexGet {
+                base,
+                array_type_id,
+                index,
+            } => {
+                let base_val = self.lower_inst(*base).value.unwrap();
+                let index_val = self.lower_inst(*index).value.unwrap();
+                let value = self.emit(
+                    CfgInstData::IndexGet {
+                        base: base_val,
+                        array_type_id: *array_type_id,
+                        index: index_val,
+                    },
+                    ty,
+                    span,
+                );
+                ExprResult {
+                    value: Some(value),
+                    continuation: Continuation::Continues,
+                }
+            }
+
+            AirInstData::IndexSet {
+                slot,
+                array_type_id,
+                index,
+                value,
+            } => {
+                let index_val = self.lower_inst(*index).value.unwrap();
+                let val = self.lower_inst(*value).value.unwrap();
+                self.emit(
+                    CfgInstData::IndexSet {
+                        slot: *slot,
+                        array_type_id: *array_type_id,
+                        index: index_val,
+                        value: val,
+                    },
+                    Type::Unit,
+                    span,
+                );
+                ExprResult {
+                    value: None,
+                    continuation: Continuation::Continues,
+                }
+            }
         }
     }
 
@@ -1016,7 +1085,7 @@ mod tests {
         let astgen = AstGen::new(&ast, &mut interner);
         let rir = astgen.generate();
 
-        let sema = Sema::new(&rir, &interner);
+        let mut sema = Sema::new(&rir, &mut interner);
         let output = sema.analyze_all().unwrap();
 
         let func = &output.functions[0];

@@ -126,7 +126,7 @@ pub fn compile_frontend(source: &str) -> CompileResult<CompileState> {
     let rir = astgen.generate();
 
     // Semantic analysis (RIR to AIR)
-    let sema = Sema::new(&rir, &interner);
+    let sema = Sema::new(&rir, &mut interner);
     let sema_output = sema.analyze_all()?;
 
     // Build CFGs from AIR (one per function), collecting warnings

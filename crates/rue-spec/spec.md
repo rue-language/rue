@@ -99,3 +99,50 @@ Certain programs are rejected by the compiler.
 - Unterminated constructs (unclosed braces, etc.)
 
 **See also:** [Test cases](cases/05-errors.toml)
+
+## 8. Arrays
+
+### 8.1 Fixed-Size Arrays
+
+Arrays are fixed-size, homogeneous sequences of elements. The type `[T; N]` represents an array of `N` elements of type `T`.
+
+**Syntax:**
+```ebnf
+array_type    = "[" type ";" integer "]" ;
+array_literal = "[" [ expression { "," expression } ] "]" ;
+index_expr    = expression "[" expression "]" ;
+```
+
+**Semantics:**
+- Array length is part of the type: `[i32; 3]` is a different type from `[i32; 4]`
+- Array elements are accessed via zero-based indexing: `arr[0]`, `arr[1]`, etc.
+- Array literals must have exactly the number of elements specified in the type
+- All elements must have the same type
+- Mutable arrays (declared with `let mut`) allow element assignment
+- Index expressions must evaluate to an integer type
+
+**Examples:**
+```rue
+fn main() -> i32 {
+    let arr: [i32; 3] = [10, 20, 12];
+    arr[0] + arr[1] + arr[2]  // returns 42
+}
+```
+
+```rue
+fn main() -> i32 {
+    let mut arr: [i32; 2] = [0, 0];
+    arr[0] = 20;
+    arr[1] = 22;
+    arr[0] + arr[1]  // returns 42
+}
+```
+
+**Compile-time errors:**
+- Array length mismatch: `let arr: [i32; 3] = [1, 2]` (expected 3 elements, found 2)
+- Element type mismatch: `let arr: [i32; 2] = [1, true]` (expected i32, found bool)
+- Assignment to immutable array: `arr[0] = 5` where `arr` is not `mut`
+- Index on non-array type: `let x = 5; x[0]`
+- Empty array without type annotation: `let arr = []` (type annotation required)
+
+**See also:** [Test cases](cases/19-arrays.toml)

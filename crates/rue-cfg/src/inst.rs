@@ -5,7 +5,7 @@
 
 use std::fmt;
 
-use rue_air::{StructId, Type};
+use rue_air::{ArrayTypeId, StructId, Type};
 use rue_span::Span;
 
 /// A basic block identifier.
@@ -152,6 +152,23 @@ pub enum CfgInstData {
         slot: u32,
         struct_id: StructId,
         field_index: u32,
+        value: CfgValue,
+    },
+
+    // Array operations
+    ArrayInit {
+        array_type_id: ArrayTypeId,
+        elements: Vec<CfgValue>,
+    },
+    IndexGet {
+        base: CfgValue,
+        array_type_id: ArrayTypeId,
+        index: CfgValue,
+    },
+    IndexSet {
+        slot: u32,
+        array_type_id: ArrayTypeId,
+        index: CfgValue,
         value: CfgValue,
     },
 }
@@ -591,6 +608,38 @@ impl Cfg {
                     f,
                     "field_set ${}.#{}.{} = {}",
                     slot, struct_id.0, field_index, value
+                )
+            }
+            CfgInstData::ArrayInit {
+                array_type_id,
+                elements,
+            } => {
+                write!(f, "array_init @{} [", array_type_id.0)?;
+                for (i, elem) in elements.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{}", elem)?;
+                }
+                write!(f, "]")
+            }
+            CfgInstData::IndexGet {
+                base,
+                array_type_id,
+                index,
+            } => {
+                write!(f, "index_get {}(@{})[{}]", base, array_type_id.0, index)
+            }
+            CfgInstData::IndexSet {
+                slot,
+                array_type_id,
+                index,
+                value,
+            } => {
+                write!(
+                    f,
+                    "index_set ${}(@{})[{}] = {}",
+                    slot, array_type_id.0, index, value
                 )
             }
         }

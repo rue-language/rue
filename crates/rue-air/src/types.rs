@@ -6,6 +6,11 @@
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct StructId(pub u32);
 
+/// A unique identifier for an array type.
+/// This is needed because Type is Copy, so we can't use Box<Type> for the element type.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ArrayTypeId(pub u32);
+
 /// A type in the Rue type system.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum Type {
@@ -32,6 +37,8 @@ pub enum Type {
     Unit,
     /// User-defined struct type
     Struct(StructId),
+    /// Fixed-size array type: [T; N]
+    Array(ArrayTypeId),
     /// An error type (used during type checking to continue after errors)
     Error,
     /// The never type - represents computations that don't return (e.g., break, continue).
@@ -69,10 +76,31 @@ impl StructDef {
     }
 }
 
+/// Definition of an array type.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ArrayTypeDef {
+    /// Element type
+    pub element_type: Type,
+    /// Fixed array length
+    pub length: u64,
+}
+
+impl ArrayTypeDef {
+    /// Get the total number of elements in this array.
+    pub fn len(&self) -> u64 {
+        self.length
+    }
+
+    /// Check if this array has zero length.
+    pub fn is_empty(&self) -> bool {
+        self.length == 0
+    }
+}
+
 impl Type {
     /// Get a human-readable name for this type.
-    /// Note: For struct types, this returns a placeholder.
-    /// Use `type_name_with_structs` for proper struct names.
+    /// Note: For struct and array types, this returns a placeholder.
+    /// Use `type_name_with_structs` for proper struct/array names.
     pub fn name(&self) -> &'static str {
         match self {
             Type::I8 => "i8",
@@ -86,6 +114,7 @@ impl Type {
             Type::Bool => "bool",
             Type::Unit => "()",
             Type::Struct(_) => "<struct>",
+            Type::Array(_) => "<array>",
             Type::Error => "<error>",
             Type::Never => "!",
         }
@@ -125,6 +154,19 @@ impl Type {
     pub fn as_struct(&self) -> Option<StructId> {
         match self {
             Type::Struct(id) => Some(*id),
+            _ => None,
+        }
+    }
+
+    /// Check if this is an array type.
+    pub fn is_array(&self) -> bool {
+        matches!(self, Type::Array(_))
+    }
+
+    /// Get the array type ID if this is an array type.
+    pub fn as_array(&self) -> Option<ArrayTypeId> {
+        match self {
+            Type::Array(id) => Some(*id),
             _ => None,
         }
     }

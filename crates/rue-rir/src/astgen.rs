@@ -5,7 +5,8 @@
 
 use rue_intern::Interner;
 use rue_parser::{
-    AssignTarget, Ast, BinaryOp, Expr, Function, Item, Pattern, Statement, StructDecl, UnaryOp,
+    AssignTarget, Ast, BinaryOp, Expr, Function, Item, Pattern, Statement, StructDecl, TypeExpr,
+    UnaryOp,
 };
 
 use crate::inst::{Inst, InstData, InstRef, Rir, RirPattern};
@@ -49,6 +50,27 @@ impl<'a> AstGen<'a> {
         }
     }
 
+    /// Convert a TypeExpr to its string representation for interning.
+    /// This converts the structured type representation back to a string symbol.
+    fn type_expr_to_string(&self, ty: &TypeExpr) -> String {
+        match ty {
+            TypeExpr::Named(ident) => ident.name.clone(),
+            TypeExpr::Unit(_) => "()".to_string(),
+            TypeExpr::Never(_) => "!".to_string(),
+            TypeExpr::Array {
+                element, length, ..
+            } => {
+                format!("[{}; {}]", self.type_expr_to_string(element), length)
+            }
+        }
+    }
+
+    /// Intern a TypeExpr as a symbol.
+    fn intern_type(&mut self, ty: &TypeExpr) -> rue_intern::Symbol {
+        let s = self.type_expr_to_string(ty);
+        self.interner.intern(&s)
+    }
+
     fn gen_struct(&mut self, struct_decl: &StructDecl) -> InstRef {
         let name = self.interner.intern(&struct_decl.name.name);
         let fields: Vec<_> = struct_decl
@@ -56,7 +78,7 @@ impl<'a> AstGen<'a> {
             .iter()
             .map(|f| {
                 let field_name = self.interner.intern(&f.name.name);
-                let field_type = self.interner.intern(&f.ty.name);
+                let field_type = self.intern_type(&f.ty);
                 (field_name, field_type)
             })
             .collect();
@@ -71,7 +93,7 @@ impl<'a> AstGen<'a> {
         // Intern the function name and return type
         let name = self.interner.intern(&func.name.name);
         let return_type = match &func.return_type {
-            Some(ident) => self.interner.intern(&ident.name),
+            Some(ty) => self.intern_type(ty),
             None => self.interner.intern("()"), // Default to unit type
         };
 
@@ -81,7 +103,7 @@ impl<'a> AstGen<'a> {
             .iter()
             .map(|p| {
                 let param_name = self.interner.intern(&p.name.name);
-                let param_type = self.interner.intern(&p.ty.name);
+                let param_type = self.intern_type(&p.ty);
                 (param_name, param_type)
             })
             .collect();
@@ -262,6 +284,27 @@ impl<'a> AstGen<'a> {
                     span: intrinsic.span,
                 })
             }
+            Expr::ArrayLit(array_lit) => {
+                let elements: Vec<_> = array_lit
+                    .elements
+                    .iter()
+                    .map(|e| self.gen_expr(e))
+                    .collect();
+
+                self.rir.add_inst(Inst {
+                    data: InstData::ArrayInit { elements },
+                    span: array_lit.span,
+                })
+            }
+            Expr::Index(index_expr) => {
+                let base = self.gen_expr(&index_expr.base);
+                let index = self.gen_expr(&index_expr.index);
+
+                self.rir.add_inst(Inst {
+                    data: InstData::IndexGet { base, index },
+                    span: index_expr.span,
+                })
+            }
         }
     }
 
@@ -306,7 +349,7 @@ impl<'a> AstGen<'a> {
         match stmt {
             Statement::Let(let_stmt) => {
                 let name = self.interner.intern(&let_stmt.name.name);
-                let ty = let_stmt.ty.as_ref().map(|t| self.interner.intern(&t.name));
+                let ty = let_stmt.ty.as_ref().map(|t| self.intern_type(t));
                 let init = self.gen_expr(&let_stmt.init);
                 self.rir.add_inst(Inst {
                     data: InstData::Alloc {
@@ -333,6 +376,14 @@ impl<'a> AstGen<'a> {
                         let field = self.interner.intern(&field_expr.field.name);
                         self.rir.add_inst(Inst {
                             data: InstData::FieldSet { base, field, value },
+                            span: assign.span,
+                        })
+                    }
+                    AssignTarget::Index(index_expr) => {
+                        let base = self.gen_expr(&index_expr.base);
+                        let index = self.gen_expr(&index_expr.index);
+                        self.rir.add_inst(Inst {
+                            data: InstData::IndexSet { base, index, value },
                             span: assign.span,
                         })
                     }

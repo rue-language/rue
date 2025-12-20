@@ -568,6 +568,93 @@ impl RegAlloc {
                 }
             }
 
+            Aarch64Inst::LdrIndexed { dst, base } => {
+                // Load base vreg into scratch, then emit load with the result allocation
+                let base_op = Operand::Virtual(base);
+                let base_reg = self.load_operand(mir, base_op, Reg::X9);
+                let base_phys = match base_reg {
+                    Operand::Physical(r) => r,
+                    _ => Reg::X9,
+                };
+
+                match self.get_allocation(dst) {
+                    Some(Allocation::Register(reg)) => {
+                        mir.push(Aarch64Inst::Ldr {
+                            dst: Operand::Physical(reg),
+                            base: base_phys,
+                            offset: 0,
+                        });
+                    }
+                    Some(Allocation::Spill(offset)) => {
+                        mir.push(Aarch64Inst::Ldr {
+                            dst: Operand::Physical(Reg::X10),
+                            base: base_phys,
+                            offset: 0,
+                        });
+                        mir.push(Aarch64Inst::Str {
+                            src: Operand::Physical(Reg::X10),
+                            base: Reg::Fp,
+                            offset,
+                        });
+                    }
+                    None => {
+                        mir.push(Aarch64Inst::Ldr {
+                            dst,
+                            base: base_phys,
+                            offset: 0,
+                        });
+                    }
+                }
+            }
+
+            Aarch64Inst::StrIndexed { src, base } => {
+                let src_op = self.load_operand(mir, src, Reg::X9);
+                let base_vreg_op = Operand::Virtual(base);
+                let base_reg = self.load_operand(mir, base_vreg_op, Reg::X10);
+                let base_phys = match base_reg {
+                    Operand::Physical(r) => r,
+                    _ => Reg::X10,
+                };
+                mir.push(Aarch64Inst::Str {
+                    src: src_op,
+                    base: base_phys,
+                    offset: 0,
+                });
+            }
+
+            Aarch64Inst::LslImm { dst, src, imm } => {
+                let src_op = self.load_operand(mir, src, Reg::X10);
+
+                match self.get_allocation(dst) {
+                    Some(Allocation::Register(reg)) => {
+                        mir.push(Aarch64Inst::LslImm {
+                            dst: Operand::Physical(reg),
+                            src: src_op,
+                            imm,
+                        });
+                    }
+                    Some(Allocation::Spill(offset)) => {
+                        mir.push(Aarch64Inst::LslImm {
+                            dst: Operand::Physical(Reg::X9),
+                            src: src_op,
+                            imm,
+                        });
+                        mir.push(Aarch64Inst::Str {
+                            src: Operand::Physical(Reg::X9),
+                            base: Reg::Fp,
+                            offset,
+                        });
+                    }
+                    None => {
+                        mir.push(Aarch64Inst::LslImm {
+                            dst,
+                            src: src_op,
+                            imm,
+                        });
+                    }
+                }
+            }
+
             // Pass-through instructions
             Aarch64Inst::B { label } => mir.push(Aarch64Inst::B { label }),
             Aarch64Inst::BCond { cond, label } => mir.push(Aarch64Inst::BCond { cond, label }),
