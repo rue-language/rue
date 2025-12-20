@@ -38,7 +38,7 @@ pub struct FieldDecl {
     /// Field name
     pub name: Ident,
     /// Field type
-    pub ty: Ident,
+    pub ty: TypeExpr,
     /// Span covering the entire field declaration
     pub span: Span,
 }
@@ -51,7 +51,7 @@ pub struct Function {
     /// Function parameters
     pub params: Vec<Param>,
     /// Return type (None means implicit unit `()`)
-    pub return_type: Option<Ident>,
+    pub return_type: Option<TypeExpr>,
     /// Function body
     pub body: Expr,
     /// Span covering the entire function
@@ -64,7 +64,7 @@ pub struct Param {
     /// Parameter name
     pub name: Ident,
     /// Parameter type
-    pub ty: Ident,
+    pub ty: TypeExpr,
     /// Span covering the entire parameter
     pub span: Span,
 }
@@ -74,6 +74,48 @@ pub struct Param {
 pub struct Ident {
     pub name: String,
     pub span: Span,
+}
+
+/// A type expression in the AST.
+#[derive(Debug, Clone)]
+pub enum TypeExpr {
+    /// A simple named type (e.g., i32, bool, MyStruct)
+    Named(Ident),
+    /// Unit type: ()
+    Unit(Span),
+    /// Never type: !
+    Never(Span),
+    /// Array type: [T; N] where T is the element type and N is the length
+    Array {
+        element: Box<TypeExpr>,
+        length: u64,
+        span: Span,
+    },
+}
+
+impl TypeExpr {
+    /// Get the span of this type expression.
+    pub fn span(&self) -> Span {
+        match self {
+            TypeExpr::Named(ident) => ident.span,
+            TypeExpr::Unit(span) => *span,
+            TypeExpr::Never(span) => *span,
+            TypeExpr::Array { span, .. } => *span,
+        }
+    }
+}
+
+impl fmt::Display for TypeExpr {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            TypeExpr::Named(ident) => write!(f, "{}", ident.name),
+            TypeExpr::Unit(_) => write!(f, "()"),
+            TypeExpr::Never(_) => write!(f, "!"),
+            TypeExpr::Array {
+                element, length, ..
+            } => write!(f, "[{}; {}]", element, length),
+        }
+    }
 }
 
 /// An expression.
@@ -115,6 +157,10 @@ pub enum Expr {
     Field(FieldExpr),
     /// Intrinsic call (e.g., `@dbg(42)`)
     IntrinsicCall(IntrinsicCallExpr),
+    /// Array literal (e.g., `[1, 2, 3]`)
+    ArrayLit(ArrayLitExpr),
+    /// Array indexing (e.g., `arr[0]`)
+    Index(IndexExpr),
 }
 
 /// An integer literal.
@@ -297,6 +343,24 @@ pub struct FieldExpr {
     pub span: Span,
 }
 
+/// An array literal expression (e.g., `[1, 2, 3]`).
+#[derive(Debug, Clone)]
+pub struct ArrayLitExpr {
+    /// Array elements
+    pub elements: Vec<Expr>,
+    pub span: Span,
+}
+
+/// An array index expression (e.g., `arr[0]`).
+#[derive(Debug, Clone)]
+pub struct IndexExpr {
+    /// The array being indexed
+    pub base: Box<Expr>,
+    /// The index expression
+    pub index: Box<Expr>,
+    pub span: Span,
+}
+
 /// A statement (does not produce a value).
 #[derive(Debug, Clone)]
 pub enum Statement {
@@ -316,7 +380,7 @@ pub struct LetStatement {
     /// Variable name
     pub name: Ident,
     /// Optional type annotation
-    pub ty: Option<Ident>,
+    pub ty: Option<TypeExpr>,
     /// Initializer expression
     pub init: Box<Expr>,
     pub span: Span,
@@ -339,6 +403,8 @@ pub enum AssignTarget {
     Var(Ident),
     /// Field assignment (e.g., `point.x = 5`)
     Field(FieldExpr),
+    /// Index assignment (e.g., `arr[0] = 5`)
+    Index(IndexExpr),
 }
 
 /// A while loop expression.
@@ -401,6 +467,8 @@ impl Expr {
             Expr::StructLit(struct_lit) => struct_lit.span,
             Expr::Field(field_expr) => field_expr.span,
             Expr::IntrinsicCall(intrinsic) => intrinsic.span,
+            Expr::ArrayLit(array_lit) => array_lit.span,
+            Expr::Index(index_expr) => index_expr.span,
         }
     }
 }
@@ -443,7 +511,7 @@ fn fmt_struct(f: &mut fmt::Formatter<'_>, s: &StructDecl, level: usize) -> fmt::
     writeln!(f, "Struct {}", s.name.name)?;
     for field in &s.fields {
         indent(f, level + 1)?;
-        writeln!(f, "Field {} : {}", field.name.name, field.ty.name)?;
+        writeln!(f, "Field {} : {}", field.name.name, field.ty)?;
     }
     Ok(())
 }
@@ -457,12 +525,12 @@ fn fmt_function(f: &mut fmt::Formatter<'_>, func: &Function, level: usize) -> fm
             if i > 0 {
                 write!(f, ", ")?;
             }
-            write!(f, "{}: {}", param.name.name, param.ty.name)?;
+            write!(f, "{}: {}", param.name.name, param.ty)?;
         }
         write!(f, ")")?;
     }
     if let Some(ref ret) = func.return_type {
-        write!(f, " -> {}", ret.name)?;
+        write!(f, " -> {}", ret)?;
     }
     writeln!(f)?;
     fmt_expr(f, &func.body, level + 1)?;
@@ -572,6 +640,22 @@ fn fmt_expr(f: &mut fmt::Formatter<'_>, expr: &Expr, level: usize) -> fmt::Resul
             writeln!(f, "Field .{}", field.field.name)?;
             fmt_expr(f, &field.base, level + 1)
         }
+        Expr::ArrayLit(array) => {
+            writeln!(f, "ArrayLit")?;
+            for elem in &array.elements {
+                fmt_expr(f, elem, level + 1)?;
+            }
+            Ok(())
+        }
+        Expr::Index(index) => {
+            writeln!(f, "Index")?;
+            indent(f, level + 1)?;
+            writeln!(f, "Base:")?;
+            fmt_expr(f, &index.base, level + 2)?;
+            indent(f, level + 1)?;
+            writeln!(f, "Index:")?;
+            fmt_expr(f, &index.index, level + 2)
+        }
     }
 }
 
@@ -592,7 +676,7 @@ fn fmt_stmt(f: &mut fmt::Formatter<'_>, stmt: &Statement, level: usize) -> fmt::
             }
             write!(f, " {}", let_stmt.name.name)?;
             if let Some(ref ty) = let_stmt.ty {
-                write!(f, ": {}", ty.name)?;
+                write!(f, ": {}", ty)?;
             }
             writeln!(f)?;
             fmt_expr(f, &let_stmt.init, level + 1)
@@ -603,6 +687,15 @@ fn fmt_stmt(f: &mut fmt::Formatter<'_>, stmt: &Statement, level: usize) -> fmt::
                 AssignTarget::Field(field) => {
                     writeln!(f, "Assign field .{}", field.field.name)?;
                     fmt_expr(f, &field.base, level + 1)?;
+                }
+                AssignTarget::Index(index) => {
+                    writeln!(f, "Assign index")?;
+                    indent(f, level + 1)?;
+                    writeln!(f, "Base:")?;
+                    fmt_expr(f, &index.base, level + 2)?;
+                    indent(f, level + 1)?;
+                    writeln!(f, "Index:")?;
+                    fmt_expr(f, &index.index, level + 2)?;
                 }
             }
             fmt_expr(f, &assign.value, level + 1)

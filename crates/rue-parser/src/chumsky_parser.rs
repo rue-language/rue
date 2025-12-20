@@ -4,10 +4,11 @@
 //! with Pratt parsing for expression precedence.
 
 use crate::ast::{
-    AssignStatement, AssignTarget, Ast, BinaryExpr, BinaryOp, BlockExpr, BoolLit, BreakExpr,
-    CallExpr, ContinueExpr, Expr, FieldDecl, FieldExpr, FieldInit, Function, Ident, IfExpr, IntLit,
-    IntrinsicCallExpr, Item, LetStatement, LoopExpr, MatchArm, MatchExpr, Param, ParenExpr,
-    Pattern, ReturnExpr, Statement, StructDecl, StructLitExpr, UnaryExpr, UnaryOp, WhileExpr,
+    ArrayLitExpr, AssignStatement, AssignTarget, Ast, BinaryExpr, BinaryOp, BlockExpr, BoolLit,
+    BreakExpr, CallExpr, ContinueExpr, Expr, FieldDecl, FieldExpr, FieldInit, Function, Ident,
+    IfExpr, IndexExpr, IntLit, IntrinsicCallExpr, Item, LetStatement, LoopExpr, MatchArm,
+    MatchExpr, Param, ParenExpr, Pattern, ReturnExpr, Statement, StructDecl, StructLitExpr,
+    TypeExpr, UnaryExpr, UnaryOp, WhileExpr,
 };
 use chumsky::input::{Input as ChumskyInput, Stream, ValueInput};
 use chumsky::pratt::{infix, left, prefix};
@@ -34,29 +35,41 @@ where
     }
 }
 
-/// Parser for type expressions: identifier (i32, bool, etc.), () for unit, or ! for never
-fn type_parser<'src, I>() -> impl Parser<'src, I, Ident, extra::Err<Rich<'src, TokenKind>>> + Clone
+/// Parser for type expressions: identifier (i32, bool, etc.), () for unit, ! for never, or [T; N] for arrays
+fn type_parser<'src, I>()
+-> impl Parser<'src, I, TypeExpr, extra::Err<Rich<'src, TokenKind>>> + Clone
 where
     I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
 {
-    // Unit type: ()
-    let unit_type = just(TokenKind::LParen)
-        .then(just(TokenKind::RParen))
-        .map_with(|_, e| Ident {
-            name: "()".to_string(),
-            span: to_rue_span(e.span()),
-        });
+    recursive(|ty| {
+        // Unit type: ()
+        let unit_type = just(TokenKind::LParen)
+            .then(just(TokenKind::RParen))
+            .map_with(|_, e| TypeExpr::Unit(to_rue_span(e.span())));
 
-    // Never type: !
-    let never_type = just(TokenKind::Bang).map_with(|_, e| Ident {
-        name: "!".to_string(),
-        span: to_rue_span(e.span()),
-    });
+        // Never type: !
+        let never_type =
+            just(TokenKind::Bang).map_with(|_, e| TypeExpr::Never(to_rue_span(e.span())));
 
-    // Named type: i32, bool, MyStruct, etc.
-    let named_type = ident_parser();
+        // Array type: [T; N]
+        let array_type = just(TokenKind::LBracket)
+            .ignore_then(ty)
+            .then_ignore(just(TokenKind::Semi))
+            .then(select! {
+                TokenKind::Int(n) => n as u64,
+            })
+            .then_ignore(just(TokenKind::RBracket))
+            .map_with(|(element, length), e| TypeExpr::Array {
+                element: Box::new(element),
+                length,
+                span: to_rue_span(e.span()),
+            });
 
-    unit_type.or(never_type).or(named_type)
+        // Named type: i32, bool, MyStruct, etc.
+        let named_type = ident_parser().map(TypeExpr::Named);
+
+        choice((unit_type, never_type, array_type, named_type))
+    })
 }
 
 /// Parser for function parameters: name: type
@@ -471,7 +484,10 @@ where
     // Intrinsic call: @name(args)
     let intrinsic_call = just(TokenKind::At)
         .ignore_then(ident_parser())
-        .then(args_parser(expr).delimited_by(just(TokenKind::LParen), just(TokenKind::RParen)))
+        .then(
+            args_parser(expr.clone())
+                .delimited_by(just(TokenKind::LParen), just(TokenKind::RParen)),
+        )
         .map_with(|(name, args), e| {
             Expr::IntrinsicCall(IntrinsicCallExpr {
                 name,
@@ -480,7 +496,17 @@ where
             })
         });
 
-    // Primary expression (before field access)
+    // Array literal: [expr, expr, ...]
+    let array_lit = args_parser(expr.clone())
+        .delimited_by(just(TokenKind::LBracket), just(TokenKind::RBracket))
+        .map_with(|elements, e| {
+            Expr::ArrayLit(ArrayLitExpr {
+                elements,
+                span: to_rue_span(e.span()),
+            })
+        });
+
+    // Primary expression (before field access and indexing)
     let primary = choice((
         int_lit,
         bool_true,
@@ -493,22 +519,48 @@ where
         while_expr,
         loop_expr,
         intrinsic_call,
+        array_lit,
         ident_or_call_or_struct,
         paren_expr,
         block_expr,
     ));
 
-    // Field access suffix: .field
-    // Handles chains like a.b.c
+    // Suffix for field access (.field) or indexing ([expr])
+    #[derive(Clone)]
+    enum Suffix {
+        Field(Ident),
+        Index(Expr),
+    }
+
+    let field_suffix = just(TokenKind::Dot)
+        .ignore_then(ident_parser())
+        .map(Suffix::Field);
+
+    let index_suffix = expr
+        .delimited_by(just(TokenKind::LBracket), just(TokenKind::RBracket))
+        .map(Suffix::Index);
+
+    // Field access and indexing suffix: .field or [expr]
+    // Handles chains like a.b.c or a[0][1] or a[0].field
     primary.foldl(
-        just(TokenKind::Dot).ignore_then(ident_parser()).repeated(),
-        |base, field| {
-            let span = Span::new(base.span().start, field.span.end);
-            Expr::Field(FieldExpr {
-                base: Box::new(base),
-                field,
-                span,
-            })
+        choice((field_suffix, index_suffix)).repeated(),
+        |base, suffix| match suffix {
+            Suffix::Field(field) => {
+                let span = Span::new(base.span().start, field.span.end);
+                Expr::Field(FieldExpr {
+                    base: Box::new(base),
+                    field,
+                    span,
+                })
+            }
+            Suffix::Index(index) => {
+                let span = Span::new(base.span().start, index.span().end);
+                Expr::Index(IndexExpr {
+                    base: Box::new(base),
+                    index: Box::new(index),
+                    span,
+                })
+            }
         },
     )
 }
@@ -543,7 +595,7 @@ where
     just(TokenKind::Let)
         .ignore_then(just(TokenKind::Mut).or_not().map(|m| m.is_some()))
         .then(let_binding_parser())
-        .then(just(TokenKind::Colon).ignore_then(ident_parser()).or_not())
+        .then(just(TokenKind::Colon).ignore_then(type_parser()).or_not())
         .then_ignore(just(TokenKind::Eq))
         .then(expr)
         .then_ignore(just(TokenKind::Semi))
@@ -558,55 +610,95 @@ where
         })
 }
 
-/// Parser for assignment target: either a simple variable or field access chain
-/// Parses: name or name.field or name.field.field...
-fn assign_target_parser<'src, I>()
--> impl Parser<'src, I, AssignTarget, extra::Err<Rich<'src, TokenKind>>> + Clone
+/// Suffix for assignment targets: either .field or [index]
+#[derive(Clone)]
+enum AssignSuffix {
+    Field(Ident),
+    Index(Expr),
+}
+
+/// Parser for assignment target: variable, field access, or index access
+/// Parses: name or name.field or name[idx] or name.field[idx].field...
+fn assign_target_parser<'src, I>(
+    expr: impl Parser<'src, I, Expr, extra::Err<Rich<'src, TokenKind>>> + Clone,
+) -> impl Parser<'src, I, AssignTarget, extra::Err<Rich<'src, TokenKind>>> + Clone
 where
     I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
 {
+    let field_suffix = just(TokenKind::Dot)
+        .ignore_then(ident_parser())
+        .map(AssignSuffix::Field);
+
+    let index_suffix = expr
+        .delimited_by(just(TokenKind::LBracket), just(TokenKind::RBracket))
+        .map(AssignSuffix::Index);
+
     ident_parser()
         .then(
-            just(TokenKind::Dot)
-                .ignore_then(ident_parser())
+            choice((field_suffix, index_suffix))
                 .repeated()
                 .collect::<Vec<_>>(),
         )
-        .map(|(base_ident, field_chain)| {
-            if field_chain.is_empty() {
+        .map(|(base_ident, suffixes)| {
+            if suffixes.is_empty() {
                 // Simple variable: x
                 AssignTarget::Var(base_ident)
             } else {
-                // Field access chain: x.a.b.c
-                // Build up the FieldExpr from left to right
+                // Chain of field/index accesses: x.a[0].b...
+                // Build up the expression from left to right
                 let mut base_expr = Expr::Ident(base_ident);
-                for field in field_chain {
-                    let span = Span::new(base_expr.span().start, field.span.end);
-                    base_expr = Expr::Field(FieldExpr {
-                        base: Box::new(base_expr),
-                        field,
-                        span,
-                    });
+                for suffix in suffixes.iter().take(suffixes.len().saturating_sub(1)) {
+                    match suffix {
+                        AssignSuffix::Field(field) => {
+                            let span = Span::new(base_expr.span().start, field.span.end);
+                            base_expr = Expr::Field(FieldExpr {
+                                base: Box::new(base_expr),
+                                field: field.clone(),
+                                span,
+                            });
+                        }
+                        AssignSuffix::Index(index) => {
+                            let span = Span::new(base_expr.span().start, index.span().end);
+                            base_expr = Expr::Index(IndexExpr {
+                                base: Box::new(base_expr),
+                                index: Box::new(index.clone()),
+                                span,
+                            });
+                        }
+                    }
                 }
-                // Extract the FieldExpr from the final expression
-                if let Expr::Field(field_expr) = base_expr {
-                    AssignTarget::Field(field_expr)
-                } else {
-                    unreachable!("We just built a Field expression")
+                // The last suffix determines the target type
+                match suffixes.last().unwrap() {
+                    AssignSuffix::Field(field) => {
+                        let span = Span::new(base_expr.span().start, field.span.end);
+                        AssignTarget::Field(FieldExpr {
+                            base: Box::new(base_expr),
+                            field: field.clone(),
+                            span,
+                        })
+                    }
+                    AssignSuffix::Index(index) => {
+                        let span = Span::new(base_expr.span().start, index.span().end);
+                        AssignTarget::Index(IndexExpr {
+                            base: Box::new(base_expr),
+                            index: Box::new(index.clone()),
+                            span,
+                        })
+                    }
                 }
             }
         })
 }
 
 /// Parser for assignment statements: target = expr;
-/// Supports both variable assignment (x = 5) and field assignment (point.x = 5)
+/// Supports variable (x = 5), field (point.x = 5), and index (arr[0] = 5) assignment
 fn assign_statement_parser<'src, I>(
     expr: impl Parser<'src, I, Expr, extra::Err<Rich<'src, TokenKind>>> + Clone,
 ) -> impl Parser<'src, I, Statement, extra::Err<Rich<'src, TokenKind>>> + Clone
 where
     I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
 {
-    assign_target_parser()
+    assign_target_parser(expr.clone())
         .then_ignore(just(TokenKind::Eq))
         .then(expr)
         .then_ignore(just(TokenKind::Semi))
@@ -967,7 +1059,10 @@ mod tests {
         match &ast.items[0] {
             Item::Function(f) => {
                 assert_eq!(f.name.name, "main");
-                assert_eq!(f.return_type.as_ref().unwrap().name, "i32");
+                match f.return_type.as_ref().unwrap() {
+                    TypeExpr::Named(ident) => assert_eq!(ident.name, "i32"),
+                    _ => panic!("expected Named type"),
+                }
                 match &f.body {
                     Expr::Block(block) => match block.expr.as_ref() {
                         Expr::Int(lit) => assert_eq!(lit.value, 42),

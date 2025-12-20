@@ -28,6 +28,7 @@ Rue is in early development. The implemented feature set is minimal:
 | While loops | ✓ Implemented |
 | Break/continue | ✓ Implemented |
 | Return statement | ✓ Implemented |
+| Arrays | ✓ Fixed-size arrays with value semantics |
 
 ## Specification Tests
 
@@ -50,6 +51,7 @@ The executable specification lives in `crates/rue-spec/cases/`:
 | `12-while-loops.toml` | 12.1 | While loops |
 | `13-break-continue.toml` | 13.1 | Break and continue statements |
 | `14-return.toml` | 14.1 | Return statement |
+| `19-arrays.toml` | 8.1 | Fixed-size arrays |
 
 Each `.toml` file contains test cases that define expected behavior:
 
@@ -184,6 +186,81 @@ fn main() -> i32 {
     let x = 10;
     let x = x + 5;  // shadows previous x
     x  // returns 15
+}
+```
+
+### Arrays
+
+Arrays are fixed-size sequences of elements of the same type. The syntax `[T; N]` declares an array of `N` elements of type `T`:
+
+```rue
+fn main() -> i32 {
+    let arr: [i32; 3] = [10, 20, 12];
+    arr[0] + arr[1] + arr[2]  // returns 42
+}
+```
+
+Array elements are accessed using index syntax `arr[index]`:
+
+```rue
+fn main() -> i32 {
+    let arr: [i32; 3] = [100, 42, 200];
+    arr[1]  // returns 42
+}
+```
+
+Mutable arrays allow element assignment:
+
+```rue
+fn main() -> i32 {
+    let mut arr: [i32; 2] = [0, 0];
+    arr[0] = 20;
+    arr[1] = 22;
+    arr[0] + arr[1]  // returns 42
+}
+```
+
+Array indices can be variables or expressions:
+
+```rue
+fn main() -> i32 {
+    let arr: [i32; 3] = [10, 42, 100];
+    let idx = 1;
+    arr[idx]  // returns 42
+}
+```
+
+```rue
+fn main() -> i32 {
+    let arr: [i32; 5] = [5, 10, 42, 100, 200];
+    let base = 1;
+    arr[base + 1]  // returns 42
+}
+```
+
+Array elements can be initialized with expressions:
+
+```rue
+fn double(x: i32) -> i32 { x * 2 }
+
+fn main() -> i32 {
+    let arr: [i32; 1] = [double(21)];
+    arr[0]  // returns 42
+}
+```
+
+**Compile-time checks:**
+- Array length must match the declared size
+- All elements must have the same type
+- Immutable arrays cannot be assigned to
+
+```rue
+fn main() -> i32 {
+    let arr: [i32; 3] = [1, 2];     // ERROR: expected array of 3 elements
+    let arr: [i32; 2] = [1, true];  // ERROR: type mismatch
+    let arr: [i32; 1] = [42];
+    arr[0] = 10;                    // ERROR: cannot assign to immutable array
+    0
 }
 ```
 
@@ -674,8 +751,8 @@ param          = IDENT ":" type ;
 block          = { statement } expression ;
 statement      = let_stmt | assign_stmt ;
 let_stmt       = "let" [ "mut" ] IDENT [ ":" type ] "=" expression ";" ;
-assign_stmt    = IDENT "=" expression ";" ;
-type           = "i32" | "bool" ;
+assign_stmt    = IDENT "=" expression ";" | IDENT "[" expression "]" "=" expression ";" ;
+type           = "i32" | "bool" | "[" type ";" INTEGER "]" ;
 expression     = or_expr ;
 or_expr        = and_expr { "||" and_expr } ;
 and_expr       = comparison { "&&" comparison } ;
@@ -683,10 +760,12 @@ comparison     = additive { ("==" | "!=" | "<" | ">" | "<=" | ">=") additive } ;
 additive       = multiplicative { ("+" | "-") multiplicative } ;
 multiplicative = unary { ("*" | "/" | "%") unary } ;
 unary          = "-" unary | "!" unary | postfix ;
-postfix        = primary [ "(" [ args ] ")" ] ;
+postfix        = primary { "[" expression "]" | "(" [ args ] ")" } ;
 args           = expression { "," expression } ;
 primary        = INTEGER | BOOL | IDENT | "(" expression ")" | block_expr
-               | if_expr | match_expr | while_expr | "break" | "continue" | return_expr ;
+               | if_expr | match_expr | while_expr | "break" | "continue" | return_expr
+               | array_literal ;
+array_literal  = "[" [ expression { "," expression } ] "]" ;
 return_expr    = "return" expression ;
 block_expr     = "{" block "}" ;
 if_expr        = "if" expression "{" block "}" [ "else" "{" block "}" ] ;

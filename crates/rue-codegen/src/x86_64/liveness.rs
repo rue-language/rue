@@ -169,7 +169,9 @@ fn uses(inst: &X86Inst) -> Vec<VReg> {
         X86Inst::MovMR { src, .. } => {
             add_if_virtual(src, &mut result);
         }
-        X86Inst::AddRR { dst, src } | X86Inst::SubRR { dst, src } => {
+        X86Inst::AddRR { dst, src }
+        | X86Inst::SubRR { dst, src }
+        | X86Inst::SubRR64 { dst, src } => {
             // dst is both read and written (dst = dst op src)
             add_if_virtual(dst, &mut result);
             add_if_virtual(src, &mut result);
@@ -235,6 +237,22 @@ fn uses(inst: &X86Inst) -> Vec<VReg> {
         X86Inst::Push { src } => {
             add_if_virtual(src, &mut result);
         }
+        X86Inst::Lea { dst, .. } => {
+            add_if_virtual(dst, &mut result);
+            // base is physical register
+        }
+        X86Inst::Shl { dst, count } => {
+            add_if_virtual(dst, &mut result);
+            add_if_virtual(count, &mut result);
+        }
+        X86Inst::MovRMIndexed { base, .. } => {
+            // base is a VReg
+            result.push(*base);
+        }
+        X86Inst::MovMRIndexed { base, src, .. } => {
+            result.push(*base);
+            add_if_virtual(src, &mut result);
+        }
         X86Inst::Cdq
         | X86Inst::Jz { .. }
         | X86Inst::Jnz { .. }
@@ -278,6 +296,7 @@ fn defs(inst: &X86Inst) -> Vec<VReg> {
         X86Inst::AddRR { dst, .. }
         | X86Inst::AddRI { dst, .. }
         | X86Inst::SubRR { dst, .. }
+        | X86Inst::SubRR64 { dst, .. }
         | X86Inst::ImulRR { dst, .. } => {
             add_if_virtual(dst, &mut result);
         }
@@ -318,6 +337,18 @@ fn defs(inst: &X86Inst) -> Vec<VReg> {
         }
         X86Inst::Push { .. } => {
             // Only reads, no definition
+        }
+        X86Inst::Lea { dst, .. } => {
+            add_if_virtual(dst, &mut result);
+        }
+        X86Inst::Shl { dst, .. } => {
+            add_if_virtual(dst, &mut result);
+        }
+        X86Inst::MovRMIndexed { dst, .. } => {
+            add_if_virtual(dst, &mut result);
+        }
+        X86Inst::MovMRIndexed { .. } => {
+            // Writes to memory
         }
         X86Inst::Cdq
         | X86Inst::Jz { .. }

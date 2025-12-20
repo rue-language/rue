@@ -325,6 +325,17 @@ fn uses(inst: &Aarch64Inst) -> Vec<VReg> {
         Aarch64Inst::LdpPost { .. } => {
             // Only defines
         }
+        Aarch64Inst::LdrIndexed { base, .. } => {
+            // base is a VReg directly, not an Operand
+            result.push(*base);
+        }
+        Aarch64Inst::StrIndexed { src, base } => {
+            add_if_virtual(src, &mut result);
+            result.push(*base);
+        }
+        Aarch64Inst::LslImm { src, .. } => {
+            add_if_virtual(src, &mut result);
+        }
         Aarch64Inst::B { .. }
         | Aarch64Inst::BCond { .. }
         | Aarch64Inst::Bvs { .. }
@@ -405,6 +416,15 @@ fn defs(inst: &Aarch64Inst) -> Vec<VReg> {
         Aarch64Inst::LdpPost { dst1, dst2, .. } => {
             add_if_virtual(dst1, &mut result);
             add_if_virtual(dst2, &mut result);
+        }
+        Aarch64Inst::LdrIndexed { dst, .. } => {
+            add_if_virtual(dst, &mut result);
+        }
+        Aarch64Inst::StrIndexed { .. } => {
+            // Writes to memory
+        }
+        Aarch64Inst::LslImm { dst, .. } => {
+            add_if_virtual(dst, &mut result);
         }
         Aarch64Inst::B { .. }
         | Aarch64Inst::BCond { .. }

@@ -77,6 +77,22 @@ impl<'a> Emitter<'a> {
     ///
     /// Returns (code bytes, relocations).
     pub fn emit(mut self) -> (Vec<u8>, Vec<EmittedRelocation>) {
+        // Verify no MovRMIndexed or MovMRIndexed survived into emission
+        // These should have been lowered by regalloc into MovRM/MovMR
+        #[cfg(debug_assertions)]
+        for (i, inst) in self.mir.iter().enumerate() {
+            if matches!(
+                inst,
+                X86Inst::MovRMIndexed { .. } | X86Inst::MovMRIndexed { .. }
+            ) {
+                panic!(
+                    "Post-regalloc verification failed: instruction {} is {:?}, \
+                     which should have been lowered by regalloc",
+                    i, inst
+                );
+            }
+        }
+
         // Emit function prologue if we have local variables, parameters, or callee-saved regs
         if self.num_locals > 0 || self.num_params > 0 || !self.callee_saved.is_empty() {
             self.emit_prologue();
@@ -292,6 +308,9 @@ impl<'a> Emitter<'a> {
             X86Inst::SubRR { dst, src } => {
                 self.emit_sub_rr(dst.as_physical(), src.as_physical());
             }
+            X86Inst::SubRR64 { dst, src } => {
+                self.emit_sub_rr64(dst.as_physical(), src.as_physical());
+            }
             X86Inst::ImulRR { dst, src } => {
                 self.emit_imul_rr(dst.as_physical(), src.as_physical());
             }
@@ -425,7 +444,102 @@ impl<'a> Emitter<'a> {
             X86Inst::Push { src } => {
                 self.emit_push(src.as_physical());
             }
+            X86Inst::Lea {
+                dst,
+                base,
+                index: _,
+                scale: _,
+                disp,
+            } => {
+                // Adjust displacement for rbp-relative accesses to account for callee-saved registers.
+                // Lower.rs generates offsets assuming [rbp-8] is the first slot, but callee-saved
+                // registers are pushed after rbp, so we need to skip past them.
+                let adjusted_disp = if *base == Reg::Rbp && *disp < 0 {
+                    let callee_saved_size = self.callee_saved.len() as i32 * 8;
+                    *disp - callee_saved_size
+                } else {
+                    *disp
+                };
+                // Simplified: LEA dst, [base + disp] without index
+                self.emit_lea_simple(dst.as_physical(), *base, adjusted_disp);
+            }
+            X86Inst::Shl { dst, count } => {
+                let dst = dst.as_physical();
+                let cnt = count.as_physical();
+
+                // If count isn't in RCX, move it.
+                if cnt != Reg::Rcx {
+                    // NB: this clobbers rcx, which is exactly what we want.
+                    self.emit_mov_rr(Reg::Rcx, cnt);
+                }
+
+                // If dst is RCX, that's a conflict (dst would be clobbered by the move above
+                // or would shift itself by itself). Better to assert first.
+                debug_assert!(
+                    dst != Reg::Rcx,
+                    "Shl dst allocated to RCX, but x86 requires count in CL; \
+         regalloc must avoid assigning dst=RCX for Shl"
+                );
+
+                self.emit_shl_cl(dst);
+            }
+
+            X86Inst::MovRMIndexed { dst, base, offset } => {
+                // MOV dst, [base_vreg + offset] - but base is VReg
+                // After regalloc, base should be in a physical register
+                // We emit MOV r64, [r64 + offset] where base has already been loaded
+                // For now use a simple indirect load. The regalloc phase should ensure
+                // base is already in a register.
+                let _ = base;
+                let _ = offset;
+                // This is handled specially - after regalloc the base VReg is in Rax
+                self.emit_mov_rm(dst.as_physical(), Reg::Rax, 0);
+            }
+            X86Inst::MovMRIndexed { base, offset, src } => {
+                // MOV [base_vreg + offset], src
+                let _ = base;
+                let _ = offset;
+                // Same as above - base should be in Rax after regalloc
+                self.emit_mov_mr(Reg::Rax, 0, src.as_physical());
+            }
         }
+    }
+
+    /// Emit LEA with simple [base + disp] addressing.
+    fn emit_lea_simple(&mut self, dst: Reg, base: Reg, disp: i32) {
+        let dst_enc = dst.encoding();
+        let base_enc = base.encoding();
+
+        let mut rex = 0x48;
+        if dst.needs_rex() {
+            rex |= 0x04;
+        }
+        if base.needs_rex() {
+            rex |= 0x01;
+        }
+        self.code.push(rex);
+
+        self.code.push(0x8D);
+
+        // Use the same memory encoding logic as mov.
+        self.emit_modrm_memory(dst_enc, base_enc, disp);
+    }
+
+    /// Emit SHL r64, CL.
+    fn emit_shl_cl(&mut self, dst: Reg) {
+        let dst_enc = dst.encoding();
+
+        // REX.W prefix
+        let mut rex = 0x48;
+        if dst.needs_rex() {
+            rex |= 0x01; // REX.B
+        }
+        self.code.push(rex);
+
+        // SHL r/m64, CL is D3 /4
+        self.code.push(0xD3);
+        // ModR/M: mod=11 (register), reg=4 (/4), r/m=dst
+        self.code.push(0xE0 | (dst_enc & 7));
     }
 
     /// Emit `mov r32, imm32`.
@@ -759,6 +873,27 @@ impl<'a> Emitter<'a> {
         }
 
         // Opcode: 29 (sub r/m32, r32)
+        self.code.push(0x29);
+
+        // ModR/M: mod=11 (register-to-register), reg=src, r/m=dst
+        let modrm = 0xC0 | ((src_enc & 7) << 3) | (dst_enc & 7);
+        self.code.push(modrm);
+    }
+
+    /// Emit `sub r64, r64`.
+    ///
+    /// Encoding: REX.W 29 /r (sub r/m64, r64)
+    fn emit_sub_rr64(&mut self, dst: Reg, src: Reg) {
+        let dst_enc = dst.encoding();
+        let src_enc = src.encoding();
+
+        // REX prefix: W=1 for 64-bit, R for src, B for dst
+        let rex = 0x48
+            | if src.needs_rex() { 0x04 } else { 0x00 }  // REX.R
+            | if dst.needs_rex() { 0x01 } else { 0x00 }; // REX.B
+        self.code.push(rex);
+
+        // Opcode: 29 (sub r/m64, r64)
         self.code.push(0x29);
 
         // ModR/M: mod=11 (register-to-register), reg=src, r/m=dst
@@ -1387,6 +1522,16 @@ mod tests {
     }
 
     #[test]
+    fn test_sub_rax_rcx_64() {
+        let code = emit_single(X86Inst::SubRR64 {
+            dst: Operand::Physical(Reg::Rax),
+            src: Operand::Physical(Reg::Rcx),
+        });
+        // sub rax, rcx -> 48 29 C8
+        assert_eq!(code, vec![0x48, 0x29, 0xC8]);
+    }
+
+    #[test]
     fn test_imul_eax_ecx() {
         let code = emit_single(X86Inst::ImulRR {
             dst: Operand::Physical(Reg::Rax),
@@ -1578,5 +1723,15 @@ mod tests {
         let mir = X86Mir::new();
         let (code, _) = Emitter::new(&mir, 0, 0, 0, &[]).emit();
         assert!(code.is_empty());
+    }
+
+    #[test]
+    fn test_shl_r14_cl() {
+        let code = emit_single(X86Inst::Shl {
+            dst: Operand::Physical(Reg::R14),
+            count: Operand::Physical(Reg::Rcx),
+        });
+        // shl r14, cl -> 49 D3 E6  (REX.W|B because r/m=r14, opcode D3, modrm E0|6)
+        assert_eq!(code, vec![0x49, 0xD3, 0xE6]);
     }
 }

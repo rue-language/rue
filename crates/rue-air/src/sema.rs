@@ -6,7 +6,7 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::inst::{Air, AirInst, AirInstData, AirPattern, AirRef};
-use crate::types::{StructDef, StructField, StructId, Type};
+use crate::types::{ArrayTypeDef, ArrayTypeId, StructDef, StructField, StructId, Type};
 use rue_error::{CompileError, CompileResult, CompileWarning, ErrorKind, WarningKind};
 use rue_intern::{Interner, Symbol};
 use rue_rir::{InstData, InstRef, Rir, RirPattern};
@@ -35,6 +35,8 @@ pub struct SemaOutput {
     pub functions: Vec<AnalyzedFunction>,
     /// Struct definitions.
     pub struct_defs: Vec<StructDef>,
+    /// Array type definitions.
+    pub array_types: Vec<ArrayTypeDef>,
     /// Warnings collected during analysis.
     pub warnings: Vec<CompileWarning>,
 }
@@ -168,26 +170,32 @@ impl AnalysisResult {
 /// Semantic analyzer that converts RIR to AIR.
 pub struct Sema<'a> {
     rir: &'a Rir,
-    interner: &'a Interner,
+    interner: &'a mut Interner,
     /// Function table: maps function name symbols to their info
     functions: HashMap<Symbol, FunctionInfo>,
     /// Struct table: maps struct name symbols to their StructId
     structs: HashMap<Symbol, StructId>,
     /// Struct definitions indexed by StructId
     struct_defs: Vec<StructDef>,
+    /// Array type table: maps (element_type, length) to ArrayTypeId
+    array_types: HashMap<(Type, u64), ArrayTypeId>,
+    /// Array type definitions indexed by ArrayTypeId
+    array_type_defs: Vec<ArrayTypeDef>,
     /// Warnings collected during analysis
     warnings: Vec<CompileWarning>,
 }
 
 impl<'a> Sema<'a> {
     /// Create a new semantic analyzer.
-    pub fn new(rir: &'a Rir, interner: &'a Interner) -> Self {
+    pub fn new(rir: &'a Rir, interner: &'a mut Interner) -> Self {
         Self {
             rir,
             interner,
             functions: HashMap::new(),
             structs: HashMap::new(),
             struct_defs: Vec::new(),
+            array_types: HashMap::new(),
+            array_type_defs: Vec::new(),
             warnings: Vec::new(),
         }
     }
@@ -276,6 +284,7 @@ impl<'a> Sema<'a> {
         Ok(SemaOutput {
             functions,
             struct_defs: self.struct_defs,
+            array_types: self.array_type_defs,
             warnings: self.warnings,
         })
     }
@@ -918,11 +927,14 @@ impl<'a> Sema<'a> {
                     (init_result, init_result.ty)
                 };
 
-                // Allocate slots - structs need multiple slots (one per field)
+                // Allocate slots - structs and arrays need multiple slots
                 let slot = ctx.next_slot;
                 let num_slots = match var_type {
                     Type::Struct(struct_id) => {
                         self.struct_defs[struct_id.0 as usize].field_count() as u32
+                    }
+                    Type::Array(array_type_id) => {
+                        self.array_type_defs[array_type_id.0 as usize].length as u32
                     }
                     _ => 1,
                 };
@@ -1530,13 +1542,222 @@ impl<'a> Sema<'a> {
                 });
                 Ok(AnalysisResult::new(air_ref, Type::Unit))
             }
+
+            InstData::ArrayInit { elements } => {
+                // Determine the element type from expectation or first element
+                if elements.is_empty() {
+                    // Empty array: need a type annotation
+                    // For now, we'll require the expectation to provide the type
+                    match expectation {
+                        TypeExpectation::Check(Type::Array(array_type_id)) => {
+                            let air_ref = air.add_inst(AirInst {
+                                data: AirInstData::ArrayInit {
+                                    array_type_id,
+                                    elements: vec![],
+                                },
+                                ty: Type::Array(array_type_id),
+                                span: inst.span,
+                            });
+                            Ok(AnalysisResult::new(air_ref, Type::Array(array_type_id)))
+                        }
+                        _ => Err(CompileError::new(
+                            ErrorKind::TypeAnnotationRequired,
+                            inst.span,
+                        )),
+                    }
+                } else {
+                    // Non-empty array: infer element type from first element
+                    // or use expectation if available
+                    let (element_type, array_type_id) = match expectation {
+                        TypeExpectation::Check(Type::Array(array_type_id)) => {
+                            let array_def = &self.array_type_defs[array_type_id.0 as usize];
+                            (array_def.element_type, array_type_id)
+                        }
+                        _ => {
+                            // Synthesize element type from first element
+                            let first_result = self.analyze_inst(
+                                air,
+                                elements[0],
+                                TypeExpectation::Synthesize,
+                                ctx,
+                            )?;
+                            let elem_ty = first_result.ty;
+                            let array_type_id =
+                                self.get_or_create_array_type(elem_ty, elements.len() as u64);
+                            (elem_ty, array_type_id)
+                        }
+                    };
+
+                    // Verify length matches if we have an expected type
+                    let expected_len = self.array_type_defs[array_type_id.0 as usize].length;
+                    if elements.len() as u64 != expected_len {
+                        return Err(CompileError::new(
+                            ErrorKind::ArrayLengthMismatch {
+                                expected: expected_len,
+                                found: elements.len() as u64,
+                            },
+                            inst.span,
+                        ));
+                    }
+
+                    // Analyze all elements with the determined element type.
+                    // Note: When we inferred the type from the first element (Synthesize path),
+                    // we re-analyze it here with Check to get the correct AirRef and ensure
+                    // type compatibility. This is intentional - the first analysis was only
+                    // to determine the element type.
+                    let mut element_refs = Vec::with_capacity(elements.len());
+                    for elem in elements.iter() {
+                        let elem_result = self.analyze_inst(
+                            air,
+                            *elem,
+                            TypeExpectation::Check(element_type),
+                            ctx,
+                        )?;
+                        element_refs.push(elem_result.air_ref);
+                    }
+
+                    let array_type = Type::Array(array_type_id);
+                    let air_ref = air.add_inst(AirInst {
+                        data: AirInstData::ArrayInit {
+                            array_type_id,
+                            elements: element_refs,
+                        },
+                        ty: array_type,
+                        span: inst.span,
+                    });
+                    Ok(AnalysisResult::new(air_ref, array_type))
+                }
+            }
+
+            InstData::IndexGet { base, index } => {
+                // Synthesize the base type
+                let base_result =
+                    self.analyze_inst(air, *base, TypeExpectation::Synthesize, ctx)?;
+                let base_type = base_result.ty;
+
+                let array_type_id = match base_type {
+                    Type::Array(id) => id,
+                    _ => {
+                        return Err(CompileError::new(
+                            ErrorKind::IndexOnNonArray {
+                                found: base_type.name().to_string(),
+                            },
+                            inst.span,
+                        ));
+                    }
+                };
+
+                // Index must be an integer (we'll use u64 for indexing)
+                let index_result =
+                    self.analyze_inst(air, *index, TypeExpectation::Synthesize, ctx)?;
+                if !index_result.ty.is_integer() && !index_result.ty.is_error() {
+                    return Err(CompileError::new(
+                        ErrorKind::TypeMismatch {
+                            expected: "integer".to_string(),
+                            found: index_result.ty.name().to_string(),
+                        },
+                        self.rir.get(*index).span,
+                    ));
+                }
+
+                let element_type = self.array_type_defs[array_type_id.0 as usize].element_type;
+
+                // Type check against expectation
+                expectation.check(element_type, inst.span)?;
+
+                let air_ref = air.add_inst(AirInst {
+                    data: AirInstData::IndexGet {
+                        base: base_result.air_ref,
+                        array_type_id,
+                        index: index_result.air_ref,
+                    },
+                    ty: element_type,
+                    span: inst.span,
+                });
+                Ok(AnalysisResult::new(air_ref, element_type))
+            }
+
+            InstData::IndexSet { base, index, value } => {
+                // For index assignment, we need the base to be a local variable
+                let base_inst = self.rir.get(*base);
+                let (var_name, slot, base_type, is_mut) = match &base_inst.data {
+                    InstData::VarRef { name } => {
+                        let name_str = self.interner.get(*name);
+                        let local = ctx.locals.get(name).ok_or_else(|| {
+                            CompileError::new(
+                                ErrorKind::UndefinedVariable(name_str.to_string()),
+                                inst.span,
+                            )
+                        })?;
+                        (name_str.to_string(), local.slot, local.ty, local.is_mut)
+                    }
+                    _ => {
+                        return Err(CompileError::new(
+                            ErrorKind::InvalidAssignmentTarget,
+                            inst.span,
+                        ));
+                    }
+                };
+
+                // Check mutability
+                if !is_mut {
+                    return Err(CompileError::new(
+                        ErrorKind::AssignToImmutable(var_name),
+                        inst.span,
+                    ));
+                }
+
+                let array_type_id = match base_type {
+                    Type::Array(id) => id,
+                    _ => {
+                        return Err(CompileError::new(
+                            ErrorKind::IndexOnNonArray {
+                                found: base_type.name().to_string(),
+                            },
+                            inst.span,
+                        ));
+                    }
+                };
+
+                // Index must be an integer
+                let index_result =
+                    self.analyze_inst(air, *index, TypeExpectation::Synthesize, ctx)?;
+                if !index_result.ty.is_integer() && !index_result.ty.is_error() {
+                    return Err(CompileError::new(
+                        ErrorKind::TypeMismatch {
+                            expected: "integer".to_string(),
+                            found: index_result.ty.name().to_string(),
+                        },
+                        self.rir.get(*index).span,
+                    ));
+                }
+
+                let element_type = self.array_type_defs[array_type_id.0 as usize].element_type;
+
+                // Analyze the value with the expected element type
+                let value_result =
+                    self.analyze_inst(air, *value, TypeExpectation::Check(element_type), ctx)?;
+
+                let air_ref = air.add_inst(AirInst {
+                    data: AirInstData::IndexSet {
+                        slot,
+                        array_type_id,
+                        index: index_result.air_ref,
+                        value: value_result.air_ref,
+                    },
+                    ty: Type::Unit,
+                    span: inst.span,
+                });
+                Ok(AnalysisResult::new(air_ref, Type::Unit))
+            }
         }
     }
 
     /// Resolve a type symbol to a Type.
     ///
     /// Uses symbol comparison instead of string comparison for efficiency.
-    fn resolve_type(&self, type_sym: Symbol, span: Span) -> CompileResult<Type> {
+    /// Handles array types with the syntax "[T; N]".
+    fn resolve_type(&mut self, type_sym: Symbol, span: Span) -> CompileResult<Type> {
         let well_known = self.interner.well_known();
 
         if type_sym == well_known.i8 {
@@ -1564,16 +1785,74 @@ impl<'a> Sema<'a> {
         } else if let Some(&struct_id) = self.structs.get(&type_sym) {
             Ok(Type::Struct(struct_id))
         } else {
+            // Check for array type syntax: [T; N]
             let type_name = self.interner.get(type_sym);
-            Err(CompileError::new(
-                ErrorKind::UnknownType(type_name.to_string()),
-                span,
-            ))
+            if let Some((element_type, length)) = Self::parse_array_type_syntax(type_name) {
+                // Resolve the element type first
+                let element_sym = self.interner.intern(&element_type);
+                let element_ty = self.resolve_type(element_sym, span)?;
+                // Get or create the array type
+                let array_type_id = self.get_or_create_array_type(element_ty, length);
+                Ok(Type::Array(array_type_id))
+            } else {
+                Err(CompileError::new(
+                    ErrorKind::UnknownType(type_name.to_string()),
+                    span,
+                ))
+            }
         }
     }
 
+    /// Parse array type syntax "[T; N]" and return (element_type_str, length).
+    fn parse_array_type_syntax(type_name: &str) -> Option<(String, u64)> {
+        let type_name = type_name.trim();
+        if !type_name.starts_with('[') || !type_name.ends_with(']') {
+            return None;
+        }
+
+        // Remove the outer brackets
+        let inner = &type_name[1..type_name.len() - 1];
+
+        // Find the semicolon separator - need to handle nested arrays
+        // We look for the last `;` that's at nesting level 0
+        let mut bracket_depth = 0;
+        let mut semi_pos = None;
+        for (i, ch) in inner.char_indices() {
+            match ch {
+                '[' => bracket_depth += 1,
+                ']' => bracket_depth -= 1,
+                ';' if bracket_depth == 0 => semi_pos = Some(i),
+                _ => {}
+            }
+        }
+
+        let semi_pos = semi_pos?;
+        let element_type = inner[..semi_pos].trim().to_string();
+        let length_str = inner[semi_pos + 1..].trim();
+        let length: u64 = length_str.parse().ok()?;
+
+        Some((element_type, length))
+    }
+
+    /// Get or create an array type for the given element type and length.
+    fn get_or_create_array_type(&mut self, element_type: Type, length: u64) -> ArrayTypeId {
+        let key = (element_type, length);
+        if let Some(&id) = self.array_types.get(&key) {
+            return id;
+        }
+
+        let id = ArrayTypeId(self.array_type_defs.len() as u32);
+        self.array_type_defs.push(ArrayTypeDef {
+            element_type,
+            length,
+        });
+        self.array_types.insert(key, id);
+        id
+    }
+
     /// Get the number of ABI slots required for a type.
-    /// Scalar types (i8, i16, i32, i64, u8, u16, u32, u64, bool) use 1 slot, structs use 1 slot per field.
+    /// Scalar types (i8, i16, i32, i64, u8, u16, u32, u64, bool) use 1 slot,
+    /// structs use 1 slot per field, arrays use 1 slot per element.
     fn abi_slot_count(&self, ty: Type) -> u32 {
         match ty {
             Type::I8
@@ -1589,6 +1868,11 @@ impl<'a> Sema<'a> {
             | Type::Error
             | Type::Never => 1,
             Type::Struct(struct_id) => self.struct_defs[struct_id.0 as usize].field_count() as u32,
+            Type::Array(array_type_id) => {
+                let array_def = &self.array_type_defs[array_type_id.0 as usize];
+                let element_slots = self.abi_slot_count(array_def.element_type);
+                element_slots * array_def.length as u32
+            }
         }
     }
 
@@ -1731,7 +2015,7 @@ mod tests {
         let astgen = AstGen::new(&ast, &mut interner);
         let rir = astgen.generate();
 
-        let sema = Sema::new(&rir, &interner);
+        let sema = Sema::new(&rir, &mut interner);
         sema.analyze_all()
     }
 

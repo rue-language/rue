@@ -567,8 +567,8 @@ impl<'a> CfgLower<'a> {
 
             CfgInstData::Alloc { slot, init } => {
                 let init_type = self.cfg.get_inst(*init).ty;
-                if matches!(init_type, Type::Struct(_)) {
-                    // Struct: store all fields to consecutive slots
+                if matches!(init_type, Type::Struct(_)) || matches!(init_type, Type::Array(_)) {
+                    // Struct/Array: store all fields/elements to consecutive slots
                     if let Some(field_vregs) = self.struct_field_vregs.get(init).cloned() {
                         for (i, field_vreg) in field_vregs.iter().enumerate() {
                             let field_slot = slot + i as u32;
@@ -942,6 +942,138 @@ impl<'a> CfgLower<'a> {
                     offset,
                 });
             }
+
+            CfgInstData::ArrayInit {
+                array_type_id: _,
+                elements,
+            } => {
+                // Array is stored in local slots; we just create vregs for elements.
+                let vreg = self.mir.alloc_vreg();
+                self.value_map.insert(value, vreg);
+
+                // Store element vregs for later IndexGet access
+                let element_vregs: Vec<VReg> = elements.iter().map(|e| self.get_vreg(*e)).collect();
+                self.struct_field_vregs.insert(value, element_vregs);
+
+                // Move 0 into vreg as placeholder
+                self.mir.push(Aarch64Inst::MovImm {
+                    dst: Operand::Virtual(vreg),
+                    imm: 0,
+                });
+            }
+
+            CfgInstData::IndexGet {
+                base,
+                array_type_id: _,
+                index,
+            } => {
+                let vreg = self.mir.alloc_vreg();
+                self.value_map.insert(value, vreg);
+
+                let base_data = &self.cfg.get_inst(*base).data;
+                match base_data {
+                    CfgInstData::Load { slot } => {
+                        // Base is a load from a local variable - use dynamic indexing
+                        let index_vreg = self.get_vreg(*index);
+                        let base_offset = self.local_offset(*slot);
+
+                        // Calculate effective address: base_ptr - index * 8
+                        // (stack grows down, array laid out sequentially)
+
+                        // Shift left by 3 (multiply by 8)
+                        let scaled_index = self.mir.alloc_vreg();
+                        self.mir.push(Aarch64Inst::LslImm {
+                            dst: Operand::Virtual(scaled_index),
+                            src: Operand::Virtual(index_vreg),
+                            imm: 3,
+                        });
+
+                        // Compute base address (base_offset is negative, e.g., -8)
+                        // We need addr = FP + base_offset = FP - abs(base_offset)
+                        let addr_vreg = self.mir.alloc_vreg();
+                        self.mir.push(Aarch64Inst::SubImm {
+                            dst: Operand::Virtual(addr_vreg),
+                            src: Operand::Physical(Reg::Fp),
+                            imm: -base_offset,
+                        });
+
+                        // Subtract scaled index
+                        self.mir.push(Aarch64Inst::SubRR {
+                            dst: Operand::Virtual(addr_vreg),
+                            src1: Operand::Virtual(addr_vreg),
+                            src2: Operand::Virtual(scaled_index),
+                        });
+
+                        // Load from computed address
+                        self.mir.push(Aarch64Inst::LdrIndexed {
+                            dst: Operand::Virtual(vreg),
+                            base: addr_vreg,
+                        });
+                    }
+                    _ => {
+                        // For other sources (ArrayInit), use element vregs if index is constant
+                        let index_inst = &self.cfg.get_inst(*index).data;
+                        if let CfgInstData::Const(idx) = index_inst {
+                            if let Some(element_vregs) = self.struct_field_vregs.get(base).cloned()
+                            {
+                                if let Some(&elem_vreg) = element_vregs.get(*idx as usize) {
+                                    self.mir.push(Aarch64Inst::MovRR {
+                                        dst: Operand::Virtual(vreg),
+                                        src: Operand::Virtual(elem_vreg),
+                                    });
+                                    return;
+                                }
+                            }
+                        }
+                        // Fallback
+                        self.mir.push(Aarch64Inst::MovImm {
+                            dst: Operand::Virtual(vreg),
+                            imm: 0,
+                        });
+                    }
+                }
+            }
+
+            CfgInstData::IndexSet {
+                slot,
+                array_type_id: _,
+                index,
+                value: val,
+            } => {
+                let val_vreg = self.get_vreg(*val);
+                let index_vreg = self.get_vreg(*index);
+
+                // Shift left by 3 (multiply by 8)
+                let scaled_index = self.mir.alloc_vreg();
+                self.mir.push(Aarch64Inst::LslImm {
+                    dst: Operand::Virtual(scaled_index),
+                    src: Operand::Virtual(index_vreg),
+                    imm: 3,
+                });
+
+                // Compute base address (base_offset is negative, e.g., -8)
+                // We need addr = FP + base_offset = FP - abs(base_offset)
+                let base_offset = self.local_offset(*slot);
+                let addr_vreg = self.mir.alloc_vreg();
+                self.mir.push(Aarch64Inst::SubImm {
+                    dst: Operand::Virtual(addr_vreg),
+                    src: Operand::Physical(Reg::Fp),
+                    imm: -base_offset,
+                });
+
+                // Subtract scaled index
+                self.mir.push(Aarch64Inst::SubRR {
+                    dst: Operand::Virtual(addr_vreg),
+                    src1: Operand::Virtual(addr_vreg),
+                    src2: Operand::Virtual(scaled_index),
+                });
+
+                // Store to computed address
+                self.mir.push(Aarch64Inst::StrIndexed {
+                    src: Operand::Virtual(val_vreg),
+                    base: addr_vreg,
+                });
+            }
         }
     }
 
@@ -1227,7 +1359,7 @@ mod tests {
         let astgen = AstGen::new(&ast, &mut interner);
         let rir = astgen.generate();
 
-        let sema = Sema::new(&rir, &interner);
+        let sema = Sema::new(&rir, &mut interner);
         let output = sema.analyze_all().unwrap();
 
         let func = &output.functions[0];

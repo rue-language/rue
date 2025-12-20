@@ -343,6 +343,10 @@ impl RegAlloc {
                 self.emit_binop(mir, dst, src, |d, s| X86Inst::SubRR { dst: d, src: s });
             }
 
+            X86Inst::SubRR64 { dst, src } => {
+                self.emit_binop(mir, dst, src, |d, s| X86Inst::SubRR64 { dst: d, src: s });
+            }
+
             X86Inst::ImulRR { dst, src } => {
                 self.emit_binop(mir, dst, src, |d, s| X86Inst::ImulRR { dst: d, src: s });
             }
@@ -611,6 +615,143 @@ impl RegAlloc {
             X86Inst::Push { src } => {
                 let src_op = self.load_operand(mir, src, Reg::Rax);
                 mir.push(X86Inst::Push { src: src_op });
+            }
+
+            X86Inst::Lea {
+                dst,
+                base,
+                index,
+                scale,
+                disp,
+            } => match self.get_allocation(dst) {
+                Some(Allocation::Register(reg)) => {
+                    mir.push(X86Inst::Lea {
+                        dst: Operand::Physical(reg),
+                        base,
+                        index,
+                        scale,
+                        disp,
+                    });
+                }
+                Some(Allocation::Spill(offset)) => {
+                    mir.push(X86Inst::Lea {
+                        dst: Operand::Physical(Reg::Rax),
+                        base,
+                        index,
+                        scale,
+                        disp,
+                    });
+                    mir.push(X86Inst::MovMR {
+                        base: Reg::Rbp,
+                        offset,
+                        src: Operand::Physical(Reg::Rax),
+                    });
+                }
+                None => {
+                    mir.push(X86Inst::Lea {
+                        dst,
+                        base,
+                        index,
+                        scale,
+                        disp,
+                    });
+                }
+            },
+
+            X86Inst::Shl { dst, count } => {
+                // SHL needs count in RCX
+                let count_op = self.load_operand(mir, count, Reg::Rcx);
+                if count_op != Operand::Physical(Reg::Rcx) {
+                    mir.push(X86Inst::MovRR {
+                        dst: Operand::Physical(Reg::Rcx),
+                        src: count_op,
+                    });
+                }
+
+                match self.get_allocation(dst) {
+                    Some(Allocation::Register(reg)) => {
+                        mir.push(X86Inst::Shl {
+                            dst: Operand::Physical(reg),
+                            count: Operand::Physical(Reg::Rcx),
+                        });
+                    }
+                    Some(Allocation::Spill(offset)) => {
+                        mir.push(X86Inst::MovRM {
+                            dst: Operand::Physical(Reg::Rax),
+                            base: Reg::Rbp,
+                            offset,
+                        });
+                        mir.push(X86Inst::Shl {
+                            dst: Operand::Physical(Reg::Rax),
+                            count: Operand::Physical(Reg::Rcx),
+                        });
+                        mir.push(X86Inst::MovMR {
+                            base: Reg::Rbp,
+                            offset,
+                            src: Operand::Physical(Reg::Rax),
+                        });
+                    }
+                    None => {
+                        mir.push(X86Inst::Shl {
+                            dst,
+                            count: Operand::Physical(Reg::Rcx),
+                        });
+                    }
+                }
+            }
+
+            X86Inst::MovRMIndexed { dst, base, offset } => {
+                // Load base vreg into scratch register
+                let base_op = Operand::Virtual(base);
+                let base_reg = self.load_operand(mir, base_op, Reg::Rax);
+                let base_phys = match base_reg {
+                    Operand::Physical(r) => r,
+                    _ => Reg::Rax,
+                };
+
+                match self.get_allocation(dst) {
+                    Some(Allocation::Register(reg)) => {
+                        mir.push(X86Inst::MovRM {
+                            dst: Operand::Physical(reg),
+                            base: base_phys,
+                            offset,
+                        });
+                    }
+                    Some(Allocation::Spill(spill_off)) => {
+                        mir.push(X86Inst::MovRM {
+                            dst: Operand::Physical(Reg::Rdx),
+                            base: base_phys,
+                            offset,
+                        });
+                        mir.push(X86Inst::MovMR {
+                            base: Reg::Rbp,
+                            offset: spill_off,
+                            src: Operand::Physical(Reg::Rdx),
+                        });
+                    }
+                    None => {
+                        mir.push(X86Inst::MovRM {
+                            dst,
+                            base: base_phys,
+                            offset,
+                        });
+                    }
+                }
+            }
+
+            X86Inst::MovMRIndexed { base, offset, src } => {
+                let src_op = self.load_operand(mir, src, Reg::Rdx);
+                let base_op = Operand::Virtual(base);
+                let base_reg = self.load_operand(mir, base_op, Reg::Rax);
+                let base_phys = match base_reg {
+                    Operand::Physical(r) => r,
+                    _ => Reg::Rax,
+                };
+                mir.push(X86Inst::MovMR {
+                    base: base_phys,
+                    offset,
+                    src: src_op,
+                });
             }
 
             // Instructions without register operands pass through unchanged

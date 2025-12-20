@@ -600,8 +600,8 @@ impl<'a> CfgLower<'a> {
 
             CfgInstData::Alloc { slot, init } => {
                 let init_type = self.cfg.get_inst(*init).ty;
-                if matches!(init_type, Type::Struct(_)) {
-                    // Struct: store all fields to consecutive slots
+                if matches!(init_type, Type::Struct(_)) || matches!(init_type, Type::Array(_)) {
+                    // Struct/Array: store all fields/elements to consecutive slots
                     if let Some(field_vregs) = self.struct_field_vregs.get(init).cloned() {
                         for (i, field_vreg) in field_vregs.iter().enumerate() {
                             let field_slot = slot + i as u32;
@@ -969,6 +969,170 @@ impl<'a> CfgLower<'a> {
                     src: Operand::Virtual(val_vreg),
                 });
             }
+
+            CfgInstData::ArrayInit {
+                array_type_id: _,
+                elements,
+            } => {
+                // Array is stored in local slots; we just create vregs for elements.
+                // The actual storage is handled by the Alloc that precedes this.
+                // For now, just create a dummy vreg - arrays are passed by loading from slots.
+                let vreg = self.mir.alloc_vreg();
+                self.value_map.insert(value, vreg);
+
+                // Store element vregs for later IndexGet access
+                let element_vregs: Vec<VReg> = elements.iter().map(|e| self.get_vreg(*e)).collect();
+                self.struct_field_vregs.insert(value, element_vregs);
+
+                // Move 0 into vreg as placeholder (array base doesn't have a single value)
+                self.mir.push(X86Inst::MovRI32 {
+                    dst: Operand::Virtual(vreg),
+                    imm: 0,
+                });
+            }
+
+            CfgInstData::IndexGet {
+                base,
+                array_type_id: _,
+                index,
+            } => {
+                let vreg = self.mir.alloc_vreg();
+                self.value_map.insert(value, vreg);
+
+                let base_data = &self.cfg.get_inst(*base).data;
+                match base_data {
+                    CfgInstData::Load { slot } => {
+                        // Base is a load from a local variable - use dynamic indexing
+                        let index_vreg = self.get_vreg(*index);
+
+                        // Load base slot into a temp register
+                        let base_vreg = self.mir.alloc_vreg();
+                        let base_offset = self.local_offset(*slot);
+
+                        // Calculate effective address: base_ptr + index * 8
+                        // First, we need the address of the array base: rbp + base_offset
+                        // Then add index * 8
+
+                        // Compute address: lea temp, [rbp + base_offset]
+                        // Then: mov result, [temp + index*8]
+                        // For now, simpler approach using scaled index addressing:
+                        // We'll use rbp-based addressing with computed offset
+
+                        // Get the index value and multiply by 8 (element size)
+                        let scaled_index = self.mir.alloc_vreg();
+                        self.mir.push(X86Inst::MovRR {
+                            dst: Operand::Virtual(scaled_index),
+                            src: Operand::Virtual(index_vreg),
+                        });
+                        // Multiply by 8 using shift
+                        let eight = self.mir.alloc_vreg();
+                        self.mir.push(X86Inst::MovRI32 {
+                            dst: Operand::Virtual(eight),
+                            imm: 3,
+                        });
+                        // shift left by 3 = multiply by 8
+                        self.mir.push(X86Inst::Shl {
+                            dst: Operand::Virtual(scaled_index),
+                            count: Operand::Virtual(eight),
+                        });
+
+                        // Compute base + scaled_index
+                        // We need: [rbp - (slot+1)*8 - scaled_index]
+                        // But scaled_index is positive, so: [rbp + base_offset] - scaled_index
+                        // Actually for stack arrays: higher index = lower address
+                        // So it's: [rbp + (base_offset - index*8)]
+
+                        // Use a two-step approach: compute address then load
+                        self.mir.push(X86Inst::Lea {
+                            dst: Operand::Virtual(base_vreg),
+                            base: Reg::Rbp,
+                            index: None,
+                            scale: 1,
+                            disp: base_offset,
+                        });
+
+                        // Subtract scaled index (stack grows down, array laid out sequentially)
+                        self.mir.push(X86Inst::SubRR64 {
+                            dst: Operand::Virtual(base_vreg),
+                            src: Operand::Virtual(scaled_index),
+                        });
+
+                        // Load from computed address using indirect addressing through base_vreg
+                        self.mir.push(X86Inst::MovRMIndexed {
+                            dst: Operand::Virtual(vreg),
+                            base: base_vreg,
+                            offset: 0,
+                        });
+                    }
+                    _ => {
+                        // For other sources (ArrayInit), use element vregs if index is constant
+                        let index_inst = &self.cfg.get_inst(*index).data;
+                        if let CfgInstData::Const(idx) = index_inst {
+                            if let Some(element_vregs) = self.struct_field_vregs.get(base).cloned()
+                            {
+                                if let Some(&elem_vreg) = element_vregs.get(*idx as usize) {
+                                    self.mir.push(X86Inst::MovRR {
+                                        dst: Operand::Virtual(vreg),
+                                        src: Operand::Virtual(elem_vreg),
+                                    });
+                                    return;
+                                }
+                            }
+                        }
+                        // Fallback - shouldn't happen with proper constant folding
+                        self.mir.push(X86Inst::MovRI32 {
+                            dst: Operand::Virtual(vreg),
+                            imm: 0,
+                        });
+                    }
+                }
+            }
+
+            CfgInstData::IndexSet {
+                slot,
+                array_type_id: _,
+                index,
+                value: val,
+            } => {
+                let val_vreg = self.get_vreg(*val);
+                let index_vreg = self.get_vreg(*index);
+
+                // Similar to IndexGet but store instead of load
+                let scaled_index = self.mir.alloc_vreg();
+                self.mir.push(X86Inst::MovRR {
+                    dst: Operand::Virtual(scaled_index),
+                    src: Operand::Virtual(index_vreg),
+                });
+                let eight = self.mir.alloc_vreg();
+                self.mir.push(X86Inst::MovRI32 {
+                    dst: Operand::Virtual(eight),
+                    imm: 3,
+                });
+                self.mir.push(X86Inst::Shl {
+                    dst: Operand::Virtual(scaled_index),
+                    count: Operand::Virtual(eight),
+                });
+
+                let base_offset = self.local_offset(*slot);
+                let addr_vreg = self.mir.alloc_vreg();
+                self.mir.push(X86Inst::Lea {
+                    dst: Operand::Virtual(addr_vreg),
+                    base: Reg::Rbp,
+                    index: None,
+                    scale: 1,
+                    disp: base_offset,
+                });
+                self.mir.push(X86Inst::SubRR64 {
+                    dst: Operand::Virtual(addr_vreg),
+                    src: Operand::Virtual(scaled_index),
+                });
+
+                self.mir.push(X86Inst::MovMRIndexed {
+                    base: addr_vreg,
+                    offset: 0,
+                    src: Operand::Virtual(val_vreg),
+                });
+            }
         }
     }
 
@@ -1131,9 +1295,10 @@ impl<'a> CfgLower<'a> {
                         dst: Operand::Physical(Reg::Rdi),
                         src: Operand::Virtual(val_vreg),
                     });
-                    if self.has_frame {
-                        self.emit_epilogue();
-                    }
+                    // Don't emit epilogue before __rue_exit - it never returns, and
+                    // restoring the frame would break stack alignment for the call
+                    // (after pop rbp, rsp is 8 mod 16; call pushes 8 more, making
+                    // it 0 mod 16 at callee entry, violating SysV ABI).
                     self.mir.push(X86Inst::CallRel {
                         symbol: "__rue_exit".to_string(),
                     });
@@ -1256,7 +1421,7 @@ mod tests {
         let astgen = AstGen::new(&ast, &mut interner);
         let rir = astgen.generate();
 
-        let sema = Sema::new(&rir, &interner);
+        let sema = Sema::new(&rir, &mut interner);
         let output = sema.analyze_all().unwrap();
 
         let func = &output.functions[0];

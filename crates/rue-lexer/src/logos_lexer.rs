@@ -110,6 +110,10 @@ pub enum LogosTokenKind {
     LBrace,
     #[token("}")]
     RBrace,
+    #[token("[")]
+    LBracket,
+    #[token("]")]
+    RBracket,
     #[token(":")]
     Colon,
     #[token(";")]
@@ -165,6 +169,8 @@ impl From<LogosTokenKind> for TokenKind {
             LogosTokenKind::RParen => TokenKind::RParen,
             LogosTokenKind::LBrace => TokenKind::LBrace,
             LogosTokenKind::RBrace => TokenKind::RBrace,
+            LogosTokenKind::LBracket => TokenKind::LBracket,
+            LogosTokenKind::RBracket => TokenKind::RBracket,
             LogosTokenKind::Colon => TokenKind::Colon,
             LogosTokenKind::Semi => TokenKind::Semi,
             LogosTokenKind::Comma => TokenKind::Comma,
