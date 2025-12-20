@@ -790,3 +790,67 @@ fn main() -> i32 {
 """
 compile_fail = true
 error_contains = "outside of loop"
+
+# =============================================================================
+# Never Type in Comparison Operators
+# =============================================================================
+
+[[case]]
+name = "never_in_comparison_lhs_eq"
+description = "never type on left side of == propagates without extra errors"
+source = """
+fn diverge() -> ! {
+    loop { }
+}
+
+fn main() -> i32 {
+    let x = if false { diverge() == 0 } else { true };
+    if x { 1 } else { 0 }
+}
+"""
+exit_code = 1
+
+[[case]]
+name = "never_in_comparison_lhs_lt"
+description = "never type on left side of < propagates without extra errors"
+source = """
+fn diverge() -> ! {
+    loop { }
+}
+
+fn main() -> i32 {
+    let x = if false { diverge() < 0 } else { true };
+    if x { 1 } else { 0 }
+}
+"""
+exit_code = 1
+
+[[case]]
+name = "never_in_comparison_lhs_from_loop"
+description = "loop {} on left side of comparison propagates never type"
+source = """
+fn main() -> i32 {
+    let x = if false { loop {} == 0 } else { true };
+    if x { 1 } else { 0 }
+}
+"""
+exit_code = 1
+
+[[case]]
+name = "never_in_comparison_nested"
+description = "nested comparison with never type in lhs"
+source = """
+fn diverge() -> ! {
+    loop { }
+}
+
+fn main() -> i32 {
+    let x = if false {
+        if diverge() > 10 { 1 } else { 0 }
+    } else {
+        42
+    };
+    x
+}
+"""
+exit_code = 42

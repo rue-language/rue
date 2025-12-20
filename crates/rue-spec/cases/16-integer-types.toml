@@ -210,3 +210,277 @@ fn main() -> i16 {
 """
 compile_fail = true
 error_contains = "type mismatch"
+
+# =============================================================================
+# Comparison Type Inference
+# =============================================================================
+
+[[case]]
+name = "comparison_literal_eq_literal"
+source = """
+fn main() -> i32 {
+    if 10 == 10 { 1 } else { 0 }
+}
+"""
+exit_code = 1
+
+[[case]]
+name = "comparison_literal_ne_literal"
+source = """
+fn main() -> i32 {
+    if 5 != 10 { 1 } else { 0 }
+}
+"""
+exit_code = 1
+
+[[case]]
+name = "comparison_literal_lt_literal"
+source = """
+fn main() -> i32 {
+    if 5 < 10 { 1 } else { 0 }
+}
+"""
+exit_code = 1
+
+[[case]]
+name = "comparison_i64_eq"
+source = """
+fn main() -> i32 {
+    let x: i64 = 100;
+    if x == 100 { 1 } else { 0 }
+}
+"""
+exit_code = 1
+
+[[case]]
+name = "comparison_i64_ne"
+source = """
+fn main() -> i32 {
+    let x: i64 = 100;
+    if x != 50 { 1 } else { 0 }
+}
+"""
+exit_code = 1
+
+[[case]]
+name = "comparison_i64_lt"
+source = """
+fn main() -> i32 {
+    let x: i64 = 10;
+    if x < 20 { 1 } else { 0 }
+}
+"""
+exit_code = 1
+
+[[case]]
+name = "comparison_i64_gt"
+source = """
+fn main() -> i32 {
+    let x: i64 = 20;
+    if x > 10 { 1 } else { 0 }
+}
+"""
+exit_code = 1
+
+[[case]]
+name = "comparison_i64_le"
+source = """
+fn main() -> i32 {
+    let x: i64 = 10;
+    if x <= 10 { 1 } else { 0 }
+}
+"""
+exit_code = 1
+
+[[case]]
+name = "comparison_i64_ge"
+source = """
+fn main() -> i32 {
+    let x: i64 = 10;
+    if x >= 10 { 1 } else { 0 }
+}
+"""
+exit_code = 1
+
+[[case]]
+name = "comparison_i8_variables"
+source = """
+fn main() -> i32 {
+    let a: i8 = 10;
+    let b: i8 = 20;
+    if a < b { 1 } else { 0 }
+}
+"""
+exit_code = 1
+
+[[case]]
+name = "comparison_i16_with_literal"
+source = """
+fn main() -> i32 {
+    let x: i16 = 100;
+    if x == 100 { 1 } else { 0 }
+}
+"""
+exit_code = 1
+
+[[case]]
+name = "comparison_bool_eq"
+source = """
+fn main() -> i32 {
+    let x = true;
+    if x == true { 1 } else { 0 }
+}
+"""
+exit_code = 1
+
+[[case]]
+name = "comparison_bool_ne"
+source = """
+fn main() -> i32 {
+    let x = false;
+    if x != true { 1 } else { 0 }
+}
+"""
+exit_code = 1
+
+[[case]]
+name = "comparison_type_mismatch_i64_i32"
+source = """
+fn main() -> i32 {
+    let x: i64 = 100;
+    let y: i32 = 100;
+    if x == y { 1 } else { 0 }
+}
+"""
+compile_fail = true
+error_contains = "type mismatch"
+
+[[case]]
+name = "comparison_lt_on_bool"
+source = """
+fn main() -> i32 {
+    let x = true;
+    if x < false { 1 } else { 0 }
+}
+"""
+compile_fail = true
+error_contains = "expected integer"
+
+[[case]]
+name = "comparison_gt_on_bool"
+source = """
+fn main() -> i32 {
+    if true > false { 1 } else { 0 }
+}
+"""
+compile_fail = true
+error_contains = "expected integer"
+
+[[case]]
+name = "comparison_le_on_bool"
+source = """
+fn main() -> i32 {
+    if true <= false { 1 } else { 0 }
+}
+"""
+compile_fail = true
+error_contains = "expected integer"
+
+[[case]]
+name = "comparison_ge_on_bool"
+source = """
+fn main() -> i32 {
+    if true >= false { 1 } else { 0 }
+}
+"""
+compile_fail = true
+error_contains = "expected integer"
+
+# =============================================================================
+# Unsigned Integer Comparisons
+# =============================================================================
+
+[[case]]
+name = "comparison_u32_eq"
+source = """
+fn main() -> i32 {
+    let x: u32 = 100;
+    if x == 100 { 1 } else { 0 }
+}
+"""
+exit_code = 1
+
+[[case]]
+name = "comparison_u32_lt"
+source = """
+fn main() -> i32 {
+    let x: u32 = 10;
+    if x < 20 { 1 } else { 0 }
+}
+"""
+exit_code = 1
+
+[[case]]
+name = "comparison_u64_gt"
+source = """
+fn main() -> i32 {
+    let x: u64 = 1000;
+    if x > 500 { 1 } else { 0 }
+}
+"""
+exit_code = 1
+
+[[case]]
+name = "comparison_u8_le"
+source = """
+fn main() -> i32 {
+    let a: u8 = 10;
+    let b: u8 = 10;
+    if a <= b { 1 } else { 0 }
+}
+"""
+exit_code = 1
+
+[[case]]
+name = "comparison_u16_ge"
+source = """
+fn main() -> i32 {
+    let x: u16 = 50;
+    if x >= 25 { 1 } else { 0 }
+}
+"""
+exit_code = 1
+
+[[case]]
+name = "comparison_u64_ne"
+source = """
+fn main() -> i32 {
+    let x: u64 = 100;
+    if x != 50 { 1 } else { 0 }
+}
+"""
+exit_code = 1
+
+[[case]]
+name = "comparison_type_mismatch_u32_i32"
+source = """
+fn main() -> i32 {
+    let x: u32 = 100;
+    let y: i32 = 100;
+    if x == y { 1 } else { 0 }
+}
+"""
+compile_fail = true
+error_contains = "type mismatch"
+
+[[case]]
+name = "comparison_type_mismatch_u64_u32"
+source = """
+fn main() -> i32 {
+    let x: u64 = 100;
+    let y: u32 = 100;
+    if x < y { 1 } else { 0 }
+}
+"""
+compile_fail = true
+error_contains = "type mismatch"

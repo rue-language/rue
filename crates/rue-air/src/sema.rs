@@ -453,71 +453,32 @@ impl<'a> Sema<'a> {
                 }))
             }
 
-            // Comparison operators: operands must be i32, result is bool
+            // Comparison operators: operands must be the same integer type, result is bool.
+            // We infer the type from the left operand and check the right operand against it.
+            // Never and Error types are propagated without additional errors.
+            // Equality operators (==, !=) also allow bool operands.
             InstData::Eq { lhs, rhs } => {
-                let lhs_ref = self.analyze_inst(air, *lhs, Type::I32, ctx)?;
-                let rhs_ref = self.analyze_inst(air, *rhs, Type::I32, ctx)?;
-
-                Ok(air.add_inst(AirInst {
-                    data: AirInstData::Eq(lhs_ref, rhs_ref),
-                    ty: Type::Bool,
-                    span: inst.span,
-                }))
+                self.analyze_comparison(air, *lhs, *rhs, true, AirInstData::Eq, inst.span, ctx)
             }
 
             InstData::Ne { lhs, rhs } => {
-                let lhs_ref = self.analyze_inst(air, *lhs, Type::I32, ctx)?;
-                let rhs_ref = self.analyze_inst(air, *rhs, Type::I32, ctx)?;
-
-                Ok(air.add_inst(AirInst {
-                    data: AirInstData::Ne(lhs_ref, rhs_ref),
-                    ty: Type::Bool,
-                    span: inst.span,
-                }))
+                self.analyze_comparison(air, *lhs, *rhs, true, AirInstData::Ne, inst.span, ctx)
             }
 
             InstData::Lt { lhs, rhs } => {
-                let lhs_ref = self.analyze_inst(air, *lhs, Type::I32, ctx)?;
-                let rhs_ref = self.analyze_inst(air, *rhs, Type::I32, ctx)?;
-
-                Ok(air.add_inst(AirInst {
-                    data: AirInstData::Lt(lhs_ref, rhs_ref),
-                    ty: Type::Bool,
-                    span: inst.span,
-                }))
+                self.analyze_comparison(air, *lhs, *rhs, false, AirInstData::Lt, inst.span, ctx)
             }
 
             InstData::Gt { lhs, rhs } => {
-                let lhs_ref = self.analyze_inst(air, *lhs, Type::I32, ctx)?;
-                let rhs_ref = self.analyze_inst(air, *rhs, Type::I32, ctx)?;
-
-                Ok(air.add_inst(AirInst {
-                    data: AirInstData::Gt(lhs_ref, rhs_ref),
-                    ty: Type::Bool,
-                    span: inst.span,
-                }))
+                self.analyze_comparison(air, *lhs, *rhs, false, AirInstData::Gt, inst.span, ctx)
             }
 
             InstData::Le { lhs, rhs } => {
-                let lhs_ref = self.analyze_inst(air, *lhs, Type::I32, ctx)?;
-                let rhs_ref = self.analyze_inst(air, *rhs, Type::I32, ctx)?;
-
-                Ok(air.add_inst(AirInst {
-                    data: AirInstData::Le(lhs_ref, rhs_ref),
-                    ty: Type::Bool,
-                    span: inst.span,
-                }))
+                self.analyze_comparison(air, *lhs, *rhs, false, AirInstData::Le, inst.span, ctx)
             }
 
             InstData::Ge { lhs, rhs } => {
-                let lhs_ref = self.analyze_inst(air, *lhs, Type::I32, ctx)?;
-                let rhs_ref = self.analyze_inst(air, *rhs, Type::I32, ctx)?;
-
-                Ok(air.add_inst(AirInst {
-                    data: AirInstData::Ge(lhs_ref, rhs_ref),
-                    ty: Type::Bool,
-                    span: inst.span,
-                }))
+                self.analyze_comparison(air, *lhs, *rhs, false, AirInstData::Ge, inst.span, ctx)
             }
 
             // Logical operators: operands and result are all bool
@@ -1455,6 +1416,68 @@ impl<'a> Sema<'a> {
             | Type::Never => 1,
             Type::Struct(struct_id) => self.struct_defs[struct_id.0 as usize].field_count() as u32,
         }
+    }
+
+    /// Analyze a comparison operator with bidirectional type inference.
+    ///
+    /// The type is inferred from the left operand and the right operand is checked against it.
+    /// For equality operators (`==`, `!=`), both integers and booleans are allowed.
+    /// For ordering operators (`<`, `>`, `<=`, `>=`), only integers are allowed.
+    fn analyze_comparison<F>(
+        &mut self,
+        air: &mut Air,
+        lhs: InstRef,
+        rhs: InstRef,
+        allow_bool: bool,
+        make_data: F,
+        span: Span,
+        ctx: &mut AnalysisContext,
+    ) -> CompileResult<AirRef>
+    where
+        F: FnOnce(AirRef, AirRef) -> AirInstData,
+    {
+        let lhs_type = self.infer_type(lhs, &ctx.locals, ctx.params)?;
+
+        // Propagate Never/Error without additional type errors
+        if lhs_type.is_never() || lhs_type.is_error() {
+            let lhs_ref = self.analyze_inst(air, lhs, lhs_type, ctx)?;
+            let rhs_ref = self.analyze_inst(air, rhs, Type::I32, ctx)?;
+            return Ok(air.add_inst(AirInst {
+                data: make_data(lhs_ref, rhs_ref),
+                ty: Type::Bool,
+                span,
+            }));
+        }
+
+        // Validate the type is appropriate for this comparison
+        if allow_bool {
+            if !lhs_type.is_integer() && lhs_type != Type::Bool {
+                return Err(CompileError::new(
+                    ErrorKind::TypeMismatch {
+                        expected: "integer or bool".to_string(),
+                        found: lhs_type.name().to_string(),
+                    },
+                    self.rir.get(lhs).span,
+                ));
+            }
+        } else if !lhs_type.is_integer() {
+            return Err(CompileError::new(
+                ErrorKind::TypeMismatch {
+                    expected: "integer".to_string(),
+                    found: lhs_type.name().to_string(),
+                },
+                self.rir.get(lhs).span,
+            ));
+        }
+
+        let lhs_ref = self.analyze_inst(air, lhs, lhs_type, ctx)?;
+        let rhs_ref = self.analyze_inst(air, rhs, lhs_type, ctx)?;
+
+        Ok(air.add_inst(AirInst {
+            data: make_data(lhs_ref, rhs_ref),
+            ty: Type::Bool,
+            span,
+        }))
     }
 
     /// Infer the type of an RIR instruction without analyzing it fully.

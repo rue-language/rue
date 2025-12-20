@@ -187,12 +187,21 @@ fn main() -> i32 {
 
 ### Types
 
-Rue currently supports two primitive types:
+Rue supports the following primitive types:
 
 | Type | Description | Literals |
 |------|-------------|----------|
+| `i8` | 8-bit signed integer | `0`, `42`, `-17` |
+| `i16` | 16-bit signed integer | `0`, `42`, `-17` |
 | `i32` | 32-bit signed integer | `0`, `42`, `-17` |
+| `i64` | 64-bit signed integer | `0`, `42`, `-17` |
+| `u8` | 8-bit unsigned integer | `0`, `42`, `255` |
+| `u16` | 16-bit unsigned integer | `0`, `42` |
+| `u32` | 32-bit unsigned integer | `0`, `42` |
+| `u64` | 64-bit unsigned integer | `0`, `42` |
 | `bool` | Boolean | `true`, `false` |
+
+Integer literals without a type annotation default to `i32`.
 
 Type annotations are optional when the type can be inferred:
 
@@ -201,6 +210,7 @@ fn main() -> i32 {
     let x = 42;        // inferred as i32
     let flag = true;   // inferred as bool
     let y: i32 = 10;   // explicit annotation
+    let big: i64 = 1000000;  // 64-bit integer
     x + y
 }
 ```
@@ -217,7 +227,7 @@ Operators by precedence (highest to lowest):
 
 All binary operators are left-associative: `10 - 3 - 2` equals `5` (not `9`).
 
-Comparison operators return `bool`:
+Comparison operators return `bool` and use bidirectional type inference:
 
 ```rue
 fn main() -> i32 {
@@ -225,6 +235,37 @@ fn main() -> i32 {
     let b = 2 < 3;     // true
     let c = 5 >= 5;    // true
     if a { 1 } else { 0 }
+}
+```
+
+The type of a comparison is inferred from the left operand, and the right operand is checked against it:
+
+```rue
+fn main() -> i32 {
+    let x: i64 = 100;
+    if x == 100 { 1 } else { 0 }  // 100 is inferred as i64
+}
+```
+
+Equality operators (`==`, `!=`) work on both integers and booleans. Ordering operators (`<`, `>`, `<=`, `>=`) only work on integers:
+
+```rue
+fn main() -> i32 {
+    let a = true == false;  // ok: bool equality
+    let b = 10 < 20;        // ok: integer ordering
+    // let c = true < false; // error: ordering not allowed on bool
+    if a { 0 } else { 1 }
+}
+```
+
+Both operands must have the same type:
+
+```rue
+fn main() -> i32 {
+    let x: i64 = 100;
+    let y: i32 = 100;
+    // if x == y { 1 } else { 0 }  // error: type mismatch
+    0
 }
 ```
 

@@ -677,7 +677,7 @@ fn main() -> i32 {
 }
 """
 compile_fail = true
-error_contains = "expected i32"
+error_contains = "expected integer"
 
 # =============================================================================
 # Syntax Errors
