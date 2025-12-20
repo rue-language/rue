@@ -1,0 +1,43 @@
+// Example: Match expressions
+//
+// Match provides multi-way branching on values.
+// This example demonstrates a simple "day of week" classifier.
+
+fn day_type(day: i32) -> i32 {
+    // Returns: 0 = weekend, 1 = weekday, 2 = invalid
+    match day {
+        0 => 0,  // Sunday - weekend
+        1 => 1,  // Monday - weekday
+        2 => 1,  // Tuesday - weekday
+        3 => 1,  // Wednesday - weekday
+        4 => 1,  // Thursday - weekday
+        5 => 1,  // Friday - weekday
+        6 => 0,  // Saturday - weekend
+        _ => 2,  // Invalid day
+    }
+}
+
+fn is_weekday(day: i32) -> bool {
+    match day_type(day) {
+        1 => true,
+        _ => false,
+    }
+}
+
+fn count_weekdays(start: i32, end: i32) -> i32 {
+    let mut count = 0;
+    let mut day = start;
+    while day <= end {
+        if is_weekday(day) {
+            count = count + 1;
+        }
+        day = day + 1;
+    }
+    count
+}
+
+fn main() -> i32 {
+    // Count weekdays from Sunday (0) through Saturday (6)
+    // Should be 5 (Mon, Tue, Wed, Thu, Fri)
+    @dbg(count_weekdays(0, 6))
+}

@@ -5,11 +5,11 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::inst::{Air, AirInst, AirInstData, AirRef};
+use crate::inst::{Air, AirInst, AirInstData, AirPattern, AirRef};
 use crate::types::{StructDef, StructField, StructId, Type};
 use rue_error::{CompileError, CompileResult, CompileWarning, ErrorKind, WarningKind};
 use rue_intern::{Interner, Symbol};
-use rue_rir::{InstData, InstRef, Rir};
+use rue_rir::{InstData, InstRef, Rir, RirPattern};
 use rue_span::Span;
 
 /// Result of analyzing a function.
@@ -759,6 +759,143 @@ impl<'a> Sema<'a> {
                     span: inst.span,
                 });
                 Ok(AnalysisResult::new(air_ref, Type::Never))
+            }
+
+            InstData::Match { scrutinee, arms } => {
+                // Analyze the scrutinee to determine its type
+                let scrutinee_result =
+                    self.analyze_inst(air, *scrutinee, TypeExpectation::Synthesize, ctx)?;
+                let scrutinee_type = scrutinee_result.ty;
+
+                // Validate that we can match on this type (integers and booleans only for now)
+                if !scrutinee_type.is_integer() && scrutinee_type != Type::Bool {
+                    return Err(CompileError::new(
+                        ErrorKind::InvalidMatchType(scrutinee_type.name().to_string()),
+                        inst.span,
+                    ));
+                }
+
+                // Check for empty match
+                if arms.is_empty() {
+                    return Err(CompileError::new(ErrorKind::EmptyMatch, inst.span));
+                }
+
+                // Track patterns for exhaustiveness checking
+                let mut has_wildcard = false;
+                let mut bool_true_covered = false;
+                let mut bool_false_covered = false;
+
+                // Save locals before match arms (each arm is its own scope)
+                let saved_locals = ctx.locals.clone();
+
+                // Analyze each arm
+                let mut air_arms = Vec::new();
+                let mut result_type: Option<Type> = None;
+
+                for (pattern, body) in arms.iter() {
+                    // Validate pattern against scrutinee type
+                    match pattern {
+                        RirPattern::Wildcard => {
+                            has_wildcard = true;
+                        }
+                        RirPattern::Int(_) => {
+                            if !scrutinee_type.is_integer() {
+                                return Err(CompileError::new(
+                                    ErrorKind::TypeMismatch {
+                                        expected: scrutinee_type.name().to_string(),
+                                        found: "integer".to_string(),
+                                    },
+                                    inst.span,
+                                ));
+                            }
+                        }
+                        RirPattern::Bool(b) => {
+                            if scrutinee_type != Type::Bool {
+                                return Err(CompileError::new(
+                                    ErrorKind::TypeMismatch {
+                                        expected: scrutinee_type.name().to_string(),
+                                        found: "bool".to_string(),
+                                    },
+                                    inst.span,
+                                ));
+                            }
+                            if *b {
+                                bool_true_covered = true;
+                            } else {
+                                bool_false_covered = true;
+                            }
+                        }
+                    }
+
+                    // Restore locals for each arm (each arm is its own scope)
+                    ctx.locals = saved_locals.clone();
+
+                    // Analyze arm body with appropriate expectation
+                    let arm_expectation = match result_type {
+                        Some(ty) if !ty.is_never() => TypeExpectation::Check(ty),
+                        _ => expectation,
+                    };
+                    let body_result = self.analyze_inst(air, *body, arm_expectation, ctx)?;
+                    let body_type = body_result.ty;
+
+                    // Update result type (handle Never type coercion)
+                    result_type = Some(match result_type {
+                        None => body_type,
+                        Some(prev) => {
+                            if prev.is_never() {
+                                body_type
+                            } else if body_type.is_never() {
+                                prev
+                            } else if prev != body_type && !prev.is_error() && !body_type.is_error()
+                            {
+                                return Err(CompileError::new(
+                                    ErrorKind::TypeMismatch {
+                                        expected: prev.name().to_string(),
+                                        found: body_type.name().to_string(),
+                                    },
+                                    self.rir.get(*body).span,
+                                ));
+                            } else {
+                                prev
+                            }
+                        }
+                    });
+
+                    // Convert pattern to AIR pattern
+                    let air_pattern = match pattern {
+                        RirPattern::Wildcard => AirPattern::Wildcard,
+                        RirPattern::Int(n) => AirPattern::Int(*n),
+                        RirPattern::Bool(b) => AirPattern::Bool(*b),
+                    };
+
+                    air_arms.push((air_pattern, body_result.air_ref));
+                }
+
+                // Exhaustiveness checking
+                let is_exhaustive = if scrutinee_type == Type::Bool {
+                    has_wildcard || (bool_true_covered && bool_false_covered)
+                } else {
+                    // For integers, must have wildcard
+                    has_wildcard
+                };
+
+                if !is_exhaustive {
+                    return Err(CompileError::new(ErrorKind::NonExhaustiveMatch, inst.span));
+                }
+
+                // Restore locals
+                ctx.locals = saved_locals;
+
+                let final_type = result_type.unwrap_or(Type::Unit);
+                let air_ref = air.add_inst(AirInst {
+                    data: AirInstData::Match {
+                        scrutinee: scrutinee_result.air_ref,
+                        arms: air_arms,
+                    },
+                    ty: final_type,
+                    span: inst.span,
+                });
+                Ok(AnalysisResult::new(air_ref, final_type))
             }
 
             InstData::Alloc {

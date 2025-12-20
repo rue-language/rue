@@ -23,6 +23,7 @@ Rue is in early development. The implemented feature set is minimal:
 | Comparison operators | ✓ Implemented |
 | Variables | ✓ Implemented |
 | If/else expressions | ✓ Implemented |
+| Match expressions | ✓ Implemented |
 | Logical operators | ✓ Implemented |
 | While loops | ✓ Implemented |
 | Break/continue | ✓ Implemented |
@@ -45,6 +46,7 @@ The executable specification lives in `crates/rue-spec/cases/`:
 | `09-variables.toml` | 2.2 | Local variables |
 | `10-conditionals.toml` | 10.1 | If/else expressions and comparisons |
 | `11-logical-operators.toml` | 11.1 | Logical operators (!, &&, \|\|) |
+| `11-match.toml` | 11.1 | Match expressions |
 | `12-while-loops.toml` | 12.1 | While loops |
 | `13-break-continue.toml` | 13.1 | Break and continue statements |
 | `14-return.toml` | 14.1 | Return statement |
@@ -332,6 +334,180 @@ fn main() -> i32 {
 }
 ```
 
+### Match Expressions
+
+Match expressions provide multi-way branching on values:
+
+```rue
+fn main() -> i32 {
+    match 2 {
+        1 => 10,
+        2 => 20,
+        _ => 0,
+    }
+}
+```
+
+Match is an expression that returns a value. All arms must have the same type:
+
+```rue
+fn main() -> i32 {
+    let x = 3;
+    let result = match x {
+        1 => 100,
+        2 => 200,
+        _ => 0,
+    };
+    result
+}
+```
+
+#### Patterns
+
+Match currently supports three kinds of patterns:
+
+| Pattern | Description | Example |
+|---------|-------------|---------|
+| Integer literal | Matches a specific integer value | `1`, `42`, `0` |
+| Boolean literal | Matches `true` or `false` | `true`, `false` |
+| Wildcard | Matches any value | `_` |
+
+The wildcard pattern `_` is a catch-all that matches any value not covered by previous arms.
+
+#### Exhaustiveness Checking
+
+Match expressions must be exhaustive—they must cover all possible values:
+
+**For booleans**: You must cover both `true` and `false`, or use a wildcard:
+
+```rue
+fn main() -> i32 {
+    // Both values covered explicitly
+    match true {
+        true => 1,
+        false => 0,
+    }
+}
+```
+
+```rue
+fn main() -> i32 {
+    // Wildcard covers remaining cases
+    match false {
+        true => 1,
+        _ => 0,
+    }
+}
+```
+
+**For integers**: You must include a wildcard pattern since integers have too many possible values:
+
+```rue
+fn main() -> i32 {
+    match 42 {
+        1 => 10,
+        2 => 20,
+        _ => 0,  // required for integers
+    }
+}
+```
+
+Non-exhaustive matches are compile-time errors:
+
+```rue
+fn main() -> i32 {
+    match 1 {
+        1 => 10,
+        2 => 20,
+        // ERROR: match is not exhaustive (integer match requires wildcard)
+    }
+}
+```
+
+#### Block Bodies
+
+Match arms can have block bodies for more complex expressions:
+
+```rue
+fn main() -> i32 {
+    match 2 {
+        1 => {
+            let a = 10;
+            a
+        },
+        2 => {
+            let b = 20;
+            let c = 5;
+            b + c
+        },
+        _ => 0,
+    }
+}
+```
+
+#### Match on Expressions
+
+The scrutinee (value being matched) can be any expression:
+
+```rue
+fn main() -> i32 {
+    let x = 5;
+    match x > 3 {
+        true => 100,
+        false => 0,
+    }
+}
+```
+
+```rue
+fn main() -> i32 {
+    match 1 + 1 {
+        2 => 42,
+        _ => 0,
+    }
+}
+```
+
+#### Nested Match
+
+Match expressions can be nested:
+
+```rue
+fn main() -> i32 {
+    match 1 {
+        1 => match 2 {
+            2 => 12,
+            _ => 10,
+        },
+        _ => 0,
+    }
+}
+```
+
+#### Trailing Commas
+
+Trailing commas after the last arm are optional:
+
+```rue
+fn main() -> i32 {
+    // With trailing comma
+    match 1 {
+        1 => 10,
+        _ => 0,
+    }
+}
+```
+
+```rue
+fn main() -> i32 {
+    // Without trailing comma
+    match 1 {
+        1 => 10,
+        _ => 0
+    }
+}
+```
+
 ### While Loops
 
 `while` loops repeat a block of code while a condition is true:
@@ -510,10 +686,13 @@ unary          = "-" unary | "!" unary | postfix ;
 postfix        = primary [ "(" [ args ] ")" ] ;
 args           = expression { "," expression } ;
 primary        = INTEGER | BOOL | IDENT | "(" expression ")" | block_expr
-               | if_expr | while_expr | "break" | "continue" | return_expr ;
+               | if_expr | match_expr | while_expr | "break" | "continue" | return_expr ;
 return_expr    = "return" expression ;
 block_expr     = "{" block "}" ;
 if_expr        = "if" expression "{" block "}" [ "else" "{" block "}" ] ;
+match_expr     = "match" expression "{" { match_arm "," } [ match_arm ] "}" ;
+match_arm      = pattern "=>" expression ;
+pattern        = "_" | INTEGER | BOOL ;
 while_expr     = "while" expression "{" block "}" ;
 
 BOOL           = "true" | "false" ;

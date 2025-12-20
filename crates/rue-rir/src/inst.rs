@@ -28,6 +28,17 @@ impl InstRef {
     }
 }
 
+/// A pattern in a match expression (RIR level - untyped).
+#[derive(Debug, Clone)]
+pub enum RirPattern {
+    /// Wildcard pattern `_` - matches anything
+    Wildcard,
+    /// Integer literal pattern
+    Int(i64),
+    /// Boolean literal pattern
+    Bool(bool),
+}
+
 /// The complete RIR for a source file.
 #[derive(Debug, Default)]
 pub struct Rir {
@@ -165,6 +176,14 @@ pub enum InstData {
 
     /// Infinite loop: loop { body }
     InfiniteLoop { body: InstRef },
+
+    /// Match expression: match scrutinee { pattern => expr, ... }
+    Match {
+        /// The value being matched
+        scrutinee: InstRef,
+        /// Match arms: [(pattern, body), ...]
+        arms: Vec<(RirPattern, InstRef)>,
+    },
 
     /// Break: exits the innermost loop
     Break,
@@ -372,6 +391,24 @@ impl<'a, 'b> RirPrinter<'a, 'b> {
                 }
                 InstData::InfiniteLoop { body } => {
                     out.push_str(&format!("infinite_loop {}\n", body));
+                }
+                InstData::Match { scrutinee, arms } => {
+                    let arms_str: Vec<String> = arms
+                        .iter()
+                        .map(|(pat, body)| {
+                            let pat_str = match pat {
+                                RirPattern::Wildcard => "_".to_string(),
+                                RirPattern::Int(n) => n.to_string(),
+                                RirPattern::Bool(b) => b.to_string(),
+                            };
+                            format!("{} => {}", pat_str, body)
+                        })
+                        .collect();
+                    out.push_str(&format!(
+                        "match {} {{ {} }}\n",
+                        scrutinee,
+                        arms_str.join(", ")
+                    ));
                 }
                 InstData::Break => {
                     out.push_str("break\n");

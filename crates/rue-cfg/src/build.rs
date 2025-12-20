@@ -3,7 +3,7 @@
 //! This module converts the structured control flow in AIR (Branch, Loop)
 //! into explicit basic blocks with terminators.
 
-use rue_air::{Air, AirInstData, AirRef, Type};
+use rue_air::{Air, AirInstData, AirPattern, AirRef, Type};
 use rue_error::{CompileWarning, WarningKind};
 
 use crate::CfgOutput;
@@ -795,6 +795,132 @@ impl<'a> CfgBuilder<'a> {
                 let unit_val = self.emit(CfgInstData::Const(0), Type::Unit, span);
                 ExprResult {
                     value: Some(unit_val),
+                    continuation: Continuation::Continues,
+                }
+            }
+
+            AirInstData::Match { scrutinee, arms } => {
+                // Lower the scrutinee
+                let scrutinee_val = self.lower_inst(*scrutinee).value.unwrap();
+
+                // Create blocks for each arm and a join block
+                let arm_blocks: Vec<_> = arms.iter().map(|_| self.cfg.new_block()).collect();
+                let join_block = self.cfg.new_block();
+
+                // Get result type (from first non-Never arm)
+                let result_type = arms
+                    .iter()
+                    .map(|(_, body)| self.air.get(*body).ty)
+                    .find(|ty| !ty.is_never())
+                    .unwrap_or(Type::Never);
+
+                // Create the switch terminator
+                // Build cases: for each arm, check pattern and jump to corresponding block
+                let mut switch_cases = Vec::new();
+                let mut default_block = None;
+
+                for (i, (pattern, _)) in arms.iter().enumerate() {
+                    match pattern {
+                        AirPattern::Wildcard => {
+                            default_block = Some(arm_blocks[i]);
+                            // Wildcard matches everything - any patterns after this are unreachable
+                            break;
+                        }
+                        AirPattern::Int(n) => {
+                            switch_cases.push((*n, arm_blocks[i]));
+                        }
+                        AirPattern::Bool(b) => {
+                            // Booleans are 0 or 1
+                            let val = if *b { 1 } else { 0 };
+                            switch_cases.push((val, arm_blocks[i]));
+                        }
+                    }
+                }
+
+                // If no explicit wildcard, use the last arm as default
+                // This handles exhaustive matches like `true => ..., false => ...`
+                // where semantics verified exhaustiveness but we need a default for codegen
+                let default = default_block.unwrap_or_else(|| {
+                    // Pop the last case to use as default
+                    let (_, last_block) = switch_cases
+                        .pop()
+                        .expect("match must have at least one arm");
+                    last_block
+                });
+
+                // Set the switch terminator on current block
+                self.cfg.set_terminator(
+                    self.current_block,
+                    Terminator::Switch {
+                        scrutinee: scrutinee_val,
+                        cases: switch_cases,
+                        default,
+                    },
+                );
+
+                // Lower each arm and wire to join block
+                let mut all_diverged = true;
+                let mut arm_results = Vec::new();
+
+                for (i, (_, body)) in arms.iter().enumerate() {
+                    self.current_block = arm_blocks[i];
+                    let body_result = self.lower_inst(*body);
+                    let exit_block = self.current_block;
+                    let diverged = matches!(body_result.continuation, Continuation::Diverged);
+
+                    if !diverged {
+                        all_diverged = false;
+                    }
+
+                    arm_results.push((exit_block, body_result, diverged));
+                }
+
+                // If all arms diverge, mark join block unreachable
+                if all_diverged {
+                    self.cfg.set_terminator(join_block, Terminator::Unreachable);
+                    return ExprResult {
+                        value: None,
+                        continuation: Continuation::Diverged,
+                    };
+                }
+
+                // Add block parameter for result (if we have a value type)
+                let result_param = if result_type != Type::Unit && result_type != Type::Never {
+                    Some(self.cfg.add_block_param(join_block, result_type))
+                } else {
+                    None
+                };
+
+                // Wire up non-divergent arms to join
+                for (exit_block, body_result, diverged) in arm_results {
+                    if !diverged {
+                        let args = if let Some(val) = body_result.value {
+                            if result_param.is_some() {
+                                vec![val]
+                            } else {
+                                vec![]
+                            }
+                        } else {
+                            vec![]
+                        };
+                        self.cfg.set_terminator(
+                            exit_block,
+                            Terminator::Goto {
+                                target: join_block,
+                                args,
+                            },
+                        );
+                    }
+                }
+
+                self.current_block = join_block;
+
+                if let Some(param) = result_param {
+                    self.cache(air_ref, param);
+                }
+
+                ExprResult {
+                    value: result_param,
                     continuation: Continuation::Continues,
                 }
             }

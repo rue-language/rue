@@ -93,6 +93,8 @@ pub enum Expr {
     Block(BlockExpr),
     /// If expression (e.g., `if cond { a } else { b }`)
     If(IfExpr),
+    /// Match expression (e.g., `match x { 1 => a, _ => b }`)
+    Match(MatchExpr),
     /// While expression (e.g., `while cond { body }`)
     While(WhileExpr),
     /// Loop expression - infinite loop (e.g., `loop { body }`)
@@ -199,6 +201,48 @@ pub struct IfExpr {
     /// Optional else branch
     pub else_block: Option<BlockExpr>,
     pub span: Span,
+}
+
+/// A match expression.
+#[derive(Debug, Clone)]
+pub struct MatchExpr {
+    /// The value being matched (scrutinee)
+    pub scrutinee: Box<Expr>,
+    /// Match arms
+    pub arms: Vec<MatchArm>,
+    pub span: Span,
+}
+
+/// A single arm in a match expression.
+#[derive(Debug, Clone)]
+pub struct MatchArm {
+    /// The pattern to match
+    pub pattern: Pattern,
+    /// The body expression
+    pub body: Box<Expr>,
+    pub span: Span,
+}
+
+/// A pattern in a match arm.
+#[derive(Debug, Clone)]
+pub enum Pattern {
+    /// Wildcard pattern `_` - matches anything
+    Wildcard(Span),
+    /// Integer literal pattern
+    Int(IntLit),
+    /// Boolean literal pattern
+    Bool(BoolLit),
+}
+
+impl Pattern {
+    /// Get the span of this pattern.
+    pub fn span(&self) -> Span {
+        match self {
+            Pattern::Wildcard(span) => *span,
+            Pattern::Int(lit) => lit.span,
+            Pattern::Bool(lit) => lit.span,
+        }
+    }
 }
 
 /// A function call expression.
@@ -345,6 +389,7 @@ impl Expr {
             Expr::Paren(paren) => paren.span,
             Expr::Block(block) => block.span,
             Expr::If(if_expr) => if_expr.span,
+            Expr::Match(match_expr) => match_expr.span,
             Expr::While(while_expr) => while_expr.span,
             Expr::Loop(loop_expr) => loop_expr.span,
             Expr::Call(call) => call.span,

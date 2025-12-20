@@ -5,10 +5,10 @@
 
 use rue_intern::Interner;
 use rue_parser::{
-    AssignTarget, Ast, BinaryOp, Expr, Function, Item, Statement, StructDecl, UnaryOp,
+    AssignTarget, Ast, BinaryOp, Expr, Function, Item, Pattern, Statement, StructDecl, UnaryOp,
 };
 
-use crate::inst::{Inst, InstData, InstRef, Rir};
+use crate::inst::{Inst, InstData, InstRef, Rir, RirPattern};
 
 /// Generates RIR from an AST.
 pub struct AstGen<'a> {
@@ -186,6 +186,23 @@ impl<'a> AstGen<'a> {
                     span: loop_expr.span,
                 })
             }
+            Expr::Match(match_expr) => {
+                let scrutinee = self.gen_expr(&match_expr.scrutinee);
+                let arms: Vec<_> = match_expr
+                    .arms
+                    .iter()
+                    .map(|arm| {
+                        let pattern = self.gen_pattern(&arm.pattern);
+                        let body = self.gen_expr(&arm.body);
+                        (pattern, body)
+                    })
+                    .collect();
+
+                self.rir.add_inst(Inst {
+                    data: InstData::Match { scrutinee, arms },
+                    span: match_expr.span,
+                })
+            }
             Expr::Call(call) => {
                 let name = self.interner.intern(&call.name.name);
                 let args: Vec<_> = call.args.iter().map(|a| self.gen_expr(a)).collect();
@@ -245,6 +262,14 @@ impl<'a> AstGen<'a> {
                     span: intrinsic.span,
                 })
             }
+        }
+    }
+
+    fn gen_pattern(&self, pattern: &Pattern) -> RirPattern {
+        match pattern {
+            Pattern::Wildcard(_) => RirPattern::Wildcard,
+            Pattern::Int(lit) => RirPattern::Int(lit.value),
+            Pattern::Bool(lit) => RirPattern::Bool(lit.value),
         }
     }
 

@@ -70,6 +70,11 @@ pub enum ErrorKind {
     BreakOutsideLoop,
     ContinueOutsideLoop,
 
+    // Match errors
+    NonExhaustiveMatch,
+    EmptyMatch,
+    InvalidMatchType(String),
+
     // Intrinsic errors
     UnknownIntrinsic(String),
     IntrinsicWrongArgCount {
@@ -211,6 +216,11 @@ impl fmt::Display for ErrorKind {
             }
             ErrorKind::BreakOutsideLoop => write!(f, "'break' outside of loop"),
             ErrorKind::ContinueOutsideLoop => write!(f, "'continue' outside of loop"),
+            ErrorKind::NonExhaustiveMatch => write!(f, "match is not exhaustive"),
+            ErrorKind::EmptyMatch => write!(f, "match expression has no arms"),
+            ErrorKind::InvalidMatchType(ty) => {
+                write!(f, "cannot match on type '{}', expected integer or bool", ty)
+            }
             ErrorKind::UnknownIntrinsic(name) => write!(f, "unknown intrinsic '@{}'", name),
             ErrorKind::IntrinsicWrongArgCount {
                 name,

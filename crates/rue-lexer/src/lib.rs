@@ -17,6 +17,7 @@ pub enum TokenKind {
     Mut,
     If,
     Else,
+    Match,
     While,
     Loop,
     Break,
@@ -25,6 +26,9 @@ pub enum TokenKind {
     True,
     False,
     Struct,
+
+    // Patterns
+    Underscore, // _ (wildcard pattern)
 
     // Literals
     Int(i64),
@@ -54,7 +58,8 @@ pub enum TokenKind {
     RParen,
     LBrace,
     RBrace,
-    Arrow, // ->
+    Arrow,    // ->
+    FatArrow, // =>
     Colon,
     Semi,
     Comma,
@@ -74,6 +79,7 @@ impl TokenKind {
             TokenKind::Mut => "'mut'",
             TokenKind::If => "'if'",
             TokenKind::Else => "'else'",
+            TokenKind::Match => "'match'",
             TokenKind::While => "'while'",
             TokenKind::Loop => "'loop'",
             TokenKind::Break => "'break'",
@@ -82,6 +88,7 @@ impl TokenKind {
             TokenKind::True => "'true'",
             TokenKind::False => "'false'",
             TokenKind::Struct => "'struct'",
+            TokenKind::Underscore => "'_'",
             TokenKind::Int(_) => "integer",
             TokenKind::Ident(_) => "identifier",
             TokenKind::Plus => "'+'",
@@ -104,6 +111,7 @@ impl TokenKind {
             TokenKind::LBrace => "'{'",
             TokenKind::RBrace => "'}'",
             TokenKind::Arrow => "'->'",
+            TokenKind::FatArrow => "'=>'",
             TokenKind::Colon => "':'",
             TokenKind::Semi => "';'",
             TokenKind::Comma => "','",

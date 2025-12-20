@@ -177,6 +177,16 @@ pub enum Terminator {
         else_args: Vec<CfgValue>,
     },
 
+    /// Multi-way branch (switch/match).
+    Switch {
+        /// The value to switch on
+        scrutinee: CfgValue,
+        /// Cases: (value, target_block)
+        cases: Vec<(i64, BlockId)>,
+        /// Default block (for wildcard pattern)
+        default: BlockId,
+    },
+
     /// Return from function (None for unit-returning functions).
     Return { value: Option<CfgValue> },
 
@@ -369,6 +379,12 @@ impl Cfg {
                     edges.push((block.id, *then_block));
                     edges.push((block.id, *else_block));
                 }
+                Terminator::Switch { cases, default, .. } => {
+                    for (_, target) in cases {
+                        edges.push((block.id, *target));
+                    }
+                    edges.push((block.id, *default));
+                }
                 Terminator::Return { .. } | Terminator::Unreachable | Terminator::None => {}
             }
         }
@@ -467,6 +483,20 @@ impl fmt::Display for Cfg {
                         }
                         write!(f, ")")?;
                     }
+                }
+                Terminator::Switch {
+                    scrutinee,
+                    cases,
+                    default,
+                } => {
+                    write!(f, "switch {} [", scrutinee)?;
+                    for (i, (val, target)) in cases.iter().enumerate() {
+                        if i > 0 {
+                            write!(f, ", ")?;
+                        }
+                        write!(f, "{} => {}", val, target)?;
+                    }
+                    write!(f, "], default: {}", default)?;
                 }
                 Terminator::Return { value } => {
                     if let Some(value) = value {

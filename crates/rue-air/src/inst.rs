@@ -7,6 +7,17 @@ use std::fmt;
 use crate::types::{StructId, Type};
 use rue_span::Span;
 
+/// A pattern in a match expression (AIR level - typed).
+#[derive(Debug, Clone)]
+pub enum AirPattern {
+    /// Wildcard pattern `_` - matches anything
+    Wildcard,
+    /// Integer literal pattern
+    Int(i64),
+    /// Boolean literal pattern
+    Bool(bool),
+}
+
 /// A reference to an instruction in the AIR.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct AirRef(u32);
@@ -149,6 +160,14 @@ pub enum AirInstData {
     /// Infinite loop (produces Never type)
     InfiniteLoop { body: AirRef },
 
+    /// Match expression
+    Match {
+        /// The value being matched (scrutinee)
+        scrutinee: AirRef,
+        /// Match arms: [(pattern, body), ...]
+        arms: Vec<(AirPattern, AirRef)>,
+    },
+
     /// Break: exits the innermost loop
     Break,
 
@@ -288,6 +307,21 @@ impl fmt::Display for Air {
                 }
                 AirInstData::Loop { cond, body } => writeln!(f, "loop {}, {}", cond, body)?,
                 AirInstData::InfiniteLoop { body } => writeln!(f, "infinite_loop {}", body)?,
+                AirInstData::Match { scrutinee, arms } => {
+                    write!(f, "match {} {{ ", scrutinee)?;
+                    for (i, (pat, body)) in arms.iter().enumerate() {
+                        if i > 0 {
+                            write!(f, ", ")?;
+                        }
+                        let pat_str = match pat {
+                            AirPattern::Wildcard => "_".to_string(),
+                            AirPattern::Int(n) => n.to_string(),
+                            AirPattern::Bool(b) => b.to_string(),
+                        };
+                        write!(f, "{} => {}", pat_str, body)?;
+                    }
+                    writeln!(f, " }}")?;
+                }
                 AirInstData::Break => writeln!(f, "break")?,
                 AirInstData::Continue => writeln!(f, "continue")?,
                 AirInstData::Alloc { slot, init } => writeln!(f, "alloc ${} = {}", slot, init)?,

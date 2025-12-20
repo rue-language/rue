@@ -1069,6 +1069,37 @@ impl<'a> CfgLower<'a> {
                 }
             }
 
+            Terminator::Switch {
+                scrutinee,
+                cases,
+                default,
+            } => {
+                let scrutinee_vreg = self.get_vreg(*scrutinee);
+
+                // Generate comparison and jump for each case
+                for (value, target) in cases {
+                    // Compare scrutinee with case value
+                    let imm_vreg = self.mir.alloc_vreg();
+                    self.mir.push(Aarch64Inst::MovImm {
+                        dst: Operand::Virtual(imm_vreg),
+                        imm: *value,
+                    });
+                    self.mir.push(Aarch64Inst::CmpRR {
+                        src1: Operand::Virtual(scrutinee_vreg),
+                        src2: Operand::Virtual(imm_vreg),
+                    });
+                    self.mir.push(Aarch64Inst::BCond {
+                        cond: Cond::Eq,
+                        label: self.block_label(*target),
+                    });
+                }
+
+                // Fall through to default
+                self.mir.push(Aarch64Inst::B {
+                    label: self.block_label(*default),
+                });
+            }
+
             Terminator::Return { value } => {
                 // Handle `return;` without expression (unit-returning functions)
                 let Some(value) = value else {

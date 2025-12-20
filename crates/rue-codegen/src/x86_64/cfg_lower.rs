@@ -1083,6 +1083,36 @@ impl<'a> CfgLower<'a> {
                 let _ = else_args;
             }
 
+            Terminator::Switch {
+                scrutinee,
+                cases,
+                default,
+            } => {
+                let scrutinee_vreg = self.get_vreg(*scrutinee);
+
+                // Generate comparison and jump for each case
+                for (value, target) in cases {
+                    // Load case value into a register to handle full i64 range
+                    let case_vreg = self.mir.alloc_vreg();
+                    self.mir.push(X86Inst::MovRI64 {
+                        dst: Operand::Virtual(case_vreg),
+                        imm: *value,
+                    });
+                    self.mir.push(X86Inst::CmpRR {
+                        src1: Operand::Virtual(scrutinee_vreg),
+                        src2: Operand::Virtual(case_vreg),
+                    });
+                    self.mir.push(X86Inst::Jz {
+                        label: self.block_label(*target),
+                    });
+                }
+
+                // Fall through to default
+                self.mir.push(X86Inst::Jmp {
+                    label: self.block_label(*default),
+                });
+            }
+
             Terminator::Return { value } => {
                 // Handle `return;` without expression (unit-returning functions)
                 let Some(value) = value else {

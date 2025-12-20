@@ -6,8 +6,8 @@
 use crate::ast::{
     AssignStatement, AssignTarget, Ast, BinaryExpr, BinaryOp, BlockExpr, BoolLit, BreakExpr,
     CallExpr, ContinueExpr, Expr, FieldDecl, FieldExpr, FieldInit, Function, Ident, IfExpr, IntLit,
-    IntrinsicCallExpr, Item, LetStatement, LoopExpr, Param, ParenExpr, ReturnExpr, Statement,
-    StructDecl, StructLitExpr, UnaryExpr, UnaryOp, WhileExpr,
+    IntrinsicCallExpr, Item, LetStatement, LoopExpr, MatchArm, MatchExpr, Param, ParenExpr,
+    Pattern, ReturnExpr, Statement, StructDecl, StructLitExpr, UnaryExpr, UnaryOp, WhileExpr,
 };
 use chumsky::input::{Input as ChumskyInput, Stream, ValueInput};
 use chumsky::pratt::{infix, left, prefix};
@@ -251,6 +251,59 @@ where
     })
 }
 
+/// Parser for patterns in match arms
+fn pattern_parser<'src, I>()
+-> impl Parser<'src, I, Pattern, extra::Err<Rich<'src, TokenKind>>> + Clone
+where
+    I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
+{
+    // Wildcard pattern: _
+    let wildcard =
+        just(TokenKind::Underscore).map_with(|_, e| Pattern::Wildcard(to_rue_span(e.span())));
+
+    // Integer literal pattern
+    let int_pat = select! {
+        TokenKind::Int(n) = e => Pattern::Int(IntLit {
+            value: n,
+            span: to_rue_span(e.span()),
+        }),
+    };
+
+    // Boolean literal patterns
+    let bool_true = select! {
+        TokenKind::True = e => Pattern::Bool(BoolLit {
+            value: true,
+            span: to_rue_span(e.span()),
+        }),
+    };
+
+    let bool_false = select! {
+        TokenKind::False = e => Pattern::Bool(BoolLit {
+            value: false,
+            span: to_rue_span(e.span()),
+        }),
+    };
+
+    choice((wildcard, int_pat, bool_true, bool_false))
+}
+
+/// Parser for a single match arm: pattern => expr
+fn match_arm_parser<'src, I>(
+    expr: impl Parser<'src, I, Expr, extra::Err<Rich<'src, TokenKind>>> + Clone,
+) -> impl Parser<'src, I, MatchArm, extra::Err<Rich<'src, TokenKind>>> + Clone
+where
+    I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
+{
+    pattern_parser()
+        .then_ignore(just(TokenKind::FatArrow))
+        .then(expr)
+        .map_with(|(pattern, body), e| MatchArm {
+            pattern,
+            body: Box::new(body),
+            span: to_rue_span(e.span()),
+        })
+}
+
 /// Atom parser - primary expressions (literals, identifiers, parens, blocks, control flow)
 fn atom_parser<'src, I>(
     expr: impl Parser<'src, I, Expr, extra::Err<Rich<'src, TokenKind>>> + Clone + 'src,
@@ -344,6 +397,25 @@ where
         })
         .boxed();
 
+    // Match expression: match scrutinee { pattern => expr, ... }
+    let match_expr = just(TokenKind::Match)
+        .ignore_then(expr.clone())
+        .then(
+            match_arm_parser(expr.clone())
+                .separated_by(just(TokenKind::Comma))
+                .allow_trailing()
+                .collect::<Vec<_>>()
+                .delimited_by(just(TokenKind::LBrace), just(TokenKind::RBrace)),
+        )
+        .map_with(|(scrutinee, arms), e| {
+            Expr::Match(MatchExpr {
+                scrutinee: Box::new(scrutinee),
+                arms,
+                span: to_rue_span(e.span()),
+            })
+        })
+        .boxed();
+
     // What can follow an identifier: call args, struct fields, or nothing
     #[derive(Clone)]
     enum IdentSuffix {
@@ -417,6 +489,7 @@ where
         continue_expr,
         return_expr,
         if_expr,
+        match_expr,
         while_expr,
         loop_expr,
         intrinsic_call,
@@ -447,6 +520,19 @@ enum BlockItem {
     Expr(Expr),
 }
 
+/// Parser for a let binding name: either an identifier or _ (wildcard/discard)
+fn let_binding_parser<'src, I>()
+-> impl Parser<'src, I, Ident, extra::Err<Rich<'src, TokenKind>>> + Clone
+where
+    I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
+{
+    let underscore = just(TokenKind::Underscore).map_with(|_, e| Ident {
+        name: "_".to_string(),
+        span: to_rue_span(e.span()),
+    });
+    ident_parser().or(underscore)
+}
+
 /// Parser for let statements: let [mut] name [: type] = expr;
 fn let_statement_parser<'src, I>(
     expr: impl Parser<'src, I, Expr, extra::Err<Rich<'src, TokenKind>>> + Clone,
@@ -456,7 +542,7 @@ where
 {
     just(TokenKind::Let)
         .ignore_then(just(TokenKind::Mut).or_not().map(|m| m.is_some()))
-        .then(ident_parser())
+        .then(let_binding_parser())
         .then(just(TokenKind::Colon).ignore_then(ident_parser()).or_not())
         .then_ignore(just(TokenKind::Eq))
         .then(expr)
@@ -534,11 +620,12 @@ where
 }
 
 /// Returns true if the expression is a control flow construct that can appear
-/// as a statement without a trailing semicolon (if, while, break, continue, return).
+/// as a statement without a trailing semicolon (if, while, match, break, continue, return).
 fn is_control_flow_expr(e: &Expr) -> bool {
     matches!(
         e,
         Expr::If(_)
+            | Expr::Match(_)
             | Expr::While(_)
             | Expr::Loop(_)
             | Expr::Break(_)

@@ -32,6 +32,8 @@ pub enum LogosTokenKind {
     If,
     #[token("else")]
     Else,
+    #[token("match")]
+    Match,
     #[token("while")]
     While,
     #[token("loop")]
@@ -48,6 +50,10 @@ pub enum LogosTokenKind {
     False,
     #[token("struct")]
     Struct,
+
+    // Patterns
+    #[token("_")]
+    Underscore,
 
     // Integer literals
     #[regex(r"[0-9]+", |lex| lex.slice().parse::<i64>().ok())]
@@ -72,6 +78,8 @@ pub enum LogosTokenKind {
     PipePipe,
     #[token("->")]
     Arrow,
+    #[token("=>")]
+    FatArrow,
 
     // Single-character operators
     #[token("+")]
@@ -124,6 +132,7 @@ impl From<LogosTokenKind> for TokenKind {
             LogosTokenKind::Mut => TokenKind::Mut,
             LogosTokenKind::If => TokenKind::If,
             LogosTokenKind::Else => TokenKind::Else,
+            LogosTokenKind::Match => TokenKind::Match,
             LogosTokenKind::While => TokenKind::While,
             LogosTokenKind::Loop => TokenKind::Loop,
             LogosTokenKind::Break => TokenKind::Break,
@@ -132,6 +141,7 @@ impl From<LogosTokenKind> for TokenKind {
             LogosTokenKind::True => TokenKind::True,
             LogosTokenKind::False => TokenKind::False,
             LogosTokenKind::Struct => TokenKind::Struct,
+            LogosTokenKind::Underscore => TokenKind::Underscore,
             LogosTokenKind::Int(n) => TokenKind::Int(n),
             LogosTokenKind::Ident(s) => TokenKind::Ident(s),
             LogosTokenKind::EqEq => TokenKind::EqEq,
@@ -141,6 +151,7 @@ impl From<LogosTokenKind> for TokenKind {
             LogosTokenKind::AmpAmp => TokenKind::AmpAmp,
             LogosTokenKind::PipePipe => TokenKind::PipePipe,
             LogosTokenKind::Arrow => TokenKind::Arrow,
+            LogosTokenKind::FatArrow => TokenKind::FatArrow,
             LogosTokenKind::Plus => TokenKind::Plus,
             LogosTokenKind::Minus => TokenKind::Minus,
             LogosTokenKind::Star => TokenKind::Star,
