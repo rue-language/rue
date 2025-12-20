@@ -10,19 +10,15 @@
 //! - `cfg_lower`: Converts CFG to X86Mir with virtual registers
 //! - `regalloc`: Assigns physical registers to virtual registers
 //! - `emit`: Encodes X86Mir instructions to machine code bytes
-//!
-//! The old `lower` module (AIR → X86Mir) is kept for backward compatibility.
 
 mod cfg_lower;
 mod emit;
 mod liveness;
-mod lower;
 mod mir;
 mod regalloc;
 
 pub use cfg_lower::CfgLower;
 pub use emit::Emitter;
-pub use lower::Lower;
 pub use mir::{Operand, Reg, VReg, X86Inst, X86Mir};
 pub use regalloc::RegAlloc;
 
