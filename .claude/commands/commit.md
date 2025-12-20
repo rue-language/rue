@@ -36,3 +36,4 @@ If there are bd issues related to this work that should be closed, also run:
 
 Use `jj commit -m "<message>"` to create the commit as the final step.
 
+IMPORTANT: close the issue with `bd close` **before** you run `jj commit`, as we want to make sure that the issue being closed is associated with this commit.

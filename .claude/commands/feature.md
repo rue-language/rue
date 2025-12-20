@@ -21,6 +21,7 @@ Follow this workflow:
 5. **Add spec tests** - Add test cases to `crates/rue-spec/cases/` as appropriate. Also update the language specification `docs/language.md` as appropriate.
 6. **Implement incrementally** - Make changes, add tests as you go
 7. **Verify** - Run `./test.sh` to ensure everything passes
-8. **Close the issue** - `bd close <id> --reason "Implemented"`
+8. **Add example** - consider adding or modifying programs in the `examples` directory that show off this feature.
+9. **Close the issue** - `bd close <id> --reason "Implemented"`
 
 Remember: This project uses Buck2 (`./buck2`), not Cargo. Use jj for version control.
