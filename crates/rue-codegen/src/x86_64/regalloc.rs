@@ -415,6 +415,22 @@ impl RegAlloc {
                 self.emit_setcc(mir, dst, |d| X86Inst::Setge { dst: d });
             }
 
+            X86Inst::Setb { dst } => {
+                self.emit_setcc(mir, dst, |d| X86Inst::Setb { dst: d });
+            }
+
+            X86Inst::Seta { dst } => {
+                self.emit_setcc(mir, dst, |d| X86Inst::Seta { dst: d });
+            }
+
+            X86Inst::Setbe { dst } => {
+                self.emit_setcc(mir, dst, |d| X86Inst::Setbe { dst: d });
+            }
+
+            X86Inst::Setae { dst } => {
+                self.emit_setcc(mir, dst, |d| X86Inst::Setae { dst: d });
+            }
+
             X86Inst::Movzx { dst, src } => {
                 let src_op = self.load_operand(mir, src, Reg::Rax);
                 match self.get_allocation(dst) {

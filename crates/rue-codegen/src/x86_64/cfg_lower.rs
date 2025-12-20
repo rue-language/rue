@@ -505,34 +505,62 @@ impl<'a> CfgLower<'a> {
             }
 
             CfgInstData::Lt(lhs, rhs) => {
+                let is_unsigned = self.is_unsigned_comparison(*lhs);
                 self.emit_comparison(value, *lhs, *rhs, |mir, vreg| {
-                    mir.push(X86Inst::Setl {
-                        dst: Operand::Virtual(vreg),
-                    });
+                    if is_unsigned {
+                        mir.push(X86Inst::Setb {
+                            dst: Operand::Virtual(vreg),
+                        });
+                    } else {
+                        mir.push(X86Inst::Setl {
+                            dst: Operand::Virtual(vreg),
+                        });
+                    }
                 });
             }
 
             CfgInstData::Gt(lhs, rhs) => {
+                let is_unsigned = self.is_unsigned_comparison(*lhs);
                 self.emit_comparison(value, *lhs, *rhs, |mir, vreg| {
-                    mir.push(X86Inst::Setg {
-                        dst: Operand::Virtual(vreg),
-                    });
+                    if is_unsigned {
+                        mir.push(X86Inst::Seta {
+                            dst: Operand::Virtual(vreg),
+                        });
+                    } else {
+                        mir.push(X86Inst::Setg {
+                            dst: Operand::Virtual(vreg),
+                        });
+                    }
                 });
             }
 
             CfgInstData::Le(lhs, rhs) => {
+                let is_unsigned = self.is_unsigned_comparison(*lhs);
                 self.emit_comparison(value, *lhs, *rhs, |mir, vreg| {
-                    mir.push(X86Inst::Setle {
-                        dst: Operand::Virtual(vreg),
-                    });
+                    if is_unsigned {
+                        mir.push(X86Inst::Setbe {
+                            dst: Operand::Virtual(vreg),
+                        });
+                    } else {
+                        mir.push(X86Inst::Setle {
+                            dst: Operand::Virtual(vreg),
+                        });
+                    }
                 });
             }
 
             CfgInstData::Ge(lhs, rhs) => {
+                let is_unsigned = self.is_unsigned_comparison(*lhs);
                 self.emit_comparison(value, *lhs, *rhs, |mir, vreg| {
-                    mir.push(X86Inst::Setge {
-                        dst: Operand::Virtual(vreg),
-                    });
+                    if is_unsigned {
+                        mir.push(X86Inst::Setae {
+                            dst: Operand::Virtual(vreg),
+                        });
+                    } else {
+                        mir.push(X86Inst::Setge {
+                            dst: Operand::Virtual(vreg),
+                        });
+                    }
                 });
             }
 
@@ -942,6 +970,13 @@ impl<'a> CfgLower<'a> {
                 });
             }
         }
+    }
+
+    /// Check if a comparison should use unsigned comparison instructions.
+    ///
+    /// Sema guarantees both operands have the same signedness, so we only need to check one.
+    fn is_unsigned_comparison(&self, lhs: CfgValue) -> bool {
+        self.cfg.get_inst(lhs).ty.is_unsigned()
     }
 
     /// Emit a comparison instruction.

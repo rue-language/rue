@@ -138,6 +138,12 @@ impl Type {
     pub fn can_coerce_to(&self, target: &Type) -> bool {
         self.is_never() || self.is_error() || self == target
     }
+
+    /// Check if this is an unsigned integer type.
+    #[must_use]
+    pub fn is_unsigned(&self) -> bool {
+        matches!(self, Type::U8 | Type::U16 | Type::U32 | Type::U64)
+    }
 }
 
 impl std::fmt::Display for Type {

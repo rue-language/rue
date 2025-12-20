@@ -306,3 +306,153 @@ fn main() -> u32 {
 """
 compile_fail = true
 error_contains = "type mismatch"
+
+# =============================================================================
+# Unsigned Comparison Operators
+# =============================================================================
+# These tests verify that unsigned comparisons use unsigned semantics.
+# The key test case is comparing 1 > 0xFFFFFFFF for u32:
+# - With unsigned semantics: 1 > 4294967295 is FALSE (0)
+# - With signed semantics: 1 > -1 is TRUE (1) - WRONG!
+
+[[case]]
+name = "u32_comparison_less_than_basic"
+source = """
+fn main() -> i32 {
+    let x: u32 = 1;
+    let y: u32 = 2;
+    if x < y { 1 } else { 0 }
+}
+"""
+exit_code = 1
+
+[[case]]
+name = "u32_comparison_greater_than_basic"
+source = """
+fn main() -> i32 {
+    let x: u32 = 2;
+    let y: u32 = 1;
+    if x > y { 1 } else { 0 }
+}
+"""
+exit_code = 1
+
+[[case]]
+name = "u32_comparison_less_than_max"
+description = "1 < MAX_U32: unsigned 1 < 4294967295 should be true"
+source = """
+fn main() -> i32 {
+    let x: u32 = 1;
+    let y: u32 = 4294967295;
+    if x < y { 1 } else { 0 }
+}
+"""
+exit_code = 1
+
+[[case]]
+name = "u32_comparison_greater_than_max"
+description = "1 > MAX_U32: unsigned 1 > 4294967295 should be false (would be true with signed comparison treating MAX_U32 as -1)"
+source = """
+fn main() -> i32 {
+    let x: u32 = 1;
+    let y: u32 = 4294967295;
+    if x > y { 1 } else { 0 }
+}
+"""
+exit_code = 0
+
+[[case]]
+name = "u32_comparison_le_max"
+description = "1 <= MAX_U32 should be true"
+source = """
+fn main() -> i32 {
+    let x: u32 = 1;
+    let y: u32 = 4294967295;
+    if x <= y { 1 } else { 0 }
+}
+"""
+exit_code = 1
+
+[[case]]
+name = "u32_comparison_ge_max"
+description = "MAX_U32 >= 1 should be true"
+source = """
+fn main() -> i32 {
+    let x: u32 = 4294967295;
+    let y: u32 = 1;
+    if x >= y { 1 } else { 0 }
+}
+"""
+exit_code = 1
+
+[[case]]
+name = "u32_max_greater_than_small"
+description = "MAX_U32 > 1 should be true"
+source = """
+fn main() -> i32 {
+    let x: u32 = 4294967295;
+    let y: u32 = 1;
+    if x > y { 1 } else { 0 }
+}
+"""
+exit_code = 1
+
+[[case]]
+name = "u32_max_less_than_small"
+description = "MAX_U32 < 1 should be false"
+source = """
+fn main() -> i32 {
+    let x: u32 = 4294967295;
+    let y: u32 = 1;
+    if x < y { 1 } else { 0 }
+}
+"""
+exit_code = 0
+
+[[case]]
+name = "u8_comparison_high_values"
+description = "200 > 100 should be true (200 would be -56 if interpreted as signed)"
+source = """
+fn main() -> i32 {
+    let x: u8 = 200;
+    let y: u8 = 100;
+    if x > y { 1 } else { 0 }
+}
+"""
+exit_code = 1
+
+[[case]]
+name = "u8_comparison_max"
+description = "255 > 1 should be true"
+source = """
+fn main() -> i32 {
+    let x: u8 = 255;
+    let y: u8 = 1;
+    if x > y { 1 } else { 0 }
+}
+"""
+exit_code = 1
+
+[[case]]
+name = "u64_comparison_basic"
+description = "Basic u64 comparison - 100 > 50 should be true"
+source = """
+fn main() -> i32 {
+    let x: u64 = 100;
+    let y: u64 = 50;
+    if x > y { 1 } else { 0 }
+}
+"""
+exit_code = 1
+
+[[case]]
+name = "u64_comparison_less_than"
+description = "u64 less than - 10 < 20 should be true"
+source = """
+fn main() -> i32 {
+    let x: u64 = 10;
+    let y: u64 = 20;
+    if x < y { 1 } else { 0 }
+}
+"""
+exit_code = 1

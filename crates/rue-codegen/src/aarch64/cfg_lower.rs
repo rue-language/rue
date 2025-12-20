@@ -502,19 +502,39 @@ impl<'a> CfgLower<'a> {
             }
 
             CfgInstData::Lt(lhs, rhs) => {
-                self.emit_comparison(value, *lhs, *rhs, Cond::Lt);
+                let cond = if self.is_unsigned_comparison(*lhs) {
+                    Cond::Lo // unsigned lower
+                } else {
+                    Cond::Lt // signed less than
+                };
+                self.emit_comparison(value, *lhs, *rhs, cond);
             }
 
             CfgInstData::Gt(lhs, rhs) => {
-                self.emit_comparison(value, *lhs, *rhs, Cond::Gt);
+                let cond = if self.is_unsigned_comparison(*lhs) {
+                    Cond::Hi // unsigned higher
+                } else {
+                    Cond::Gt // signed greater than
+                };
+                self.emit_comparison(value, *lhs, *rhs, cond);
             }
 
             CfgInstData::Le(lhs, rhs) => {
-                self.emit_comparison(value, *lhs, *rhs, Cond::Le);
+                let cond = if self.is_unsigned_comparison(*lhs) {
+                    Cond::Ls // unsigned lower or same
+                } else {
+                    Cond::Le // signed less than or equal
+                };
+                self.emit_comparison(value, *lhs, *rhs, cond);
             }
 
             CfgInstData::Ge(lhs, rhs) => {
-                self.emit_comparison(value, *lhs, *rhs, Cond::Ge);
+                let cond = if self.is_unsigned_comparison(*lhs) {
+                    Cond::Hs // unsigned higher or same
+                } else {
+                    Cond::Ge // signed greater than or equal
+                };
+                self.emit_comparison(value, *lhs, *rhs, cond);
             }
 
             CfgInstData::And(lhs, rhs) => {
@@ -923,6 +943,13 @@ impl<'a> CfgLower<'a> {
                 });
             }
         }
+    }
+
+    /// Check if a comparison should use unsigned comparison instructions.
+    ///
+    /// Sema guarantees both operands have the same signedness, so we only need to check one.
+    fn is_unsigned_comparison(&self, lhs: CfgValue) -> bool {
+        self.cfg.get_inst(lhs).ty.is_unsigned()
     }
 
     /// Emit a comparison instruction.

@@ -256,6 +256,18 @@ pub enum X86Inst {
     /// `setge dst` - Set byte if greater or equal (signed: SF=OF).
     Setge { dst: Operand },
 
+    /// `setb dst` - Set byte if below (unsigned: CF=1).
+    Setb { dst: Operand },
+
+    /// `seta dst` - Set byte if above (unsigned: CF=0 and ZF=0).
+    Seta { dst: Operand },
+
+    /// `setbe dst` - Set byte if below or equal (unsigned: CF=1 or ZF=1).
+    Setbe { dst: Operand },
+
+    /// `setae dst` - Set byte if above or equal (unsigned: CF=0).
+    Setae { dst: Operand },
+
     /// `movzx dst, src` - Move with zero-extend (byte to dword).
     Movzx { dst: Operand, src: Operand },
 
@@ -383,6 +395,10 @@ impl fmt::Display for X86Inst {
             X86Inst::Setg { dst } => write!(f, "setg {}", dst),
             X86Inst::Setle { dst } => write!(f, "setle {}", dst),
             X86Inst::Setge { dst } => write!(f, "setge {}", dst),
+            X86Inst::Setb { dst } => write!(f, "setb {}", dst),
+            X86Inst::Seta { dst } => write!(f, "seta {}", dst),
+            X86Inst::Setbe { dst } => write!(f, "setbe {}", dst),
+            X86Inst::Setae { dst } => write!(f, "setae {}", dst),
             X86Inst::Movzx { dst, src } => write!(f, "movzx {}, {}", dst, src),
             X86Inst::Movsx8To64 { dst, src } => write!(f, "movsx {}, byte {}", dst, src),
             X86Inst::Movsx16To64 { dst, src } => write!(f, "movsx {}, word {}", dst, src),

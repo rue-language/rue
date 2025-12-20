@@ -337,6 +337,18 @@ impl<'a> Emitter<'a> {
             X86Inst::Setge { dst } => {
                 self.emit_setcc(0x9D, dst.as_physical()); // SETGE opcode
             }
+            X86Inst::Setb { dst } => {
+                self.emit_setcc(0x92, dst.as_physical()); // SETB opcode (CF=1)
+            }
+            X86Inst::Seta { dst } => {
+                self.emit_setcc(0x97, dst.as_physical()); // SETA opcode (CF=0 and ZF=0)
+            }
+            X86Inst::Setbe { dst } => {
+                self.emit_setcc(0x96, dst.as_physical()); // SETBE opcode (CF=1 or ZF=1)
+            }
+            X86Inst::Setae { dst } => {
+                self.emit_setcc(0x93, dst.as_physical()); // SETAE opcode (CF=0)
+            }
             X86Inst::Movzx { dst, src } => {
                 self.emit_movzx(dst.as_physical(), src.as_physical());
             }
