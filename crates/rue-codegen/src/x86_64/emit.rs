@@ -36,8 +36,11 @@ pub struct Emitter<'a> {
     labels: HashMap<String, usize>,
     /// Forward jumps that need to be patched.
     fixups: Vec<Fixup>,
-    /// Number of local variable slots (for stack frame setup).
+    /// Total number of local slots including spills (for stack frame size).
     num_locals: u32,
+    /// Original number of local variables (for param offset calculation).
+    /// CfgLower generates param offsets based on this value.
+    num_locals_original: u32,
     /// Number of function parameters.
     num_params: u32,
     /// Callee-saved registers that need to be preserved.
@@ -46,7 +49,17 @@ pub struct Emitter<'a> {
 
 impl<'a> Emitter<'a> {
     /// Create a new emitter.
-    pub fn new(mir: &'a X86Mir, num_locals: u32, num_params: u32, callee_saved: &[Reg]) -> Self {
+    ///
+    /// - `num_locals`: Total local slots including spills (for stack frame size)
+    /// - `num_locals_original`: Original local count (for param offset calculation)
+    /// - `num_params`: Number of function parameters
+    pub fn new(
+        mir: &'a X86Mir,
+        num_locals: u32,
+        num_locals_original: u32,
+        num_params: u32,
+        callee_saved: &[Reg],
+    ) -> Self {
         Self {
             mir,
             code: Vec::new(),
@@ -54,6 +67,7 @@ impl<'a> Emitter<'a> {
             labels: HashMap::new(),
             fixups: Vec::new(),
             num_locals,
+            num_locals_original,
             num_params,
             callee_saved: callee_saved.to_vec(),
         }
@@ -143,11 +157,10 @@ impl<'a> Emitter<'a> {
         }
 
         // Save incoming parameters from registers to the stack.
-        // Parameters are stored after locals AND after callee-saved registers:
-        //   [rbp-8]  = callee-saved 0
-        //   [rbp-16] = callee-saved 1
-        //   ...
-        //   [rbp - callee_saved_count * 8 - 8] = param 0 / local 0
+        // cfg_lower generates offsets assuming [rbp-8] is the first slot, but
+        // callee-saved registers are pushed after rbp, shifting everything down.
+        // The emit phase adjusts all rbp-relative negative offsets to account
+        // for this (see MovRM and MovMR handlers).
         //
         // System V AMD64 ABI: first 6 args in rdi, rsi, rdx, rcx, r8, r9
         const ARG_REGS: [Reg; 6] = [Reg::Rdi, Reg::Rsi, Reg::Rdx, Reg::Rcx, Reg::R8, Reg::R9];
@@ -156,7 +169,9 @@ impl<'a> Emitter<'a> {
         let callee_saved_size = callee_saved.len() as i32 * 8;
 
         for i in 0..self.num_params.min(6) {
-            let slot = self.num_locals + i;
+            // Use num_locals_original (not num_locals which includes spills)
+            // because CfgLower generates param offsets based on the original count
+            let slot = self.num_locals_original + i;
             // Skip past callee-saved registers in the offset calculation
             let offset = -callee_saved_size - ((slot as i32 + 1) * 8);
             let reg = ARG_REGS[i as usize];
@@ -1167,7 +1182,7 @@ mod tests {
     fn emit_single(inst: X86Inst) -> Vec<u8> {
         let mut mir = X86Mir::new();
         mir.push(inst);
-        Emitter::new(&mir, 0, 0, &[]).emit().0
+        Emitter::new(&mir, 0, 0, 0, &[]).emit().0
     }
 
     #[test]
@@ -1289,7 +1304,7 @@ mod tests {
         });
         mir.push(X86Inst::Syscall);
 
-        let (code, _) = Emitter::new(&mir, 0, 0, &[]).emit();
+        let (code, _) = Emitter::new(&mir, 0, 0, 0, &[]).emit();
 
         // 41 BA 2A 00 00 00  mov r10d, 42
         // 4C 89 D7           mov rdi, r10
@@ -1313,7 +1328,7 @@ mod tests {
             symbol: "__rue_exit".into(),
         });
 
-        let (code, relocs) = Emitter::new(&mir, 0, 0, &[]).emit();
+        let (code, relocs) = Emitter::new(&mir, 0, 0, 0, &[]).emit();
 
         // call rel32 -> E8 00 00 00 00
         assert_eq!(code, vec![0xE8, 0x00, 0x00, 0x00, 0x00]);
@@ -1530,7 +1545,7 @@ mod tests {
     fn test_prologue_one_local() {
         // With 1 local, we need 8 bytes, aligned to 16 = 16 bytes
         let mir = X86Mir::new();
-        let (code, _) = Emitter::new(&mir, 1, 0, &[]).emit();
+        let (code, _) = Emitter::new(&mir, 1, 1, 0, &[]).emit();
 
         // push rbp: 55
         // mov rbp, rsp: 48 89 E5
@@ -1549,7 +1564,7 @@ mod tests {
     fn test_no_prologue_no_locals() {
         // With 0 locals, no prologue should be emitted
         let mir = X86Mir::new();
-        let (code, _) = Emitter::new(&mir, 0, 0, &[]).emit();
+        let (code, _) = Emitter::new(&mir, 0, 0, 0, &[]).emit();
         assert!(code.is_empty());
     }
 }

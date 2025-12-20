@@ -48,8 +48,16 @@ pub fn generate(cfg: &Cfg, struct_defs: &[StructDef]) -> MachineCode {
     // Emit machine code bytes (with prologue for stack frame setup)
     // Total local slots = local variables + spill slots (params handled separately)
     let total_locals = num_locals + num_spills;
-    let (code, relocations) =
-        Emitter::new(&mir, total_locals, num_params, &used_callee_saved).emit();
+    // Pass both total_locals (for stack frame size) and num_locals (for param offset calculation)
+    // CfgLower generates param offsets based on num_locals, so the prologue must match
+    let (code, relocations) = Emitter::new(
+        &mir,
+        total_locals,
+        num_locals,
+        num_params,
+        &used_callee_saved,
+    )
+    .emit();
 
     MachineCode { code, relocations }
 }

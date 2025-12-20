@@ -1129,6 +1129,79 @@ compile_fail = true
 error_contains = "type mismatch"
 
 [[case]]
+name = "struct_return_conditional_multi_field"
+description = "Return multi-field struct from conditional expression"
+source = """
+struct Point {
+    x: i32,
+    y: i32,
+}
+
+fn choose_point(flag: bool) -> Point {
+    if flag {
+        Point { x: 10, y: 32 }
+    } else {
+        Point { x: 5, y: 37 }
+    }
+}
+
+fn main() -> i32 {
+    let p = choose_point(true);
+    p.x + p.y
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "struct_return_conditional_multi_field_else"
+description = "Return multi-field struct from else branch"
+source = """
+struct Point {
+    x: i32,
+    y: i32,
+}
+
+fn choose_point(flag: bool) -> Point {
+    if flag {
+        Point { x: 5, y: 37 }
+    } else {
+        Point { x: 10, y: 32 }
+    }
+}
+
+fn main() -> i32 {
+    let p = choose_point(false);
+    p.x + p.y
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "struct_return_conditional_three_fields"
+description = "Return three-field struct from conditional"
+source = """
+struct Triple {
+    a: i32,
+    b: i32,
+    c: i32,
+}
+
+fn choose_triple(flag: bool) -> Triple {
+    if flag {
+        Triple { a: 10, b: 20, c: 12 }
+    } else {
+        Triple { a: 1, b: 2, c: 3 }
+    }
+}
+
+fn main() -> i32 {
+    let t = choose_triple(true);
+    t.a + t.b + t.c
+}
+"""
+exit_code = 42
+
+[[case]]
 name = "struct_return_i32_instead"
 description = "Return i32 where struct expected"
 source = """
