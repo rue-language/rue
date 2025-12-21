@@ -5,24 +5,54 @@ use std::path::Path;
 
 use annotate_snippets::{Level, Renderer, Snippet};
 use rue_compiler::{
-    CompileError, CompileOptions, CompileWarning, LinkerMode, compile_frontend,
-    compile_with_options, generate_mir,
+    CompileError, CompileOptions, CompileWarning, Lexer, LinkerMode, Parser, compile_frontend,
+    compile_with_options, generate_allocated_mir, generate_mir,
 };
 use rue_rir::RirPrinter;
 use rue_target::Target;
 
+/// Compilation stages that can be emitted.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum DumpMode {
-    None,
+enum EmitStage {
+    /// Emit tokens from the lexer.
+    Tokens,
+    /// Emit the abstract syntax tree.
+    Ast,
+    /// Emit RIR (untyped intermediate representation).
     Rir,
+    /// Emit AIR (typed intermediate representation).
     Air,
+    /// Emit CFG (control flow graph).
+    Cfg,
+    /// Emit MIR (machine intermediate representation).
     Mir,
+    /// Emit assembly text.
+    Asm,
+}
+
+impl EmitStage {
+    fn from_str(s: &str) -> Option<Self> {
+        match s {
+            "tokens" => Some(EmitStage::Tokens),
+            "ast" => Some(EmitStage::Ast),
+            "rir" => Some(EmitStage::Rir),
+            "air" => Some(EmitStage::Air),
+            "cfg" => Some(EmitStage::Cfg),
+            "mir" => Some(EmitStage::Mir),
+            "asm" => Some(EmitStage::Asm),
+            _ => None,
+        }
+    }
+
+    fn all_names() -> &'static str {
+        "tokens, ast, rir, air, cfg, mir, asm"
+    }
 }
 
 struct Options {
     source_path: String,
     output_path: String,
-    dump_mode: DumpMode,
+    emit_stages: Vec<EmitStage>,
     target: Target,
     linker: LinkerMode,
 }
@@ -36,9 +66,9 @@ fn print_usage() {
     eprintln!("  --linker <linker>  Set linker to use (default: internal)");
     eprintln!("                     Use 'internal' for built-in linker, or a command");
     eprintln!("                     like 'clang', 'gcc', or 'ld' for system linker");
-    eprintln!("  --dump-rir         Dump RIR (untyped intermediate representation)");
-    eprintln!("  --dump-air         Dump AIR (typed intermediate representation)");
-    eprintln!("  --dump-mir         Dump MIR (machine intermediate representation)");
+    eprintln!("  --emit <stage>     Emit intermediate representation and exit");
+    eprintln!("                     Can be specified multiple times for multiple outputs");
+    eprintln!("                     Stages: tokens, ast, rir, air, cfg, mir, asm");
     eprintln!("  --help             Show this help message");
 }
 
@@ -50,7 +80,7 @@ fn parse_args() -> Option<Options> {
         return None;
     }
 
-    let mut dump_mode = DumpMode::None;
+    let mut emit_stages = Vec::new();
     let mut target: Option<Target> = None;
     let mut linker: Option<LinkerMode> = None;
     let mut positional = Vec::new();
@@ -58,9 +88,21 @@ fn parse_args() -> Option<Options> {
 
     while let Some(arg) = args_iter.next() {
         match arg.as_str() {
-            "--dump-rir" => dump_mode = DumpMode::Rir,
-            "--dump-air" => dump_mode = DumpMode::Air,
-            "--dump-mir" => dump_mode = DumpMode::Mir,
+            "--emit" => {
+                let Some(stage_str) = args_iter.next() else {
+                    eprintln!("Error: --emit requires a value");
+                    eprintln!("Valid stages: {}", EmitStage::all_names());
+                    return None;
+                };
+                match EmitStage::from_str(stage_str) {
+                    Some(stage) => emit_stages.push(stage),
+                    None => {
+                        eprintln!("Error: unknown emit stage '{}'", stage_str);
+                        eprintln!("Valid stages: {}", EmitStage::all_names());
+                        return None;
+                    }
+                }
+            }
             "--target" => {
                 let Some(target_str) = args_iter.next() else {
                     eprintln!("Error: --target requires a value");
@@ -115,7 +157,7 @@ fn parse_args() -> Option<Options> {
     Some(Options {
         source_path,
         output_path,
-        dump_mode,
+        emit_stages,
         target: target.unwrap_or_else(Target::host),
         linker: linker.unwrap_or_default(),
     })
@@ -133,33 +175,10 @@ fn main() {
         std::process::exit(1);
     });
 
-    // Handle dump modes
-    if options.dump_mode != DumpMode::None {
-        match compile_frontend(&source) {
-            Ok(state) => match options.dump_mode {
-                DumpMode::Rir => {
-                    let printer = RirPrinter::new(&state.rir, &state.interner);
-                    println!("{}", printer);
-                }
-                DumpMode::Air => {
-                    for func in &state.functions {
-                        println!("function {}:", func.analyzed.name);
-                        println!("{}", func.analyzed.air);
-                    }
-                }
-                DumpMode::Mir => {
-                    for func in &state.functions {
-                        let mir = generate_mir(&func.cfg, &state.struct_defs);
-                        println!("function {}:", func.analyzed.name);
-                        println!("{}", mir);
-                    }
-                }
-                DumpMode::None => unreachable!(),
-            },
-            Err(e) => {
-                print_error(&e, &source, &options.source_path);
-                std::process::exit(1);
-            }
+    // Handle emit modes
+    if !options.emit_stages.is_empty() {
+        if let Err(()) = handle_emit(&source, &options) {
+            std::process::exit(1);
         }
         return;
     }
@@ -215,6 +234,158 @@ fn main() {
         Err(e) => {
             print_error(&e, &source, &options.source_path);
             std::process::exit(1);
+        }
+    }
+}
+
+/// Handle emit stages - print requested IRs and exit.
+///
+/// Note: When emitting both AST and later stages (rir, air, etc.), this
+/// function parses the source twice - once for AST output and again inside
+/// compile_frontend(). This is acceptable for a debugging tool but could
+/// be optimized if needed (see tree1-tr8).
+fn handle_emit(source: &str, options: &Options) -> Result<(), ()> {
+    // For early stages (tokens, ast), we don't need the full frontend
+    // For later stages, we compile incrementally and cache results
+
+    // Track what we need to compute
+    let needs_tokens = options.emit_stages.contains(&EmitStage::Tokens);
+    let needs_ast = options.emit_stages.contains(&EmitStage::Ast);
+    let needs_frontend = options.emit_stages.iter().any(|s| {
+        matches!(
+            s,
+            EmitStage::Rir | EmitStage::Air | EmitStage::Cfg | EmitStage::Mir | EmitStage::Asm
+        )
+    });
+
+    // Compute tokens if needed (for tokens stage or later stages)
+    let tokens = if needs_tokens || needs_ast || needs_frontend {
+        let mut lexer = Lexer::new(source);
+        match lexer.tokenize() {
+            Ok(tokens) => tokens,
+            Err(e) => {
+                print_error(&e, source, &options.source_path);
+                return Err(());
+            }
+        }
+    } else {
+        Vec::new()
+    };
+
+    // Compute AST if needed
+    let ast = if needs_ast || needs_frontend {
+        let mut parser = Parser::new(tokens.clone());
+        match parser.parse() {
+            Ok(ast) => Some(ast),
+            Err(e) => {
+                print_error(&e, source, &options.source_path);
+                return Err(());
+            }
+        }
+    } else {
+        None
+    };
+
+    // Compute full frontend if needed
+    let frontend_state = if needs_frontend {
+        match compile_frontend(source) {
+            Ok(state) => Some(state),
+            Err(e) => {
+                print_error(&e, source, &options.source_path);
+                return Err(());
+            }
+        }
+    } else {
+        None
+    };
+
+    // Now emit in order
+    for stage in &options.emit_stages {
+        match stage {
+            EmitStage::Tokens => {
+                println!("=== Tokens ===");
+                for token in &tokens {
+                    println!("{}", token);
+                }
+                println!();
+            }
+            EmitStage::Ast => {
+                println!("=== AST ===");
+                if let Some(ref ast) = ast {
+                    print!("{}", ast);
+                }
+                println!();
+            }
+            EmitStage::Rir => {
+                println!("=== RIR ===");
+                if let Some(ref state) = frontend_state {
+                    let printer = RirPrinter::new(&state.rir, &state.interner);
+                    println!("{}", printer);
+                }
+                println!();
+            }
+            EmitStage::Air => {
+                println!("=== AIR ===");
+                if let Some(ref state) = frontend_state {
+                    for func in &state.functions {
+                        println!("function {}:", func.analyzed.name);
+                        println!("{}", func.analyzed.air);
+                    }
+                }
+                println!();
+            }
+            EmitStage::Cfg => {
+                println!("=== CFG ===");
+                if let Some(ref state) = frontend_state {
+                    for func in &state.functions {
+                        println!("{}", func.cfg);
+                    }
+                }
+                println!();
+            }
+            EmitStage::Mir => {
+                println!("=== MIR ===");
+                if let Some(ref state) = frontend_state {
+                    for func in &state.functions {
+                        let mir = generate_mir(&func.cfg, &state.struct_defs);
+                        println!("function {}:", func.analyzed.name);
+                        println!("{}", mir);
+                    }
+                }
+                println!();
+            }
+            EmitStage::Asm => {
+                println!("=== Assembly (x86-64) ===");
+                if let Some(ref state) = frontend_state {
+                    for func in &state.functions {
+                        println!(".globl {}", func.analyzed.name);
+                        println!("{}:", func.analyzed.name);
+                        let mir = generate_allocated_mir(&func.cfg, &state.struct_defs);
+                        print_assembly(&mir);
+                        println!();
+                    }
+                }
+                println!();
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// Print x86-64 assembly from MIR.
+///
+/// This prints the MIR instructions in assembly-like format.
+/// When called with allocated MIR (post-regalloc), physical registers
+/// like rax, rbx, r12 are shown.
+fn print_assembly(mir: &rue_compiler::X86Mir) {
+    use rue_codegen::x86_64::X86Inst;
+
+    // Print instructions
+    for inst in mir.instructions() {
+        match inst {
+            X86Inst::Label { name } => println!("{}:", name),
+            _ => println!("    {}", inst),
         }
     }
 }

@@ -35,6 +35,12 @@ struct Case {
     /// Expected exact error output (golden test)
     #[serde(default)]
     expected_error: Option<String>,
+    /// Expected tokens dump (golden test)
+    #[serde(default)]
+    expected_tokens: Option<String>,
+    /// Expected AST dump (golden test)
+    #[serde(default)]
+    expected_ast: Option<String>,
     /// Expected RIR dump (golden test)
     #[serde(default)]
     expected_rir: Option<String>,
@@ -143,6 +149,16 @@ fn normalize_error_output(s: &str, source_path: &Path) -> String {
     normalize_golden(&normalized)
 }
 
+/// Strip the emit header (e.g., "=== RIR ===") from the output.
+fn strip_emit_header(output: &str, stage: &str) -> String {
+    let header = format!("=== {} ===", stage);
+    output
+        .lines()
+        .filter(|line| line.trim() != header)
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 /// Compare actual output against expected golden output.
 fn check_golden(actual: &str, expected: &str, label: &str) -> Result<(), Failed> {
     let actual_normalized = normalize_golden(actual);
@@ -172,63 +188,121 @@ fn run_test_case(case: &Case, rue_binary: &Path) -> Result<(), Failed> {
         .write_all(case.source.as_bytes())
         .map_err(|e| format!("Failed to write source: {}", e))?;
 
-    // Check for golden IR tests (RIR, AIR, MIR)
-    if case.expected_rir.is_some() || case.expected_air.is_some() || case.expected_mir.is_some() {
+    // Check for golden IR tests (tokens, AST, RIR, AIR, MIR)
+    if case.expected_tokens.is_some()
+        || case.expected_ast.is_some()
+        || case.expected_rir.is_some()
+        || case.expected_air.is_some()
+        || case.expected_mir.is_some()
+    {
         // Run dump commands and check golden output
-        if let Some(ref expected) = case.expected_rir {
+        if let Some(ref expected) = case.expected_tokens {
             let output = Command::new(rue_binary)
-                .arg("--dump-rir")
+                .arg("--emit")
+                .arg("tokens")
                 .arg(&source_path)
                 .output()
-                .map_err(|e| format!("Failed to run rue --dump-rir: {}", e))?;
+                .map_err(|e| format!("Failed to run rue --emit tokens: {}", e))?;
 
             if !output.status.success() {
                 return Err(format!(
-                    "rue --dump-rir failed:\n{}",
+                    "rue --emit tokens failed:\n{}",
                     String::from_utf8_lossy(&output.stderr)
                 )
                 .into());
             }
 
             let actual = String::from_utf8_lossy(&output.stdout);
+            // Strip the "=== Tokens ===" header for golden comparison
+            let actual = strip_emit_header(&actual, "Tokens");
+            check_golden(&actual, expected, "Tokens")?;
+        }
+
+        if let Some(ref expected) = case.expected_ast {
+            let output = Command::new(rue_binary)
+                .arg("--emit")
+                .arg("ast")
+                .arg(&source_path)
+                .output()
+                .map_err(|e| format!("Failed to run rue --emit ast: {}", e))?;
+
+            if !output.status.success() {
+                return Err(format!(
+                    "rue --emit ast failed:\n{}",
+                    String::from_utf8_lossy(&output.stderr)
+                )
+                .into());
+            }
+
+            let actual = String::from_utf8_lossy(&output.stdout);
+            // Strip the "=== AST ===" header for golden comparison
+            let actual = strip_emit_header(&actual, "AST");
+            check_golden(&actual, expected, "AST")?;
+        }
+
+        if let Some(ref expected) = case.expected_rir {
+            let output = Command::new(rue_binary)
+                .arg("--emit")
+                .arg("rir")
+                .arg(&source_path)
+                .output()
+                .map_err(|e| format!("Failed to run rue --emit rir: {}", e))?;
+
+            if !output.status.success() {
+                return Err(format!(
+                    "rue --emit rir failed:\n{}",
+                    String::from_utf8_lossy(&output.stderr)
+                )
+                .into());
+            }
+
+            let actual = String::from_utf8_lossy(&output.stdout);
+            // Strip the "=== RIR ===" header for golden comparison
+            let actual = strip_emit_header(&actual, "RIR");
             check_golden(&actual, expected, "RIR")?;
         }
 
         if let Some(ref expected) = case.expected_air {
             let output = Command::new(rue_binary)
-                .arg("--dump-air")
+                .arg("--emit")
+                .arg("air")
                 .arg(&source_path)
                 .output()
-                .map_err(|e| format!("Failed to run rue --dump-air: {}", e))?;
+                .map_err(|e| format!("Failed to run rue --emit air: {}", e))?;
 
             if !output.status.success() {
                 return Err(format!(
-                    "rue --dump-air failed:\n{}",
+                    "rue --emit air failed:\n{}",
                     String::from_utf8_lossy(&output.stderr)
                 )
                 .into());
             }
 
             let actual = String::from_utf8_lossy(&output.stdout);
+            // Strip the "=== AIR ===" header for golden comparison
+            let actual = strip_emit_header(&actual, "AIR");
             check_golden(&actual, expected, "AIR")?;
         }
 
         if let Some(ref expected) = case.expected_mir {
             let output = Command::new(rue_binary)
-                .arg("--dump-mir")
+                .arg("--emit")
+                .arg("mir")
                 .arg(&source_path)
                 .output()
-                .map_err(|e| format!("Failed to run rue --dump-mir: {}", e))?;
+                .map_err(|e| format!("Failed to run rue --emit mir: {}", e))?;
 
             if !output.status.success() {
                 return Err(format!(
-                    "rue --dump-mir failed:\n{}",
+                    "rue --emit mir failed:\n{}",
                     String::from_utf8_lossy(&output.stderr)
                 )
                 .into());
             }
 
             let actual = String::from_utf8_lossy(&output.stdout);
+            // Strip the "=== MIR ===" header for golden comparison
+            let actual = strip_emit_header(&actual, "MIR");
             check_golden(&actual, expected, "MIR")?;
         }
 

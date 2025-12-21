@@ -4,6 +4,8 @@
 //! It closely mirrors the source syntax and preserves all information
 //! needed for error reporting.
 
+use std::fmt;
+
 use rue_span::Span;
 
 /// A complete source file (list of items).
@@ -399,6 +401,215 @@ impl Expr {
             Expr::StructLit(struct_lit) => struct_lit.span,
             Expr::Field(field_expr) => field_expr.span,
             Expr::IntrinsicCall(intrinsic) => intrinsic.span,
+        }
+    }
+}
+
+// Display implementations for AST pretty-printing
+
+/// Helper for indented printing.
+struct AstPrinter<'a> {
+    ast: &'a Ast,
+}
+
+impl fmt::Display for Ast {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let printer = AstPrinter { ast: self };
+        printer.fmt(f)
+    }
+}
+
+impl<'a> fmt::Display for AstPrinter<'a> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        for item in &self.ast.items {
+            match item {
+                Item::Function(func) => fmt_function(f, func, 0)?,
+                Item::Struct(s) => fmt_struct(f, s, 0)?,
+            }
+        }
+        Ok(())
+    }
+}
+
+fn indent(f: &mut fmt::Formatter<'_>, level: usize) -> fmt::Result {
+    for _ in 0..level {
+        write!(f, "  ")?;
+    }
+    Ok(())
+}
+
+fn fmt_struct(f: &mut fmt::Formatter<'_>, s: &StructDecl, level: usize) -> fmt::Result {
+    indent(f, level)?;
+    writeln!(f, "Struct {}", s.name.name)?;
+    for field in &s.fields {
+        indent(f, level + 1)?;
+        writeln!(f, "Field {} : {}", field.name.name, field.ty.name)?;
+    }
+    Ok(())
+}
+
+fn fmt_function(f: &mut fmt::Formatter<'_>, func: &Function, level: usize) -> fmt::Result {
+    indent(f, level)?;
+    write!(f, "Function {}", func.name.name)?;
+    if !func.params.is_empty() {
+        write!(f, "(")?;
+        for (i, param) in func.params.iter().enumerate() {
+            if i > 0 {
+                write!(f, ", ")?;
+            }
+            write!(f, "{}: {}", param.name.name, param.ty.name)?;
+        }
+        write!(f, ")")?;
+    }
+    if let Some(ref ret) = func.return_type {
+        write!(f, " -> {}", ret.name)?;
+    }
+    writeln!(f)?;
+    fmt_expr(f, &func.body, level + 1)?;
+    Ok(())
+}
+
+fn fmt_expr(f: &mut fmt::Formatter<'_>, expr: &Expr, level: usize) -> fmt::Result {
+    indent(f, level)?;
+    match expr {
+        Expr::Int(lit) => writeln!(f, "Int({})", lit.value),
+        Expr::Bool(lit) => writeln!(f, "Bool({})", lit.value),
+        Expr::Ident(ident) => writeln!(f, "Ident({})", ident.name),
+        Expr::Binary(bin) => {
+            writeln!(f, "Binary {:?}", bin.op)?;
+            fmt_expr(f, &bin.left, level + 1)?;
+            fmt_expr(f, &bin.right, level + 1)
+        }
+        Expr::Unary(un) => {
+            writeln!(f, "Unary {:?}", un.op)?;
+            fmt_expr(f, &un.operand, level + 1)
+        }
+        Expr::Paren(paren) => {
+            writeln!(f, "Paren")?;
+            fmt_expr(f, &paren.inner, level + 1)
+        }
+        Expr::Block(block) => {
+            writeln!(f, "Block")?;
+            for stmt in &block.statements {
+                fmt_stmt(f, stmt, level + 1)?;
+            }
+            fmt_expr(f, &block.expr, level + 1)
+        }
+        Expr::If(if_expr) => {
+            writeln!(f, "If")?;
+            indent(f, level + 1)?;
+            writeln!(f, "Cond:")?;
+            fmt_expr(f, &if_expr.cond, level + 2)?;
+            indent(f, level + 1)?;
+            writeln!(f, "Then:")?;
+            fmt_block_expr(f, &if_expr.then_block, level + 2)?;
+            if let Some(ref else_block) = if_expr.else_block {
+                indent(f, level + 1)?;
+                writeln!(f, "Else:")?;
+                fmt_block_expr(f, else_block, level + 2)?;
+            }
+            Ok(())
+        }
+        Expr::Match(match_expr) => {
+            writeln!(f, "Match")?;
+            indent(f, level + 1)?;
+            writeln!(f, "Scrutinee:")?;
+            fmt_expr(f, &match_expr.scrutinee, level + 2)?;
+            for arm in &match_expr.arms {
+                indent(f, level + 1)?;
+                writeln!(f, "Arm {:?} =>", arm.pattern)?;
+                fmt_expr(f, &arm.body, level + 2)?;
+            }
+            Ok(())
+        }
+        Expr::While(while_expr) => {
+            writeln!(f, "While")?;
+            indent(f, level + 1)?;
+            writeln!(f, "Cond:")?;
+            fmt_expr(f, &while_expr.cond, level + 2)?;
+            indent(f, level + 1)?;
+            writeln!(f, "Body:")?;
+            fmt_block_expr(f, &while_expr.body, level + 2)
+        }
+        Expr::Loop(loop_expr) => {
+            writeln!(f, "Loop")?;
+            fmt_block_expr(f, &loop_expr.body, level + 1)
+        }
+        Expr::Call(call) => {
+            writeln!(f, "Call {}", call.name.name)?;
+            for arg in &call.args {
+                fmt_expr(f, arg, level + 1)?;
+            }
+            Ok(())
+        }
+        Expr::IntrinsicCall(intrinsic) => {
+            writeln!(f, "Intrinsic @{}", intrinsic.name.name)?;
+            for arg in &intrinsic.args {
+                fmt_expr(f, arg, level + 1)?;
+            }
+            Ok(())
+        }
+        Expr::Break(_) => writeln!(f, "Break"),
+        Expr::Continue(_) => writeln!(f, "Continue"),
+        Expr::Return(ret) => {
+            if let Some(ref value) = ret.value {
+                writeln!(f, "Return")?;
+                fmt_expr(f, value, level + 1)
+            } else {
+                writeln!(f, "Return (unit)")
+            }
+        }
+        Expr::StructLit(lit) => {
+            writeln!(f, "StructLit {}", lit.name.name)?;
+            for field in &lit.fields {
+                indent(f, level + 1)?;
+                writeln!(f, "{} =", field.name.name)?;
+                fmt_expr(f, &field.value, level + 2)?;
+            }
+            Ok(())
+        }
+        Expr::Field(field) => {
+            writeln!(f, "Field .{}", field.field.name)?;
+            fmt_expr(f, &field.base, level + 1)
+        }
+    }
+}
+
+fn fmt_block_expr(f: &mut fmt::Formatter<'_>, block: &BlockExpr, level: usize) -> fmt::Result {
+    for stmt in &block.statements {
+        fmt_stmt(f, stmt, level)?;
+    }
+    fmt_expr(f, &block.expr, level)
+}
+
+fn fmt_stmt(f: &mut fmt::Formatter<'_>, stmt: &Statement, level: usize) -> fmt::Result {
+    indent(f, level)?;
+    match stmt {
+        Statement::Let(let_stmt) => {
+            write!(f, "Let")?;
+            if let_stmt.is_mut {
+                write!(f, " mut")?;
+            }
+            write!(f, " {}", let_stmt.name.name)?;
+            if let Some(ref ty) = let_stmt.ty {
+                write!(f, ": {}", ty.name)?;
+            }
+            writeln!(f)?;
+            fmt_expr(f, &let_stmt.init, level + 1)
+        }
+        Statement::Assign(assign) => {
+            match &assign.target {
+                AssignTarget::Var(ident) => writeln!(f, "Assign {}", ident.name)?,
+                AssignTarget::Field(field) => {
+                    writeln!(f, "Assign field .{}", field.field.name)?;
+                    fmt_expr(f, &field.base, level + 1)?;
+                }
+            }
+            fmt_expr(f, &assign.value, level + 1)
+        }
+        Statement::Expr(expr) => {
+            writeln!(f, "ExprStmt")?;
+            fmt_expr(f, expr, level + 1)
         }
     }
 }

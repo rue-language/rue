@@ -128,3 +128,64 @@ pub struct Token {
     pub kind: TokenKind,
     pub span: Span,
 }
+
+impl std::fmt::Display for Token {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{:>4}..{:<4} {}",
+            self.span.start, self.span.end, self.kind
+        )
+    }
+}
+
+impl std::fmt::Display for TokenKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            TokenKind::Fn => write!(f, "FN"),
+            TokenKind::Let => write!(f, "LET"),
+            TokenKind::Mut => write!(f, "MUT"),
+            TokenKind::If => write!(f, "IF"),
+            TokenKind::Else => write!(f, "ELSE"),
+            TokenKind::Match => write!(f, "MATCH"),
+            TokenKind::While => write!(f, "WHILE"),
+            TokenKind::Loop => write!(f, "LOOP"),
+            TokenKind::Break => write!(f, "BREAK"),
+            TokenKind::Continue => write!(f, "CONTINUE"),
+            TokenKind::Return => write!(f, "RETURN"),
+            TokenKind::True => write!(f, "TRUE"),
+            TokenKind::False => write!(f, "FALSE"),
+            TokenKind::Struct => write!(f, "STRUCT"),
+            TokenKind::Underscore => write!(f, "UNDERSCORE"),
+            TokenKind::Int(v) => write!(f, "INT({})", v),
+            TokenKind::Ident(s) => write!(f, "IDENT({})", s),
+            TokenKind::Plus => write!(f, "PLUS"),
+            TokenKind::Minus => write!(f, "MINUS"),
+            TokenKind::Star => write!(f, "STAR"),
+            TokenKind::Slash => write!(f, "SLASH"),
+            TokenKind::Percent => write!(f, "PERCENT"),
+            TokenKind::Eq => write!(f, "EQ"),
+            TokenKind::EqEq => write!(f, "EQEQ"),
+            TokenKind::Bang => write!(f, "BANG"),
+            TokenKind::BangEq => write!(f, "BANGEQ"),
+            TokenKind::Lt => write!(f, "LT"),
+            TokenKind::Gt => write!(f, "GT"),
+            TokenKind::LtEq => write!(f, "LTEQ"),
+            TokenKind::GtEq => write!(f, "GTEQ"),
+            TokenKind::AmpAmp => write!(f, "AMPAMP"),
+            TokenKind::PipePipe => write!(f, "PIPEPIPE"),
+            TokenKind::LParen => write!(f, "LPAREN"),
+            TokenKind::RParen => write!(f, "RPAREN"),
+            TokenKind::LBrace => write!(f, "LBRACE"),
+            TokenKind::RBrace => write!(f, "RBRACE"),
+            TokenKind::Arrow => write!(f, "ARROW"),
+            TokenKind::FatArrow => write!(f, "FATARROW"),
+            TokenKind::Colon => write!(f, "COLON"),
+            TokenKind::Semi => write!(f, "SEMI"),
+            TokenKind::Comma => write!(f, "COMMA"),
+            TokenKind::Dot => write!(f, "DOT"),
+            TokenKind::At => write!(f, "AT"),
+            TokenKind::Eof => write!(f, "EOF"),
+        }
+    }
+}

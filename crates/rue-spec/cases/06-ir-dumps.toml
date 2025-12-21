@@ -3,6 +3,98 @@ id = "4.1"
 name = "IR Dumps"
 description = "Golden tests for intermediate representation dumps."
 
+# =============================================================================
+# Tokens
+# =============================================================================
+
+[[case]]
+name = "simple_return_tokens"
+source = "fn main() -> i32 { 42 }"
+expected_tokens = """
+   0..2    FN
+   3..7    IDENT(main)
+   7..8    LPAREN
+   8..9    RPAREN
+  10..12   ARROW
+  13..16   IDENT(i32)
+  17..18   LBRACE
+  19..21   INT(42)
+  22..23   RBRACE
+  23..23   EOF
+"""
+
+[[case]]
+name = "binary_expr_tokens"
+source = "fn main() -> i32 { 1 + 2 }"
+expected_tokens = """
+   0..2    FN
+   3..7    IDENT(main)
+   7..8    LPAREN
+   8..9    RPAREN
+  10..12   ARROW
+  13..16   IDENT(i32)
+  17..18   LBRACE
+  19..20   INT(1)
+  21..22   PLUS
+  23..24   INT(2)
+  25..26   RBRACE
+  26..26   EOF
+"""
+
+# =============================================================================
+# AST
+# =============================================================================
+
+[[case]]
+name = "simple_return_ast"
+source = "fn main() -> i32 { 42 }"
+expected_ast = """
+Function main -> i32
+  Block
+    Int(42)
+"""
+
+[[case]]
+name = "binary_expr_ast"
+source = "fn main() -> i32 { 1 + 2 }"
+expected_ast = """
+Function main -> i32
+  Block
+    Binary Add
+      Int(1)
+      Int(2)
+"""
+
+[[case]]
+name = "let_binding_ast"
+source = "fn main() -> i32 { let x = 42; x }"
+expected_ast = """
+Function main -> i32
+  Block
+    Let x
+      Int(42)
+    Ident(x)
+"""
+
+[[case]]
+name = "if_else_ast"
+source = "fn main() -> i32 { if true { 1 } else { 2 } }"
+expected_ast = """
+Function main -> i32
+  Block
+    If
+      Cond:
+        Bool(true)
+      Then:
+        Int(1)
+      Else:
+        Int(2)
+"""
+
+# =============================================================================
+# RIR
+# =============================================================================
+
 [[case]]
 name = "simple_return_rir"
 source = "fn main() -> i32 { 42 }"

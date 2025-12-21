@@ -43,20 +43,39 @@ You will need to source `~/.profile` before running any commands.
 ./buck2 run //crates/rue:rue -- source.rue output
 ./output
 
-# Dump intermediate representations
-./buck2 run //crates/rue:rue -- --dump-rir source.rue  # Untyped IR
-./buck2 run //crates/rue:rue -- --dump-air source.rue  # Typed IR
-./buck2 run //crates/rue:rue -- --dump-mir source.rue  # Machine IR
+# Emit intermediate representations (can specify multiple stages)
+./buck2 run //crates/rue:rue -- --emit tokens source.rue  # Lexer tokens
+./buck2 run //crates/rue:rue -- --emit ast source.rue     # Abstract syntax tree
+./buck2 run //crates/rue:rue -- --emit rir source.rue     # Untyped IR
+./buck2 run //crates/rue:rue -- --emit air source.rue     # Typed IR
+./buck2 run //crates/rue:rue -- --emit cfg source.rue     # Control flow graph
+./buck2 run //crates/rue:rue -- --emit mir source.rue     # Machine IR (virtual registers)
+./buck2 run //crates/rue:rue -- --emit asm source.rue     # Assembly (physical registers)
+
+# Chain multiple stages to see the full pipeline
+./buck2 run //crates/rue:rue -- --emit tokens --emit ast --emit rir source.rue
 ```
 
 ## Architecture
 
 The compiler pipeline transforms source through successive IRs:
 
+```mermaid
+graph LR
+    Source --> Lexer --> Parser --> AstGen --> Sema --> CfgBuilder --> Lower --> RegAlloc --> Emit --> Link
 ```
-Source → Lexer → Parser → AstGen → Sema → Lower → RegAlloc → Emit → Link
-         tokens   AST      RIR      AIR    X86Mir          bytes   ELF
-```
+
+| Stage | Pass | IR Produced | `--emit` flag |
+|-------|------|-------------|---------------|
+| 1 | Lexer | tokens | `tokens` |
+| 2 | Parser | AST | `ast` |
+| 3 | AstGen | RIR (untyped) | `rir` |
+| 4 | Sema | AIR (typed) | `air` |
+| 5 | CfgBuilder | CFG | `cfg` |
+| 6 | Lower | MIR (machine) | `mir` |
+| 7 | RegAlloc | MIR (allocated) | `asm` |
+| 8 | Emit | bytes | - |
+| 9 | Link | ELF | - |
 
 ### Crate Responsibilities
 

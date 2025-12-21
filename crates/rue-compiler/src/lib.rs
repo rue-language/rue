@@ -491,8 +491,29 @@ fn link_system_macos(
 }
 
 /// Generate X86Mir from CFG (for debugging/inspection).
+///
+/// This returns the MIR before register allocation, with virtual registers.
 pub fn generate_mir(cfg: &Cfg, struct_defs: &[StructDef]) -> X86Mir {
     rue_codegen::x86_64::CfgLower::new(cfg, struct_defs).lower()
+}
+
+/// Generate X86Mir after register allocation (for debugging/inspection).
+///
+/// This returns the MIR after register allocation, with physical registers.
+/// This is closer to the final assembly that will be emitted.
+pub fn generate_allocated_mir(cfg: &Cfg, struct_defs: &[StructDef]) -> X86Mir {
+    let num_locals = cfg.num_locals();
+    let num_params = cfg.num_params();
+
+    // Lower CFG to X86Mir with virtual registers
+    let mir = rue_codegen::x86_64::CfgLower::new(cfg, struct_defs).lower();
+
+    // Allocate physical registers
+    let existing_slots = num_locals + num_params;
+    let (mir, _num_spills, _used_callee_saved) =
+        rue_codegen::x86_64::RegAlloc::new(mir, existing_slots).allocate_with_spills();
+
+    mir
 }
 
 #[cfg(test)]

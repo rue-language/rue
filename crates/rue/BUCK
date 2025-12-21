@@ -2,6 +2,7 @@ rust_binary(
     name = "rue",
     srcs = ["src/main.rs"],
     deps = [
+        "//crates/rue-codegen:rue-codegen",
         "//crates/rue-compiler:rue-compiler",
         "//crates/rue-rir:rue-rir",
         "//crates/rue-target:rue-target",
