@@ -1,0 +1,71 @@
+name: Deploy Website
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'website/**'
+      - 'docs/spec/**'
+      - '.github/workflows/deploy-website.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: "pages"
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Setup dotslash
+        uses: facebook/install-dotslash@latest
+
+      - name: Build mdbook-spec preprocessor
+        run: |
+          ./buck2 build //docs/spec/tools/mdbook-spec:mdbook-spec || exit 1
+          MDBOOK_SPEC="$(./buck2 build //docs/spec/tools/mdbook-spec:mdbook-spec --show-output | tail -1 | awk '{print $2}')"
+          if [ -z "$MDBOOK_SPEC" ]; then echo "Failed to get mdbook-spec path"; exit 1; fi
+          MDBOOK_SPEC_DIR="$PWD/$(dirname "$MDBOOK_SPEC")"
+          # Create symlink with hyphenated name (buck2 uses underscores)
+          ln -sf mdbook_spec "$MDBOOK_SPEC_DIR/mdbook-spec" || { echo "Failed to create symlink"; exit 1; }
+          echo "MDBOOK_SPEC_DIR=$MDBOOK_SPEC_DIR" >> $GITHUB_ENV
+
+      - name: Build specification
+        run: |
+          export PATH="$MDBOOK_SPEC_DIR:$PATH"
+          cd docs/spec && ../../mdbook build
+
+      - name: Build website
+        run: cd website && ../zola build
+
+      - name: Combine outputs
+        run: |
+          mkdir -p website/public/spec
+          cp -r docs/spec/book/* website/public/spec/
+
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: website/public
+
+  deploy:
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

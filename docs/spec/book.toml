@@ -10,13 +10,14 @@ create-missing = false
 extra-watch-dirs = ["tools/mdbook-spec/src"]
 
 [preprocessor.spec]
-command = "cargo run --manifest-path tools/mdbook-spec/Cargo.toml --"
+command = "mdbook-spec"
 
 [output.html]
 git-repository-url = "https://github.com/rue-language/rue"
 edit-url-template = "https://github.com/rue-language/rue/edit/main/docs/spec/{path}"
 site-url = "/spec/"
 additional-css = ["theme/spec.css"]
+additional-js = ["theme/back-to-site.js"]
 
 [output.html.fold]
 enable = true

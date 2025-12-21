@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>{% block title %}{{ config.title }}{% endblock %}</title>
+    <meta name="description" content="{{ config.description }}">
+    <link rel="stylesheet" href="{{ get_url(path='style.css') }}">
+</head>
+<body>
+    <nav class="navbar">
+        <div class="container">
+            <a href="{{ get_url(path='/') }}" class="logo">Rue</a>
+            <ul class="nav-links">
+                <li><a href="{{ get_url(path='/') }}">Home</a></li>
+                <li><a href="{{ get_url(path='getting-started') }}">Get Started</a></li>
+                <li><a href="{{ get_url(path='spec/') }}">Specification</a></li>
+                <li><a href="{{ config.extra.github_url }}">GitHub</a></li>
+            </ul>
+        </div>
+    </nav>
+
+    <main>
+        {% block content %}{% endblock %}
+    </main>
+
+    <footer>
+        <div class="container">
+            <p>&copy; 2025 The Rue Authors. Licensed under MIT/Apache-2.0.</p>
+        </div>
+    </footer>
+</body>
+</html>

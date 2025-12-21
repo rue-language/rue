@@ -1,0 +1,15 @@
+# Rue Language Website
+base_url = "https://rue-lang.org"
+title = "Rue"
+description = "A systems programming language with memory safety and high-level ergonomics"
+compile_sass = true
+minify_html = true
+generate_feeds = true
+feed_filenames = ["rss.xml"]
+
+[markdown]
+highlight_code = true
+highlight_theme = "css"
+
+[extra]
+github_url = "https://github.com/rue-lang/rue"

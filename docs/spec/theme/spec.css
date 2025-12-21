@@ -1,6 +1,20 @@
 /* Rue specification rule styling */
 /* Inspired by the Rust Reference: https://github.com/rust-lang/reference */
 
+/* Back to main site link */
+.back-to-site {
+    color: var(--icons) !important;
+    text-decoration: none;
+    padding: 3px 12px 3px 0;
+    margin-right: 10px;
+    border-right: 1px solid var(--icons);
+    font-size: 0.9em;
+}
+
+.back-to-site:hover {
+    color: var(--icons-hover) !important;
+}
+
 /* 3-column grid layout: rules | content | margin */
 main {
     display: grid;

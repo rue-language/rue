@@ -1,0 +1,55 @@
+#!/usr/bin/env dotslash
+
+{
+  "name": "zola",
+  "platforms": {
+    "macos-aarch64": {
+      "size": 11400770,
+      "hash": "blake3",
+      "digest": "3c82d481166dc8c26334bb7a80a7f7f292cd4842dd0d5fb0ea768706326e0bfa",
+      "format": "tar.gz",
+      "path": "zola",
+      "providers": [
+        {
+          "url": "https://github.com/getzola/zola/releases/download/v0.21.0/zola-v0.21.0-aarch64-apple-darwin.tar.gz"
+        }
+      ]
+    },
+    "macos-x86_64": {
+      "size": 12246693,
+      "hash": "blake3",
+      "digest": "7af64cbfae6d64334224576dc4241ce3a967dd2709fec6d8afd3b537c9bfa826",
+      "format": "tar.gz",
+      "path": "zola",
+      "providers": [
+        {
+          "url": "https://github.com/getzola/zola/releases/download/v0.21.0/zola-v0.21.0-x86_64-apple-darwin.tar.gz"
+        }
+      ]
+    },
+    "linux-x86_64": {
+      "size": 12834025,
+      "hash": "blake3",
+      "digest": "2f40219d14b9943bc5876d4693514e1b1ceba8c88efd9cf5dbd6a9f614c2bde0",
+      "format": "tar.gz",
+      "path": "zola",
+      "providers": [
+        {
+          "url": "https://github.com/getzola/zola/releases/download/v0.21.0/zola-v0.21.0-x86_64-unknown-linux-gnu.tar.gz"
+        }
+      ]
+    },
+    "linux-aarch64": {
+      "size": 11884524,
+      "hash": "blake3",
+      "digest": "c5a08f70a9ee06404c3bf9b179ada5c6db6829ef73560df0ddcbbf9847b744f4",
+      "format": "tar.gz",
+      "path": "zola",
+      "providers": [
+        {
+          "url": "https://github.com/getzola/zola/releases/download/v0.21.0/zola-v0.21.0-aarch64-unknown-linux-gnu.tar.gz"
+        }
+      ]
+    }
+  }
+}

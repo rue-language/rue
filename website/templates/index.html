@@ -1,0 +1,32 @@
+{% extends "base.html" %}
+
+{% block content %}
+<section class="hero">
+    <div class="container">
+        <h1>{{ section.title }}</h1>
+        <p class="tagline">{{ section.extra.tagline }}</p>
+        <div class="cta-buttons">
+            <a href="{{ get_url(path='getting-started') }}" class="btn btn-primary">Get Started</a>
+            <a href="/spec/" class="btn btn-secondary">Read the Spec</a>
+        </div>
+    </div>
+</section>
+
+<section class="features">
+    <div class="container">
+        {% for feature in section.extra.features %}
+        <div class="feature">
+            <h2>{{ feature.title }}</h2>
+            <p>{{ feature.description }}</p>
+        </div>
+        {% endfor %}
+    </div>
+</section>
+
+<section class="example">
+    <div class="container">
+        <h2>Hello, Rue</h2>
+        {{ section.content | safe }}
+    </div>
+</section>
+{% endblock %}

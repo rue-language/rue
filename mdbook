@@ -1,0 +1,55 @@
+#!/usr/bin/env dotslash
+
+{
+  "name": "mdbook",
+  "platforms": {
+    "macos-aarch64": {
+      "size": 4461166,
+      "hash": "blake3",
+      "digest": "3d3f48b4ae0eb5c3ba75d5af276257d5e33366f1cc3ef27f6b81c40b23130133",
+      "format": "tar.gz",
+      "path": "mdbook",
+      "providers": [
+        {
+          "url": "https://github.com/rust-lang/mdBook/releases/download/v0.5.2/mdbook-v0.5.2-aarch64-apple-darwin.tar.gz"
+        }
+      ]
+    },
+    "macos-x86_64": {
+      "size": 4672976,
+      "hash": "blake3",
+      "digest": "0000d1ed8572652d307b8b2d6006d83120f3598bc758bc16d276df7eb431d9c8",
+      "format": "tar.gz",
+      "path": "mdbook",
+      "providers": [
+        {
+          "url": "https://github.com/rust-lang/mdBook/releases/download/v0.5.2/mdbook-v0.5.2-x86_64-apple-darwin.tar.gz"
+        }
+      ]
+    },
+    "linux-x86_64": {
+      "size": 4877218,
+      "hash": "blake3",
+      "digest": "f95093c74ed5b1f502db24843f8abb483de91ac0979148e371a9e2871222093a",
+      "format": "tar.gz",
+      "path": "mdbook",
+      "providers": [
+        {
+          "url": "https://github.com/rust-lang/mdBook/releases/download/v0.5.2/mdbook-v0.5.2-x86_64-unknown-linux-gnu.tar.gz"
+        }
+      ]
+    },
+    "linux-aarch64": {
+      "size": 4782745,
+      "hash": "blake3",
+      "digest": "d618b46302fea04a9fa99ecb3e3c4a9e1786c8875b0e7159a633e8f0f2fdd774",
+      "format": "tar.gz",
+      "path": "mdbook",
+      "providers": [
+        {
+          "url": "https://github.com/rust-lang/mdBook/releases/download/v0.5.2/mdbook-v0.5.2-aarch64-unknown-linux-musl.tar.gz"
+        }
+      ]
+    }
+  }
+}
