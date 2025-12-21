@@ -29,6 +29,6 @@ That's the idea anyway, we'll see what happens as it goes along. It might not!
 
 Rue is open source, but we're not seeking contributions at this time. Check out our [GitHub repository](https://github.com/rue-language/rue) to explore the code. If you kick the tires, please feel free to file issues though!
 
-If you're interested in following along with development, subscribe to our [RSS feed](/blog/rss.xml) to stay updated.
+If you're interested in following along with development, subscribe to our [RSS feed](/blog/rss.xml) or follow us on Bluesky at [@rue-lang.dev](https://bsky.app/profile/rue-lang.dev) to stay updated.
 
 Thanks for your interest in Rue. We're excited to share this journey with you!

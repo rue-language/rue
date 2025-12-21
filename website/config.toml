@@ -13,3 +13,4 @@ highlight_theme = "css"
 
 [extra]
 github_url = "https://github.com/rue-language/rue"
+bluesky_url = "https://bsky.app/profile/rue-lang.dev"
