@@ -909,3 +909,252 @@ fn main() -> i32 {
 }
 """
 exit_code = 1
+
+# =============================================================================
+# Compile-Time Integer Literal Range Validation
+# =============================================================================
+# These tests verify that integer literals exceeding the target type's range
+# are rejected at compile time with an appropriate error.
+
+[[case]]
+name = "i8_literal_out_of_range"
+spec = ["3.1:17"]
+description = "i8 literal exceeds maximum value (127)"
+source = """
+fn main() -> i8 {
+    128
+}
+"""
+compile_fail = true
+error_contains = "out of range"
+
+[[case]]
+name = "i8_literal_large_out_of_range"
+spec = ["3.1:17"]
+description = "Large literal assigned to i8"
+source = """
+fn main() -> i32 {
+    let x: i8 = 1000;
+    0
+}
+"""
+compile_fail = true
+error_contains = "out of range"
+
+[[case]]
+name = "i16_literal_out_of_range"
+spec = ["3.1:17"]
+description = "i16 literal exceeds maximum value (32767)"
+source = """
+fn main() -> i16 {
+    32768
+}
+"""
+compile_fail = true
+error_contains = "out of range"
+
+[[case]]
+name = "i32_literal_out_of_range"
+spec = ["3.1:17"]
+description = "i32 literal exceeds maximum value (2147483647)"
+source = """
+fn main() -> i32 {
+    2147483648
+}
+"""
+compile_fail = true
+error_contains = "out of range"
+
+[[case]]
+name = "i32_literal_very_large"
+spec = ["3.1:17"]
+description = "Very large literal assigned to i32"
+source = """
+fn main() -> i32 {
+    9999999999
+}
+"""
+compile_fail = true
+error_contains = "out of range"
+
+[[case]]
+name = "i64_literal_out_of_range"
+spec = ["3.1:17"]
+description = "i64 literal exceeds maximum value (9223372036854775807)"
+source = """
+fn main() -> i64 {
+    9223372036854775808
+}
+"""
+compile_fail = true
+error_contains = "out of range"
+
+[[case]]
+name = "u8_literal_out_of_range"
+spec = ["3.1:17"]
+description = "u8 literal exceeds maximum value (255)"
+source = """
+fn main() -> u8 {
+    256
+}
+"""
+compile_fail = true
+error_contains = "out of range"
+
+[[case]]
+name = "u16_literal_out_of_range"
+spec = ["3.1:17"]
+description = "u16 literal exceeds maximum value (65535)"
+source = """
+fn main() -> u16 {
+    65536
+}
+"""
+compile_fail = true
+error_contains = "out of range"
+
+[[case]]
+name = "u32_literal_out_of_range"
+spec = ["3.1:17"]
+description = "u32 literal exceeds maximum value (4294967295)"
+source = """
+fn main() -> u32 {
+    4294967296
+}
+"""
+compile_fail = true
+error_contains = "out of range"
+
+# Note: There is no u64_literal_out_of_range test because u64 can represent any
+# value that fits in the lexer's u64 representation. Literals exceeding u64::MAX
+# would fail during lexing, not during semantic analysis range checking.
+
+# =============================================================================
+# Valid Edge Cases (MIN values via negation)
+# =============================================================================
+# These tests verify that negated literals representing MIN values are accepted.
+
+[[case]]
+name = "i8_min_via_negation"
+spec = ["3.1:17"]
+description = "i8::MIN (-128) via negation is valid"
+source = """
+fn main() -> i32 {
+    let x: i8 = -128;
+    if x == -128 { 1 } else { 0 }
+}
+"""
+exit_code = 1
+
+[[case]]
+name = "i16_min_via_negation"
+spec = ["3.1:17"]
+description = "i16::MIN (-32768) via negation is valid"
+source = """
+fn main() -> i32 {
+    let x: i16 = -32768;
+    if x == -32768 { 1 } else { 0 }
+}
+"""
+exit_code = 1
+
+[[case]]
+name = "i32_min_via_negation"
+spec = ["3.1:17"]
+description = "i32::MIN (-2147483648) via negation is valid"
+source = """
+fn main() -> i32 {
+    let x: i32 = -2147483648;
+    if x == -2147483648 { 1 } else { 0 }
+}
+"""
+exit_code = 1
+
+[[case]]
+name = "i64_min_via_negation"
+spec = ["3.1:17"]
+description = "i64::MIN (-9223372036854775808) via negation is valid"
+source = """
+fn main() -> i32 {
+    let x: i64 = -9223372036854775808;
+    if x < 0 { 1 } else { 0 }
+}
+"""
+exit_code = 1
+
+# =============================================================================
+# Valid MAX Values
+# =============================================================================
+# These tests verify that literals at the MAX boundary are accepted.
+
+[[case]]
+name = "i8_max_boundary"
+spec = ["3.1:17"]
+description = "i8::MAX (127) is valid"
+source = """
+fn main() -> i32 {
+    let x: i8 = 127;
+    if x == 127 { 1 } else { 0 }
+}
+"""
+exit_code = 1
+
+[[case]]
+name = "i16_max_boundary"
+spec = ["3.1:17"]
+description = "i16::MAX (32767) is valid"
+source = """
+fn main() -> i32 {
+    let x: i16 = 32767;
+    if x == 32767 { 1 } else { 0 }
+}
+"""
+exit_code = 1
+
+[[case]]
+name = "i32_max_boundary"
+spec = ["3.1:17"]
+description = "i32::MAX (2147483647) is valid"
+source = """
+fn main() -> i32 {
+    let x: i32 = 2147483647;
+    if x == 2147483647 { 1 } else { 0 }
+}
+"""
+exit_code = 1
+
+[[case]]
+name = "u8_max_boundary"
+spec = ["3.1:17"]
+description = "u8::MAX (255) is valid"
+source = """
+fn main() -> i32 {
+    let x: u8 = 255;
+    if x == 255 { 1 } else { 0 }
+}
+"""
+exit_code = 1
+
+[[case]]
+name = "u16_max_boundary"
+spec = ["3.1:17"]
+description = "u16::MAX (65535) is valid"
+source = """
+fn main() -> i32 {
+    let x: u16 = 65535;
+    if x == 65535 { 1 } else { 0 }
+}
+"""
+exit_code = 1
+
+[[case]]
+name = "u32_max_boundary"
+spec = ["3.1:17"]
+description = "u32::MAX (4294967295) is valid"
+source = """
+fn main() -> i32 {
+    let x: u32 = 4294967295;
+    if x == 4294967295 { 1 } else { 0 }
+}
+"""
+exit_code = 1

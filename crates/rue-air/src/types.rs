@@ -186,6 +186,43 @@ impl Type {
     pub fn is_unsigned(&self) -> bool {
         matches!(self, Type::U8 | Type::U16 | Type::U32 | Type::U64)
     }
+
+    /// Check if a u64 value fits within the range of this integer type.
+    ///
+    /// For signed types, only the positive range is checked (0 to max positive).
+    /// Negation is handled separately to allow values like `-128` for i8.
+    ///
+    /// Returns `true` if the value fits, `false` otherwise.
+    /// For non-integer types, returns `false`.
+    #[must_use]
+    pub fn literal_fits(&self, value: u64) -> bool {
+        match self {
+            Type::I8 => value <= i8::MAX as u64,
+            Type::I16 => value <= i16::MAX as u64,
+            Type::I32 => value <= i32::MAX as u64,
+            Type::I64 => value <= i64::MAX as u64,
+            Type::U8 => value <= u8::MAX as u64,
+            Type::U16 => value <= u16::MAX as u64,
+            Type::U32 => value <= u32::MAX as u64,
+            Type::U64 => true, // Any u64 value fits in u64
+            _ => false,
+        }
+    }
+
+    /// Check if a u64 value can be negated to fit within the range of this signed integer type.
+    ///
+    /// This is used to allow literals like `2147483648` when negated to `-2147483648` (i32::MIN).
+    /// Returns `true` if the negated value fits, `false` otherwise.
+    #[must_use]
+    pub fn negated_literal_fits(&self, value: u64) -> bool {
+        match self {
+            Type::I8 => value <= (i8::MIN as i64).unsigned_abs(),
+            Type::I16 => value <= (i16::MIN as i64).unsigned_abs(),
+            Type::I32 => value <= (i32::MIN as i64).unsigned_abs(),
+            Type::I64 => value <= (i64::MIN).unsigned_abs(),
+            _ => false,
+        }
+    }
 }
 
 impl std::fmt::Display for Type {

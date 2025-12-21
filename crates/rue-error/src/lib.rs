@@ -216,6 +216,12 @@ pub enum ErrorKind {
         found: String,
     },
 
+    // Literal errors
+    LiteralOutOfRange {
+        value: u64,
+        ty: String,
+    },
+
     // Array errors
     IndexOnNonArray {
         found: String,
@@ -455,6 +461,13 @@ impl fmt::Display for ErrorKind {
                     f,
                     "intrinsic '@{}' expects {}, found {}",
                     name, expected, found
+                )
+            }
+            ErrorKind::LiteralOutOfRange { value, ty } => {
+                write!(
+                    f,
+                    "literal value {} is out of range for type '{}'",
+                    value, ty
                 )
             }
             ErrorKind::IndexOnNonArray { found } => {

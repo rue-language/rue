@@ -67,3 +67,18 @@ fn main() -> i32 {
     0
 }
 ```
+
+## Integer Literal Range Validation
+
+r[3.1.17#normative]
+A compile-time error occurs when an integer literal value exceeds the representable range of its target type.
+
+r[3.1.18]
+```rue
+fn main() -> i32 {
+    let x: i8 = 128;           // error: literal out of range for i8
+    let y: u8 = 256;           // error: literal out of range for u8
+    let z: i32 = 9999999999;   // error: literal out of range for i32
+    0
+}
+```

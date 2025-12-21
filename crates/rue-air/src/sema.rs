@@ -486,6 +486,17 @@ impl<'a> Sema<'a> {
                 let ty = expectation.integer_type();
                 expectation.check(ty, inst.span)?;
 
+                // Check if the literal value fits in the target type's range
+                if !ty.literal_fits(*value) {
+                    return Err(CompileError::new(
+                        ErrorKind::LiteralOutOfRange {
+                            value: *value,
+                            ty: ty.name().to_string(),
+                        },
+                        inst.span,
+                    ));
+                }
+
                 let air_ref = air.add_inst(AirInst {
                     data: AirInstData::Const(*value),
                     ty,
@@ -626,29 +637,35 @@ impl<'a> Sema<'a> {
             }
 
             InstData::Neg { operand } => {
-                // Special case: -2147483648 (MIN_I32)
-                // The literal 2147483648 exceeds i32::MAX, but -2147483648 is valid.
-                // We check this first regardless of expectation mode.
-                // Handle special case of negating 2^31 to get i32::MIN
+                // Special case: negating a literal that equals |MIN| for signed types.
+                // For example, -128 for i8, -32768 for i16, -2147483648 for i32, etc.
+                // The positive literal exceeds the signed MAX, but the negated value is valid.
                 let operand_inst = self.rir.get(*operand);
                 if let InstData::IntConst(value) = &operand_inst.data {
-                    if *value == 2147483648 {
-                        // Determine what type to use
-                        let ty = match expectation {
-                            TypeExpectation::Check(t) if t.is_integer() => t,
-                            _ => Type::I32,
+                    // Determine what type to use
+                    let ty = match expectation {
+                        TypeExpectation::Check(t) if t.is_integer() => t,
+                        _ => Type::I32,
+                    };
+
+                    // Check if this value, when negated, fits in the target signed type
+                    if ty.negated_literal_fits(*value) && !ty.literal_fits(*value) {
+                        // This is the MIN value case - the positive literal is out of range
+                        // but the negated value is exactly the MIN of this type.
+                        // Store the MIN value directly.
+                        let neg_value = match ty {
+                            Type::I8 => (i8::MIN as i64) as u64,
+                            Type::I16 => (i16::MIN as i64) as u64,
+                            Type::I32 => (i32::MIN as i64) as u64,
+                            Type::I64 => i64::MIN as u64,
+                            _ => unreachable!(),
                         };
-                        if ty == Type::I32 {
-                            // Store i32::MIN as its u64 bit pattern
-                            // i32::MIN = -2147483648, which as u64 bit pattern is 0xFFFFFFFF80000000
-                            // But we just need the 32-bit representation interpreted correctly
-                            let air_ref = air.add_inst(AirInst {
-                                data: AirInstData::Const((-2147483648_i32) as u32 as u64),
-                                ty,
-                                span: inst.span,
-                            });
-                            return Ok(AnalysisResult::new(air_ref, ty));
-                        }
+                        let air_ref = air.add_inst(AirInst {
+                            data: AirInstData::Const(neg_value),
+                            ty,
+                            span: inst.span,
+                        });
+                        return Ok(AnalysisResult::new(air_ref, ty));
                     }
                 }
 
