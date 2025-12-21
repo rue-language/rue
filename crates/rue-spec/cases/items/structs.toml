@@ -1,0 +1,175 @@
+[section]
+id = "items.structs"
+spec_chapter = "6.2"
+name = "Structs"
+description = "Struct definitions and struct expressions."
+
+# =============================================================================
+# Struct Definition
+# =============================================================================
+
+[[case]]
+name = "struct_basic"
+spec = ["6.2:1", "6.2:2"]
+source = """
+struct Point { x: i32, y: i32 }
+fn main() -> i32 {
+    let p = Point { x: 10, y: 20 };
+    p.x
+}
+"""
+exit_code = 10
+
+[[case]]
+name = "struct_single_field"
+spec = ["6.2:1"]
+source = """
+struct Wrapper { value: i32 }
+fn main() -> i32 {
+    let w = Wrapper { value: 42 };
+    w.value
+}
+"""
+exit_code = 42
+
+# =============================================================================
+# Unique Field Names
+# =============================================================================
+
+[[case]]
+name = "duplicate_field_names_error"
+spec = ["6.2:3"]
+source = """
+struct Bad { x: i32, x: i32 }
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+
+# =============================================================================
+# All Fields Must Be Initialized
+# =============================================================================
+
+[[case]]
+name = "all_fields_initialized"
+spec = ["6.2:5"]
+source = """
+struct Point { x: i32, y: i32 }
+fn main() -> i32 {
+    let p = Point { x: 10, y: 20 };
+    p.x + p.y
+}
+"""
+exit_code = 30
+
+[[case]]
+name = "missing_field_error"
+spec = ["6.2:5"]
+source = """
+struct Point { x: i32, y: i32 }
+fn main() -> i32 {
+    let p = Point { x: 10 };
+    p.x
+}
+"""
+compile_fail = true
+
+# =============================================================================
+# Field Initializers Must Be In Order
+# =============================================================================
+
+[[case]]
+name = "fields_in_order"
+spec = ["6.2:6"]
+source = """
+struct Point { x: i32, y: i32 }
+fn main() -> i32 {
+    let p = Point { x: 42, y: 10 };
+    p.x
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "fields_wrong_order_error"
+spec = ["6.2:6"]
+source = """
+struct Point { x: i32, y: i32 }
+fn main() -> i32 {
+    let p = Point { y: 10, x: 42 };
+    p.x
+}
+"""
+compile_fail = true
+error_contains = "order"
+
+# =============================================================================
+# Field Access
+# =============================================================================
+
+[[case]]
+name = "field_access_x"
+spec = ["6.2:8"]
+source = """
+struct Point { x: i32, y: i32 }
+fn main() -> i32 {
+    let p = Point { x: 42, y: 10 };
+    p.x
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "field_access_y"
+spec = ["6.2:8"]
+source = """
+struct Point { x: i32, y: i32 }
+fn main() -> i32 {
+    let p = Point { x: 10, y: 42 };
+    p.y
+}
+"""
+exit_code = 42
+
+# =============================================================================
+# Mutable Struct Field Assignment
+# =============================================================================
+
+[[case]]
+name = "mutable_field_assign"
+spec = ["6.2:9"]
+source = """
+struct Point { x: i32, y: i32 }
+fn main() -> i32 {
+    let mut p = Point { x: 10, y: 20 };
+    p.x = 42;
+    p.x
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "mutable_field_assign_both"
+spec = ["6.2:9"]
+source = """
+struct Point { x: i32, y: i32 }
+fn main() -> i32 {
+    let mut p = Point { x: 0, y: 0 };
+    p.x = 20;
+    p.y = 22;
+    p.x + p.y
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "immutable_field_assign_error"
+spec = ["6.2:9"]
+source = """
+struct Point { x: i32, y: i32 }
+fn main() -> i32 {
+    let p = Point { x: 10, y: 20 };
+    p.x = 42;
+    p.x
+}
+"""
+compile_fail = true

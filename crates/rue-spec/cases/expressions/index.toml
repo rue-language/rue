@@ -1,0 +1,121 @@
+[section]
+id = "expressions.index"
+spec_chapter = "4.11"
+name = "Index Expressions"
+description = "Index expressions access elements of arrays."
+
+# =============================================================================
+# Basic Array Indexing
+# =============================================================================
+
+[[case]]
+name = "index_first_element"
+spec = ["4.11:1", "4.11:2", "4.11:3"]
+source = """
+fn main() -> i32 {
+    let arr: [i32; 3] = [10, 20, 30];
+    arr[0]
+}
+"""
+exit_code = 10
+
+[[case]]
+name = "index_last_element"
+spec = ["4.11:1", "4.11:3"]
+source = """
+fn main() -> i32 {
+    let arr: [i32; 3] = [10, 20, 42];
+    arr[2]
+}
+"""
+exit_code = 42
+
+# =============================================================================
+# Index Type Must Be Integer
+# =============================================================================
+
+[[case]]
+name = "index_with_variable"
+spec = ["4.11:4"]
+source = """
+fn main() -> i32 {
+    let arr: [i32; 3] = [10, 20, 30];
+    let i = 1;
+    arr[i]
+}
+"""
+exit_code = 20
+
+[[case]]
+name = "index_type_bool_error"
+spec = ["4.11:4"]
+source = """
+fn main() -> i32 {
+    let arr: [i32; 3] = [10, 20, 30];
+    arr[true]
+}
+"""
+compile_fail = true
+
+# =============================================================================
+# Result Type is Element Type
+# =============================================================================
+
+[[case]]
+name = "index_result_type"
+spec = ["4.11:5"]
+source = """
+fn main() -> i32 {
+    let arr: [i32; 3] = [10, 20, 30];
+    let x: i32 = arr[1];
+    x
+}
+"""
+exit_code = 20
+
+# =============================================================================
+# Compile-Time Bounds Checking
+# =============================================================================
+
+[[case]]
+name = "constant_index_out_of_bounds"
+spec = ["4.11:7"]
+source = """
+fn main() -> i32 {
+    let arr: [i32; 3] = [10, 20, 30];
+    arr[5]
+}
+"""
+compile_fail = true
+
+# =============================================================================
+# Runtime Bounds Checking
+# =============================================================================
+
+[[case]]
+name = "runtime_index_out_of_bounds"
+spec = ["4.11:8", "4.11:9"]
+source = """
+fn main() -> i32 {
+    let arr: [i32; 3] = [10, 20, 30];
+    let i = 5;
+    arr[i]
+}
+"""
+exit_code = 101
+
+# =============================================================================
+# Mutable Array Element Assignment
+# =============================================================================
+
+[[case]]
+name = "mutable_array_assignment"
+spec = ["4.11:12"]
+source = """
+fn main() -> i32 {
+    let mut arr: [i32; 3] = [10, 20, 30];
+    arr[1] = 42;
+    arr[1]
+}
+"""
+exit_code = 42

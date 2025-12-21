@@ -1,0 +1,210 @@
+[section]
+id = "expressions.while"
+spec_chapter = "4.8"
+name = "While Loop Expressions"
+description = "While loops repeatedly execute their body while a condition is true."
+
+# =============================================================================
+# Basic While Loop
+# =============================================================================
+
+[[case]]
+name = "while_basic"
+spec = ["4.8:1", "4.8:2", "4.8:5"]
+source = """
+fn main() -> i32 {
+    let mut i = 0;
+    while i < 5 {
+        i = i + 1;
+    }
+    i
+}
+"""
+exit_code = 5
+
+[[case]]
+name = "while_false_condition"
+spec = ["4.8:1", "4.8:5"]
+source = """
+fn main() -> i32 {
+    let mut i = 0;
+    while false {
+        i = i + 1;
+    }
+    i
+}
+"""
+exit_code = 0
+
+# =============================================================================
+# Condition Must Be Bool
+# =============================================================================
+
+[[case]]
+name = "while_condition_must_be_bool"
+spec = ["4.8:3"]
+source = """
+fn main() -> i32 {
+    while 1 { }
+    0
+}
+"""
+compile_fail = true
+
+# =============================================================================
+# While Has Unit Type
+# =============================================================================
+
+[[case]]
+name = "while_has_unit_type"
+spec = ["4.8:4"]
+source = """
+fn main() -> i32 {
+    let mut i = 0;
+    while i < 3 { i = i + 1; }
+    i
+}
+"""
+exit_code = 3
+
+# =============================================================================
+# Break Expression
+# =============================================================================
+
+[[case]]
+name = "break_exits_loop"
+spec = ["4.8:7"]
+source = """
+fn main() -> i32 {
+    let mut i = 0;
+    while true {
+        i = i + 1;
+        if i == 5 { break }
+    }
+    i
+}
+"""
+exit_code = 5
+
+[[case]]
+name = "break_has_never_type"
+spec = ["4.8:10"]
+source = """
+fn main() -> i32 {
+    let mut i = 0;
+    while true {
+        i = i + 1;
+        if i == 5 { break }
+    }
+    i
+}
+"""
+exit_code = 5
+
+# =============================================================================
+# Continue Expression
+# =============================================================================
+
+[[case]]
+name = "continue_skips_iteration"
+spec = ["4.8:8"]
+source = """
+fn main() -> i32 {
+    let mut sum = 0;
+    let mut i = 0;
+    while i < 5 {
+        i = i + 1;
+        if i == 3 { continue }
+        sum = sum + i;
+    }
+    sum
+}
+"""
+exit_code = 12
+
+[[case]]
+name = "continue_has_never_type"
+spec = ["4.8:10"]
+source = """
+fn main() -> i32 {
+    let mut sum = 0;
+    let mut i = 0;
+    while i < 3 {
+        i = i + 1;
+        if i == 2 { continue }
+        sum = sum + i;
+    }
+    sum
+}
+"""
+exit_code = 4
+
+# =============================================================================
+# Break/Continue Must Be in Loop
+# =============================================================================
+
+[[case]]
+name = "break_outside_loop"
+spec = ["4.8:9"]
+source = """
+fn main() -> i32 {
+    break;
+    0
+}
+"""
+compile_fail = true
+
+[[case]]
+name = "continue_outside_loop"
+spec = ["4.8:9"]
+source = """
+fn main() -> i32 {
+    continue;
+    0
+}
+"""
+compile_fail = true
+
+# =============================================================================
+# Nested Loops
+# =============================================================================
+
+[[case]]
+name = "break_affects_innermost"
+spec = ["4.8:13"]
+source = """
+fn main() -> i32 {
+    let mut outer = 0;
+    while outer < 3 {
+        let mut inner = 0;
+        while true {
+            inner = inner + 1;
+            if inner == 2 { break }
+        }
+        outer = outer + 1;
+    }
+    outer
+}
+"""
+exit_code = 3
+
+[[case]]
+name = "continue_affects_innermost"
+spec = ["4.8:13"]
+source = """
+fn main() -> i32 {
+    let mut sum = 0;
+    let mut i = 0;
+    while i < 2 {
+        i = i + 1;
+        let mut j = 0;
+        while j < 3 {
+            j = j + 1;
+            if j == 2 { continue }
+            sum = sum + 1;
+        }
+    }
+    sum
+}
+"""
+exit_code = 4

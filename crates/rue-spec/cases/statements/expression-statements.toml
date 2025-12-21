@@ -1,0 +1,74 @@
+[section]
+id = "statements.expression"
+spec_chapter = "5.3"
+name = "Expression Statements"
+description = "An expression followed by a semicolon becomes an expression statement."
+
+# =============================================================================
+# Expression Followed by Semicolon
+# =============================================================================
+
+[[case]]
+name = "expression_statement_simple"
+spec = ["5.3:1", "5.3:2"]
+source = """
+fn returns_int() -> i32 { 42 }
+fn main() -> i32 {
+    returns_int();
+    10
+}
+"""
+exit_code = 10
+
+[[case]]
+name = "expression_statement_call"
+spec = ["5.3:1"]
+source = """
+fn do_something() {}
+fn main() -> i32 {
+    do_something();
+    42
+}
+"""
+exit_code = 42
+
+# =============================================================================
+# Value Is Discarded
+# =============================================================================
+
+[[case]]
+name = "value_discarded"
+spec = ["5.3:3"]
+source = """
+fn main() -> i32 {
+    42;
+    10
+}
+"""
+exit_code = 10
+
+[[case]]
+name = "side_effect_statement"
+spec = ["5.3:3"]
+source = """
+fn main() -> i32 {
+    let mut x = 0;
+    x = 42;
+    x
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "multiple_expression_statements"
+spec = ["5.3:1", "5.3:3"]
+source = """
+fn main() -> i32 {
+    let mut sum = 0;
+    sum = sum + 10;
+    sum = sum + 20;
+    sum = sum + 12;
+    sum
+}
+"""
+exit_code = 42

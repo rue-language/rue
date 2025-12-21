@@ -1,0 +1,127 @@
+[section]
+id = "expressions.return"
+spec_chapter = "4.9"
+name = "Return Expressions"
+description = "Return expressions exit the current function and provide a return value."
+
+# =============================================================================
+# Basic Return
+# =============================================================================
+
+[[case]]
+name = "return_basic"
+spec = ["4.9:1", "4.9:2"]
+source = """
+fn main() -> i32 {
+    return 42;
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "return_early"
+spec = ["4.9:1", "4.9:6"]
+source = """
+fn main() -> i32 {
+    return 42;
+    0
+}
+"""
+exit_code = 42
+
+# =============================================================================
+# Return Type Must Match
+# =============================================================================
+
+[[case]]
+name = "return_type_matches"
+spec = ["4.9:3"]
+source = """
+fn returns_i32() -> i32 { return 42; }
+fn main() -> i32 { returns_i32() }
+"""
+exit_code = 42
+
+[[case]]
+name = "return_type_mismatch"
+spec = ["4.9:3"]
+source = """
+fn main() -> i32 {
+    return true;
+}
+"""
+compile_fail = true
+
+# =============================================================================
+# Return Has Never Type
+# =============================================================================
+
+[[case]]
+name = "return_has_never_type"
+spec = ["4.9:4"]
+source = """
+fn main() -> i32 {
+    let x: i32 = if true { return 42 } else { 0 };
+    x
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "return_in_any_context"
+spec = ["4.9:7"]
+source = """
+fn test(x: i32) -> i32 {
+    let y = if x > 5 { return 100 } else { x };
+    y * 2
+}
+fn main() -> i32 { test(10) }
+"""
+exit_code = 100
+
+# =============================================================================
+# Function Execution
+# =============================================================================
+
+[[case]]
+name = "return_exits_immediately"
+spec = ["4.9:6"]
+source = """
+fn test() -> i32 {
+    return 42;
+}
+fn main() -> i32 { test() }
+"""
+exit_code = 42
+
+[[case]]
+name = "return_from_loop"
+spec = ["4.9:6"]
+source = """
+fn main() -> i32 {
+    let mut i = 0;
+    while true {
+        i = i + 1;
+        if i == 5 { return i; }
+    }
+    0
+}
+"""
+exit_code = 5
+
+[[case]]
+name = "return_from_nested_if"
+spec = ["4.9:6"]
+source = """
+fn test(x: i32) -> i32 {
+    if x > 10 {
+        if x > 20 {
+            return 100;
+        }
+        return 50;
+    }
+    return x;
+}
+fn main() -> i32 { test(25) }
+"""
+exit_code = 100

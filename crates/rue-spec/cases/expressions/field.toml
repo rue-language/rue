@@ -1,0 +1,96 @@
+[section]
+id = "expressions.field"
+spec_chapter = "4.12"
+name = "Field Access Expressions"
+description = "Field access expressions access fields of structs."
+
+# =============================================================================
+# Basic Field Access
+# =============================================================================
+
+[[case]]
+name = "field_access_basic"
+spec = ["4.12:1", "4.12:2", "4.12:3"]
+source = """
+struct Point { x: i32, y: i32 }
+fn main() -> i32 {
+    let p = Point { x: 42, y: 10 };
+    p.x
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "field_access_second_field"
+spec = ["4.12:1", "4.12:3"]
+source = """
+struct Point { x: i32, y: i32 }
+fn main() -> i32 {
+    let p = Point { x: 10, y: 42 };
+    p.y
+}
+"""
+exit_code = 42
+
+# =============================================================================
+# Field Must Exist
+# =============================================================================
+
+[[case]]
+name = "field_not_found"
+spec = ["4.12:4"]
+source = """
+struct Point { x: i32, y: i32 }
+fn main() -> i32 {
+    let p = Point { x: 10, y: 20 };
+    p.z
+}
+"""
+compile_fail = true
+
+# =============================================================================
+# Field Type
+# =============================================================================
+
+[[case]]
+name = "field_access_type"
+spec = ["4.12:5"]
+source = """
+struct Data { value: i32, flag: bool }
+fn main() -> i32 {
+    let d = Data { value: 42, flag: true };
+    let v: i32 = d.value;
+    v
+}
+"""
+exit_code = 42
+
+# =============================================================================
+# Mutable Field Assignment
+# =============================================================================
+
+[[case]]
+name = "mutable_field_assignment"
+spec = ["4.12:7"]
+source = """
+struct Point { x: i32, y: i32 }
+fn main() -> i32 {
+    let mut p = Point { x: 10, y: 20 };
+    p.x = 42;
+    p.x
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "immutable_field_assignment_error"
+spec = ["4.12:7"]
+source = """
+struct Point { x: i32, y: i32 }
+fn main() -> i32 {
+    let p = Point { x: 10, y: 20 };
+    p.x = 42;
+    p.x
+}
+"""
+compile_fail = true

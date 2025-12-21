@@ -1,0 +1,321 @@
+[section]
+id = "expressions.if"
+spec_chapter = "4.6"
+name = "If Expressions"
+description = "If expressions conditionally execute branches based on a boolean condition."
+
+# =============================================================================
+# Basic If Expression
+# =============================================================================
+
+[[case]]
+name = "if_condition_true"
+spec = ["4.6:1", "4.6:2", "4.6:7"]
+source = """
+fn main() -> i32 {
+    if true { 42 } else { 0 }
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "if_condition_false"
+spec = ["4.6:1", "4.6:7"]
+source = """
+fn main() -> i32 {
+    if false { 0 } else { 42 }
+}
+"""
+exit_code = 42
+
+# =============================================================================
+# Condition Must Be Bool
+# =============================================================================
+
+[[case]]
+name = "condition_must_be_bool"
+spec = ["4.6:3"]
+source = """
+fn main() -> i32 {
+    if 1 { 42 } else { 0 }
+}
+"""
+compile_fail = true
+
+[[case]]
+name = "condition_comparison_is_bool"
+spec = ["4.6:3"]
+source = """
+fn main() -> i32 {
+    if 5 > 3 { 42 } else { 0 }
+}
+"""
+exit_code = 42
+
+# =============================================================================
+# Both Branches Must Have Same Type
+# =============================================================================
+
+[[case]]
+name = "branches_same_type"
+spec = ["4.6:4"]
+source = """
+fn main() -> i32 {
+    let x = if true { 10 } else { 20 };
+    x
+}
+"""
+exit_code = 10
+
+[[case]]
+name = "branches_different_types"
+spec = ["4.6:4"]
+source = """
+fn main() -> i32 {
+    if true { 42 } else { true }
+}
+"""
+compile_fail = true
+
+# =============================================================================
+# No Else Branch Must Have Unit Type
+# =============================================================================
+
+[[case]]
+name = "no_else_unit_type"
+spec = ["4.6:5"]
+source = """
+fn main() -> i32 {
+    if true { }
+    42
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "no_else_non_unit_error"
+spec = ["4.6:5"]
+source = "fn main() -> i32 { if true { 42 } 0 }"
+compile_fail = true
+error_contains = "expected"
+
+[[case]]
+name = "no_else_non_unit_error_i64"
+spec = ["4.6:5"]
+source = """
+fn main() -> i32 {
+    let x: i64 = 100;
+    if true { x }
+    0
+}
+"""
+compile_fail = true
+error_contains = "expected"
+
+[[case]]
+name = "no_else_non_unit_error_bool"
+spec = ["4.6:5"]
+source = "fn main() -> i32 { if true { false } 0 }"
+compile_fail = true
+error_contains = "expected"
+
+[[case]]
+name = "if_without_else_unit_with_statement"
+spec = ["4.6:5"]
+source = """
+fn main() -> i32 {
+    let mut x = 0;
+    if true {
+        x = 42;
+    }
+    x
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "if_without_else_break"
+spec = ["4.6:5"]
+source = """
+fn main() -> i32 {
+    let mut x = 0;
+    while x < 10 {
+        if x == 5 { break; }
+        x = x + 1;
+    }
+    x
+}
+"""
+exit_code = 5
+
+[[case]]
+name = "if_without_else_return"
+spec = ["4.6:5"]
+source = """
+fn main() -> i32 {
+    if true { return 42; }
+    0
+}
+"""
+exit_code = 42
+
+# =============================================================================
+# Execution Semantics
+# =============================================================================
+
+[[case]]
+name = "execute_then_branch"
+spec = ["4.6:7"]
+source = """
+fn main() -> i32 {
+    let mut x = 0;
+    if true { x = 42; }
+    x
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "execute_else_branch"
+spec = ["4.6:7"]
+source = """
+fn main() -> i32 {
+    let mut x = 0;
+    if false { x = 10; } else { x = 42; }
+    x
+}
+"""
+exit_code = 42
+
+# =============================================================================
+# Nested If
+# =============================================================================
+
+[[case]]
+name = "nested_if"
+spec = ["4.6:1"]
+source = """
+fn main() -> i32 {
+    if true {
+        if false { 10 } else { 42 }
+    } else {
+        0
+    }
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "else_if_basic"
+spec = ["4.6:1"]
+source = """
+fn main() -> i32 {
+    let x = 2;
+    if x == 1 { 10 }
+    else if x == 2 { 20 }
+    else { 0 }
+}
+"""
+exit_code = 20
+
+[[case]]
+name = "else_if_chain"
+spec = ["4.6:1"]
+source = """
+fn main() -> i32 {
+    let x = 2;
+    if x == 1 { 10 }
+    else if x == 2 { 20 }
+    else if x == 3 { 30 }
+    else { 0 }
+}
+"""
+exit_code = 20
+
+[[case]]
+name = "else_if_first_branch"
+spec = ["4.6:1"]
+source = """
+fn main() -> i32 {
+    let x = 1;
+    if x == 1 { 10 }
+    else if x == 2 { 20 }
+    else if x == 3 { 30 }
+    else { 0 }
+}
+"""
+exit_code = 10
+
+[[case]]
+name = "else_if_last_branch"
+spec = ["4.6:1"]
+source = """
+fn main() -> i32 {
+    let x = 3;
+    if x == 1 { 10 }
+    else if x == 2 { 20 }
+    else if x == 3 { 30 }
+    else { 0 }
+}
+"""
+exit_code = 30
+
+[[case]]
+name = "else_if_fallthrough"
+spec = ["4.6:1"]
+source = """
+fn main() -> i32 {
+    let x = 99;
+    if x == 1 { 10 }
+    else if x == 2 { 20 }
+    else if x == 3 { 30 }
+    else { 0 }
+}
+"""
+exit_code = 0
+
+[[case]]
+name = "else_if_with_complex_conditions"
+spec = ["4.6:1"]
+source = """
+fn main() -> i32 {
+    let x = 15;
+    if x < 10 { 1 }
+    else if x < 20 { 2 }
+    else if x < 30 { 3 }
+    else { 4 }
+}
+"""
+exit_code = 2
+
+[[case]]
+name = "else_if_nested_in_else_if"
+spec = ["4.6:1"]
+source = """
+fn main() -> i32 {
+    let x = 2;
+    let y = 1;
+    if x == 1 { 10 }
+    else if x == 2 {
+        if y == 1 { 21 }
+        else if y == 2 { 22 }
+        else { 20 }
+    }
+    else { 0 }
+}
+"""
+exit_code = 21
+
+[[case]]
+name = "if_else_if_nested"
+spec = ["4.6:1"]
+source = """
+fn main() -> i32 {
+    let x = 2;
+    if x == 1 { 10 }
+    else { if x == 2 { 20 }
+    else { if x == 3 { 30 }
+    else { 0 } } }
+}
+"""
+exit_code = 20

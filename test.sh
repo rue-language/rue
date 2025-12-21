@@ -26,3 +26,9 @@ echo "Running spec tests..."
 RUE_BINARY="$RUE_BINARY" \
 RUE_SPEC_CASES="crates/rue-spec/cases" \
 ./buck2 run //crates/rue-spec:rue-spec -- "$@"
+
+# Run traceability check (fails if coverage < 100% or orphan references exist)
+echo "Running spec traceability check..."
+RUE_SPEC_DIR="docs/spec/src" \
+RUE_SPEC_CASES="crates/rue-spec/cases" \
+./buck2 run //crates/rue-spec:rue-spec -- --traceability

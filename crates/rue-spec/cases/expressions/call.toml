@@ -1,0 +1,100 @@
+[section]
+id = "expressions.call"
+spec_chapter = "4.10"
+name = "Call Expressions"
+description = "Function call expressions invoke functions with arguments."
+
+# =============================================================================
+# Basic Function Calls
+# =============================================================================
+
+[[case]]
+name = "call_no_args"
+spec = ["4.10:2", "4.10:3"]
+source = """
+fn foo() -> i32 { 42 }
+fn main() -> i32 { foo() }
+"""
+exit_code = 42
+
+[[case]]
+name = "call_one_arg"
+spec = ["4.10:3", "4.10:4"]
+source = """
+fn double(x: i32) -> i32 { x * 2 }
+fn main() -> i32 { double(21) }
+"""
+exit_code = 42
+
+[[case]]
+name = "call_multiple_args"
+spec = ["4.10:3", "4.10:4"]
+source = """
+fn add(x: i32, y: i32) -> i32 { x + y }
+fn main() -> i32 { add(20, 22) }
+"""
+exit_code = 42
+
+# =============================================================================
+# Argument Count Must Match
+# =============================================================================
+
+[[case]]
+name = "too_few_arguments"
+spec = ["4.10:3"]
+source = """
+fn add(x: i32, y: i32) -> i32 { x + y }
+fn main() -> i32 { add(42) }
+"""
+compile_fail = true
+
+[[case]]
+name = "too_many_arguments"
+spec = ["4.10:3"]
+source = """
+fn foo(x: i32) -> i32 { x }
+fn main() -> i32 { foo(1, 2) }
+"""
+compile_fail = true
+
+# =============================================================================
+# Argument Types Must Match
+# =============================================================================
+
+[[case]]
+name = "argument_type_mismatch"
+spec = ["4.10:4"]
+source = """
+fn foo(x: i32) -> i32 { x }
+fn main() -> i32 { foo(true) }
+"""
+compile_fail = true
+
+# =============================================================================
+# Return Type
+# =============================================================================
+
+[[case]]
+name = "call_return_type"
+spec = ["4.10:5"]
+source = """
+fn returns_i32() -> i32 { 42 }
+fn main() -> i32 {
+    let x: i32 = returns_i32();
+    x
+}
+"""
+exit_code = 42
+
+# =============================================================================
+# Argument Evaluation Order
+# =============================================================================
+
+[[case]]
+name = "args_left_to_right"
+spec = ["4.10:7"]
+source = """
+fn sub(x: i32, y: i32) -> i32 { x - y }
+fn main() -> i32 { sub(50, 8) }
+"""
+exit_code = 42

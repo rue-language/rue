@@ -1,0 +1,410 @@
+[section]
+id = "expressions.arithmetic"
+spec_chapter = "4.2"
+name = "Arithmetic Operators"
+description = "Arithmetic operators with standard precedence. Unary negation binds tightest, then multiplication/division/modulo, then addition/subtraction. Parentheses can override precedence."
+
+# =============================================================================
+# Basic Operations
+# =============================================================================
+
+[[case]]
+name = "addition_simple"
+spec = ["4.2:1"]
+source = "fn main() -> i32 { 1 + 2 }"
+exit_code = 3
+
+[[case]]
+name = "subtraction_simple"
+spec = ["4.2:1"]
+source = "fn main() -> i32 { 5 - 3 }"
+exit_code = 2
+
+[[case]]
+name = "multiplication_simple"
+spec = ["4.2:1"]
+source = "fn main() -> i32 { 3 * 4 }"
+exit_code = 12
+
+[[case]]
+name = "division_simple"
+spec = ["4.2:1"]
+source = "fn main() -> i32 { 10 / 3 }"
+exit_code = 3
+
+[[case]]
+name = "modulo_simple"
+spec = ["4.2:1"]
+source = "fn main() -> i32 { 10 % 3 }"
+exit_code = 1
+
+# =============================================================================
+# Operator Precedence
+# =============================================================================
+
+[[case]]
+name = "precedence_mul_over_add"
+spec = ["4.2:2"]
+source = "fn main() -> i32 { 1 + 2 * 3 }"
+exit_code = 7
+
+[[case]]
+name = "precedence_mul_over_sub"
+spec = ["4.2:2"]
+source = "fn main() -> i32 { 10 - 2 * 3 }"
+exit_code = 4
+
+[[case]]
+name = "precedence_div_over_add"
+spec = ["4.2:2"]
+source = "fn main() -> i32 { 1 + 6 / 2 }"
+exit_code = 4
+
+[[case]]
+name = "precedence_div_over_sub"
+spec = ["4.2:2"]
+source = "fn main() -> i32 { 10 - 6 / 2 }"
+exit_code = 7
+
+[[case]]
+name = "precedence_mod_over_add"
+spec = ["4.2:2"]
+source = "fn main() -> i32 { 1 + 7 % 3 }"
+exit_code = 2
+
+[[case]]
+name = "precedence_complex"
+spec = ["4.2:2"]
+source = "fn main() -> i32 { 2 + 3 * 4 - 10 / 2 }"
+exit_code = 9
+
+# =============================================================================
+# Parentheses
+# =============================================================================
+
+[[case]]
+name = "parens_override_precedence"
+spec = ["4.2:3"]
+source = "fn main() -> i32 { (1 + 2) * 3 }"
+exit_code = 9
+
+[[case]]
+name = "parens_nested"
+spec = ["4.2:3"]
+source = "fn main() -> i32 { ((1 + 2) * (3 + 4)) }"
+exit_code = 21
+
+[[case]]
+name = "parens_unnecessary"
+spec = ["4.2:3"]
+source = "fn main() -> i32 { (2) + (3) }"
+exit_code = 5
+
+[[case]]
+name = "parens_around_single"
+spec = ["4.2:3"]
+source = "fn main() -> i32 { (42) }"
+exit_code = 42
+
+[[case]]
+name = "parens_complex"
+spec = ["4.2:3"]
+source = "fn main() -> i32 { (10 - 2) * (3 + 1) / 4 }"
+exit_code = 8
+
+# =============================================================================
+# Associativity (left-to-right)
+# =============================================================================
+
+[[case]]
+name = "left_associative_sub"
+spec = ["4.2:4"]
+source = "fn main() -> i32 { 10 - 3 - 2 }"
+exit_code = 5
+
+[[case]]
+name = "left_associative_div"
+spec = ["4.2:4"]
+source = "fn main() -> i32 { 24 / 4 / 2 }"
+exit_code = 3
+
+[[case]]
+name = "left_associative_mod"
+spec = ["4.2:4"]
+source = "fn main() -> i32 { 17 % 10 % 3 }"
+exit_code = 1
+
+[[case]]
+name = "left_associative_mixed"
+spec = ["4.2:4"]
+source = "fn main() -> i32 { 100 - 50 + 20 - 10 }"
+exit_code = 60
+
+# =============================================================================
+# Edge Cases and Boundaries
+# =============================================================================
+
+[[case]]
+name = "add_to_zero"
+spec = ["4.2:1"]
+source = "fn main() -> i32 { 0 + 42 }"
+exit_code = 42
+
+[[case]]
+name = "multiply_by_zero"
+spec = ["4.2:1"]
+source = "fn main() -> i32 { 42 * 0 }"
+exit_code = 0
+
+[[case]]
+name = "multiply_by_one"
+spec = ["4.2:1"]
+source = "fn main() -> i32 { 42 * 1 }"
+exit_code = 42
+
+[[case]]
+name = "divide_by_one"
+spec = ["4.2:1"]
+source = "fn main() -> i32 { 42 / 1 }"
+exit_code = 42
+
+[[case]]
+name = "mod_by_larger"
+spec = ["4.2:1"]
+source = "fn main() -> i32 { 5 % 10 }"
+exit_code = 5
+
+[[case]]
+name = "mod_exact_multiple"
+spec = ["4.2:1"]
+source = "fn main() -> i32 { 10 % 5 }"
+exit_code = 0
+
+[[case]]
+name = "zero_divided"
+spec = ["4.2:1"]
+source = "fn main() -> i32 { 0 / 5 }"
+exit_code = 0
+
+[[case]]
+name = "zero_mod"
+spec = ["4.2:1"]
+source = "fn main() -> i32 { 0 % 5 }"
+exit_code = 0
+
+# =============================================================================
+# Exit Code Wrapping (result mod 256)
+# =============================================================================
+
+[[case]]
+name = "addition_wraps"
+spec = ["4.2:1"]
+source = "fn main() -> i32 { 200 + 100 }"
+exit_code = 44
+
+[[case]]
+name = "multiplication_wraps"
+spec = ["4.2:1"]
+source = "fn main() -> i32 { 20 * 15 }"
+exit_code = 44
+
+[[case]]
+name = "large_computation"
+spec = ["4.2:1"]
+source = "fn main() -> i32 { 100 * 100 }"
+exit_code = 16
+
+# =============================================================================
+# Whitespace Flexibility
+# =============================================================================
+
+[[case]]
+name = "no_spaces"
+spec = ["4.2:1"]
+source = "fn main() -> i32 { 1+2 }"
+exit_code = 3
+
+[[case]]
+name = "extra_spaces"
+spec = ["4.2:1"]
+source = "fn main() -> i32 { 1  +  2 }"
+exit_code = 3
+
+[[case]]
+name = "multiline_expr"
+spec = ["4.2:1"]
+source = """
+fn main() -> i32 {
+    1
+    + 2
+    * 3
+}
+"""
+exit_code = 7
+
+[[case]]
+name = "newline_after_operator"
+spec = ["4.2:1"]
+source = """
+fn main() -> i32 {
+    10 -
+    3
+}
+"""
+exit_code = 7
+
+# =============================================================================
+# Chained Operations
+# =============================================================================
+
+[[case]]
+name = "chain_addition"
+spec = ["4.2:1"]
+source = "fn main() -> i32 { 1 + 2 + 3 + 4 + 5 }"
+exit_code = 15
+
+[[case]]
+name = "chain_multiplication"
+spec = ["4.2:1"]
+source = "fn main() -> i32 { 2 * 3 * 4 }"
+exit_code = 24
+
+[[case]]
+name = "chain_mixed"
+spec = ["4.2:1", "4.2:2"]
+source = "fn main() -> i32 { 1 + 2 * 3 + 4 * 5 - 6 }"
+exit_code = 21
+
+# =============================================================================
+# Unary Negation
+# =============================================================================
+
+[[case]]
+name = "negation_simple"
+spec = ["4.2:5", "4.2:6"]
+source = "fn main() -> i32 { -1 }"
+exit_code = 255
+
+[[case]]
+name = "negation_larger"
+spec = ["4.2:5", "4.2:6"]
+source = "fn main() -> i32 { -42 }"
+exit_code = 214
+
+[[case]]
+name = "negation_zero"
+spec = ["4.2:5"]
+source = "fn main() -> i32 { -0 }"
+exit_code = 0
+
+[[case]]
+name = "negation_in_expression"
+spec = ["4.2:5"]
+source = "fn main() -> i32 { 10 + -3 }"
+exit_code = 7
+
+[[case]]
+name = "negation_binds_tighter_than_mul"
+spec = ["4.2:5", "4.2:2", "4.2:7"]
+source = "fn main() -> i32 { -2 * 3 }"
+exit_code = 250
+
+[[case]]
+name = "negation_of_expression"
+spec = ["4.2:5"]
+source = "fn main() -> i32 { -(1 + 2) }"
+exit_code = 253
+
+[[case]]
+name = "double_negation"
+spec = ["4.2:5"]
+source = "fn main() -> i32 { --5 }"
+exit_code = 5
+
+[[case]]
+name = "triple_negation"
+spec = ["4.2:5"]
+source = "fn main() -> i32 { ---5 }"
+exit_code = 251
+
+[[case]]
+name = "negation_with_parens"
+spec = ["4.2:5"]
+source = "fn main() -> i32 { (-10) + 15 }"
+exit_code = 5
+
+[[case]]
+name = "subtract_negative"
+spec = ["4.2:1", "4.2:5"]
+source = "fn main() -> i32 { 10 - -5 }"
+exit_code = 15
+
+[[case]]
+name = "multiply_negatives"
+spec = ["4.2:1", "4.2:5"]
+source = "fn main() -> i32 { -3 * -4 }"
+exit_code = 12
+
+[[case]]
+name = "divide_negative"
+spec = ["4.2:1", "4.2:5"]
+source = "fn main() -> i32 { -10 / 3 }"
+exit_code = 253
+
+[[case]]
+name = "negative_dividend"
+spec = ["4.2:1", "4.2:5"]
+source = "fn main() -> i32 { 10 / -3 }"
+exit_code = 253
+
+[[case]]
+name = "mod_negative"
+spec = ["4.2:1", "4.2:5"]
+source = "fn main() -> i32 { -10 % 3 }"
+exit_code = 255
+
+# =============================================================================
+# Runtime Errors
+# =============================================================================
+
+[[case]]
+name = "division_by_zero"
+spec = ["8.3:1", "4.2:11"]
+source = "fn main() -> i32 { 10 / 0 }"
+runtime_error = "division by zero"
+
+[[case]]
+name = "mod_by_zero"
+spec = ["8.3:1", "4.2:11"]
+source = "fn main() -> i32 { 10 % 0 }"
+runtime_error = "division by zero"
+
+[[case]]
+name = "division_by_zero_computed"
+spec = ["8.3:1", "4.2:11"]
+source = "fn main() -> i32 { 10 / (5 - 5) }"
+runtime_error = "division by zero"
+
+[[case]]
+name = "overflow_add"
+spec = ["8.1:1", "4.2:9"]
+source = "fn main() -> i32 { 2147483647 + 1 }"
+runtime_error = "integer overflow"
+
+[[case]]
+name = "overflow_sub"
+spec = ["8.1:1", "4.2:9"]
+source = "fn main() -> i32 { -2147483648 - 1 }"
+runtime_error = "integer overflow"
+
+[[case]]
+name = "overflow_mul"
+spec = ["8.1:1", "4.2:9"]
+source = "fn main() -> i32 { 2147483647 * 2 }"
+runtime_error = "integer overflow"
+
+[[case]]
+name = "overflow_neg"
+spec = ["8.1:1", "4.2:9"]
+source = "fn main() -> i32 { --2147483648 }"
+runtime_error = "integer overflow"

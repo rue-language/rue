@@ -1,0 +1,132 @@
+[section]
+id = "lexical.tokens"
+spec_chapter = "2.1"
+name = "Tokens"
+description = "Tokens are the atomic units of syntax: keywords, identifiers, literals, operators, delimiters."
+
+# =============================================================================
+# Integer Literals (syntax)
+# =============================================================================
+
+[[case]]
+name = "integer_literal_zero"
+spec = ["2.1:3", "2.1:4"]
+source = "fn main() -> i32 { 0 }"
+exit_code = 0
+
+[[case]]
+name = "integer_literal_single_digit"
+spec = ["2.1:3", "2.1:4"]
+source = "fn main() -> i32 { 7 }"
+exit_code = 7
+
+[[case]]
+name = "integer_literal_multiple_digits"
+spec = ["2.1:3", "2.1:4"]
+source = "fn main() -> i32 { 42 }"
+exit_code = 42
+
+[[case]]
+name = "integer_literal_large"
+spec = ["2.1:3", "2.1:4"]
+source = "fn main() -> i32 { 123456 }"
+exit_code = 64  # 123456 % 256
+
+[[case]]
+name = "integer_literal_default_i32"
+spec = ["2.1:4"]
+source = """
+fn main() -> i32 {
+    let x = 42;
+    x
+}
+"""
+exit_code = 42
+
+# =============================================================================
+# Identifiers (syntax and legality)
+# =============================================================================
+
+[[case]]
+name = "identifier_letter_start"
+spec = ["2.1:6"]
+source = """
+fn main() -> i32 {
+    let x = 42;
+    x
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "identifier_underscore_start"
+spec = ["2.1:6"]
+source = """
+fn main() -> i32 {
+    let _x = 42;
+    _x
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "identifier_with_digits"
+spec = ["2.1:6"]
+source = """
+fn main() -> i32 {
+    let x1 = 42;
+    x1
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "identifier_mixed"
+spec = ["2.1:6"]
+source = """
+fn main() -> i32 {
+    let my_var_123 = 42;
+    my_var_123
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "identifier_uppercase"
+spec = ["2.1:6"]
+source = """
+fn main() -> i32 {
+    let MyVar = 42;
+    MyVar
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "identifier_cannot_be_keyword_fn"
+spec = ["2.1:7"]
+source = "fn main() -> i32 { let fn = 1; fn }"
+compile_fail = true
+
+[[case]]
+name = "identifier_cannot_be_keyword_let"
+spec = ["2.1:7"]
+source = "fn main() -> i32 { let let = 1; 0 }"
+compile_fail = true
+
+[[case]]
+name = "identifier_cannot_be_keyword_if"
+spec = ["2.1:7"]
+source = "fn main() -> i32 { let if = 1; 0 }"
+compile_fail = true
+
+[[case]]
+name = "identifier_unused_underscore"
+spec = ["2.1:7"]
+source = """
+fn main() -> i32 {
+    let _ = 100;
+    42
+}
+"""
+exit_code = 42

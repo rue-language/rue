@@ -1,0 +1,842 @@
+[section]
+id = "types.integers"
+spec_chapter = "3.1"
+name = "Integer Types"
+description = "Signed and unsigned integer types: i8, i16, i32, i64, u8, u16, u32, u64"
+
+# =============================================================================
+# i8 Type
+# =============================================================================
+
+[[case]]
+name = "i8_return"
+spec = ["3.1:1", "3.1:2"]
+source = "fn main() -> i8 { 42 }"
+exit_code = 42
+
+[[case]]
+name = "i8_zero"
+spec = ["3.1:1", "3.1:2"]
+source = "fn main() -> i8 { 0 }"
+exit_code = 0
+
+[[case]]
+name = "i8_max_positive"
+spec = ["3.1:2"]
+source = "fn main() -> i8 { 127 }"
+exit_code = 127
+
+[[case]]
+name = "i8_variable"
+spec = ["3.1:1", "3.1:2"]
+source = """
+fn main() -> i8 {
+    let x: i8 = 50;
+    x
+}
+"""
+exit_code = 50
+
+[[case]]
+name = "i8_arithmetic"
+spec = ["3.1:1", "3.1:2"]
+source = """
+fn main() -> i8 {
+    let a: i8 = 10;
+    let b: i8 = 5;
+    a + b
+}
+"""
+exit_code = 15
+
+# =============================================================================
+# i16 Type
+# =============================================================================
+
+[[case]]
+name = "i16_return"
+spec = ["3.1:1", "3.1:3"]
+source = "fn main() -> i16 { 100 }"
+exit_code = 100
+
+[[case]]
+name = "i16_zero"
+spec = ["3.1:1", "3.1:3"]
+source = "fn main() -> i16 { 0 }"
+exit_code = 0
+
+[[case]]
+name = "i16_variable"
+spec = ["3.1:1", "3.1:3"]
+source = """
+fn main() -> i16 {
+    let x: i16 = 200;
+    x
+}
+"""
+exit_code = 200
+
+# =============================================================================
+# i32 Type
+# =============================================================================
+
+[[case]]
+name = "i32_return"
+spec = ["3.1:1", "3.1:4"]
+source = "fn main() -> i32 { 42 }"
+exit_code = 42
+
+[[case]]
+name = "i32_zero"
+spec = ["3.1:1", "3.1:4"]
+source = "fn main() -> i32 { 0 }"
+exit_code = 0
+
+[[case]]
+name = "i32_default_type"
+spec = ["3.1:14"]
+source = """
+fn main() -> i32 {
+    let x = 42;
+    x
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "i32_infer_from_context"
+spec = ["3.1:15"]
+source = """
+fn takes_i32(x: i32) -> i32 { x }
+fn main() -> i32 { takes_i32(42) }
+"""
+exit_code = 42
+
+# =============================================================================
+# i64 Type
+# =============================================================================
+
+[[case]]
+name = "i64_return"
+spec = ["3.1:1", "3.1:5"]
+source = "fn main() -> i64 { 42 }"
+exit_code = 42
+
+[[case]]
+name = "i64_zero"
+spec = ["3.1:1", "3.1:5"]
+source = "fn main() -> i64 { 0 }"
+exit_code = 0
+
+[[case]]
+name = "i64_variable"
+spec = ["3.1:1", "3.1:5"]
+source = """
+fn main() -> i64 {
+    let x: i64 = 123;
+    x
+}
+"""
+exit_code = 123
+
+# =============================================================================
+# u8 Type
+# =============================================================================
+
+[[case]]
+name = "u8_return"
+spec = ["3.1:8", "3.1:9"]
+source = "fn main() -> u8 { 42 }"
+exit_code = 42
+
+[[case]]
+name = "u8_zero"
+spec = ["3.1:8", "3.1:9"]
+source = "fn main() -> u8 { 0 }"
+exit_code = 0
+
+[[case]]
+name = "u8_max"
+spec = ["3.1:9"]
+source = "fn main() -> u8 { 255 }"
+exit_code = 255
+
+# =============================================================================
+# u16 Type
+# =============================================================================
+
+[[case]]
+name = "u16_return"
+spec = ["3.1:8", "3.1:10"]
+source = "fn main() -> u16 { 100 }"
+exit_code = 100
+
+[[case]]
+name = "u16_zero"
+spec = ["3.1:8", "3.1:10"]
+source = "fn main() -> u16 { 0 }"
+exit_code = 0
+
+# =============================================================================
+# u32 Type
+# =============================================================================
+
+[[case]]
+name = "u32_return"
+spec = ["3.1:8", "3.1:11"]
+source = "fn main() -> u32 { 42 }"
+exit_code = 42
+
+[[case]]
+name = "u32_zero"
+spec = ["3.1:8", "3.1:11"]
+source = "fn main() -> u32 { 0 }"
+exit_code = 0
+
+# =============================================================================
+# u64 Type
+# =============================================================================
+
+[[case]]
+name = "u64_return"
+spec = ["3.1:8", "3.1:12"]
+source = "fn main() -> u64 { 42 }"
+exit_code = 42
+
+[[case]]
+name = "u64_zero"
+spec = ["3.1:8", "3.1:12"]
+source = "fn main() -> u64 { 0 }"
+exit_code = 0
+
+# =============================================================================
+# Type Mismatch Errors
+# =============================================================================
+
+[[case]]
+name = "type_mismatch_i8_i32"
+spec = ["3.1:1"]
+source = """
+fn main() -> i32 {
+    let x: i8 = 42;
+    x
+}
+"""
+compile_fail = true
+
+[[case]]
+name = "type_mismatch_i32_u32"
+spec = ["3.1:1", "3.1:8"]
+source = """
+fn main() -> u32 {
+    let x: i32 = 42;
+    x
+}
+"""
+compile_fail = true
+
+# =============================================================================
+# Signed Integer Overflow (Runtime Panic - Exit 101)
+# =============================================================================
+
+[[case]]
+name = "i8_overflow_addition"
+spec = ["3.1:6"]
+source = """
+fn main() -> i8 {
+    let x: i8 = 127;
+    x + 1
+}
+"""
+exit_code = 101
+
+[[case]]
+name = "i8_overflow_subtraction"
+spec = ["3.1:6"]
+source = """
+fn main() -> i8 {
+    let x: i8 = -128;
+    x - 1
+}
+"""
+exit_code = 101
+
+[[case]]
+name = "i8_overflow_multiplication"
+spec = ["3.1:6"]
+source = """
+fn main() -> i8 {
+    let x: i8 = 16;
+    x * 16
+}
+"""
+exit_code = 101
+
+[[case]]
+name = "i16_overflow_addition"
+spec = ["3.1:6"]
+source = """
+fn main() -> i16 {
+    let x: i16 = 32767;
+    x + 1
+}
+"""
+exit_code = 101
+
+[[case]]
+name = "i16_overflow_subtraction"
+spec = ["3.1:6"]
+source = """
+fn main() -> i16 {
+    let x: i16 = -32768;
+    x - 1
+}
+"""
+exit_code = 101
+
+[[case]]
+name = "i32_overflow_multiplication"
+spec = ["3.1:6"]
+source = """
+fn main() -> i32 {
+    let x: i32 = 2147483647;
+    x * 2
+}
+"""
+exit_code = 101
+
+[[case]]
+name = "i64_overflow_addition"
+spec = ["3.1:6"]
+source = """
+fn main() -> i64 {
+    let x: i64 = 4611686018427387903;
+    let y: i64 = x + x;
+    y + x
+}
+"""
+exit_code = 101
+
+[[case]]
+name = "i64_overflow_subtraction"
+spec = ["3.1:6"]
+source = """
+fn main() -> i64 {
+    let x: i64 = -4611686018427387903;
+    let y: i64 = x + x;
+    y + x
+}
+"""
+exit_code = 101
+
+[[case]]
+name = "i64_overflow_multiplication"
+spec = ["3.1:6"]
+source = """
+fn main() -> i64 {
+    let x: i64 = 3037000500;
+    x * x
+}
+"""
+exit_code = 101
+
+# =============================================================================
+# Unsigned Integer Overflow (Runtime Panic - Exit 101)
+# =============================================================================
+
+[[case]]
+name = "u8_overflow_addition"
+spec = ["3.1:13"]
+source = """
+fn main() -> u8 {
+    let x: u8 = 255;
+    x + 1
+}
+"""
+exit_code = 101
+
+[[case]]
+name = "u8_overflow_addition_rhs"
+spec = ["3.1:13"]
+source = """
+fn main() -> u8 {
+    let x: u8 = 200;
+    let y: u8 = 100;
+    x + y
+}
+"""
+exit_code = 101
+
+[[case]]
+name = "u8_overflow_subtraction"
+spec = ["3.1:13"]
+source = """
+fn main() -> u8 {
+    let x: u8 = 0;
+    x - 1
+}
+"""
+exit_code = 101
+
+[[case]]
+name = "u8_overflow_multiplication"
+spec = ["3.1:13"]
+source = """
+fn main() -> u8 {
+    let x: u8 = 16;
+    x * 16
+}
+"""
+exit_code = 101
+
+[[case]]
+name = "u16_overflow_addition"
+spec = ["3.1:13"]
+source = """
+fn main() -> u16 {
+    let x: u16 = 65535;
+    x + 1
+}
+"""
+exit_code = 101
+
+[[case]]
+name = "u16_overflow_subtraction"
+spec = ["3.1:13"]
+source = """
+fn main() -> u16 {
+    let x: u16 = 0;
+    x - 1
+}
+"""
+exit_code = 101
+
+[[case]]
+name = "u32_overflow_addition"
+spec = ["3.1:13"]
+source = """
+fn main() -> u32 {
+    let x: u32 = 4294967295;
+    x + 1
+}
+"""
+exit_code = 101
+
+[[case]]
+name = "u32_overflow_subtraction"
+spec = ["3.1:13"]
+source = """
+fn main() -> u32 {
+    let x: u32 = 0;
+    x - 1
+}
+"""
+exit_code = 101
+
+[[case]]
+name = "u32_overflow_multiplication"
+spec = ["3.1:13"]
+source = """
+fn main() -> u32 {
+    let x: u32 = 100000;
+    x * 100000
+}
+"""
+exit_code = 101
+
+[[case]]
+name = "u64_overflow_addition"
+spec = ["3.1:13"]
+source = """
+fn main() -> u64 {
+    let x: u64 = 9223372036854775807;
+    let y: u64 = x + x;
+    y + x
+}
+"""
+exit_code = 101
+
+[[case]]
+name = "u64_overflow_subtraction"
+spec = ["3.1:13"]
+source = """
+fn main() -> u64 {
+    let x: u64 = 0;
+    x - 1
+}
+"""
+exit_code = 101
+
+# =============================================================================
+# Unsigned Negation Overflow
+# =============================================================================
+
+[[case]]
+name = "u8_negation_zero"
+spec = ["3.1:13"]
+source = """
+fn main() -> u8 {
+    let x: u8 = 0;
+    -x
+}
+"""
+exit_code = 0
+
+[[case]]
+name = "u8_negation_overflow"
+spec = ["3.1:13"]
+source = """
+fn main() -> u8 {
+    let x: u8 = 1;
+    -x
+}
+"""
+exit_code = 101
+
+[[case]]
+name = "u32_negation_zero"
+spec = ["3.1:13"]
+source = """
+fn main() -> u32 {
+    let x: u32 = 0;
+    -x
+}
+"""
+exit_code = 0
+
+[[case]]
+name = "u32_negation_overflow"
+spec = ["3.1:13"]
+source = """
+fn main() -> u32 {
+    let x: u32 = 1;
+    -x
+}
+"""
+exit_code = 101
+
+[[case]]
+name = "u64_negation_zero"
+spec = ["3.1:13"]
+source = """
+fn main() -> u64 {
+    let x: u64 = 0;
+    -x
+}
+"""
+exit_code = 0
+
+[[case]]
+name = "u64_negation_overflow"
+spec = ["3.1:13"]
+source = """
+fn main() -> u64 {
+    let x: u64 = 1;
+    -x
+}
+"""
+exit_code = 101
+
+# =============================================================================
+# Valid Arithmetic (No Overflow)
+# =============================================================================
+
+[[case]]
+name = "i8_near_max_no_overflow"
+spec = ["3.1:6"]
+source = """
+fn main() -> i8 {
+    let x: i8 = 126;
+    x + 1
+}
+"""
+exit_code = 127
+
+[[case]]
+name = "i16_near_max_no_overflow"
+spec = ["3.1:6"]
+source = """
+fn main() -> i32 {
+    let x: i16 = 32766;
+    let y: i16 = x + 1;
+    if y == 32767 { 42 } else { 0 }
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "i64_large_no_overflow"
+spec = ["3.1:6"]
+source = """
+fn main() -> i32 {
+    let x: i64 = 1000000000000;
+    let y: i64 = x + 1;
+    if y > 1000000000000 { 42 } else { 0 }
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "u8_near_max_no_overflow"
+spec = ["3.1:13"]
+source = """
+fn main() -> u8 {
+    let x: u8 = 254;
+    x + 1
+}
+"""
+exit_code = 255
+
+[[case]]
+name = "u32_near_max_no_overflow"
+spec = ["3.1:13"]
+source = """
+fn main() -> i32 {
+    let x: u32 = 4294967294;
+    let y: u32 = x + 1;
+    if y == 4294967295 { 42 } else { 0 }
+}
+"""
+exit_code = 42
+
+# =============================================================================
+# Bidirectional Type Inference for Literals (literal on left side)
+# =============================================================================
+# These tests verify that integer literals on the LEFT side of binary operators
+# correctly infer their type from the RIGHT operand. This enables code like
+# `100 == x` where x: i64 to work (literal adopts i64 type from x).
+
+# --- Comparison operators with literal on left ---
+
+[[case]]
+name = "literal_left_comparison_i64_eq"
+spec = ["3.1:15"]
+source = """
+fn main() -> i32 {
+    let x: i64 = 100;
+    if 100 == x { 1 } else { 0 }
+}
+"""
+exit_code = 1
+
+[[case]]
+name = "literal_left_comparison_i64_ne"
+spec = ["3.1:15"]
+source = """
+fn main() -> i32 {
+    let x: i64 = 100;
+    if 50 != x { 1 } else { 0 }
+}
+"""
+exit_code = 1
+
+[[case]]
+name = "literal_left_comparison_i64_lt"
+spec = ["3.1:15"]
+source = """
+fn main() -> i32 {
+    let x: i64 = 100;
+    if 50 < x { 1 } else { 0 }
+}
+"""
+exit_code = 1
+
+[[case]]
+name = "literal_left_comparison_i64_gt"
+spec = ["3.1:15"]
+source = """
+fn main() -> i32 {
+    let x: i64 = 50;
+    if 100 > x { 1 } else { 0 }
+}
+"""
+exit_code = 1
+
+[[case]]
+name = "literal_left_comparison_i64_le"
+spec = ["3.1:15"]
+source = """
+fn main() -> i32 {
+    let x: i64 = 100;
+    if 100 <= x { 1 } else { 0 }
+}
+"""
+exit_code = 1
+
+[[case]]
+name = "literal_left_comparison_i64_ge"
+spec = ["3.1:15"]
+source = """
+fn main() -> i32 {
+    let x: i64 = 100;
+    if 100 >= x { 1 } else { 0 }
+}
+"""
+exit_code = 1
+
+[[case]]
+name = "literal_left_comparison_i8"
+spec = ["3.1:15"]
+source = """
+fn main() -> i32 {
+    let x: i8 = 42;
+    if 42 == x { 1 } else { 0 }
+}
+"""
+exit_code = 1
+
+[[case]]
+name = "literal_left_comparison_u64"
+spec = ["3.1:15"]
+source = """
+fn main() -> i32 {
+    let x: u64 = 1000;
+    if 500 < x { 1 } else { 0 }
+}
+"""
+exit_code = 1
+
+[[case]]
+name = "literal_left_comparison_u8"
+spec = ["3.1:15"]
+source = """
+fn main() -> i32 {
+    let x: u8 = 200;
+    if 100 < x { 1 } else { 0 }
+}
+"""
+exit_code = 1
+
+# --- Arithmetic operators with literal on left ---
+
+[[case]]
+name = "literal_left_add_i64"
+spec = ["3.1:15"]
+source = """
+fn main() -> i32 {
+    let x: i64 = 100;
+    let result: i64 = 50 + x;
+    if result == 150 { 1 } else { 0 }
+}
+"""
+exit_code = 1
+
+[[case]]
+name = "literal_left_sub_i64"
+spec = ["3.1:15"]
+source = """
+fn main() -> i32 {
+    let x: i64 = 50;
+    let result: i64 = 100 - x;
+    if result == 50 { 1 } else { 0 }
+}
+"""
+exit_code = 1
+
+[[case]]
+name = "literal_left_mul_i64"
+spec = ["3.1:15"]
+source = """
+fn main() -> i32 {
+    let x: i64 = 10;
+    let result: i64 = 5 * x;
+    if result == 50 { 1 } else { 0 }
+}
+"""
+exit_code = 1
+
+[[case]]
+name = "literal_left_div_i64"
+spec = ["3.1:15"]
+source = """
+fn main() -> i32 {
+    let x: i64 = 10;
+    let result: i64 = 100 / x;
+    if result == 10 { 1 } else { 0 }
+}
+"""
+exit_code = 1
+
+[[case]]
+name = "literal_left_mod_i64"
+spec = ["3.1:15"]
+source = """
+fn main() -> i32 {
+    let x: i64 = 7;
+    let result: i64 = 100 % x;
+    if result == 2 { 1 } else { 0 }
+}
+"""
+exit_code = 1
+
+[[case]]
+name = "literal_left_add_u64"
+spec = ["3.1:15"]
+source = """
+fn main() -> i32 {
+    let x: u64 = 100;
+    let result: u64 = 50 + x;
+    if result == 150 { 1 } else { 0 }
+}
+"""
+exit_code = 1
+
+[[case]]
+name = "literal_left_add_i8"
+spec = ["3.1:15"]
+source = """
+fn main() -> i32 {
+    let x: i8 = 20;
+    let result: i8 = 10 + x;
+    if result == 30 { 1 } else { 0 }
+}
+"""
+exit_code = 1
+
+# --- Both operands are literals (should still default to i32) ---
+
+[[case]]
+name = "both_literals_comparison"
+spec = ["3.1:14"]
+source = """
+fn main() -> i32 {
+    if 100 == 100 { 1 } else { 0 }
+}
+"""
+exit_code = 1
+
+[[case]]
+name = "both_literals_arithmetic"
+spec = ["3.1:14"]
+source = """
+fn main() -> i32 {
+    50 + 50
+}
+"""
+exit_code = 100
+
+# --- Nested expressions with literals ---
+
+[[case]]
+name = "literal_left_complex_expr"
+spec = ["3.1:15"]
+source = """
+fn main() -> i32 {
+    let x: i64 = 50;
+    let y: i64 = 50;
+    if 100 == x + y { 1 } else { 0 }
+}
+"""
+exit_code = 1
+
+[[case]]
+name = "literal_left_function_call"
+spec = ["3.1:15"]
+source = """
+fn get_value() -> i64 { 42 }
+
+fn main() -> i32 {
+    if 42 == get_value() { 1 } else { 0 }
+}
+"""
+exit_code = 1

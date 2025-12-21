@@ -1,0 +1,76 @@
+[section]
+id = "types.unit"
+spec_chapter = "3.3"
+name = "Unit Type"
+description = "The unit type () has exactly one value, also written ()."
+
+# =============================================================================
+# Unit Type Definition
+# =============================================================================
+
+[[case]]
+name = "unit_explicit_return"
+spec = ["3.3:1", "3.3:2"]
+source = """
+fn returns_unit() -> () {}
+fn main() -> i32 {
+    returns_unit();
+    42
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "unit_implicit_return"
+spec = ["3.3:2"]
+source = """
+fn no_return_type() {}
+fn main() -> i32 {
+    no_return_type();
+    42
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "unit_side_effect_expression"
+spec = ["3.3:3"]
+source = """
+fn main() -> i32 {
+    let mut x = 0;
+    x = 42;  // Assignment produces ()
+    x
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "unit_while_loop_type"
+spec = ["3.3:3"]
+source = """
+fn main() -> i32 {
+    let mut i = 0;
+    while i < 3 {
+        i = i + 1;
+    }
+    i
+}
+"""
+exit_code = 3
+
+# =============================================================================
+# Unit Memory Representation (zero size)
+# =============================================================================
+
+[[case]]
+name = "unit_zero_size"
+spec = ["3.3:4"]
+source = """
+fn returns_unit() -> () {}
+fn main() -> i32 {
+    returns_unit();
+    returns_unit();
+    42
+}
+"""
+exit_code = 42

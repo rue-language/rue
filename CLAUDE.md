@@ -108,25 +108,53 @@ graph LR
 Add to relevant crate's source file with `#[cfg(test)]` modules. Ensure crate has `rust_test` target in its `BUCK` file.
 
 ### Specification Tests
-Add test cases to `.toml` files in `crates/rue-spec/cases/`:
+
+The specification test system provides traceability between the language specification and tests.
+
+#### Test Directory Structure
+
+Tests are organized in `crates/rue-spec/cases/` by language feature:
+
+```
+cases/
+├── lexical/          # Tokens, comments, whitespace
+├── types/            # Integer, boolean, unit, never types
+├── expressions/      # Literals, operators, control flow
+├── statements/       # Let, assignment, expression statements
+├── items/            # Functions, structs
+├── arrays/           # Fixed-size arrays
+├── runtime/          # Intrinsics, runtime behavior
+├── golden/           # IR dump tests
+└── errors/           # Compile-time error tests
+```
+
+#### Test Format
 
 ```toml
-# Run-pass test
+[section]
+id = "expressions.arithmetic"
+spec_chapter = "4.2"           # Links to spec chapter
+name = "Arithmetic Operators"
+
+# Run-pass test with spec traceability
 [[case]]
-name = "my_test"
-source = "fn main() -> i32 { 42 }"
-exit_code = 42
+name = "addition_basic"
+spec = ["4.2:1", "4.2:2"]      # Spec paragraphs this test covers
+source = "fn main() -> i32 { 1 + 2 }"
+exit_code = 3
 
 # Compile-fail test
 [[case]]
-name = "my_error_test"
-source = "fn main() { }"
+name = "type_mismatch"
+spec = ["4.2:5"]
+source = "fn main() -> i32 { 1 + true }"
 compile_fail = true
-error_contains = "expected '->'"
+error_contains = "type mismatch"
 
 # Golden test (exact IR output)
 [[case]]
-name = "my_golden_test"
+name = "simple_add_air"
+spec = ["4.2:1"]
 source = "fn main() -> i32 { 42 }"
 expected_air = """
 function main:
@@ -136,6 +164,80 @@ air (return_type: i32) {
 }
 """
 ```
+
+#### Spec Paragraph References
+
+The `spec` field links tests to specification paragraphs using the format `{chapter}.{section}:{paragraph}`:
+- `3.1:1` - Chapter 3, Section 1, Paragraph 1
+- `4.2:5` - Chapter 4, Section 2, Paragraph 5
+
+### Language Specification
+
+The formal language specification is in `docs/spec/` using mdBook format.
+
+#### Building the Spec
+
+```bash
+cd docs/spec && mdbook build
+# Output in docs/spec/book/
+```
+
+#### Spec Structure
+
+```
+docs/spec/src/
+├── SUMMARY.md              # Table of contents
+├── 01-introduction.md      # Conformance, definitions
+├── 02-lexical-structure/   # Tokens, comments, keywords
+├── 03-types/               # Type system
+├── 04-expressions/         # All expression forms
+├── 05-statements/          # Statement forms
+├── 06-items/               # Functions, structs
+├── 07-arrays/              # Array types
+├── 08-runtime-behavior/    # Overflow, bounds checking
+└── appendices/             # Grammar, UB summary
+```
+
+#### Spec Paragraph Format
+
+Each normative paragraph has an ID and category:
+
+```markdown
+<!-- spec:3.1:1 legality-rule -->
+A signed integer type is one of: `i8`, `i16`, `i32`, or `i64`.
+
+<!-- spec:3.1:2 dynamic-semantics -->
+Signed integer arithmetic that overflows causes a runtime panic.
+
+<!-- spec:3.1:3 example informative -->
+```rue
+let x: i32 = 42;
+```
+```
+
+**Paragraph categories:**
+- `legality-rule` - Compile-time requirements (normative)
+- `dynamic-semantics` - Runtime behavior (normative)
+- `syntax` - Grammar rules (normative)
+- `undefined-behavior` - UB conditions (normative)
+- `example` - Code examples (informative)
+- `informative` - Explanatory text (informative)
+
+#### Traceability Report
+
+Generate a report showing test coverage of spec paragraphs:
+
+```bash
+# Summary report
+./buck2 run //crates/rue-spec:rue-spec -- --traceability
+
+# Detailed matrix (shows all paragraphs and their covering tests)
+./buck2 run //crates/rue-spec:rue-spec -- --traceability --detailed
+```
+
+The traceability check is run as part of `./test.sh` and fails if:
+- Any spec paragraph has no covering test (coverage < 100%)
+- Any test references a non-existent spec paragraph ID
 
 ## Modifying the Grammar
 

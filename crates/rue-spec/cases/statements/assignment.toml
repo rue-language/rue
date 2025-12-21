@@ -1,0 +1,139 @@
+[section]
+id = "statements.assignment"
+spec_chapter = "5.2"
+name = "Assignment Statements"
+description = "Assignment modifies the value of a mutable variable, array element, or struct field."
+
+# =============================================================================
+# Variable Assignment
+# =============================================================================
+
+[[case]]
+name = "assign_simple"
+spec = ["5.2:1", "5.2:2", "5.2:3"]
+source = """
+fn main() -> i32 {
+    let mut x = 10;
+    x = 42;
+    x
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "assign_expression"
+spec = ["5.2:1", "5.2:4"]
+source = """
+fn main() -> i32 {
+    let mut x = 10;
+    x = 20 + 22;
+    x
+}
+"""
+exit_code = 42
+
+# =============================================================================
+# Must Be Mutable
+# =============================================================================
+
+[[case]]
+name = "assign_immutable_error"
+spec = ["5.2:3"]
+source = """
+fn main() -> i32 {
+    let x = 10;
+    x = 20;
+    x
+}
+"""
+compile_fail = true
+
+# =============================================================================
+# Type Must Be Compatible
+# =============================================================================
+
+[[case]]
+name = "assign_type_mismatch"
+spec = ["5.2:4"]
+source = """
+fn main() -> i32 {
+    let mut x: i32 = 10;
+    x = true;
+    x
+}
+"""
+compile_fail = true
+
+# =============================================================================
+# Array Element Assignment
+# =============================================================================
+
+[[case]]
+name = "assign_array_element"
+spec = ["5.2:6"]
+source = """
+fn main() -> i32 {
+    let mut arr: [i32; 3] = [10, 20, 30];
+    arr[1] = 42;
+    arr[1]
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "assign_immutable_array_error"
+spec = ["5.2:6"]
+source = """
+fn main() -> i32 {
+    let arr: [i32; 3] = [10, 20, 30];
+    arr[1] = 42;
+    arr[1]
+}
+"""
+compile_fail = true
+
+# =============================================================================
+# Struct Field Assignment
+# =============================================================================
+
+[[case]]
+name = "assign_struct_field"
+spec = ["5.2:8"]
+source = """
+struct Point { x: i32, y: i32 }
+fn main() -> i32 {
+    let mut p = Point { x: 10, y: 20 };
+    p.x = 42;
+    p.x
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "assign_immutable_struct_error"
+spec = ["5.2:8"]
+source = """
+struct Point { x: i32, y: i32 }
+fn main() -> i32 {
+    let p = Point { x: 10, y: 20 };
+    p.x = 42;
+    p.x
+}
+"""
+compile_fail = true
+
+# =============================================================================
+# Assignment Is Statement, Not Expression
+# =============================================================================
+
+[[case]]
+name = "assignment_not_expression"
+spec = ["5.2:10"]
+source = """
+fn main() -> i32 {
+    let mut x = 10;
+    let y = (x = 20);
+    x
+}
+"""
+compile_fail = true

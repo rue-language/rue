@@ -1,0 +1,123 @@
+[section]
+id = "types.arrays"
+spec_chapter = "3.5"
+name = "Array Types"
+description = "Array types [T; N] represent fixed-size collections of elements."
+
+# =============================================================================
+# Array Type Definition
+# =============================================================================
+
+[[case]]
+name = "array_type_i32"
+spec = ["3.5:1"]
+source = """
+fn main() -> i32 {
+    let arr: [i32; 3] = [10, 20, 30];
+    arr[0]
+}
+"""
+exit_code = 10
+
+[[case]]
+name = "array_type_bool"
+spec = ["3.5:1"]
+source = """
+fn main() -> i32 {
+    let arr: [bool; 2] = [true, false];
+    if arr[0] { 1 } else { 0 }
+}
+"""
+exit_code = 1
+
+# =============================================================================
+# Length Must Be Non-Negative Literal
+# =============================================================================
+
+[[case]]
+name = "array_length_literal"
+spec = ["3.5:2"]
+source = """
+fn main() -> i32 {
+    let arr: [i32; 5] = [1, 2, 3, 4, 5];
+    arr[4]
+}
+"""
+exit_code = 5
+
+# =============================================================================
+# All Elements Same Type
+# =============================================================================
+
+[[case]]
+name = "array_homogeneous"
+spec = ["3.5:3", "3.5:4"]
+source = """
+fn main() -> i32 {
+    let arr: [i32; 3] = [1, 2, 3];
+    arr[0] + arr[1] + arr[2]
+}
+"""
+exit_code = 6
+
+# =============================================================================
+# Index Syntax
+# =============================================================================
+
+[[case]]
+name = "array_index_syntax"
+spec = ["3.5:6"]
+source = """
+fn main() -> i32 {
+    let arr: [i32; 3] = [10, 42, 30];
+    arr[1]
+}
+"""
+exit_code = 42
+
+# =============================================================================
+# Compile-Time Bounds Checking
+# =============================================================================
+
+[[case]]
+name = "array_bounds_compile_time"
+spec = ["3.5:7"]
+source = """
+fn main() -> i32 {
+    let arr: [i32; 3] = [10, 20, 30];
+    arr[10]
+}
+"""
+compile_fail = true
+
+# =============================================================================
+# Runtime Bounds Checking
+# =============================================================================
+
+[[case]]
+name = "array_bounds_runtime"
+spec = ["3.5:8"]
+source = """
+fn main() -> i32 {
+    let arr: [i32; 3] = [10, 20, 30];
+    let i = 10;
+    arr[i]
+}
+"""
+exit_code = 101
+
+# =============================================================================
+# Out-of-Bounds Panic
+# =============================================================================
+
+[[case]]
+name = "array_out_of_bounds_panic"
+spec = ["3.5:9"]
+source = """
+fn main() -> i32 {
+    let arr: [i32; 3] = [10, 20, 30];
+    let i = 5;
+    arr[i]
+}
+"""
+exit_code = 101

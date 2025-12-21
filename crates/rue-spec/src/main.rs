@@ -2,8 +2,10 @@ use libtest_mimic::{Arguments, Failed, Trial};
 use serde::Deserialize;
 use std::fs;
 use std::io::Write;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
+
+mod traceability;
 
 /// A section of the spec containing multiple test cases.
 #[derive(Debug, Deserialize)]
@@ -12,8 +14,11 @@ struct Section {
     #[allow(dead_code)]
     name: String,
     #[allow(dead_code)]
-    #[serde(default)]
     description: String,
+    /// Optional reference to spec chapter (e.g., "3.1")
+    #[allow(dead_code)]
+    #[serde(default)]
+    spec_chapter: Option<String>,
 }
 
 /// A single test case.
@@ -67,6 +72,10 @@ struct Case {
     /// If true, verify no warnings were emitted
     #[serde(default)]
     no_warnings: bool,
+    /// Spec paragraph references (e.g., ["3.1:1", "3.1:2"])
+    #[allow(dead_code)]
+    #[serde(default)]
+    spec: Vec<String>,
 }
 
 /// A spec file containing a section and its cases.
@@ -77,7 +86,21 @@ struct SpecFile {
     case: Vec<Case>,
 }
 
-/// Load all spec files from the cases directory.
+/// Recursively collect all TOML files from a directory.
+fn collect_toml_files(dir: &Path, files: &mut Vec<PathBuf>) {
+    if let Ok(entries) = fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                collect_toml_files(&path, files);
+            } else if path.extension().is_some_and(|ext| ext == "toml") {
+                files.push(path);
+            }
+        }
+    }
+}
+
+/// Load all spec files from the cases directory (including subdirectories).
 fn load_spec_files(cases_dir: &Path) -> Vec<(String, SpecFile)> {
     let mut specs = Vec::new();
 
@@ -89,42 +112,39 @@ fn load_spec_files(cases_dir: &Path) -> Vec<(String, SpecFile)> {
         return specs;
     }
 
-    let entries = match fs::read_dir(cases_dir) {
-        Ok(entries) => entries,
-        Err(e) => {
-            eprintln!("Error reading cases directory: {}", e);
-            return specs;
-        }
-    };
+    // Collect all TOML files recursively
+    let mut toml_files = Vec::new();
+    collect_toml_files(cases_dir, &mut toml_files);
 
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.extension().is_some_and(|ext| ext == "toml") {
-            let content = match fs::read_to_string(&path) {
-                Ok(c) => c,
-                Err(e) => {
-                    eprintln!("Error reading {}: {}", path.display(), e);
-                    continue;
-                }
-            };
+    for path in toml_files {
+        let content = match fs::read_to_string(&path) {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!("Error reading {}: {}", path.display(), e);
+                continue;
+            }
+        };
 
-            match toml::from_str::<SpecFile>(&content) {
-                Ok(spec) => {
-                    let filename = path
-                        .file_stem()
-                        .and_then(|s| s.to_str())
-                        .unwrap_or("unknown")
-                        .to_string();
-                    specs.push((filename, spec));
-                }
-                Err(e) => {
-                    eprintln!("Error parsing {}: {}", path.display(), e);
-                }
+        match toml::from_str::<SpecFile>(&content) {
+            Ok(spec) => {
+                // Build a relative path from cases_dir to create the identifier
+                // e.g., "expressions/match" for "cases/expressions/match.toml"
+                let relative = path
+                    .strip_prefix(cases_dir)
+                    .unwrap_or(&path)
+                    .with_extension("");
+                let identifier = relative
+                    .to_string_lossy()
+                    .replace(std::path::MAIN_SEPARATOR, "/");
+                specs.push((identifier, spec));
+            }
+            Err(e) => {
+                eprintln!("Error parsing {}: {}", path.display(), e);
             }
         }
     }
 
-    // Sort by filename for deterministic ordering
+    // Sort by identifier for deterministic ordering
     specs.sort_by(|a, b| a.0.cmp(&b.0));
     specs
 }
@@ -460,7 +480,92 @@ fn run_test_case(case: &Case, rue_binary: &Path) -> Result<(), Failed> {
     Ok(())
 }
 
+/// Find the spec directory.
+fn find_spec_dir() -> PathBuf {
+    std::env::var("RUE_SPEC_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| {
+            let possible_paths = ["docs/spec/src", "../docs/spec/src", "../../docs/spec/src"];
+            for path in possible_paths {
+                let p = Path::new(path);
+                if p.exists() {
+                    return p.to_path_buf();
+                }
+            }
+            Path::new("docs/spec/src").to_path_buf()
+        })
+}
+
+/// Find the cases directory.
+fn find_cases_dir() -> PathBuf {
+    std::env::var("RUE_SPEC_CASES")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| {
+            let possible_paths = ["crates/rue-spec/cases", "cases", "../rue-spec/cases"];
+            for path in possible_paths {
+                let p = Path::new(path);
+                if p.exists() {
+                    return p.to_path_buf();
+                }
+            }
+            Path::new("cases").to_path_buf()
+        })
+}
+
+/// Run the traceability report.
+fn run_traceability(detailed: bool) {
+    let spec_dir = find_spec_dir();
+    let cases_dir = find_cases_dir();
+
+    if !spec_dir.exists() {
+        eprintln!("Error: Spec directory not found: {}", spec_dir.display());
+        eprintln!("Set RUE_SPEC_DIR environment variable or run from project root.");
+        std::process::exit(1);
+    }
+
+    if !cases_dir.exists() {
+        eprintln!("Error: Cases directory not found: {}", cases_dir.display());
+        eprintln!("Set RUE_SPEC_CASES environment variable or run from project root.");
+        std::process::exit(1);
+    }
+
+    let report = traceability::generate_report(&spec_dir, &cases_dir);
+
+    if detailed {
+        report.print_detailed();
+    } else {
+        report.print_summary();
+    }
+
+    // Exit with error if there are uncovered normative paragraphs or orphan references
+    // Informative paragraphs don't require test coverage
+    if report.normative_uncovered_count() > 0 || !report.orphan_references.is_empty() {
+        std::process::exit(1);
+    }
+}
+
 fn main() {
+    // Check for traceability flag before parsing libtest args
+    let raw_args: Vec<String> = std::env::args().collect();
+
+    if raw_args.iter().any(|a| a == "--traceability") {
+        let detailed = raw_args.iter().any(|a| a == "--detailed");
+        run_traceability(detailed);
+        return;
+    }
+
+    if raw_args.iter().any(|a| a == "--help-traceability") {
+        println!("Traceability Report Options:");
+        println!();
+        println!("  --traceability     Generate spec coverage report");
+        println!("  --detailed         Show detailed traceability matrix");
+        println!();
+        println!("Environment Variables:");
+        println!("  RUE_SPEC_DIR       Path to spec markdown files (default: docs/spec/src)");
+        println!("  RUE_SPEC_CASES     Path to test case files (default: crates/rue-spec/cases)");
+        return;
+    }
+
     let args = Arguments::from_args();
 
     // Find the rue binary - it should be built alongside this test runner
@@ -493,19 +598,7 @@ fn main() {
         });
 
     // Find the cases directory
-    let cases_dir = std::env::var("RUE_SPEC_CASES")
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(|_| {
-            // Try to find it relative to the current directory
-            let possible_paths = ["crates/rue-spec/cases", "cases", "../rue-spec/cases"];
-            for path in possible_paths {
-                let p = Path::new(path);
-                if p.exists() {
-                    return p.to_path_buf();
-                }
-            }
-            Path::new("cases").to_path_buf()
-        });
+    let cases_dir = find_cases_dir();
 
     // Load all spec files
     let specs = load_spec_files(&cases_dir);

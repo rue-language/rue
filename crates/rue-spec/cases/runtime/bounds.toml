@@ -1,0 +1,84 @@
+[section]
+id = "runtime.bounds"
+spec_chapter = "8.2"
+name = "Array Bounds Checking"
+description = "Out-of-bounds array access causes a runtime panic with exit code 101."
+
+# =============================================================================
+# Out-of-Bounds Causes Panic
+# =============================================================================
+
+[[case]]
+name = "out_of_bounds_panic"
+spec = ["8.2:1", "B.1:4"]
+source = """
+fn main() -> i32 {
+    let arr: [i32; 3] = [10, 20, 30];
+    let i = 5;
+    arr[i]
+}
+"""
+exit_code = 101
+
+# =============================================================================
+# Exit Code 101 on Out-of-Bounds
+# =============================================================================
+
+[[case]]
+name = "out_of_bounds_exit_101"
+spec = ["8.2:2"]
+source = """
+fn main() -> i32 {
+    let arr: [i32; 3] = [10, 20, 30];
+    let i = 10;
+    arr[i]
+}
+"""
+exit_code = 101
+
+# =============================================================================
+# Compile-Time Bounds Checking
+# =============================================================================
+
+[[case]]
+name = "constant_index_checked"
+spec = ["8.2:3"]
+source = """
+fn main() -> i32 {
+    let arr: [i32; 3] = [10, 20, 30];
+    arr[5]
+}
+"""
+compile_fail = true
+
+# =============================================================================
+# Runtime Bounds Checking
+# =============================================================================
+
+[[case]]
+name = "variable_index_checked_at_runtime"
+spec = ["8.2:4"]
+source = """
+fn main() -> i32 {
+    let arr: [i32; 3] = [10, 20, 30];
+    let i = 100;
+    arr[i]
+}
+"""
+exit_code = 101
+
+# =============================================================================
+# Negative Indices
+# =============================================================================
+
+[[case]]
+name = "negative_index_panic"
+spec = ["8.2:7"]
+source = """
+fn main() -> i32 {
+    let arr: [i32; 3] = [10, 20, 30];
+    let i: i32 = -1;
+    arr[i]
+}
+"""
+exit_code = 101

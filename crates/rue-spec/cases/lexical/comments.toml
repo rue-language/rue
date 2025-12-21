@@ -1,0 +1,91 @@
+[section]
+id = "lexical.comments"
+spec_chapter = "2.2"
+name = "Comments"
+description = "Line comments start with // and extend to the end of the line."
+
+# =============================================================================
+# Line Comments
+# =============================================================================
+
+[[case]]
+name = "line_comment_after_code"
+spec = ["2.2:1"]
+source = """
+fn main() -> i32 { 42 } // this is a comment
+"""
+exit_code = 42
+
+[[case]]
+name = "line_comment_before_code"
+spec = ["2.2:1"]
+source = """
+// this is a comment
+fn main() -> i32 { 42 }
+"""
+exit_code = 42
+
+[[case]]
+name = "line_comment_between_tokens"
+spec = ["2.2:1"]
+source = """
+fn main() -> i32 {
+    // return value
+    42
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "multiple_line_comments"
+spec = ["2.2:1"]
+source = """
+// first comment
+// second comment
+fn main() -> i32 { 42 }
+// trailing comment
+"""
+exit_code = 42
+
+[[case]]
+name = "empty_comment"
+spec = ["2.2:1"]
+source = """
+//
+fn main() -> i32 { 42 }
+"""
+exit_code = 42
+
+[[case]]
+name = "comment_with_slashes"
+spec = ["2.2:1"]
+source = """
+// this // has // multiple // slashes
+fn main() -> i32 { 42 }
+"""
+exit_code = 42
+
+# =============================================================================
+# Comments Discarded During Lexing
+# =============================================================================
+
+[[case]]
+name = "comment_content_not_parsed"
+spec = ["2.2:2"]
+source = """
+// invalid syntax in comment: fn { } -> let
+fn main() -> i32 { 42 }
+"""
+exit_code = 42
+
+[[case]]
+name = "comment_does_not_affect_code"
+spec = ["2.2:2"]
+source = """
+fn main() -> i32 {
+    let x = 10; // x is ten
+    let y = 20; // y is twenty
+    x + y       // return sum
+}
+"""
+exit_code = 30

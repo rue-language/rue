@@ -1,0 +1,116 @@
+[section]
+id = "lexical.whitespace"
+spec_chapter = "2.3"
+name = "Whitespace"
+description = "Whitespace (spaces, tabs, newlines) is ignored between tokens."
+
+# =============================================================================
+# Whitespace Handling
+# =============================================================================
+
+[[case]]
+name = "minimal_whitespace"
+spec = ["2.3:1"]
+source = "fn main()->i32{42}"
+exit_code = 42
+
+[[case]]
+name = "extra_spaces"
+spec = ["2.3:1"]
+source = "fn   main()   ->   i32   {   42   }"
+exit_code = 42
+
+[[case]]
+name = "tabs"
+spec = ["2.3:1"]
+source = "fn\tmain()\t->\ti32\t{\t42\t}"
+exit_code = 42
+
+[[case]]
+name = "newlines"
+spec = ["2.3:1"]
+source = """
+fn
+main
+(
+)
+->
+i32
+{
+42
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "mixed_whitespace"
+spec = ["2.3:1"]
+source = """
+fn 	main()
+	-> i32 {
+		42
+	}
+"""
+exit_code = 42
+
+[[case]]
+name = "leading_whitespace"
+spec = ["2.3:1"]
+source = """
+
+   fn main() -> i32 { 42 }
+"""
+exit_code = 42
+
+[[case]]
+name = "trailing_whitespace"
+spec = ["2.3:1"]
+source = """
+fn main() -> i32 { 42 }
+
+"""
+exit_code = 42
+
+# =============================================================================
+# Whitespace Ignored Between Tokens
+# =============================================================================
+
+[[case]]
+name = "whitespace_separates_keywords"
+spec = ["2.3:2"]
+source = "fn main() -> i32 { let x = 42; x }"
+exit_code = 42
+
+[[case]]
+name = "no_whitespace_between_operators"
+spec = ["2.3:2"]
+source = "fn main() -> i32 { 1+2+3 }"
+exit_code = 6
+
+# =============================================================================
+# Multiple Whitespace Equivalent to Single
+# =============================================================================
+
+[[case]]
+name = "multiple_spaces_equivalent"
+spec = ["2.3:3"]
+source = "fn main() -> i32 {     42     }"
+exit_code = 42
+
+[[case]]
+name = "multiple_newlines_equivalent"
+spec = ["2.3:3"]
+source = """
+
+
+fn main() -> i32 {
+
+
+    42
+
+
+}
+
+
+"""
+exit_code = 42

@@ -1,0 +1,193 @@
+[section]
+id = "lexical.keywords"
+spec_chapter = "2.4"
+name = "Keywords and Reserved Words"
+description = "Keywords are reserved words with special meaning and cannot be used as identifiers."
+
+# =============================================================================
+# Keywords Cannot Be Used as Identifiers
+# =============================================================================
+
+[[case]]
+name = "keyword_fn_reserved"
+spec = ["2.4:1", "2.4:2"]
+source = "fn main() -> i32 { let fn = 1; fn }"
+compile_fail = true
+
+[[case]]
+name = "keyword_let_reserved"
+spec = ["2.4:1", "2.4:2"]
+source = "fn main() -> i32 { let let = 1; 0 }"
+compile_fail = true
+
+[[case]]
+name = "keyword_mut_reserved"
+spec = ["2.4:1", "2.4:2"]
+source = "fn main() -> i32 { let mut = 1; 0 }"
+compile_fail = true
+
+[[case]]
+name = "keyword_if_reserved"
+spec = ["2.4:1", "2.4:2"]
+source = "fn main() -> i32 { let if = 1; 0 }"
+compile_fail = true
+
+[[case]]
+name = "keyword_else_reserved"
+spec = ["2.4:1", "2.4:2"]
+source = "fn main() -> i32 { let else = 1; 0 }"
+compile_fail = true
+
+[[case]]
+name = "keyword_while_reserved"
+spec = ["2.4:1", "2.4:2"]
+source = "fn main() -> i32 { let while = 1; 0 }"
+compile_fail = true
+
+[[case]]
+name = "keyword_match_reserved"
+spec = ["2.4:1", "2.4:2"]
+source = "fn main() -> i32 { let match = 1; 0 }"
+compile_fail = true
+
+[[case]]
+name = "keyword_return_reserved"
+spec = ["2.4:1", "2.4:2"]
+source = "fn main() -> i32 { let return = 1; 0 }"
+compile_fail = true
+
+[[case]]
+name = "keyword_break_reserved"
+spec = ["2.4:1", "2.4:2"]
+source = "fn main() -> i32 { let break = 1; 0 }"
+compile_fail = true
+
+[[case]]
+name = "keyword_continue_reserved"
+spec = ["2.4:1", "2.4:2"]
+source = "fn main() -> i32 { let continue = 1; 0 }"
+compile_fail = true
+
+[[case]]
+name = "keyword_true_reserved"
+spec = ["2.4:1", "2.4:2"]
+source = "fn main() -> i32 { let true = 1; 0 }"
+compile_fail = true
+
+[[case]]
+name = "keyword_false_reserved"
+spec = ["2.4:1", "2.4:2"]
+source = "fn main() -> i32 { let false = 1; 0 }"
+compile_fail = true
+
+[[case]]
+name = "keyword_struct_reserved"
+spec = ["2.4:1", "2.4:2"]
+source = "fn main() -> i32 { let struct = 1; 0 }"
+compile_fail = true
+
+# =============================================================================
+# Type Names Are Reserved
+# =============================================================================
+
+[[case]]
+name = "type_i8_as_variable"
+spec = ["2.4:3"]
+source = """
+fn main() -> i32 {
+    let i8 = 42;
+    0
+}
+"""
+compile_fail = true
+
+[[case]]
+name = "type_i16_as_variable"
+spec = ["2.4:3"]
+source = """
+fn main() -> i32 {
+    let i16 = 42;
+    0
+}
+"""
+compile_fail = true
+
+[[case]]
+name = "type_i32_as_variable"
+spec = ["2.4:3"]
+source = """
+fn main() -> i32 {
+    let i32 = 42;
+    0
+}
+"""
+compile_fail = true
+
+[[case]]
+name = "type_i64_as_variable"
+spec = ["2.4:3"]
+source = """
+fn main() -> i32 {
+    let i64 = 42;
+    0
+}
+"""
+compile_fail = true
+
+[[case]]
+name = "type_u8_as_variable"
+spec = ["2.4:3"]
+source = """
+fn main() -> i32 {
+    let u8 = 42;
+    0
+}
+"""
+compile_fail = true
+
+[[case]]
+name = "type_bool_as_variable"
+spec = ["2.4:3"]
+source = """
+fn main() -> i32 {
+    let bool = 42;
+    0
+}
+"""
+compile_fail = true
+
+[[case]]
+name = "type_i32_as_function_name"
+spec = ["2.4:3"]
+source = """
+fn i32() -> i32 { 0 }
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+
+[[case]]
+name = "type_bool_as_parameter"
+spec = ["2.4:3"]
+source = """
+fn foo(bool: i32) -> i32 { 0 }
+fn main() -> i32 { foo(42) }
+"""
+compile_fail = true
+
+[[case]]
+name = "type_i32_as_struct_name"
+spec = ["2.4:3"]
+source = """
+struct i32 { x: i64 }
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+
+[[case]]
+name = "type_bool_as_struct_field"
+spec = ["2.4:3"]
+source = """
+struct Foo { bool: i32 }
+fn main() -> i32 { 0 }
+"""
+compile_fail = true

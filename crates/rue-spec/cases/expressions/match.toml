@@ -1,0 +1,421 @@
+[section]
+id = "expressions.match"
+spec_chapter = "4.7"
+name = "Match Expressions"
+description = "Match expressions provide multi-way branching on values. Currently supports integer and boolean patterns with wildcard (_)."
+
+# =============================================================================
+# Basic Match with Integers
+# =============================================================================
+
+[[case]]
+name = "match_int_first"
+spec = ["4.7:1"]
+source = """
+fn main() -> i32 {
+    match 1 {
+        1 => 10,
+        2 => 20,
+        _ => 0,
+    }
+}
+"""
+exit_code = 10
+
+[[case]]
+name = "match_int_second"
+spec = ["4.7:1"]
+source = """
+fn main() -> i32 {
+    match 2 {
+        1 => 10,
+        2 => 20,
+        _ => 0,
+    }
+}
+"""
+exit_code = 20
+
+[[case]]
+name = "match_int_default"
+spec = ["4.7:1", "4.7:3", "4.7:7"]
+source = """
+fn main() -> i32 {
+    match 99 {
+        1 => 10,
+        2 => 20,
+        _ => 0,
+    }
+}
+"""
+exit_code = 0
+
+[[case]]
+name = "match_single_arm_wildcard"
+spec = ["4.7:3", "4.7:7"]
+source = """
+fn main() -> i32 {
+    match 42 {
+        _ => 100,
+    }
+}
+"""
+exit_code = 100
+
+# =============================================================================
+# Match with Boolean
+# =============================================================================
+
+[[case]]
+name = "match_bool_true"
+spec = ["4.7:1", "4.7:2", "4.7:8"]
+source = """
+fn main() -> i32 {
+    match true {
+        true => 1,
+        false => 0,
+    }
+}
+"""
+exit_code = 1
+
+[[case]]
+name = "match_bool_false"
+spec = ["4.7:1", "4.7:2", "4.7:8"]
+source = """
+fn main() -> i32 {
+    match false {
+        true => 1,
+        false => 0,
+    }
+}
+"""
+exit_code = 0
+
+[[case]]
+name = "match_bool_with_wildcard"
+spec = ["4.7:2", "4.7:3", "4.7:8"]
+source = """
+fn main() -> i32 {
+    match true {
+        false => 0,
+        _ => 1,
+    }
+}
+"""
+exit_code = 1
+
+# =============================================================================
+# Match with Expressions
+# =============================================================================
+
+[[case]]
+name = "match_on_expression"
+spec = ["4.7:1"]
+source = """
+fn main() -> i32 {
+    match 1 + 1 {
+        2 => 42,
+        _ => 0,
+    }
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "match_on_variable"
+spec = ["4.7:1"]
+source = """
+fn main() -> i32 {
+    let x = 3;
+    match x {
+        1 => 10,
+        2 => 20,
+        3 => 30,
+        _ => 0,
+    }
+}
+"""
+exit_code = 30
+
+[[case]]
+name = "match_on_comparison"
+spec = ["4.7:1"]
+source = """
+fn main() -> i32 {
+    let x = 5;
+    match x > 3 {
+        true => 100,
+        false => 0,
+    }
+}
+"""
+exit_code = 100
+
+# =============================================================================
+# Match with Block Bodies
+# =============================================================================
+
+[[case]]
+name = "match_block_body"
+spec = ["4.7:4", "4.7:12"]
+source = """
+fn main() -> i32 {
+    match 2 {
+        1 => {
+            let a = 10;
+            a
+        },
+        2 => {
+            let b = 20;
+            let c = 5;
+            b + c
+        },
+        _ => 0,
+    }
+}
+"""
+exit_code = 25
+
+[[case]]
+name = "match_mixed_body_styles"
+spec = ["4.7:4", "4.7:12"]
+source = """
+fn main() -> i32 {
+    match 1 {
+        1 => 42,
+        2 => {
+            let x = 100;
+            x
+        },
+        _ => 0,
+    }
+}
+"""
+exit_code = 42
+
+# =============================================================================
+# Match as Expression
+# =============================================================================
+
+[[case]]
+name = "match_assigns_to_variable"
+spec = ["4.7:1"]
+source = """
+fn main() -> i32 {
+    let result = match 3 {
+        1 => 10,
+        2 => 20,
+        _ => 30,
+    };
+    result
+}
+"""
+exit_code = 30
+
+[[case]]
+name = "match_in_expression"
+spec = ["4.7:1"]
+source = """
+fn main() -> i32 {
+    1 + match true {
+        true => 10,
+        false => 0,
+    }
+}
+"""
+exit_code = 11
+
+[[case]]
+name = "match_in_return"
+spec = ["4.7:1"]
+source = """
+fn main() -> i32 {
+    return match 5 {
+        5 => 50,
+        _ => 0,
+    };
+}
+"""
+exit_code = 50
+
+# =============================================================================
+# Nested Match
+# =============================================================================
+
+[[case]]
+name = "nested_match"
+spec = ["4.7:1"]
+source = """
+fn main() -> i32 {
+    match 1 {
+        1 => match 2 {
+            2 => 12,
+            _ => 10,
+        },
+        _ => 0,
+    }
+}
+"""
+exit_code = 12
+
+# =============================================================================
+# Match with Zero
+# =============================================================================
+
+[[case]]
+name = "match_zero"
+spec = ["4.7:1"]
+source = """
+fn main() -> i32 {
+    match 0 {
+        0 => 42,
+        1 => 2,
+        _ => 99,
+    }
+}
+"""
+exit_code = 42
+
+# NOTE: Negative integer patterns are not yet supported in the parser.
+# They will be added when negative literals are supported in patterns.
+
+# =============================================================================
+# Error Cases: Non-exhaustive Match
+# =============================================================================
+
+[[case]]
+name = "non_exhaustive_int"
+spec = ["4.7:5"]
+source = """
+fn main() -> i32 {
+    match 1 {
+        1 => 10,
+        2 => 20,
+    }
+}
+"""
+compile_fail = true
+
+[[case]]
+name = "non_exhaustive_bool_missing_false"
+spec = ["4.7:5"]
+source = """
+fn main() -> i32 {
+    match true {
+        true => 1,
+    }
+}
+"""
+compile_fail = true
+
+[[case]]
+name = "non_exhaustive_bool_missing_true"
+spec = ["4.7:5"]
+source = """
+fn main() -> i32 {
+    match false {
+        false => 0,
+    }
+}
+"""
+compile_fail = true
+
+# =============================================================================
+# Error Cases: Empty Match
+# =============================================================================
+
+[[case]]
+name = "empty_match"
+spec = ["4.7:5"]
+source = """
+fn main() -> i32 {
+    match 1 {
+    }
+}
+"""
+compile_fail = true
+
+# NOTE: Invalid match type tests (like matching on unit or struct) are not yet
+# supported since the parser doesn't handle those scrutinee expressions.
+
+# =============================================================================
+# Error Cases: Type Mismatch in Arms
+# =============================================================================
+
+[[case]]
+name = "arm_type_mismatch"
+spec = ["4.7:6", "4.7:10"]
+source = """
+fn main() -> i32 {
+    match 1 {
+        1 => 10,
+        _ => true,
+    }
+}
+"""
+compile_fail = true
+
+# =============================================================================
+# Pattern Type Must Match Scrutinee
+# =============================================================================
+
+[[case]]
+name = "pattern_type_mismatch"
+spec = ["4.7:11"]
+source = """
+fn main() -> i32 {
+    match 1 {
+        true => 10,
+        _ => 0,
+    }
+}
+"""
+compile_fail = true
+
+# =============================================================================
+# Arms Evaluated in Order
+# =============================================================================
+
+[[case]]
+name = "first_matching_arm_wins"
+spec = ["4.7:14"]
+source = """
+fn main() -> i32 {
+    match 1 {
+        _ => 10,
+        1 => 20,
+    }
+}
+"""
+exit_code = 10
+
+# =============================================================================
+# Trailing Comma Handling
+# =============================================================================
+
+[[case]]
+name = "trailing_comma"
+spec = ["4.7:1"]
+source = """
+fn main() -> i32 {
+    match 1 {
+        1 => 10,
+        _ => 0,
+    }
+}
+"""
+exit_code = 10
+
+[[case]]
+name = "no_trailing_comma"
+spec = ["4.7:1"]
+source = """
+fn main() -> i32 {
+    match 1 {
+        1 => 10,
+        _ => 0
+    }
+}
+"""
+exit_code = 10

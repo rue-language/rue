@@ -1,0 +1,242 @@
+[section]
+id = "expressions.comparison"
+spec_chapter = "4.3"
+name = "Comparison Operators"
+description = "Comparison operators compare values and produce bool results."
+
+# =============================================================================
+# Comparison Produces Bool
+# =============================================================================
+
+[[case]]
+name = "comparison_eq_true"
+spec = ["4.3:1"]
+source = """
+fn main() -> i32 {
+    if 5 == 5 { 1 } else { 0 }
+}
+"""
+exit_code = 1
+
+[[case]]
+name = "comparison_eq_false"
+spec = ["4.3:1"]
+source = """
+fn main() -> i32 {
+    if 5 == 6 { 1 } else { 0 }
+}
+"""
+exit_code = 0
+
+[[case]]
+name = "comparison_ne_true"
+spec = ["4.3:1"]
+source = """
+fn main() -> i32 {
+    if 5 != 6 { 1 } else { 0 }
+}
+"""
+exit_code = 1
+
+# =============================================================================
+# Equality Works on Integers and Booleans
+# =============================================================================
+
+[[case]]
+name = "equality_on_integers"
+spec = ["4.3:2"]
+source = """
+fn main() -> i32 {
+    if 42 == 42 { 1 } else { 0 }
+}
+"""
+exit_code = 1
+
+[[case]]
+name = "equality_on_booleans"
+spec = ["4.3:2"]
+source = """
+fn main() -> i32 {
+    if true == true { 1 } else { 0 }
+}
+"""
+exit_code = 1
+
+[[case]]
+name = "inequality_on_booleans"
+spec = ["4.3:2"]
+source = """
+fn main() -> i32 {
+    if true != false { 1 } else { 0 }
+}
+"""
+exit_code = 1
+
+# =============================================================================
+# Ordering Works Only on Integers
+# =============================================================================
+
+[[case]]
+name = "ordering_lt_integers"
+spec = ["4.3:4"]
+source = """
+fn main() -> i32 {
+    if 5 < 10 { 1 } else { 0 }
+}
+"""
+exit_code = 1
+
+[[case]]
+name = "ordering_gt_integers"
+spec = ["4.3:4"]
+source = """
+fn main() -> i32 {
+    if 10 > 5 { 1 } else { 0 }
+}
+"""
+exit_code = 1
+
+[[case]]
+name = "ordering_le_integers"
+spec = ["4.3:4"]
+source = """
+fn main() -> i32 {
+    if 5 <= 5 { 1 } else { 0 }
+}
+"""
+exit_code = 1
+
+[[case]]
+name = "ordering_ge_integers"
+spec = ["4.3:4"]
+source = """
+fn main() -> i32 {
+    if 5 >= 5 { 1 } else { 0 }
+}
+"""
+exit_code = 1
+
+# =============================================================================
+# Ordering on Booleans is Compile Error
+# =============================================================================
+
+[[case]]
+name = "ordering_lt_on_bool"
+spec = ["4.3:5"]
+source = """
+fn main() -> i32 {
+    if true < false { 1 } else { 0 }
+}
+"""
+compile_fail = true
+
+[[case]]
+name = "ordering_gt_on_bool"
+spec = ["4.3:5"]
+source = """
+fn main() -> i32 {
+    if true > false { 1 } else { 0 }
+}
+"""
+compile_fail = true
+
+[[case]]
+name = "ordering_le_on_bool"
+spec = ["4.3:5"]
+source = """
+fn main() -> i32 {
+    if true <= false { 1 } else { 0 }
+}
+"""
+compile_fail = true
+
+[[case]]
+name = "ordering_ge_on_bool"
+spec = ["4.3:5"]
+source = """
+fn main() -> i32 {
+    if true >= false { 1 } else { 0 }
+}
+"""
+compile_fail = true
+
+# =============================================================================
+# Comparison Precedence Lower Than Arithmetic
+# =============================================================================
+
+[[case]]
+name = "precedence_comparison_after_arithmetic"
+spec = ["4.3:7"]
+source = """
+fn main() -> i32 {
+    if 2 + 3 == 5 { 1 } else { 0 }
+}
+"""
+exit_code = 1
+
+[[case]]
+name = "precedence_lt_after_add"
+spec = ["4.3:7"]
+source = """
+fn main() -> i32 {
+    if 2 + 3 < 10 - 3 { 1 } else { 0 }
+}
+"""
+exit_code = 1
+
+# =============================================================================
+# Both Operands Must Have Same Type
+# =============================================================================
+
+[[case]]
+name = "type_mismatch_i32_i64"
+spec = ["4.3:9"]
+source = """
+fn main() -> i32 {
+    let x: i32 = 10;
+    let y: i64 = 10;
+    if x == y { 1 } else { 0 }
+}
+"""
+compile_fail = true
+
+[[case]]
+name = "type_mismatch_i32_u32"
+spec = ["4.3:9"]
+source = """
+fn main() -> i32 {
+    let x: i32 = 10;
+    let y: u32 = 10;
+    if x == y { 1 } else { 0 }
+}
+"""
+compile_fail = true
+
+# =============================================================================
+# Type Inference from One Operand
+# =============================================================================
+
+[[case]]
+name = "infer_type_from_left_operand"
+spec = ["4.3:10"]
+source = """
+fn main() -> i32 {
+    let x: i64 = 100;
+    if x == 100 { 1 } else { 0 }
+}
+"""
+exit_code = 1
+
+# NOTE: This test is commented out because the compiler doesn't yet support
+# type inference from the right operand of a comparison.
+# TODO: Implement bidirectional type inference and uncomment the test.
+# [[case]]
+# name = "infer_type_from_right_operand"
+# spec = ["4.3:10"]
+# source = """
+# fn main() -> i32 {
+#     let x: i64 = 100;
+#     if 100 == x { 1 } else { 0 }
+# }
+# """
+# exit_code = 1

@@ -1,0 +1,185 @@
+[section]
+id = "expressions.logical"
+spec_chapter = "4.4"
+name = "Logical Operators"
+description = "Logical operators (!, &&, ||) operate on bool values and produce bool results."
+
+# =============================================================================
+# Logical Operators on Bool
+# =============================================================================
+
+[[case]]
+name = "logical_and_true_true"
+spec = ["4.4:1", "4.4:4"]
+source = """
+fn main() -> i32 {
+    if true && true { 1 } else { 0 }
+}
+"""
+exit_code = 1
+
+[[case]]
+name = "logical_and_true_false"
+spec = ["4.4:1", "4.4:4"]
+source = """
+fn main() -> i32 {
+    if true && false { 1 } else { 0 }
+}
+"""
+exit_code = 0
+
+[[case]]
+name = "logical_or_false_true"
+spec = ["4.4:1", "4.4:7"]
+source = """
+fn main() -> i32 {
+    if false || true { 1 } else { 0 }
+}
+"""
+exit_code = 1
+
+[[case]]
+name = "logical_or_false_false"
+spec = ["4.4:1", "4.4:7"]
+source = """
+fn main() -> i32 {
+    if false || false { 1 } else { 0 }
+}
+"""
+exit_code = 0
+
+# =============================================================================
+# Logical NOT
+# =============================================================================
+
+[[case]]
+name = "logical_not_true"
+spec = ["4.4:2"]
+source = """
+fn main() -> i32 {
+    if !true { 1 } else { 0 }
+}
+"""
+exit_code = 0
+
+[[case]]
+name = "logical_not_false"
+spec = ["4.4:2"]
+source = """
+fn main() -> i32 {
+    if !false { 1 } else { 0 }
+}
+"""
+exit_code = 1
+
+[[case]]
+name = "logical_double_not"
+spec = ["4.4:2"]
+source = """
+fn main() -> i32 {
+    if !!true { 1 } else { 0 }
+}
+"""
+exit_code = 1
+
+# =============================================================================
+# Short-Circuit Evaluation (AND)
+# =============================================================================
+
+[[case]]
+name = "short_circuit_and"
+spec = ["4.4:5"]
+source = """
+fn side_effect() -> bool {
+    return false;
+}
+fn main() -> i32 {
+    if false && side_effect() { 1 } else { 0 }
+}
+"""
+exit_code = 0
+
+# =============================================================================
+# Short-Circuit Evaluation (OR)
+# =============================================================================
+
+[[case]]
+name = "short_circuit_or"
+spec = ["4.4:8"]
+source = """
+fn side_effect() -> bool {
+    return false;
+}
+fn main() -> i32 {
+    if true || side_effect() { 1 } else { 0 }
+}
+"""
+exit_code = 1
+
+# =============================================================================
+# Operator Precedence
+# =============================================================================
+
+[[case]]
+name = "precedence_not_over_and"
+spec = ["4.4:10"]
+source = """
+fn main() -> i32 {
+    if !false && true { 1 } else { 0 }
+}
+"""
+exit_code = 1
+
+[[case]]
+name = "precedence_and_over_or"
+spec = ["4.4:10"]
+source = """
+fn main() -> i32 {
+    if true || false && false { 1 } else { 0 }
+}
+"""
+exit_code = 1
+
+# =============================================================================
+# Operands Must Be Bool
+# =============================================================================
+
+[[case]]
+name = "and_requires_bool_left"
+spec = ["4.4:12"]
+source = """
+fn main() -> i32 {
+    if 1 && true { 1 } else { 0 }
+}
+"""
+compile_fail = true
+
+[[case]]
+name = "and_requires_bool_right"
+spec = ["4.4:12"]
+source = """
+fn main() -> i32 {
+    if true && 1 { 1 } else { 0 }
+}
+"""
+compile_fail = true
+
+[[case]]
+name = "or_requires_bool_left"
+spec = ["4.4:12"]
+source = """
+fn main() -> i32 {
+    if 1 || false { 1 } else { 0 }
+}
+"""
+compile_fail = true
+
+[[case]]
+name = "not_requires_bool"
+spec = ["4.4:12"]
+source = """
+fn main() -> i32 {
+    if !1 { 1 } else { 0 }
+}
+"""
+compile_fail = true

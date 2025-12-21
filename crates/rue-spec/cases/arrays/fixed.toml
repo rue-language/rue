@@ -1,0 +1,269 @@
+[section]
+id = "arrays.fixed"
+spec_chapter = "7.1"
+name = "Fixed-Size Arrays"
+description = "Fixed-size arrays with bracket syntax for literals and indexing."
+
+# =============================================================================
+# Array Literal
+# =============================================================================
+
+[[case]]
+name = "array_literal_simple"
+spec = ["7.1:1", "7.1:2"]
+source = """
+fn main() -> i32 {
+    let arr: [i32; 3] = [10, 20, 30];
+    arr[0]
+}
+"""
+exit_code = 10
+
+[[case]]
+name = "array_literal_single"
+spec = ["7.1:2"]
+source = """
+fn main() -> i32 {
+    let arr: [i32; 1] = [42];
+    arr[0]
+}
+"""
+exit_code = 42
+
+# =============================================================================
+# All Elements Same Type
+# =============================================================================
+
+[[case]]
+name = "array_elements_same_type"
+spec = ["7.1:3"]
+source = """
+fn main() -> i32 {
+    let arr: [i32; 3] = [1, 2, 3];
+    arr[0] + arr[1] + arr[2]
+}
+"""
+exit_code = 6
+
+[[case]]
+name = "array_elements_type_mismatch"
+spec = ["7.1:3"]
+source = """
+fn main() -> i32 {
+    let arr: [i32; 3] = [1, true, 3];
+    arr[0]
+}
+"""
+compile_fail = true
+
+# =============================================================================
+# Element Count Must Match Size
+# =============================================================================
+
+[[case]]
+name = "array_size_matches"
+spec = ["7.1:4"]
+source = """
+fn main() -> i32 {
+    let arr: [i32; 3] = [10, 20, 30];
+    arr[2]
+}
+"""
+exit_code = 30
+
+[[case]]
+name = "array_too_few_elements"
+spec = ["7.1:4"]
+source = """
+fn main() -> i32 {
+    let arr: [i32; 3] = [10, 20];
+    arr[0]
+}
+"""
+compile_fail = true
+
+[[case]]
+name = "array_too_many_elements"
+spec = ["7.1:4"]
+source = """
+fn main() -> i32 {
+    let arr: [i32; 2] = [10, 20, 30];
+    arr[0]
+}
+"""
+compile_fail = true
+
+# =============================================================================
+# Array Indexing
+# =============================================================================
+
+[[case]]
+name = "array_index_bracket"
+spec = ["7.1:6"]
+source = """
+fn main() -> i32 {
+    let arr: [i32; 3] = [10, 20, 42];
+    arr[2]
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "array_index_first"
+spec = ["7.1:6"]
+source = """
+fn main() -> i32 {
+    let arr: [i32; 3] = [42, 20, 30];
+    arr[0]
+}
+"""
+exit_code = 42
+
+# =============================================================================
+# Index Must Be Integer
+# =============================================================================
+
+[[case]]
+name = "array_index_integer"
+spec = ["7.1:7"]
+source = """
+fn main() -> i32 {
+    let arr: [i32; 3] = [10, 20, 30];
+    let i = 1;
+    arr[i]
+}
+"""
+exit_code = 20
+
+[[case]]
+name = "array_index_bool_error"
+spec = ["7.1:7"]
+source = """
+fn main() -> i32 {
+    let arr: [i32; 3] = [10, 20, 30];
+    arr[true]
+}
+"""
+compile_fail = true
+
+# =============================================================================
+# Compile-Time Bounds Checking
+# =============================================================================
+
+[[case]]
+name = "constant_index_valid"
+spec = ["7.1:9"]
+source = """
+fn main() -> i32 {
+    let arr: [i32; 3] = [10, 20, 30];
+    arr[2]
+}
+"""
+exit_code = 30
+
+[[case]]
+name = "constant_index_out_of_bounds"
+spec = ["7.1:9"]
+source = """
+fn main() -> i32 {
+    let arr: [i32; 3] = [10, 20, 30];
+    arr[5]
+}
+"""
+compile_fail = true
+
+# =============================================================================
+# Runtime Bounds Checking
+# =============================================================================
+
+[[case]]
+name = "runtime_index_in_bounds"
+spec = ["7.1:10"]
+source = """
+fn main() -> i32 {
+    let arr: [i32; 3] = [10, 42, 30];
+    let i = 1;
+    arr[i]
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "runtime_index_out_of_bounds"
+spec = ["7.1:10", "7.1:11"]
+source = """
+fn main() -> i32 {
+    let arr: [i32; 3] = [10, 20, 30];
+    let i = 5;
+    arr[i]
+}
+"""
+exit_code = 101
+
+# =============================================================================
+# Mutable Array Element Assignment
+# =============================================================================
+
+[[case]]
+name = "mutable_array_assign"
+spec = ["7.1:12"]
+source = """
+fn main() -> i32 {
+    let mut arr: [i32; 3] = [10, 20, 30];
+    arr[1] = 42;
+    arr[1]
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "mutable_array_assign_all"
+spec = ["7.1:12"]
+source = """
+fn main() -> i32 {
+    let mut arr: [i32; 3] = [0, 0, 0];
+    arr[0] = 10;
+    arr[1] = 20;
+    arr[2] = 12;
+    arr[0] + arr[1] + arr[2]
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "immutable_array_assign_error"
+spec = ["7.1:12"]
+source = """
+fn main() -> i32 {
+    let arr: [i32; 3] = [10, 20, 30];
+    arr[1] = 42;
+    arr[1]
+}
+"""
+compile_fail = true
+
+# =============================================================================
+# Array Size Must Be Non-Negative Literal
+# =============================================================================
+
+[[case]]
+name = "array_size_positive"
+spec = ["7.1:14", "7.1:15"]
+source = """
+fn main() -> i32 {
+    let arr: [i32; 5] = [1, 2, 3, 4, 5];
+    arr[4]
+}
+"""
+exit_code = 5
+
+[[case]]
+name = "array_size_zero"
+spec = ["7.1:15"]
+source = """
+fn main() -> i32 {
+    let arr: [i32; 0] = [];
+    42
+}
+"""
+exit_code = 42

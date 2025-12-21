@@ -1,0 +1,97 @@
+[section]
+id = "expressions.blocks"
+spec_chapter = "4.5"
+name = "Block Expressions"
+description = "Block expressions contain statements and optionally a final expression."
+
+# =============================================================================
+# Block Type is Final Expression Type
+# =============================================================================
+
+[[case]]
+name = "block_returns_final_expr"
+spec = ["4.5:2", "4.5:3"]
+source = """
+fn main() -> i32 {
+    let x = { 42 };
+    x
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "block_with_statements_and_expr"
+spec = ["4.5:3"]
+source = """
+fn main() -> i32 {
+    let x = {
+        let a = 10;
+        let b = 20;
+        a + b
+    };
+    x
+}
+"""
+exit_code = 30
+
+[[case]]
+name = "block_empty_is_unit"
+spec = ["4.5:3"]
+source = """
+fn do_nothing() {
+    {}
+}
+fn main() -> i32 {
+    do_nothing();
+    42
+}
+"""
+exit_code = 42
+
+# =============================================================================
+# Block Scope
+# =============================================================================
+
+[[case]]
+name = "variable_scope_block"
+spec = ["4.5:4"]
+source = """
+fn main() -> i32 {
+    let x = 10;
+    {
+        let y = 20;
+        x + y
+    }
+}
+"""
+exit_code = 30
+
+[[case]]
+name = "variable_not_visible_outside_block"
+spec = ["4.5:4", "4.5:6"]
+source = """
+fn main() -> i32 {
+    {
+        let x = 10;
+    }
+    x
+}
+"""
+compile_fail = true
+
+[[case]]
+name = "nested_blocks_scope"
+spec = ["4.5:4"]
+source = """
+fn main() -> i32 {
+    let a = 1;
+    {
+        let b = 2;
+        {
+            let c = 3;
+            a + b + c
+        }
+    }
+}
+"""
+exit_code = 6

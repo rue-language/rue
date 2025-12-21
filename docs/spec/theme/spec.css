@@ -1,0 +1,116 @@
+/* Rue specification rule styling */
+/* Inspired by the Rust Reference: https://github.com/rust-lang/reference */
+
+/* 3-column grid layout: rules | content | margin */
+main {
+    display: grid;
+    grid-template-columns:
+        [rules] minmax(36px, 1fr)
+        [text] minmax(auto, 48em)
+        [margin] minmax(36px, 1fr);
+    margin: 0;
+    padding: 0 !important;
+    max-width: none !important;
+    row-gap: 16px;
+}
+
+/* Default: all content goes in text column */
+main > * {
+    grid-column: text;
+    max-width: none;
+    /* Disable margin collapsing in grid */
+    margin-block: 0;
+}
+
+/* Rule IDs go in the left margin */
+main > .rule {
+    grid-column: rules;
+    max-width: unset;
+    justify-self: right;
+    width: 100%;
+    container-type: inline-size;
+    container-name: rule;
+    /* Reset the blockquote-style formatting */
+    background: none;
+    border: none;
+    padding: 0;
+    margin: 0;
+}
+
+.rule-link {
+    float: right;
+    text-align: right;
+    padding-right: 10px;
+    word-break: keep-all;
+    color: #999 !important;
+    text-decoration: none;
+    font-family: var(--mono-font);
+    font-size: 0.85em;
+}
+
+.rule-link:hover {
+    color: var(--links) !important;
+    text-decoration: underline;
+}
+
+/* When rule is targeted via URL fragment, highlight it */
+.rule:target .rule-link::before {
+    display: inline-block;
+    content: "»";
+    padding-right: 5px;
+}
+
+.rule:target .rule-link {
+    color: var(--fg) !important;
+}
+
+/* On narrow screens, collapse rules column and show abbreviated marker */
+@container rule (max-width: 14em) {
+    .rule-link {
+        font-size: 0;
+    }
+    .rule-link::after {
+        font-size: 0.85rem;
+        content: "[*]";
+    }
+}
+
+/* Very narrow screens: hide rule markers entirely */
+@media (max-width: 600px) {
+    main {
+        grid-template-columns: [text] 1fr;
+    }
+    main > .rule {
+        grid-column: text;
+        justify-self: start;
+        margin-bottom: -12px;
+    }
+    .rule-link {
+        float: none;
+        font-size: 0.8em;
+        padding-right: 0;
+    }
+}
+
+/* Ensure headings don't have excessive top margin in grid */
+main > h1, main > h2, main > h3, main > h4, main > h5, main > h6 {
+    margin-top: 0;
+    padding-top: 1em;
+}
+
+main > h1:first-child, main > h2:first-child {
+    padding-top: 0;
+}
+
+/* Code blocks and tables should span properly */
+main > pre, main > table {
+    max-width: 100%;
+    overflow-x: auto;
+}
+
+/* Blockquotes (for notes, not rules) */
+main > blockquote {
+    border-left: 4px solid var(--quote-border);
+    padding-left: 1em;
+    margin-left: 0;
+}
