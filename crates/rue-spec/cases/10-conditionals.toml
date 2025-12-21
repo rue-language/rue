@@ -303,3 +303,101 @@ fn main() -> i32 {
 }
 """
 exit_code = 3
+
+# =============================================================================
+# Else If Chains
+# =============================================================================
+
+[[case]]
+name = "else_if_basic"
+source = """
+fn main() -> i32 {
+    let x = 2;
+    if x == 1 { 10 }
+    else if x == 2 { 20 }
+    else { 0 }
+}
+"""
+exit_code = 20
+
+[[case]]
+name = "else_if_chain"
+source = """
+fn main() -> i32 {
+    let x = 2;
+    if x == 1 { 10 }
+    else if x == 2 { 20 }
+    else if x == 3 { 30 }
+    else { 0 }
+}
+"""
+exit_code = 20
+
+[[case]]
+name = "else_if_first_branch"
+source = """
+fn main() -> i32 {
+    let x = 1;
+    if x == 1 { 10 }
+    else if x == 2 { 20 }
+    else if x == 3 { 30 }
+    else { 0 }
+}
+"""
+exit_code = 10
+
+[[case]]
+name = "else_if_last_branch"
+source = """
+fn main() -> i32 {
+    let x = 3;
+    if x == 1 { 10 }
+    else if x == 2 { 20 }
+    else if x == 3 { 30 }
+    else { 0 }
+}
+"""
+exit_code = 30
+
+[[case]]
+name = "else_if_fallthrough"
+source = """
+fn main() -> i32 {
+    let x = 99;
+    if x == 1 { 10 }
+    else if x == 2 { 20 }
+    else if x == 3 { 30 }
+    else { 0 }
+}
+"""
+exit_code = 0
+
+[[case]]
+name = "else_if_with_complex_conditions"
+source = """
+fn main() -> i32 {
+    let x = 15;
+    if x < 10 { 1 }
+    else if x < 20 { 2 }
+    else if x < 30 { 3 }
+    else { 4 }
+}
+"""
+exit_code = 2
+
+[[case]]
+name = "else_if_nested_in_else_if"
+source = """
+fn main() -> i32 {
+    let x = 2;
+    let y = 1;
+    if x == 1 { 10 }
+    else if x == 2 {
+        if y == 1 { 21 }
+        else if y == 2 { 22 }
+        else { 20 }
+    }
+    else { 0 }
+}
+"""
+exit_code = 21

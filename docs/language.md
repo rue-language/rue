@@ -425,7 +425,18 @@ fn main() -> i32 {
 }
 ```
 
-If/else can be nested:
+If/else can be chained with `else if`:
+
+```rue
+fn main() -> i32 {
+    let x = 5;
+    if x < 3 { 1 }
+    else if x < 7 { 2 }
+    else { 3 }
+}
+```
+
+This is syntactic sugar for nested if/else:
 
 ```rue
 fn main() -> i32 {
@@ -831,7 +842,7 @@ primary        = INTEGER | BOOL | IDENT | "(" expression ")" | block_expr
 array_literal  = "[" [ expression { "," expression } ] "]" ;
 return_expr    = "return" expression ;
 block_expr     = "{" block "}" ;
-if_expr        = "if" expression "{" block "}" [ "else" "{" block "}" ] ;
+if_expr        = "if" expression "{" block "}" [ "else" ( if_expr | "{" block "}" ) ] ;
 match_expr     = "match" expression "{" { match_arm "," } [ match_arm ] "}" ;
 match_arm      = pattern "=>" expression ;
 pattern        = "_" | INTEGER | BOOL ;

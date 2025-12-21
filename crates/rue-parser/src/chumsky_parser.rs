@@ -386,24 +386,38 @@ where
             })
         });
 
-    // If expression
-    let if_expr = just(TokenKind::If)
-        .ignore_then(expr.clone())
-        .then(maybe_unit_block_parser(expr.clone()))
-        .then(
-            just(TokenKind::Else)
-                .ignore_then(maybe_unit_block_parser(expr.clone()))
-                .or_not(),
-        )
-        .map_with(|((cond, then_block), else_block), e| {
-            Expr::If(IfExpr {
-                cond: Box::new(cond),
-                then_block,
-                else_block,
-                span: to_rue_span(e.span()),
+    // If expression - defined with recursive reference to allow `else if` chains
+    let if_expr = recursive(|if_expr_rec| {
+        just(TokenKind::If)
+            .ignore_then(expr.clone())
+            .then(maybe_unit_block_parser(expr.clone()))
+            .then(
+                just(TokenKind::Else)
+                    .ignore_then(choice((
+                        // else if: wrap the nested if in a synthetic block
+                        if_expr_rec.map_with(|nested_if, e| {
+                            let span = to_rue_span(e.span());
+                            BlockExpr {
+                                statements: Vec::new(),
+                                expr: Box::new(nested_if),
+                                span,
+                            }
+                        }),
+                        // else { ... }: parse a regular block
+                        maybe_unit_block_parser(expr.clone()),
+                    )))
+                    .or_not(),
+            )
+            .map_with(|((cond, then_block), else_block), e| {
+                Expr::If(IfExpr {
+                    cond: Box::new(cond),
+                    then_block,
+                    else_block,
+                    span: to_rue_span(e.span()),
+                })
             })
-        })
-        .boxed();
+    })
+    .boxed();
 
     // While expression
     let while_expr = just(TokenKind::While)
