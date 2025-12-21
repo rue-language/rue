@@ -12,6 +12,36 @@ use rue_intern::{Interner, Symbol};
 use rue_rir::{InstData, InstRef, Rir, RirPattern};
 use rue_span::Span;
 
+/// A value that can be computed at compile time.
+///
+/// This is used for constant expression evaluation, primarily for compile-time
+/// bounds checking. It can be extended for future `comptime` features.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ConstValue {
+    /// Integer value (signed to handle arithmetic correctly)
+    Integer(i64),
+    /// Boolean value
+    Bool(bool),
+}
+
+impl ConstValue {
+    /// Try to extract an integer value.
+    fn as_integer(self) -> Option<i64> {
+        match self {
+            ConstValue::Integer(n) => Some(n),
+            ConstValue::Bool(_) => None,
+        }
+    }
+
+    /// Try to extract a boolean value.
+    fn as_bool(self) -> Option<bool> {
+        match self {
+            ConstValue::Bool(b) => Some(b),
+            ConstValue::Integer(_) => None,
+        }
+    }
+}
+
 /// Result of analyzing a function.
 #[derive(Debug)]
 pub struct AnalyzedFunction {
@@ -2159,29 +2189,141 @@ impl<'a> Sema<'a> {
         Ok(AnalysisResult::new(air_ref, Type::Bool))
     }
 
+    /// Try to evaluate an RIR expression as a compile-time constant.
+    ///
+    /// Returns `Some(value)` if the expression can be fully evaluated at compile time,
+    /// or `None` if evaluation requires runtime information (e.g., variable values,
+    /// function calls) or would cause overflow/panic.
+    ///
+    /// This is the foundation for compile-time bounds checking and can be extended
+    /// for future `comptime` features.
+    fn try_evaluate_const(&self, inst_ref: InstRef) -> Option<ConstValue> {
+        let inst = self.rir.get(inst_ref);
+        match &inst.data {
+            // Integer literals
+            InstData::IntConst(value) => i64::try_from(*value).ok().map(ConstValue::Integer),
+
+            // Boolean literals
+            InstData::BoolConst(value) => Some(ConstValue::Bool(*value)),
+
+            // Unary negation: -expr
+            InstData::Neg { operand } => {
+                match self.try_evaluate_const(*operand)? {
+                    ConstValue::Integer(n) => n.checked_neg().map(ConstValue::Integer),
+                    ConstValue::Bool(_) => None, // Can't negate a boolean
+                }
+            }
+
+            // Logical NOT: !expr
+            InstData::Not { operand } => {
+                match self.try_evaluate_const(*operand)? {
+                    ConstValue::Bool(b) => Some(ConstValue::Bool(!b)),
+                    ConstValue::Integer(_) => None, // Can't logical-NOT an integer
+                }
+            }
+
+            // Binary arithmetic operations
+            InstData::Add { lhs, rhs } => {
+                let l = self.try_evaluate_const(*lhs)?.as_integer()?;
+                let r = self.try_evaluate_const(*rhs)?.as_integer()?;
+                l.checked_add(r).map(ConstValue::Integer)
+            }
+            InstData::Sub { lhs, rhs } => {
+                let l = self.try_evaluate_const(*lhs)?.as_integer()?;
+                let r = self.try_evaluate_const(*rhs)?.as_integer()?;
+                l.checked_sub(r).map(ConstValue::Integer)
+            }
+            InstData::Mul { lhs, rhs } => {
+                let l = self.try_evaluate_const(*lhs)?.as_integer()?;
+                let r = self.try_evaluate_const(*rhs)?.as_integer()?;
+                l.checked_mul(r).map(ConstValue::Integer)
+            }
+            InstData::Div { lhs, rhs } => {
+                let l = self.try_evaluate_const(*lhs)?.as_integer()?;
+                let r = self.try_evaluate_const(*rhs)?.as_integer()?;
+                if r == 0 {
+                    None // Division by zero - defer to runtime
+                } else {
+                    l.checked_div(r).map(ConstValue::Integer)
+                }
+            }
+            InstData::Mod { lhs, rhs } => {
+                let l = self.try_evaluate_const(*lhs)?.as_integer()?;
+                let r = self.try_evaluate_const(*rhs)?.as_integer()?;
+                if r == 0 {
+                    None // Modulo by zero - defer to runtime
+                } else {
+                    l.checked_rem(r).map(ConstValue::Integer)
+                }
+            }
+
+            // Comparison operations
+            InstData::Eq { lhs, rhs } => {
+                let l = self.try_evaluate_const(*lhs)?;
+                let r = self.try_evaluate_const(*rhs)?;
+                match (l, r) {
+                    (ConstValue::Integer(a), ConstValue::Integer(b)) => {
+                        Some(ConstValue::Bool(a == b))
+                    }
+                    (ConstValue::Bool(a), ConstValue::Bool(b)) => Some(ConstValue::Bool(a == b)),
+                    _ => None, // Mixed types
+                }
+            }
+            InstData::Ne { lhs, rhs } => {
+                let l = self.try_evaluate_const(*lhs)?;
+                let r = self.try_evaluate_const(*rhs)?;
+                match (l, r) {
+                    (ConstValue::Integer(a), ConstValue::Integer(b)) => {
+                        Some(ConstValue::Bool(a != b))
+                    }
+                    (ConstValue::Bool(a), ConstValue::Bool(b)) => Some(ConstValue::Bool(a != b)),
+                    _ => None,
+                }
+            }
+            InstData::Lt { lhs, rhs } => {
+                let l = self.try_evaluate_const(*lhs)?.as_integer()?;
+                let r = self.try_evaluate_const(*rhs)?.as_integer()?;
+                Some(ConstValue::Bool(l < r))
+            }
+            InstData::Gt { lhs, rhs } => {
+                let l = self.try_evaluate_const(*lhs)?.as_integer()?;
+                let r = self.try_evaluate_const(*rhs)?.as_integer()?;
+                Some(ConstValue::Bool(l > r))
+            }
+            InstData::Le { lhs, rhs } => {
+                let l = self.try_evaluate_const(*lhs)?.as_integer()?;
+                let r = self.try_evaluate_const(*rhs)?.as_integer()?;
+                Some(ConstValue::Bool(l <= r))
+            }
+            InstData::Ge { lhs, rhs } => {
+                let l = self.try_evaluate_const(*lhs)?.as_integer()?;
+                let r = self.try_evaluate_const(*rhs)?.as_integer()?;
+                Some(ConstValue::Bool(l >= r))
+            }
+
+            // Logical operations
+            InstData::And { lhs, rhs } => {
+                let l = self.try_evaluate_const(*lhs)?.as_bool()?;
+                let r = self.try_evaluate_const(*rhs)?.as_bool()?;
+                Some(ConstValue::Bool(l && r))
+            }
+            InstData::Or { lhs, rhs } => {
+                let l = self.try_evaluate_const(*lhs)?.as_bool()?;
+                let r = self.try_evaluate_const(*rhs)?.as_bool()?;
+                Some(ConstValue::Bool(l || r))
+            }
+
+            // Everything else requires runtime evaluation
+            _ => None,
+        }
+    }
+
     /// Try to extract a constant integer value from an RIR index expression.
     ///
     /// This is used for compile-time bounds checking. Returns `Some(value)` if
-    /// the index is a simple integer constant or a negation of one, otherwise `None`.
+    /// the index can be evaluated to an integer constant at compile time.
     fn try_get_const_index(&self, inst_ref: InstRef) -> Option<i64> {
-        let inst = self.rir.get(inst_ref);
-        match &inst.data {
-            InstData::IntConst(value) => {
-                // Convert u64 to i64, returning None if it would overflow
-                i64::try_from(*value).ok()
-            }
-            InstData::Neg { operand } => {
-                // Handle negative literal: -N
-                let operand_inst = self.rir.get(*operand);
-                if let InstData::IntConst(value) = &operand_inst.data {
-                    // Negate the value; this can overflow for very large values
-                    i64::try_from(*value).ok().and_then(|v| v.checked_neg())
-                } else {
-                    None
-                }
-            }
-            _ => None,
-        }
+        self.try_evaluate_const(inst_ref)?.as_integer()
     }
 
     /// Check if an RIR instruction is an integer literal.

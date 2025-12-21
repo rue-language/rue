@@ -52,12 +52,93 @@ fn main() -> i32 {
 compile_fail = true
 
 # =============================================================================
+# Constant Expression Index Checking
+# =============================================================================
+
+[[case]]
+name = "constant_expression_addition_checked"
+spec = ["8.2:3", "8.2:4"]
+source = """
+fn main() -> i32 {
+    let arr: [i32; 3] = [10, 20, 30];
+    arr[1 + 5]
+}
+"""
+compile_fail = true
+
+[[case]]
+name = "constant_expression_multiplication_checked"
+spec = ["8.2:3", "8.2:4"]
+source = """
+fn main() -> i32 {
+    let arr: [i32; 3] = [10, 20, 30];
+    arr[2 * 3]
+}
+"""
+compile_fail = true
+
+[[case]]
+name = "constant_expression_subtraction_valid"
+spec = ["8.2:3", "8.2:4"]
+source = """
+fn main() -> i32 {
+    let arr: [i32; 3] = [10, 20, 30];
+    arr[5 - 3]
+}
+"""
+exit_code = 30
+
+[[case]]
+name = "constant_expression_complex_checked"
+spec = ["8.2:3", "8.2:4"]
+source = """
+fn main() -> i32 {
+    let arr: [i32; 3] = [10, 20, 30];
+    arr[(1 + 2) * 3]
+}
+"""
+compile_fail = true
+
+[[case]]
+name = "constant_expression_negation_checked"
+spec = ["8.2:3", "8.2:4"]
+source = """
+fn main() -> i32 {
+    let arr: [i32; 3] = [10, 20, 30];
+    arr[-1]
+}
+"""
+compile_fail = true
+
+[[case]]
+name = "constant_expression_division_valid"
+spec = ["8.2:3", "8.2:4"]
+source = """
+fn main() -> i32 {
+    let arr: [i32; 3] = [10, 20, 30];
+    arr[6 / 3]
+}
+"""
+exit_code = 30
+
+[[case]]
+name = "constant_expression_division_out_of_bounds"
+spec = ["8.2:3", "8.2:4"]
+source = """
+fn main() -> i32 {
+    let arr: [i32; 3] = [10, 20, 30];
+    arr[10 / 2]
+}
+"""
+compile_fail = true
+
+# =============================================================================
 # Runtime Bounds Checking
 # =============================================================================
 
 [[case]]
 name = "variable_index_checked_at_runtime"
-spec = ["8.2:4"]
+spec = ["8.2:5"]
 source = """
 fn main() -> i32 {
     let arr: [i32; 3] = [10, 20, 30];
@@ -73,7 +154,7 @@ exit_code = 101
 
 [[case]]
 name = "negative_index_panic"
-spec = ["8.2:7"]
+spec = ["8.2:9"]
 source = """
 fn main() -> i32 {
     let arr: [i32; 3] = [10, 20, 30];
