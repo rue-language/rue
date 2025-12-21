@@ -12,7 +12,7 @@ Welcome to the Rue programming language blog! This is where we'll share updates 
 
 Rue is a systems programming language that aims to provide memory safety without garbage collection, while offering higher-level ergonomics than languages like Rust and Zig. We're currently in early development, with a Rust-like syntax that we're actively evolving.
 
-Rue is being developed by [Steve Klabnik](https://steveklabnik.com), but also by Claude. Here's the background: Steve has wanted to mess with building a programming language for a long time; he organized his college courseload to get to compilers as quickly as possible, but ended up finding professional work in the web at first. And then during his work on Rust, he did mostly documentation and advocacy, and not really any compiler work. This projet is partially Steve's ideas for a programming langauge in 2025 (even though that's almost over), partially "can Claude write a compiler?" and partially just something fun to mess around with.
+Rue is being developed by [Steve Klabnik](https://steveklabnik.com), but also by Claude. Here's the background: Steve has wanted to mess with building a programming language for a long time; he organized his college courseload to get to compilers as quickly as possible, but ended up finding professional work in the web at first. And then during his work on Rust, he did mostly documentation and advocacy, and not really any compiler work. This project is partially Steve's ideas for a programming langauge in 2025 (even though that's almost over), partially "can Claude write a compiler?" and partially just something fun to mess around with.
 
 ## What to Expect
 
