@@ -481,6 +481,20 @@ fn main() -> i32 {
 compile_fail = true
 error_contains = "cannot assign"
 
+[[case]]
+name = "struct_duplicate_field"
+description = "Duplicate field names in struct definition"
+source = """
+struct Bad {
+    x: i32,
+    x: i32,
+}
+
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = "duplicate"
+
 # =============================================================================
 # Structs as Function Parameters
 # =============================================================================

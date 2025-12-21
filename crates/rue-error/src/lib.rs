@@ -61,6 +61,10 @@ pub enum ErrorKind {
         struct_name: String,
         field_name: String,
     },
+    DuplicateField {
+        struct_name: String,
+        field_name: String,
+    },
     FieldAccessOnNonStruct {
         found: String,
     },
@@ -219,6 +223,16 @@ impl fmt::Display for ErrorKind {
                 write!(
                     f,
                     "unknown field '{}' in struct '{}'",
+                    field_name, struct_name
+                )
+            }
+            ErrorKind::DuplicateField {
+                struct_name,
+                field_name,
+            } => {
+                write!(
+                    f,
+                    "duplicate field '{}' in struct '{}'",
                     field_name, struct_name
                 )
             }

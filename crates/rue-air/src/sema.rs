@@ -339,6 +339,21 @@ impl<'a> Sema<'a> {
                 let struct_id = StructId(self.struct_defs.len() as u32);
                 let struct_name = self.interner.get(*name).to_string();
 
+                // Check for duplicate field names
+                let mut seen_fields: HashSet<Symbol> = HashSet::new();
+                for (field_name, _) in fields {
+                    if !seen_fields.insert(*field_name) {
+                        let field_name_str = self.interner.get(*field_name).to_string();
+                        return Err(CompileError::new(
+                            ErrorKind::DuplicateField {
+                                struct_name: struct_name.clone(),
+                                field_name: field_name_str,
+                            },
+                            inst.span,
+                        ));
+                    }
+                }
+
                 // Resolve field types (can only be primitive types for now, or other structs)
                 let mut resolved_fields = Vec::new();
                 for (field_name, field_type) in fields {
