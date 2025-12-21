@@ -32,11 +32,22 @@ impl InstRef {
 #[derive(Debug, Clone)]
 pub enum RirPattern {
     /// Wildcard pattern `_` - matches anything
-    Wildcard,
+    Wildcard(Span),
     /// Integer literal pattern
-    Int(u64),
+    Int(u64, Span),
     /// Boolean literal pattern
-    Bool(bool),
+    Bool(bool, Span),
+}
+
+impl RirPattern {
+    /// Get the span of this pattern.
+    pub fn span(&self) -> Span {
+        match self {
+            RirPattern::Wildcard(span) => *span,
+            RirPattern::Int(_, span) => *span,
+            RirPattern::Bool(_, span) => *span,
+        }
+    }
 }
 
 /// The complete RIR for a source file.
@@ -428,9 +439,9 @@ impl<'a, 'b> RirPrinter<'a, 'b> {
                         .iter()
                         .map(|(pat, body)| {
                             let pat_str = match pat {
-                                RirPattern::Wildcard => "_".to_string(),
-                                RirPattern::Int(n) => n.to_string(),
-                                RirPattern::Bool(b) => b.to_string(),
+                                RirPattern::Wildcard(_) => "_".to_string(),
+                                RirPattern::Int(n, _) => n.to_string(),
+                                RirPattern::Bool(b, _) => b.to_string(),
                             };
                             format!("{} => {}", pat_str, body)
                         })

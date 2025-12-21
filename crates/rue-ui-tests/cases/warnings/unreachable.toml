@@ -118,3 +118,140 @@ fn main() -> i32 { test(1) }
 exit_code = 10
 warning_contains = ["unreachable"]
 expected_warning_count = 1
+
+# =============================================================================
+# Unreachable patterns in match expressions
+# =============================================================================
+
+[[case]]
+name = "duplicate_integer_pattern"
+source = """
+fn main() -> i32 {
+    match 1 {
+        1 => 10,
+        1 => 20,
+        _ => 0,
+    }
+}
+"""
+exit_code = 10
+warning_contains = ["unreachable pattern", "'1'"]
+expected_warning_count = 1
+
+[[case]]
+name = "duplicate_boolean_pattern_true"
+source = """
+fn main() -> i32 {
+    match true {
+        true => 10,
+        true => 20,
+        false => 0,
+    }
+}
+"""
+exit_code = 10
+warning_contains = ["unreachable pattern", "'true'"]
+expected_warning_count = 1
+
+[[case]]
+name = "duplicate_boolean_pattern_false"
+source = """
+fn main() -> i32 {
+    match false {
+        true => 10,
+        false => 20,
+        false => 30,
+    }
+}
+"""
+exit_code = 20
+warning_contains = ["unreachable pattern", "'false'"]
+expected_warning_count = 1
+
+[[case]]
+name = "pattern_after_wildcard"
+source = """
+fn main() -> i32 {
+    match 5 {
+        _ => 10,
+        1 => 20,
+    }
+}
+"""
+exit_code = 10
+warning_contains = ["unreachable pattern", "'1'"]
+expected_warning_count = 1
+
+[[case]]
+name = "multiple_patterns_after_wildcard"
+source = """
+fn main() -> i32 {
+    match 5 {
+        _ => 10,
+        1 => 20,
+        2 => 30,
+    }
+}
+"""
+exit_code = 10
+warning_contains = ["unreachable pattern"]
+expected_warning_count = 2
+
+[[case]]
+name = "duplicate_wildcard"
+source = """
+fn main() -> i32 {
+    match 5 {
+        _ => 10,
+        _ => 20,
+    }
+}
+"""
+exit_code = 10
+warning_contains = ["unreachable pattern", "'_'"]
+expected_warning_count = 1
+
+[[case]]
+name = "multiple_duplicate_integers"
+source = """
+fn main() -> i32 {
+    match 1 {
+        1 => 10,
+        2 => 20,
+        1 => 30,
+        2 => 40,
+        _ => 0,
+    }
+}
+"""
+exit_code = 10
+warning_contains = ["unreachable pattern"]
+expected_warning_count = 2
+
+[[case]]
+name = "no_warning_distinct_patterns"
+source = """
+fn main() -> i32 {
+    match 2 {
+        1 => 10,
+        2 => 20,
+        3 => 30,
+        _ => 0,
+    }
+}
+"""
+exit_code = 20
+no_warnings = true
+
+[[case]]
+name = "no_warning_bool_exhaustive"
+source = """
+fn main() -> i32 {
+    match true {
+        true => 10,
+        false => 20,
+    }
+}
+"""
+exit_code = 10
+no_warnings = true

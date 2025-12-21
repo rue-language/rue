@@ -314,9 +314,9 @@ impl<'a> AstGen<'a> {
 
     fn gen_pattern(&self, pattern: &Pattern) -> RirPattern {
         match pattern {
-            Pattern::Wildcard(_) => RirPattern::Wildcard,
-            Pattern::Int(lit) => RirPattern::Int(lit.value),
-            Pattern::Bool(lit) => RirPattern::Bool(lit.value),
+            Pattern::Wildcard(span) => RirPattern::Wildcard(*span),
+            Pattern::Int(lit) => RirPattern::Int(lit.value, lit.span),
+            Pattern::Bool(lit) => RirPattern::Bool(lit.value, lit.span),
         }
     }
 

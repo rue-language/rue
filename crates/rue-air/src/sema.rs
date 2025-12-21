@@ -887,22 +887,48 @@ impl<'a> Sema<'a> {
                     return Err(CompileError::new(ErrorKind::EmptyMatch, inst.span));
                 }
 
-                // Track patterns for exhaustiveness checking
-                let mut has_wildcard = false;
-                let mut bool_true_covered = false;
-                let mut bool_false_covered = false;
+                // Track patterns for exhaustiveness checking and duplicate detection
+                let mut wildcard_span: Option<Span> = None;
+                let mut bool_true_span: Option<Span> = None;
+                let mut bool_false_span: Option<Span> = None;
+                let mut seen_ints: HashMap<u64, Span> = HashMap::new();
 
                 // Analyze each arm (each arm gets its own scope)
                 let mut air_arms = Vec::new();
                 let mut result_type: Option<Type> = None;
 
                 for (pattern, body) in arms.iter() {
-                    // Validate pattern against scrutinee type
+                    // Check for unreachable patterns (duplicates or patterns after wildcard)
+                    let pattern_span = pattern.span();
+
+                    // If we've seen a wildcard, everything after is unreachable
+                    if let Some(first_wildcard_span) = wildcard_span {
+                        let pat_str = match pattern {
+                            RirPattern::Wildcard(_) => "_".to_string(),
+                            RirPattern::Int(n, _) => n.to_string(),
+                            RirPattern::Bool(b, _) => b.to_string(),
+                        };
+                        self.warnings.push(
+                            CompileWarning::new(
+                                WarningKind::UnreachablePattern(pat_str),
+                                pattern_span,
+                            )
+                            .with_label("previous wildcard pattern here", first_wildcard_span)
+                            .with_note(
+                                "this pattern will never be matched because the wildcard pattern above matches everything",
+                            ),
+                        );
+                    }
+
+                    // Validate pattern against scrutinee type and check for duplicates
                     match pattern {
-                        RirPattern::Wildcard => {
-                            has_wildcard = true;
+                        RirPattern::Wildcard(_) => {
+                            if wildcard_span.is_none() {
+                                wildcard_span = Some(pattern_span);
+                            }
+                            // Note: duplicate wildcards are already caught by the "pattern after wildcard" check above
                         }
-                        RirPattern::Int(_) => {
+                        RirPattern::Int(n, _) => {
                             if !scrutinee_type.is_integer() {
                                 return Err(CompileError::new(
                                     ErrorKind::TypeMismatch {
@@ -912,8 +938,26 @@ impl<'a> Sema<'a> {
                                     inst.span,
                                 ));
                             }
+                            // Check for duplicate integer pattern
+                            if let Some(first_span) = seen_ints.get(n) {
+                                if wildcard_span.is_none() {
+                                    // Only emit if not already covered by wildcard warning
+                                    self.warnings.push(
+                                        CompileWarning::new(
+                                            WarningKind::UnreachablePattern(n.to_string()),
+                                            pattern_span,
+                                        )
+                                        .with_label("first occurrence of this pattern", *first_span)
+                                        .with_note(
+                                            "this pattern will never be matched because an earlier arm already matches the same value",
+                                        ),
+                                    );
+                                }
+                            } else {
+                                seen_ints.insert(*n, pattern_span);
+                            }
                         }
-                        RirPattern::Bool(b) => {
+                        RirPattern::Bool(b, _) => {
                             if scrutinee_type != Type::Bool {
                                 return Err(CompileError::new(
                                     ErrorKind::TypeMismatch {
@@ -923,10 +967,28 @@ impl<'a> Sema<'a> {
                                     inst.span,
                                 ));
                             }
-                            if *b {
-                                bool_true_covered = true;
+                            // Check for duplicate boolean pattern
+                            let (first_span_opt, is_true) = if *b {
+                                (&mut bool_true_span, true)
                             } else {
-                                bool_false_covered = true;
+                                (&mut bool_false_span, false)
+                            };
+                            if let Some(first_span) = *first_span_opt {
+                                if wildcard_span.is_none() {
+                                    // Only emit if not already covered by wildcard warning
+                                    self.warnings.push(
+                                        CompileWarning::new(
+                                            WarningKind::UnreachablePattern(is_true.to_string()),
+                                            pattern_span,
+                                        )
+                                        .with_label("first occurrence of this pattern", first_span)
+                                        .with_note(
+                                            "this pattern will never be matched because an earlier arm already matches the same value",
+                                        ),
+                                    );
+                                }
+                            } else {
+                                *first_span_opt = Some(pattern_span);
                             }
                         }
                     }
@@ -969,15 +1031,18 @@ impl<'a> Sema<'a> {
 
                     // Convert pattern to AIR pattern
                     let air_pattern = match pattern {
-                        RirPattern::Wildcard => AirPattern::Wildcard,
-                        RirPattern::Int(n) => AirPattern::Int(*n),
-                        RirPattern::Bool(b) => AirPattern::Bool(*b),
+                        RirPattern::Wildcard(_) => AirPattern::Wildcard,
+                        RirPattern::Int(n, _) => AirPattern::Int(*n),
+                        RirPattern::Bool(b, _) => AirPattern::Bool(*b),
                     };
 
                     air_arms.push((air_pattern, body_result.air_ref));
                 }
 
                 // Exhaustiveness checking
+                let has_wildcard = wildcard_span.is_some();
+                let bool_true_covered = bool_true_span.is_some();
+                let bool_false_covered = bool_false_span.is_some();
                 let is_exhaustive = if scrutinee_type == Type::Bool {
                     has_wildcard || (bool_true_covered && bool_false_covered)
                 } else {

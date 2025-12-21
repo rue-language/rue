@@ -516,6 +516,8 @@ pub enum WarningKind {
     UnusedFunction(String),
     /// Code that will never be executed.
     UnreachableCode,
+    /// A pattern that will never be matched because a previous pattern already covers it.
+    UnreachablePattern(String),
 }
 
 /// A compilation warning with optional source location information.
@@ -613,6 +615,7 @@ impl fmt::Display for WarningKind {
             WarningKind::UnusedVariable(name) => write!(f, "unused variable '{}'", name),
             WarningKind::UnusedFunction(name) => write!(f, "unused function '{}'", name),
             WarningKind::UnreachableCode => write!(f, "unreachable code"),
+            WarningKind::UnreachablePattern(pat) => write!(f, "unreachable pattern '{}'", pat),
         }
     }
 }
