@@ -150,6 +150,8 @@ pub struct UnitLit {
 pub enum Expr {
     /// Integer literal
     Int(IntLit),
+    /// String literal
+    String(StringLit),
     /// Boolean literal
     Bool(BoolLit),
     /// Unit literal (explicit `()` or implicit unit for blocks without final expression)
@@ -198,6 +200,13 @@ pub enum Expr {
 #[derive(Debug, Clone)]
 pub struct IntLit {
     pub value: u64,
+    pub span: Span,
+}
+
+/// A string literal.
+#[derive(Debug, Clone)]
+pub struct StringLit {
+    pub value: String,
     pub span: Span,
 }
 
@@ -504,6 +513,7 @@ impl Expr {
     pub fn span(&self) -> Span {
         match self {
             Expr::Int(lit) => lit.span,
+            Expr::String(lit) => lit.span,
             Expr::Bool(lit) => lit.span,
             Expr::Unit(lit) => lit.span,
             Expr::Ident(ident) => ident.span,
@@ -608,6 +618,7 @@ fn fmt_expr(f: &mut fmt::Formatter<'_>, expr: &Expr, level: usize) -> fmt::Resul
     indent(f, level)?;
     match expr {
         Expr::Int(lit) => writeln!(f, "Int({})", lit.value),
+        Expr::String(lit) => writeln!(f, "String({:?})", lit.value),
         Expr::Bool(lit) => writeln!(f, "Bool({})", lit.value),
         Expr::Unit(_) => writeln!(f, "Unit"),
         Expr::Ident(ident) => writeln!(f, "Ident({})", ident.name),

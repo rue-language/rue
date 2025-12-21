@@ -23,7 +23,7 @@ r[4.13.6#normative]
 The `@dbg` intrinsic prints a value to standard output for debugging purposes.
 
 r[4.13.7#normative]
-`@dbg` accepts exactly one argument of integer or boolean type.
+`@dbg` accepts exactly one argument of integer, boolean, or string type.
 
 r[4.13.8#normative]
 `@dbg` prints the value followed by a newline character.
@@ -34,11 +34,12 @@ The return type of `@dbg` is `()`.
 r[4.13.10]
 ```rue
 fn main() -> i32 {
-    @dbg(42);       // prints: 42
-    @dbg(-17);      // prints: -17
-    @dbg(true);     // prints: true
-    @dbg(false);    // prints: false
-    @dbg(10 + 5);   // prints: 15
+    @dbg(42);           // prints: 42
+    @dbg(-17);          // prints: -17
+    @dbg(true);         // prints: true
+    @dbg(false);        // prints: false
+    @dbg(10 + 5);       // prints: 15
+    @dbg("hello");      // prints: hello
     0
 }
 ```

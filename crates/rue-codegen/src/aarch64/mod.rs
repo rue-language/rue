@@ -30,12 +30,17 @@ use crate::MachineCode;
 /// Generate machine code from CFG.
 ///
 /// This is the main entry point for AArch64 code generation.
-pub fn generate(cfg: &Cfg, struct_defs: &[StructDef], array_types: &[ArrayTypeDef]) -> MachineCode {
+pub fn generate(
+    cfg: &Cfg,
+    struct_defs: &[StructDef],
+    array_types: &[ArrayTypeDef],
+    strings: &[String],
+) -> MachineCode {
     let num_locals = cfg.num_locals();
     let num_params = cfg.num_params();
 
     // Lower CFG to Aarch64Mir with virtual registers
-    let mir = CfgLower::new(cfg, struct_defs, array_types).lower();
+    let mir = CfgLower::new(cfg, struct_defs, array_types, strings).lower();
 
     // Allocate physical registers
     let existing_slots = num_locals + num_params;
@@ -45,7 +50,11 @@ pub fn generate(cfg: &Cfg, struct_defs: &[StructDef], array_types: &[ArrayTypeDe
     // Emit machine code bytes
     let total_locals = num_locals + num_spills;
     let (code, relocations) =
-        Emitter::new(&mir, total_locals, num_params, &used_callee_saved).emit();
+        Emitter::new(&mir, total_locals, num_params, &used_callee_saved, strings).emit();
 
-    MachineCode { code, relocations }
+    MachineCode {
+        code,
+        relocations,
+        strings: strings.to_vec(),
+    }
 }

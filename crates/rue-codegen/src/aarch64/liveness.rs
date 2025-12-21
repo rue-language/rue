@@ -346,6 +346,9 @@ fn uses(inst: &Aarch64Inst) -> Vec<VReg> {
         Aarch64Inst::LslImm { src, .. } => {
             add_if_virtual(src, &mut result);
         }
+        Aarch64Inst::StringConstPtr { .. } | Aarch64Inst::StringConstLen { .. } => {
+            // Only defines, no uses
+        }
         Aarch64Inst::B { .. }
         | Aarch64Inst::BCond { .. }
         | Aarch64Inst::Bvs { .. }
@@ -442,6 +445,9 @@ fn defs(inst: &Aarch64Inst) -> Vec<VReg> {
             // Writes to memory
         }
         Aarch64Inst::LslImm { dst, .. } => {
+            add_if_virtual(dst, &mut result);
+        }
+        Aarch64Inst::StringConstPtr { dst, .. } | Aarch64Inst::StringConstLen { dst, .. } => {
             add_if_virtual(dst, &mut result);
         }
         Aarch64Inst::B { .. }

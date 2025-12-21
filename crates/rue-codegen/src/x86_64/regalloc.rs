@@ -775,6 +775,52 @@ impl RegAlloc {
                 });
             }
 
+            X86Inst::StringConstPtr { dst, string_id } => match self.get_allocation(dst) {
+                Some(Allocation::Register(reg)) => {
+                    mir.push(X86Inst::StringConstPtr {
+                        dst: Operand::Physical(reg),
+                        string_id,
+                    });
+                }
+                Some(Allocation::Spill(offset)) => {
+                    mir.push(X86Inst::StringConstPtr {
+                        dst: Operand::Physical(Reg::Rax),
+                        string_id,
+                    });
+                    mir.push(X86Inst::MovMR {
+                        base: Reg::Rbp,
+                        offset,
+                        src: Operand::Physical(Reg::Rax),
+                    });
+                }
+                None => {
+                    mir.push(X86Inst::StringConstPtr { dst, string_id });
+                }
+            },
+
+            X86Inst::StringConstLen { dst, string_id } => match self.get_allocation(dst) {
+                Some(Allocation::Register(reg)) => {
+                    mir.push(X86Inst::StringConstLen {
+                        dst: Operand::Physical(reg),
+                        string_id,
+                    });
+                }
+                Some(Allocation::Spill(offset)) => {
+                    mir.push(X86Inst::StringConstLen {
+                        dst: Operand::Physical(Reg::Rax),
+                        string_id,
+                    });
+                    mir.push(X86Inst::MovMR {
+                        base: Reg::Rbp,
+                        offset,
+                        src: Operand::Physical(Reg::Rax),
+                    });
+                }
+                None => {
+                    mir.push(X86Inst::StringConstLen { dst, string_id });
+                }
+            },
+
             // Instructions without register operands pass through unchanged
             X86Inst::Cdq => mir.push(X86Inst::Cdq),
             X86Inst::Jz { label } => mir.push(X86Inst::Jz { label }),

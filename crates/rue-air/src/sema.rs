@@ -71,6 +71,8 @@ pub struct SemaOutput {
     pub enum_defs: Vec<EnumDef>,
     /// Array type definitions.
     pub array_types: Vec<ArrayTypeDef>,
+    /// String literals indexed by their AIR string_const index.
+    pub strings: Vec<String>,
     /// Warnings collected during analysis.
     pub warnings: Vec<CompileWarning>,
 }
@@ -259,6 +261,10 @@ pub struct Sema<'a> {
     array_types: HashMap<(Type, u64), ArrayTypeId>,
     /// Array type definitions indexed by ArrayTypeId
     array_type_defs: Vec<ArrayTypeDef>,
+    /// String table: maps string content to index (for deduplication)
+    string_table: HashMap<String, u32>,
+    /// String data indexed by string table index
+    strings: Vec<String>,
     /// Warnings collected during analysis
     warnings: Vec<CompileWarning>,
 }
@@ -276,8 +282,22 @@ impl<'a> Sema<'a> {
             enum_defs: Vec::new(),
             array_types: HashMap::new(),
             array_type_defs: Vec::new(),
+            string_table: HashMap::new(),
+            strings: Vec::new(),
             warnings: Vec::new(),
         }
+    }
+
+    /// Add a string to the string table, returning its index.
+    /// Deduplicates identical strings.
+    fn add_string(&mut self, content: String) -> u32 {
+        if let Some(&id) = self.string_table.get(&content) {
+            return id;
+        }
+        let id = self.strings.len() as u32;
+        self.string_table.insert(content.clone(), id);
+        self.strings.push(content);
+        id
     }
 
     /// Check for unused local variables in the current scope (before popping it).
@@ -371,6 +391,7 @@ impl<'a> Sema<'a> {
             struct_defs: self.struct_defs,
             enum_defs: self.enum_defs,
             array_types: self.array_type_defs,
+            strings: self.strings,
             warnings: self.warnings,
         })
     }
@@ -586,6 +607,22 @@ impl<'a> Sema<'a> {
 
                 let air_ref = air.add_inst(AirInst {
                     data: AirInstData::BoolConst(*value),
+                    ty,
+                    span: inst.span,
+                });
+                Ok(AnalysisResult::new(air_ref, ty))
+            }
+
+            InstData::StringConst(symbol) => {
+                let ty = Type::String;
+                expectation.check(ty, inst.span)?;
+
+                // Add string to the string table
+                let string_content = self.interner.get(*symbol).to_string();
+                let string_id = self.add_string(string_content);
+
+                let air_ref = air.add_inst(AirInst {
+                    data: AirInstData::StringConst(string_id),
                     ty,
                     span: inst.span,
                 });
@@ -1838,18 +1875,19 @@ impl<'a> Sema<'a> {
                     ));
                 }
 
-                // Synthesize the argument type in a single traversal (we accept any scalar type)
+                // Synthesize the argument type in a single traversal
                 let arg_result =
                     self.analyze_inst(air, args[0], TypeExpectation::Synthesize, ctx)?;
                 let arg_type = arg_result.ty;
 
-                // Check that argument is a scalar (integer or bool)
-                let is_scalar = arg_type.is_integer() || arg_type == Type::Bool;
-                if !is_scalar {
+                // Check that argument is a supported type (integer, bool, or string)
+                let is_supported =
+                    arg_type.is_integer() || arg_type == Type::Bool || arg_type == Type::String;
+                if !is_supported {
                     return Err(CompileError::new(
                         ErrorKind::IntrinsicTypeMismatch {
                             name: intrinsic_name,
-                            expected: "integer or bool".to_string(),
+                            expected: "integer, bool, or string".to_string(),
                             found: arg_type.name().to_string(),
                         },
                         inst.span,
@@ -2184,6 +2222,8 @@ impl<'a> Sema<'a> {
             Ok(Type::Unit)
         } else if type_sym == well_known.never {
             Ok(Type::Never)
+        } else if type_sym == well_known.string {
+            Ok(Type::String)
         } else if let Some(&struct_id) = self.structs.get(&type_sym) {
             Ok(Type::Struct(struct_id))
         } else if let Some(&enum_id) = self.enums.get(&type_sym) {
@@ -2273,6 +2313,8 @@ impl<'a> Sema<'a> {
             | Type::Never => 1,
             // Enums are represented as their discriminant type (a scalar), so 1 slot
             Type::Enum(_) => 1,
+            // Strings are fat pointers (ptr + len), so 2 slots
+            Type::String => 2,
             Type::Struct(struct_id) => {
                 // Sum the slot counts of all fields (handles arrays and nested structs)
                 let struct_def = &self.struct_defs[struct_id.0 as usize];
@@ -2397,10 +2439,10 @@ impl<'a> Sema<'a> {
 
         // Validate the type is appropriate for this comparison
         if allow_bool {
-            if !lhs_type.is_integer() && lhs_type != Type::Bool {
+            if !lhs_type.is_integer() && lhs_type != Type::Bool && lhs_type != Type::String {
                 return Err(CompileError::new(
                     ErrorKind::TypeMismatch {
-                        expected: "integer or bool".to_string(),
+                        expected: "integer, bool, or string".to_string(),
                         found: lhs_type.name().to_string(),
                     },
                     self.rir.get(lhs).span,

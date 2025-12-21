@@ -42,6 +42,8 @@ pub struct CfgLower<'a> {
     struct_defs: &'a [StructDef],
     /// Array type definitions for bounds checking.
     array_types: &'a [ArrayTypeDef],
+    /// String table from semantic analysis (indexed by StringId).
+    strings: &'a [String],
     mir: Aarch64Mir,
     /// Maps CFG values to vregs
     value_map: HashMap<CfgValue, VReg>,
@@ -63,6 +65,7 @@ impl<'a> CfgLower<'a> {
         cfg: &'a Cfg,
         struct_defs: &'a [StructDef],
         array_types: &'a [ArrayTypeDef],
+        strings: &'a [String],
     ) -> Self {
         let num_locals = cfg.num_locals();
         let num_params = cfg.num_params();
@@ -70,6 +73,7 @@ impl<'a> CfgLower<'a> {
             cfg,
             struct_defs,
             array_types,
+            strings,
             mir: Aarch64Mir::new(),
             value_map: HashMap::new(),
             block_param_vregs: HashMap::new(),
@@ -424,6 +428,26 @@ impl<'a> CfgLower<'a> {
                 });
             }
 
+            CfgInstData::StringConst(string_id) => {
+                let ptr_vreg = self.mir.alloc_vreg();
+                let len_vreg = self.mir.alloc_vreg();
+
+                self.mir.push(Aarch64Inst::StringConstPtr {
+                    dst: Operand::Virtual(ptr_vreg),
+                    string_id: *string_id,
+                });
+
+                self.mir.push(Aarch64Inst::StringConstLen {
+                    dst: Operand::Virtual(len_vreg),
+                    string_id: *string_id,
+                });
+
+                // Store both in struct_field_vregs for fat pointer access
+                self.struct_field_vregs
+                    .insert(value, vec![ptr_vreg, len_vreg]);
+                self.value_map.insert(value, ptr_vreg);
+            }
+
             CfgInstData::Param { index } => {
                 let vreg = self.mir.alloc_vreg();
                 self.value_map.insert(value, vreg);
@@ -612,11 +636,148 @@ impl<'a> CfgLower<'a> {
             }
 
             CfgInstData::Eq(lhs, rhs) => {
-                self.emit_comparison(value, *lhs, *rhs, Cond::Eq);
+                let lhs_ty = self.cfg.get_inst(*lhs).ty;
+
+                if lhs_ty == Type::String {
+                    // String equality: call __rue_str_eq(ptr1, len1, ptr2, len2)
+                    let vreg = self.mir.alloc_vreg();
+                    self.value_map.insert(value, vreg);
+
+                    // Get string fat pointers (ptr, len) from struct_field_vregs
+                    let lhs_fields = self
+                        .struct_field_vregs
+                        .get(lhs)
+                        .cloned()
+                        .expect("string should have fat pointer fields");
+                    let rhs_fields = self
+                        .struct_field_vregs
+                        .get(rhs)
+                        .cloned()
+                        .expect("string should have fat pointer fields");
+
+                    debug_assert_eq!(
+                        lhs_fields.len(),
+                        2,
+                        "string should have 2 fields (ptr, len)"
+                    );
+                    debug_assert_eq!(
+                        rhs_fields.len(),
+                        2,
+                        "string should have 2 fields (ptr, len)"
+                    );
+
+                    let lhs_ptr = lhs_fields[0];
+                    let lhs_len = lhs_fields[1];
+                    let rhs_ptr = rhs_fields[0];
+                    let rhs_len = rhs_fields[1];
+
+                    // Move arguments to calling convention registers (AAPCS64)
+                    // X0 = ptr1, X1 = len1, X2 = ptr2, X3 = len2
+                    self.mir.push(Aarch64Inst::MovRR {
+                        dst: Operand::Physical(Reg::X0),
+                        src: Operand::Virtual(lhs_ptr),
+                    });
+                    self.mir.push(Aarch64Inst::MovRR {
+                        dst: Operand::Physical(Reg::X1),
+                        src: Operand::Virtual(lhs_len),
+                    });
+                    self.mir.push(Aarch64Inst::MovRR {
+                        dst: Operand::Physical(Reg::X2),
+                        src: Operand::Virtual(rhs_ptr),
+                    });
+                    self.mir.push(Aarch64Inst::MovRR {
+                        dst: Operand::Physical(Reg::X3),
+                        src: Operand::Virtual(rhs_len),
+                    });
+
+                    // Call __rue_str_eq
+                    self.mir.push(Aarch64Inst::Bl {
+                        symbol: "__rue_str_eq".to_string(),
+                    });
+
+                    // Result is in X0 (0 or 1)
+                    self.mir.push(Aarch64Inst::MovRR {
+                        dst: Operand::Virtual(vreg),
+                        src: Operand::Physical(Reg::X0),
+                    });
+                } else {
+                    self.emit_comparison(value, *lhs, *rhs, Cond::Eq);
+                }
             }
 
             CfgInstData::Ne(lhs, rhs) => {
-                self.emit_comparison(value, *lhs, *rhs, Cond::Ne);
+                let lhs_ty = self.cfg.get_inst(*lhs).ty;
+
+                if lhs_ty == Type::String {
+                    // String inequality: call __rue_str_eq and invert result
+                    let vreg = self.mir.alloc_vreg();
+                    self.value_map.insert(value, vreg);
+
+                    // Get string fat pointers (ptr, len) from struct_field_vregs
+                    let lhs_fields = self
+                        .struct_field_vregs
+                        .get(lhs)
+                        .cloned()
+                        .expect("string should have fat pointer fields");
+                    let rhs_fields = self
+                        .struct_field_vregs
+                        .get(rhs)
+                        .cloned()
+                        .expect("string should have fat pointer fields");
+
+                    debug_assert_eq!(
+                        lhs_fields.len(),
+                        2,
+                        "string should have 2 fields (ptr, len)"
+                    );
+                    debug_assert_eq!(
+                        rhs_fields.len(),
+                        2,
+                        "string should have 2 fields (ptr, len)"
+                    );
+
+                    let lhs_ptr = lhs_fields[0];
+                    let lhs_len = lhs_fields[1];
+                    let rhs_ptr = rhs_fields[0];
+                    let rhs_len = rhs_fields[1];
+
+                    // Move arguments to calling convention registers (AAPCS64)
+                    // X0 = ptr1, X1 = len1, X2 = ptr2, X3 = len2
+                    self.mir.push(Aarch64Inst::MovRR {
+                        dst: Operand::Physical(Reg::X0),
+                        src: Operand::Virtual(lhs_ptr),
+                    });
+                    self.mir.push(Aarch64Inst::MovRR {
+                        dst: Operand::Physical(Reg::X1),
+                        src: Operand::Virtual(lhs_len),
+                    });
+                    self.mir.push(Aarch64Inst::MovRR {
+                        dst: Operand::Physical(Reg::X2),
+                        src: Operand::Virtual(rhs_ptr),
+                    });
+                    self.mir.push(Aarch64Inst::MovRR {
+                        dst: Operand::Physical(Reg::X3),
+                        src: Operand::Virtual(rhs_len),
+                    });
+
+                    // Call __rue_str_eq
+                    self.mir.push(Aarch64Inst::Bl {
+                        symbol: "__rue_str_eq".to_string(),
+                    });
+
+                    // Result is in X0 (0 or 1), invert it with XOR 1
+                    self.mir.push(Aarch64Inst::MovRR {
+                        dst: Operand::Virtual(vreg),
+                        src: Operand::Physical(Reg::X0),
+                    });
+                    self.mir.push(Aarch64Inst::EorImm {
+                        dst: Operand::Virtual(vreg),
+                        src: Operand::Virtual(vreg),
+                        imm: 1,
+                    });
+                } else {
+                    self.emit_comparison(value, *lhs, *rhs, Cond::Ne);
+                }
             }
 
             CfgInstData::Lt(lhs, rhs) => {
@@ -709,6 +870,37 @@ impl<'a> CfgLower<'a> {
                             offset,
                         });
                     }
+                } else if init_type == Type::String {
+                    // String: store both ptr and len to consecutive slots
+                    let field_vregs = self
+                        .struct_field_vregs
+                        .get(init)
+                        .cloned()
+                        .expect("string should have fat pointer fields in Alloc");
+                    debug_assert_eq!(
+                        field_vregs.len(),
+                        2,
+                        "string should have 2 fields (ptr, len)"
+                    );
+
+                    let ptr_vreg = field_vregs[0];
+                    let len_vreg = field_vregs[1];
+
+                    // Store ptr to slot
+                    let ptr_offset = self.local_offset(*slot);
+                    self.mir.push(Aarch64Inst::Str {
+                        src: Operand::Virtual(ptr_vreg),
+                        base: Reg::Fp,
+                        offset: ptr_offset,
+                    });
+
+                    // Store len to slot + 1
+                    let len_offset = self.local_offset(slot + 1);
+                    self.mir.push(Aarch64Inst::Str {
+                        src: Operand::Virtual(len_vreg),
+                        base: Reg::Fp,
+                        offset: len_offset,
+                    });
                 } else {
                     let init_vreg = self.get_vreg(*init);
                     let offset = self.local_offset(*slot);
@@ -721,25 +913,88 @@ impl<'a> CfgLower<'a> {
             }
 
             CfgInstData::Load { slot } => {
-                let vreg = self.mir.alloc_vreg();
-                self.value_map.insert(value, vreg);
+                let load_type = self.cfg.get_inst(value).ty;
 
-                let offset = self.local_offset(*slot);
-                self.mir.push(Aarch64Inst::Ldr {
-                    dst: Operand::Virtual(vreg),
-                    base: Reg::Fp,
-                    offset,
-                });
+                if load_type == Type::String {
+                    // String: load both ptr and len from consecutive slots
+                    let ptr_vreg = self.mir.alloc_vreg();
+                    let len_vreg = self.mir.alloc_vreg();
+
+                    // Load ptr from slot
+                    let ptr_offset = self.local_offset(*slot);
+                    self.mir.push(Aarch64Inst::Ldr {
+                        dst: Operand::Virtual(ptr_vreg),
+                        base: Reg::Fp,
+                        offset: ptr_offset,
+                    });
+
+                    // Load len from slot + 1
+                    let len_offset = self.local_offset(slot + 1);
+                    self.mir.push(Aarch64Inst::Ldr {
+                        dst: Operand::Virtual(len_vreg),
+                        base: Reg::Fp,
+                        offset: len_offset,
+                    });
+
+                    // Register fat pointer metadata
+                    self.struct_field_vregs
+                        .insert(value, vec![ptr_vreg, len_vreg]);
+                    self.value_map.insert(value, ptr_vreg);
+                } else {
+                    let vreg = self.mir.alloc_vreg();
+                    self.value_map.insert(value, vreg);
+
+                    let offset = self.local_offset(*slot);
+                    self.mir.push(Aarch64Inst::Ldr {
+                        dst: Operand::Virtual(vreg),
+                        base: Reg::Fp,
+                        offset,
+                    });
+                }
             }
 
             CfgInstData::Store { slot, value: val } => {
-                let val_vreg = self.get_vreg(*val);
-                let offset = self.local_offset(*slot);
-                self.mir.push(Aarch64Inst::Str {
-                    src: Operand::Virtual(val_vreg),
-                    base: Reg::Fp,
-                    offset,
-                });
+                let val_type = self.cfg.get_inst(*val).ty;
+                if val_type == Type::String {
+                    // String: store both ptr and len to consecutive slots
+                    let field_vregs = self
+                        .struct_field_vregs
+                        .get(val)
+                        .cloned()
+                        .expect("string should have fat pointer fields in Store");
+                    debug_assert_eq!(
+                        field_vregs.len(),
+                        2,
+                        "string should have 2 fields (ptr, len)"
+                    );
+
+                    let ptr_vreg = field_vregs[0];
+                    let len_vreg = field_vregs[1];
+
+                    // Store ptr to slot
+                    let ptr_offset = self.local_offset(*slot);
+                    self.mir.push(Aarch64Inst::Str {
+                        src: Operand::Virtual(ptr_vreg),
+                        base: Reg::Fp,
+                        offset: ptr_offset,
+                    });
+
+                    // Store len to slot + 1
+                    let len_offset = self.local_offset(slot + 1);
+                    self.mir.push(Aarch64Inst::Str {
+                        src: Operand::Virtual(len_vreg),
+                        base: Reg::Fp,
+                        offset: len_offset,
+                    });
+                } else {
+                    let val_vreg = self.get_vreg(*val);
+                    let offset = self.local_offset(*slot);
+                    self.mir.push(Aarch64Inst::Str {
+                        src: Operand::Virtual(val_vreg),
+                        base: Reg::Fp,
+                        offset,
+                    });
+                }
             }
 
             CfgInstData::Call { name, args } => {
@@ -926,83 +1181,114 @@ impl<'a> CfgLower<'a> {
             CfgInstData::Intrinsic { name, args } => {
                 if name == "dbg" {
                     let arg_val = args[0];
-                    let arg_vreg = self.get_vreg(arg_val);
                     let arg_type = self.cfg.get_inst(arg_val).ty;
 
-                    let runtime_fn = match arg_type {
-                        Type::Bool => "__rue_dbg_bool",
-                        Type::I8 | Type::I16 | Type::I32 | Type::I64 => "__rue_dbg_i64",
-                        Type::U8 | Type::U16 | Type::U32 | Type::U64 => "__rue_dbg_u64",
-                        _ => unreachable!("@dbg only supports scalars"),
-                    };
+                    // Handle String arguments separately
+                    if arg_type == Type::String {
+                        // String is a fat pointer stored as [ptr_vreg, len_vreg] in struct_field_vregs
+                        if let Some(field_vregs) = self.struct_field_vregs.get(&arg_val) {
+                            let ptr_vreg = field_vregs[0];
+                            let len_vreg = field_vregs[1];
 
-                    // Handle type extensions
-                    match arg_type {
-                        Type::I8 => {
+                            // Move pointer to X0 and length to X1
                             self.mir.push(Aarch64Inst::MovRR {
                                 dst: Operand::Physical(Reg::X0),
-                                src: Operand::Virtual(arg_vreg),
+                                src: Operand::Virtual(ptr_vreg),
                             });
-                            self.mir.push(Aarch64Inst::Sxtb {
-                                dst: Operand::Physical(Reg::X0),
-                                src: Operand::Physical(Reg::X0),
-                            });
-                        }
-                        Type::I16 => {
                             self.mir.push(Aarch64Inst::MovRR {
-                                dst: Operand::Physical(Reg::X0),
-                                src: Operand::Virtual(arg_vreg),
+                                dst: Operand::Physical(Reg::X1),
+                                src: Operand::Virtual(len_vreg),
                             });
-                            self.mir.push(Aarch64Inst::Sxth {
-                                dst: Operand::Physical(Reg::X0),
-                                src: Operand::Physical(Reg::X0),
+
+                            // Call __rue_dbg_str
+                            self.mir.push(Aarch64Inst::Bl {
+                                symbol: "__rue_dbg_str".to_string(),
                             });
+                        } else {
+                            unreachable!("String fat pointer not found in struct_field_vregs");
                         }
-                        Type::I32 => {
-                            self.mir.push(Aarch64Inst::MovRR {
-                                dst: Operand::Physical(Reg::X0),
-                                src: Operand::Virtual(arg_vreg),
-                            });
-                            self.mir.push(Aarch64Inst::Sxtw {
-                                dst: Operand::Physical(Reg::X0),
-                                src: Operand::Physical(Reg::X0),
-                            });
+
+                        let result_vreg = self.mir.alloc_vreg();
+                        self.value_map.insert(value, result_vreg);
+                    } else {
+                        // Handle scalar types (integers and bool)
+                        let arg_vreg = self.get_vreg(arg_val);
+
+                        let runtime_fn = match arg_type {
+                            Type::Bool => "__rue_dbg_bool",
+                            Type::I8 | Type::I16 | Type::I32 | Type::I64 => "__rue_dbg_i64",
+                            Type::U8 | Type::U16 | Type::U32 | Type::U64 => "__rue_dbg_u64",
+                            _ => unreachable!("@dbg only supports scalars and strings"),
+                        };
+
+                        // Handle type extensions
+                        match arg_type {
+                            Type::I8 => {
+                                self.mir.push(Aarch64Inst::MovRR {
+                                    dst: Operand::Physical(Reg::X0),
+                                    src: Operand::Virtual(arg_vreg),
+                                });
+                                self.mir.push(Aarch64Inst::Sxtb {
+                                    dst: Operand::Physical(Reg::X0),
+                                    src: Operand::Physical(Reg::X0),
+                                });
+                            }
+                            Type::I16 => {
+                                self.mir.push(Aarch64Inst::MovRR {
+                                    dst: Operand::Physical(Reg::X0),
+                                    src: Operand::Virtual(arg_vreg),
+                                });
+                                self.mir.push(Aarch64Inst::Sxth {
+                                    dst: Operand::Physical(Reg::X0),
+                                    src: Operand::Physical(Reg::X0),
+                                });
+                            }
+                            Type::I32 => {
+                                self.mir.push(Aarch64Inst::MovRR {
+                                    dst: Operand::Physical(Reg::X0),
+                                    src: Operand::Virtual(arg_vreg),
+                                });
+                                self.mir.push(Aarch64Inst::Sxtw {
+                                    dst: Operand::Physical(Reg::X0),
+                                    src: Operand::Physical(Reg::X0),
+                                });
+                            }
+                            Type::U8 => {
+                                self.mir.push(Aarch64Inst::MovRR {
+                                    dst: Operand::Physical(Reg::X0),
+                                    src: Operand::Virtual(arg_vreg),
+                                });
+                                self.mir.push(Aarch64Inst::Uxtb {
+                                    dst: Operand::Physical(Reg::X0),
+                                    src: Operand::Physical(Reg::X0),
+                                });
+                            }
+                            Type::U16 => {
+                                self.mir.push(Aarch64Inst::MovRR {
+                                    dst: Operand::Physical(Reg::X0),
+                                    src: Operand::Virtual(arg_vreg),
+                                });
+                                self.mir.push(Aarch64Inst::Uxth {
+                                    dst: Operand::Physical(Reg::X0),
+                                    src: Operand::Physical(Reg::X0),
+                                });
+                            }
+                            Type::U32 | Type::I64 | Type::U64 | Type::Bool => {
+                                self.mir.push(Aarch64Inst::MovRR {
+                                    dst: Operand::Physical(Reg::X0),
+                                    src: Operand::Virtual(arg_vreg),
+                                });
+                            }
+                            _ => unreachable!(),
                         }
-                        Type::U8 => {
-                            self.mir.push(Aarch64Inst::MovRR {
-                                dst: Operand::Physical(Reg::X0),
-                                src: Operand::Virtual(arg_vreg),
-                            });
-                            self.mir.push(Aarch64Inst::Uxtb {
-                                dst: Operand::Physical(Reg::X0),
-                                src: Operand::Physical(Reg::X0),
-                            });
-                        }
-                        Type::U16 => {
-                            self.mir.push(Aarch64Inst::MovRR {
-                                dst: Operand::Physical(Reg::X0),
-                                src: Operand::Virtual(arg_vreg),
-                            });
-                            self.mir.push(Aarch64Inst::Uxth {
-                                dst: Operand::Physical(Reg::X0),
-                                src: Operand::Physical(Reg::X0),
-                            });
-                        }
-                        Type::U32 | Type::I64 | Type::U64 | Type::Bool => {
-                            self.mir.push(Aarch64Inst::MovRR {
-                                dst: Operand::Physical(Reg::X0),
-                                src: Operand::Virtual(arg_vreg),
-                            });
-                        }
-                        _ => unreachable!(),
+
+                        self.mir.push(Aarch64Inst::Bl {
+                            symbol: runtime_fn.to_string(),
+                        });
+
+                        let result_vreg = self.mir.alloc_vreg();
+                        self.value_map.insert(value, result_vreg);
                     }
-
-                    self.mir.push(Aarch64Inst::Bl {
-                        symbol: runtime_fn.to_string(),
-                    });
-
-                    let result_vreg = self.mir.alloc_vreg();
-                    self.value_map.insert(value, result_vreg);
                 }
             }
 
@@ -1986,26 +2272,91 @@ impl<'a> CfgLower<'a> {
         let vreg = self.mir.alloc_vreg();
         self.value_map.insert(value, vreg);
 
-        let lhs_vreg = self.get_vreg(lhs);
-        let rhs_vreg = self.get_vreg(rhs);
-
-        // Use 64-bit compare for i64/u64 types
         let lhs_ty = self.cfg.get_inst(lhs).ty;
-        if matches!(lhs_ty, Type::I64 | Type::U64) {
-            self.mir.push(Aarch64Inst::Cmp64RR {
-                src1: Operand::Virtual(lhs_vreg),
-                src2: Operand::Virtual(rhs_vreg),
+
+        // Special handling for string comparisons
+        if lhs_ty == Type::String {
+            // String comparison requires calling __rue_str_eq runtime function
+            // Strings are fat pointers: [ptr_vreg, len_vreg] in struct_field_vregs
+
+            // Get left string fat pointer
+            let lhs_fields = self
+                .struct_field_vregs
+                .get(&lhs)
+                .cloned()
+                .expect("String should have fat pointer fields");
+            let lhs_ptr = lhs_fields[0];
+            let lhs_len = lhs_fields[1];
+
+            // Get right string fat pointer
+            let rhs_fields = self
+                .struct_field_vregs
+                .get(&rhs)
+                .cloned()
+                .expect("String should have fat pointer fields");
+            let rhs_ptr = rhs_fields[0];
+            let rhs_len = rhs_fields[1];
+
+            // Set up arguments for __rue_str_eq(ptr1, len1, ptr2, len2)
+            // ARM64 calling convention: X0, X1, X2, X3
+            self.mir.push(Aarch64Inst::MovRR {
+                dst: Operand::Physical(Reg::X0),
+                src: Operand::Virtual(lhs_ptr),
             });
+            self.mir.push(Aarch64Inst::MovRR {
+                dst: Operand::Physical(Reg::X1),
+                src: Operand::Virtual(lhs_len),
+            });
+            self.mir.push(Aarch64Inst::MovRR {
+                dst: Operand::Physical(Reg::X2),
+                src: Operand::Virtual(rhs_ptr),
+            });
+            self.mir.push(Aarch64Inst::MovRR {
+                dst: Operand::Physical(Reg::X3),
+                src: Operand::Virtual(rhs_len),
+            });
+
+            // Call __rue_str_eq
+            self.mir.push(Aarch64Inst::Bl {
+                symbol: "__rue_str_eq".to_string(),
+            });
+
+            // Result is in X0 (0 or 1)
+            self.mir.push(Aarch64Inst::MovRR {
+                dst: Operand::Virtual(vreg),
+                src: Operand::Physical(Reg::X0),
+            });
+
+            // For != comparison, invert the result
+            if cond == Cond::Ne {
+                self.mir.push(Aarch64Inst::EorImm {
+                    dst: Operand::Virtual(vreg),
+                    src: Operand::Virtual(vreg),
+                    imm: 1,
+                });
+            }
         } else {
-            self.mir.push(Aarch64Inst::CmpRR {
-                src1: Operand::Virtual(lhs_vreg),
-                src2: Operand::Virtual(rhs_vreg),
+            // Normal scalar comparison
+            let lhs_vreg = self.get_vreg(lhs);
+            let rhs_vreg = self.get_vreg(rhs);
+
+            // Use 64-bit compare for i64/u64 types
+            if matches!(lhs_ty, Type::I64 | Type::U64) {
+                self.mir.push(Aarch64Inst::Cmp64RR {
+                    src1: Operand::Virtual(lhs_vreg),
+                    src2: Operand::Virtual(rhs_vreg),
+                });
+            } else {
+                self.mir.push(Aarch64Inst::CmpRR {
+                    src1: Operand::Virtual(lhs_vreg),
+                    src2: Operand::Virtual(rhs_vreg),
+                });
+            }
+            self.mir.push(Aarch64Inst::Cset {
+                dst: Operand::Virtual(vreg),
+                cond,
             });
         }
-        self.mir.push(Aarch64Inst::Cset {
-            dst: Operand::Virtual(vreg),
-            cond,
-        });
     }
 
     /// Lower a block terminator.
@@ -2272,10 +2623,11 @@ mod tests {
         let func = &output.functions[0];
         let struct_defs = &output.struct_defs;
         let array_types = &output.array_types;
+        let strings = &output.strings;
         let cfg_output =
             CfgBuilder::build(&func.air, func.num_locals, func.num_param_slots, &func.name);
 
-        CfgLower::new(&cfg_output.cfg, struct_defs, array_types).lower()
+        CfgLower::new(&cfg_output.cfg, struct_defs, array_types, strings).lower()
     }
 
     #[test]

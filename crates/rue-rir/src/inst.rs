@@ -146,6 +146,9 @@ pub enum InstData {
     /// Boolean constant
     BoolConst(bool),
 
+    /// String constant (interned string content)
+    StringConst(Symbol),
+
     /// Unit constant (for blocks that produce unit type)
     UnitConst,
 
@@ -395,6 +398,9 @@ impl<'a, 'b> RirPrinter<'a, 'b> {
                 }
                 InstData::BoolConst(v) => {
                     out.push_str(&format!("const {}\n", v));
+                }
+                InstData::StringConst(s) => {
+                    out.push_str(&format!("const {:?}\n", self.interner.get(*s)));
                 }
                 InstData::UnitConst => {
                     out.push_str("const ()\n");

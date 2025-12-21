@@ -357,7 +357,12 @@ fn handle_emit(source: &str, options: &Options) -> Result<(), ()> {
                 println!("=== MIR ===");
                 if let Some(ref state) = frontend_state {
                     for func in &state.functions {
-                        let mir = generate_mir(&func.cfg, &state.struct_defs, &state.array_types);
+                        let mir = generate_mir(
+                            &func.cfg,
+                            &state.struct_defs,
+                            &state.array_types,
+                            &state.strings,
+                        );
                         println!("function {}:", func.analyzed.name);
                         println!("{}", mir);
                     }
@@ -374,6 +379,7 @@ fn handle_emit(source: &str, options: &Options) -> Result<(), ()> {
                             &func.cfg,
                             &state.struct_defs,
                             &state.array_types,
+                            &state.strings,
                         );
                         print_assembly(&mir);
                         println!();

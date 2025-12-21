@@ -17,6 +17,7 @@
   - [Never Type](03-types/04-never-type.md)
   - [Array Types](03-types/05-array-types.md)
   - [Struct Types](03-types/06-struct-types.md)
+  - [String Type](03-types/07-string-type.md)
 
 - [Expressions](04-expressions/README.md)
   - [Literal Expressions](04-expressions/01-literal-expressions.md)

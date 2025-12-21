@@ -56,6 +56,8 @@ pub struct WellKnown {
     pub unit: Symbol,
     /// The `!` never type
     pub never: Symbol,
+    /// The `String` type
+    pub string: Symbol,
 }
 
 impl WellKnown {
@@ -73,6 +75,7 @@ impl WellKnown {
             bool: interner.intern_inner("bool"),
             unit: interner.intern_inner("()"),
             never: interner.intern_inner("!"),
+            string: interner.intern_inner("String"),
         }
     }
 }
@@ -239,9 +242,9 @@ mod tests {
     #[test]
     fn test_len() {
         let mut interner = Interner::new();
-        // Well-known symbols (i8, i16, i32, i64, u8, u16, u32, u64, bool, (), !) are pre-interned
+        // Well-known symbols (i8, i16, i32, i64, u8, u16, u32, u64, bool, (), !, String) are pre-interned
         let initial_len = interner.len();
-        assert_eq!(initial_len, 11);
+        assert_eq!(initial_len, 12);
 
         interner.intern("a");
         assert_eq!(interner.len(), initial_len + 1);

@@ -8,7 +8,8 @@ use crate::ast::{
     BreakExpr, CallExpr, ContinueExpr, EnumDecl, EnumVariant, Expr, FieldDecl, FieldExpr,
     FieldInit, Function, Ident, IfExpr, IndexExpr, IntLit, IntrinsicCallExpr, Item, LetStatement,
     LoopExpr, MatchArm, MatchExpr, Param, ParenExpr, PathExpr, PathPattern, Pattern, ReturnExpr,
-    Statement, StructDecl, StructLitExpr, TypeExpr, UnaryExpr, UnaryOp, UnitLit, WhileExpr,
+    Statement, StringLit, StructDecl, StructLitExpr, TypeExpr, UnaryExpr, UnaryOp, UnitLit,
+    WhileExpr,
 };
 use chumsky::input::{Input as ChumskyInput, Stream, ValueInput};
 use chumsky::pratt::{infix, left, prefix};
@@ -363,6 +364,14 @@ where
         }),
     };
 
+    // String literal
+    let string_lit = select! {
+        TokenKind::String(s) = e => Expr::String(StringLit {
+            value: s,
+            span: to_rue_span(e.span()),
+        }),
+    };
+
     // Boolean literals
     let bool_true = select! {
         TokenKind::True = e => Expr::Bool(BoolLit {
@@ -574,6 +583,7 @@ where
     // Note: unit_lit must come before paren_expr so () is parsed as unit, not empty parens
     let primary = choice((
         int_lit,
+        string_lit,
         bool_true,
         bool_false,
         unit_lit,

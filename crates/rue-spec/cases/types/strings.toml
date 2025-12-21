@@ -1,0 +1,461 @@
+[section]
+id = "types.strings"
+spec_chapter = "3.7"
+name = "String Type"
+description = "The String type represents immutable UTF-8 encoded string literals."
+
+# =============================================================================
+# String Type Definition
+# =============================================================================
+
+[[case]]
+name = "string_literal_basic"
+spec = ["3.7:1", "3.7:2", "3.7:3", "3.7:5", "4.1:10", "2.1:6"]
+source = """
+fn main() -> i32 {
+    let s = "hello";
+    0
+}
+"""
+exit_code = 0
+
+[[case]]
+name = "string_literal_empty"
+spec = ["3.7:1", "3.7:5", "4.1:10"]
+source = """
+fn main() -> i32 {
+    let s = "";
+    0
+}
+"""
+exit_code = 0
+
+[[case]]
+name = "string_literal_spaces"
+spec = ["3.7:1", "3.7:5", "4.1:10"]
+source = """
+fn main() -> i32 {
+    let s = "hello world";
+    0
+}
+"""
+exit_code = 0
+
+# =============================================================================
+# String Escape Sequences
+# =============================================================================
+
+[[case]]
+name = "string_escape_backslash"
+spec = ["3.7:6", "4.1:11", "2.1:7"]
+source = """
+fn main() -> i32 {
+    let s = "with \\\\ backslash";
+    0
+}
+"""
+exit_code = 0
+
+[[case]]
+name = "string_escape_quote"
+spec = ["3.7:6", "4.1:11", "2.1:7"]
+source = """
+fn main() -> i32 {
+    let s = "with \\"quotes\\"";
+    0
+}
+"""
+exit_code = 0
+
+[[case]]
+name = "string_escape_combined"
+spec = ["3.7:6", "4.1:11", "2.1:7"]
+source = """
+fn main() -> i32 {
+    let s = "path: C:\\\\Users\\\\\\"name\\"";
+    0
+}
+"""
+exit_code = 0
+
+[[case]]
+name = "string_invalid_escape"
+spec = ["3.7:7", "2.1:8"]
+source = """
+fn main() -> i32 {
+    let s = "invalid \\n escape";
+    0
+}
+"""
+compile_fail = true
+
+# =============================================================================
+# String Equality (literal comparisons)
+# =============================================================================
+
+[[case]]
+name = "string_literal_eq_same"
+spec = ["3.7:9", "3.7:10", "4.3:3"]
+source = """
+fn main() -> i32 {
+    if "hello" == "hello" { 1 } else { 0 }
+}
+"""
+exit_code = 1
+
+[[case]]
+name = "string_literal_eq_different"
+spec = ["3.7:9", "3.7:10", "4.3:3"]
+source = """
+fn main() -> i32 {
+    if "hello" == "world" { 1 } else { 0 }
+}
+"""
+exit_code = 0
+
+[[case]]
+name = "string_literal_ne"
+spec = ["3.7:9", "3.7:10", "4.3:3"]
+source = """
+fn main() -> i32 {
+    if "foo" != "bar" { 1 } else { 0 }
+}
+"""
+exit_code = 1
+
+[[case]]
+name = "string_literal_eq_empty"
+spec = ["3.7:9", "3.7:10", "4.3:3"]
+source = """
+fn main() -> i32 {
+    if "" == "" { 1 } else { 0 }
+}
+"""
+exit_code = 1
+
+[[case]]
+name = "string_literal_eq_different_lengths"
+spec = ["3.7:9", "3.7:10", "4.3:3"]
+source = """
+fn main() -> i32 {
+    if "hello" == "helloworld" { 1 } else { 0 }
+}
+"""
+exit_code = 0
+
+[[case]]
+name = "string_no_ordering_lt"
+spec = ["3.7:9", "4.3:6"]
+source = """
+fn main() -> i32 {
+    if "a" < "b" { 1 } else { 0 }
+}
+"""
+compile_fail = true
+
+[[case]]
+name = "string_no_ordering_gt"
+spec = ["3.7:9", "4.3:6"]
+source = """
+fn main() -> i32 {
+    if "a" > "b" { 1 } else { 0 }
+}
+"""
+compile_fail = true
+
+[[case]]
+name = "string_no_ordering_le"
+spec = ["3.7:9", "4.3:6"]
+source = """
+fn main() -> i32 {
+    if "a" <= "b" { 1 } else { 0 }
+}
+"""
+compile_fail = true
+
+[[case]]
+name = "string_no_ordering_ge"
+spec = ["3.7:9", "4.3:6"]
+source = """
+fn main() -> i32 {
+    if "a" >= "b" { 1 } else { 0 }
+}
+"""
+compile_fail = true
+
+# =============================================================================
+# String Edge Cases
+# =============================================================================
+
+[[case]]
+name = "string_special_chars"
+spec = ["3.7:1", "3.7:5"]
+source = """
+fn main() -> i32 {
+    let s = "!@#$%^&*()";
+    0
+}
+"""
+exit_code = 0
+
+[[case]]
+name = "string_unicode"
+spec = ["3.7:1"]
+source = """
+fn main() -> i32 {
+    let s = "Hello, world!";
+    0
+}
+"""
+exit_code = 0
+
+# =============================================================================
+# String Type Annotation
+# =============================================================================
+
+[[case]]
+name = "string_type_annotation"
+spec = ["3.7:1"]
+source = """
+fn main() -> i32 {
+    let s: String = "hello";
+    0
+}
+"""
+exit_code = 0
+
+[[case]]
+name = "string_type_annotation_empty"
+spec = ["3.7:1"]
+source = """
+fn main() -> i32 {
+    let s: String = "";
+    0
+}
+"""
+exit_code = 0
+
+# =============================================================================
+# String Variables in Equality Comparisons
+# =============================================================================
+
+[[case]]
+name = "string_var_eq_literal"
+spec = ["3.7:9", "3.7:10"]
+source = """
+fn main() -> i32 {
+    let a = "hello";
+    if a == "hello" { 1 } else { 0 }
+}
+"""
+exit_code = 1
+
+[[case]]
+name = "string_var_ne_literal"
+spec = ["3.7:9", "3.7:10"]
+source = """
+fn main() -> i32 {
+    let a = "hello";
+    if a != "world" { 1 } else { 0 }
+}
+"""
+exit_code = 1
+
+[[case]]
+name = "string_var_eq_var_same"
+spec = ["3.7:9", "3.7:10"]
+source = """
+fn main() -> i32 {
+    let a = "hello";
+    let b = "hello";
+    if a == b { 1 } else { 0 }
+}
+"""
+exit_code = 1
+
+[[case]]
+name = "string_var_eq_var_different"
+spec = ["3.7:9", "3.7:10"]
+source = """
+fn main() -> i32 {
+    let a = "hello";
+    let b = "world";
+    if a == b { 1 } else { 0 }
+}
+"""
+exit_code = 0
+
+[[case]]
+name = "string_var_ne_var"
+spec = ["3.7:9", "3.7:10"]
+source = """
+fn main() -> i32 {
+    let a = "foo";
+    let b = "bar";
+    if a != b { 1 } else { 0 }
+}
+"""
+exit_code = 1
+
+[[case]]
+name = "string_var_eq_empty"
+spec = ["3.7:9", "3.7:10"]
+source = """
+fn main() -> i32 {
+    let a = "";
+    let b = "";
+    if a == b { 1 } else { 0 }
+}
+"""
+exit_code = 1
+
+[[case]]
+name = "string_var_eq_different_lengths"
+spec = ["3.7:9", "3.7:10"]
+source = """
+fn main() -> i32 {
+    let a = "hello";
+    let b = "helloworld";
+    if a == b { 1 } else { 0 }
+}
+"""
+exit_code = 0
+
+[[case]]
+name = "string_literal_eq_var"
+spec = ["3.7:9", "3.7:10"]
+source = """
+fn main() -> i32 {
+    let b = "hello";
+    if "hello" == b { 1 } else { 0 }
+}
+"""
+exit_code = 1
+
+# =============================================================================
+# String Debugging with @dbg
+# =============================================================================
+
+[[case]]
+name = "string_dbg_literal"
+spec = ["3.7:12"]
+source = """
+fn main() -> i32 {
+    @dbg("hello");
+    0
+}
+"""
+exit_code = 0
+stdout = "hello\n"
+
+[[case]]
+name = "string_dbg_variable"
+spec = ["3.7:12"]
+source = """
+fn main() -> i32 {
+    let msg = "world";
+    @dbg(msg);
+    0
+}
+"""
+exit_code = 0
+stdout = "world\n"
+
+[[case]]
+name = "string_dbg_empty"
+spec = ["3.7:12"]
+source = """
+fn main() -> i32 {
+    @dbg("");
+    0
+}
+"""
+exit_code = 0
+stdout = "\n"
+
+[[case]]
+name = "string_dbg_with_spaces"
+spec = ["3.7:12"]
+source = """
+fn main() -> i32 {
+    let msg = "Hello, world!";
+    @dbg(msg);
+    0
+}
+"""
+exit_code = 0
+stdout = "Hello, world!\n"
+
+# =============================================================================
+# String in Complex Expressions
+# =============================================================================
+
+[[case]]
+name = "string_multiple_comparisons"
+spec = ["3.7:9", "3.7:10"]
+source = """
+fn main() -> i32 {
+    let a = "hello";
+    let b = "hello";
+    let c = "world";
+    if a == b && a != c {
+        1
+    } else {
+        0
+    }
+}
+"""
+exit_code = 1
+
+# =============================================================================
+# Mutable String Reassignment
+# =============================================================================
+
+[[case]]
+name = "string_reassignment_and_compare"
+spec = ["3.7:9", "3.7:10"]
+source = """
+fn main() -> i32 {
+    let mut s = "first";
+    s = "second";
+    if s == "second" { 1 } else { 0 }
+}
+"""
+exit_code = 1
+
+[[case]]
+name = "string_reassignment_multiple"
+spec = ["3.7:9", "3.7:10"]
+source = """
+fn main() -> i32 {
+    let mut s = "one";
+    s = "two";
+    s = "three";
+    if s == "three" { 1 } else { 0 }
+}
+"""
+exit_code = 1
+
+[[case]]
+name = "string_reassignment_to_empty"
+spec = ["3.7:9", "3.7:10"]
+source = """
+fn main() -> i32 {
+    let mut s = "hello";
+    s = "";
+    if s == "" { 1 } else { 0 }
+}
+"""
+exit_code = 1
+
+[[case]]
+name = "string_reassignment_from_empty"
+spec = ["3.7:9", "3.7:10"]
+source = """
+fn main() -> i32 {
+    let mut s = "";
+    s = "world";
+    if s == "world" { 1 } else { 0 }
+}
+"""
+exit_code = 1

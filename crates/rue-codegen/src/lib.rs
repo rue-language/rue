@@ -37,6 +37,8 @@ pub struct MachineCode {
     pub code: Vec<u8>,
     /// Relocations that need to be resolved by the linker.
     pub relocations: Vec<EmittedRelocation>,
+    /// String table referenced by the code.
+    pub strings: Vec<String>,
 }
 
 // Re-export the generate function for x86_64 (default)
@@ -72,7 +74,7 @@ mod tests {
         let cfg_output = CfgBuilder::build(&air, 0, 0, "main");
 
         // Test the generate function
-        let machine_code = generate(&cfg_output.cfg, &[], &[]);
+        let machine_code = generate(&cfg_output.cfg, &[], &[], &[]);
 
         // Should generate working code
         assert!(!machine_code.code.is_empty());
@@ -86,5 +88,8 @@ mod tests {
         // Should have one relocation for __rue_exit
         assert_eq!(machine_code.relocations.len(), 1);
         assert_eq!(machine_code.relocations[0].symbol, "__rue_exit");
+
+        // Should have no strings
+        assert!(machine_code.strings.is_empty());
     }
 }

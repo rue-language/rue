@@ -13,6 +13,7 @@ Rue tokens fall into the following categories:
 | Keywords | `fn`, `let`, `mut`, `if`, `else`, `while`, `match`, `return`, `break`, `continue`, `true`, `false` |
 | Identifiers | `main`, `x`, `my_var`, `_unused` |
 | Integer literals | `0`, `42`, `255`, `2147483647` |
+| String literals | `"hello"`, `"world"`, `"with \"escapes\""` |
 | Operators | `+`, `-`, `*`, `/`, `%`, `==`, `!=`, `<`, `>`, `<=`, `>=`, `&&`, `\|\|`, `!` |
 | Delimiters | `(`, `)`, `{`, `}`, `[`, `]`, `,`, `;`, `:`, `->`, `=>` |
 
@@ -38,9 +39,36 @@ fn main() -> i32 {
 }
 ```
 
-## Identifiers
+## String Literals
 
 r[2.1.6#normative]
+A string literal is a sequence of characters enclosed in double quotes (`"`).
+
+```ebnf
+string_literal = '"' { string_char } '"' ;
+string_char = any_char_except_quote_or_backslash | escape_sequence ;
+escape_sequence = "\\" | "\"" ;
+```
+
+r[2.1.7#normative]
+String literals support escape sequences: `\\` for a backslash and `\"` for a double quote.
+
+r[2.1.8#normative]
+An invalid escape sequence in a string literal is a compile-time error.
+
+r[2.1.9]
+```rue
+fn main() -> i32 {
+    let a = "hello world";
+    let b = "with \"quotes\"";
+    let c = "with \\ backslash";
+    0
+}
+```
+
+## Identifiers
+
+r[2.1.10#normative]
 An identifier starts with a letter or underscore, followed by any number of letters, digits, or underscores.
 
 ```ebnf
@@ -48,10 +76,10 @@ identifier = (letter | "_") { letter | digit | "_" } ;
 letter = "a" | ... | "z" | "A" | ... | "Z" ;
 ```
 
-r[2.1.7#normative]
+r[2.1.11#normative]
 Identifiers cannot be keywords. The identifier `_` (single underscore) is special and indicates an unused binding.
 
-r[2.1.8]
+r[2.1.12]
 ```rue
 fn main() -> i32 {
     let x = 1;

@@ -45,6 +45,8 @@ pub enum Type {
     Enum(EnumId),
     /// Fixed-size array type: [T; N]
     Array(ArrayTypeId),
+    /// String type (fat pointer: ptr + len, 16 bytes)
+    String,
     /// An error type (used during type checking to continue after errors)
     Error,
     /// The never type - represents computations that don't return (e.g., break, continue).
@@ -160,6 +162,7 @@ impl Type {
             Type::Struct(_) => "<struct>",
             Type::Enum(_) => "<enum>",
             Type::Array(_) => "<array>",
+            Type::String => "String",
             Type::Error => "<error>",
             Type::Never => "!",
         }
@@ -227,6 +230,11 @@ impl Type {
             Type::Enum(id) => Some(*id),
             _ => None,
         }
+    }
+
+    /// Check if this is a string type.
+    pub fn is_string(&self) -> bool {
+        matches!(self, Type::String)
     }
 
     /// Check if this type can coerce to the target type.

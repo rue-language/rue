@@ -99,6 +99,8 @@ pub struct CompileState {
     pub struct_defs: Vec<StructDef>,
     /// Array type definitions (element type and length).
     pub array_types: Vec<ArrayTypeDef>,
+    /// String literals indexed by their string_const index.
+    pub strings: Vec<String>,
     /// Warnings collected during compilation.
     pub warnings: Vec<CompileWarning>,
 }
@@ -163,6 +165,7 @@ pub fn compile_frontend_from_ast(ast: Ast) -> CompileResult<CompileState> {
         functions,
         struct_defs: sema_output.struct_defs,
         array_types: sema_output.array_types,
+        strings: sema_output.strings,
         warnings,
     })
 }
@@ -204,23 +207,33 @@ fn compile_x86_64(state: &CompileState, options: &CompileOptions) -> CompileResu
     let mut object_files: Vec<Vec<u8>> = Vec::new();
 
     for func in &state.functions {
-        let machine_code =
-            rue_codegen::x86_64::generate(&func.cfg, &state.struct_defs, &state.array_types);
+        let machine_code = rue_codegen::x86_64::generate(
+            &func.cfg,
+            &state.struct_defs,
+            &state.array_types,
+            &state.strings,
+        );
 
         // Build object file for this function
-        let mut obj_builder =
-            ObjectBuilder::new(options.target, &func.analyzed.name).code(machine_code.code);
+        let mut obj_builder = ObjectBuilder::new(options.target, &func.analyzed.name)
+            .code(machine_code.code)
+            .strings(machine_code.strings);
 
         // Add relocations from codegen (convert emitted relocations to linker relocations).
-        // We use PLT32 for call instructions since this is the standard relocation type
-        // for function calls on x86-64. While we're doing static linking without a PLT,
-        // PLT32 and PC32 are treated identically by the linker for direct calls.
-        // Using PLT32 follows the convention established by GCC/Clang.
+        // String constant references (.rodata.strN) use PC32 relocation type.
+        // Function calls use PLT32 relocation type (treated same as PC32 for static linking).
         for reloc in machine_code.relocations {
+            // String constants use .rodata.strN symbols and PC32 relocations
+            let rel_type = if reloc.symbol.starts_with(".rodata.str") {
+                RelocationType::Pc32
+            } else {
+                RelocationType::Plt32
+            };
+
             obj_builder = obj_builder.relocation(CodeRelocation {
                 offset: reloc.offset,
                 symbol: reloc.symbol,
-                rel_type: RelocationType::Plt32,
+                rel_type,
                 addend: reloc.addend,
             });
         }
@@ -391,13 +404,19 @@ fn compile_aarch64(state: &CompileState, options: &CompileOptions) -> CompileRes
     let mut object_files: Vec<Vec<u8>> = Vec::new();
 
     for func in &state.functions {
-        let machine_code =
-            rue_codegen::aarch64::generate(&func.cfg, &state.struct_defs, &state.array_types);
+        let machine_code = rue_codegen::aarch64::generate(
+            &func.cfg,
+            &state.struct_defs,
+            &state.array_types,
+            &state.strings,
+        );
 
-        let mut obj_builder =
-            ObjectBuilder::new(options.target, &func.analyzed.name).code(machine_code.code);
+        let mut obj_builder = ObjectBuilder::new(options.target, &func.analyzed.name)
+            .code(machine_code.code)
+            .strings(machine_code.strings);
 
         for reloc in machine_code.relocations {
+            // TODO: Handle string constants for aarch64 (similar to x86_64)
             obj_builder = obj_builder.relocation(CodeRelocation {
                 offset: reloc.offset,
                 symbol: reloc.symbol,
@@ -518,8 +537,13 @@ fn link_system_macos(
 /// Generate X86Mir from CFG (for debugging/inspection).
 ///
 /// This returns the MIR before register allocation, with virtual registers.
-pub fn generate_mir(cfg: &Cfg, struct_defs: &[StructDef], array_types: &[ArrayTypeDef]) -> X86Mir {
-    rue_codegen::x86_64::CfgLower::new(cfg, struct_defs, array_types).lower()
+pub fn generate_mir(
+    cfg: &Cfg,
+    struct_defs: &[StructDef],
+    array_types: &[ArrayTypeDef],
+    strings: &[String],
+) -> X86Mir {
+    rue_codegen::x86_64::CfgLower::new(cfg, struct_defs, array_types, strings).lower()
 }
 
 /// Generate X86Mir after register allocation (for debugging/inspection).
@@ -530,12 +554,13 @@ pub fn generate_allocated_mir(
     cfg: &Cfg,
     struct_defs: &[StructDef],
     array_types: &[ArrayTypeDef],
+    strings: &[String],
 ) -> X86Mir {
     let num_locals = cfg.num_locals();
     let num_params = cfg.num_params();
 
     // Lower CFG to X86Mir with virtual registers
-    let mir = rue_codegen::x86_64::CfgLower::new(cfg, struct_defs, array_types).lower();
+    let mir = rue_codegen::x86_64::CfgLower::new(cfg, struct_defs, array_types, strings).lower();
 
     // Allocate physical registers
     let existing_slots = num_locals + num_params;

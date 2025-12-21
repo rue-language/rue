@@ -116,6 +116,15 @@ impl<'a> CfgBuilder<'a> {
                 }
             }
 
+            AirInstData::StringConst(string_id) => {
+                let value = self.emit(CfgInstData::StringConst(*string_id), ty, span);
+                self.cache(air_ref, value);
+                ExprResult {
+                    value: Some(value),
+                    continuation: Continuation::Continues,
+                }
+            }
+
             AirInstData::UnitConst => {
                 // Unit constants have no runtime representation.
                 // We emit a dummy const 0 with unit type for uniformity,

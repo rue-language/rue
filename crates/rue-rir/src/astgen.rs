@@ -150,6 +150,13 @@ impl<'a> AstGen<'a> {
                 data: InstData::BoolConst(lit.value),
                 span: lit.span,
             }),
+            Expr::String(lit) => {
+                let symbol = self.interner.intern(&lit.value);
+                self.rir.add_inst(Inst {
+                    data: InstData::StringConst(symbol),
+                    span: lit.span,
+                })
+            }
             Expr::Unit(lit) => self.rir.add_inst(Inst {
                 data: InstData::UnitConst,
                 span: lit.span,

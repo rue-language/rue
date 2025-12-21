@@ -166,7 +166,7 @@ compile_fail = true
 
 [[case]]
 name = "precedence_comparison_after_arithmetic"
-spec = ["4.3:7"]
+spec = ["4.3:8"]
 source = """
 fn main() -> i32 {
     if 2 + 3 == 5 { 1 } else { 0 }
@@ -176,7 +176,7 @@ exit_code = 1
 
 [[case]]
 name = "precedence_lt_after_add"
-spec = ["4.3:7"]
+spec = ["4.3:8"]
 source = """
 fn main() -> i32 {
     if 2 + 3 < 10 - 3 { 1 } else { 0 }
@@ -190,7 +190,7 @@ exit_code = 1
 
 [[case]]
 name = "type_mismatch_i32_i64"
-spec = ["4.3:9"]
+spec = ["4.3:10"]
 source = """
 fn main() -> i32 {
     let x: i32 = 10;
@@ -202,7 +202,7 @@ compile_fail = true
 
 [[case]]
 name = "type_mismatch_i32_u32"
-spec = ["4.3:9"]
+spec = ["4.3:10"]
 source = """
 fn main() -> i32 {
     let x: i32 = 10;
@@ -218,7 +218,7 @@ compile_fail = true
 
 [[case]]
 name = "infer_type_from_left_operand"
-spec = ["4.3:10"]
+spec = ["4.3:11"]
 source = """
 fn main() -> i32 {
     let x: i64 = 100;
@@ -232,7 +232,7 @@ exit_code = 1
 # TODO: Implement bidirectional type inference and uncomment the test.
 # [[case]]
 # name = "infer_type_from_right_operand"
-# spec = ["4.3:10"]
+# spec = ["4.3:11"]
 # source = """
 # fn main() -> i32 {
 #     let x: i64 = 100;

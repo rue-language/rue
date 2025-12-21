@@ -141,6 +141,8 @@ pub enum ErrorKind {
     // Lexer errors
     UnexpectedCharacter(char),
     InvalidInteger,
+    InvalidStringEscape(char),
+    UnterminatedString,
 
     // Parser errors
     UnexpectedToken {
@@ -346,6 +348,8 @@ impl fmt::Display for ErrorKind {
         match self {
             ErrorKind::UnexpectedCharacter(c) => write!(f, "unexpected character: {}", c),
             ErrorKind::InvalidInteger => write!(f, "invalid integer literal"),
+            ErrorKind::InvalidStringEscape(c) => write!(f, "invalid escape sequence: \\{}", c),
+            ErrorKind::UnterminatedString => write!(f, "unterminated string literal"),
             ErrorKind::UnexpectedToken { expected, found } => {
                 write!(f, "expected {}, found {}", expected, found)
             }

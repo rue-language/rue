@@ -146,6 +146,8 @@ pub struct Emitter<'a> {
     callee_saved: Vec<Reg>,
     /// Whether a stack frame was emitted (prologue was executed).
     has_frame: bool,
+    /// String constants (for StringConstPtr/StringConstLen)
+    strings: &'a [String],
 }
 
 impl<'a> Emitter<'a> {
@@ -155,6 +157,7 @@ impl<'a> Emitter<'a> {
         num_locals: u32,
         num_params: u32,
         callee_saved: &[Reg],
+        strings: &'a [String],
     ) -> Self {
         Self {
             mir,
@@ -166,6 +169,7 @@ impl<'a> Emitter<'a> {
             num_params,
             callee_saved: callee_saved.to_vec(),
             has_frame: false,
+            strings,
         }
     }
 
@@ -606,6 +610,61 @@ impl<'a> Emitter<'a> {
                 let rd = dst.as_physical();
                 let rn = src.as_physical();
                 self.emit_lsl_imm(rd, rn, *imm);
+            }
+
+            Aarch64Inst::StringConstPtr { dst, string_id } => {
+                // Load string pointer using ADRP + ADD for PC-relative addressing
+                // This requires relocations to be resolved by the linker
+                let rd = dst.as_physical();
+                let string_id = *string_id;
+
+                // Create a symbol name for this string constant
+                let symbol = format!("__rue_string_{}", string_id);
+
+                // ADRP dst, <symbol>@PAGE
+                // This loads the 4KB-aligned page address of the symbol
+                let offset = self.code.len();
+                let adrp = 0x90000000_u32 | rd.encoding() as u32;
+                self.emit_u32(adrp);
+
+                // Record relocation for ADRP (ARM64_RELOC_PAGE21)
+                // Use @PAGE suffix to indicate PAGE21 relocation
+                self.relocations.push(EmittedRelocation {
+                    offset: offset as u64,
+                    symbol: format!("{}@PAGE", symbol),
+                    addend: 0,
+                });
+
+                // ADD dst, dst, <symbol>@PAGEOFF
+                // This adds the offset within the page
+                let offset = self.code.len();
+                let add = 0x91000000_u32 | (rd.encoding() as u32) << 5 | rd.encoding() as u32;
+                self.emit_u32(add);
+
+                // Record relocation for ADD (ARM64_RELOC_PAGEOFF12)
+                // Use @PAGEOFF suffix to indicate PAGEOFF12 relocation
+                self.relocations.push(EmittedRelocation {
+                    offset: offset as u64,
+                    symbol: format!("{}@PAGEOFF", symbol),
+                    addend: 0,
+                });
+            }
+
+            Aarch64Inst::StringConstLen { dst, string_id } => {
+                // Load string length as an immediate
+                // Look up the actual string to get its length
+                let rd = dst.as_physical();
+                let string_id = *string_id as usize;
+
+                let len = if string_id < self.strings.len() {
+                    self.strings[string_id].len() as i64
+                } else {
+                    // Invalid string_id - emit 0
+                    0
+                };
+
+                // Emit the length as an immediate
+                self.emit_mov_imm(rd, len);
             }
         }
     }

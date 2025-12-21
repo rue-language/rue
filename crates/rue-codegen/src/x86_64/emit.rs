@@ -45,6 +45,8 @@ pub struct Emitter<'a> {
     num_params: u32,
     /// Callee-saved registers that need to be preserved.
     callee_saved: Vec<Reg>,
+    /// String table (indexed by string_id in StringConstPtr/StringConstLen).
+    strings: &'a [String],
 }
 
 impl<'a> Emitter<'a> {
@@ -53,12 +55,14 @@ impl<'a> Emitter<'a> {
     /// - `num_locals`: Total local slots including spills (for stack frame size)
     /// - `num_locals_original`: Original local count (for param offset calculation)
     /// - `num_params`: Number of function parameters
+    /// - `strings`: String table for string constant references
     pub fn new(
         mir: &'a X86Mir,
         num_locals: u32,
         num_locals_original: u32,
         num_params: u32,
         callee_saved: &[Reg],
+        strings: &'a [String],
     ) -> Self {
         Self {
             mir,
@@ -70,6 +74,7 @@ impl<'a> Emitter<'a> {
             num_locals_original,
             num_params,
             callee_saved: callee_saved.to_vec(),
+            strings,
         }
     }
 
@@ -523,6 +528,23 @@ impl<'a> Emitter<'a> {
                 // Same as above - base should be in Rax after regalloc
                 self.emit_mov_mr(Reg::Rax, 0, src.as_physical());
             }
+
+            X86Inst::StringConstPtr { dst, string_id } => {
+                // LEA dst, [rip + offset]  - Load address of string in .rodata
+                // This emits a placeholder that will be fixed up by a relocation.
+                // The relocation will point to .rodata.str{string_id}
+                self.emit_string_const_ptr(dst.as_physical(), *string_id);
+            }
+
+            X86Inst::StringConstLen { dst, string_id } => {
+                // MOV dst, imm64 - Load string length as immediate
+                let string_len = self
+                    .strings
+                    .get(*string_id as usize)
+                    .map(|s| s.len() as i64)
+                    .unwrap_or(0);
+                self.emit_mov_ri64(dst.as_physical(), string_len);
+            }
         }
     }
 
@@ -815,6 +837,41 @@ impl<'a> Emitter<'a> {
         self.relocations.push(EmittedRelocation {
             offset: reloc_offset,
             symbol: symbol.to_string(),
+            addend: -4,
+        });
+    }
+
+    /// Emit LEA dst, [rip + offset] for loading string constant address.
+    ///
+    /// Encoding: REX.W 8D /r with RIP-relative addressing (ModR/M = 05)
+    /// The offset is a placeholder that will be patched by the linker.
+    fn emit_string_const_ptr(&mut self, dst: Reg, string_id: u32) {
+        let dst_enc = dst.encoding();
+
+        // REX.W prefix (always needed for 64-bit)
+        let rex = 0x48 | if dst.needs_rex() { 0x04 } else { 0x00 }; // REX.R
+        self.code.push(rex);
+
+        // Opcode: 8D (LEA)
+        self.code.push(0x8D);
+
+        // ModR/M: mod=00 (disp32 only), reg=dst, r/m=101 (RIP-relative)
+        // For RIP-relative addressing: mod=00, r/m=101
+        let modrm = ((dst_enc & 7) << 3) | 0x05;
+        self.code.push(modrm);
+
+        // The relocation offset points to the disp32
+        let reloc_offset = self.code.len() as u64;
+
+        // Placeholder for disp32 (will be filled by linker)
+        self.code.extend_from_slice(&[0x00, 0x00, 0x00, 0x00]);
+
+        // Record relocation to string symbol
+        // The symbol will be .rodata.str{string_id}
+        // Addend = -4 because RIP points to the next instruction
+        self.relocations.push(EmittedRelocation {
+            offset: reloc_offset,
+            symbol: format!(".rodata.str{}", string_id),
             addend: -4,
         });
     }
@@ -1432,7 +1489,7 @@ mod tests {
     fn emit_single(inst: X86Inst) -> Vec<u8> {
         let mut mir = X86Mir::new();
         mir.push(inst);
-        Emitter::new(&mir, 0, 0, 0, &[]).emit().0
+        Emitter::new(&mir, 0, 0, 0, &[], &[]).emit().0
     }
 
     #[test]
@@ -1554,7 +1611,7 @@ mod tests {
         });
         mir.push(X86Inst::Syscall);
 
-        let (code, _) = Emitter::new(&mir, 0, 0, 0, &[]).emit();
+        let (code, _) = Emitter::new(&mir, 0, 0, 0, &[], &[]).emit();
 
         // 41 BA 2A 00 00 00  mov r10d, 42
         // 4C 89 D7           mov rdi, r10
@@ -1578,7 +1635,7 @@ mod tests {
             symbol: "__rue_exit".into(),
         });
 
-        let (code, relocs) = Emitter::new(&mir, 0, 0, 0, &[]).emit();
+        let (code, relocs) = Emitter::new(&mir, 0, 0, 0, &[], &[]).emit();
 
         // call rel32 -> E8 00 00 00 00
         assert_eq!(code, vec![0xE8, 0x00, 0x00, 0x00, 0x00]);
@@ -1805,7 +1862,7 @@ mod tests {
     fn test_prologue_one_local() {
         // With 1 local, we need 8 bytes, aligned to 16 = 16 bytes
         let mir = X86Mir::new();
-        let (code, _) = Emitter::new(&mir, 1, 1, 0, &[]).emit();
+        let (code, _) = Emitter::new(&mir, 1, 1, 0, &[], &[]).emit();
 
         // push rbp: 55
         // mov rbp, rsp: 48 89 E5
@@ -1824,7 +1881,7 @@ mod tests {
     fn test_no_prologue_no_locals() {
         // With 0 locals, no prologue should be emitted
         let mir = X86Mir::new();
-        let (code, _) = Emitter::new(&mir, 0, 0, 0, &[]).emit();
+        let (code, _) = Emitter::new(&mir, 0, 0, 0, &[], &[]).emit();
         assert!(code.is_empty());
     }
 

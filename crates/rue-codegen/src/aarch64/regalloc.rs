@@ -715,6 +715,52 @@ impl RegAlloc {
                 }
             }
 
+            Aarch64Inst::StringConstPtr { dst, string_id } => match self.get_allocation(dst) {
+                Some(Allocation::Register(reg)) => {
+                    mir.push(Aarch64Inst::StringConstPtr {
+                        dst: Operand::Physical(reg),
+                        string_id,
+                    });
+                }
+                Some(Allocation::Spill(offset)) => {
+                    mir.push(Aarch64Inst::StringConstPtr {
+                        dst: Operand::Physical(Reg::X9),
+                        string_id,
+                    });
+                    mir.push(Aarch64Inst::Str {
+                        src: Operand::Physical(Reg::X9),
+                        base: Reg::Fp,
+                        offset,
+                    });
+                }
+                None => {
+                    mir.push(Aarch64Inst::StringConstPtr { dst, string_id });
+                }
+            },
+
+            Aarch64Inst::StringConstLen { dst, string_id } => match self.get_allocation(dst) {
+                Some(Allocation::Register(reg)) => {
+                    mir.push(Aarch64Inst::StringConstLen {
+                        dst: Operand::Physical(reg),
+                        string_id,
+                    });
+                }
+                Some(Allocation::Spill(offset)) => {
+                    mir.push(Aarch64Inst::StringConstLen {
+                        dst: Operand::Physical(Reg::X9),
+                        string_id,
+                    });
+                    mir.push(Aarch64Inst::Str {
+                        src: Operand::Physical(Reg::X9),
+                        base: Reg::Fp,
+                        offset,
+                    });
+                }
+                None => {
+                    mir.push(Aarch64Inst::StringConstLen { dst, string_id });
+                }
+            },
+
             // Pass-through instructions
             Aarch64Inst::B { label } => mir.push(Aarch64Inst::B { label }),
             Aarch64Inst::BCond { cond, label } => mir.push(Aarch64Inst::BCond { cond, label }),

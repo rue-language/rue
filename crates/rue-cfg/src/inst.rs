@@ -76,6 +76,9 @@ pub enum CfgInstData {
     /// Boolean constant
     BoolConst(bool),
 
+    /// String constant (index into string table)
+    StringConst(u32),
+
     /// Reference to a function parameter
     Param {
         index: u32,
@@ -548,6 +551,7 @@ impl Cfg {
         match data {
             CfgInstData::Const(v) => write!(f, "const {}", v),
             CfgInstData::BoolConst(v) => write!(f, "const {}", v),
+            CfgInstData::StringConst(idx) => write!(f, "string_const @{}", idx),
             CfgInstData::Param { index } => write!(f, "param {}", index),
             CfgInstData::BlockParam { index } => write!(f, "block_param {}", index),
             CfgInstData::Add(lhs, rhs) => write!(f, "add {}, {}", lhs, rhs),

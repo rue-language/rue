@@ -44,6 +44,7 @@ pub enum TokenKind {
 
     // Literals
     Int(u64),
+    String(String),
 
     // Identifiers
     Ident(String),
@@ -115,6 +116,7 @@ impl TokenKind {
             TokenKind::Bool => "type 'bool'",
             TokenKind::Underscore => "'_'",
             TokenKind::Int(_) => "integer",
+            TokenKind::String(_) => "string",
             TokenKind::Ident(_) => "identifier",
             TokenKind::Plus => "'+'",
             TokenKind::Minus => "'-'",
@@ -196,6 +198,7 @@ impl std::fmt::Display for TokenKind {
             TokenKind::Bool => write!(f, "TYPE(bool)"),
             TokenKind::Underscore => write!(f, "UNDERSCORE"),
             TokenKind::Int(v) => write!(f, "INT({})", v),
+            TokenKind::String(s) => write!(f, "STRING({:?})", s),
             TokenKind::Ident(s) => write!(f, "IDENT({})", s),
             TokenKind::Plus => write!(f, "PLUS"),
             TokenKind::Minus => write!(f, "MINUS"),

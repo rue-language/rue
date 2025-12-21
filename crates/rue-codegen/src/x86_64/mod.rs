@@ -32,12 +32,17 @@ pub use super::{EmittedRelocation, MachineCode};
 ///
 /// This is the main entry point for x86-64 code generation.
 /// The pipeline is: CFG → X86Mir → Machine Code
-pub fn generate(cfg: &Cfg, struct_defs: &[StructDef], array_types: &[ArrayTypeDef]) -> MachineCode {
+pub fn generate(
+    cfg: &Cfg,
+    struct_defs: &[StructDef],
+    array_types: &[ArrayTypeDef],
+    strings: &[String],
+) -> MachineCode {
     let num_locals = cfg.num_locals();
     let num_params = cfg.num_params();
 
     // Lower CFG to X86Mir with virtual registers
-    let mir = CfgLower::new(cfg, struct_defs, array_types).lower();
+    let mir = CfgLower::new(cfg, struct_defs, array_types, strings).lower();
 
     // Allocate physical registers (may add spill slots)
     // Spill slots go after both locals AND parameters to avoid conflicts
@@ -56,8 +61,13 @@ pub fn generate(cfg: &Cfg, struct_defs: &[StructDef], array_types: &[ArrayTypeDe
         num_locals,
         num_params,
         &used_callee_saved,
+        strings,
     )
     .emit();
 
-    MachineCode { code, relocations }
+    MachineCode {
+        code,
+        relocations,
+        strings: strings.to_vec(),
+    }
 }

@@ -283,9 +283,11 @@ impl Linker {
 
         for (obj_idx, obj) in self.objects.iter().enumerate() {
             for (sec_idx, section) in obj.sections.iter().enumerate() {
-                if !section.name.starts_with(".rodata") || section.data.is_empty() {
+                if !section.name.starts_with(".rodata") {
                     continue;
                 }
+                // Note: we don't skip empty sections because they may still have
+                // symbols at offset 0 (e.g., empty strings) that need addresses.
 
                 let align = section.align.max(1);
                 let padding =

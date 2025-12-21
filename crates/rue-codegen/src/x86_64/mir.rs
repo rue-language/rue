@@ -409,6 +409,12 @@ pub enum X86Inst {
         offset: i32,
         src: Operand,
     },
+
+    /// Load pointer to string constant (pseudo-instruction resolved during emission)
+    StringConstPtr { dst: Operand, string_id: u32 },
+
+    /// Load string length (pseudo-instruction resolved during emission)
+    StringConstLen { dst: Operand, string_id: u32 },
 }
 
 impl X86Inst {
@@ -548,6 +554,12 @@ impl fmt::Display for X86Inst {
                 } else {
                     write!(f, "mov [{}-{}], {}", base, -offset, src)
                 }
+            }
+            X86Inst::StringConstPtr { dst, string_id } => {
+                write!(f, "string_const_ptr {}, str{}", dst, string_id)
+            }
+            X86Inst::StringConstLen { dst, string_id } => {
+                write!(f, "string_const_len {}, str{}", dst, string_id)
             }
         }
     }

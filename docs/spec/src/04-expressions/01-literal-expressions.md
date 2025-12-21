@@ -54,3 +54,21 @@ fn main() -> i32 {
     0
 }
 ```
+
+## String Literals
+
+r[4.1.10#normative]
+A string literal is a sequence of characters enclosed in double quotes, of type `String`.
+
+r[4.1.11#normative]
+String literals support escape sequences: `\\` for a backslash and `\"` for a double quote.
+
+r[4.1.12]
+```rue
+fn main() -> i32 {
+    let a = "hello";
+    let b = "world";
+    let c = "with \"quotes\"";
+    0
+}
+```

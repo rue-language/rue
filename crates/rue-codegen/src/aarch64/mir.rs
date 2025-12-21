@@ -665,6 +665,12 @@ pub enum Aarch64Inst {
         dst2: Operand,
         offset: i32,
     },
+
+    /// Load pointer to string constant (pseudo-instruction resolved during emission)
+    StringConstPtr { dst: Operand, string_id: u32 },
+
+    /// Load string length (pseudo-instruction resolved during emission)
+    StringConstLen { dst: Operand, string_id: u32 },
 }
 
 impl Aarch64Inst {
@@ -811,6 +817,12 @@ impl fmt::Display for Aarch64Inst {
             }
             Aarch64Inst::LdpPost { dst1, dst2, offset } => {
                 write!(f, "ldp {}, {}, [sp], #{}", dst1, dst2, offset)
+            }
+            Aarch64Inst::StringConstPtr { dst, string_id } => {
+                write!(f, "string_const_ptr {}, str{}", dst, string_id)
+            }
+            Aarch64Inst::StringConstLen { dst, string_id } => {
+                write!(f, "string_const_len {}, str{}", dst, string_id)
             }
         }
     }

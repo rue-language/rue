@@ -13,6 +13,33 @@ pub enum LexError {
     #[default]
     UnexpectedCharacter,
     InvalidInteger,
+    InvalidStringEscape,
+    UnterminatedString,
+}
+
+/// Process a string literal, handling escape sequences.
+/// Input includes the surrounding quotes.
+fn process_string_literal(lex: &mut logos::Lexer<LogosTokenKind>) -> Result<String, LexError> {
+    let slice = lex.slice();
+    // Remove surrounding quotes
+    let inner = &slice[1..slice.len() - 1];
+
+    let mut result = String::with_capacity(inner.len());
+    let mut chars = inner.chars().peekable();
+
+    while let Some(c) = chars.next() {
+        if c == '\\' {
+            match chars.next() {
+                Some('\\') => result.push('\\'),
+                Some('"') => result.push('"'),
+                Some(_) | None => return Err(LexError::InvalidStringEscape),
+            }
+        } else {
+            result.push(c);
+        }
+    }
+
+    Ok(result)
 }
 
 /// Token kinds in the Rue language, using logos derive macro.
@@ -80,6 +107,10 @@ pub enum LogosTokenKind {
     // Integer literals
     #[regex(r"[0-9]+", |lex| lex.slice().parse::<u64>().ok())]
     Int(u64),
+
+    // String literals
+    #[regex(r#""([^"\\]|\\.)*""#, process_string_literal)]
+    String(String),
 
     // Identifiers (lower priority than keywords)
     #[regex(r"[a-zA-Z_][a-zA-Z0-9_]*", |lex| lex.slice().to_string(), priority = 1)]
@@ -181,6 +212,7 @@ impl From<LogosTokenKind> for TokenKind {
             LogosTokenKind::Bool => TokenKind::Bool,
             LogosTokenKind::Underscore => TokenKind::Underscore,
             LogosTokenKind::Int(n) => TokenKind::Int(n),
+            LogosTokenKind::String(s) => TokenKind::String(s),
             LogosTokenKind::Ident(s) => TokenKind::Ident(s),
             LogosTokenKind::EqEq => TokenKind::EqEq,
             LogosTokenKind::BangEq => TokenKind::BangEq,
@@ -240,10 +272,20 @@ impl<'a> LogosLexer<'a> {
                 }
                 Err(lex_error) => {
                     let rue_span = Span::new(span.start as u32, span.end as u32);
-                    let error_char = self.source[span.clone()].chars().next().unwrap_or('?');
+                    let slice = &self.source[span.clone()];
+                    let error_char = slice.chars().next().unwrap_or('?');
                     let kind = match lex_error {
                         LexError::InvalidInteger => ErrorKind::InvalidInteger,
                         LexError::UnexpectedCharacter => ErrorKind::UnexpectedCharacter(error_char),
+                        LexError::InvalidStringEscape => {
+                            // Find the escape character after backslash
+                            let escape_char = slice
+                                .find('\\')
+                                .and_then(|pos| slice[pos + 1..].chars().next())
+                                .unwrap_or('?');
+                            ErrorKind::InvalidStringEscape(escape_char)
+                        }
+                        LexError::UnterminatedString => ErrorKind::UnterminatedString,
                     };
                     return Err(CompileError::new(kind, rue_span));
                 }

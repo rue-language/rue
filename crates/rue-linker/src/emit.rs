@@ -16,6 +16,8 @@ pub struct ObjectBuilder {
     pub code: Vec<u8>,
     /// Relocations needed in the code.
     pub relocations: Vec<CodeRelocation>,
+    /// String constants (for .rodata section).
+    pub strings: Vec<String>,
 }
 
 /// A relocation in generated code.
@@ -39,6 +41,7 @@ impl ObjectBuilder {
             name: name.into(),
             code: Vec::new(),
             relocations: Vec::new(),
+            strings: Vec::new(),
         }
     }
 
@@ -51,6 +54,12 @@ impl ObjectBuilder {
     /// Add a relocation.
     pub fn relocation(mut self, reloc: CodeRelocation) -> Self {
         self.relocations.push(reloc);
+        self
+    }
+
+    /// Set string constants.
+    pub fn strings(mut self, strings: Vec<String>) -> Self {
+        self.strings = strings;
         self
     }
 
@@ -72,7 +81,18 @@ impl ObjectBuilder {
         // We'll create a minimal ELF with:
         // - ELF header
         // - Section headers at the end
-        // - Sections: null, .text, .symtab, .strtab, .shstrtab, .rela.text
+        // - Sections: null, .text, .rodata (if strings), .symtab, .strtab, .shstrtab, .rela.text
+
+        let has_rodata = !self.strings.is_empty();
+
+        // Build .rodata content from strings
+        let mut rodata = Vec::new();
+        let mut string_offsets = Vec::new();
+        for s in &self.strings {
+            string_offsets.push(rodata.len());
+            rodata.extend_from_slice(s.as_bytes());
+            // No null terminator - Rue strings are length-prefixed
+        }
 
         // String tables
         let mut shstrtab = vec![0u8]; // Section header string table
@@ -81,6 +101,13 @@ impl ObjectBuilder {
         // Add section names to shstrtab
         let shstrtab_text = shstrtab.len();
         shstrtab.extend_from_slice(b".text\0");
+        let shstrtab_rodata = if has_rodata {
+            let offset = shstrtab.len();
+            shstrtab.extend_from_slice(b".rodata\0");
+            offset
+        } else {
+            0
+        };
         let shstrtab_symtab = shstrtab.len();
         shstrtab.extend_from_slice(b".symtab\0");
         let shstrtab_strtab = shstrtab.len();
@@ -95,10 +122,23 @@ impl ObjectBuilder {
         strtab.extend_from_slice(self.name.as_bytes());
         strtab.push(0);
 
-        // Collect external symbols for relocations
+        // Add string constant symbol names to strtab
+        let mut string_symbol_offsets = Vec::new();
+        for i in 0..self.strings.len() {
+            string_symbol_offsets.push(strtab.len());
+            let sym_name = format!(".rodata.str{}", i);
+            strtab.extend_from_slice(sym_name.as_bytes());
+            strtab.push(0);
+        }
+
+        // Collect external symbols for relocations (excluding string constants)
         let mut extern_symbols: Vec<String> = Vec::new();
         let mut extern_symbol_offsets: Vec<usize> = Vec::new();
         for reloc in &self.relocations {
+            // Skip string constant symbols - they're local, not external
+            if reloc.symbol.starts_with(".rodata.str") {
+                continue;
+            }
             if !extern_symbols.contains(&reloc.symbol) {
                 extern_symbol_offsets.push(strtab.len());
                 strtab.extend_from_slice(reloc.symbol.as_bytes());
@@ -108,11 +148,13 @@ impl ObjectBuilder {
         }
 
         // Build symbol table
-        // Symbol 0: null
-        // Symbol 1: file (optional, skip for simplicity)
-        // Symbol 2: .text section
-        // Symbol 3: the function (global)
-        // Symbol 4+: external symbols (undefined)
+        // Symbol layout:
+        // 0: null
+        // 1: .text section symbol
+        // 2: .rodata section symbol (if has_rodata)
+        // 3..3+N: string constant symbols (local, in .rodata)
+        // then: function symbol (global)
+        // then: external symbols (undefined)
 
         let mut symtab = Vec::new();
 
@@ -127,16 +169,49 @@ impl ObjectBuilder {
         symtab.extend_from_slice(&0_u64.to_le_bytes()); // st_value
         symtab.extend_from_slice(&0_u64.to_le_bytes()); // st_size
 
-        // Symbol 2: the function (global)
+        // Track symbol indices
+        let rodata_section_idx: u16 = if has_rodata { 2 } else { 0 };
+        let mut next_sym_idx = 2_usize;
+
+        // Symbol 2: .rodata section symbol (if has_rodata)
+        if has_rodata {
+            symtab.extend_from_slice(&0_u32.to_le_bytes()); // st_name (empty)
+            symtab.push(0x03); // st_info: STB_LOCAL, STT_SECTION
+            symtab.push(0); // st_other
+            symtab.extend_from_slice(&rodata_section_idx.to_le_bytes()); // st_shndx: .rodata section
+            symtab.extend_from_slice(&0_u64.to_le_bytes()); // st_value
+            symtab.extend_from_slice(&0_u64.to_le_bytes()); // st_size
+            next_sym_idx += 1;
+        }
+
+        // String constant symbols (local, defined in .rodata)
+        let first_string_sym = next_sym_idx;
+        for (i, offset) in string_offsets.iter().enumerate() {
+            symtab.extend_from_slice(&(string_symbol_offsets[i] as u32).to_le_bytes()); // st_name
+            symtab.push(0x00); // st_info: STB_LOCAL, STT_NOTYPE
+            symtab.push(0); // st_other
+            symtab.extend_from_slice(&rodata_section_idx.to_le_bytes()); // st_shndx: .rodata
+            symtab.extend_from_slice(&(*offset as u64).to_le_bytes()); // st_value: offset in .rodata
+            symtab.extend_from_slice(&0_u64.to_le_bytes()); // st_size
+            next_sym_idx += 1;
+        }
+
+        // First non-local symbol index (for sh_info)
+        let first_global_sym = next_sym_idx;
+
+        // Function symbol (global)
+        let func_sym_idx = next_sym_idx;
         symtab.extend_from_slice(&(strtab_name as u32).to_le_bytes()); // st_name
         symtab.push(0x12); // st_info: STB_GLOBAL, STT_FUNC
         symtab.push(0); // st_other
         symtab.extend_from_slice(&1_u16.to_le_bytes()); // st_shndx: .text
         symtab.extend_from_slice(&0_u64.to_le_bytes()); // st_value
         symtab.extend_from_slice(&(self.code.len() as u64).to_le_bytes()); // st_size
+        next_sym_idx += 1;
+        let _ = func_sym_idx; // suppress unused warning
 
         // External symbols (undefined)
-        let first_extern_sym = 3_usize;
+        let first_extern_sym = next_sym_idx;
         for (i, _sym) in extern_symbols.iter().enumerate() {
             symtab.extend_from_slice(&(extern_symbol_offsets[i] as u32).to_le_bytes()); // st_name
             symtab.push(0x10); // st_info: STB_GLOBAL, STT_NOTYPE
@@ -149,11 +224,25 @@ impl ObjectBuilder {
         // Build relocation table
         let mut rela = Vec::new();
         for reloc in &self.relocations {
-            let sym_idx = extern_symbols
-                .iter()
-                .position(|s| s == &reloc.symbol)
-                .unwrap()
-                + first_extern_sym;
+            // Determine symbol index
+            let sym_idx = if reloc.symbol.starts_with(".rodata.str") {
+                // String constant - local symbol
+                let string_id: usize = reloc
+                    .symbol
+                    .strip_prefix(".rodata.str")
+                    .unwrap()
+                    .parse()
+                    .unwrap();
+                first_string_sym + string_id
+            } else {
+                // External symbol
+                extern_symbols
+                    .iter()
+                    .position(|s| s == &reloc.symbol)
+                    .unwrap()
+                    + first_extern_sym
+            };
+
             let r_type: u32 = match reloc.rel_type {
                 RelocationType::Abs64 => 1,
                 RelocationType::Pc32 => 2,
@@ -173,13 +262,33 @@ impl ObjectBuilder {
         // Calculate section layout
         const ELF_HEADER_SIZE: usize = 64;
         const SECTION_HEADER_SIZE: usize = 64;
-        const NUM_SECTIONS: usize = 6; // null, .text, .symtab, .strtab, .shstrtab, .rela.text
+        // Sections: null, .text, .rodata (optional), .symtab, .strtab, .shstrtab, .rela.text
+        let num_sections = if has_rodata { 7 } else { 6 };
+
+        // Section indices depend on whether .rodata is present
+        let symtab_section_idx = if has_rodata { 3 } else { 2 };
+        let strtab_section_idx = if has_rodata { 4 } else { 3 };
+        let shstrtab_section_idx = if has_rodata { 5 } else { 4 };
+        let rela_section_idx = if has_rodata { 6 } else { 5 };
+        let _ = rela_section_idx; // suppress unused warning
 
         // Sections start right after ELF header
         let text_offset = ELF_HEADER_SIZE;
         let text_size = self.code.len();
 
-        let symtab_offset = align_up(text_offset + text_size, 8);
+        // .rodata follows .text (if present)
+        let rodata_offset = if has_rodata {
+            align_up(text_offset + text_size, 8)
+        } else {
+            0
+        };
+        let rodata_size = rodata.len();
+
+        let symtab_offset = if has_rodata {
+            align_up(rodata_offset + rodata_size, 8)
+        } else {
+            align_up(text_offset + text_size, 8)
+        };
         let symtab_size = symtab.len();
 
         let strtab_offset = symtab_offset + symtab_size;
@@ -213,12 +322,20 @@ impl ObjectBuilder {
         elf.extend_from_slice(&0_u16.to_le_bytes()); // e_phentsize
         elf.extend_from_slice(&0_u16.to_le_bytes()); // e_phnum
         elf.extend_from_slice(&(SECTION_HEADER_SIZE as u16).to_le_bytes()); // e_shentsize
-        elf.extend_from_slice(&(NUM_SECTIONS as u16).to_le_bytes()); // e_shnum
-        elf.extend_from_slice(&4_u16.to_le_bytes()); // e_shstrndx: .shstrtab is section 4
+        elf.extend_from_slice(&(num_sections as u16).to_le_bytes()); // e_shnum
+        elf.extend_from_slice(&(shstrtab_section_idx as u16).to_le_bytes()); // e_shstrndx
 
         // === Sections ===
         // .text
         elf.extend_from_slice(&self.code);
+
+        // .rodata (if present)
+        if has_rodata {
+            while elf.len() < rodata_offset {
+                elf.push(0);
+            }
+            elf.extend_from_slice(&rodata);
+        }
 
         // Padding to symtab
         while elf.len() < symtab_offset {
@@ -260,19 +377,33 @@ impl ObjectBuilder {
         elf.extend_from_slice(&16_u64.to_le_bytes()); // sh_addralign
         elf.extend_from_slice(&0_u64.to_le_bytes()); // sh_entsize
 
-        // Section 2: .symtab
+        // Section 2: .rodata (if present)
+        if has_rodata {
+            elf.extend_from_slice(&(shstrtab_rodata as u32).to_le_bytes()); // sh_name
+            elf.extend_from_slice(&1_u32.to_le_bytes()); // sh_type: SHT_PROGBITS
+            elf.extend_from_slice(&0x2_u64.to_le_bytes()); // sh_flags: SHF_ALLOC
+            elf.extend_from_slice(&0_u64.to_le_bytes()); // sh_addr
+            elf.extend_from_slice(&(rodata_offset as u64).to_le_bytes()); // sh_offset
+            elf.extend_from_slice(&(rodata_size as u64).to_le_bytes()); // sh_size
+            elf.extend_from_slice(&0_u32.to_le_bytes()); // sh_link
+            elf.extend_from_slice(&0_u32.to_le_bytes()); // sh_info
+            elf.extend_from_slice(&8_u64.to_le_bytes()); // sh_addralign
+            elf.extend_from_slice(&0_u64.to_le_bytes()); // sh_entsize
+        }
+
+        // Section: .symtab
         elf.extend_from_slice(&(shstrtab_symtab as u32).to_le_bytes()); // sh_name
         elf.extend_from_slice(&2_u32.to_le_bytes()); // sh_type: SHT_SYMTAB
         elf.extend_from_slice(&0_u64.to_le_bytes()); // sh_flags
         elf.extend_from_slice(&0_u64.to_le_bytes()); // sh_addr
         elf.extend_from_slice(&(symtab_offset as u64).to_le_bytes()); // sh_offset
         elf.extend_from_slice(&(symtab_size as u64).to_le_bytes()); // sh_size
-        elf.extend_from_slice(&3_u32.to_le_bytes()); // sh_link: .strtab
-        elf.extend_from_slice(&2_u32.to_le_bytes()); // sh_info: first non-local symbol index
+        elf.extend_from_slice(&(strtab_section_idx as u32).to_le_bytes()); // sh_link: .strtab
+        elf.extend_from_slice(&(first_global_sym as u32).to_le_bytes()); // sh_info: first non-local symbol
         elf.extend_from_slice(&8_u64.to_le_bytes()); // sh_addralign
         elf.extend_from_slice(&24_u64.to_le_bytes()); // sh_entsize
 
-        // Section 3: .strtab
+        // Section: .strtab
         elf.extend_from_slice(&(shstrtab_strtab as u32).to_le_bytes()); // sh_name
         elf.extend_from_slice(&3_u32.to_le_bytes()); // sh_type: SHT_STRTAB
         elf.extend_from_slice(&0_u64.to_le_bytes()); // sh_flags
@@ -284,7 +415,7 @@ impl ObjectBuilder {
         elf.extend_from_slice(&1_u64.to_le_bytes()); // sh_addralign
         elf.extend_from_slice(&0_u64.to_le_bytes()); // sh_entsize
 
-        // Section 4: .shstrtab
+        // Section: .shstrtab
         elf.extend_from_slice(&(shstrtab_shstrtab as u32).to_le_bytes()); // sh_name
         elf.extend_from_slice(&3_u32.to_le_bytes()); // sh_type: SHT_STRTAB
         elf.extend_from_slice(&0_u64.to_le_bytes()); // sh_flags
@@ -296,14 +427,14 @@ impl ObjectBuilder {
         elf.extend_from_slice(&1_u64.to_le_bytes()); // sh_addralign
         elf.extend_from_slice(&0_u64.to_le_bytes()); // sh_entsize
 
-        // Section 5: .rela.text
+        // Section: .rela.text
         elf.extend_from_slice(&(shstrtab_rela as u32).to_le_bytes()); // sh_name
         elf.extend_from_slice(&4_u32.to_le_bytes()); // sh_type: SHT_RELA
         elf.extend_from_slice(&0x40_u64.to_le_bytes()); // sh_flags: SHF_INFO_LINK
         elf.extend_from_slice(&0_u64.to_le_bytes()); // sh_addr
         elf.extend_from_slice(&(rela_offset as u64).to_le_bytes()); // sh_offset
         elf.extend_from_slice(&(rela_size as u64).to_le_bytes()); // sh_size
-        elf.extend_from_slice(&2_u32.to_le_bytes()); // sh_link: .symtab
+        elf.extend_from_slice(&(symtab_section_idx as u32).to_le_bytes()); // sh_link: .symtab
         elf.extend_from_slice(&1_u32.to_le_bytes()); // sh_info: .text section
         elf.extend_from_slice(&8_u64.to_le_bytes()); // sh_addralign
         elf.extend_from_slice(&24_u64.to_le_bytes()); // sh_entsize
@@ -340,6 +471,8 @@ impl ObjectBuilder {
 
         // ARM64 relocation types
         const ARM64_RELOC_BRANCH26: u32 = 2;
+        const ARM64_RELOC_PAGE21: u32 = 3;
+        const ARM64_RELOC_PAGEOFF12: u32 = 4;
 
         // Calculate sizes and offsets
         const HEADER_SIZE: usize = 32;
@@ -350,19 +483,66 @@ impl ObjectBuilder {
         const NLIST_SIZE: usize = 16;
         const RELOC_SIZE: usize = 8;
 
-        let num_sections = 1; // __text
+        // Determine number of sections (1 for __text, +1 if we have strings for __rodata)
+        let has_rodata = !self.strings.is_empty();
+        let num_sections = if has_rodata { 2 } else { 1 };
         let segment_cmd_total = SEGMENT_CMD_SIZE + (SECTION_SIZE * num_sections);
         // Three load commands: LC_SEGMENT_64, LC_BUILD_VERSION, LC_SYMTAB
         let load_commands_size = segment_cmd_total + BUILD_VERSION_CMD_SIZE + SYMTAB_CMD_SIZE;
         let header_and_commands = HEADER_SIZE + load_commands_size;
 
-        // Align section data to 4 bytes (required for ARM64)
-        let section_offset = align_up(header_and_commands, 4);
-        let section_size = self.code.len();
+        // Build rodata content (string constants)
+        let mut rodata = Vec::new();
+        let mut string_offsets = Vec::new();
+        for s in &self.strings {
+            string_offsets.push(rodata.len());
+            rodata.extend_from_slice(s.as_bytes());
+            // No null terminator - Rue strings are length-prefixed
+        }
 
-        // Relocations follow section data
-        let reloc_offset = align_up(section_offset + section_size, 4);
-        let num_relocs = self.relocations.len();
+        // Align section data to 4 bytes (required for ARM64)
+        let text_offset = align_up(header_and_commands, 4);
+        let text_size = self.code.len();
+
+        // Rodata follows text (if present)
+        let rodata_offset = if has_rodata {
+            align_up(text_offset + text_size, 8) // Align rodata to 8 bytes
+        } else {
+            0
+        };
+        let rodata_size = rodata.len();
+
+        // Text relocations follow text and rodata sections
+        let text_reloc_offset = if has_rodata {
+            align_up(rodata_offset + rodata_size, 4)
+        } else {
+            align_up(text_offset + text_size, 4)
+        };
+
+        // Separate relocations by type
+        let mut text_relocs: Vec<&CodeRelocation> = Vec::new();
+        let mut rodata_relocs: Vec<&CodeRelocation> = Vec::new();
+
+        for reloc in &self.relocations {
+            // Check if this is a string relocation
+            // String relocations have @PAGE or @PAGEOFF suffix
+            if reloc.symbol.contains("__rue_string_") {
+                // String relocations go in text section (they're PC-relative loads)
+                text_relocs.push(reloc);
+            } else {
+                text_relocs.push(reloc);
+            }
+        }
+
+        let num_text_relocs = text_relocs.len();
+        let num_rodata_relocs = rodata_relocs.len();
+
+        // Rodata relocations follow text relocations (if present)
+        let rodata_reloc_offset = if has_rodata && num_rodata_relocs > 0 {
+            align_up(text_reloc_offset + (num_text_relocs * RELOC_SIZE), 4)
+        } else {
+            0
+        };
 
         // On macOS, all external C symbols get a leading underscore prefix.
         // This applies to ALL symbols, regardless of their original name.
@@ -378,11 +558,25 @@ impl ObjectBuilder {
         strtab.extend_from_slice(macho_name.as_bytes());
         strtab.push(0);
 
+        // String constant symbols (local symbols for rodata)
+        let mut string_name_offsets: Vec<usize> = Vec::new();
+        for (i, _) in self.strings.iter().enumerate() {
+            string_name_offsets.push(strtab.len());
+            let sym_name = format!("___rue_string_{}", i); // With underscore prefix
+            strtab.extend_from_slice(sym_name.as_bytes());
+            strtab.push(0);
+        }
+
         // External symbol names (for relocations)
         // All symbols need underscore prefix for macOS
         let mut extern_symbols: Vec<String> = Vec::new();
         let mut extern_name_offsets: Vec<usize> = Vec::new();
         for reloc in &self.relocations {
+            // Skip string symbols - they're handled above
+            // Also skip if it has @PAGE or @PAGEOFF suffix (internal markers)
+            if reloc.symbol.contains("__rue_string_") {
+                continue;
+            }
             // Always add underscore prefix for macOS
             let macho_sym = format!("_{}", reloc.symbol);
             if !extern_symbols.contains(&macho_sym) {
@@ -393,10 +587,19 @@ impl ObjectBuilder {
             }
         }
 
-        // Symbol table follows relocations
-        let symtab_offset = align_up(reloc_offset + (num_relocs * RELOC_SIZE), 4);
-        let num_local_syms = 1; // Just our function
-        let num_extern_syms = extern_symbols.len();
+        // Symbol table follows all relocations
+        let last_reloc_end = if has_rodata && num_rodata_relocs > 0 {
+            rodata_reloc_offset + (num_rodata_relocs * RELOC_SIZE)
+        } else {
+            text_reloc_offset + (num_text_relocs * RELOC_SIZE)
+        };
+        let symtab_offset = align_up(last_reloc_end, 4);
+
+        // In Mach-O, local symbols come first, then external symbols
+        // Local symbols: string constants (non-external)
+        // External symbols: function + undefined externals
+        let num_local_syms = self.strings.len(); // string constants only
+        let num_extern_syms = 1 + extern_symbols.len(); // function + external refs
         let num_syms = num_local_syms + num_extern_syms;
 
         // String table follows symbol table
@@ -421,10 +624,17 @@ impl ObjectBuilder {
         let mut segname = [0u8; 16];
         macho.extend_from_slice(&segname);
 
+        // Segment vmsize is the total size of all sections
+        let vmsize = if has_rodata {
+            (rodata_offset - text_offset) + rodata_size
+        } else {
+            text_size
+        };
+
         macho.extend_from_slice(&0_u64.to_le_bytes()); // vmaddr
-        macho.extend_from_slice(&(section_size as u64).to_le_bytes()); // vmsize
-        macho.extend_from_slice(&(section_offset as u64).to_le_bytes()); // fileoff
-        macho.extend_from_slice(&(section_size as u64).to_le_bytes()); // filesize
+        macho.extend_from_slice(&(vmsize as u64).to_le_bytes()); // vmsize
+        macho.extend_from_slice(&(text_offset as u64).to_le_bytes()); // fileoff
+        macho.extend_from_slice(&(vmsize as u64).to_le_bytes()); // filesize
         macho.extend_from_slice(&0x7_u32.to_le_bytes()); // maxprot (rwx)
         macho.extend_from_slice(&0x5_u32.to_le_bytes()); // initprot (rx)
         macho.extend_from_slice(&(num_sections as u32).to_le_bytes()); // nsects
@@ -441,17 +651,45 @@ impl ObjectBuilder {
         macho.extend_from_slice(&segname);
 
         macho.extend_from_slice(&0_u64.to_le_bytes()); // addr
-        macho.extend_from_slice(&(section_size as u64).to_le_bytes()); // size
-        macho.extend_from_slice(&(section_offset as u32).to_le_bytes()); // offset
+        macho.extend_from_slice(&(text_size as u64).to_le_bytes()); // size
+        macho.extend_from_slice(&(text_offset as u32).to_le_bytes()); // offset
         macho.extend_from_slice(&2_u32.to_le_bytes()); // align (2^2 = 4 byte alignment)
-        macho.extend_from_slice(&(reloc_offset as u32).to_le_bytes()); // reloff
-        macho.extend_from_slice(&(num_relocs as u32).to_le_bytes()); // nreloc
+        macho.extend_from_slice(&(text_reloc_offset as u32).to_le_bytes()); // reloff
+        macho.extend_from_slice(&(num_text_relocs as u32).to_le_bytes()); // nreloc
         macho.extend_from_slice(
             &(S_ATTR_PURE_INSTRUCTIONS | S_ATTR_SOME_INSTRUCTIONS).to_le_bytes(),
         ); // flags
         macho.extend_from_slice(&0_u32.to_le_bytes()); // reserved1
         macho.extend_from_slice(&0_u32.to_le_bytes()); // reserved2
         macho.extend_from_slice(&0_u32.to_le_bytes()); // reserved3 (64-bit only)
+
+        // === Section: __rodata (if present) ===
+        if has_rodata {
+            let mut sectname = [0u8; 16];
+            sectname[..8].copy_from_slice(b"__rodata");
+            macho.extend_from_slice(&sectname);
+
+            // segname: __DATA or __TEXT - using __TEXT for read-only data
+            let mut segname = [0u8; 16];
+            segname[..6].copy_from_slice(b"__TEXT");
+            macho.extend_from_slice(&segname);
+
+            macho.extend_from_slice(&(text_size as u64).to_le_bytes()); // addr (follows text)
+            macho.extend_from_slice(&(rodata_size as u64).to_le_bytes()); // size
+            macho.extend_from_slice(&(rodata_offset as u32).to_le_bytes()); // offset
+            macho.extend_from_slice(&3_u32.to_le_bytes()); // align (2^3 = 8 byte alignment)
+            if num_rodata_relocs > 0 {
+                macho.extend_from_slice(&(rodata_reloc_offset as u32).to_le_bytes()); // reloff
+                macho.extend_from_slice(&(num_rodata_relocs as u32).to_le_bytes()); // nreloc
+            } else {
+                macho.extend_from_slice(&0_u32.to_le_bytes()); // reloff
+                macho.extend_from_slice(&0_u32.to_le_bytes()); // nreloc
+            }
+            macho.extend_from_slice(&0_u32.to_le_bytes()); // flags (regular data)
+            macho.extend_from_slice(&0_u32.to_le_bytes()); // reserved1
+            macho.extend_from_slice(&0_u32.to_le_bytes()); // reserved2
+            macho.extend_from_slice(&0_u32.to_le_bytes()); // reserved3 (64-bit only)
+        }
 
         // === LC_BUILD_VERSION ===
         // This tells the linker which macOS version this was built for
@@ -473,15 +711,23 @@ impl ObjectBuilder {
         macho.extend_from_slice(&(strtab_size as u32).to_le_bytes()); // strsize
 
         // === Section Data ===
-        // Pad to section offset
-        while macho.len() < section_offset {
+        // Pad to text offset
+        while macho.len() < text_offset {
             macho.push(0);
         }
         macho.extend_from_slice(&self.code);
 
-        // === Relocations ===
-        // Pad to relocation offset
-        while macho.len() < reloc_offset {
+        // Add rodata section if present
+        if has_rodata {
+            while macho.len() < rodata_offset {
+                macho.push(0);
+            }
+            macho.extend_from_slice(&rodata);
+        }
+
+        // === Text Relocations ===
+        // Pad to text relocation offset
+        while macho.len() < text_reloc_offset {
             macho.push(0);
         }
 
@@ -492,28 +738,81 @@ impl ObjectBuilder {
         // r_length: 2-bit (0=byte, 1=word, 2=long, 3=quad)
         // r_extern: 1-bit (1 = symbol index, 0 = section ordinal)
         // r_type: 4-bit relocation type
-        for reloc in &self.relocations {
-            // Look up the underscore-prefixed version of the symbol
-            let macho_sym = format!("_{}", reloc.symbol);
-            let sym_idx = extern_symbols.iter().position(|s| s == &macho_sym).unwrap();
-            // External symbols start after local symbols
-            let sym_num = (num_local_syms + sym_idx) as u32;
+        for reloc in &text_relocs {
+            // Extract the base symbol name and detect relocation type from suffix
+            let (base_symbol, r_type_override) = if reloc.symbol.ends_with("@PAGE") {
+                (
+                    reloc.symbol.strip_suffix("@PAGE").unwrap(),
+                    Some(ARM64_RELOC_PAGE21),
+                )
+            } else if reloc.symbol.ends_with("@PAGEOFF") {
+                (
+                    reloc.symbol.strip_suffix("@PAGEOFF").unwrap(),
+                    Some(ARM64_RELOC_PAGEOFF12),
+                )
+            } else {
+                (reloc.symbol.as_str(), None)
+            };
+
+            // Look up the symbol
+            let (sym_num, is_extern) = if base_symbol.starts_with("__rue_string_") {
+                // String symbol - local symbol (indices 0, 1, 2...)
+                let string_id: usize = base_symbol
+                    .strip_prefix("__rue_string_")
+                    .unwrap()
+                    .parse()
+                    .unwrap();
+                // String symbols are at the beginning of the symbol table
+                (string_id as u32, true)
+            } else {
+                // External symbol (function or undefined external)
+                // First check if it's the function itself
+                if base_symbol == self.name {
+                    // Function symbol is the first external symbol
+                    (num_local_syms as u32, true)
+                } else {
+                    // Undefined external symbol
+                    let macho_sym = format!("_{}", base_symbol);
+                    let sym_idx = extern_symbols.iter().position(|s| s == &macho_sym).unwrap();
+                    // External symbols start after local symbols, function is first external
+                    (num_local_syms as u32 + 1 + sym_idx as u32, true)
+                }
+            };
 
             // r_address (4 bytes)
             macho.extend_from_slice(&(reloc.offset as u32).to_le_bytes());
 
-            // r_symbolnum (24 bits) | r_pcrel (1) | r_length (2) | r_extern (1) | r_type (4)
-            // For ARM64_RELOC_BRANCH26: pcrel=1, length=2 (4 bytes), extern=1
-            let r_type = match reloc.rel_type {
-                RelocationType::Call26 => ARM64_RELOC_BRANCH26,
-                _ => ARM64_RELOC_BRANCH26, // Default to branch for now
+            // Determine relocation type and r_pcrel flag
+            let (r_type, r_pcrel) = if let Some(override_type) = r_type_override {
+                // PAGE21 is PC-relative, PAGEOFF12 is not
+                let pcrel = if override_type == ARM64_RELOC_PAGE21 {
+                    1
+                } else {
+                    0
+                };
+                (override_type, pcrel)
+            } else {
+                match reloc.rel_type {
+                    RelocationType::Call26 => (ARM64_RELOC_BRANCH26, 1),
+                    _ => (ARM64_RELOC_BRANCH26, 1), // Default to branch for now
+                }
             };
+
             let info: u32 = (sym_num & 0x00FFFFFF)  // r_symbolnum (bits 0-23)
-                | (1 << 24)  // r_pcrel (bit 24)
+                | (r_pcrel << 24)  // r_pcrel (bit 24)
                 | (2 << 25)  // r_length (bits 25-26) - 2 means 4 bytes
-                | (1 << 27)  // r_extern (bit 27)
+                | ((is_extern as u32) << 27)  // r_extern (bit 27)
                 | (r_type << 28); // r_type (bits 28-31)
             macho.extend_from_slice(&info.to_le_bytes());
+        }
+
+        // === Rodata Relocations (if any) ===
+        if has_rodata && num_rodata_relocs > 0 {
+            while macho.len() < rodata_reloc_offset {
+                macho.push(0);
+            }
+            // Rodata relocations would go here if needed
+            // For now, string constants are just raw bytes with no relocations in rodata itself
         }
 
         // === Symbol Table ===
@@ -532,8 +831,29 @@ impl ObjectBuilder {
         // Symbol constants
         const N_EXT: u8 = 0x01; // External symbol
         const N_SECT: u8 = 0x0E; // Defined in section
+        const N_UNDF: u8 = 0x00; // Undefined symbol
 
-        // Local symbol: the function itself
+        // Mach-O requires local symbols first, then external symbols
+
+        // Local symbols: String constant symbols (non-external, defined in rodata section)
+        for (i, _) in self.strings.iter().enumerate() {
+            macho.extend_from_slice(&(string_name_offsets[i] as u32).to_le_bytes()); // n_strx
+            // String symbols are private/local - just N_SECT without N_EXT
+            macho.push(N_SECT); // n_type: defined in section (not external)
+            if has_rodata {
+                macho.push(2); // n_sect: section 2 (__rodata)
+            } else {
+                macho.push(0); // Should not happen, but defensive
+            }
+            macho.extend_from_slice(&0_u16.to_le_bytes()); // n_desc
+            // n_value is the VM address: rodata section starts at text_size
+            let vm_addr = (text_size + string_offsets[i]) as u64;
+            macho.extend_from_slice(&vm_addr.to_le_bytes());
+        }
+
+        // External symbols start here
+
+        // External symbol: the function itself
         macho.extend_from_slice(&(func_name_offset as u32).to_le_bytes()); // n_strx
         macho.push(N_EXT | N_SECT); // n_type: external, defined in section
         macho.push(1); // n_sect: section 1 (__text)
@@ -541,7 +861,6 @@ impl ObjectBuilder {
         macho.extend_from_slice(&0_u64.to_le_bytes()); // n_value (offset in section)
 
         // External symbols (undefined)
-        const N_UNDF: u8 = 0x00; // Undefined symbol
         for (i, _sym) in extern_symbols.iter().enumerate() {
             macho.extend_from_slice(&(extern_name_offsets[i] as u32).to_le_bytes()); // n_strx
             macho.push(N_EXT | N_UNDF); // n_type: external, undefined

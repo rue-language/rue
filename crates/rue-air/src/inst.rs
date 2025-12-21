@@ -115,6 +115,9 @@ pub enum AirInstData {
     /// Boolean constant
     BoolConst(bool),
 
+    /// String constant (index into string table)
+    StringConst(u32),
+
     /// Unit constant
     UnitConst,
 
@@ -329,6 +332,7 @@ impl fmt::Display for Air {
             match &inst.data {
                 AirInstData::Const(v) => writeln!(f, "const {}", v)?,
                 AirInstData::BoolConst(v) => writeln!(f, "const {}", v)?,
+                AirInstData::StringConst(idx) => writeln!(f, "string_const @{}", idx)?,
                 AirInstData::UnitConst => writeln!(f, "const ()")?,
                 AirInstData::Add(lhs, rhs) => writeln!(f, "add {}, {}", lhs, rhs)?,
                 AirInstData::Sub(lhs, rhs) => writeln!(f, "sub {}, {}", lhs, rhs)?,

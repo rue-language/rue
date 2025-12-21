@@ -399,6 +399,117 @@ pub extern "C" fn __rue_dbg_bool(value: i64) {
     platform::print_bool(value != 0);
 }
 
+/// Debug intrinsic: print a string.
+///
+/// Called by `@dbg(expr)` when the expression is a String type.
+/// Writes the string content followed by a newline to stdout.
+///
+/// # ABI
+///
+/// ```text
+/// extern "C" fn __rue_dbg_str(ptr: *const u8, len: u64)
+/// ```
+///
+/// - `ptr` is passed in the first argument register (rdi on x86_64, x0 on aarch64)
+/// - `len` is passed in the second argument register (rsi on x86_64, x1 on aarch64)
+/// - String is passed as a fat pointer (ptr, len) expanded into two arguments
+///
+/// # Safety
+///
+/// The caller must ensure:
+/// - `ptr` points to a valid UTF-8 string of `len` bytes
+/// - The memory region remains valid for the duration of the call
+#[cfg(all(target_arch = "x86_64", target_os = "linux"))]
+#[unsafe(no_mangle)]
+pub extern "C" fn __rue_dbg_str(ptr: *const u8, len: u64) {
+    // SAFETY: The caller guarantees ptr and len are valid
+    let bytes = unsafe { core::slice::from_raw_parts(ptr, len as usize) };
+    platform::write_stdout(bytes);
+    platform::write_stdout(b"\n");
+}
+
+#[cfg(all(target_arch = "aarch64", target_os = "macos"))]
+#[unsafe(no_mangle)]
+pub extern "C" fn __rue_dbg_str(ptr: *const u8, len: u64) {
+    // SAFETY: The caller guarantees ptr and len are valid
+    let bytes = unsafe { core::slice::from_raw_parts(ptr, len as usize) };
+    platform::write_stdout(bytes);
+    platform::write_stdout(b"\n");
+}
+
+/// String equality comparison.
+///
+/// Called by the `==` operator on String types. Compares two strings
+/// represented as fat pointers (pointer + length pairs).
+///
+/// # ABI
+///
+/// ```text
+/// extern "C" fn __rue_str_eq(ptr1: *const u8, len1: u64, ptr2: *const u8, len2: u64) -> u8
+/// ```
+///
+/// - `ptr1` is passed in the first argument register (rdi on x86_64, x0 on aarch64)
+/// - `len1` is passed in the second argument register (rsi on x86_64, x1 on aarch64)
+/// - `ptr2` is passed in the third argument register (rdx on x86_64, x2 on aarch64)
+/// - `len2` is passed in the fourth argument register (rcx on x86_64, x3 on aarch64)
+/// - Returns 1 if strings are equal, 0 otherwise (in `al`/`w0` register)
+///
+/// # Implementation
+///
+/// Fast path: If lengths differ, strings cannot be equal (returns 0).
+/// Slow path: Compare bytes one by one until a difference is found or
+/// all bytes match.
+///
+/// # Safety
+///
+/// The caller must ensure that:
+/// - `ptr1` points to a valid buffer of at least `len1` bytes
+/// - `ptr2` points to a valid buffer of at least `len2` bytes
+/// - Both pointers remain valid for the duration of the call
+#[cfg(all(target_arch = "x86_64", target_os = "linux"))]
+#[unsafe(no_mangle)]
+pub extern "C" fn __rue_str_eq(ptr1: *const u8, len1: u64, ptr2: *const u8, len2: u64) -> u8 {
+    // Fast path: different lengths means not equal
+    if len1 != len2 {
+        return 0;
+    }
+
+    // Slow path: compare bytes one by one
+    // We avoid slice comparison (==) because it generates a call to bcmp,
+    // which is a libc function not available in our no_std runtime.
+    // SAFETY: Caller guarantees pointers are valid for their respective lengths
+    for i in 0..len1 as usize {
+        let b1 = unsafe { *ptr1.add(i) };
+        let b2 = unsafe { *ptr2.add(i) };
+        if b1 != b2 {
+            return 0;
+        }
+    }
+    1
+}
+
+#[cfg(all(target_arch = "aarch64", target_os = "macos"))]
+#[unsafe(no_mangle)]
+pub extern "C" fn __rue_str_eq(ptr1: *const u8, len1: u64, ptr2: *const u8, len2: u64) -> u8 {
+    // Fast path: different lengths means not equal
+    if len1 != len2 {
+        return 0;
+    }
+
+    // Slow path: compare bytes one by one
+    // We avoid slice comparison (==) because it generates a call to bcmp,
+    // which may not be available in all runtime environments.
+    // SAFETY: Caller guarantees pointers are valid for their respective lengths
+    for i in 0..len1 as usize {
+        let b1 = unsafe { *ptr1.add(i) };
+        let b2 = unsafe { *ptr2.add(i) };
+        if b1 != b2 {
+            return 0;
+        }
+    }
+    1
+}
+
 // Re-export platform functions for tests
 #[cfg(all(test, target_arch = "x86_64", target_os = "linux"))]
 pub use x86_64_linux::{exit, write, write_all, write_stderr};
