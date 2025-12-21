@@ -2001,9 +2001,9 @@ impl<'a> Sema<'a> {
 
     /// Analyze a comparison operator with bidirectional type inference.
     ///
-    /// Synthesizes the type from the left operand in a single traversal, then checks
-    /// the right operand against it. This eliminates the double traversal that was
-    /// previously required by infer_type + analyze_inst.
+    /// Uses bidirectional type inference: if the LHS is an integer literal and
+    /// the RHS has a known integer type, the literal adopts that type. Otherwise,
+    /// synthesizes the type from the left operand.
     ///
     /// For equality operators (`==`, `!=`), both integers and booleans are allowed.
     /// For ordering operators (`<`, `>`, `<=`, `>=`), only integers are allowed.
@@ -2020,8 +2020,24 @@ impl<'a> Sema<'a> {
     where
         F: FnOnce(AirRef, AirRef) -> AirInstData,
     {
-        // SINGLE TRAVERSAL: synthesize type AND emit AIR in one pass
-        let lhs_result = self.analyze_inst(air, lhs, TypeExpectation::Synthesize, ctx)?;
+        // Bidirectional type inference for integer literals:
+        // If LHS is an integer literal, peek at RHS to get a type hint
+        let lhs_expectation = if self.is_integer_literal(lhs) {
+            if let Some(rhs_type) = self.peek_type(rhs, ctx) {
+                if rhs_type.is_integer() {
+                    // Use the RHS type for the LHS literal
+                    TypeExpectation::Check(rhs_type)
+                } else {
+                    TypeExpectation::Synthesize
+                }
+            } else {
+                TypeExpectation::Synthesize
+            }
+        } else {
+            TypeExpectation::Synthesize
+        };
+
+        let lhs_result = self.analyze_inst(air, lhs, lhs_expectation, ctx)?;
         let lhs_type = lhs_result.ty;
 
         // Propagate Never/Error without additional type errors
@@ -2084,6 +2100,101 @@ impl<'a> Sema<'a> {
                     None
                 }
             }
+            _ => None,
+        }
+    }
+
+    /// Check if an RIR instruction is an integer literal.
+    ///
+    /// This is used for bidirectional type inference to detect when the LHS
+    /// of a binary operator is a literal that can adopt its type from the RHS.
+    fn is_integer_literal(&self, inst_ref: InstRef) -> bool {
+        matches!(self.rir.get(inst_ref).data, InstData::IntConst(_))
+    }
+
+    /// Peek at the type of an expression without emitting AIR.
+    ///
+    /// This is a lightweight type inference pass used for bidirectional type inference.
+    /// When the LHS of a binary operator is an integer literal, we peek at the RHS type
+    /// to determine what type the literal should adopt.
+    ///
+    /// Returns `None` if the type cannot be determined (e.g., for complex expressions
+    /// that would require full analysis), in which case we fall back to default behavior.
+    fn peek_type(&self, inst_ref: InstRef, ctx: &AnalysisContext) -> Option<Type> {
+        let inst = self.rir.get(inst_ref);
+        match &inst.data {
+            // Literals have known types (except integers which default to i32)
+            InstData::IntConst(_) => Some(Type::I32),
+            InstData::BoolConst(_) => Some(Type::Bool),
+
+            // Variables have their declared types
+            InstData::VarRef { name } => {
+                if let Some(local) = ctx.locals.get(name) {
+                    Some(local.ty)
+                } else if let Some(param) = ctx.params.get(name) {
+                    Some(param.ty)
+                } else {
+                    None
+                }
+            }
+
+            // Function parameters have their declared types
+            InstData::ParamRef { name, .. } => ctx.params.get(name).map(|p| p.ty),
+
+            // Function calls have their declared return type
+            InstData::Call { name, .. } => self.functions.get(name).map(|f| f.return_type),
+
+            // Binary arithmetic operations: peek at operands to find integer type
+            InstData::Add { lhs, rhs }
+            | InstData::Sub { lhs, rhs }
+            | InstData::Mul { lhs, rhs }
+            | InstData::Div { lhs, rhs }
+            | InstData::Mod { lhs, rhs } => {
+                // Try LHS first, then RHS
+                if let Some(ty) = self.peek_type(*lhs, ctx) {
+                    if ty.is_integer() {
+                        return Some(ty);
+                    }
+                }
+                if let Some(ty) = self.peek_type(*rhs, ctx) {
+                    if ty.is_integer() {
+                        return Some(ty);
+                    }
+                }
+                Some(Type::I32) // Default if both are literals
+            }
+
+            // Unary negation: peek at operand
+            InstData::Neg { operand } => self.peek_type(*operand, ctx),
+
+            // Comparisons return bool
+            InstData::Eq { .. }
+            | InstData::Ne { .. }
+            | InstData::Lt { .. }
+            | InstData::Gt { .. }
+            | InstData::Le { .. }
+            | InstData::Ge { .. } => Some(Type::Bool),
+
+            // Logical operators return bool
+            InstData::And { .. } | InstData::Or { .. } | InstData::Not { .. } => Some(Type::Bool),
+
+            // Array index: get element type from array type
+            InstData::IndexGet { base, .. } => {
+                if let Some(array_ty) = self.peek_type(*base, ctx) {
+                    if let Type::Array(id) = array_ty {
+                        // Get the element type from the array type definition
+                        self.array_type_defs
+                            .get(id.0 as usize)
+                            .map(|def| def.element_type)
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            }
+
+            // For other expressions, we can't easily peek
             _ => None,
         }
     }

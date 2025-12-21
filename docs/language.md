@@ -350,12 +350,23 @@ fn main() -> i32 {
 }
 ```
 
-The type of a comparison is inferred from the left operand, and the right operand is checked against it:
+Integer literals in binary operations use bidirectional type inference—they adopt the type of the other operand when possible:
 
 ```rue
 fn main() -> i32 {
     let x: i64 = 100;
     if x == 100 { 1 } else { 0 }  // 100 is inferred as i64
+    if 100 == x { 1 } else { 0 }  // Also works: literal adopts type from x
+}
+```
+
+This applies to both comparison and arithmetic operators:
+
+```rue
+fn main() -> i32 {
+    let x: i64 = 50;
+    let y: i64 = 50 + x;  // 50 is inferred as i64
+    if y == 100 { 1 } else { 0 }
 }
 ```
 

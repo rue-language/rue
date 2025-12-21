@@ -751,3 +751,245 @@ fn main() -> i32 {
 }
 """
 exit_code = 42
+
+# =============================================================================
+# Bidirectional Type Inference for Literals (literal on left side)
+# =============================================================================
+# These tests verify that integer literals on the LEFT side of binary operators
+# correctly infer their type from the RIGHT operand. This enables code like
+# `100 == x` where x: i64 to work (literal adopts i64 type from x).
+
+# --- Comparison operators with literal on left ---
+
+[[case]]
+name = "literal_left_comparison_i64_eq"
+description = "Literal on left should infer type from i64 variable on right"
+source = """
+fn main() -> i32 {
+    let x: i64 = 100;
+    if 100 == x { 1 } else { 0 }
+}
+"""
+exit_code = 1
+
+[[case]]
+name = "literal_left_comparison_i64_ne"
+description = "Literal != with i64 variable on right"
+source = """
+fn main() -> i32 {
+    let x: i64 = 100;
+    if 50 != x { 1 } else { 0 }
+}
+"""
+exit_code = 1
+
+[[case]]
+name = "literal_left_comparison_i64_lt"
+description = "Literal < with i64 variable on right"
+source = """
+fn main() -> i32 {
+    let x: i64 = 100;
+    if 50 < x { 1 } else { 0 }
+}
+"""
+exit_code = 1
+
+[[case]]
+name = "literal_left_comparison_i64_gt"
+description = "Literal > with i64 variable on right"
+source = """
+fn main() -> i32 {
+    let x: i64 = 50;
+    if 100 > x { 1 } else { 0 }
+}
+"""
+exit_code = 1
+
+[[case]]
+name = "literal_left_comparison_i64_le"
+description = "Literal <= with i64 variable on right"
+source = """
+fn main() -> i32 {
+    let x: i64 = 100;
+    if 100 <= x { 1 } else { 0 }
+}
+"""
+exit_code = 1
+
+[[case]]
+name = "literal_left_comparison_i64_ge"
+description = "Literal >= with i64 variable on right"
+source = """
+fn main() -> i32 {
+    let x: i64 = 100;
+    if 100 >= x { 1 } else { 0 }
+}
+"""
+exit_code = 1
+
+[[case]]
+name = "literal_left_comparison_i8"
+description = "Literal on left should infer type from i8 variable"
+source = """
+fn main() -> i32 {
+    let x: i8 = 42;
+    if 42 == x { 1 } else { 0 }
+}
+"""
+exit_code = 1
+
+[[case]]
+name = "literal_left_comparison_u64"
+description = "Literal on left should infer type from u64 variable"
+source = """
+fn main() -> i32 {
+    let x: u64 = 1000;
+    if 500 < x { 1 } else { 0 }
+}
+"""
+exit_code = 1
+
+[[case]]
+name = "literal_left_comparison_u8"
+description = "Literal on left should infer type from u8 variable"
+source = """
+fn main() -> i32 {
+    let x: u8 = 200;
+    if 100 < x { 1 } else { 0 }
+}
+"""
+exit_code = 1
+
+# --- Arithmetic operators with literal on left ---
+
+[[case]]
+name = "literal_left_add_i64"
+description = "Literal + i64 variable should infer literal as i64"
+source = """
+fn main() -> i32 {
+    let x: i64 = 100;
+    let result: i64 = 50 + x;
+    if result == 150 { 1 } else { 0 }
+}
+"""
+exit_code = 1
+
+[[case]]
+name = "literal_left_sub_i64"
+description = "Literal - i64 variable should infer literal as i64"
+source = """
+fn main() -> i32 {
+    let x: i64 = 50;
+    let result: i64 = 100 - x;
+    if result == 50 { 1 } else { 0 }
+}
+"""
+exit_code = 1
+
+[[case]]
+name = "literal_left_mul_i64"
+description = "Literal * i64 variable should infer literal as i64"
+source = """
+fn main() -> i32 {
+    let x: i64 = 10;
+    let result: i64 = 5 * x;
+    if result == 50 { 1 } else { 0 }
+}
+"""
+exit_code = 1
+
+[[case]]
+name = "literal_left_div_i64"
+description = "Literal / i64 variable should infer literal as i64"
+source = """
+fn main() -> i32 {
+    let x: i64 = 10;
+    let result: i64 = 100 / x;
+    if result == 10 { 1 } else { 0 }
+}
+"""
+exit_code = 1
+
+[[case]]
+name = "literal_left_mod_i64"
+description = "Literal % i64 variable should infer literal as i64"
+source = """
+fn main() -> i32 {
+    let x: i64 = 7;
+    let result: i64 = 100 % x;
+    if result == 2 { 1 } else { 0 }
+}
+"""
+exit_code = 1
+
+[[case]]
+name = "literal_left_add_u64"
+description = "Literal + u64 variable should infer literal as u64"
+source = """
+fn main() -> i32 {
+    let x: u64 = 100;
+    let result: u64 = 50 + x;
+    if result == 150 { 1 } else { 0 }
+}
+"""
+exit_code = 1
+
+[[case]]
+name = "literal_left_add_i8"
+description = "Literal + i8 variable should infer literal as i8"
+source = """
+fn main() -> i32 {
+    let x: i8 = 20;
+    let result: i8 = 10 + x;
+    if result == 30 { 1 } else { 0 }
+}
+"""
+exit_code = 1
+
+# --- Both operands are literals (should still default to i32) ---
+
+[[case]]
+name = "both_literals_comparison"
+description = "Two literals in comparison should both be i32"
+source = """
+fn main() -> i32 {
+    if 100 == 100 { 1 } else { 0 }
+}
+"""
+exit_code = 1
+
+[[case]]
+name = "both_literals_arithmetic"
+description = "Two literals in arithmetic should both be i32"
+source = """
+fn main() -> i32 {
+    50 + 50
+}
+"""
+exit_code = 100
+
+# --- Nested expressions with literals ---
+
+[[case]]
+name = "literal_left_complex_expr"
+description = "Literal compared to arithmetic expression"
+source = """
+fn main() -> i32 {
+    let x: i64 = 50;
+    let y: i64 = 50;
+    if 100 == x + y { 1 } else { 0 }
+}
+"""
+exit_code = 1
+
+[[case]]
+name = "literal_left_function_call"
+description = "Literal compared to function returning i64"
+source = """
+fn get_value() -> i64 { 42 }
+
+fn main() -> i32 {
+    if 42 == get_value() { 1 } else { 0 }
+}
+"""
+exit_code = 1
