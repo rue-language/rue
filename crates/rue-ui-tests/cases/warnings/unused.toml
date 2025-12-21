@@ -1,0 +1,161 @@
+[section]
+id = "warnings.unused"
+name = "Unused Variable and Function Warnings"
+description = "Tests for detection of unused variables and functions."
+
+# =============================================================================
+# Unused Variables
+# =============================================================================
+
+[[case]]
+name = "unused_variable_warning"
+source = """
+fn main() -> i32 {
+    let x = 42;
+    0
+}
+"""
+exit_code = 0
+warning_contains = ["unused variable", "'x'"]
+expected_warning_count = 1
+
+[[case]]
+name = "used_variable_no_warning"
+source = """
+fn main() -> i32 {
+    let x = 42;
+    x
+}
+"""
+exit_code = 42
+no_warnings = true
+
+[[case]]
+name = "multiple_unused_variables"
+source = """
+fn main() -> i32 {
+    let a = 1;
+    let b = 2;
+    let c = 3;
+    0
+}
+"""
+exit_code = 0
+warning_contains = ["unused variable"]
+expected_warning_count = 3
+
+[[case]]
+name = "underscore_prefix_suppresses_warning"
+source = """
+fn main() -> i32 {
+    let _unused = 42;
+    0
+}
+"""
+exit_code = 0
+no_warnings = true
+
+[[case]]
+name = "mutable_but_unused"
+source = """
+fn main() -> i32 {
+    let mut x = 42;
+    0
+}
+"""
+exit_code = 0
+warning_contains = ["unused variable", "'x'"]
+
+[[case]]
+name = "used_in_expression"
+source = """
+fn main() -> i32 {
+    let x = 10;
+    let y = 20;
+    x + y
+}
+"""
+exit_code = 30
+no_warnings = true
+
+# =============================================================================
+# Unused Functions
+# =============================================================================
+
+# TODO: Unused function warnings are defined but not yet implemented
+# See bd issue tree1-11z for warning suppression feature
+[[case]]
+name = "unused_function_warning"
+skip = true
+source = """
+fn unused_helper() -> i32 { 42 }
+
+fn main() -> i32 {
+    0
+}
+"""
+exit_code = 0
+warning_contains = ["unused function", "'unused_helper'"]
+expected_warning_count = 1
+
+[[case]]
+name = "called_function_no_warning"
+source = """
+fn helper() -> i32 { 42 }
+
+fn main() -> i32 {
+    helper()
+}
+"""
+exit_code = 42
+no_warnings = true
+
+# TODO: Unused function warnings are defined but not yet implemented
+[[case]]
+name = "multiple_unused_functions"
+skip = true
+source = """
+fn helper1() -> i32 { 1 }
+fn helper2() -> i32 { 2 }
+fn helper3() -> i32 { 3 }
+
+fn main() -> i32 {
+    0
+}
+"""
+exit_code = 0
+warning_contains = ["unused function"]
+expected_warning_count = 3
+
+[[case]]
+name = "underscore_prefix_function_no_warning"
+source = """
+fn _unused_helper() -> i32 { 42 }
+
+fn main() -> i32 {
+    0
+}
+"""
+exit_code = 0
+no_warnings = true
+
+# =============================================================================
+# Mixed unused warnings
+# =============================================================================
+
+# TODO: Unused function warnings are defined but not yet implemented
+# Once implemented, this test should produce 2 warnings (function + variable)
+[[case]]
+name = "mixed_unused_warnings"
+skip = true
+source = """
+fn unused_fn() -> i32 { 42 }
+
+fn main() -> i32 {
+    let unused_var = 10;
+    0
+}
+"""
+exit_code = 0
+warning_contains = ["unused function", "unused variable"]
+expected_warning_count = 2

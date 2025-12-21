@@ -1,12 +1,9 @@
 rust_binary(
-    name = "rue-spec",
+    name = "rue-ui-tests",
     srcs = glob(["src/**/*.rs"]),
     deps = [
         "//crates/rue-test-runner:rue-test-runner",
         "//third-party:libtest-mimic",
-        "//third-party:serde",
-        "//third-party:tempfile",
-        "//third-party:toml",
     ],
     visibility = ["PUBLIC"],
 )

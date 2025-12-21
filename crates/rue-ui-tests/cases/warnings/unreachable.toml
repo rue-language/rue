@@ -1,0 +1,120 @@
+[section]
+id = "warnings.unreachable"
+name = "Unreachable Code Warnings"
+description = "Tests for unreachable code detection and warnings."
+
+# =============================================================================
+# Unreachable after return
+# =============================================================================
+
+[[case]]
+name = "unreachable_after_return"
+source = """
+fn main() -> i32 {
+    return 42;
+    0
+}
+"""
+exit_code = 42
+warning_contains = ["unreachable"]
+expected_warning_count = 1
+
+[[case]]
+name = "unreachable_statement_after_return"
+source = """
+fn main() -> i32 {
+    return 42;
+    let x = 10;
+    x
+}
+"""
+exit_code = 42
+warning_contains = ["unreachable"]
+expected_warning_count = 1
+
+[[case]]
+name = "no_warning_without_unreachable_code"
+source = """
+fn main() -> i32 {
+    let x = 42;
+    x
+}
+"""
+exit_code = 42
+no_warnings = true
+
+# =============================================================================
+# Unreachable in control flow
+# =============================================================================
+
+[[case]]
+name = "unreachable_after_return_in_if"
+source = """
+fn test() -> i32 {
+    if true {
+        return 1;
+        42
+    } else {
+        2
+    }
+}
+fn main() -> i32 { test() }
+"""
+exit_code = 1
+warning_contains = ["unreachable"]
+expected_warning_count = 1
+
+[[case]]
+name = "no_warning_when_both_branches_return"
+source = """
+fn test(x: bool) -> i32 {
+    if x {
+        return 1;
+    } else {
+        return 2;
+    }
+}
+fn main() -> i32 { test(true) }
+"""
+exit_code = 1
+no_warnings = true
+
+# =============================================================================
+# Unreachable in loops
+# =============================================================================
+
+[[case]]
+name = "unreachable_after_return_in_loop"
+source = """
+fn main() -> i32 {
+    while true {
+        return 42;
+        0
+    }
+    0
+}
+"""
+exit_code = 42
+warning_contains = ["unreachable"]
+
+# =============================================================================
+# Match with unreachable
+# =============================================================================
+
+[[case]]
+name = "unreachable_after_return_in_match_arm"
+source = """
+fn test(x: i32) -> i32 {
+    match x {
+        1 => {
+            return 10;
+            20
+        },
+        _ => 0,
+    }
+}
+fn main() -> i32 { test(1) }
+"""
+exit_code = 10
+warning_contains = ["unreachable"]
+expected_warning_count = 1

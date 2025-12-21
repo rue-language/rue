@@ -32,3 +32,9 @@ echo "Running spec traceability check..."
 RUE_SPEC_DIR="docs/spec/src" \
 RUE_SPEC_CASES="crates/rue-spec/cases" \
 ./buck2 run //crates/rue-spec:rue-spec -- --traceability
+
+# Run UI tests (compiler-specific tests like warnings)
+echo "Running UI tests..."
+RUE_BINARY="$RUE_BINARY" \
+RUE_UI_CASES="crates/rue-ui-tests/cases" \
+./buck2 run //crates/rue-ui-tests:rue-ui-tests -- "$@"

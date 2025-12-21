@@ -1,9 +1,7 @@
-rust_binary(
-    name = "rue-spec",
+rust_library(
+    name = "rue-test-runner",
     srcs = glob(["src/**/*.rs"]),
     deps = [
-        "//crates/rue-test-runner:rue-test-runner",
-        "//third-party:libtest-mimic",
         "//third-party:serde",
         "//third-party:tempfile",
         "//third-party:toml",
