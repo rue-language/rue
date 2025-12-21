@@ -84,6 +84,117 @@ impl<'a> CfgLower<'a> {
             .unwrap_or(0)
     }
 
+    /// Get the array type definition.
+    fn array_type_def(&self, array_type_id: ArrayTypeId) -> Option<&ArrayTypeDef> {
+        self.array_types.get(array_type_id.0 as usize)
+    }
+
+    /// Calculate the total number of slots needed to store a type.
+    /// For scalars, this is 1. For arrays, it's length * slot_count(element_type).
+    /// For nested arrays, this recursively multiplies.
+    fn type_slot_count(&self, ty: Type) -> u32 {
+        match ty {
+            Type::Array(array_type_id) => {
+                if let Some(def) = self.array_type_def(array_type_id) {
+                    let elem_slots = self.type_slot_count(def.element_type);
+                    (def.length as u32) * elem_slots
+                } else {
+                    1
+                }
+            }
+            Type::Struct(struct_id) => self.struct_field_count(struct_id),
+            _ => 1,
+        }
+    }
+
+    /// Calculate the slot count for a single element of an array type.
+    fn array_element_slot_count(&self, array_type_id: ArrayTypeId) -> u32 {
+        if let Some(def) = self.array_type_def(array_type_id) {
+            self.type_slot_count(def.element_type)
+        } else {
+            1
+        }
+    }
+
+    /// Calculate the slot offset for a field within a struct.
+    /// This accounts for the sizes of all preceding fields.
+    fn struct_field_slot_offset(&self, struct_id: StructId, field_index: u32) -> u32 {
+        if let Some(struct_def) = self.struct_defs.get(struct_id.0 as usize) {
+            let mut offset = 0u32;
+            for i in 0..(field_index as usize) {
+                if let Some(field) = struct_def.fields.get(i) {
+                    offset += self.type_slot_count(field.ty);
+                }
+            }
+            offset
+        } else {
+            field_index // Fallback to field index if struct not found
+        }
+    }
+
+    /// Recursively collect all scalar vregs from an array value.
+    /// For nested arrays, this flattens them to a list of scalar vregs.
+    fn collect_array_scalar_vregs(&mut self, value: CfgValue) -> Vec<VReg> {
+        let inst = self.cfg.get_inst(value);
+        match &inst.data.clone() {
+            CfgInstData::ArrayInit { elements, .. } => {
+                let mut result = Vec::new();
+                for elem in elements {
+                    let elem_inst = self.cfg.get_inst(*elem);
+                    if matches!(elem_inst.ty, Type::Array(_)) {
+                        // Recursively collect from nested array
+                        result.extend(self.collect_array_scalar_vregs(*elem));
+                    } else {
+                        // Scalar element - get its vreg
+                        result.push(self.get_vreg(*elem));
+                    }
+                }
+                result
+            }
+            _ => {
+                // For non-ArrayInit sources, try struct_field_vregs cache
+                if let Some(vregs) = self.struct_field_vregs.get(&value).cloned() {
+                    vregs
+                } else {
+                    vec![self.get_vreg(value)]
+                }
+            }
+        }
+    }
+
+    /// Recursively collect all scalar vregs from a struct value.
+    /// This flattens any array fields to their scalar elements.
+    fn collect_struct_scalar_vregs(&mut self, value: CfgValue) -> Vec<VReg> {
+        let inst = self.cfg.get_inst(value);
+        match &inst.data.clone() {
+            CfgInstData::StructInit { fields, .. } => {
+                let mut result = Vec::new();
+                for field in fields {
+                    let field_inst = self.cfg.get_inst(*field);
+                    if matches!(field_inst.ty, Type::Array(_)) {
+                        // Recursively collect from array field
+                        result.extend(self.collect_array_scalar_vregs(*field));
+                    } else if matches!(field_inst.ty, Type::Struct(_)) {
+                        // Recursively collect from nested struct field
+                        result.extend(self.collect_struct_scalar_vregs(*field));
+                    } else {
+                        // Scalar field - get its vreg
+                        result.push(self.get_vreg(*field));
+                    }
+                }
+                result
+            }
+            _ => {
+                // For non-StructInit sources, try struct_field_vregs cache
+                if let Some(vregs) = self.struct_field_vregs.get(&value).cloned() {
+                    vregs
+                } else {
+                    vec![self.get_vreg(value)]
+                }
+            }
+        }
+    }
+
     /// Calculate the stack offset for a local variable slot.
     fn local_offset(&self, slot: u32) -> i32 {
         -((slot as i32 + 1) * 8)
@@ -668,26 +779,28 @@ impl<'a> CfgLower<'a> {
 
             CfgInstData::Alloc { slot, init } => {
                 let init_type = self.cfg.get_inst(*init).ty;
-                if matches!(init_type, Type::Struct(_)) || matches!(init_type, Type::Array(_)) {
-                    // Struct/Array: store all fields/elements to consecutive slots
-                    if let Some(field_vregs) = self.struct_field_vregs.get(init).cloned() {
-                        for (i, field_vreg) in field_vregs.iter().enumerate() {
-                            let field_slot = slot + i as u32;
-                            let offset = self.local_offset(field_slot);
-                            self.mir.push(X86Inst::MovMR {
-                                base: Reg::Rbp,
-                                offset,
-                                src: Operand::Virtual(*field_vreg),
-                            });
-                        }
-                    } else {
-                        // Fallback: just store single value
-                        let init_vreg = self.get_vreg(*init);
-                        let offset = self.local_offset(*slot);
+                if matches!(init_type, Type::Array(_)) {
+                    // Array: recursively flatten nested arrays and store scalar elements
+                    let scalar_vregs = self.collect_array_scalar_vregs(*init);
+                    for (i, scalar_vreg) in scalar_vregs.iter().enumerate() {
+                        let elem_slot = slot + i as u32;
+                        let offset = self.local_offset(elem_slot);
                         self.mir.push(X86Inst::MovMR {
                             base: Reg::Rbp,
                             offset,
-                            src: Operand::Virtual(init_vreg),
+                            src: Operand::Virtual(*scalar_vreg),
+                        });
+                    }
+                } else if matches!(init_type, Type::Struct(_)) {
+                    // Struct: recursively flatten struct fields (including array fields) to scalars
+                    let scalar_vregs = self.collect_struct_scalar_vregs(*init);
+                    for (i, scalar_vreg) in scalar_vregs.iter().enumerate() {
+                        let field_slot = slot + i as u32;
+                        let offset = self.local_offset(field_slot);
+                        self.mir.push(X86Inst::MovMR {
+                            base: Reg::Rbp,
+                            offset,
+                            src: Operand::Virtual(*scalar_vreg),
                         });
                     }
                 } else {
@@ -1109,6 +1222,9 @@ impl<'a> CfgLower<'a> {
                 let vreg = self.mir.alloc_vreg();
                 self.value_map.insert(value, vreg);
 
+                // Calculate the slot stride for this array's elements
+                let elem_slot_count = self.array_element_slot_count(*array_type_id);
+
                 let base_data = &self.cfg.get_inst(*base).data;
                 match base_data {
                     CfgInstData::Load { slot } => {
@@ -1119,43 +1235,41 @@ impl<'a> CfgLower<'a> {
                         let array_length = self.array_length(*array_type_id);
                         self.emit_bounds_check(index_vreg, array_length);
 
-                        // Load base slot into a temp register
                         let base_vreg = self.mir.alloc_vreg();
                         let base_offset = self.local_offset(*slot);
 
-                        // Calculate effective address: base_ptr + index * 8
-                        // First, we need the address of the array base: rbp + base_offset
-                        // Then add index * 8
-
-                        // Compute address: lea temp, [rbp + base_offset]
-                        // Then: mov result, [temp + index*8]
-                        // For now, simpler approach using scaled index addressing:
-                        // We'll use rbp-based addressing with computed offset
-
-                        // Get the index value and multiply by 8 (element size)
+                        // Multiply index by element slot count, then by 8
                         let scaled_index = self.mir.alloc_vreg();
                         self.mir.push(X86Inst::MovRR {
                             dst: Operand::Virtual(scaled_index),
                             src: Operand::Virtual(index_vreg),
                         });
-                        // Multiply by 8 using shift left by 3
-                        let shift_count = self.mir.alloc_vreg();
-                        self.mir.push(X86Inst::MovRI32 {
-                            dst: Operand::Virtual(shift_count),
-                            imm: 3,
-                        });
-                        self.mir.push(X86Inst::Shl {
-                            dst: Operand::Virtual(scaled_index),
-                            count: Operand::Virtual(shift_count),
-                        });
 
-                        // Compute base + scaled_index
-                        // We need: [rbp - (slot+1)*8 - scaled_index]
-                        // But scaled_index is positive, so: [rbp + base_offset] - scaled_index
-                        // Actually for stack arrays: higher index = lower address
-                        // So it's: [rbp + (base_offset - index*8)]
+                        if elem_slot_count == 1 {
+                            // Simple case: just shift by 3 (multiply by 8)
+                            let shift_count = self.mir.alloc_vreg();
+                            self.mir.push(X86Inst::MovRI32 {
+                                dst: Operand::Virtual(shift_count),
+                                imm: 3,
+                            });
+                            self.mir.push(X86Inst::Shl {
+                                dst: Operand::Virtual(scaled_index),
+                                count: Operand::Virtual(shift_count),
+                            });
+                        } else {
+                            // Multiply by elem_slot_count * 8
+                            let stride_vreg = self.mir.alloc_vreg();
+                            self.mir.push(X86Inst::MovRI64 {
+                                dst: Operand::Virtual(stride_vreg),
+                                imm: (elem_slot_count * 8) as i64,
+                            });
+                            self.mir.push(X86Inst::ImulRR64 {
+                                dst: Operand::Virtual(scaled_index),
+                                src: Operand::Virtual(stride_vreg),
+                            });
+                        }
 
-                        // Use a two-step approach: compute address then load
+                        // Compute base address
                         self.mir.push(X86Inst::Lea {
                             dst: Operand::Virtual(base_vreg),
                             base: Reg::Rbp,
@@ -1170,7 +1284,7 @@ impl<'a> CfgLower<'a> {
                             src: Operand::Virtual(scaled_index),
                         });
 
-                        // Load from computed address using indirect addressing through base_vreg
+                        // Load from computed address
                         self.mir.push(X86Inst::MovRMIndexed {
                             dst: Operand::Virtual(vreg),
                             base: base_vreg,
@@ -1190,22 +1304,34 @@ impl<'a> CfgLower<'a> {
                         let base_slot = self.num_locals + *param_index as u32;
                         let base_offset = self.local_offset(base_slot);
 
-                        // Get the index value and multiply by 8 (element size)
+                        // Multiply index by element slot count, then by 8
                         let scaled_index = self.mir.alloc_vreg();
                         self.mir.push(X86Inst::MovRR {
                             dst: Operand::Virtual(scaled_index),
                             src: Operand::Virtual(index_vreg),
                         });
-                        // Multiply by 8 using shift left by 3
-                        let shift_count = self.mir.alloc_vreg();
-                        self.mir.push(X86Inst::MovRI32 {
-                            dst: Operand::Virtual(shift_count),
-                            imm: 3,
-                        });
-                        self.mir.push(X86Inst::Shl {
-                            dst: Operand::Virtual(scaled_index),
-                            count: Operand::Virtual(shift_count),
-                        });
+
+                        if elem_slot_count == 1 {
+                            let shift_count = self.mir.alloc_vreg();
+                            self.mir.push(X86Inst::MovRI32 {
+                                dst: Operand::Virtual(shift_count),
+                                imm: 3,
+                            });
+                            self.mir.push(X86Inst::Shl {
+                                dst: Operand::Virtual(scaled_index),
+                                count: Operand::Virtual(shift_count),
+                            });
+                        } else {
+                            let stride_vreg = self.mir.alloc_vreg();
+                            self.mir.push(X86Inst::MovRI64 {
+                                dst: Operand::Virtual(stride_vreg),
+                                imm: (elem_slot_count * 8) as i64,
+                            });
+                            self.mir.push(X86Inst::ImulRR64 {
+                                dst: Operand::Virtual(scaled_index),
+                                src: Operand::Virtual(stride_vreg),
+                            });
+                        }
 
                         // Compute base address
                         let base_vreg = self.mir.alloc_vreg();
@@ -1229,6 +1355,218 @@ impl<'a> CfgLower<'a> {
                             base: base_vreg,
                             offset: 0,
                         });
+                    }
+                    CfgInstData::IndexGet {
+                        base: outer_base,
+                        array_type_id: outer_array_type_id,
+                        index: outer_index,
+                    } => {
+                        // Chained indexing: arr[i][j] where base is arr[i]
+                        // We need to find the ultimate base (Load or Param) and compute the combined offset
+                        let outer_base_data = &self.cfg.get_inst(*outer_base).data;
+
+                        // Get the slot count for the outer array's elements
+                        let outer_elem_slot_count =
+                            self.array_element_slot_count(*outer_array_type_id);
+
+                        let index_vreg = self.get_vreg(*index);
+                        let outer_index_vreg = self.get_vreg(*outer_index);
+
+                        // Emit runtime bounds check for inner index
+                        let array_length = self.array_length(*array_type_id);
+                        self.emit_bounds_check(index_vreg, array_length);
+
+                        match outer_base_data {
+                            CfgInstData::Load { slot } => {
+                                let base_offset = self.local_offset(*slot);
+
+                                // Combined offset = outer_index * outer_elem_slots * 8 + inner_index * elem_slots * 8
+                                // For [[i32; 2]; 2], outer_elem_slots=2, elem_slots=1
+                                // arr[1][1] = base - (1 * 2 * 8) - (1 * 1 * 8) = base - 24
+
+                                // Calculate outer offset
+                                let outer_scaled = self.mir.alloc_vreg();
+                                self.mir.push(X86Inst::MovRR {
+                                    dst: Operand::Virtual(outer_scaled),
+                                    src: Operand::Virtual(outer_index_vreg),
+                                });
+                                if outer_elem_slot_count == 1 {
+                                    let shift_count = self.mir.alloc_vreg();
+                                    self.mir.push(X86Inst::MovRI32 {
+                                        dst: Operand::Virtual(shift_count),
+                                        imm: 3,
+                                    });
+                                    self.mir.push(X86Inst::Shl {
+                                        dst: Operand::Virtual(outer_scaled),
+                                        count: Operand::Virtual(shift_count),
+                                    });
+                                } else {
+                                    let stride_vreg = self.mir.alloc_vreg();
+                                    self.mir.push(X86Inst::MovRI64 {
+                                        dst: Operand::Virtual(stride_vreg),
+                                        imm: (outer_elem_slot_count * 8) as i64,
+                                    });
+                                    self.mir.push(X86Inst::ImulRR64 {
+                                        dst: Operand::Virtual(outer_scaled),
+                                        src: Operand::Virtual(stride_vreg),
+                                    });
+                                }
+
+                                // Calculate inner offset
+                                let inner_scaled = self.mir.alloc_vreg();
+                                self.mir.push(X86Inst::MovRR {
+                                    dst: Operand::Virtual(inner_scaled),
+                                    src: Operand::Virtual(index_vreg),
+                                });
+                                if elem_slot_count == 1 {
+                                    let shift_count = self.mir.alloc_vreg();
+                                    self.mir.push(X86Inst::MovRI32 {
+                                        dst: Operand::Virtual(shift_count),
+                                        imm: 3,
+                                    });
+                                    self.mir.push(X86Inst::Shl {
+                                        dst: Operand::Virtual(inner_scaled),
+                                        count: Operand::Virtual(shift_count),
+                                    });
+                                } else {
+                                    let stride_vreg = self.mir.alloc_vreg();
+                                    self.mir.push(X86Inst::MovRI64 {
+                                        dst: Operand::Virtual(stride_vreg),
+                                        imm: (elem_slot_count * 8) as i64,
+                                    });
+                                    self.mir.push(X86Inst::ImulRR64 {
+                                        dst: Operand::Virtual(inner_scaled),
+                                        src: Operand::Virtual(stride_vreg),
+                                    });
+                                }
+
+                                // Combine offsets
+                                let total_offset = self.mir.alloc_vreg();
+                                self.mir.push(X86Inst::MovRR {
+                                    dst: Operand::Virtual(total_offset),
+                                    src: Operand::Virtual(outer_scaled),
+                                });
+                                self.mir.push(X86Inst::AddRR64 {
+                                    dst: Operand::Virtual(total_offset),
+                                    src: Operand::Virtual(inner_scaled),
+                                });
+
+                                // Compute base address
+                                let addr_vreg = self.mir.alloc_vreg();
+                                self.mir.push(X86Inst::Lea {
+                                    dst: Operand::Virtual(addr_vreg),
+                                    base: Reg::Rbp,
+                                    index: None,
+                                    scale: 1,
+                                    disp: base_offset,
+                                });
+
+                                // Subtract combined offset
+                                self.mir.push(X86Inst::SubRR64 {
+                                    dst: Operand::Virtual(addr_vreg),
+                                    src: Operand::Virtual(total_offset),
+                                });
+
+                                // Load from computed address
+                                self.mir.push(X86Inst::MovRMIndexed {
+                                    dst: Operand::Virtual(vreg),
+                                    base: addr_vreg,
+                                    offset: 0,
+                                });
+                            }
+                            _ => {
+                                // Fallback for deeper nesting or other cases
+                                self.mir.push(X86Inst::MovRI32 {
+                                    dst: Operand::Virtual(vreg),
+                                    imm: 0,
+                                });
+                            }
+                        }
+                    }
+                    CfgInstData::FieldGet {
+                        base: struct_base,
+                        struct_id,
+                        field_index,
+                    } => {
+                        // Indexing into an array that is a struct field
+                        // The struct is loaded from a slot, and the array starts at field_slot_offset within
+                        let struct_base_data = &self.cfg.get_inst(*struct_base).data;
+                        let index_vreg = self.get_vreg(*index);
+
+                        // Emit runtime bounds check
+                        let array_length = self.array_length(*array_type_id);
+                        self.emit_bounds_check(index_vreg, array_length);
+
+                        // Calculate the actual slot offset for this field
+                        let field_slot_offset =
+                            self.struct_field_slot_offset(*struct_id, *field_index);
+
+                        match struct_base_data {
+                            CfgInstData::Load { slot } => {
+                                // Array starts at slot + field_slot_offset
+                                let array_base_slot = slot + field_slot_offset;
+                                let base_offset = self.local_offset(array_base_slot);
+
+                                // Multiply index by element slot count, then by 8
+                                let scaled_index = self.mir.alloc_vreg();
+                                self.mir.push(X86Inst::MovRR {
+                                    dst: Operand::Virtual(scaled_index),
+                                    src: Operand::Virtual(index_vreg),
+                                });
+
+                                if elem_slot_count == 1 {
+                                    let shift_count = self.mir.alloc_vreg();
+                                    self.mir.push(X86Inst::MovRI32 {
+                                        dst: Operand::Virtual(shift_count),
+                                        imm: 3,
+                                    });
+                                    self.mir.push(X86Inst::Shl {
+                                        dst: Operand::Virtual(scaled_index),
+                                        count: Operand::Virtual(shift_count),
+                                    });
+                                } else {
+                                    let stride_vreg = self.mir.alloc_vreg();
+                                    self.mir.push(X86Inst::MovRI64 {
+                                        dst: Operand::Virtual(stride_vreg),
+                                        imm: (elem_slot_count * 8) as i64,
+                                    });
+                                    self.mir.push(X86Inst::ImulRR64 {
+                                        dst: Operand::Virtual(scaled_index),
+                                        src: Operand::Virtual(stride_vreg),
+                                    });
+                                }
+
+                                // Compute base address
+                                let base_vreg = self.mir.alloc_vreg();
+                                self.mir.push(X86Inst::Lea {
+                                    dst: Operand::Virtual(base_vreg),
+                                    base: Reg::Rbp,
+                                    index: None,
+                                    scale: 1,
+                                    disp: base_offset,
+                                });
+
+                                // Subtract scaled index
+                                self.mir.push(X86Inst::SubRR64 {
+                                    dst: Operand::Virtual(base_vreg),
+                                    src: Operand::Virtual(scaled_index),
+                                });
+
+                                // Load from computed address
+                                self.mir.push(X86Inst::MovRMIndexed {
+                                    dst: Operand::Virtual(vreg),
+                                    base: base_vreg,
+                                    offset: 0,
+                                });
+                            }
+                            _ => {
+                                // Fallback
+                                self.mir.push(X86Inst::MovRI32 {
+                                    dst: Operand::Virtual(vreg),
+                                    imm: 0,
+                                });
+                            }
+                        }
                     }
                     _ => {
                         // For other sources (ArrayInit), use element vregs if index is constant

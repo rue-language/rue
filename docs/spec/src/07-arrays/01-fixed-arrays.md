@@ -75,3 +75,57 @@ array_type = "[" type ";" INTEGER "]" ;
 
 r[7.1.15#normative]
 The size must be a non-negative integer literal.
+
+## Nested Arrays
+
+r[7.1.16#normative]
+Arrays may contain other arrays as elements, forming multi-dimensional arrays.
+
+r[7.1.17#normative]
+Nested arrays are indexed using chained bracket notation, evaluated left to right.
+
+r[7.1.18]
+```rue
+fn main() -> i32 {
+    let matrix: [[i32; 2]; 2] = [[1, 2], [3, 4]];
+    matrix[1][1]  // 4
+}
+```
+
+## Arrays in Structs
+
+r[7.1.19#normative]
+Struct fields may have array types.
+
+r[7.1.20#normative]
+Array fields are accessed by combining field access with array indexing.
+
+r[7.1.21]
+```rue
+struct Container { values: [i32; 3] }
+
+fn main() -> i32 {
+    let c = Container { values: [10, 20, 30] };
+    c.values[1]  // 20
+}
+```
+
+## Arrays as Function Parameters
+
+r[7.1.22#normative]
+Functions may accept arrays as parameters.
+
+r[7.1.23#normative]
+Array parameters are passed by value; the entire array is copied to the function.
+
+r[7.1.24]
+```rue
+fn sum(arr: [i32; 3]) -> i32 {
+    arr[0] + arr[1] + arr[2]
+}
+
+fn main() -> i32 {
+    let data: [i32; 3] = [10, 20, 12];
+    sum(data)  // 42
+}
+```

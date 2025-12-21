@@ -1005,16 +1005,9 @@ impl<'a> Sema<'a> {
                 };
 
                 // Allocate slots - structs and arrays need multiple slots
+                // Use abi_slot_count which recursively computes total slots for nested types
                 let slot = ctx.next_slot;
-                let num_slots = match var_type {
-                    Type::Struct(struct_id) => {
-                        self.struct_defs[struct_id.0 as usize].field_count() as u32
-                    }
-                    Type::Array(array_type_id) => {
-                        self.array_type_defs[array_type_id.0 as usize].length as u32
-                    }
-                    _ => 1,
-                };
+                let num_slots = self.abi_slot_count(var_type);
                 ctx.next_slot += num_slots;
 
                 // Register the variable (shadowing is allowed by just overwriting)
@@ -1995,7 +1988,15 @@ impl<'a> Sema<'a> {
             | Type::Unit
             | Type::Error
             | Type::Never => 1,
-            Type::Struct(struct_id) => self.struct_defs[struct_id.0 as usize].field_count() as u32,
+            Type::Struct(struct_id) => {
+                // Sum the slot counts of all fields (handles arrays and nested structs)
+                let struct_def = &self.struct_defs[struct_id.0 as usize];
+                struct_def
+                    .fields
+                    .iter()
+                    .map(|f| self.abi_slot_count(f.ty))
+                    .sum()
+            }
             Type::Array(array_type_id) => {
                 let array_def = &self.array_type_defs[array_type_id.0 as usize];
                 let element_slots = self.abi_slot_count(array_def.element_type);
