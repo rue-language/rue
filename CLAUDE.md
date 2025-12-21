@@ -107,6 +107,73 @@ graph LR
 ### Unit Tests
 Add to relevant crate's source file with `#[cfg(test)]` modules. Ensure crate has `rust_test` target in its `BUCK` file.
 
+### UI Tests
+
+UI tests verify compiler behavior that is **not** part of the language specification, such as:
+- Warning messages (unused variables, unreachable code)
+- Diagnostic quality and formatting
+- Compiler flags and options
+- Error message wording
+
+#### UI Test Directory Structure
+
+UI tests are in `crates/rue-ui-tests/cases/`:
+
+```
+cases/
+├── warnings/         # Warning detection tests
+│   ├── unused.toml   # Unused variable/function warnings
+│   └── unreachable.toml  # Unreachable code warnings
+└── diagnostics/      # Error message quality tests (future)
+```
+
+#### UI Test Format
+
+```toml
+[section]
+id = "warnings.unused"
+name = "Unused Variable Warnings"
+description = "Tests for detection of unused variables."
+
+[[case]]
+name = "unused_variable_warning"
+source = """
+fn main() -> i32 {
+    let x = 42;
+    0
+}
+"""
+exit_code = 0
+warning_contains = ["unused variable", "'x'"]
+expected_warning_count = 1
+
+[[case]]
+name = "no_warnings_expected"
+source = """
+fn main() -> i32 {
+    let x = 42;
+    x
+}
+"""
+exit_code = 42
+no_warnings = true
+```
+
+#### Running UI Tests
+
+```bash
+# Run all UI tests
+./buck2 run //crates/rue-ui-tests:rue-ui-tests
+
+# Filter by pattern
+./buck2 run //crates/rue-ui-tests:rue-ui-tests -- "unused"
+```
+
+#### When to Add UI Tests vs Spec Tests
+
+- **Spec tests** (`crates/rue-spec/cases/`): Language semantics defined in the specification. These tests have `spec = [...]` references linking to spec paragraphs.
+- **UI tests** (`crates/rue-ui-tests/cases/`): Compiler quality-of-life features not in the spec (warnings, diagnostics, CLI behavior).
+
 ### Specification Tests
 
 The specification test system provides traceability between the language specification and tests.
@@ -239,14 +306,37 @@ The traceability check is run as part of `./test.sh` and fails if:
 - Any spec paragraph has no covering test (coverage < 100%)
 - Any test references a non-existent spec paragraph ID
 
-## Modifying the Grammar
+## Modifying the Language
 
-1. Update `rue-lexer` if new tokens needed
-2. Update `rue-parser` for new syntax
-3. Update `rue-rir` for new IR instructions
-4. Update `rue-air` for typed versions
-5. Update `rue-codegen` for code generation
-6. Add spec tests in `crates/rue-spec/cases/`
+When adding or changing language features, follow this checklist:
+
+### Implementation Steps
+
+1. **Update the specification** (`docs/spec/src/`)
+   - Add/modify spec paragraphs with proper IDs (e.g., `<!-- spec:4.2:3 legality-rule -->`)
+   - Include normative rules, dynamic semantics, and examples
+   - Update the grammar appendix if syntax changes
+
+2. **Update `rue-lexer`** if new tokens needed
+
+3. **Update `rue-parser`** for new syntax
+
+4. **Update `rue-rir`** for new IR instructions
+
+5. **Update `rue-air`** for typed versions
+
+6. **Update `rue-codegen`** for code generation
+
+7. **Add spec tests** in `crates/rue-spec/cases/`
+   - Include `spec = ["X.Y:Z"]` references to link to spec paragraphs
+   - Cover all normative paragraphs (traceability check enforces 100% coverage)
+
+8. **Add UI tests** in `crates/rue-ui-tests/cases/` if the feature includes:
+   - New warnings or lints
+   - Changes to error message formatting
+   - New compiler flags or options
+
+9. **Run `./test.sh`** to verify all tests pass and traceability is maintained
 
 ## Version Control
 

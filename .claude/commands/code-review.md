@@ -19,14 +19,20 @@ Review the current changes for:
 
 1. **Correctness** - Does the code do what it's supposed to? Are there any bugs you can find?
 2. **Performance** - Are we going to regress performance of the compiler itself or of the code the compiler generates? Is that an acceptable amount or not?
-4. **Style** - Follows Rust idioms and project conventions?
-5. **Error handling** - Appropriate error types and messages?
-6. **Tests** - Are changes adequately tested?
-7. **Documentation** - Are public APIs documented? Is the language specification updated if it needs to be? Are there spec tests added if so?
+3. **Style** - Follows Rust idioms and project conventions?
+4. **Error handling** - Appropriate error types and messages?
+5. **Tests** - Are changes adequately tested? Consider:
+   - **Spec tests** (`crates/rue-spec/cases/`): Required for language semantics changes. Must include `spec = [...]` references.
+   - **UI tests** (`crates/rue-ui-tests/cases/`): Required for warnings, diagnostic changes, or compiler flag changes.
+   - **Unit tests**: For internal implementation details.
+6. **Specification** - If this changes language semantics:
+   - Is the language specification (`docs/spec/src/`) updated with proper paragraph IDs?
+   - Do new spec tests reference the new spec paragraphs?
+   - Will traceability check pass (100% coverage required)?
 
 For the Rue compiler specifically, also check:
 - Index-based references used correctly (no dangling indices)
 - IR transformations preserve semantics
 - Span tracking maintained for error reporting
 
-Provide specific, actionable feedback with file:line references. File new bugs with `bd` for simple non-blocking improvemnets, but the feedback given here is things that we should land before we merge this change.
+Provide specific, actionable feedback with file:line references. File new bugs with `bd` for simple non-blocking improvements, but the feedback given here is things that we should land before we merge this change.
