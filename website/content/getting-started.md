@@ -4,7 +4,7 @@ title = "Getting Started"
 
 ## Installation
 
-Rue is currently in early development. To try it out, you'll need to build from source. If you do try it out, you'll certainly find bugs, and if you do please [file them](https://github.com/rue-lang/rue/issues)!
+Rue is currently in early development. To try it out, you'll need to build from source. If you do try it out, you'll certainly find bugs, and if you do please [file them](https://github.com/rue-language/rue/issues)!
 
 ### Prerequisites
 
@@ -14,7 +14,7 @@ Rue is currently in early development. To try it out, you'll need to build from 
 ### Building from Source
 
 ```bash
-git clone https://github.com/rue-lang/rue
+git clone https://github.com/rue-language/rue
 cd rue
 ./buck2 build //crates/rue:rue
 ```
@@ -42,4 +42,4 @@ echo $?  # prints: 0
 ## Next Steps
 
 - Read the [Language Specification](/spec/) for complete documentation
-- Check out the [GitHub repository](https://github.com/rue-lang/rue) for examples
+- Check out the [GitHub repository](https://github.com/rue-language/rue) for examples

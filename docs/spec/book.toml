@@ -14,7 +14,7 @@ command = "mdbook-spec"
 
 [output.html]
 git-repository-url = "https://github.com/rue-language/rue"
-edit-url-template = "https://github.com/rue-language/rue/edit/main/docs/spec/{path}"
+edit-url-template = "https://github.com/rue-language/rue/edit/trunk/docs/spec/{path}"
 site-url = "/spec/"
 additional-css = ["theme/spec.css"]
 additional-js = ["theme/back-to-site.js"]
