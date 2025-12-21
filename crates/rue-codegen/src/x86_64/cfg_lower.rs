@@ -775,6 +775,48 @@ impl<'a> CfgLower<'a> {
                                 }
                             }
                         }
+                        Type::Array(array_type_id) => {
+                            let arg_data = &self.cfg.get_inst(*arg).data;
+                            let array_len = self.array_length(array_type_id) as u32;
+                            match arg_data {
+                                CfgInstData::Load { slot } => {
+                                    for elem_idx in 0..array_len {
+                                        let elem_vreg = self.mir.alloc_vreg();
+                                        let elem_slot = slot + elem_idx;
+                                        let offset = self.local_offset(elem_slot);
+                                        self.mir.push(X86Inst::MovRM {
+                                            dst: Operand::Virtual(elem_vreg),
+                                            base: Reg::Rbp,
+                                            offset,
+                                        });
+                                        flattened_vregs.push(elem_vreg);
+                                    }
+                                }
+                                CfgInstData::Param { index } => {
+                                    for elem_idx in 0..array_len {
+                                        let elem_vreg = self.mir.alloc_vreg();
+                                        let param_slot = self.num_locals + index + elem_idx;
+                                        let offset = self.local_offset(param_slot);
+                                        self.mir.push(X86Inst::MovRM {
+                                            dst: Operand::Virtual(elem_vreg),
+                                            base: Reg::Rbp,
+                                            offset,
+                                        });
+                                        flattened_vregs.push(elem_vreg);
+                                    }
+                                }
+                                CfgInstData::ArrayInit { .. } | CfgInstData::Call { .. } => {
+                                    if let Some(elem_vregs) = self.struct_field_vregs.get(arg) {
+                                        flattened_vregs.extend(elem_vregs.iter().copied());
+                                    } else {
+                                        flattened_vregs.push(self.get_vreg(*arg));
+                                    }
+                                }
+                                _ => {
+                                    flattened_vregs.push(self.get_vreg(*arg));
+                                }
+                            }
+                        }
                         _ => {
                             flattened_vregs.push(self.get_vreg(*arg));
                         }
@@ -1096,16 +1138,15 @@ impl<'a> CfgLower<'a> {
                             dst: Operand::Virtual(scaled_index),
                             src: Operand::Virtual(index_vreg),
                         });
-                        // Multiply by 8 using shift
-                        let eight = self.mir.alloc_vreg();
+                        // Multiply by 8 using shift left by 3
+                        let shift_count = self.mir.alloc_vreg();
                         self.mir.push(X86Inst::MovRI32 {
-                            dst: Operand::Virtual(eight),
+                            dst: Operand::Virtual(shift_count),
                             imm: 3,
                         });
-                        // shift left by 3 = multiply by 8
                         self.mir.push(X86Inst::Shl {
                             dst: Operand::Virtual(scaled_index),
-                            count: Operand::Virtual(eight),
+                            count: Operand::Virtual(shift_count),
                         });
 
                         // Compute base + scaled_index
@@ -1130,6 +1171,59 @@ impl<'a> CfgLower<'a> {
                         });
 
                         // Load from computed address using indirect addressing through base_vreg
+                        self.mir.push(X86Inst::MovRMIndexed {
+                            dst: Operand::Virtual(vreg),
+                            base: base_vreg,
+                            offset: 0,
+                        });
+                    }
+                    CfgInstData::Param { index: param_index } => {
+                        // Base is a function parameter - array elements are in consecutive param slots
+                        let index_vreg = self.get_vreg(*index);
+
+                        // Emit runtime bounds check
+                        let array_length = self.array_length(*array_type_id);
+                        self.emit_bounds_check(index_vreg, array_length);
+
+                        // Array parameter elements are stored at consecutive slots starting at
+                        // num_locals + param_index
+                        let base_slot = self.num_locals + *param_index as u32;
+                        let base_offset = self.local_offset(base_slot);
+
+                        // Get the index value and multiply by 8 (element size)
+                        let scaled_index = self.mir.alloc_vreg();
+                        self.mir.push(X86Inst::MovRR {
+                            dst: Operand::Virtual(scaled_index),
+                            src: Operand::Virtual(index_vreg),
+                        });
+                        // Multiply by 8 using shift left by 3
+                        let shift_count = self.mir.alloc_vreg();
+                        self.mir.push(X86Inst::MovRI32 {
+                            dst: Operand::Virtual(shift_count),
+                            imm: 3,
+                        });
+                        self.mir.push(X86Inst::Shl {
+                            dst: Operand::Virtual(scaled_index),
+                            count: Operand::Virtual(shift_count),
+                        });
+
+                        // Compute base address
+                        let base_vreg = self.mir.alloc_vreg();
+                        self.mir.push(X86Inst::Lea {
+                            dst: Operand::Virtual(base_vreg),
+                            base: Reg::Rbp,
+                            index: None,
+                            scale: 1,
+                            disp: base_offset,
+                        });
+
+                        // Subtract scaled index (stack grows down, array laid out sequentially)
+                        self.mir.push(X86Inst::SubRR64 {
+                            dst: Operand::Virtual(base_vreg),
+                            src: Operand::Virtual(scaled_index),
+                        });
+
+                        // Load from computed address
                         self.mir.push(X86Inst::MovRMIndexed {
                             dst: Operand::Virtual(vreg),
                             base: base_vreg,

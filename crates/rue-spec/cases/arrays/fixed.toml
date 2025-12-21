@@ -267,3 +267,86 @@ fn main() -> i32 {
 }
 """
 exit_code = 42
+
+# =============================================================================
+# Array Function Parameters
+# =============================================================================
+
+[[case]]
+name = "array_param_access_first"
+spec = ["7.1:6"]
+source = """
+fn get_first(arr: [i32; 4]) -> i32 {
+    arr[0]
+}
+
+fn main() -> i32 {
+    let data = [10, 20, 30, 40];
+    get_first(data)
+}
+"""
+exit_code = 10
+
+[[case]]
+name = "array_param_access_index"
+spec = ["7.1:6"]
+source = """
+fn get_element(arr: [i32; 4], idx: i32) -> i32 {
+    arr[idx]
+}
+
+fn main() -> i32 {
+    let data = [10, 20, 30, 40];
+    get_element(data, 2)
+}
+"""
+exit_code = 30
+
+[[case]]
+name = "array_param_with_scalar"
+spec = ["7.1:6"]
+source = """
+fn test(arr: [i32; 4], x: i32) -> i32 {
+    x
+}
+
+fn main() -> i32 {
+    let data = [10, 20, 30, 40];
+    test(data, 99)
+}
+"""
+exit_code = 99
+
+[[case]]
+name = "array_param_sum"
+spec = ["7.1:6"]
+source = """
+fn sum(arr: [i32; 3]) -> i32 {
+    arr[0] + arr[1] + arr[2]
+}
+
+fn main() -> i32 {
+    let data = [10, 20, 12];
+    sum(data)
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "array_param_pass_through"
+spec = ["7.1:6"]
+source = """
+fn inner(arr: [i32; 3]) -> i32 {
+    arr[1]
+}
+
+fn outer(arr: [i32; 3]) -> i32 {
+    inner(arr)
+}
+
+fn main() -> i32 {
+    let data = [10, 42, 30];
+    outer(data)
+}
+"""
+exit_code = 42

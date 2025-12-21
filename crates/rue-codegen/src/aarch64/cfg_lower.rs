@@ -680,6 +680,48 @@ impl<'a> CfgLower<'a> {
                                 }
                             }
                         }
+                        Type::Array(array_type_id) => {
+                            let arg_data = &self.cfg.get_inst(*arg).data;
+                            let array_len = self.array_length(array_type_id) as u32;
+                            match arg_data {
+                                CfgInstData::Load { slot } => {
+                                    for elem_idx in 0..array_len {
+                                        let elem_vreg = self.mir.alloc_vreg();
+                                        let elem_slot = slot + elem_idx;
+                                        let offset = self.local_offset(elem_slot);
+                                        self.mir.push(Aarch64Inst::Ldr {
+                                            dst: Operand::Virtual(elem_vreg),
+                                            base: Reg::Fp,
+                                            offset,
+                                        });
+                                        flattened_vregs.push(elem_vreg);
+                                    }
+                                }
+                                CfgInstData::Param { index } => {
+                                    for elem_idx in 0..array_len {
+                                        let elem_vreg = self.mir.alloc_vreg();
+                                        let param_slot = self.num_locals + index + elem_idx;
+                                        let offset = self.local_offset(param_slot);
+                                        self.mir.push(Aarch64Inst::Ldr {
+                                            dst: Operand::Virtual(elem_vreg),
+                                            base: Reg::Fp,
+                                            offset,
+                                        });
+                                        flattened_vregs.push(elem_vreg);
+                                    }
+                                }
+                                CfgInstData::ArrayInit { .. } | CfgInstData::Call { .. } => {
+                                    if let Some(elem_vregs) = self.struct_field_vregs.get(arg) {
+                                        flattened_vregs.extend(elem_vregs.iter().copied());
+                                    } else {
+                                        flattened_vregs.push(self.get_vreg(*arg));
+                                    }
+                                }
+                                _ => {
+                                    flattened_vregs.push(self.get_vreg(*arg));
+                                }
+                            }
+                        }
                         _ => {
                             flattened_vregs.push(self.get_vreg(*arg));
                         }
@@ -1002,6 +1044,48 @@ impl<'a> CfgLower<'a> {
 
                         // Compute base address (base_offset is negative, e.g., -8)
                         // We need addr = FP + base_offset = FP - abs(base_offset)
+                        let addr_vreg = self.mir.alloc_vreg();
+                        self.mir.push(Aarch64Inst::SubImm {
+                            dst: Operand::Virtual(addr_vreg),
+                            src: Operand::Physical(Reg::Fp),
+                            imm: -base_offset,
+                        });
+
+                        // Subtract scaled index
+                        self.mir.push(Aarch64Inst::SubRR {
+                            dst: Operand::Virtual(addr_vreg),
+                            src1: Operand::Virtual(addr_vreg),
+                            src2: Operand::Virtual(scaled_index),
+                        });
+
+                        // Load from computed address
+                        self.mir.push(Aarch64Inst::LdrIndexed {
+                            dst: Operand::Virtual(vreg),
+                            base: addr_vreg,
+                        });
+                    }
+                    CfgInstData::Param { index: param_index } => {
+                        // Base is a function parameter - array elements are in consecutive param slots
+                        let index_vreg = self.get_vreg(*index);
+
+                        // Emit runtime bounds check
+                        let array_length = self.array_length(*array_type_id);
+                        self.emit_bounds_check(index_vreg, array_length);
+
+                        // Array parameter elements are stored at consecutive slots starting at
+                        // num_locals + param_index
+                        let base_slot = self.num_locals + *param_index as u32;
+                        let base_offset = self.local_offset(base_slot);
+
+                        // Shift left by 3 (multiply by 8)
+                        let scaled_index = self.mir.alloc_vreg();
+                        self.mir.push(Aarch64Inst::LslImm {
+                            dst: Operand::Virtual(scaled_index),
+                            src: Operand::Virtual(index_vreg),
+                            imm: 3,
+                        });
+
+                        // Compute base address
                         let addr_vreg = self.mir.alloc_vreg();
                         self.mir.push(Aarch64Inst::SubImm {
                             dst: Operand::Virtual(addr_vreg),
