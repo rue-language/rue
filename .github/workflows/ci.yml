@@ -5,6 +5,8 @@ on:
     branches: [trunk]
   pull_request:
     branches: [trunk]
+  merge_group:
+    branches: [trunk]
 
 jobs:
   fmt:
