@@ -31,6 +31,7 @@
   - [Call Expressions](04-expressions/10-call-expressions.md)
   - [Index Expressions](04-expressions/11-index-expressions.md)
   - [Field Access Expressions](04-expressions/12-field-access.md)
+  - [Intrinsic Expressions](04-expressions/13-intrinsics.md)
 
 - [Statements](05-statements/README.md)
   - [Let Statements](05-statements/01-let-statements.md)

@@ -1,0 +1,164 @@
+[section]
+id = "expressions.intrinsics"
+spec_chapter = "4.13"
+name = "Intrinsic Expressions"
+description = "Compiler-provided intrinsic operations."
+
+# =============================================================================
+# Basic Intrinsic Syntax
+# =============================================================================
+
+[[case]]
+name = "intrinsic_syntax"
+spec = ["4.13:1", "4.13:2", "4.13:3"]
+source = """
+fn main() -> i32 {
+    @dbg(42);
+    0
+}
+"""
+exit_code = 0
+
+[[case]]
+name = "unknown_intrinsic"
+spec = ["4.13:5"]
+source = """
+fn main() -> i32 {
+    @unknown(42);
+    0
+}
+"""
+compile_fail = true
+error_contains = "unknown intrinsic"
+
+# =============================================================================
+# @dbg Intrinsic
+# =============================================================================
+
+[[case]]
+name = "dbg_signed_integer"
+spec = ["4.13:6", "4.13:7"]
+source = """
+fn main() -> i32 {
+    @dbg(42);
+    @dbg(-17);
+    0
+}
+"""
+exit_code = 0
+
+[[case]]
+name = "dbg_unsigned_integer"
+spec = ["4.13:6", "4.13:7"]
+source = """
+fn main() -> i32 {
+    let x: u32 = 100;
+    @dbg(x);
+    0
+}
+"""
+exit_code = 0
+
+[[case]]
+name = "dbg_boolean"
+spec = ["4.13:6", "4.13:7"]
+source = """
+fn main() -> i32 {
+    @dbg(true);
+    @dbg(false);
+    0
+}
+"""
+exit_code = 0
+
+[[case]]
+name = "dbg_expression"
+spec = ["4.13:6", "4.13:7"]
+source = """
+fn main() -> i32 {
+    @dbg(10 + 5);
+    @dbg(3 > 2);
+    0
+}
+"""
+exit_code = 0
+
+[[case]]
+name = "dbg_prints_with_newline"
+spec = ["4.13:8"]
+source = """
+fn main() -> i32 {
+    @dbg(42);
+    0
+}
+"""
+exit_code = 0
+
+[[case]]
+name = "dbg_returns_unit"
+spec = ["4.13:9"]
+source = """
+fn takes_unit(x: ()) -> i32 { 0 }
+fn main() -> i32 {
+    takes_unit(@dbg(42))
+}
+"""
+exit_code = 0
+
+[[case]]
+name = "dbg_wrong_arg_count_zero"
+spec = ["4.13:4", "4.13:7"]
+source = """
+fn main() -> i32 {
+    @dbg();
+    0
+}
+"""
+compile_fail = true
+
+[[case]]
+name = "dbg_wrong_arg_count_two"
+spec = ["4.13:4", "4.13:7"]
+source = """
+fn main() -> i32 {
+    @dbg(1, 2);
+    0
+}
+"""
+compile_fail = true
+
+[[case]]
+name = "dbg_invalid_type_unit"
+spec = ["4.13:7"]
+source = """
+fn main() -> i32 {
+    @dbg(());
+    0
+}
+"""
+compile_fail = true
+
+[[case]]
+name = "dbg_invalid_type_array"
+spec = ["4.13:7"]
+source = """
+fn main() -> i32 {
+    let arr: [i32; 3] = [1, 2, 3];
+    @dbg(arr);
+    0
+}
+"""
+compile_fail = true
+
+[[case]]
+name = "dbg_invalid_type_struct"
+spec = ["4.13:7"]
+source = """
+struct Point { x: i32, y: i32 }
+fn main() -> i32 {
+    let p = Point { x: 1, y: 2 };
+    @dbg(p);
+    0
+}
+"""
+compile_fail = true

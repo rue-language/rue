@@ -42,6 +42,7 @@ additive       = multiplicative { ( "+" | "-" ) multiplicative } ;
 multiplicative = unary { ( "*" | "/" | "%" ) unary } ;
 unary          = "-" unary | "!" unary | postfix ;
 postfix        = primary { "[" expression "]" | "(" [ args ] ")" | "." IDENT } ;
+intrinsic      = "@" IDENT "(" [ args ] ")" ;
 args           = expression { "," expression } ;
 primary        = INTEGER | BOOL | IDENT
                | "(" expression ")"
@@ -52,7 +53,8 @@ primary        = INTEGER | BOOL | IDENT
                | "break" | "continue"
                | return_expr
                | array_literal
-               | struct_literal ;
+               | struct_literal
+               | intrinsic ;
 
 (* Compound expressions *)
 block_expr     = "{" block "}" ;
