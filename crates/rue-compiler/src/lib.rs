@@ -367,6 +367,14 @@ fn link_system(
 
 /// Compile for AArch64 target.
 fn compile_aarch64(state: &CompileState, options: &CompileOptions) -> CompileResult<CompileOutput> {
+    // AArch64 Linux is not yet supported - only macOS works for now.
+    // The internal ELF linker needs testing with AArch64 relocations before enabling.
+    if options.target == Target::Aarch64Linux {
+        return Err(CompileError::without_span(ErrorKind::UnsupportedTarget(
+            "aarch64-linux is not yet supported; use aarch64-macos or x86-64-linux".into(),
+        )));
+    }
+
     // Generate machine code for all functions using the aarch64 backend
     let mut object_files: Vec<Vec<u8>> = Vec::new();
 

@@ -108,6 +108,9 @@ pub enum ErrorKind {
 
     // Linker errors
     LinkError(String),
+
+    // Target errors
+    UnsupportedTarget(String),
 }
 
 impl CompileError {
@@ -309,6 +312,7 @@ impl fmt::Display for ErrorKind {
                 write!(f, "type annotation required for empty array")
             }
             ErrorKind::LinkError(msg) => write!(f, "link error: {}", msg),
+            ErrorKind::UnsupportedTarget(msg) => write!(f, "unsupported target: {}", msg),
         }
     }
 }
