@@ -65,6 +65,11 @@ pub enum ErrorKind {
         struct_name: String,
         field_name: String,
     },
+    FieldWrongOrder {
+        struct_name: String,
+        expected_field: String,
+        found_field: String,
+    },
     FieldAccessOnNonStruct {
         found: String,
     },
@@ -237,6 +242,17 @@ impl fmt::Display for ErrorKind {
                     f,
                     "duplicate field '{}' in struct '{}'",
                     field_name, struct_name
+                )
+            }
+            ErrorKind::FieldWrongOrder {
+                struct_name,
+                expected_field,
+                found_field,
+            } => {
+                write!(
+                    f,
+                    "struct '{}' fields must be initialized in declaration order: expected '{}', found '{}'",
+                    struct_name, expected_field, found_field
                 )
             }
             ErrorKind::FieldAccessOnNonStruct { found } => {

@@ -334,8 +334,8 @@ exit_code = 10
 # =============================================================================
 
 [[case]]
-name = "struct_field_order_independence"
-description = "Field order in literal doesn't matter (matches definition order)"
+name = "struct_field_wrong_order"
+description = "Fields must be initialized in declaration order"
 source = """
 struct Point {
     x: i32,
@@ -347,7 +347,8 @@ fn main() -> i32 {
     p.x + p.y
 }
 """
-exit_code = 42
+compile_fail = true
+error_contains = "order"
 
 [[case]]
 name = "struct_same_field_names_different_structs"

@@ -1351,6 +1351,22 @@ impl<'a> Sema<'a> {
                     ));
                 }
 
+                // Check that fields are in declaration order
+                for (i, (init_field_name, _)) in field_inits.iter().enumerate() {
+                    let init_name = self.interner.get(*init_field_name);
+                    let expected_name = &struct_def.fields[i].name;
+                    if init_name != expected_name {
+                        return Err(CompileError::new(
+                            ErrorKind::FieldWrongOrder {
+                                struct_name: struct_def.name.clone(),
+                                expected_field: expected_name.clone(),
+                                found_field: init_name.to_string(),
+                            },
+                            inst.span,
+                        ));
+                    }
+                }
+
                 // Analyze field values in declaration order
                 // First, build a map from field name to its value
                 let mut field_map: HashMap<String, InstRef> = HashMap::new();
