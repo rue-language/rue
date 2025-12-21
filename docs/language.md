@@ -313,6 +313,8 @@ Rue supports the following primitive types:
 
 Integer literals without a type annotation default to `i32`.
 
+**Reserved type names**: All type names (`i8`, `i16`, `i32`, `i64`, `u8`, `u16`, `u32`, `u64`, `bool`) are reserved keywords and cannot be used as identifiers (variable names, function names, or parameter names).
+
 Type annotations are optional when the type can be inferred:
 
 ```rue
@@ -788,7 +790,8 @@ block          = { statement } expression ;
 statement      = let_stmt | assign_stmt ;
 let_stmt       = "let" [ "mut" ] IDENT [ ":" type ] "=" expression ";" ;
 assign_stmt    = IDENT "=" expression ";" | IDENT "[" expression "]" "=" expression ";" ;
-type           = "i32" | "bool" | "[" type ";" INTEGER "]" ;
+type           = primitive_type | "[" type ";" INTEGER "]" | "()" | "!" ;
+primitive_type = "i8" | "i16" | "i32" | "i64" | "u8" | "u16" | "u32" | "u64" | "bool" ;
 expression     = or_expr ;
 or_expr        = and_expr { "||" and_expr } ;
 and_expr       = comparison { "&&" comparison } ;

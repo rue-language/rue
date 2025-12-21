@@ -51,6 +51,26 @@ pub enum LogosTokenKind {
     #[token("struct")]
     Struct,
 
+    // Type keywords
+    #[token("i8")]
+    I8,
+    #[token("i16")]
+    I16,
+    #[token("i32")]
+    I32,
+    #[token("i64")]
+    I64,
+    #[token("u8")]
+    U8,
+    #[token("u16")]
+    U16,
+    #[token("u32")]
+    U32,
+    #[token("u64")]
+    U64,
+    #[token("bool")]
+    Bool,
+
     // Patterns
     #[token("_")]
     Underscore,
@@ -145,6 +165,15 @@ impl From<LogosTokenKind> for TokenKind {
             LogosTokenKind::True => TokenKind::True,
             LogosTokenKind::False => TokenKind::False,
             LogosTokenKind::Struct => TokenKind::Struct,
+            LogosTokenKind::I8 => TokenKind::I8,
+            LogosTokenKind::I16 => TokenKind::I16,
+            LogosTokenKind::I32 => TokenKind::I32,
+            LogosTokenKind::I64 => TokenKind::I64,
+            LogosTokenKind::U8 => TokenKind::U8,
+            LogosTokenKind::U16 => TokenKind::U16,
+            LogosTokenKind::U32 => TokenKind::U32,
+            LogosTokenKind::U64 => TokenKind::U64,
+            LogosTokenKind::Bool => TokenKind::Bool,
             LogosTokenKind::Underscore => TokenKind::Underscore,
             LogosTokenKind::Int(n) => TokenKind::Int(n),
             LogosTokenKind::Ident(s) => TokenKind::Ident(s),
@@ -240,7 +269,7 @@ mod tests {
         assert!(matches!(tokens[2].kind, TokenKind::LParen));
         assert!(matches!(tokens[3].kind, TokenKind::RParen));
         assert!(matches!(tokens[4].kind, TokenKind::Arrow));
-        assert!(matches!(tokens[5].kind, TokenKind::Ident(ref s) if s == "i32"));
+        assert!(matches!(tokens[5].kind, TokenKind::I32));
         assert!(matches!(tokens[6].kind, TokenKind::LBrace));
         assert!(matches!(tokens[7].kind, TokenKind::Int(42)));
         assert!(matches!(tokens[8].kind, TokenKind::RBrace));
@@ -385,5 +414,31 @@ mod tests {
         assert!(matches!(tokens[3].kind, TokenKind::Ident(ref s) if s == "iff"));
         assert!(matches!(tokens[4].kind, TokenKind::Ident(ref s) if s == "elseif"));
         assert!(matches!(tokens[5].kind, TokenKind::Ident(ref s) if s == "whileloop"));
+    }
+
+    #[test]
+    fn test_logos_type_keywords() {
+        // Type names should be recognized as keywords, not identifiers
+        let mut lexer = LogosLexer::new("i8 i16 i32 i64 u8 u16 u32 u64 bool");
+        let tokens = lexer.tokenize().unwrap();
+
+        assert!(matches!(tokens[0].kind, TokenKind::I8));
+        assert!(matches!(tokens[1].kind, TokenKind::I16));
+        assert!(matches!(tokens[2].kind, TokenKind::I32));
+        assert!(matches!(tokens[3].kind, TokenKind::I64));
+        assert!(matches!(tokens[4].kind, TokenKind::U8));
+        assert!(matches!(tokens[5].kind, TokenKind::U16));
+        assert!(matches!(tokens[6].kind, TokenKind::U32));
+        assert!(matches!(tokens[7].kind, TokenKind::U64));
+        assert!(matches!(tokens[8].kind, TokenKind::Bool));
+
+        // Identifiers that start with type names should be identifiers
+        let mut lexer = LogosLexer::new("i32x i64ptr boolish u8_data");
+        let tokens = lexer.tokenize().unwrap();
+
+        assert!(matches!(tokens[0].kind, TokenKind::Ident(ref s) if s == "i32x"));
+        assert!(matches!(tokens[1].kind, TokenKind::Ident(ref s) if s == "i64ptr"));
+        assert!(matches!(tokens[2].kind, TokenKind::Ident(ref s) if s == "boolish"));
+        assert!(matches!(tokens[3].kind, TokenKind::Ident(ref s) if s == "u8_data"));
     }
 }

@@ -241,6 +241,112 @@ fn main() -> i32 {
 """
 compile_fail = true
 
+# =============================================================================
+# Type Keyword Errors
+# =============================================================================
+
+[[case]]
+name = "i8_type_as_variable_name"
+source = """
+fn main() -> i32 {
+    let i8 = 42;
+    0
+}
+"""
+compile_fail = true
+error_contains = "found type 'i8'"
+
+[[case]]
+name = "i16_type_as_variable_name"
+source = """
+fn main() -> i32 {
+    let i16 = 42;
+    0
+}
+"""
+compile_fail = true
+error_contains = "found type 'i16'"
+
+[[case]]
+name = "i32_type_as_variable_name"
+source = """
+fn main() -> i32 {
+    let i32 = 42;
+    0
+}
+"""
+compile_fail = true
+error_contains = "found type 'i32'"
+
+[[case]]
+name = "i64_type_as_variable_name"
+source = """
+fn main() -> i32 {
+    let i64 = 42;
+    0
+}
+"""
+compile_fail = true
+error_contains = "found type 'i64'"
+
+[[case]]
+name = "bool_type_as_variable_name"
+source = """
+fn main() -> i32 {
+    let bool = 42;
+    0
+}
+"""
+compile_fail = true
+error_contains = "found type 'bool'"
+
+[[case]]
+name = "u8_type_as_variable_name"
+source = """
+fn main() -> i32 {
+    let u8 = 42;
+    0
+}
+"""
+compile_fail = true
+error_contains = "found type 'u8'"
+
+[[case]]
+name = "i32_type_as_function_name"
+source = """
+fn i32() -> i32 { 0 }
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = "found type 'i32'"
+
+[[case]]
+name = "bool_type_as_parameter_name"
+source = """
+fn foo(bool: i32) -> i32 { 0 }
+fn main() -> i32 { foo(42) }
+"""
+compile_fail = true
+error_contains = "found type 'bool'"
+
+[[case]]
+name = "i32_type_as_struct_name"
+source = """
+struct i32 { x: i64 }
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = "found type 'i32'"
+
+[[case]]
+name = "bool_type_as_struct_field_name"
+source = """
+struct Foo { bool: i32 }
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = "found type 'bool'"
+
 [[case]]
 name = "let_wrong_type_annotation"
 source = """
