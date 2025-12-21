@@ -407,20 +407,46 @@ fn print_assembly(mir: &rue_compiler::X86Mir) {
 fn print_error(error: &CompileError, source: &str, source_path: &str) {
     let message = error.to_string();
     let renderer = Renderer::plain();
+    let diagnostic = error.diagnostic();
 
-    // For errors without a span, just print the message
+    // For errors without a span, just print the message with any footers
     let Some(span) = error.span() else {
-        let report = Level::Error.title(&message);
+        let mut report = Level::Error.title(&message);
+        // Add notes and helps as footers
+        for note in &diagnostic.notes {
+            report = report.footer(Level::Note.title(note.0.as_str()));
+        }
+        for help in &diagnostic.helps {
+            report = report.footer(Level::Help.title(help.0.as_str()));
+        }
         eprintln!("{}", renderer.render(report));
         return;
     };
 
-    let report = Level::Error.title(&message).snippet(
-        Snippet::source(source)
-            .origin(source_path)
-            .fold(true)
-            .annotation(Level::Error.span(span.start as usize..span.end as usize)),
-    );
+    // Build snippet with primary annotation
+    let mut snippet = Snippet::source(source)
+        .origin(source_path)
+        .fold(true)
+        .annotation(Level::Error.span(span.start as usize..span.end as usize));
+
+    // Add secondary labels as Info annotations
+    for label in &diagnostic.labels {
+        snippet = snippet.annotation(
+            Level::Info
+                .span(label.span.start as usize..label.span.end as usize)
+                .label(&label.message),
+        );
+    }
+
+    let mut report = Level::Error.title(&message).snippet(snippet);
+
+    // Add notes and helps as footers
+    for note in &diagnostic.notes {
+        report = report.footer(Level::Note.title(note.0.as_str()));
+    }
+    for help in &diagnostic.helps {
+        report = report.footer(Level::Help.title(help.0.as_str()));
+    }
 
     eprintln!("{}", renderer.render(report));
 }
@@ -428,20 +454,46 @@ fn print_error(error: &CompileError, source: &str, source_path: &str) {
 fn print_warning(warning: &CompileWarning, source: &str, source_path: &str) {
     let message = warning.to_string();
     let renderer = Renderer::plain();
+    let diagnostic = warning.diagnostic();
 
-    // For warnings without a span, just print the message
+    // For warnings without a span, just print the message with any footers
     let Some(span) = warning.span() else {
-        let report = Level::Warning.title(&message);
+        let mut report = Level::Warning.title(&message);
+        // Add notes and helps as footers
+        for note in &diagnostic.notes {
+            report = report.footer(Level::Note.title(note.0.as_str()));
+        }
+        for help in &diagnostic.helps {
+            report = report.footer(Level::Help.title(help.0.as_str()));
+        }
         eprintln!("{}", renderer.render(report));
         return;
     };
 
-    let report = Level::Warning.title(&message).snippet(
-        Snippet::source(source)
-            .origin(source_path)
-            .fold(true)
-            .annotation(Level::Warning.span(span.start as usize..span.end as usize)),
-    );
+    // Build snippet with primary annotation
+    let mut snippet = Snippet::source(source)
+        .origin(source_path)
+        .fold(true)
+        .annotation(Level::Warning.span(span.start as usize..span.end as usize));
+
+    // Add secondary labels as Info annotations
+    for label in &diagnostic.labels {
+        snippet = snippet.annotation(
+            Level::Info
+                .span(label.span.start as usize..label.span.end as usize)
+                .label(&label.message),
+        );
+    }
+
+    let mut report = Level::Warning.title(&message).snippet(snippet);
+
+    // Add notes and helps as footers
+    for note in &diagnostic.notes {
+        report = report.footer(Level::Note.title(note.0.as_str()));
+    }
+    for help in &diagnostic.helps {
+        report = report.footer(Level::Help.title(help.0.as_str()));
+    }
 
     eprintln!("{}", renderer.render(report));
 }

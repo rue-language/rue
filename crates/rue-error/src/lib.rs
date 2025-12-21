@@ -2,18 +2,137 @@
 //!
 //! This crate provides the error infrastructure used throughout the compilation
 //! pipeline. Errors carry source location information for diagnostic rendering.
+//!
+//! # Diagnostic System
+//!
+//! Errors and warnings can include rich diagnostic information:
+//! - **Labels**: Secondary spans pointing to related code locations
+//! - **Notes**: Informational context about the error/warning
+//! - **Helps**: Actionable suggestions for fixing the issue
+//!
+//! Example:
+//! ```ignore
+//! CompileError::new(ErrorKind::TypeMismatch { ... }, span)
+//!     .with_label("expected because of this", other_span)
+//!     .with_help("consider using a type conversion")
+//! ```
 
 use rue_span::Span;
 use std::fmt;
+
+// ============================================================================
+// Diagnostic Types
+// ============================================================================
+
+/// A secondary label pointing to related code.
+///
+/// Labels appear as additional annotations in the source snippet,
+/// helping users understand the relationship between different parts of code.
+#[derive(Debug, Clone)]
+pub struct Label {
+    /// The message explaining this location's relevance.
+    pub message: String,
+    /// The source location to highlight.
+    pub span: Span,
+}
+
+impl Label {
+    /// Create a new label with a message and span.
+    pub fn new(message: impl Into<String>, span: Span) -> Self {
+        Self {
+            message: message.into(),
+            span,
+        }
+    }
+}
+
+/// An informational note providing context.
+///
+/// Notes appear as footer messages and explain why something happened
+/// or provide additional context about the diagnostic.
+#[derive(Debug, Clone)]
+pub struct Note(pub String);
+
+impl Note {
+    /// Create a new note.
+    pub fn new(message: impl Into<String>) -> Self {
+        Self(message.into())
+    }
+}
+
+impl std::fmt::Display for Note {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+/// An actionable help suggestion.
+///
+/// Helps appear as footer messages and suggest specific actions
+/// the user can take to resolve the issue.
+#[derive(Debug, Clone)]
+pub struct Help(pub String);
+
+impl Help {
+    /// Create a new help suggestion.
+    pub fn new(message: impl Into<String>) -> Self {
+        Self(message.into())
+    }
+}
+
+impl std::fmt::Display for Help {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+/// Rich diagnostic information for errors and warnings.
+///
+/// This struct collects all supplementary information that can be
+/// attached to a diagnostic message.
+#[derive(Debug, Clone, Default)]
+pub struct Diagnostic {
+    /// Secondary labels pointing to related code locations.
+    pub labels: Vec<Label>,
+    /// Informational notes providing context.
+    pub notes: Vec<Note>,
+    /// Actionable help suggestions.
+    pub helps: Vec<Help>,
+}
+
+impl Diagnostic {
+    /// Create an empty diagnostic.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Check if this diagnostic has any content.
+    pub fn is_empty(&self) -> bool {
+        self.labels.is_empty() && self.notes.is_empty() && self.helps.is_empty()
+    }
+}
+
+// ============================================================================
+// Compile Errors
+// ============================================================================
 
 /// A compilation error with optional source location information.
 ///
 /// Some errors (like `NoMainFunction` or `LinkError`) don't have a meaningful
 /// source location. Use `has_span()` to check before rendering location info.
+///
+/// Errors can include rich diagnostic information using the builder methods:
+/// ```ignore
+/// CompileError::new(ErrorKind::TypeMismatch { ... }, span)
+///     .with_label("expected because of this", other_span)
+///     .with_note("types must match exactly")
+///     .with_help("consider adding a type conversion")
+/// ```
 #[derive(Debug, Clone)]
 pub struct CompileError {
     pub kind: ErrorKind,
     span: Option<Span>,
+    diagnostic: Diagnostic,
 }
 
 /// The kind of compilation error.
@@ -125,6 +244,7 @@ impl CompileError {
         Self {
             kind,
             span: Some(span),
+            diagnostic: Diagnostic::new(),
         }
     }
 
@@ -134,7 +254,11 @@ impl CompileError {
     /// such as "no main function found" or linker errors.
     #[inline]
     pub fn without_span(kind: ErrorKind) -> Self {
-        Self { kind, span: None }
+        Self {
+            kind,
+            span: None,
+            diagnostic: Diagnostic::new(),
+        }
     }
 
     /// Create an error at a specific position (zero-length span).
@@ -143,6 +267,7 @@ impl CompileError {
         Self {
             kind,
             span: Some(Span::point(pos)),
+            diagnostic: Diagnostic::new(),
         }
     }
 
@@ -156,6 +281,39 @@ impl CompileError {
     #[inline]
     pub fn span(&self) -> Option<Span> {
         self.span
+    }
+
+    /// Get the diagnostic information.
+    #[inline]
+    pub fn diagnostic(&self) -> &Diagnostic {
+        &self.diagnostic
+    }
+
+    /// Add a secondary label pointing to related code.
+    ///
+    /// Labels appear as additional annotations in the source snippet.
+    #[inline]
+    pub fn with_label(mut self, message: impl Into<String>, span: Span) -> Self {
+        self.diagnostic.labels.push(Label::new(message, span));
+        self
+    }
+
+    /// Add an informational note.
+    ///
+    /// Notes appear as footer messages providing context.
+    #[inline]
+    pub fn with_note(mut self, message: impl Into<String>) -> Self {
+        self.diagnostic.notes.push(Note::new(message));
+        self
+    }
+
+    /// Add a help suggestion.
+    ///
+    /// Helps appear as footer messages with actionable advice.
+    #[inline]
+    pub fn with_help(mut self, message: impl Into<String>) -> Self {
+        self.diagnostic.helps.push(Help::new(message));
+        self
     }
 }
 
@@ -350,10 +508,17 @@ pub enum WarningKind {
 /// A compilation warning with optional source location information.
 ///
 /// Warnings don't stop compilation but indicate potential issues in the code.
+///
+/// Warnings can include rich diagnostic information using the builder methods:
+/// ```ignore
+/// CompileWarning::new(WarningKind::UnusedVariable("x".into()), span)
+///     .with_help("if this is intentional, prefix it with an underscore: `_x`")
+/// ```
 #[derive(Debug, Clone)]
 pub struct CompileWarning {
     pub kind: WarningKind,
     span: Option<Span>,
+    diagnostic: Diagnostic,
 }
 
 impl CompileWarning {
@@ -363,13 +528,18 @@ impl CompileWarning {
         Self {
             kind,
             span: Some(span),
+            diagnostic: Diagnostic::new(),
         }
     }
 
     /// Create a warning without a source location.
     #[inline]
     pub fn without_span(kind: WarningKind) -> Self {
-        Self { kind, span: None }
+        Self {
+            kind,
+            span: None,
+            diagnostic: Diagnostic::new(),
+        }
     }
 
     /// Returns true if this warning has source location information.
@@ -382,6 +552,39 @@ impl CompileWarning {
     #[inline]
     pub fn span(&self) -> Option<Span> {
         self.span
+    }
+
+    /// Get the diagnostic information.
+    #[inline]
+    pub fn diagnostic(&self) -> &Diagnostic {
+        &self.diagnostic
+    }
+
+    /// Add a secondary label pointing to related code.
+    ///
+    /// Labels appear as additional annotations in the source snippet.
+    #[inline]
+    pub fn with_label(mut self, message: impl Into<String>, span: Span) -> Self {
+        self.diagnostic.labels.push(Label::new(message, span));
+        self
+    }
+
+    /// Add an informational note.
+    ///
+    /// Notes appear as footer messages providing context.
+    #[inline]
+    pub fn with_note(mut self, message: impl Into<String>) -> Self {
+        self.diagnostic.notes.push(Note::new(message));
+        self
+    }
+
+    /// Add a help suggestion.
+    ///
+    /// Helps appear as footer messages with actionable advice.
+    #[inline]
+    pub fn with_help(mut self, message: impl Into<String>) -> Self {
+        self.diagnostic.helps.push(Help::new(message));
+        self
     }
 }
 
@@ -522,5 +725,178 @@ mod tests {
     fn test_error_implements_std_error() {
         fn assert_error<T: std::error::Error>() {}
         assert_error::<CompileError>();
+    }
+
+    // ========================================================================
+    // Diagnostic tests
+    // ========================================================================
+
+    #[test]
+    fn test_diagnostic_empty_by_default() {
+        let diag = Diagnostic::new();
+        assert!(diag.is_empty());
+        assert!(diag.labels.is_empty());
+        assert!(diag.notes.is_empty());
+        assert!(diag.helps.is_empty());
+    }
+
+    #[test]
+    fn test_diagnostic_not_empty_with_label() {
+        let mut diag = Diagnostic::new();
+        diag.labels.push(Label::new("test", Span::new(0, 10)));
+        assert!(!diag.is_empty());
+    }
+
+    #[test]
+    fn test_diagnostic_not_empty_with_note() {
+        let mut diag = Diagnostic::new();
+        diag.notes.push(Note::new("test note"));
+        assert!(!diag.is_empty());
+    }
+
+    #[test]
+    fn test_diagnostic_not_empty_with_help() {
+        let mut diag = Diagnostic::new();
+        diag.helps.push(Help::new("test help"));
+        assert!(!diag.is_empty());
+    }
+
+    #[test]
+    fn test_label_creation() {
+        let span = Span::new(10, 20);
+        let label = Label::new("expected type here", span);
+        assert_eq!(label.message, "expected type here");
+        assert_eq!(label.span, span);
+    }
+
+    #[test]
+    fn test_note_display() {
+        let note = Note::new("types must match exactly");
+        assert_eq!(note.to_string(), "types must match exactly");
+    }
+
+    #[test]
+    fn test_help_display() {
+        let help = Help::new("consider adding a type annotation");
+        assert_eq!(help.to_string(), "consider adding a type annotation");
+    }
+
+    #[test]
+    fn test_error_with_label() {
+        let span = Span::new(10, 20);
+        let label_span = Span::new(0, 5);
+        let error = CompileError::new(
+            ErrorKind::TypeMismatch {
+                expected: "i32".to_string(),
+                found: "bool".to_string(),
+            },
+            span,
+        )
+        .with_label("expected because of this", label_span);
+
+        let diag = error.diagnostic();
+        assert_eq!(diag.labels.len(), 1);
+        assert_eq!(diag.labels[0].message, "expected because of this");
+        assert_eq!(diag.labels[0].span, label_span);
+    }
+
+    #[test]
+    fn test_error_with_note() {
+        let span = Span::new(10, 20);
+        let error = CompileError::new(
+            ErrorKind::TypeMismatch {
+                expected: "i32".to_string(),
+                found: "bool".to_string(),
+            },
+            span,
+        )
+        .with_note("if and else branches must have compatible types");
+
+        let diag = error.diagnostic();
+        assert_eq!(diag.notes.len(), 1);
+        assert_eq!(
+            diag.notes[0].to_string(),
+            "if and else branches must have compatible types"
+        );
+    }
+
+    #[test]
+    fn test_error_with_help() {
+        let span = Span::new(10, 20);
+        let error = CompileError::new(ErrorKind::AssignToImmutable("x".to_string()), span)
+            .with_help("consider making `x` mutable: `let mut x`");
+
+        let diag = error.diagnostic();
+        assert_eq!(diag.helps.len(), 1);
+        assert_eq!(
+            diag.helps[0].to_string(),
+            "consider making `x` mutable: `let mut x`"
+        );
+    }
+
+    #[test]
+    fn test_error_with_multiple_diagnostics() {
+        let span = Span::new(10, 20);
+        let label_span = Span::new(0, 5);
+        let error = CompileError::new(
+            ErrorKind::TypeMismatch {
+                expected: "i32".to_string(),
+                found: "bool".to_string(),
+            },
+            span,
+        )
+        .with_label("then branch is here", label_span)
+        .with_note("if and else branches must have compatible types")
+        .with_help("consider using a type conversion");
+
+        let diag = error.diagnostic();
+        assert_eq!(diag.labels.len(), 1);
+        assert_eq!(diag.notes.len(), 1);
+        assert_eq!(diag.helps.len(), 1);
+    }
+
+    #[test]
+    fn test_error_diagnostic_empty_by_default() {
+        let span = Span::new(10, 20);
+        let error = CompileError::new(ErrorKind::InvalidInteger, span);
+        assert!(error.diagnostic().is_empty());
+    }
+
+    #[test]
+    fn test_warning_with_help() {
+        let span = Span::new(10, 20);
+        let warning = CompileWarning::new(WarningKind::UnusedVariable("foo".to_string()), span)
+            .with_help("if this is intentional, prefix it with an underscore: `_foo`");
+
+        let diag = warning.diagnostic();
+        assert_eq!(diag.helps.len(), 1);
+        assert_eq!(
+            diag.helps[0].to_string(),
+            "if this is intentional, prefix it with an underscore: `_foo`"
+        );
+    }
+
+    #[test]
+    fn test_warning_with_label_and_note() {
+        let span = Span::new(20, 25);
+        let diverging_span = Span::new(10, 18);
+        let warning = CompileWarning::new(WarningKind::UnreachableCode, span)
+            .with_label(
+                "any code following this expression is unreachable",
+                diverging_span,
+            )
+            .with_note("this warning occurs because the preceding expression diverges");
+
+        let diag = warning.diagnostic();
+        assert_eq!(diag.labels.len(), 1);
+        assert_eq!(diag.labels[0].span, diverging_span);
+        assert_eq!(diag.notes.len(), 1);
+    }
+
+    #[test]
+    fn test_warning_diagnostic_empty_by_default() {
+        let span = Span::new(10, 20);
+        let warning = CompileWarning::new(WarningKind::UnreachableCode, span);
+        assert!(warning.diagnostic().is_empty());
     }
 }

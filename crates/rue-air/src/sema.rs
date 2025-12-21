@@ -273,11 +273,14 @@ impl<'a> Sema<'a> {
                 continue;
             }
 
-            // Emit warning
-            self.warnings.push(CompileWarning::new(
-                WarningKind::UnusedVariable(name.to_string()),
-                local.span,
-            ));
+            // Emit warning with help suggestion
+            self.warnings.push(
+                CompileWarning::new(WarningKind::UnusedVariable(name.to_string()), local.span)
+                    .with_help(format!(
+                        "if this is intentional, prefix it with an underscore: `_{}`",
+                        name
+                    )),
+            );
         }
     }
 
@@ -703,19 +706,17 @@ impl<'a> Sema<'a> {
                     ctx.push_scope();
                     let then_result = self.analyze_inst(air, *then_block, expectation, ctx)?;
                     let then_type = then_result.ty;
+                    let then_span = self.rir.get(*then_block).span;
                     ctx.pop_scope();
 
                     // Analyze else branch with its own scope
-                    // If then branch is Never, use original expectation for else (so it determines the result)
-                    // Otherwise use then_type as the expectation
+                    // Use Synthesize to get the actual else type, then compare ourselves
+                    // This allows us to provide better error messages with secondary labels
                     ctx.push_scope();
-                    let else_expectation = if then_type.is_never() {
-                        expectation
-                    } else {
-                        TypeExpectation::Check(then_type)
-                    };
-                    let else_result = self.analyze_inst(air, *else_b, else_expectation, ctx)?;
+                    let else_result =
+                        self.analyze_inst(air, *else_b, TypeExpectation::Synthesize, ctx)?;
                     let else_type = else_result.ty;
+                    let else_span = self.rir.get(*else_b).span;
                     ctx.pop_scope();
 
                     // Compute the unified result type using never type coercion:
@@ -737,8 +738,13 @@ impl<'a> Sema<'a> {
                                         expected: then_type.name().to_string(),
                                         found: else_type.name().to_string(),
                                     },
-                                    self.rir.get(*else_b).span,
-                                ));
+                                    else_span,
+                                )
+                                .with_label(
+                                    format!("this is of type `{}`", then_type.name()),
+                                    then_span,
+                                )
+                                .with_note("if and else branches must have compatible types"));
                             }
                             then_type
                         }
@@ -771,6 +777,10 @@ impl<'a> Sema<'a> {
                                 found: then_type.name().to_string(),
                             },
                             self.rir.get(*then_block).span,
+                        )
+                        .with_help(
+                            "if expressions without else must have unit type; \
+                             consider adding an else branch or making the body return ()",
                         ));
                     }
 
@@ -1086,7 +1096,12 @@ impl<'a> Sema<'a> {
                     return Err(CompileError::new(
                         ErrorKind::AssignToImmutable(name_str.to_string()),
                         inst.span,
-                    ));
+                    )
+                    .with_label("variable declared as immutable here", local.span)
+                    .with_help(format!(
+                        "consider making `{}` mutable: `let mut {}`",
+                        name_str, name_str
+                    )));
                 }
 
                 let slot = local.slot;

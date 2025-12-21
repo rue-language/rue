@@ -526,6 +526,9 @@ impl<'a> CfgBuilder<'a> {
                 for (i, stmt) in statements.iter().enumerate() {
                     let result = self.lower_inst(*stmt);
                     if matches!(result.continuation, Continuation::Diverged) {
+                        // Get the span of the diverging statement for the secondary label
+                        let diverging_span = self.air.get(*stmt).span;
+
                         // Check if there are remaining statements or a value expression
                         // that will never be executed
                         let remaining = &statements[i + 1..];
@@ -533,10 +536,17 @@ impl<'a> CfgBuilder<'a> {
                             // Warn about the first unreachable statement
                             let unreachable_stmt = remaining[0];
                             let unreachable_span = self.air.get(unreachable_stmt).span;
-                            self.warnings.push(CompileWarning::new(
-                                WarningKind::UnreachableCode,
-                                unreachable_span,
-                            ));
+                            self.warnings.push(
+                                CompileWarning::new(WarningKind::UnreachableCode, unreachable_span)
+                                    .with_label(
+                                        "any code following this expression is unreachable",
+                                        diverging_span,
+                                    )
+                                    .with_note(
+                                        "this warning occurs because the preceding expression \
+                                         diverges (e.g., returns, breaks, or continues)",
+                                    ),
+                            );
                         } else {
                             // The final value expression is unreachable.
                             // However, don't warn about synthetic unit values (created by parser
@@ -545,10 +555,17 @@ impl<'a> CfgBuilder<'a> {
                             let value_span = self.air.get(*value).span;
                             let is_synthetic = value_span.start == value_span.end;
                             if !is_synthetic {
-                                self.warnings.push(CompileWarning::new(
-                                    WarningKind::UnreachableCode,
-                                    value_span,
-                                ));
+                                self.warnings.push(
+                                    CompileWarning::new(WarningKind::UnreachableCode, value_span)
+                                        .with_label(
+                                            "any code following this expression is unreachable",
+                                            diverging_span,
+                                        )
+                                        .with_note(
+                                            "this warning occurs because the preceding expression \
+                                             diverges (e.g., returns, breaks, or continues)",
+                                        ),
+                                );
                             }
                         }
                         return ExprResult {
