@@ -56,6 +56,7 @@ jobs:
         run: |
           mkdir -p website/public/spec
           cp -r docs/spec/book/* website/public/spec/
+          echo "rue-lang.dev" > website/public/CNAME
 
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
