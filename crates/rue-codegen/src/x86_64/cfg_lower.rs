@@ -10,7 +10,7 @@ use rue_cfg::{
     BasicBlock, BlockId, Cfg, CfgInstData, CfgValue, StructDef, StructId, Terminator, Type,
 };
 
-use super::mir::{Operand, Reg, VReg, X86Inst, X86Mir};
+use super::mir::{LabelId, Operand, Reg, VReg, X86Inst, X86Mir};
 
 /// Argument passing registers per System V AMD64 ABI.
 const ARG_REGS: [Reg; 6] = [Reg::Rdi, Reg::Rsi, Reg::Rdx, Reg::Rcx, Reg::R8, Reg::R9];
@@ -29,16 +29,16 @@ pub struct CfgLower<'a> {
     value_map: HashMap<CfgValue, VReg>,
     /// Maps block parameters to vregs (block_id, param_index) -> vreg
     block_param_vregs: HashMap<(BlockId, u32), VReg>,
-    /// Label counter for generating unique labels
-    label_counter: u32,
+    /// Next label ID for generating unique labels
+    next_label: u32,
     /// Whether this function has a stack frame
     has_frame: bool,
     /// Number of local variable slots
     num_locals: u32,
     /// Number of parameter slots
     num_params: u32,
-    /// Function name
-    fn_name: String,
+    /// Function name (needed to detect main function)
+    fn_name: &'a str,
     /// Maps StructInit CFG values to their field vregs
     struct_field_vregs: HashMap<CfgValue, Vec<VReg>>,
 }
@@ -59,11 +59,11 @@ impl<'a> CfgLower<'a> {
             mir: X86Mir::new(),
             value_map: HashMap::new(),
             block_param_vregs: HashMap::new(),
-            label_counter: 0,
+            next_label: 0,
             has_frame: num_locals > 0 || num_params > 0,
             num_locals,
             num_params,
-            fn_name: cfg.fn_name().to_string(),
+            fn_name: cfg.fn_name(),
             struct_field_vregs: HashMap::new(),
         }
     }
@@ -108,10 +108,8 @@ impl<'a> CfgLower<'a> {
         });
 
         // If index < length (unsigned), jump to ok label; otherwise call bounds check
-        let ok_label = self.new_label("bounds_ok");
-        self.mir.push(X86Inst::Jb {
-            label: ok_label.clone(),
-        });
+        let ok_label = self.new_label();
+        self.mir.push(X86Inst::Jb { label: ok_label });
 
         // Call the bounds check error handler (never returns)
         self.mir.push(X86Inst::CallRel {
@@ -119,7 +117,7 @@ impl<'a> CfgLower<'a> {
         });
 
         // Continue with valid access
-        self.mir.push(X86Inst::Label { name: ok_label });
+        self.mir.push(X86Inst::Label { id: ok_label });
     }
 
     /// Emit function epilogue.
@@ -133,16 +131,21 @@ impl<'a> CfgLower<'a> {
         });
     }
 
-    /// Generate a unique label name.
-    fn new_label(&mut self, prefix: &str) -> String {
-        let label = format!(".L{}_{}_{}", self.fn_name, prefix, self.label_counter);
-        self.label_counter += 1;
+    /// Allocate a new label ID.
+    fn new_label(&mut self) -> LabelId {
+        let label = LabelId::new(self.next_label);
+        self.next_label += 1;
         label
     }
 
     /// Get the label for a block.
-    fn block_label(&self, block_id: BlockId) -> String {
-        format!(".L{}_{}", self.fn_name, block_id.as_u32())
+    ///
+    /// Block IDs are mapped to label IDs with a simple offset to avoid
+    /// collisions with other allocated labels. Block labels use IDs starting
+    /// at u32::MAX / 2 and counting down.
+    fn block_label(&self, block_id: BlockId) -> LabelId {
+        // Use high label IDs for blocks to avoid collision with new_label()
+        LabelId::new(u32::MAX / 2 + block_id.as_u32())
     }
 
     /// Get or compute field vregs for a struct value.
@@ -272,7 +275,7 @@ impl<'a> CfgLower<'a> {
         // Emit block label (except for entry block)
         if block.id != self.cfg.entry {
             self.mir.push(X86Inst::Label {
-                name: self.block_label(block.id),
+                id: self.block_label(block.id),
             });
         }
 
@@ -366,14 +369,12 @@ impl<'a> CfgLower<'a> {
                 });
 
                 // Overflow check
-                let ok_label = self.new_label("add_ok");
-                self.mir.push(X86Inst::Jno {
-                    label: ok_label.clone(),
-                });
+                let ok_label = self.new_label();
+                self.mir.push(X86Inst::Jno { label: ok_label });
                 self.mir.push(X86Inst::CallRel {
                     symbol: "__rue_overflow".to_string(),
                 });
-                self.mir.push(X86Inst::Label { name: ok_label });
+                self.mir.push(X86Inst::Label { id: ok_label });
             }
 
             CfgInstData::Sub(lhs, rhs) => {
@@ -392,14 +393,12 @@ impl<'a> CfgLower<'a> {
                     src: Operand::Virtual(rhs_vreg),
                 });
 
-                let ok_label = self.new_label("sub_ok");
-                self.mir.push(X86Inst::Jno {
-                    label: ok_label.clone(),
-                });
+                let ok_label = self.new_label();
+                self.mir.push(X86Inst::Jno { label: ok_label });
                 self.mir.push(X86Inst::CallRel {
                     symbol: "__rue_overflow".to_string(),
                 });
-                self.mir.push(X86Inst::Label { name: ok_label });
+                self.mir.push(X86Inst::Label { id: ok_label });
             }
 
             CfgInstData::Mul(lhs, rhs) => {
@@ -418,14 +417,12 @@ impl<'a> CfgLower<'a> {
                     src: Operand::Virtual(rhs_vreg),
                 });
 
-                let ok_label = self.new_label("mul_ok");
-                self.mir.push(X86Inst::Jno {
-                    label: ok_label.clone(),
-                });
+                let ok_label = self.new_label();
+                self.mir.push(X86Inst::Jno { label: ok_label });
                 self.mir.push(X86Inst::CallRel {
                     symbol: "__rue_overflow".to_string(),
                 });
-                self.mir.push(X86Inst::Label { name: ok_label });
+                self.mir.push(X86Inst::Label { id: ok_label });
             }
 
             CfgInstData::Div(lhs, rhs) => {
@@ -436,18 +433,16 @@ impl<'a> CfgLower<'a> {
                 let rhs_vreg = self.get_vreg(*rhs);
 
                 // Division by zero check
-                let ok_label = self.new_label("div_ok");
+                let ok_label = self.new_label();
                 self.mir.push(X86Inst::TestRR {
                     src1: Operand::Virtual(rhs_vreg),
                     src2: Operand::Virtual(rhs_vreg),
                 });
-                self.mir.push(X86Inst::Jnz {
-                    label: ok_label.clone(),
-                });
+                self.mir.push(X86Inst::Jnz { label: ok_label });
                 self.mir.push(X86Inst::CallRel {
                     symbol: "__rue_div_by_zero".to_string(),
                 });
-                self.mir.push(X86Inst::Label { name: ok_label });
+                self.mir.push(X86Inst::Label { id: ok_label });
 
                 self.mir.push(X86Inst::MovRR {
                     dst: Operand::Physical(Reg::Rax),
@@ -470,18 +465,16 @@ impl<'a> CfgLower<'a> {
                 let lhs_vreg = self.get_vreg(*lhs);
                 let rhs_vreg = self.get_vreg(*rhs);
 
-                let ok_label = self.new_label("mod_ok");
+                let ok_label = self.new_label();
                 self.mir.push(X86Inst::TestRR {
                     src1: Operand::Virtual(rhs_vreg),
                     src2: Operand::Virtual(rhs_vreg),
                 });
-                self.mir.push(X86Inst::Jnz {
-                    label: ok_label.clone(),
-                });
+                self.mir.push(X86Inst::Jnz { label: ok_label });
                 self.mir.push(X86Inst::CallRel {
                     symbol: "__rue_div_by_zero".to_string(),
                 });
-                self.mir.push(X86Inst::Label { name: ok_label });
+                self.mir.push(X86Inst::Label { id: ok_label });
 
                 self.mir.push(X86Inst::MovRR {
                     dst: Operand::Physical(Reg::Rax),
@@ -511,14 +504,12 @@ impl<'a> CfgLower<'a> {
                     dst: Operand::Virtual(vreg),
                 });
 
-                let ok_label = self.new_label("neg_ok");
-                self.mir.push(X86Inst::Jno {
-                    label: ok_label.clone(),
-                });
+                let ok_label = self.new_label();
+                self.mir.push(X86Inst::Jno { label: ok_label });
                 self.mir.push(X86Inst::CallRel {
                     symbol: "__rue_overflow".to_string(),
                 });
-                self.mir.push(X86Inst::Label { name: ok_label });
+                self.mir.push(X86Inst::Label { id: ok_label });
             }
 
             CfgInstData::Not(operand) => {
@@ -1262,7 +1253,7 @@ impl<'a> CfgLower<'a> {
                 let cond_vreg = self.get_vreg(*cond);
 
                 // Generate a unique label for the else path argument setup
-                let else_setup_label = self.new_label("else_setup");
+                let else_setup_label = self.new_label();
 
                 // Test condition
                 self.mir.push(X86Inst::CmpRI {
@@ -1299,7 +1290,7 @@ impl<'a> CfgLower<'a> {
 
                 // Else setup: copy else_args to else_block's params
                 self.mir.push(X86Inst::Label {
-                    name: else_setup_label,
+                    id: else_setup_label,
                 });
                 for (i, &arg) in else_args.iter().enumerate() {
                     let arg_type = self.cfg.get_inst(arg).ty;

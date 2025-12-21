@@ -19,7 +19,7 @@ mod regalloc;
 
 pub use cfg_lower::CfgLower;
 pub use emit::Emitter;
-pub use mir::{Operand, Reg, VReg, X86Inst, X86Mir};
+pub use mir::{LabelId, Operand, Reg, VReg, X86Inst, X86Mir};
 pub use regalloc::RegAlloc;
 
 use rue_air::{ArrayTypeDef, StructDef};

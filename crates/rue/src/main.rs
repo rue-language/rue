@@ -388,7 +388,7 @@ fn print_assembly(mir: &rue_compiler::X86Mir) {
     // Print instructions
     for inst in mir.instructions() {
         match inst {
-            X86Inst::Label { name } => println!("{}:", name),
+            X86Inst::Label { id } => println!("{}:", id),
             _ => println!("    {}", inst),
         }
     }
