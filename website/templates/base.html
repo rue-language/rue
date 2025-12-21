@@ -6,6 +6,7 @@
     <title>{% block title %}{{ config.title }}{% endblock %}</title>
     <meta name="description" content="{{ config.description }}">
     <link rel="stylesheet" href="{{ get_url(path='style.css') }}">
+    <link rel="alternate" type="application/rss+xml" title="Rue Blog RSS" href="{{ get_url(path='blog/rss.xml') }}">
 </head>
 <body>
     <nav class="navbar">
@@ -15,6 +16,7 @@
                 <li><a href="{{ get_url(path='/') }}">Home</a></li>
                 <li><a href="{{ get_url(path='getting-started') }}">Get Started</a></li>
                 <li><a href="{{ get_url(path='spec/') }}">Specification</a></li>
+                <li><a href="{{ get_url(path='blog') }}">Blog</a></li>
                 <li><a href="{{ config.extra.github_url }}">GitHub</a></li>
             </ul>
         </div>

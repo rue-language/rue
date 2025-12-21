@@ -246,6 +246,163 @@ a {
     }
 }
 
+// Blog
+.blog-list {
+    padding: 3rem 0;
+    flex: 1;
+
+    .blog-header {
+        margin-bottom: 3rem;
+
+        h1 {
+            font-size: 2.5rem;
+            margin-bottom: 0.5rem;
+        }
+
+        .blog-description {
+            color: $color-muted;
+            margin-bottom: 1rem;
+        }
+
+        .rss-link {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.5rem;
+            color: $color-muted;
+            font-size: 0.875rem;
+
+            &:hover {
+                color: $color-accent;
+            }
+
+            svg {
+                width: 14px;
+                height: 14px;
+            }
+        }
+    }
+
+    .posts {
+        display: flex;
+        flex-direction: column;
+        gap: 2rem;
+    }
+
+    .post-preview {
+        padding-bottom: 2rem;
+        border-bottom: 1px solid $color-border;
+
+        &:last-child {
+            border-bottom: none;
+        }
+
+        h2 {
+            font-size: 1.5rem;
+            margin-bottom: 0.25rem;
+
+            a {
+                color: $color-fg;
+
+                &:hover {
+                    color: $color-accent;
+                    text-decoration: none;
+                }
+            }
+        }
+
+        time {
+            display: block;
+            color: $color-muted;
+            font-size: 0.875rem;
+            margin-bottom: 0.75rem;
+        }
+
+        p {
+            color: $color-muted;
+        }
+    }
+
+    .pagination {
+        display: flex;
+        justify-content: space-between;
+        margin-top: 3rem;
+        padding-top: 2rem;
+        border-top: 1px solid $color-border;
+    }
+}
+
+.blog-post {
+    padding: 3rem 0;
+    flex: 1;
+
+    .post-header {
+        margin-bottom: 2rem;
+
+        h1 {
+            font-size: 2.5rem;
+            margin-bottom: 0.5rem;
+        }
+
+        time {
+            color: $color-muted;
+        }
+    }
+
+    .post-content {
+        h2 {
+            font-size: 1.5rem;
+            margin: 2rem 0 1rem;
+        }
+
+        h3 {
+            font-size: 1.25rem;
+            margin: 1.5rem 0 0.75rem;
+        }
+
+        p {
+            margin-bottom: 1rem;
+        }
+
+        ul, ol {
+            margin: 1rem 0;
+            padding-left: 2rem;
+        }
+
+        li {
+            margin-bottom: 0.5rem;
+        }
+
+        pre {
+            background: $color-surface;
+            border: 1px solid $color-border;
+            border-radius: 6px;
+            padding: 1rem;
+            margin: 1rem 0;
+            overflow-x: auto;
+
+            code {
+                font-family: $font-mono;
+                font-size: 0.875rem;
+            }
+        }
+
+        code {
+            font-family: $font-mono;
+            background: $color-surface;
+            padding: 0.2em 0.4em;
+            border-radius: 3px;
+            font-size: 0.9em;
+        }
+
+        blockquote {
+            border-left: 3px solid $color-accent;
+            padding-left: 1rem;
+            margin: 1rem 0;
+            color: $color-muted;
+        }
+    }
+}
+
 // Footer
 footer {
     padding: 2rem 0;
