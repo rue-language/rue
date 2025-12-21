@@ -275,6 +275,14 @@ impl RegAlloc {
                 });
             }
 
+            Aarch64Inst::AddsRR64 { dst, src1, src2 } => {
+                self.emit_ternop(mir, dst, src1, src2, |d, s1, s2| Aarch64Inst::AddsRR64 {
+                    dst: d,
+                    src1: s1,
+                    src2: s2,
+                });
+            }
+
             Aarch64Inst::AddImm { dst, src, imm } => {
                 self.emit_binop_imm(mir, dst, src, imm, |d, s, i| Aarch64Inst::AddImm {
                     dst: d,
@@ -293,6 +301,14 @@ impl RegAlloc {
 
             Aarch64Inst::SubsRR { dst, src1, src2 } => {
                 self.emit_ternop(mir, dst, src1, src2, |d, s1, s2| Aarch64Inst::SubsRR {
+                    dst: d,
+                    src1: s1,
+                    src2: s2,
+                });
+            }
+
+            Aarch64Inst::SubsRR64 { dst, src1, src2 } => {
+                self.emit_ternop(mir, dst, src1, src2, |d, s1, s2| Aarch64Inst::SubsRR64 {
                     dst: d,
                     src1: s1,
                     src2: s2,
@@ -320,6 +336,46 @@ impl RegAlloc {
                     dst: d,
                     src1: s1,
                     src2: s2,
+                });
+            }
+
+            Aarch64Inst::UmullRR { dst, src1, src2 } => {
+                self.emit_ternop(mir, dst, src1, src2, |d, s1, s2| Aarch64Inst::UmullRR {
+                    dst: d,
+                    src1: s1,
+                    src2: s2,
+                });
+            }
+
+            Aarch64Inst::SmulhRR { dst, src1, src2 } => {
+                self.emit_ternop(mir, dst, src1, src2, |d, s1, s2| Aarch64Inst::SmulhRR {
+                    dst: d,
+                    src1: s1,
+                    src2: s2,
+                });
+            }
+
+            Aarch64Inst::UmulhRR { dst, src1, src2 } => {
+                self.emit_ternop(mir, dst, src1, src2, |d, s1, s2| Aarch64Inst::UmulhRR {
+                    dst: d,
+                    src1: s1,
+                    src2: s2,
+                });
+            }
+
+            Aarch64Inst::Lsr64Imm { dst, src, imm } => {
+                self.emit_binop(mir, dst, src, |d, s| Aarch64Inst::Lsr64Imm {
+                    dst: d,
+                    src: s,
+                    imm,
+                });
+            }
+
+            Aarch64Inst::Asr64Imm { dst, src, imm } => {
+                self.emit_binop(mir, dst, src, |d, s| Aarch64Inst::Asr64Imm {
+                    dst: d,
+                    src: s,
+                    imm,
                 });
             }
 
@@ -381,6 +437,10 @@ impl RegAlloc {
 
             Aarch64Inst::Negs { dst, src } => {
                 self.emit_binop(mir, dst, src, |d, s| Aarch64Inst::Negs { dst: d, src: s });
+            }
+
+            Aarch64Inst::Negs32 { dst, src } => {
+                self.emit_binop(mir, dst, src, |d, s| Aarch64Inst::Negs32 { dst: d, src: s });
             }
 
             Aarch64Inst::AndRR { dst, src1, src2 } => {

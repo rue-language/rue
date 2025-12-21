@@ -767,15 +767,39 @@ fn main() -> i32 {
 
 ### Runtime Errors
 
-Division by zero, integer overflow, and array bounds violations cause runtime errors (exit code 101):
+Certain operations cause runtime panics (exit code 101):
+
+**Division by zero:**
+```rue
+fn main() -> i32 { 10 / 0 }           // runtime panic
+```
+
+**Integer overflow (all integer types):**
+
+Arithmetic overflow is detected for all signed and unsigned integer types (`i8`, `i16`, `i32`, `i64`, `u8`, `u16`, `u32`, `u64`). The following operations are checked:
+- Addition (`+`)
+- Subtraction (`-`)
+- Multiplication (`*`)
+- Negation (`-x`)
 
 ```rue
-fn main() -> i32 { 10 / 0 }           // runtime error: division by zero
-fn main() -> i32 { 2147483647 + 1 }   // runtime error: integer overflow
+// Signed overflow
+fn main() -> i32 { 2147483647 + 1 }   // i32 max + 1: panic
+fn main() -> i8 { let x: i8 = 127; x + 1 }  // i8 max + 1: panic
+fn main() -> i64 { let x: i64 = 9223372036854775807; x + 1 }  // i64 max + 1: panic
+
+// Unsigned overflow
+fn main() -> u8 { let x: u8 = 255; x + 1 }  // u8 max + 1: panic
+fn main() -> u32 { let x: u32 = 0; x - 1 }  // u32 underflow: panic
+fn main() -> u64 { let x: u64 = 18446744073709551615; x + 1 }  // u64 max + 1: panic
+```
+
+**Array bounds violations:**
+```rue
 fn main() -> i32 {
     let arr: [i32; 3] = [1, 2, 3];
     let idx = 10;
-    arr[idx]                          // runtime error: index out of bounds
+    arr[idx]                          // index out of bounds: panic
 }
 ```
 

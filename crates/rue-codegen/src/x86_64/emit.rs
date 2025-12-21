@@ -302,6 +302,9 @@ impl<'a> Emitter<'a> {
             X86Inst::AddRR { dst, src } => {
                 self.emit_add_rr(dst.as_physical(), src.as_physical());
             }
+            X86Inst::AddRR64 { dst, src } => {
+                self.emit_add_rr64(dst.as_physical(), src.as_physical());
+            }
             X86Inst::AddRI { dst, imm } => {
                 self.emit_add_ri(dst.as_physical(), *imm);
             }
@@ -314,8 +317,14 @@ impl<'a> Emitter<'a> {
             X86Inst::ImulRR { dst, src } => {
                 self.emit_imul_rr(dst.as_physical(), src.as_physical());
             }
+            X86Inst::ImulRR64 { dst, src } => {
+                self.emit_imul_rr64(dst.as_physical(), src.as_physical());
+            }
             X86Inst::Neg { dst } => {
                 self.emit_neg(dst.as_physical());
+            }
+            X86Inst::Neg64 { dst } => {
+                self.emit_neg64(dst.as_physical());
             }
             X86Inst::XorRI { dst, imm } => {
                 self.emit_xor_ri(dst.as_physical(), *imm);
@@ -406,6 +415,9 @@ impl<'a> Emitter<'a> {
             }
             X86Inst::Jae { label } => {
                 self.emit_jcc(0x73, *label); // JAE rel8 opcode (CF=0)
+            }
+            X86Inst::Jbe { label } => {
+                self.emit_jcc(0x76, *label); // JBE rel8 opcode (CF=1 or ZF=1)
             }
             X86Inst::Jmp { label } => {
                 self.emit_jmp(*label);
@@ -828,6 +840,27 @@ impl<'a> Emitter<'a> {
         self.code.push(modrm);
     }
 
+    /// Emit `add r64, r64`.
+    ///
+    /// Encoding: REX.W 01 /r (add r/m64, r64)
+    fn emit_add_rr64(&mut self, dst: Reg, src: Reg) {
+        let dst_enc = dst.encoding();
+        let src_enc = src.encoding();
+
+        // REX prefix: W=1 for 64-bit, R for src, B for dst
+        let rex = 0x48
+            | if src.needs_rex() { 0x04 } else { 0x00 }  // REX.R
+            | if dst.needs_rex() { 0x01 } else { 0x00 }; // REX.B
+        self.code.push(rex);
+
+        // Opcode: 01 (add r/m64, r64)
+        self.code.push(0x01);
+
+        // ModR/M: mod=11 (register-to-register), reg=src, r/m=dst
+        let modrm = 0xC0 | ((src_enc & 7) << 3) | (dst_enc & 7);
+        self.code.push(modrm);
+    }
+
     /// Emit `add r64, imm32` - Add 32-bit sign-extended immediate to 64-bit register.
     ///
     /// Encoding: REX.W 81 /0 imm32 (add r/m64, imm32)
@@ -931,6 +964,28 @@ impl<'a> Emitter<'a> {
         self.code.push(modrm);
     }
 
+    /// Emit `imul r64, r64`.
+    ///
+    /// Encoding: REX.W 0F AF /r (imul r64, r/m64)
+    fn emit_imul_rr64(&mut self, dst: Reg, src: Reg) {
+        let dst_enc = dst.encoding();
+        let src_enc = src.encoding();
+
+        // REX prefix: W=1 for 64-bit, R for dst, B for src
+        let rex = 0x48
+            | if dst.needs_rex() { 0x04 } else { 0x00 }  // REX.R (dst is reg field)
+            | if src.needs_rex() { 0x01 } else { 0x00 }; // REX.B (src is r/m field)
+        self.code.push(rex);
+
+        // Opcode: 0F AF (imul r64, r/m64)
+        self.code.push(0x0F);
+        self.code.push(0xAF);
+
+        // ModR/M: mod=11, reg=dst, r/m=src
+        let modrm = 0xC0 | ((dst_enc & 7) << 3) | (src_enc & 7);
+        self.code.push(modrm);
+    }
+
     /// Emit `neg r32`.
     ///
     /// Encoding: [REX] F7 /3 (neg r/m32)
@@ -941,6 +996,24 @@ impl<'a> Emitter<'a> {
         if dst.needs_rex() {
             self.code.push(0x41); // REX.B
         }
+
+        // Opcode: F7 (group 3 operations)
+        self.code.push(0xF7);
+
+        // ModR/M: mod=11, reg=3 (NEG), r/m=dst
+        let modrm = 0xC0 | (3 << 3) | (dst_enc & 7);
+        self.code.push(modrm);
+    }
+
+    /// Emit `neg r64`.
+    ///
+    /// Encoding: REX.W F7 /3 (neg r/m64)
+    fn emit_neg64(&mut self, dst: Reg) {
+        let dst_enc = dst.encoding();
+
+        // REX prefix: W=1 for 64-bit, B if needed
+        let rex = 0x48 | if dst.needs_rex() { 0x01 } else { 0x00 };
+        self.code.push(rex);
 
         // Opcode: F7 (group 3 operations)
         self.code.push(0xF7);

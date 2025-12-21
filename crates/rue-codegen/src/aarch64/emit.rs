@@ -70,6 +70,9 @@ const OPCODE_SMULL: u32 = 0x9B207C00;
 const OPCODE_ADDS_W: u32 = 0x2B000000;
 /// SUBS Wd, Wn, Wm - Subtract and set flags (32-bit)
 const OPCODE_SUBS_W: u32 = 0x6B000000;
+// Arithmetic instructions (64-bit, for i64/u64 operations)
+/// ADDS Xd, Xn, Xm - Add and set flags (64-bit)
+const OPCODE_ADDS_X: u32 = 0xAB000000;
 /// SDIV Wd, Wn, Wm - Signed divide (32-bit)
 const OPCODE_SDIV_W: u32 = 0x1AC00C00;
 /// MSUB Wd, Wn, Wm, Wa - Multiply-subtract (32-bit)
@@ -301,7 +304,14 @@ impl<'a> Emitter<'a> {
                 let rd = dst.as_physical();
                 let rn = src1.as_physical();
                 let rm = src2.as_physical();
-                self.emit_add_rr(rd, rn, rm, true);
+                self.emit_adds_rr32(rd, rn, rm);
+            }
+
+            Aarch64Inst::AddsRR64 { dst, src1, src2 } => {
+                let rd = dst.as_physical();
+                let rn = src1.as_physical();
+                let rm = src2.as_physical();
+                self.emit_adds_rr64(rd, rn, rm);
             }
 
             Aarch64Inst::AddImm { dst, src, imm } => {
@@ -321,7 +331,14 @@ impl<'a> Emitter<'a> {
                 let rd = dst.as_physical();
                 let rn = src1.as_physical();
                 let rm = src2.as_physical();
-                self.emit_sub_rr(rd, rn, rm, true);
+                self.emit_subs_rr32(rd, rn, rm);
+            }
+
+            Aarch64Inst::SubsRR64 { dst, src1, src2 } => {
+                let rd = dst.as_physical();
+                let rn = src1.as_physical();
+                let rm = src2.as_physical();
+                self.emit_subs_rr64(rd, rn, rm);
             }
 
             Aarch64Inst::SubImm { dst, src, imm } => {
@@ -350,6 +367,39 @@ impl<'a> Emitter<'a> {
                 let rn = src1.as_physical();
                 let rm = src2.as_physical();
                 self.emit_smull(rd, rn, rm);
+            }
+
+            Aarch64Inst::UmullRR { dst, src1, src2 } => {
+                let rd = dst.as_physical();
+                let rn = src1.as_physical();
+                let rm = src2.as_physical();
+                self.emit_umull(rd, rn, rm);
+            }
+
+            Aarch64Inst::SmulhRR { dst, src1, src2 } => {
+                let rd = dst.as_physical();
+                let rn = src1.as_physical();
+                let rm = src2.as_physical();
+                self.emit_smulh(rd, rn, rm);
+            }
+
+            Aarch64Inst::UmulhRR { dst, src1, src2 } => {
+                let rd = dst.as_physical();
+                let rn = src1.as_physical();
+                let rm = src2.as_physical();
+                self.emit_umulh(rd, rn, rm);
+            }
+
+            Aarch64Inst::Lsr64Imm { dst, src, imm } => {
+                let rd = dst.as_physical();
+                let rn = src.as_physical();
+                self.emit_lsr_imm(rd, rn, *imm);
+            }
+
+            Aarch64Inst::Asr64Imm { dst, src, imm } => {
+                let rd = dst.as_physical();
+                let rn = src.as_physical();
+                self.emit_asr_imm(rd, rn, *imm);
             }
 
             Aarch64Inst::SdivRR { dst, src1, src2 } => {
@@ -382,8 +432,15 @@ impl<'a> Emitter<'a> {
             Aarch64Inst::Negs { dst, src } => {
                 let rd = dst.as_physical();
                 let rm = src.as_physical();
-                // NEGS is SUBS from WZR (32-bit for proper i32 overflow detection)
-                self.emit_sub_rr(rd, Reg::Xzr, rm, true);
+                // NEGS is SUBS from XZR (64-bit for i64/u64 overflow detection)
+                self.emit_subs_rr64(rd, Reg::Xzr, rm);
+            }
+
+            Aarch64Inst::Negs32 { dst, src } => {
+                let rd = dst.as_physical();
+                let rm = src.as_physical();
+                // NEGS is SUBS from WZR (32-bit for i32/u32 and sub-word overflow detection)
+                self.emit_subs_rr32(rd, Reg::Xzr, rm);
             }
 
             Aarch64Inst::AndRR { dst, src1, src2 } => {
@@ -416,8 +473,8 @@ impl<'a> Emitter<'a> {
             Aarch64Inst::CmpRR { src1, src2 } => {
                 let rn = src1.as_physical();
                 let rm = src2.as_physical();
-                // CMP is SUBS with XZR destination (32-bit form for i32)
-                self.emit_sub_rr(Reg::Xzr, rn, rm, true);
+                // CMP is SUBS with WZR destination (32-bit form for i32 and sub-word types)
+                self.emit_subs_rr32(Reg::Xzr, rn, rm);
             }
 
             Aarch64Inst::Cmp64RR { src1, src2 } => {
@@ -812,14 +869,27 @@ impl<'a> Emitter<'a> {
         self.emit_u32(inst);
     }
 
-    fn emit_add_rr(&mut self, rd: Reg, rn: Reg, rm: Reg, set_flags: bool) {
-        // When set_flags is true, use 32-bit (W) form for proper i32 overflow detection.
-        let base = if set_flags {
-            OPCODE_ADDS_W
-        } else {
-            OPCODE_ADD_X
-        };
-        let inst = base
+    fn emit_add_rr(&mut self, rd: Reg, rn: Reg, rm: Reg, _set_flags: bool) {
+        // Use 64-bit ADD (no flags)
+        let inst = OPCODE_ADD_X
+            | (rm.encoding() as u32) << 16
+            | (rn.encoding() as u32) << 5
+            | rd.encoding() as u32;
+        self.emit_u32(inst);
+    }
+
+    fn emit_adds_rr32(&mut self, rd: Reg, rn: Reg, rm: Reg) {
+        // ADDS Wd, Wn, Wm - 32-bit add with flags for i32 overflow detection
+        let inst = OPCODE_ADDS_W
+            | (rm.encoding() as u32) << 16
+            | (rn.encoding() as u32) << 5
+            | rd.encoding() as u32;
+        self.emit_u32(inst);
+    }
+
+    fn emit_adds_rr64(&mut self, rd: Reg, rn: Reg, rm: Reg) {
+        // ADDS Xd, Xn, Xm - 64-bit add with flags for i64/u64 overflow detection
+        let inst = OPCODE_ADDS_X
             | (rm.encoding() as u32) << 16
             | (rn.encoding() as u32) << 5
             | rd.encoding() as u32;
@@ -836,13 +906,31 @@ impl<'a> Emitter<'a> {
     }
 
     fn emit_sub_rr(&mut self, rd: Reg, rn: Reg, rm: Reg, set_flags: bool) {
-        // When set_flags is true, use 32-bit (W) form for proper i32 overflow detection.
+        // Use 64-bit SUB, optionally with flags
         let base = if set_flags {
-            OPCODE_SUBS_W
+            OPCODE_SUBS_X
         } else {
             OPCODE_SUB_X
         };
         let inst = base
+            | (rm.encoding() as u32) << 16
+            | (rn.encoding() as u32) << 5
+            | rd.encoding() as u32;
+        self.emit_u32(inst);
+    }
+
+    fn emit_subs_rr32(&mut self, rd: Reg, rn: Reg, rm: Reg) {
+        // SUBS Wd, Wn, Wm - 32-bit subtract with flags for i32 overflow detection
+        let inst = OPCODE_SUBS_W
+            | (rm.encoding() as u32) << 16
+            | (rn.encoding() as u32) << 5
+            | rd.encoding() as u32;
+        self.emit_u32(inst);
+    }
+
+    fn emit_subs_rr64(&mut self, rd: Reg, rn: Reg, rm: Reg) {
+        // SUBS Xd, Xn, Xm - 64-bit subtract with flags for i64/u64 overflow detection
+        let inst = OPCODE_SUBS_X
             | (rm.encoding() as u32) << 16
             | (rn.encoding() as u32) << 5
             | rd.encoding() as u32;
@@ -885,6 +973,63 @@ impl<'a> Emitter<'a> {
         // SMULL Xd, Wn, Wm
         let inst = OPCODE_SMULL
             | (rm.encoding() as u32) << 16
+            | (rn.encoding() as u32) << 5
+            | rd.encoding() as u32;
+        self.emit_u32(inst);
+    }
+
+    fn emit_umull(&mut self, rd: Reg, rn: Reg, rm: Reg) {
+        // UMULL Xd, Wn, Wm (unsigned multiply long 32x32->64)
+        // Same encoding as SMULL but uses UMADDL opcode
+        const OPCODE_UMULL: u32 = 0x9BA0_7C00; // UMADDL with Ra=XZR
+        let inst = OPCODE_UMULL
+            | (rm.encoding() as u32) << 16
+            | (rn.encoding() as u32) << 5
+            | rd.encoding() as u32;
+        self.emit_u32(inst);
+    }
+
+    fn emit_smulh(&mut self, rd: Reg, rn: Reg, rm: Reg) {
+        // SMULH Xd, Xn, Xm (high 64 bits of 64x64 signed multiply)
+        const OPCODE_SMULH: u32 = 0x9B40_7C00;
+        let inst = OPCODE_SMULH
+            | (rm.encoding() as u32) << 16
+            | (rn.encoding() as u32) << 5
+            | rd.encoding() as u32;
+        self.emit_u32(inst);
+    }
+
+    fn emit_umulh(&mut self, rd: Reg, rn: Reg, rm: Reg) {
+        // UMULH Xd, Xn, Xm (high 64 bits of 64x64 unsigned multiply)
+        const OPCODE_UMULH: u32 = 0x9BC0_7C00;
+        let inst = OPCODE_UMULH
+            | (rm.encoding() as u32) << 16
+            | (rn.encoding() as u32) << 5
+            | rd.encoding() as u32;
+        self.emit_u32(inst);
+    }
+
+    fn emit_lsr_imm(&mut self, rd: Reg, rn: Reg, imm: u8) {
+        // LSR Xd, Xn, #imm (64-bit logical shift right by immediate)
+        // Encoded as UBFM Xd, Xn, #imm, #63
+        // UBFM: 0b1101_0011_0100_0000 immr imms Rn Rd
+        // For LSR #imm: immr = imm, imms = 63
+        const OPCODE_UBFM_X: u32 = 0xD340_FC00; // 64-bit UBFM with imms=63
+        let inst = OPCODE_UBFM_X
+            | ((imm as u32 & 0x3F) << 16)
+            | (rn.encoding() as u32) << 5
+            | rd.encoding() as u32;
+        self.emit_u32(inst);
+    }
+
+    fn emit_asr_imm(&mut self, rd: Reg, rn: Reg, imm: u8) {
+        // ASR Xd, Xn, #imm (64-bit arithmetic shift right by immediate)
+        // Encoded as SBFM Xd, Xn, #imm, #63
+        // SBFM: 0b1001_0011_0100_0000 immr imms Rn Rd
+        // For ASR #imm: immr = imm, imms = 63
+        const OPCODE_SBFM_X: u32 = 0x9340_FC00; // 64-bit SBFM with imms=63
+        let inst = OPCODE_SBFM_X
+            | ((imm as u32 & 0x3F) << 16)
             | (rn.encoding() as u32) << 5
             | rd.encoding() as u32;
         self.emit_u32(inst);

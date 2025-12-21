@@ -357,22 +357,24 @@ impl<'a> CfgLower<'a> {
                 let lhs_vreg = self.get_vreg(*lhs);
                 let rhs_vreg = self.get_vreg(*rhs);
 
-                // Use ADDS to set overflow flag
-                self.mir.push(Aarch64Inst::AddsRR {
-                    dst: Operand::Virtual(vreg),
-                    src1: Operand::Virtual(lhs_vreg),
-                    src2: Operand::Virtual(rhs_vreg),
-                });
+                // Use ADDS to set overflow and carry flags
+                // Use 64-bit version for 64-bit types to get correct overflow detection
+                if matches!(ty, Type::I64 | Type::U64) {
+                    self.mir.push(Aarch64Inst::AddsRR64 {
+                        dst: Operand::Virtual(vreg),
+                        src1: Operand::Virtual(lhs_vreg),
+                        src2: Operand::Virtual(rhs_vreg),
+                    });
+                } else {
+                    self.mir.push(Aarch64Inst::AddsRR {
+                        dst: Operand::Virtual(vreg),
+                        src1: Operand::Virtual(lhs_vreg),
+                        src2: Operand::Virtual(rhs_vreg),
+                    });
+                }
 
-                // Overflow check - branch on overflow set
-                let ok_label = self.new_label("add_ok");
-                self.mir.push(Aarch64Inst::Bvc {
-                    label: ok_label.clone(),
-                });
-                self.mir.push(Aarch64Inst::Bl {
-                    symbol: "__rue_overflow".to_string(),
-                });
-                self.mir.push(Aarch64Inst::Label { name: ok_label });
+                // Overflow check - use appropriate flag based on signedness
+                self.emit_overflow_check_add(ty, vreg, "add_ok");
             }
 
             CfgInstData::Sub(lhs, rhs) => {
@@ -382,20 +384,23 @@ impl<'a> CfgLower<'a> {
                 let lhs_vreg = self.get_vreg(*lhs);
                 let rhs_vreg = self.get_vreg(*rhs);
 
-                self.mir.push(Aarch64Inst::SubsRR {
-                    dst: Operand::Virtual(vreg),
-                    src1: Operand::Virtual(lhs_vreg),
-                    src2: Operand::Virtual(rhs_vreg),
-                });
+                // Use 64-bit version for 64-bit types to get correct overflow detection
+                if matches!(ty, Type::I64 | Type::U64) {
+                    self.mir.push(Aarch64Inst::SubsRR64 {
+                        dst: Operand::Virtual(vreg),
+                        src1: Operand::Virtual(lhs_vreg),
+                        src2: Operand::Virtual(rhs_vreg),
+                    });
+                } else {
+                    self.mir.push(Aarch64Inst::SubsRR {
+                        dst: Operand::Virtual(vreg),
+                        src1: Operand::Virtual(lhs_vreg),
+                        src2: Operand::Virtual(rhs_vreg),
+                    });
+                }
 
-                let ok_label = self.new_label("sub_ok");
-                self.mir.push(Aarch64Inst::Bvc {
-                    label: ok_label.clone(),
-                });
-                self.mir.push(Aarch64Inst::Bl {
-                    symbol: "__rue_overflow".to_string(),
-                });
-                self.mir.push(Aarch64Inst::Label { name: ok_label });
+                // Overflow check - use appropriate flag based on signedness
+                self.emit_overflow_check_sub(ty, vreg, "sub_ok");
             }
 
             CfgInstData::Mul(lhs, rhs) => {
@@ -405,45 +410,8 @@ impl<'a> CfgLower<'a> {
                 let lhs_vreg = self.get_vreg(*lhs);
                 let rhs_vreg = self.get_vreg(*rhs);
 
-                // For signed overflow detection on 32-bit multiply:
-                // 1. SMULL gives 64-bit result
-                // 2. Sign-extend the low 32 bits with SXTW
-                // 3. Compare - if they differ, we have overflow
-                let smull_vreg = self.mir.alloc_vreg();
-                self.mir.push(Aarch64Inst::SmullRR {
-                    dst: Operand::Virtual(smull_vreg),
-                    src1: Operand::Virtual(lhs_vreg),
-                    src2: Operand::Virtual(rhs_vreg),
-                });
-
-                // Copy low 32 bits to result (MUL is effectively low 32 bits of SMULL)
-                self.mir.push(Aarch64Inst::MovRR {
-                    dst: Operand::Virtual(vreg),
-                    src: Operand::Virtual(smull_vreg),
-                });
-
-                // Sign-extend the 32-bit result to compare with full 64-bit result
-                let sext_vreg = self.mir.alloc_vreg();
-                self.mir.push(Aarch64Inst::Sxtw {
-                    dst: Operand::Virtual(sext_vreg),
-                    src: Operand::Virtual(smull_vreg),
-                });
-
-                // Compare 64-bit SMULL result with sign-extended 32-bit value
-                // If they differ, the result didn't fit in 32 bits
-                let ok_label = self.new_label("mul_ok");
-                self.mir.push(Aarch64Inst::Cmp64RR {
-                    src1: Operand::Virtual(smull_vreg),
-                    src2: Operand::Virtual(sext_vreg),
-                });
-                self.mir.push(Aarch64Inst::BCond {
-                    cond: Cond::Eq,
-                    label: ok_label.clone(),
-                });
-                self.mir.push(Aarch64Inst::Bl {
-                    symbol: "__rue_overflow".to_string(),
-                });
-                self.mir.push(Aarch64Inst::Label { name: ok_label });
+                // Overflow check for multiplication
+                self.emit_overflow_check_mul(ty, vreg, lhs_vreg, rhs_vreg, "mul_ok");
             }
 
             CfgInstData::Div(lhs, rhs) => {
@@ -512,21 +480,20 @@ impl<'a> CfgLower<'a> {
 
                 let operand_vreg = self.get_vreg(*operand);
 
-                // Use NEGS to set overflow flag (overflow only happens for MIN_VALUE)
-                self.mir.push(Aarch64Inst::Negs {
-                    dst: Operand::Virtual(vreg),
-                    src: Operand::Virtual(operand_vreg),
-                });
+                // Use NEGS to set overflow and carry flags
+                // Use 32-bit variant for 32-bit and sub-word types, 64-bit for I64/U64
+                let dst = Operand::Virtual(vreg);
+                let src = Operand::Virtual(operand_vreg);
+                if matches!(ty, Type::I64 | Type::U64) {
+                    self.mir.push(Aarch64Inst::Negs { dst, src });
+                } else {
+                    self.mir.push(Aarch64Inst::Negs32 { dst, src });
+                }
 
-                // Check overflow flag (V=1 means overflow)
-                let ok_label = self.new_label("neg_ok");
-                self.mir.push(Aarch64Inst::Bvc {
-                    label: ok_label.clone(),
-                });
-                self.mir.push(Aarch64Inst::Bl {
-                    symbol: "__rue_overflow".to_string(),
-                });
-                self.mir.push(Aarch64Inst::Label { name: ok_label });
+                // Overflow check - use appropriate flag based on signedness
+                // For signed: V flag indicates overflow (when negating MIN_VALUE)
+                // For unsigned: C flag indicates non-zero operand (0 - x wraps for x != 0)
+                self.emit_overflow_check_neg(ty, vreg, "neg_ok");
             }
 
             CfgInstData::Not(operand) => {
@@ -1141,6 +1108,471 @@ impl<'a> CfgLower<'a> {
     /// Sema guarantees both operands have the same signedness, so we only need to check one.
     fn is_unsigned_comparison(&self, lhs: CfgValue) -> bool {
         self.cfg.get_inst(lhs).ty.is_unsigned()
+    }
+
+    /// Emit overflow check for ADD based on the type.
+    ///
+    /// For 32/64-bit types, we use CPU flags directly:
+    /// - Signed (i32, i64): V (overflow) flag via BVC
+    /// - Unsigned (u32, u64): C (carry) flag - C=1 means overflow, so branch on Lo (C=0)
+    ///
+    /// For sub-word types, check if result fits in the type's range.
+    fn emit_overflow_check_add(&mut self, ty: Type, result_vreg: VReg, label_prefix: &str) {
+        let ok_label = self.new_label(label_prefix);
+
+        match ty {
+            // 32-bit and 64-bit unsigned: C=1 means overflow (carry out)
+            // Branch to ok if C=0 (no overflow)
+            Type::U32 | Type::U64 => {
+                self.mir.push(Aarch64Inst::BCond {
+                    cond: Cond::Lo, // Lo = C=0 (no carry)
+                    label: ok_label.clone(),
+                });
+            }
+            // 32-bit and 64-bit signed: V flag indicates overflow
+            Type::I32 | Type::I64 => {
+                self.mir.push(Aarch64Inst::Bvc {
+                    label: ok_label.clone(),
+                });
+            }
+            // Sub-word unsigned types: check if result fits in range [0, max]
+            Type::U8 => {
+                // Result must be <= 255
+                self.mir.push(Aarch64Inst::CmpImm {
+                    src: Operand::Virtual(result_vreg),
+                    imm: 255,
+                });
+                // Branch if below or same (unsigned <=)
+                self.mir.push(Aarch64Inst::BCond {
+                    cond: Cond::Ls,
+                    label: ok_label.clone(),
+                });
+            }
+            Type::U16 => {
+                // Result must be <= 65535
+                let max_vreg = self.mir.alloc_vreg();
+                self.mir.push(Aarch64Inst::MovImm {
+                    dst: Operand::Virtual(max_vreg),
+                    imm: 65535,
+                });
+                self.mir.push(Aarch64Inst::CmpRR {
+                    src1: Operand::Virtual(result_vreg),
+                    src2: Operand::Virtual(max_vreg),
+                });
+                self.mir.push(Aarch64Inst::BCond {
+                    cond: Cond::Ls,
+                    label: ok_label.clone(),
+                });
+            }
+            // Sub-word signed types: check if result fits in range [min, max]
+            Type::I8 => {
+                // Sign-extend to 64-bit and compare with original
+                let sext_vreg = self.mir.alloc_vreg();
+                self.mir.push(Aarch64Inst::Sxtb {
+                    dst: Operand::Virtual(sext_vreg),
+                    src: Operand::Virtual(result_vreg),
+                });
+                self.mir.push(Aarch64Inst::CmpRR {
+                    src1: Operand::Virtual(result_vreg),
+                    src2: Operand::Virtual(sext_vreg),
+                });
+                self.mir.push(Aarch64Inst::BCond {
+                    cond: Cond::Eq,
+                    label: ok_label.clone(),
+                });
+            }
+            Type::I16 => {
+                // Sign-extend to 64-bit and compare with original
+                let sext_vreg = self.mir.alloc_vreg();
+                self.mir.push(Aarch64Inst::Sxth {
+                    dst: Operand::Virtual(sext_vreg),
+                    src: Operand::Virtual(result_vreg),
+                });
+                self.mir.push(Aarch64Inst::CmpRR {
+                    src1: Operand::Virtual(result_vreg),
+                    src2: Operand::Virtual(sext_vreg),
+                });
+                self.mir.push(Aarch64Inst::BCond {
+                    cond: Cond::Eq,
+                    label: ok_label.clone(),
+                });
+            }
+            // Other types don't have arithmetic
+            _ => return,
+        }
+
+        // Overflow occurred - call panic handler
+        self.mir.push(Aarch64Inst::Bl {
+            symbol: "__rue_overflow".to_string(),
+        });
+        self.mir.push(Aarch64Inst::Label { name: ok_label });
+    }
+
+    /// Emit overflow check for SUB based on the type.
+    ///
+    /// For ARM64 SUBS:
+    /// - Signed: V flag indicates overflow
+    /// - Unsigned: C=0 means borrow (underflow), C=1 means no borrow
+    fn emit_overflow_check_sub(&mut self, ty: Type, result_vreg: VReg, label_prefix: &str) {
+        let ok_label = self.new_label(label_prefix);
+
+        match ty {
+            // 32-bit and 64-bit unsigned: C=0 means borrow (underflow)
+            // Branch to ok if C=1 (no underflow)
+            Type::U32 | Type::U64 => {
+                self.mir.push(Aarch64Inst::BCond {
+                    cond: Cond::Hs, // Hs = C=1 (no borrow)
+                    label: ok_label.clone(),
+                });
+            }
+            // 32-bit and 64-bit signed: V flag indicates overflow
+            Type::I32 | Type::I64 => {
+                self.mir.push(Aarch64Inst::Bvc {
+                    label: ok_label.clone(),
+                });
+            }
+            // Sub-word types: same as ADD - check range
+            Type::U8 | Type::U16 | Type::I8 | Type::I16 => {
+                // For subtraction, we need to check both overflow (signed) and underflow
+                // Use the same logic as ADD - check if result fits in type's range
+                match ty {
+                    Type::U8 => {
+                        self.mir.push(Aarch64Inst::CmpImm {
+                            src: Operand::Virtual(result_vreg),
+                            imm: 255,
+                        });
+                        self.mir.push(Aarch64Inst::BCond {
+                            cond: Cond::Ls,
+                            label: ok_label.clone(),
+                        });
+                    }
+                    Type::U16 => {
+                        let max_vreg = self.mir.alloc_vreg();
+                        self.mir.push(Aarch64Inst::MovImm {
+                            dst: Operand::Virtual(max_vreg),
+                            imm: 65535,
+                        });
+                        self.mir.push(Aarch64Inst::CmpRR {
+                            src1: Operand::Virtual(result_vreg),
+                            src2: Operand::Virtual(max_vreg),
+                        });
+                        self.mir.push(Aarch64Inst::BCond {
+                            cond: Cond::Ls,
+                            label: ok_label.clone(),
+                        });
+                    }
+                    Type::I8 => {
+                        let sext_vreg = self.mir.alloc_vreg();
+                        self.mir.push(Aarch64Inst::Sxtb {
+                            dst: Operand::Virtual(sext_vreg),
+                            src: Operand::Virtual(result_vreg),
+                        });
+                        self.mir.push(Aarch64Inst::CmpRR {
+                            src1: Operand::Virtual(result_vreg),
+                            src2: Operand::Virtual(sext_vreg),
+                        });
+                        self.mir.push(Aarch64Inst::BCond {
+                            cond: Cond::Eq,
+                            label: ok_label.clone(),
+                        });
+                    }
+                    Type::I16 => {
+                        let sext_vreg = self.mir.alloc_vreg();
+                        self.mir.push(Aarch64Inst::Sxth {
+                            dst: Operand::Virtual(sext_vreg),
+                            src: Operand::Virtual(result_vreg),
+                        });
+                        self.mir.push(Aarch64Inst::CmpRR {
+                            src1: Operand::Virtual(result_vreg),
+                            src2: Operand::Virtual(sext_vreg),
+                        });
+                        self.mir.push(Aarch64Inst::BCond {
+                            cond: Cond::Eq,
+                            label: ok_label.clone(),
+                        });
+                    }
+                    _ => unreachable!(),
+                }
+            }
+            // Other types don't have arithmetic
+            _ => return,
+        }
+
+        self.mir.push(Aarch64Inst::Bl {
+            symbol: "__rue_overflow".to_string(),
+        });
+        self.mir.push(Aarch64Inst::Label { name: ok_label });
+    }
+
+    /// Emit overflow check for MUL based on the type.
+    ///
+    /// For multiplication, we need different approaches for signed vs unsigned:
+    /// - Signed: Use SMULL (64-bit result), compare with sign-extended 32-bit
+    /// - Unsigned: Use UMULL (64-bit result), check if high bits are non-zero
+    fn emit_overflow_check_mul(
+        &mut self,
+        ty: Type,
+        result_vreg: VReg,
+        lhs_vreg: VReg,
+        rhs_vreg: VReg,
+        label_prefix: &str,
+    ) {
+        let ok_label = self.new_label(label_prefix);
+
+        match ty {
+            // 32-bit signed: SMULL gives 64-bit result
+            Type::I32 => {
+                let smull_vreg = self.mir.alloc_vreg();
+                self.mir.push(Aarch64Inst::SmullRR {
+                    dst: Operand::Virtual(smull_vreg),
+                    src1: Operand::Virtual(lhs_vreg),
+                    src2: Operand::Virtual(rhs_vreg),
+                });
+                // Copy low 32 bits to result
+                self.mir.push(Aarch64Inst::MovRR {
+                    dst: Operand::Virtual(result_vreg),
+                    src: Operand::Virtual(smull_vreg),
+                });
+                // Sign-extend the 32-bit result
+                let sext_vreg = self.mir.alloc_vreg();
+                self.mir.push(Aarch64Inst::Sxtw {
+                    dst: Operand::Virtual(sext_vreg),
+                    src: Operand::Virtual(smull_vreg),
+                });
+                // Compare 64-bit result with sign-extended 32-bit
+                self.mir.push(Aarch64Inst::Cmp64RR {
+                    src1: Operand::Virtual(smull_vreg),
+                    src2: Operand::Virtual(sext_vreg),
+                });
+                self.mir.push(Aarch64Inst::BCond {
+                    cond: Cond::Eq,
+                    label: ok_label.clone(),
+                });
+            }
+            // 32-bit unsigned: UMULL gives 64-bit result
+            Type::U32 => {
+                let umull_vreg = self.mir.alloc_vreg();
+                self.mir.push(Aarch64Inst::UmullRR {
+                    dst: Operand::Virtual(umull_vreg),
+                    src1: Operand::Virtual(lhs_vreg),
+                    src2: Operand::Virtual(rhs_vreg),
+                });
+                // Copy low 32 bits to result
+                self.mir.push(Aarch64Inst::MovRR {
+                    dst: Operand::Virtual(result_vreg),
+                    src: Operand::Virtual(umull_vreg),
+                });
+                // Check if high 32 bits are zero (shift right by 32, compare with 0)
+                let high_vreg = self.mir.alloc_vreg();
+                self.mir.push(Aarch64Inst::Lsr64Imm {
+                    dst: Operand::Virtual(high_vreg),
+                    src: Operand::Virtual(umull_vreg),
+                    imm: 32,
+                });
+                self.mir.push(Aarch64Inst::Cbz {
+                    src: Operand::Virtual(high_vreg),
+                    label: ok_label.clone(),
+                });
+            }
+            // 64-bit signed: Use SMULH for high bits
+            Type::I64 => {
+                // Do the multiply first
+                self.mir.push(Aarch64Inst::MulRR {
+                    dst: Operand::Virtual(result_vreg),
+                    src1: Operand::Virtual(lhs_vreg),
+                    src2: Operand::Virtual(rhs_vreg),
+                });
+                // Get high bits with SMULH
+                let high_vreg = self.mir.alloc_vreg();
+                self.mir.push(Aarch64Inst::SmulhRR {
+                    dst: Operand::Virtual(high_vreg),
+                    src1: Operand::Virtual(lhs_vreg),
+                    src2: Operand::Virtual(rhs_vreg),
+                });
+                // Sign-extend the low result's sign bit to compare
+                let sign_vreg = self.mir.alloc_vreg();
+                self.mir.push(Aarch64Inst::Asr64Imm {
+                    dst: Operand::Virtual(sign_vreg),
+                    src: Operand::Virtual(result_vreg),
+                    imm: 63,
+                });
+                // If high bits == sign extension, no overflow
+                self.mir.push(Aarch64Inst::Cmp64RR {
+                    src1: Operand::Virtual(high_vreg),
+                    src2: Operand::Virtual(sign_vreg),
+                });
+                self.mir.push(Aarch64Inst::BCond {
+                    cond: Cond::Eq,
+                    label: ok_label.clone(),
+                });
+            }
+            // 64-bit unsigned: Use UMULH for high bits
+            Type::U64 => {
+                // Do the multiply first
+                self.mir.push(Aarch64Inst::MulRR {
+                    dst: Operand::Virtual(result_vreg),
+                    src1: Operand::Virtual(lhs_vreg),
+                    src2: Operand::Virtual(rhs_vreg),
+                });
+                // Get high bits with UMULH
+                let high_vreg = self.mir.alloc_vreg();
+                self.mir.push(Aarch64Inst::UmulhRR {
+                    dst: Operand::Virtual(high_vreg),
+                    src1: Operand::Virtual(lhs_vreg),
+                    src2: Operand::Virtual(rhs_vreg),
+                });
+                // If high bits are zero, no overflow
+                self.mir.push(Aarch64Inst::Cbz {
+                    src: Operand::Virtual(high_vreg),
+                    label: ok_label.clone(),
+                });
+            }
+            // Sub-word types: do the multiply, then check range
+            Type::I8 | Type::I16 | Type::U8 | Type::U16 => {
+                // For sub-word, just do the multiply and check range
+                self.mir.push(Aarch64Inst::MulRR {
+                    dst: Operand::Virtual(result_vreg),
+                    src1: Operand::Virtual(lhs_vreg),
+                    src2: Operand::Virtual(rhs_vreg),
+                });
+                // Check range using same logic as ADD
+                match ty {
+                    Type::U8 => {
+                        self.mir.push(Aarch64Inst::CmpImm {
+                            src: Operand::Virtual(result_vreg),
+                            imm: 255,
+                        });
+                        self.mir.push(Aarch64Inst::BCond {
+                            cond: Cond::Ls,
+                            label: ok_label.clone(),
+                        });
+                    }
+                    Type::U16 => {
+                        let max_vreg = self.mir.alloc_vreg();
+                        self.mir.push(Aarch64Inst::MovImm {
+                            dst: Operand::Virtual(max_vreg),
+                            imm: 65535,
+                        });
+                        self.mir.push(Aarch64Inst::CmpRR {
+                            src1: Operand::Virtual(result_vreg),
+                            src2: Operand::Virtual(max_vreg),
+                        });
+                        self.mir.push(Aarch64Inst::BCond {
+                            cond: Cond::Ls,
+                            label: ok_label.clone(),
+                        });
+                    }
+                    Type::I8 => {
+                        let sext_vreg = self.mir.alloc_vreg();
+                        self.mir.push(Aarch64Inst::Sxtb {
+                            dst: Operand::Virtual(sext_vreg),
+                            src: Operand::Virtual(result_vreg),
+                        });
+                        self.mir.push(Aarch64Inst::CmpRR {
+                            src1: Operand::Virtual(result_vreg),
+                            src2: Operand::Virtual(sext_vreg),
+                        });
+                        self.mir.push(Aarch64Inst::BCond {
+                            cond: Cond::Eq,
+                            label: ok_label.clone(),
+                        });
+                    }
+                    Type::I16 => {
+                        let sext_vreg = self.mir.alloc_vreg();
+                        self.mir.push(Aarch64Inst::Sxth {
+                            dst: Operand::Virtual(sext_vreg),
+                            src: Operand::Virtual(result_vreg),
+                        });
+                        self.mir.push(Aarch64Inst::CmpRR {
+                            src1: Operand::Virtual(result_vreg),
+                            src2: Operand::Virtual(sext_vreg),
+                        });
+                        self.mir.push(Aarch64Inst::BCond {
+                            cond: Cond::Eq,
+                            label: ok_label.clone(),
+                        });
+                    }
+                    _ => unreachable!(),
+                }
+            }
+            _ => return,
+        }
+
+        self.mir.push(Aarch64Inst::Bl {
+            symbol: "__rue_overflow".to_string(),
+        });
+        self.mir.push(Aarch64Inst::Label { name: ok_label });
+    }
+
+    /// Emit overflow check for NEG based on the type.
+    ///
+    /// For NEGS (0 - x):
+    /// - Signed: V flag indicates overflow (when negating MIN_VALUE)
+    /// - Unsigned: Any non-zero value causes overflow (since 0 - x wraps)
+    fn emit_overflow_check_neg(&mut self, ty: Type, result_vreg: VReg, label_prefix: &str) {
+        let ok_label = self.new_label(label_prefix);
+
+        match ty {
+            // Unsigned: NEGS sets C=0 for non-zero operands (which is overflow)
+            // Branch to ok if C=1 (meaning operand was 0, no overflow)
+            Type::U32 | Type::U64 => {
+                self.mir.push(Aarch64Inst::BCond {
+                    cond: Cond::Hs, // Hs = C=1
+                    label: ok_label.clone(),
+                });
+            }
+            // Signed: V flag indicates overflow
+            Type::I32 | Type::I64 => {
+                self.mir.push(Aarch64Inst::Bvc {
+                    label: ok_label.clone(),
+                });
+            }
+            // Sub-word types: check range
+            Type::U8 | Type::U16 => {
+                // For unsigned negation, only 0 is valid (negating to 0)
+                // Result must be 0 for no overflow
+                self.mir.push(Aarch64Inst::Cbz {
+                    src: Operand::Virtual(result_vreg),
+                    label: ok_label.clone(),
+                });
+            }
+            Type::I8 => {
+                let sext_vreg = self.mir.alloc_vreg();
+                self.mir.push(Aarch64Inst::Sxtb {
+                    dst: Operand::Virtual(sext_vreg),
+                    src: Operand::Virtual(result_vreg),
+                });
+                self.mir.push(Aarch64Inst::CmpRR {
+                    src1: Operand::Virtual(result_vreg),
+                    src2: Operand::Virtual(sext_vreg),
+                });
+                self.mir.push(Aarch64Inst::BCond {
+                    cond: Cond::Eq,
+                    label: ok_label.clone(),
+                });
+            }
+            Type::I16 => {
+                let sext_vreg = self.mir.alloc_vreg();
+                self.mir.push(Aarch64Inst::Sxth {
+                    dst: Operand::Virtual(sext_vreg),
+                    src: Operand::Virtual(result_vreg),
+                });
+                self.mir.push(Aarch64Inst::CmpRR {
+                    src1: Operand::Virtual(result_vreg),
+                    src2: Operand::Virtual(sext_vreg),
+                });
+                self.mir.push(Aarch64Inst::BCond {
+                    cond: Cond::Eq,
+                    label: ok_label.clone(),
+                });
+            }
+            _ => return,
+        }
+
+        self.mir.push(Aarch64Inst::Bl {
+            symbol: "__rue_overflow".to_string(),
+        });
+        self.mir.push(Aarch64Inst::Label { name: ok_label });
     }
 
     /// Emit a comparison instruction.

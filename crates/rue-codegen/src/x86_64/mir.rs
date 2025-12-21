@@ -230,6 +230,11 @@ pub enum X86Inst {
     /// `add dst, src` - Add src to dst (dst = dst + src).
     AddRR { dst: Operand, src: Operand },
 
+    /// `add dst, src` (64-bit) - Add src to dst treating operands as 64-bit.
+    ///
+    /// Used for 64-bit arithmetic where 32-bit truncation would give incorrect overflow detection.
+    AddRR64 { dst: Operand, src: Operand },
+
     /// `sub dst, src` - Subtract src from dst (dst = dst - src).
     SubRR { dst: Operand, src: Operand },
 
@@ -244,8 +249,18 @@ pub enum X86Inst {
     /// `imul dst, src` - Signed multiply (dst = dst * src).
     ImulRR { dst: Operand, src: Operand },
 
+    /// `imul dst, src` (64-bit) - Signed multiply treating operands as 64-bit.
+    ///
+    /// Used for 64-bit multiplication where 32-bit truncation would give incorrect overflow detection.
+    ImulRR64 { dst: Operand, src: Operand },
+
     /// `neg dst` - Two's complement negation (dst = -dst).
     Neg { dst: Operand },
+
+    /// `neg dst` (64-bit) - Two's complement negation treating operand as 64-bit.
+    ///
+    /// Used for 64-bit negation where 32-bit truncation would give incorrect overflow detection.
+    Neg64 { dst: Operand },
 
     /// `xor dst, imm` - XOR with immediate (dst = dst ^ imm).
     XorRI { dst: Operand, imm: i32 },
@@ -338,6 +353,9 @@ pub enum X86Inst {
 
     /// `jae label` - Jump if above or equal (unsigned: CF=0).
     Jae { label: LabelId },
+
+    /// `jbe label` - Jump if below or equal (unsigned: CF=1 or ZF=1).
+    Jbe { label: LabelId },
 
     /// `jmp label` - Unconditional jump.
     Jmp { label: LabelId },
@@ -442,11 +460,14 @@ impl fmt::Display for X86Inst {
                 }
             }
             X86Inst::AddRR { dst, src } => write!(f, "add {}, {}", dst, src),
+            X86Inst::AddRR64 { dst, src } => write!(f, "addq {}, {}", dst, src),
             X86Inst::AddRI { dst, imm } => write!(f, "add {}, {}", dst, imm),
             X86Inst::SubRR { dst, src } => write!(f, "sub {}, {}", dst, src),
             X86Inst::SubRR64 { dst, src } => write!(f, "subq {}, {}", dst, src),
             X86Inst::ImulRR { dst, src } => write!(f, "imul {}, {}", dst, src),
+            X86Inst::ImulRR64 { dst, src } => write!(f, "imulq {}, {}", dst, src),
             X86Inst::Neg { dst } => write!(f, "neg {}", dst),
+            X86Inst::Neg64 { dst } => write!(f, "negq {}", dst),
             X86Inst::XorRI { dst, imm } => write!(f, "xor {}, {}", dst, imm),
             X86Inst::AndRR { dst, src } => write!(f, "and {}, {}", dst, src),
             X86Inst::OrRR { dst, src } => write!(f, "or {}, {}", dst, src),
@@ -477,6 +498,7 @@ impl fmt::Display for X86Inst {
             X86Inst::Jno { label } => write!(f, "jno {}", label),
             X86Inst::Jb { label } => write!(f, "jb {}", label),
             X86Inst::Jae { label } => write!(f, "jae {}", label),
+            X86Inst::Jbe { label } => write!(f, "jbe {}", label),
             X86Inst::Jmp { label } => write!(f, "jmp {}", label),
             X86Inst::Label { id } => write!(f, "{}:", id),
             X86Inst::CallRel { symbol } => write!(f, "call {}", symbol),

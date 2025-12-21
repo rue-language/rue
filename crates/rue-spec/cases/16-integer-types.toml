@@ -614,3 +614,140 @@ fn main() -> i32 {
 }
 """
 exit_code = 1
+
+# =============================================================================
+# Signed Integer Overflow (Runtime Panic - Exit 101)
+# =============================================================================
+# The spec says signed integer overflow is undefined behavior.
+# In practice, Rue panics with exit code 101 on overflow.
+
+[[case]]
+name = "i8_overflow_addition"
+description = "127 + 1 should overflow and panic"
+source = """
+fn main() -> i8 {
+    let x: i8 = 127;
+    x + 1
+}
+"""
+exit_code = 101
+
+[[case]]
+name = "i8_overflow_subtraction"
+description = "-128 - 1 should underflow and panic"
+source = """
+fn main() -> i8 {
+    let x: i8 = -128;
+    x - 1
+}
+"""
+exit_code = 101
+
+[[case]]
+name = "i8_overflow_multiplication"
+description = "16 * 16 = 256 should overflow i8"
+source = """
+fn main() -> i8 {
+    let x: i8 = 16;
+    x * 16
+}
+"""
+exit_code = 101
+
+[[case]]
+name = "i16_overflow_addition"
+description = "32767 + 1 should overflow and panic"
+source = """
+fn main() -> i16 {
+    let x: i16 = 32767;
+    x + 1
+}
+"""
+exit_code = 101
+
+[[case]]
+name = "i16_overflow_subtraction"
+description = "-32768 - 1 should underflow and panic"
+source = """
+fn main() -> i16 {
+    let x: i16 = -32768;
+    x - 1
+}
+"""
+exit_code = 101
+
+[[case]]
+name = "i64_overflow_addition"
+description = "Large i64 addition should overflow"
+source = """
+fn main() -> i64 {
+    // Start with near-max values and add to overflow
+    let x: i64 = 4611686018427387903;  // About half of MAX
+    let y: i64 = x + x;  // Near MAX
+    y + x  // This should overflow
+}
+"""
+exit_code = 101
+
+[[case]]
+name = "i64_overflow_subtraction"
+description = "Large negative i64 subtraction should underflow"
+source = """
+fn main() -> i64 {
+    // Create a very negative value, then subtract
+    let x: i64 = -4611686018427387903;  // About half of MIN
+    let y: i64 = x + x;  // Near MIN
+    y + x  // This should underflow
+}
+"""
+exit_code = 101
+
+[[case]]
+name = "i64_overflow_multiplication"
+description = "Large i64 multiplication should overflow"
+source = """
+fn main() -> i64 {
+    let x: i64 = 3037000500;  // sqrt(MAX) is about 3037000499
+    x * x  // This should overflow
+}
+"""
+exit_code = 101
+
+# =============================================================================
+# Valid signed arithmetic (no overflow)
+# =============================================================================
+
+[[case]]
+name = "i8_near_max_no_overflow"
+description = "126 + 1 = 127 should NOT overflow"
+source = """
+fn main() -> i8 {
+    let x: i8 = 126;
+    x + 1
+}
+"""
+exit_code = 127
+
+[[case]]
+name = "i16_near_max_no_overflow"
+description = "Near-max i16 arithmetic"
+source = """
+fn main() -> i32 {
+    let x: i16 = 32766;
+    let y: i16 = x + 1;
+    if y == 32767 { 42 } else { 0 }
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "i64_large_no_overflow"
+description = "Large i64 values that don't overflow"
+source = """
+fn main() -> i32 {
+    let x: i64 = 1000000000000;
+    let y: i64 = x + 1;
+    if y > 1000000000000 { 42 } else { 0 }
+}
+"""
+exit_code = 42

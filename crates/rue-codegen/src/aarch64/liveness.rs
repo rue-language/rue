@@ -269,10 +269,15 @@ fn uses(inst: &Aarch64Inst) -> Vec<VReg> {
         }
         Aarch64Inst::AddRR { src1, src2, .. }
         | Aarch64Inst::AddsRR { src1, src2, .. }
+        | Aarch64Inst::AddsRR64 { src1, src2, .. }
         | Aarch64Inst::SubRR { src1, src2, .. }
         | Aarch64Inst::SubsRR { src1, src2, .. }
+        | Aarch64Inst::SubsRR64 { src1, src2, .. }
         | Aarch64Inst::MulRR { src1, src2, .. }
         | Aarch64Inst::SmullRR { src1, src2, .. }
+        | Aarch64Inst::UmullRR { src1, src2, .. }
+        | Aarch64Inst::SmulhRR { src1, src2, .. }
+        | Aarch64Inst::UmulhRR { src1, src2, .. }
         | Aarch64Inst::SdivRR { src1, src2, .. }
         | Aarch64Inst::AndRR { src1, src2, .. }
         | Aarch64Inst::OrrRR { src1, src2, .. }
@@ -280,7 +285,10 @@ fn uses(inst: &Aarch64Inst) -> Vec<VReg> {
             add_if_virtual(src1, &mut result);
             add_if_virtual(src2, &mut result);
         }
-        Aarch64Inst::AddImm { src, .. } | Aarch64Inst::SubImm { src, .. } => {
+        Aarch64Inst::AddImm { src, .. }
+        | Aarch64Inst::SubImm { src, .. }
+        | Aarch64Inst::Lsr64Imm { src, .. }
+        | Aarch64Inst::Asr64Imm { src, .. } => {
             add_if_virtual(src, &mut result);
         }
         Aarch64Inst::Msub {
@@ -290,7 +298,9 @@ fn uses(inst: &Aarch64Inst) -> Vec<VReg> {
             add_if_virtual(src2, &mut result);
             add_if_virtual(src3, &mut result);
         }
-        Aarch64Inst::Neg { src, .. } | Aarch64Inst::Negs { src, .. } => {
+        Aarch64Inst::Neg { src, .. }
+        | Aarch64Inst::Negs { src, .. }
+        | Aarch64Inst::Negs32 { src, .. } => {
             add_if_virtual(src, &mut result);
         }
         Aarch64Inst::EorImm { src, .. } => {
@@ -375,16 +385,24 @@ fn defs(inst: &Aarch64Inst) -> Vec<VReg> {
         }
         Aarch64Inst::AddRR { dst, .. }
         | Aarch64Inst::AddsRR { dst, .. }
+        | Aarch64Inst::AddsRR64 { dst, .. }
         | Aarch64Inst::SubRR { dst, .. }
         | Aarch64Inst::SubsRR { dst, .. }
+        | Aarch64Inst::SubsRR64 { dst, .. }
         | Aarch64Inst::AddImm { dst, .. }
         | Aarch64Inst::SubImm { dst, .. }
         | Aarch64Inst::MulRR { dst, .. }
         | Aarch64Inst::SmullRR { dst, .. }
+        | Aarch64Inst::UmullRR { dst, .. }
+        | Aarch64Inst::SmulhRR { dst, .. }
+        | Aarch64Inst::UmulhRR { dst, .. }
+        | Aarch64Inst::Lsr64Imm { dst, .. }
+        | Aarch64Inst::Asr64Imm { dst, .. }
         | Aarch64Inst::SdivRR { dst, .. }
         | Aarch64Inst::Msub { dst, .. }
         | Aarch64Inst::Neg { dst, .. }
         | Aarch64Inst::Negs { dst, .. }
+        | Aarch64Inst::Negs32 { dst, .. }
         | Aarch64Inst::AndRR { dst, .. }
         | Aarch64Inst::OrrRR { dst, .. }
         | Aarch64Inst::EorRR { dst, .. }

@@ -456,3 +456,232 @@ fn main() -> i32 {
 }
 """
 exit_code = 1
+
+# =============================================================================
+# Unsigned Integer Overflow (Runtime Panic - Exit 101)
+# =============================================================================
+# The spec says unsigned integer overflow is undefined behavior.
+# In practice, Rue panics with exit code 101 on overflow.
+
+[[case]]
+name = "u8_overflow_addition"
+description = "255 + 1 should overflow and panic"
+source = """
+fn main() -> u8 {
+    let x: u8 = 255;
+    x + 1
+}
+"""
+exit_code = 101
+
+[[case]]
+name = "u8_overflow_addition_rhs"
+description = "u8 addition overflow with larger addend"
+source = """
+fn main() -> u8 {
+    let x: u8 = 200;
+    let y: u8 = 100;
+    x + y
+}
+"""
+exit_code = 101
+
+[[case]]
+name = "u8_overflow_subtraction"
+description = "0 - 1 should underflow and panic"
+source = """
+fn main() -> u8 {
+    let x: u8 = 0;
+    x - 1
+}
+"""
+exit_code = 101
+
+[[case]]
+name = "u8_overflow_multiplication"
+description = "16 * 16 = 256 should overflow u8"
+source = """
+fn main() -> u8 {
+    let x: u8 = 16;
+    x * 16
+}
+"""
+exit_code = 101
+
+[[case]]
+name = "u16_overflow_addition"
+description = "65535 + 1 should overflow and panic"
+source = """
+fn main() -> u16 {
+    let x: u16 = 65535;
+    x + 1
+}
+"""
+exit_code = 101
+
+[[case]]
+name = "u16_overflow_subtraction"
+description = "0 - 1 should underflow and panic"
+source = """
+fn main() -> u16 {
+    let x: u16 = 0;
+    x - 1
+}
+"""
+exit_code = 101
+
+[[case]]
+name = "u32_overflow_addition"
+description = "4294967295 + 1 should overflow and panic"
+source = """
+fn main() -> u32 {
+    let x: u32 = 4294967295;
+    x + 1
+}
+"""
+exit_code = 101
+
+[[case]]
+name = "u32_overflow_subtraction"
+description = "0 - 1 should underflow and panic"
+source = """
+fn main() -> u32 {
+    let x: u32 = 0;
+    x - 1
+}
+"""
+exit_code = 101
+
+[[case]]
+name = "u32_overflow_multiplication"
+description = "Large u32 multiplication should overflow"
+source = """
+fn main() -> u32 {
+    let x: u32 = 100000;
+    x * 100000
+}
+"""
+exit_code = 101
+
+[[case]]
+name = "u64_overflow_addition"
+description = "Large u64 addition should overflow"
+source = """
+fn main() -> u64 {
+    // Start with large values and add to overflow
+    let x: u64 = 9223372036854775807;  // About half of MAX
+    let y: u64 = x + x;  // Near MAX
+    y + x  // This should overflow
+}
+"""
+exit_code = 101
+
+[[case]]
+name = "u64_overflow_subtraction"
+description = "0 - 1 should underflow and panic"
+source = """
+fn main() -> u64 {
+    let x: u64 = 0;
+    x - 1
+}
+"""
+exit_code = 101
+
+# =============================================================================
+# Unsigned Negation Overflow
+# =============================================================================
+# Negating any non-zero unsigned value causes overflow since 0 - x wraps.
+# Only -0 = 0 is valid for unsigned types.
+
+[[case]]
+name = "u8_negation_zero"
+description = "Negating zero should be valid (0 = -0)"
+source = """
+fn main() -> u8 {
+    let x: u8 = 0;
+    -x
+}
+"""
+exit_code = 0
+
+[[case]]
+name = "u8_negation_overflow"
+description = "Negating any non-zero u8 should panic"
+source = """
+fn main() -> u8 {
+    let x: u8 = 1;
+    -x
+}
+"""
+exit_code = 101
+
+[[case]]
+name = "u32_negation_zero"
+description = "Negating zero should be valid for u32"
+source = """
+fn main() -> u32 {
+    let x: u32 = 0;
+    -x
+}
+"""
+exit_code = 0
+
+[[case]]
+name = "u32_negation_overflow"
+description = "Negating any non-zero u32 should panic"
+source = """
+fn main() -> u32 {
+    let x: u32 = 1;
+    -x
+}
+"""
+exit_code = 101
+
+[[case]]
+name = "u64_negation_zero"
+description = "Negating zero should be valid for u64"
+source = """
+fn main() -> u64 {
+    let x: u64 = 0;
+    -x
+}
+"""
+exit_code = 0
+
+[[case]]
+name = "u64_negation_overflow"
+description = "Negating any non-zero u64 should panic"
+source = """
+fn main() -> u64 {
+    let x: u64 = 1;
+    -x
+}
+"""
+exit_code = 101
+
+# =============================================================================
+# Valid unsigned arithmetic (no overflow)
+# =============================================================================
+
+[[case]]
+name = "u8_near_max_no_overflow"
+description = "254 + 1 = 255 should NOT overflow"
+source = """
+fn main() -> u8 {
+    let x: u8 = 254;
+    x + 1
+}
+"""
+exit_code = 255
+
+[[case]]
+name = "u32_near_max_no_overflow"
+description = "Large u32 that doesn't overflow"
+source = """
+fn main() -> i32 {
+    let x: u32 = 4294967294;
+    let y: u32 = x + 1;
+    if y == 4294967295 { 42 } else { 0 }
+}
+"""
+exit_code = 42

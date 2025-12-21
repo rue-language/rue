@@ -1,0 +1,2 @@
+# Add readme.md so that include_str! can find it
+extra_srcs = ["readme.md"]

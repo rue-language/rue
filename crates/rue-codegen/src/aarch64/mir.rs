@@ -418,8 +418,15 @@ pub enum Aarch64Inst {
         src2: Operand,
     },
 
-    /// `adds dst, src1, src2` - Add and set flags.
+    /// `adds dst, src1, src2` - Add and set flags (32-bit).
     AddsRR {
+        dst: Operand,
+        src1: Operand,
+        src2: Operand,
+    },
+
+    /// `adds dst, src1, src2` - Add and set flags (64-bit).
+    AddsRR64 {
         dst: Operand,
         src1: Operand,
         src2: Operand,
@@ -439,8 +446,15 @@ pub enum Aarch64Inst {
         src2: Operand,
     },
 
-    /// `subs dst, src1, src2` - Subtract and set flags.
+    /// `subs dst, src1, src2` - Subtract and set flags (32-bit).
     SubsRR {
+        dst: Operand,
+        src1: Operand,
+        src2: Operand,
+    },
+
+    /// `subs dst, src1, src2` - Subtract and set flags (64-bit).
+    SubsRR64 {
         dst: Operand,
         src1: Operand,
         src2: Operand,
@@ -467,6 +481,33 @@ pub enum Aarch64Inst {
         src2: Operand,
     },
 
+    /// `umull dst, src1, src2` - Unsigned multiply long (32x32->64 for overflow check).
+    UmullRR {
+        dst: Operand,
+        src1: Operand,
+        src2: Operand,
+    },
+
+    /// `smulh dst, src1, src2` - Signed multiply high (high 64 bits of 64x64->128).
+    SmulhRR {
+        dst: Operand,
+        src1: Operand,
+        src2: Operand,
+    },
+
+    /// `umulh dst, src1, src2` - Unsigned multiply high (high 64 bits of 64x64->128).
+    UmulhRR {
+        dst: Operand,
+        src1: Operand,
+        src2: Operand,
+    },
+
+    /// `lsr dst, src, #imm` - Logical shift right by immediate (64-bit).
+    Lsr64Imm { dst: Operand, src: Operand, imm: u8 },
+
+    /// `asr dst, src, #imm` - Arithmetic shift right by immediate (64-bit).
+    Asr64Imm { dst: Operand, src: Operand, imm: u8 },
+
     /// `sdiv dst, src1, src2` - Signed divide.
     SdivRR {
         dst: Operand,
@@ -486,8 +527,11 @@ pub enum Aarch64Inst {
     /// `neg dst, src` - Negate (sub from zero).
     Neg { dst: Operand, src: Operand },
 
-    /// `negs dst, src` - Negate and set flags (for overflow detection).
+    /// `negs dst, src` - Negate and set flags (64-bit, for i64/u64 overflow detection).
     Negs { dst: Operand, src: Operand },
+
+    /// `negs dst, src` - Negate and set flags (32-bit, for i32/u32 overflow detection).
+    Negs32 { dst: Operand, src: Operand },
 
     // === Logical instructions ===
     /// `and dst, src1, src2` - Bitwise AND.
@@ -659,6 +703,9 @@ impl fmt::Display for Aarch64Inst {
             Aarch64Inst::AddsRR { dst, src1, src2 } => {
                 write!(f, "adds {}, {}, {}", dst, src1, src2)
             }
+            Aarch64Inst::AddsRR64 { dst, src1, src2 } => {
+                write!(f, "adds {}, {}, {} // 64-bit", dst, src1, src2)
+            }
             Aarch64Inst::AddImm { dst, src, imm } => write!(f, "add {}, {}, #{}", dst, src, imm),
             Aarch64Inst::SubRR { dst, src1, src2 } => {
                 write!(f, "sub {}, {}, {}", dst, src1, src2)
@@ -666,12 +713,30 @@ impl fmt::Display for Aarch64Inst {
             Aarch64Inst::SubsRR { dst, src1, src2 } => {
                 write!(f, "subs {}, {}, {}", dst, src1, src2)
             }
+            Aarch64Inst::SubsRR64 { dst, src1, src2 } => {
+                write!(f, "subs {}, {}, {} // 64-bit", dst, src1, src2)
+            }
             Aarch64Inst::SubImm { dst, src, imm } => write!(f, "sub {}, {}, #{}", dst, src, imm),
             Aarch64Inst::MulRR { dst, src1, src2 } => {
                 write!(f, "mul {}, {}, {}", dst, src1, src2)
             }
             Aarch64Inst::SmullRR { dst, src1, src2 } => {
                 write!(f, "smull {}, {}, {}", dst, src1, src2)
+            }
+            Aarch64Inst::UmullRR { dst, src1, src2 } => {
+                write!(f, "umull {}, {}, {}", dst, src1, src2)
+            }
+            Aarch64Inst::SmulhRR { dst, src1, src2 } => {
+                write!(f, "smulh {}, {}, {}", dst, src1, src2)
+            }
+            Aarch64Inst::UmulhRR { dst, src1, src2 } => {
+                write!(f, "umulh {}, {}, {}", dst, src1, src2)
+            }
+            Aarch64Inst::Lsr64Imm { dst, src, imm } => {
+                write!(f, "lsr {}, {}, #{}", dst, src, imm)
+            }
+            Aarch64Inst::Asr64Imm { dst, src, imm } => {
+                write!(f, "asr {}, {}, #{}", dst, src, imm)
             }
             Aarch64Inst::SdivRR { dst, src1, src2 } => {
                 write!(f, "sdiv {}, {}, {}", dst, src1, src2)
@@ -684,6 +749,7 @@ impl fmt::Display for Aarch64Inst {
             } => write!(f, "msub {}, {}, {}, {}", dst, src1, src2, src3),
             Aarch64Inst::Neg { dst, src } => write!(f, "neg {}, {}", dst, src),
             Aarch64Inst::Negs { dst, src } => write!(f, "negs {}, {}", dst, src),
+            Aarch64Inst::Negs32 { dst, src } => write!(f, "negs32 {}, {}", dst, src),
             Aarch64Inst::AndRR { dst, src1, src2 } => {
                 write!(f, "and {}, {}, {}", dst, src1, src2)
             }

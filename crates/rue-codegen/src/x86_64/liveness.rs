@@ -170,6 +170,7 @@ fn uses(inst: &X86Inst) -> Vec<VReg> {
             add_if_virtual(src, &mut result);
         }
         X86Inst::AddRR { dst, src }
+        | X86Inst::AddRR64 { dst, src }
         | X86Inst::SubRR { dst, src }
         | X86Inst::SubRR64 { dst, src } => {
             // dst is both read and written (dst = dst op src)
@@ -180,11 +181,11 @@ fn uses(inst: &X86Inst) -> Vec<VReg> {
             // dst is both read and written (dst = dst + imm)
             add_if_virtual(dst, &mut result);
         }
-        X86Inst::ImulRR { dst, src } => {
+        X86Inst::ImulRR { dst, src } | X86Inst::ImulRR64 { dst, src } => {
             add_if_virtual(dst, &mut result);
             add_if_virtual(src, &mut result);
         }
-        X86Inst::Neg { dst } => {
+        X86Inst::Neg { dst } | X86Inst::Neg64 { dst } => {
             // dst is both read and written
             add_if_virtual(dst, &mut result);
         }
@@ -260,6 +261,7 @@ fn uses(inst: &X86Inst) -> Vec<VReg> {
         | X86Inst::Jno { .. }
         | X86Inst::Jb { .. }
         | X86Inst::Jae { .. }
+        | X86Inst::Jbe { .. }
         | X86Inst::Jmp { .. }
         | X86Inst::Label { .. }
         | X86Inst::CallRel { .. }
@@ -296,13 +298,15 @@ fn defs(inst: &X86Inst) -> Vec<VReg> {
             // Writes to memory, not to a register
         }
         X86Inst::AddRR { dst, .. }
+        | X86Inst::AddRR64 { dst, .. }
         | X86Inst::AddRI { dst, .. }
         | X86Inst::SubRR { dst, .. }
         | X86Inst::SubRR64 { dst, .. }
-        | X86Inst::ImulRR { dst, .. } => {
+        | X86Inst::ImulRR { dst, .. }
+        | X86Inst::ImulRR64 { dst, .. } => {
             add_if_virtual(dst, &mut result);
         }
-        X86Inst::Neg { dst } | X86Inst::XorRI { dst, .. } => {
+        X86Inst::Neg { dst } | X86Inst::Neg64 { dst } | X86Inst::XorRI { dst, .. } => {
             add_if_virtual(dst, &mut result);
         }
         X86Inst::AndRR { dst, .. } | X86Inst::OrRR { dst, .. } => {
@@ -359,6 +363,7 @@ fn defs(inst: &X86Inst) -> Vec<VReg> {
         | X86Inst::Jno { .. }
         | X86Inst::Jb { .. }
         | X86Inst::Jae { .. }
+        | X86Inst::Jbe { .. }
         | X86Inst::Jmp { .. }
         | X86Inst::Label { .. }
         | X86Inst::CallRel { .. }

@@ -363,18 +363,22 @@ impl<'a> CfgLower<'a> {
                     dst: Operand::Virtual(vreg),
                     src: Operand::Virtual(lhs_vreg),
                 });
-                self.mir.push(X86Inst::AddRR {
-                    dst: Operand::Virtual(vreg),
-                    src: Operand::Virtual(rhs_vreg),
-                });
 
-                // Overflow check
-                let ok_label = self.new_label();
-                self.mir.push(X86Inst::Jno { label: ok_label });
-                self.mir.push(X86Inst::CallRel {
-                    symbol: "__rue_overflow".to_string(),
-                });
-                self.mir.push(X86Inst::Label { id: ok_label });
+                // Use 64-bit add for 64-bit types to get correct overflow detection
+                if matches!(ty, Type::I64 | Type::U64) {
+                    self.mir.push(X86Inst::AddRR64 {
+                        dst: Operand::Virtual(vreg),
+                        src: Operand::Virtual(rhs_vreg),
+                    });
+                } else {
+                    self.mir.push(X86Inst::AddRR {
+                        dst: Operand::Virtual(vreg),
+                        src: Operand::Virtual(rhs_vreg),
+                    });
+                }
+
+                // Overflow check - use appropriate flag based on signedness
+                self.emit_overflow_check(ty, vreg);
             }
 
             CfgInstData::Sub(lhs, rhs) => {
@@ -388,17 +392,22 @@ impl<'a> CfgLower<'a> {
                     dst: Operand::Virtual(vreg),
                     src: Operand::Virtual(lhs_vreg),
                 });
-                self.mir.push(X86Inst::SubRR {
-                    dst: Operand::Virtual(vreg),
-                    src: Operand::Virtual(rhs_vreg),
-                });
 
-                let ok_label = self.new_label();
-                self.mir.push(X86Inst::Jno { label: ok_label });
-                self.mir.push(X86Inst::CallRel {
-                    symbol: "__rue_overflow".to_string(),
-                });
-                self.mir.push(X86Inst::Label { id: ok_label });
+                // Use 64-bit sub for 64-bit types to get correct overflow detection
+                if matches!(ty, Type::I64 | Type::U64) {
+                    self.mir.push(X86Inst::SubRR64 {
+                        dst: Operand::Virtual(vreg),
+                        src: Operand::Virtual(rhs_vreg),
+                    });
+                } else {
+                    self.mir.push(X86Inst::SubRR {
+                        dst: Operand::Virtual(vreg),
+                        src: Operand::Virtual(rhs_vreg),
+                    });
+                }
+
+                // Overflow check - use appropriate flag based on signedness
+                self.emit_overflow_check(ty, vreg);
             }
 
             CfgInstData::Mul(lhs, rhs) => {
@@ -412,17 +421,24 @@ impl<'a> CfgLower<'a> {
                     dst: Operand::Virtual(vreg),
                     src: Operand::Virtual(lhs_vreg),
                 });
-                self.mir.push(X86Inst::ImulRR {
-                    dst: Operand::Virtual(vreg),
-                    src: Operand::Virtual(rhs_vreg),
-                });
 
-                let ok_label = self.new_label();
-                self.mir.push(X86Inst::Jno { label: ok_label });
-                self.mir.push(X86Inst::CallRel {
-                    symbol: "__rue_overflow".to_string(),
-                });
-                self.mir.push(X86Inst::Label { id: ok_label });
+                // Use 64-bit mul for 64-bit types to get correct overflow detection
+                if matches!(ty, Type::I64 | Type::U64) {
+                    self.mir.push(X86Inst::ImulRR64 {
+                        dst: Operand::Virtual(vreg),
+                        src: Operand::Virtual(rhs_vreg),
+                    });
+                } else {
+                    self.mir.push(X86Inst::ImulRR {
+                        dst: Operand::Virtual(vreg),
+                        src: Operand::Virtual(rhs_vreg),
+                    });
+                }
+
+                // Overflow check - use appropriate flag based on signedness
+                // Note: IMUL sets both OF and CF to the same value, so this works
+                // for both signed and unsigned multiplication
+                self.emit_overflow_check(ty, vreg);
             }
 
             CfgInstData::Div(lhs, rhs) => {
@@ -500,16 +516,24 @@ impl<'a> CfgLower<'a> {
                     dst: Operand::Virtual(vreg),
                     src: Operand::Virtual(operand_vreg),
                 });
-                self.mir.push(X86Inst::Neg {
-                    dst: Operand::Virtual(vreg),
-                });
 
-                let ok_label = self.new_label();
-                self.mir.push(X86Inst::Jno { label: ok_label });
-                self.mir.push(X86Inst::CallRel {
-                    symbol: "__rue_overflow".to_string(),
-                });
-                self.mir.push(X86Inst::Label { id: ok_label });
+                // Use 64-bit neg for 64-bit types to get correct overflow detection
+                if matches!(ty, Type::I64 | Type::U64) {
+                    self.mir.push(X86Inst::Neg64 {
+                        dst: Operand::Virtual(vreg),
+                    });
+                } else {
+                    self.mir.push(X86Inst::Neg {
+                        dst: Operand::Virtual(vreg),
+                    });
+                }
+
+                // Overflow check for negation
+                // For signed types: NEG sets OF when negating MIN_VALUE
+                // For unsigned types: NEG sets CF for all non-zero values,
+                // but we only care about -0 = 0 (no overflow). Since negation
+                // of any non-zero unsigned value would wrap (0 - x), we check CF.
+                self.emit_overflow_check(ty, vreg);
             }
 
             CfgInstData::Not(operand) => {
@@ -1189,6 +1213,102 @@ impl<'a> CfgLower<'a> {
     /// Sema guarantees both operands have the same signedness, so we only need to check one.
     fn is_unsigned_comparison(&self, lhs: CfgValue) -> bool {
         self.cfg.get_inst(lhs).ty.is_unsigned()
+    }
+
+    /// Emit overflow check based on the type.
+    ///
+    /// For 32/64-bit types, we can use the CPU flags directly:
+    /// - Signed (i32, i64): Use OF (overflow flag) via JNO
+    /// - Unsigned (u32, u64): Use CF (carry flag) via JAE (= JNC)
+    ///
+    /// For sub-word types (8/16-bit), the arithmetic is done in 32/64-bit registers,
+    /// so we need to check if the result fits in the original type's range.
+    fn emit_overflow_check(&mut self, ty: Type, result_vreg: VReg) {
+        let ok_label = self.new_label();
+
+        match ty {
+            // 32-bit and 64-bit unsigned: check carry flag
+            Type::U32 | Type::U64 => {
+                self.mir.push(X86Inst::Jae { label: ok_label });
+            }
+            // 32-bit and 64-bit signed: check overflow flag
+            Type::I32 | Type::I64 => {
+                self.mir.push(X86Inst::Jno { label: ok_label });
+            }
+            // Sub-word unsigned types: check if result fits in range [0, max]
+            Type::U8 => {
+                // Result must be <= 255
+                self.mir.push(X86Inst::CmpRI {
+                    src: Operand::Virtual(result_vreg),
+                    imm: 255,
+                });
+                // Jump if below or equal (unsigned)
+                self.mir.push(X86Inst::Jbe { label: ok_label });
+            }
+            Type::U16 => {
+                // Result must be <= 65535
+                let max_vreg = self.mir.alloc_vreg();
+                self.mir.push(X86Inst::MovRI32 {
+                    dst: Operand::Virtual(max_vreg),
+                    imm: 65535,
+                });
+                self.mir.push(X86Inst::CmpRR {
+                    src1: Operand::Virtual(result_vreg),
+                    src2: Operand::Virtual(max_vreg),
+                });
+                // Jump if below or equal (unsigned)
+                self.mir.push(X86Inst::Jbe { label: ok_label });
+            }
+            // Sub-word signed types: check if result fits in range [min, max]
+            Type::I8 => {
+                // For i8: result must be in [-128, 127]
+                // Sign-extend to 32-bit and compare with original
+                // If they differ, overflow occurred
+                let sext_vreg = self.mir.alloc_vreg();
+                self.mir.push(X86Inst::MovRR {
+                    dst: Operand::Virtual(sext_vreg),
+                    src: Operand::Virtual(result_vreg),
+                });
+                self.mir.push(X86Inst::Movsx8To64 {
+                    dst: Operand::Virtual(sext_vreg),
+                    src: Operand::Virtual(sext_vreg),
+                });
+                self.mir.push(X86Inst::CmpRR {
+                    src1: Operand::Virtual(result_vreg),
+                    src2: Operand::Virtual(sext_vreg),
+                });
+                self.mir.push(X86Inst::Jz { label: ok_label });
+            }
+            Type::I16 => {
+                // For i16: result must be in [-32768, 32767]
+                // Sign-extend to 32-bit and compare with original
+                let sext_vreg = self.mir.alloc_vreg();
+                self.mir.push(X86Inst::MovRR {
+                    dst: Operand::Virtual(sext_vreg),
+                    src: Operand::Virtual(result_vreg),
+                });
+                self.mir.push(X86Inst::Movsx16To64 {
+                    dst: Operand::Virtual(sext_vreg),
+                    src: Operand::Virtual(sext_vreg),
+                });
+                self.mir.push(X86Inst::CmpRR {
+                    src1: Operand::Virtual(result_vreg),
+                    src2: Operand::Virtual(sext_vreg),
+                });
+                self.mir.push(X86Inst::Jz { label: ok_label });
+            }
+            // Other types (bool, unit, struct, etc.) don't have arithmetic
+            _ => {
+                // No overflow check needed
+                return;
+            }
+        }
+
+        // Overflow occurred - call panic handler
+        self.mir.push(X86Inst::CallRel {
+            symbol: "__rue_overflow".to_string(),
+        });
+        self.mir.push(X86Inst::Label { id: ok_label });
     }
 
     /// Emit a comparison instruction.

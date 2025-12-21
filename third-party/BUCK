@@ -3290,7 +3290,10 @@ cargo.rust_library(
 
 cargo.rust_library(
     name = "windows-link-0.2.1",
-    srcs = ["vendor/windows-link-0.2.1/src/lib.rs"],
+    srcs = [
+        "vendor/windows-link-0.2.1/readme.md",
+        "vendor/windows-link-0.2.1/src/lib.rs",
+    ],
     crate = "windows_link",
     crate_root = "vendor/windows-link-0.2.1/src/lib.rs",
     edition = "2021",
