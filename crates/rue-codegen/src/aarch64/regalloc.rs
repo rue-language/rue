@@ -720,7 +720,7 @@ impl RegAlloc {
             Aarch64Inst::BCond { cond, label } => mir.push(Aarch64Inst::BCond { cond, label }),
             Aarch64Inst::Bvs { label } => mir.push(Aarch64Inst::Bvs { label }),
             Aarch64Inst::Bvc { label } => mir.push(Aarch64Inst::Bvc { label }),
-            Aarch64Inst::Label { name } => mir.push(Aarch64Inst::Label { name }),
+            Aarch64Inst::Label { id } => mir.push(Aarch64Inst::Label { id }),
             Aarch64Inst::Bl { symbol } => mir.push(Aarch64Inst::Bl { symbol }),
             Aarch64Inst::Ret => mir.push(Aarch64Inst::Ret),
         }

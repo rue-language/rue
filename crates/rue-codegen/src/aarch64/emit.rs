@@ -5,7 +5,7 @@
 
 use std::collections::HashMap;
 
-use super::mir::{Aarch64Inst, Aarch64Mir, Cond, Reg};
+use super::mir::{Aarch64Inst, Aarch64Mir, Cond, LabelId, Reg};
 use crate::EmittedRelocation;
 
 // ========== AArch64 Instruction Encoding Constants ==========
@@ -120,8 +120,8 @@ const OPCODE_UBFM_X: u32 = 0xD3400000;
 struct Fixup {
     /// Offset of the instruction in the code.
     offset: usize,
-    /// Target label name.
-    label: String,
+    /// Target label ID.
+    label: LabelId,
     /// Kind of branch (for calculating offset).
     kind: FixupKind,
 }
@@ -139,7 +139,7 @@ pub struct Emitter<'a> {
     mir: &'a Aarch64Mir,
     code: Vec<u8>,
     relocations: Vec<EmittedRelocation>,
-    labels: HashMap<String, usize>,
+    labels: HashMap<LabelId, usize>,
     fixups: Vec<Fixup>,
     num_locals: u32,
     num_params: u32,
@@ -491,12 +491,12 @@ impl<'a> Emitter<'a> {
 
             Aarch64Inst::Cbz { src, label } => {
                 let rt = src.as_physical();
-                self.emit_cbz(rt, label, false);
+                self.emit_cbz(rt, *label, false);
             }
 
             Aarch64Inst::Cbnz { src, label } => {
                 let rt = src.as_physical();
-                self.emit_cbz(rt, label, true);
+                self.emit_cbz(rt, *label, true);
             }
 
             Aarch64Inst::Cset { dst, cond } => {
@@ -542,25 +542,25 @@ impl<'a> Emitter<'a> {
             }
 
             Aarch64Inst::B { label } => {
-                self.emit_b(label);
+                self.emit_b(*label);
             }
 
             Aarch64Inst::BCond { cond, label } => {
-                self.emit_bcond(*cond, label);
+                self.emit_bcond(*cond, *label);
             }
 
             Aarch64Inst::Bvs { label } => {
                 // B.VS = branch if overflow set (cond = 0110)
-                self.emit_bcond_raw(6, label);
+                self.emit_bcond_raw(6, *label);
             }
 
             Aarch64Inst::Bvc { label } => {
                 // B.VC = branch if overflow clear (cond = 0111)
-                self.emit_bcond_raw(7, label);
+                self.emit_bcond_raw(7, *label);
             }
 
-            Aarch64Inst::Label { name } => {
-                self.labels.insert(name.clone(), self.code.len());
+            Aarch64Inst::Label { id } => {
+                self.labels.insert(*id, self.code.len());
             }
 
             Aarch64Inst::Bl { symbol } => {
@@ -1115,7 +1115,7 @@ impl<'a> Emitter<'a> {
         self.emit_u32(inst);
     }
 
-    fn emit_cbz(&mut self, rt: Reg, label: &str, is_nz: bool) {
+    fn emit_cbz(&mut self, rt: Reg, label: LabelId, is_nz: bool) {
         // CBZ/CBNZ Xt, label
         let op = if is_nz { 1 } else { 0 };
         let offset = self.code.len();
@@ -1126,7 +1126,7 @@ impl<'a> Emitter<'a> {
 
         self.fixups.push(Fixup {
             offset,
-            label: label.to_string(),
+            label,
             kind: FixupKind::CondBranch,
         });
     }
@@ -1158,38 +1158,38 @@ impl<'a> Emitter<'a> {
         self.emit_u32(inst);
     }
 
-    fn emit_b(&mut self, label: &str) {
+    fn emit_b(&mut self, label: LabelId) {
         // B label
         let offset = self.code.len();
         self.emit_u32(OPCODE_B);
 
         self.fixups.push(Fixup {
             offset,
-            label: label.to_string(),
+            label,
             kind: FixupKind::Branch,
         });
     }
 
-    fn emit_bcond(&mut self, cond: Cond, label: &str) {
+    fn emit_bcond(&mut self, cond: Cond, label: LabelId) {
         let offset = self.code.len();
         let inst = OPCODE_BCOND | cond.encoding() as u32;
         self.emit_u32(inst);
 
         self.fixups.push(Fixup {
             offset,
-            label: label.to_string(),
+            label,
             kind: FixupKind::CondBranch,
         });
     }
 
-    fn emit_bcond_raw(&mut self, cond: u8, label: &str) {
+    fn emit_bcond_raw(&mut self, cond: u8, label: LabelId) {
         let offset = self.code.len();
         let inst = OPCODE_BCOND | cond as u32;
         self.emit_u32(inst);
 
         self.fixups.push(Fixup {
             offset,
-            label: label.to_string(),
+            label,
             kind: FixupKind::CondBranch,
         });
     }

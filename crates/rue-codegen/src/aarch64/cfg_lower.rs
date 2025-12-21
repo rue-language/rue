@@ -10,7 +10,7 @@ use rue_cfg::{
     BasicBlock, BlockId, Cfg, CfgInstData, CfgValue, StructDef, StructId, Terminator, Type,
 };
 
-use super::mir::{Aarch64Inst, Aarch64Mir, Cond, Operand, Reg, VReg};
+use super::mir::{Aarch64Inst, Aarch64Mir, Cond, LabelId, Operand, Reg, VReg};
 
 /// Argument passing registers per AAPCS64.
 const ARG_REGS: [Reg; 8] = [
@@ -47,14 +47,12 @@ pub struct CfgLower<'a> {
     value_map: HashMap<CfgValue, VReg>,
     /// Maps block parameters to vregs (block_id, param_index) -> vreg
     block_param_vregs: HashMap<(BlockId, u32), VReg>,
-    /// Label counter for generating unique labels
-    label_counter: u32,
     /// Number of local variable slots
     num_locals: u32,
     /// Number of parameter slots
     num_params: u32,
-    /// Function name
-    fn_name: String,
+    /// Function name (needed to detect main function)
+    fn_name: &'a str,
     /// Maps StructInit CFG values to their field vregs
     struct_field_vregs: HashMap<CfgValue, Vec<VReg>>,
 }
@@ -75,10 +73,9 @@ impl<'a> CfgLower<'a> {
             mir: Aarch64Mir::new(),
             value_map: HashMap::new(),
             block_param_vregs: HashMap::new(),
-            label_counter: 0,
             num_locals,
             num_params,
-            fn_name: cfg.fn_name().to_string(),
+            fn_name: cfg.fn_name(),
             struct_field_vregs: HashMap::new(),
         }
     }
@@ -124,10 +121,10 @@ impl<'a> CfgLower<'a> {
         });
 
         // If index < length (unsigned), branch to ok label; otherwise call bounds check
-        let ok_label = self.new_label("bounds_ok");
+        let ok_label = self.mir.alloc_label();
         self.mir.push(Aarch64Inst::BCond {
             cond: Cond::Lo, // Lower (unsigned <)
-            label: ok_label.clone(),
+            label: ok_label,
         });
 
         // Call the bounds check error handler (never returns)
@@ -136,20 +133,12 @@ impl<'a> CfgLower<'a> {
         });
 
         // Continue with valid access
-        self.mir.push(Aarch64Inst::Label { name: ok_label });
-    }
-
-    /// Generate a unique label name.
-    fn new_label(&mut self, prefix: &str) -> String {
-        // macOS requires symbols to start with underscore
-        let label = format!("_L{}_{}_{}", self.fn_name, prefix, self.label_counter);
-        self.label_counter += 1;
-        label
+        self.mir.push(Aarch64Inst::Label { id: ok_label });
     }
 
     /// Get the label for a block.
-    fn block_label(&self, block_id: BlockId) -> String {
-        format!("_L{}_{}", self.fn_name, block_id.as_u32())
+    fn block_label(&self, block_id: BlockId) -> LabelId {
+        Aarch64Mir::block_label(block_id.as_u32())
     }
 
     /// Get or compute field vregs for a struct value.
@@ -279,7 +268,7 @@ impl<'a> CfgLower<'a> {
         // Emit block label (except for entry block)
         if block.id != self.cfg.entry {
             self.mir.push(Aarch64Inst::Label {
-                name: self.block_label(block.id),
+                id: self.block_label(block.id),
             });
         }
 
@@ -374,7 +363,7 @@ impl<'a> CfgLower<'a> {
                 }
 
                 // Overflow check - use appropriate flag based on signedness
-                self.emit_overflow_check_add(ty, vreg, "add_ok");
+                self.emit_overflow_check_add(ty, vreg);
             }
 
             CfgInstData::Sub(lhs, rhs) => {
@@ -400,7 +389,7 @@ impl<'a> CfgLower<'a> {
                 }
 
                 // Overflow check - use appropriate flag based on signedness
-                self.emit_overflow_check_sub(ty, vreg, "sub_ok");
+                self.emit_overflow_check_sub(ty, vreg);
             }
 
             CfgInstData::Mul(lhs, rhs) => {
@@ -411,7 +400,7 @@ impl<'a> CfgLower<'a> {
                 let rhs_vreg = self.get_vreg(*rhs);
 
                 // Overflow check for multiplication
-                self.emit_overflow_check_mul(ty, vreg, lhs_vreg, rhs_vreg, "mul_ok");
+                self.emit_overflow_check_mul(ty, vreg, lhs_vreg, rhs_vreg);
             }
 
             CfgInstData::Div(lhs, rhs) => {
@@ -422,15 +411,15 @@ impl<'a> CfgLower<'a> {
                 let rhs_vreg = self.get_vreg(*rhs);
 
                 // Division by zero check
-                let ok_label = self.new_label("div_ok");
+                let ok_label = self.mir.alloc_label();
                 self.mir.push(Aarch64Inst::Cbnz {
                     src: Operand::Virtual(rhs_vreg),
-                    label: ok_label.clone(),
+                    label: ok_label,
                 });
                 self.mir.push(Aarch64Inst::Bl {
                     symbol: "__rue_div_by_zero".to_string(),
                 });
-                self.mir.push(Aarch64Inst::Label { name: ok_label });
+                self.mir.push(Aarch64Inst::Label { id: ok_label });
 
                 self.mir.push(Aarch64Inst::SdivRR {
                     dst: Operand::Virtual(vreg),
@@ -447,15 +436,15 @@ impl<'a> CfgLower<'a> {
                 let rhs_vreg = self.get_vreg(*rhs);
 
                 // Division by zero check
-                let ok_label = self.new_label("mod_ok");
+                let ok_label = self.mir.alloc_label();
                 self.mir.push(Aarch64Inst::Cbnz {
                     src: Operand::Virtual(rhs_vreg),
-                    label: ok_label.clone(),
+                    label: ok_label,
                 });
                 self.mir.push(Aarch64Inst::Bl {
                     symbol: "__rue_div_by_zero".to_string(),
                 });
-                self.mir.push(Aarch64Inst::Label { name: ok_label });
+                self.mir.push(Aarch64Inst::Label { id: ok_label });
 
                 // Compute quotient first
                 let quot_vreg = self.mir.alloc_vreg();
@@ -493,7 +482,7 @@ impl<'a> CfgLower<'a> {
                 // Overflow check - use appropriate flag based on signedness
                 // For signed: V flag indicates overflow (when negating MIN_VALUE)
                 // For unsigned: C flag indicates non-zero operand (0 - x wraps for x != 0)
-                self.emit_overflow_check_neg(ty, vreg, "neg_ok");
+                self.emit_overflow_check_neg(ty, vreg);
             }
 
             CfgInstData::Not(operand) => {
@@ -1117,8 +1106,8 @@ impl<'a> CfgLower<'a> {
     /// - Unsigned (u32, u64): C (carry) flag - C=1 means overflow, so branch on Lo (C=0)
     ///
     /// For sub-word types, check if result fits in the type's range.
-    fn emit_overflow_check_add(&mut self, ty: Type, result_vreg: VReg, label_prefix: &str) {
-        let ok_label = self.new_label(label_prefix);
+    fn emit_overflow_check_add(&mut self, ty: Type, result_vreg: VReg) {
+        let ok_label = self.mir.alloc_label();
 
         match ty {
             // 32-bit and 64-bit unsigned: C=1 means overflow (carry out)
@@ -1126,14 +1115,12 @@ impl<'a> CfgLower<'a> {
             Type::U32 | Type::U64 => {
                 self.mir.push(Aarch64Inst::BCond {
                     cond: Cond::Lo, // Lo = C=0 (no carry)
-                    label: ok_label.clone(),
+                    label: ok_label,
                 });
             }
             // 32-bit and 64-bit signed: V flag indicates overflow
             Type::I32 | Type::I64 => {
-                self.mir.push(Aarch64Inst::Bvc {
-                    label: ok_label.clone(),
-                });
+                self.mir.push(Aarch64Inst::Bvc { label: ok_label });
             }
             // Sub-word unsigned types: check if result fits in range [0, max]
             Type::U8 => {
@@ -1145,7 +1132,7 @@ impl<'a> CfgLower<'a> {
                 // Branch if below or same (unsigned <=)
                 self.mir.push(Aarch64Inst::BCond {
                     cond: Cond::Ls,
-                    label: ok_label.clone(),
+                    label: ok_label,
                 });
             }
             Type::U16 => {
@@ -1161,7 +1148,7 @@ impl<'a> CfgLower<'a> {
                 });
                 self.mir.push(Aarch64Inst::BCond {
                     cond: Cond::Ls,
-                    label: ok_label.clone(),
+                    label: ok_label,
                 });
             }
             // Sub-word signed types: check if result fits in range [min, max]
@@ -1178,7 +1165,7 @@ impl<'a> CfgLower<'a> {
                 });
                 self.mir.push(Aarch64Inst::BCond {
                     cond: Cond::Eq,
-                    label: ok_label.clone(),
+                    label: ok_label,
                 });
             }
             Type::I16 => {
@@ -1194,7 +1181,7 @@ impl<'a> CfgLower<'a> {
                 });
                 self.mir.push(Aarch64Inst::BCond {
                     cond: Cond::Eq,
-                    label: ok_label.clone(),
+                    label: ok_label,
                 });
             }
             // Other types don't have arithmetic
@@ -1205,7 +1192,7 @@ impl<'a> CfgLower<'a> {
         self.mir.push(Aarch64Inst::Bl {
             symbol: "__rue_overflow".to_string(),
         });
-        self.mir.push(Aarch64Inst::Label { name: ok_label });
+        self.mir.push(Aarch64Inst::Label { id: ok_label });
     }
 
     /// Emit overflow check for SUB based on the type.
@@ -1213,8 +1200,8 @@ impl<'a> CfgLower<'a> {
     /// For ARM64 SUBS:
     /// - Signed: V flag indicates overflow
     /// - Unsigned: C=0 means borrow (underflow), C=1 means no borrow
-    fn emit_overflow_check_sub(&mut self, ty: Type, result_vreg: VReg, label_prefix: &str) {
-        let ok_label = self.new_label(label_prefix);
+    fn emit_overflow_check_sub(&mut self, ty: Type, result_vreg: VReg) {
+        let ok_label = self.mir.alloc_label();
 
         match ty {
             // 32-bit and 64-bit unsigned: C=0 means borrow (underflow)
@@ -1222,14 +1209,12 @@ impl<'a> CfgLower<'a> {
             Type::U32 | Type::U64 => {
                 self.mir.push(Aarch64Inst::BCond {
                     cond: Cond::Hs, // Hs = C=1 (no borrow)
-                    label: ok_label.clone(),
+                    label: ok_label,
                 });
             }
             // 32-bit and 64-bit signed: V flag indicates overflow
             Type::I32 | Type::I64 => {
-                self.mir.push(Aarch64Inst::Bvc {
-                    label: ok_label.clone(),
-                });
+                self.mir.push(Aarch64Inst::Bvc { label: ok_label });
             }
             // Sub-word types: same as ADD - check range
             Type::U8 | Type::U16 | Type::I8 | Type::I16 => {
@@ -1243,7 +1228,7 @@ impl<'a> CfgLower<'a> {
                         });
                         self.mir.push(Aarch64Inst::BCond {
                             cond: Cond::Ls,
-                            label: ok_label.clone(),
+                            label: ok_label,
                         });
                     }
                     Type::U16 => {
@@ -1258,7 +1243,7 @@ impl<'a> CfgLower<'a> {
                         });
                         self.mir.push(Aarch64Inst::BCond {
                             cond: Cond::Ls,
-                            label: ok_label.clone(),
+                            label: ok_label,
                         });
                     }
                     Type::I8 => {
@@ -1273,7 +1258,7 @@ impl<'a> CfgLower<'a> {
                         });
                         self.mir.push(Aarch64Inst::BCond {
                             cond: Cond::Eq,
-                            label: ok_label.clone(),
+                            label: ok_label,
                         });
                     }
                     Type::I16 => {
@@ -1288,7 +1273,7 @@ impl<'a> CfgLower<'a> {
                         });
                         self.mir.push(Aarch64Inst::BCond {
                             cond: Cond::Eq,
-                            label: ok_label.clone(),
+                            label: ok_label,
                         });
                     }
                     _ => unreachable!(),
@@ -1301,7 +1286,7 @@ impl<'a> CfgLower<'a> {
         self.mir.push(Aarch64Inst::Bl {
             symbol: "__rue_overflow".to_string(),
         });
-        self.mir.push(Aarch64Inst::Label { name: ok_label });
+        self.mir.push(Aarch64Inst::Label { id: ok_label });
     }
 
     /// Emit overflow check for MUL based on the type.
@@ -1315,9 +1300,8 @@ impl<'a> CfgLower<'a> {
         result_vreg: VReg,
         lhs_vreg: VReg,
         rhs_vreg: VReg,
-        label_prefix: &str,
     ) {
-        let ok_label = self.new_label(label_prefix);
+        let ok_label = self.mir.alloc_label();
 
         match ty {
             // 32-bit signed: SMULL gives 64-bit result
@@ -1346,7 +1330,7 @@ impl<'a> CfgLower<'a> {
                 });
                 self.mir.push(Aarch64Inst::BCond {
                     cond: Cond::Eq,
-                    label: ok_label.clone(),
+                    label: ok_label,
                 });
             }
             // 32-bit unsigned: UMULL gives 64-bit result
@@ -1371,7 +1355,7 @@ impl<'a> CfgLower<'a> {
                 });
                 self.mir.push(Aarch64Inst::Cbz {
                     src: Operand::Virtual(high_vreg),
-                    label: ok_label.clone(),
+                    label: ok_label,
                 });
             }
             // 64-bit signed: Use SMULH for high bits
@@ -1403,7 +1387,7 @@ impl<'a> CfgLower<'a> {
                 });
                 self.mir.push(Aarch64Inst::BCond {
                     cond: Cond::Eq,
-                    label: ok_label.clone(),
+                    label: ok_label,
                 });
             }
             // 64-bit unsigned: Use UMULH for high bits
@@ -1424,7 +1408,7 @@ impl<'a> CfgLower<'a> {
                 // If high bits are zero, no overflow
                 self.mir.push(Aarch64Inst::Cbz {
                     src: Operand::Virtual(high_vreg),
-                    label: ok_label.clone(),
+                    label: ok_label,
                 });
             }
             // Sub-word types: do the multiply, then check range
@@ -1444,7 +1428,7 @@ impl<'a> CfgLower<'a> {
                         });
                         self.mir.push(Aarch64Inst::BCond {
                             cond: Cond::Ls,
-                            label: ok_label.clone(),
+                            label: ok_label,
                         });
                     }
                     Type::U16 => {
@@ -1459,7 +1443,7 @@ impl<'a> CfgLower<'a> {
                         });
                         self.mir.push(Aarch64Inst::BCond {
                             cond: Cond::Ls,
-                            label: ok_label.clone(),
+                            label: ok_label,
                         });
                     }
                     Type::I8 => {
@@ -1474,7 +1458,7 @@ impl<'a> CfgLower<'a> {
                         });
                         self.mir.push(Aarch64Inst::BCond {
                             cond: Cond::Eq,
-                            label: ok_label.clone(),
+                            label: ok_label,
                         });
                     }
                     Type::I16 => {
@@ -1489,7 +1473,7 @@ impl<'a> CfgLower<'a> {
                         });
                         self.mir.push(Aarch64Inst::BCond {
                             cond: Cond::Eq,
-                            label: ok_label.clone(),
+                            label: ok_label,
                         });
                     }
                     _ => unreachable!(),
@@ -1501,7 +1485,7 @@ impl<'a> CfgLower<'a> {
         self.mir.push(Aarch64Inst::Bl {
             symbol: "__rue_overflow".to_string(),
         });
-        self.mir.push(Aarch64Inst::Label { name: ok_label });
+        self.mir.push(Aarch64Inst::Label { id: ok_label });
     }
 
     /// Emit overflow check for NEG based on the type.
@@ -1509,8 +1493,8 @@ impl<'a> CfgLower<'a> {
     /// For NEGS (0 - x):
     /// - Signed: V flag indicates overflow (when negating MIN_VALUE)
     /// - Unsigned: Any non-zero value causes overflow (since 0 - x wraps)
-    fn emit_overflow_check_neg(&mut self, ty: Type, result_vreg: VReg, label_prefix: &str) {
-        let ok_label = self.new_label(label_prefix);
+    fn emit_overflow_check_neg(&mut self, ty: Type, result_vreg: VReg) {
+        let ok_label = self.mir.alloc_label();
 
         match ty {
             // Unsigned: NEGS sets C=0 for non-zero operands (which is overflow)
@@ -1518,14 +1502,12 @@ impl<'a> CfgLower<'a> {
             Type::U32 | Type::U64 => {
                 self.mir.push(Aarch64Inst::BCond {
                     cond: Cond::Hs, // Hs = C=1
-                    label: ok_label.clone(),
+                    label: ok_label,
                 });
             }
             // Signed: V flag indicates overflow
             Type::I32 | Type::I64 => {
-                self.mir.push(Aarch64Inst::Bvc {
-                    label: ok_label.clone(),
-                });
+                self.mir.push(Aarch64Inst::Bvc { label: ok_label });
             }
             // Sub-word types: check range
             Type::U8 | Type::U16 => {
@@ -1533,7 +1515,7 @@ impl<'a> CfgLower<'a> {
                 // Result must be 0 for no overflow
                 self.mir.push(Aarch64Inst::Cbz {
                     src: Operand::Virtual(result_vreg),
-                    label: ok_label.clone(),
+                    label: ok_label,
                 });
             }
             Type::I8 => {
@@ -1548,7 +1530,7 @@ impl<'a> CfgLower<'a> {
                 });
                 self.mir.push(Aarch64Inst::BCond {
                     cond: Cond::Eq,
-                    label: ok_label.clone(),
+                    label: ok_label,
                 });
             }
             Type::I16 => {
@@ -1563,7 +1545,7 @@ impl<'a> CfgLower<'a> {
                 });
                 self.mir.push(Aarch64Inst::BCond {
                     cond: Cond::Eq,
-                    label: ok_label.clone(),
+                    label: ok_label,
                 });
             }
             _ => return,
@@ -1572,7 +1554,7 @@ impl<'a> CfgLower<'a> {
         self.mir.push(Aarch64Inst::Bl {
             symbol: "__rue_overflow".to_string(),
         });
-        self.mir.push(Aarch64Inst::Label { name: ok_label });
+        self.mir.push(Aarch64Inst::Label { id: ok_label });
     }
 
     /// Emit a comparison instruction.
@@ -1633,12 +1615,12 @@ impl<'a> CfgLower<'a> {
                 let cond_vreg = self.get_vreg(*cond);
 
                 // Generate a unique label for the else path argument setup
-                let else_setup_label = self.new_label("else_setup");
+                let else_setup_label = self.mir.alloc_label();
 
                 // If zero, jump to else setup (where we copy else_args)
                 self.mir.push(Aarch64Inst::Cbz {
                     src: Operand::Virtual(cond_vreg),
-                    label: else_setup_label.clone(),
+                    label: else_setup_label,
                 });
 
                 // Copy then_args to then_block's params
@@ -1665,7 +1647,7 @@ impl<'a> CfgLower<'a> {
 
                 // Else setup: copy else_args to else_block's params
                 self.mir.push(Aarch64Inst::Label {
-                    name: else_setup_label,
+                    id: else_setup_label,
                 });
                 for (i, &arg) in else_args.iter().enumerate() {
                     let arg_type = self.cfg.get_inst(arg).ty;

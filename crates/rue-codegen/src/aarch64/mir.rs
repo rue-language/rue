@@ -34,6 +34,33 @@ impl fmt::Display for VReg {
     }
 }
 
+/// A label identifier.
+///
+/// Labels are local to a function and are represented as a lightweight u32 index
+/// rather than as heap-allocated strings. This avoids allocations during codegen.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct LabelId(u32);
+
+impl LabelId {
+    /// Create a new label with the given index.
+    #[inline]
+    pub const fn new(index: u32) -> Self {
+        Self(index)
+    }
+
+    /// Get the index of this label.
+    #[inline]
+    pub const fn index(self) -> u32 {
+        self.0
+    }
+}
+
+impl fmt::Display for LabelId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, ".L{}", self.0)
+    }
+}
+
 /// A physical AArch64 register.
 ///
 /// AArch64 has 31 general-purpose registers (X0-X30), plus SP and XZR.
@@ -573,10 +600,10 @@ pub enum Aarch64Inst {
     CmpImm { src: Operand, imm: i32 },
 
     /// `cbz src, label` - Compare and branch if zero.
-    Cbz { src: Operand, label: String },
+    Cbz { src: Operand, label: LabelId },
 
     /// `cbnz src, label` - Compare and branch if not zero.
-    Cbnz { src: Operand, label: String },
+    Cbnz { src: Operand, label: LabelId },
 
     /// `cset dst, cond` - Conditional set: dst = 1 if cond, else 0.
     Cset { dst: Operand, cond: Cond },
@@ -604,19 +631,19 @@ pub enum Aarch64Inst {
 
     // === Control flow ===
     /// `b label` - Unconditional branch.
-    B { label: String },
+    B { label: LabelId },
 
     /// `b.cond label` - Conditional branch.
-    BCond { cond: Cond, label: String },
+    BCond { cond: Cond, label: LabelId },
 
     /// `b.vs label` - Branch if overflow set.
-    Bvs { label: String },
+    Bvs { label: LabelId },
 
     /// `b.vc label` - Branch if overflow clear.
-    Bvc { label: String },
+    Bvc { label: LabelId },
 
     /// Label marker (not a real instruction).
-    Label { name: String },
+    Label { id: LabelId },
 
     /// `bl symbol` - Branch with link (call).
     Bl { symbol: String },
@@ -776,7 +803,7 @@ impl fmt::Display for Aarch64Inst {
             Aarch64Inst::BCond { cond, label } => write!(f, "b.{} {}", cond, label),
             Aarch64Inst::Bvs { label } => write!(f, "b.vs {}", label),
             Aarch64Inst::Bvc { label } => write!(f, "b.vc {}", label),
-            Aarch64Inst::Label { name } => write!(f, "{}:", name),
+            Aarch64Inst::Label { id } => write!(f, "{}:", id),
             Aarch64Inst::Bl { symbol } => write!(f, "bl {}", symbol),
             Aarch64Inst::Ret => write!(f, "ret"),
             Aarch64Inst::StpPre { src1, src2, offset } => {
@@ -796,6 +823,8 @@ pub struct Aarch64Mir {
     instructions: Vec<Aarch64Inst>,
     /// The next virtual register index.
     next_vreg: u32,
+    /// The next label index.
+    next_label: u32,
 }
 
 impl Aarch64Mir {
@@ -804,6 +833,7 @@ impl Aarch64Mir {
         Self {
             instructions: Vec::new(),
             next_vreg: 0,
+            next_label: 0,
         }
     }
 
@@ -812,6 +842,23 @@ impl Aarch64Mir {
         let vreg = VReg::new(self.next_vreg);
         self.next_vreg += 1;
         vreg
+    }
+
+    /// Allocate a new label.
+    pub fn alloc_label(&mut self) -> LabelId {
+        let label = LabelId::new(self.next_label);
+        self.next_label += 1;
+        label
+    }
+
+    /// Get the label for a block.
+    ///
+    /// Block IDs are mapped to label IDs with a simple offset to avoid
+    /// collisions with other allocated labels. Block labels use IDs starting
+    /// at u32::MAX / 2.
+    pub fn block_label(block_id: u32) -> LabelId {
+        // Use high label IDs for blocks to avoid collision with alloc_label()
+        LabelId::new(u32::MAX / 2 + block_id)
     }
 
     /// Get the number of virtual registers allocated.

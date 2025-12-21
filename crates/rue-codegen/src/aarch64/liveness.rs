@@ -11,7 +11,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use super::mir::{Aarch64Inst, Aarch64Mir, Operand, Reg, VReg};
+use super::mir::{Aarch64Inst, Aarch64Mir, LabelId, Operand, Reg, VReg};
 
 /// Live range for a virtual register.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -96,10 +96,10 @@ pub fn analyze(mir: &Aarch64Mir) -> LivenessInfo {
     }
 
     // Step 1: Build label -> instruction index map
-    let mut label_to_idx: HashMap<&str, usize> = HashMap::new();
+    let mut label_to_idx: HashMap<LabelId, usize> = HashMap::new();
     for (idx, inst) in instructions.iter().enumerate() {
-        if let Aarch64Inst::Label { name } = inst {
-            label_to_idx.insert(name.as_str(), idx);
+        if let Aarch64Inst::Label { id } = inst {
+            label_to_idx.insert(*id, idx);
         }
     }
 
@@ -109,7 +109,7 @@ pub fn analyze(mir: &Aarch64Mir) -> LivenessInfo {
         match inst {
             // Unconditional branch - only successor is the target
             Aarch64Inst::B { label } => {
-                if let Some(&target) = label_to_idx.get(label.as_str()) {
+                if let Some(&target) = label_to_idx.get(label) {
                     successors[idx].push(target);
                 }
             }
@@ -124,7 +124,7 @@ pub fn analyze(mir: &Aarch64Mir) -> LivenessInfo {
                     successors[idx].push(idx + 1);
                 }
                 // Branch target
-                if let Some(&target) = label_to_idx.get(label.as_str()) {
+                if let Some(&target) = label_to_idx.get(label) {
                     successors[idx].push(target);
                 }
             }
@@ -536,6 +536,8 @@ mod tests {
         let mut mir = Aarch64Mir::new();
         let v0 = mir.alloc_vreg();
         let v1 = mir.alloc_vreg();
+        let label_else = mir.alloc_label();
+        let label_end = mir.alloc_label();
 
         // v0 = 1
         mir.push(Aarch64Inst::MovImm {
@@ -546,7 +548,7 @@ mod tests {
         // cbz v0, label_else
         mir.push(Aarch64Inst::Cbz {
             src: Operand::Virtual(v0),
-            label: "label_else".to_string(),
+            label: label_else,
         });
 
         // v1 = v0 (then branch)
@@ -556,14 +558,10 @@ mod tests {
         });
 
         // b label_end
-        mir.push(Aarch64Inst::B {
-            label: "label_end".to_string(),
-        });
+        mir.push(Aarch64Inst::B { label: label_end });
 
         // label_else:
-        mir.push(Aarch64Inst::Label {
-            name: "label_else".to_string(),
-        });
+        mir.push(Aarch64Inst::Label { id: label_else });
 
         // v1 = 2 (else branch)
         mir.push(Aarch64Inst::MovImm {
@@ -572,9 +570,7 @@ mod tests {
         });
 
         // label_end:
-        mir.push(Aarch64Inst::Label {
-            name: "label_end".to_string(),
-        });
+        mir.push(Aarch64Inst::Label { id: label_end });
 
         // Use v1 at the end
         mir.push(Aarch64Inst::MovRR {
@@ -604,6 +600,7 @@ mod tests {
         // Test B.cond handling
         let mut mir = Aarch64Mir::new();
         let v0 = mir.alloc_vreg();
+        let skip_label = mir.alloc_label();
 
         mir.push(Aarch64Inst::MovImm {
             dst: Operand::Virtual(v0),
@@ -617,7 +614,7 @@ mod tests {
 
         mir.push(Aarch64Inst::BCond {
             cond: Cond::Eq,
-            label: "skip".to_string(),
+            label: skip_label,
         });
 
         // v0 is used after the conditional branch
@@ -626,9 +623,7 @@ mod tests {
             src: Operand::Virtual(v0),
         });
 
-        mir.push(Aarch64Inst::Label {
-            name: "skip".to_string(),
-        });
+        mir.push(Aarch64Inst::Label { id: skip_label });
 
         mir.push(Aarch64Inst::Ret);
 
@@ -653,6 +648,7 @@ mod tests {
         let mut mir = Aarch64Mir::new();
         let v0 = mir.alloc_vreg();
         let v1 = mir.alloc_vreg();
+        let loop_label = mir.alloc_label();
 
         // v0 = 10
         mir.push(Aarch64Inst::MovImm {
@@ -661,9 +657,7 @@ mod tests {
         });
 
         // loop:
-        mir.push(Aarch64Inst::Label {
-            name: "loop".to_string(),
-        });
+        mir.push(Aarch64Inst::Label { id: loop_label });
 
         // v1 = v0
         mir.push(Aarch64Inst::MovRR {
@@ -681,7 +675,7 @@ mod tests {
         // cbnz v0, loop
         mir.push(Aarch64Inst::Cbnz {
             src: Operand::Virtual(v0),
-            label: "loop".to_string(),
+            label: loop_label,
         });
 
         mir.push(Aarch64Inst::Ret);
