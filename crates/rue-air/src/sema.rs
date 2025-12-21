@@ -82,6 +82,44 @@ struct AnalysisContext<'a> {
     used_locals: HashSet<Symbol>,
     /// Return type of the current function (for explicit return validation)
     return_type: Type,
+    /// Scope stack for efficient scope management.
+    /// Each entry is a list of (symbol, old_value) pairs for variables added/shadowed in that scope.
+    /// When a scope is popped, we restore old values (for shadowed vars) or remove new vars.
+    scope_stack: Vec<Vec<(Symbol, Option<LocalVar>)>>,
+}
+
+impl AnalysisContext<'_> {
+    /// Push a new scope onto the stack.
+    fn push_scope(&mut self) {
+        self.scope_stack.push(Vec::new());
+    }
+
+    /// Pop the current scope, restoring any shadowed variables and removing new ones.
+    fn pop_scope(&mut self) {
+        if let Some(scope_entries) = self.scope_stack.pop() {
+            for (symbol, old_value) in scope_entries {
+                match old_value {
+                    Some(old_var) => {
+                        // Restore the shadowed variable
+                        self.locals.insert(symbol, old_var);
+                    }
+                    None => {
+                        // Remove the variable that was added in this scope
+                        self.locals.remove(&symbol);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Insert a local variable, tracking it in the current scope for later cleanup.
+    fn insert_local(&mut self, symbol: Symbol, var: LocalVar) {
+        let old_value = self.locals.insert(symbol, var);
+        // Track in the current scope (if any) for cleanup on pop
+        if let Some(current_scope) = self.scope_stack.last_mut() {
+            current_scope.push((symbol, old_value));
+        }
+    }
 }
 
 /// Information about a function.
@@ -200,17 +238,17 @@ impl<'a> Sema<'a> {
         }
     }
 
-    /// Check for unused local variables in the current scope.
-    /// `saved_locals` contains the locals from the outer scope before this scope started.
-    /// We check variables that are in `ctx.locals` but not in `saved_locals` (i.e., new in this scope).
-    fn check_unused_locals_in_scope(
-        &mut self,
-        saved_locals: &HashMap<Symbol, LocalVar>,
-        ctx: &AnalysisContext,
-    ) {
-        for (symbol, local) in &ctx.locals {
-            // Skip if this variable existed in the outer scope
-            if saved_locals.contains_key(symbol) {
+    /// Check for unused local variables in the current scope (before popping it).
+    /// Uses the scope stack to determine which variables were added in the current scope.
+    fn check_unused_locals_in_current_scope(&mut self, ctx: &AnalysisContext) {
+        // Get the current scope entries (variables added in this scope)
+        let Some(current_scope) = ctx.scope_stack.last() else {
+            return;
+        };
+
+        for (symbol, old_value) in current_scope {
+            // Only check variables that were newly added (not shadowed)
+            if old_value.is_some() {
                 continue;
             }
 
@@ -218,6 +256,11 @@ impl<'a> Sema<'a> {
             if ctx.used_locals.contains(symbol) {
                 continue;
             }
+
+            // Get the local var info (it should still be in ctx.locals before pop)
+            let Some(local) = ctx.locals.get(symbol) else {
+                continue;
+            };
 
             // Get variable name
             let name = self.interner.get(*symbol);
@@ -379,6 +422,7 @@ impl<'a> Sema<'a> {
             loop_depth: 0,
             used_locals: HashSet::new(),
             return_type,
+            scope_stack: Vec::new(),
         };
 
         // Analyze the body expression
@@ -625,17 +669,16 @@ impl<'a> Sema<'a> {
                 //   (Never type can coerce to any type)
                 // - If else is absent, the result is Unit
                 if let Some(else_b) = else_block {
-                    // Save locals before then branch
-                    let saved_locals = ctx.locals.clone();
-
-                    // Analyze then branch with the expected type
+                    // Analyze then branch with its own scope
+                    ctx.push_scope();
                     let then_result = self.analyze_inst(air, *then_block, expectation, ctx)?;
                     let then_type = then_result.ty;
+                    ctx.pop_scope();
 
-                    // Restore locals and analyze else branch
+                    // Analyze else branch with its own scope
                     // If then branch is Never, use original expectation for else (so it determines the result)
                     // Otherwise use then_type as the expectation
-                    ctx.locals = saved_locals.clone();
+                    ctx.push_scope();
                     let else_expectation = if then_type.is_never() {
                         expectation
                     } else {
@@ -643,6 +686,7 @@ impl<'a> Sema<'a> {
                     };
                     let else_result = self.analyze_inst(air, *else_b, else_expectation, ctx)?;
                     let else_type = else_result.ty;
+                    ctx.pop_scope();
 
                     // Compute the unified result type using never type coercion:
                     // - If both branches are Never, result is Never
@@ -670,9 +714,6 @@ impl<'a> Sema<'a> {
                         }
                     };
 
-                    // Restore locals to original (branches are isolated scopes)
-                    ctx.locals = saved_locals;
-
                     let air_ref = air.add_inst(AirInst {
                         data: AirInstData::Branch {
                             cond: cond_result.air_ref,
@@ -685,19 +726,15 @@ impl<'a> Sema<'a> {
                     Ok(AnalysisResult::new(air_ref, result_type))
                 } else {
                     // No else branch - result is Unit
-                    // Save locals
-                    let saved_locals = ctx.locals.clone();
-
-                    // Analyze then branch (can be any type, we'll ignore it)
+                    // Analyze then branch with its own scope (can be any type, we'll ignore it)
+                    ctx.push_scope();
                     let then_result = self.analyze_inst(
                         air,
                         *then_block,
                         TypeExpectation::Check(Type::Unit),
                         ctx,
                     )?;
-
-                    // Restore locals
-                    ctx.locals = saved_locals;
+                    ctx.pop_scope();
 
                     let air_ref = air.add_inst(AirInst {
                         data: AirInstData::Branch {
@@ -719,18 +756,14 @@ impl<'a> Sema<'a> {
                 let cond_result =
                     self.analyze_inst(air, *cond, TypeExpectation::Check(Type::Bool), ctx)?;
 
-                // Save locals before loop body
-                let saved_locals = ctx.locals.clone();
-
-                // Analyze body - while body is Unit type
+                // Analyze body with its own scope - while body is Unit type
                 // Increment loop_depth so break/continue inside the body are valid
+                ctx.push_scope();
                 ctx.loop_depth += 1;
                 let body_result =
                     self.analyze_inst(air, *body, TypeExpectation::Check(Type::Unit), ctx)?;
                 ctx.loop_depth -= 1;
-
-                // Restore locals (loop body is its own scope)
-                ctx.locals = saved_locals;
+                ctx.pop_scope();
 
                 let air_ref = air.add_inst(AirInst {
                     data: AirInstData::Loop {
@@ -747,18 +780,14 @@ impl<'a> Sema<'a> {
                 // Infinite loop: `loop { body }` - always produces Never type
                 // The loop never terminates normally (only via break, which is handled separately)
 
-                // Save locals before loop body
-                let saved_locals = ctx.locals.clone();
-
-                // Analyze body - loop body is Unit type
+                // Analyze body with its own scope - loop body is Unit type
                 // Increment loop_depth so break/continue inside the body are valid
+                ctx.push_scope();
                 ctx.loop_depth += 1;
                 let body_result =
                     self.analyze_inst(air, *body, TypeExpectation::Check(Type::Unit), ctx)?;
                 ctx.loop_depth -= 1;
-
-                // Restore locals (loop body is its own scope)
-                ctx.locals = saved_locals;
+                ctx.pop_scope();
 
                 let air_ref = air.add_inst(AirInst {
                     data: AirInstData::InfiniteLoop {
@@ -794,10 +823,7 @@ impl<'a> Sema<'a> {
                 let mut bool_true_covered = false;
                 let mut bool_false_covered = false;
 
-                // Save locals before match arms (each arm is its own scope)
-                let saved_locals = ctx.locals.clone();
-
-                // Analyze each arm
+                // Analyze each arm (each arm gets its own scope)
                 let mut air_arms = Vec::new();
                 let mut result_type: Option<Type> = None;
 
@@ -836,8 +862,8 @@ impl<'a> Sema<'a> {
                         }
                     }
 
-                    // Restore locals for each arm (each arm is its own scope)
-                    ctx.locals = saved_locals.clone();
+                    // Each arm gets its own scope
+                    ctx.push_scope();
 
                     // Analyze arm body with appropriate expectation
                     let arm_expectation = match result_type {
@@ -846,6 +872,8 @@ impl<'a> Sema<'a> {
                     };
                     let body_result = self.analyze_inst(air, *body, arm_expectation, ctx)?;
                     let body_type = body_result.ty;
+
+                    ctx.pop_scope();
 
                     // Update result type (handle Never type coercion)
                     result_type = Some(match result_type {
@@ -891,9 +919,6 @@ impl<'a> Sema<'a> {
                 if !is_exhaustive {
                     return Err(CompileError::new(ErrorKind::NonExhaustiveMatch, inst.span));
                 }
-
-                // Restore locals
-                ctx.locals = saved_locals;
 
                 let final_type = result_type.unwrap_or(Type::Unit);
                 let air_ref = air.add_inst(AirInst {
@@ -941,7 +966,7 @@ impl<'a> Sema<'a> {
                 ctx.next_slot += num_slots;
 
                 // Register the variable (shadowing is allowed by just overwriting)
-                ctx.locals.insert(
+                ctx.insert_local(
                     *name,
                     LocalVar {
                         slot,
@@ -1136,9 +1161,9 @@ impl<'a> Sema<'a> {
                 // Get the instruction refs from extra data
                 let inst_refs = self.rir.get_extra(*extra_start, *len);
 
-                // Save the current locals for block scoping.
+                // Push a new scope for this block.
                 // Variables declared in this block will be removed when the block ends.
-                let saved_locals = ctx.locals.clone();
+                ctx.push_scope();
 
                 // Process all instructions in the block
                 // The last one is the final expression (the block's value)
@@ -1173,13 +1198,13 @@ impl<'a> Sema<'a> {
                     }
                 }
 
-                // Check for unused variables before restoring scope
-                self.check_unused_locals_in_scope(&saved_locals, ctx);
+                // Check for unused variables before popping scope
+                self.check_unused_locals_in_current_scope(ctx);
 
-                // Restore locals to remove block-scoped variables.
+                // Pop scope to remove block-scoped variables.
                 // Note: We don't restore next_slot, so slots are not reused.
                 // This is a future optimization opportunity.
-                ctx.locals = saved_locals;
+                ctx.pop_scope();
 
                 let last = last_result.expect("block should have at least one instruction");
 
