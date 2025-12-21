@@ -1,0 +1,35 @@
+// Binary Search
+//
+// The classic O(log n) search algorithm.
+// Returns the index of the target, or -1 if not found.
+//
+// Note: Uses inline array due to array parameter passing bug (tree2-0dm)
+
+fn main() -> i32 {
+    // Sorted array for binary search
+    let data = [2, 5, 8, 12, 16, 23, 38, 56];
+    let target = 16;
+
+    let mut low = 0;
+    let mut high = 7;  // array length - 1
+    let mut result = -1;
+
+    while low <= high {
+        let mid = low + (high - low) / 2;
+        let value = data[mid];
+
+        if value == target {
+            result = mid;
+            low = high + 1;  // Exit loop
+        } else {
+            if value < target {
+                low = mid + 1;
+            } else {
+                high = mid - 1;
+            }
+        }
+    }
+
+    @dbg(result);  // Should be 4 (index of 16)
+    result
+}

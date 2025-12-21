@@ -1,0 +1,42 @@
+// Fibonacci sequence - computed iteratively
+//
+// The Fibonacci sequence: 0, 1, 1, 2, 3, 5, 8, 13, 21, 34, ...
+// Each number is the sum of the two preceding ones.
+
+fn fib(n: i32) -> i32 {
+    if n <= 1 {
+        n
+    } else {
+        let mut a = 0;
+        let mut b = 1;
+        let mut i = 2;
+        while i <= n {
+            let next = a + b;
+            a = b;
+            b = next;
+            i = i + 1;
+        }
+        b
+    }
+}
+
+// Recursive version for comparison
+fn fib_recursive(n: i32) -> i32 {
+    if n <= 1 {
+        n
+    } else {
+        fib_recursive(n - 1) + fib_recursive(n - 2)
+    }
+}
+
+fn main() -> i32 {
+    // Print the first 20 Fibonacci numbers
+    let mut i = 0;
+    while i < 20 {
+        @dbg(fib(i));
+        i = i + 1;
+    }
+
+    // Return fib(10) = 55
+    fib(10)
+}

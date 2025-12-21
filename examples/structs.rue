@@ -1,0 +1,81 @@
+// Structs - custom data types with named fields
+//
+// Rue supports structs with value semantics, meaning they're
+// copied when assigned or passed to functions.
+
+struct Point {
+    x: i32,
+    y: i32,
+}
+
+struct Rectangle {
+    origin: Point,
+    width: i32,
+    height: i32,
+}
+
+fn make_point(x: i32, y: i32) -> Point {
+    Point { x: x, y: y }
+}
+
+fn point_distance_squared(p1: Point, p2: Point) -> i32 {
+    let dx = p2.x - p1.x;
+    let dy = p2.y - p1.y;
+    dx * dx + dy * dy
+}
+
+fn rectangle_area(rect: Rectangle) -> i32 {
+    rect.width * rect.height
+}
+
+fn rectangle_perimeter(rect: Rectangle) -> i32 {
+    2 * (rect.width + rect.height)
+}
+
+fn rectangles_overlap(r1: Rectangle, r2: Rectangle) -> bool {
+    let r1_right = r1.origin.x + r1.width;
+    let r1_bottom = r1.origin.y + r1.height;
+    let r2_right = r2.origin.x + r2.width;
+    let r2_bottom = r2.origin.y + r2.height;
+
+    // Check if one rectangle is to the left/right or above/below the other
+    if r1.origin.x >= r2_right {
+        return false;
+    }
+    if r2.origin.x >= r1_right {
+        return false;
+    }
+    if r1.origin.y >= r2_bottom {
+        return false;
+    }
+    if r2.origin.y >= r1_bottom {
+        return false;
+    }
+    true
+}
+
+fn main() -> i32 {
+    let p1 = make_point(0, 0);
+    let p2 = make_point(3, 4);
+
+    // Distance squared from origin to (3,4) = 25 (so distance = 5)
+    @dbg(point_distance_squared(p1, p2));
+
+    let rect1 = Rectangle {
+        origin: Point { x: 0, y: 0 },
+        width: 10,
+        height: 5,
+    };
+
+    let rect2 = Rectangle {
+        origin: Point { x: 5, y: 2 },
+        width: 10,
+        height: 5,
+    };
+
+    @dbg(rectangle_area(rect1));      // 50
+    @dbg(rectangle_perimeter(rect1)); // 30
+    @dbg(rectangles_overlap(rect1, rect2)); // true
+
+    rectangle_area(rect1)
+}

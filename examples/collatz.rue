@@ -1,0 +1,59 @@
+// Collatz Conjecture
+//
+// Starting from any positive integer n:
+// - If n is even, divide it by 2
+// - If n is odd, multiply by 3 and add 1
+//
+// The conjecture states this sequence always reaches 1.
+// This remains unproven for all integers!
+
+fn collatz_step(n: i32) -> i32 {
+    if n % 2 == 0 {
+        n / 2
+    } else {
+        3 * n + 1
+    }
+}
+
+fn collatz_length(start: i32) -> i32 {
+    let mut n = start;
+    let mut steps = 0;
+    while n != 1 {
+        n = collatz_step(n);
+        steps = steps + 1;
+    }
+    steps
+}
+
+fn print_collatz_sequence(start: i32) {
+    let mut n = start;
+    while n != 1 {
+        @dbg(n);
+        n = collatz_step(n);
+    }
+    @dbg(1);  // Print the final 1
+}
+
+fn main() -> i32 {
+    // Print the Collatz sequence starting from 27
+    // (famous for its surprisingly long journey: 111 steps!)
+    @dbg(27);
+    @dbg(collatz_length(27));
+
+    // Find which starting number (2-100) has the longest sequence
+    let mut max_length = 0;
+    let mut max_start = 0;
+    let mut i = 2;
+    while i <= 100 {
+        let len = collatz_length(i);
+        if len > max_length {
+            max_length = len;
+            max_start = i;
+        }
+        i = i + 1;
+    }
+
+    // Return the starting number with longest sequence
+    // (Should be 97, with 118 steps)
+    max_start
+}

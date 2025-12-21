@@ -1,0 +1,44 @@
+// Greatest Common Divisor (GCD)
+//
+// Implements Euclid's algorithm, one of the oldest known algorithms
+// (circa 300 BCE). Demonstrates that elegant solutions are timeless.
+
+fn gcd(a: i32, b: i32) -> i32 {
+    let mut x = a;
+    let mut y = b;
+    while y != 0 {
+        let temp = y;
+        y = x % y;
+        x = temp;
+    }
+    x
+}
+
+// Recursive version - mathematically equivalent
+fn gcd_recursive(a: i32, b: i32) -> i32 {
+    if b == 0 {
+        a
+    } else {
+        gcd_recursive(b, a % b)
+    }
+}
+
+// Least Common Multiple using GCD
+fn lcm(a: i32, b: i32) -> i32 {
+    (a / gcd(a, b)) * b
+}
+
+fn main() -> i32 {
+    // GCD of 48 and 18 = 6
+    @dbg(gcd(48, 18));
+
+    // GCD of two consecutive Fibonacci numbers is always 1
+    @dbg(gcd(21, 34));
+
+    // LCM of 12 and 18 = 36
+    @dbg(lcm(12, 18));
+
+    // Return GCD(1071, 462) = 21
+    // This was Euclid's original example!
+    gcd(1071, 462)
+}

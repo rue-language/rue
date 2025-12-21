@@ -1,0 +1,49 @@
+// Arrays - fixed-size collections
+//
+// Rue arrays have a fixed size known at compile time.
+// They support indexing with bounds checking at runtime.
+
+fn main() -> i32 {
+    let numbers = [64, 34, 25, 12, 22];
+
+    // Sum all elements
+    let mut sum = 0;
+    let mut i = 0;
+    while i < 5 {
+        sum = sum + numbers[i];
+        i = i + 1;
+    }
+    @dbg(sum);  // 157
+
+    // Find maximum
+    let mut max = numbers[0];
+    i = 1;
+    while i < 5 {
+        if numbers[i] > max {
+            max = numbers[i];
+        }
+        i = i + 1;
+    }
+    @dbg(max);  // 64
+
+    // Find minimum
+    let mut min = numbers[0];
+    i = 1;
+    while i < 5 {
+        if numbers[i] < min {
+            min = numbers[i];
+        }
+        i = i + 1;
+    }
+    @dbg(min);  // 12
+
+    // Mutable array example
+    let mut counts = [0, 0, 0];
+    counts[0] = 10;
+    counts[1] = 20;
+    counts[2] = 30;
+    @dbg(counts[0] + counts[1] + counts[2]);  // 60
+
+    // Return sum of all numbers
+    sum
+}

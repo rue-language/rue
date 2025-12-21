@@ -1,0 +1,50 @@
+// Integer Square Root
+//
+// Computes the integer square root using binary search.
+// For input n, returns the largest integer k where k*k <= n.
+//
+// This is the Babylonian method simplified to integers.
+
+fn isqrt(n: i32) -> i32 {
+    if n < 2 {
+        return n;
+    }
+
+    // Binary search for the answer
+    let mut low = 1;
+    let mut high = n / 2;
+    let mut result = 1;
+
+    while low <= high {
+        let mid = low + (high - low) / 2;
+        let square = mid * mid;
+
+        if square == n {
+            return mid;
+        } else {
+            if square < n {
+                result = mid;
+                low = mid + 1;
+            } else {
+                high = mid - 1;
+            }
+        }
+    }
+
+    result
+}
+
+fn main() -> i32 {
+    @dbg(isqrt(0));    // 0
+    @dbg(isqrt(1));    // 1
+    @dbg(isqrt(4));    // 2
+    @dbg(isqrt(8));    // 2 (not quite 3)
+    @dbg(isqrt(9));    // 3
+    @dbg(isqrt(15));   // 3
+    @dbg(isqrt(16));   // 4
+    @dbg(isqrt(100));  // 10
+    @dbg(isqrt(1000)); // 31
+
+    // Return sqrt(144) = 12
+    isqrt(144)
+}
