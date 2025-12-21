@@ -78,6 +78,50 @@ fn main() -> i32 {
 exit_code = 30
 no_warnings = true
 
+[[case]]
+name = "unused_shadowed_variable"
+source = """
+fn main() -> i32 {
+    let x = 1;
+    {
+        let x = 2;
+    };
+    x
+}
+"""
+exit_code = 1
+warning_contains = ["unused variable", "'x'"]
+expected_warning_count = 1
+
+[[case]]
+name = "used_shadowed_variable_no_warning"
+source = """
+fn main() -> i32 {
+    let x = 1;
+    {
+        let x = 2;
+        x
+    }
+}
+"""
+exit_code = 2
+no_warnings = true
+
+[[case]]
+name = "both_shadowing_variables_unused"
+source = """
+fn main() -> i32 {
+    let x = 1;
+    {
+        let x = 2;
+    };
+    0
+}
+"""
+exit_code = 0
+warning_contains = ["unused variable"]
+expected_warning_count = 2
+
 # =============================================================================
 # Unused Functions
 # =============================================================================

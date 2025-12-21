@@ -289,12 +289,7 @@ impl<'a> Sema<'a> {
             return;
         };
 
-        for (symbol, old_value) in current_scope {
-            // Only check variables that were newly added (not shadowed)
-            if old_value.is_some() {
-                continue;
-            }
-
+        for (symbol, _old_value) in current_scope {
             // Skip if variable was used
             if ctx.used_locals.contains(symbol) {
                 continue;
