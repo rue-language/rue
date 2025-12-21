@@ -270,17 +270,25 @@ fn handle_emit(source: &str, options: &Options) -> Result<(), ()> {
     };
 
     // Stage 1: Parse (needed for AST output or any later stage)
-    let ast = if max_stage >= 1 {
-        let mut parser = Parser::new(tokens.clone().unwrap());
+    // Only clone tokens if we're also emitting them; otherwise move them into the parser
+    let needs_tokens = options.emit_stages.contains(&EmitStage::Tokens);
+    let (tokens, ast) = if max_stage >= 1 {
+        let (kept_tokens, parser_tokens) = if needs_tokens {
+            let t = tokens.unwrap();
+            (Some(t.clone()), t)
+        } else {
+            (None, tokens.unwrap())
+        };
+        let parser = Parser::new(parser_tokens);
         match parser.parse() {
-            Ok(ast) => Some(ast),
+            Ok(ast) => (kept_tokens, Some(ast)),
             Err(e) => {
                 print_error(&e, source, &options.source_path);
                 return Err(());
             }
         }
     } else {
-        None
+        (tokens, None)
     };
 
     // Stage 2: Full frontend (RIR, AIR, CFG) - reuses the already-parsed AST
