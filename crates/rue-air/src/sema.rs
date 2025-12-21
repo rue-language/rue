@@ -91,7 +91,10 @@ struct AnalysisContext<'a> {
 impl AnalysisContext<'_> {
     /// Push a new scope onto the stack.
     fn push_scope(&mut self) {
-        self.scope_stack.push(Vec::new());
+        // Preallocate for a small number of variables. Most scopes (loop bodies,
+        // if/match arms) have 0-2 variables; function bodies have more but are
+        // less frequent. 2 is a conservative choice until we have real metrics.
+        self.scope_stack.push(Vec::with_capacity(2));
     }
 
     /// Pop the current scope, restoring any shadowed variables and removing new ones.
