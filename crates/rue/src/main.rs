@@ -5,8 +5,8 @@ use std::path::Path;
 
 use annotate_snippets::{Level, Renderer, Snippet};
 use rue_compiler::{
-    CompileError, CompileOptions, CompileWarning, Lexer, LinkerMode, Parser, compile_frontend,
-    compile_with_options, generate_allocated_mir, generate_mir,
+    CompileError, CompileOptions, CompileWarning, Lexer, LinkerMode, Parser,
+    compile_frontend_from_ast, compile_with_options, generate_allocated_mir, generate_mir,
 };
 use rue_rir::RirPrinter;
 use rue_target::Target;
@@ -240,41 +240,38 @@ fn main() {
 
 /// Handle emit stages - print requested IRs and exit.
 ///
-/// Note: When emitting both AST and later stages (rir, air, etc.), this
-/// function parses the source twice - once for AST output and again inside
-/// compile_frontend(). This is acceptable for a debugging tool but could
-/// be optimized if needed (see tree1-tr8).
+/// This uses a single-pass approach: each compilation stage is run at most once,
+/// and the results are reused for later stages.
 fn handle_emit(source: &str, options: &Options) -> Result<(), ()> {
-    // For early stages (tokens, ast), we don't need the full frontend
-    // For later stages, we compile incrementally and cache results
+    // Determine the highest stage we need to compute
+    let max_stage = options
+        .emit_stages
+        .iter()
+        .map(|s| match s {
+            EmitStage::Tokens => 0,
+            EmitStage::Ast => 1,
+            EmitStage::Rir | EmitStage::Air | EmitStage::Cfg | EmitStage::Mir | EmitStage::Asm => 2,
+        })
+        .max()
+        .unwrap_or(0);
 
-    // Track what we need to compute
-    let needs_tokens = options.emit_stages.contains(&EmitStage::Tokens);
-    let needs_ast = options.emit_stages.contains(&EmitStage::Ast);
-    let needs_frontend = options.emit_stages.iter().any(|s| {
-        matches!(
-            s,
-            EmitStage::Rir | EmitStage::Air | EmitStage::Cfg | EmitStage::Mir | EmitStage::Asm
-        )
-    });
-
-    // Compute tokens if needed (for tokens stage or later stages)
-    let tokens = if needs_tokens || needs_ast || needs_frontend {
+    // Stage 0: Tokenize (needed for tokens output or any later stage)
+    let tokens = if max_stage >= 0 {
         let mut lexer = Lexer::new(source);
         match lexer.tokenize() {
-            Ok(tokens) => tokens,
+            Ok(tokens) => Some(tokens),
             Err(e) => {
                 print_error(&e, source, &options.source_path);
                 return Err(());
             }
         }
     } else {
-        Vec::new()
+        None
     };
 
-    // Compute AST if needed
-    let ast = if needs_ast || needs_frontend {
-        let mut parser = Parser::new(tokens.clone());
+    // Stage 1: Parse (needed for AST output or any later stage)
+    let ast = if max_stage >= 1 {
+        let mut parser = Parser::new(tokens.clone().unwrap());
         match parser.parse() {
             Ok(ast) => Some(ast),
             Err(e) => {
@@ -286,9 +283,9 @@ fn handle_emit(source: &str, options: &Options) -> Result<(), ()> {
         None
     };
 
-    // Compute full frontend if needed
-    let frontend_state = if needs_frontend {
-        match compile_frontend(source) {
+    // Stage 2: Full frontend (RIR, AIR, CFG) - reuses the already-parsed AST
+    let frontend_state = if max_stage >= 2 {
+        match compile_frontend_from_ast(ast.clone().unwrap()) {
             Ok(state) => Some(state),
             Err(e) => {
                 print_error(&e, source, &options.source_path);
@@ -304,14 +301,19 @@ fn handle_emit(source: &str, options: &Options) -> Result<(), ()> {
         match stage {
             EmitStage::Tokens => {
                 println!("=== Tokens ===");
-                for token in &tokens {
-                    println!("{}", token);
+                if let Some(ref tokens) = tokens {
+                    for token in tokens {
+                        println!("{}", token);
+                    }
                 }
                 println!();
             }
             EmitStage::Ast => {
                 println!("=== AST ===");
-                if let Some(ref ast) = ast {
+                // Prefer the AST from frontend_state if available (same AST, avoids clone)
+                if let Some(ref state) = frontend_state {
+                    print!("{}", state.ast);
+                } else if let Some(ref ast) = ast {
                     print!("{}", ast);
                 }
                 println!();

@@ -85,8 +85,10 @@ pub struct FunctionWithCfg {
 /// Intermediate compilation state after frontend processing.
 ///
 /// This allows inspection of the IR at each stage, useful for
-/// debugging and the `--dump-*` CLI flags.
+/// debugging and the `--emit` CLI flags.
 pub struct CompileState {
+    /// The abstract syntax tree.
+    pub ast: Ast,
     /// String interner used during compilation.
     pub interner: Interner,
     /// The untyped IR (RIR).
@@ -122,6 +124,15 @@ pub fn compile_frontend(source: &str) -> CompileResult<CompileState> {
     let mut parser = Parser::new(tokens);
     let ast = parser.parse()?;
 
+    compile_frontend_from_ast(ast)
+}
+
+/// Compile from an already-parsed AST through all remaining frontend phases.
+///
+/// This runs: AST to RIR → semantic analysis → CFG construction.
+/// Use this when you already have a parsed AST (e.g., for `--emit` modes that
+/// need both AST output and later stage output without double-parsing).
+pub fn compile_frontend_from_ast(ast: Ast) -> CompileResult<CompileState> {
     // AST to RIR (untyped IR)
     let mut interner = Interner::new();
     let astgen = AstGen::new(&ast, &mut interner);
@@ -146,6 +157,7 @@ pub fn compile_frontend(source: &str) -> CompileResult<CompileState> {
     }
 
     Ok(CompileState {
+        ast,
         interner,
         rir,
         functions,
