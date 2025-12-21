@@ -2,7 +2,7 @@ name: Deploy Website
 
 on:
   push:
-    branches: [main]
+    branches: [trunk]
     paths:
       - 'website/**'
       - 'docs/spec/**'
@@ -30,6 +30,9 @@ jobs:
 
       - name: Setup dotslash
         uses: facebook/install-dotslash@latest
+
+      - name: Vendor dependencies
+        run: cd third-party && dotslash ../reindeer vendor
 
       - name: Build mdbook-spec preprocessor
         run: |
