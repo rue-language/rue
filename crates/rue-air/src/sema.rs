@@ -6,7 +6,9 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::inst::{Air, AirInst, AirInstData, AirPattern, AirRef};
-use crate::types::{ArrayTypeDef, ArrayTypeId, StructDef, StructField, StructId, Type};
+use crate::types::{
+    ArrayTypeDef, ArrayTypeId, EnumDef, EnumId, StructDef, StructField, StructId, Type,
+};
 use rue_error::{CompileError, CompileResult, CompileWarning, ErrorKind, WarningKind};
 use rue_intern::{Interner, Symbol};
 use rue_rir::{InstData, InstRef, Rir, RirPattern};
@@ -57,7 +59,7 @@ pub struct AnalyzedFunction {
 
 /// Output from semantic analysis.
 ///
-/// Contains all analyzed functions, struct definitions, and any warnings
+/// Contains all analyzed functions, struct definitions, enum definitions, and any warnings
 /// generated during analysis.
 #[derive(Debug)]
 pub struct SemaOutput {
@@ -65,6 +67,8 @@ pub struct SemaOutput {
     pub functions: Vec<AnalyzedFunction>,
     /// Struct definitions.
     pub struct_defs: Vec<StructDef>,
+    /// Enum definitions.
+    pub enum_defs: Vec<EnumDef>,
     /// Array type definitions.
     pub array_types: Vec<ArrayTypeDef>,
     /// Warnings collected during analysis.
@@ -248,6 +252,10 @@ pub struct Sema<'a> {
     structs: HashMap<Symbol, StructId>,
     /// Struct definitions indexed by StructId
     struct_defs: Vec<StructDef>,
+    /// Enum table: maps enum name symbols to their EnumId
+    enums: HashMap<Symbol, EnumId>,
+    /// Enum definitions indexed by EnumId
+    enum_defs: Vec<EnumDef>,
     /// Array type table: maps (element_type, length) to ArrayTypeId
     array_types: HashMap<(Type, u64), ArrayTypeId>,
     /// Array type definitions indexed by ArrayTypeId
@@ -265,6 +273,8 @@ impl<'a> Sema<'a> {
             functions: HashMap::new(),
             structs: HashMap::new(),
             struct_defs: Vec::new(),
+            enums: HashMap::new(),
+            enum_defs: Vec::new(),
             array_types: HashMap::new(),
             array_type_defs: Vec::new(),
             warnings: Vec::new(),
@@ -317,9 +327,11 @@ impl<'a> Sema<'a> {
     /// Analyze all functions in the RIR.
     ///
     /// Consumes the Sema and returns a [`SemaOutput`] containing all analyzed
-    /// functions, struct definitions, and any warnings generated during analysis.
+    /// functions, struct definitions, enum definitions, and any warnings generated during analysis.
     pub fn analyze_all(mut self) -> CompileResult<SemaOutput> {
-        // First pass: collect struct definitions (needed for type resolution)
+        // First pass: collect type definitions (enums then structs)
+        // Enums must be collected first so struct fields can reference enum types
+        self.collect_enum_definitions()?;
         self.collect_struct_definitions()?;
 
         // Second pass: collect function signatures
@@ -363,6 +375,7 @@ impl<'a> Sema<'a> {
         Ok(SemaOutput {
             functions,
             struct_defs: self.struct_defs,
+            enum_defs: self.enum_defs,
             array_types: self.array_type_defs,
             warnings: self.warnings,
         })
@@ -405,6 +418,44 @@ impl<'a> Sema<'a> {
                     fields: resolved_fields,
                 });
                 self.structs.insert(*name, struct_id);
+            }
+        }
+        Ok(())
+    }
+
+    /// Collect all enum definitions from the RIR.
+    fn collect_enum_definitions(&mut self) -> CompileResult<()> {
+        for (_, inst) in self.rir.iter() {
+            if let InstData::EnumDecl { name, variants } = &inst.data {
+                let enum_id = EnumId(self.enum_defs.len() as u32);
+                let enum_name = self.interner.get(*name).to_string();
+
+                // Check for duplicate variant names
+                let mut seen_variants: HashSet<Symbol> = HashSet::new();
+                for variant_name in variants {
+                    if !seen_variants.insert(*variant_name) {
+                        let variant_name_str = self.interner.get(*variant_name).to_string();
+                        return Err(CompileError::new(
+                            ErrorKind::DuplicateVariant {
+                                enum_name: enum_name.clone(),
+                                variant_name: variant_name_str,
+                            },
+                            inst.span,
+                        ));
+                    }
+                }
+
+                // Convert variant symbols to strings
+                let variant_names: Vec<String> = variants
+                    .iter()
+                    .map(|v| self.interner.get(*v).to_string())
+                    .collect();
+
+                self.enum_defs.push(EnumDef {
+                    name: enum_name,
+                    variants: variant_names,
+                });
+                self.enums.insert(*name, enum_id);
             }
         }
         Ok(())
@@ -904,8 +955,11 @@ impl<'a> Sema<'a> {
                     self.analyze_inst(air, *scrutinee, TypeExpectation::Synthesize, ctx)?;
                 let scrutinee_type = scrutinee_result.ty;
 
-                // Validate that we can match on this type (integers and booleans only for now)
-                if !scrutinee_type.is_integer() && scrutinee_type != Type::Bool {
+                // Validate that we can match on this type (integers, booleans, and enums)
+                if !scrutinee_type.is_integer()
+                    && scrutinee_type != Type::Bool
+                    && !scrutinee_type.is_enum()
+                {
                     return Err(CompileError::new(
                         ErrorKind::InvalidMatchType(scrutinee_type.name().to_string()),
                         inst.span,
@@ -922,6 +976,12 @@ impl<'a> Sema<'a> {
                 let mut bool_true_span: Option<Span> = None;
                 let mut bool_false_span: Option<Span> = None;
                 let mut seen_ints: HashMap<u64, Span> = HashMap::new();
+                // Track covered enum variants (variant_index -> true if covered)
+                let mut covered_variants: HashSet<u32> = HashSet::new();
+                // Track span of first occurrence of each variant for duplicate detection
+                let mut seen_variants: HashMap<u32, Span> = HashMap::new();
+                // For enum exhaustiveness, store the enum_id if we find path patterns
+                let mut pattern_enum_id: Option<EnumId> = None;
 
                 // Analyze each arm (each arm gets its own scope)
                 let mut air_arms = Vec::new();
@@ -937,6 +997,15 @@ impl<'a> Sema<'a> {
                             RirPattern::Wildcard(_) => "_".to_string(),
                             RirPattern::Int(n, _) => n.to_string(),
                             RirPattern::Bool(b, _) => b.to_string(),
+                            RirPattern::Path {
+                                type_name, variant, ..
+                            } => {
+                                format!(
+                                    "{}::{}",
+                                    self.interner.get(*type_name),
+                                    self.interner.get(*variant)
+                                )
+                            }
                         };
                         self.warnings.push(
                             CompileWarning::new(
@@ -1021,6 +1090,47 @@ impl<'a> Sema<'a> {
                                 *first_span_opt = Some(pattern_span);
                             }
                         }
+                        RirPattern::Path {
+                            type_name, variant, ..
+                        } => {
+                            // Look up the enum type
+                            let enum_id = self.enums.get(type_name).ok_or_else(|| {
+                                CompileError::new(
+                                    ErrorKind::UnknownEnumType(
+                                        self.interner.get(*type_name).to_string(),
+                                    ),
+                                    inst.span,
+                                )
+                            })?;
+                            let enum_def = &self.enum_defs[enum_id.0 as usize];
+
+                            // Check that scrutinee type matches the pattern's enum type
+                            if scrutinee_type != Type::Enum(*enum_id) {
+                                return Err(CompileError::new(
+                                    ErrorKind::TypeMismatch {
+                                        expected: scrutinee_type.name().to_string(),
+                                        found: enum_def.name.clone(),
+                                    },
+                                    inst.span,
+                                ));
+                            }
+
+                            // Find the variant index
+                            let variant_name = self.interner.get(*variant);
+                            let variant_index =
+                                enum_def.find_variant(variant_name).ok_or_else(|| {
+                                    CompileError::new(
+                                        ErrorKind::UnknownVariant {
+                                            enum_name: enum_def.name.clone(),
+                                            variant_name: variant_name.to_string(),
+                                        },
+                                        inst.span,
+                                    )
+                                })?;
+
+                            covered_variants.insert(variant_index as u32);
+                            pattern_enum_id = Some(*enum_id);
+                        }
                     }
 
                     // Each arm gets its own scope
@@ -1064,6 +1174,19 @@ impl<'a> Sema<'a> {
                         RirPattern::Wildcard(_) => AirPattern::Wildcard,
                         RirPattern::Int(n, _) => AirPattern::Int(*n),
                         RirPattern::Bool(b, _) => AirPattern::Bool(*b),
+                        RirPattern::Path {
+                            type_name, variant, ..
+                        } => {
+                            // We already validated this above, so unwrap is safe
+                            let enum_id = *self.enums.get(type_name).unwrap();
+                            let enum_def = &self.enum_defs[enum_id.0 as usize];
+                            let variant_name = self.interner.get(*variant);
+                            let variant_index = enum_def.find_variant(variant_name).unwrap();
+                            AirPattern::EnumVariant {
+                                enum_id,
+                                variant_index: variant_index as u32,
+                            }
+                        }
                     };
 
                     air_arms.push((air_pattern, body_result.air_ref));
@@ -1075,6 +1198,10 @@ impl<'a> Sema<'a> {
                 let bool_false_covered = bool_false_span.is_some();
                 let is_exhaustive = if scrutinee_type == Type::Bool {
                     has_wildcard || (bool_true_covered && bool_false_covered)
+                } else if let Some(enum_id) = pattern_enum_id {
+                    // For enums, check all variants are covered or there's a wildcard
+                    let enum_def = &self.enum_defs[enum_id.0 as usize];
+                    has_wildcard || covered_variants.len() == enum_def.variant_count()
                 } else {
                     // For integers, must have wildcard
                     has_wildcard
@@ -1983,6 +2110,54 @@ impl<'a> Sema<'a> {
                 });
                 Ok(AnalysisResult::new(air_ref, Type::Unit))
             }
+
+            // Enum declarations are processed during collection phase, skip here
+            InstData::EnumDecl { .. } => {
+                // Return Unit - enum declarations don't produce a value
+                let air_ref = air.add_inst(AirInst {
+                    data: AirInstData::UnitConst,
+                    ty: Type::Unit,
+                    span: inst.span,
+                });
+                Ok(AnalysisResult::new(air_ref, Type::Unit))
+            }
+
+            // Enum variant expression (e.g., Color::Red)
+            InstData::EnumVariant { type_name, variant } => {
+                // Look up the enum type
+                let enum_id = self.enums.get(type_name).ok_or_else(|| {
+                    CompileError::new(
+                        ErrorKind::UnknownEnumType(self.interner.get(*type_name).to_string()),
+                        inst.span,
+                    )
+                })?;
+                let enum_def = &self.enum_defs[enum_id.0 as usize];
+
+                // Find the variant index
+                let variant_name = self.interner.get(*variant);
+                let variant_index = enum_def.find_variant(variant_name).ok_or_else(|| {
+                    CompileError::new(
+                        ErrorKind::UnknownVariant {
+                            enum_name: enum_def.name.clone(),
+                            variant_name: variant_name.to_string(),
+                        },
+                        inst.span,
+                    )
+                })?;
+
+                let ty = Type::Enum(*enum_id);
+                expectation.check(ty, inst.span)?;
+
+                let air_ref = air.add_inst(AirInst {
+                    data: AirInstData::EnumVariant {
+                        enum_id: *enum_id,
+                        variant_index: variant_index as u32,
+                    },
+                    ty,
+                    span: inst.span,
+                });
+                Ok(AnalysisResult::new(air_ref, ty))
+            }
         }
     }
 
@@ -2017,6 +2192,8 @@ impl<'a> Sema<'a> {
             Ok(Type::Never)
         } else if let Some(&struct_id) = self.structs.get(&type_sym) {
             Ok(Type::Struct(struct_id))
+        } else if let Some(&enum_id) = self.enums.get(&type_sym) {
+            Ok(Type::Enum(enum_id))
         } else {
             // Check for array type syntax: [T; N]
             let type_name = self.interner.get(type_sym);
@@ -2100,6 +2277,8 @@ impl<'a> Sema<'a> {
             | Type::Unit
             | Type::Error
             | Type::Never => 1,
+            // Enums are represented as their discriminant type (a scalar), so 1 slot
+            Type::Enum(_) => 1,
             Type::Struct(struct_id) => {
                 // Sum the slot counts of all fields (handles arrays and nested structs)
                 let struct_def = &self.struct_defs[struct_id.0 as usize];

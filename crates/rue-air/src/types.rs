@@ -6,6 +6,10 @@
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct StructId(pub u32);
 
+/// A unique identifier for an enum definition.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct EnumId(pub u32);
+
 /// A unique identifier for an array type.
 /// This is needed because Type is Copy, so we can't use Box<Type> for the element type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -37,6 +41,8 @@ pub enum Type {
     Unit,
     /// User-defined struct type
     Struct(StructId),
+    /// User-defined enum type
+    Enum(EnumId),
     /// Fixed-size array type: [T; N]
     Array(ArrayTypeId),
     /// An error type (used during type checking to continue after errors)
@@ -97,6 +103,44 @@ impl ArrayTypeDef {
     }
 }
 
+/// Definition of an enum type.
+#[derive(Debug, Clone)]
+pub struct EnumDef {
+    /// Enum name
+    pub name: String,
+    /// Variant names in declaration order
+    pub variants: Vec<String>,
+}
+
+impl EnumDef {
+    /// Get the number of variants in this enum.
+    pub fn variant_count(&self) -> usize {
+        self.variants.len()
+    }
+
+    /// Find a variant by name and return its index.
+    pub fn find_variant(&self, name: &str) -> Option<usize> {
+        self.variants.iter().position(|v| v == name)
+    }
+
+    /// Get the discriminant type for this enum.
+    /// Returns the smallest unsigned integer type that can hold all variant indices.
+    pub fn discriminant_type(&self) -> Type {
+        let count = self.variants.len();
+        if count == 0 {
+            Type::Never // Zero-variant enum is uninhabited
+        } else if count <= 256 {
+            Type::U8
+        } else if count <= 65536 {
+            Type::U16
+        } else if count <= 4_294_967_296 {
+            Type::U32
+        } else {
+            Type::U64
+        }
+    }
+}
+
 impl Type {
     /// Get a human-readable name for this type.
     /// Note: For struct and array types, this returns a placeholder.
@@ -114,6 +158,7 @@ impl Type {
             Type::Bool => "bool",
             Type::Unit => "()",
             Type::Struct(_) => "<struct>",
+            Type::Enum(_) => "<enum>",
             Type::Array(_) => "<array>",
             Type::Error => "<error>",
             Type::Never => "!",
@@ -167,6 +212,19 @@ impl Type {
     pub fn as_array(&self) -> Option<ArrayTypeId> {
         match self {
             Type::Array(id) => Some(*id),
+            _ => None,
+        }
+    }
+
+    /// Check if this is an enum type.
+    pub fn is_enum(&self) -> bool {
+        matches!(self, Type::Enum(_))
+    }
+
+    /// Get the enum ID if this is an enum type.
+    pub fn as_enum(&self) -> Option<EnumId> {
+        match self {
+            Type::Enum(id) => Some(*id),
             _ => None,
         }
     }

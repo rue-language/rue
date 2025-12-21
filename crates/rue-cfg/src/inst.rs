@@ -5,7 +5,7 @@
 
 use std::fmt;
 
-use rue_air::{ArrayTypeId, StructId, Type};
+use rue_air::{ArrayTypeId, EnumId, StructId, Type};
 use rue_span::Span;
 
 /// A basic block identifier.
@@ -170,6 +170,13 @@ pub enum CfgInstData {
         array_type_id: ArrayTypeId,
         index: CfgValue,
         value: CfgValue,
+    },
+
+    // Enum operations
+    /// Create an enum variant (discriminant value)
+    EnumVariant {
+        enum_id: EnumId,
+        variant_index: u32,
     },
 }
 
@@ -641,6 +648,12 @@ impl Cfg {
                     "index_set ${}(@{})[{}] = {}",
                     slot, array_type_id.0, index, value
                 )
+            }
+            CfgInstData::EnumVariant {
+                enum_id,
+                variant_index,
+            } => {
+                write!(f, "enum_variant #{}::{}", enum_id.0, variant_index)
             }
         }
     }

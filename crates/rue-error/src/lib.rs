@@ -184,6 +184,17 @@ pub enum ErrorKind {
         struct_name: String,
         field_name: String,
     },
+
+    // Enum errors
+    DuplicateVariant {
+        enum_name: String,
+        variant_name: String,
+    },
+    UnknownVariant {
+        enum_name: String,
+        variant_name: String,
+    },
+    UnknownEnumType(String),
     FieldWrongOrder {
         struct_name: String,
         expected_field: String,
@@ -408,6 +419,29 @@ impl fmt::Display for ErrorKind {
                     field_name, struct_name
                 )
             }
+            ErrorKind::DuplicateVariant {
+                enum_name,
+                variant_name,
+            } => {
+                write!(
+                    f,
+                    "duplicate variant '{}' in enum '{}'",
+                    variant_name, enum_name
+                )
+            }
+            ErrorKind::UnknownVariant {
+                enum_name,
+                variant_name,
+            } => {
+                write!(
+                    f,
+                    "unknown variant '{}' in enum '{}'",
+                    variant_name, enum_name
+                )
+            }
+            ErrorKind::UnknownEnumType(name) => {
+                write!(f, "unknown enum type '{}'", name)
+            }
             ErrorKind::FieldWrongOrder {
                 struct_name,
                 expected_field,
@@ -430,7 +464,11 @@ impl fmt::Display for ErrorKind {
             ErrorKind::NonExhaustiveMatch => write!(f, "match is not exhaustive"),
             ErrorKind::EmptyMatch => write!(f, "match expression has no arms"),
             ErrorKind::InvalidMatchType(ty) => {
-                write!(f, "cannot match on type '{}', expected integer or bool", ty)
+                write!(
+                    f,
+                    "cannot match on type '{}', expected integer, bool, or enum",
+                    ty
+                )
             }
             ErrorKind::UnknownIntrinsic(name) => write!(f, "unknown intrinsic '@{}'", name),
             ErrorKind::IntrinsicWrongArgCount {

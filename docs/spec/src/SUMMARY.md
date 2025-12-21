@@ -41,6 +41,7 @@
 - [Items](06-items/README.md)
   - [Functions](06-items/01-functions.md)
   - [Structs](06-items/02-structs.md)
+  - [Enums](06-items/03-enums.md)
 
 - [Arrays](07-arrays/README.md)
   - [Fixed-Size Arrays](07-arrays/01-fixed-arrays.md)

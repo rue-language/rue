@@ -16,6 +16,13 @@ pub enum AirPattern {
     Int(u64),
     /// Boolean literal pattern
     Bool(bool),
+    /// Enum variant pattern (e.g., Color::Red)
+    EnumVariant {
+        /// The enum type ID
+        enum_id: crate::types::EnumId,
+        /// The variant index (0-based)
+        variant_index: u32,
+    },
 }
 
 /// A reference to an instruction in the AIR.
@@ -297,6 +304,15 @@ pub enum AirInstData {
         /// Value to store
         value: AirRef,
     },
+
+    // Enum operations
+    /// Create an enum variant value
+    EnumVariant {
+        /// The enum type ID
+        enum_id: crate::types::EnumId,
+        /// The variant index (0-based)
+        variant_index: u32,
+    },
 }
 
 impl fmt::Display for AirRef {
@@ -352,6 +368,10 @@ impl fmt::Display for Air {
                             AirPattern::Wildcard => "_".to_string(),
                             AirPattern::Int(n) => n.to_string(),
                             AirPattern::Bool(b) => b.to_string(),
+                            AirPattern::EnumVariant {
+                                enum_id,
+                                variant_index,
+                            } => format!("enum#{}::{}", enum_id.0, variant_index),
                         };
                         write!(f, "{} => {}", pat_str, body)?;
                     }
@@ -460,6 +480,12 @@ impl fmt::Display for Air {
                         "index_set ${}(@{})[{}] = {}",
                         slot, array_type_id.0, index, value
                     )?;
+                }
+                AirInstData::EnumVariant {
+                    enum_id,
+                    variant_index,
+                } => {
+                    writeln!(f, "enum_variant #{}::{}", enum_id.0, variant_index)?;
                 }
             }
         }

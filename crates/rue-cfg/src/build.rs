@@ -863,6 +863,10 @@ impl<'a> CfgBuilder<'a> {
                             let val = if *b { 1 } else { 0 };
                             switch_cases.push((val, arm_blocks[i]));
                         }
+                        AirPattern::EnumVariant { variant_index, .. } => {
+                            // Enum variants are matched by their discriminant (variant index)
+                            switch_cases.push((*variant_index as u64, arm_blocks[i]));
+                        }
                     }
                 }
 
@@ -1077,6 +1081,26 @@ impl<'a> CfgBuilder<'a> {
                 );
                 ExprResult {
                     value: None,
+                    continuation: Continuation::Continues,
+                }
+            }
+
+            AirInstData::EnumVariant {
+                enum_id,
+                variant_index,
+            } => {
+                // Enum variants are just their discriminant value
+                let value = self.emit(
+                    CfgInstData::EnumVariant {
+                        enum_id: *enum_id,
+                        variant_index: *variant_index,
+                    },
+                    ty,
+                    span,
+                );
+                self.cache(air_ref, value);
+                ExprResult {
+                    value: Some(value),
                     continuation: Continuation::Continues,
                 }
             }

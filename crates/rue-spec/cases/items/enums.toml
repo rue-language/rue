@@ -1,0 +1,257 @@
+[section]
+id = "items.enums"
+spec_chapter = "6.3"
+name = "Enums"
+description = "Enum definitions and enum variants."
+
+# =============================================================================
+# Enum Definition
+# =============================================================================
+
+[[case]]
+name = "enum_basic"
+spec = ["6.3:1", "6.3:2"]
+source = """
+enum Color { Red, Green, Blue }
+fn main() -> i32 {
+    let c = Color::Red;
+    0
+}
+"""
+exit_code = 0
+
+[[case]]
+name = "enum_single_variant"
+spec = ["6.3:1"]
+source = """
+enum Single { Only }
+fn main() -> i32 {
+    let s = Single::Only;
+    0
+}
+"""
+exit_code = 0
+
+[[case]]
+name = "enum_many_variants"
+spec = ["6.3:1"]
+source = """
+enum Direction { North, East, South, West }
+fn main() -> i32 {
+    let d = Direction::South;
+    0
+}
+"""
+exit_code = 0
+
+[[case]]
+name = "enum_zero_variants"
+spec = ["6.3:1", "6.3:12"]
+source = """
+enum Void {}
+fn main() -> i32 {
+    0
+}
+"""
+exit_code = 0
+
+[[case]]
+name = "enum_zero_variants_as_param"
+spec = ["6.3:10", "6.3:12"]
+source = """
+enum Void {}
+fn takes_void(v: Void) -> i32 {
+    0
+}
+fn main() -> i32 {
+    0
+}
+"""
+exit_code = 0
+
+# =============================================================================
+# Unique Variant Names
+# =============================================================================
+
+[[case]]
+name = "duplicate_variant_names_error"
+spec = ["6.3:3"]
+source = """
+enum Bad { X, X }
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = "duplicate"
+
+# =============================================================================
+# Unknown Enum Type Error
+# =============================================================================
+
+[[case]]
+name = "unknown_enum_type_error"
+spec = ["6.3:4"]
+source = """
+fn main() -> i32 {
+    let c = Unknown::Red;
+    0
+}
+"""
+compile_fail = true
+error_contains = "unknown"
+
+# =============================================================================
+# Unknown Variant Error
+# =============================================================================
+
+[[case]]
+name = "unknown_variant_error"
+spec = ["6.3:5"]
+source = """
+enum Color { Red, Green, Blue }
+fn main() -> i32 {
+    let c = Color::Yellow;
+    0
+}
+"""
+compile_fail = true
+error_contains = "unknown"
+
+# =============================================================================
+# Match on Enum
+# =============================================================================
+
+[[case]]
+name = "match_enum_exhaustive"
+spec = ["6.3:7", "6.3:8"]
+source = """
+enum Color { Red, Green, Blue }
+fn main() -> i32 {
+    let c = Color::Green;
+    match c {
+        Color::Red => 1,
+        Color::Green => 2,
+        Color::Blue => 3,
+    }
+}
+"""
+exit_code = 2
+
+[[case]]
+name = "match_enum_with_wildcard"
+spec = ["6.3:7", "6.3:8"]
+source = """
+enum Color { Red, Green, Blue }
+fn main() -> i32 {
+    let c = Color::Blue;
+    match c {
+        Color::Red => 1,
+        _ => 99,
+    }
+}
+"""
+exit_code = 99
+
+[[case]]
+name = "match_enum_non_exhaustive_error"
+spec = ["6.3:8"]
+source = """
+enum Color { Red, Green, Blue }
+fn main() -> i32 {
+    let c = Color::Red;
+    match c {
+        Color::Red => 1,
+        Color::Green => 2,
+    }
+}
+"""
+compile_fail = true
+error_contains = "exhaustive"
+
+[[case]]
+name = "match_enum_first_variant"
+spec = ["6.3:7"]
+source = """
+enum Color { Red, Green, Blue }
+fn main() -> i32 {
+    let c = Color::Red;
+    match c {
+        Color::Red => 42,
+        Color::Green => 0,
+        Color::Blue => 0,
+    }
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "match_enum_last_variant"
+spec = ["6.3:7"]
+source = """
+enum Color { Red, Green, Blue }
+fn main() -> i32 {
+    let c = Color::Blue;
+    match c {
+        Color::Red => 0,
+        Color::Green => 0,
+        Color::Blue => 42,
+    }
+}
+"""
+exit_code = 42
+
+# =============================================================================
+# Enum in Function Parameters and Return Types
+# =============================================================================
+
+[[case]]
+name = "enum_as_parameter"
+spec = ["6.3:10"]
+source = """
+enum Color { Red, Green, Blue }
+fn color_value(c: Color) -> i32 {
+    match c {
+        Color::Red => 1,
+        Color::Green => 2,
+        Color::Blue => 3,
+    }
+}
+fn main() -> i32 {
+    color_value(Color::Green)
+}
+"""
+exit_code = 2
+
+[[case]]
+name = "enum_as_return"
+spec = ["6.3:10"]
+source = """
+enum Color { Red, Green, Blue }
+fn get_color() -> Color {
+    Color::Blue
+}
+fn main() -> i32 {
+    match get_color() {
+        Color::Red => 1,
+        Color::Green => 2,
+        Color::Blue => 42,
+    }
+}
+"""
+exit_code = 42
+
+# =============================================================================
+# Enum in Struct Fields
+# =============================================================================
+
+[[case]]
+name = "enum_in_struct"
+spec = ["6.3:10"]
+source = """
+enum Color { Red, Green, Blue }
+struct Pixel { color: Color, x: i32 }
+fn main() -> i32 {
+    let p = Pixel { color: Color::Red, x: 42 };
+    p.x
+}
+"""
+exit_code = 42

@@ -26,6 +26,7 @@ pub enum TokenKind {
     True,
     False,
     Struct,
+    Enum,
 
     // Type keywords
     I8,
@@ -69,10 +70,11 @@ pub enum TokenKind {
     RParen,
     LBrace,
     RBrace,
-    LBracket, // [
-    RBracket, // ]
-    Arrow,    // ->
-    FatArrow, // =>
+    LBracket,   // [
+    RBracket,   // ]
+    Arrow,      // ->
+    FatArrow,   // =>
+    ColonColon, // ::
     Colon,
     Semi,
     Comma,
@@ -101,6 +103,7 @@ impl TokenKind {
             TokenKind::True => "'true'",
             TokenKind::False => "'false'",
             TokenKind::Struct => "'struct'",
+            TokenKind::Enum => "'enum'",
             TokenKind::I8 => "type 'i8'",
             TokenKind::I16 => "type 'i16'",
             TokenKind::I32 => "type 'i32'",
@@ -136,6 +139,7 @@ impl TokenKind {
             TokenKind::RBracket => "']'",
             TokenKind::Arrow => "'->'",
             TokenKind::FatArrow => "'=>'",
+            TokenKind::ColonColon => "'::'",
             TokenKind::Colon => "':'",
             TokenKind::Semi => "';'",
             TokenKind::Comma => "','",
@@ -180,6 +184,7 @@ impl std::fmt::Display for TokenKind {
             TokenKind::True => write!(f, "TRUE"),
             TokenKind::False => write!(f, "FALSE"),
             TokenKind::Struct => write!(f, "STRUCT"),
+            TokenKind::Enum => write!(f, "ENUM"),
             TokenKind::I8 => write!(f, "TYPE(i8)"),
             TokenKind::I16 => write!(f, "TYPE(i16)"),
             TokenKind::I32 => write!(f, "TYPE(i32)"),
@@ -215,6 +220,7 @@ impl std::fmt::Display for TokenKind {
             TokenKind::RBracket => write!(f, "RBRACKET"),
             TokenKind::Arrow => write!(f, "ARROW"),
             TokenKind::FatArrow => write!(f, "FATARROW"),
+            TokenKind::ColonColon => write!(f, "COLONCOLON"),
             TokenKind::Colon => write!(f, "COLON"),
             TokenKind::Semi => write!(f, "SEMI"),
             TokenKind::Comma => write!(f, "COMMA"),

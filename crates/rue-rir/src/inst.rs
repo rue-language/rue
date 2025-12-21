@@ -37,6 +37,15 @@ pub enum RirPattern {
     Int(u64, Span),
     /// Boolean literal pattern
     Bool(bool, Span),
+    /// Path pattern for enum variants (e.g., Color::Red)
+    Path {
+        /// The enum type name
+        type_name: Symbol,
+        /// The variant name
+        variant: Symbol,
+        /// Span of the pattern
+        span: Span,
+    },
 }
 
 impl RirPattern {
@@ -46,6 +55,7 @@ impl RirPattern {
             RirPattern::Wildcard(span) => *span,
             RirPattern::Int(_, span) => *span,
             RirPattern::Bool(_, span) => *span,
+            RirPattern::Path { span, .. } => *span,
         }
     }
 }
@@ -313,6 +323,23 @@ pub enum InstData {
         value: InstRef,
     },
 
+    // Enum operations
+    /// Enum type declaration
+    EnumDecl {
+        /// Enum name
+        name: Symbol,
+        /// Variant names (no data for now)
+        variants: Vec<Symbol>,
+    },
+
+    /// Enum variant: creates a value of an enum type
+    EnumVariant {
+        /// Enum type name
+        type_name: Symbol,
+        /// Variant name
+        variant: Symbol,
+    },
+
     // Array operations
     /// Array literal: creates a new array from element values
     ArrayInit {
@@ -442,6 +469,15 @@ impl<'a, 'b> RirPrinter<'a, 'b> {
                                 RirPattern::Wildcard(_) => "_".to_string(),
                                 RirPattern::Int(n, _) => n.to_string(),
                                 RirPattern::Bool(b, _) => b.to_string(),
+                                RirPattern::Path {
+                                    type_name, variant, ..
+                                } => {
+                                    format!(
+                                        "{}::{}",
+                                        self.interner.get(*type_name),
+                                        self.interner.get(*variant)
+                                    )
+                                }
                             };
                             format!("{} => {}", pat_str, body)
                         })
@@ -574,6 +610,23 @@ impl<'a, 'b> RirPrinter<'a, 'b> {
                 InstData::FieldSet { base, field, value } => {
                     let field_str = self.interner.get(*field);
                     out.push_str(&format!("field_set {}.{} = {}\n", base, field_str, value));
+                }
+                InstData::EnumDecl { name, variants } => {
+                    let name_str = self.interner.get(*name);
+                    let variants_str: Vec<String> = variants
+                        .iter()
+                        .map(|v| self.interner.get(*v).to_string())
+                        .collect();
+                    out.push_str(&format!(
+                        "enum {} {{ {} }}\n",
+                        name_str,
+                        variants_str.join(", ")
+                    ));
+                }
+                InstData::EnumVariant { type_name, variant } => {
+                    let type_str = self.interner.get(*type_name);
+                    let variant_str = self.interner.get(*variant);
+                    out.push_str(&format!("enum_variant {}::{}\n", type_str, variant_str));
                 }
                 InstData::ArrayInit { elements } => {
                     let elems_str: Vec<String> =

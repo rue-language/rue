@@ -7,8 +7,9 @@ mod chumsky_parser;
 
 pub use ast::{
     ArrayLitExpr, AssignStatement, AssignTarget, Ast, BinaryExpr, BinaryOp, BlockExpr, CallExpr,
-    Expr, FieldDecl, FieldExpr, FieldInit, Function, Ident, IndexExpr, IntLit, IntrinsicCallExpr,
-    Item, LetStatement, MatchArm, MatchExpr, Param, ParenExpr, Pattern, ReturnExpr, Statement,
-    StructDecl, StructLitExpr, TypeExpr, UnaryExpr, UnaryOp, WhileExpr,
+    EnumDecl, EnumVariant, Expr, FieldDecl, FieldExpr, FieldInit, Function, Ident, IndexExpr,
+    IntLit, IntrinsicCallExpr, Item, LetStatement, MatchArm, MatchExpr, Param, ParenExpr, PathExpr,
+    PathPattern, Pattern, ReturnExpr, Statement, StructDecl, StructLitExpr, TypeExpr, UnaryExpr,
+    UnaryOp, WhileExpr,
 };
 pub use chumsky_parser::ChumskyParser as Parser;

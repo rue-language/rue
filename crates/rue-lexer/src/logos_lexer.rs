@@ -50,6 +50,8 @@ pub enum LogosTokenKind {
     False,
     #[token("struct")]
     Struct,
+    #[token("enum")]
+    Enum,
 
     // Type keywords
     #[token("i8")]
@@ -100,6 +102,8 @@ pub enum LogosTokenKind {
     Arrow,
     #[token("=>")]
     FatArrow,
+    #[token("::")]
+    ColonColon,
 
     // Single-character operators
     #[token("+")]
@@ -165,6 +169,7 @@ impl From<LogosTokenKind> for TokenKind {
             LogosTokenKind::True => TokenKind::True,
             LogosTokenKind::False => TokenKind::False,
             LogosTokenKind::Struct => TokenKind::Struct,
+            LogosTokenKind::Enum => TokenKind::Enum,
             LogosTokenKind::I8 => TokenKind::I8,
             LogosTokenKind::I16 => TokenKind::I16,
             LogosTokenKind::I32 => TokenKind::I32,
@@ -185,6 +190,7 @@ impl From<LogosTokenKind> for TokenKind {
             LogosTokenKind::PipePipe => TokenKind::PipePipe,
             LogosTokenKind::Arrow => TokenKind::Arrow,
             LogosTokenKind::FatArrow => TokenKind::FatArrow,
+            LogosTokenKind::ColonColon => TokenKind::ColonColon,
             LogosTokenKind::Plus => TokenKind::Plus,
             LogosTokenKind::Minus => TokenKind::Minus,
             LogosTokenKind::Star => TokenKind::Star,

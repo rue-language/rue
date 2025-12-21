@@ -19,6 +19,7 @@ pub struct Ast {
 pub enum Item {
     Function(Function),
     Struct(StructDecl),
+    Enum(EnumDecl),
 }
 
 /// A struct declaration.
@@ -40,6 +41,26 @@ pub struct FieldDecl {
     /// Field type
     pub ty: TypeExpr,
     /// Span covering the entire field declaration
+    pub span: Span,
+}
+
+/// An enum declaration.
+#[derive(Debug, Clone)]
+pub struct EnumDecl {
+    /// Enum name
+    pub name: Ident,
+    /// Enum variants
+    pub variants: Vec<EnumVariant>,
+    /// Span covering the entire enum declaration
+    pub span: Span,
+}
+
+/// A variant in an enum declaration.
+#[derive(Debug, Clone)]
+pub struct EnumVariant {
+    /// Variant name
+    pub name: Ident,
+    /// Span covering the variant
     pub span: Span,
 }
 
@@ -169,6 +190,8 @@ pub enum Expr {
     ArrayLit(ArrayLitExpr),
     /// Array indexing (e.g., `arr[0]`)
     Index(IndexExpr),
+    /// Path expression (e.g., `Color::Red`)
+    Path(PathExpr),
 }
 
 /// An integer literal.
@@ -288,6 +311,18 @@ pub enum Pattern {
     Int(IntLit),
     /// Boolean literal pattern
     Bool(BoolLit),
+    /// Path pattern (e.g., `Color::Red` for enum variant)
+    Path(PathPattern),
+}
+
+/// A path pattern (e.g., `Color::Red` for enum variant matching).
+#[derive(Debug, Clone)]
+pub struct PathPattern {
+    /// The type name (e.g., `Color`)
+    pub type_name: Ident,
+    /// The variant name (e.g., `Red`)
+    pub variant: Ident,
+    pub span: Span,
 }
 
 impl Pattern {
@@ -297,6 +332,7 @@ impl Pattern {
             Pattern::Wildcard(span) => *span,
             Pattern::Int(lit) => lit.span,
             Pattern::Bool(lit) => lit.span,
+            Pattern::Path(path) => path.span,
         }
     }
 }
@@ -366,6 +402,16 @@ pub struct IndexExpr {
     pub base: Box<Expr>,
     /// The index expression
     pub index: Box<Expr>,
+    pub span: Span,
+}
+
+/// A path expression (e.g., `Color::Red` for enum variant).
+#[derive(Debug, Clone)]
+pub struct PathExpr {
+    /// The type name (e.g., `Color`)
+    pub type_name: Ident,
+    /// The variant name (e.g., `Red`)
+    pub variant: Ident,
     pub span: Span,
 }
 
@@ -478,6 +524,7 @@ impl Expr {
             Expr::IntrinsicCall(intrinsic) => intrinsic.span,
             Expr::ArrayLit(array_lit) => array_lit.span,
             Expr::Index(index_expr) => index_expr.span,
+            Expr::Path(path_expr) => path_expr.span,
         }
     }
 }
@@ -502,6 +549,7 @@ impl<'a> fmt::Display for AstPrinter<'a> {
             match item {
                 Item::Function(func) => fmt_function(f, func, 0)?,
                 Item::Struct(s) => fmt_struct(f, s, 0)?,
+                Item::Enum(e) => fmt_enum(f, e, 0)?,
             }
         }
         Ok(())
@@ -521,6 +569,16 @@ fn fmt_struct(f: &mut fmt::Formatter<'_>, s: &StructDecl, level: usize) -> fmt::
     for field in &s.fields {
         indent(f, level + 1)?;
         writeln!(f, "Field {} : {}", field.name.name, field.ty)?;
+    }
+    Ok(())
+}
+
+fn fmt_enum(f: &mut fmt::Formatter<'_>, e: &EnumDecl, level: usize) -> fmt::Result {
+    indent(f, level)?;
+    writeln!(f, "Enum {}", e.name.name)?;
+    for variant in &e.variants {
+        indent(f, level + 1)?;
+        writeln!(f, "Variant {}", variant.name.name)?;
     }
     Ok(())
 }
@@ -665,6 +723,9 @@ fn fmt_expr(f: &mut fmt::Formatter<'_>, expr: &Expr, level: usize) -> fmt::Resul
             indent(f, level + 1)?;
             writeln!(f, "Index:")?;
             fmt_expr(f, &index.index, level + 2)
+        }
+        Expr::Path(path) => {
+            writeln!(f, "Path {}::{}", path.type_name.name, path.variant.name)
         }
     }
 }

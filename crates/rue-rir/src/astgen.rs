@@ -5,8 +5,8 @@
 
 use rue_intern::Interner;
 use rue_parser::{
-    AssignTarget, Ast, BinaryOp, Expr, Function, Item, Pattern, Statement, StructDecl, TypeExpr,
-    UnaryOp,
+    AssignTarget, Ast, BinaryOp, EnumDecl, Expr, Function, Item, Pattern, Statement, StructDecl,
+    TypeExpr, UnaryOp,
 };
 
 use crate::inst::{Inst, InstData, InstRef, Rir, RirPattern};
@@ -47,6 +47,9 @@ impl<'a> AstGen<'a> {
             Item::Struct(struct_decl) => {
                 self.gen_struct(struct_decl);
             }
+            Item::Enum(enum_decl) => {
+                self.gen_enum(enum_decl);
+            }
         }
     }
 
@@ -86,6 +89,20 @@ impl<'a> AstGen<'a> {
         self.rir.add_inst(Inst {
             data: InstData::StructDecl { name, fields },
             span: struct_decl.span,
+        })
+    }
+
+    fn gen_enum(&mut self, enum_decl: &EnumDecl) -> InstRef {
+        let name = self.interner.intern(&enum_decl.name.name);
+        let variants: Vec<_> = enum_decl
+            .variants
+            .iter()
+            .map(|v| self.interner.intern(&v.name.name))
+            .collect();
+
+        self.rir.add_inst(Inst {
+            data: InstData::EnumDecl { name, variants },
+            span: enum_decl.span,
         })
     }
 
@@ -309,14 +326,32 @@ impl<'a> AstGen<'a> {
                     span: index_expr.span,
                 })
             }
+            Expr::Path(path_expr) => {
+                let type_name = self.interner.intern(&path_expr.type_name.name);
+                let variant = self.interner.intern(&path_expr.variant.name);
+
+                self.rir.add_inst(Inst {
+                    data: InstData::EnumVariant { type_name, variant },
+                    span: path_expr.span,
+                })
+            }
         }
     }
 
-    fn gen_pattern(&self, pattern: &Pattern) -> RirPattern {
+    fn gen_pattern(&mut self, pattern: &Pattern) -> RirPattern {
         match pattern {
             Pattern::Wildcard(span) => RirPattern::Wildcard(*span),
             Pattern::Int(lit) => RirPattern::Int(lit.value, lit.span),
             Pattern::Bool(lit) => RirPattern::Bool(lit.value, lit.span),
+            Pattern::Path(path) => {
+                let type_name = self.interner.intern(&path.type_name.name);
+                let variant = self.interner.intern(&path.variant.name);
+                RirPattern::Path {
+                    type_name,
+                    variant,
+                    span: path.span,
+                }
+            }
         }
     }
 

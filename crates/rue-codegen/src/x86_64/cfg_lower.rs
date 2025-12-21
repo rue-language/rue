@@ -1641,6 +1641,17 @@ impl<'a> CfgLower<'a> {
                     src: Operand::Virtual(val_vreg),
                 });
             }
+
+            CfgInstData::EnumVariant { variant_index, .. } => {
+                // Enum variants are represented as their discriminant (variant index)
+                let vreg = self.mir.alloc_vreg();
+                self.value_map.insert(value, vreg);
+
+                self.mir.push(X86Inst::MovRI32 {
+                    dst: Operand::Virtual(vreg),
+                    imm: *variant_index as i32,
+                });
+            }
         }
     }
 

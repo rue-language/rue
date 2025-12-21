@@ -5,10 +5,10 @@
 
 use crate::ast::{
     ArrayLitExpr, AssignStatement, AssignTarget, Ast, BinaryExpr, BinaryOp, BlockExpr, BoolLit,
-    BreakExpr, CallExpr, ContinueExpr, Expr, FieldDecl, FieldExpr, FieldInit, Function, Ident,
-    IfExpr, IndexExpr, IntLit, IntrinsicCallExpr, Item, LetStatement, LoopExpr, MatchArm,
-    MatchExpr, Param, ParenExpr, Pattern, ReturnExpr, Statement, StructDecl, StructLitExpr,
-    TypeExpr, UnaryExpr, UnaryOp, UnitLit, WhileExpr,
+    BreakExpr, CallExpr, ContinueExpr, EnumDecl, EnumVariant, Expr, FieldDecl, FieldExpr,
+    FieldInit, Function, Ident, IfExpr, IndexExpr, IntLit, IntrinsicCallExpr, Item, LetStatement,
+    LoopExpr, MatchArm, MatchExpr, Param, ParenExpr, PathExpr, PathPattern, Pattern, ReturnExpr,
+    Statement, StructDecl, StructLitExpr, TypeExpr, UnaryExpr, UnaryOp, UnitLit, WhileExpr,
 };
 use chumsky::input::{Input as ChumskyInput, Stream, ValueInput};
 use chumsky::pratt::{infix, left, prefix};
@@ -316,7 +316,19 @@ where
         }),
     };
 
-    choice((wildcard, int_pat, bool_true, bool_false))
+    // Path pattern: Enum::Variant
+    let path_pat = ident_parser()
+        .then_ignore(just(TokenKind::ColonColon))
+        .then(ident_parser())
+        .map_with(|(type_name, variant), e| {
+            Pattern::Path(PathPattern {
+                type_name,
+                variant,
+                span: to_rue_span(e.span()),
+            })
+        });
+
+    choice((wildcard, int_pat, bool_true, bool_false, path_pat))
 }
 
 /// Parser for a single match arm: pattern => expr
@@ -462,16 +474,17 @@ where
         })
         .boxed();
 
-    // What can follow an identifier: call args, struct fields, or nothing
+    // What can follow an identifier: call args, struct fields, path (::variant), or nothing
     #[derive(Clone)]
     enum IdentSuffix {
         Call(Vec<Expr>),
         StructLit(Vec<FieldInit>),
+        Path(Ident), // ::Variant
         None,
     }
 
-    // Identifier followed by optional call args, struct literal, or nothing
-    let ident_or_call_or_struct = ident_parser()
+    // Identifier followed by optional call args, struct literal, path, or nothing
+    let ident_or_call_or_struct_or_path = ident_parser()
         .then(
             choice((
                 // Function call: (args)
@@ -482,6 +495,10 @@ where
                 field_inits_parser(expr.clone())
                     .delimited_by(just(TokenKind::LBrace), just(TokenKind::RBrace))
                     .map(IdentSuffix::StructLit),
+                // Path: ::Variant (for enum variants)
+                just(TokenKind::ColonColon)
+                    .ignore_then(ident_parser())
+                    .map(IdentSuffix::Path),
             ))
             .or_not()
             .map(|opt| opt.unwrap_or(IdentSuffix::None)),
@@ -495,6 +512,11 @@ where
             IdentSuffix::StructLit(fields) => Expr::StructLit(StructLitExpr {
                 name,
                 fields,
+                span: to_rue_span(e.span()),
+            }),
+            IdentSuffix::Path(variant) => Expr::Path(PathExpr {
+                type_name: name,
+                variant,
                 span: to_rue_span(e.span()),
             }),
             IdentSuffix::None => Expr::Ident(name),
@@ -553,7 +575,7 @@ where
         loop_expr,
         intrinsic_call,
         array_lit,
-        ident_or_call_or_struct,
+        ident_or_call_or_struct_or_path,
         paren_expr,
         block_expr,
     ));
@@ -952,7 +974,47 @@ where
         })
 }
 
-/// Parser for top-level items (functions and structs)
+/// Parser for enum variant: just an identifier
+fn enum_variant_parser<'src, I>()
+-> impl Parser<'src, I, EnumVariant, extra::Err<Rich<'src, TokenKind>>> + Clone
+where
+    I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
+{
+    ident_parser().map_with(|name, e| EnumVariant {
+        name,
+        span: to_rue_span(e.span()),
+    })
+}
+
+/// Parser for comma-separated enum variants
+fn enum_variants_parser<'src, I>()
+-> impl Parser<'src, I, Vec<EnumVariant>, extra::Err<Rich<'src, TokenKind>>> + Clone
+where
+    I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
+{
+    enum_variant_parser()
+        .separated_by(just(TokenKind::Comma))
+        .allow_trailing()
+        .collect()
+}
+
+/// Parser for enum definitions: enum Name { Variant1, Variant2, ... }
+fn enum_parser<'src, I>()
+-> impl Parser<'src, I, EnumDecl, extra::Err<Rich<'src, TokenKind>>> + Clone
+where
+    I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
+{
+    just(TokenKind::Enum)
+        .ignore_then(ident_parser())
+        .then(enum_variants_parser().delimited_by(just(TokenKind::LBrace), just(TokenKind::RBrace)))
+        .map_with(|(name, variants), e| EnumDecl {
+            name,
+            variants,
+            span: to_rue_span(e.span()),
+        })
+}
+
+/// Parser for top-level items (functions, structs, and enums)
 fn item_parser<'src, I>() -> impl Parser<'src, I, Item, extra::Err<Rich<'src, TokenKind>>> + Clone
 where
     I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
@@ -960,6 +1022,7 @@ where
     choice((
         function_parser().map(Item::Function),
         struct_parser().map(Item::Struct),
+        enum_parser().map(Item::Enum),
     ))
 }
 
@@ -1080,6 +1143,7 @@ mod tests {
                 other => Ok(other),
             },
             Item::Struct(_) => panic!("parse_expr helper should only be used with functions"),
+            Item::Enum(_) => panic!("parse_expr helper should only be used with functions"),
         }
     }
 
@@ -1104,6 +1168,7 @@ mod tests {
                 }
             }
             Item::Struct(_) => panic!("expected Function"),
+            Item::Enum(_) => panic!("expected Function"),
         }
     }
 
@@ -1165,6 +1230,7 @@ mod tests {
                 _ => panic!("expected Block"),
             },
             Item::Struct(_) => panic!("expected Function"),
+            Item::Enum(_) => panic!("expected Function"),
         }
     }
 
