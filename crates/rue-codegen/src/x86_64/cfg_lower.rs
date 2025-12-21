@@ -1261,15 +1261,18 @@ impl<'a> CfgLower<'a> {
             } => {
                 let cond_vreg = self.get_vreg(*cond);
 
+                // Generate a unique label for the else path argument setup
+                let else_setup_label = self.new_label("else_setup");
+
                 // Test condition
                 self.mir.push(X86Inst::CmpRI {
                     src: Operand::Virtual(cond_vreg),
                     imm: 0,
                 });
 
-                // If false (zero), jump to else block
+                // If false (zero), jump to else setup (where we copy else_args)
                 self.mir.push(X86Inst::Jz {
-                    label: self.block_label(*else_block),
+                    label: else_setup_label.clone(),
                 });
 
                 // Copy then_args to then_block's params
@@ -1289,19 +1292,38 @@ impl<'a> CfgLower<'a> {
                     }
                 }
 
-                // Jump to then block (or fall through if next)
-                let next_block_id = BlockId::from_raw(block.id.as_u32() + 1);
-                if *then_block != next_block_id {
-                    self.mir.push(X86Inst::Jmp {
-                        label: self.block_label(*then_block),
-                    });
+                // Jump to then block
+                self.mir.push(X86Inst::Jmp {
+                    label: self.block_label(*then_block),
+                });
+
+                // Else setup: copy else_args to else_block's params
+                self.mir.push(X86Inst::Label {
+                    name: else_setup_label,
+                });
+                for (i, &arg) in else_args.iter().enumerate() {
+                    let arg_type = self.cfg.get_inst(arg).ty;
+                    if matches!(arg_type, Type::Struct(_)) {
+                        // For struct args, copy all field vregs
+                        self.copy_struct_to_block_param(arg, *else_block, i as u32);
+                    } else {
+                        // For scalar args, just copy the single vreg
+                        let arg_vreg = self.get_vreg(arg);
+                        let param_vreg = self.block_param_vregs[&(*else_block, i as u32)];
+                        self.mir.push(X86Inst::MovRR {
+                            dst: Operand::Virtual(param_vreg),
+                            src: Operand::Virtual(arg_vreg),
+                        });
+                    }
                 }
 
-                // Note: else_args need to be copied before jumping to else_block.
-                // This is done via an intermediate else_path label when args are non-empty.
-                // For now, this simplified version works for empty args (most common case).
-                // TODO: Handle non-empty else_args properly (like aarch64 does).
-                let _ = else_args;
+                // Jump to else block (or fall through if next)
+                let next_block_id = BlockId::from_raw(block.id.as_u32() + 1);
+                if *else_block != next_block_id {
+                    self.mir.push(X86Inst::Jmp {
+                        label: self.block_label(*else_block),
+                    });
+                }
             }
 
             Terminator::Switch {
