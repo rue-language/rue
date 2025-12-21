@@ -146,15 +146,28 @@ fn main() -> i32 {
 exit_code = 42
 
 [[case]]
-name = "function_order_matters"
-spec = ["6.1:4", "6.1:13"]
-description = "Functions can call other functions defined before them"
+name = "function_forward_reference"
+spec = ["6.1:12"]
+description = "Functions can call other functions regardless of definition order"
 source = """
-fn first(x: i32) -> i32 { x + 1 }
-fn second(x: i32) -> i32 { first(x) + 1 }
-fn main() -> i32 { second(40) }
+fn main() -> i32 { helper() }
+fn helper() -> i32 { 42 }
 """
 exit_code = 42
+
+[[case]]
+name = "function_mutual_forward_reference"
+spec = ["6.1:12"]
+description = "Functions can have mutual forward references"
+source = """
+fn first(x: i32) -> i32 {
+    if x <= 0 { 0 }
+    else { second(x - 1) + 1 }
+}
+fn second(x: i32) -> i32 { first(x) }
+fn main() -> i32 { first(5) }
+"""
+exit_code = 5
 
 # =============================================================================
 # Recursion

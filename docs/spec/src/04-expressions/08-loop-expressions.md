@@ -32,6 +32,51 @@ fn main() -> i32 {
 }
 ```
 
+## Infinite Loops
+
+r[4.8.15#normative]
+An infinite loop repeatedly executes its body unconditionally.
+
+r[4.8.16#normative]
+```ebnf
+loop_expr = "loop" "{" block "}" ;
+```
+
+r[4.8.17#normative]
+A loop expression has type `!` (never), because it never terminates normally.
+
+r[4.8.18#normative]
+The only way to exit a `loop` is via `break` or `return`.
+
+r[4.8.19]
+```rue
+fn main() -> i32 {
+    let mut x = 0;
+    loop {
+        x = x + 1;
+        if x == 5 {
+            break;
+        }
+    }
+    x  // 5
+}
+```
+
+r[4.8.20]
+The `loop` expression is preferred over `while true` for infinite loops:
+
+```rue
+// Preferred
+loop {
+    // ...
+}
+
+// Also valid, but less idiomatic
+while true {
+    // ...
+}
+```
+
 ## Break and Continue
 
 r[4.8.7#normative]

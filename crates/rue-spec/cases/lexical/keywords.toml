@@ -45,6 +45,12 @@ source = "fn main() -> i32 { let while = 1; 0 }"
 compile_fail = true
 
 [[case]]
+name = "keyword_loop_reserved"
+spec = ["2.4:1", "2.4:2"]
+source = "fn main() -> i32 { let loop = 1; 0 }"
+compile_fail = true
+
+[[case]]
 name = "keyword_match_reserved"
 spec = ["2.4:1", "2.4:2"]
 source = "fn main() -> i32 { let match = 1; 0 }"

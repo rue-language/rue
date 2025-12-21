@@ -67,7 +67,15 @@ fn main() -> i32 {
 ## Function Visibility
 
 r[6.1.12#normative]
-Functions can call any function defined in the same module.
+Functions can call any function defined in the same module, regardless of definition order.
 
-r[6.1.13#normative]
-Functions must be defined before `main` to be callable from `main`.
+r[6.1.13]
+```rue
+fn main() -> i32 {
+    helper()  // can call function defined below
+}
+
+fn helper() -> i32 {
+    42
+}
+```

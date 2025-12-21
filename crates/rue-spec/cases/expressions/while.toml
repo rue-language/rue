@@ -208,3 +208,91 @@ fn main() -> i32 {
 }
 """
 exit_code = 4
+
+# =============================================================================
+# Infinite Loops (loop expression)
+# =============================================================================
+
+[[case]]
+name = "loop_basic"
+spec = ["4.8:15", "4.8:16", "4.8:18"]
+source = """
+fn main() -> i32 {
+    let mut i = 0;
+    loop {
+        i = i + 1;
+        if i == 5 { break }
+    }
+    i
+}
+"""
+exit_code = 5
+
+[[case]]
+name = "loop_with_return"
+spec = ["4.8:15", "4.8:18"]
+source = """
+fn main() -> i32 {
+    let mut i = 0;
+    loop {
+        i = i + 1;
+        if i == 3 { return i }
+    }
+}
+"""
+exit_code = 3
+
+[[case]]
+name = "loop_has_never_type"
+spec = ["4.8:17"]
+description = "loop has never type, allowing it in expression position where never is expected"
+source = """
+fn diverge() -> ! {
+    loop {}
+}
+
+fn main() -> i32 {
+    42
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "loop_nested_break"
+spec = ["4.8:15", "4.8:13"]
+source = """
+fn main() -> i32 {
+    let mut total = 0;
+    let mut i = 0;
+    loop {
+        i = i + 1;
+        let mut j = 0;
+        loop {
+            j = j + 1;
+            total = total + 1;
+            if j == 2 { break }
+        }
+        if i == 3 { break }
+    }
+    total
+}
+"""
+exit_code = 6
+
+[[case]]
+name = "loop_with_continue"
+spec = ["4.8:15", "4.8:8"]
+source = """
+fn main() -> i32 {
+    let mut sum = 0;
+    let mut i = 0;
+    loop {
+        i = i + 1;
+        if i > 5 { break }
+        if i == 3 { continue }
+        sum = sum + i;
+    }
+    sum
+}
+"""
+exit_code = 12

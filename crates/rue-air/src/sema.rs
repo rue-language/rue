@@ -678,6 +678,15 @@ impl<'a> Sema<'a> {
                         _ => Type::I32,
                     };
 
+                    // Check if trying to negate an unsigned type
+                    if ty.is_unsigned() {
+                        return Err(CompileError::new(
+                            ErrorKind::CannotNegateUnsigned(ty.name().to_string()),
+                            inst.span,
+                        )
+                        .with_note("unsigned values cannot be negated"));
+                    }
+
                     // Check if this value, when negated, fits in the target signed type
                     if ty.negated_literal_fits(*value) && !ty.literal_fits(*value) {
                         // This is the MIN value case - the positive literal is out of range
@@ -702,6 +711,14 @@ impl<'a> Sema<'a> {
                 // Determine the type: use expected type if integer, otherwise synthesize from operand
                 let (operand_result, op_type) = match expectation {
                     TypeExpectation::Check(ty) if ty.is_integer() => {
+                        // Check if trying to negate an unsigned type
+                        if ty.is_unsigned() {
+                            return Err(CompileError::new(
+                                ErrorKind::CannotNegateUnsigned(ty.name().to_string()),
+                                inst.span,
+                            )
+                            .with_note("unsigned values cannot be negated"));
+                        }
                         let result =
                             self.analyze_inst(air, *operand, TypeExpectation::Check(ty), ctx)?;
                         (result, ty)
@@ -715,6 +732,14 @@ impl<'a> Sema<'a> {
                         } else {
                             Type::I32
                         };
+                        // Check if trying to negate an unsigned type
+                        if ty.is_unsigned() {
+                            return Err(CompileError::new(
+                                ErrorKind::CannotNegateUnsigned(ty.name().to_string()),
+                                inst.span,
+                            )
+                            .with_note("unsigned values cannot be negated"));
+                        }
                         (result, ty)
                     }
                 };

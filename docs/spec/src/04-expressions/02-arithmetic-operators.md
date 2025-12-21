@@ -45,7 +45,10 @@ fn main() -> i32 {
 ## Unary Negation
 
 r[4.2.6#normative]
-The unary negation operator `-` takes a single integer operand and produces its arithmetic negation.
+The unary negation operator `-` takes a single signed integer operand and produces its arithmetic negation.
+
+r[4.2.14#normative]
+Unary negation on unsigned integer types is a compile-time error.
 
 r[4.2.7#normative]
 Unary negation binds tighter than all binary operators.

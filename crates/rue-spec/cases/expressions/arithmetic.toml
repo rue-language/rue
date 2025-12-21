@@ -364,6 +364,63 @@ source = "fn main() -> i32 { -10 % 3 }"
 exit_code = 255
 
 # =============================================================================
+# Unsigned Negation is an Error
+# =============================================================================
+
+[[case]]
+name = "negation_unsigned_error"
+spec = ["4.2:14"]
+description = "Unary negation on unsigned types is a compile-time error"
+source = """
+fn main() -> i32 {
+    let x: u32 = 5;
+    let y: u32 = -x;
+    0
+}
+"""
+compile_fail = true
+error_contains = "cannot apply unary operator"
+
+[[case]]
+name = "negation_unsigned_u8_error"
+spec = ["4.2:14"]
+source = """
+fn main() -> i32 {
+    let x: u8 = 5;
+    let y: u8 = -x;
+    0
+}
+"""
+compile_fail = true
+error_contains = "cannot apply unary operator"
+
+[[case]]
+name = "negation_unsigned_u64_error"
+spec = ["4.2:14"]
+source = """
+fn main() -> i32 {
+    let x: u64 = 5;
+    let y: u64 = -x;
+    0
+}
+"""
+compile_fail = true
+error_contains = "cannot apply unary operator"
+
+[[case]]
+name = "negation_unsigned_literal_error"
+spec = ["4.2:14"]
+description = "Even negating a literal with unsigned type annotation is an error"
+source = """
+fn main() -> i32 {
+    let x: u32 = -5;
+    0
+}
+"""
+compile_fail = true
+error_contains = "cannot apply unary operator"
+
+# =============================================================================
 # Runtime Errors
 # =============================================================================
 

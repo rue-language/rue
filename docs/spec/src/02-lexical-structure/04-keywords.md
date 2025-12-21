@@ -15,7 +15,8 @@ The following words are keywords and cannot be used as identifiers:
 | `mut` | Mutable binding modifier |
 | `if` | Conditional expression |
 | `else` | Alternative branch |
-| `while` | Loop expression |
+| `while` | While loop expression |
+| `loop` | Infinite loop expression |
 | `match` | Pattern matching expression |
 | `return` | Return from function |
 | `break` | Exit loop |

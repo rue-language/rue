@@ -222,6 +222,9 @@ pub enum ErrorKind {
         ty: String,
     },
 
+    // Operator errors
+    CannotNegateUnsigned(String),
+
     // Array errors
     IndexOnNonArray {
         found: String,
@@ -469,6 +472,9 @@ impl fmt::Display for ErrorKind {
                     "literal value {} is out of range for type '{}'",
                     value, ty
                 )
+            }
+            ErrorKind::CannotNegateUnsigned(ty) => {
+                write!(f, "cannot apply unary operator `-` to type '{}'", ty)
             }
             ErrorKind::IndexOnNonArray { found } => {
                 write!(f, "cannot index into non-array type '{}'", found)

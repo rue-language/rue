@@ -50,6 +50,7 @@ primary        = INTEGER | BOOL | IDENT
                | if_expr
                | match_expr
                | while_expr
+               | loop_expr
                | "break" | "continue"
                | return_expr
                | array_literal
@@ -63,6 +64,7 @@ match_expr     = "match" expression "{" { match_arm "," } [ match_arm ] "}" ;
 match_arm      = pattern "=>" expression ;
 pattern        = "_" | INTEGER | BOOL ;
 while_expr     = "while" expression "{" block "}" ;
+loop_expr      = "loop" "{" block "}" ;
 return_expr    = "return" expression ;
 array_literal  = "[" [ expression { "," expression } ] "]" ;
 struct_literal = IDENT "{" [ field_inits ] "}" ;
