@@ -763,7 +763,7 @@ impl RegAlloc {
             X86Inst::Jb { label } => mir.push(X86Inst::Jb { label }),
             X86Inst::Jae { label } => mir.push(X86Inst::Jae { label }),
             X86Inst::Jmp { label } => mir.push(X86Inst::Jmp { label }),
-            X86Inst::Label { name } => mir.push(X86Inst::Label { name }),
+            X86Inst::Label { id } => mir.push(X86Inst::Label { id }),
             X86Inst::CallRel { symbol } => mir.push(X86Inst::CallRel { symbol }),
             X86Inst::Syscall => mir.push(X86Inst::Syscall),
             X86Inst::Ret => mir.push(X86Inst::Ret),

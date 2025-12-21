@@ -6,7 +6,7 @@
 use std::collections::HashMap;
 
 use super::EmittedRelocation;
-use super::mir::{Reg, X86Inst, X86Mir};
+use super::mir::{LabelId, Reg, X86Inst, X86Mir};
 
 /// Kind of jump fixup (rel8 or rel32).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -21,8 +21,8 @@ enum FixupKind {
 struct Fixup {
     /// Offset of the rel8/rel32 displacement in the code.
     offset: usize,
-    /// Target label name.
-    label: String,
+    /// Target label ID.
+    label: LabelId,
     /// Kind of fixup (rel8 or rel32).
     kind: FixupKind,
 }
@@ -32,8 +32,8 @@ pub struct Emitter<'a> {
     mir: &'a X86Mir,
     code: Vec<u8>,
     relocations: Vec<EmittedRelocation>,
-    /// Maps label names to their code offsets.
-    labels: HashMap<String, usize>,
+    /// Maps label IDs to their code offsets.
+    labels: HashMap<LabelId, usize>,
     /// Forward jumps that need to be patched.
     fixups: Vec<Fixup>,
     /// Total number of local slots including spills (for stack frame size).
@@ -390,29 +390,29 @@ impl<'a> Emitter<'a> {
                 self.emit_test_rr(src1.as_physical(), src2.as_physical());
             }
             X86Inst::Jz { label } => {
-                self.emit_jcc(0x74, label); // JZ rel8 opcode
+                self.emit_jcc(0x74, *label); // JZ rel8 opcode
             }
             X86Inst::Jnz { label } => {
-                self.emit_jcc(0x75, label); // JNZ rel8 opcode
+                self.emit_jcc(0x75, *label); // JNZ rel8 opcode
             }
             X86Inst::Jo { label } => {
-                self.emit_jcc(0x70, label); // JO rel8 opcode
+                self.emit_jcc(0x70, *label); // JO rel8 opcode
             }
             X86Inst::Jno { label } => {
-                self.emit_jcc(0x71, label); // JNO rel8 opcode
+                self.emit_jcc(0x71, *label); // JNO rel8 opcode
             }
             X86Inst::Jb { label } => {
-                self.emit_jcc(0x72, label); // JB rel8 opcode (CF=1)
+                self.emit_jcc(0x72, *label); // JB rel8 opcode (CF=1)
             }
             X86Inst::Jae { label } => {
-                self.emit_jcc(0x73, label); // JAE rel8 opcode (CF=0)
+                self.emit_jcc(0x73, *label); // JAE rel8 opcode (CF=0)
             }
             X86Inst::Jmp { label } => {
-                self.emit_jmp(label);
+                self.emit_jmp(*label);
             }
-            X86Inst::Label { name } => {
+            X86Inst::Label { id } => {
                 // Record the current code offset for this label
-                self.labels.insert(name.clone(), self.code.len());
+                self.labels.insert(*id, self.code.len());
             }
             X86Inst::CallRel { symbol } => {
                 self.emit_call_rel(symbol);
@@ -1285,7 +1285,7 @@ impl<'a> Emitter<'a> {
     ///
     /// Encoding: E9 rel32
     /// We always use rel32 to support jumps of any size.
-    fn emit_jmp(&mut self, label: &str) {
+    fn emit_jmp(&mut self, label: LabelId) {
         // Opcode: E9 (jmp rel32)
         self.code.push(0xE9);
 
@@ -1295,7 +1295,7 @@ impl<'a> Emitter<'a> {
 
         self.fixups.push(Fixup {
             offset: fixup_offset,
-            label: label.to_string(),
+            label,
             kind: FixupKind::Rel32,
         });
     }
@@ -1304,7 +1304,7 @@ impl<'a> Emitter<'a> {
     ///
     /// The opcode is the condition-specific byte (e.g., 0x74 for JZ, 0x75 for JNZ).
     /// We convert rel8 opcodes to rel32 opcodes (0F 8x form) to support jumps of any size.
-    fn emit_jcc(&mut self, opcode: u8, label: &str) {
+    fn emit_jcc(&mut self, opcode: u8, label: LabelId) {
         // Convert rel8 opcode to rel32 opcode
         // rel8 opcodes are 7x (e.g., 74=JZ, 75=JNZ, 70=JO, 71=JNO)
         // rel32 opcodes are 0F 8x (e.g., 0F 84=JZ, 0F 85=JNZ, 0F 80=JO, 0F 81=JNO)
@@ -1321,7 +1321,7 @@ impl<'a> Emitter<'a> {
 
         self.fixups.push(Fixup {
             offset: fixup_offset,
-            label: label.to_string(),
+            label,
             kind: FixupKind::Rel32,
         });
     }

@@ -34,6 +34,33 @@ impl fmt::Display for VReg {
     }
 }
 
+/// A label identifier.
+///
+/// Labels are local to a function and are represented as a lightweight u32 index
+/// rather than as heap-allocated strings. This avoids allocations during codegen.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct LabelId(u32);
+
+impl LabelId {
+    /// Create a new label with the given index.
+    #[inline]
+    pub const fn new(index: u32) -> Self {
+        Self(index)
+    }
+
+    /// Get the index of this label.
+    #[inline]
+    pub const fn index(self) -> u32 {
+        self.0
+    }
+}
+
+impl fmt::Display for LabelId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, ".L{}", self.0)
+    }
+}
+
 /// A physical x86-64 register.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(u8)]
@@ -295,28 +322,28 @@ pub enum X86Inst {
     TestRR { src1: Operand, src2: Operand },
 
     /// `jz label` - Jump if zero flag is set.
-    Jz { label: String },
+    Jz { label: LabelId },
 
     /// `jnz label` - Jump if zero flag is not set.
-    Jnz { label: String },
+    Jnz { label: LabelId },
 
     /// `jo label` - Jump if overflow flag is set.
-    Jo { label: String },
+    Jo { label: LabelId },
 
     /// `jno label` - Jump if overflow flag is not set.
-    Jno { label: String },
+    Jno { label: LabelId },
 
     /// `jb label` - Jump if below (unsigned: CF=1).
-    Jb { label: String },
+    Jb { label: LabelId },
 
     /// `jae label` - Jump if above or equal (unsigned: CF=0).
-    Jae { label: String },
+    Jae { label: LabelId },
 
     /// `jmp label` - Unconditional jump.
-    Jmp { label: String },
+    Jmp { label: LabelId },
 
     /// Label marker (not a real instruction).
-    Label { name: String },
+    Label { id: LabelId },
 
     /// `call symbol` - Call a function by symbol name (PC-relative).
     ///
@@ -451,7 +478,7 @@ impl fmt::Display for X86Inst {
             X86Inst::Jb { label } => write!(f, "jb {}", label),
             X86Inst::Jae { label } => write!(f, "jae {}", label),
             X86Inst::Jmp { label } => write!(f, "jmp {}", label),
-            X86Inst::Label { name } => write!(f, "{}:", name),
+            X86Inst::Label { id } => write!(f, "{}:", id),
             X86Inst::CallRel { symbol } => write!(f, "call {}", symbol),
             X86Inst::Syscall => write!(f, "syscall"),
             X86Inst::Ret => write!(f, "ret"),
