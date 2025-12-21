@@ -303,15 +303,19 @@ impl<'a> CfgLower<'a> {
                 let vreg = self.mir.alloc_vreg();
                 self.value_map.insert(value, vreg);
 
-                if *v >= i32::MIN as i64 && *v <= i32::MAX as i64 {
+                // Use 32-bit immediate if value fits in unsigned 32-bit range
+                // (this is safe because mov r32, imm32 zero-extends to 64-bit)
+                if *v <= u32::MAX as u64 {
                     self.mir.push(X86Inst::MovRI32 {
                         dst: Operand::Virtual(vreg),
                         imm: *v as i32,
                     });
                 } else {
+                    // For values > u32::MAX, use 64-bit move
+                    // Cast to i64 to preserve the bit pattern
                     self.mir.push(X86Inst::MovRI64 {
                         dst: Operand::Virtual(vreg),
-                        imm: *v,
+                        imm: *v as i64,
                     });
                 }
             }
@@ -1322,10 +1326,19 @@ impl<'a> CfgLower<'a> {
         let lhs_vreg = self.get_vreg(lhs);
         let rhs_vreg = self.get_vreg(rhs);
 
-        self.mir.push(X86Inst::CmpRR {
-            src1: Operand::Virtual(lhs_vreg),
-            src2: Operand::Virtual(rhs_vreg),
-        });
+        // Use 64-bit compare for i64/u64 types
+        let lhs_ty = self.cfg.get_inst(lhs).ty;
+        if matches!(lhs_ty, Type::I64 | Type::U64) {
+            self.mir.push(X86Inst::Cmp64RR {
+                src1: Operand::Virtual(lhs_vreg),
+                src2: Operand::Virtual(rhs_vreg),
+            });
+        } else {
+            self.mir.push(X86Inst::CmpRR {
+                src1: Operand::Virtual(lhs_vreg),
+                src2: Operand::Virtual(rhs_vreg),
+            });
+        }
         emit_setcc(&mut self.mir, vreg);
         self.mir.push(X86Inst::Movzx {
             dst: Operand::Virtual(vreg),
@@ -1446,11 +1459,12 @@ impl<'a> CfgLower<'a> {
 
                 // Generate comparison and jump for each case
                 for (value, target) in cases {
-                    // Load case value into a register to handle full i64 range
+                    // Load case value into a register to handle full u64 range
+                    // Cast to i64 to preserve bit pattern
                     let case_vreg = self.mir.alloc_vreg();
                     self.mir.push(X86Inst::MovRI64 {
                         dst: Operand::Virtual(case_vreg),
-                        imm: *value,
+                        imm: *value as i64,
                     });
                     self.mir.push(X86Inst::CmpRR {
                         src1: Operand::Virtual(scrutinee_vreg),

@@ -344,6 +344,9 @@ impl<'a> Emitter<'a> {
             X86Inst::CmpRR { src1, src2 } => {
                 self.emit_cmp_rr(src1.as_physical(), src2.as_physical());
             }
+            X86Inst::Cmp64RR { src1, src2 } => {
+                self.emit_cmp64_rr(src1.as_physical(), src2.as_physical());
+            }
             X86Inst::CmpRI { src, imm } => {
                 self.emit_cmp_ri(src.as_physical(), *imm);
             }
@@ -1170,6 +1173,27 @@ impl<'a> Emitter<'a> {
         }
 
         // Opcode: 39 (cmp r/m32, r32)
+        self.code.push(0x39);
+
+        // ModR/M: mod=11, reg=src2, r/m=src1
+        let modrm = 0xC0 | ((src2_enc & 7) << 3) | (src1_enc & 7);
+        self.code.push(modrm);
+    }
+
+    /// Emit `cmp r64, r64`.
+    ///
+    /// Encoding: REX.W 39 /r (cmp r/m64, r64)
+    fn emit_cmp64_rr(&mut self, src1: Reg, src2: Reg) {
+        let src1_enc = src1.encoding();
+        let src2_enc = src2.encoding();
+
+        // REX.W prefix (always needed for 64-bit operands)
+        let rex = 0x48
+            | if src2.needs_rex() { 0x04 } else { 0x00 }  // REX.R
+            | if src1.needs_rex() { 0x01 } else { 0x00 }; // REX.B
+        self.code.push(rex);
+
+        // Opcode: 39 (cmp r/m64, r64)
         self.code.push(0x39);
 
         // ModR/M: mod=11, reg=src2, r/m=src1

@@ -34,7 +34,7 @@ pub enum RirPattern {
     /// Wildcard pattern `_` - matches anything
     Wildcard,
     /// Integer literal pattern
-    Int(i64),
+    Int(u64),
     /// Boolean literal pattern
     Bool(bool),
 }
@@ -120,7 +120,7 @@ pub struct Inst {
 #[derive(Debug, Clone)]
 pub enum InstData {
     /// Integer constant
-    IntConst(i64),
+    IntConst(u64),
 
     /// Boolean constant
     BoolConst(bool),

@@ -174,7 +174,7 @@ pub enum Expr {
 /// An integer literal.
 #[derive(Debug, Clone)]
 pub struct IntLit {
-    pub value: i64,
+    pub value: u64,
     pub span: Span,
 }
 

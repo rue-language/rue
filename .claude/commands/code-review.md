@@ -34,5 +34,6 @@ For the Rue compiler specifically, also check:
 - Index-based references used correctly (no dangling indices)
 - IR transformations preserve semantics
 - Span tracking maintained for error reporting
+- **Multi-backend consistency**: If changes touch `rue-codegen`, verify that equivalent changes were made to ALL backends (x86_64 and aarch64). Check mir.rs, emit.rs, regalloc.rs, liveness.rs, and cfg_lower.rs in both directories.
 
 Provide specific, actionable feedback with file:line references. File new bugs with `bd` for simple non-blocking improvements, but the feedback given here is things that we should land before we merge this change.

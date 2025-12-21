@@ -76,8 +76,8 @@ pub enum LogosTokenKind {
     Underscore,
 
     // Integer literals
-    #[regex(r"[0-9]+", |lex| lex.slice().parse::<i64>().ok())]
-    Int(i64),
+    #[regex(r"[0-9]+", |lex| lex.slice().parse::<u64>().ok())]
+    Int(u64),
 
     // Identifiers (lower priority than keywords)
     #[regex(r"[a-zA-Z_][a-zA-Z0-9_]*", |lex| lex.slice().to_string(), priority = 1)]

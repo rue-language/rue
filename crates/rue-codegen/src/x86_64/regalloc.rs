@@ -402,6 +402,15 @@ impl RegAlloc {
                 });
             }
 
+            X86Inst::Cmp64RR { src1, src2 } => {
+                let src1_op = self.load_operand(mir, src1, Reg::Rax);
+                let src2_op = self.load_operand(mir, src2, Reg::R10);
+                mir.push(X86Inst::Cmp64RR {
+                    src1: src1_op,
+                    src2: src2_op,
+                });
+            }
+
             X86Inst::CmpRI { src, imm } => {
                 let src_op = self.load_operand(mir, src, Reg::Rax);
                 mir.push(X86Inst::CmpRI { src: src_op, imm });

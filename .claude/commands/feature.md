@@ -23,6 +23,7 @@ Follow this workflow:
 7. **Add spec tests** - Add test cases to `crates/rue-spec/cases/` with `spec = ["X.Y:Z"]` references linking to the spec paragraphs.
 8. **Add UI tests** - If the feature includes warnings, lints, or diagnostic changes, add tests to `crates/rue-ui-tests/cases/`.
 9. **Implement incrementally** - Make changes, keeping tests passing as you go
+   - **If touching rue-codegen**: Implement changes in ALL backends (x86_64 and aarch64). See "Codegen: Multi-Backend Considerations" in CLAUDE.md.
 10. **Verify** - Run `./test.sh` to ensure:
     - All tests pass
     - Traceability check passes (100% spec coverage)

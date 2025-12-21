@@ -71,7 +71,7 @@ pub struct CfgInst {
 #[derive(Debug, Clone)]
 pub enum CfgInstData {
     /// Integer constant (typed)
-    Const(i64),
+    Const(u64),
 
     /// Boolean constant
     BoolConst(bool),
@@ -199,7 +199,7 @@ pub enum Terminator {
         /// The value to switch on
         scrutinee: CfgValue,
         /// Cases: (value, target_block)
-        cases: Vec<(i64, BlockId)>,
+        cases: Vec<(u64, BlockId)>,
         /// Default block (for wildcard pattern)
         default: BlockId,
     },

@@ -840,3 +840,72 @@ fn main() -> i32 {
 }
 """
 exit_code = 1
+
+# =============================================================================
+# Large u64 Literals (values > i64::MAX)
+# =============================================================================
+# These tests verify that integer literals larger than i64::MAX can be parsed
+# and used correctly with u64 type. i64::MAX is 9223372036854775807 (2^63 - 1).
+
+[[case]]
+name = "u64_i64_max_plus_one"
+spec = ["3.1:12"]
+description = "u64 literal that is exactly i64::MAX + 1 (2^63)"
+source = """
+fn main() -> i32 {
+    let x: u64 = 9223372036854775808;
+    if x > 0 { 1 } else { 0 }
+}
+"""
+exit_code = 1
+
+[[case]]
+name = "u64_large_literal"
+spec = ["3.1:12"]
+description = "u64 literal significantly larger than i64::MAX"
+source = """
+fn main() -> i32 {
+    let x: u64 = 10000000000000000000;
+    if x > 0 { 1 } else { 0 }
+}
+"""
+exit_code = 1
+
+[[case]]
+name = "u64_max"
+spec = ["3.1:12"]
+description = "u64::MAX literal (2^64 - 1)"
+source = """
+fn main() -> i32 {
+    let x: u64 = 18446744073709551615;
+    if x > 0 { 1 } else { 0 }
+}
+"""
+exit_code = 1
+
+[[case]]
+name = "u64_large_arithmetic"
+spec = ["3.1:12"]
+description = "Arithmetic with large u64 values"
+source = """
+fn main() -> i32 {
+    let x: u64 = 9223372036854775808;
+    let y: u64 = 1;
+    let z: u64 = x + y;
+    if z > x { 1 } else { 0 }
+}
+"""
+exit_code = 1
+
+[[case]]
+name = "u64_large_comparison"
+spec = ["3.1:12"]
+description = "Comparison between large u64 values"
+source = """
+fn main() -> i32 {
+    let x: u64 = 9223372036854775808;
+    let y: u64 = 9223372036854775809;
+    if y > x { 1 } else { 0 }
+}
+"""
+exit_code = 1

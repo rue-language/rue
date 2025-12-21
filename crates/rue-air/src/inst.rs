@@ -13,7 +13,7 @@ pub enum AirPattern {
     /// Wildcard pattern `_` - matches anything
     Wildcard,
     /// Integer literal pattern
-    Int(i64),
+    Int(u64),
     /// Boolean literal pattern
     Bool(bool),
 }
@@ -103,7 +103,7 @@ pub struct AirInst {
 #[derive(Debug, Clone)]
 pub enum AirInstData {
     /// Integer constant (typed)
-    Const(i64),
+    Const(u64),
 
     /// Boolean constant
     BoolConst(bool),

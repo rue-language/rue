@@ -205,7 +205,7 @@ fn uses(inst: &X86Inst) -> Vec<VReg> {
             add_if_virtual(src1, &mut result);
             add_if_virtual(src2, &mut result);
         }
-        X86Inst::CmpRR { src1, src2 } => {
+        X86Inst::CmpRR { src1, src2 } | X86Inst::Cmp64RR { src1, src2 } => {
             add_if_virtual(src1, &mut result);
             add_if_virtual(src2, &mut result);
         }
@@ -315,7 +315,10 @@ fn defs(inst: &X86Inst) -> Vec<VReg> {
         X86Inst::IdivR { .. } => {
             // Implicitly defines RAX (quotient) and RDX (remainder), but those are physical
         }
-        X86Inst::TestRR { .. } | X86Inst::CmpRR { .. } | X86Inst::CmpRI { .. } => {
+        X86Inst::TestRR { .. }
+        | X86Inst::CmpRR { .. }
+        | X86Inst::Cmp64RR { .. }
+        | X86Inst::CmpRI { .. } => {
             // Only sets flags, no register def
         }
         X86Inst::Sete { dst }

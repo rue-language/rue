@@ -626,6 +626,7 @@ impl<'a> Sema<'a> {
                 // Special case: -2147483648 (MIN_I32)
                 // The literal 2147483648 exceeds i32::MAX, but -2147483648 is valid.
                 // We check this first regardless of expectation mode.
+                // Handle special case of negating 2^31 to get i32::MIN
                 let operand_inst = self.rir.get(*operand);
                 if let InstData::IntConst(value) = &operand_inst.data {
                     if *value == 2147483648 {
@@ -635,8 +636,11 @@ impl<'a> Sema<'a> {
                             _ => Type::I32,
                         };
                         if ty == Type::I32 {
+                            // Store i32::MIN as its u64 bit pattern
+                            // i32::MIN = -2147483648, which as u64 bit pattern is 0xFFFFFFFF80000000
+                            // But we just need the 32-bit representation interpreted correctly
                             let air_ref = air.add_inst(AirInst {
-                                data: AirInstData::Const(-2147483648_i64),
+                                data: AirInstData::Const((-2147483648_i32) as u32 as u64),
                                 ty,
                                 span: inst.span,
                             });
@@ -2129,12 +2133,16 @@ impl<'a> Sema<'a> {
     fn try_get_const_index(&self, inst_ref: InstRef) -> Option<i64> {
         let inst = self.rir.get(inst_ref);
         match &inst.data {
-            InstData::IntConst(value) => Some(*value),
+            InstData::IntConst(value) => {
+                // Convert u64 to i64, returning None if it would overflow
+                i64::try_from(*value).ok()
+            }
             InstData::Neg { operand } => {
                 // Handle negative literal: -N
                 let operand_inst = self.rir.get(*operand);
                 if let InstData::IntConst(value) = &operand_inst.data {
-                    Some(-value)
+                    // Negate the value; this can overflow for very large values
+                    i64::try_from(*value).ok().and_then(|v| v.checked_neg())
                 } else {
                     None
                 }

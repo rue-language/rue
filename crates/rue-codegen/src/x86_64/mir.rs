@@ -279,8 +279,11 @@ pub enum X86Inst {
     IdivR { src: Operand },
 
     // Comparison and control flow
-    /// `cmp src1, src2` - Compare (subtract and set flags, discard result).
+    /// `cmp src1, src2` - Compare 32-bit (subtract and set flags, discard result).
     CmpRR { src1: Operand, src2: Operand },
+
+    /// `cmp src1, src2` - Compare 64-bit (subtract and set flags, discard result).
+    Cmp64RR { src1: Operand, src2: Operand },
 
     /// `cmp src, imm` - Compare register with immediate.
     CmpRI { src: Operand, imm: i32 },
@@ -474,6 +477,7 @@ impl fmt::Display for X86Inst {
             X86Inst::Cdq => write!(f, "cdq"),
             X86Inst::IdivR { src } => write!(f, "idiv {}", src),
             X86Inst::CmpRR { src1, src2 } => write!(f, "cmp {}, {}", src1, src2),
+            X86Inst::Cmp64RR { src1, src2 } => write!(f, "cmpq {}, {}", src1, src2),
             X86Inst::CmpRI { src, imm } => write!(f, "cmp {}, {}", src, imm),
             X86Inst::Sete { dst } => write!(f, "sete {}", dst),
             X86Inst::Setne { dst } => write!(f, "setne {}", dst),

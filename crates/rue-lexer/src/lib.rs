@@ -42,7 +42,7 @@ pub enum TokenKind {
     Underscore, // _ (wildcard pattern)
 
     // Literals
-    Int(i64),
+    Int(u64),
 
     // Identifiers
     Ident(String),

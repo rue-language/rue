@@ -296,9 +296,10 @@ impl<'a> CfgLower<'a> {
                 let vreg = self.mir.alloc_vreg();
                 self.value_map.insert(value, vreg);
 
+                // Cast u64 to i64 to preserve bit pattern
                 self.mir.push(Aarch64Inst::MovImm {
                     dst: Operand::Virtual(vreg),
-                    imm: *v,
+                    imm: *v as i64,
                 });
             }
 
@@ -1565,10 +1566,19 @@ impl<'a> CfgLower<'a> {
         let lhs_vreg = self.get_vreg(lhs);
         let rhs_vreg = self.get_vreg(rhs);
 
-        self.mir.push(Aarch64Inst::CmpRR {
-            src1: Operand::Virtual(lhs_vreg),
-            src2: Operand::Virtual(rhs_vreg),
-        });
+        // Use 64-bit compare for i64/u64 types
+        let lhs_ty = self.cfg.get_inst(lhs).ty;
+        if matches!(lhs_ty, Type::I64 | Type::U64) {
+            self.mir.push(Aarch64Inst::Cmp64RR {
+                src1: Operand::Virtual(lhs_vreg),
+                src2: Operand::Virtual(rhs_vreg),
+            });
+        } else {
+            self.mir.push(Aarch64Inst::CmpRR {
+                src1: Operand::Virtual(lhs_vreg),
+                src2: Operand::Virtual(rhs_vreg),
+            });
+        }
         self.mir.push(Aarch64Inst::Cset {
             dst: Operand::Virtual(vreg),
             cond,
@@ -1684,10 +1694,11 @@ impl<'a> CfgLower<'a> {
                 // Generate comparison and jump for each case
                 for (value, target) in cases {
                     // Compare scrutinee with case value
+                    // Cast to i64 to preserve bit pattern
                     let imm_vreg = self.mir.alloc_vreg();
                     self.mir.push(Aarch64Inst::MovImm {
                         dst: Operand::Virtual(imm_vreg),
-                        imm: *value,
+                        imm: *value as i64,
                     });
                     self.mir.push(Aarch64Inst::CmpRR {
                         src1: Operand::Virtual(scrutinee_vreg),

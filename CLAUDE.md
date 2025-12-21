@@ -338,6 +338,29 @@ When adding or changing language features, follow this checklist:
 
 9. **Run `./test.sh`** to verify all tests pass and traceability is maintained
 
+## Codegen: Multi-Backend Considerations
+
+**IMPORTANT**: The `rue-codegen` crate contains multiple architecture backends:
+- `x86_64/` - Linux x86-64
+- `aarch64/` - macOS ARM64
+
+When making changes to codegen, **always check if the same change is needed in all backends**. Common areas that require parallel changes:
+
+- **New MIR instructions**: Add to both `x86_64/mir.rs` and `aarch64/mir.rs`
+- **Instruction emission**: Update both `x86_64/emit.rs` and `aarch64/emit.rs`
+- **Register allocation**: Update both `x86_64/regalloc.rs` and `aarch64/regalloc.rs`
+- **Liveness analysis**: Update both `x86_64/liveness.rs` and `aarch64/liveness.rs`
+- **CFG lowering**: Update both `x86_64/cfg_lower.rs` and `aarch64/cfg_lower.rs`
+
+Example: If adding a new comparison instruction variant (e.g., 64-bit compare):
+1. Add `Cmp64RR` to both MIR definitions
+2. Add emission logic to both emitters
+3. Add register allocation handling to both allocators
+4. Add liveness tracking to both liveness analyzers
+5. Update CFG lowering in both backends to use the new instruction where appropriate
+
+**Testing across backends**: The spec tests run on the host architecture only. If you only have access to one platform, note in your commit message that the other backend may need verification.
+
 ## Version Control
 
 Uses Jujutsu (jj): `jj status`, `jj diff`, `jj commit -m "msg"`, `jj log`
