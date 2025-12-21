@@ -118,6 +118,12 @@ impl fmt::Display for TypeExpr {
     }
 }
 
+/// A unit literal expression - represents `()` or implicit unit.
+#[derive(Debug, Clone)]
+pub struct UnitLit {
+    pub span: Span,
+}
+
 /// An expression.
 #[derive(Debug, Clone)]
 pub enum Expr {
@@ -125,6 +131,8 @@ pub enum Expr {
     Int(IntLit),
     /// Boolean literal
     Bool(BoolLit),
+    /// Unit literal (explicit `()` or implicit unit for blocks without final expression)
+    Unit(UnitLit),
     /// Identifier reference (variable)
     Ident(Ident),
     /// Binary operation (e.g., `a + b`)
@@ -451,6 +459,7 @@ impl Expr {
         match self {
             Expr::Int(lit) => lit.span,
             Expr::Bool(lit) => lit.span,
+            Expr::Unit(lit) => lit.span,
             Expr::Ident(ident) => ident.span,
             Expr::Binary(bin) => bin.span,
             Expr::Unary(un) => un.span,
@@ -542,6 +551,7 @@ fn fmt_expr(f: &mut fmt::Formatter<'_>, expr: &Expr, level: usize) -> fmt::Resul
     match expr {
         Expr::Int(lit) => writeln!(f, "Int({})", lit.value),
         Expr::Bool(lit) => writeln!(f, "Bool({})", lit.value),
+        Expr::Unit(_) => writeln!(f, "Unit"),
         Expr::Ident(ident) => writeln!(f, "Ident({})", ident.name),
         Expr::Binary(bin) => {
             writeln!(f, "Binary {:?}", bin.op)?;

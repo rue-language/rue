@@ -455,6 +455,32 @@ fn main() -> i32 {
 }
 ```
 
+**If without else:** When the else branch is omitted, the then branch must have unit type `()`. The entire if expression evaluates to unit:
+
+```rue
+fn main() -> i32 {
+    let mut x = 0;
+    if true { x = 42; }  // OK: then branch has unit type
+    x
+}
+```
+
+```rue
+fn main() -> i32 {
+    if true { 42 }  // ERROR: expected (), found i32
+    0
+}
+```
+
+Control flow expressions like `break`, `continue`, and `return` are allowed in the then branch because they have the never type `!`, which coerces to any type including unit:
+
+```rue
+fn main() -> i32 {
+    if true { return 42; }  // OK: return has never type
+    0
+}
+```
+
 ### Match Expressions
 
 Match expressions provide multi-way branching on values:

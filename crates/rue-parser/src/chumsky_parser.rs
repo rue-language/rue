@@ -8,7 +8,7 @@ use crate::ast::{
     BreakExpr, CallExpr, ContinueExpr, Expr, FieldDecl, FieldExpr, FieldInit, Function, Ident,
     IfExpr, IndexExpr, IntLit, IntrinsicCallExpr, Item, LetStatement, LoopExpr, MatchArm,
     MatchExpr, Param, ParenExpr, Pattern, ReturnExpr, Statement, StructDecl, StructLitExpr,
-    TypeExpr, UnaryExpr, UnaryOp, WhileExpr,
+    TypeExpr, UnaryExpr, UnaryOp, UnitLit, WhileExpr,
 };
 use chumsky::input::{Input as ChumskyInput, Stream, ValueInput};
 use chumsky::pratt::{infix, left, prefix};
@@ -861,9 +861,8 @@ fn process_block_items(items: Vec<BlockItem>, block_span: Span) -> (Vec<Statemen
                 return e;
             }
         }
-        // Fallback: use a dummy false value (unit type placeholder)
-        Expr::Bool(BoolLit {
-            value: false,
+        // Fallback: use a unit expression (block produces unit type)
+        Expr::Unit(UnitLit {
             span: Span::new(block_span.end, block_span.end),
         })
     });

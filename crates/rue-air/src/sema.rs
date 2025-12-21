@@ -500,6 +500,18 @@ impl<'a> Sema<'a> {
                 Ok(AnalysisResult::new(air_ref, ty))
             }
 
+            InstData::UnitConst => {
+                let ty = Type::Unit;
+                expectation.check(ty, inst.span)?;
+
+                let air_ref = air.add_inst(AirInst {
+                    data: AirInstData::UnitConst,
+                    ty,
+                    span: inst.span,
+                });
+                Ok(AnalysisResult::new(air_ref, ty))
+            }
+
             InstData::Add { lhs, rhs } => self.analyze_binary_arith(
                 air,
                 *lhs,
@@ -741,15 +753,23 @@ impl<'a> Sema<'a> {
                     Ok(AnalysisResult::new(air_ref, result_type))
                 } else {
                     // No else branch - result is Unit
-                    // Analyze then branch with its own scope (can be any type, we'll ignore it)
+                    // The then branch must have unit type (spec 4.6:5)
                     ctx.push_scope();
-                    let then_result = self.analyze_inst(
-                        air,
-                        *then_block,
-                        TypeExpectation::Check(Type::Unit),
-                        ctx,
-                    )?;
+                    let then_result =
+                        self.analyze_inst(air, *then_block, TypeExpectation::Synthesize, ctx)?;
                     ctx.pop_scope();
+
+                    // Check that the then branch has unit type (or Never/Error)
+                    let then_type = then_result.ty;
+                    if then_type != Type::Unit && !then_type.is_never() && !then_type.is_error() {
+                        return Err(CompileError::new(
+                            ErrorKind::TypeMismatch {
+                                expected: "()".to_string(),
+                                found: then_type.name().to_string(),
+                            },
+                            self.rir.get(*then_block).span,
+                        ));
+                    }
 
                     let air_ref = air.add_inst(AirInst {
                         data: AirInstData::Branch {

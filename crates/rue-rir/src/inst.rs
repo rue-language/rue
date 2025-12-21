@@ -125,6 +125,9 @@ pub enum InstData {
     /// Boolean constant
     BoolConst(bool),
 
+    /// Unit constant (for blocks that produce unit type)
+    UnitConst,
+
     // Binary arithmetic operations
     /// Addition: lhs + rhs
     Add { lhs: InstRef, rhs: InstRef },
@@ -354,6 +357,9 @@ impl<'a, 'b> RirPrinter<'a, 'b> {
                 }
                 InstData::BoolConst(v) => {
                     out.push_str(&format!("const {}\n", v));
+                }
+                InstData::UnitConst => {
+                    out.push_str("const ()\n");
                 }
                 InstData::Add { lhs, rhs } => {
                     out.push_str(&format!("add {}, {}\n", lhs, rhs));

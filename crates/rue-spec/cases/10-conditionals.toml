@@ -401,3 +401,85 @@ fn main() -> i32 {
 }
 """
 exit_code = 21
+
+# =============================================================================
+# If Without Else
+# =============================================================================
+
+[[case]]
+name = "if_without_else_unit_ok"
+description = "if without else with unit type in then branch is valid"
+source = """
+fn main() -> i32 {
+    if true { }
+    42
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "if_without_else_unit_with_statement_ok"
+description = "if without else with statements in then branch is valid (block yields unit)"
+source = """
+fn main() -> i32 {
+    let mut x = 0;
+    if true {
+        x = 42;
+    }
+    x
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "no_else_non_unit_error"
+description = "if without else with non-unit then branch is an error"
+source = "fn main() -> i32 { if true { 42 } 0 }"
+compile_fail = true
+error_contains = "expected"
+
+[[case]]
+name = "no_else_non_unit_error_i64"
+description = "if without else with i64 then branch is an error"
+source = """
+fn main() -> i32 {
+    let x: i64 = 100;
+    if true { x }
+    0
+}
+"""
+compile_fail = true
+error_contains = "expected"
+
+[[case]]
+name = "no_else_non_unit_error_bool"
+description = "if without else with bool then branch is an error"
+source = "fn main() -> i32 { if true { false } 0 }"
+compile_fail = true
+error_contains = "expected"
+
+[[case]]
+name = "if_without_else_break_ok"
+description = "if without else with break (Never type) in then branch is valid"
+source = """
+fn main() -> i32 {
+    let mut x = 0;
+    while x < 10 {
+        if x == 5 { break; }
+        x = x + 1;
+    }
+    x
+}
+"""
+exit_code = 5
+
+[[case]]
+name = "if_without_else_return_ok"
+description = "if without else with return (Never type) in then branch is valid"
+source = """
+fn main() -> i32 {
+    if true { return 42; }
+    0
+}
+"""
+exit_code = 42

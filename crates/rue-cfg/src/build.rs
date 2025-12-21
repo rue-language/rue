@@ -116,6 +116,18 @@ impl<'a> CfgBuilder<'a> {
                 }
             }
 
+            AirInstData::UnitConst => {
+                // Unit constants have no runtime representation.
+                // We emit a dummy const 0 with unit type for uniformity,
+                // but codegen will ignore values of unit type.
+                let value = self.emit(CfgInstData::Const(0), ty, span);
+                self.cache(air_ref, value);
+                ExprResult {
+                    value: Some(value),
+                    continuation: Continuation::Continues,
+                }
+            }
+
             AirInstData::Param { index } => {
                 let value = self.emit(CfgInstData::Param { index: *index }, ty, span);
                 self.cache(air_ref, value);

@@ -133,6 +133,10 @@ impl<'a> AstGen<'a> {
                 data: InstData::BoolConst(lit.value),
                 span: lit.span,
             }),
+            Expr::Unit(lit) => self.rir.add_inst(Inst {
+                data: InstData::UnitConst,
+                span: lit.span,
+            }),
             Expr::Ident(ident) => {
                 let name = self.interner.intern(&ident.name);
                 self.rir.add_inst(Inst {
