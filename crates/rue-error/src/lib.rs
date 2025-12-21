@@ -172,10 +172,6 @@ pub enum ErrorKind {
         expected: usize,
         found: usize,
     },
-    MissingField {
-        struct_name: String,
-        field_name: String,
-    },
     UnknownField {
         struct_name: String,
         field_name: String,
@@ -391,16 +387,6 @@ impl fmt::Display for ErrorKind {
                         struct_name, expected, found
                     )
                 }
-            }
-            ErrorKind::MissingField {
-                struct_name,
-                field_name,
-            } => {
-                write!(
-                    f,
-                    "missing field '{}' in struct '{}'",
-                    field_name, struct_name
-                )
             }
             ErrorKind::UnknownField {
                 struct_name,

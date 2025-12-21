@@ -1661,27 +1661,12 @@ impl<'a> Sema<'a> {
                     }
                 }
 
-                // Analyze field values in declaration order
-                // First, build a map from field name to its value
-                let mut field_map: HashMap<String, InstRef> = HashMap::new();
-                for (field_name, field_value) in field_inits {
-                    let name_str = self.interner.get(*field_name).to_string();
-                    field_map.insert(name_str, *field_value);
-                }
-
-                // Now analyze fields in struct definition order
+                // Analyze field values - since we've verified the order matches,
+                // we can directly iterate over field_inits paired with struct fields
                 let mut field_refs = Vec::new();
-                for struct_field in &struct_def.fields {
-                    let field_value = field_map.get(&struct_field.name).ok_or_else(|| {
-                        CompileError::new(
-                            ErrorKind::MissingField {
-                                struct_name: struct_def.name.clone(),
-                                field_name: struct_field.name.clone(),
-                            },
-                            inst.span,
-                        )
-                    })?;
-
+                for ((_, field_value), struct_field) in
+                    field_inits.iter().zip(struct_def.fields.iter())
+                {
                     let field_result = self.analyze_inst(
                         air,
                         *field_value,
@@ -1689,20 +1674,6 @@ impl<'a> Sema<'a> {
                         ctx,
                     )?;
                     field_refs.push(field_result.air_ref);
-                }
-
-                // Check for extra fields
-                for (field_name, _) in field_inits {
-                    let name_str = self.interner.get(*field_name).to_string();
-                    if struct_def.find_field(&name_str).is_none() {
-                        return Err(CompileError::new(
-                            ErrorKind::UnknownField {
-                                struct_name: struct_def.name.clone(),
-                                field_name: name_str,
-                            },
-                            inst.span,
-                        ));
-                    }
                 }
 
                 let air_ref = air.add_inst(AirInst {
