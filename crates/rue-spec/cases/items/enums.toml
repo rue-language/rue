@@ -122,7 +122,7 @@ error_contains = "unknown"
 
 [[case]]
 name = "match_enum_exhaustive"
-spec = ["6.3:7", "6.3:8"]
+spec = ["4.7:7", "4.7:10", "6.3:7", "6.3:8"]
 source = """
 enum Color { Red, Green, Blue }
 fn main() -> i32 {
@@ -138,7 +138,7 @@ exit_code = 2
 
 [[case]]
 name = "match_enum_with_wildcard"
-spec = ["6.3:7", "6.3:8"]
+spec = ["4.7:4", "4.7:7", "4.7:10", "6.3:7", "6.3:8"]
 source = """
 enum Color { Red, Green, Blue }
 fn main() -> i32 {
@@ -153,7 +153,7 @@ exit_code = 99
 
 [[case]]
 name = "match_enum_non_exhaustive_error"
-spec = ["6.3:8"]
+spec = ["4.7:9", "4.7:10", "6.3:8"]
 source = """
 enum Color { Red, Green, Blue }
 fn main() -> i32 {
@@ -169,7 +169,7 @@ error_contains = "exhaustive"
 
 [[case]]
 name = "match_enum_first_variant"
-spec = ["6.3:7"]
+spec = ["4.7:7", "4.7:10", "6.3:7"]
 source = """
 enum Color { Red, Green, Blue }
 fn main() -> i32 {
@@ -185,7 +185,7 @@ exit_code = 42
 
 [[case]]
 name = "match_enum_last_variant"
-spec = ["6.3:7"]
+spec = ["4.7:7", "4.7:10", "6.3:7"]
 source = """
 enum Color { Red, Green, Blue }
 fn main() -> i32 {

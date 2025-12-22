@@ -10,7 +10,7 @@ description = "Match expressions provide multi-way branching on values. Currentl
 
 [[case]]
 name = "match_int_first"
-spec = ["4.7:1"]
+spec = ["4.7:1", "4.7:5"]
 source = """
 fn main() -> i32 {
     match 1 {
@@ -24,7 +24,7 @@ exit_code = 10
 
 [[case]]
 name = "match_int_second"
-spec = ["4.7:1"]
+spec = ["4.7:1", "4.7:5"]
 source = """
 fn main() -> i32 {
     match 2 {
@@ -38,7 +38,7 @@ exit_code = 20
 
 [[case]]
 name = "match_int_default"
-spec = ["4.7:1", "4.7:3", "4.7:7"]
+spec = ["4.7:1", "4.7:4", "4.7:5", "4.7:10"]
 source = """
 fn main() -> i32 {
     match 99 {
@@ -52,7 +52,7 @@ exit_code = 0
 
 [[case]]
 name = "match_single_arm_wildcard"
-spec = ["4.7:3", "4.7:7"]
+spec = ["4.7:4", "4.7:10"]
 source = """
 fn main() -> i32 {
     match 42 {
@@ -68,7 +68,7 @@ exit_code = 100
 
 [[case]]
 name = "match_bool_true"
-spec = ["4.7:1", "4.7:2", "4.7:8"]
+spec = ["4.7:1", "4.7:2", "4.7:6", "4.7:10"]
 source = """
 fn main() -> i32 {
     match true {
@@ -81,7 +81,7 @@ exit_code = 1
 
 [[case]]
 name = "match_bool_false"
-spec = ["4.7:1", "4.7:2", "4.7:8"]
+spec = ["4.7:1", "4.7:2", "4.7:6", "4.7:10"]
 source = """
 fn main() -> i32 {
     match false {
@@ -94,7 +94,7 @@ exit_code = 0
 
 [[case]]
 name = "match_bool_with_wildcard"
-spec = ["4.7:2", "4.7:3", "4.7:8"]
+spec = ["4.7:2", "4.7:4", "4.7:6", "4.7:10"]
 source = """
 fn main() -> i32 {
     match true {
@@ -158,7 +158,7 @@ exit_code = 100
 
 [[case]]
 name = "match_block_body"
-spec = ["4.7:4", "4.7:12"]
+spec = ["4.7:4", "4.7:14"]
 source = """
 fn main() -> i32 {
     match 2 {
@@ -179,7 +179,7 @@ exit_code = 25
 
 [[case]]
 name = "match_mixed_body_styles"
-spec = ["4.7:4", "4.7:12"]
+spec = ["4.7:4", "4.7:14"]
 source = """
 fn main() -> i32 {
     match 1 {
@@ -265,7 +265,7 @@ exit_code = 12
 
 [[case]]
 name = "match_zero"
-spec = ["4.7:1"]
+spec = ["4.7:1", "4.7:5"]
 source = """
 fn main() -> i32 {
     match 0 {
@@ -286,7 +286,7 @@ exit_code = 42
 
 [[case]]
 name = "non_exhaustive_int"
-spec = ["4.7:5"]
+spec = ["4.7:9", "4.7:10"]
 source = """
 fn main() -> i32 {
     match 1 {
@@ -299,7 +299,7 @@ compile_fail = true
 
 [[case]]
 name = "non_exhaustive_bool_missing_false"
-spec = ["4.7:5"]
+spec = ["4.7:9", "4.7:10"]
 source = """
 fn main() -> i32 {
     match true {
@@ -311,7 +311,7 @@ compile_fail = true
 
 [[case]]
 name = "non_exhaustive_bool_missing_true"
-spec = ["4.7:5"]
+spec = ["4.7:9", "4.7:10"]
 source = """
 fn main() -> i32 {
     match false {
@@ -327,7 +327,7 @@ compile_fail = true
 
 [[case]]
 name = "empty_match"
-spec = ["4.7:5"]
+spec = ["4.7:9"]
 source = """
 fn main() -> i32 {
     match 1 {
@@ -345,7 +345,7 @@ compile_fail = true
 
 [[case]]
 name = "arm_type_mismatch"
-spec = ["4.7:6", "4.7:10"]
+spec = ["4.7:12"]
 source = """
 fn main() -> i32 {
     match 1 {
@@ -362,7 +362,7 @@ compile_fail = true
 
 [[case]]
 name = "pattern_type_mismatch"
-spec = ["4.7:11"]
+spec = ["4.7:13"]
 source = """
 fn main() -> i32 {
     match 1 {
@@ -379,7 +379,7 @@ compile_fail = true
 
 [[case]]
 name = "first_matching_arm_wins"
-spec = ["4.7:14"]
+spec = ["4.7:16"]
 source = """
 fn main() -> i32 {
     match 1 {
@@ -396,7 +396,7 @@ exit_code = 10
 
 [[case]]
 name = "trailing_comma"
-spec = ["4.7:1"]
+spec = ["4.7:2"]
 source = """
 fn main() -> i32 {
     match 1 {
@@ -409,7 +409,7 @@ exit_code = 10
 
 [[case]]
 name = "no_trailing_comma"
-spec = ["4.7:1"]
+spec = ["4.7:2"]
 source = """
 fn main() -> i32 {
     match 1 {
@@ -419,3 +419,78 @@ fn main() -> i32 {
 }
 """
 exit_code = 10
+
+# =============================================================================
+# Exhaustiveness Definition Tests
+# =============================================================================
+
+[[case]]
+name = "exhaustive_via_wildcard"
+spec = ["4.7:8", "4.7:10"]
+source = """
+fn main() -> i32 {
+    match 42 {
+        _ => 1,
+    }
+}
+"""
+exit_code = 1
+
+[[case]]
+name = "exhaustive_via_all_bool_values"
+spec = ["4.7:8", "4.7:10"]
+source = """
+fn main() -> i32 {
+    match true {
+        true => 1,
+        false => 0,
+    }
+}
+"""
+exit_code = 1
+
+# =============================================================================
+# Irrefutable Pattern Tests
+# =============================================================================
+
+[[case]]
+name = "wildcard_is_irrefutable"
+spec = ["4.7:3", "4.7:4"]
+source = """
+fn main() -> i32 {
+    match 42 {
+        _ => 99,
+    }
+}
+"""
+exit_code = 99
+
+# =============================================================================
+# Refutable Pattern Tests
+# =============================================================================
+
+[[case]]
+name = "integer_pattern_is_refutable"
+spec = ["4.7:3", "4.7:5"]
+source = """
+fn main() -> i32 {
+    match 1 {
+        1 => 10,
+        _ => 0,
+    }
+}
+"""
+exit_code = 10
+
+[[case]]
+name = "bool_pattern_is_refutable"
+spec = ["4.7:3", "4.7:6"]
+source = """
+fn main() -> i32 {
+    match true {
+        true => 1,
+        false => 0,
+    }
+}
+"""
+exit_code = 1
