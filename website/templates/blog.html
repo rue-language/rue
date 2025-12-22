@@ -22,7 +22,14 @@
             {% for page in pages %}
             <article class="post-preview">
                 <h2><a href="{{ page.permalink }}">{{ page.title }}</a></h2>
-                <time datetime="{{ page.date }}">{{ page.date | date(format="%B %e, %Y") }}</time>
+                <div class="post-meta">
+                    <time datetime="{{ page.date }}">{{ page.date | date(format="%B %e, %Y") }}</time>
+                    {% if page.extra.authors %}
+                    <span class="authors">
+                        by {% for author in page.extra.authors %}{% if loop.index > 1 %}{% if loop.last %} and {% else %}, {% endif %}{% endif %}{% if author == "steve" %}Steve{% elif author == "claude" %}Claude{% else %}{{ author }}{% endif %}{% endfor %}
+                    </span>
+                    {% endif %}
+                </div>
                 {% if page.summary %}
                 <p>{{ page.summary | safe }}</p>
                 {% endif %}

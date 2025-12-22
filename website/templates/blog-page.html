@@ -7,7 +7,14 @@
     <div class="container">
         <header class="post-header">
             <h1>{{ page.title }}</h1>
-            <time datetime="{{ page.date }}">{{ page.date | date(format="%B %e, %Y") }}</time>
+            <div class="post-meta">
+                <time datetime="{{ page.date }}">{{ page.date | date(format="%B %e, %Y") }}</time>
+                {% if page.extra.authors %}
+                <span class="authors">
+                    by {% for author in page.extra.authors %}{% if loop.index > 1 %}{% if loop.last %} and {% else %}, {% endif %}{% endif %}{% if author == "steve" %}<a href="https://steveklabnik.com">Steve</a>{% elif author == "claude" %}<a href="https://claude.ai">Claude</a>{% else %}{{ author }}{% endif %}{% endfor %}
+                </span>
+                {% endif %}
+            </div>
         </header>
         <div class="post-content">
             {{ page.content | safe }}

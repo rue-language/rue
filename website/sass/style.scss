@@ -310,11 +310,20 @@ a {
             }
         }
 
-        time {
-            display: block;
+        .post-meta {
             color: $color-muted;
             font-size: 0.875rem;
             margin-bottom: 0.75rem;
+            display: flex;
+            gap: 0.5rem;
+            flex-wrap: wrap;
+
+            .authors {
+                &::before {
+                    content: "·";
+                    margin-right: 0.5rem;
+                }
+            }
         }
 
         p {
@@ -343,8 +352,18 @@ a {
             margin-bottom: 0.5rem;
         }
 
-        time {
+        .post-meta {
             color: $color-muted;
+            display: flex;
+            gap: 0.5rem;
+            flex-wrap: wrap;
+
+            .authors {
+                &::before {
+                    content: "·";
+                    margin-right: 0.5rem;
+                }
+            }
         }
     }
 

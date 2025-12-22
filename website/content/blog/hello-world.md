@@ -2,6 +2,9 @@
 title = "Hello, World!"
 date = 2025-12-21
 template = "blog-page.html"
+
+[extra]
+authors = ["steve", "claude"]
 +++
 
 Welcome to the Rue programming language blog! This is where we'll share updates about the language's development, design decisions, and announcements.
