@@ -281,9 +281,18 @@ fn uses(inst: &Aarch64Inst) -> Vec<VReg> {
         | Aarch64Inst::SdivRR { src1, src2, .. }
         | Aarch64Inst::AndRR { src1, src2, .. }
         | Aarch64Inst::OrrRR { src1, src2, .. }
-        | Aarch64Inst::EorRR { src1, src2, .. } => {
+        | Aarch64Inst::EorRR { src1, src2, .. }
+        | Aarch64Inst::LslRR { src1, src2, .. }
+        | Aarch64Inst::Lsl32RR { src1, src2, .. }
+        | Aarch64Inst::LsrRR { src1, src2, .. }
+        | Aarch64Inst::Lsr32RR { src1, src2, .. }
+        | Aarch64Inst::AsrRR { src1, src2, .. }
+        | Aarch64Inst::Asr32RR { src1, src2, .. } => {
             add_if_virtual(src1, &mut result);
             add_if_virtual(src2, &mut result);
+        }
+        Aarch64Inst::MvnRR { src, .. } => {
+            add_if_virtual(src, &mut result);
         }
         Aarch64Inst::AddImm { src, .. }
         | Aarch64Inst::SubImm { src, .. }
@@ -409,7 +418,14 @@ fn defs(inst: &Aarch64Inst) -> Vec<VReg> {
         | Aarch64Inst::AndRR { dst, .. }
         | Aarch64Inst::OrrRR { dst, .. }
         | Aarch64Inst::EorRR { dst, .. }
-        | Aarch64Inst::EorImm { dst, .. } => {
+        | Aarch64Inst::EorImm { dst, .. }
+        | Aarch64Inst::MvnRR { dst, .. }
+        | Aarch64Inst::LslRR { dst, .. }
+        | Aarch64Inst::Lsl32RR { dst, .. }
+        | Aarch64Inst::LsrRR { dst, .. }
+        | Aarch64Inst::Lsr32RR { dst, .. }
+        | Aarch64Inst::AsrRR { dst, .. }
+        | Aarch64Inst::Asr32RR { dst, .. } => {
             add_if_virtual(dst, &mut result);
         }
         Aarch64Inst::CmpRR { .. }

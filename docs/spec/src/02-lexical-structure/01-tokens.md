@@ -14,7 +14,7 @@ Rue tokens fall into the following categories:
 | Identifiers | `main`, `x`, `my_var`, `_unused` |
 | Integer literals | `0`, `42`, `255`, `2147483647` |
 | String literals | `"hello"`, `"world"`, `"with \"escapes\""` |
-| Operators | `+`, `-`, `*`, `/`, `%`, `==`, `!=`, `<`, `>`, `<=`, `>=`, `&&`, `\|\|`, `!` |
+| Operators | `+`, `-`, `*`, `/`, `%`, `==`, `!=`, `<`, `>`, `<=`, `>=`, `&&`, `\|\|`, `!`, `&`, `\|`, `^`, `~`, `<<`, `>>` |
 | Delimiters | `(`, `)`, `{`, `}`, `[`, `]`, `,`, `;`, `:`, `->`, `=>` |
 
 ## Integer Literals

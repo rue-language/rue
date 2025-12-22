@@ -153,11 +153,25 @@ pub enum AirInstData {
     /// Logical OR
     Or(AirRef, AirRef),
 
+    // Bitwise operations
+    /// Bitwise AND
+    BitAnd(AirRef, AirRef),
+    /// Bitwise OR
+    BitOr(AirRef, AirRef),
+    /// Bitwise XOR
+    BitXor(AirRef, AirRef),
+    /// Left shift
+    Shl(AirRef, AirRef),
+    /// Right shift (arithmetic for signed, logical for unsigned)
+    Shr(AirRef, AirRef),
+
     // Unary operations
     /// Negation
     Neg(AirRef),
     /// Logical NOT
     Not(AirRef),
+    /// Bitwise NOT
+    BitNot(AirRef),
 
     // Control flow
     /// Conditional branch
@@ -347,8 +361,14 @@ impl fmt::Display for Air {
                 AirInstData::Ge(lhs, rhs) => writeln!(f, "ge {}, {}", lhs, rhs)?,
                 AirInstData::And(lhs, rhs) => writeln!(f, "and {}, {}", lhs, rhs)?,
                 AirInstData::Or(lhs, rhs) => writeln!(f, "or {}, {}", lhs, rhs)?,
+                AirInstData::BitAnd(lhs, rhs) => writeln!(f, "bit_and {}, {}", lhs, rhs)?,
+                AirInstData::BitOr(lhs, rhs) => writeln!(f, "bit_or {}, {}", lhs, rhs)?,
+                AirInstData::BitXor(lhs, rhs) => writeln!(f, "bit_xor {}, {}", lhs, rhs)?,
+                AirInstData::Shl(lhs, rhs) => writeln!(f, "shl {}, {}", lhs, rhs)?,
+                AirInstData::Shr(lhs, rhs) => writeln!(f, "shr {}, {}", lhs, rhs)?,
                 AirInstData::Neg(operand) => writeln!(f, "neg {}", operand)?,
                 AirInstData::Not(operand) => writeln!(f, "not {}", operand)?,
+                AirInstData::BitNot(operand) => writeln!(f, "bit_not {}", operand)?,
                 AirInstData::Branch {
                     cond,
                     then_value,

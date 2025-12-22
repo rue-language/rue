@@ -379,6 +379,50 @@ impl RegAlloc {
                 self.emit_binop(mir, dst, src, |d, s| X86Inst::OrRR { dst: d, src: s });
             }
 
+            X86Inst::XorRR { dst, src } => {
+                self.emit_binop(mir, dst, src, |d, s| X86Inst::XorRR { dst: d, src: s });
+            }
+
+            X86Inst::NotR { dst } => {
+                self.emit_unop(mir, dst, |d| X86Inst::NotR { dst: d });
+            }
+
+            X86Inst::ShlRCl { dst } => {
+                self.emit_unop(mir, dst, |d| X86Inst::ShlRCl { dst: d });
+            }
+
+            X86Inst::Shl32RCl { dst } => {
+                self.emit_unop(mir, dst, |d| X86Inst::Shl32RCl { dst: d });
+            }
+
+            X86Inst::ShlRI { dst, imm } => {
+                self.emit_unop_imm_u8(mir, dst, imm, |d, i| X86Inst::ShlRI { dst: d, imm: i });
+            }
+
+            X86Inst::ShrRCl { dst } => {
+                self.emit_unop(mir, dst, |d| X86Inst::ShrRCl { dst: d });
+            }
+
+            X86Inst::Shr32RCl { dst } => {
+                self.emit_unop(mir, dst, |d| X86Inst::Shr32RCl { dst: d });
+            }
+
+            X86Inst::ShrRI { dst, imm } => {
+                self.emit_unop_imm_u8(mir, dst, imm, |d, i| X86Inst::ShrRI { dst: d, imm: i });
+            }
+
+            X86Inst::SarRCl { dst } => {
+                self.emit_unop(mir, dst, |d| X86Inst::SarRCl { dst: d });
+            }
+
+            X86Inst::Sar32RCl { dst } => {
+                self.emit_unop(mir, dst, |d| X86Inst::Sar32RCl { dst: d });
+            }
+
+            X86Inst::SarRI { dst, imm } => {
+                self.emit_unop_imm_u8(mir, dst, imm, |d, i| X86Inst::SarRI { dst: d, imm: i });
+            }
+
             X86Inst::IdivR { src } => {
                 let src_op = self.load_operand(mir, src, Reg::R10);
                 mir.push(X86Inst::IdivR { src: src_op });
@@ -936,6 +980,34 @@ impl RegAlloc {
     fn emit_unop_imm<F>(&self, mir: &mut X86Mir, dst: Operand, imm: i32, make_inst: F)
     where
         F: FnOnce(Operand, i32) -> X86Inst,
+    {
+        match self.get_allocation(dst) {
+            Some(Allocation::Register(reg)) => {
+                mir.push(make_inst(Operand::Physical(reg), imm));
+            }
+            Some(Allocation::Spill(offset)) => {
+                mir.push(X86Inst::MovRM {
+                    dst: Operand::Physical(Reg::Rax),
+                    base: Reg::Rbp,
+                    offset,
+                });
+                mir.push(make_inst(Operand::Physical(Reg::Rax), imm));
+                mir.push(X86Inst::MovMR {
+                    base: Reg::Rbp,
+                    offset,
+                    src: Operand::Physical(Reg::Rax),
+                });
+            }
+            None => {
+                mir.push(make_inst(dst, imm));
+            }
+        }
+    }
+
+    /// Emit a unary operation with u8 immediate (dst = dst op imm).
+    fn emit_unop_imm_u8<F>(&self, mir: &mut X86Mir, dst: Operand, imm: u8, make_inst: F)
+    where
+        F: FnOnce(Operand, u8) -> X86Inst,
     {
         match self.get_allocation(dst) {
             Some(Allocation::Register(reg)) => {

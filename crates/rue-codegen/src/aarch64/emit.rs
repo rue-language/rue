@@ -89,6 +89,20 @@ const OPCODE_ORR_X: u32 = 0xAA000000;
 const OPCODE_EOR_X: u32 = 0xCA000000;
 /// EOR Xd, Xn, #imm - Bitwise XOR with bitmask immediate (64-bit, N=1)
 const OPCODE_EOR_IMM_X: u32 = 0xD2400000;
+/// MVN Xd, Xm - Bitwise NOT (alias for ORN Xd, XZR, Xm)
+const OPCODE_ORN_X: u32 = 0xAA200000;
+/// LSLV Xd, Xn, Xm - Logical shift left variable (64-bit)
+const OPCODE_LSLV_X: u32 = 0x9AC02000;
+/// LSLV Wd, Wn, Wm - Logical shift left variable (32-bit)
+const OPCODE_LSLV_W: u32 = 0x1AC02000;
+/// LSRV Xd, Xn, Xm - Logical shift right variable (64-bit)
+const OPCODE_LSRV_X: u32 = 0x9AC02400;
+/// LSRV Wd, Wn, Wm - Logical shift right variable (32-bit)
+const OPCODE_LSRV_W: u32 = 0x1AC02400;
+/// ASRV Xd, Xn, Xm - Arithmetic shift right variable (64-bit)
+const OPCODE_ASRV_X: u32 = 0x9AC02800;
+/// ASRV Wd, Wn, Wm - Arithmetic shift right variable (32-bit)
+const OPCODE_ASRV_W: u32 = 0x1AC02800;
 
 // Compare instructions
 /// CMP Xn, #imm12 - Compare immediate (alias for SUBS XZR, Xn, #imm12)
@@ -472,6 +486,54 @@ impl<'a> Emitter<'a> {
                 let rd = dst.as_physical();
                 let rn = src.as_physical();
                 self.emit_eor_imm(rd, rn, *imm);
+            }
+
+            Aarch64Inst::MvnRR { dst, src } => {
+                let rd = dst.as_physical();
+                let rm = src.as_physical();
+                self.emit_mvn_rr(rd, rm);
+            }
+
+            Aarch64Inst::LslRR { dst, src1, src2 } => {
+                let rd = dst.as_physical();
+                let rn = src1.as_physical();
+                let rm = src2.as_physical();
+                self.emit_lslv_rr(rd, rn, rm);
+            }
+
+            Aarch64Inst::Lsl32RR { dst, src1, src2 } => {
+                let rd = dst.as_physical();
+                let rn = src1.as_physical();
+                let rm = src2.as_physical();
+                self.emit_lslv32_rr(rd, rn, rm);
+            }
+
+            Aarch64Inst::LsrRR { dst, src1, src2 } => {
+                let rd = dst.as_physical();
+                let rn = src1.as_physical();
+                let rm = src2.as_physical();
+                self.emit_lsrv_rr(rd, rn, rm);
+            }
+
+            Aarch64Inst::Lsr32RR { dst, src1, src2 } => {
+                let rd = dst.as_physical();
+                let rn = src1.as_physical();
+                let rm = src2.as_physical();
+                self.emit_lsrv32_rr(rd, rn, rm);
+            }
+
+            Aarch64Inst::AsrRR { dst, src1, src2 } => {
+                let rd = dst.as_physical();
+                let rn = src1.as_physical();
+                let rm = src2.as_physical();
+                self.emit_asrv_rr(rd, rn, rm);
+            }
+
+            Aarch64Inst::Asr32RR { dst, src1, src2 } => {
+                let rd = dst.as_physical();
+                let rn = src1.as_physical();
+                let rm = src2.as_physical();
+                self.emit_asrv32_rr(rd, rn, rm);
             }
 
             Aarch64Inst::CmpRR { src1, src2 } => {
@@ -1163,6 +1225,69 @@ impl<'a> Emitter<'a> {
             self.emit_mov_imm(Reg::X9, imm as i64);
             self.emit_eor_rr(rd, rn, Reg::X9);
         }
+    }
+
+    fn emit_mvn_rr(&mut self, rd: Reg, rm: Reg) {
+        // MVN Xd, Xm (alias for ORN Xd, XZR, Xm)
+        let inst = OPCODE_ORN_X
+            | (rm.encoding() as u32) << 16
+            | (Reg::Xzr.encoding() as u32) << 5
+            | rd.encoding() as u32;
+        self.emit_u32(inst);
+    }
+
+    fn emit_lslv_rr(&mut self, rd: Reg, rn: Reg, rm: Reg) {
+        // LSLV Xd, Xn, Xm - Logical shift left variable (64-bit)
+        let inst = OPCODE_LSLV_X
+            | (rm.encoding() as u32) << 16
+            | (rn.encoding() as u32) << 5
+            | rd.encoding() as u32;
+        self.emit_u32(inst);
+    }
+
+    fn emit_lslv32_rr(&mut self, rd: Reg, rn: Reg, rm: Reg) {
+        // LSLV Wd, Wn, Wm - Logical shift left variable (32-bit)
+        let inst = OPCODE_LSLV_W
+            | (rm.encoding() as u32) << 16
+            | (rn.encoding() as u32) << 5
+            | rd.encoding() as u32;
+        self.emit_u32(inst);
+    }
+
+    fn emit_lsrv_rr(&mut self, rd: Reg, rn: Reg, rm: Reg) {
+        // LSRV Xd, Xn, Xm - Logical shift right variable (64-bit)
+        let inst = OPCODE_LSRV_X
+            | (rm.encoding() as u32) << 16
+            | (rn.encoding() as u32) << 5
+            | rd.encoding() as u32;
+        self.emit_u32(inst);
+    }
+
+    fn emit_lsrv32_rr(&mut self, rd: Reg, rn: Reg, rm: Reg) {
+        // LSRV Wd, Wn, Wm - Logical shift right variable (32-bit)
+        let inst = OPCODE_LSRV_W
+            | (rm.encoding() as u32) << 16
+            | (rn.encoding() as u32) << 5
+            | rd.encoding() as u32;
+        self.emit_u32(inst);
+    }
+
+    fn emit_asrv_rr(&mut self, rd: Reg, rn: Reg, rm: Reg) {
+        // ASRV Xd, Xn, Xm - Arithmetic shift right variable (64-bit)
+        let inst = OPCODE_ASRV_X
+            | (rm.encoding() as u32) << 16
+            | (rn.encoding() as u32) << 5
+            | rd.encoding() as u32;
+        self.emit_u32(inst);
+    }
+
+    fn emit_asrv32_rr(&mut self, rd: Reg, rn: Reg, rm: Reg) {
+        // ASRV Wd, Wn, Wm - Arithmetic shift right variable (32-bit)
+        let inst = OPCODE_ASRV_W
+            | (rm.encoding() as u32) << 16
+            | (rn.encoding() as u32) << 5
+            | rd.encoding() as u32;
+        self.emit_u32(inst);
     }
 
     fn emit_cmp_imm(&mut self, rn: Reg, imm: u32) {

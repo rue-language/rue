@@ -65,6 +65,12 @@ pub enum TokenKind {
     GtEq,     // >=
     AmpAmp,   // &&
     PipePipe, // ||
+    Amp,      // &
+    Pipe,     // |
+    Caret,    // ^
+    Tilde,    // ~
+    LtLt,     // <<
+    GtGt,     // >>
 
     // Punctuation
     LParen,
@@ -133,6 +139,12 @@ impl TokenKind {
             TokenKind::GtEq => "'>='",
             TokenKind::AmpAmp => "'&&'",
             TokenKind::PipePipe => "'||'",
+            TokenKind::Amp => "'&'",
+            TokenKind::Pipe => "'|'",
+            TokenKind::Caret => "'^'",
+            TokenKind::Tilde => "'~'",
+            TokenKind::LtLt => "'<<'",
+            TokenKind::GtGt => "'>>'",
             TokenKind::LParen => "'('",
             TokenKind::RParen => "')'",
             TokenKind::LBrace => "'{'",
@@ -215,6 +227,12 @@ impl std::fmt::Display for TokenKind {
             TokenKind::GtEq => write!(f, "GTEQ"),
             TokenKind::AmpAmp => write!(f, "AMPAMP"),
             TokenKind::PipePipe => write!(f, "PIPEPIPE"),
+            TokenKind::Amp => write!(f, "AMP"),
+            TokenKind::Pipe => write!(f, "PIPE"),
+            TokenKind::Caret => write!(f, "CARET"),
+            TokenKind::Tilde => write!(f, "TILDE"),
+            TokenKind::LtLt => write!(f, "LTLT"),
+            TokenKind::GtGt => write!(f, "GTGT"),
             TokenKind::LParen => write!(f, "LPAREN"),
             TokenKind::RParen => write!(f, "RPAREN"),
             TokenKind::LBrace => write!(f, "LBRACE"),

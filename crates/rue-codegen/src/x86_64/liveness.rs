@@ -193,9 +193,26 @@ fn uses(inst: &X86Inst) -> Vec<VReg> {
             // dst is both read and written
             add_if_virtual(dst, &mut result);
         }
-        X86Inst::AndRR { dst, src } | X86Inst::OrRR { dst, src } => {
+        X86Inst::AndRR { dst, src } | X86Inst::OrRR { dst, src } | X86Inst::XorRR { dst, src } => {
             add_if_virtual(dst, &mut result);
             add_if_virtual(src, &mut result);
+        }
+        X86Inst::NotR { dst } => {
+            // dst is both read and written
+            add_if_virtual(dst, &mut result);
+        }
+        X86Inst::ShlRCl { dst }
+        | X86Inst::Shl32RCl { dst }
+        | X86Inst::ShrRCl { dst }
+        | X86Inst::Shr32RCl { dst }
+        | X86Inst::SarRCl { dst }
+        | X86Inst::Sar32RCl { dst } => {
+            // dst is both read and written, CL is implicit physical register
+            add_if_virtual(dst, &mut result);
+        }
+        X86Inst::ShlRI { dst, .. } | X86Inst::ShrRI { dst, .. } | X86Inst::SarRI { dst, .. } => {
+            // dst is both read and written
+            add_if_virtual(dst, &mut result);
         }
         X86Inst::IdivR { src } => {
             add_if_virtual(src, &mut result);
@@ -312,7 +329,19 @@ fn defs(inst: &X86Inst) -> Vec<VReg> {
         X86Inst::Neg { dst } | X86Inst::Neg64 { dst } | X86Inst::XorRI { dst, .. } => {
             add_if_virtual(dst, &mut result);
         }
-        X86Inst::AndRR { dst, .. } | X86Inst::OrRR { dst, .. } => {
+        X86Inst::AndRR { dst, .. }
+        | X86Inst::OrRR { dst, .. }
+        | X86Inst::XorRR { dst, .. }
+        | X86Inst::NotR { dst }
+        | X86Inst::ShlRCl { dst }
+        | X86Inst::Shl32RCl { dst }
+        | X86Inst::ShlRI { dst, .. }
+        | X86Inst::ShrRCl { dst }
+        | X86Inst::Shr32RCl { dst }
+        | X86Inst::ShrRI { dst, .. }
+        | X86Inst::SarRCl { dst }
+        | X86Inst::Sar32RCl { dst }
+        | X86Inst::SarRI { dst, .. } => {
             add_if_virtual(dst, &mut result);
         }
         X86Inst::IdivR { .. } => {

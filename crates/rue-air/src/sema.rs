@@ -748,6 +748,57 @@ impl<'a> Sema<'a> {
                 Ok(AnalysisResult::new(air_ref, Type::Bool))
             }
 
+            // Bitwise operations: operands must be same integer type, result is that type
+            InstData::BitAnd { lhs, rhs } => self.analyze_binary_arith(
+                air,
+                *lhs,
+                *rhs,
+                expectation,
+                AirInstData::BitAnd,
+                inst.span,
+                ctx,
+            ),
+
+            InstData::BitOr { lhs, rhs } => self.analyze_binary_arith(
+                air,
+                *lhs,
+                *rhs,
+                expectation,
+                AirInstData::BitOr,
+                inst.span,
+                ctx,
+            ),
+
+            InstData::BitXor { lhs, rhs } => self.analyze_binary_arith(
+                air,
+                *lhs,
+                *rhs,
+                expectation,
+                AirInstData::BitXor,
+                inst.span,
+                ctx,
+            ),
+
+            InstData::Shl { lhs, rhs } => self.analyze_binary_arith(
+                air,
+                *lhs,
+                *rhs,
+                expectation,
+                AirInstData::Shl,
+                inst.span,
+                ctx,
+            ),
+
+            InstData::Shr { lhs, rhs } => self.analyze_binary_arith(
+                air,
+                *lhs,
+                *rhs,
+                expectation,
+                AirInstData::Shr,
+                inst.span,
+                ctx,
+            ),
+
             InstData::Neg { operand } => {
                 // Special case: negating a literal that equals |MIN| for signed types.
                 // For example, -128 for i8, -32768 for i16, -2147483648 for i32, etc.
@@ -844,6 +895,45 @@ impl<'a> Sema<'a> {
                     span: inst.span,
                 });
                 Ok(AnalysisResult::new(air_ref, Type::Bool))
+            }
+
+            InstData::BitNot { operand } => {
+                // Bitwise NOT operates on integer types only
+                // Determine the type: use expected type if integer, otherwise synthesize from operand
+                let (operand_result, op_type) = match expectation {
+                    TypeExpectation::Check(ty) if ty.is_integer() => {
+                        let result =
+                            self.analyze_inst(air, *operand, TypeExpectation::Check(ty), ctx)?;
+                        (result, ty)
+                    }
+                    _ => {
+                        // Synthesize from operand
+                        let result =
+                            self.analyze_inst(air, *operand, TypeExpectation::Synthesize, ctx)?;
+                        let ty = if result.ty.is_integer() {
+                            result.ty
+                        } else if result.ty == Type::Bool {
+                            // Bitwise NOT is not allowed on booleans
+                            return Err(CompileError::new(
+                                ErrorKind::TypeMismatch {
+                                    expected: "integer type".to_string(),
+                                    found: result.ty.name().to_string(),
+                                },
+                                inst.span,
+                            ));
+                        } else {
+                            Type::I32
+                        };
+                        (result, ty)
+                    }
+                };
+
+                let air_ref = air.add_inst(AirInst {
+                    data: AirInstData::BitNot(operand_result.air_ref),
+                    ty: op_type,
+                    span: inst.span,
+                });
+                Ok(AnalysisResult::new(air_ref, op_type))
             }
 
             InstData::Branch {
@@ -2365,6 +2455,15 @@ impl<'a> Sema<'a> {
                 let result = self.analyze_inst(air, lhs, TypeExpectation::Synthesize, ctx)?;
                 let ty = if result.ty.is_integer() {
                     result.ty
+                } else if result.ty == Type::Bool {
+                    // Arithmetic and bitwise operators are not allowed on booleans
+                    return Err(CompileError::new(
+                        ErrorKind::TypeMismatch {
+                            expected: "integer type".to_string(),
+                            found: result.ty.name().to_string(),
+                        },
+                        span,
+                    ));
                 } else {
                     // LHS is not an integer (e.g., both operands are literals),
                     // default to i32
@@ -2593,6 +2692,48 @@ impl<'a> Sema<'a> {
                 Some(ConstValue::Bool(l || r))
             }
 
+            // Bitwise operations
+            InstData::BitAnd { lhs, rhs } => {
+                let l = self.try_evaluate_const(*lhs)?.as_integer()?;
+                let r = self.try_evaluate_const(*rhs)?.as_integer()?;
+                Some(ConstValue::Integer(l & r))
+            }
+            InstData::BitOr { lhs, rhs } => {
+                let l = self.try_evaluate_const(*lhs)?.as_integer()?;
+                let r = self.try_evaluate_const(*rhs)?.as_integer()?;
+                Some(ConstValue::Integer(l | r))
+            }
+            InstData::BitXor { lhs, rhs } => {
+                let l = self.try_evaluate_const(*lhs)?.as_integer()?;
+                let r = self.try_evaluate_const(*rhs)?.as_integer()?;
+                Some(ConstValue::Integer(l ^ r))
+            }
+            InstData::Shl { lhs, rhs } => {
+                let l = self.try_evaluate_const(*lhs)?.as_integer()?;
+                let r = self.try_evaluate_const(*rhs)?.as_integer()?;
+                // Only constant-fold small shift amounts to avoid type-width issues.
+                // For shifts >= 8, defer to runtime where hardware handles masking correctly.
+                // This is conservative but safe - we don't know the operand type here.
+                if r < 0 || r >= 8 {
+                    return None;
+                }
+                Some(ConstValue::Integer(l << r))
+            }
+            InstData::Shr { lhs, rhs } => {
+                let l = self.try_evaluate_const(*lhs)?.as_integer()?;
+                let r = self.try_evaluate_const(*rhs)?.as_integer()?;
+                // Only constant-fold small shift amounts to avoid type-width issues.
+                // For shifts >= 8, defer to runtime where hardware handles masking correctly.
+                if r < 0 || r >= 8 {
+                    return None;
+                }
+                Some(ConstValue::Integer(l >> r))
+            }
+            InstData::BitNot { operand } => {
+                let n = self.try_evaluate_const(*operand)?.as_integer()?;
+                Some(ConstValue::Integer(!n))
+            }
+
             // Everything else requires runtime evaluation
             _ => None,
         }
@@ -2651,7 +2792,12 @@ impl<'a> Sema<'a> {
             | InstData::Sub { lhs, rhs }
             | InstData::Mul { lhs, rhs }
             | InstData::Div { lhs, rhs }
-            | InstData::Mod { lhs, rhs } => {
+            | InstData::Mod { lhs, rhs }
+            | InstData::BitAnd { lhs, rhs }
+            | InstData::BitOr { lhs, rhs }
+            | InstData::BitXor { lhs, rhs }
+            | InstData::Shl { lhs, rhs }
+            | InstData::Shr { lhs, rhs } => {
                 // Try LHS first, then RHS
                 if let Some(ty) = self.peek_type(*lhs, ctx) {
                     if ty.is_integer() {
@@ -2666,8 +2812,10 @@ impl<'a> Sema<'a> {
                 Some(Type::I32) // Default if both are literals
             }
 
-            // Unary negation: peek at operand
-            InstData::Neg { operand } => self.peek_type(*operand, ctx),
+            // Unary negation and bitwise NOT: peek at operand
+            InstData::Neg { operand } | InstData::BitNot { operand } => {
+                self.peek_type(*operand, ctx)
+            }
 
             // Comparisons return bool
             InstData::Eq { .. }

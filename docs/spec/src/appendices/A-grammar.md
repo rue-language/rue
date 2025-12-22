@@ -37,10 +37,14 @@ type           = "i8" | "i16" | "i32" | "i64"
 expression     = or_expr ;
 or_expr        = and_expr { "||" and_expr } ;
 and_expr       = comparison { "&&" comparison } ;
-comparison     = additive { ( "==" | "!=" | "<" | ">" | "<=" | ">=" ) additive } ;
+comparison     = bitor_expr { ( "==" | "!=" | "<" | ">" | "<=" | ">=" ) bitor_expr } ;
+bitor_expr     = bitxor_expr { "|" bitxor_expr } ;
+bitxor_expr    = bitand_expr { "^" bitand_expr } ;
+bitand_expr    = shift_expr { "&" shift_expr } ;
+shift_expr     = additive { ( "<<" | ">>" ) additive } ;
 additive       = multiplicative { ( "+" | "-" ) multiplicative } ;
 multiplicative = unary { ( "*" | "/" | "%" ) unary } ;
-unary          = "-" unary | "!" unary | postfix ;
+unary          = "-" unary | "!" unary | "~" unary | postfix ;
 postfix        = primary { "[" expression "]" | "(" [ args ] ")" | "." IDENT } ;
 intrinsic      = "@" IDENT "(" [ args ] ")" ;
 args           = expression { "," expression } ;

@@ -499,6 +499,58 @@ impl RegAlloc {
                 }
             }
 
+            Aarch64Inst::MvnRR { dst, src } => {
+                self.emit_binop(mir, dst, src, |d, s| Aarch64Inst::MvnRR { dst: d, src: s });
+            }
+
+            Aarch64Inst::LslRR { dst, src1, src2 } => {
+                self.emit_ternop(mir, dst, src1, src2, |d, s1, s2| Aarch64Inst::LslRR {
+                    dst: d,
+                    src1: s1,
+                    src2: s2,
+                });
+            }
+
+            Aarch64Inst::Lsl32RR { dst, src1, src2 } => {
+                self.emit_ternop(mir, dst, src1, src2, |d, s1, s2| Aarch64Inst::Lsl32RR {
+                    dst: d,
+                    src1: s1,
+                    src2: s2,
+                });
+            }
+
+            Aarch64Inst::LsrRR { dst, src1, src2 } => {
+                self.emit_ternop(mir, dst, src1, src2, |d, s1, s2| Aarch64Inst::LsrRR {
+                    dst: d,
+                    src1: s1,
+                    src2: s2,
+                });
+            }
+
+            Aarch64Inst::Lsr32RR { dst, src1, src2 } => {
+                self.emit_ternop(mir, dst, src1, src2, |d, s1, s2| Aarch64Inst::Lsr32RR {
+                    dst: d,
+                    src1: s1,
+                    src2: s2,
+                });
+            }
+
+            Aarch64Inst::AsrRR { dst, src1, src2 } => {
+                self.emit_ternop(mir, dst, src1, src2, |d, s1, s2| Aarch64Inst::AsrRR {
+                    dst: d,
+                    src1: s1,
+                    src2: s2,
+                });
+            }
+
+            Aarch64Inst::Asr32RR { dst, src1, src2 } => {
+                self.emit_ternop(mir, dst, src1, src2, |d, s1, s2| Aarch64Inst::Asr32RR {
+                    dst: d,
+                    src1: s1,
+                    src2: s2,
+                });
+            }
+
             Aarch64Inst::CmpRR { src1, src2 } => {
                 let src1_op = self.load_operand(mir, src1, Reg::X9);
                 let src2_op = self.load_operand(mir, src2, Reg::X10);

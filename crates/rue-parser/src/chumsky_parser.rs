@@ -220,57 +220,85 @@ where
         // Precedence (lower number = lower precedence, binds less tightly):
         // 1: || (logical or)
         // 2: && (logical and)
-        // 3: ==, !=, <, >, <=, >= (comparison)
-        // 4: +, - (additive)
-        // 5: *, /, % (multiplicative)
-        // 6: unary -, ! (prefix)
+        // 3: | (bitwise or)
+        // 4: ^ (bitwise xor)
+        // 5: & (bitwise and)
+        // 6: ==, !=, <, >, <=, >= (comparison)
+        // 7: <<, >> (shift)
+        // 8: +, - (additive)
+        // 9: *, /, % (multiplicative)
+        // 10: unary -, !, ~ (prefix)
         atom.pratt((
             // Prefix operators (highest precedence for unary)
             prefix(
-                6,
+                10,
                 just(TokenKind::Minus).map_with(|_, e| e.span()),
                 |op_span, rhs: Expr, _| make_unary(UnaryOp::Neg, rhs, op_span),
             ),
             prefix(
-                6,
+                10,
                 just(TokenKind::Bang).map_with(|_, e| e.span()),
                 |op_span, rhs: Expr, _| make_unary(UnaryOp::Not, rhs, op_span),
             ),
-            // Multiplicative (precedence 5)
-            infix(left(5), just(TokenKind::Star), |l, _, r, _| {
+            prefix(
+                10,
+                just(TokenKind::Tilde).map_with(|_, e| e.span()),
+                |op_span, rhs: Expr, _| make_unary(UnaryOp::BitNot, rhs, op_span),
+            ),
+            // Multiplicative (precedence 9)
+            infix(left(9), just(TokenKind::Star), |l, _, r, _| {
                 make_binary(l, BinaryOp::Mul, r)
             }),
-            infix(left(5), just(TokenKind::Slash), |l, _, r, _| {
+            infix(left(9), just(TokenKind::Slash), |l, _, r, _| {
                 make_binary(l, BinaryOp::Div, r)
             }),
-            infix(left(5), just(TokenKind::Percent), |l, _, r, _| {
+            infix(left(9), just(TokenKind::Percent), |l, _, r, _| {
                 make_binary(l, BinaryOp::Mod, r)
             }),
-            // Additive (precedence 4)
-            infix(left(4), just(TokenKind::Plus), |l, _, r, _| {
+            // Additive (precedence 8)
+            infix(left(8), just(TokenKind::Plus), |l, _, r, _| {
                 make_binary(l, BinaryOp::Add, r)
             }),
-            infix(left(4), just(TokenKind::Minus), |l, _, r, _| {
+            infix(left(8), just(TokenKind::Minus), |l, _, r, _| {
                 make_binary(l, BinaryOp::Sub, r)
             }),
-            // Comparison (precedence 3)
-            infix(left(3), just(TokenKind::EqEq), |l, _, r, _| {
+            // Shift (precedence 7)
+            infix(left(7), just(TokenKind::LtLt), |l, _, r, _| {
+                make_binary(l, BinaryOp::Shl, r)
+            }),
+            infix(left(7), just(TokenKind::GtGt), |l, _, r, _| {
+                make_binary(l, BinaryOp::Shr, r)
+            }),
+            // Comparison (precedence 6)
+            infix(left(6), just(TokenKind::EqEq), |l, _, r, _| {
                 make_binary(l, BinaryOp::Eq, r)
             }),
-            infix(left(3), just(TokenKind::BangEq), |l, _, r, _| {
+            infix(left(6), just(TokenKind::BangEq), |l, _, r, _| {
                 make_binary(l, BinaryOp::Ne, r)
             }),
-            infix(left(3), just(TokenKind::Lt), |l, _, r, _| {
+            infix(left(6), just(TokenKind::Lt), |l, _, r, _| {
                 make_binary(l, BinaryOp::Lt, r)
             }),
-            infix(left(3), just(TokenKind::Gt), |l, _, r, _| {
+            infix(left(6), just(TokenKind::Gt), |l, _, r, _| {
                 make_binary(l, BinaryOp::Gt, r)
             }),
-            infix(left(3), just(TokenKind::LtEq), |l, _, r, _| {
+            infix(left(6), just(TokenKind::LtEq), |l, _, r, _| {
                 make_binary(l, BinaryOp::Le, r)
             }),
-            infix(left(3), just(TokenKind::GtEq), |l, _, r, _| {
+            infix(left(6), just(TokenKind::GtEq), |l, _, r, _| {
                 make_binary(l, BinaryOp::Ge, r)
+            }),
+            // Bitwise AND (precedence 5)
+            infix(left(5), just(TokenKind::Amp), |l, _, r, _| {
+                make_binary(l, BinaryOp::BitAnd, r)
+            }),
+            // Bitwise XOR (precedence 4)
+            infix(left(4), just(TokenKind::Caret), |l, _, r, _| {
+                make_binary(l, BinaryOp::BitXor, r)
+            }),
+            // Bitwise OR (precedence 3)
+            infix(left(3), just(TokenKind::Pipe), |l, _, r, _| {
+                make_binary(l, BinaryOp::BitOr, r)
             }),
             // Logical AND (precedence 2)
             infix(left(2), just(TokenKind::AmpAmp), |l, _, r, _| {

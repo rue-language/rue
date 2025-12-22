@@ -184,11 +184,25 @@ pub enum InstData {
     /// Logical OR: lhs || rhs
     Or { lhs: InstRef, rhs: InstRef },
 
+    // Bitwise operations
+    /// Bitwise AND: lhs & rhs
+    BitAnd { lhs: InstRef, rhs: InstRef },
+    /// Bitwise OR: lhs | rhs
+    BitOr { lhs: InstRef, rhs: InstRef },
+    /// Bitwise XOR: lhs ^ rhs
+    BitXor { lhs: InstRef, rhs: InstRef },
+    /// Left shift: lhs << rhs
+    Shl { lhs: InstRef, rhs: InstRef },
+    /// Right shift: lhs >> rhs (arithmetic for signed, logical for unsigned)
+    Shr { lhs: InstRef, rhs: InstRef },
+
     // Unary operations
     /// Negation: -operand
     Neg { operand: InstRef },
     /// Logical NOT: !operand
     Not { operand: InstRef },
+    /// Bitwise NOT: ~operand
+    BitNot { operand: InstRef },
 
     // Control flow
     /// Branch: if cond then then_block else else_block
@@ -444,11 +458,29 @@ impl<'a, 'b> RirPrinter<'a, 'b> {
                 InstData::Or { lhs, rhs } => {
                     out.push_str(&format!("or {}, {}\n", lhs, rhs));
                 }
+                InstData::BitAnd { lhs, rhs } => {
+                    out.push_str(&format!("bit_and {}, {}\n", lhs, rhs));
+                }
+                InstData::BitOr { lhs, rhs } => {
+                    out.push_str(&format!("bit_or {}, {}\n", lhs, rhs));
+                }
+                InstData::BitXor { lhs, rhs } => {
+                    out.push_str(&format!("bit_xor {}, {}\n", lhs, rhs));
+                }
+                InstData::Shl { lhs, rhs } => {
+                    out.push_str(&format!("shl {}, {}\n", lhs, rhs));
+                }
+                InstData::Shr { lhs, rhs } => {
+                    out.push_str(&format!("shr {}, {}\n", lhs, rhs));
+                }
                 InstData::Neg { operand } => {
                     out.push_str(&format!("neg {}\n", operand));
                 }
                 InstData::Not { operand } => {
                     out.push_str(&format!("not {}\n", operand));
+                }
+                InstData::BitNot { operand } => {
+                    out.push_str(&format!("bit_not {}\n", operand));
                 }
                 InstData::Branch {
                     cond,

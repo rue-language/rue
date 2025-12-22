@@ -691,6 +691,148 @@ impl<'a> CfgLower<'a> {
                 });
             }
 
+            CfgInstData::BitNot(operand) => {
+                let vreg = self.mir.alloc_vreg();
+                self.value_map.insert(value, vreg);
+
+                let operand_vreg = self.get_vreg(*operand);
+
+                self.mir.push(X86Inst::MovRR {
+                    dst: Operand::Virtual(vreg),
+                    src: Operand::Virtual(operand_vreg),
+                });
+                self.mir.push(X86Inst::NotR {
+                    dst: Operand::Virtual(vreg),
+                });
+            }
+
+            CfgInstData::BitAnd(lhs, rhs) => {
+                let vreg = self.mir.alloc_vreg();
+                self.value_map.insert(value, vreg);
+
+                let lhs_vreg = self.get_vreg(*lhs);
+                let rhs_vreg = self.get_vreg(*rhs);
+
+                self.mir.push(X86Inst::MovRR {
+                    dst: Operand::Virtual(vreg),
+                    src: Operand::Virtual(lhs_vreg),
+                });
+                self.mir.push(X86Inst::AndRR {
+                    dst: Operand::Virtual(vreg),
+                    src: Operand::Virtual(rhs_vreg),
+                });
+            }
+
+            CfgInstData::BitOr(lhs, rhs) => {
+                let vreg = self.mir.alloc_vreg();
+                self.value_map.insert(value, vreg);
+
+                let lhs_vreg = self.get_vreg(*lhs);
+                let rhs_vreg = self.get_vreg(*rhs);
+
+                self.mir.push(X86Inst::MovRR {
+                    dst: Operand::Virtual(vreg),
+                    src: Operand::Virtual(lhs_vreg),
+                });
+                self.mir.push(X86Inst::OrRR {
+                    dst: Operand::Virtual(vreg),
+                    src: Operand::Virtual(rhs_vreg),
+                });
+            }
+
+            CfgInstData::BitXor(lhs, rhs) => {
+                let vreg = self.mir.alloc_vreg();
+                self.value_map.insert(value, vreg);
+
+                let lhs_vreg = self.get_vreg(*lhs);
+                let rhs_vreg = self.get_vreg(*rhs);
+
+                self.mir.push(X86Inst::MovRR {
+                    dst: Operand::Virtual(vreg),
+                    src: Operand::Virtual(lhs_vreg),
+                });
+                self.mir.push(X86Inst::XorRR {
+                    dst: Operand::Virtual(vreg),
+                    src: Operand::Virtual(rhs_vreg),
+                });
+            }
+
+            CfgInstData::Shl(lhs, rhs) => {
+                let vreg = self.mir.alloc_vreg();
+                self.value_map.insert(value, vreg);
+
+                let lhs_vreg = self.get_vreg(*lhs);
+                let rhs_vreg = self.get_vreg(*rhs);
+
+                // Move LHS to result
+                self.mir.push(X86Inst::MovRR {
+                    dst: Operand::Virtual(vreg),
+                    src: Operand::Virtual(lhs_vreg),
+                });
+
+                // Move shift amount to RCX (CL is the low byte)
+                self.mir.push(X86Inst::MovRR {
+                    dst: Operand::Physical(Reg::Rcx),
+                    src: Operand::Virtual(rhs_vreg),
+                });
+
+                // Use 64-bit shift for i64/u64, 32-bit shift for smaller types
+                // 32-bit shift masks by 31, 64-bit shift masks by 63
+                if ty.is_64_bit() {
+                    self.mir.push(X86Inst::ShlRCl {
+                        dst: Operand::Virtual(vreg),
+                    });
+                } else {
+                    self.mir.push(X86Inst::Shl32RCl {
+                        dst: Operand::Virtual(vreg),
+                    });
+                }
+            }
+
+            CfgInstData::Shr(lhs, rhs) => {
+                let vreg = self.mir.alloc_vreg();
+                self.value_map.insert(value, vreg);
+
+                let lhs_vreg = self.get_vreg(*lhs);
+                let rhs_vreg = self.get_vreg(*rhs);
+
+                // Move LHS to result
+                self.mir.push(X86Inst::MovRR {
+                    dst: Operand::Virtual(vreg),
+                    src: Operand::Virtual(lhs_vreg),
+                });
+
+                // Move shift amount to RCX (CL is the low byte)
+                self.mir.push(X86Inst::MovRR {
+                    dst: Operand::Physical(Reg::Rcx),
+                    src: Operand::Virtual(rhs_vreg),
+                });
+
+                // Use arithmetic shift (SAR) for signed types, logical shift (SHR) for unsigned
+                // Use 64-bit shift for i64/u64, 32-bit shift for smaller types
+                if ty.is_64_bit() {
+                    if ty.is_signed() {
+                        self.mir.push(X86Inst::SarRCl {
+                            dst: Operand::Virtual(vreg),
+                        });
+                    } else {
+                        self.mir.push(X86Inst::ShrRCl {
+                            dst: Operand::Virtual(vreg),
+                        });
+                    }
+                } else {
+                    if ty.is_signed() {
+                        self.mir.push(X86Inst::Sar32RCl {
+                            dst: Operand::Virtual(vreg),
+                        });
+                    } else {
+                        self.mir.push(X86Inst::Shr32RCl {
+                            dst: Operand::Virtual(vreg),
+                        });
+                    }
+                }
+            }
+
             CfgInstData::Eq(lhs, rhs) => {
                 let lhs_ty = self.cfg.get_inst(*lhs).ty;
 

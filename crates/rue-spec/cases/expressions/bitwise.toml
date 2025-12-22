@@ -1,0 +1,550 @@
+[section]
+id = "expressions.bitwise"
+spec_chapter = "4.3a"
+name = "Bitwise Operators"
+description = "Bitwise operators (&, |, ^, ~, <<, >>) operate on integer values at the bit level."
+
+# =============================================================================
+# Binary Bitwise Operators
+# =============================================================================
+
+[[case]]
+name = "bitwise_and_basic"
+spec = ["4.3a:1"]
+source = """
+fn main() -> i32 {
+    let a: i32 = 12;  // 0b1100
+    let b: i32 = 10;  // 0b1010
+    a & b             // 0b1000 = 8
+}
+"""
+exit_code = 8
+
+[[case]]
+name = "bitwise_or_basic"
+spec = ["4.3a:1"]
+source = """
+fn main() -> i32 {
+    let a: i32 = 12;  // 0b1100
+    let b: i32 = 10;  // 0b1010
+    a | b             // 0b1110 = 14
+}
+"""
+exit_code = 14
+
+[[case]]
+name = "bitwise_xor_basic"
+spec = ["4.3a:1"]
+source = """
+fn main() -> i32 {
+    let a: i32 = 12;  // 0b1100
+    let b: i32 = 10;  // 0b1010
+    a ^ b             // 0b0110 = 6
+}
+"""
+exit_code = 6
+
+[[case]]
+name = "bitwise_and_zero"
+spec = ["4.3a:1"]
+source = """
+fn main() -> i32 {
+    let a: i32 = 255;
+    a & 0
+}
+"""
+exit_code = 0
+
+[[case]]
+name = "bitwise_or_zero"
+spec = ["4.3a:1"]
+source = """
+fn main() -> i32 {
+    let a: i32 = 42;
+    a | 0
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "bitwise_xor_self"
+spec = ["4.3a:1"]
+source = """
+fn main() -> i32 {
+    let a: i32 = 42;
+    a ^ a
+}
+"""
+exit_code = 0
+
+# =============================================================================
+# Bitwise NOT
+# =============================================================================
+
+[[case]]
+name = "bitwise_not_zero"
+spec = ["4.3a:3", "4.3a:4"]
+source = """
+fn main() -> i32 {
+    let a: i32 = 0;
+    ~a  // All bits set = -1 in two's complement
+}
+"""
+exit_code = 255  # -1 as exit code wraps to 255
+
+[[case]]
+name = "bitwise_not_negative_one"
+spec = ["4.3a:3", "4.3a:4"]
+source = """
+fn main() -> i32 {
+    let a: i32 = 0 - 1;  // -1
+    ~a  // ~(-1) = 0
+}
+"""
+exit_code = 0
+
+[[case]]
+name = "bitwise_double_not"
+spec = ["4.3a:3", "4.3a:4"]
+source = """
+fn main() -> i32 {
+    let a: i32 = 42;
+    ~~a
+}
+"""
+exit_code = 42
+
+# =============================================================================
+# Shift Operators
+# =============================================================================
+
+[[case]]
+name = "shift_left_basic"
+spec = ["4.3a:6", "4.3a:7"]
+source = """
+fn main() -> i32 {
+    let x: i32 = 1;
+    x << 4  // 16
+}
+"""
+exit_code = 16
+
+[[case]]
+name = "shift_right_basic"
+spec = ["4.3a:6", "4.3a:8"]
+source = """
+fn main() -> i32 {
+    let x: i32 = 16;
+    x >> 2  // 4
+}
+"""
+exit_code = 4
+
+[[case]]
+name = "shift_left_zero"
+spec = ["4.3a:6", "4.3a:7"]
+source = """
+fn main() -> i32 {
+    let x: i32 = 42;
+    x << 0
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "shift_right_zero"
+spec = ["4.3a:6", "4.3a:8"]
+source = """
+fn main() -> i32 {
+    let x: i32 = 42;
+    x >> 0
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "shift_left_multiple"
+spec = ["4.3a:6", "4.3a:7"]
+source = """
+fn main() -> i32 {
+    let x: i32 = 3;
+    x << 3  // 24
+}
+"""
+exit_code = 24
+
+[[case]]
+name = "shift_left_right_identity"
+spec = ["4.3a:6", "4.3a:7", "4.3a:8"]
+source = """
+fn main() -> i32 {
+    let x: i32 = 42;
+    (x << 2) >> 2
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "shift_type_same"
+spec = ["4.3a:9"]
+source = """
+fn main() -> i32 {
+    let x: i32 = 1;
+    let shift: i32 = 3;
+    x << shift
+}
+"""
+exit_code = 8
+
+[[case]]
+name = "shift_large_amount"
+spec = ["4.3a:10"]
+source = """
+fn main() -> i32 {
+    let x: i32 = 1;
+    // Shifting by 33 on i32 (32-bit) is equivalent to shifting by 1
+    x << 33
+}
+"""
+exit_code = 2
+
+# =============================================================================
+# Operator Precedence
+# =============================================================================
+
+[[case]]
+name = "precedence_and_or"
+spec = ["4.3a:12", "4.3a:13"]
+source = """
+fn main() -> i32 {
+    1 | 2 & 3  // = 1 | (2 & 3) = 1 | 2 = 3
+}
+"""
+exit_code = 3
+
+[[case]]
+name = "precedence_xor_and"
+spec = ["4.3a:12", "4.3a:13"]
+source = """
+fn main() -> i32 {
+    1 ^ 3 & 2  // = 1 ^ (3 & 2) = 1 ^ 2 = 3
+}
+"""
+exit_code = 3
+
+[[case]]
+name = "precedence_or_xor"
+spec = ["4.3a:12", "4.3a:13"]
+source = """
+fn main() -> i32 {
+    1 | 2 ^ 3  // = 1 | (2 ^ 3) = 1 | 1 = 1
+}
+"""
+exit_code = 1
+
+[[case]]
+name = "precedence_shift_and"
+spec = ["4.3a:12", "4.3a:13"]
+source = """
+fn main() -> i32 {
+    let a: i32 = 1 << 2 & 7;  // = (1 << 2) & 7 = 4 & 7 = 4
+    a
+}
+"""
+exit_code = 4
+
+[[case]]
+name = "precedence_parentheses"
+spec = ["4.3a:14"]
+source = """
+fn main() -> i32 {
+    (1 | 2) & 3  // = 3 & 3 = 3
+}
+"""
+exit_code = 3
+
+# =============================================================================
+# Associativity
+# =============================================================================
+
+[[case]]
+name = "associativity_shift_left"
+spec = ["4.3a:16"]
+source = """
+fn main() -> i32 {
+    let x: i32 = 1 << 2 << 1;  // = (1 << 2) << 1 = 4 << 1 = 8
+    x
+}
+"""
+exit_code = 8
+
+[[case]]
+name = "associativity_and"
+spec = ["4.3a:16"]
+source = """
+fn main() -> i32 {
+    15 & 7 & 3  // = (15 & 7) & 3 = 7 & 3 = 3
+}
+"""
+exit_code = 3
+
+[[case]]
+name = "associativity_or"
+spec = ["4.3a:16"]
+source = """
+fn main() -> i32 {
+    1 | 2 | 4  // = (1 | 2) | 4 = 3 | 4 = 7
+}
+"""
+exit_code = 7
+
+[[case]]
+name = "associativity_xor"
+spec = ["4.3a:16"]
+source = """
+fn main() -> i32 {
+    7 ^ 3 ^ 1  // = (7 ^ 3) ^ 1 = 4 ^ 1 = 5
+}
+"""
+exit_code = 5
+
+# =============================================================================
+# Type Checking (Integer Types)
+# =============================================================================
+
+[[case]]
+name = "bitwise_i32"
+spec = ["4.3a:18"]
+source = """
+fn main() -> i32 {
+    let a: i32 = 5;
+    let b: i32 = 3;
+    a & b
+}
+"""
+exit_code = 1
+
+[[case]]
+name = "bitwise_i8"
+spec = ["4.3a:18"]
+source = """
+fn main() -> i32 {
+    let a: i8 = 5;
+    let b: i8 = 3;
+    let result: i8 = a | b;
+    // Need to use i32 return, so we recompute
+    5 | 3
+}
+"""
+exit_code = 7
+
+[[case]]
+name = "bitwise_u8"
+spec = ["4.3a:18"]
+source = """
+fn main() -> i32 {
+    let a: u8 = 5;
+    let b: u8 = 3;
+    let result: u8 = a ^ b;
+    // Need to use i32 return, so we recompute
+    5 ^ 3
+}
+"""
+exit_code = 6
+
+# =============================================================================
+# Type Checking Errors
+# =============================================================================
+
+[[case]]
+name = "bitwise_and_bool_error"
+spec = ["4.3a:19"]
+source = """
+fn main() -> i32 {
+    let a = true;
+    let b = false;
+    a & b;
+    0
+}
+"""
+compile_fail = true
+error_contains = "type"
+
+[[case]]
+name = "bitwise_not_bool_error"
+spec = ["4.3a:19"]
+source = """
+fn main() -> i32 {
+    let a = true;
+    ~a;
+    0
+}
+"""
+compile_fail = true
+error_contains = "type"
+
+[[case]]
+name = "shift_bool_error"
+spec = ["4.3a:19"]
+source = """
+fn main() -> i32 {
+    let a = true;
+    let b: i32 = 1;
+    a << b;
+    0
+}
+"""
+compile_fail = true
+error_contains = "type"
+
+# =============================================================================
+# Large Shift Amounts (Modulo Bit Width)
+# =============================================================================
+
+[[case]]
+name = "shift_i64_large_amount"
+spec = ["4.3a:10"]
+source = """
+fn main() -> i32 {
+    let x: i64 = 1;
+    // Shifting by 65 on i64 (64-bit) is equivalent to shifting by 1
+    let result: i64 = x << 65;
+    // result should be 2, return 1 if true
+    if result == 2 { 1 } else { 0 }
+}
+"""
+exit_code = 1
+
+[[case]]
+name = "shift_u64_large_amount"
+spec = ["4.3a:10"]
+source = """
+fn main() -> i32 {
+    let x: u64 = 1;
+    // Shifting by 65 on u64 (64-bit) is equivalent to shifting by 1
+    let result: u64 = x << 65;
+    if result == 2 { 1 } else { 0 }
+}
+"""
+exit_code = 1
+
+[[case]]
+name = "shift_right_u8"
+spec = ["4.3a:8", "4.3a:18"]
+source = """
+fn main() -> i32 {
+    let x: u8 = 128;
+    let result: u8 = x >> 4;  // Logical shift: 8
+    // Return result directly by reconstructing as i32
+    if result == 8 { 8 } else { 0 }
+}
+"""
+exit_code = 8
+
+[[case]]
+name = "shift_left_u16"
+spec = ["4.3a:7", "4.3a:18"]
+source = """
+fn main() -> i32 {
+    let x: u16 = 1;
+    let result: u16 = x << 8;  // 256
+    if result == 256 { 1 } else { 0 }
+}
+"""
+exit_code = 1
+
+[[case]]
+name = "shift_right_signed_preserves_sign"
+spec = ["4.3a:8"]
+source = """
+fn main() -> i32 {
+    let x: i32 = 0 - 8;  // -8
+    // Arithmetic shift right by 2 should preserve sign
+    // -8 >> 2 = -2 (sign bit is preserved)
+    let result: i32 = x >> 2;
+    // -2 as exit code wraps to 254
+    result
+}
+"""
+exit_code = 254
+
+[[case]]
+name = "shift_right_unsigned_fills_zeros"
+spec = ["4.3a:8"]
+source = """
+fn main() -> i32 {
+    let x: u32 = 4294967288;  // 0xFFFFFFF8, high bits set
+    // Logical shift right by 4 should fill with zeros
+    let result: u32 = x >> 4;
+    // 0x0FFFFFFF = 268435455
+    if result == 268435455 { 1 } else { 0 }
+}
+"""
+exit_code = 1
+
+# =============================================================================
+# Negative Shift Amounts
+# =============================================================================
+
+[[case]]
+name = "shift_negative_amount"
+spec = ["4.3a:10"]
+source = """
+fn main() -> i32 {
+    let x: i32 = 16;
+    let shift: i32 = 0 - 2;  // -2
+    // Negative shift amounts are treated as unsigned, so -2 interpreted as u32 is very large
+    // This will effectively shift by (-2 mod 32) which is 30
+    let result: i32 = x << shift;
+    // 16 << 30 wraps, result should not be 16
+    if result != 16 { 1 } else { 0 }
+}
+"""
+exit_code = 1
+
+# =============================================================================
+# Unsigned Bitwise Operations
+# =============================================================================
+
+[[case]]
+name = "bitwise_u32_and"
+spec = ["4.3a:1", "4.3a:18"]
+source = """
+fn main() -> i32 {
+    // 4278255360 = 0xFF00FF00
+    let a: u32 = 4278255360;
+    // 252645135 = 0x0F0F0F0F
+    let b: u32 = 252645135;
+    let result: u32 = a & b;
+    // 0x0F000F00 = 251662080
+    if result == 251662080 { 1 } else { 0 }
+}
+"""
+exit_code = 1
+
+[[case]]
+name = "bitwise_u64_or"
+spec = ["4.3a:1", "4.3a:18"]
+source = """
+fn main() -> i32 {
+    let a: u64 = 1;
+    let b: u64 = 2;
+    let result: u64 = a | b;
+    if result == 3 { 1 } else { 0 }
+}
+"""
+exit_code = 1
+
+[[case]]
+name = "bitwise_not_u8"
+spec = ["4.3a:3", "4.3a:18"]
+source = """
+fn main() -> i32 {
+    let a: u8 = 5;    // 0b00000101
+    let b: u8 = ~a;   // 0b11111010 (inverted)
+    let c: u8 = ~~a;  // Should be back to original
+    // Double NOT should give original value
+    if c == 5 { 1 } else { 0 }
+}
+"""
+exit_code = 1

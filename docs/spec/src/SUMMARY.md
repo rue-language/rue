@@ -23,6 +23,7 @@
   - [Literal Expressions](04-expressions/01-literal-expressions.md)
   - [Arithmetic Operators](04-expressions/02-arithmetic-operators.md)
   - [Comparison Operators](04-expressions/03-comparison-operators.md)
+  - [Bitwise Operators](04-expressions/03a-bitwise-operators.md)
   - [Logical Operators](04-expressions/04-logical-operators.md)
   - [Block Expressions](04-expressions/05-block-expressions.md)
   - [If Expressions](04-expressions/06-if-expressions.md)

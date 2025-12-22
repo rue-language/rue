@@ -589,6 +589,51 @@ pub enum Aarch64Inst {
         imm: u64,
     },
 
+    /// `mvn dst, src` - Bitwise NOT.
+    MvnRR { dst: Operand, src: Operand },
+
+    /// `lsl dst, src1, src2` - Logical shift left 64-bit by register.
+    LslRR {
+        dst: Operand,
+        src1: Operand,
+        src2: Operand,
+    },
+
+    /// `lsl dst, src1, src2` - Logical shift left 32-bit by register.
+    Lsl32RR {
+        dst: Operand,
+        src1: Operand,
+        src2: Operand,
+    },
+
+    /// `lsr dst, src1, src2` - Logical shift right 64-bit by register.
+    LsrRR {
+        dst: Operand,
+        src1: Operand,
+        src2: Operand,
+    },
+
+    /// `lsr dst, src1, src2` - Logical shift right 32-bit by register.
+    Lsr32RR {
+        dst: Operand,
+        src1: Operand,
+        src2: Operand,
+    },
+
+    /// `asr dst, src1, src2` - Arithmetic shift right 64-bit by register.
+    AsrRR {
+        dst: Operand,
+        src1: Operand,
+        src2: Operand,
+    },
+
+    /// `asr dst, src1, src2` - Arithmetic shift right 32-bit by register.
+    Asr32RR {
+        dst: Operand,
+        src1: Operand,
+        src2: Operand,
+    },
+
     // === Comparison instructions ===
     /// `cmp src1, src2` - Compare (subtract and set flags, discard result). Uses 32-bit form.
     CmpRR { src1: Operand, src2: Operand },
@@ -793,6 +838,25 @@ impl fmt::Display for Aarch64Inst {
                 write!(f, "eor {}, {}, {}", dst, src1, src2)
             }
             Aarch64Inst::EorImm { dst, src, imm } => write!(f, "eor {}, {}, #{}", dst, src, imm),
+            Aarch64Inst::MvnRR { dst, src } => write!(f, "mvn {}, {}", dst, src),
+            Aarch64Inst::LslRR { dst, src1, src2 } => {
+                write!(f, "lslq {}, {}, {}", dst, src1, src2)
+            }
+            Aarch64Inst::Lsl32RR { dst, src1, src2 } => {
+                write!(f, "lsll {}, {}, {}", dst, src1, src2)
+            }
+            Aarch64Inst::LsrRR { dst, src1, src2 } => {
+                write!(f, "lsrq {}, {}, {}", dst, src1, src2)
+            }
+            Aarch64Inst::Lsr32RR { dst, src1, src2 } => {
+                write!(f, "lsrl {}, {}, {}", dst, src1, src2)
+            }
+            Aarch64Inst::AsrRR { dst, src1, src2 } => {
+                write!(f, "asrq {}, {}, {}", dst, src1, src2)
+            }
+            Aarch64Inst::Asr32RR { dst, src1, src2 } => {
+                write!(f, "asrl {}, {}, {}", dst, src1, src2)
+            }
             Aarch64Inst::CmpRR { src1, src2 } => write!(f, "cmp {}, {}", src1, src2),
             Aarch64Inst::Cmp64RR { src1, src2 } => write!(f, "cmp {}, {}", src1, src2),
             Aarch64Inst::CmpImm { src, imm } => write!(f, "cmp {}, #{}", src, imm),

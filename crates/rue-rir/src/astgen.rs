@@ -185,6 +185,11 @@ impl<'a> AstGen<'a> {
                     BinaryOp::Ge => InstData::Ge { lhs, rhs },
                     BinaryOp::And => InstData::And { lhs, rhs },
                     BinaryOp::Or => InstData::Or { lhs, rhs },
+                    BinaryOp::BitAnd => InstData::BitAnd { lhs, rhs },
+                    BinaryOp::BitOr => InstData::BitOr { lhs, rhs },
+                    BinaryOp::BitXor => InstData::BitXor { lhs, rhs },
+                    BinaryOp::Shl => InstData::Shl { lhs, rhs },
+                    BinaryOp::Shr => InstData::Shr { lhs, rhs },
                 };
                 self.rir.add_inst(Inst {
                     data,
@@ -196,6 +201,7 @@ impl<'a> AstGen<'a> {
                 let data = match un.op {
                     UnaryOp::Neg => InstData::Neg { operand },
                     UnaryOp::Not => InstData::Not { operand },
+                    UnaryOp::BitNot => InstData::BitNot { operand },
                 };
                 self.rir.add_inst(Inst {
                     data,

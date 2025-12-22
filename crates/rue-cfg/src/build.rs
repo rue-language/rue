@@ -374,6 +374,71 @@ impl<'a> CfgBuilder<'a> {
                 }
             }
 
+            AirInstData::BitNot(operand) => {
+                let op_val = self.lower_inst(*operand).value.unwrap();
+                let value = self.emit(CfgInstData::BitNot(op_val), ty, span);
+                self.cache(air_ref, value);
+                ExprResult {
+                    value: Some(value),
+                    continuation: Continuation::Continues,
+                }
+            }
+
+            AirInstData::BitAnd(lhs, rhs) => {
+                let lhs_val = self.lower_inst(*lhs).value.unwrap();
+                let rhs_val = self.lower_inst(*rhs).value.unwrap();
+                let value = self.emit(CfgInstData::BitAnd(lhs_val, rhs_val), ty, span);
+                self.cache(air_ref, value);
+                ExprResult {
+                    value: Some(value),
+                    continuation: Continuation::Continues,
+                }
+            }
+
+            AirInstData::BitOr(lhs, rhs) => {
+                let lhs_val = self.lower_inst(*lhs).value.unwrap();
+                let rhs_val = self.lower_inst(*rhs).value.unwrap();
+                let value = self.emit(CfgInstData::BitOr(lhs_val, rhs_val), ty, span);
+                self.cache(air_ref, value);
+                ExprResult {
+                    value: Some(value),
+                    continuation: Continuation::Continues,
+                }
+            }
+
+            AirInstData::BitXor(lhs, rhs) => {
+                let lhs_val = self.lower_inst(*lhs).value.unwrap();
+                let rhs_val = self.lower_inst(*rhs).value.unwrap();
+                let value = self.emit(CfgInstData::BitXor(lhs_val, rhs_val), ty, span);
+                self.cache(air_ref, value);
+                ExprResult {
+                    value: Some(value),
+                    continuation: Continuation::Continues,
+                }
+            }
+
+            AirInstData::Shl(lhs, rhs) => {
+                let lhs_val = self.lower_inst(*lhs).value.unwrap();
+                let rhs_val = self.lower_inst(*rhs).value.unwrap();
+                let value = self.emit(CfgInstData::Shl(lhs_val, rhs_val), ty, span);
+                self.cache(air_ref, value);
+                ExprResult {
+                    value: Some(value),
+                    continuation: Continuation::Continues,
+                }
+            }
+
+            AirInstData::Shr(lhs, rhs) => {
+                let lhs_val = self.lower_inst(*lhs).value.unwrap();
+                let rhs_val = self.lower_inst(*rhs).value.unwrap();
+                let value = self.emit(CfgInstData::Shr(lhs_val, rhs_val), ty, span);
+                self.cache(air_ref, value);
+                ExprResult {
+                    value: Some(value),
+                    continuation: Continuation::Continues,
+                }
+            }
+
             AirInstData::Alloc { slot, init } => {
                 let init_result = self.lower_inst(*init);
                 // If init produces a value, use it; otherwise use a dummy Unit value

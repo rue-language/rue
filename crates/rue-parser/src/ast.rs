@@ -245,6 +245,12 @@ pub enum BinaryOp {
     // Logical
     And, // &&
     Or,  // ||
+    // Bitwise
+    BitAnd, // &
+    BitOr,  // |
+    BitXor, // ^
+    Shl,    // <<
+    Shr,    // >>
 }
 
 /// A unary expression.
@@ -258,8 +264,9 @@ pub struct UnaryExpr {
 /// Unary operators.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UnaryOp {
-    Neg, // -
-    Not, // !
+    Neg,    // -
+    Not,    // !
+    BitNot, // ~
 }
 
 /// A parenthesized expression.

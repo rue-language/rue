@@ -237,6 +237,16 @@ impl Type {
         matches!(self, Type::String)
     }
 
+    /// Check if this is a signed integer type.
+    pub fn is_signed(&self) -> bool {
+        matches!(self, Type::I8 | Type::I16 | Type::I32 | Type::I64)
+    }
+
+    /// Check if this is a 64-bit type (uses 64-bit operations).
+    pub fn is_64_bit(&self) -> bool {
+        matches!(self, Type::I64 | Type::U64)
+    }
+
     /// Check if this type can coerce to the target type.
     ///
     /// Coercion rules:

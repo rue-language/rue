@@ -844,6 +844,124 @@ impl<'a> CfgLower<'a> {
                 });
             }
 
+            CfgInstData::BitNot(operand) => {
+                let vreg = self.mir.alloc_vreg();
+                self.value_map.insert(value, vreg);
+
+                let operand_vreg = self.get_vreg(*operand);
+
+                self.mir.push(Aarch64Inst::MvnRR {
+                    dst: Operand::Virtual(vreg),
+                    src: Operand::Virtual(operand_vreg),
+                });
+            }
+
+            CfgInstData::BitAnd(lhs, rhs) => {
+                let vreg = self.mir.alloc_vreg();
+                self.value_map.insert(value, vreg);
+
+                let lhs_vreg = self.get_vreg(*lhs);
+                let rhs_vreg = self.get_vreg(*rhs);
+
+                self.mir.push(Aarch64Inst::AndRR {
+                    dst: Operand::Virtual(vreg),
+                    src1: Operand::Virtual(lhs_vreg),
+                    src2: Operand::Virtual(rhs_vreg),
+                });
+            }
+
+            CfgInstData::BitOr(lhs, rhs) => {
+                let vreg = self.mir.alloc_vreg();
+                self.value_map.insert(value, vreg);
+
+                let lhs_vreg = self.get_vreg(*lhs);
+                let rhs_vreg = self.get_vreg(*rhs);
+
+                self.mir.push(Aarch64Inst::OrrRR {
+                    dst: Operand::Virtual(vreg),
+                    src1: Operand::Virtual(lhs_vreg),
+                    src2: Operand::Virtual(rhs_vreg),
+                });
+            }
+
+            CfgInstData::BitXor(lhs, rhs) => {
+                let vreg = self.mir.alloc_vreg();
+                self.value_map.insert(value, vreg);
+
+                let lhs_vreg = self.get_vreg(*lhs);
+                let rhs_vreg = self.get_vreg(*rhs);
+
+                self.mir.push(Aarch64Inst::EorRR {
+                    dst: Operand::Virtual(vreg),
+                    src1: Operand::Virtual(lhs_vreg),
+                    src2: Operand::Virtual(rhs_vreg),
+                });
+            }
+
+            CfgInstData::Shl(lhs, rhs) => {
+                let vreg = self.mir.alloc_vreg();
+                self.value_map.insert(value, vreg);
+
+                let lhs_vreg = self.get_vreg(*lhs);
+                let rhs_vreg = self.get_vreg(*rhs);
+
+                // Use 64-bit shift for i64/u64, 32-bit shift for smaller types
+                // 32-bit shift masks by 31, 64-bit shift masks by 63
+                if ty.is_64_bit() {
+                    self.mir.push(Aarch64Inst::LslRR {
+                        dst: Operand::Virtual(vreg),
+                        src1: Operand::Virtual(lhs_vreg),
+                        src2: Operand::Virtual(rhs_vreg),
+                    });
+                } else {
+                    self.mir.push(Aarch64Inst::Lsl32RR {
+                        dst: Operand::Virtual(vreg),
+                        src1: Operand::Virtual(lhs_vreg),
+                        src2: Operand::Virtual(rhs_vreg),
+                    });
+                }
+            }
+
+            CfgInstData::Shr(lhs, rhs) => {
+                let vreg = self.mir.alloc_vreg();
+                self.value_map.insert(value, vreg);
+
+                let lhs_vreg = self.get_vreg(*lhs);
+                let rhs_vreg = self.get_vreg(*rhs);
+
+                // Use arithmetic shift (ASR) for signed types, logical shift (LSR) for unsigned
+                // Use 64-bit shift for i64/u64, 32-bit shift for smaller types
+                if ty.is_64_bit() {
+                    if ty.is_signed() {
+                        self.mir.push(Aarch64Inst::AsrRR {
+                            dst: Operand::Virtual(vreg),
+                            src1: Operand::Virtual(lhs_vreg),
+                            src2: Operand::Virtual(rhs_vreg),
+                        });
+                    } else {
+                        self.mir.push(Aarch64Inst::LsrRR {
+                            dst: Operand::Virtual(vreg),
+                            src1: Operand::Virtual(lhs_vreg),
+                            src2: Operand::Virtual(rhs_vreg),
+                        });
+                    }
+                } else {
+                    if ty.is_signed() {
+                        self.mir.push(Aarch64Inst::Asr32RR {
+                            dst: Operand::Virtual(vreg),
+                            src1: Operand::Virtual(lhs_vreg),
+                            src2: Operand::Virtual(rhs_vreg),
+                        });
+                    } else {
+                        self.mir.push(Aarch64Inst::Lsr32RR {
+                            dst: Operand::Virtual(vreg),
+                            src1: Operand::Virtual(lhs_vreg),
+                            src2: Operand::Virtual(rhs_vreg),
+                        });
+                    }
+                }
+            }
+
             CfgInstData::Alloc { slot, init } => {
                 let init_type = self.cfg.get_inst(*init).ty;
                 if matches!(init_type, Type::Array(_)) {

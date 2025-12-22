@@ -109,9 +109,17 @@ pub enum CfgInstData {
     And(CfgValue, CfgValue),
     Or(CfgValue, CfgValue),
 
+    // Bitwise operations
+    BitAnd(CfgValue, CfgValue),
+    BitOr(CfgValue, CfgValue),
+    BitXor(CfgValue, CfgValue),
+    Shl(CfgValue, CfgValue),
+    Shr(CfgValue, CfgValue),
+
     // Unary operations
     Neg(CfgValue),
     Not(CfgValue),
+    BitNot(CfgValue),
 
     // Variable operations
     /// Allocate local variable with initial value
@@ -567,8 +575,14 @@ impl Cfg {
             CfgInstData::Ge(lhs, rhs) => write!(f, "ge {}, {}", lhs, rhs),
             CfgInstData::And(lhs, rhs) => write!(f, "and {}, {}", lhs, rhs),
             CfgInstData::Or(lhs, rhs) => write!(f, "or {}, {}", lhs, rhs),
+            CfgInstData::BitAnd(lhs, rhs) => write!(f, "bit_and {}, {}", lhs, rhs),
+            CfgInstData::BitOr(lhs, rhs) => write!(f, "bit_or {}, {}", lhs, rhs),
+            CfgInstData::BitXor(lhs, rhs) => write!(f, "bit_xor {}, {}", lhs, rhs),
+            CfgInstData::Shl(lhs, rhs) => write!(f, "shl {}, {}", lhs, rhs),
+            CfgInstData::Shr(lhs, rhs) => write!(f, "shr {}, {}", lhs, rhs),
             CfgInstData::Neg(v) => write!(f, "neg {}", v),
             CfgInstData::Not(v) => write!(f, "not {}", v),
+            CfgInstData::BitNot(v) => write!(f, "bit_not {}", v),
             CfgInstData::Alloc { slot, init } => write!(f, "alloc ${} = {}", slot, init),
             CfgInstData::Load { slot } => write!(f, "load ${}", slot),
             CfgInstData::Store { slot, value } => write!(f, "store ${} = {}", slot, value),

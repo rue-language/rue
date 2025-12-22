@@ -129,6 +129,10 @@ pub enum LogosTokenKind {
     AmpAmp,
     #[token("||")]
     PipePipe,
+    #[token("<<")]
+    LtLt,
+    #[token(">>")]
+    GtGt,
     #[token("->")]
     Arrow,
     #[token("=>")]
@@ -155,6 +159,14 @@ pub enum LogosTokenKind {
     Lt,
     #[token(">")]
     Gt,
+    #[token("&")]
+    Amp,
+    #[token("|")]
+    Pipe,
+    #[token("^")]
+    Caret,
+    #[token("~")]
+    Tilde,
 
     // Punctuation
     #[token("(")]
@@ -220,6 +232,8 @@ impl From<LogosTokenKind> for TokenKind {
             LogosTokenKind::GtEq => TokenKind::GtEq,
             LogosTokenKind::AmpAmp => TokenKind::AmpAmp,
             LogosTokenKind::PipePipe => TokenKind::PipePipe,
+            LogosTokenKind::LtLt => TokenKind::LtLt,
+            LogosTokenKind::GtGt => TokenKind::GtGt,
             LogosTokenKind::Arrow => TokenKind::Arrow,
             LogosTokenKind::FatArrow => TokenKind::FatArrow,
             LogosTokenKind::ColonColon => TokenKind::ColonColon,
@@ -232,6 +246,10 @@ impl From<LogosTokenKind> for TokenKind {
             LogosTokenKind::Bang => TokenKind::Bang,
             LogosTokenKind::Lt => TokenKind::Lt,
             LogosTokenKind::Gt => TokenKind::Gt,
+            LogosTokenKind::Amp => TokenKind::Amp,
+            LogosTokenKind::Pipe => TokenKind::Pipe,
+            LogosTokenKind::Caret => TokenKind::Caret,
+            LogosTokenKind::Tilde => TokenKind::Tilde,
             LogosTokenKind::LParen => TokenKind::LParen,
             LogosTokenKind::RParen => TokenKind::RParen,
             LogosTokenKind::LBrace => TokenKind::LBrace,
@@ -462,6 +480,82 @@ mod tests {
         assert!(matches!(tokens[3].kind, TokenKind::Ident(ref s) if s == "iff"));
         assert!(matches!(tokens[4].kind, TokenKind::Ident(ref s) if s == "elseif"));
         assert!(matches!(tokens[5].kind, TokenKind::Ident(ref s) if s == "whileloop"));
+    }
+
+    #[test]
+    fn test_logos_bitwise_operators() {
+        let mut lexer = LogosLexer::new("a & b | c ^ d ~ e << f >> g");
+        let tokens = lexer.tokenize().unwrap();
+
+        assert!(matches!(tokens[0].kind, TokenKind::Ident(ref s) if s == "a"));
+        assert!(matches!(tokens[1].kind, TokenKind::Amp));
+        assert!(matches!(tokens[2].kind, TokenKind::Ident(ref s) if s == "b"));
+        assert!(matches!(tokens[3].kind, TokenKind::Pipe));
+        assert!(matches!(tokens[4].kind, TokenKind::Ident(ref s) if s == "c"));
+        assert!(matches!(tokens[5].kind, TokenKind::Caret));
+        assert!(matches!(tokens[6].kind, TokenKind::Ident(ref s) if s == "d"));
+        assert!(matches!(tokens[7].kind, TokenKind::Tilde));
+        assert!(matches!(tokens[8].kind, TokenKind::Ident(ref s) if s == "e"));
+        assert!(matches!(tokens[9].kind, TokenKind::LtLt));
+        assert!(matches!(tokens[10].kind, TokenKind::Ident(ref s) if s == "f"));
+        assert!(matches!(tokens[11].kind, TokenKind::GtGt));
+        assert!(matches!(tokens[12].kind, TokenKind::Ident(ref s) if s == "g"));
+    }
+
+    #[test]
+    fn test_logos_bitwise_vs_logical() {
+        // Single & should be bitwise AND
+        let mut lexer = LogosLexer::new("a & b");
+        let tokens = lexer.tokenize().unwrap();
+        assert!(matches!(tokens[1].kind, TokenKind::Amp));
+
+        // Double && should be logical AND
+        let mut lexer = LogosLexer::new("a && b");
+        let tokens = lexer.tokenize().unwrap();
+        assert!(matches!(tokens[1].kind, TokenKind::AmpAmp));
+
+        // Single | should be bitwise OR
+        let mut lexer = LogosLexer::new("a | b");
+        let tokens = lexer.tokenize().unwrap();
+        assert!(matches!(tokens[1].kind, TokenKind::Pipe));
+
+        // Double || should be logical OR
+        let mut lexer = LogosLexer::new("a || b");
+        let tokens = lexer.tokenize().unwrap();
+        assert!(matches!(tokens[1].kind, TokenKind::PipePipe));
+    }
+
+    #[test]
+    fn test_logos_shift_vs_comparison() {
+        // << should be left shift
+        let mut lexer = LogosLexer::new("a << b");
+        let tokens = lexer.tokenize().unwrap();
+        assert!(matches!(tokens[1].kind, TokenKind::LtLt));
+
+        // >> should be right shift
+        let mut lexer = LogosLexer::new("a >> b");
+        let tokens = lexer.tokenize().unwrap();
+        assert!(matches!(tokens[1].kind, TokenKind::GtGt));
+
+        // < should be less than
+        let mut lexer = LogosLexer::new("a < b");
+        let tokens = lexer.tokenize().unwrap();
+        assert!(matches!(tokens[1].kind, TokenKind::Lt));
+
+        // > should be greater than
+        let mut lexer = LogosLexer::new("a > b");
+        let tokens = lexer.tokenize().unwrap();
+        assert!(matches!(tokens[1].kind, TokenKind::Gt));
+
+        // <= should be less than or equal
+        let mut lexer = LogosLexer::new("a <= b");
+        let tokens = lexer.tokenize().unwrap();
+        assert!(matches!(tokens[1].kind, TokenKind::LtEq));
+
+        // >= should be greater than or equal
+        let mut lexer = LogosLexer::new("a >= b");
+        let tokens = lexer.tokenize().unwrap();
+        assert!(matches!(tokens[1].kind, TokenKind::GtEq));
     }
 
     #[test]
