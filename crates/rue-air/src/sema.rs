@@ -201,8 +201,7 @@ impl TypeExpectation {
             TypeExpectation::Synthesize => Ok(()),
             TypeExpectation::Check(expected) => {
                 if synthesized == *expected
-                    || *expected == Type::Unit // Unit context accepts anything
-                    || synthesized.is_never() // Never coerces to anything
+                    || synthesized.is_never() // Never coerces to anything (the only coercion in Rue)
                     || expected.is_error()
                     || synthesized.is_error()
                 {
@@ -1496,7 +1495,11 @@ impl<'a> Sema<'a> {
                             expectation
                         }
                     } else {
-                        TypeExpectation::Check(Type::Unit)
+                        // Non-final statements: synthesize their type but discard the result.
+                        // Let and assignment statements produce Unit naturally.
+                        // Expression statements (e.g., `42;`) produce their expression's type,
+                        // but we don't care - the value is discarded.
+                        TypeExpectation::Synthesize
                     };
                     let result = self.analyze_inst(air, inst_ref, inst_expectation, ctx)?;
 

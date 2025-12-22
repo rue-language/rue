@@ -53,12 +53,12 @@ fn main() -> i32 {
 exit_code = 12
 
 # =============================================================================
-# Never Type Coercion
+# Type Coercion (3.4:3, 3.4:4)
 # =============================================================================
 
 [[case]]
 name = "never_coerces_to_i32"
-spec = ["3.4:3"]
+spec = ["3.4:3", "3.4:4"]
 source = """
 fn main() -> i32 {
     let x: i32 = if false { return 0 } else { 42 };
@@ -69,7 +69,7 @@ exit_code = 42
 
 [[case]]
 name = "never_coerces_in_match_arm"
-spec = ["3.4:3"]
+spec = ["3.4:3", "3.4:4"]
 source = """
 fn main() -> i32 {
     let x = 2;
@@ -84,7 +84,7 @@ exit_code = 20
 
 [[case]]
 name = "never_in_if_branch"
-spec = ["3.4:3"]
+spec = ["3.4:3", "3.4:4"]
 source = """
 fn test(x: i32) -> i32 {
     let y = if x > 5 { return 100 } else { x };
@@ -95,12 +95,53 @@ fn main() -> i32 { test(3) }
 exit_code = 6
 
 # =============================================================================
-# Never-Returning Function
+# Both Branches Diverge (3.4:6)
+# =============================================================================
+
+[[case]]
+name = "both_if_branches_diverge"
+spec = ["3.4:6"]
+source = """
+fn diverges(x: i32) -> i32 {
+    if x > 0 { return 1 } else { return 0 }
+}
+fn main() -> i32 { diverges(5) }
+"""
+exit_code = 1
+
+[[case]]
+name = "both_if_branches_diverge_negative"
+spec = ["3.4:6"]
+source = """
+fn diverges(x: i32) -> i32 {
+    if x > 0 { return 1 } else { return 0 }
+}
+fn main() -> i32 { diverges(-5) }
+"""
+exit_code = 0
+
+[[case]]
+name = "all_match_arms_diverge"
+spec = ["3.4:6"]
+source = """
+fn main() -> i32 {
+    let x = 2;
+    match x {
+        1 => return 10,
+        2 => return 20,
+        _ => return 0,
+    }
+}
+"""
+exit_code = 20
+
+# =============================================================================
+# Diverging Functions (3.4:8)
 # =============================================================================
 
 [[case]]
 name = "never_returning_function"
-spec = ["3.4:5"]
+spec = ["3.4:8"]
 source = """
 fn diverge(x: i32) -> i32 {
     if x < 10 { return x }
