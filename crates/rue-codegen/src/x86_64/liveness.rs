@@ -271,8 +271,25 @@ fn uses(inst: &X86Inst) -> Vec<VReg> {
             result.push(*base);
             add_if_virtual(src, &mut result);
         }
-        X86Inst::StringConstPtr { .. } | X86Inst::StringConstLen { .. } => {
+        X86Inst::StringConstPtr { .. }
+        | X86Inst::StringConstLen { .. }
+        | X86Inst::StringConstCap { .. } => {
             // Only defines, no uses
+        }
+        X86Inst::StringDrop { ptr, len, cap } => {
+            add_if_virtual(ptr, &mut result);
+            add_if_virtual(len, &mut result);
+            add_if_virtual(cap, &mut result);
+        }
+        X86Inst::StringClone {
+            src_ptr,
+            src_len,
+            src_cap,
+            ..
+        } => {
+            add_if_virtual(src_ptr, &mut result);
+            add_if_virtual(src_len, &mut result);
+            add_if_virtual(src_cap, &mut result);
         }
         X86Inst::Cdq
         | X86Inst::Jz { .. }
@@ -391,8 +408,23 @@ fn defs(inst: &X86Inst) -> Vec<VReg> {
         X86Inst::MovMRIndexed { .. } => {
             // Writes to memory
         }
-        X86Inst::StringConstPtr { dst, .. } | X86Inst::StringConstLen { dst, .. } => {
+        X86Inst::StringConstPtr { dst, .. }
+        | X86Inst::StringConstLen { dst, .. }
+        | X86Inst::StringConstCap { dst, .. } => {
             add_if_virtual(dst, &mut result);
+        }
+        X86Inst::StringDrop { .. } => {
+            // No definitions, only uses
+        }
+        X86Inst::StringClone {
+            out_ptr,
+            out_len,
+            out_cap,
+            ..
+        } => {
+            add_if_virtual(out_ptr, &mut result);
+            add_if_virtual(out_len, &mut result);
+            add_if_virtual(out_cap, &mut result);
         }
         X86Inst::Cdq
         | X86Inst::Jz { .. }

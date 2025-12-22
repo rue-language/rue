@@ -1,13 +1,13 @@
 # String Type
 
 r[3.7:1#normative]
-The type `String` represents an immutable sequence of UTF-8 encoded bytes.
+The type `String` represents a sequence of UTF-8 encoded bytes.
 
 r[3.7:2#normative]
-A `String` value is a fat pointer consisting of a pointer to the string data and the length in bytes.
+A `String` value is a tuple consisting of a pointer to the string data, the length in bytes, and a capacity field.
 
 r[3.7:3#normative]
-String literals are stored in read-only memory and have static lifetime.
+String literals are stored in read-only memory and are represented with a capacity of -1.
 
 r[3.7:4]
 ```rue
@@ -79,13 +79,66 @@ fn main() -> i32 {
 }
 ```
 
+## String Copy Semantics
+
+r[3.7:14#normative]
+Strings have copy semantics. When a string is assigned to another variable, a deep copy is made.
+
+r[3.7:15#normative]
+The original and copied strings are independent; modifications to one do not affect the other.
+
+r[3.7:16]
+```rue
+fn main() -> i32 {
+    let a = "hello";
+    let b = a;  // b is a copy of a
+    // a and b are independent
+    0
+}
+```
+
+## String Concatenation
+
+r[3.7:17#normative]
+The `+` operator concatenates two strings, producing a new heap-allocated string.
+
+r[3.7:18#normative]
+The result of string concatenation is a new string with capacity greater than or equal to the combined length.
+
+r[3.7:19]
+```rue
+fn main() -> i32 {
+    let a = "hello";
+    let b = " world";
+    let c = a + b;  // c is "hello world"
+    0
+}
+```
+
+## Scope-Based Cleanup
+
+r[3.7:20#normative]
+Heap-allocated strings are automatically freed when they go out of scope.
+
+r[3.7:21#normative]
+String literals (with capacity -1) are not freed, as they reside in read-only memory.
+
+r[3.7:22]
+```rue
+fn main() -> i32 {
+    {
+        let s = "hello" + " world";  // heap-allocated
+        // s is used here
+    }  // s is freed here
+    0
+}
+```
+
 ## Limitations
 
-r[3.7:14#informative]
+r[3.7:23#informative]
 The current implementation does not support:
-- String concatenation
 - String indexing or slicing
 - Pattern matching on strings
-- Mutable strings
 
 These features may be added in future versions.

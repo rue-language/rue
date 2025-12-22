@@ -448,6 +448,29 @@ pub enum X86Inst {
 
     /// Load string length (pseudo-instruction resolved during emission)
     StringConstLen { dst: Operand, string_id: u32 },
+
+    /// Load string capacity (pseudo-instruction resolved during emission)
+    /// For string literals, this is always -1 (RODATA_CAPACITY sentinel).
+    StringConstCap { dst: Operand, string_id: u32 },
+
+    /// Drop (deallocate) a string if it's heap-allocated.
+    /// Calls __rue_string_drop(ptr, len, cap) which frees if cap >= 0.
+    StringDrop {
+        ptr: Operand,
+        len: Operand,
+        cap: Operand,
+    },
+
+    /// Clone a string, creating a heap-allocated copy.
+    /// Calls __rue_string_clone and writes result to out_ptr, out_len, out_cap.
+    StringClone {
+        src_ptr: Operand,
+        src_len: Operand,
+        src_cap: Operand,
+        out_ptr: Operand,
+        out_len: Operand,
+        out_cap: Operand,
+    },
 }
 
 impl X86Inst {
@@ -604,6 +627,26 @@ impl fmt::Display for X86Inst {
             }
             X86Inst::StringConstLen { dst, string_id } => {
                 write!(f, "string_const_len {}, str{}", dst, string_id)
+            }
+            X86Inst::StringConstCap { dst, string_id } => {
+                write!(f, "string_const_cap {}, str{}", dst, string_id)
+            }
+            X86Inst::StringDrop { ptr, len, cap } => {
+                write!(f, "string_drop {}, {}, {}", ptr, len, cap)
+            }
+            X86Inst::StringClone {
+                src_ptr,
+                src_len,
+                src_cap,
+                out_ptr,
+                out_len,
+                out_cap,
+            } => {
+                write!(
+                    f,
+                    "string_clone ({}, {}, {}) -> ({}, {}, {})",
+                    src_ptr, src_len, src_cap, out_ptr, out_len, out_cap
+                )
             }
         }
     }

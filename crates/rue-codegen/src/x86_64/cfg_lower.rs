@@ -448,6 +448,7 @@ impl<'a> CfgLower<'a> {
             CfgInstData::StringConst(string_id) => {
                 let ptr_vreg = self.mir.alloc_vreg();
                 let len_vreg = self.mir.alloc_vreg();
+                let cap_vreg = self.mir.alloc_vreg();
 
                 self.mir.push(X86Inst::StringConstPtr {
                     dst: Operand::Virtual(ptr_vreg),
@@ -459,31 +460,75 @@ impl<'a> CfgLower<'a> {
                     string_id: *string_id,
                 });
 
-                // Store both in struct_field_vregs for fat pointer access
+                self.mir.push(X86Inst::StringConstCap {
+                    dst: Operand::Virtual(cap_vreg),
+                    string_id: *string_id,
+                });
+
+                // Store all three in struct_field_vregs for fat pointer access
                 self.struct_field_vregs
-                    .insert(value, vec![ptr_vreg, len_vreg]);
+                    .insert(value, vec![ptr_vreg, len_vreg, cap_vreg]);
                 self.value_map.insert(value, ptr_vreg);
             }
 
             CfgInstData::Param { index } => {
-                let vreg = self.mir.alloc_vreg();
-                self.value_map.insert(value, vreg);
+                if ty == Type::String {
+                    // String parameter: load ptr, len, cap from 3 consecutive param slots
+                    let ptr_vreg = self.mir.alloc_vreg();
+                    let len_vreg = self.mir.alloc_vreg();
+                    let cap_vreg = self.mir.alloc_vreg();
 
-                if (*index as usize) < ARG_REGS.len() {
-                    let slot = self.num_locals + *index;
-                    let offset = self.local_offset(slot);
+                    // Load ptr from param slot
+                    let ptr_slot = self.num_locals + *index;
+                    let ptr_offset = self.local_offset(ptr_slot);
                     self.mir.push(X86Inst::MovRM {
-                        dst: Operand::Virtual(vreg),
+                        dst: Operand::Virtual(ptr_vreg),
                         base: Reg::Rbp,
-                        offset,
+                        offset: ptr_offset,
                     });
+
+                    // Load len from param slot + 1
+                    let len_slot = self.num_locals + *index + 1;
+                    let len_offset = self.local_offset(len_slot);
+                    self.mir.push(X86Inst::MovRM {
+                        dst: Operand::Virtual(len_vreg),
+                        base: Reg::Rbp,
+                        offset: len_offset,
+                    });
+
+                    // Load cap from param slot + 2
+                    let cap_slot = self.num_locals + *index + 2;
+                    let cap_offset = self.local_offset(cap_slot);
+                    self.mir.push(X86Inst::MovRM {
+                        dst: Operand::Virtual(cap_vreg),
+                        base: Reg::Rbp,
+                        offset: cap_offset,
+                    });
+
+                    // Store in struct_field_vregs for fat pointer access
+                    self.struct_field_vregs
+                        .insert(value, vec![ptr_vreg, len_vreg, cap_vreg]);
+                    self.value_map.insert(value, ptr_vreg);
                 } else {
-                    let stack_offset = 16 + ((*index as i32) - 6) * 8;
-                    self.mir.push(X86Inst::MovRM {
-                        dst: Operand::Virtual(vreg),
-                        base: Reg::Rbp,
-                        offset: stack_offset,
-                    });
+                    let vreg = self.mir.alloc_vreg();
+                    self.value_map.insert(value, vreg);
+
+                    if (*index as usize) < ARG_REGS.len() {
+                        let slot = self.num_locals + *index;
+                        let offset = self.local_offset(slot);
+                        self.mir.push(X86Inst::MovRM {
+                            dst: Operand::Virtual(vreg),
+                            base: Reg::Rbp,
+                            offset,
+                        });
+                    } else {
+                        let stack_offset = 16 + ((*index as i32) - 6) * 8;
+                        self.mir.push(X86Inst::MovRM {
+                            dst: Operand::Virtual(vreg),
+                            base: Reg::Rbp,
+                            offset: stack_offset,
+                        });
+                    }
                 }
             }
 
@@ -492,32 +537,196 @@ impl<'a> CfgLower<'a> {
             }
 
             CfgInstData::Add(lhs, rhs) => {
-                let vreg = self.mir.alloc_vreg();
-                self.value_map.insert(value, vreg);
+                if ty == Type::String {
+                    // String concatenation: call __rue_string_concat
+                    // Ensure operands are lowered first (populates struct_field_vregs)
+                    self.get_vreg(*lhs);
+                    self.get_vreg(*rhs);
 
-                let lhs_vreg = self.get_vreg(*lhs);
-                let rhs_vreg = self.get_vreg(*rhs);
+                    // Get string fat pointers (ptr, len, cap) from struct_field_vregs
+                    let lhs_fields = self
+                        .struct_field_vregs
+                        .get(lhs)
+                        .cloned()
+                        .expect("string should have fat pointer fields");
+                    let rhs_fields = self
+                        .struct_field_vregs
+                        .get(rhs)
+                        .cloned()
+                        .expect("string should have fat pointer fields");
 
-                self.mir.push(X86Inst::MovRR {
-                    dst: Operand::Virtual(vreg),
-                    src: Operand::Virtual(lhs_vreg),
-                });
+                    debug_assert_eq!(
+                        lhs_fields.len(),
+                        3,
+                        "string should have 3 fields (ptr, len, cap)"
+                    );
+                    debug_assert_eq!(
+                        rhs_fields.len(),
+                        3,
+                        "string should have 3 fields (ptr, len, cap)"
+                    );
 
-                // Use 64-bit add for 64-bit types to get correct overflow detection
-                if matches!(ty, Type::I64 | Type::U64) {
-                    self.mir.push(X86Inst::AddRR64 {
-                        dst: Operand::Virtual(vreg),
-                        src: Operand::Virtual(rhs_vreg),
+                    let lhs_ptr = lhs_fields[0];
+                    let lhs_len = lhs_fields[1];
+                    let lhs_cap = lhs_fields[2];
+                    let rhs_ptr = rhs_fields[0];
+                    let rhs_len = rhs_fields[1];
+                    let rhs_cap = rhs_fields[2];
+
+                    // Allocate result vregs (ptr, len, cap)
+                    let result_ptr = self.mir.alloc_vreg();
+                    let result_len = self.mir.alloc_vreg();
+                    let result_cap = self.mir.alloc_vreg();
+
+                    // Store field vregs for the result
+                    self.struct_field_vregs
+                        .insert(value, vec![result_ptr, result_len, result_cap]);
+
+                    // Allocate stack space for output parameters (3 * 8 bytes = 24)
+                    // Align to 16 bytes (so 32 bytes total)
+                    self.mir.push(X86Inst::AddRI {
+                        dst: Operand::Physical(Reg::Rsp),
+                        imm: -32,
                     });
+
+                    // Pass arguments in registers (System V AMD64 ABI):
+                    // RDI = ptr1, RSI = len1, RDX = cap1
+                    // RCX = ptr2, R8 = len2, R9 = cap2
+                    // [RSP] = &out_ptr, [RSP+8] = &out_len, [RSP+16] = &out_cap
+                    self.mir.push(X86Inst::MovRR {
+                        dst: Operand::Physical(Reg::Rdi),
+                        src: Operand::Virtual(lhs_ptr),
+                    });
+                    self.mir.push(X86Inst::MovRR {
+                        dst: Operand::Physical(Reg::Rsi),
+                        src: Operand::Virtual(lhs_len),
+                    });
+                    self.mir.push(X86Inst::MovRR {
+                        dst: Operand::Physical(Reg::Rdx),
+                        src: Operand::Virtual(lhs_cap),
+                    });
+                    self.mir.push(X86Inst::MovRR {
+                        dst: Operand::Physical(Reg::Rcx),
+                        src: Operand::Virtual(rhs_ptr),
+                    });
+                    self.mir.push(X86Inst::MovRR {
+                        dst: Operand::Physical(Reg::R8),
+                        src: Operand::Virtual(rhs_len),
+                    });
+                    self.mir.push(X86Inst::MovRR {
+                        dst: Operand::Physical(Reg::R9),
+                        src: Operand::Virtual(rhs_cap),
+                    });
+
+                    // Pass stack addresses for output parameters
+                    // Stack layout after subtraction: [RSP+0..7] = space for out_ptr
+                    //                                 [RSP+8..15] = space for out_len
+                    //                                 [RSP+16..23] = space for out_cap
+                    // We need to push addresses of these locations as stack arguments
+                    // After 6 register args, remaining args go on stack
+                    // Push in reverse order: &out_cap, &out_len, &out_ptr
+
+                    // Compute &out_cap = RSP + 16 (after 3 pushes: RSP + 16 + 24 = RSP + 40)
+                    self.mir.push(X86Inst::Lea {
+                        dst: Operand::Physical(Reg::Rax),
+                        base: Reg::Rsp,
+                        index: None,
+                        scale: 1,
+                        disp: 40,
+                    });
+                    self.mir.push(X86Inst::Push {
+                        src: Operand::Physical(Reg::Rax),
+                    });
+
+                    // Compute &out_len = RSP + 8 (after 2 pushes already, so RSP + 8 + 16 = RSP + 24)
+                    self.mir.push(X86Inst::Lea {
+                        dst: Operand::Physical(Reg::Rax),
+                        base: Reg::Rsp,
+                        index: None,
+                        scale: 1,
+                        disp: 32,
+                    });
+                    self.mir.push(X86Inst::Push {
+                        src: Operand::Physical(Reg::Rax),
+                    });
+
+                    // Compute &out_ptr = RSP + 0 (after 1 push already, so RSP + 0 + 8 = RSP + 8)
+                    self.mir.push(X86Inst::Lea {
+                        dst: Operand::Physical(Reg::Rax),
+                        base: Reg::Rsp,
+                        index: None,
+                        scale: 1,
+                        disp: 24,
+                    });
+                    self.mir.push(X86Inst::Push {
+                        src: Operand::Physical(Reg::Rax),
+                    });
+
+                    // Call __rue_string_concat
+                    self.mir.push(X86Inst::CallRel {
+                        symbol: "__rue_string_concat".to_string(),
+                    });
+
+                    // Clean up the 3 pushed addresses (24 bytes)
+                    self.mir.push(X86Inst::AddRI {
+                        dst: Operand::Physical(Reg::Rsp),
+                        imm: 24,
+                    });
+
+                    // Read results from stack (still at RSP since we cleaned up pushes)
+                    self.mir.push(X86Inst::MovRM {
+                        dst: Operand::Virtual(result_ptr),
+                        base: Reg::Rsp,
+                        offset: 0,
+                    });
+                    self.mir.push(X86Inst::MovRM {
+                        dst: Operand::Virtual(result_len),
+                        base: Reg::Rsp,
+                        offset: 8,
+                    });
+                    self.mir.push(X86Inst::MovRM {
+                        dst: Operand::Virtual(result_cap),
+                        base: Reg::Rsp,
+                        offset: 16,
+                    });
+
+                    // Clean up output parameter space
+                    self.mir.push(X86Inst::AddRI {
+                        dst: Operand::Physical(Reg::Rsp),
+                        imm: 32,
+                    });
+
+                    // Store the first field vreg as the value map entry
+                    self.value_map.insert(value, result_ptr);
                 } else {
-                    self.mir.push(X86Inst::AddRR {
-                        dst: Operand::Virtual(vreg),
-                        src: Operand::Virtual(rhs_vreg),
-                    });
-                }
+                    // Integer addition
+                    let vreg = self.mir.alloc_vreg();
+                    self.value_map.insert(value, vreg);
 
-                // Overflow check - use appropriate flag based on signedness
-                self.emit_overflow_check(ty, vreg);
+                    let lhs_vreg = self.get_vreg(*lhs);
+                    let rhs_vreg = self.get_vreg(*rhs);
+
+                    self.mir.push(X86Inst::MovRR {
+                        dst: Operand::Virtual(vreg),
+                        src: Operand::Virtual(lhs_vreg),
+                    });
+
+                    // Use 64-bit add for 64-bit types to get correct overflow detection
+                    if matches!(ty, Type::I64 | Type::U64) {
+                        self.mir.push(X86Inst::AddRR64 {
+                            dst: Operand::Virtual(vreg),
+                            src: Operand::Virtual(rhs_vreg),
+                        });
+                    } else {
+                        self.mir.push(X86Inst::AddRR {
+                            dst: Operand::Virtual(vreg),
+                            src: Operand::Virtual(rhs_vreg),
+                        });
+                    }
+
+                    // Overflow check - use appropriate flag based on signedness
+                    self.emit_overflow_check(ty, vreg);
+                }
             }
 
             CfgInstData::Sub(lhs, rhs) => {
@@ -837,11 +1046,15 @@ impl<'a> CfgLower<'a> {
                 let lhs_ty = self.cfg.get_inst(*lhs).ty;
 
                 if lhs_ty == Type::String {
-                    // String equality: call __rue_str_eq(ptr1, len1, ptr2, len2)
+                    // String equality: call __rue_str_eq(ptr1, len1, cap1, ptr2, len2, cap2)
                     let vreg = self.mir.alloc_vreg();
                     self.value_map.insert(value, vreg);
 
-                    // Get string fat pointers (ptr, len) from struct_field_vregs
+                    // Ensure operands are lowered first (populates struct_field_vregs)
+                    self.get_vreg(*lhs);
+                    self.get_vreg(*rhs);
+
+                    // Get string 3-tuples (ptr, len, cap) from struct_field_vregs
                     let lhs_fields = self
                         .struct_field_vregs
                         .get(lhs)
@@ -855,22 +1068,24 @@ impl<'a> CfgLower<'a> {
 
                     debug_assert_eq!(
                         lhs_fields.len(),
-                        2,
-                        "string should have 2 fields (ptr, len)"
+                        3,
+                        "string should have 3 fields (ptr, len, cap)"
                     );
                     debug_assert_eq!(
                         rhs_fields.len(),
-                        2,
-                        "string should have 2 fields (ptr, len)"
+                        3,
+                        "string should have 3 fields (ptr, len, cap)"
                     );
 
                     let lhs_ptr = lhs_fields[0];
                     let lhs_len = lhs_fields[1];
+                    let lhs_cap = lhs_fields[2];
                     let rhs_ptr = rhs_fields[0];
                     let rhs_len = rhs_fields[1];
+                    let rhs_cap = rhs_fields[2];
 
                     // Move arguments to calling convention registers
-                    // RDI = ptr1, RSI = len1, RDX = ptr2, RCX = len2
+                    // RDI = ptr1, RSI = len1, RDX = cap1, RCX = ptr2, R8 = len2, R9 = cap2
                     self.mir.push(X86Inst::MovRR {
                         dst: Operand::Physical(Reg::Rdi),
                         src: Operand::Virtual(lhs_ptr),
@@ -881,11 +1096,19 @@ impl<'a> CfgLower<'a> {
                     });
                     self.mir.push(X86Inst::MovRR {
                         dst: Operand::Physical(Reg::Rdx),
-                        src: Operand::Virtual(rhs_ptr),
+                        src: Operand::Virtual(lhs_cap),
                     });
                     self.mir.push(X86Inst::MovRR {
                         dst: Operand::Physical(Reg::Rcx),
+                        src: Operand::Virtual(rhs_ptr),
+                    });
+                    self.mir.push(X86Inst::MovRR {
+                        dst: Operand::Physical(Reg::R8),
                         src: Operand::Virtual(rhs_len),
+                    });
+                    self.mir.push(X86Inst::MovRR {
+                        dst: Operand::Physical(Reg::R9),
+                        src: Operand::Virtual(rhs_cap),
                     });
 
                     // Call __rue_str_eq
@@ -915,7 +1138,11 @@ impl<'a> CfgLower<'a> {
                     let vreg = self.mir.alloc_vreg();
                     self.value_map.insert(value, vreg);
 
-                    // Get string fat pointers (ptr, len) from struct_field_vregs
+                    // Ensure operands are lowered first (populates struct_field_vregs)
+                    self.get_vreg(*lhs);
+                    self.get_vreg(*rhs);
+
+                    // Get string 3-tuples (ptr, len, cap) from struct_field_vregs
                     let lhs_fields = self
                         .struct_field_vregs
                         .get(lhs)
@@ -929,22 +1156,24 @@ impl<'a> CfgLower<'a> {
 
                     debug_assert_eq!(
                         lhs_fields.len(),
-                        2,
-                        "string should have 2 fields (ptr, len)"
+                        3,
+                        "string should have 3 fields (ptr, len, cap)"
                     );
                     debug_assert_eq!(
                         rhs_fields.len(),
-                        2,
-                        "string should have 2 fields (ptr, len)"
+                        3,
+                        "string should have 3 fields (ptr, len, cap)"
                     );
 
                     let lhs_ptr = lhs_fields[0];
                     let lhs_len = lhs_fields[1];
+                    let lhs_cap = lhs_fields[2];
                     let rhs_ptr = rhs_fields[0];
                     let rhs_len = rhs_fields[1];
+                    let rhs_cap = rhs_fields[2];
 
                     // Move arguments to calling convention registers
-                    // RDI = ptr1, RSI = len1, RDX = ptr2, RCX = len2
+                    // RDI = ptr1, RSI = len1, RDX = cap1, RCX = ptr2, R8 = len2, R9 = cap2
                     self.mir.push(X86Inst::MovRR {
                         dst: Operand::Physical(Reg::Rdi),
                         src: Operand::Virtual(lhs_ptr),
@@ -955,11 +1184,19 @@ impl<'a> CfgLower<'a> {
                     });
                     self.mir.push(X86Inst::MovRR {
                         dst: Operand::Physical(Reg::Rdx),
-                        src: Operand::Virtual(rhs_ptr),
+                        src: Operand::Virtual(lhs_cap),
                     });
                     self.mir.push(X86Inst::MovRR {
                         dst: Operand::Physical(Reg::Rcx),
+                        src: Operand::Virtual(rhs_ptr),
+                    });
+                    self.mir.push(X86Inst::MovRR {
+                        dst: Operand::Physical(Reg::R8),
                         src: Operand::Virtual(rhs_len),
+                    });
+                    self.mir.push(X86Inst::MovRR {
+                        dst: Operand::Physical(Reg::R9),
+                        src: Operand::Virtual(rhs_cap),
                     });
 
                     // Call __rue_str_eq
@@ -1106,7 +1343,10 @@ impl<'a> CfgLower<'a> {
                         });
                     }
                 } else if init_type == Type::String {
-                    // String: store both ptr and len to consecutive slots
+                    // String: check if we need to clone (only for Load instructions)
+                    // Ensure init is lowered first (populates struct_field_vregs)
+                    self.get_vreg(*init);
+
                     let field_vregs = self
                         .struct_field_vregs
                         .get(init)
@@ -1114,12 +1354,43 @@ impl<'a> CfgLower<'a> {
                         .expect("string should have fat pointer fields in Alloc");
                     debug_assert_eq!(
                         field_vregs.len(),
-                        2,
-                        "string should have 2 fields (ptr, len)"
+                        3,
+                        "string should have 3 fields (ptr, len, cap)"
                     );
 
-                    let ptr_vreg = field_vregs[0];
-                    let len_vreg = field_vregs[1];
+                    let src_ptr_vreg = field_vregs[0];
+                    let src_len_vreg = field_vregs[1];
+                    let src_cap_vreg = field_vregs[2];
+
+                    // Check if init is a Load instruction (copying from another variable).
+                    // Only Load needs cloning because it's reading from an existing variable
+                    // that the user might still reference. Other sources (StringConst, Add for
+                    // concatenation, Call returns, etc.) produce fresh values that don't need
+                    // cloning - the new variable becomes the sole owner.
+                    let init_inst = self.cfg.get_inst(*init);
+                    let needs_clone = matches!(init_inst.data, CfgInstData::Load { .. });
+
+                    let (ptr_vreg, len_vreg, cap_vreg) = if needs_clone {
+                        // Clone the string (creates a new heap-allocated copy)
+                        let cloned_ptr_vreg = self.mir.alloc_vreg();
+                        let cloned_len_vreg = self.mir.alloc_vreg();
+                        let cloned_cap_vreg = self.mir.alloc_vreg();
+
+                        // Emit StringClone instruction
+                        self.mir.push(X86Inst::StringClone {
+                            src_ptr: Operand::Virtual(src_ptr_vreg),
+                            src_len: Operand::Virtual(src_len_vreg),
+                            src_cap: Operand::Virtual(src_cap_vreg),
+                            out_ptr: Operand::Virtual(cloned_ptr_vreg),
+                            out_len: Operand::Virtual(cloned_len_vreg),
+                            out_cap: Operand::Virtual(cloned_cap_vreg),
+                        });
+
+                        (cloned_ptr_vreg, cloned_len_vreg, cloned_cap_vreg)
+                    } else {
+                        // No clone needed (e.g., string literal), use source vregs directly
+                        (src_ptr_vreg, src_len_vreg, src_cap_vreg)
+                    };
 
                     // Store ptr to slot
                     let ptr_offset = self.local_offset(*slot);
@@ -1136,6 +1407,14 @@ impl<'a> CfgLower<'a> {
                         offset: len_offset,
                         src: Operand::Virtual(len_vreg),
                     });
+
+                    // Store cap to slot + 2
+                    let cap_offset = self.local_offset(slot + 2);
+                    self.mir.push(X86Inst::MovMR {
+                        base: Reg::Rbp,
+                        offset: cap_offset,
+                        src: Operand::Virtual(cap_vreg),
+                    });
                 } else {
                     let init_vreg = self.get_vreg(*init);
                     let offset = self.local_offset(*slot);
@@ -1151,9 +1430,10 @@ impl<'a> CfgLower<'a> {
                 let load_type = self.cfg.get_inst(value).ty;
 
                 if load_type == Type::String {
-                    // String: load both ptr and len from consecutive slots
+                    // String: load ptr, len, and cap from consecutive slots
                     let ptr_vreg = self.mir.alloc_vreg();
                     let len_vreg = self.mir.alloc_vreg();
+                    let cap_vreg = self.mir.alloc_vreg();
 
                     // Load ptr from slot
                     let ptr_offset = self.local_offset(*slot);
@@ -1171,9 +1451,17 @@ impl<'a> CfgLower<'a> {
                         offset: len_offset,
                     });
 
+                    // Load cap from slot + 2
+                    let cap_offset = self.local_offset(slot + 2);
+                    self.mir.push(X86Inst::MovRM {
+                        dst: Operand::Virtual(cap_vreg),
+                        base: Reg::Rbp,
+                        offset: cap_offset,
+                    });
+
                     // Register fat pointer metadata
                     self.struct_field_vregs
-                        .insert(value, vec![ptr_vreg, len_vreg]);
+                        .insert(value, vec![ptr_vreg, len_vreg, cap_vreg]);
                     self.value_map.insert(value, ptr_vreg);
                 } else {
                     let vreg = self.mir.alloc_vreg();
@@ -1191,7 +1479,10 @@ impl<'a> CfgLower<'a> {
             CfgInstData::Store { slot, value: val } => {
                 let val_type = self.cfg.get_inst(*val).ty;
                 if val_type == Type::String {
-                    // String: store both ptr and len to consecutive slots
+                    // String: clone the string to get an independent copy (ADR-019)
+                    // Ensure val is lowered first (populates struct_field_vregs)
+                    self.get_vreg(*val);
+
                     let field_vregs = self
                         .struct_field_vregs
                         .get(val)
@@ -1199,27 +1490,51 @@ impl<'a> CfgLower<'a> {
                         .expect("string should have fat pointer fields in Store");
                     debug_assert_eq!(
                         field_vregs.len(),
-                        2,
-                        "string should have 2 fields (ptr, len)"
+                        3,
+                        "string should have 3 fields (ptr, len, cap)"
                     );
 
-                    let ptr_vreg = field_vregs[0];
-                    let len_vreg = field_vregs[1];
+                    let src_ptr_vreg = field_vregs[0];
+                    let src_len_vreg = field_vregs[1];
+                    let src_cap_vreg = field_vregs[2];
 
-                    // Store ptr to slot
+                    // Allocate vregs for the cloned string
+                    let cloned_ptr_vreg = self.mir.alloc_vreg();
+                    let cloned_len_vreg = self.mir.alloc_vreg();
+                    let cloned_cap_vreg = self.mir.alloc_vreg();
+
+                    // Clone the string (deep copy)
+                    self.mir.push(X86Inst::StringClone {
+                        src_ptr: Operand::Virtual(src_ptr_vreg),
+                        src_len: Operand::Virtual(src_len_vreg),
+                        src_cap: Operand::Virtual(src_cap_vreg),
+                        out_ptr: Operand::Virtual(cloned_ptr_vreg),
+                        out_len: Operand::Virtual(cloned_len_vreg),
+                        out_cap: Operand::Virtual(cloned_cap_vreg),
+                    });
+
+                    // Store cloned ptr to slot
                     let ptr_offset = self.local_offset(*slot);
                     self.mir.push(X86Inst::MovMR {
                         base: Reg::Rbp,
                         offset: ptr_offset,
-                        src: Operand::Virtual(ptr_vreg),
+                        src: Operand::Virtual(cloned_ptr_vreg),
                     });
 
-                    // Store len to slot + 1
+                    // Store cloned len to slot + 1
                     let len_offset = self.local_offset(slot + 1);
                     self.mir.push(X86Inst::MovMR {
                         base: Reg::Rbp,
                         offset: len_offset,
-                        src: Operand::Virtual(len_vreg),
+                        src: Operand::Virtual(cloned_len_vreg),
+                    });
+
+                    // Store cloned cap to slot + 2
+                    let cap_offset = self.local_offset(slot + 2);
+                    self.mir.push(X86Inst::MovMR {
+                        base: Reg::Rbp,
+                        offset: cap_offset,
+                        src: Operand::Virtual(cloned_cap_vreg),
                     });
                 } else {
                     let val_vreg = self.get_vreg(*val);
@@ -1241,6 +1556,46 @@ impl<'a> CfgLower<'a> {
                 for arg in args {
                     let arg_type = self.cfg.get_inst(*arg).ty;
                     match arg_type {
+                        Type::String => {
+                            // String: clone before passing to maintain copy semantics (ADR-019)
+                            // Ensure arg is lowered first (populates struct_field_vregs)
+                            self.get_vreg(*arg);
+
+                            let field_vregs = self
+                                .struct_field_vregs
+                                .get(arg)
+                                .cloned()
+                                .expect("string should have fat pointer fields in Call");
+                            debug_assert_eq!(
+                                field_vregs.len(),
+                                3,
+                                "string should have 3 fields (ptr, len, cap)"
+                            );
+
+                            let src_ptr_vreg = field_vregs[0];
+                            let src_len_vreg = field_vregs[1];
+                            let src_cap_vreg = field_vregs[2];
+
+                            // Allocate vregs for the cloned string
+                            let cloned_ptr_vreg = self.mir.alloc_vreg();
+                            let cloned_len_vreg = self.mir.alloc_vreg();
+                            let cloned_cap_vreg = self.mir.alloc_vreg();
+
+                            // Clone the string (deep copy)
+                            self.mir.push(X86Inst::StringClone {
+                                src_ptr: Operand::Virtual(src_ptr_vreg),
+                                src_len: Operand::Virtual(src_len_vreg),
+                                src_cap: Operand::Virtual(src_cap_vreg),
+                                out_ptr: Operand::Virtual(cloned_ptr_vreg),
+                                out_len: Operand::Virtual(cloned_len_vreg),
+                                out_cap: Operand::Virtual(cloned_cap_vreg),
+                            });
+
+                            // Pass the cloned string fields as arguments
+                            flattened_vregs.push(cloned_ptr_vreg);
+                            flattened_vregs.push(cloned_len_vreg);
+                            flattened_vregs.push(cloned_cap_vreg);
+                        }
                         Type::Struct(struct_id) => {
                             let arg_data = &self.cfg.get_inst(*arg).data;
                             match arg_data {
@@ -1377,8 +1732,41 @@ impl<'a> CfgLower<'a> {
                     });
                 }
 
-                // Handle struct return
-                if let Type::Struct(struct_id) = ty {
+                // Handle return value based on type
+                if ty == Type::String {
+                    // String return: read ptr, len, cap from return registers
+                    let ptr_vreg = self.mir.alloc_vreg();
+                    let len_vreg = self.mir.alloc_vreg();
+                    let cap_vreg = self.mir.alloc_vreg();
+
+                    // System V AMD64: return values in RAX, RDX, (and RCX for 3rd if needed)
+                    // But typically small structs use RAX and RDX
+                    self.mir.push(X86Inst::MovRR {
+                        dst: Operand::Virtual(ptr_vreg),
+                        src: Operand::Physical(Reg::Rax),
+                    });
+                    self.mir.push(X86Inst::MovRR {
+                        dst: Operand::Virtual(len_vreg),
+                        src: Operand::Physical(Reg::Rdx),
+                    });
+                    // For the 3rd field (cap), we use RCX or another convention
+                    // Actually looking at the calling convention, large structs are
+                    // returned via memory. For now, let's use a consistent approach:
+                    // the caller provides space and the callee writes to it.
+                    // But since String is 3 words, it might be returned in registers.
+                    // Let's check what RET_REGS contains...
+                    self.mir.push(X86Inst::MovRR {
+                        dst: Operand::Virtual(cap_vreg),
+                        src: Operand::Physical(Reg::Rcx), // 3rd return register
+                    });
+
+                    self.struct_field_vregs
+                        .insert(value, vec![ptr_vreg, len_vreg, cap_vreg]);
+                    self.mir.push(X86Inst::MovRR {
+                        dst: Operand::Virtual(result_vreg),
+                        src: Operand::Virtual(ptr_vreg),
+                    });
+                } else if let Type::Struct(struct_id) = ty {
                     let field_count = self.struct_field_count(struct_id);
                     let mut field_vregs = Vec::new();
                     for field_idx in 0..field_count {
@@ -1413,17 +1801,22 @@ impl<'a> CfgLower<'a> {
 
                     // Handle string type specially
                     if arg_type == Type::String {
-                        // Get the fat pointer (ptr, len) from struct_field_vregs
+                        // Ensure arg is lowered first (populates struct_field_vregs)
+                        self.get_vreg(arg_val);
+
+                        // Get the fat pointer (ptr, len, cap) from struct_field_vregs
                         if let Some(field_vregs) = self.struct_field_vregs.get(&arg_val).cloned() {
                             debug_assert_eq!(
                                 field_vregs.len(),
-                                2,
-                                "string should have exactly 2 vregs (ptr, len)"
+                                3,
+                                "string should have exactly 3 vregs (ptr, len, cap)"
                             );
+                            // Pass all 3 components to __rue_dbg_str
                             let ptr_vreg = field_vregs[0];
                             let len_vreg = field_vregs[1];
+                            let cap_vreg = field_vregs[2];
 
-                            // Move ptr to RDI, len to RSI
+                            // Move ptr to RDI, len to RSI, cap to RDX
                             self.mir.push(X86Inst::MovRR {
                                 dst: Operand::Physical(Reg::Rdi),
                                 src: Operand::Virtual(ptr_vreg),
@@ -1431,6 +1824,10 @@ impl<'a> CfgLower<'a> {
                             self.mir.push(X86Inst::MovRR {
                                 dst: Operand::Physical(Reg::Rsi),
                                 src: Operand::Virtual(len_vreg),
+                            });
+                            self.mir.push(X86Inst::MovRR {
+                                dst: Operand::Physical(Reg::Rdx),
+                                src: Operand::Virtual(cap_vreg),
                             });
 
                             // Call __rue_dbg_str
@@ -2085,6 +2482,49 @@ impl<'a> CfgLower<'a> {
                     imm: *variant_index as i32,
                 });
             }
+
+            CfgInstData::DropString { slot } => {
+                // Load the string (ptr, len, cap) from the slot
+                // Strings occupy 3 consecutive slots: slot, slot+1, slot+2
+                let ptr_vreg = self.mir.alloc_vreg();
+                let len_vreg = self.mir.alloc_vreg();
+                let cap_vreg = self.mir.alloc_vreg();
+
+                let base_offset = self.local_offset(*slot);
+                self.mir.push(X86Inst::MovRM {
+                    dst: Operand::Virtual(ptr_vreg),
+                    base: Reg::Rbp,
+                    offset: base_offset,
+                });
+                self.mir.push(X86Inst::MovRM {
+                    dst: Operand::Virtual(len_vreg),
+                    base: Reg::Rbp,
+                    offset: base_offset - 8,
+                });
+                self.mir.push(X86Inst::MovRM {
+                    dst: Operand::Virtual(cap_vreg),
+                    base: Reg::Rbp,
+                    offset: base_offset - 16,
+                });
+
+                // Call __rue_string_drop(ptr, len, cap)
+                // Arguments go in rdi, rsi, rdx
+                self.mir.push(X86Inst::MovRR {
+                    dst: Operand::Physical(Reg::Rdi),
+                    src: Operand::Virtual(ptr_vreg),
+                });
+                self.mir.push(X86Inst::MovRR {
+                    dst: Operand::Physical(Reg::Rsi),
+                    src: Operand::Virtual(len_vreg),
+                });
+                self.mir.push(X86Inst::MovRR {
+                    dst: Operand::Physical(Reg::Rdx),
+                    src: Operand::Virtual(cap_vreg),
+                });
+                self.mir.push(X86Inst::CallRel {
+                    symbol: "__rue_string_drop".to_string(),
+                });
+            }
         }
     }
 
@@ -2382,6 +2822,35 @@ impl<'a> CfgLower<'a> {
                     self.mir.push(X86Inst::CallRel {
                         symbol: "__rue_exit".to_string(),
                     });
+                } else if return_type == Type::String {
+                    // Return string in registers (ptr, len, cap)
+                    // Ensure value is lowered and has struct_field_vregs populated
+                    self.get_vreg(*value);
+
+                    if let Some(field_vregs) = self.struct_field_vregs.get(value).cloned() {
+                        // Move field values to return registers in REVERSE order
+                        // to avoid clobbering Rax with scratch loads
+                        for (i, field_vreg) in field_vregs.iter().enumerate().rev() {
+                            if i < RET_REGS.len() {
+                                self.mir.push(X86Inst::MovRR {
+                                    dst: Operand::Physical(RET_REGS[i]),
+                                    src: Operand::Virtual(*field_vreg),
+                                });
+                            }
+                        }
+                    } else {
+                        // Fallback: should not happen if string is properly tracked
+                        let val_vreg = self.get_vreg(*value);
+                        self.mir.push(X86Inst::MovRR {
+                            dst: Operand::Physical(Reg::Rax),
+                            src: Operand::Virtual(val_vreg),
+                        });
+                    }
+
+                    if self.has_frame {
+                        self.emit_epilogue();
+                    }
+                    self.mir.push(X86Inst::Ret);
                 } else if let Type::Struct(struct_id) = return_type {
                     // Return struct in registers
                     let field_count = self.struct_field_count(struct_id);

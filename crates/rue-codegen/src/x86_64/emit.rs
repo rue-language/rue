@@ -578,6 +578,79 @@ impl<'a> Emitter<'a> {
                     .unwrap_or(0);
                 self.emit_mov_ri64(dst.as_physical(), string_len);
             }
+
+            X86Inst::StringConstCap { dst, string_id: _ } => {
+                // String literals have capacity = -1 (RODATA_CAPACITY sentinel)
+                // This indicates the string is in .rodata and must not be freed
+                self.emit_mov_ri64(dst.as_physical(), -1i64);
+            }
+
+            X86Inst::StringDrop { ptr, len, cap } => {
+                // Move arguments to calling convention registers
+                // __rue_string_drop(ptr: rdi, len: rsi, cap: rdx)
+                self.emit_mov_rr(Reg::Rdi, ptr.as_physical());
+                self.emit_mov_rr(Reg::Rsi, len.as_physical());
+                self.emit_mov_rr(Reg::Rdx, cap.as_physical());
+                self.emit_call_rel("__rue_string_drop");
+            }
+
+            X86Inst::StringClone {
+                src_ptr,
+                src_len,
+                src_cap,
+                out_ptr,
+                out_len,
+                out_cap,
+            } => {
+                // __rue_string_clone(src_ptr, src_len, src_cap, &out_ptr, &out_len, &out_cap)
+                // The runtime function expects pointers to where results should be written
+
+                // Reserve 24 bytes on stack for outputs (3 x 8 bytes)
+                // RSP-8: out_ptr, RSP-16: out_len, RSP-24: out_cap
+                self.emit_sub_rsp(24);
+
+                // Load source values into argument registers
+                // rdi = src_ptr, rsi = src_len, rdx = src_cap
+                self.emit_mov_rr(Reg::Rdi, src_ptr.as_physical());
+                self.emit_mov_rr(Reg::Rsi, src_len.as_physical());
+                self.emit_mov_rr(Reg::Rdx, src_cap.as_physical());
+
+                // Pass addresses of stack locations for outputs
+                // rcx = &out_ptr (RSP), r8 = &out_len (RSP+8), r9 = &out_cap (RSP+16)
+                self.emit_lea_simple(Reg::Rcx, Reg::Rsp, 0);
+                self.emit_lea_simple(Reg::R8, Reg::Rsp, 8);
+                self.emit_lea_simple(Reg::R9, Reg::Rsp, 16);
+
+                // Call the runtime function
+                self.emit_call_rel("__rue_string_clone");
+
+                // Load results from stack into output registers
+                // out_ptr from [RSP]
+                self.code.push(0x48); // REX.W
+                self.code.push(0x8B); // mov r64, r/m64
+                let out_ptr_reg = out_ptr.as_physical();
+                self.code.push(0x04 | (out_ptr_reg.encoding() << 3)); // ModRM: [RSP]
+                self.code.push(0x24); // SIB: [RSP]
+
+                // out_len from [RSP+8]
+                self.code.push(0x48); // REX.W
+                self.code.push(0x8B); // mov r64, r/m64
+                let out_len_reg = out_len.as_physical();
+                self.code.push(0x44 | (out_len_reg.encoding() << 3)); // ModRM: [RSP+disp8]
+                self.code.push(0x24); // SIB: [RSP]
+                self.code.push(0x08); // disp8: +8
+
+                // out_cap from [RSP+16]
+                self.code.push(0x48); // REX.W
+                self.code.push(0x8B); // mov r64, r/m64
+                let out_cap_reg = out_cap.as_physical();
+                self.code.push(0x44 | (out_cap_reg.encoding() << 3)); // ModRM: [RSP+disp8]
+                self.code.push(0x24); // SIB: [RSP]
+                self.code.push(0x10); // disp8: +16
+
+                // Clean up stack (remove 24 bytes)
+                self.emit_add_rsp(24);
+            }
         }
     }
 
@@ -1027,6 +1100,48 @@ impl<'a> Emitter<'a> {
 
             // ModR/M: mod=11, reg=0 (ADD), r/m=dst
             let modrm = 0xC0 | (dst_enc & 7);
+            self.code.push(modrm);
+
+            // 32-bit immediate
+            self.code.extend_from_slice(&imm.to_le_bytes());
+        }
+    }
+
+    /// Emit `sub rsp, imm` - Subtract immediate from RSP.
+    fn emit_sub_rsp(&mut self, imm: i32) {
+        self.emit_sub_ri(Reg::Rsp, imm);
+    }
+
+    /// Emit `add rsp, imm` - Add immediate to RSP.
+    fn emit_add_rsp(&mut self, imm: i32) {
+        self.emit_add_ri(Reg::Rsp, imm);
+    }
+
+    /// Emit `sub r64, imm32` - Subtract 32-bit sign-extended immediate from 64-bit register.
+    fn emit_sub_ri(&mut self, dst: Reg, imm: i32) {
+        let dst_enc = dst.encoding();
+
+        // REX prefix: W=1 for 64-bit operand, B if needed
+        let rex = 0x48 | if dst.needs_rex() { 0x01 } else { 0x00 };
+        self.code.push(rex);
+
+        // For small immediates (-128..127), use 83 /5 imm8
+        if imm >= -128 && imm <= 127 {
+            // Opcode: 83 (group 1, /5 for SUB with imm8)
+            self.code.push(0x83);
+
+            // ModR/M: mod=11, reg=5 (SUB), r/m=dst
+            let modrm = 0xE8 | (dst_enc & 7);
+            self.code.push(modrm);
+
+            // 8-bit immediate
+            self.code.push(imm as u8);
+        } else {
+            // Opcode: 81 (group 1, /5 for SUB with imm32)
+            self.code.push(0x81);
+
+            // ModR/M: mod=11, reg=5 (SUB), r/m=dst
+            let modrm = 0xE8 | (dst_enc & 7);
             self.code.push(modrm);
 
             // 32-bit immediate

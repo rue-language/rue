@@ -813,6 +813,99 @@ impl RegAlloc {
                 }
             },
 
+            Aarch64Inst::StringConstCap { dst, string_id } => match self.get_allocation(dst) {
+                Some(Allocation::Register(reg)) => {
+                    mir.push(Aarch64Inst::StringConstCap {
+                        dst: Operand::Physical(reg),
+                        string_id,
+                    });
+                }
+                Some(Allocation::Spill(offset)) => {
+                    mir.push(Aarch64Inst::StringConstCap {
+                        dst: Operand::Physical(Reg::X9),
+                        string_id,
+                    });
+                    mir.push(Aarch64Inst::Str {
+                        src: Operand::Physical(Reg::X9),
+                        base: Reg::Fp,
+                        offset,
+                    });
+                }
+                None => {
+                    mir.push(Aarch64Inst::StringConstCap { dst, string_id });
+                }
+            },
+
+            Aarch64Inst::StringDrop { ptr, len, cap } => {
+                let ptr = self.load_operand(mir, ptr, Reg::X0);
+                let len = self.load_operand(mir, len, Reg::X1);
+                let cap = self.load_operand(mir, cap, Reg::X2);
+                mir.push(Aarch64Inst::StringDrop { ptr, len, cap });
+            }
+
+            Aarch64Inst::StringClone {
+                src_ptr,
+                src_len,
+                src_cap,
+                out_ptr,
+                out_len,
+                out_cap,
+            } => {
+                let src_ptr = self.load_operand(mir, src_ptr, Reg::X0);
+                let src_len = self.load_operand(mir, src_len, Reg::X1);
+                let src_cap = self.load_operand(mir, src_cap, Reg::X2);
+
+                // For output operands, we need physical registers. If they're spilled,
+                // we use scratch registers and then store to the spill slots after.
+                let (out_ptr_reg, out_ptr_spill) = match self.get_allocation(out_ptr) {
+                    Some(Allocation::Register(reg)) => (reg, None),
+                    Some(Allocation::Spill(offset)) => (Reg::X9, Some(offset)),
+                    None => (Reg::X9, None), // Shouldn't happen, but use scratch
+                };
+                let (out_len_reg, out_len_spill) = match self.get_allocation(out_len) {
+                    Some(Allocation::Register(reg)) => (reg, None),
+                    Some(Allocation::Spill(offset)) => (Reg::X10, Some(offset)),
+                    None => (Reg::X10, None),
+                };
+                let (out_cap_reg, out_cap_spill) = match self.get_allocation(out_cap) {
+                    Some(Allocation::Register(reg)) => (reg, None),
+                    Some(Allocation::Spill(offset)) => (Reg::X11, Some(offset)),
+                    None => (Reg::X11, None),
+                };
+
+                mir.push(Aarch64Inst::StringClone {
+                    src_ptr,
+                    src_len,
+                    src_cap,
+                    out_ptr: Operand::Physical(out_ptr_reg),
+                    out_len: Operand::Physical(out_len_reg),
+                    out_cap: Operand::Physical(out_cap_reg),
+                });
+
+                // Spill outputs if needed
+                if let Some(offset) = out_ptr_spill {
+                    mir.push(Aarch64Inst::Str {
+                        src: Operand::Physical(out_ptr_reg),
+                        base: Reg::Fp,
+                        offset,
+                    });
+                }
+                if let Some(offset) = out_len_spill {
+                    mir.push(Aarch64Inst::Str {
+                        src: Operand::Physical(out_len_reg),
+                        base: Reg::Fp,
+                        offset,
+                    });
+                }
+                if let Some(offset) = out_cap_spill {
+                    mir.push(Aarch64Inst::Str {
+                        src: Operand::Physical(out_cap_reg),
+                        base: Reg::Fp,
+                        offset,
+                    });
+                }
+            }
+
             // Pass-through instructions
             Aarch64Inst::B { label } => mir.push(Aarch64Inst::B { label }),
             Aarch64Inst::BCond { cond, label } => mir.push(Aarch64Inst::BCond { cond, label }),

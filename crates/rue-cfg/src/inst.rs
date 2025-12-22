@@ -189,6 +189,14 @@ pub enum CfgInstData {
         enum_id: EnumId,
         variant_index: u32,
     },
+
+    // String memory management
+    /// Drop (deallocate) a string variable.
+    /// The slot must hold a string (ptr, len, cap) tuple.
+    /// Calls __rue_string_drop which frees if cap >= 0.
+    DropString {
+        slot: u32,
+    },
 }
 
 /// Block terminator - how control leaves a basic block.
@@ -672,6 +680,9 @@ impl Cfg {
                 variant_index,
             } => {
                 write!(f, "enum_variant #{}::{}", enum_id.0, variant_index)
+            }
+            CfgInstData::DropString { slot } => {
+                write!(f, "drop_string ${}", slot)
             }
         }
     }

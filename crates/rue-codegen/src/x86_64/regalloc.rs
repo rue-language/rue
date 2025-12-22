@@ -865,6 +865,99 @@ impl RegAlloc {
                 }
             },
 
+            X86Inst::StringConstCap { dst, string_id } => match self.get_allocation(dst) {
+                Some(Allocation::Register(reg)) => {
+                    mir.push(X86Inst::StringConstCap {
+                        dst: Operand::Physical(reg),
+                        string_id,
+                    });
+                }
+                Some(Allocation::Spill(offset)) => {
+                    mir.push(X86Inst::StringConstCap {
+                        dst: Operand::Physical(Reg::Rax),
+                        string_id,
+                    });
+                    mir.push(X86Inst::MovMR {
+                        base: Reg::Rbp,
+                        offset,
+                        src: Operand::Physical(Reg::Rax),
+                    });
+                }
+                None => {
+                    mir.push(X86Inst::StringConstCap { dst, string_id });
+                }
+            },
+
+            X86Inst::StringDrop { ptr, len, cap } => {
+                let ptr = self.load_operand(mir, ptr, Reg::Rdi);
+                let len = self.load_operand(mir, len, Reg::Rsi);
+                let cap = self.load_operand(mir, cap, Reg::Rdx);
+                mir.push(X86Inst::StringDrop { ptr, len, cap });
+            }
+
+            X86Inst::StringClone {
+                src_ptr,
+                src_len,
+                src_cap,
+                out_ptr,
+                out_len,
+                out_cap,
+            } => {
+                let src_ptr = self.load_operand(mir, src_ptr, Reg::Rdi);
+                let src_len = self.load_operand(mir, src_len, Reg::Rsi);
+                let src_cap = self.load_operand(mir, src_cap, Reg::Rdx);
+
+                // For output operands, we need physical registers. If they're spilled,
+                // we use scratch registers and then store to the spill slots after.
+                let (out_ptr_reg, out_ptr_spill) = match self.get_allocation(out_ptr) {
+                    Some(Allocation::Register(reg)) => (reg, None),
+                    Some(Allocation::Spill(offset)) => (Reg::Rax, Some(offset)),
+                    None => (Reg::Rax, None), // Shouldn't happen, but use scratch
+                };
+                let (out_len_reg, out_len_spill) = match self.get_allocation(out_len) {
+                    Some(Allocation::Register(reg)) => (reg, None),
+                    Some(Allocation::Spill(offset)) => (Reg::R10, Some(offset)),
+                    None => (Reg::R10, None),
+                };
+                let (out_cap_reg, out_cap_spill) = match self.get_allocation(out_cap) {
+                    Some(Allocation::Register(reg)) => (reg, None),
+                    Some(Allocation::Spill(offset)) => (Reg::R11, Some(offset)),
+                    None => (Reg::R11, None),
+                };
+
+                mir.push(X86Inst::StringClone {
+                    src_ptr,
+                    src_len,
+                    src_cap,
+                    out_ptr: Operand::Physical(out_ptr_reg),
+                    out_len: Operand::Physical(out_len_reg),
+                    out_cap: Operand::Physical(out_cap_reg),
+                });
+
+                // Spill outputs if needed
+                if let Some(offset) = out_ptr_spill {
+                    mir.push(X86Inst::MovMR {
+                        base: Reg::Rbp,
+                        offset,
+                        src: Operand::Physical(out_ptr_reg),
+                    });
+                }
+                if let Some(offset) = out_len_spill {
+                    mir.push(X86Inst::MovMR {
+                        base: Reg::Rbp,
+                        offset,
+                        src: Operand::Physical(out_len_reg),
+                    });
+                }
+                if let Some(offset) = out_cap_spill {
+                    mir.push(X86Inst::MovMR {
+                        base: Reg::Rbp,
+                        offset,
+                        src: Operand::Physical(out_cap_reg),
+                    });
+                }
+            }
+
             // Instructions without register operands pass through unchanged
             X86Inst::Cdq => mir.push(X86Inst::Cdq),
             X86Inst::Jz { label } => mir.push(X86Inst::Jz { label }),

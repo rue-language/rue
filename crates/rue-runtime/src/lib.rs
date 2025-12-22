@@ -26,7 +26,8 @@
 //!
 //! - **`#![no_std]`**: No dependency on the Rust standard library or libc.
 //!   All OS interaction happens via direct syscalls.
-//! - **Zero allocations**: The runtime never allocates memory.
+//! - **Heap allocation**: The runtime provides mmap-based heap allocation for
+//!   mutable strings and other dynamic data.
 //! - **Small code size**: Compiled with `-Copt-level=z` and LTO for minimal footprint.
 //!
 //! # Calling Conventions
@@ -407,22 +408,26 @@ pub extern "C" fn __rue_dbg_bool(value: i64) {
 /// # ABI
 ///
 /// ```text
-/// extern "C" fn __rue_dbg_str(ptr: *const u8, len: u64)
+/// extern "C" fn __rue_dbg_str(ptr: *const u8, len: u64, cap: i64)
 /// ```
 ///
 /// - `ptr` is passed in the first argument register (rdi on x86_64, x0 on aarch64)
 /// - `len` is passed in the second argument register (rsi on x86_64, x1 on aarch64)
-/// - String is passed as a fat pointer (ptr, len) expanded into two arguments
+/// - `cap` is passed in the third argument register (rdx on x86_64, x2 on aarch64)
+/// - String is passed as a 3-tuple (ptr, len, cap) expanded into three arguments
 ///
 /// # Safety
 ///
 /// The caller must ensure:
 /// - `ptr` points to a valid UTF-8 string of `len` bytes
 /// - The memory region remains valid for the duration of the call
+/// - `cap` is either -1 (rodata) or >= 0 (heap-allocated)
 #[cfg(all(target_arch = "x86_64", target_os = "linux"))]
 #[unsafe(no_mangle)]
-pub extern "C" fn __rue_dbg_str(ptr: *const u8, len: u64) {
+pub extern "C" fn __rue_dbg_str(ptr: *const u8, len: u64, _cap: i64) {
     // SAFETY: The caller guarantees ptr and len are valid
+    // Note: capacity is not used for printing, but accepted for consistency
+    // with the 3-tuple string representation
     let bytes = unsafe { core::slice::from_raw_parts(ptr, len as usize) };
     platform::write_stdout(bytes);
     platform::write_stdout(b"\n");
@@ -430,8 +435,10 @@ pub extern "C" fn __rue_dbg_str(ptr: *const u8, len: u64) {
 
 #[cfg(all(target_arch = "aarch64", target_os = "macos"))]
 #[unsafe(no_mangle)]
-pub extern "C" fn __rue_dbg_str(ptr: *const u8, len: u64) {
+pub extern "C" fn __rue_dbg_str(ptr: *const u8, len: u64, _cap: i64) {
     // SAFETY: The caller guarantees ptr and len are valid
+    // Note: capacity is not used for printing, but accepted for consistency
+    // with the 3-tuple string representation
     let bytes = unsafe { core::slice::from_raw_parts(ptr, len as usize) };
     platform::write_stdout(bytes);
     platform::write_stdout(b"\n");
@@ -440,21 +447,27 @@ pub extern "C" fn __rue_dbg_str(ptr: *const u8, len: u64) {
 /// String equality comparison.
 ///
 /// Called by the `==` operator on String types. Compares two strings
-/// represented as fat pointers (pointer + length pairs).
+/// represented as 3-tuples (pointer, length, capacity).
 ///
 /// # ABI
 ///
 /// ```text
-/// extern "C" fn __rue_str_eq(ptr1: *const u8, len1: u64, ptr2: *const u8, len2: u64) -> u8
+/// extern "C" fn __rue_str_eq(ptr1: *const u8, len1: u64, cap1: i64, ptr2: *const u8, len2: u64, cap2: i64) -> u8
 /// ```
 ///
 /// - `ptr1` is passed in the first argument register (rdi on x86_64, x0 on aarch64)
 /// - `len1` is passed in the second argument register (rsi on x86_64, x1 on aarch64)
-/// - `ptr2` is passed in the third argument register (rdx on x86_64, x2 on aarch64)
-/// - `len2` is passed in the fourth argument register (rcx on x86_64, x3 on aarch64)
+/// - `cap1` is passed in the third argument register (rdx on x86_64, x2 on aarch64)
+/// - `ptr2` is passed in the fourth argument register (rcx on x86_64, x3 on aarch64)
+/// - `len2` is passed in the fifth argument register (r8 on x86_64, x4 on aarch64)
+/// - `cap2` is passed in the sixth argument register (r9 on x86_64, x5 on aarch64)
 /// - Returns 1 if strings are equal, 0 otherwise (in `al`/`w0` register)
 ///
 /// # Implementation
+///
+/// The capacity fields are not used for comparison - equality only depends on
+/// the actual content (ptr + len). They are included for consistency with other
+/// string operations that receive the full 3-tuple representation.
 ///
 /// Fast path: If lengths differ, strings cannot be equal (returns 0).
 /// Slow path: Compare bytes one by one until a difference is found or
@@ -468,7 +481,14 @@ pub extern "C" fn __rue_dbg_str(ptr: *const u8, len: u64) {
 /// - Both pointers remain valid for the duration of the call
 #[cfg(all(target_arch = "x86_64", target_os = "linux"))]
 #[unsafe(no_mangle)]
-pub extern "C" fn __rue_str_eq(ptr1: *const u8, len1: u64, ptr2: *const u8, len2: u64) -> u8 {
+pub extern "C" fn __rue_str_eq(
+    ptr1: *const u8,
+    len1: u64,
+    _cap1: i64,
+    ptr2: *const u8,
+    len2: u64,
+    _cap2: i64,
+) -> u8 {
     // Fast path: different lengths means not equal
     if len1 != len2 {
         return 0;
@@ -490,7 +510,14 @@ pub extern "C" fn __rue_str_eq(ptr1: *const u8, len1: u64, ptr2: *const u8, len2
 
 #[cfg(all(target_arch = "aarch64", target_os = "macos"))]
 #[unsafe(no_mangle)]
-pub extern "C" fn __rue_str_eq(ptr1: *const u8, len1: u64, ptr2: *const u8, len2: u64) -> u8 {
+pub extern "C" fn __rue_str_eq(
+    ptr1: *const u8,
+    len1: u64,
+    _cap1: i64,
+    ptr2: *const u8,
+    len2: u64,
+    _cap2: i64,
+) -> u8 {
     // Fast path: different lengths means not equal
     if len1 != len2 {
         return 0;
@@ -508,6 +535,304 @@ pub extern "C" fn __rue_str_eq(ptr1: *const u8, len1: u64, ptr2: *const u8, len2
         }
     }
     1
+}
+
+// ============================================================================
+// String Memory Management
+// ============================================================================
+//
+// Strings in Rue use a 3-tuple representation: (ptr, len, capacity)
+//
+// - capacity >= 0: heap-allocated string, can be mutated and freed
+// - capacity == -1: rodata string literal, immutable, must not be freed
+//
+// When a rodata string is mutated, it is "promoted" to the heap by copying
+// its contents to a new heap allocation.
+
+/// Sentinel value for rodata string capacity.
+/// Rodata strings have capacity = -1 to indicate they must not be freed.
+#[allow(dead_code)]
+const RODATA_CAPACITY: i64 = -1;
+
+/// Copy bytes from src to dst without relying on compiler builtins.
+///
+/// This function performs a byte-by-byte copy to avoid LLVM lowering the copy
+/// to a `memcpy` call, which would be undefined in our `#![no_std]` environment.
+///
+/// # Safety
+///
+/// The caller must ensure:
+/// - `src` and `dst` do not overlap
+/// - Both pointers are valid for `len` bytes
+/// - Both pointers are properly aligned (byte alignment is always satisfied)
+#[inline(always)]
+unsafe fn copy_bytes(src: *const u8, dst: *mut u8, len: usize) {
+    for i in 0..len {
+        *dst.add(i) = *src.add(i);
+    }
+}
+
+/// Drop (deallocate) a string.
+///
+/// Called when a string goes out of scope. If the string is heap-allocated
+/// (capacity >= 0), frees the memory. Rodata strings (capacity == -1) are
+/// not freed.
+///
+/// # ABI
+///
+/// ```text
+/// extern "C" fn __rue_string_drop(ptr: *mut u8, len: u64, cap: i64)
+/// ```
+///
+/// # Safety
+///
+/// The caller must ensure:
+/// - If cap >= 0, ptr was allocated by the runtime allocator
+/// - The string is not used after this call
+#[cfg(all(target_arch = "x86_64", target_os = "linux"))]
+#[unsafe(no_mangle)]
+pub extern "C" fn __rue_string_drop(ptr: *mut u8, _len: u64, cap: i64) {
+    if cap >= 0 {
+        platform::dealloc(ptr, cap as u64);
+    }
+    // Rodata strings (cap == -1) are not freed
+}
+
+#[cfg(all(target_arch = "aarch64", target_os = "macos"))]
+#[unsafe(no_mangle)]
+pub extern "C" fn __rue_string_drop(ptr: *mut u8, _len: u64, cap: i64) {
+    if cap >= 0 {
+        platform::dealloc(ptr, cap as u64);
+    }
+}
+
+/// Clone a string, creating a new heap-allocated copy.
+///
+/// Always creates a heap copy, regardless of whether the source is rodata
+/// or heap-allocated. This implements copy semantics for strings.
+///
+/// # ABI
+///
+/// ```text
+/// extern "C" fn __rue_string_clone(
+///     src_ptr: *const u8,
+///     src_len: u64,
+///     src_cap: i64,
+///     out_ptr: *mut *mut u8,
+///     out_len: *mut u64,
+///     out_cap: *mut i64
+/// )
+/// ```
+///
+/// The output is written to the three out parameters.
+///
+/// # Safety
+///
+/// The caller must ensure:
+/// - src_ptr points to valid memory of at least src_len bytes
+/// - out_ptr, out_len, out_cap are valid pointers
+#[cfg(all(target_arch = "x86_64", target_os = "linux"))]
+#[unsafe(no_mangle)]
+pub extern "C" fn __rue_string_clone(
+    src_ptr: *const u8,
+    src_len: u64,
+    _src_cap: i64,
+    out_ptr: *mut *mut u8,
+    out_len: *mut u64,
+    out_cap: *mut i64,
+) {
+    if src_len == 0 {
+        // Empty string: return null ptr with zero len/cap
+        unsafe {
+            *out_ptr = core::ptr::null_mut();
+            *out_len = 0;
+            *out_cap = 0;
+        }
+        return;
+    }
+
+    // Allocate new buffer with exact size (no extra capacity for clones)
+    let new_ptr = platform::alloc(src_len);
+    if new_ptr.is_null() {
+        // Allocation failed - panic
+        platform::write_stderr(b"error: out of memory\n");
+        platform::exit(101);
+    }
+
+    // Copy the data
+    // SAFETY: src_ptr is valid for src_len bytes, new_ptr is a fresh allocation
+    // of src_len bytes, so they don't overlap.
+    unsafe {
+        copy_bytes(src_ptr, new_ptr, src_len as usize);
+        *out_ptr = new_ptr;
+        *out_len = src_len;
+        *out_cap = src_len as i64;
+    }
+}
+
+#[cfg(all(target_arch = "aarch64", target_os = "macos"))]
+#[unsafe(no_mangle)]
+pub extern "C" fn __rue_string_clone(
+    src_ptr: *const u8,
+    src_len: u64,
+    _src_cap: i64,
+    out_ptr: *mut *mut u8,
+    out_len: *mut u64,
+    out_cap: *mut i64,
+) {
+    if src_len == 0 {
+        unsafe {
+            *out_ptr = core::ptr::null_mut();
+            *out_len = 0;
+            *out_cap = 0;
+        }
+        return;
+    }
+
+    let new_ptr = platform::alloc(src_len);
+    if new_ptr.is_null() {
+        platform::write_stderr(b"error: out of memory\n");
+        platform::exit(101);
+    }
+
+    // SAFETY: src_ptr is valid for src_len bytes, new_ptr is a fresh allocation
+    // of src_len bytes, so they don't overlap.
+    unsafe {
+        copy_bytes(src_ptr, new_ptr, src_len as usize);
+        *out_ptr = new_ptr;
+        *out_len = src_len;
+        *out_cap = src_len as i64;
+    }
+}
+
+/// Concatenate two strings, returning a new heap-allocated string.
+///
+/// # ABI
+///
+/// ```text
+/// extern "C" fn __rue_string_concat(
+///     ptr1: *const u8, len1: u64, cap1: i64,
+///     ptr2: *const u8, len2: u64, cap2: i64,
+///     out_ptr: *mut *mut u8, out_len: *mut u64, out_cap: *mut i64
+/// )
+/// ```
+#[cfg(all(target_arch = "x86_64", target_os = "linux"))]
+#[unsafe(no_mangle)]
+pub extern "C" fn __rue_string_concat(
+    ptr1: *const u8,
+    len1: u64,
+    _cap1: i64,
+    ptr2: *const u8,
+    len2: u64,
+    _cap2: i64,
+    out_ptr: *mut *mut u8,
+    out_len: *mut u64,
+    out_cap: *mut i64,
+) {
+    // Use checked addition to detect overflow
+    let total_len = match len1.checked_add(len2) {
+        Some(len) => len,
+        None => {
+            platform::write_stderr(b"error: string too large\n");
+            platform::exit(101);
+        }
+    };
+
+    if total_len == 0 {
+        unsafe {
+            *out_ptr = core::ptr::null_mut();
+            *out_len = 0;
+            *out_cap = 0;
+        }
+        return;
+    }
+
+    // Allocate with some extra capacity for future growth (1.5x, min 16 bytes)
+    // Use saturating arithmetic for capacity calculation to avoid overflow
+    let new_cap = if total_len < 16 {
+        16
+    } else {
+        total_len.saturating_add(total_len / 2)
+    };
+    let new_ptr = platform::alloc(new_cap);
+    if new_ptr.is_null() {
+        platform::write_stderr(b"error: out of memory\n");
+        platform::exit(101);
+    }
+
+    // Copy both strings
+    // SAFETY: ptr1/ptr2 are valid for their respective lengths, new_ptr is a
+    // fresh allocation, so there's no overlap.
+    unsafe {
+        if len1 > 0 {
+            copy_bytes(ptr1, new_ptr, len1 as usize);
+        }
+        if len2 > 0 {
+            copy_bytes(ptr2, new_ptr.add(len1 as usize), len2 as usize);
+        }
+        *out_ptr = new_ptr;
+        *out_len = total_len;
+        *out_cap = new_cap as i64;
+    }
+}
+
+#[cfg(all(target_arch = "aarch64", target_os = "macos"))]
+#[unsafe(no_mangle)]
+pub extern "C" fn __rue_string_concat(
+    ptr1: *const u8,
+    len1: u64,
+    _cap1: i64,
+    ptr2: *const u8,
+    len2: u64,
+    _cap2: i64,
+    out_ptr: *mut *mut u8,
+    out_len: *mut u64,
+    out_cap: *mut i64,
+) {
+    // Use checked addition to detect overflow
+    let total_len = match len1.checked_add(len2) {
+        Some(len) => len,
+        None => {
+            platform::write_stderr(b"error: string too large\n");
+            platform::exit(101);
+        }
+    };
+
+    if total_len == 0 {
+        unsafe {
+            *out_ptr = core::ptr::null_mut();
+            *out_len = 0;
+            *out_cap = 0;
+        }
+        return;
+    }
+
+    // Allocate with some extra capacity for future growth (1.5x, min 16 bytes)
+    // Use saturating arithmetic for capacity calculation to avoid overflow
+    let new_cap = if total_len < 16 {
+        16
+    } else {
+        total_len.saturating_add(total_len / 2)
+    };
+    let new_ptr = platform::alloc(new_cap);
+    if new_ptr.is_null() {
+        platform::write_stderr(b"error: out of memory\n");
+        platform::exit(101);
+    }
+
+    // SAFETY: ptr1/ptr2 are valid for their respective lengths, new_ptr is a
+    // fresh allocation, so there's no overlap.
+    unsafe {
+        if len1 > 0 {
+            copy_bytes(ptr1, new_ptr, len1 as usize);
+        }
+        if len2 > 0 {
+            copy_bytes(ptr2, new_ptr.add(len1 as usize), len2 as usize);
+        }
+        *out_ptr = new_ptr;
+        *out_len = total_len;
+        *out_cap = new_cap as i64;
+    }
 }
 
 // Re-export platform functions for tests

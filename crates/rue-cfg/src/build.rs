@@ -5,6 +5,7 @@
 
 use rue_air::{Air, AirInstData, AirPattern, AirRef, Type};
 use rue_error::{CompileWarning, WarningKind};
+use rue_span::Span;
 
 use crate::CfgOutput;
 use crate::inst::{BlockId, Cfg, CfgInst, CfgInstData, CfgValue, Terminator};
@@ -31,6 +32,8 @@ struct LoopContext {
     header: BlockId,
     /// Block to jump to for break (loop exit)
     exit: BlockId,
+    /// Scope depth when this loop was entered (for drop insertion)
+    scope_depth: usize,
 }
 
 /// Builder that converts AIR to CFG.
@@ -45,6 +48,11 @@ pub struct CfgBuilder<'a> {
     value_cache: Vec<Option<CfgValue>>,
     /// Warnings collected during CFG construction (e.g., unreachable code)
     warnings: Vec<CompileWarning>,
+    /// Maps slot index to its type (tracked from Alloc instructions)
+    slot_types: Vec<Option<Type>>,
+    /// Stack of string slots declared in nested scopes (for drop insertion)
+    /// Each entry is a Vec of (slot_index, span) for strings in that scope
+    string_slots_stack: Vec<Vec<(u32, Span)>>,
 }
 
 impl<'a> CfgBuilder<'a> {
@@ -62,6 +70,8 @@ impl<'a> CfgBuilder<'a> {
             loop_stack: Vec::new(),
             value_cache: vec![None; air.len()],
             warnings: Vec::new(),
+            slot_types: vec![None; num_locals as usize],
+            string_slots_stack: vec![Vec::new()],
         };
 
         // Create entry block
@@ -453,6 +463,20 @@ impl<'a> CfgBuilder<'a> {
                     Type::Unit,
                     span,
                 );
+
+                // Track slot type for drop insertion
+                if (*slot as usize) < self.slot_types.len() {
+                    self.slot_types[*slot as usize] = Some(ty);
+                }
+
+                // If this is a string type, track it for dropping
+                if ty == Type::String {
+                    self.string_slots_stack
+                        .last_mut()
+                        .expect("string_slots_stack should never be empty")
+                        .push((*slot, span));
+                }
+
                 ExprResult {
                     value: None,
                     continuation: Continuation::Continues,
@@ -588,6 +612,9 @@ impl<'a> CfgBuilder<'a> {
             }
 
             AirInstData::Block { statements, value } => {
+                // Push a new scope for this block
+                self.string_slots_stack.push(Vec::new());
+
                 // Lower each statement.
                 //
                 // Design decision: When a statement diverges (break/continue/return), we only
@@ -642,6 +669,8 @@ impl<'a> CfgBuilder<'a> {
                                 );
                             }
                         }
+                        // Pop the scope - drops were already inserted by the diverging instruction
+                        self.string_slots_stack.pop();
                         return ExprResult {
                             value: None,
                             continuation: Continuation::Diverged,
@@ -650,7 +679,15 @@ impl<'a> CfgBuilder<'a> {
                 }
 
                 // Lower the final value
-                self.lower_inst(*value)
+                let result = self.lower_inst(*value);
+
+                // Insert drops for strings declared in this block (in reverse order)
+                self.insert_drops_for_current_scope();
+
+                // Pop the scope
+                self.string_slots_stack.pop();
+
+                result
             }
 
             AirInstData::Branch {
@@ -789,10 +826,11 @@ impl<'a> CfgBuilder<'a> {
                     },
                 );
 
-                // Push loop context
+                // Push loop context with current scope depth
                 self.loop_stack.push(LoopContext {
                     header: header_block,
                     exit: exit_block,
+                    scope_depth: self.string_slots_stack.len(),
                 });
 
                 // Lower condition in header
@@ -861,10 +899,11 @@ impl<'a> CfgBuilder<'a> {
                     },
                 );
 
-                // Push loop context (body_block is the continue target)
+                // Push loop context (body_block is the continue target) with current scope depth
                 self.loop_stack.push(LoopContext {
                     header: body_block,
                     exit: exit_block,
+                    scope_depth: self.string_slots_stack.len(),
                 });
 
                 // Lower body
@@ -1034,10 +1073,16 @@ impl<'a> CfgBuilder<'a> {
 
             AirInstData::Break => {
                 let ctx = self.loop_stack.last().expect("break outside loop");
+                let loop_scope_depth = ctx.scope_depth;
+                let exit_block = ctx.exit;
+
+                // Insert drops for all string variables in scopes that will be exited
+                self.insert_drops_until_loop_scope(loop_scope_depth);
+
                 self.cfg.set_terminator(
                     self.current_block,
                     Terminator::Goto {
-                        target: ctx.exit,
+                        target: exit_block,
                         args: vec![],
                     },
                 );
@@ -1050,10 +1095,16 @@ impl<'a> CfgBuilder<'a> {
 
             AirInstData::Continue => {
                 let ctx = self.loop_stack.last().expect("continue outside loop");
+                let loop_scope_depth = ctx.scope_depth;
+                let header_block = ctx.header;
+
+                // Insert drops for all string variables in scopes that will be exited
+                self.insert_drops_until_loop_scope(loop_scope_depth);
+
                 self.cfg.set_terminator(
                     self.current_block,
                     Terminator::Goto {
-                        target: ctx.header,
+                        target: header_block,
                         args: vec![],
                     },
                 );
@@ -1081,6 +1132,10 @@ impl<'a> CfgBuilder<'a> {
                     }
                     None => None,
                 };
+
+                // Insert drops for ALL string variables in ALL scopes before returning
+                self.insert_drops_for_all_scopes();
+
                 self.cfg
                     .set_terminator(self.current_block, Terminator::Return { value: val });
 
@@ -1190,6 +1245,70 @@ impl<'a> CfgBuilder<'a> {
     /// Cache a value for an AIR ref.
     fn cache(&mut self, air_ref: AirRef, value: CfgValue) {
         self.value_cache[air_ref.as_u32() as usize] = Some(value);
+    }
+
+    /// Insert drops for all string variables in the current scope.
+    /// Drops are inserted in reverse declaration order.
+    fn insert_drops_for_current_scope(&mut self) {
+        let current_scope_strings = self
+            .string_slots_stack
+            .last()
+            .expect("string_slots_stack should never be empty")
+            .clone(); // Clone to avoid borrow checker issues
+
+        // Drop in reverse order of declaration
+        for &(slot, span) in current_scope_strings.iter().rev() {
+            self.emit(CfgInstData::DropString { slot }, Type::Unit, span);
+        }
+    }
+
+    /// Insert drops for all string variables in ALL scopes.
+    /// Used when returning from a function - must drop all strings regardless of nesting.
+    /// Drops are inserted in reverse scope order (inner to outer), with each scope's
+    /// strings dropped in reverse declaration order.
+    fn insert_drops_for_all_scopes(&mut self) {
+        // Collect all drops to insert (avoid borrow checker issues)
+        let mut drops_to_insert = Vec::new();
+        for scope_strings in self.string_slots_stack.iter().rev() {
+            for &(slot, span) in scope_strings.iter().rev() {
+                drops_to_insert.push((slot, span));
+            }
+        }
+
+        // Insert the drops
+        for (slot, span) in drops_to_insert {
+            self.emit(CfgInstData::DropString { slot }, Type::Unit, span);
+        }
+    }
+
+    /// Insert drops for all string variables in scopes that will be exited by a break/continue.
+    /// This drops strings from all scopes that were entered after the target loop started.
+    /// The loop_depth parameter indicates how many nested scopes deep the target loop is.
+    fn insert_drops_until_loop_scope(&mut self, loop_depth: usize) {
+        // Collect all drops to insert (avoid borrow checker issues)
+        let mut drops_to_insert = Vec::new();
+
+        // Drop strings from all scopes deeper than the loop's scope
+        // loop_depth is the index in string_slots_stack where the loop's scope starts
+        let num_scopes_to_drop = self.string_slots_stack.len() - loop_depth;
+
+        // Iterate from innermost scope to the loop's scope
+        for scope_strings in self
+            .string_slots_stack
+            .iter()
+            .rev()
+            .take(num_scopes_to_drop)
+        {
+            // Within each scope, drop in reverse declaration order
+            for &(slot, span) in scope_strings.iter().rev() {
+                drops_to_insert.push((slot, span));
+            }
+        }
+
+        // Insert the drops
+        for (slot, span) in drops_to_insert {
+            self.emit(CfgInstData::DropString { slot }, Type::Unit, span);
+        }
     }
 }
 

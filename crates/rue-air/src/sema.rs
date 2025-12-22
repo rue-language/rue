@@ -641,15 +641,39 @@ impl<'a> Sema<'a> {
                 Ok(AnalysisResult::new(air_ref, ty))
             }
 
-            InstData::Add { lhs, rhs } => self.analyze_binary_arith(
-                air,
-                *lhs,
-                *rhs,
-                expectation,
-                AirInstData::Add,
-                inst.span,
-                ctx,
-            ),
+            InstData::Add { lhs, rhs } => {
+                // Addition supports both integers and strings
+                // First, peek at types to determine if this is string or integer addition
+                let lhs_type = self.peek_type(*lhs, ctx);
+                let rhs_type = self.peek_type(*rhs, ctx);
+
+                // If either operand is a string, treat as string concatenation
+                if lhs_type == Some(Type::String) || rhs_type == Some(Type::String) {
+                    // String concatenation
+                    let lhs_result =
+                        self.analyze_inst(air, *lhs, TypeExpectation::Check(Type::String), ctx)?;
+                    let rhs_result =
+                        self.analyze_inst(air, *rhs, TypeExpectation::Check(Type::String), ctx)?;
+
+                    let air_ref = air.add_inst(AirInst {
+                        data: AirInstData::Add(lhs_result.air_ref, rhs_result.air_ref),
+                        ty: Type::String,
+                        span: inst.span,
+                    });
+                    Ok(AnalysisResult::new(air_ref, Type::String))
+                } else {
+                    // Integer addition
+                    self.analyze_binary_arith(
+                        air,
+                        *lhs,
+                        *rhs,
+                        expectation,
+                        AirInstData::Add,
+                        inst.span,
+                        ctx,
+                    )
+                }
+            }
 
             InstData::Sub { lhs, rhs } => self.analyze_binary_arith(
                 air,
@@ -2411,8 +2435,8 @@ impl<'a> Sema<'a> {
             | Type::Never => 1,
             // Enums are represented as their discriminant type (a scalar), so 1 slot
             Type::Enum(_) => 1,
-            // Strings are fat pointers (ptr + len), so 2 slots
-            Type::String => 2,
+            // Strings are 3-tuples (ptr, len, capacity), so 3 slots
+            Type::String => 3,
             Type::Struct(struct_id) => {
                 // Sum the slot counts of all fields (handles arrays and nested structs)
                 let struct_def = &self.struct_defs[struct_id.0 as usize];
@@ -2777,6 +2801,7 @@ impl<'a> Sema<'a> {
             // Literals have known types (except integers which default to i32)
             InstData::IntConst(_) => Some(Type::I32),
             InstData::BoolConst(_) => Some(Type::Bool),
+            InstData::StringConst(_) => Some(Type::String),
 
             // Variables have their declared types
             InstData::VarRef { name } => {
@@ -2796,8 +2821,23 @@ impl<'a> Sema<'a> {
             InstData::Call { name, .. } => self.functions.get(name).map(|f| f.return_type),
 
             // Binary arithmetic operations: peek at operands to find integer type
-            InstData::Add { lhs, rhs }
-            | InstData::Sub { lhs, rhs }
+            // For Add, also support String type
+            InstData::Add { lhs, rhs } => {
+                // Try LHS first, then RHS
+                if let Some(ty) = self.peek_type(*lhs, ctx) {
+                    if ty.is_integer() || ty == Type::String {
+                        return Some(ty);
+                    }
+                }
+                if let Some(ty) = self.peek_type(*rhs, ctx) {
+                    if ty.is_integer() || ty == Type::String {
+                        return Some(ty);
+                    }
+                }
+                Some(Type::I32) // Default if both are literals
+            }
+
+            InstData::Sub { lhs, rhs }
             | InstData::Mul { lhs, rhs }
             | InstData::Div { lhs, rhs }
             | InstData::Mod { lhs, rhs }

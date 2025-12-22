@@ -355,8 +355,25 @@ fn uses(inst: &Aarch64Inst) -> Vec<VReg> {
         Aarch64Inst::LslImm { src, .. } => {
             add_if_virtual(src, &mut result);
         }
-        Aarch64Inst::StringConstPtr { .. } | Aarch64Inst::StringConstLen { .. } => {
+        Aarch64Inst::StringConstPtr { .. }
+        | Aarch64Inst::StringConstLen { .. }
+        | Aarch64Inst::StringConstCap { .. } => {
             // Only defines, no uses
+        }
+        Aarch64Inst::StringDrop { ptr, len, cap } => {
+            add_if_virtual(ptr, &mut result);
+            add_if_virtual(len, &mut result);
+            add_if_virtual(cap, &mut result);
+        }
+        Aarch64Inst::StringClone {
+            src_ptr,
+            src_len,
+            src_cap,
+            ..
+        } => {
+            add_if_virtual(src_ptr, &mut result);
+            add_if_virtual(src_len, &mut result);
+            add_if_virtual(src_cap, &mut result);
         }
         Aarch64Inst::B { .. }
         | Aarch64Inst::BCond { .. }
@@ -463,8 +480,23 @@ fn defs(inst: &Aarch64Inst) -> Vec<VReg> {
         Aarch64Inst::LslImm { dst, .. } => {
             add_if_virtual(dst, &mut result);
         }
-        Aarch64Inst::StringConstPtr { dst, .. } | Aarch64Inst::StringConstLen { dst, .. } => {
+        Aarch64Inst::StringConstPtr { dst, .. }
+        | Aarch64Inst::StringConstLen { dst, .. }
+        | Aarch64Inst::StringConstCap { dst, .. } => {
             add_if_virtual(dst, &mut result);
+        }
+        Aarch64Inst::StringDrop { .. } => {
+            // No definitions, only uses
+        }
+        Aarch64Inst::StringClone {
+            out_ptr,
+            out_len,
+            out_cap,
+            ..
+        } => {
+            add_if_virtual(out_ptr, &mut result);
+            add_if_virtual(out_len, &mut result);
+            add_if_virtual(out_cap, &mut result);
         }
         Aarch64Inst::B { .. }
         | Aarch64Inst::BCond { .. }

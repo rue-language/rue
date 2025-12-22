@@ -459,3 +459,435 @@ fn main() -> i32 {
 }
 """
 exit_code = 1
+
+# =============================================================================
+# String Copy Semantics (ADR-019)
+# =============================================================================
+
+[[case]]
+name = "string_copy_semantics_basic"
+spec = ["3.7:14", "3.7:15"]
+source = """
+fn main() -> i32 {
+    let a = "hello";
+    let b = a;
+    if a == b { 1 } else { 0 }
+}
+"""
+exit_code = 1
+
+[[case]]
+name = "string_copy_semantics_independent"
+spec = ["3.7:14", "3.7:15"]
+source = """
+fn main() -> i32 {
+    let mut a = "hello";
+    let b = a;
+    a = "world";
+    // b should still be "hello" (independent copy)
+    if b == "hello" { 1 } else { 0 }
+}
+"""
+exit_code = 1
+
+[[case]]
+name = "string_copy_semantics_both_mutable"
+spec = ["3.7:14", "3.7:15"]
+source = """
+fn main() -> i32 {
+    let mut a = "one";
+    let mut b = a;
+    a = "two";
+    b = "three";
+    // a and b are independent
+    if a == "two" && b == "three" { 1 } else { 0 }
+}
+"""
+exit_code = 1
+
+# =============================================================================
+# String Concatenation (ADR-019)
+# =============================================================================
+
+[[case]]
+name = "string_concat_basic"
+spec = ["3.7:17", "3.7:18"]
+source = """
+fn main() -> i32 {
+    let a = "hello";
+    let b = " world";
+    let c = a + b;
+    if c == "hello world" { 1 } else { 0 }
+}
+"""
+exit_code = 1
+
+[[case]]
+name = "string_concat_literals"
+spec = ["3.7:17", "3.7:18"]
+source = """
+fn main() -> i32 {
+    let c = "foo" + "bar";
+    if c == "foobar" { 1 } else { 0 }
+}
+"""
+exit_code = 1
+
+[[case]]
+name = "string_concat_empty_left"
+spec = ["3.7:17", "3.7:18"]
+source = """
+fn main() -> i32 {
+    let c = "" + "hello";
+    if c == "hello" { 1 } else { 0 }
+}
+"""
+exit_code = 1
+
+[[case]]
+name = "string_concat_empty_right"
+spec = ["3.7:17", "3.7:18"]
+source = """
+fn main() -> i32 {
+    let c = "hello" + "";
+    if c == "hello" { 1 } else { 0 }
+}
+"""
+exit_code = 1
+
+[[case]]
+name = "string_concat_both_empty"
+spec = ["3.7:17", "3.7:18"]
+source = """
+fn main() -> i32 {
+    let c = "" + "";
+    if c == "" { 1 } else { 0 }
+}
+"""
+exit_code = 1
+
+[[case]]
+name = "string_concat_chained"
+spec = ["3.7:17", "3.7:18"]
+source = """
+fn main() -> i32 {
+    let a = "a" + "b" + "c";
+    if a == "abc" { 1 } else { 0 }
+}
+"""
+exit_code = 1
+
+[[case]]
+name = "string_concat_with_variable"
+spec = ["3.7:17", "3.7:18"]
+source = """
+fn main() -> i32 {
+    let x = "hello";
+    let c = x + " world";
+    if c == "hello world" { 1 } else { 0 }
+}
+"""
+exit_code = 1
+
+[[case]]
+name = "string_concat_preserves_original"
+spec = ["3.7:17", "3.7:14"]
+source = """
+fn main() -> i32 {
+    let a = "hello";
+    let b = " world";
+    let c = a + b;
+    // Original strings should be unchanged
+    if a == "hello" && b == " world" && c == "hello world" { 1 } else { 0 }
+}
+"""
+exit_code = 1
+
+[[case]]
+name = "string_concat_dbg"
+spec = ["3.7:17", "3.7:12"]
+source = """
+fn main() -> i32 {
+    let c = "Hello" + ", " + "world!";
+    @dbg(c);
+    0
+}
+"""
+exit_code = 0
+stdout = "Hello, world!\n"
+
+# =============================================================================
+# Scope-Based Cleanup (ADR-019)
+# =============================================================================
+
+[[case]]
+name = "string_scope_cleanup_basic"
+spec = ["3.7:20", "3.7:21"]
+source = """
+fn test_scope() -> i32 {
+    let s = "hello" + " world";
+    @dbg(s);
+    0
+}
+
+fn main() -> i32 {
+    test_scope()
+}
+"""
+exit_code = 0
+stdout = "hello world\n"
+
+[[case]]
+name = "string_scope_cleanup_nested"
+spec = ["3.7:20"]
+source = """
+fn inner(a: String) -> i32 {
+    let b = a + " inner";
+    @dbg(b);
+    0
+}
+
+fn outer() -> i32 {
+    let a = "outer";
+    inner(a);
+    @dbg(a);
+    0
+}
+
+fn main() -> i32 {
+    outer()
+}
+"""
+exit_code = 0
+stdout = "outer inner\nouter\n"
+
+[[case]]
+name = "string_scope_cleanup_early_return"
+spec = ["3.7:20"]
+source = """
+fn helper() -> i32 {
+    let s = "test" + " string";
+    return 42;
+    // s should be cleaned up on return
+}
+
+fn main() -> i32 {
+    helper()
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "string_scope_cleanup_nested_early_return"
+spec = ["3.7:20"]
+source = """
+fn main() -> i32 {
+    {
+        let outer = "a" + "b";
+        {
+            let inner = "c" + "d";
+            return 0;
+            // Both inner and outer should be dropped
+        }
+    }
+}
+"""
+exit_code = 0
+
+[[case]]
+name = "string_scope_cleanup_loop_break"
+spec = ["3.7:20"]
+source = """
+fn main() -> i32 {
+    let mut count = 0;
+    while count < 3 {
+        let s = "loop" + " iteration";
+        count = count + 1;
+        if count == 2 {
+            break;
+        }
+    }
+    count
+}
+"""
+exit_code = 2
+
+[[case]]
+name = "string_scope_cleanup_nested_loop_break"
+spec = ["3.7:20"]
+source = """
+fn main() -> i32 {
+    let mut count = 0;
+    while count < 3 {
+        let outer = "a" + "b";
+        {
+            let inner = "c" + "d";
+            count = count + 1;
+            if count == 2 {
+                break;
+                // Both inner and outer should be dropped
+            }
+        }
+    }
+    count
+}
+"""
+exit_code = 2
+
+[[case]]
+name = "string_scope_cleanup_loop_continue"
+spec = ["3.7:20"]
+source = """
+fn main() -> i32 {
+    let mut count = 0;
+    let mut total = 0;
+    while count < 3 {
+        count = count + 1;
+        let s = "iteration";
+        if count == 2 {
+            continue;
+        }
+        total = total + 1;
+    }
+    total
+}
+"""
+exit_code = 2
+
+[[case]]
+name = "string_scope_cleanup_nested_loop_continue"
+spec = ["3.7:20"]
+source = """
+fn main() -> i32 {
+    let mut count = 0;
+    let mut total = 0;
+    while count < 3 {
+        count = count + 1;
+        let outer = "x" + "y";
+        if count == 2 {
+            let inner = "a" + "b";
+            continue;
+            // Both inner and outer should be dropped
+        }
+        total = total + 1;
+    }
+    total
+}
+"""
+exit_code = 2
+
+# =============================================================================
+# String Functions and Parameters
+# =============================================================================
+
+[[case]]
+name = "string_as_function_parameter"
+spec = ["3.7:14"]
+source = """
+fn check(s: String) -> i32 {
+    if s == "hello" { 1 } else { 0 }
+}
+
+fn main() -> i32 {
+    check("hello")
+}
+"""
+exit_code = 1
+
+[[case]]
+name = "string_as_function_return"
+spec = ["3.7:14"]
+source = """
+fn get_greeting() -> String {
+    "hello"
+}
+
+fn main() -> i32 {
+    let s = get_greeting();
+    if s == "hello" { 1 } else { 0 }
+}
+"""
+exit_code = 1
+
+[[case]]
+name = "string_concat_in_function"
+spec = ["3.7:17", "3.7:14"]
+source = """
+fn greet(name: String) -> String {
+    "Hello, " + name
+}
+
+fn main() -> i32 {
+    let msg = greet("world");
+    if msg == "Hello, world" { 1 } else { 0 }
+}
+"""
+exit_code = 1
+
+[[case]]
+name = "string_multiple_params"
+spec = ["3.7:14"]
+source = """
+fn compare(a: String, b: String) -> i32 {
+    if a == b { 1 } else { 0 }
+}
+
+fn main() -> i32 {
+    compare("test", "test")
+}
+"""
+exit_code = 1
+
+# =============================================================================
+# String Edge Cases
+# =============================================================================
+
+[[case]]
+name = "string_long_concat"
+spec = ["3.7:17", "3.7:18"]
+source = """
+fn main() -> i32 {
+    let a = "This is a longer string ";
+    let b = "that we are concatenating ";
+    let c = "to test capacity growth.";
+    let result = a + b + c;
+    if result == "This is a longer string that we are concatenating to test capacity growth." {
+        1
+    } else {
+        0
+    }
+}
+"""
+exit_code = 1
+
+[[case]]
+name = "string_concat_in_loop"
+spec = ["3.7:17", "3.7:20"]
+source = """
+fn main() -> i32 {
+    let mut count = 0;
+    while count < 5 {
+        let s = "x" + "y";
+        // Each iteration creates and drops a string
+        count = count + 1;
+    }
+    count
+}
+"""
+exit_code = 5
+
+[[case]]
+name = "string_conditional_concat"
+spec = ["3.7:17"]
+source = """
+fn main() -> i32 {
+    let cond = true;
+    let result = if cond {
+        "yes" + "!"
+    } else {
+        "no" + "..."
+    };
+    if result == "yes!" { 1 } else { 0 }
+}
+"""
+exit_code = 1

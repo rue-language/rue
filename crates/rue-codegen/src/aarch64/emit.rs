@@ -728,6 +728,64 @@ impl<'a> Emitter<'a> {
                 // Emit the length as an immediate
                 self.emit_mov_imm(rd, len);
             }
+
+            Aarch64Inst::StringConstCap { dst, string_id: _ } => {
+                // String literals have capacity = -1 (RODATA_CAPACITY sentinel)
+                // This indicates the string is in .rodata and must not be freed
+                let rd = dst.as_physical();
+                self.emit_mov_imm(rd, -1i64);
+            }
+
+            Aarch64Inst::StringDrop { ptr, len, cap } => {
+                // Move arguments to calling convention registers
+                // __rue_string_drop(ptr: x0, len: x1, cap: x2)
+                self.emit_mov_rr(Reg::X0, ptr.as_physical());
+                self.emit_mov_rr(Reg::X1, len.as_physical());
+                self.emit_mov_rr(Reg::X2, cap.as_physical());
+                self.emit_bl("__rue_string_drop");
+            }
+
+            Aarch64Inst::StringClone {
+                src_ptr,
+                src_len,
+                src_cap,
+                out_ptr,
+                out_len,
+                out_cap,
+            } => {
+                // __rue_string_clone(src_ptr, src_len, src_cap, &out_ptr, &out_len, &out_cap)
+                // The runtime function expects pointers to where results should be written
+
+                // Reserve 32 bytes on stack for outputs (3 x 8 bytes = 24, rounded up to 16-byte aligned)
+                // SP: out_ptr, SP+8: out_len, SP+16: out_cap (SP+24 is padding)
+                self.emit_sub_imm(Reg::Sp, Reg::Sp, 32);
+
+                // Load source values into argument registers
+                // x0 = src_ptr, x1 = src_len, x2 = src_cap
+                self.emit_mov_rr(Reg::X0, src_ptr.as_physical());
+                self.emit_mov_rr(Reg::X1, src_len.as_physical());
+                self.emit_mov_rr(Reg::X2, src_cap.as_physical());
+
+                // Pass addresses of stack locations for outputs
+                // x3 = &out_ptr (SP), x4 = &out_len (SP+8), x5 = &out_cap (SP+16)
+                self.emit_mov_rr(Reg::X3, Reg::Sp);
+                self.emit_add_imm(Reg::X4, Reg::Sp, 8);
+                self.emit_add_imm(Reg::X5, Reg::Sp, 16);
+
+                // Call the runtime function
+                self.emit_bl("__rue_string_clone");
+
+                // Load results from stack into output registers
+                // out_ptr from [SP]
+                self.emit_ldr(out_ptr.as_physical(), Reg::Sp, 0);
+                // out_len from [SP+8]
+                self.emit_ldr(out_len.as_physical(), Reg::Sp, 8);
+                // out_cap from [SP+16]
+                self.emit_ldr(out_cap.as_physical(), Reg::Sp, 16);
+
+                // Clean up stack (remove 32 bytes for 16-byte alignment)
+                self.emit_add_imm(Reg::Sp, Reg::Sp, 32);
+            }
         }
     }
 

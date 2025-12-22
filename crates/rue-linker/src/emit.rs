@@ -524,10 +524,18 @@ impl ObjectBuilder {
         let mut rodata_relocs: Vec<&CodeRelocation> = Vec::new();
 
         for reloc in &self.relocations {
-            // Check if this is a string relocation
-            // String relocations have @PAGE or @PAGEOFF suffix
-            if reloc.symbol.contains("__rue_string_") {
-                // String relocations go in text section (they're PC-relative loads)
+            // Check if this is a string literal relocation
+            // String literal relocations have @PAGE or @PAGEOFF suffix and numeric IDs
+            let is_string_literal = reloc.symbol.starts_with("__rue_string_")
+                && reloc
+                    .symbol
+                    .strip_prefix("__rue_string_")
+                    .and_then(|s| s.split('@').next())
+                    .map(|s| s.chars().all(|c| c.is_ascii_digit()))
+                    .unwrap_or(false);
+
+            if is_string_literal {
+                // String literal relocations go in text section (they're PC-relative loads)
                 text_relocs.push(reloc);
             } else {
                 text_relocs.push(reloc);
@@ -572,9 +580,17 @@ impl ObjectBuilder {
         let mut extern_symbols: Vec<String> = Vec::new();
         let mut extern_name_offsets: Vec<usize> = Vec::new();
         for reloc in &self.relocations {
-            // Skip string symbols - they're handled above
-            // Also skip if it has @PAGE or @PAGEOFF suffix (internal markers)
-            if reloc.symbol.contains("__rue_string_") {
+            // Skip string literal symbols - they're handled above
+            // String literals have numeric IDs like __rue_string_0, __rue_string_1
+            let is_string_literal = reloc.symbol.starts_with("__rue_string_")
+                && reloc
+                    .symbol
+                    .strip_prefix("__rue_string_")
+                    .and_then(|s| s.split('@').next())
+                    .map(|s| s.chars().all(|c| c.is_ascii_digit()))
+                    .unwrap_or(false);
+
+            if is_string_literal {
                 continue;
             }
             // Always add underscore prefix for macOS
@@ -755,8 +771,14 @@ impl ObjectBuilder {
             };
 
             // Look up the symbol
-            let (sym_num, is_extern) = if base_symbol.starts_with("__rue_string_") {
-                // String symbol - local symbol (indices 0, 1, 2...)
+            let (sym_num, is_extern) = if base_symbol.starts_with("__rue_string_")
+                && base_symbol
+                    .strip_prefix("__rue_string_")
+                    .unwrap()
+                    .chars()
+                    .all(|c| c.is_ascii_digit())
+            {
+                // String literal symbol - local symbol (indices 0, 1, 2...)
                 let string_id: usize = base_symbol
                     .strip_prefix("__rue_string_")
                     .unwrap()

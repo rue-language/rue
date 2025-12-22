@@ -34,6 +34,20 @@ const SYS_EXIT: u64 = 1;
 /// macOS syscall number for write (SYS_write).
 const SYS_WRITE: u64 = 4;
 
+/// macOS syscall number for mmap (SYS_mmap).
+const SYS_MMAP: u64 = 197;
+
+/// macOS syscall number for munmap (SYS_munmap).
+const SYS_MUNMAP: u64 = 73;
+
+// mmap protection flags (same as Linux)
+const PROT_READ: u64 = 0x1;
+const PROT_WRITE: u64 = 0x2;
+
+// mmap flags
+const MAP_PRIVATE: u64 = 0x0002;
+const MAP_ANONYMOUS: u64 = 0x1000; // MAP_ANON on macOS
+
 /// Standard error file descriptor.
 const STDERR: u64 = 2;
 
@@ -223,6 +237,161 @@ pub fn exit(status: i32) -> ! {
             options(noreturn)
         );
     }
+}
+
+/// Copy bytes from src to dst without relying on compiler builtins.
+///
+/// This function performs a byte-by-byte copy to avoid LLVM lowering the copy
+/// to a `memcpy` call, which would be undefined in our `#![no_std]` environment.
+///
+/// # Safety
+///
+/// The caller must ensure:
+/// - `src` and `dst` do not overlap
+/// - Both pointers are valid for `len` bytes
+/// - Both pointers are properly aligned (byte alignment is always satisfied)
+#[inline(always)]
+unsafe fn copy_bytes(src: *const u8, dst: *mut u8, len: usize) {
+    for i in 0..len {
+        *dst.add(i) = *src.add(i);
+    }
+}
+
+/// Allocate memory using mmap.
+///
+/// # Performance Note
+///
+/// This implementation uses mmap for every allocation, which incurs syscall
+/// overhead and allocates at page granularity (typically 16KB on Apple Silicon).
+/// This is simple but inefficient for small allocations. A future optimization
+/// would be to implement a proper allocator (bump allocator or free-list) on top
+/// of mmap. See ADR-019 Phase 1 for the planned improvement.
+///
+/// # Arguments
+///
+/// * `size` - Number of bytes to allocate
+///
+/// # Returns
+///
+/// Pointer to allocated memory, or null on failure.
+///
+/// # Safety
+///
+/// The caller must ensure the returned pointer is eventually freed with `dealloc`.
+pub fn alloc(size: u64) -> *mut u8 {
+    if size == 0 {
+        return core::ptr::null_mut();
+    }
+
+    let result: u64;
+    let err_flag: u64;
+
+    // SAFETY: mmap syscall with anonymous mapping
+    unsafe {
+        asm!(
+            "svc #0x80",
+            "cset {err}, cs",
+            inlateout("x16") SYS_MMAP => _,
+            in("x0") 0u64,                            // addr: let kernel choose
+            in("x1") size,                            // length
+            in("x2") PROT_READ | PROT_WRITE,          // prot
+            in("x3") MAP_PRIVATE | MAP_ANONYMOUS,     // flags
+            in("x4") u64::MAX,                        // fd: -1 for anonymous
+            in("x5") 0u64,                            // offset
+            lateout("x0") result,
+            err = out(reg) err_flag,
+            out("x17") _,
+        );
+    }
+
+    // On error, carry flag is set and result contains errno
+    if err_flag != 0 {
+        core::ptr::null_mut()
+    } else {
+        result as *mut u8
+    }
+}
+
+/// Deallocate memory previously allocated with `alloc`.
+///
+/// # Arguments
+///
+/// * `ptr` - Pointer to memory to deallocate
+/// * `size` - Size of the allocation (must match the original allocation)
+///
+/// # Safety
+///
+/// The caller must ensure:
+/// - `ptr` was returned by a previous call to `alloc`
+/// - `size` matches the size passed to `alloc`
+/// - The memory has not already been deallocated
+pub fn dealloc(ptr: *mut u8, size: u64) {
+    if ptr.is_null() || size == 0 {
+        return;
+    }
+
+    // SAFETY: munmap syscall
+    unsafe {
+        asm!(
+            "svc #0x80",
+            inlateout("x16") SYS_MUNMAP => _,
+            in("x0") ptr,
+            in("x1") size,
+            lateout("x0") _,
+            out("x17") _,
+        );
+    }
+    // We ignore errors from munmap - there's not much we can do about them
+}
+
+/// Reallocate memory to a new size.
+///
+/// # Arguments
+///
+/// * `ptr` - Pointer to existing allocation (or null for new allocation)
+/// * `old_size` - Current size of allocation
+/// * `new_size` - Desired new size
+///
+/// # Returns
+///
+/// Pointer to reallocated memory, or null on failure.
+/// On failure, the original allocation is still valid.
+///
+/// # Safety
+///
+/// The caller must ensure:
+/// - `ptr` was returned by a previous call to `alloc` or `realloc`, or is null
+/// - `old_size` matches the current allocation size
+pub fn realloc(ptr: *mut u8, old_size: u64, new_size: u64) -> *mut u8 {
+    if new_size == 0 {
+        dealloc(ptr, old_size);
+        return core::ptr::null_mut();
+    }
+
+    if ptr.is_null() || old_size == 0 {
+        return alloc(new_size);
+    }
+
+    // Simple implementation: allocate new, copy, free old
+    let new_ptr = alloc(new_size);
+    if new_ptr.is_null() {
+        return core::ptr::null_mut();
+    }
+
+    // Copy the old data
+    let copy_size = if old_size < new_size {
+        old_size
+    } else {
+        new_size
+    };
+    // SAFETY: Both pointers are valid for their respective sizes, and they
+    // don't overlap since new_ptr is a fresh allocation.
+    unsafe {
+        copy_bytes(ptr, new_ptr, copy_size as usize);
+    }
+
+    dealloc(ptr, old_size);
+    new_ptr
 }
 
 #[cfg(test)]
