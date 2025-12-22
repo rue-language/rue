@@ -81,7 +81,7 @@ exit_code = 2
 
 [[case]]
 name = "let_shadow_uses_previous"
-spec = ["5.1:2", "5.1:10"]
+spec = ["5.1:2", "5.1:10", "5.1:12"]
 source = """
 fn main() -> i32 {
     let x = 10;

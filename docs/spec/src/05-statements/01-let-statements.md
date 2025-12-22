@@ -61,11 +61,14 @@ A variable can shadow a previous variable of the same name in the same scope.
 r[5.1.11#normative]
 When shadowing, the new variable can have a different type.
 
-r[5.1.12]
+r[5.1.12#normative]
+The scope of a binding introduced by a let statement begins after the complete let statement, including its initializer. The initializer expression is evaluated before the new binding is introduced, so references to a shadowed name within the initializer resolve to the previous binding.
+
+r[5.1.13]
 ```rue
 fn main() -> i32 {
     let x = 10;
-    let x = x + 5;  // shadows previous x
+    let x = x + 5;  // shadows previous x, initializer uses old x
     x  // 15
 }
 ```
