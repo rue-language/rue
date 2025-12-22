@@ -3,20 +3,20 @@
 {% block title %}{{ page.title }} | Blog | {{ config.title }}{% endblock %}
 
 {% block content %}
-<article class="blog-post">
-    <div class="container">
-        <header class="post-header">
-            <h1>{{ page.title }}</h1>
-            <div class="post-meta">
+<article class="py-12">
+    <div class="max-w-3xl mx-auto px-6">
+        <header class="mb-8">
+            <h1 class="text-4xl font-bold mb-2">{{ page.title }}</h1>
+            <div class="text-muted flex flex-wrap gap-1">
                 <time datetime="{{ page.date }}">{{ page.date | date(format="%B %e, %Y") }}</time>
                 {% if page.extra.authors %}
-                <span class="authors">
+                <span class="before:content-['·'] before:mr-1">
                     by {% for author in page.extra.authors %}{% if loop.index > 1 %}{% if loop.last %} and {% else %}, {% endif %}{% endif %}{% if author == "steve" %}<a href="https://steveklabnik.com">Steve</a>{% elif author == "claude" %}<a href="https://claude.ai">Claude</a>{% else %}{{ author }}{% endif %}{% endfor %}
                 </span>
                 {% endif %}
             </div>
         </header>
-        <div class="post-content">
+        <div class="prose">
             {{ page.content | safe }}
         </div>
     </div>

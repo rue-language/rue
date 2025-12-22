@@ -27,10 +27,15 @@ rm -rf website/static/spec
 mkdir -p website/static/spec
 cp -r docs/spec/book/* website/static/spec/
 
-# Build or serve
+# Build Tailwind CSS
+echo "Building Tailwind CSS..."
 cd website
+"$ROOT/tailwindcss" -i css/input.css -o static/style.css --minify
+
+# Build or serve
 if [[ "${1:-}" == "serve" ]]; then
     echo "Starting dev server at http://127.0.0.1:1111"
+    echo "Note: CSS changes require rebuilding Tailwind manually"
     "$ROOT/zola" serve
 else
     echo "Building website..."

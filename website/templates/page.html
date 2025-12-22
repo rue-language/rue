@@ -3,8 +3,8 @@
 {% block title %}{{ page.title }} | {{ config.title }}{% endblock %}
 
 {% block content %}
-<article class="page">
-    <div class="container">
+<article class="py-12">
+    <div class="max-w-3xl mx-auto px-6 prose">
         <h1>{{ page.title }}</h1>
         {{ page.content | safe }}
     </div>

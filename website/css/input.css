@@ -1,0 +1,302 @@
+@import "tailwindcss";
+
+/* Custom theme for Rue language website */
+@theme {
+  /* Colors - Light mode defaults */
+  --color-bg: #fafafa;
+  --color-fg: #1a1a1a;
+  --color-muted: #6b7280;
+  --color-accent: #4f6ddb;
+  --color-accent-hover: #3b54b8;
+  --color-surface: #ffffff;
+  --color-border: #e5e7eb;
+  --color-code-bg: #f3f4f6;
+
+  /* Dark mode colors */
+  --color-bg-dark: #0f0f0f;
+  --color-fg-dark: #f0f0f0;
+  --color-muted-dark: #9ca3af;
+  --color-accent-dark: #7c9dff;
+  --color-accent-hover-dark: #a3bbff;
+  --color-surface-dark: #1a1a1a;
+  --color-border-dark: #2e2e2e;
+  --color-code-bg-dark: #1e1e1e;
+
+  /* Typography */
+  --font-sans: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+}
+
+/* Base styles */
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  background-color: var(--color-bg);
+  color: var(--color-fg);
+  font-family: var(--font-sans);
+  transition: background-color 0.2s ease, color 0.2s ease;
+}
+
+/* Dark mode */
+.dark body,
+body.dark {
+  background-color: var(--color-bg-dark);
+  color: var(--color-fg-dark);
+}
+
+/* Links */
+a {
+  color: var(--color-accent);
+  transition: color 0.15s ease;
+}
+
+a:hover {
+  color: var(--color-accent-hover);
+}
+
+.dark a {
+  color: var(--color-accent-dark);
+}
+
+.dark a:hover {
+  color: var(--color-accent-hover-dark);
+}
+
+/* Code blocks */
+pre {
+  background-color: var(--color-code-bg);
+  border: 1px solid var(--color-border);
+  border-radius: 0.5rem;
+  padding: 1rem;
+  overflow-x: auto;
+  font-family: var(--font-mono);
+  font-size: 0.875rem;
+  line-height: 1.6;
+}
+
+.dark pre {
+  background-color: var(--color-code-bg-dark);
+  border-color: var(--color-border-dark);
+}
+
+code {
+  font-family: var(--font-mono);
+  font-size: 0.9em;
+}
+
+/* Inline code */
+:not(pre) > code {
+  background-color: var(--color-code-bg);
+  padding: 0.125rem 0.375rem;
+  border-radius: 0.25rem;
+}
+
+.dark :not(pre) > code {
+  background-color: var(--color-code-bg-dark);
+}
+
+/* Prose content styling */
+.prose h1 {
+  font-size: 2.25rem;
+  font-weight: 700;
+  margin-bottom: 1.5rem;
+  line-height: 1.2;
+}
+
+.prose h2 {
+  font-size: 1.5rem;
+  font-weight: 600;
+  margin-top: 2.5rem;
+  margin-bottom: 1rem;
+  line-height: 1.3;
+}
+
+.prose h3 {
+  font-size: 1.25rem;
+  font-weight: 600;
+  margin-top: 2rem;
+  margin-bottom: 0.75rem;
+}
+
+.prose p {
+  margin-bottom: 1rem;
+  line-height: 1.7;
+}
+
+.prose ul, .prose ol {
+  margin: 1rem 0;
+  padding-left: 1.5rem;
+}
+
+.prose ul {
+  list-style-type: disc;
+}
+
+.prose ol {
+  list-style-type: decimal;
+}
+
+.prose li {
+  margin-bottom: 0.5rem;
+  line-height: 1.6;
+}
+
+.prose blockquote {
+  border-left: 3px solid var(--color-accent);
+  padding-left: 1rem;
+  margin: 1.5rem 0;
+  color: var(--color-muted);
+  font-style: italic;
+}
+
+.dark .prose blockquote {
+  border-color: var(--color-accent-dark);
+  color: var(--color-muted-dark);
+}
+
+.prose pre {
+  margin: 1.5rem 0;
+}
+
+/* Muted text helper */
+.text-muted {
+  color: var(--color-muted);
+}
+
+.dark .text-muted {
+  color: var(--color-muted-dark);
+}
+
+/* Surface background helper */
+.bg-surface {
+  background-color: var(--color-surface);
+}
+
+.dark .bg-surface {
+  background-color: var(--color-surface-dark);
+}
+
+/* Border helper */
+.border-themed {
+  border-color: var(--color-border);
+}
+
+.dark .border-themed {
+  border-color: var(--color-border-dark);
+}
+
+/* Primary button */
+.btn-primary {
+  display: inline-block;
+  padding: 0.75rem 1.5rem;
+  background-color: var(--color-accent);
+  color: white;
+  font-weight: 500;
+  border-radius: 0.5rem;
+  transition: background-color 0.15s ease;
+  text-decoration: none;
+}
+
+.btn-primary:hover {
+  background-color: var(--color-accent-hover);
+  color: white;
+  text-decoration: none;
+}
+
+.dark .btn-primary {
+  background-color: var(--color-accent-dark);
+  color: var(--color-bg-dark);
+}
+
+.dark .btn-primary:hover {
+  background-color: var(--color-accent-hover-dark);
+  color: var(--color-bg-dark);
+}
+
+/* Secondary button */
+.btn-secondary {
+  display: inline-block;
+  padding: 0.75rem 1.5rem;
+  background-color: transparent;
+  color: var(--color-fg);
+  font-weight: 500;
+  border: 1px solid var(--color-border);
+  border-radius: 0.5rem;
+  transition: border-color 0.15s ease, color 0.15s ease;
+  text-decoration: none;
+}
+
+.btn-secondary:hover {
+  border-color: var(--color-muted);
+  text-decoration: none;
+}
+
+.dark .btn-secondary {
+  color: var(--color-fg-dark);
+  border-color: var(--color-border-dark);
+}
+
+.dark .btn-secondary:hover {
+  border-color: var(--color-muted-dark);
+}
+
+/* Nav link */
+.nav-link {
+  color: var(--color-muted);
+  transition: color 0.15s ease;
+  text-decoration: none;
+}
+
+.nav-link:hover {
+  color: var(--color-fg);
+  text-decoration: none;
+}
+
+.dark .nav-link {
+  color: var(--color-muted-dark);
+}
+
+.dark .nav-link:hover {
+  color: var(--color-fg-dark);
+}
+
+/* Theme toggle button */
+.theme-toggle {
+  padding: 0.5rem;
+  border-radius: 0.375rem;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  color: var(--color-muted);
+  transition: color 0.15s ease;
+}
+
+.theme-toggle:hover {
+  color: var(--color-fg);
+}
+
+.dark .theme-toggle {
+  color: var(--color-muted-dark);
+}
+
+.dark .theme-toggle:hover {
+  color: var(--color-fg-dark);
+}
+
+.theme-toggle .icon-sun {
+  display: none;
+}
+
+.theme-toggle .icon-moon {
+  display: block;
+}
+
+.dark .theme-toggle .icon-sun {
+  display: block;
+}
+
+.dark .theme-toggle .icon-moon {
+  display: none;
+}

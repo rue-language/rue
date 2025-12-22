@@ -3,13 +3,13 @@
 {% block title %}Blog | {{ config.title }}{% endblock %}
 
 {% block content %}
-<section class="blog-list">
-    <div class="container">
-        <header class="blog-header">
-            <h1>{{ section.title }}</h1>
-            <p class="blog-description">{{ section.content | safe }}</p>
-            <a href="{{ get_url(path='blog/rss.xml') }}" class="rss-link">
-                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+<section class="py-12">
+    <div class="max-w-3xl mx-auto px-6">
+        <header class="mb-12">
+            <h1 class="text-4xl font-bold mb-2">{{ section.title }}</h1>
+            <p class="text-muted mb-4">{{ section.content | safe }}</p>
+            <a href="{{ get_url(path='blog/rss.xml') }}" class="inline-flex items-center gap-2 text-muted text-sm hover:text-[var(--color-accent)] dark:hover:text-[var(--color-accent-dark)]">
+                <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
                     <circle cx="6.18" cy="17.82" r="2.18"/>
                     <path d="M4 4.44v2.83c7.03 0 12.73 5.7 12.73 12.73h2.83c0-8.59-6.97-15.56-15.56-15.56zm0 5.66v2.83c3.9 0 7.07 3.17 7.07 7.07h2.83c0-5.47-4.43-9.9-9.9-9.9z"/>
                 </svg>
@@ -17,28 +17,30 @@
             </a>
         </header>
 
-        <div class="posts">
+        <div class="flex flex-col gap-8">
             {% set pages = paginator.pages | default(value=section.pages) %}
             {% for page in pages %}
-            <article class="post-preview">
-                <h2><a href="{{ page.permalink }}">{{ page.title }}</a></h2>
-                <div class="post-meta">
+            <article class="pb-8 border-b border-themed last:border-b-0">
+                <h2 class="text-xl font-semibold mb-1">
+                    <a href="{{ page.permalink }}" class="hover:text-[var(--color-accent)] dark:hover:text-[var(--color-accent-dark)]" style="color: inherit; text-decoration: none;">{{ page.title }}</a>
+                </h2>
+                <div class="text-muted text-sm mb-2 flex flex-wrap gap-1">
                     <time datetime="{{ page.date }}">{{ page.date | date(format="%B %e, %Y") }}</time>
                     {% if page.extra.authors %}
-                    <span class="authors">
+                    <span class="before:content-['·'] before:mr-1">
                         by {% for author in page.extra.authors %}{% if loop.index > 1 %}{% if loop.last %} and {% else %}, {% endif %}{% endif %}{% if author == "steve" %}Steve{% elif author == "claude" %}Claude{% else %}{{ author }}{% endif %}{% endfor %}
                     </span>
                     {% endif %}
                 </div>
                 {% if page.summary %}
-                <p>{{ page.summary | safe }}</p>
+                <p class="text-muted text-sm">{{ page.summary | safe }}</p>
                 {% endif %}
             </article>
             {% endfor %}
         </div>
 
         {% if paginator %}
-        <nav class="pagination">
+        <nav class="flex justify-between mt-12 pt-8 border-t border-themed">
             {% if paginator.previous %}
             <a href="{{ paginator.previous }}">&larr; Newer</a>
             {% endif %}

@@ -1,32 +1,35 @@
 {% extends "base.html" %}
 
 {% block content %}
-<section class="hero">
-    <div class="container">
-        <h1>{{ section.title }}</h1>
-        <p class="tagline">{{ section.extra.tagline }}</p>
-        <div class="cta-buttons">
-            <a href="{{ get_url(path='getting-started') }}" class="btn btn-primary">Get Started</a>
-            <a href="/spec/" class="btn btn-secondary">Read the Spec</a>
+<section class="py-24 text-center">
+    <div class="max-w-5xl mx-auto px-6">
+        <h1 class="text-5xl md:text-6xl font-bold mb-4">{{ section.title }}</h1>
+        <p class="text-xl md:text-2xl text-muted mb-8">{{ section.extra.tagline }}</p>
+        <div class="flex flex-col sm:flex-row gap-4 justify-center">
+            <a href="{{ get_url(path='getting-started') }}" class="btn-primary">Get Started</a>
+<!-- Hardcoded path: spec is a static mdbook, not Zola content -->
+            <a href="/spec/" class="btn-secondary">Read the Spec</a>
         </div>
     </div>
 </section>
 
-<section class="features">
-    <div class="container">
+<section class="py-16">
+    <div class="max-w-5xl mx-auto px-6 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
         {% for feature in section.extra.features %}
-        <div class="feature">
-            <h2>{{ feature.title }}</h2>
-            <p>{{ feature.description }}</p>
+        <div class="bg-surface border border-themed rounded-lg p-6">
+            <h2 class="text-lg font-semibold mb-2">{{ feature.title }}</h2>
+            <p class="text-muted text-sm leading-relaxed">{{ feature.description }}</p>
         </div>
         {% endfor %}
     </div>
 </section>
 
-<section class="example">
-    <div class="container">
-        <h2>Hello, Rue</h2>
-        {{ section.content | safe }}
+<section class="py-16">
+    <div class="max-w-3xl mx-auto px-6">
+        <h2 class="text-2xl font-semibold text-center mb-8">Hello, Rue</h2>
+        <div class="prose">
+            {{ section.content | safe }}
+        </div>
     </div>
 </section>
 {% endblock %}

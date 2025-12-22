@@ -7,30 +7,61 @@
     <meta name="description" content="{{ config.description }}">
     <link rel="stylesheet" href="{{ get_url(path='style.css') }}">
     <link rel="alternate" type="application/rss+xml" title="Rue Blog RSS" href="{{ get_url(path='blog/rss.xml') }}">
+    <script>
+        // Check for saved theme preference or default to system preference
+        if (localStorage.theme === 'dark' || (!('theme' in localStorage) && window.matchMedia('(prefers-color-scheme: dark)').matches)) {
+            document.documentElement.classList.add('dark');
+        } else {
+            document.documentElement.classList.remove('dark');
+        }
+    </script>
 </head>
-<body>
-    <nav class="navbar">
-        <div class="container">
-            <a href="{{ get_url(path='/') }}" class="logo">Rue</a>
-            <ul class="nav-links">
-                <li><a href="{{ get_url(path='/') }}">Home</a></li>
-                <li><a href="{{ get_url(path='getting-started') }}">Get Started</a></li>
-                <li><a href="{{ get_url(path='spec/') }}">Specification</a></li>
-                <li><a href="{{ get_url(path='blog') }}">Blog</a></li>
-                <li><a href="{{ config.extra.github_url }}">GitHub</a></li>
-                <li><a href="{{ config.extra.bluesky_url }}">Bluesky</a></li>
-            </ul>
+<body class="min-h-screen flex flex-col">
+    <nav class="border-b border-themed">
+        <div class="max-w-5xl mx-auto px-6 py-4 flex justify-between items-center">
+            <a href="{{ get_url(path='/') }}" class="text-2xl font-bold hover:text-[var(--color-accent)] dark:hover:text-[var(--color-accent-dark)] transition-colors no-underline" style="color: inherit;">Rue</a>
+            <div class="flex items-center gap-6">
+                <ul class="flex gap-6 text-sm">
+                    <li><a href="{{ get_url(path='/') }}" class="nav-link">Home</a></li>
+                    <li><a href="{{ get_url(path='getting-started') }}" class="nav-link">Get Started</a></li>
+                    <!-- Hardcoded path: spec is a static mdbook, not Zola content -->
+                    <li><a href="/spec/" class="nav-link">Specification</a></li>
+                    <li><a href="{{ get_url(path='blog') }}" class="nav-link">Blog</a></li>
+                    <li><a href="{{ config.extra.github_url }}" class="nav-link">GitHub</a></li>
+                    <li><a href="{{ config.extra.bluesky_url }}" class="nav-link">Bluesky</a></li>
+                </ul>
+                <button onclick="toggleTheme()" class="theme-toggle" aria-label="Toggle theme">
+                    <svg class="icon-sun w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.364 6.364l-.707-.707M6.343 6.343l-.707-.707m12.728 0l-.707.707M6.343 17.657l-.707.707M16 12a4 4 0 11-8 0 4 4 0 018 0z" />
+                    </svg>
+                    <svg class="icon-moon w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20.354 15.354A9 9 0 018.646 3.646 9.003 9.003 0 0012 21a9.003 9.003 0 008.354-5.646z" />
+                    </svg>
+                </button>
+            </div>
         </div>
     </nav>
 
-    <main>
+    <main class="flex-1">
         {% block content %}{% endblock %}
     </main>
 
-    <footer>
-        <div class="container">
+    <footer class="border-t border-themed mt-auto">
+        <div class="max-w-5xl mx-auto px-6 py-8 text-center text-muted text-sm">
             <p>&copy; 2025 The Rue Authors. Licensed under MIT/Apache-2.0.</p>
         </div>
     </footer>
+
+    <script>
+        function toggleTheme() {
+            if (document.documentElement.classList.contains('dark')) {
+                document.documentElement.classList.remove('dark');
+                localStorage.theme = 'light';
+            } else {
+                document.documentElement.classList.add('dark');
+                localStorage.theme = 'dark';
+            }
+        }
+    </script>
 </body>
 </html>
