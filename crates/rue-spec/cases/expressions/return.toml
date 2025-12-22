@@ -19,8 +19,36 @@ fn main() -> i32 {
 exit_code = 42
 
 [[case]]
+name = "return_without_expression"
+spec = ["4.9:2", "4.9:3"]
+source = """
+fn do_nothing() {
+    return;
+}
+fn main() -> i32 {
+    do_nothing();
+    0
+}
+"""
+exit_code = 0
+
+[[case]]
+name = "return_with_unit_literal"
+spec = ["4.9:2", "4.9:3"]
+source = """
+fn do_nothing() {
+    return ();
+}
+fn main() -> i32 {
+    do_nothing();
+    0
+}
+"""
+exit_code = 0
+
+[[case]]
 name = "return_early"
-spec = ["4.9:1", "4.9:6"]
+spec = ["4.9:1", "4.9:7"]
 source = """
 fn main() -> i32 {
     return 42;
@@ -35,7 +63,7 @@ exit_code = 42
 
 [[case]]
 name = "return_type_matches"
-spec = ["4.9:3"]
+spec = ["4.9:4"]
 source = """
 fn returns_i32() -> i32 { return 42; }
 fn main() -> i32 { returns_i32() }
@@ -44,7 +72,7 @@ exit_code = 42
 
 [[case]]
 name = "return_type_mismatch"
-spec = ["4.9:3"]
+spec = ["4.9:4"]
 source = """
 fn main() -> i32 {
     return true;
@@ -58,7 +86,7 @@ compile_fail = true
 
 [[case]]
 name = "return_has_never_type"
-spec = ["4.9:4"]
+spec = ["4.9:5"]
 source = """
 fn main() -> i32 {
     let x: i32 = if true { return 42 } else { 0 };
@@ -69,7 +97,7 @@ exit_code = 42
 
 [[case]]
 name = "return_in_any_context"
-spec = ["4.9:7"]
+spec = ["4.9:8"]
 source = """
 fn test(x: i32) -> i32 {
     let y = if x > 5 { return 100 } else { x };
@@ -85,7 +113,7 @@ exit_code = 100
 
 [[case]]
 name = "return_exits_immediately"
-spec = ["4.9:6"]
+spec = ["4.9:7"]
 source = """
 fn test() -> i32 {
     return 42;
@@ -96,7 +124,7 @@ exit_code = 42
 
 [[case]]
 name = "return_from_loop"
-spec = ["4.9:6"]
+spec = ["4.9:7"]
 source = """
 fn main() -> i32 {
     let mut i = 0;
@@ -111,7 +139,7 @@ exit_code = 5
 
 [[case]]
 name = "return_from_nested_if"
-spec = ["4.9:6"]
+spec = ["4.9:7"]
 source = """
 fn test(x: i32) -> i32 {
     if x > 10 {

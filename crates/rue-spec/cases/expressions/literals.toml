@@ -113,3 +113,32 @@ fn main() -> i32 {
 }
 """
 exit_code = 0
+
+# =============================================================================
+# Unit Literal
+# =============================================================================
+
+[[case]]
+name = "unit_literal"
+spec = ["4.1:7", "4.1:8"]
+source = """
+fn returns_unit() -> () {
+    ()
+}
+fn main() -> i32 {
+    returns_unit();
+    0
+}
+"""
+exit_code = 0
+
+[[case]]
+name = "unit_literal_binding"
+spec = ["4.1:7", "4.1:8"]
+source = """
+fn main() -> i32 {
+    let _u = ();
+    0
+}
+"""
+exit_code = 0

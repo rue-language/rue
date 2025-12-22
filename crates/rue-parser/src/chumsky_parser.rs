@@ -378,6 +378,15 @@ where
         }),
     };
 
+    // Unit literal: ()
+    let unit_lit = just(TokenKind::LParen)
+        .then(just(TokenKind::RParen))
+        .map_with(|_, e| {
+            Expr::Unit(UnitLit {
+                span: to_rue_span(e.span()),
+            })
+        });
+
     // Break
     let break_expr = select! {
         TokenKind::Break = e => Expr::Break(BreakExpr { span: to_rue_span(e.span()) }),
@@ -562,10 +571,12 @@ where
         });
 
     // Primary expression (before field access and indexing)
+    // Note: unit_lit must come before paren_expr so () is parsed as unit, not empty parens
     let primary = choice((
         int_lit,
         bool_true,
         bool_false,
+        unit_lit,
         break_expr,
         continue_expr,
         return_expr,

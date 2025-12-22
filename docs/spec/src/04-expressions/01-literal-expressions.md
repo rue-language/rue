@@ -33,3 +33,24 @@ fn main() -> i32 {
     if a { 1 } else { 0 }
 }
 ```
+
+## Unit Literal
+
+r[4.1.7#normative]
+The unit literal `()` is an expression of type `()`.
+
+r[4.1.8#normative]
+The unit literal evaluates to the single value of the unit type.
+
+r[4.1.9]
+```rue
+fn returns_unit() -> () {
+    ()
+}
+
+fn main() -> i32 {
+    let u = ();
+    returns_unit();
+    0
+}
+```
