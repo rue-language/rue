@@ -1,0 +1,162 @@
+[section]
+id = "expressions.evaluation_order"
+spec_chapter = "4.0"
+name = "Evaluation Order"
+description = "Evaluation order of subexpressions within compound expressions."
+
+# =============================================================================
+# Binary Operators - Left operand before right operand
+# =============================================================================
+
+[[case]]
+name = "binary_add_left_to_right"
+spec = ["4.0:2", "4.0:3"]
+source = """
+fn main() -> i32 {
+    1 + 2
+}
+"""
+exit_code = 3
+
+[[case]]
+name = "binary_sub_left_to_right"
+spec = ["4.0:2", "4.0:3"]
+source = """
+fn main() -> i32 {
+    50 - 8
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "binary_mul_left_to_right"
+spec = ["4.0:2", "4.0:3"]
+source = """
+fn main() -> i32 {
+    6 * 7
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "binary_div_left_to_right"
+spec = ["4.0:2", "4.0:3"]
+source = """
+fn main() -> i32 {
+    84 / 2
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "binary_comparison_left_to_right"
+spec = ["4.0:2", "4.0:3"]
+source = """
+fn main() -> i32 {
+    if 1 < 2 { 42 } else { 0 }
+}
+"""
+exit_code = 42
+
+# =============================================================================
+# Function Calls - Callee then arguments left-to-right
+# =============================================================================
+
+[[case]]
+name = "call_args_left_to_right"
+spec = ["4.0:2", "4.0:4"]
+source = """
+fn sub(x: i32, y: i32) -> i32 { x - y }
+fn main() -> i32 { sub(50, 8) }
+"""
+exit_code = 42
+
+[[case]]
+name = "call_nested_args"
+spec = ["4.0:2", "4.0:4"]
+source = """
+fn add(x: i32, y: i32) -> i32 { x + y }
+fn main() -> i32 {
+    add(add(10, 20), add(5, 7))
+}
+"""
+exit_code = 42
+
+# =============================================================================
+# Index Expressions - Base before index
+# =============================================================================
+
+[[case]]
+name = "index_base_before_index"
+spec = ["4.0:2", "4.0:5"]
+source = """
+fn main() -> i32 {
+    let arr: [i32; 3] = [10, 42, 100];
+    arr[1]
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "index_nested"
+spec = ["4.0:2", "4.0:5"]
+source = """
+fn main() -> i32 {
+    let arr: [[i32; 2]; 2] = [[1, 2], [3, 42]];
+    arr[1][1]
+}
+"""
+exit_code = 42
+
+# =============================================================================
+# Field Access - Base before field
+# =============================================================================
+
+[[case]]
+name = "field_base_before_field"
+spec = ["4.0:2", "4.0:6"]
+source = """
+struct Point { x: i32, y: i32 }
+fn main() -> i32 {
+    let p = Point { x: 42, y: 10 };
+    p.x
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "field_chained"
+spec = ["4.0:2", "4.0:6"]
+source = """
+struct Inner { value: i32 }
+struct Outer { inner: Inner }
+fn main() -> i32 {
+    let o = Outer { inner: Inner { value: 42 } };
+    o.inner.value
+}
+"""
+exit_code = 42
+
+# =============================================================================
+# Short-Circuit Evaluation - Exception to normal order
+# =============================================================================
+
+[[case]]
+name = "short_circuit_and_skips_right"
+spec = ["4.0:7"]
+source = """
+fn main() -> i32 {
+    if false && true { 1 } else { 42 }
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "short_circuit_or_skips_right"
+spec = ["4.0:7"]
+source = """
+fn main() -> i32 {
+    if true || false { 42 } else { 0 }
+}
+"""
+exit_code = 42

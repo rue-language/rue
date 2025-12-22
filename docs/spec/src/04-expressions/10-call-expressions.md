@@ -29,7 +29,7 @@ fn main() -> i32 {
 ```
 
 r[4.10.7#normative]
-Arguments are evaluated left-to-right before the function is called.
+Arguments are evaluated left-to-right before the function is called, as specified in section 4.0.
 
 r[4.10.8]
 Call expressions can be nested:
