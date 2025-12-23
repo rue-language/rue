@@ -92,3 +92,42 @@ r[4.7.16#normative]
 Arms are evaluated in order. The first arm whose pattern matches the scrutinee value
 is selected, and its body expression is evaluated. The result of that evaluation
 becomes the value of the match expression.
+
+## Unreachable Patterns
+
+r[4.7.17#normative]
+A pattern is *unreachable* if all values it could match are already matched by
+a preceding pattern in the same match expression.
+
+r[4.7.18#normative]
+A pattern following an irrefutable pattern (such as `_`) is always unreachable,
+since the irrefutable pattern matches all possible values.
+
+r[4.7.19#normative]
+A pattern that is identical to a preceding pattern in the same match expression
+is unreachable, since the earlier pattern will match first.
+
+r[4.7.20#normative]
+An unreachable pattern produces a compile-time warning. The program remains
+well-formed and the unreachable arm is not executed at runtime.
+
+r[4.7.21]
+```rue
+fn main() -> i32 {
+    match 5 {
+        _ => 10,
+        1 => 20,  // warning: unreachable pattern '1'
+    }
+}
+```
+
+r[4.7.22]
+```rue
+fn main() -> i32 {
+    match 1 {
+        1 => 10,
+        1 => 20,  // warning: unreachable pattern '1'
+        _ => 0,
+    }
+}
+```

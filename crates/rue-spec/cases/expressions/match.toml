@@ -494,3 +494,89 @@ fn main() -> i32 {
 }
 """
 exit_code = 1
+
+# =============================================================================
+# Unreachable Pattern Tests
+# =============================================================================
+
+[[case]]
+name = "unreachable_pattern_definition"
+spec = ["4.7:17", "4.7:20"]
+source = """
+fn main() -> i32 {
+    match 5 {
+        1 => 10,
+        1 => 20,
+        _ => 30,
+    }
+}
+"""
+exit_code = 30
+
+[[case]]
+name = "pattern_after_wildcard_is_unreachable"
+spec = ["4.7:17", "4.7:18", "4.7:20"]
+source = """
+fn main() -> i32 {
+    match 5 {
+        _ => 10,
+        1 => 20,
+    }
+}
+"""
+exit_code = 10
+
+[[case]]
+name = "multiple_patterns_after_wildcard"
+spec = ["4.7:17", "4.7:18", "4.7:20"]
+source = """
+fn main() -> i32 {
+    match 5 {
+        _ => 10,
+        1 => 20,
+        2 => 30,
+    }
+}
+"""
+exit_code = 10
+
+[[case]]
+name = "duplicate_integer_pattern_is_unreachable"
+spec = ["4.7:17", "4.7:19", "4.7:20"]
+source = """
+fn main() -> i32 {
+    match 1 {
+        1 => 10,
+        1 => 20,
+        _ => 0,
+    }
+}
+"""
+exit_code = 10
+
+[[case]]
+name = "duplicate_bool_pattern_is_unreachable"
+spec = ["4.7:17", "4.7:19", "4.7:20"]
+source = """
+fn main() -> i32 {
+    match true {
+        true => 10,
+        true => 20,
+        false => 0,
+    }
+}
+"""
+exit_code = 10
+
+[[case]]
+name = "duplicate_wildcard_is_unreachable"
+spec = ["4.7:17", "4.7:18", "4.7:20"]
+source = """
+fn main() -> i32 {
+    match 5 {
+        _ => 10,
+        _ => 20,
+    }
+}
+"""
+exit_code = 10
