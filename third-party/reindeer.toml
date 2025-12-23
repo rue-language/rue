@@ -1,5 +1,13 @@
 # Reindeer configuration for rue
 # See: https://github.com/facebookincubator/reindeer
+#
+# Workflow for updating dependencies:
+#   1. Edit Cargo.toml to add/update dependencies
+#   2. Run: reindeer vendor && reindeer buckify
+#   3. Commit both vendor/ and BUCK together
+#
+# The vendor directory is committed to ensure reproducible builds
+# without network access. See issue #287.
 
-# Vendor sources locally (better for reproducibility)
+# Vendor sources locally (committed to repo for reproducibility)
 vendor = true

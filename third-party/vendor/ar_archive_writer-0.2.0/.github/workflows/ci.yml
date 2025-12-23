@@ -1,0 +1,28 @@
+on: [push, pull_request]
+
+name: CI
+
+jobs:
+  test:
+    name: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v3
+      - name: Test
+        run: |
+          cargo test
+
+  fmt:
+    name: rustfmt
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v3
+      - name: Install rustfmt
+        run: |
+          rustup component add rustfmt
+      - name: Rustfmt
+        run: |
+          cargo fmt --check
+

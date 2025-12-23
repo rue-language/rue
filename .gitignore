@@ -1,10 +1,8 @@
 # Buck2
 buck-out/
 
-# Third-party vendored dependencies (managed by reindeer)
-third-party/vendor/
-third-party/Cargo.lock
-third-party/.cargo/
+# Third-party: Cargo registry cache (redundant with vendored sources)
+third-party/.cargo/registry/
 
 # Editor
 .idea/
