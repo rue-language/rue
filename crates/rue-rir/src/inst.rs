@@ -280,9 +280,10 @@ pub enum InstData {
 
     // Variable operations
     /// Local variable declaration: allocates storage and initializes
+    /// If name is None, this is a wildcard pattern that discards the value
     Alloc {
-        /// Variable name
-        name: Symbol,
+        /// Variable name (None for wildcard `_` pattern that discards the value)
+        name: Option<Symbol>,
         /// Whether the variable is mutable
         is_mut: bool,
         /// Optional type annotation
@@ -593,7 +594,9 @@ impl<'a, 'b> RirPrinter<'a, 'b> {
                     ty,
                     init,
                 } => {
-                    let name_str = self.interner.get(*name);
+                    let name_str = name
+                        .map(|n| self.interner.get(n).to_string())
+                        .unwrap_or_else(|| "_".to_string());
                     let mut_str = if *is_mut { "mut " } else { "" };
                     let ty_str = ty
                         .map(|t| format!(": {}", self.interner.get(t)))

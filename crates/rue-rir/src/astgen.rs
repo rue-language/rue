@@ -5,8 +5,8 @@
 
 use rue_intern::Interner;
 use rue_parser::{
-    AssignTarget, Ast, BinaryOp, EnumDecl, Expr, Function, Item, Pattern, Statement, StructDecl,
-    TypeExpr, UnaryOp,
+    AssignTarget, Ast, BinaryOp, EnumDecl, Expr, Function, Item, LetPattern, Pattern, Statement,
+    StructDecl, TypeExpr, UnaryOp,
 };
 
 use crate::inst::{Inst, InstData, InstRef, Rir, RirPattern};
@@ -400,7 +400,10 @@ impl<'a> AstGen<'a> {
     fn gen_statement(&mut self, stmt: &Statement) -> InstRef {
         match stmt {
             Statement::Let(let_stmt) => {
-                let name = self.interner.intern(&let_stmt.name.name);
+                let name = match &let_stmt.pattern {
+                    LetPattern::Ident(ident) => Some(self.interner.intern(&ident.name)),
+                    LetPattern::Wildcard(_) => None,
+                };
                 let ty = let_stmt.ty.as_ref().map(|t| self.intern_type(t));
                 let init = self.gen_expr(&let_stmt.init);
                 self.rir.add_inst(Inst {
@@ -635,7 +638,7 @@ mod tests {
                 ty,
                 init,
             } => {
-                assert_eq!(interner.get(*name), "x");
+                assert_eq!(interner.get(name.unwrap()), "x");
                 assert!(!is_mut);
                 assert!(ty.is_none());
                 assert!(matches!(rir.get(*init).data, InstData::IntConst(42)));
@@ -656,7 +659,7 @@ mod tests {
         let (_, inst) = alloc_inst.unwrap();
         match &inst.data {
             InstData::Alloc { name, is_mut, .. } => {
-                assert_eq!(interner.get(*name), "x");
+                assert_eq!(interner.get(name.unwrap()), "x");
                 assert!(*is_mut);
             }
             _ => panic!("expected Alloc"),

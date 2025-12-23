@@ -77,15 +77,40 @@ letter = "a" | ... | "z" | "A" | ... | "Z" ;
 ```
 
 r[2.1:11#normative]
-Identifiers cannot be keywords. The identifier `_` (single underscore) is special and indicates an unused binding.
+Identifiers cannot be keywords.
 
-r[2.1:12]
+## Underscore Identifier
+
+r[2.1:12#normative]
+The identifier `_` (single underscore) is a *wildcard* that discards its value without creating a binding. When used in a let statement, the initializer expression is evaluated for its side effects, but no variable is created and no storage is allocated.
+
+r[2.1:13#normative]
+A reference to `_` as an expression is a compile-time error. The wildcard identifier cannot be used to retrieve a previously discarded value.
+
+r[2.1:14#normative]
+Multiple occurrences of `_` are permitted in the same scope. Each occurrence independently discards its value.
+
+r[2.1:15]
+```rue
+fn main() -> i32 {
+    let _ = 42;       // discards 42, no binding created
+    let _ = 100;      // discards 100, no conflict with previous _
+    0
+}
+```
+
+## Underscore-Prefixed Identifiers
+
+r[2.1:16#normative]
+An identifier that begins with an underscore followed by one or more characters (e.g., `_unused`, `_x`) is a normal identifier that creates a binding. Such identifiers suppress unused variable warnings but can otherwise be used like any other identifier.
+
+r[2.1:17]
 ```rue
 fn main() -> i32 {
     let x = 1;
     let my_variable = 2;
-    let _unused = 3;
+    let _unused = 3;      // suppresses unused warning, but is a normal variable
     let x1 = 4;
-    x + my_variable + x1
+    x + my_variable + _unused + x1
 }
 ```

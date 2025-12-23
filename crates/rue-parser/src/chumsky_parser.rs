@@ -6,10 +6,10 @@
 use crate::ast::{
     ArrayLitExpr, AssignStatement, AssignTarget, Ast, BinaryExpr, BinaryOp, BlockExpr, BoolLit,
     BreakExpr, CallExpr, ContinueExpr, EnumDecl, EnumVariant, Expr, FieldDecl, FieldExpr,
-    FieldInit, Function, Ident, IfExpr, IndexExpr, IntLit, IntrinsicCallExpr, Item, LetStatement,
-    LoopExpr, MatchArm, MatchExpr, Param, ParenExpr, PathExpr, PathPattern, Pattern, ReturnExpr,
-    Statement, StringLit, StructDecl, StructLitExpr, TypeExpr, UnaryExpr, UnaryOp, UnitLit,
-    WhileExpr,
+    FieldInit, Function, Ident, IfExpr, IndexExpr, IntLit, IntrinsicCallExpr, Item, LetPattern,
+    LetStatement, LoopExpr, MatchArm, MatchExpr, Param, ParenExpr, PathExpr, PathPattern, Pattern,
+    ReturnExpr, Statement, StringLit, StructDecl, StructLitExpr, TypeExpr, UnaryExpr, UnaryOp,
+    UnitLit, WhileExpr,
 };
 use chumsky::input::{Input as ChumskyInput, Stream, ValueInput};
 use chumsky::pratt::{infix, left, prefix};
@@ -676,20 +676,19 @@ enum BlockItem {
     Expr(Expr),
 }
 
-/// Parser for a let binding name: either an identifier or _ (wildcard/discard)
-fn let_binding_parser<'src, I>()
--> impl Parser<'src, I, Ident, extra::Err<Rich<'src, TokenKind>>> + Clone
+/// Parser for a let binding pattern: either an identifier or _ (wildcard/discard)
+fn let_pattern_parser<'src, I>()
+-> impl Parser<'src, I, LetPattern, extra::Err<Rich<'src, TokenKind>>> + Clone
 where
     I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
 {
-    let underscore = just(TokenKind::Underscore).map_with(|_, e| Ident {
-        name: "_".to_string(),
-        span: to_rue_span(e.span()),
-    });
-    ident_parser().or(underscore)
+    let wildcard =
+        just(TokenKind::Underscore).map_with(|_, e| LetPattern::Wildcard(to_rue_span(e.span())));
+    let ident = ident_parser().map(LetPattern::Ident);
+    ident.or(wildcard)
 }
 
-/// Parser for let statements: let [mut] name [: type] = expr;
+/// Parser for let statements: let [mut] pattern [: type] = expr;
 fn let_statement_parser<'src, I>(
     expr: impl Parser<'src, I, Expr, extra::Err<Rich<'src, TokenKind>>> + Clone,
 ) -> impl Parser<'src, I, Statement, extra::Err<Rich<'src, TokenKind>>> + Clone
@@ -698,15 +697,15 @@ where
 {
     just(TokenKind::Let)
         .ignore_then(just(TokenKind::Mut).or_not().map(|m| m.is_some()))
-        .then(let_binding_parser())
+        .then(let_pattern_parser())
         .then(just(TokenKind::Colon).ignore_then(type_parser()).or_not())
         .then_ignore(just(TokenKind::Eq))
         .then(expr)
         .then_ignore(just(TokenKind::Semi))
-        .map_with(|(((is_mut, name), ty), init), e| {
+        .map_with(|(((is_mut, pattern), ty), init), e| {
             Statement::Let(LetStatement {
                 is_mut,
-                name,
+                pattern,
                 ty,
                 init: Box::new(init),
                 span: to_rue_span(e.span()),
@@ -1271,7 +1270,10 @@ mod tests {
                     match &block.statements[0] {
                         Statement::Let(let_stmt) => {
                             assert!(!let_stmt.is_mut);
-                            assert_eq!(let_stmt.name.name, "x");
+                            match &let_stmt.pattern {
+                                LetPattern::Ident(ident) => assert_eq!(ident.name, "x"),
+                                LetPattern::Wildcard(_) => panic!("expected Ident, got Wildcard"),
+                            }
                         }
                         _ => panic!("expected Let"),
                     }

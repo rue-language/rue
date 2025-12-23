@@ -1389,6 +1389,14 @@ impl<'a> Sema<'a> {
                     (init_result, init_result.ty)
                 };
 
+                // If name is None, this is a wildcard pattern `_` that discards the value
+                // We still evaluate the initializer for side effects, but don't allocate a slot
+                let Some(name) = name else {
+                    // Just return the initializer result - we evaluated it, but discard it
+                    // The result type is Unit since let statements produce unit
+                    return Ok(AnalysisResult::new(init_result.air_ref, Type::Unit));
+                };
+
                 // Allocate slots - structs and arrays need multiple slots
                 // Use abi_slot_count which recursively computes total slots for nested types
                 let slot = ctx.next_slot;

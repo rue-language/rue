@@ -445,7 +445,7 @@ exit_code = 42
 
 [[case]]
 name = "underscore_only"
-spec = ["5.1:1"]
+spec = ["5.1:1", "2.1:12"]
 source = """
 fn main() -> i32 {
     let _ = 42;

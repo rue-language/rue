@@ -442,13 +442,32 @@ pub enum Statement {
     Expr(Expr),
 }
 
+/// A pattern in a let binding.
+#[derive(Debug, Clone)]
+pub enum LetPattern {
+    /// Named binding (e.g., `x`, `_unused`)
+    Ident(Ident),
+    /// Wildcard pattern `_` - discards the value without creating a binding
+    Wildcard(Span),
+}
+
+impl LetPattern {
+    /// Get the span of this pattern.
+    pub fn span(&self) -> Span {
+        match self {
+            LetPattern::Ident(ident) => ident.span,
+            LetPattern::Wildcard(span) => *span,
+        }
+    }
+}
+
 /// A let binding statement.
 #[derive(Debug, Clone)]
 pub struct LetStatement {
     /// Whether the binding is mutable
     pub is_mut: bool,
-    /// Variable name
-    pub name: Ident,
+    /// The binding pattern (identifier or wildcard)
+    pub pattern: LetPattern,
     /// Optional type annotation
     pub ty: Option<TypeExpr>,
     /// Initializer expression
@@ -763,7 +782,10 @@ fn fmt_stmt(f: &mut fmt::Formatter<'_>, stmt: &Statement, level: usize) -> fmt::
             if let_stmt.is_mut {
                 write!(f, " mut")?;
             }
-            write!(f, " {}", let_stmt.name.name)?;
+            match &let_stmt.pattern {
+                LetPattern::Ident(ident) => write!(f, " {}", ident.name)?,
+                LetPattern::Wildcard(_) => write!(f, " _")?,
+            }
             if let Some(ref ty) = let_stmt.ty {
                 write!(f, ": {}", ty)?;
             }

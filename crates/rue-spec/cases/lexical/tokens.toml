@@ -122,11 +122,47 @@ compile_fail = true
 
 [[case]]
 name = "identifier_unused_underscore"
-spec = ["2.1:11"]
+spec = ["2.1:12"]
 source = """
 fn main() -> i32 {
     let _ = 100;
     42
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "underscore_multiple_bindings"
+spec = ["2.1:14"]
+source = """
+fn main() -> i32 {
+    let _ = 42;
+    let _ = 100;
+    let _ = 200;
+    0
+}
+"""
+exit_code = 0
+
+[[case]]
+name = "underscore_cannot_be_referenced"
+spec = ["2.1:13"]
+source = """
+fn main() -> i32 {
+    let _ = 42;
+    _
+}
+"""
+compile_fail = true
+error_contains = "found '_'"
+
+[[case]]
+name = "underscore_prefixed_is_normal_variable"
+spec = ["2.1:16"]
+source = """
+fn main() -> i32 {
+    let _unused = 42;
+    _unused
 }
 """
 exit_code = 42
