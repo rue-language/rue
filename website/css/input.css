@@ -300,3 +300,16 @@ code {
 .dark .theme-toggle .icon-moon {
   display: none;
 }
+
+/* Prompt disclosure */
+.prompt-details summary {
+  transition: color 0.15s ease;
+}
+
+.prompt-details summary:hover {
+  color: var(--color-fg);
+}
+
+.dark .prompt-details summary:hover {
+  color: var(--color-fg-dark);
+}
