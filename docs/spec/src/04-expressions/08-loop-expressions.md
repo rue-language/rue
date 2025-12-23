@@ -43,7 +43,7 @@ loop_expr = "loop" "{" block "}" ;
 ```
 
 r[4.8:17#normative]
-A loop expression has type `!` (never), because it never terminates normally.
+A loop expression has type `!` (never), because it never produces a value. Even when `break` is present, the loop expression itself does not yield a result.
 
 r[4.8:18#normative]
 The only way to exit a `loop` is via `break` or `return`.
@@ -90,6 +90,9 @@ Both `break` and `continue` must appear within a loop. Using them outside a loop
 
 r[4.8:10#normative]
 Both `break` and `continue` have the never type `!`.
+
+r[4.8:21#normative]
+Currently, `break` does not carry a value. A `loop` expression has type `!` regardless of whether `break` is reachable, because the loop itself does not produce a value.
 
 r[4.8:11]
 ```rue

@@ -258,6 +258,22 @@ fn main() -> i32 {
 exit_code = 42
 
 [[case]]
+name = "loop_has_never_type_even_with_break"
+spec = ["4.8:17", "4.8:21"]
+description = "loop expression type remains ! even when break is present; break does not carry a value"
+source = """
+fn main() -> i32 {
+    let mut x = 0;
+    loop {
+        x = x + 1;
+        if x == 5 { break }
+    }
+    x
+}
+"""
+exit_code = 5
+
+[[case]]
 name = "loop_nested_break"
 spec = ["4.8:15", "4.8:13"]
 source = """
