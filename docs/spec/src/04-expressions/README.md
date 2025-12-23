@@ -24,3 +24,6 @@ For field access expressions of the form `base.field`, the base expression is ev
 
 r[4.0:7#normative]
 Logical operators `&&` and `||` are an exception to the normal left-to-right evaluation. They use short-circuit evaluation as specified in section 4.4: the right operand may not be evaluated depending on the value of the left operand.
+
+r[4.0:8#normative]
+For struct literal expressions of the form `Type { field1: expr1, field2: expr2, ... }`, the field initializer expressions are evaluated in source order (left-to-right as written).

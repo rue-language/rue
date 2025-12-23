@@ -160,3 +160,50 @@ fn main() -> i32 {
 }
 """
 exit_code = 42
+
+# =============================================================================
+# Struct Literal - Field initializers in source order
+# =============================================================================
+
+[[case]]
+name = "struct_init_source_order"
+spec = ["4.0:2", "4.0:8"]
+source = """
+struct Point { x: i32, y: i32 }
+fn main() -> i32 {
+    let p = Point { x: 10, y: 32 };
+    p.x + p.y
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "struct_init_reverse_order"
+spec = ["4.0:2", "4.0:8"]
+source = """
+struct Point { x: i32, y: i32 }
+fn main() -> i32 {
+    // Fields evaluated in source order (y first, then x)
+    // but stored in declaration order
+    let p = Point { y: 32, x: 10 };
+    p.x + p.y
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "struct_init_nested"
+spec = ["4.0:2", "4.0:8"]
+source = """
+struct Inner { value: i32 }
+struct Outer { first: Inner, second: Inner }
+fn main() -> i32 {
+    // Nested struct literals evaluated in source order
+    let o = Outer {
+        second: Inner { value: 22 },
+        first: Inner { value: 20 }
+    };
+    o.first.value + o.second.value
+}
+"""
+exit_code = 42

@@ -74,11 +74,11 @@ fn main() -> i32 {
 compile_fail = true
 
 # =============================================================================
-# Field Initializers Must Be In Order
+# Field Initializers May Be In Any Order
 # =============================================================================
 
 [[case]]
-name = "fields_in_order"
+name = "fields_in_declaration_order"
 spec = ["6.2:6"]
 source = """
 struct Point { x: i32, y: i32 }
@@ -90,7 +90,7 @@ fn main() -> i32 {
 exit_code = 42
 
 [[case]]
-name = "fields_wrong_order_error"
+name = "fields_in_reverse_order"
 spec = ["6.2:6"]
 source = """
 struct Point { x: i32, y: i32 }
@@ -99,8 +99,19 @@ fn main() -> i32 {
     p.x
 }
 """
-compile_fail = true
-error_contains = "order"
+exit_code = 42
+
+[[case]]
+name = "fields_any_order_three_fields"
+spec = ["6.2:6"]
+source = """
+struct Triple { a: i32, b: i32, c: i32 }
+fn main() -> i32 {
+    let t = Triple { c: 3, a: 40, b: 2 };
+    t.a - t.b + t.c
+}
+"""
+exit_code = 41
 
 # =============================================================================
 # Field Access

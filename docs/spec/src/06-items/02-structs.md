@@ -29,14 +29,15 @@ r[6.2:5#normative]
 All fields must be initialized when creating a struct instance.
 
 r[6.2:6#normative]
-Field initializers must be provided in the same order as the struct definition.
+Field initializers may be provided in any order.
 
 r[6.2:7]
 ```rue
 struct Point { x: i32, y: i32 }
 
 fn main() -> i32 {
-    let p = Point { x: 10, y: 20 };
+    // Fields can be initialized in any order
+    let p = Point { y: 20, x: 10 };
     p.x + p.y
 }
 ```

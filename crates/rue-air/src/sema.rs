@@ -1771,7 +1771,43 @@ impl<'a> Sema<'a> {
                 // Type check
                 expectation.check(struct_type, inst.span)?;
 
-                // Check that all fields are provided and no extra fields
+                // Build a map from field name to struct field index for efficient lookup
+                let field_index_map: std::collections::HashMap<&str, usize> = struct_def
+                    .fields
+                    .iter()
+                    .enumerate()
+                    .map(|(i, f)| (f.name.as_str(), i))
+                    .collect();
+
+                // Check for unknown or duplicate fields
+                let mut seen_fields = std::collections::HashSet::new();
+                for (init_field_name, _) in field_inits.iter() {
+                    let init_name = self.interner.get(*init_field_name);
+
+                    // Check if field exists in struct
+                    if !field_index_map.contains_key(init_name) {
+                        return Err(CompileError::new(
+                            ErrorKind::UnknownField {
+                                struct_name: struct_def.name.clone(),
+                                field_name: init_name.to_string(),
+                            },
+                            inst.span,
+                        ));
+                    }
+
+                    // Check for duplicate field
+                    if !seen_fields.insert(init_name) {
+                        return Err(CompileError::new(
+                            ErrorKind::DuplicateField {
+                                struct_name: struct_def.name.clone(),
+                                field_name: init_name.to_string(),
+                            },
+                            inst.span,
+                        ));
+                    }
+                }
+
+                // Check that all fields are provided
                 if field_inits.len() != struct_def.fields.len() {
                     return Err(CompileError::new(
                         ErrorKind::WrongFieldCount {
@@ -1783,36 +1819,28 @@ impl<'a> Sema<'a> {
                     ));
                 }
 
-                // Check that fields are in declaration order
-                for (i, (init_field_name, _)) in field_inits.iter().enumerate() {
+                // Analyze field values in SOURCE ORDER (left-to-right as written)
+                // This is important for evaluation order semantics
+                let mut analyzed_fields: Vec<Option<AirRef>> = vec![None; struct_def.fields.len()];
+                for (init_field_name, field_value) in field_inits.iter() {
                     let init_name = self.interner.get(*init_field_name);
-                    let expected_name = &struct_def.fields[i].name;
-                    if init_name != expected_name {
-                        return Err(CompileError::new(
-                            ErrorKind::FieldWrongOrder {
-                                struct_name: struct_def.name.clone(),
-                                expected_field: expected_name.clone(),
-                                found_field: init_name.to_string(),
-                            },
-                            inst.span,
-                        ));
-                    }
-                }
+                    let field_idx = field_index_map[init_name];
+                    let struct_field = &struct_def.fields[field_idx];
 
-                // Analyze field values - since we've verified the order matches,
-                // we can directly iterate over field_inits paired with struct fields
-                let mut field_refs = Vec::new();
-                for ((_, field_value), struct_field) in
-                    field_inits.iter().zip(struct_def.fields.iter())
-                {
                     let field_result = self.analyze_inst(
                         air,
                         *field_value,
                         TypeExpectation::Check(struct_field.ty),
                         ctx,
                     )?;
-                    field_refs.push(field_result.air_ref);
+                    analyzed_fields[field_idx] = Some(field_result.air_ref);
                 }
+
+                // Collect field refs in DECLARATION ORDER for the AIR instruction
+                let field_refs: Vec<AirRef> = analyzed_fields
+                    .into_iter()
+                    .map(|opt| opt.expect("all fields should be initialized"))
+                    .collect();
 
                 let air_ref = air.add_inst(AirInst {
                     data: AirInstData::StructInit {
