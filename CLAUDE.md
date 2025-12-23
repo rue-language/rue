@@ -12,8 +12,6 @@ Rue is a systems programming language aiming for memory safety without garbage c
 
 This project uses Buck2 (via `./buck2` wrapper script), not Cargo.
 
-You will need to source `~/.profile` before running any commands.
-
 ### Common Commands
 
 ```bash

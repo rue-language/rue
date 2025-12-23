@@ -3,5 +3,17 @@
     "allow": [
       "Bash(curl:*)"
     ]
+  },
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash -c 'if [ -n \"$CLAUDE_ENV_FILE\" ]; then echo \"source ~/.profile\" >> \"$CLAUDE_ENV_FILE\"; fi'"
+          }
+        ]
+      }
+    ]
   }
 }
