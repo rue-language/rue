@@ -35,7 +35,7 @@ Compile and run it:
 ```bash
 ./buck2 run //crates/rue:rue -- hello.rue hello
 ./hello
-# prints: [hello.rue:2] 42 = 42
+# prints: 42
 echo $?  # prints: 0
 ```
 
