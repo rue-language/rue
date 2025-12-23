@@ -1,0 +1,88 @@
+# Hermetic Rust toolchain configuration
+#
+# Downloads prebuilt Rust toolchains for reproducible builds.
+# The toolchain includes rustc, cargo, rust-lld, and the standard library.
+
+load(":defs.bzl", "RUST_VERSION", "RUST_RELEASES", "hermetic_rust_toolchain", "rustfmt", "host_rustfmt")
+
+# Download Rust for Linux x86_64
+http_archive(
+    name = "rust-linux-x86_64",
+    urls = [RUST_RELEASES["x86_64-unknown-linux-gnu"].url],
+    sha256 = RUST_RELEASES["x86_64-unknown-linux-gnu"].sha256,
+    strip_prefix = "rust-{}-x86_64-unknown-linux-gnu".format(RUST_VERSION),
+    type = "tar.xz",
+    visibility = [],
+)
+
+# Download Rust for macOS ARM64 (Apple Silicon)
+http_archive(
+    name = "rust-macos-aarch64",
+    urls = [RUST_RELEASES["aarch64-apple-darwin"].url],
+    sha256 = RUST_RELEASES["aarch64-apple-darwin"].sha256,
+    strip_prefix = "rust-{}-aarch64-apple-darwin".format(RUST_VERSION),
+    type = "tar.xz",
+    visibility = [],
+)
+
+# Download Rust for macOS x86_64 (Intel)
+http_archive(
+    name = "rust-macos-x86_64",
+    urls = [RUST_RELEASES["x86_64-apple-darwin"].url],
+    sha256 = RUST_RELEASES["x86_64-apple-darwin"].sha256,
+    strip_prefix = "rust-{}-x86_64-apple-darwin".format(RUST_VERSION),
+    type = "tar.xz",
+    visibility = [],
+)
+
+# Hermetic toolchain for Linux x86_64
+hermetic_rust_toolchain(
+    name = "hermetic-linux-x86_64",
+    distribution = ":rust-linux-x86_64",
+    target_triple = "x86_64-unknown-linux-gnu",
+    default_edition = "2024",
+    visibility = ["PUBLIC"],
+)
+
+# Hermetic toolchain for macOS ARM64
+hermetic_rust_toolchain(
+    name = "hermetic-macos-aarch64",
+    distribution = ":rust-macos-aarch64",
+    target_triple = "aarch64-apple-darwin",
+    default_edition = "2024",
+    visibility = ["PUBLIC"],
+)
+
+# Hermetic toolchain for macOS x86_64
+hermetic_rust_toolchain(
+    name = "hermetic-macos-x86_64",
+    distribution = ":rust-macos-x86_64",
+    target_triple = "x86_64-apple-darwin",
+    default_edition = "2024",
+    visibility = ["PUBLIC"],
+)
+
+# Rustfmt for each platform
+rustfmt(
+    name = "rustfmt-linux-x86_64",
+    distribution = ":rust-linux-x86_64",
+    visibility = ["PUBLIC"],
+)
+
+rustfmt(
+    name = "rustfmt-macos-aarch64",
+    distribution = ":rust-macos-aarch64",
+    visibility = ["PUBLIC"],
+)
+
+rustfmt(
+    name = "rustfmt-macos-x86_64",
+    distribution = ":rust-macos-x86_64",
+    visibility = ["PUBLIC"],
+)
+
+# Host-platform rustfmt alias - automatically selects the right platform
+host_rustfmt(
+    name = "rustfmt",
+    visibility = ["PUBLIC"],
+)

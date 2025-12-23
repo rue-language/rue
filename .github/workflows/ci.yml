@@ -8,18 +8,22 @@ on:
   merge_group:
     branches: [trunk]
 
+# Cancel in-progress runs for the same branch
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   fmt:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt
+      - name: Install dotslash
+        uses: facebook/install-dotslash@latest
 
       - name: Check formatting
+        # Uses hermetic rustfmt from Buck2 toolchain
         run: ./fmt.sh check
 
   test:
@@ -30,11 +34,20 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-
       - name: Install dotslash
         uses: facebook/install-dotslash@latest
 
+      # Cache Buck2 outputs including downloaded Rust toolchain
+      - name: Cache Buck2 outputs
+        uses: actions/cache@v4
+        with:
+          path: |
+            buck-out/v2/gen
+            ~/.cache/buck2
+          key: buck2-${{ runner.os }}-${{ hashFiles('**/BUCK', 'toolchains/rust/defs.bzl') }}
+          restore-keys: |
+            buck2-${{ runner.os }}-
+
+      # Uses hermetic Rust toolchain downloaded by Buck2
       - name: Run tests
         run: ./test.sh

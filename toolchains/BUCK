@@ -1,7 +1,20 @@
+# Toolchain configuration for Rue
+#
+# Status: Hermetic Rust toolchain
+# - Rust toolchain: Downloaded prebuilt binaries (Rust 1.92.0)
+# - C++ toolchain: System (clang/gcc)
+#
+# The hermetic Rust toolchain downloads prebuilt binaries for each platform,
+# ensuring reproducible builds without depending on system-installed rustc.
+#
+# Note: Building the Rue *compiler* is hermetic. However, *running* the Rue
+# compiler to produce executables has platform-specific requirements:
+# - Linux x86_64: Fully hermetic (uses internal ELF linker)
+# - macOS ARM64/x86_64: Requires Xcode Command Line Tools (uses system clang)
+
 load("@prelude//toolchains:cxx.bzl", "system_cxx_toolchain")
 load("@prelude//toolchains:genrule.bzl", "system_genrule_toolchain")
 load("@prelude//toolchains:python.bzl", "system_python_bootstrap_toolchain")
-load("@prelude//toolchains:rust.bzl", "system_rust_toolchain")
 load("@prelude//tests:test_toolchain.bzl", "noop_test_toolchain")
 load(":remote_test_execution.bzl", "noop_remote_test_execution_toolchain")
 
@@ -20,11 +33,25 @@ system_python_bootstrap_toolchain(
     visibility = ["PUBLIC"],
 )
 
-system_rust_toolchain(
+# Hermetic Rust toolchain - downloads prebuilt Rust binaries
+# Platform selection happens via select() based on host OS and CPU.
+#
+# Supported platforms:
+# - Linux x86_64: toolchains//rust:hermetic-linux-x86_64
+# - macOS ARM64:  toolchains//rust:hermetic-macos-aarch64
+# - macOS x86_64: toolchains//rust:hermetic-macos-x86_64
+toolchain_alias(
     name = "rust",
-    default_edition = "2024",
+    actual = select({
+        "prelude//os:linux": "toolchains//rust:hermetic-linux-x86_64",
+        "prelude//os:macos": select({
+            "prelude//cpu:arm64": "toolchains//rust:hermetic-macos-aarch64",
+            "prelude//cpu:x86_64": "toolchains//rust:hermetic-macos-x86_64",
+        }),
+    }),
     visibility = ["PUBLIC"],
 )
+
 
 noop_test_toolchain(
     name = "test",

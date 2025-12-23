@@ -1,0 +1,62 @@
+# Hermetic linker configuration (documentation only)
+#
+# This file documents linker options for future use. No build rules are defined here yet.
+#
+# Current Rue compiler linking behavior:
+# - Linux x86_64: Uses internal rue-linker (fully hermetic, emits ELF directly)
+# - macOS ARM64/x86_64: Uses system clang (requires Xcode Command Line Tools)
+#
+# Future: Could use rust-lld from the hermetic Rust toolchain for macOS,
+# but would still need macOS SDK for libSystem and code signing.
+
+# =============================================================================
+# Linker Options
+# =============================================================================
+#
+# RECOMMENDED: Use rust-lld from the Rust toolchain
+#
+# rust-lld is bundled with every Rust installation at:
+#   lib/rustlib/{triple}/bin/rust-lld
+#
+# Benefits:
+# - Cross-platform: Linux, macOS, Windows
+# - Already included in Rust download (~116MB, no extra download)
+# - Drop-in replacement for system linkers
+# - Much faster than GNU ld
+#
+# To use rust-lld with the Rue compiler, pass it as the linker command.
+# The path varies by platform:
+#   Linux:   ~/.rustup/toolchains/{version}-{triple}/lib/rustlib/{triple}/bin/rust-lld
+#   macOS:   ~/.rustup/toolchains/{version}-{triple}/lib/rustlib/{triple}/bin/rust-lld
+#   Windows: %USERPROFILE%\.rustup\toolchains\{version}-{triple}\lib\rustlib\{triple}\bin\rust-lld.exe
+
+# Alternative: mold (Linux only, smaller and faster)
+#
+# mold is a very fast linker but only available for Linux.
+# For cross-platform builds, rust-lld is preferred.
+
+MOLD_VERSION = "2.40.4"
+
+MOLD_RELEASES = {
+    "x86_64-linux": struct(
+        url = "https://github.com/rui314/mold/releases/download/v2.40.4/mold-2.40.4-x86_64-linux.tar.gz",
+        sha256 = "4c999e19ffa31afa5aa429c679b665d5e2ca5a6b6832ad4b79668e8dcf3d8ec1",
+        binary = "bin/mold",
+    ),
+    "aarch64-linux": struct(
+        url = "https://github.com/rui314/mold/releases/download/v2.40.4/mold-2.40.4-aarch64-linux.tar.gz",
+        sha256 = "c799b9ccae8728793da2186718fbe53b76400a9da396184fac0c64aa3298ec37",
+        binary = "bin/mold",
+    ),
+}
+
+# Linker comparison:
+#
+# | Linker    | Platforms           | Size   | Speed     | Notes                    |
+# |-----------|---------------------|--------|-----------|--------------------------|
+# | rust-lld  | Linux, macOS, Win   | ~116MB | Fast      | Bundled with Rust        |
+# | mold      | Linux only          | ~5MB   | Very fast | Separate download        |
+# | lld       | Linux, macOS, Win   | ~1.6GB | Fast      | Full LLVM required       |
+# | ld (GNU)  | Linux               | System | Slow      | System linker            |
+# | ld64      | macOS               | System | Medium    | Xcode required           |
+# | link.exe  | Windows             | System | Medium    | MSVC required            |

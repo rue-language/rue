@@ -1,0 +1,6 @@
+# This file is for rustup users (IDE integration, running cargo directly).
+# Buck2 uses the hermetic toolchain in toolchains/rust/ instead.
+# Keep the version in sync with RUST_VERSION in toolchains/rust/defs.bzl.
+[toolchain]
+channel = "1.92.0"
+components = ["rustfmt"]

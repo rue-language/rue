@@ -4,9 +4,25 @@ This document covers how to build, test, and contribute to the Rue compiler.
 
 ## Prerequisites
 
-- Rust toolchain (rustc, cargo)
-- dotslash, for bootstrapping buck2
-- Linux x86-64 (for running compiled binaries)
+### Required
+
+- **dotslash** - For bootstrapping Buck2. Install via `brew install dotslash` (macOS) or see [dotslash docs](https://dotslash-cli.com/).
+
+### Platform-Specific
+
+The Rust toolchain is downloaded automatically by Buck2 (hermetic build). However, running Rue programs has platform requirements:
+
+| Platform | Requirements |
+|----------|--------------|
+| Linux x86_64 | None (fully hermetic) |
+| macOS ARM64 | Xcode Command Line Tools (`xcode-select --install`) |
+| macOS x86_64 | Xcode Command Line Tools (`xcode-select --install`) |
+
+**Why macOS needs Xcode**: The Rue compiler uses the system `clang` to link executables on macOS. On Linux, Rue uses its own internal ELF linker.
+
+### Optional (for IDE support)
+
+- **Rust toolchain via rustup** - For IDE features (rust-analyzer, etc.). The `rust-toolchain.toml` in the repo root ensures the right version.
 
 ## Repository Structure
 
