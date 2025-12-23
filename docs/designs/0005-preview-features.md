@@ -1,8 +1,28 @@
-# ADR-020: Preview Features
+---
+id: 0005
+title: Preview Features
+status: accepted
+tags: [process]
+feature-flag: preview-features
+created: 2025-01-01
+accepted: 2025-01-01
+implemented:
+spec-sections: []
+superseded-by:
+---
+
+<!-- Note: This is the ADR that introduces the preview feature system itself.
+     Ironically, it has a placeholder feature-flag to satisfy its own schema. -->
+
+# ADR-0005: Preview Features
 
 ## Status
 
-Proposed
+Accepted
+
+## Summary
+
+Introduce a preview feature gating mechanism that allows in-progress language features to be merged to main behind flags, enabling incremental development and test-driven implementation.
 
 ## Context
 
@@ -80,19 +100,9 @@ impl PreviewFeature {
 
     pub fn adr(&self) -> Option<&'static str> {
         match *self {
-            // Example: PreviewFeature::InoutParams => Some("ADR-XXX"),
+            // Example: PreviewFeature::InoutParams => Some("ADR-0006"),
         }
     }
-}
-```
-
-### Compile Options
-
-```rust
-pub struct CompileOptions {
-    pub target: Target,
-    pub linker: LinkerMode,
-    pub preview_features: HashSet<PreviewFeature>,
 }
 ```
 
@@ -146,32 +156,6 @@ The test runner:
 2. **Allows preview tests to fail** without failing the overall suite
 3. **Reports progress** on each preview feature
 
-### Test Runner Output
-
-```
-Running spec tests...
-
-=== Stable Tests ===
-expressions.arithmetic::add_basic                    ... ok
-expressions.arithmetic::sub_basic                    ... ok
-types.strings::string_literal_eq                     ... ok
-...
-Stable: 750 passed, 0 failed
-
-=== Preview: inout_params ===
-params.inout::inout_basic                            ... ok
-params.inout::inout_nested                           ... FAILED
-params.inout::inout_exclusivity                      ... FAILED
-...
-inout_params: 5/18 passed (27%)
-
-=== Summary ===
-Stable: 750/750 PASSED
-Preview: inout_params 5/18 (27%)
-
-Result: PASS (all stable tests passed)
-```
-
 ### Stabilization
 
 When all tests for a preview feature pass:
@@ -179,81 +163,15 @@ When all tests for a preview feature pass:
 1. Remove `preview = "..."` from spec tests
 2. Remove the `require_preview()` gate from sema
 3. Remove the feature from the `PreviewFeature` enum
-4. Update the ADR status to "Stable"
+4. Update the ADR status to "Implemented"
 
 The feature is now part of stable Rue.
 
-### Verifying Gates Work
+## Implementation Phases
 
-For each preview feature, add a stable test that verifies the gate:
-
-```toml
-[[case]]
-name = "inout_requires_preview"
-source = """
-fn foo(inout x: i32) { }
-fn main() -> i32 { 0 }
-"""
-compile_fail = true
-error_contains = "requires preview feature"
-```
-
-This test runs without any preview flag and ensures the error message is correct.
-
-## Feature Size Guidelines
-
-Not every feature needs preview gating. Use this heuristic:
-
-### Small Features (no preview needed)
-
-- Touches 1-3 files
-- Single concept (new operator, syntax sugar)
-- No new runtime functions
-- No new IR instructions
-- Completable in one session/commit
-
-Examples: `%` operator, `else if` syntax, unary `+`
-
-### Large Features (preview required)
-
-- Touches many files across multiple crates
-- Multiple implementation phases
-- New runtime support functions
-- New IR instruction kinds
-- New type system concepts
-- Multi-session implementation
-
-Examples: inout parameters, traits, generics
-
-### Decision Process
-
-When starting a feature, ask:
-1. Does this need an ADR? → Probably needs preview
-2. Does this add runtime functions? → Probably needs preview
-3. Does this change the type system? → Probably needs preview
-4. Can I finish this in one commit with confidence? → Probably doesn't need preview
-
-## Implementation Plan
-
-### Phase 1: Infrastructure
-
-1. Add `PreviewFeature` enum to `rue-compiler`
-2. Add `preview_features` to `CompileOptions`
-3. Add `--preview` flag to CLI argument parsing
-4. Add `PreviewFeatureRequired` error kind
-
-### Phase 2: Test Runner
-
-1. Add `preview` field to spec test case schema
-2. Update test runner to pass `--preview` when running preview tests
-3. Update test runner to allow preview test failures
-4. Add progress reporting for preview features
-
-### Phase 3: First Feature
-
-1. When a new large feature is started, add `preview = "<feature>"` to its tests
-2. Add gates to sema for the feature's operations
-3. Verify stable tests still pass
+- [ ] **Phase 1: Infrastructure** - Add PreviewFeature enum, CompileOptions, CLI flag, error kind
+- [ ] **Phase 2: Test runner** - Add preview field to test schema, update runner to handle preview tests
+- [ ] **Phase 3: First feature** - Gate a new feature with the system
 
 ## Consequences
 
@@ -271,41 +189,16 @@ When starting a feature, ask:
 - **Gate maintenance**: Must remember to remove gates on stabilization
 - **Two test modes**: Mental overhead of stable vs preview
 
-### Mitigations
+## Open Questions
 
-- Keep the feature registry simple (just an enum)
-- Stabilization checklist in ADRs
-- Test runner makes the distinction clear
+- Should we support multiple `--preview` flags, or a comma-separated list?
 
-## Alternatives Considered
+## Future Work
 
-### Expected Failures Only
+- Preview feature progress dashboard
+- Automatic tracking of preview feature test pass rates
 
-Mark tests as `expected_fail = true` without compiler gates.
+## References
 
-Rejected because:
-- Can't actually use the feature (no `--preview` flag)
-- Can't ship incremental working functionality
-- Just tracks "this is broken" not "this is in progress"
-
-### Nightly/Stable Channels
-
-Separate compiler builds like Rust.
-
-Rejected because:
-- Too much infrastructure for a small project
-- "Nightly" implies daily releases, which isn't our cadence
-- Preview features are simpler and sufficient
-
-### No Gating
-
-Just implement features and fix bugs.
-
-Rejected because:
-- This is what we tried with mutable strings
-- 18 failing tests with no isolation of what's broken
-- Can't ship partial progress
-
-## Related
-
-- `.claude/commands/feature.md` (workflow for implementing features)
+- Rust's feature gates and editions
+- TC39 proposal stages

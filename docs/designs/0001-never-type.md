@@ -1,8 +1,28 @@
-# ADR-010: The Never Type (!)
+---
+id: 0001
+title: The Never Type
+status: implemented
+tags: [types]
+feature-flag: never-type
+created: 2025-01-01
+accepted: 2025-01-01
+implemented: 2025-01-01
+spec-sections: []
+superseded-by:
+---
+
+<!-- Note: This ADR predates the preview feature system (ADR-0005). The feature-flag
+     is a placeholder to satisfy the schema; this feature was not actually gated. -->
+
+# ADR-0001: The Never Type (!)
 
 ## Status
 
-Accepted (Implemented)
+Implemented
+
+## Summary
+
+Add a `Never` type that represents computations that never produce a value, allowing `break` and `continue` to be used in expression position.
 
 ## Context
 
@@ -22,7 +42,7 @@ Add a `Never` type to Rue's type system that represents computations that never 
 
 #### 1. Extend the Type enum
 
-In [rue-air/src/types.rs](../../crates/rue-air/src/types.rs):
+In `rue-air/src/types.rs`:
 
 ```rust
 pub enum Type {
@@ -70,7 +90,7 @@ The key insight is that the current type unification uses strict equality (`==`)
 
 #### 1. Update branch type unification
 
-In [rue-air/src/sema.rs](../../crates/rue-air/src/sema.rs), the branch handling (around line 497-561) currently does:
+In `rue-air/src/sema.rs`, the branch handling currently does:
 
 ```rust
 // Current code
@@ -155,7 +175,7 @@ InstData::Break | InstData::Continue => Ok(Type::Never),
 
 ### Code Generation Changes
 
-Code generation ([rue-codegen/src/lib.rs](../../crates/rue-codegen/src/lib.rs)) should handle `Never` type gracefully:
+Code generation should handle `Never` type gracefully:
 
 1. **No value to move**: When lowering a `Never`-typed instruction to a register, it's unreachable code. The existing break/continue handling already emits a jump, so the "value" is never actually used.
 
@@ -176,31 +196,9 @@ The existing code gen likely needs minimal changes because:
 
 **None required** for this phase. The grammar already supports break/continue as primary expressions. They simply weren't being used in expression contexts due to type system limitations.
 
-## Phases of Implementation
+## Implementation Phases
 
-### Phase 1: Core Never Type (This ADR)
-
-1. Add `Type::Never` variant
-2. Update `break`/`continue` to produce `Never`
-3. Update branch unification to handle `Never`
-4. Update type checking to allow `Never` coercion
-
-### Phase 2: Future Extensions (Separate ADRs)
-
-- `loop { }` keyword (infinite loop with type `!`)
-- `panic!()` or similar (function that returns `!`)
-- `-> !` return type annotation
-- Dead code detection after diverging expressions
-- `return` statement (returns `!` to caller)
-
-## File Changes Summary
-
-| File | Changes |
-|------|---------|
-| `crates/rue-air/src/types.rs` | Add `Never` variant, `is_never()`, `can_coerce_to()` |
-| `crates/rue-air/src/sema.rs` | Update branch unification, break/continue typing, type checks |
-| `crates/rue-spec/cases/14-never-type.toml` | New spec file with test cases |
-| `docs/language.md` | Update documentation |
+- [x] **Phase 1: Core Never Type** - Add Type::Never, update break/continue typing, branch unification, type coercion
 
 ## Consequences
 
@@ -216,33 +214,18 @@ The existing code gen likely needs minimal changes because:
 - **Complexity**: Type system moves from equality to subsumption (though localized)
 - **Learning curve**: Users must understand why `break` can appear in value position
 
-### Neutral
+## Open Questions
 
-- **No syntax changes**: Users don't write `!` themselves (in this phase)
-- **Backwards compatible**: All existing code continues to work
+None remaining.
 
-## Test Plan
+## Future Work
 
-The specification file `crates/rue-spec/cases/14-never-type.toml` contains comprehensive tests:
+- `loop { }` keyword (infinite loop with type `!`)
+- `panic!()` or similar (function that returns `!`)
+- `-> !` return type annotation
+- Dead code detection after diverging expressions
+- `return` statement (returns `!` to caller)
 
-1. **Basic break/continue in branches** (8 tests)
-2. **Nested if expressions** (2 tests)
-3. **Both branches diverge** (2 tests)
-4. **Arithmetic expressions** (2 tests)
-5. **Function arguments** (2 tests)
-6. **Variable assignment** (2 tests)
-7. **Chained if-else** (3 tests)
-8. **Complex control flow** (3 tests)
-9. **Error cases** (3 tests)
-10. **Edge cases** (5 tests)
+## References
 
-Run with: `./buck2 run //crates/rue-spec:rue-spec -- "14.1"`
-
-## Acceptance Criteria
-
-- [ ] All tests in `14-never-type.toml` pass
-- [ ] Existing tests continue to pass (`./test.sh`)
-- [ ] `break` and `continue` can appear in expression position inside loops
-- [ ] Type inference correctly uses the non-diverging branch type
-- [ ] Error messages for type mismatches are still clear
-- [ ] `break`/`continue` outside loops still produce clear errors
+- Rust's never type documentation

@@ -11,29 +11,38 @@ Current change:
 !jj show
 ```
 
-## Your Task
+## Task
 
-Create a commit for the current changes.
+Create a commit following `docs/process/committing.md`.
 
 If a message was provided: $ARGUMENTS
 - Use it as the basis for the commit message
 
 If no message was provided:
-- Analyze the changes and write an appropriate commit message
+- Analyze the changes and write an appropriate message
 
-Commit message guidelines:
+## Commit Message Guidelines
+
 - Use imperative mood ("Add feature" not "Added feature")
-- First line: concise summary (50 chars or less preferred)
-- If needed, add blank line then detailed explanation
-- Reference bd issue IDs if applicable (e.g., "Fixes bd-42")
-- Consider what someone reading this in the future would want to see
-  - Is the message too in-the-weeds? Things like a list of changed files are already found in the VCS tooling, and so are irrelevant here.
-  - Does the message adequately describe the changes made?
-  - Does the message provide context for why these changes were made?
+- First line: concise summary (50 chars preferred, 72 max)
+- Optional body: explain what and why (not how)
+- Reference bd issues: "Fixes bd-42" or "Related to bd-42"
 
-If there are bd issues related to this work that should be closed, also run:
-`bd close <id> --reason "Completed in commit"`
+## Workflow
 
-Use `jj commit -m "<message>"` to create the commit as the final step.
+1. **Close related bd issues first** (so closure is in the commit):
+   ```bash
+   bd close <id> --reason "Completed"
+   ```
 
-IMPORTANT: close the issue with `bd close` **before** you run `jj commit`, as we want to make sure that the issue being closed is associated with this commit.
+2. **Create the commit**:
+   ```bash
+   jj commit -m "<message>"
+   ```
+
+## Important
+
+- Close issues with `bd close` BEFORE `jj commit`
+- Each commit should leave tests passing
+- Don't include file lists (VCS shows that)
+- Don't commit WIP or debug code
