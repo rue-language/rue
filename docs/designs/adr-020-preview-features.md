@@ -8,9 +8,8 @@ Proposed
 
 Large features in Rue often require multiple implementation phases spanning several commits or development sessions. Examples include:
 
-- **Mutable strings** (ADR-019): Runtime allocator, 3-tuple representation, clone semantics, drop insertion, concatenation
 - **Inout parameters** (future): Parser changes, exclusivity analysis, codegen calling convention
-- **Enums** (future): New type kind, pattern matching, memory layout
+- **Traits** (future): Trait definitions, impl blocks, method resolution
 
 When implementing these features in a single commit, several problems arise:
 
@@ -38,20 +37,20 @@ Introduce **preview features** - a gating mechanism for in-progress language fea
 ### Compiler Flag
 
 ```bash
-rue --preview mutable_strings source.rue output
+rue --preview inout_params source.rue output
 ```
 
 Code using preview features without the flag produces a clear error:
 
 ```
-error: string concatenation requires preview feature `mutable_strings`
-  --> source.rue:3:13
+error: inout parameters require preview feature `inout_params`
+  --> source.rue:1:12
    |
- 3 |     let c = "a" + "b";
-   |             ^^^^^^^^^
+ 1 | fn foo(inout x: i32) { }
+   |        ^^^^^
    |
-   = help: compile with `--preview mutable_strings` to enable
-   = note: preview features may change or be removed; see ADR-019
+   = help: compile with `--preview inout_params` to enable
+   = note: preview features may change or be removed
 ```
 
 ### Feature Registry
@@ -61,26 +60,27 @@ error: string concatenation requires preview feature `mutable_strings`
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum PreviewFeature {
-    MutableStrings,
+    // Add preview features here as needed
+    // Example: InoutParams,
 }
 
 impl PreviewFeature {
     pub fn name(&self) -> &'static str {
-        match self {
-            PreviewFeature::MutableStrings => "mutable_strings",
+        match *self {
+            // Example: PreviewFeature::InoutParams => "inout_params",
         }
     }
 
     pub fn from_str(s: &str) -> Option<Self> {
         match s {
-            "mutable_strings" => Some(PreviewFeature::MutableStrings),
+            // Example: "inout_params" => Some(PreviewFeature::InoutParams),
             _ => None,
         }
     }
 
-    pub fn adr(&self) -> &'static str {
-        match self {
-            PreviewFeature::MutableStrings => "ADR-019",
+    pub fn adr(&self) -> Option<&'static str> {
+        match *self {
+            // Example: PreviewFeature::InoutParams => Some("ADR-XXX"),
         }
     }
 }
@@ -101,10 +101,10 @@ pub struct CompileOptions {
 When analyzing code that requires a preview feature:
 
 ```rust
-// In sema.rs
-fn analyze_binary_op(&mut self, op: BinOp, lhs: AirRef, rhs: AirRef, span: Span) -> Result<...> {
-    if op == BinOp::Add && lhs_type == Type::String && rhs_type == Type::String {
-        self.require_preview(PreviewFeature::MutableStrings, "string concatenation", span)?;
+// In sema.rs - example for a hypothetical feature
+fn analyze_param(&mut self, param: &Param, span: Span) -> Result<...> {
+    if param.is_inout {
+        self.require_preview(PreviewFeature::InoutParams, "inout parameters", span)?;
         // ... proceed with implementation
     }
 }
@@ -126,15 +126,19 @@ Tests can declare which preview feature they require:
 
 ```toml
 [[case]]
-name = "string_concat_basic"
-preview = "mutable_strings"
+name = "inout_basic"
+preview = "inout_params"
 source = """
+fn increment(inout x: i32) {
+    x = x + 1;
+}
 fn main() -> i32 {
-    let c = "hello" + " world";
-    if c == "hello world" { 1 } else { 0 }
+    let mut n = 41;
+    increment(inout n);
+    n
 }
 """
-exit_code = 1
+exit_code = 42
 ```
 
 The test runner:
@@ -154,16 +158,16 @@ types.strings::string_literal_eq                     ... ok
 ...
 Stable: 750 passed, 0 failed
 
-=== Preview: mutable_strings ===
-types.strings::string_concat_basic                   ... ok
-types.strings::string_concat_chained                 ... FAILED
-types.strings::string_copy_semantics                 ... FAILED
+=== Preview: inout_params ===
+params.inout::inout_basic                            ... ok
+params.inout::inout_nested                           ... FAILED
+params.inout::inout_exclusivity                      ... FAILED
 ...
-mutable_strings: 5/18 passed (27%)
+inout_params: 5/18 passed (27%)
 
 === Summary ===
 Stable: 750/750 PASSED
-Preview: mutable_strings 5/18 (27%)
+Preview: inout_params 5/18 (27%)
 
 Result: PASS (all stable tests passed)
 ```
@@ -185,12 +189,10 @@ For each preview feature, add a stable test that verifies the gate:
 
 ```toml
 [[case]]
-name = "string_concat_requires_preview"
+name = "inout_requires_preview"
 source = """
-fn main() -> i32 {
-    let c = "a" + "b";
-    0
-}
+fn foo(inout x: i32) { }
+fn main() -> i32 { 0 }
 """
 compile_fail = true
 error_contains = "requires preview feature"
@@ -221,7 +223,7 @@ Examples: `%` operator, `else if` syntax, unary `+`
 - New type system concepts
 - Multi-session implementation
 
-Examples: mutable strings, inout parameters, enums, traits
+Examples: inout parameters, traits, generics
 
 ### Decision Process
 
@@ -247,10 +249,10 @@ When starting a feature, ask:
 3. Update test runner to allow preview test failures
 4. Add progress reporting for preview features
 
-### Phase 3: Migration
+### Phase 3: First Feature
 
-1. Add `preview = "mutable_strings"` to existing mutable string tests
-2. Add gates to sema for mutable string operations
+1. When a new large feature is started, add `preview = "<feature>"` to its tests
+2. Add gates to sema for the feature's operations
 3. Verify stable tests still pass
 
 ## Consequences
@@ -306,5 +308,4 @@ Rejected because:
 
 ## Related
 
-- ADR-019: Mutable Strings (first feature to use preview gating)
 - `.claude/commands/feature.md` (workflow for implementing features)
