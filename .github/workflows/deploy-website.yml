@@ -31,9 +31,6 @@ jobs:
       - name: Setup dotslash
         uses: facebook/install-dotslash@latest
 
-      - name: Vendor dependencies
-        run: cd third-party && dotslash ../reindeer vendor
-
       - name: Build mdbook-spec preprocessor
         run: |
           ./buck2 build //docs/spec/tools/mdbook-spec:mdbook-spec || exit 1

@@ -36,8 +36,5 @@ jobs:
       - name: Install dotslash
         run: cargo install dotslash
 
-      - name: Vendor dependencies
-        run: cd third-party && dotslash ../reindeer vendor
-
       - name: Run tests
         run: ./test.sh
