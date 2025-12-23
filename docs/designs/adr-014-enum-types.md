@@ -1,8 +1,8 @@
-# ADR-013: Enum Types (Discriminated Unions Without Data)
+# ADR-014: Enum Types (Discriminated Unions Without Data)
 
 ## Status
 
-Proposed
+Accepted (Implemented)
 
 ## Context
 
