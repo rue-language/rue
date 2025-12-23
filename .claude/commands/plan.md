@@ -22,9 +22,11 @@ Use `/implement` to execute the plan once approved.
 
 ### Step 1: Understand the Feature
 
-1. **Clarify requirements** - Make sure you understand what's being asked
+1. **Clarify requirements** - Ask the user clarifying questions to fully understand the feature
 2. **Research the codebase** - Use Glob/Grep/Read to understand relevant code
 3. **Check for existing work** - Run `bd ready --json` to see if already tracked
+
+**Important:** Do NOT create any bd issues yet. We need to agree on the plan first.
 
 ### Step 2: Assess Feature Size
 
@@ -51,64 +53,95 @@ Examples:
 | Add unary `+` | Enums and pattern matching |
 | New warning type | Trait system |
 
-### Step 3: Create the Plan
+### Step 3: Draft the Plan
 
 **For small features:**
 
-1. Create a bd issue with clear scope:
-   ```bash
-   bd create "<feature title>" -t feature -p 2 --json
-   ```
-
-2. Present a brief implementation plan to the user:
-   - Which files need changes
-   - What spec sections need updates (if any)
-   - What tests need to be added
-   - Estimated complexity
+Present a brief implementation plan to the user:
+- Which files need changes
+- What spec sections need updates (if any)
+- What tests need to be added
+- Estimated complexity
 
 **For large features:**
 
-1. Create a bd issue:
-   ```bash
-   bd create "<feature title>" -t epic -p 2 --json
-   ```
-
-2. Draft an ADR in `docs/designs/adr-NNN-<feature>.md`:
+1. Draft an ADR in `docs/designs/adr-NNN-<feature>.md`:
    - Use the next available ADR number
    - Include clear implementation phases
    - Each phase should be independently committable
    - Reference ADR-020 for preview feature pattern
 
+2. Present the ADR to the user for review
+
+**Do NOT create bd issues yet.** The plan must be approved first.
+
+### Step 4: Iterate on the Plan
+
+Work with the user to refine the plan:
+- Answer questions about the approach
+- Adjust phases or scope as needed
+- Update the ADR based on feedback
+
+Continue iterating until the user explicitly approves the plan.
+
+### Step 5: Create Issues (After Approval Only)
+
+**Only after the user approves the plan**, create the bd issues:
+
+**For small features:**
+```bash
+bd create "<feature title>" -t feature -p 2 --json
+```
+
+**For large features:**
+
+1. Create the epic:
+   ```bash
+   bd create "<feature title>" -t epic -p 2 --json
+   ```
+
+2. Create a subtask for each implementation phase from the ADR:
+   ```bash
+   bd create "Phase 1: <description>" -t task --parent <epic-id> --json
+   bd create "Phase 2: <description>" -t task --parent <epic-id> --json
+   # ... etc
+   ```
+
 3. Add the feature to `PreviewFeature` enum in `crates/rue-error/src/lib.rs`
-
-4. Present the ADR to the user for approval
-
-### Step 4: Get Approval
-
-Present your plan and ask the user:
-- Does this scope look correct?
-- For large features: Do the phases make sense?
-- Any adjustments needed before implementation?
-
-**Do not proceed to implementation.** Tell the user to run `/implement <bd-id>` when ready.
 
 ## Output Format
 
-Your output should end with something like:
+**Before approval**, your output should be:
+
+```
+## Draft Plan
+
+**Type:** small/large feature
+**Files to modify:** <list>
+
+[For large features: ADR has been written to docs/designs/adr-NNN-<feature>.md]
+
+Please review the plan. Let me know if you'd like any changes, or say "approved" to create the bd issues.
+```
+
+**After approval**, your output should be:
 
 ```
 ## Plan Complete
 
-**Issue:** bd-XX - <title>
-**Type:** small/large feature
-**Files to modify:** <list>
+**Epic:** bd-XX - <title>
+**Subtasks:**
+- bd-YY - Phase 1: <description>
+- bd-ZZ - Phase 2: <description>
+- ...
 
-Ready to implement? Run: `/implement bd-XX`
+Ready to implement? Run: `/implement bd-YY` (or start with any subtask)
 ```
 
 ## Important Notes
 
 - This command is **planning only** - do not write implementation code
+- **Do NOT create bd issues until the user explicitly approves the plan**
 - Keep context usage low - don't read entire codebase
 - For large features, phases should be small enough to complete in one context window
-- The user may want to adjust the plan before implementing
+- Iterate on the ADR with the user until they're satisfied
