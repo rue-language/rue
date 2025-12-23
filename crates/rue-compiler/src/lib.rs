@@ -30,7 +30,10 @@ pub fn validate_runtime() -> Result<(), String> {
 pub use rue_air::{Air, AnalyzedFunction, ArrayTypeDef, Sema, SemaOutput, StructDef, Type};
 pub use rue_cfg::{Cfg, CfgBuilder, CfgOutput};
 pub use rue_codegen::X86Mir;
-pub use rue_error::{CompileError, CompileResult, CompileWarning, ErrorKind, WarningKind};
+pub use rue_error::{
+    CompileError, CompileResult, CompileWarning, ErrorKind, PreviewFeature, PreviewFeatures,
+    WarningKind,
+};
 pub use rue_intern::{Interner, Symbol};
 pub use rue_lexer::{Lexer, Token, TokenKind};
 pub use rue_linker::{Archive, CodeRelocation, Linker, ObjectBuilder, ObjectFile, RelocationType};
@@ -61,6 +64,8 @@ pub struct CompileOptions {
     pub target: Target,
     /// Which linker to use.
     pub linker: LinkerMode,
+    /// Enabled preview features.
+    pub preview_features: PreviewFeatures,
 }
 
 impl Default for CompileOptions {
@@ -68,6 +73,7 @@ impl Default for CompileOptions {
         Self {
             target: Target::host(),
             linker: LinkerMode::Internal,
+            preview_features: PreviewFeatures::new(),
         }
     }
 }

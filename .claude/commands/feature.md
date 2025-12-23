@@ -1,33 +1,71 @@
 ---
-description: Plan and implement a new feature
+description: Plan and implement a new feature (convenience wrapper)
 allowed-tools: Bash, Read, Write, Edit, Glob, Grep, Task
 argument-hint: <feature description>
 ---
 
 ## Context
 
-You are working on the Rue programming language compiler. Review the project structure and CLAUDE.md for context.
+You are working on the Rue programming language compiler.
 
 ## Your Task
 
 Plan and implement this feature: $ARGUMENTS
 
-Follow this workflow:
+## Recommended Workflow
 
-1. **Understand the request** - Clarify requirements if needed
-2. **Check for existing issues** - Run `bd ready --json` to see if this is already tracked
-3. **Create a bd issue** - Track this work with `bd create "<title>" -t feature -p 2 --json`
-4. **Plan the implementation** - Identify which crates need changes (see Architecture in CLAUDE.md)
-5. **Ask the user to accept the plan** - before getting started, make sure that they agree to the plan, and refine if necessary.
-6. **Update the specification** - If this changes language semantics, update `docs/spec/src/` with proper spec paragraph IDs (e.g., `<!-- spec:4.2:3 legality-rule -->`).
-7. **Add spec tests** - Add test cases to `crates/rue-spec/cases/` with `spec = ["X.Y:Z"]` references linking to the spec paragraphs.
-8. **Add UI tests** - If the feature includes warnings, lints, or diagnostic changes, add tests to `crates/rue-ui-tests/cases/`.
-9. **Implement incrementally** - Make changes, keeping tests passing as you go
-   - **If touching rue-codegen**: Implement changes in ALL backends (x86_64 and aarch64). See "Codegen: Multi-Backend Considerations" in CLAUDE.md.
-10. **Verify** - Run `./test.sh` to ensure:
-    - All tests pass
-    - Traceability check passes (100% spec coverage)
-11. **Add example** - Consider adding or modifying programs in the `examples` directory that show off this feature.
-12. **Close the issue** - `bd close <id> --reason "Implemented"`
+This command combines planning and implementation. For better context management, consider using the split commands:
 
-Remember: This project uses Buck2 (`./buck2`), not Cargo. Use jj for version control.
+1. **`/plan <description>`** - Creates a plan (ADR or bd issue)
+2. **`/implement <bd-id>`** - Implements a planned feature
+
+The split approach is better for:
+- Large features that span multiple sessions
+- When you want to review the plan before implementing
+- When context window limits are a concern
+
+## Combined Workflow
+
+If proceeding with combined planning + implementation:
+
+### Step 1: Plan (see /plan for details)
+
+1. Understand and research the feature
+2. Assess size (small vs large)
+3. Create bd issue (and ADR for large features)
+4. Present plan to user for approval
+
+### Step 2: Get Approval
+
+Before implementing, confirm with the user:
+- Does the scope look correct?
+- Ready to proceed with implementation?
+
+### Step 3: Implement (see /implement for details)
+
+1. Update specification if needed
+2. Add tests first
+3. Make code changes
+4. Run `./test.sh`
+5. Run `/code-review`
+6. Run `/commit`
+
+## Size Guidelines
+
+**Small Feature** (no preview gate):
+- 1-3 files, single concept, one session
+
+**Large Feature** (requires ADR + preview gate):
+- Many files, multiple phases, may span sessions
+
+| Small | Large |
+|-------|-------|
+| Add `%` operator | Mutable strings |
+| Add `else if` syntax | Inout parameters |
+| New warning type | Trait system |
+
+## Important
+
+- For large features, prefer `/plan` then `/implement` separately
+- Each commit should leave tests passing
+- Always run `/code-review` before `/commit`

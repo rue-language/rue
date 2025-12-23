@@ -18,7 +18,73 @@
 //! ```
 
 use rue_span::Span;
+use std::collections::HashSet;
 use std::fmt;
+
+// ============================================================================
+// Preview Features
+// ============================================================================
+
+/// A preview feature that can be enabled with `--preview`.
+///
+/// Preview features are in-progress language additions that:
+/// - May change or be removed before stabilization
+/// - Require explicit opt-in via `--preview <feature>`
+/// - Allow incremental implementation to be merged to main
+///
+/// See ADR-020 for the full design.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum PreviewFeature {
+    /// Mutable strings with heap allocation and concatenation (ADR-019).
+    MutableStrings,
+}
+
+impl PreviewFeature {
+    /// Get the CLI name for this feature (used with `--preview`).
+    pub fn name(&self) -> &'static str {
+        match self {
+            PreviewFeature::MutableStrings => "mutable_strings",
+        }
+    }
+
+    /// Parse a feature name from a string.
+    pub fn from_str(s: &str) -> Option<Self> {
+        match s {
+            "mutable_strings" => Some(PreviewFeature::MutableStrings),
+            _ => None,
+        }
+    }
+
+    /// Get the ADR number documenting this feature.
+    pub fn adr(&self) -> &'static str {
+        match self {
+            PreviewFeature::MutableStrings => "ADR-019",
+        }
+    }
+
+    /// Get all available preview features.
+    pub fn all() -> &'static [PreviewFeature] {
+        &[PreviewFeature::MutableStrings]
+    }
+
+    /// Get a comma-separated list of all feature names (for help text).
+    pub fn all_names() -> String {
+        Self::all()
+            .iter()
+            .map(|f| f.name())
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+}
+
+impl fmt::Display for PreviewFeature {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.name())
+    }
+}
+
+/// A set of enabled preview features.
+pub type PreviewFeatures = HashSet<PreviewFeature>;
 
 // ============================================================================
 // Diagnostic Types
@@ -253,6 +319,12 @@ pub enum ErrorKind {
 
     // Target errors
     UnsupportedTarget(String),
+
+    // Preview feature errors
+    PreviewFeatureRequired {
+        feature: PreviewFeature,
+        what: String,
+    },
 }
 
 impl CompileError {
@@ -534,6 +606,9 @@ impl fmt::Display for ErrorKind {
             }
             ErrorKind::LinkError(msg) => write!(f, "link error: {}", msg),
             ErrorKind::UnsupportedTarget(msg) => write!(f, "unsupported target: {}", msg),
+            ErrorKind::PreviewFeatureRequired { feature, what } => {
+                write!(f, "{} requires preview feature `{}`", what, feature.name())
+            }
         }
     }
 }
@@ -948,5 +1023,66 @@ mod tests {
         let span = Span::new(10, 20);
         let warning = CompileWarning::new(WarningKind::UnreachableCode, span);
         assert!(warning.diagnostic().is_empty());
+    }
+
+    // ========================================================================
+    // Preview feature tests
+    // ========================================================================
+
+    #[test]
+    fn test_preview_feature_name() {
+        assert_eq!(PreviewFeature::MutableStrings.name(), "mutable_strings");
+    }
+
+    #[test]
+    fn test_preview_feature_from_str() {
+        assert_eq!(
+            PreviewFeature::from_str("mutable_strings"),
+            Some(PreviewFeature::MutableStrings)
+        );
+        assert_eq!(PreviewFeature::from_str("unknown"), None);
+        assert_eq!(PreviewFeature::from_str(""), None);
+    }
+
+    #[test]
+    fn test_preview_feature_adr() {
+        assert_eq!(PreviewFeature::MutableStrings.adr(), "ADR-019");
+    }
+
+    #[test]
+    fn test_preview_feature_all() {
+        let all = PreviewFeature::all();
+        assert!(!all.is_empty());
+        assert!(all.contains(&PreviewFeature::MutableStrings));
+    }
+
+    #[test]
+    fn test_preview_feature_all_names() {
+        let names = PreviewFeature::all_names();
+        assert!(names.contains("mutable_strings"));
+    }
+
+    #[test]
+    fn test_preview_feature_display() {
+        assert_eq!(
+            format!("{}", PreviewFeature::MutableStrings),
+            "mutable_strings"
+        );
+    }
+
+    #[test]
+    fn test_preview_feature_required_error() {
+        let span = Span::new(10, 20);
+        let error = CompileError::new(
+            ErrorKind::PreviewFeatureRequired {
+                feature: PreviewFeature::MutableStrings,
+                what: "string concatenation".to_string(),
+            },
+            span,
+        );
+        assert_eq!(
+            error.to_string(),
+            "string concatenation requires preview feature `mutable_strings`"
+        );
     }
 }

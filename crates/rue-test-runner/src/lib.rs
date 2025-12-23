@@ -81,6 +81,11 @@ pub struct Case {
     #[allow(dead_code)]
     #[serde(default)]
     pub spec: Vec<String>,
+    /// Preview feature required to run this test (e.g., "mutable_strings").
+    /// Tests with this field are compiled with `--preview <feature>` and
+    /// are allowed to fail without failing the overall test suite.
+    #[serde(default)]
+    pub preview: Option<String>,
 }
 
 /// A test file containing a section and its cases.
@@ -214,6 +219,15 @@ pub fn run_test_case(case: &Case, rue_binary: &Path) -> TestResult {
         .write_all(case.source.as_bytes())
         .map_err(|e| format!("Failed to write source: {}", e))?;
 
+    // Build base command with preview flags if needed
+    let build_command = |binary: &Path| -> Command {
+        let mut cmd = Command::new(binary);
+        if let Some(ref feature) = case.preview {
+            cmd.arg("--preview").arg(feature);
+        }
+        cmd
+    };
+
     // Check for golden IR tests (tokens, AST, RIR, AIR, MIR)
     if case.expected_tokens.is_some()
         || case.expected_ast.is_some()
@@ -223,7 +237,7 @@ pub fn run_test_case(case: &Case, rue_binary: &Path) -> TestResult {
     {
         // Run dump commands and check golden output
         if let Some(ref expected) = case.expected_tokens {
-            let output = Command::new(rue_binary)
+            let output = build_command(rue_binary)
                 .arg("--emit")
                 .arg("tokens")
                 .arg(&source_path)
@@ -244,7 +258,7 @@ pub fn run_test_case(case: &Case, rue_binary: &Path) -> TestResult {
         }
 
         if let Some(ref expected) = case.expected_ast {
-            let output = Command::new(rue_binary)
+            let output = build_command(rue_binary)
                 .arg("--emit")
                 .arg("ast")
                 .arg(&source_path)
@@ -265,7 +279,7 @@ pub fn run_test_case(case: &Case, rue_binary: &Path) -> TestResult {
         }
 
         if let Some(ref expected) = case.expected_rir {
-            let output = Command::new(rue_binary)
+            let output = build_command(rue_binary)
                 .arg("--emit")
                 .arg("rir")
                 .arg(&source_path)
@@ -286,7 +300,7 @@ pub fn run_test_case(case: &Case, rue_binary: &Path) -> TestResult {
         }
 
         if let Some(ref expected) = case.expected_air {
-            let output = Command::new(rue_binary)
+            let output = build_command(rue_binary)
                 .arg("--emit")
                 .arg("air")
                 .arg(&source_path)
@@ -307,7 +321,7 @@ pub fn run_test_case(case: &Case, rue_binary: &Path) -> TestResult {
         }
 
         if let Some(ref expected) = case.expected_mir {
-            let output = Command::new(rue_binary)
+            let output = build_command(rue_binary)
                 .arg("--emit")
                 .arg("mir")
                 .arg(&source_path)
@@ -331,7 +345,7 @@ pub fn run_test_case(case: &Case, rue_binary: &Path) -> TestResult {
     }
 
     // Compile with rue
-    let compile_output = Command::new(rue_binary)
+    let compile_output = build_command(rue_binary)
         .arg(&source_path)
         .arg(&output_path)
         .output()

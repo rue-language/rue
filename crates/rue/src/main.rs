@@ -5,8 +5,9 @@ use std::path::Path;
 
 use annotate_snippets::{Level, Renderer, Snippet};
 use rue_compiler::{
-    CompileError, CompileOptions, CompileWarning, Lexer, LinkerMode, Parser,
-    compile_frontend_from_ast, compile_with_options, generate_allocated_mir, generate_mir,
+    CompileError, CompileOptions, CompileWarning, Lexer, LinkerMode, Parser, PreviewFeature,
+    PreviewFeatures, compile_frontend_from_ast, compile_with_options, generate_allocated_mir,
+    generate_mir,
 };
 use rue_rir::RirPrinter;
 use rue_target::Target;
@@ -55,21 +56,27 @@ struct Options {
     emit_stages: Vec<EmitStage>,
     target: Target,
     linker: LinkerMode,
+    preview_features: PreviewFeatures,
 }
 
 fn print_usage() {
     eprintln!("Usage: rue [options] <source.rue> [output]");
     eprintln!();
     eprintln!("Options:");
-    eprintln!("  --target <target>  Set compilation target (default: host)");
-    eprintln!("                     Valid targets: x86-64-linux, aarch64-linux");
-    eprintln!("  --linker <linker>  Set linker to use (default: internal)");
-    eprintln!("                     Use 'internal' for built-in linker, or a command");
-    eprintln!("                     like 'clang', 'gcc', or 'ld' for system linker");
-    eprintln!("  --emit <stage>     Emit intermediate representation and exit");
-    eprintln!("                     Can be specified multiple times for multiple outputs");
-    eprintln!("                     Stages: tokens, ast, rir, air, cfg, mir, asm");
-    eprintln!("  --help             Show this help message");
+    eprintln!("  --target <target>    Set compilation target (default: host)");
+    eprintln!("                       Valid targets: x86-64-linux, aarch64-linux");
+    eprintln!("  --linker <linker>    Set linker to use (default: internal)");
+    eprintln!("                       Use 'internal' for built-in linker, or a command");
+    eprintln!("                       like 'clang', 'gcc', or 'ld' for system linker");
+    eprintln!("  --emit <stage>       Emit intermediate representation and exit");
+    eprintln!("                       Can be specified multiple times for multiple outputs");
+    eprintln!("                       Stages: tokens, ast, rir, air, cfg, mir, asm");
+    eprintln!("  --preview <feature>  Enable a preview feature (can be repeated)");
+    eprintln!(
+        "                       Features: {}",
+        PreviewFeature::all_names()
+    );
+    eprintln!("  --help               Show this help message");
 }
 
 fn parse_args() -> Option<Options> {
@@ -83,6 +90,7 @@ fn parse_args() -> Option<Options> {
     let mut emit_stages = Vec::new();
     let mut target: Option<Target> = None;
     let mut linker: Option<LinkerMode> = None;
+    let mut preview_features = PreviewFeatures::new();
     let mut positional = Vec::new();
     let mut args_iter = args.iter().peekable();
 
@@ -129,6 +137,23 @@ fn parse_args() -> Option<Options> {
                     LinkerMode::System(linker_str.clone())
                 });
             }
+            "--preview" => {
+                let Some(feature_str) = args_iter.next() else {
+                    eprintln!("Error: --preview requires a feature name");
+                    eprintln!("Available features: {}", PreviewFeature::all_names());
+                    return None;
+                };
+                match PreviewFeature::from_str(feature_str) {
+                    Some(feature) => {
+                        preview_features.insert(feature);
+                    }
+                    None => {
+                        eprintln!("Error: unknown preview feature '{}'", feature_str);
+                        eprintln!("Available features: {}", PreviewFeature::all_names());
+                        return None;
+                    }
+                }
+            }
             "--help" | "-h" => {
                 print_usage();
                 return None;
@@ -160,6 +185,7 @@ fn parse_args() -> Option<Options> {
         emit_stages,
         target: target.unwrap_or_else(Target::host),
         linker: linker.unwrap_or_default(),
+        preview_features,
     })
 }
 
@@ -187,6 +213,7 @@ fn main() {
     let compile_options = CompileOptions {
         target: options.target,
         linker: options.linker.clone(),
+        preview_features: options.preview_features.clone(),
     };
     match compile_with_options(&source, &compile_options) {
         Ok(output) => {

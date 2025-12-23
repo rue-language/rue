@@ -1,4 +1,4 @@
-use libtest_mimic::{Arguments, Failed, Trial};
+use libtest_mimic::{Arguments, Conclusion, Failed, Trial};
 use rue_test_runner::{Case, find_rue_binary, load_test_files, run_test_case};
 use std::path::{Path, PathBuf};
 
@@ -106,34 +106,89 @@ fn main() {
     // Load all test files
     let specs = load_test_files(&cases_dir);
 
-    // Convert to trials
-    let tests: Vec<Trial> = specs
-        .into_iter()
-        .flat_map(|(_, spec)| {
-            let section_id = spec.section.id.clone();
+    // Separate stable and preview tests
+    let mut stable_tests: Vec<Trial> = Vec::new();
+    let mut preview_tests: Vec<Trial> = Vec::new();
+
+    for (_, spec) in specs {
+        let section_id = spec.section.id.clone();
+
+        for case in spec.case {
+            let test_name = format!("{}::{}", section_id, case.name);
+            let skip = case.skip;
+            let is_preview = case.preview.is_some();
             let rue_binary = rue_binary.clone();
 
-            spec.case.into_iter().map(move |case| {
-                let test_name = format!("{}::{}", section_id, case.name);
-                let skip = case.skip;
-                let rue_binary = rue_binary.clone();
+            let mut trial = Trial::test(test_name, move || run_case_wrapper(&case, &rue_binary));
 
-                let mut trial =
-                    Trial::test(test_name, move || run_case_wrapper(&case, &rue_binary));
+            if skip {
+                trial = trial.with_ignored_flag(true);
+            }
 
-                if skip {
-                    trial = trial.with_ignored_flag(true);
-                }
+            if is_preview {
+                preview_tests.push(trial);
+            } else {
+                stable_tests.push(trial);
+            }
+        }
+    }
 
-                trial
-            })
-        })
-        .collect();
-
-    if tests.is_empty() {
+    if stable_tests.is_empty() && preview_tests.is_empty() {
         eprintln!("Warning: No test cases found in {}", cases_dir.display());
         eprintln!("Make sure spec files exist and have the correct format.");
     }
 
-    libtest_mimic::run(&args, tests).exit();
+    // Run stable tests first - these must all pass
+    let stable_conclusion = if !stable_tests.is_empty() {
+        println!("\n=== Stable Tests ===\n");
+        libtest_mimic::run(&args, stable_tests)
+    } else {
+        Conclusion {
+            num_filtered_out: 0,
+            num_passed: 0,
+            num_failed: 0,
+            num_ignored: 0,
+            num_measured: 0,
+        }
+    };
+
+    // Run preview tests - these are allowed to fail
+    let preview_conclusion = if !preview_tests.is_empty() {
+        println!("\n=== Preview Tests ===\n");
+        libtest_mimic::run(&args, preview_tests)
+    } else {
+        Conclusion {
+            num_filtered_out: 0,
+            num_passed: 0,
+            num_failed: 0,
+            num_ignored: 0,
+            num_measured: 0,
+        }
+    };
+
+    // Print summary
+    println!("\n=== Summary ===\n");
+    println!(
+        "Stable:  {} passed, {} failed",
+        stable_conclusion.num_passed, stable_conclusion.num_failed
+    );
+
+    let preview_total = preview_conclusion.num_passed + preview_conclusion.num_failed;
+    if preview_total > 0 {
+        let percent = (preview_conclusion.num_passed as f64 / preview_total as f64) * 100.0;
+        println!(
+            "Preview: {} passed, {} failed ({:.0}%)",
+            preview_conclusion.num_passed, preview_conclusion.num_failed, percent
+        );
+    }
+
+    // Exit with error only if stable tests failed
+    // Preview test failures are allowed
+    if stable_conclusion.num_failed > 0 {
+        println!("\nResult: FAILED (stable tests failed)");
+        std::process::exit(1);
+    } else {
+        println!("\nResult: PASSED");
+        std::process::exit(0);
+    }
 }
