@@ -1,13 +1,21 @@
++++
+title = "Runtime Panics"
+weight = 2
+template = "spec/page.html"
++++
+
 # Appendix B: Runtime Panics
 
 This appendix summarizes all conditions that cause runtime panics in Rue.
 
-r[B.1:1]
+{{ rule(id="B.1:1") }}
+
 Rue detects certain error conditions at runtime and responds with a panic, terminating the program with a specific exit code.
 
 ## Integer Overflow
 
-r[B.1:2]
+{{ rule(id="B.1:2") }}
+
 Signed or unsigned integer arithmetic that overflows the representable range causes a runtime panic.
 
 **Operations affected:**
@@ -20,7 +28,8 @@ Signed or unsigned integer arithmetic that overflows the representable range cau
 
 ## Division by Zero
 
-r[B.1:3]
+{{ rule(id="B.1:3") }}
+
 Division or remainder with a divisor of zero causes a runtime panic.
 
 **Operations affected:**
@@ -31,7 +40,8 @@ Division or remainder with a divisor of zero causes a runtime panic.
 
 ## Array Bounds Violation
 
-r[B.1:4]
+{{ rule(id="B.1:4") }}
+
 Accessing an array element with an index outside the valid range `[0, length)` causes a runtime panic.
 
 **Operations affected:**
@@ -48,5 +58,6 @@ Accessing an array element with an index outside the valid range `[0, length)` c
 | Division by zero | 101 |
 | Array out of bounds | 101 |
 
-r[B.1:5]
+{{ rule(id="B.1:5") }}
+
 All runtime panics produce exit code 101, matching Rust's convention for unwinding panics.

@@ -300,7 +300,6 @@ code {
 .dark .theme-toggle .icon-moon {
   display: none;
 }
-
 /* Prompt disclosure */
 .prompt-details summary {
   transition: color 0.15s ease;
@@ -312,4 +311,416 @@ code {
 
 .dark .prompt-details summary:hover {
   color: var(--color-fg-dark);
+}
+
+/* ========================================
+   Specification Page Styles
+   ======================================== */
+
+/* Main layout: sidebar + content */
+.spec-layout {
+  display: flex;
+  min-height: calc(100vh - 65px - 73px); /* viewport minus nav and footer */
+}
+
+/* Sidebar */
+.spec-sidebar {
+  width: 280px;
+  flex-shrink: 0;
+  border-right: 1px solid var(--color-border);
+  background-color: var(--color-surface);
+}
+
+.dark .spec-sidebar {
+  border-color: var(--color-border-dark);
+  background-color: var(--color-surface-dark);
+}
+
+.spec-sidebar-inner {
+  padding: 1.5rem 0;
+}
+
+.spec-sidebar-header {
+  padding: 0 1.5rem 1rem;
+  border-bottom: 1px solid var(--color-border);
+  margin-bottom: 1rem;
+}
+
+.dark .spec-sidebar-header {
+  border-color: var(--color-border-dark);
+}
+
+.spec-title {
+  font-size: 1.125rem;
+  font-weight: 600;
+  color: var(--color-fg);
+  text-decoration: none;
+}
+
+.dark .spec-title {
+  color: var(--color-fg-dark);
+}
+
+.spec-title:hover {
+  color: var(--color-accent);
+}
+
+.dark .spec-title:hover {
+  color: var(--color-accent-dark);
+}
+
+/* Navigation list */
+.spec-nav-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+
+.spec-nav-list .spec-nav-list {
+  padding-left: 1rem;
+  margin-top: 0.25rem;
+}
+
+.spec-nav-item,
+.spec-nav-section {
+  margin: 0;
+}
+
+.spec-nav-link,
+.spec-nav-section-title {
+  display: block;
+  padding: 0.375rem 1.5rem;
+  color: var(--color-muted);
+  text-decoration: none;
+  font-size: 0.875rem;
+  line-height: 1.4;
+  transition: color 0.15s ease, background-color 0.15s ease;
+}
+
+.dark .spec-nav-link,
+.dark .spec-nav-section-title {
+  color: var(--color-muted-dark);
+}
+
+.spec-nav-link:hover,
+.spec-nav-section-title:hover {
+  color: var(--color-fg);
+  background-color: var(--color-code-bg);
+}
+
+.dark .spec-nav-link:hover,
+.dark .spec-nav-section-title:hover {
+  color: var(--color-fg-dark);
+  background-color: var(--color-code-bg-dark);
+}
+
+.spec-nav-link.active,
+.spec-nav-section-title.active {
+  color: var(--color-accent);
+  font-weight: 500;
+}
+
+.dark .spec-nav-link.active,
+.dark .spec-nav-section-title.active {
+  color: var(--color-accent-dark);
+}
+
+.spec-nav-section-title {
+  font-weight: 500;
+  color: var(--color-fg);
+}
+
+.dark .spec-nav-section-title {
+  color: var(--color-fg-dark);
+}
+
+/* Main content area */
+.spec-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* Spec content with 3-column grid for rule IDs */
+.spec-content {
+  flex: 1;
+  display: grid;
+  grid-template-columns:
+    [rules] minmax(50px, 1fr)
+    [text] minmax(auto, 48em)
+    [margin] minmax(50px, 1fr);
+  padding: 2rem 0;
+  row-gap: 0.5rem;
+  align-content: start;
+}
+
+/* Default: all content goes in text column */
+.spec-content > * {
+  grid-column: text;
+  max-width: none;
+  margin-block: 0;
+}
+
+/* Rule IDs go in the left margin */
+.spec-content > .rule {
+  grid-column: rules;
+  justify-self: right;
+  width: 100%;
+  container-type: inline-size;
+  container-name: rule;
+}
+
+.rule-link {
+  float: right;
+  text-align: right;
+  padding-right: 1rem;
+  word-break: keep-all;
+  color: var(--color-muted) !important;
+  text-decoration: none;
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+}
+
+.dark .rule-link {
+  color: var(--color-muted-dark) !important;
+}
+
+.rule-link:hover {
+  color: var(--color-accent) !important;
+  text-decoration: underline;
+}
+
+.dark .rule-link:hover {
+  color: var(--color-accent-dark) !important;
+}
+
+/* When rule is targeted via URL fragment, highlight it */
+.rule:target .rule-link::before {
+  display: inline-block;
+  content: "\00BB";
+  padding-right: 0.25rem;
+}
+
+.rule:target .rule-link {
+  color: var(--color-fg) !important;
+}
+
+.dark .rule:target .rule-link {
+  color: var(--color-fg-dark) !important;
+}
+
+/* Spec headings */
+.spec-content > h1 {
+  font-size: 2rem;
+  font-weight: 700;
+  margin-bottom: 1.5rem;
+  padding-top: 0;
+}
+
+.spec-content > h2 {
+  font-size: 1.5rem;
+  font-weight: 600;
+  margin-top: 0;
+  padding-top: 2rem;
+  margin-bottom: 1rem;
+}
+
+.spec-content > h3 {
+  font-size: 1.25rem;
+  font-weight: 600;
+  margin-top: 0;
+  padding-top: 1.5rem;
+  margin-bottom: 0.75rem;
+}
+
+.spec-content > p {
+  margin-bottom: 1rem;
+  line-height: 1.7;
+}
+
+.spec-content > ul,
+.spec-content > ol {
+  margin: 1rem 0;
+  padding-left: 1.5rem;
+}
+
+.spec-content > ul {
+  list-style-type: disc;
+}
+
+.spec-content > ol {
+  list-style-type: decimal;
+}
+
+.spec-content li {
+  margin-bottom: 0.5rem;
+  line-height: 1.6;
+}
+
+.spec-content > pre {
+  margin: 1.5rem 0;
+  max-width: 100%;
+  overflow-x: auto;
+}
+
+.spec-content > blockquote {
+  border-left: 4px solid var(--color-accent);
+  padding-left: 1rem;
+  margin: 1.5rem 0;
+  color: var(--color-muted);
+}
+
+.dark .spec-content > blockquote {
+  border-color: var(--color-accent-dark);
+  color: var(--color-muted-dark);
+}
+
+.spec-content > table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 1.5rem 0;
+}
+
+.spec-content th,
+.spec-content td {
+  border: 1px solid var(--color-border);
+  padding: 0.5rem 1rem;
+  text-align: left;
+}
+
+.dark .spec-content th,
+.dark .spec-content td {
+  border-color: var(--color-border-dark);
+}
+
+.spec-content th {
+  background-color: var(--color-code-bg);
+  font-weight: 600;
+}
+
+.dark .spec-content th {
+  background-color: var(--color-code-bg-dark);
+}
+
+/* Section table of contents */
+.spec-section-toc {
+  list-style: none;
+  padding: 0;
+  margin: 1rem 0;
+}
+
+.spec-section-toc li {
+  margin-bottom: 0.5rem;
+}
+
+.spec-section-toc a {
+  text-decoration: none;
+}
+
+.spec-section-toc a:hover {
+  text-decoration: underline;
+}
+
+/* Prev/Next navigation */
+.spec-page-nav {
+  display: flex;
+  justify-content: space-between;
+  padding: 2rem;
+  border-top: 1px solid var(--color-border);
+  margin-top: auto;
+}
+
+.dark .spec-page-nav {
+  border-color: var(--color-border-dark);
+}
+
+.spec-nav-prev,
+.spec-nav-next {
+  display: flex;
+  flex-direction: column;
+  text-decoration: none;
+  max-width: 45%;
+}
+
+.spec-nav-next {
+  text-align: right;
+  margin-left: auto;
+}
+
+.spec-nav-label {
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--color-muted);
+  margin-bottom: 0.25rem;
+}
+
+.dark .spec-nav-label {
+  color: var(--color-muted-dark);
+}
+
+.spec-nav-title {
+  color: var(--color-accent);
+  font-weight: 500;
+}
+
+.dark .spec-nav-title {
+  color: var(--color-accent-dark);
+}
+
+.spec-nav-prev:hover .spec-nav-title,
+.spec-nav-next:hover .spec-nav-title {
+  text-decoration: underline;
+}
+
+/* Responsive: collapse sidebar on mobile */
+@media (max-width: 900px) {
+  .spec-layout {
+    flex-direction: column;
+  }
+
+  .spec-sidebar {
+    width: 100%;
+    height: auto;
+    position: static;
+    border-right: none;
+    border-bottom: 1px solid var(--color-border);
+  }
+
+  .dark .spec-sidebar {
+    border-bottom-color: var(--color-border-dark);
+  }
+
+  .spec-sidebar-inner {
+    padding: 1rem 0;
+  }
+
+  .spec-content {
+    grid-template-columns: [text] 1fr;
+    padding: 1.5rem;
+  }
+
+  .spec-content > .rule {
+    grid-column: text;
+    justify-self: start;
+    margin-bottom: -0.25rem;
+  }
+
+  .rule-link {
+    float: none;
+    padding-right: 0;
+    font-size: 0.75rem;
+  }
+}
+
+/* Narrow rule column: abbreviate */
+@container rule (max-width: 10em) {
+  .rule-link {
+    font-size: 0;
+  }
+  .rule-link::after {
+    font-size: 0.75rem;
+    content: "[*]";
+  }
 }

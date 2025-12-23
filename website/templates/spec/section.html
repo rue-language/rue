@@ -1,0 +1,31 @@
+{% extends "spec/base.html" %}
+
+{% block spec_content %}
+<h1>{{ section.title }}</h1>
+
+{{ section.content | safe }}
+
+{# List child pages #}
+{% if section.pages %}
+<h2>In this section</h2>
+<ul class="spec-section-toc">
+    {% for page in section.pages %}
+    <li><a href="{{ page.path }}">{{ page.title }}</a></li>
+    {% endfor %}
+</ul>
+{% endif %}
+
+{# List subsections #}
+{% if section.subsections %}
+<ul class="spec-section-toc">
+    {% for subsection_path in section.subsections %}
+        {% set subsection = get_section(path=subsection_path) %}
+    <li><a href="{{ subsection.permalink }}">{{ subsection.title }}</a></li>
+    {% endfor %}
+</ul>
+{% endif %}
+{% endblock %}
+
+{% block prev_next %}
+{# Sections don't have prev/next by default #}
+{% endblock %}

@@ -1,17 +1,27 @@
++++
+title = "Expression Statements"
+weight = 3
+template = "spec/page.html"
++++
+
 # Expression Statements
 
-r[5.3:1#normative]
+{{ rule(id="5.3:1", cat="normative") }}
+
 An expression followed by a semicolon becomes an expression statement.
 
-r[5.3:2#normative]
+{{ rule(id="5.3:2", cat="normative") }}
+
 ```ebnf
 expr_stmt = expression ";" ;
 ```
 
-r[5.3:3#normative]
+{{ rule(id="5.3:3", cat="normative") }}
+
 The value of the expression is discarded. The type of an expression statement is `()`.
 
-r[5.3:4]
+{{ rule(id="5.3:4") }}
+
 ```rue
 fn side_effect() { }
 
@@ -21,5 +31,6 @@ fn main() -> i32 {
 }
 ```
 
-r[5.3:5]
+{{ rule(id="5.3:5") }}
+
 Expression statements are useful for calling functions for their side effects while discarding their return values.

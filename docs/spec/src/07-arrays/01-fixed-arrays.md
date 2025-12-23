@@ -1,22 +1,33 @@
++++
+title = "Fixed-Size Arrays"
+weight = 1
+template = "spec/page.html"
++++
+
 # Fixed-Size Arrays
 
 ## Array Literals
 
-r[7.1:1#normative]
+{{ rule(id="7.1:1", cat="normative") }}
+
 ```ebnf
 array_literal = "[" [ expression { "," expression } ] "]" ;
 ```
 
-r[7.1:2#normative]
+{{ rule(id="7.1:2", cat="normative") }}
+
 An array literal creates an array with the given elements.
 
-r[7.1:3#normative]
+{{ rule(id="7.1:3", cat="normative") }}
+
 All elements must have the same type.
 
-r[7.1:4#normative]
+{{ rule(id="7.1:4", cat="normative") }}
+
 The number of elements must match the declared array size.
 
-r[7.1:5]
+{{ rule(id="7.1:5") }}
+
 ```rue
 fn main() -> i32 {
     let arr: [i32; 3] = [10, 20, 12];
@@ -26,13 +37,16 @@ fn main() -> i32 {
 
 ## Array Indexing
 
-r[7.1:6#normative]
+{{ rule(id="7.1:6", cat="normative") }}
+
 Array elements are accessed using bracket notation `arr[index]`.
 
-r[7.1:7#normative]
+{{ rule(id="7.1:7", cat="normative") }}
+
 The index must be an integer type.
 
-r[7.1:8]
+{{ rule(id="7.1:8") }}
+
 ```rue
 fn main() -> i32 {
     let arr: [i32; 3] = [100, 42, 200];
@@ -42,21 +56,26 @@ fn main() -> i32 {
 
 ## Bounds Checking
 
-r[7.1:9#normative]
+{{ rule(id="7.1:9", cat="normative") }}
+
 For constant indices, bounds are checked at compile time.
 
-r[7.1:10#normative]
+{{ rule(id="7.1:10", cat="normative") }}
+
 For variable indices, bounds are checked at runtime.
 
-r[7.1:11#normative]
+{{ rule(id="7.1:11", cat="normative") }}
+
 Out-of-bounds access causes a runtime panic.
 
 ## Mutable Arrays
 
-r[7.1:12#normative]
+{{ rule(id="7.1:12", cat="normative") }}
+
 Mutable arrays allow element assignment.
 
-r[7.1:13]
+{{ rule(id="7.1:13") }}
+
 ```rue
 fn main() -> i32 {
     let mut arr: [i32; 2] = [0, 0];
@@ -68,23 +87,28 @@ fn main() -> i32 {
 
 ## Array Type Syntax
 
-r[7.1:14#normative]
+{{ rule(id="7.1:14", cat="normative") }}
+
 ```ebnf
 array_type = "[" type ";" INTEGER "]" ;
 ```
 
-r[7.1:15#normative]
+{{ rule(id="7.1:15", cat="normative") }}
+
 The size must be a non-negative integer literal.
 
 ## Nested Arrays
 
-r[7.1:16#normative]
+{{ rule(id="7.1:16", cat="normative") }}
+
 Arrays may contain other arrays as elements, forming multi-dimensional arrays.
 
-r[7.1:17#normative]
+{{ rule(id="7.1:17", cat="normative") }}
+
 Nested arrays are indexed using chained bracket notation, evaluated left to right.
 
-r[7.1:18]
+{{ rule(id="7.1:18") }}
+
 ```rue
 fn main() -> i32 {
     let matrix: [[i32; 2]; 2] = [[1, 2], [3, 4]];
@@ -94,13 +118,16 @@ fn main() -> i32 {
 
 ## Arrays in Structs
 
-r[7.1:19#normative]
+{{ rule(id="7.1:19", cat="normative") }}
+
 Struct fields may have array types.
 
-r[7.1:20#normative]
+{{ rule(id="7.1:20", cat="normative") }}
+
 Array fields are accessed by combining field access with array indexing.
 
-r[7.1:21]
+{{ rule(id="7.1:21") }}
+
 ```rue
 struct Container { values: [i32; 3] }
 
@@ -112,13 +139,16 @@ fn main() -> i32 {
 
 ## Arrays as Function Parameters
 
-r[7.1:22#normative]
+{{ rule(id="7.1:22", cat="normative") }}
+
 Functions may accept arrays as parameters.
 
-r[7.1:23#normative]
+{{ rule(id="7.1:23", cat="normative") }}
+
 Array parameters are passed by value; the entire array is copied to the function.
 
-r[7.1:24]
+{{ rule(id="7.1:24") }}
+
 ```rue
 fn sum(arr: [i32; 3]) -> i32 {
     arr[0] + arr[1] + arr[2]

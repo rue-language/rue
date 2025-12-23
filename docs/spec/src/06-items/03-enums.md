@@ -1,9 +1,17 @@
++++
+title = "Enums"
+weight = 3
+template = "spec/page.html"
++++
+
 # Enums
 
-r[6.3:1#normative]
+{{ rule(id="6.3:1", cat="normative") }}
+
 An enum is defined using the `enum` keyword.
 
-r[6.3:2#normative]
+{{ rule(id="6.3:2", cat="normative") }}
+
 ```ebnf
 enum_def = "enum" IDENT "{" [ enum_variants ] "}" ;
 enum_variants = IDENT { "," IDENT } [ "," ] ;
@@ -11,21 +19,26 @@ enum_variants = IDENT { "," IDENT } [ "," ] ;
 
 ## Enum Definition
 
-r[6.3:3#normative]
+{{ rule(id="6.3:3", cat="normative") }}
+
 Variant names must be unique within an enum.
 
-r[6.3:12#normative]
+{{ rule(id="6.3:12", cat="normative") }}
+
 An enum with zero variants is valid and represents an uninhabited type.
 A zero-variant enum can never be constructed.
 
-r[6.3:4#normative]
+{{ rule(id="6.3:4", cat="normative") }}
+
 Enum variants are referenced using path syntax: `EnumName::VariantName`.
 An error is raised if the enum type does not exist.
 
-r[6.3:5#normative]
+{{ rule(id="6.3:5", cat="normative") }}
+
 An error is raised if the variant does not exist within the enum.
 
-r[6.3:6]
+{{ rule(id="6.3:6") }}
+
 ```rue
 enum Color {
     Red,
@@ -41,15 +54,18 @@ fn main() -> i32 {
 
 ## Match on Enums
 
-r[6.3:7#normative]
+{{ rule(id="6.3:7", cat="normative") }}
+
 Enum values can be matched using pattern matching in `match` expressions.
 Each arm pattern uses the same path syntax as enum variant expressions.
 
-r[6.3:8#normative]
+{{ rule(id="6.3:8", cat="normative") }}
+
 Match expressions on enums must be exhaustive: all variants must be covered,
 either explicitly or via a wildcard pattern `_`.
 
-r[6.3:9]
+{{ rule(id="6.3:9") }}
+
 ```rue
 enum Color { Red, Green, Blue }
 
@@ -65,10 +81,12 @@ fn main() -> i32 {
 
 ## Enum Types
 
-r[6.3:10#normative]
+{{ rule(id="6.3:10", cat="normative") }}
+
 Enums can be used as function parameter types, return types, and struct field types.
 
-r[6.3:11]
+{{ rule(id="6.3:11") }}
+
 ```rue
 enum Color { Red, Green, Blue }
 

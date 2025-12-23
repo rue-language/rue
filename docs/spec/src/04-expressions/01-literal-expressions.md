@@ -1,17 +1,27 @@
++++
+title = "Literal Expressions"
+weight = 1
+template = "spec/page.html"
++++
+
 # Literal Expressions
 
-r[4.1:1#normative]
+{{ rule(id="4.1:1", cat="normative") }}
+
 A literal expression evaluates to a constant value.
 
 ## Integer Literals
 
-r[4.1:2#normative]
+{{ rule(id="4.1:2", cat="normative") }}
+
 An integer literal is a sequence of decimal digits that evaluates to an integer value.
 
-r[4.1:3#normative]
+{{ rule(id="4.1:3", cat="normative") }}
+
 Integer literals default to type `i32` unless the context requires a different type.
 
-r[4.1:4]
+{{ rule(id="4.1:4") }}
+
 ```rue
 fn main() -> i32 {
     0       // zero
@@ -22,10 +32,12 @@ fn main() -> i32 {
 
 ## Boolean Literals
 
-r[4.1:5#normative]
+{{ rule(id="4.1:5", cat="normative") }}
+
 The boolean literals are `true` and `false`, both of type `bool`.
 
-r[4.1:6]
+{{ rule(id="4.1:6") }}
+
 ```rue
 fn main() -> i32 {
     let a = true;
@@ -36,13 +48,16 @@ fn main() -> i32 {
 
 ## Unit Literal
 
-r[4.1:7#normative]
+{{ rule(id="4.1:7", cat="normative") }}
+
 The unit literal `()` is an expression of type `()`.
 
-r[4.1:8#normative]
+{{ rule(id="4.1:8", cat="normative") }}
+
 The unit literal evaluates to the single value of the unit type.
 
-r[4.1:9]
+{{ rule(id="4.1:9") }}
+
 ```rue
 fn returns_unit() -> () {
     ()
@@ -57,13 +72,16 @@ fn main() -> i32 {
 
 ## String Literals
 
-r[4.1:10#normative]
+{{ rule(id="4.1:10", cat="normative") }}
+
 A string literal is a sequence of characters enclosed in double quotes, of type `String`.
 
-r[4.1:11#normative]
+{{ rule(id="4.1:11", cat="normative") }}
+
 String literals support escape sequences: `\\` for a backslash and `\"` for a double quote.
 
-r[4.1:12]
+{{ rule(id="4.1:12") }}
+
 ```rue
 fn main() -> i32 {
     let a = "hello";

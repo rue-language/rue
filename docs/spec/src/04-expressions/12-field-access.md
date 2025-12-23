@@ -1,23 +1,35 @@
++++
+title = "Field Access Expressions"
+weight = 12
+template = "spec/page.html"
++++
+
 # Field Access Expressions
 
-r[4.12:1#normative]
+{{ rule(id="4.12:1", cat="normative") }}
+
 A field access expression accesses a field of a struct.
 
-r[4.12:2#normative]
+{{ rule(id="4.12:2", cat="normative") }}
+
 ```ebnf
 field_access = expression "." IDENT ;
 ```
 
-r[4.12:3#normative]
+{{ rule(id="4.12:3", cat="normative") }}
+
 The expression before the dot must have a struct type.
 
-r[4.12:4#normative]
+{{ rule(id="4.12:4", cat="normative") }}
+
 The identifier must be a valid field name for that struct type.
 
-r[4.12:5#normative]
+{{ rule(id="4.12:5", cat="normative") }}
+
 The type of a field access expression is the type of the accessed field.
 
-r[4.12:6]
+{{ rule(id="4.12:6") }}
+
 ```rue
 struct Point {
     x: i32,
@@ -32,10 +44,12 @@ fn main() -> i32 {
 
 ## Field Assignment
 
-r[4.12:7#normative]
+{{ rule(id="4.12:7", cat="normative") }}
+
 For mutable struct values, fields can be assigned.
 
-r[4.12:8]
+{{ rule(id="4.12:8") }}
+
 ```rue
 struct Point {
     x: i32,

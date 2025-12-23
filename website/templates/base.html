@@ -24,8 +24,7 @@
                 <ul class="flex gap-6 text-sm">
                     <li><a href="{{ get_url(path='/') }}" class="nav-link">Home</a></li>
                     <li><a href="{{ get_url(path='getting-started') }}" class="nav-link">Get Started</a></li>
-                    <!-- Hardcoded path: spec is a static mdbook, not Zola content -->
-                    <li><a href="/spec/" class="nav-link">Specification</a></li>
+                    <li><a href="{{ get_url(path='spec') }}" class="nav-link">Specification</a></li>
                     <li><a href="{{ get_url(path='blog') }}" class="nav-link">Blog</a></li>
                     <li><a href="{{ config.extra.github_url }}" class="nav-link">GitHub</a></li>
                     <li><a href="{{ config.extra.bluesky_url }}" class="nav-link">Bluesky</a></li>

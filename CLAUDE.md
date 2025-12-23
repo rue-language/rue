@@ -238,20 +238,22 @@ The `spec` field links tests to specification paragraphs using the format `{chap
 
 ### Language Specification
 
-The formal language specification is in `docs/spec/` using mdBook format.
+The formal language specification is in `docs/spec/src/`. It is integrated into the website via Zola.
 
 #### Building the Spec
 
+The spec is built as part of the website:
+
 ```bash
-cd docs/spec && mdbook build
-# Output in docs/spec/book/
+./website/build.sh
+# Output in website/public/spec/
 ```
 
 #### Spec Structure
 
 ```
 docs/spec/src/
-├── SUMMARY.md              # Table of contents
+├── _index.md               # Spec root (Zola section)
 ├── 01-introduction.md      # Conformance, definitions
 ├── 02-lexical-structure/   # Tokens, comments, keywords
 ├── 03-types/               # Type system
@@ -265,26 +267,26 @@ docs/spec/src/
 
 #### Spec Paragraph Format
 
-Each paragraph has an ID using the format `r[{chapter}.{section}:{paragraph}]` with an optional category:
+Each paragraph has an ID using the Zola shortcode format `{{ rule(id="X.Y:Z", cat="category") }}`:
 
 ```markdown
-r[3.1:1#normative]
+{{ rule(id="3.1:1", cat="normative") }}
 A signed integer type is one of: `i8`, `i16`, `i32`, or `i64`.
 
-r[3.1:2#normative]
+{{ rule(id="3.1:2", cat="normative") }}
 Signed integer arithmetic that overflows causes a runtime panic.
 
-r[3.1:3#example]
+{{ rule(id="3.1:3", cat="example") }}
 ```rue
 let x: i32 = 42;
 ```
 ```
 
-The format is `r[X.Y:Z]` or `r[X.Y:Z#category]` where:
+The format is `{{ rule(id="X.Y:Z") }}` or `{{ rule(id="X.Y:Z", cat="category") }}` where:
 - `X.Y` is the chapter and section (e.g., `3.1` for Chapter 3, Section 1)
 - `Z` is the paragraph number within that section
 - The colon (`:`) separates the structural location from the paragraph number
-- `#category` is optional (defaults to `informative` if omitted)
+- `cat` is optional (defaults to `informative` if omitted)
 
 **Paragraph categories:**
 - `normative` - General normative rule (requires test coverage)

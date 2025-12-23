@@ -1,25 +1,37 @@
++++
+title = "Loop Expressions"
+weight = 8
+template = "spec/page.html"
++++
+
 # Loop Expressions
 
 ## While Loops
 
-r[4.8:1#normative]
+{{ rule(id="4.8:1", cat="normative") }}
+
 A while loop repeatedly executes its body while a condition is true.
 
-r[4.8:2#normative]
+{{ rule(id="4.8:2", cat="normative") }}
+
 ```ebnf
 while_expr = "while" expression "{" block "}" ;
 ```
 
-r[4.8:3#normative]
+{{ rule(id="4.8:3", cat="normative") }}
+
 The condition expression must have type `bool`.
 
-r[4.8:4#normative]
+{{ rule(id="4.8:4", cat="normative") }}
+
 A while expression has type `()`.
 
-r[4.8:5#normative]
+{{ rule(id="4.8:5", cat="normative") }}
+
 The condition is evaluated before each iteration. If it is `true`, the body is executed and the condition is re-evaluated. If it is `false`, the loop terminates.
 
-r[4.8:6]
+{{ rule(id="4.8:6") }}
+
 ```rue
 fn main() -> i32 {
     let mut sum = 0;
@@ -34,21 +46,26 @@ fn main() -> i32 {
 
 ## Infinite Loops
 
-r[4.8:15#normative]
+{{ rule(id="4.8:15", cat="normative") }}
+
 An infinite loop repeatedly executes its body unconditionally.
 
-r[4.8:16#normative]
+{{ rule(id="4.8:16", cat="normative") }}
+
 ```ebnf
 loop_expr = "loop" "{" block "}" ;
 ```
 
-r[4.8:17#normative]
+{{ rule(id="4.8:17", cat="normative") }}
+
 A loop expression has type `!` (never), because it never produces a value. Even when `break` is present, the loop expression itself does not yield a result.
 
-r[4.8:18#normative]
+{{ rule(id="4.8:18", cat="normative") }}
+
 The only way to exit a `loop` is via `break` or `return`.
 
-r[4.8:19]
+{{ rule(id="4.8:19") }}
+
 ```rue
 fn main() -> i32 {
     let mut x = 0;
@@ -62,7 +79,8 @@ fn main() -> i32 {
 }
 ```
 
-r[4.8:20]
+{{ rule(id="4.8:20") }}
+
 The `loop` expression is preferred over `while true` for infinite loops:
 
 ```rue
@@ -79,22 +97,28 @@ while true {
 
 ## Break and Continue
 
-r[4.8:7#normative]
+{{ rule(id="4.8:7", cat="normative") }}
+
 The `break` expression exits the innermost enclosing loop.
 
-r[4.8:8#normative]
+{{ rule(id="4.8:8", cat="normative") }}
+
 The `continue` expression skips to the next iteration of the innermost enclosing loop.
 
-r[4.8:9#normative]
+{{ rule(id="4.8:9", cat="normative") }}
+
 Both `break` and `continue` must appear within a loop. Using them outside a loop is a compile-time error.
 
-r[4.8:10#normative]
+{{ rule(id="4.8:10", cat="normative") }}
+
 Both `break` and `continue` have the never type `!`.
 
-r[4.8:21#normative]
+{{ rule(id="4.8:21", cat="normative") }}
+
 Currently, `break` does not carry a value. A `loop` expression has type `!` regardless of whether `break` is reachable, because the loop itself does not produce a value.
 
-r[4.8:11]
+{{ rule(id="4.8:11") }}
+
 ```rue
 fn main() -> i32 {
     let mut x = 0;
@@ -108,7 +132,8 @@ fn main() -> i32 {
 }
 ```
 
-r[4.8:12]
+{{ rule(id="4.8:12") }}
+
 ```rue
 fn main() -> i32 {
     let mut sum = 0;
@@ -126,10 +151,12 @@ fn main() -> i32 {
 
 ## Nested Loops
 
-r[4.8:13#normative]
+{{ rule(id="4.8:13", cat="normative") }}
+
 In nested loops, `break` and `continue` affect only the innermost enclosing loop.
 
-r[4.8:14]
+{{ rule(id="4.8:14") }}
+
 ```rue
 fn main() -> i32 {
     let mut total = 0;

@@ -166,3 +166,4 @@ See [ADR-0005: Preview Features](0005-preview-features.md) for details on the ga
 | [0003](0003-constant-evaluation.md) | Constant Expression Evaluation | Implemented | compiler |
 | [0004](0004-enum-types.md) | Enum Types | Implemented | types, syntax |
 | [0005](0005-preview-features.md) | Preview Features | Accepted | process |
+| [0006](0006-zola-unified-website.md) | Unified Zola Website | Implemented | tooling, documentation |

@@ -272,43 +272,49 @@ impl TraceabilityReport {
 }
 
 /// Parse a spec marker from a line.
-/// Format: r[X.Y:Z] or r[X.Y:Z#category] at the start of a line.
+/// Format: {{ rule(id="X.Y:Z") }} or {{ rule(id="X.Y:Z", cat="category") }} (Zola shortcode)
 /// Category can be: normative, informative, syntax, example
-/// Default category (no #) is informative.
+/// Default category (no cat) is informative.
 /// Returns (id, category) if found.
 fn parse_spec_comment(line: &str) -> Option<(String, String)> {
     let line = line.trim();
 
-    // Format: r[X.Y:Z] or r[X.Y:Z#category] at start of line
-    if line.starts_with("r[") && line.ends_with(']') {
-        let inner = line.trim_start_matches("r[").trim_end_matches(']');
+    // Zola shortcode format: {{ rule(id="X.Y:Z") }} or {{ rule(id="X.Y:Z", cat="category") }}
+    if line.starts_with("{{") && line.contains("rule(") {
+        // Extract the id parameter
+        if let Some(id_start) = line.find("id=\"") {
+            let id_content = &line[id_start + 4..]; // Skip 'id="'
+            if let Some(id_end) = id_content.find('"') {
+                let id = &id_content[..id_end];
 
-        if inner.is_empty() {
-            return None;
+                // Validate that the ID contains a colon (required format: X.Y:Z)
+                if !id.contains(':') {
+                    return None;
+                }
+
+                // Extract optional cat parameter
+                let category = if let Some(cat_start) = line.find("cat=\"") {
+                    let cat_content = &line[cat_start + 5..]; // Skip 'cat="'
+                    if let Some(cat_end) = cat_content.find('"') {
+                        cat_content[..cat_end].to_string()
+                    } else {
+                        "informative".to_string()
+                    }
+                } else {
+                    "informative".to_string()
+                };
+
+                return Some((id.to_string(), category));
+            }
         }
-
-        // Split on # to get ID and optional category
-        let (id, category) = if let Some(hash_pos) = inner.find('#') {
-            let id_part = &inner[..hash_pos];
-            let cat_part = &inner[hash_pos + 1..];
-            (id_part.to_string(), cat_part.to_string())
-        } else {
-            (inner.to_string(), "informative".to_string())
-        };
-
-        if id.is_empty() {
-            return None;
-        }
-
-        // Validate that the ID contains a colon (required format: X.Y:Z)
-        if !id.contains(':') {
-            return None;
-        }
-
-        return Some((id, category));
     }
 
     None
+}
+
+/// Check if a line is a spec marker (Zola shortcode format).
+fn is_spec_marker(line: &str) -> bool {
+    line.starts_with("{{") && line.contains("rule(")
 }
 
 /// Parse spec paragraphs from a markdown file.
@@ -332,7 +338,7 @@ fn parse_spec_file(path: &Path, paragraphs: &mut BTreeMap<String, SpecParagraph>
                 }
                 // Stop at code blocks, other spec markers, or headers
                 if next_line.starts_with("```")
-                    || next_line.starts_with("r[")
+                    || is_spec_marker(next_line)
                     || next_line.starts_with('#')
                 {
                     break;
@@ -507,41 +513,42 @@ mod tests {
 
     #[test]
     fn test_parse_spec_comment() {
-        // Simple rule ID without category defaults to informative
-        let (id, cat) = parse_spec_comment("r[3.1:1]").unwrap();
+        // Simple shortcode without category defaults to informative
+        let (id, cat) = parse_spec_comment("{{ rule(id=\"3.1:1\") }}").unwrap();
         assert_eq!(id, "3.1:1");
         assert_eq!(cat, "informative");
 
-        // Rule with explicit normative category
-        let (id, cat) = parse_spec_comment("r[4.2:3#normative]").unwrap();
+        // Shortcode with explicit normative category
+        let (id, cat) = parse_spec_comment("{{ rule(id=\"4.2:3\", cat=\"normative\") }}").unwrap();
         assert_eq!(id, "4.2:3");
         assert_eq!(cat, "normative");
 
-        // Rule with explicit syntax category
-        let (id, cat) = parse_spec_comment("r[2.1:1#syntax]").unwrap();
+        // Shortcode with explicit syntax category
+        let (id, cat) = parse_spec_comment("{{ rule(id=\"2.1:1\", cat=\"syntax\") }}").unwrap();
         assert_eq!(id, "2.1:1");
         assert_eq!(cat, "syntax");
+
+        // Invalid: no colon in ID
+        assert!(parse_spec_comment("{{ rule(id=\"3.1.1\") }}").is_none());
 
         // Invalid formats
         assert!(parse_spec_comment("not a spec comment").is_none());
         assert!(parse_spec_comment("<!-- not spec -->").is_none());
-        assert!(parse_spec_comment("r[").is_none()); // Incomplete
-        assert!(parse_spec_comment("r[]").is_none()); // Empty
-
-        // Old dot notation is no longer supported
-        assert!(parse_spec_comment("r[3.1.1]").is_none());
-        assert!(parse_spec_comment("r[4.2.3#normative]").is_none());
     }
 
     #[test]
     fn test_parse_spec_file() {
         let content = r#"
++++
+title = "Test"
++++
+
 # Test
 
-r[3.1:1#normative]
+{{ rule(id="3.1:1", cat="normative") }}
 This is a test paragraph.
 
-r[3.1:2#normative]
+{{ rule(id="3.1:2", cat="normative") }}
 Another paragraph.
 "#;
         let dir = tempfile::tempdir().unwrap();
@@ -562,7 +569,7 @@ Another paragraph.
     #[test]
     fn test_default_category_is_informative() {
         // Rules without explicit category default to informative
-        let (id, cat) = parse_spec_comment("r[1.1:1]").unwrap();
+        let (id, cat) = parse_spec_comment("{{ rule(id=\"1.1:1\") }}").unwrap();
         assert_eq!(id, "1.1:1");
         assert_eq!(cat, "informative");
     }
@@ -571,7 +578,7 @@ Another paragraph.
     fn test_explicit_example_category() {
         // Paragraphs can be explicitly marked as examples
         let content = r#"
-r[3.1:5#example]
+{{ rule(id="3.1:5", cat="example") }}
 ```rue
 fn main() { }
 ```

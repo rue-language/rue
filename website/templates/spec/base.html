@@ -1,0 +1,76 @@
+{% extends "base.html" %}
+
+{% block title %}{{ page.title | default(value=section.title) }} - Rue Language Specification{% endblock %}
+
+{% block content %}
+<div class="spec-layout">
+    {# Sidebar #}
+    <aside class="spec-sidebar">
+        <div class="spec-sidebar-inner">
+            <div class="spec-sidebar-header">
+                <a href="{{ get_url(path='spec') }}" class="spec-title">Rue Specification</a>
+            </div>
+            <nav class="spec-nav">
+                {% set spec_section = get_section(path="spec/_index.md") %}
+                {% set current = page.permalink | default(value=section.permalink) | default(value="") %}
+                {{ self::render_nav(section=spec_section, current_path=current, depth=0) }}
+            </nav>
+        </div>
+    </aside>
+
+    {# Main content #}
+    <div class="spec-main">
+        <article class="spec-content">
+            {% block spec_content %}{% endblock %}
+        </article>
+
+        {# Prev/Next navigation #}
+        {% block prev_next %}
+        <nav class="spec-page-nav">
+            {% if page.lower %}
+            <a href="{{ page.lower.permalink }}" class="spec-nav-prev">
+                <span class="spec-nav-label">Previous</span>
+                <span class="spec-nav-title">{{ page.lower.title }}</span>
+            </a>
+            {% else %}
+            <span></span>
+            {% endif %}
+            {% if page.higher %}
+            <a href="{{ page.higher.permalink }}" class="spec-nav-next">
+                <span class="spec-nav-label">Next</span>
+                <span class="spec-nav-title">{{ page.higher.title }}</span>
+            </a>
+            {% endif %}
+        </nav>
+        {% endblock %}
+    </div>
+</div>
+{% endblock %}
+
+{# Recursive macro for navigation - handles a section and its content #}
+{% macro render_nav(section, current_path, depth) %}
+<ul class="spec-nav-list">
+    {# Render direct pages in this section (already sorted by weight) #}
+    {% for pg in section.pages %}
+    <li class="spec-nav-item">
+        <a href="{{ pg.permalink }}" class="spec-nav-link {% if pg.permalink == current_path %}active{% endif %}">
+            {{ pg.title }}
+        </a>
+    </li>
+    {% endfor %}
+
+    {# Subsections paths are already sorted alphabetically by Zola, which works for
+       our numbered chapters (02-lexical-structure, 03-types, etc.) #}
+    {% for sub_path in section.subsections | sort %}
+        {% set sub = get_section(path=sub_path) %}
+    <li class="spec-nav-section">
+        <a href="{{ sub.permalink }}" class="spec-nav-section-title {% if current_path is starting_with(sub.permalink) %}active{% endif %}">
+            {{ sub.title }}
+        </a>
+        {% if current_path is starting_with(sub.permalink) %}
+        {{ self::render_nav(section=sub, current_path=current_path, depth=depth + 1) }}
+        {% endif %}
+    </li>
+    {% endfor %}
+</ul>
+{% endmacro %}

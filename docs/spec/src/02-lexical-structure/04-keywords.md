@@ -1,11 +1,19 @@
++++
+title = "Keywords and Reserved Words"
+weight = 4
+template = "spec/page.html"
++++
+
 # Keywords and Reserved Words
 
-r[2.4:1#normative]
+{{ rule(id="2.4:1", cat="normative") }}
+
 Keywords are reserved words that have special meaning in the language.
 
 ## Keywords
 
-r[2.4:2#normative]
+{{ rule(id="2.4:2", cat="normative") }}
+
 The following words are keywords and cannot be used as identifiers:
 
 | Keyword | Description |
@@ -27,7 +35,8 @@ The following words are keywords and cannot be used as identifiers:
 
 ## Type Names
 
-r[2.4:3#normative]
+{{ rule(id="2.4:3", cat="normative") }}
+
 The following are type names and are reserved:
 
 | Type | Description |

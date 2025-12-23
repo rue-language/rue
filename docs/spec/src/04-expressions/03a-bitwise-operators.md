@@ -1,10 +1,17 @@
++++
+title = "Bitwise Operators"
+weight = 100
+template = "spec/page.html"
++++
+
 # Bitwise Operators
 
 Bitwise operators perform bit-level operations on integer values.
 
 ## Binary Bitwise Operators
 
-r[4.3a:1#normative]
+{{ rule(id="4.3a:1", cat="normative") }}
+
 Binary bitwise operators take two operands of the same integer type and produce a result of that type.
 
 | Operator | Name | Description |
@@ -13,7 +20,8 @@ Binary bitwise operators take two operands of the same integer type and produce 
 | `\|` | Bitwise OR | Sets each bit if either operand bit is 1 |
 | `^` | Bitwise XOR | Sets each bit if exactly one operand bit is 1 |
 
-r[4.3a:2]
+{{ rule(id="4.3a:2") }}
+
 ```rue
 fn main() -> i32 {
     let a: i32 = 0b1100;
@@ -27,13 +35,16 @@ fn main() -> i32 {
 
 ## Bitwise NOT
 
-r[4.3a:3#normative]
+{{ rule(id="4.3a:3", cat="normative") }}
+
 The bitwise NOT operator `~` inverts all bits of its operand.
 
-r[4.3a:4#normative]
+{{ rule(id="4.3a:4", cat="normative") }}
+
 Bitwise NOT takes a single integer operand and produces a result of the same type.
 
-r[4.3a:5]
+{{ rule(id="4.3a:5") }}
+
 ```rue
 fn main() -> i32 {
     let a: i32 = 0b0101;
@@ -44,7 +55,8 @@ fn main() -> i32 {
 
 ## Shift Operators
 
-r[4.3a:6#normative]
+{{ rule(id="4.3a:6", cat="normative") }}
+
 Shift operators move bits left or right by a specified number of positions.
 
 | Operator | Name | Description |
@@ -52,21 +64,26 @@ Shift operators move bits left or right by a specified number of positions.
 | `<<` | Left Shift | Shifts bits left, filling with zeros |
 | `>>` | Right Shift | Shifts bits right |
 
-r[4.3a:7#normative]
+{{ rule(id="4.3a:7", cat="normative") }}
+
 For left shift (`<<`), vacated bit positions are filled with zeros.
 
-r[4.3a:8#normative]
+{{ rule(id="4.3a:8", cat="normative") }}
+
 For right shift (`>>`), the behavior depends on the signedness of the operand type:
 - For unsigned types, vacated bit positions are filled with zeros (logical shift).
 - For signed types, vacated bit positions are filled with copies of the sign bit (arithmetic shift).
 
-r[4.3a:9#normative]
+{{ rule(id="4.3a:9", cat="normative") }}
+
 The shift amount operand shall have the same type as the value being shifted.
 
-r[4.3a:10#normative]
+{{ rule(id="4.3a:10", cat="normative") }}
+
 If the shift amount is greater than or equal to the bit width of the type, the behavior is defined as shifting by the amount modulo the bit width. For example, shifting an `i32` by 33 positions is equivalent to shifting by 1 position.
 
-r[4.3a:11]
+{{ rule(id="4.3a:11") }}
+
 ```rue
 fn main() -> i32 {
     let x: i32 = 1;
@@ -78,7 +95,8 @@ fn main() -> i32 {
 
 ## Operator Precedence
 
-r[4.3a:12#normative]
+{{ rule(id="4.3a:12", cat="normative") }}
+
 Bitwise operator precedence (highest to lowest within this group):
 1. `~` (bitwise NOT, unary)
 2. `<<`, `>>` (shift operators)
@@ -86,13 +104,16 @@ Bitwise operator precedence (highest to lowest within this group):
 4. `^` (bitwise XOR)
 5. `|` (bitwise OR)
 
-r[4.3a:13#normative]
+{{ rule(id="4.3a:13", cat="normative") }}
+
 Shift operators have higher precedence than arithmetic operators. Bitwise AND, XOR, and OR have lower precedence than comparison operators.
 
-r[4.3a:14#normative]
+{{ rule(id="4.3a:14", cat="normative") }}
+
 Parentheses can be used to override the default precedence.
 
-r[4.3a:15]
+{{ rule(id="4.3a:15") }}
+
 ```rue
 fn main() -> i32 {
     let a: i32 = 1 | 2 & 3;   // = 1 | (2 & 3) = 1 | 2 = 3
@@ -103,10 +124,12 @@ fn main() -> i32 {
 
 ## Associativity
 
-r[4.3a:16#normative]
+{{ rule(id="4.3a:16", cat="normative") }}
+
 All binary bitwise operators are left-associative.
 
-r[4.3a:17]
+{{ rule(id="4.3a:17") }}
+
 ```rue
 fn main() -> i32 {
     let x: i32 = 1 << 2 << 1;  // = (1 << 2) << 1 = 4 << 1 = 8
@@ -116,8 +139,10 @@ fn main() -> i32 {
 
 ## Type Checking
 
-r[4.3a:18#normative]
+{{ rule(id="4.3a:18", cat="normative") }}
+
 Bitwise operators are only valid for integer types (`i8`, `i16`, `i32`, `i64`, `u8`, `u16`, `u32`, `u64`).
 
-r[4.3a:19#normative]
+{{ rule(id="4.3a:19", cat="normative") }}
+
 Using bitwise operators on boolean or other non-integer types is a compile-time error.

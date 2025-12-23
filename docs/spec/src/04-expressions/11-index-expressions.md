@@ -1,23 +1,35 @@
++++
+title = "Index Expressions"
+weight = 11
+template = "spec/page.html"
++++
+
 # Index Expressions
 
-r[4.11:1#normative]
+{{ rule(id="4.11:1", cat="normative") }}
+
 An index expression accesses an element of an array.
 
-r[4.11:2#normative]
+{{ rule(id="4.11:2", cat="normative") }}
+
 ```ebnf
 index_expr = expression "[" expression "]" ;
 ```
 
-r[4.11:3#normative]
+{{ rule(id="4.11:3", cat="normative") }}
+
 The expression before the brackets must have an array type `[T; N]`.
 
-r[4.11:4#normative]
+{{ rule(id="4.11:4", cat="normative") }}
+
 The index expression must have an integer type.
 
-r[4.11:5#normative]
+{{ rule(id="4.11:5", cat="normative") }}
+
 The type of an index expression is the element type `T`.
 
-r[4.11:6]
+{{ rule(id="4.11:6") }}
+
 ```rue
 fn main() -> i32 {
     let arr: [i32; 3] = [10, 42, 100];
@@ -27,16 +39,20 @@ fn main() -> i32 {
 
 ## Bounds Checking
 
-r[4.11:7#normative]
+{{ rule(id="4.11:7", cat="normative") }}
+
 For constant indices, bounds checking is performed at compile time.
 
-r[4.11:8#normative]
+{{ rule(id="4.11:8", cat="normative") }}
+
 For variable indices, bounds checking is performed at runtime.
 
-r[4.11:9#normative]
+{{ rule(id="4.11:9", cat="normative") }}
+
 An out-of-bounds access causes a runtime panic.
 
-r[4.11:10]
+{{ rule(id="4.11:10") }}
+
 ```rue
 fn main() -> i32 {
     let arr: [i32; 3] = [1, 2, 3];
@@ -44,7 +60,8 @@ fn main() -> i32 {
 }
 ```
 
-r[4.11:11]
+{{ rule(id="4.11:11") }}
+
 ```rue
 fn main() -> i32 {
     let arr: [i32; 3] = [1, 2, 3];
@@ -55,10 +72,12 @@ fn main() -> i32 {
 
 ## Index Assignment
 
-r[4.11:12#normative]
+{{ rule(id="4.11:12", cat="normative") }}
+
 For mutable arrays, elements can be assigned using index expressions.
 
-r[4.11:13]
+{{ rule(id="4.11:13") }}
+
 ```rue
 fn main() -> i32 {
     let mut arr: [i32; 2] = [0, 0];

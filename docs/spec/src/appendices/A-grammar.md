@@ -1,3 +1,9 @@
++++
+title = "Grammar"
+weight = 1
+template = "spec/page.html"
++++
+
 # Appendix A: Grammar
 
 This appendix contains the complete EBNF grammar for Rue.

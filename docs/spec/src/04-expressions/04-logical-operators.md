@@ -1,14 +1,23 @@
++++
+title = "Logical Operators"
+weight = 4
+template = "spec/page.html"
++++
+
 # Logical Operators
 
-r[4.4:1#normative]
+{{ rule(id="4.4:1", cat="normative") }}
+
 Logical operators operate on `bool` values and produce `bool` results.
 
 ## Logical NOT
 
-r[4.4:2#normative]
+{{ rule(id="4.4:2", cat="normative") }}
+
 The logical NOT operator `!` negates its operand.
 
-r[4.4:3]
+{{ rule(id="4.4:3") }}
+
 ```rue
 fn main() -> i32 {
     let a = !false;   // true
@@ -20,13 +29,16 @@ fn main() -> i32 {
 
 ## Logical AND
 
-r[4.4:4#normative]
+{{ rule(id="4.4:4", cat="normative") }}
+
 The logical AND operator `&&` returns `true` if both operands are `true`.
 
-r[4.4:5#normative]
+{{ rule(id="4.4:5", cat="normative") }}
+
 The `&&` operator uses short-circuit evaluation: if the left operand is `false`, the right operand is not evaluated.
 
-r[4.4:6]
+{{ rule(id="4.4:6") }}
+
 ```rue
 fn main() -> i32 {
     if true && true { 1 } else { 0 }   // 1
@@ -36,13 +48,16 @@ fn main() -> i32 {
 
 ## Logical OR
 
-r[4.4:7#normative]
+{{ rule(id="4.4:7", cat="normative") }}
+
 The logical OR operator `||` returns `true` if either operand is `true`.
 
-r[4.4:8#normative]
+{{ rule(id="4.4:8", cat="normative") }}
+
 The `||` operator uses short-circuit evaluation: if the left operand is `true`, the right operand is not evaluated.
 
-r[4.4:9]
+{{ rule(id="4.4:9") }}
+
 ```rue
 fn main() -> i32 {
     if false || true { 1 } else { 0 }  // 1
@@ -52,13 +67,15 @@ fn main() -> i32 {
 
 ## Precedence
 
-r[4.4:10#normative]
+{{ rule(id="4.4:10", cat="normative") }}
+
 Operator precedence (highest to lowest):
 1. `!` (logical NOT)
 2. `&&` (logical AND)
 3. `||` (logical OR)
 
-r[4.4:11]
+{{ rule(id="4.4:11") }}
+
 ```rue
 fn main() -> i32 {
     // true || false && false => true || (false && false) => true
@@ -68,5 +85,6 @@ fn main() -> i32 {
 
 ## Type Checking
 
-r[4.4:12#normative]
+{{ rule(id="4.4:12", cat="normative") }}
+
 All operands of logical operators must have type `bool`.

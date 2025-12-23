@@ -1,31 +1,19 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Build the Rue website with the spec included
+# Build the Rue website
 # Usage: ./build.sh [serve]
 
 cd "$(dirname "$0")/.."
 ROOT="$PWD"
 
-# Build the mdbook-spec preprocessor with buck2
-echo "Building mdbook-spec preprocessor..."
-MDBOOK_SPEC="$(./buck2 build //docs/spec/tools/mdbook-spec:mdbook-spec --show-output | tail -1 | awk '{print $2}')"
-MDBOOK_SPEC_DIR="$ROOT/$(dirname "$MDBOOK_SPEC")"
-
-# Create symlink with hyphenated name (buck2 uses underscores)
-ln -sf mdbook_spec "$MDBOOK_SPEC_DIR/mdbook-spec"
-
-# Build the spec
-echo "Building specification..."
-export PATH="$MDBOOK_SPEC_DIR:$PATH"
-cd docs/spec && "$ROOT/mdbook" build
-cd "$ROOT"
-
-# Copy spec into website static
-echo "Copying spec to website/static/spec..."
-rm -rf website/static/spec
-mkdir -p website/static/spec
-cp -r docs/spec/book/* website/static/spec/
+# Copy spec content into website/content/spec
+# We use a copy rather than a symlink for Windows compatibility (symlinks
+# require elevated privileges on Windows). The spec source lives in
+# docs/spec/src/ to keep it near the compiler code.
+echo "Copying spec content..."
+rm -rf website/content/spec
+cp -r docs/spec/src website/content/spec
 
 # Build Tailwind CSS
 echo "Building Tailwind CSS..."

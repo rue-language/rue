@@ -1,15 +1,25 @@
++++
+title = "String Type"
+weight = 7
+template = "spec/page.html"
++++
+
 # String Type
 
-r[3.7:1#normative]
+{{ rule(id="3.7:1", cat="normative") }}
+
 The type `String` represents an immutable sequence of UTF-8 encoded bytes.
 
-r[3.7:2#normative]
+{{ rule(id="3.7:2", cat="normative") }}
+
 A `String` value is a fat pointer consisting of a pointer to the string data and the length in bytes.
 
-r[3.7:3#normative]
+{{ rule(id="3.7:3", cat="normative") }}
+
 String literals are stored in read-only memory and have static lifetime.
 
-r[3.7:4]
+{{ rule(id="3.7:4") }}
+
 ```rue
 fn main() -> i32 {
     let s = "hello";
@@ -19,10 +29,12 @@ fn main() -> i32 {
 
 ## String Literals
 
-r[3.7:5#normative]
+{{ rule(id="3.7:5", cat="normative") }}
+
 A string literal is a sequence of characters enclosed in double quotes (`"`).
 
-r[3.7:6#normative]
+{{ rule(id="3.7:6", cat="normative") }}
+
 String literals support the following escape sequences:
 
 | Escape | Meaning |
@@ -30,10 +42,12 @@ String literals support the following escape sequences:
 | `\\` | Backslash |
 | `\"` | Double quote |
 
-r[3.7:7#normative]
+{{ rule(id="3.7:7", cat="normative") }}
+
 An invalid escape sequence in a string literal is a compile-time error.
 
-r[3.7:8]
+{{ rule(id="3.7:8") }}
+
 ```rue
 fn main() -> i32 {
     let a = "hello world";
@@ -45,13 +59,16 @@ fn main() -> i32 {
 
 ## String Equality
 
-r[3.7:9#normative]
+{{ rule(id="3.7:9", cat="normative") }}
+
 Strings support the equality operators `==` and `!=`.
 
-r[3.7:10#normative]
+{{ rule(id="3.7:10", cat="normative") }}
+
 Two strings are equal if they have the same length and identical byte content.
 
-r[3.7:11]
+{{ rule(id="3.7:11") }}
+
 ```rue
 fn main() -> i32 {
     let a = "hello";
@@ -67,10 +84,12 @@ fn main() -> i32 {
 
 ## String Debugging
 
-r[3.7:12#normative]
+{{ rule(id="3.7:12", cat="normative") }}
+
 The `@dbg` intrinsic accepts a `String` argument and prints its content followed by a newline.
 
-r[3.7:13]
+{{ rule(id="3.7:13") }}
+
 ```rue
 fn main() -> i32 {
     let msg = "Hello, world!";
@@ -81,7 +100,8 @@ fn main() -> i32 {
 
 ## Limitations
 
-r[3.7:14#informative]
+{{ rule(id="3.7:14", cat="informative") }}
+
 The current implementation does not support:
 - String concatenation
 - String indexing or slicing

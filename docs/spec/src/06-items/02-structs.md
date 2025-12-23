@@ -1,9 +1,17 @@
++++
+title = "Structs"
+weight = 2
+template = "spec/page.html"
++++
+
 # Structs
 
-r[6.2:1#normative]
+{{ rule(id="6.2:1", cat="normative") }}
+
 A struct is defined using the `struct` keyword.
 
-r[6.2:2#normative]
+{{ rule(id="6.2:2", cat="normative") }}
+
 ```ebnf
 struct_def = "struct" IDENT "{" [ struct_fields ] "}" ;
 struct_fields = struct_field { "," struct_field } [ "," ] ;
@@ -12,10 +20,12 @@ struct_field = IDENT ":" type ;
 
 ## Struct Definition
 
-r[6.2:3#normative]
+{{ rule(id="6.2:3", cat="normative") }}
+
 Field names must be unique within a struct.
 
-r[6.2:4]
+{{ rule(id="6.2:4") }}
+
 ```rue
 struct Point {
     x: i32,
@@ -25,13 +35,16 @@ struct Point {
 
 ## Struct Instantiation
 
-r[6.2:5#normative]
+{{ rule(id="6.2:5", cat="normative") }}
+
 All fields must be initialized when creating a struct instance.
 
-r[6.2:6#normative]
+{{ rule(id="6.2:6", cat="normative") }}
+
 Field initializers may be provided in any order.
 
-r[6.2:7]
+{{ rule(id="6.2:7") }}
+
 ```rue
 struct Point { x: i32, y: i32 }
 
@@ -44,13 +57,16 @@ fn main() -> i32 {
 
 ## Struct Usage
 
-r[6.2:8#normative]
+{{ rule(id="6.2:8", cat="normative") }}
+
 Struct fields are accessed using dot notation.
 
-r[6.2:9#normative]
+{{ rule(id="6.2:9", cat="normative") }}
+
 Mutable struct values allow field reassignment.
 
-r[6.2:10]
+{{ rule(id="6.2:10") }}
+
 ```rue
 struct Counter { value: i32 }
 
