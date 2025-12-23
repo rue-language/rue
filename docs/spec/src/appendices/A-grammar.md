@@ -63,7 +63,8 @@ primary        = INTEGER | BOOL | IDENT
 
 (* Compound expressions *)
 block_expr     = "{" block "}" ;
-if_expr        = "if" expression "{" block "}" [ "else" "{" block "}" ] ;
+if_expr        = "if" expression "{" block "}" [ else_clause ] ;
+else_clause    = "else" ( "{" block "}" | if_expr ) ;
 match_expr     = "match" expression "{" { match_arm "," } [ match_arm ] "}" ;
 match_arm      = pattern "=>" expression ;
 pattern        = "_" | INTEGER | BOOL ;

@@ -3,9 +3,10 @@
 r[4.6:1#normative]
 An if expression conditionally executes one of two branches based on a boolean condition.
 
-r[4.6:2#normative]
+r[4.6:2#syntax]
 ```ebnf
-if_expr = "if" expression "{" block "}" [ "else" "{" block "}" ] ;
+if_expr     = "if" expression "{" block "}" [ else_clause ] ;
+else_clause = "else" ( "{" block "}" | if_expr ) ;
 ```
 
 r[4.6:3#normative]
@@ -36,14 +37,14 @@ fn main() -> i32 {
 }
 ```
 
-r[4.6:9]
-If expressions can be nested:
+r[4.6:9#example]
+If expressions can be chained using `else if`:
 
 ```rue
 fn main() -> i32 {
     let x = 5;
     if x < 3 { 1 }
-    else { if x < 7 { 2 }
-    else { 3 } }
+    else if x < 7 { 2 }
+    else { 3 }
 }
 ```

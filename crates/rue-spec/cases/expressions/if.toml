@@ -207,7 +207,7 @@ exit_code = 42
 
 [[case]]
 name = "else_if_basic"
-spec = ["4.6:1"]
+spec = ["4.6:1", "4.6:9"]
 source = """
 fn main() -> i32 {
     let x = 2;
@@ -220,7 +220,7 @@ exit_code = 20
 
 [[case]]
 name = "else_if_chain"
-spec = ["4.6:1"]
+spec = ["4.6:1", "4.6:9"]
 source = """
 fn main() -> i32 {
     let x = 2;
@@ -234,7 +234,7 @@ exit_code = 20
 
 [[case]]
 name = "else_if_first_branch"
-spec = ["4.6:1"]
+spec = ["4.6:1", "4.6:9"]
 source = """
 fn main() -> i32 {
     let x = 1;
@@ -248,7 +248,7 @@ exit_code = 10
 
 [[case]]
 name = "else_if_last_branch"
-spec = ["4.6:1"]
+spec = ["4.6:1", "4.6:9"]
 source = """
 fn main() -> i32 {
     let x = 3;
@@ -262,7 +262,7 @@ exit_code = 30
 
 [[case]]
 name = "else_if_fallthrough"
-spec = ["4.6:1"]
+spec = ["4.6:1", "4.6:9"]
 source = """
 fn main() -> i32 {
     let x = 99;
@@ -276,7 +276,7 @@ exit_code = 0
 
 [[case]]
 name = "else_if_with_complex_conditions"
-spec = ["4.6:1"]
+spec = ["4.6:1", "4.6:9"]
 source = """
 fn main() -> i32 {
     let x = 15;
@@ -290,7 +290,7 @@ exit_code = 2
 
 [[case]]
 name = "else_if_nested_in_else_if"
-spec = ["4.6:1"]
+spec = ["4.6:1", "4.6:9"]
 source = """
 fn main() -> i32 {
     let x = 2;
