@@ -34,7 +34,7 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: Install dotslash
-        run: cargo install dotslash
+        uses: facebook/install-dotslash@latest
 
       - name: Run tests
         run: ./test.sh
