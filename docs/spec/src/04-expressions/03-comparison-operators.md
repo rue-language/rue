@@ -70,3 +70,20 @@ Both operands of a comparison must have the same type.
 
 r[4.3:11#normative]
 When one operand has a known type, the other is inferred to have the same type.
+
+## Associativity
+
+r[4.3:12#legality-rule]
+Comparison operators cannot be chained. Expressions like `a < b < c` or `a == b == c` are compile-time errors.
+
+r[4.3:13#example]
+To compare multiple values, use logical operators:
+
+```rue
+fn main() -> i32 {
+    let a = 1;
+    let b = 2;
+    let c = 3;
+    if a < b && b < c { 1 } else { 0 }  // correct way to chain comparisons
+}
+```

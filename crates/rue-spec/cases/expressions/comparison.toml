@@ -240,3 +240,61 @@ exit_code = 1
 # }
 # """
 # exit_code = 1
+
+# =============================================================================
+# Chained Comparisons Are Rejected
+# =============================================================================
+
+[[case]]
+name = "chained_lt_comparison_error"
+spec = ["4.3:12"]
+source = """
+fn main() -> i32 {
+    if 1 < 2 < 3 { 1 } else { 0 }
+}
+"""
+compile_fail = true
+error_contains = "comparison operators cannot be chained"
+
+[[case]]
+name = "chained_eq_comparison_error"
+spec = ["4.3:12"]
+source = """
+fn main() -> i32 {
+    if 1 == 1 == true { 1 } else { 0 }
+}
+"""
+compile_fail = true
+error_contains = "comparison operators cannot be chained"
+
+[[case]]
+name = "chained_mixed_comparison_error"
+spec = ["4.3:12"]
+source = """
+fn main() -> i32 {
+    if 1 < 2 == true { 1 } else { 0 }
+}
+"""
+compile_fail = true
+error_contains = "comparison operators cannot be chained"
+
+[[case]]
+name = "separate_comparisons_with_and"
+spec = ["4.3:13"]
+source = """
+fn main() -> i32 {
+    if 1 < 2 && 2 < 3 { 1 } else { 0 }
+}
+"""
+exit_code = 1
+
+[[case]]
+name = "parenthesized_comparison_in_chain"
+spec = ["4.3:12"]
+source = """
+fn main() -> i32 {
+    if (1 < 2) < 3 { 1 } else { 0 }
+}
+"""
+compile_fail = true
+error_contains = "comparison operators cannot be chained"

@@ -233,6 +233,7 @@ pub enum ErrorKind {
 
     // Operator errors
     CannotNegateUnsigned(String),
+    ChainedComparison,
 
     // Array errors
     IndexOnNonArray {
@@ -503,6 +504,9 @@ impl fmt::Display for ErrorKind {
             }
             ErrorKind::CannotNegateUnsigned(ty) => {
                 write!(f, "cannot apply unary operator `-` to type '{}'", ty)
+            }
+            ErrorKind::ChainedComparison => {
+                write!(f, "comparison operators cannot be chained")
             }
             ErrorKind::IndexOnNonArray { found } => {
                 write!(f, "cannot index into non-array type '{}'", found)

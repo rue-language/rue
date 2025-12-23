@@ -2513,6 +2513,14 @@ impl<'a> Sema<'a> {
     where
         F: FnOnce(AirRef, AirRef) -> AirInstData,
     {
+        // Check for chained comparisons (e.g., `a < b < c`)
+        // Since the parser is left-associative, `a < b < c` parses as `(a < b) < c`,
+        // so we only need to check if the LHS is a comparison.
+        if self.is_comparison(lhs) {
+            return Err(CompileError::new(ErrorKind::ChainedComparison, span)
+                .with_help("use `&&` to combine comparisons: `a < b && b < c`"));
+        }
+
         // Bidirectional type inference for integer literals:
         // If LHS is an integer literal, peek at RHS to get a type hint
         let lhs_expectation = if self.is_integer_literal(lhs) {
@@ -2761,6 +2769,22 @@ impl<'a> Sema<'a> {
     /// of a binary operator is a literal that can adopt its type from the RHS.
     fn is_integer_literal(&self, inst_ref: InstRef) -> bool {
         matches!(self.rir.get(inst_ref).data, InstData::IntConst(_))
+    }
+
+    /// Check if an RIR instruction is a comparison operation.
+    ///
+    /// This is used to detect chained comparisons (e.g., `a < b < c`) which are
+    /// not allowed in Rue.
+    fn is_comparison(&self, inst_ref: InstRef) -> bool {
+        matches!(
+            self.rir.get(inst_ref).data,
+            InstData::Lt { .. }
+                | InstData::Gt { .. }
+                | InstData::Le { .. }
+                | InstData::Ge { .. }
+                | InstData::Eq { .. }
+                | InstData::Ne { .. }
+        )
     }
 
     /// Peek at the type of an expression without emitting AIR.
