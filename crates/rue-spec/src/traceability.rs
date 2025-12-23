@@ -272,14 +272,14 @@ impl TraceabilityReport {
 }
 
 /// Parse a spec marker from a line.
-/// Format: r[X.Y.Z] or r[X.Y.Z#category] at the start of a line.
+/// Format: r[X.Y:Z] or r[X.Y:Z#category] at the start of a line.
 /// Category can be: normative, informative, syntax, example
 /// Default category (no #) is informative.
 /// Returns (id, category) if found.
 fn parse_spec_comment(line: &str) -> Option<(String, String)> {
     let line = line.trim();
 
-    // Format: r[X.Y.Z] or r[X.Y.Z#category] at start of line
+    // Format: r[X.Y:Z] or r[X.Y:Z#category] at start of line
     if line.starts_with("r[") && line.ends_with(']') {
         let inner = line.trim_start_matches("r[").trim_end_matches(']');
 
@@ -300,15 +300,12 @@ fn parse_spec_comment(line: &str) -> Option<(String, String)> {
             return None;
         }
 
-        // Convert from dot notation (X.Y.Z) to colon notation (X.Y:Z) for compatibility
-        // The last dot becomes a colon
-        let colon_id = if let Some(last_dot) = id.rfind('.') {
-            format!("{}:{}", &id[..last_dot], &id[last_dot + 1..])
-        } else {
-            id
-        };
+        // Validate that the ID contains a colon (required format: X.Y:Z)
+        if !id.contains(':') {
+            return None;
+        }
 
-        return Some((colon_id, category));
+        return Some((id, category));
     }
 
     None
@@ -511,17 +508,17 @@ mod tests {
     #[test]
     fn test_parse_spec_comment() {
         // Simple rule ID without category defaults to informative
-        let (id, cat) = parse_spec_comment("r[3.1.1]").unwrap();
+        let (id, cat) = parse_spec_comment("r[3.1:1]").unwrap();
         assert_eq!(id, "3.1:1");
         assert_eq!(cat, "informative");
 
         // Rule with explicit normative category
-        let (id, cat) = parse_spec_comment("r[4.2.3#normative]").unwrap();
+        let (id, cat) = parse_spec_comment("r[4.2:3#normative]").unwrap();
         assert_eq!(id, "4.2:3");
         assert_eq!(cat, "normative");
 
         // Rule with explicit syntax category
-        let (id, cat) = parse_spec_comment("r[2.1.1#syntax]").unwrap();
+        let (id, cat) = parse_spec_comment("r[2.1:1#syntax]").unwrap();
         assert_eq!(id, "2.1:1");
         assert_eq!(cat, "syntax");
 
@@ -530,6 +527,10 @@ mod tests {
         assert!(parse_spec_comment("<!-- not spec -->").is_none());
         assert!(parse_spec_comment("r[").is_none()); // Incomplete
         assert!(parse_spec_comment("r[]").is_none()); // Empty
+
+        // Old dot notation is no longer supported
+        assert!(parse_spec_comment("r[3.1.1]").is_none());
+        assert!(parse_spec_comment("r[4.2.3#normative]").is_none());
     }
 
     #[test]
@@ -537,10 +538,10 @@ mod tests {
         let content = r#"
 # Test
 
-r[3.1.1#normative]
+r[3.1:1#normative]
 This is a test paragraph.
 
-r[3.1.2#normative]
+r[3.1:2#normative]
 Another paragraph.
 "#;
         let dir = tempfile::tempdir().unwrap();
@@ -561,7 +562,7 @@ Another paragraph.
     #[test]
     fn test_default_category_is_informative() {
         // Rules without explicit category default to informative
-        let (id, cat) = parse_spec_comment("r[1.1.1]").unwrap();
+        let (id, cat) = parse_spec_comment("r[1.1:1]").unwrap();
         assert_eq!(id, "1.1:1");
         assert_eq!(cat, "informative");
     }
@@ -570,7 +571,7 @@ Another paragraph.
     fn test_explicit_example_category() {
         // Paragraphs can be explicitly marked as examples
         let content = r#"
-r[3.1.5#example]
+r[3.1:5#example]
 ```rue
 fn main() { }
 ```

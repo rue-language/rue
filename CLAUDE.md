@@ -265,28 +265,35 @@ docs/spec/src/
 
 #### Spec Paragraph Format
 
-Each normative paragraph has an ID and category:
+Each paragraph has an ID using the format `r[{chapter}.{section}:{paragraph}]` with an optional category:
 
 ```markdown
-<!-- spec:3.1:1 legality-rule -->
+r[3.1:1#normative]
 A signed integer type is one of: `i8`, `i16`, `i32`, or `i64`.
 
-<!-- spec:3.1:2 dynamic-semantics -->
+r[3.1:2#normative]
 Signed integer arithmetic that overflows causes a runtime panic.
 
-<!-- spec:3.1:3 example informative -->
+r[3.1:3#example]
 ```rue
 let x: i32 = 42;
 ```
 ```
 
+The format is `r[X.Y:Z]` or `r[X.Y:Z#category]` where:
+- `X.Y` is the chapter and section (e.g., `3.1` for Chapter 3, Section 1)
+- `Z` is the paragraph number within that section
+- The colon (`:`) separates the structural location from the paragraph number
+- `#category` is optional (defaults to `informative` if omitted)
+
 **Paragraph categories:**
+- `normative` - General normative rule (requires test coverage)
 - `legality-rule` - Compile-time requirements (normative)
 - `dynamic-semantics` - Runtime behavior (normative)
 - `syntax` - Grammar rules (normative)
 - `undefined-behavior` - UB conditions (normative)
 - `example` - Code examples (informative)
-- `informative` - Explanatory text (informative)
+- `informative` - Explanatory text (informative, default)
 
 #### Traceability Report
 
@@ -311,7 +318,7 @@ When adding or changing language features, follow this checklist:
 ### Implementation Steps
 
 1. **Update the specification** (`docs/spec/src/`)
-   - Add/modify spec paragraphs with proper IDs (e.g., `<!-- spec:4.2:3 legality-rule -->`)
+   - Add/modify spec paragraphs with proper IDs (e.g., `r[4.2:3#normative]`)
    - Include normative rules, dynamic semantics, and examples
    - Update the grammar appendix if syntax changes
 

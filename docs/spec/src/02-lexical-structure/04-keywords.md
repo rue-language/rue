@@ -1,11 +1,11 @@
 # Keywords and Reserved Words
 
-r[2.4.1#normative]
+r[2.4:1#normative]
 Keywords are reserved words that have special meaning in the language.
 
 ## Keywords
 
-r[2.4.2#normative]
+r[2.4:2#normative]
 The following words are keywords and cannot be used as identifiers:
 
 | Keyword | Description |
@@ -27,7 +27,7 @@ The following words are keywords and cannot be used as identifiers:
 
 ## Type Names
 
-r[2.4.3#normative]
+r[2.4:3#normative]
 The following are type names and are reserved:
 
 | Type | Description |

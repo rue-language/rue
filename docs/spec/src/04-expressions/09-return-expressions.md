@@ -1,23 +1,23 @@
 # Return Expressions
 
-r[4.9.1#normative]
+r[4.9:1#normative]
 A return expression exits the current function and provides its return value.
 
-r[4.9.2#normative]
+r[4.9:2#normative]
 ```ebnf
 return_expr = "return" expression? ;
 ```
 
-r[4.9.3#normative]
+r[4.9:3#normative]
 If the expression is omitted, it is equivalent to `return ()`.
 
-r[4.9.4#normative]
+r[4.9:4#normative]
 The expression following `return` (or the implicit `()`) must have a type compatible with the function's declared return type.
 
-r[4.9.5#normative]
+r[4.9:5#normative]
 A return expression has the never type `!` because it never produces a local value.
 
-r[4.9.6]
+r[4.9:6]
 ```rue
 fn abs(x: i32) -> i32 {
     if x < 0 {
@@ -31,13 +31,13 @@ fn main() -> i32 {
 }
 ```
 
-r[4.9.7#normative]
+r[4.9:7#normative]
 When a return expression is evaluated, the function immediately returns the value of the expression. No further code in the function is executed.
 
-r[4.9.8#normative]
+r[4.9:8#normative]
 Because return has type `!`, it can appear in contexts that expect any type.
 
-r[4.9.9]
+r[4.9:9]
 ```rue
 fn test(x: i32) -> i32 {
     // `return 100` has type !, which coerces to i32
@@ -50,7 +50,7 @@ fn main() -> i32 {
 }
 ```
 
-r[4.9.10]
+r[4.9:10]
 ```rue
 fn do_nothing() {
     return;  // equivalent to return ()
