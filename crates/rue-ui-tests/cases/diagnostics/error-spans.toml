@@ -1,0 +1,37 @@
+[section]
+id = "diagnostics.error-spans"
+name = "Error Span Precision"
+description = "Tests that error messages point to the precise location of errors."
+
+# =============================================================================
+# Match Pattern Type Mismatch Errors
+# =============================================================================
+
+# These tests verify that pattern type mismatch errors point to the specific
+# pattern, not the entire match expression.
+
+[[case]]
+name = "pattern_type_mismatch_int_vs_bool"
+source = """
+fn main() -> i32 {
+    match 1 {
+        true => 10,
+        _ => 0,
+    }
+}
+"""
+compile_fail = true
+error_contains = "3:9"
+
+[[case]]
+name = "pattern_type_mismatch_bool_vs_int"
+source = """
+fn main() -> i32 {
+    match true {
+        42 => 10,
+        _ => 0,
+    }
+}
+"""
+compile_fail = true
+error_contains = "3:9"

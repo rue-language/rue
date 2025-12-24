@@ -1180,7 +1180,7 @@ impl<'a> Sema<'a> {
                                         expected: scrutinee_type.name().to_string(),
                                         found: "integer".to_string(),
                                     },
-                                    inst.span,
+                                    pattern_span,
                                 ));
                             }
                             // Check for duplicate integer pattern
@@ -1209,7 +1209,7 @@ impl<'a> Sema<'a> {
                                         expected: scrutinee_type.name().to_string(),
                                         found: "bool".to_string(),
                                     },
-                                    inst.span,
+                                    pattern_span,
                                 ));
                             }
                             // Check for duplicate boolean pattern
@@ -1245,7 +1245,7 @@ impl<'a> Sema<'a> {
                                     ErrorKind::UnknownEnumType(
                                         self.interner.get(*type_name).to_string(),
                                     ),
-                                    inst.span,
+                                    pattern_span,
                                 )
                             })?;
                             let enum_def = &self.enum_defs[enum_id.0 as usize];
@@ -1257,7 +1257,7 @@ impl<'a> Sema<'a> {
                                         expected: scrutinee_type.name().to_string(),
                                         found: enum_def.name.clone(),
                                     },
-                                    inst.span,
+                                    pattern_span,
                                 ));
                             }
 
@@ -1270,7 +1270,7 @@ impl<'a> Sema<'a> {
                                             enum_name: enum_def.name.clone(),
                                             variant_name: variant_name.to_string(),
                                         },
-                                        inst.span,
+                                        pattern_span,
                                     )
                                 })?;
 
