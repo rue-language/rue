@@ -1903,29 +1903,52 @@ impl<'a> Sema<'a> {
             }
 
             InstData::FieldSet { base, field, value } => {
-                // For field assignment, we need the base to be a local variable
-                // Get the variable info from the base VarRef
-                let base_inst = self.rir.get(*base);
-                let (var_name, slot, base_type, is_mut) = match &base_inst.data {
-                    InstData::VarRef { name } => {
-                        let name_str = self.interner.get(*name);
-                        let local = ctx.locals.get(name).ok_or_else(|| {
-                            CompileError::new(
-                                ErrorKind::UndefinedVariable(name_str.to_string()),
+                // For field assignment, we need to walk up the chain of field accesses
+                // to find the root variable. We accumulate the slot offset as we go.
+                //
+                // For example, with `o.inner.value = 42`:
+                // - base points to FieldGet { base: VarRef(o), field: inner }
+                // - field is `value`
+                //
+                // We walk up to find VarRef(o), then compute:
+                // - slot offset of `inner` within Outer
+                // - slot offset of `value` within Inner
+                // - total_slot = o.slot + offset(inner) + offset(value)
+
+                // Walk up to find the root variable, collecting field symbols
+                let mut current_base = *base;
+                let mut field_symbols: Vec<Symbol> = Vec::new();
+
+                let (var_name, root_slot, root_type, is_mut) = loop {
+                    let current_inst = self.rir.get(current_base);
+                    match &current_inst.data {
+                        InstData::VarRef { name } => {
+                            let name_str = self.interner.get(*name);
+                            let local = ctx.locals.get(name).ok_or_else(|| {
+                                CompileError::new(
+                                    ErrorKind::UndefinedVariable(name_str.to_string()),
+                                    inst.span,
+                                )
+                            })?;
+                            break (name_str.to_string(), local.slot, local.ty, local.is_mut);
+                        }
+                        InstData::FieldGet {
+                            base: inner_base,
+                            field: inner_field,
+                        } => {
+                            field_symbols.push(*inner_field);
+                            current_base = *inner_base;
+                        }
+                        _ => {
+                            return Err(CompileError::new(
+                                ErrorKind::InvalidAssignmentTarget,
                                 inst.span,
-                            )
-                        })?;
-                        (name_str.to_string(), local.slot, local.ty, local.is_mut)
-                    }
-                    _ => {
-                        return Err(CompileError::new(
-                            ErrorKind::InvalidAssignmentTarget,
-                            inst.span,
-                        ));
+                            ));
+                        }
                     }
                 };
 
-                // Check mutability
+                // Check mutability of the root variable
                 if !is_mut {
                     return Err(CompileError::new(
                         ErrorKind::AssignToImmutable(var_name),
@@ -1933,12 +1956,52 @@ impl<'a> Sema<'a> {
                     ));
                 }
 
-                let struct_id = match base_type {
+                // Now resolve the field chain from root to the immediate base.
+                // field_symbols is in reverse order (innermost first), so reverse it.
+                field_symbols.reverse();
+
+                // Walk through the field chain to compute the slot offset and find the base struct
+                let mut current_type = root_type;
+                let mut slot_offset: u32 = 0;
+
+                for field_sym in &field_symbols {
+                    let struct_id = match current_type {
+                        Type::Struct(id) => id,
+                        _ => {
+                            return Err(CompileError::new(
+                                ErrorKind::FieldAccessOnNonStruct {
+                                    found: current_type.name().to_string(),
+                                },
+                                inst.span,
+                            ));
+                        }
+                    };
+
+                    let struct_def = &self.struct_defs[struct_id.0 as usize];
+                    let field_name_str = self.interner.get(*field_sym).to_string();
+
+                    let (field_index, struct_field) =
+                        struct_def.find_field(&field_name_str).ok_or_else(|| {
+                            CompileError::new(
+                                ErrorKind::UnknownField {
+                                    struct_name: struct_def.name.clone(),
+                                    field_name: field_name_str.clone(),
+                                },
+                                inst.span,
+                            )
+                        })?;
+
+                    slot_offset += self.field_slot_offset(struct_id, field_index);
+                    current_type = struct_field.ty;
+                }
+
+                // Now handle the final field being assigned
+                let struct_id = match current_type {
                     Type::Struct(id) => id,
                     _ => {
                         return Err(CompileError::new(
                             ErrorKind::FieldAccessOnNonStruct {
-                                found: base_type.name().to_string(),
+                                found: current_type.name().to_string(),
                             },
                             inst.span,
                         ));
@@ -1961,13 +2024,17 @@ impl<'a> Sema<'a> {
 
                 let field_type = struct_field.ty;
 
+                // Compute the slot of the containing struct (the immediate base).
+                // Codegen will add field_index to get the actual field slot.
+                let base_slot = root_slot + slot_offset;
+
                 // Analyze the value with the expected field type
                 let value_result =
                     self.analyze_inst(air, *value, TypeExpectation::Check(field_type), ctx)?;
 
                 let air_ref = air.add_inst(AirInst {
                     data: AirInstData::FieldSet {
-                        slot,
+                        slot: base_slot,
                         struct_id,
                         field_index: field_index as u32,
                         value: value_result.air_ref,
@@ -2456,6 +2523,16 @@ impl<'a> Sema<'a> {
                 element_slots * array_def.length as u32
             }
         }
+    }
+
+    /// Get the slot offset of a field within a struct.
+    /// Returns the number of slots before the field starts.
+    fn field_slot_offset(&self, struct_id: StructId, field_index: usize) -> u32 {
+        let struct_def = &self.struct_defs[struct_id.0 as usize];
+        struct_def.fields[..field_index]
+            .iter()
+            .map(|f| self.abi_slot_count(f.ty))
+            .sum()
     }
 
     /// Analyze a binary arithmetic operator (+, -, *, /, %).

@@ -123,6 +123,68 @@ fn main() -> i32 {
 compile_fail = true
 
 # =============================================================================
+# Nested Struct Field Assignment
+# =============================================================================
+
+[[case]]
+name = "assign_nested_struct_field"
+spec = ["5.2:11", "5.2:12"]
+source = """
+struct Inner { value: i32 }
+struct Outer { inner: Inner }
+fn main() -> i32 {
+    let mut o = Outer { inner: Inner { value: 0 } };
+    o.inner.value = 42;
+    o.inner.value
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "assign_nested_struct_field_multiple"
+spec = ["5.2:11", "5.2:12"]
+source = """
+struct Inner { value: i32 }
+struct Outer { inner: Inner, other: i32 }
+fn main() -> i32 {
+    let mut o = Outer { inner: Inner { value: 10 }, other: 5 };
+    o.inner.value = 30;
+    o.other = 12;
+    o.inner.value + o.other
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "assign_deeply_nested_struct_field"
+spec = ["5.2:11", "5.2:12"]
+source = """
+struct A { x: i32 }
+struct B { a: A }
+struct C { b: B }
+fn main() -> i32 {
+    let mut c = C { b: B { a: A { x: 0 } } };
+    c.b.a.x = 42;
+    c.b.a.x
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "assign_nested_immutable_error"
+spec = ["5.2:12"]
+source = """
+struct Inner { value: i32 }
+struct Outer { inner: Inner }
+fn main() -> i32 {
+    let o = Outer { inner: Inner { value: 0 } };
+    o.inner.value = 42;
+    o.inner.value
+}
+"""
+compile_fail = true
+
+# =============================================================================
 # Assignment Is Statement, Not Expression
 # =============================================================================
 

@@ -73,6 +73,29 @@ fn main() -> i32 {
 }
 ```
 
+### Nested Field Assignment
+
+{{ rule(id="5.2:11", cat="normative") }}
+
+Fields of nested structs can be assigned through chained field access.
+
+{{ rule(id="5.2:12", cat="normative") }}
+
+All struct values in the chain must be part of a mutable binding.
+
+{{ rule(id="5.2:13") }}
+
+```rue
+struct Inner { value: i32 }
+struct Outer { inner: Inner }
+
+fn main() -> i32 {
+    let mut o = Outer { inner: Inner { value: 0 } };
+    o.inner.value = 42;
+    o.inner.value
+}
+```
+
 ## Assignment is Not an Expression
 
 {{ rule(id="5.2:10", cat="normative") }}
