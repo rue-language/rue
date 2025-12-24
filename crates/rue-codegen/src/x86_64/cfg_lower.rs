@@ -2251,16 +2251,12 @@ impl<'a> CfgLower<'a> {
             // Sub-word signed types: check if result fits in range [min, max]
             Type::I8 => {
                 // For i8: result must be in [-128, 127]
-                // Sign-extend to 32-bit and compare with original
+                // Sign-extend to 64-bit and compare with original
                 // If they differ, overflow occurred
                 let sext_vreg = self.mir.alloc_vreg();
-                self.mir.push(X86Inst::MovRR {
-                    dst: Operand::Virtual(sext_vreg),
-                    src: Operand::Virtual(result_vreg),
-                });
                 self.mir.push(X86Inst::Movsx8To64 {
                     dst: Operand::Virtual(sext_vreg),
-                    src: Operand::Virtual(sext_vreg),
+                    src: Operand::Virtual(result_vreg),
                 });
                 self.mir.push(X86Inst::CmpRR {
                     src1: Operand::Virtual(result_vreg),
@@ -2270,15 +2266,11 @@ impl<'a> CfgLower<'a> {
             }
             Type::I16 => {
                 // For i16: result must be in [-32768, 32767]
-                // Sign-extend to 32-bit and compare with original
+                // Sign-extend to 64-bit and compare with original
                 let sext_vreg = self.mir.alloc_vreg();
-                self.mir.push(X86Inst::MovRR {
-                    dst: Operand::Virtual(sext_vreg),
-                    src: Operand::Virtual(result_vreg),
-                });
                 self.mir.push(X86Inst::Movsx16To64 {
                     dst: Operand::Virtual(sext_vreg),
-                    src: Operand::Virtual(sext_vreg),
+                    src: Operand::Virtual(result_vreg),
                 });
                 self.mir.push(X86Inst::CmpRR {
                     src1: Operand::Virtual(result_vreg),
