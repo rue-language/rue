@@ -354,7 +354,8 @@ impl<'a> AstGen<'a> {
     fn gen_pattern(&mut self, pattern: &Pattern) -> RirPattern {
         match pattern {
             Pattern::Wildcard(span) => RirPattern::Wildcard(*span),
-            Pattern::Int(lit) => RirPattern::Int(lit.value, lit.span),
+            Pattern::Int(lit) => RirPattern::Int(lit.value as i64, lit.span),
+            Pattern::NegInt(lit) => RirPattern::Int(-(lit.value as i64), lit.span),
             Pattern::Bool(lit) => RirPattern::Bool(lit.value, lit.span),
             Pattern::Path(path) => {
                 let type_name = self.interner.intern(&path.type_name.name);

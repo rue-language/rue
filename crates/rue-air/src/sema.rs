@@ -1121,7 +1121,7 @@ impl<'a> Sema<'a> {
                 let mut wildcard_span: Option<Span> = None;
                 let mut bool_true_span: Option<Span> = None;
                 let mut bool_false_span: Option<Span> = None;
-                let mut seen_ints: HashMap<u64, Span> = HashMap::new();
+                let mut seen_ints: HashMap<i64, Span> = HashMap::new();
                 // Track covered enum variants (variant_index -> true if covered)
                 let mut covered_variants: HashSet<u32> = HashSet::new();
                 // Track span of first occurrence of each variant for duplicate detection

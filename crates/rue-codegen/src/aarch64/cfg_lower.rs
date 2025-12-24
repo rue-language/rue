@@ -2646,12 +2646,11 @@ impl<'a> CfgLower<'a> {
 
                 // Generate comparison and jump for each case
                 for (value, target) in cases {
-                    // Compare scrutinee with case value
-                    // Cast to i64 to preserve bit pattern
+                    // Compare scrutinee with case value (supports signed values for negative patterns)
                     let imm_vreg = self.mir.alloc_vreg();
                     self.mir.push(Aarch64Inst::MovImm {
                         dst: Operand::Virtual(imm_vreg),
-                        imm: *value as i64,
+                        imm: *value,
                     });
                     self.mir.push(Aarch64Inst::CmpRR {
                         src1: Operand::Virtual(scrutinee_vreg),

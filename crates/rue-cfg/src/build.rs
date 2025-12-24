@@ -953,7 +953,7 @@ impl<'a> CfgBuilder<'a> {
                         }
                         AirPattern::EnumVariant { variant_index, .. } => {
                             // Enum variants are matched by their discriminant (variant index)
-                            switch_cases.push((*variant_index as u64, arm_blocks[i]));
+                            switch_cases.push((*variant_index as i64, arm_blocks[i]));
                         }
                     }
                 }

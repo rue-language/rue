@@ -323,12 +323,23 @@ pub struct MatchArm {
 pub enum Pattern {
     /// Wildcard pattern `_` - matches anything
     Wildcard(Span),
-    /// Integer literal pattern
+    /// Integer literal pattern (positive or zero)
     Int(IntLit),
+    /// Negative integer literal pattern (e.g., `-1`, `-42`)
+    NegInt(NegIntLit),
     /// Boolean literal pattern
     Bool(BoolLit),
     /// Path pattern (e.g., `Color::Red` for enum variant)
     Path(PathPattern),
+}
+
+/// A negative integer literal pattern.
+#[derive(Debug, Clone)]
+pub struct NegIntLit {
+    /// The absolute value of the negative integer
+    pub value: u64,
+    /// Span covering the entire pattern (minus sign and literal)
+    pub span: Span,
 }
 
 /// A path pattern (e.g., `Color::Red` for enum variant matching).
@@ -347,6 +358,7 @@ impl Pattern {
         match self {
             Pattern::Wildcard(span) => *span,
             Pattern::Int(lit) => lit.span,
+            Pattern::NegInt(lit) => lit.span,
             Pattern::Bool(lit) => lit.span,
             Pattern::Path(path) => path.span,
         }

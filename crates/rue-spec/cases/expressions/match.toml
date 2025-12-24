@@ -277,8 +277,95 @@ fn main() -> i32 {
 """
 exit_code = 42
 
-# NOTE: Negative integer patterns are not yet supported in the parser.
-# They will be added when negative literals are supported in patterns.
+# =============================================================================
+# Negative Integer Patterns
+# =============================================================================
+
+[[case]]
+name = "match_negative_first"
+spec = ["4.7:1", "4.7:5"]
+source = """
+fn main() -> i32 {
+    match -1 {
+        -1 => 10,
+        -2 => 20,
+        _ => 0,
+    }
+}
+"""
+exit_code = 10
+
+[[case]]
+name = "match_negative_second"
+spec = ["4.7:1", "4.7:5"]
+source = """
+fn main() -> i32 {
+    match -2 {
+        -1 => 10,
+        -2 => 20,
+        _ => 0,
+    }
+}
+"""
+exit_code = 20
+
+[[case]]
+name = "match_negative_default"
+spec = ["4.7:1", "4.7:4", "4.7:5"]
+source = """
+fn main() -> i32 {
+    match -99 {
+        -1 => 10,
+        -2 => 20,
+        _ => 30,
+    }
+}
+"""
+exit_code = 30
+
+[[case]]
+name = "match_mixed_positive_negative"
+spec = ["4.7:1", "4.7:5"]
+source = """
+fn main() -> i32 {
+    match -1 {
+        1 => 10,
+        -1 => 20,
+        0 => 30,
+        _ => 0,
+    }
+}
+"""
+exit_code = 20
+
+[[case]]
+name = "match_negative_on_variable"
+spec = ["4.7:1", "4.7:5"]
+source = """
+fn main() -> i32 {
+    let x = -5;
+    match x {
+        -5 => 50,
+        -1 => 10,
+        _ => 0,
+    }
+}
+"""
+exit_code = 50
+
+[[case]]
+name = "match_negative_expression"
+spec = ["4.7:1", "4.7:5"]
+source = """
+fn main() -> i32 {
+    match 0 - 3 {
+        -3 => 42,
+        -2 => 20,
+        _ => 0,
+    }
+}
+"""
+exit_code = 42
 
 # =============================================================================
 # Error Cases: Non-exhaustive Match

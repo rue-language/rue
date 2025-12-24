@@ -2396,12 +2396,11 @@ impl<'a> CfgLower<'a> {
 
                 // Generate comparison and jump for each case
                 for (value, target) in cases {
-                    // Load case value into a register to handle full u64 range
-                    // Cast to i64 to preserve bit pattern
+                    // Load case value into a register (supports signed values for negative patterns)
                     let case_vreg = self.mir.alloc_vreg();
                     self.mir.push(X86Inst::MovRI64 {
                         dst: Operand::Virtual(case_vreg),
-                        imm: *value as i64,
+                        imm: *value,
                     });
                     self.mir.push(X86Inst::CmpRR {
                         src1: Operand::Virtual(scrutinee_vreg),

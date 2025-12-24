@@ -7,9 +7,9 @@ use crate::ast::{
     ArrayLitExpr, AssignStatement, AssignTarget, Ast, BinaryExpr, BinaryOp, BlockExpr, BoolLit,
     BreakExpr, CallExpr, ContinueExpr, EnumDecl, EnumVariant, Expr, FieldDecl, FieldExpr,
     FieldInit, Function, Ident, IfExpr, IndexExpr, IntLit, IntrinsicCallExpr, Item, LetPattern,
-    LetStatement, LoopExpr, MatchArm, MatchExpr, Param, ParenExpr, PathExpr, PathPattern, Pattern,
-    ReturnExpr, Statement, StringLit, StructDecl, StructLitExpr, TypeExpr, UnaryExpr, UnaryOp,
-    UnitLit, WhileExpr,
+    LetStatement, LoopExpr, MatchArm, MatchExpr, NegIntLit, Param, ParenExpr, PathExpr,
+    PathPattern, Pattern, ReturnExpr, Statement, StringLit, StructDecl, StructLitExpr, TypeExpr,
+    UnaryExpr, UnaryOp, UnitLit, WhileExpr,
 };
 use chumsky::input::{Input as ChumskyInput, Stream, ValueInput};
 use chumsky::pratt::{infix, left, prefix};
@@ -322,13 +322,23 @@ where
     let wildcard =
         just(TokenKind::Underscore).map_with(|_, e| Pattern::Wildcard(to_rue_span(e.span())));
 
-    // Integer literal pattern
+    // Integer literal pattern (positive or zero)
     let int_pat = select! {
         TokenKind::Int(n) = e => Pattern::Int(IntLit {
             value: n,
             span: to_rue_span(e.span()),
         }),
     };
+
+    // Negative integer literal pattern: - followed by integer
+    let neg_int_pat = just(TokenKind::Minus)
+        .then(select! { TokenKind::Int(n) => n })
+        .map_with(|(_, n), e| {
+            Pattern::NegInt(NegIntLit {
+                value: n,
+                span: to_rue_span(e.span()),
+            })
+        });
 
     // Boolean literal patterns
     let bool_true = select! {
@@ -357,7 +367,14 @@ where
             })
         });
 
-    choice((wildcard, int_pat, bool_true, bool_false, path_pat))
+    choice((
+        wildcard,
+        neg_int_pat,
+        int_pat,
+        bool_true,
+        bool_false,
+        path_pat,
+    ))
 }
 
 /// Parser for a single match arm: pattern => expr

@@ -12,8 +12,8 @@ use rue_span::Span;
 pub enum AirPattern {
     /// Wildcard pattern `_` - matches anything
     Wildcard,
-    /// Integer literal pattern
-    Int(u64),
+    /// Integer literal pattern (can be positive or negative)
+    Int(i64),
     /// Boolean literal pattern
     Bool(bool),
     /// Enum variant pattern (e.g., Color::Red)

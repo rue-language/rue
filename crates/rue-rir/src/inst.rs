@@ -33,8 +33,8 @@ impl InstRef {
 pub enum RirPattern {
     /// Wildcard pattern `_` - matches anything
     Wildcard(Span),
-    /// Integer literal pattern
-    Int(u64, Span),
+    /// Integer literal pattern (can be positive or negative)
+    Int(i64, Span),
     /// Boolean literal pattern
     Bool(bool, Span),
     /// Path pattern for enum variants (e.g., Color::Red)

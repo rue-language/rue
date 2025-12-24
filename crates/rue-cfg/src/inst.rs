@@ -216,8 +216,8 @@ pub enum Terminator {
     Switch {
         /// The value to switch on
         scrutinee: CfgValue,
-        /// Cases: (value, target_block)
-        cases: Vec<(u64, BlockId)>,
+        /// Cases: (value, target_block) - values are signed to support negative patterns
+        cases: Vec<(i64, BlockId)>,
         /// Default block (for wildcard pattern)
         default: BlockId,
     },
