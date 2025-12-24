@@ -947,6 +947,17 @@ impl<'a> CfgLower<'a> {
                         dst: Operand::Virtual(vreg),
                         src: Operand::Physical(Reg::Rax),
                     });
+                } else if lhs_ty == Type::Unit {
+                    // Unit equality: () == () is always true
+                    let vreg = self.mir.alloc_vreg();
+                    self.value_map.insert(value, vreg);
+                    self.mir.push(X86Inst::MovRI32 {
+                        dst: Operand::Virtual(vreg),
+                        imm: 1,
+                    });
+                } else if let Type::Struct(struct_id) = lhs_ty {
+                    // Struct equality: compare all fields
+                    self.emit_struct_equality(value, *lhs, *rhs, struct_id, false);
                 } else {
                     self.emit_comparison(value, *lhs, *rhs, |mir, vreg| {
                         mir.push(X86Inst::Sete {
@@ -1025,6 +1036,17 @@ impl<'a> CfgLower<'a> {
                         dst: Operand::Virtual(vreg),
                         imm: 1,
                     });
+                } else if lhs_ty == Type::Unit {
+                    // Unit inequality: () != () is always false
+                    let vreg = self.mir.alloc_vreg();
+                    self.value_map.insert(value, vreg);
+                    self.mir.push(X86Inst::MovRI32 {
+                        dst: Operand::Virtual(vreg),
+                        imm: 0,
+                    });
+                } else if let Type::Struct(struct_id) = lhs_ty {
+                    // Struct inequality: compare all fields, invert result
+                    self.emit_struct_equality(value, *lhs, *rhs, struct_id, true);
                 } else {
                     self.emit_comparison(value, *lhs, *rhs, |mir, vreg| {
                         mir.push(X86Inst::Setne {
@@ -1224,6 +1246,32 @@ impl<'a> CfgLower<'a> {
                     self.struct_slot_vregs
                         .insert(value, vec![ptr_vreg, len_vreg]);
                     self.value_map.insert(value, ptr_vreg);
+                } else if let Type::Struct(struct_id) = load_type {
+                    // Struct: load all field slots
+                    let field_count = self.struct_field_count(struct_id);
+                    let mut slot_vregs = Vec::with_capacity(field_count as usize);
+
+                    for i in 0..field_count {
+                        let field_vreg = self.mir.alloc_vreg();
+                        let field_offset = self.local_offset(slot + i);
+                        self.mir.push(X86Inst::MovRM {
+                            dst: Operand::Virtual(field_vreg),
+                            base: Reg::Rbp,
+                            offset: field_offset,
+                        });
+                        slot_vregs.push(field_vreg);
+                    }
+
+                    // Register struct field vregs
+                    self.struct_slot_vregs.insert(value, slot_vregs.clone());
+
+                    // Use first field as the primary vreg
+                    if let Some(&first_vreg) = slot_vregs.first() {
+                        self.value_map.insert(value, first_vreg);
+                    } else {
+                        let vreg = self.mir.alloc_vreg();
+                        self.value_map.insert(value, vreg);
+                    }
                 } else {
                     let vreg = self.mir.alloc_vreg();
                     self.value_map.insert(value, vreg);
@@ -2281,6 +2329,99 @@ impl<'a> CfgLower<'a> {
             dst: Operand::Virtual(vreg),
             src: Operand::Virtual(vreg),
         });
+    }
+
+    /// Emit struct equality comparison.
+    ///
+    /// Compares all fields of two structs and returns true only if all fields are equal.
+    /// If `invert` is true, returns true if any field is different (for !=).
+    fn emit_struct_equality(
+        &mut self,
+        value: CfgValue,
+        lhs: CfgValue,
+        rhs: CfgValue,
+        struct_id: StructId,
+        invert: bool,
+    ) {
+        let result_vreg = self.mir.alloc_vreg();
+        self.value_map.insert(value, result_vreg);
+
+        // Get the struct field vregs
+        let lhs_fields = self
+            .struct_slot_vregs
+            .get(&lhs)
+            .cloned()
+            .expect("struct should have field vregs");
+        let rhs_fields = self
+            .struct_slot_vregs
+            .get(&rhs)
+            .cloned()
+            .expect("struct should have field vregs");
+
+        let struct_def = &self.struct_defs[struct_id.0 as usize];
+        let field_count = struct_def.fields.len();
+
+        if field_count == 0 {
+            // Empty struct: always equal
+            self.mir.push(X86Inst::MovRI32 {
+                dst: Operand::Virtual(result_vreg),
+                imm: if invert { 0 } else { 1 },
+            });
+            return;
+        }
+
+        // Start with 1 (true), AND each field comparison result
+        self.mir.push(X86Inst::MovRI32 {
+            dst: Operand::Virtual(result_vreg),
+            imm: 1,
+        });
+
+        // Compare each field and AND with result
+        let mut field_slot = 0usize;
+        for field in &struct_def.fields {
+            let field_slots = self.type_slot_count(field.ty) as usize;
+            let lhs_field_vreg = lhs_fields[field_slot];
+            let rhs_field_vreg = rhs_fields[field_slot];
+
+            // Allocate a vreg for this field's comparison result
+            let cmp_vreg = self.mir.alloc_vreg();
+
+            // Use 64-bit compare for i64/u64 types
+            if matches!(field.ty, Type::I64 | Type::U64) {
+                self.mir.push(X86Inst::Cmp64RR {
+                    src1: Operand::Virtual(lhs_field_vreg),
+                    src2: Operand::Virtual(rhs_field_vreg),
+                });
+            } else {
+                self.mir.push(X86Inst::CmpRR {
+                    src1: Operand::Virtual(lhs_field_vreg),
+                    src2: Operand::Virtual(rhs_field_vreg),
+                });
+            }
+            self.mir.push(X86Inst::Sete {
+                dst: Operand::Virtual(cmp_vreg),
+            });
+            self.mir.push(X86Inst::Movzx {
+                dst: Operand::Virtual(cmp_vreg),
+                src: Operand::Virtual(cmp_vreg),
+            });
+
+            // AND with accumulator
+            self.mir.push(X86Inst::AndRR {
+                dst: Operand::Virtual(result_vreg),
+                src: Operand::Virtual(cmp_vreg),
+            });
+
+            field_slot += field_slots;
+        }
+
+        // Invert result if needed (for !=)
+        if invert {
+            self.mir.push(X86Inst::XorRI {
+                dst: Operand::Virtual(result_vreg),
+                imm: 1,
+            });
+        }
     }
 
     /// Lower a block terminator.

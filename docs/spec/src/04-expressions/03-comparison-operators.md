@@ -14,7 +14,7 @@ Comparison operators compare two values and produce a `bool` result.
 
 {{ rule(id="4.3:2", cat="normative") }}
 
-Equality operators work on integers, booleans, and strings.
+Equality operators work on integers, booleans, strings, the unit type, and struct types.
 
 | Operator | Name | Description |
 |----------|------|-------------|
@@ -25,6 +25,14 @@ Equality operators work on integers, booleans, and strings.
 
 Two strings are equal if they have the same length and identical byte content.
 
+{{ rule(id="4.3:3a", cat="normative") }}
+
+Two unit values are always equal.
+
+{{ rule(id="4.3:3b", cat="normative") }}
+
+Two struct values are equal if and only if they have the same struct type and all corresponding fields are equal.
+
 {{ rule(id="4.3:4") }}
 
 ```rue
@@ -33,7 +41,21 @@ fn main() -> i32 {
     let b = 1 != 2;    // true
     let c = true == false;  // false (bool equality)
     let d = "hello" == "hello";  // true (string equality)
-    if a && b && !c && d { 1 } else { 0 }
+    let e = () == ();  // true (unit equality)
+    if a && b && !c && d && e { 1 } else { 0 }
+}
+```
+
+{{ rule(id="4.3:4a", cat="example") }}
+
+```rue
+struct Point { x: i32, y: i32 }
+
+fn main() -> i32 {
+    let p1 = Point { x: 1, y: 2 };
+    let p2 = Point { x: 1, y: 2 };
+    let p3 = Point { x: 1, y: 3 };
+    if p1 == p2 && p1 != p3 { 1 } else { 0 }
 }
 ```
 
@@ -52,7 +74,7 @@ Ordering operators work only on integers.
 
 {{ rule(id="4.3:6", cat="normative") }}
 
-Ordering operators on boolean or string values are a compile-time error.
+Ordering operators on boolean, string, unit, or struct values are a compile-time error.
 
 {{ rule(id="4.3:7") }}
 

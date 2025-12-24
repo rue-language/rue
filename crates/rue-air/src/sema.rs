@@ -2665,10 +2665,16 @@ impl<'a> Sema<'a> {
 
         // Validate the type is appropriate for this comparison
         if allow_bool {
-            if !lhs_type.is_integer() && lhs_type != Type::Bool && lhs_type != Type::String {
+            // Equality operators (==, !=) work on integers, booleans, strings, unit, and structs
+            if !lhs_type.is_integer()
+                && lhs_type != Type::Bool
+                && lhs_type != Type::String
+                && lhs_type != Type::Unit
+                && !lhs_type.is_struct()
+            {
                 return Err(CompileError::new(
                     ErrorKind::TypeMismatch {
-                        expected: "integer, bool, or string".to_string(),
+                        expected: "integer, bool, string, unit, or struct".to_string(),
                         found: lhs_type.name().to_string(),
                     },
                     self.rir.get(lhs).span,

@@ -298,3 +298,141 @@ fn main() -> i32 {
 """
 compile_fail = true
 error_contains = "comparison operators cannot be chained"
+
+# =============================================================================
+# Unit Type Equality
+# =============================================================================
+
+[[case]]
+name = "unit_equality"
+spec = ["4.3:2", "4.3:3a"]
+source = """
+fn main() -> i32 {
+    if () == () { 1 } else { 0 }
+}
+"""
+exit_code = 1
+
+[[case]]
+name = "unit_inequality"
+spec = ["4.3:2", "4.3:3a"]
+source = """
+fn main() -> i32 {
+    if () != () { 1 } else { 0 }
+}
+"""
+exit_code = 0
+
+[[case]]
+name = "unit_ordering_disallowed"
+spec = ["4.3:6"]
+source = """
+fn main() -> i32 {
+    if () < () { 1 } else { 0 }
+}
+"""
+compile_fail = true
+
+# =============================================================================
+# Struct Equality
+# =============================================================================
+
+[[case]]
+name = "struct_equality_same_values"
+spec = ["4.3:2", "4.3:3b"]
+source = """
+struct Point { x: i32, y: i32 }
+
+fn main() -> i32 {
+    let p1 = Point { x: 1, y: 2 };
+    let p2 = Point { x: 1, y: 2 };
+    if p1 == p2 { 1 } else { 0 }
+}
+"""
+exit_code = 1
+
+[[case]]
+name = "struct_equality_different_values"
+spec = ["4.3:2", "4.3:3b"]
+source = """
+struct Point { x: i32, y: i32 }
+
+fn main() -> i32 {
+    let p1 = Point { x: 1, y: 2 };
+    let p2 = Point { x: 1, y: 3 };
+    if p1 == p2 { 1 } else { 0 }
+}
+"""
+exit_code = 0
+
+[[case]]
+name = "struct_inequality"
+spec = ["4.3:2", "4.3:3b"]
+source = """
+struct Point { x: i32, y: i32 }
+
+fn main() -> i32 {
+    let p1 = Point { x: 1, y: 2 };
+    let p2 = Point { x: 1, y: 3 };
+    if p1 != p2 { 1 } else { 0 }
+}
+"""
+exit_code = 1
+
+[[case]]
+name = "struct_equality_single_field"
+spec = ["4.3:2", "4.3:3b"]
+source = """
+struct Wrapper { value: i32 }
+
+fn main() -> i32 {
+    let a = Wrapper { value: 42 };
+    let b = Wrapper { value: 42 };
+    if a == b { 1 } else { 0 }
+}
+"""
+exit_code = 1
+
+[[case]]
+name = "struct_equality_many_fields"
+spec = ["4.3:2", "4.3:3b"]
+source = """
+struct Record { a: i32, b: i32, c: i32, d: i32 }
+
+fn main() -> i32 {
+    let r1 = Record { a: 1, b: 2, c: 3, d: 4 };
+    let r2 = Record { a: 1, b: 2, c: 3, d: 4 };
+    let r3 = Record { a: 1, b: 2, c: 3, d: 5 };
+    if r1 == r2 && r1 != r3 { 1 } else { 0 }
+}
+"""
+exit_code = 1
+
+[[case]]
+name = "struct_ordering_disallowed"
+spec = ["4.3:6"]
+source = """
+struct Point { x: i32, y: i32 }
+
+fn main() -> i32 {
+    let p1 = Point { x: 1, y: 2 };
+    let p2 = Point { x: 1, y: 3 };
+    if p1 < p2 { 1 } else { 0 }
+}
+"""
+compile_fail = true
+
+[[case]]
+name = "struct_with_bool_field_equality"
+spec = ["4.3:2", "4.3:3b"]
+source = """
+struct Config { enabled: bool, count: i32 }
+
+fn main() -> i32 {
+    let c1 = Config { enabled: true, count: 5 };
+    let c2 = Config { enabled: true, count: 5 };
+    let c3 = Config { enabled: false, count: 5 };
+    if c1 == c2 && c1 != c3 { 1 } else { 0 }
+}
+"""
+exit_code = 1

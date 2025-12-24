@@ -41,16 +41,20 @@ pub struct TraceabilityReport {
 }
 
 impl TraceabilityReport {
-    /// Check if a paragraph is informative (doesn't require test coverage).
-    fn is_informative(para: &SpecParagraph) -> bool {
-        para.category.contains("informative")
+    /// Check if a paragraph is normative (requires test coverage).
+    /// Normative categories: normative, legality-rule, dynamic-semantics, syntax, undefined-behavior
+    fn is_normative(para: &SpecParagraph) -> bool {
+        matches!(
+            para.category.as_str(),
+            "normative" | "legality-rule" | "dynamic-semantics" | "syntax" | "undefined-behavior"
+        )
     }
 
     /// Count of normative paragraphs (require test coverage).
     pub fn normative_count(&self) -> usize {
         self.paragraphs
             .values()
-            .filter(|p| !Self::is_informative(p))
+            .filter(|p| Self::is_normative(p))
             .count()
     }
 
@@ -59,7 +63,7 @@ impl TraceabilityReport {
         self.paragraphs
             .values()
             .filter(|p| {
-                !Self::is_informative(p)
+                Self::is_normative(p)
                     && self
                         .coverage
                         .get(&p.id)
@@ -79,7 +83,7 @@ impl TraceabilityReport {
         self.paragraphs
             .iter()
             .filter(|(_, para)| {
-                !Self::is_informative(para)
+                Self::is_normative(para)
                     && self
                         .coverage
                         .get(&para.id)
@@ -185,11 +189,15 @@ impl TraceabilityReport {
             } else {
                 100.0
             };
-            let marker = if category.contains("informative") {
-                " (informative)"
-            } else {
-                ""
-            };
+            let is_normative = matches!(
+                *category,
+                "normative"
+                    | "legality-rule"
+                    | "dynamic-semantics"
+                    | "syntax"
+                    | "undefined-behavior"
+            );
+            let marker = if is_normative { "" } else { " (informative)" };
             println!(
                 "  {:20} {:.1}% ({}/{}){}",
                 category, pct, covered, total, marker
