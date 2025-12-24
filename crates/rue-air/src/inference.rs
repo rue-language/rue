@@ -613,25 +613,21 @@ impl Unifier {
     /// Called at the end of unification for a function to resolve
     /// any unconstrained integer literals. This processes all type variables
     /// in the substitution that are bound to IntLiteral.
-    pub fn default_all_int_literals(&mut self) {
-        // Collect variables bound to IntLiteral first to avoid borrow issues
-        let to_default: Vec<TypeVarId> = self
-            .substitution
-            .mapping
-            .iter()
-            .filter_map(|(var, ty)| {
-                if ty.is_int_literal() {
-                    Some(*var)
-                } else {
-                    None
-                }
-            })
-            .collect();
-
-        // Now update them all to i32
-        for var in to_default {
-            self.substitution
-                .insert(var, InferType::Concrete(Type::I32));
+    /// Default unconstrained integer literal type variables to i32.
+    ///
+    /// Takes the list of type variables that were allocated for integer literals
+    /// during constraint generation. Any that remain unbound (not constrained to
+    /// a specific integer type) are defaulted to i32.
+    pub fn default_int_literal_vars(&mut self, int_literal_vars: &[TypeVarId]) {
+        for &var in int_literal_vars {
+            // Check if this variable is already bound to a concrete type
+            let resolved = self.substitution.apply(&InferType::Var(var));
+            if let InferType::Var(_) = resolved {
+                // Still unbound - default to i32
+                self.substitution
+                    .insert(var, InferType::Concrete(Type::I32));
+            }
+            // If it resolved to Concrete, it was already constrained - no action needed
         }
     }
 
@@ -786,6 +782,9 @@ pub struct ConstraintGenerator<'a> {
     structs: &'a HashMap<Symbol, Type>,
     /// Enum types (name -> Type::Enum(id)).
     enums: &'a HashMap<Symbol, Type>,
+    /// Type variables allocated for integer literals.
+    /// These start as unbound and need to be defaulted to i32 if unconstrained.
+    int_literal_vars: Vec<TypeVarId>,
 }
 
 impl<'a> ConstraintGenerator<'a> {
@@ -806,7 +805,13 @@ impl<'a> ConstraintGenerator<'a> {
             functions,
             structs,
             enums,
+            int_literal_vars: Vec::new(),
         }
+    }
+
+    /// Get the type variables allocated for integer literals.
+    pub fn int_literal_vars(&self) -> &[TypeVarId] {
+        &self.int_literal_vars
     }
 
     /// Allocate a fresh type variable.
@@ -854,9 +859,20 @@ impl<'a> ConstraintGenerator<'a> {
 
         let ty = match &inst.data {
             InstData::IntConst(_) => {
-                // Integer literals get the special IntLiteral type.
-                // They will be resolved to a concrete integer type during unification.
-                InferType::IntLiteral
+                // Integer literals get a fresh type variable that we immediately
+                // bind to IntLiteral. This allows unification to track when the
+                // literal is constrained to a specific integer type.
+                //
+                // Example: `let x: i64 = 42` generates:
+                //   - type_var(?0) for the literal 42
+                //   - substitution: ?0 -> IntLiteral
+                //   - constraint: Equal(Var(?0), Concrete(i64))
+                //
+                // During unification, Equal(IntLiteral, Concrete(i64)) succeeds
+                // and rebinds ?0 -> Concrete(i64) via rebind_int_literal_to_concrete.
+                let var = self.fresh_var();
+                self.int_literal_vars.push(var);
+                InferType::Var(var)
             }
 
             InstData::BoolConst(_) => InferType::Concrete(Type::Bool),
@@ -1116,21 +1132,44 @@ impl<'a> ConstraintGenerator<'a> {
 
                 if let Some(else_ref) = else_block {
                     let else_info = self.generate(*else_ref, ctx);
-                    // Both branches must have the same type
-                    // Use a fresh type variable for the result
-                    let result_var = self.fresh_var();
-                    let result_ty = InferType::Var(result_var);
-                    self.add_constraint(Constraint::equal(
-                        then_info.ty,
-                        result_ty.clone(),
-                        then_info.span,
-                    ));
-                    self.add_constraint(Constraint::equal(
-                        else_info.ty,
-                        result_ty.clone(),
-                        else_info.span,
-                    ));
-                    result_ty
+
+                    // Handle Never type coercion:
+                    // - If one branch is Never, the if-else takes the other branch's type
+                    // - If both are Never, the result is Never
+                    // - Otherwise, both must unify to the same type
+                    let then_is_never = matches!(&then_info.ty, InferType::Concrete(Type::Never));
+                    let else_is_never = matches!(&else_info.ty, InferType::Concrete(Type::Never));
+
+                    match (then_is_never, else_is_never) {
+                        (true, true) => {
+                            // Both diverge - result is Never
+                            InferType::Concrete(Type::Never)
+                        }
+                        (true, false) => {
+                            // Then diverges - result is else type
+                            else_info.ty
+                        }
+                        (false, true) => {
+                            // Else diverges - result is then type
+                            then_info.ty
+                        }
+                        (false, false) => {
+                            // Neither diverges - both must have the same type
+                            let result_var = self.fresh_var();
+                            let result_ty = InferType::Var(result_var);
+                            self.add_constraint(Constraint::equal(
+                                then_info.ty,
+                                result_ty.clone(),
+                                then_info.span,
+                            ));
+                            self.add_constraint(Constraint::equal(
+                                else_info.ty,
+                                result_ty.clone(),
+                                else_info.span,
+                            ));
+                            result_ty
+                        }
+                    }
                 } else {
                     // No else branch - the if expression has unit type
                     // (or the then branch type if it's unit-compatible)
@@ -1172,10 +1211,8 @@ impl<'a> ConstraintGenerator<'a> {
             InstData::Match { scrutinee, arms } => {
                 let scrutinee_info = self.generate(*scrutinee, ctx);
 
-                // Fresh type variable for the match result
-                let result_var = self.fresh_var();
-                let result_ty = InferType::Var(result_var);
-
+                // Collect arm types, handling Never coercion
+                let mut arm_types: Vec<ExprInfo> = Vec::new();
                 for (pattern, body) in arms.iter() {
                     // Patterns constrain the scrutinee type
                     let pattern_ty = self.pattern_type(pattern);
@@ -1185,16 +1222,34 @@ impl<'a> ConstraintGenerator<'a> {
                         pattern.span(),
                     ));
 
-                    // Body type must match result type
+                    // Generate body and collect its type
                     let body_info = self.generate(*body, ctx);
-                    self.add_constraint(Constraint::equal(
-                        body_info.ty,
-                        result_ty.clone(),
-                        body_info.span,
-                    ));
+                    arm_types.push(body_info);
                 }
 
-                result_ty
+                // Handle Never type coercion:
+                // Filter out Never arms and use the remaining non-Never types
+                let non_never_arms: Vec<_> = arm_types
+                    .iter()
+                    .filter(|info| !matches!(&info.ty, InferType::Concrete(Type::Never)))
+                    .collect();
+
+                if non_never_arms.is_empty() {
+                    // All arms diverge - result is Never
+                    InferType::Concrete(Type::Never)
+                } else {
+                    // Create constraints for non-Never arms to have the same type
+                    let result_var = self.fresh_var();
+                    let result_ty = InferType::Var(result_var);
+                    for arm_info in non_never_arms {
+                        self.add_constraint(Constraint::equal(
+                            arm_info.ty.clone(),
+                            result_ty.clone(),
+                            arm_info.span,
+                        ));
+                    }
+                    result_ty
+                }
             }
 
             // Struct initialization
@@ -1704,8 +1759,10 @@ mod tests {
 
         let info = cgen.generate(inst_ref, &mut ctx);
 
-        // Integer literals should be IntLiteral type
-        assert!(info.ty.is_int_literal());
+        // Integer literals now get a type variable (tracked as int literal var)
+        assert!(matches!(info.ty, InferType::Var(_)));
+        // The type variable should be tracked in int_literal_vars
+        assert_eq!(cgen.int_literal_vars().len(), 1);
         // No constraints should be generated for a simple literal
         assert_eq!(cgen.constraints().len(), 0);
     }
@@ -1854,8 +1911,8 @@ mod tests {
 
         let info = cgen.generate(neg, &mut ctx);
 
-        // Negation preserves the operand type (IntLiteral in this case)
-        assert!(info.ty.is_int_literal());
+        // Negation preserves the operand type (now a type variable for the int literal)
+        assert!(matches!(info.ty, InferType::Var(_)));
         // Should generate 1 constraint: IsSigned for the result
         assert_eq!(cgen.constraints().len(), 1);
         // Verify it's an IsSigned constraint
@@ -2207,8 +2264,8 @@ mod tests {
 
         let info = cgen.generate(bitnot, &mut ctx);
 
-        // Bitwise NOT preserves the operand type
-        assert!(info.ty.is_int_literal());
+        // Bitwise NOT preserves the operand type (now a type variable for int literal)
+        assert!(matches!(info.ty, InferType::Var(_)));
         // Should generate 1 constraint: IsInteger for the result
         assert_eq!(cgen.constraints().len(), 1);
         match &cgen.constraints()[0] {
@@ -2589,20 +2646,22 @@ mod tests {
     }
 
     #[test]
-    fn test_default_all_int_literals() {
+    fn test_default_int_literal_vars() {
         let mut unifier = Unifier::new();
         let v0 = TypeVarId::new(0);
         let v1 = TypeVarId::new(1);
         let v2 = TypeVarId::new(2);
 
-        // Bind some variables to IntLiteral
-        unifier.substitution.insert(v0, InferType::IntLiteral);
-        unifier.substitution.insert(v1, InferType::IntLiteral);
+        // v0 and v1 are int literal vars (unbound)
+        // v2 is bound to Bool
         unifier
             .substitution
             .insert(v2, InferType::Concrete(Type::Bool));
 
-        unifier.default_all_int_literals();
+        // Track v0 and v1 as int literal vars
+        let int_literal_vars = vec![v0, v1];
+
+        unifier.default_int_literal_vars(&int_literal_vars);
 
         // v0 and v1 should now be i32
         assert_eq!(unifier.resolve(&InferType::Var(v0)), Some(Type::I32));
@@ -2743,22 +2802,25 @@ mod tests {
     }
 
     #[test]
-    fn test_solve_constraints_two_int_literals() {
-        // Two IntLiterals that should both become i32 after defaulting
+    fn test_solve_constraints_two_int_literal_vars() {
+        // Two int literal vars that are constrained equal.
+        // After defaulting, both should become i32.
         let mut unifier = Unifier::new();
         let v0 = TypeVarId::new(0);
         let v1 = TypeVarId::new(1);
-        let constraints = vec![
-            Constraint::equal(InferType::Var(v0), InferType::IntLiteral, Span::new(0, 5)),
-            Constraint::equal(InferType::Var(v1), InferType::IntLiteral, Span::new(6, 10)),
-            Constraint::equal(InferType::Var(v0), InferType::Var(v1), Span::new(11, 15)),
-        ];
+
+        // Both are int literal vars, constrained to be equal
+        let constraints = vec![Constraint::equal(
+            InferType::Var(v0),
+            InferType::Var(v1),
+            Span::new(0, 5),
+        )];
         let errors = unifier.solve_constraints(&constraints);
         assert!(errors.is_empty());
 
-        // Before defaulting, they should both be IntLiteral (through the chain)
-        // After defaulting, both should be i32
-        unifier.default_all_int_literals();
+        // Both are int literal vars that should be defaulted to i32
+        let int_literal_vars = vec![v0, v1];
+        unifier.default_int_literal_vars(&int_literal_vars);
         assert_eq!(unifier.resolve(&InferType::Var(v0)), Some(Type::I32));
         assert_eq!(unifier.resolve(&InferType::Var(v1)), Some(Type::I32));
     }

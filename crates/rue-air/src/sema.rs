@@ -5,6 +5,10 @@
 
 use std::collections::{HashMap, HashSet};
 
+use crate::inference::{
+    Constraint, ConstraintContext, ConstraintGenerator, FunctionSig, InferType, ParamVarInfo,
+    Unifier,
+};
 use crate::inst::{Air, AirInst, AirInstData, AirPattern, AirRef};
 use crate::types::{
     ArrayTypeDef, ArrayTypeId, EnumDef, EnumId, StructDef, StructField, StructId, Type,
@@ -122,6 +126,11 @@ struct AnalysisContext<'a> {
     /// Each entry is a list of (symbol, old_value) pairs for variables added/shadowed in that scope.
     /// When a scope is popped, we restore old values (for shadowed vars) or remove new vars.
     scope_stack: Vec<Vec<(Symbol, Option<LocalVar>)>>,
+    /// Resolved types from HM inference.
+    /// Maps RIR instruction refs to their resolved concrete types.
+    /// This is populated by running constraint generation and unification
+    /// before AIR emission.
+    resolved_types: &'a HashMap<InstRef, Type>,
 }
 
 impl AnalysisContext<'_> {
@@ -531,7 +540,14 @@ impl<'a> Sema<'a> {
         }
         let num_param_slots = next_abi_slot;
 
-        // Create analysis context
+        // ======================================================================
+        // Phase 1-2: Hindley-Milner Type Inference
+        // ======================================================================
+        // Run constraint generation and unification to determine types
+        // for all expressions BEFORE emitting AIR.
+        let resolved_types = self.run_type_inference(return_type, params, body)?;
+
+        // Create analysis context with resolved types
         let mut ctx = AnalysisContext {
             locals: HashMap::new(),
             params: &param_map,
@@ -540,9 +556,13 @@ impl<'a> Sema<'a> {
             used_locals: HashSet::new(),
             return_type,
             scope_stack: Vec::new(),
+            resolved_types: &resolved_types,
         };
 
-        // Analyze the body expression
+        // ======================================================================
+        // Phase 3: AIR Emission
+        // ======================================================================
+        // Analyze the body expression, emitting AIR with resolved types
         let body_result = self.analyze_inst(
             &mut air,
             body,
@@ -562,6 +582,110 @@ impl<'a> Sema<'a> {
         Ok((air, ctx.next_slot, num_param_slots))
     }
 
+    /// Run Hindley-Milner type inference on a function body.
+    ///
+    /// This is Phases 1-2 of the HM algorithm:
+    /// 1. Generate constraints by walking the RIR
+    /// 2. Solve constraints via unification
+    ///
+    /// Returns a map from RIR instruction refs to their resolved concrete types.
+    fn run_type_inference(
+        &self,
+        return_type: Type,
+        params: &[(Symbol, Type)],
+        body: InstRef,
+    ) -> CompileResult<HashMap<InstRef, Type>> {
+        // Build function signatures map for the constraint generator
+        let func_sigs: HashMap<Symbol, FunctionSig> = self
+            .functions
+            .iter()
+            .map(|(name, info)| {
+                (
+                    *name,
+                    FunctionSig {
+                        param_types: info.param_types.clone(),
+                        return_type: info.return_type,
+                    },
+                )
+            })
+            .collect();
+
+        // Build struct types map (name -> Type::Struct(id))
+        let struct_types: HashMap<Symbol, Type> = self
+            .structs
+            .iter()
+            .map(|(name, id)| (*name, Type::Struct(*id)))
+            .collect();
+
+        // Build enum types map (name -> Type::Enum(id))
+        let enum_types: HashMap<Symbol, Type> = self
+            .enums
+            .iter()
+            .map(|(name, id)| (*name, Type::Enum(*id)))
+            .collect();
+
+        // Create constraint generator
+        let mut cgen = ConstraintGenerator::new(
+            self.rir,
+            self.interner,
+            &func_sigs,
+            &struct_types,
+            &enum_types,
+        );
+
+        // Build parameter map for constraint context
+        let param_vars: HashMap<Symbol, ParamVarInfo> = params
+            .iter()
+            .map(|(name, ty)| (*name, ParamVarInfo { ty: *ty }))
+            .collect();
+
+        // Create constraint context
+        let mut cgen_ctx = ConstraintContext::new(&param_vars, return_type);
+
+        // Phase 1: Generate constraints
+        let body_info = cgen.generate(body, &mut cgen_ctx);
+
+        // The function body's type must match the return type.
+        // This handles implicit returns like `fn foo() -> i8 { 42 }`.
+        cgen.add_constraint(Constraint::equal(
+            body_info.ty,
+            InferType::Concrete(return_type),
+            body_info.span,
+        ));
+
+        // Phase 2: Solve constraints via unification
+        let constraints = cgen.constraints().to_vec();
+        let mut unifier = Unifier::new();
+        let errors = unifier.solve_constraints(&constraints);
+
+        // Convert unification errors to compile errors
+        // For now, we collect the first error. In the future, we could
+        // report multiple errors for better diagnostics.
+        if let Some(err) = errors.first() {
+            // Use the message() method for a human-readable error description
+            return Err(CompileError::new(
+                ErrorKind::TypeMismatch {
+                    expected: err.message(),
+                    found: "incompatible type".to_string(),
+                },
+                err.span,
+            ));
+        }
+
+        // Default any unconstrained integer literals to i32
+        unifier.default_int_literal_vars(cgen.int_literal_vars());
+
+        // Build the resolved types map
+        let expr_types = cgen.expr_types();
+        let mut resolved_types = HashMap::new();
+        for (inst_ref, infer_ty) in expr_types {
+            let concrete_ty = unifier.resolve_or_error(infer_ty);
+            resolved_types.insert(*inst_ref, concrete_ty);
+        }
+
+        Ok(resolved_types)
+    }
+
     /// Analyze an RIR instruction, producing AIR instructions.
     ///
     /// Uses bidirectional type checking: when `expectation` is `Check(ty)`, validates
@@ -578,8 +702,13 @@ impl<'a> Sema<'a> {
 
         match &inst.data {
             InstData::IntConst(value) => {
-                // Integer constants adopt the expected type if it's an integer, else default to i32
-                let ty = expectation.integer_type();
+                // Get the type from HM inference, falling back to expectation-based inference
+                // for backwards compatibility during transition.
+                let ty = ctx
+                    .resolved_types
+                    .get(&inst_ref)
+                    .copied()
+                    .unwrap_or_else(|| expectation.integer_type());
                 expectation.check(ty, inst.span)?;
 
                 // Check if the literal value fits in the target type's range

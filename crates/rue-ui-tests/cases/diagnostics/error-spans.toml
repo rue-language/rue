@@ -21,7 +21,9 @@ fn main() -> i32 {
 }
 """
 compile_fail = true
-error_contains = "3:9"
+# With HM inference, the error now points to the scrutinee literal that
+# can't be the type inferred from the pattern
+error_contains = "2:11"
 
 [[case]]
 name = "pattern_type_mismatch_bool_vs_int"

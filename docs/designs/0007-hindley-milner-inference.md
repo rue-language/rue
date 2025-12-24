@@ -267,11 +267,11 @@ Code that compiled before will compile after with the same types.
   - Error collection and reporting with `Type::Error` recovery
   - Tests for unification edge cases
 
-- [ ] **Phase 4: AIR emission** - tree1-205.4
+- [x] **Phase 4: AIR emission** - rue-048
   - Split current `analyze_inst` into constraint gen + emission
   - Emit AIR with resolved types
   - Verify all existing spec tests pass
-  - Remove legacy peek_type and integer_type hacks
+  - Legacy peek_type and integer_type kept as defensive fallbacks (may remove in Phase 5)
 
 - [ ] **Phase 5: Cleanup and stabilization** - tree1-205.5
   - Remove TypeExpectation (no longer needed)

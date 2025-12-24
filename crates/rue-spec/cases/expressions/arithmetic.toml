@@ -379,7 +379,7 @@ fn main() -> i32 {
 }
 """
 compile_fail = true
-error_contains = "cannot apply unary operator"
+error_contains = "cannot negate unsigned type"
 
 [[case]]
 name = "negation_unsigned_u8_error"
@@ -392,7 +392,7 @@ fn main() -> i32 {
 }
 """
 compile_fail = true
-error_contains = "cannot apply unary operator"
+error_contains = "cannot negate unsigned type"
 
 [[case]]
 name = "negation_unsigned_u64_error"
@@ -405,7 +405,7 @@ fn main() -> i32 {
 }
 """
 compile_fail = true
-error_contains = "cannot apply unary operator"
+error_contains = "cannot negate unsigned type"
 
 [[case]]
 name = "negation_unsigned_literal_error"
