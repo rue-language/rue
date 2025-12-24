@@ -86,6 +86,10 @@ pub struct Case {
     /// are allowed to fail without failing the overall test suite.
     #[serde(default)]
     pub preview: Option<String>,
+    /// Target architecture for MIR golden tests (e.g., "x86-64-linux", "aarch64-macos").
+    /// Required for MIR tests; omitting it causes a test failure.
+    #[serde(default)]
+    pub target: Option<String>,
 }
 
 /// A test file containing a section and its cases.
@@ -327,11 +331,15 @@ pub fn run_test_case(case: &Case, rue_binary: &Path) -> TestResult {
         }
 
         if let Some(ref expected) = case.expected_mir {
-            // MIR golden tests use x86-64-linux for consistent output across platforms.
-            // MIR is inherently architecture-specific, so we need a fixed target.
+            // MIR golden tests require an explicit target since MIR is architecture-specific.
+            let target = case.target.as_ref().ok_or_else(|| {
+                "MIR golden tests require a 'target' field (e.g., target = \"x86-64-linux\")"
+                    .to_string()
+            })?;
+
             let output = build_command(rue_binary)
                 .arg("--target")
-                .arg("x86-64-linux")
+                .arg(target)
                 .arg("--emit")
                 .arg("mir")
                 .arg(&source_path)

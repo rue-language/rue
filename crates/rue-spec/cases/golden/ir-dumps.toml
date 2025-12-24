@@ -129,11 +129,24 @@ air (return_type: i32) {
 name = "simple_return_mir"
 spec = ["2.1:1"]
 source = "fn main() -> i32 { 42 }"
+target = "x86-64-linux"
 expected_mir = """
 function main:
     mov v0, 42
     mov rdi, v0
     call __rue_exit
+"""
+
+[[case]]
+name = "simple_return_mir_aarch64"
+spec = ["2.1:1"]
+source = "fn main() -> i32 { 42 }"
+target = "aarch64-macos"
+expected_mir = """
+function main:
+    mov v0, #42
+    mov x0, v0
+    bl __rue_exit
 """
 
 [[case]]
@@ -163,11 +176,24 @@ air (return_type: i32) {
 name = "zero_mir"
 spec = ["2.1:1"]
 source = "fn main() -> i32 { 0 }"
+target = "x86-64-linux"
 expected_mir = """
 function main:
     mov v0, 0
     mov rdi, v0
     call __rue_exit
+"""
+
+[[case]]
+name = "zero_mir_aarch64"
+spec = ["2.1:1"]
+source = "fn main() -> i32 { 0 }"
+target = "aarch64-macos"
+expected_mir = """
+function main:
+    mov v0, #0
+    mov x0, v0
+    bl __rue_exit
 """
 
 [[case]]
@@ -197,11 +223,24 @@ air (return_type: i32) {
 name = "max_exit_code_mir"
 spec = ["2.1:1"]
 source = "fn main() -> i32 { 255 }"
+target = "x86-64-linux"
 expected_mir = """
 function main:
     mov v0, 255
     mov rdi, v0
     call __rue_exit
+"""
+
+[[case]]
+name = "max_exit_code_mir_aarch64"
+spec = ["2.1:1"]
+source = "fn main() -> i32 { 255 }"
+target = "aarch64-macos"
+expected_mir = """
+function main:
+    mov v0, #255
+    mov x0, v0
+    bl __rue_exit
 """
 
 # =============================================================================
@@ -239,6 +278,7 @@ air (return_type: i32) {
 name = "addition_mir"
 spec = ["4.2:1"]
 source = "fn main() -> i32 { 1 + 2 }"
+target = "x86-64-linux"
 expected_mir = """
 function main:
     mov v0, 1
@@ -250,6 +290,23 @@ function main:
     .L0:
     mov rdi, v2
     call __rue_exit
+"""
+
+[[case]]
+name = "addition_mir_aarch64"
+spec = ["4.2:1"]
+source = "fn main() -> i32 { 1 + 2 }"
+target = "aarch64-macos"
+expected_mir = """
+function main:
+    mov v0, #1
+    mov v1, #2
+    adds v2, v0, v1
+    b.vc .L0
+    bl __rue_overflow
+    .L0:
+    mov x0, v2
+    bl __rue_exit
 """
 
 [[case]]
@@ -283,6 +340,7 @@ air (return_type: i32) {
 name = "subtraction_mir"
 spec = ["4.2:1"]
 source = "fn main() -> i32 { 5 - 3 }"
+target = "x86-64-linux"
 expected_mir = """
 function main:
     mov v0, 5
@@ -294,6 +352,23 @@ function main:
     .L0:
     mov rdi, v2
     call __rue_exit
+"""
+
+[[case]]
+name = "subtraction_mir_aarch64"
+spec = ["4.2:1"]
+source = "fn main() -> i32 { 5 - 3 }"
+target = "aarch64-macos"
+expected_mir = """
+function main:
+    mov v0, #5
+    mov v1, #3
+    subs v2, v0, v1
+    b.vc .L0
+    bl __rue_overflow
+    .L0:
+    mov x0, v2
+    bl __rue_exit
 """
 
 [[case]]
@@ -327,6 +402,7 @@ air (return_type: i32) {
 name = "multiplication_mir"
 spec = ["4.2:1"]
 source = "fn main() -> i32 { 3 * 4 }"
+target = "x86-64-linux"
 expected_mir = """
 function main:
     mov v0, 3
@@ -338,6 +414,26 @@ function main:
     .L0:
     mov rdi, v2
     call __rue_exit
+"""
+
+[[case]]
+name = "multiplication_mir_aarch64"
+spec = ["4.2:1"]
+source = "fn main() -> i32 { 3 * 4 }"
+target = "aarch64-macos"
+expected_mir = """
+function main:
+    mov v0, #3
+    mov v1, #4
+    smull v3, v0, v1
+    mov v2, v3
+    sxtw v4, v3
+    cmp v3, v4
+    b.eq .L0
+    bl __rue_overflow
+    .L0:
+    mov x0, v2
+    bl __rue_exit
 """
 
 [[case]]
@@ -371,6 +467,7 @@ air (return_type: i32) {
 name = "division_mir"
 spec = ["4.2:1"]
 source = "fn main() -> i32 { 10 / 3 }"
+target = "x86-64-linux"
 expected_mir = """
 function main:
     mov v0, 10
@@ -385,6 +482,23 @@ function main:
     mov v2, rax
     mov rdi, v2
     call __rue_exit
+"""
+
+[[case]]
+name = "division_mir_aarch64"
+spec = ["4.2:1"]
+source = "fn main() -> i32 { 10 / 3 }"
+target = "aarch64-macos"
+expected_mir = """
+function main:
+    mov v0, #10
+    mov v1, #3
+    cbnz v1, .L0
+    bl __rue_div_by_zero
+    .L0:
+    sdiv v2, v0, v1
+    mov x0, v2
+    bl __rue_exit
 """
 
 [[case]]
@@ -418,6 +532,7 @@ air (return_type: i32) {
 name = "modulo_mir"
 spec = ["4.2:1"]
 source = "fn main() -> i32 { 10 % 3 }"
+target = "x86-64-linux"
 expected_mir = """
 function main:
     mov v0, 10
@@ -432,6 +547,24 @@ function main:
     mov v2, rdx
     mov rdi, v2
     call __rue_exit
+"""
+
+[[case]]
+name = "modulo_mir_aarch64"
+spec = ["4.2:1"]
+source = "fn main() -> i32 { 10 % 3 }"
+target = "aarch64-macos"
+expected_mir = """
+function main:
+    mov v0, #10
+    mov v1, #3
+    cbnz v1, .L0
+    bl __rue_div_by_zero
+    .L0:
+    sdiv v3, v0, v1
+    msub v2, v3, v1, v0
+    mov x0, v2
+    bl __rue_exit
 """
 
 [[case]]
@@ -529,6 +662,7 @@ air (return_type: i32) {
 name = "negation_mir"
 spec = ["4.2:3"]
 source = "fn main() -> i32 { -42 }"
+target = "x86-64-linux"
 expected_mir = """
 function main:
     mov v0, 42
@@ -539,6 +673,22 @@ function main:
     .L0:
     mov rdi, v1
     call __rue_exit
+"""
+
+[[case]]
+name = "negation_mir_aarch64"
+spec = ["4.2:3"]
+source = "fn main() -> i32 { -42 }"
+target = "aarch64-macos"
+expected_mir = """
+function main:
+    mov v0, #42
+    negs32 v1, v0
+    b.vc .L0
+    bl __rue_overflow
+    .L0:
+    mov x0, v1
+    bl __rue_exit
 """
 
 [[case]]
