@@ -1,0 +1,96 @@
+%YAML 1.2
+---
+# EBNF syntax highlighting
+name: ebnf
+scope: source.ebnf
+version: 2
+
+file_extensions:
+  - ebnf
+
+variables:
+  identifier: '[a-zA-Z_][a-zA-Z0-9_]*'
+
+contexts:
+  main:
+    - include: comments
+    - include: rules
+    - include: terminals
+    - include: operators
+    - include: grouping
+
+  comments:
+    # Block comments (* ... *)
+    - match: '\(\*'
+      scope: punctuation.definition.comment.begin.ebnf
+      push:
+        - meta_scope: comment.block.ebnf
+        - match: '\*\)'
+          scope: punctuation.definition.comment.end.ebnf
+          pop: true
+
+  rules:
+    # Rule names (identifiers followed by =)
+    - match: '^\s*({{identifier}})\s*(=)'
+      captures:
+        1: entity.name.function.rule.ebnf
+        2: keyword.operator.definition.ebnf
+    # References to rules (non-terminals)
+    - match: '{{identifier}}'
+      scope: variable.other.rule-reference.ebnf
+
+  terminals:
+    # Double-quoted terminals
+    - match: '"'
+      scope: punctuation.definition.string.begin.ebnf
+      push:
+        - meta_scope: string.quoted.double.ebnf
+        - match: '"'
+          scope: punctuation.definition.string.end.ebnf
+          pop: true
+        - match: '\\.'
+          scope: constant.character.escape.ebnf
+    # Single-quoted terminals (some EBNF variants)
+    - match: "'"
+      scope: punctuation.definition.string.begin.ebnf
+      push:
+        - meta_scope: string.quoted.single.ebnf
+        - match: "'"
+          scope: punctuation.definition.string.end.ebnf
+          pop: true
+        - match: '\\.'
+          scope: constant.character.escape.ebnf
+
+  operators:
+    # Definition operator
+    - match: '='
+      scope: keyword.operator.definition.ebnf
+    # Alternation
+    - match: '\|'
+      scope: keyword.operator.alternation.ebnf
+    # Terminator
+    - match: ';'
+      scope: punctuation.terminator.rule.ebnf
+    # Concatenation (comma or just whitespace, but comma is explicit)
+    - match: ','
+      scope: punctuation.separator.ebnf
+    # Range (for character ranges)
+    - match: '\.\.\.'
+      scope: keyword.operator.range.ebnf
+
+  grouping:
+    # Group (parentheses)
+    - match: '\('
+      scope: punctuation.section.group.begin.ebnf
+    - match: '\)'
+      scope: punctuation.section.group.end.ebnf
+    # Optional (square brackets)
+    - match: '\['
+      scope: punctuation.section.optional.begin.ebnf
+    - match: '\]'
+      scope: punctuation.section.optional.end.ebnf
+    # Repetition (curly braces)
+    - match: '\{'
+      scope: punctuation.section.repetition.begin.ebnf
+    - match: '\}'
+      scope: punctuation.section.repetition.end.ebnf

@@ -10,6 +10,11 @@ feed_filenames = ["rss.xml"]
 [markdown]
 highlight_code = true
 highlight_theme = "css"
+extra_syntaxes_and_themes = ["syntaxes"]
+highlight_themes_css = [
+  { theme = "base16-ocean-dark", filename = "syntax-dark.css" },
+  { theme = "base16-ocean-light", filename = "syntax-light.css" },
+]
 
 [extra]
 github_url = "https://github.com/rue-language/rue"

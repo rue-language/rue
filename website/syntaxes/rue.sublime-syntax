@@ -1,0 +1,129 @@
+%YAML 1.2
+---
+# Rue syntax highlighting (based on Rust syntax)
+name: rue
+scope: source.rue
+version: 2
+
+file_extensions:
+  - rue
+
+variables:
+  identifier: '\b[a-zA-Z_][a-zA-Z0-9_]*\b'
+  int_literal: '\b[0-9][0-9_]*\b'
+
+contexts:
+  main:
+    - include: comments
+    - include: keywords
+    - include: types
+    - include: strings
+    - include: numbers
+    - include: operators
+    - include: punctuation
+    - include: intrinsics
+    - include: functions
+    - include: identifiers
+
+  comments:
+    # Line comments
+    - match: //.*$
+      scope: comment.line.double-slash.rue
+
+  keywords:
+    # Control flow
+    - match: \b(if|else|while|loop|match|return|break|continue)\b
+      scope: keyword.control.rue
+    # Declaration keywords
+    - match: \b(fn|let|mut|struct|enum)\b
+      scope: keyword.declaration.rue
+    # Boolean literals
+    - match: \b(true|false)\b
+      scope: constant.language.boolean.rue
+
+  types:
+    # Primitive types
+    - match: \b(i8|i16|i32|i64|u8|u16|u32|u64|bool)\b
+      scope: storage.type.primitive.rue
+    # Unit type
+    - match: \(\)
+      scope: storage.type.unit.rue
+
+  strings:
+    # Double-quoted strings
+    - match: '"'
+      scope: punctuation.definition.string.begin.rue
+      push:
+        - meta_scope: string.quoted.double.rue
+        - match: '"'
+          scope: punctuation.definition.string.end.rue
+          pop: true
+        - match: '\\[\\"]'
+          scope: constant.character.escape.rue
+        - match: '\\.'
+          scope: invalid.illegal.escape.rue
+
+  numbers:
+    # Integer literals
+    - match: '{{int_literal}}'
+      scope: constant.numeric.integer.rue
+
+  operators:
+    # Arrow operators (must be before arithmetic/comparison)
+    - match: '->'
+      scope: keyword.operator.arrow.rue
+    - match: '=>'
+      scope: keyword.operator.fat-arrow.rue
+    # Comparison operators (multi-char before single-char)
+    - match: '==|!=|<=|>=|<<|>>'
+      scope: keyword.operator.comparison.rue
+    - match: '<|>'
+      scope: keyword.operator.comparison.rue
+    # Logical operators
+    - match: '\|\||&&'
+      scope: keyword.operator.logical.rue
+    # Bitwise operators
+    - match: '&|\||\^|~'
+      scope: keyword.operator.bitwise.rue
+    # Arithmetic operators
+    - match: '[+\-*/%]'
+      scope: keyword.operator.arithmetic.rue
+    # Negation (must be after && to not conflict)
+    - match: '!'
+      scope: keyword.operator.logical.rue
+    # Assignment
+    - match: '='
+      scope: keyword.operator.assignment.rue
+
+  punctuation:
+    - match: '[{}()\[\]]'
+      scope: punctuation.section.rue
+    - match: '[,;:]'
+      scope: punctuation.separator.rue
+
+  intrinsics:
+    # Intrinsic function calls like @print, @exit
+    - match: '@{{identifier}}'
+      scope: support.function.intrinsic.rue
+
+  functions:
+    # Function definitions
+    - match: '\b(fn)\s+({{identifier}})'
+      captures:
+        1: keyword.declaration.function.rue
+        2: entity.name.function.rue
+    # Function calls (identifier followed by parenthesis)
+    - match: '({{identifier}})\s*(?=\()'
+      captures:
+        1: variable.function.rue
+
+  identifiers:
+    # Wildcard identifier
+    - match: '\b_\b'
+      scope: variable.language.wildcard.rue
+    # Underscore-prefixed identifiers
+    - match: '\b_[a-zA-Z0-9_]+\b'
+      scope: variable.other.underscore.rue
+    # Regular identifiers
+    - match: '{{identifier}}'
+      scope: variable.other.rue

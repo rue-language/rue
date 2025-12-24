@@ -9,10 +9,22 @@
     <link rel="alternate" type="application/rss+xml" title="Rue Blog RSS" href="{{ get_url(path='blog/rss.xml') }}">
     <script>
         // Check for saved theme preference or default to system preference
-        if (localStorage.theme === 'dark' || (!('theme' in localStorage) && window.matchMedia('(prefers-color-scheme: dark)').matches)) {
+        const isDark = localStorage.theme === 'dark' || (!('theme' in localStorage) && window.matchMedia('(prefers-color-scheme: dark)').matches);
+        if (isDark) {
             document.documentElement.classList.add('dark');
-        } else {
-            document.documentElement.classList.remove('dark');
+        }
+        // Write syntax theme stylesheets with correct initial disabled state
+        document.write('<link rel="stylesheet" href="{{ get_url(path='syntax-light.css') }}" id="syntax-light"' + (isDark ? ' disabled' : '') + '>');
+        document.write('<link rel="stylesheet" href="{{ get_url(path='syntax-dark.css') }}" id="syntax-dark"' + (isDark ? '' : ' disabled') + '>');
+
+        function updateSyntaxTheme() {
+            const syntaxLight = document.getElementById('syntax-light');
+            const syntaxDark = document.getElementById('syntax-dark');
+            if (syntaxLight && syntaxDark) {
+                const dark = document.documentElement.classList.contains('dark');
+                syntaxLight.disabled = dark;
+                syntaxDark.disabled = !dark;
+            }
         }
     </script>
 </head>
@@ -60,6 +72,7 @@
                 document.documentElement.classList.add('dark');
                 localStorage.theme = 'dark';
             }
+            updateSyntaxTheme();
         }
     </script>
 </body>
