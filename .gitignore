@@ -13,3 +13,6 @@ third-party/.cargo/registry/
 
 # OS
 .DS_Store
+
+# beads (now stored in the beads-metadata branch)
+.beads
