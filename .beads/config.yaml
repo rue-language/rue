@@ -14,7 +14,9 @@ issue-prefix: "rue"
 # no-db: false
 
 # Disable daemon for RPC communication (forces direct database access)
-# no-daemon: false
+# Note: Using no-daemon mode because jj workspaces have separate .beads/ dirs
+# (unlike git worktrees which share .git). Each workspace needs its own DB.
+no-daemon: true
 
 # Disable auto-flush of database to JSONL after mutations
 # no-auto-flush: false
@@ -42,6 +44,7 @@ issue-prefix: "rue"
 # This setting persists across clones (unlike database config which is gitignored).
 # Can also use BEADS_SYNC_BRANCH env var for local override.
 # If not set, bd sync will require you to run 'bd config set sync.branch <branch>'.
+# Note: Not using sync-branch with jj workspaces - commit JSONL with code instead.
 # sync-branch: "beads-sync"
 
 # Multi-repo configuration (experimental - bd-307)
