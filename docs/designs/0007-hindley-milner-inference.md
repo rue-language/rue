@@ -248,7 +248,7 @@ Code that compiled before will compile after with the same types.
 
 ## Implementation Phases
 
-- [ ] **Phase 1: Type variable infrastructure** - tree1-205.1
+- [x] **Phase 1: Type variable infrastructure** - rue-xvc
   - Add `InferType`, `TypeVarId` types
   - Add type variable allocation and substitution
   - Add constraint types
