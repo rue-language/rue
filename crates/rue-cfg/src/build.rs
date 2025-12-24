@@ -523,11 +523,25 @@ impl<'a> CfgBuilder<'a> {
                 }
             }
 
-            AirInstData::StructInit { struct_id, fields } => {
-                let mut field_vals = Vec::new();
-                for field in fields {
-                    field_vals.push(self.lower_inst(*field).value.unwrap());
+            AirInstData::StructInit {
+                struct_id,
+                fields,
+                source_order,
+            } => {
+                // Evaluate field initializers in SOURCE ORDER (spec 4.0:8)
+                // The source_order tells us which declaration-order index to evaluate at each step
+                let mut lowered_fields: Vec<Option<CfgValue>> = vec![None; fields.len()];
+                for &decl_idx in source_order {
+                    let lowered = self.lower_inst(fields[decl_idx]).value.unwrap();
+                    lowered_fields[decl_idx] = Some(lowered);
                 }
+
+                // Collect in declaration order for storage layout
+                let field_vals: Vec<CfgValue> = lowered_fields
+                    .into_iter()
+                    .map(|opt: Option<CfgValue>| opt.expect("all fields should be lowered"))
+                    .collect();
+
                 let value = self.emit(
                     CfgInstData::StructInit {
                         struct_id: *struct_id,

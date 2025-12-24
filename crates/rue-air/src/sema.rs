@@ -1820,8 +1820,11 @@ impl<'a> Sema<'a> {
                 }
 
                 // Analyze field values in SOURCE ORDER (left-to-right as written)
-                // This is important for evaluation order semantics
+                // This is important for evaluation order semantics (spec 4.0:8)
                 let mut analyzed_fields: Vec<Option<AirRef>> = vec![None; struct_def.fields.len()];
+                // Track source order: which declaration index is evaluated at each position
+                let mut source_order: Vec<usize> = Vec::with_capacity(field_inits.len());
+
                 for (init_field_name, field_value) in field_inits.iter() {
                     let init_name = self.interner.get(*init_field_name);
                     let field_idx = field_index_map[init_name];
@@ -1834,9 +1837,11 @@ impl<'a> Sema<'a> {
                         ctx,
                     )?;
                     analyzed_fields[field_idx] = Some(field_result.air_ref);
+                    source_order.push(field_idx);
                 }
 
                 // Collect field refs in DECLARATION ORDER for the AIR instruction
+                // (storage layout matches declaration order)
                 let field_refs: Vec<AirRef> = analyzed_fields
                     .into_iter()
                     .map(|opt| opt.expect("all fields should be initialized"))
@@ -1846,6 +1851,7 @@ impl<'a> Sema<'a> {
                     data: AirInstData::StructInit {
                         struct_id,
                         fields: field_refs,
+                        source_order,
                     },
                     ty: struct_type,
                     span: inst.span,

@@ -81,6 +81,9 @@ pub struct Case {
     #[allow(dead_code)]
     #[serde(default)]
     pub spec: Vec<String>,
+    /// Expected stdout output after successful execution (e.g., from @dbg calls)
+    #[serde(default)]
+    pub expected_stdout: Option<String>,
     /// Preview feature required to run this test (e.g., "mutable_strings").
     /// Tests with this field are compiled with `--preview <feature>` and
     /// are allowed to fail without failing the overall test suite.
@@ -490,6 +493,19 @@ pub fn run_test_case(case: &Case, rue_binary: &Path) -> TestResult {
         }
 
         return Ok(());
+    }
+
+    // Check expected stdout output (e.g., from @dbg calls)
+    if let Some(ref expected) = case.expected_stdout {
+        let stdout = String::from_utf8_lossy(&run_output.stdout);
+        let expected_normalized = normalize_golden(expected);
+        let actual_normalized = normalize_golden(&stdout);
+        if actual_normalized != expected_normalized {
+            return Err(format!(
+                "Stdout mismatch:\n--- expected ---\n{}\n--- actual ---\n{}\n  source: {}",
+                expected_normalized, actual_normalized, case.source
+            ));
+        }
     }
 
     // Normal exit code test

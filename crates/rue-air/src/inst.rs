@@ -265,8 +265,12 @@ pub enum AirInstData {
     StructInit {
         /// The struct type being created
         struct_id: StructId,
-        /// Field values in declaration order
+        /// Field values in declaration order (for storage layout)
         fields: Vec<AirRef>,
+        /// Evaluation order: indices into `fields` in source order
+        /// e.g., for `Point { y: 10, x: 20 }` with declaration order [x, y],
+        /// source_order would be [1, 0] meaning evaluate fields[1] (y) first, then fields[0] (x)
+        source_order: Vec<usize>,
     },
 
     /// Load a field from a struct value
@@ -444,7 +448,11 @@ impl fmt::Display for Air {
                     }
                     writeln!(f, "], {}", value)?;
                 }
-                AirInstData::StructInit { struct_id, fields } => {
+                AirInstData::StructInit {
+                    struct_id,
+                    fields,
+                    source_order,
+                } => {
                     write!(f, "struct_init #{} {{", struct_id.0)?;
                     for (i, field) in fields.iter().enumerate() {
                         if i > 0 {
@@ -452,7 +460,14 @@ impl fmt::Display for Air {
                         }
                         write!(f, "{}", field)?;
                     }
-                    writeln!(f, "}}")?;
+                    write!(f, "}} eval_order=[")?;
+                    for (i, &idx) in source_order.iter().enumerate() {
+                        if i > 0 {
+                            write!(f, ", ")?;
+                        }
+                        write!(f, "{}", idx)?;
+                    }
+                    writeln!(f, "]")?;
                 }
                 AirInstData::FieldGet {
                     base,

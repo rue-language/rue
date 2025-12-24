@@ -207,3 +207,28 @@ fn main() -> i32 {
 }
 """
 exit_code = 42
+
+[[case]]
+name = "struct_init_source_order_observable"
+spec = ["4.0:2", "4.0:8"]
+source = """
+fn side_effect(val: i32) -> i32 {
+    @dbg(val);
+    val
+}
+
+struct Point { x: i32, y: i32 }
+
+fn main() -> i32 {
+    // Fields written in reverse declaration order: y first, then x
+    // If evaluated in SOURCE order: prints 20, then 10
+    // If evaluated in DECLARATION order: prints 10, then 20
+    let p = Point { y: side_effect(20), x: side_effect(10) };
+    p.x + p.y
+}
+"""
+exit_code = 30
+expected_stdout = """
+20
+10
+"""
