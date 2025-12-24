@@ -254,7 +254,7 @@ Code that compiled before will compile after with the same types.
   - Add constraint types
   - Unit tests for unification algorithm
 
-- [ ] **Phase 2: Constraint generation** - tree1-205.2
+- [x] **Phase 2: Constraint generation** - rue-5os
   - Add `generate_constraints` that walks RIR
   - Generate constraints for all expression types
   - Preserve span information for error reporting

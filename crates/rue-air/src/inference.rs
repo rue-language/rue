@@ -165,6 +165,11 @@ pub enum Constraint {
     /// Generated for unary negation which requires signed types.
     /// Unsigned integers cannot be negated.
     IsSigned(InferType, Span),
+
+    /// Type must be an integer (signed or unsigned): τ ∈ {i8, i16, i32, i64, u8, u16, u32, u64}.
+    ///
+    /// Generated for bitwise NOT which works on any integer type.
+    IsInteger(InferType, Span),
 }
 
 impl Constraint {
@@ -178,10 +183,17 @@ impl Constraint {
         Constraint::IsSigned(ty, span)
     }
 
+    /// Create a "must be integer" constraint.
+    pub fn is_integer(ty: InferType, span: Span) -> Self {
+        Constraint::IsInteger(ty, span)
+    }
+
     /// Get the span for this constraint (for error reporting).
     pub fn span(&self) -> Span {
         match self {
-            Constraint::Equal(_, _, span) | Constraint::IsSigned(_, span) => *span,
+            Constraint::Equal(_, _, span)
+            | Constraint::IsSigned(_, span)
+            | Constraint::IsInteger(_, span) => *span,
         }
     }
 }
@@ -476,6 +488,716 @@ impl Unifier {
             InferType::Concrete(t) => Some(t),
             InferType::Var(_) => None,                // Unbound variable
             InferType::IntLiteral => Some(Type::I32), // Default to i32
+        }
+    }
+}
+
+// ============================================================================
+// Constraint Generation (Phase 2)
+// ============================================================================
+
+use rue_intern::{Interner, Symbol};
+use rue_rir::{InstData, InstRef, Rir};
+
+/// Information about a local variable during constraint generation.
+#[derive(Debug, Clone)]
+pub struct LocalVarInfo {
+    /// The inferred type of this variable.
+    pub ty: InferType,
+    /// Whether the variable is mutable.
+    pub is_mut: bool,
+    /// Span of the variable declaration.
+    pub span: Span,
+}
+
+/// Information about a function parameter during constraint generation.
+#[derive(Debug, Clone)]
+pub struct ParamVarInfo {
+    /// The concrete type of this parameter (from the declaration).
+    pub ty: Type,
+}
+
+/// Information about a function during constraint generation.
+#[derive(Debug, Clone)]
+pub struct FunctionSig {
+    /// Parameter types (in order).
+    pub param_types: Vec<Type>,
+    /// Return type.
+    pub return_type: Type,
+}
+
+/// Context for constraint generation within a single function.
+pub struct ConstraintContext<'a> {
+    /// Local variables in scope.
+    pub locals: HashMap<Symbol, LocalVarInfo>,
+    /// Function parameters.
+    pub params: &'a HashMap<Symbol, ParamVarInfo>,
+    /// Return type of the current function.
+    pub return_type: Type,
+    /// How many loops we're nested inside (for break/continue validation).
+    pub loop_depth: u32,
+    /// Scope stack for efficient scope management.
+    scope_stack: Vec<Vec<(Symbol, Option<LocalVarInfo>)>>,
+}
+
+impl<'a> ConstraintContext<'a> {
+    /// Create a new context for a function.
+    pub fn new(params: &'a HashMap<Symbol, ParamVarInfo>, return_type: Type) -> Self {
+        Self {
+            locals: HashMap::new(),
+            params,
+            return_type,
+            loop_depth: 0,
+            scope_stack: Vec::new(),
+        }
+    }
+
+    /// Push a new scope onto the stack.
+    pub fn push_scope(&mut self) {
+        // Pre-allocate for 2 variables since most scopes introduce few bindings
+        self.scope_stack.push(Vec::with_capacity(2));
+    }
+
+    /// Pop the current scope, restoring any shadowed variables.
+    pub fn pop_scope(&mut self) {
+        if let Some(scope_entries) = self.scope_stack.pop() {
+            for (symbol, old_value) in scope_entries {
+                match old_value {
+                    Some(old_var) => {
+                        self.locals.insert(symbol, old_var);
+                    }
+                    None => {
+                        self.locals.remove(&symbol);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Insert a local variable, tracking it in the current scope.
+    pub fn insert_local(&mut self, symbol: Symbol, var: LocalVarInfo) {
+        let old_value = self.locals.insert(symbol, var);
+        if let Some(current_scope) = self.scope_stack.last_mut() {
+            current_scope.push((symbol, old_value));
+        }
+    }
+}
+
+/// Result of constraint generation for an expression.
+#[derive(Debug, Clone)]
+pub struct ExprInfo {
+    /// The inferred type of this expression.
+    pub ty: InferType,
+    /// The span of this expression (for error reporting).
+    pub span: Span,
+}
+
+impl ExprInfo {
+    /// Create a new expression info.
+    pub fn new(ty: InferType, span: Span) -> Self {
+        Self { ty, span }
+    }
+}
+
+/// Constraint generator that walks RIR and generates type constraints.
+///
+/// This is Phase 1 of HM inference: constraint generation. The constraints
+/// are later solved by the `Unifier` to determine concrete types.
+pub struct ConstraintGenerator<'a> {
+    /// The RIR being analyzed.
+    rir: &'a Rir,
+    /// String interner for resolving symbols.
+    interner: &'a Interner,
+    /// Type variable allocator.
+    type_vars: TypeVarAllocator,
+    /// Collected constraints.
+    constraints: Vec<Constraint>,
+    /// Mapping from RIR instruction to its inferred type.
+    expr_types: HashMap<InstRef, InferType>,
+    /// Function signatures (for call type checking).
+    functions: &'a HashMap<Symbol, FunctionSig>,
+    /// Struct types (name -> Type::Struct(id)).
+    structs: &'a HashMap<Symbol, Type>,
+    /// Enum types (name -> Type::Enum(id)).
+    enums: &'a HashMap<Symbol, Type>,
+}
+
+impl<'a> ConstraintGenerator<'a> {
+    /// Create a new constraint generator.
+    pub fn new(
+        rir: &'a Rir,
+        interner: &'a Interner,
+        functions: &'a HashMap<Symbol, FunctionSig>,
+        structs: &'a HashMap<Symbol, Type>,
+        enums: &'a HashMap<Symbol, Type>,
+    ) -> Self {
+        Self {
+            rir,
+            interner,
+            type_vars: TypeVarAllocator::new(),
+            constraints: Vec::new(),
+            expr_types: HashMap::new(),
+            functions,
+            structs,
+            enums,
+        }
+    }
+
+    /// Allocate a fresh type variable.
+    pub fn fresh_var(&mut self) -> TypeVarId {
+        self.type_vars.fresh()
+    }
+
+    /// Add a constraint.
+    pub fn add_constraint(&mut self, constraint: Constraint) {
+        self.constraints.push(constraint);
+    }
+
+    /// Record the type of an expression.
+    pub fn record_type(&mut self, inst_ref: InstRef, ty: InferType) {
+        self.expr_types.insert(inst_ref, ty);
+    }
+
+    /// Get the recorded type of an expression.
+    pub fn get_type(&self, inst_ref: InstRef) -> Option<&InferType> {
+        self.expr_types.get(&inst_ref)
+    }
+
+    /// Get all collected constraints.
+    pub fn constraints(&self) -> &[Constraint] {
+        &self.constraints
+    }
+
+    /// Take ownership of the collected constraints.
+    pub fn take_constraints(self) -> Vec<Constraint> {
+        self.constraints
+    }
+
+    /// Get the expression type mapping.
+    pub fn expr_types(&self) -> &HashMap<InstRef, InferType> {
+        &self.expr_types
+    }
+
+    /// Generate constraints for an expression.
+    ///
+    /// Returns the inferred type of the expression. Records the type in
+    /// `expr_types` and adds constraints to `constraints`.
+    pub fn generate(&mut self, inst_ref: InstRef, ctx: &mut ConstraintContext) -> ExprInfo {
+        let inst = self.rir.get(inst_ref);
+        let span = inst.span;
+
+        let ty = match &inst.data {
+            InstData::IntConst(_) => {
+                // Integer literals get the special IntLiteral type.
+                // They will be resolved to a concrete integer type during unification.
+                InferType::IntLiteral
+            }
+
+            InstData::BoolConst(_) => InferType::Concrete(Type::Bool),
+
+            InstData::StringConst(_) => InferType::Concrete(Type::String),
+
+            InstData::UnitConst => InferType::Concrete(Type::Unit),
+
+            // Binary arithmetic: both operands must have the same type, result is that type
+            InstData::Add { lhs, rhs }
+            | InstData::Sub { lhs, rhs }
+            | InstData::Mul { lhs, rhs }
+            | InstData::Div { lhs, rhs }
+            | InstData::Mod { lhs, rhs } => self.generate_binary_arith(*lhs, *rhs, ctx),
+
+            // Bitwise operations: same as arithmetic
+            InstData::BitAnd { lhs, rhs }
+            | InstData::BitOr { lhs, rhs }
+            | InstData::BitXor { lhs, rhs }
+            | InstData::Shl { lhs, rhs }
+            | InstData::Shr { lhs, rhs } => self.generate_binary_arith(*lhs, *rhs, ctx),
+
+            // Comparison operators: operands must match, result is bool
+            InstData::Eq { lhs, rhs }
+            | InstData::Ne { lhs, rhs }
+            | InstData::Lt { lhs, rhs }
+            | InstData::Gt { lhs, rhs }
+            | InstData::Le { lhs, rhs }
+            | InstData::Ge { lhs, rhs } => {
+                let lhs_info = self.generate(*lhs, ctx);
+                let rhs_info = self.generate(*rhs, ctx);
+                // Operands must have the same type
+                self.add_constraint(Constraint::equal(lhs_info.ty, rhs_info.ty, span));
+                InferType::Concrete(Type::Bool)
+            }
+
+            // Logical operators: operands must be bool, result is bool
+            InstData::And { lhs, rhs } | InstData::Or { lhs, rhs } => {
+                let lhs_info = self.generate(*lhs, ctx);
+                let rhs_info = self.generate(*rhs, ctx);
+                self.add_constraint(Constraint::equal(
+                    lhs_info.ty,
+                    InferType::Concrete(Type::Bool),
+                    lhs_info.span,
+                ));
+                self.add_constraint(Constraint::equal(
+                    rhs_info.ty,
+                    InferType::Concrete(Type::Bool),
+                    rhs_info.span,
+                ));
+                InferType::Concrete(Type::Bool)
+            }
+
+            // Unary negation: operand must be signed integer
+            InstData::Neg { operand } => {
+                let operand_info = self.generate(*operand, ctx);
+                // Result type is the same as operand type
+                let result_ty = operand_info.ty.clone();
+                // Must be a signed integer
+                self.add_constraint(Constraint::is_signed(result_ty.clone(), span));
+                result_ty
+            }
+
+            // Logical NOT: operand must be bool
+            InstData::Not { operand } => {
+                let operand_info = self.generate(*operand, ctx);
+                self.add_constraint(Constraint::equal(
+                    operand_info.ty,
+                    InferType::Concrete(Type::Bool),
+                    operand_info.span,
+                ));
+                InferType::Concrete(Type::Bool)
+            }
+
+            // Bitwise NOT: operand must be integer
+            InstData::BitNot { operand } => {
+                let operand_info = self.generate(*operand, ctx);
+                let result_ty = operand_info.ty.clone();
+                // Must be an integer type (signed or unsigned)
+                self.add_constraint(Constraint::is_integer(result_ty.clone(), span));
+                result_ty
+            }
+
+            // Variable reference
+            InstData::VarRef { name } => {
+                if let Some(local) = ctx.locals.get(name) {
+                    local.ty.clone()
+                } else if let Some(param) = ctx.params.get(name) {
+                    InferType::Concrete(param.ty)
+                } else {
+                    // Unknown variable - will be caught during semantic analysis
+                    InferType::Concrete(Type::Error)
+                }
+            }
+
+            // Parameter reference
+            InstData::ParamRef { name, .. } => {
+                if let Some(param) = ctx.params.get(name) {
+                    InferType::Concrete(param.ty)
+                } else {
+                    InferType::Concrete(Type::Error)
+                }
+            }
+
+            // Local variable allocation
+            InstData::Alloc {
+                name,
+                is_mut,
+                ty: type_annotation,
+                init,
+            } => {
+                let init_info = self.generate(*init, ctx);
+
+                let var_ty = if let Some(ty_sym) = type_annotation {
+                    // Explicit type annotation - use it and constrain init to match
+                    let ty_name = self.interner.get(*ty_sym);
+                    if let Some(concrete_ty) = self.resolve_type_name(ty_name) {
+                        let concrete = InferType::Concrete(concrete_ty);
+                        self.add_constraint(Constraint::equal(
+                            init_info.ty,
+                            concrete.clone(),
+                            span,
+                        ));
+                        concrete
+                    } else {
+                        // Unknown type name (e.g., struct/enum) - use init type for now.
+                        // Semantic analysis will catch undefined types and verify struct/enum
+                        // field types match the definition.
+                        init_info.ty
+                    }
+                } else {
+                    // No annotation - use the init expression's type
+                    init_info.ty
+                };
+
+                // Record the variable in scope (if it has a name)
+                if let Some(var_name) = name {
+                    ctx.insert_local(
+                        *var_name,
+                        LocalVarInfo {
+                            ty: var_ty.clone(),
+                            is_mut: *is_mut,
+                            span,
+                        },
+                    );
+                }
+
+                // Alloc produces unit type
+                InferType::Concrete(Type::Unit)
+            }
+
+            // Assignment
+            InstData::Assign { name, value } => {
+                let value_info = self.generate(*value, ctx);
+                if let Some(local) = ctx.locals.get(name) {
+                    // Constrain value to match variable type
+                    self.add_constraint(Constraint::equal(value_info.ty, local.ty.clone(), span));
+                }
+                // Assignment produces unit
+                InferType::Concrete(Type::Unit)
+            }
+
+            // Return statement
+            InstData::Ret(value) => {
+                if let Some(val_ref) = value {
+                    let value_info = self.generate(*val_ref, ctx);
+                    // Constrain return value to match function return type
+                    self.add_constraint(Constraint::equal(
+                        value_info.ty,
+                        InferType::Concrete(ctx.return_type),
+                        span,
+                    ));
+                } else {
+                    // Return without value - function must return unit
+                    self.add_constraint(Constraint::equal(
+                        InferType::Concrete(Type::Unit),
+                        InferType::Concrete(ctx.return_type),
+                        span,
+                    ));
+                }
+                // Return diverges
+                InferType::Concrete(Type::Never)
+            }
+
+            // Function call
+            InstData::Call { name, args } => {
+                if let Some(func) = self.functions.get(name) {
+                    // Check argument count matches parameter count.
+                    // Semantic analysis will emit a proper error; we just need to avoid
+                    // panicking and process what we can.
+                    if args.len() != func.param_types.len() {
+                        // Still process all arguments to catch type errors within them
+                        for arg_ref in args.iter() {
+                            self.generate(*arg_ref, ctx);
+                        }
+                        // Return the declared return type (error will be caught in sema)
+                        InferType::Concrete(func.return_type)
+                    } else {
+                        // Generate constraints for each argument
+                        for (arg_ref, param_ty) in args.iter().zip(func.param_types.iter()) {
+                            let arg_info = self.generate(*arg_ref, ctx);
+                            self.add_constraint(Constraint::equal(
+                                arg_info.ty,
+                                InferType::Concrete(*param_ty),
+                                arg_info.span,
+                            ));
+                        }
+                        InferType::Concrete(func.return_type)
+                    }
+                } else {
+                    // Unknown function - still process arguments for constraint generation
+                    for arg_ref in args.iter() {
+                        self.generate(*arg_ref, ctx);
+                    }
+                    InferType::Concrete(Type::Error)
+                }
+            }
+
+            // Intrinsic call
+            InstData::Intrinsic { name: _, args } => {
+                // Generate constraints for arguments (they need to be processed)
+                for arg_ref in args.iter() {
+                    self.generate(*arg_ref, ctx);
+                }
+                // Currently only @dbg is supported, which returns Unit
+                InferType::Concrete(Type::Unit)
+            }
+
+            // Block
+            InstData::Block { extra_start, len } => {
+                ctx.push_scope();
+                let mut last_ty = InferType::Concrete(Type::Unit);
+                let block_insts = self.rir.get_extra(*extra_start, *len);
+                for &inst_raw in block_insts {
+                    let block_inst_ref = InstRef::from_raw(inst_raw);
+                    let info = self.generate(block_inst_ref, ctx);
+                    last_ty = info.ty;
+                }
+                ctx.pop_scope();
+                last_ty
+            }
+
+            // Branch (if/else)
+            InstData::Branch {
+                cond,
+                then_block,
+                else_block,
+            } => {
+                let cond_info = self.generate(*cond, ctx);
+                self.add_constraint(Constraint::equal(
+                    cond_info.ty,
+                    InferType::Concrete(Type::Bool),
+                    cond_info.span,
+                ));
+
+                let then_info = self.generate(*then_block, ctx);
+
+                if let Some(else_ref) = else_block {
+                    let else_info = self.generate(*else_ref, ctx);
+                    // Both branches must have the same type
+                    // Use a fresh type variable for the result
+                    let result_var = self.fresh_var();
+                    let result_ty = InferType::Var(result_var);
+                    self.add_constraint(Constraint::equal(
+                        then_info.ty,
+                        result_ty.clone(),
+                        then_info.span,
+                    ));
+                    self.add_constraint(Constraint::equal(
+                        else_info.ty,
+                        result_ty.clone(),
+                        else_info.span,
+                    ));
+                    result_ty
+                } else {
+                    // No else branch - the if expression has unit type
+                    // (or the then branch type if it's unit-compatible)
+                    InferType::Concrete(Type::Unit)
+                }
+            }
+
+            // While loop
+            InstData::Loop { cond, body } => {
+                let cond_info = self.generate(*cond, ctx);
+                self.add_constraint(Constraint::equal(
+                    cond_info.ty,
+                    InferType::Concrete(Type::Bool),
+                    cond_info.span,
+                ));
+
+                ctx.loop_depth += 1;
+                self.generate(*body, ctx);
+                ctx.loop_depth -= 1;
+
+                // Loops produce unit
+                InferType::Concrete(Type::Unit)
+            }
+
+            // Infinite loop
+            InstData::InfiniteLoop { body } => {
+                ctx.loop_depth += 1;
+                self.generate(*body, ctx);
+                ctx.loop_depth -= 1;
+
+                // Infinite loop without break never returns
+                InferType::Concrete(Type::Never)
+            }
+
+            // Break/Continue
+            InstData::Break | InstData::Continue => InferType::Concrete(Type::Never),
+
+            // Match expression
+            InstData::Match { scrutinee, arms } => {
+                let scrutinee_info = self.generate(*scrutinee, ctx);
+
+                // Fresh type variable for the match result
+                let result_var = self.fresh_var();
+                let result_ty = InferType::Var(result_var);
+
+                for (pattern, body) in arms.iter() {
+                    // Patterns constrain the scrutinee type
+                    let pattern_ty = self.pattern_type(pattern);
+                    self.add_constraint(Constraint::equal(
+                        scrutinee_info.ty.clone(),
+                        pattern_ty,
+                        pattern.span(),
+                    ));
+
+                    // Body type must match result type
+                    let body_info = self.generate(*body, ctx);
+                    self.add_constraint(Constraint::equal(
+                        body_info.ty,
+                        result_ty.clone(),
+                        body_info.span,
+                    ));
+                }
+
+                result_ty
+            }
+
+            // Struct initialization
+            InstData::StructInit { type_name, fields } => {
+                if let Some(&struct_ty) = self.structs.get(type_name) {
+                    // Generate constraints for each field
+                    for (_, value_ref) in fields.iter() {
+                        self.generate(*value_ref, ctx);
+                    }
+                    InferType::Concrete(struct_ty)
+                } else {
+                    InferType::Concrete(Type::Error)
+                }
+            }
+
+            // Field access
+            InstData::FieldGet { base, field: _ } => {
+                // Generate constraints for the base expression (needed for nested field access)
+                let _base_info = self.generate(*base, ctx);
+                // We need to look up the field type from the struct definition.
+                // For now, use a fresh type variable - full resolution happens during
+                // semantic analysis which has access to struct definitions.
+                let result_var = self.fresh_var();
+                InferType::Var(result_var)
+            }
+
+            // Field assignment
+            InstData::FieldSet {
+                base,
+                field: _,
+                value,
+            } => {
+                self.generate(*base, ctx);
+                self.generate(*value, ctx);
+                InferType::Concrete(Type::Unit)
+            }
+
+            // Enum variant
+            InstData::EnumVariant {
+                type_name,
+                variant: _,
+            } => {
+                if let Some(&enum_ty) = self.enums.get(type_name) {
+                    InferType::Concrete(enum_ty)
+                } else {
+                    InferType::Concrete(Type::Error)
+                }
+            }
+
+            // Array initialization
+            InstData::ArrayInit { elements } => {
+                if elements.is_empty() {
+                    // Empty array - need type annotation in real usage
+                    let elem_var = self.fresh_var();
+                    InferType::Var(elem_var)
+                } else {
+                    // Get element type from first element, constrain rest to match
+                    let first_info = self.generate(elements[0], ctx);
+                    for elem_ref in elements.iter().skip(1) {
+                        let elem_info = self.generate(*elem_ref, ctx);
+                        self.add_constraint(Constraint::equal(
+                            elem_info.ty,
+                            first_info.ty.clone(),
+                            elem_info.span,
+                        ));
+                    }
+                    // Array type itself needs to be registered during sema
+                    // For now, use a fresh variable
+                    let result_var = self.fresh_var();
+                    InferType::Var(result_var)
+                }
+            }
+
+            // Array index
+            InstData::IndexGet { base, index } => {
+                self.generate(*base, ctx);
+                let index_info = self.generate(*index, ctx);
+                // Index must be an integer type
+                self.add_constraint(Constraint::is_integer(index_info.ty, index_info.span));
+                // Element type is unknown without array type info
+                let result_var = self.fresh_var();
+                InferType::Var(result_var)
+            }
+
+            // Array index assignment
+            InstData::IndexSet { base, index, value } => {
+                self.generate(*base, ctx);
+                let index_info = self.generate(*index, ctx);
+                // Index must be an integer type
+                self.add_constraint(Constraint::is_integer(index_info.ty, index_info.span));
+                self.generate(*value, ctx);
+                InferType::Concrete(Type::Unit)
+            }
+
+            // Type declarations don't produce values
+            InstData::FnDecl { .. } | InstData::StructDecl { .. } | InstData::EnumDecl { .. } => {
+                InferType::Concrete(Type::Unit)
+            }
+        };
+
+        // Record the type for this expression
+        self.record_type(inst_ref, ty.clone());
+        ExprInfo::new(ty, span)
+    }
+
+    /// Generate constraints for a binary arithmetic operation.
+    fn generate_binary_arith(
+        &mut self,
+        lhs: InstRef,
+        rhs: InstRef,
+        ctx: &mut ConstraintContext,
+    ) -> InferType {
+        let lhs_info = self.generate(lhs, ctx);
+        let rhs_info = self.generate(rhs, ctx);
+
+        // Both operands must have the same type
+        // Use a fresh type variable for the result
+        let result_var = self.fresh_var();
+        let result_ty = InferType::Var(result_var);
+
+        self.add_constraint(Constraint::equal(
+            lhs_info.ty,
+            result_ty.clone(),
+            lhs_info.span,
+        ));
+        self.add_constraint(Constraint::equal(
+            rhs_info.ty,
+            result_ty.clone(),
+            rhs_info.span,
+        ));
+
+        result_ty
+    }
+
+    /// Get the inferred type for a pattern.
+    fn pattern_type(&mut self, pattern: &rue_rir::RirPattern) -> InferType {
+        match pattern {
+            rue_rir::RirPattern::Wildcard(_) => {
+                // Wildcard matches anything - use a fresh type variable
+                let var = self.fresh_var();
+                InferType::Var(var)
+            }
+            rue_rir::RirPattern::Int(_, _) => InferType::IntLiteral,
+            rue_rir::RirPattern::Bool(_, _) => InferType::Concrete(Type::Bool),
+            rue_rir::RirPattern::Path { type_name, .. } => {
+                if let Some(&enum_ty) = self.enums.get(type_name) {
+                    InferType::Concrete(enum_ty)
+                } else {
+                    InferType::Concrete(Type::Error)
+                }
+            }
+        }
+    }
+
+    /// Resolve a type name to a concrete Type.
+    fn resolve_type_name(&self, name: &str) -> Option<Type> {
+        match name {
+            "i8" => Some(Type::I8),
+            "i16" => Some(Type::I16),
+            "i32" => Some(Type::I32),
+            "i64" => Some(Type::I64),
+            "u8" => Some(Type::U8),
+            "u16" => Some(Type::U16),
+            "u32" => Some(Type::U32),
+            "u64" => Some(Type::U64),
+            "bool" => Some(Type::Bool),
+            "()" => Some(Type::Unit),
+            "String" => Some(Type::String),
+            _ => None, // Struct/enum types need to be looked up separately
         }
     }
 }
@@ -782,5 +1504,690 @@ mod tests {
         // Now try to bind v0 to v1 - this would create a cycle
         let result = unifier.bind(v0, &InferType::Var(v1));
         assert!(matches!(result, UnifyResult::OccursCheck { .. }));
+    }
+
+    // ========================================================================
+    // Constraint Generation Tests (Phase 2)
+    // ========================================================================
+
+    use rue_intern::Interner;
+
+    /// Helper to create a minimal RIR for testing.
+    fn make_test_rir_and_interner() -> (Rir, Interner) {
+        let rir = Rir::new();
+        let interner = Interner::new();
+        (rir, interner)
+    }
+
+    #[test]
+    fn test_constraint_generator_int_literal() {
+        let (mut rir, interner) = make_test_rir_and_interner();
+        let functions = HashMap::new();
+        let structs = HashMap::new();
+        let enums = HashMap::new();
+
+        // Add an integer constant to RIR
+        let inst_ref = rir.add_inst(rue_rir::Inst {
+            data: InstData::IntConst(42),
+            span: Span::new(0, 2),
+        });
+
+        let mut cgen = ConstraintGenerator::new(&rir, &interner, &functions, &structs, &enums);
+        let params = HashMap::new();
+        let mut ctx = ConstraintContext::new(&params, Type::I32);
+
+        let info = cgen.generate(inst_ref, &mut ctx);
+
+        // Integer literals should be IntLiteral type
+        assert!(info.ty.is_int_literal());
+        // No constraints should be generated for a simple literal
+        assert_eq!(cgen.constraints().len(), 0);
+    }
+
+    #[test]
+    fn test_constraint_generator_bool_literal() {
+        let (mut rir, interner) = make_test_rir_and_interner();
+        let functions = HashMap::new();
+        let structs = HashMap::new();
+        let enums = HashMap::new();
+
+        let inst_ref = rir.add_inst(rue_rir::Inst {
+            data: InstData::BoolConst(true),
+            span: Span::new(0, 4),
+        });
+
+        let mut cgen = ConstraintGenerator::new(&rir, &interner, &functions, &structs, &enums);
+        let params = HashMap::new();
+        let mut ctx = ConstraintContext::new(&params, Type::Bool);
+
+        let info = cgen.generate(inst_ref, &mut ctx);
+
+        assert_eq!(info.ty, InferType::Concrete(Type::Bool));
+        assert_eq!(cgen.constraints().len(), 0);
+    }
+
+    #[test]
+    fn test_constraint_generator_binary_add() {
+        let (mut rir, interner) = make_test_rir_and_interner();
+        let functions = HashMap::new();
+        let structs = HashMap::new();
+        let enums = HashMap::new();
+
+        // Create: 1 + 2
+        let lhs = rir.add_inst(rue_rir::Inst {
+            data: InstData::IntConst(1),
+            span: Span::new(0, 1),
+        });
+        let rhs = rir.add_inst(rue_rir::Inst {
+            data: InstData::IntConst(2),
+            span: Span::new(4, 5),
+        });
+        let add = rir.add_inst(rue_rir::Inst {
+            data: InstData::Add { lhs, rhs },
+            span: Span::new(0, 5),
+        });
+
+        let mut cgen = ConstraintGenerator::new(&rir, &interner, &functions, &structs, &enums);
+        let params = HashMap::new();
+        let mut ctx = ConstraintContext::new(&params, Type::I32);
+
+        let info = cgen.generate(add, &mut ctx);
+
+        // Result should be a type variable
+        assert!(info.ty.is_var());
+        // Should generate 2 constraints: lhs = result, rhs = result
+        assert_eq!(cgen.constraints().len(), 2);
+    }
+
+    #[test]
+    fn test_constraint_generator_comparison() {
+        let (mut rir, interner) = make_test_rir_and_interner();
+        let functions = HashMap::new();
+        let structs = HashMap::new();
+        let enums = HashMap::new();
+
+        // Create: 1 < 2
+        let lhs = rir.add_inst(rue_rir::Inst {
+            data: InstData::IntConst(1),
+            span: Span::new(0, 1),
+        });
+        let rhs = rir.add_inst(rue_rir::Inst {
+            data: InstData::IntConst(2),
+            span: Span::new(4, 5),
+        });
+        let lt = rir.add_inst(rue_rir::Inst {
+            data: InstData::Lt { lhs, rhs },
+            span: Span::new(0, 5),
+        });
+
+        let mut cgen = ConstraintGenerator::new(&rir, &interner, &functions, &structs, &enums);
+        let params = HashMap::new();
+        let mut ctx = ConstraintContext::new(&params, Type::Bool);
+
+        let info = cgen.generate(lt, &mut ctx);
+
+        // Comparisons always return Bool
+        assert_eq!(info.ty, InferType::Concrete(Type::Bool));
+        // Should generate 1 constraint: lhs type = rhs type
+        assert_eq!(cgen.constraints().len(), 1);
+    }
+
+    #[test]
+    fn test_constraint_generator_logical_and() {
+        let (mut rir, interner) = make_test_rir_and_interner();
+        let functions = HashMap::new();
+        let structs = HashMap::new();
+        let enums = HashMap::new();
+
+        // Create: true && false
+        let lhs = rir.add_inst(rue_rir::Inst {
+            data: InstData::BoolConst(true),
+            span: Span::new(0, 4),
+        });
+        let rhs = rir.add_inst(rue_rir::Inst {
+            data: InstData::BoolConst(false),
+            span: Span::new(8, 13),
+        });
+        let and = rir.add_inst(rue_rir::Inst {
+            data: InstData::And { lhs, rhs },
+            span: Span::new(0, 13),
+        });
+
+        let mut cgen = ConstraintGenerator::new(&rir, &interner, &functions, &structs, &enums);
+        let params = HashMap::new();
+        let mut ctx = ConstraintContext::new(&params, Type::Bool);
+
+        let info = cgen.generate(and, &mut ctx);
+
+        // Logical operators return Bool
+        assert_eq!(info.ty, InferType::Concrete(Type::Bool));
+        // Should generate 2 constraints: lhs = bool, rhs = bool
+        assert_eq!(cgen.constraints().len(), 2);
+    }
+
+    #[test]
+    fn test_constraint_generator_negation() {
+        let (mut rir, interner) = make_test_rir_and_interner();
+        let functions = HashMap::new();
+        let structs = HashMap::new();
+        let enums = HashMap::new();
+
+        // Create: -42
+        let operand = rir.add_inst(rue_rir::Inst {
+            data: InstData::IntConst(42),
+            span: Span::new(1, 3),
+        });
+        let neg = rir.add_inst(rue_rir::Inst {
+            data: InstData::Neg { operand },
+            span: Span::new(0, 3),
+        });
+
+        let mut cgen = ConstraintGenerator::new(&rir, &interner, &functions, &structs, &enums);
+        let params = HashMap::new();
+        let mut ctx = ConstraintContext::new(&params, Type::I32);
+
+        let info = cgen.generate(neg, &mut ctx);
+
+        // Negation preserves the operand type (IntLiteral in this case)
+        assert!(info.ty.is_int_literal());
+        // Should generate 1 constraint: IsSigned for the result
+        assert_eq!(cgen.constraints().len(), 1);
+        // Verify it's an IsSigned constraint
+        match &cgen.constraints()[0] {
+            Constraint::IsSigned(_, _) => {}
+            _ => panic!("Expected IsSigned constraint"),
+        }
+    }
+
+    #[test]
+    fn test_constraint_generator_return() {
+        let (mut rir, interner) = make_test_rir_and_interner();
+        let functions = HashMap::new();
+        let structs = HashMap::new();
+        let enums = HashMap::new();
+
+        // Create: return 42
+        let value = rir.add_inst(rue_rir::Inst {
+            data: InstData::IntConst(42),
+            span: Span::new(7, 9),
+        });
+        let ret = rir.add_inst(rue_rir::Inst {
+            data: InstData::Ret(Some(value)),
+            span: Span::new(0, 9),
+        });
+
+        let mut cgen = ConstraintGenerator::new(&rir, &interner, &functions, &structs, &enums);
+        let params = HashMap::new();
+        let mut ctx = ConstraintContext::new(&params, Type::I32);
+
+        let info = cgen.generate(ret, &mut ctx);
+
+        // Return is divergent (Never type)
+        assert_eq!(info.ty, InferType::Concrete(Type::Never));
+        // Should generate 1 constraint: return value = return type
+        assert_eq!(cgen.constraints().len(), 1);
+    }
+
+    #[test]
+    fn test_constraint_generator_if_else() {
+        let (mut rir, interner) = make_test_rir_and_interner();
+        let functions = HashMap::new();
+        let structs = HashMap::new();
+        let enums = HashMap::new();
+
+        // Create: if true { 1 } else { 2 }
+        let cond = rir.add_inst(rue_rir::Inst {
+            data: InstData::BoolConst(true),
+            span: Span::new(3, 7),
+        });
+        let then_val = rir.add_inst(rue_rir::Inst {
+            data: InstData::IntConst(1),
+            span: Span::new(10, 11),
+        });
+        let else_val = rir.add_inst(rue_rir::Inst {
+            data: InstData::IntConst(2),
+            span: Span::new(20, 21),
+        });
+        let branch = rir.add_inst(rue_rir::Inst {
+            data: InstData::Branch {
+                cond,
+                then_block: then_val,
+                else_block: Some(else_val),
+            },
+            span: Span::new(0, 25),
+        });
+
+        let mut cgen = ConstraintGenerator::new(&rir, &interner, &functions, &structs, &enums);
+        let params = HashMap::new();
+        let mut ctx = ConstraintContext::new(&params, Type::I32);
+
+        let info = cgen.generate(branch, &mut ctx);
+
+        // Result should be a type variable (unified from both branches)
+        assert!(info.ty.is_var());
+        // Should generate 3 constraints: cond = bool, then = result, else = result
+        assert_eq!(cgen.constraints().len(), 3);
+    }
+
+    #[test]
+    fn test_constraint_generator_while_loop() {
+        let (mut rir, interner) = make_test_rir_and_interner();
+        let functions = HashMap::new();
+        let structs = HashMap::new();
+        let enums = HashMap::new();
+
+        // Create: while true { 0 }
+        let cond = rir.add_inst(rue_rir::Inst {
+            data: InstData::BoolConst(true),
+            span: Span::new(6, 10),
+        });
+        let body = rir.add_inst(rue_rir::Inst {
+            data: InstData::IntConst(0),
+            span: Span::new(13, 14),
+        });
+        let loop_inst = rir.add_inst(rue_rir::Inst {
+            data: InstData::Loop { cond, body },
+            span: Span::new(0, 15),
+        });
+
+        let mut cgen = ConstraintGenerator::new(&rir, &interner, &functions, &structs, &enums);
+        let params = HashMap::new();
+        let mut ctx = ConstraintContext::new(&params, Type::Unit);
+
+        let info = cgen.generate(loop_inst, &mut ctx);
+
+        // While loops produce Unit
+        assert_eq!(info.ty, InferType::Concrete(Type::Unit));
+        // Should generate 1 constraint: cond = bool
+        assert_eq!(cgen.constraints().len(), 1);
+    }
+
+    #[test]
+    fn test_constraint_context_scope() {
+        let params = HashMap::new();
+        let mut ctx = ConstraintContext::new(&params, Type::I32);
+
+        // Use an interner to create a symbol
+        let mut interner = Interner::new();
+        let sym = interner.intern("x");
+        ctx.insert_local(
+            sym,
+            LocalVarInfo {
+                ty: InferType::Concrete(Type::I32),
+                is_mut: false,
+                span: Span::new(0, 1),
+            },
+        );
+
+        assert!(ctx.locals.contains_key(&sym));
+
+        // Push a scope and shadow the variable
+        ctx.push_scope();
+        ctx.insert_local(
+            sym,
+            LocalVarInfo {
+                ty: InferType::Concrete(Type::I64),
+                is_mut: true,
+                span: Span::new(10, 15),
+            },
+        );
+
+        // Should see the shadowed version
+        let local = ctx.locals.get(&sym).unwrap();
+        assert_eq!(local.ty, InferType::Concrete(Type::I64));
+        assert!(local.is_mut);
+
+        // Pop scope - should restore original
+        ctx.pop_scope();
+        let local = ctx.locals.get(&sym).unwrap();
+        assert_eq!(local.ty, InferType::Concrete(Type::I32));
+        assert!(!local.is_mut);
+    }
+
+    #[test]
+    fn test_expr_info_creation() {
+        let info = ExprInfo::new(InferType::IntLiteral, Span::new(5, 10));
+        assert!(info.ty.is_int_literal());
+        assert_eq!(info.span, Span::new(5, 10));
+    }
+
+    #[test]
+    fn test_function_sig() {
+        let sig = FunctionSig {
+            param_types: vec![Type::I32, Type::Bool],
+            return_type: Type::I64,
+        };
+        assert_eq!(sig.param_types.len(), 2);
+        assert_eq!(sig.return_type, Type::I64);
+    }
+
+    #[test]
+    fn test_constraint_generator_infinite_loop() {
+        let (mut rir, interner) = make_test_rir_and_interner();
+        let functions = HashMap::new();
+        let structs = HashMap::new();
+        let enums = HashMap::new();
+
+        // Create: loop { 0 }
+        let body = rir.add_inst(rue_rir::Inst {
+            data: InstData::IntConst(0),
+            span: Span::new(6, 7),
+        });
+        let loop_inst = rir.add_inst(rue_rir::Inst {
+            data: InstData::InfiniteLoop { body },
+            span: Span::new(0, 10),
+        });
+
+        let mut cgen = ConstraintGenerator::new(&rir, &interner, &functions, &structs, &enums);
+        let params = HashMap::new();
+        let mut ctx = ConstraintContext::new(&params, Type::Unit);
+
+        let info = cgen.generate(loop_inst, &mut ctx);
+
+        // Infinite loop produces Never (diverges)
+        assert_eq!(info.ty, InferType::Concrete(Type::Never));
+        // No constraints for infinite loop itself
+        assert_eq!(cgen.constraints().len(), 0);
+    }
+
+    #[test]
+    fn test_constraint_generator_break_continue() {
+        let (mut rir, interner) = make_test_rir_and_interner();
+        let functions = HashMap::new();
+        let structs = HashMap::new();
+        let enums = HashMap::new();
+
+        let break_inst = rir.add_inst(rue_rir::Inst {
+            data: InstData::Break,
+            span: Span::new(0, 5),
+        });
+
+        let mut cgen = ConstraintGenerator::new(&rir, &interner, &functions, &structs, &enums);
+        let params = HashMap::new();
+        let mut ctx = ConstraintContext::new(&params, Type::Unit);
+
+        let info = cgen.generate(break_inst, &mut ctx);
+
+        // Break diverges
+        assert_eq!(info.ty, InferType::Concrete(Type::Never));
+        assert_eq!(cgen.constraints().len(), 0);
+    }
+
+    #[test]
+    fn test_constraint_generator_index_get() {
+        let (mut rir, interner) = make_test_rir_and_interner();
+        let functions = HashMap::new();
+        let structs = HashMap::new();
+        let enums = HashMap::new();
+
+        // Create: arr[0]
+        let base = rir.add_inst(rue_rir::Inst {
+            data: InstData::IntConst(0), // Placeholder for array
+            span: Span::new(0, 3),
+        });
+        let index = rir.add_inst(rue_rir::Inst {
+            data: InstData::IntConst(0),
+            span: Span::new(4, 5),
+        });
+        let index_get = rir.add_inst(rue_rir::Inst {
+            data: InstData::IndexGet { base, index },
+            span: Span::new(0, 6),
+        });
+
+        let mut cgen = ConstraintGenerator::new(&rir, &interner, &functions, &structs, &enums);
+        let params = HashMap::new();
+        let mut ctx = ConstraintContext::new(&params, Type::I32);
+
+        let info = cgen.generate(index_get, &mut ctx);
+
+        // Result is a type variable (element type unknown)
+        assert!(info.ty.is_var());
+        // Should generate 1 constraint: index must be integer
+        assert_eq!(cgen.constraints().len(), 1);
+        match &cgen.constraints()[0] {
+            Constraint::IsInteger(_, _) => {}
+            _ => panic!("Expected IsInteger constraint for index"),
+        }
+    }
+
+    #[test]
+    fn test_constraint_generator_index_set() {
+        let (mut rir, interner) = make_test_rir_and_interner();
+        let functions = HashMap::new();
+        let structs = HashMap::new();
+        let enums = HashMap::new();
+
+        // Create: arr[0] = 42
+        let base = rir.add_inst(rue_rir::Inst {
+            data: InstData::IntConst(0), // Placeholder for array
+            span: Span::new(0, 3),
+        });
+        let index = rir.add_inst(rue_rir::Inst {
+            data: InstData::IntConst(0),
+            span: Span::new(4, 5),
+        });
+        let value = rir.add_inst(rue_rir::Inst {
+            data: InstData::IntConst(42),
+            span: Span::new(9, 11),
+        });
+        let index_set = rir.add_inst(rue_rir::Inst {
+            data: InstData::IndexSet { base, index, value },
+            span: Span::new(0, 11),
+        });
+
+        let mut cgen = ConstraintGenerator::new(&rir, &interner, &functions, &structs, &enums);
+        let params = HashMap::new();
+        let mut ctx = ConstraintContext::new(&params, Type::Unit);
+
+        let info = cgen.generate(index_set, &mut ctx);
+
+        // Index assignment produces Unit
+        assert_eq!(info.ty, InferType::Concrete(Type::Unit));
+        // Should generate 1 constraint: index must be integer
+        assert_eq!(cgen.constraints().len(), 1);
+        match &cgen.constraints()[0] {
+            Constraint::IsInteger(_, _) => {}
+            _ => panic!("Expected IsInteger constraint for index"),
+        }
+    }
+
+    #[test]
+    fn test_constraint_generator_empty_block() {
+        let (mut rir, interner) = make_test_rir_and_interner();
+        let functions = HashMap::new();
+        let structs = HashMap::new();
+        let enums = HashMap::new();
+
+        // Create: { } (empty block)
+        let block = rir.add_inst(rue_rir::Inst {
+            data: InstData::Block {
+                extra_start: 0,
+                len: 0,
+            },
+            span: Span::new(0, 2),
+        });
+
+        let mut cgen = ConstraintGenerator::new(&rir, &interner, &functions, &structs, &enums);
+        let params = HashMap::new();
+        let mut ctx = ConstraintContext::new(&params, Type::Unit);
+
+        let info = cgen.generate(block, &mut ctx);
+
+        // Empty block produces Unit
+        assert_eq!(info.ty, InferType::Concrete(Type::Unit));
+        assert_eq!(cgen.constraints().len(), 0);
+    }
+
+    #[test]
+    fn test_constraint_generator_bitwise_not() {
+        let (mut rir, interner) = make_test_rir_and_interner();
+        let functions = HashMap::new();
+        let structs = HashMap::new();
+        let enums = HashMap::new();
+
+        // Create: !42 (bitwise NOT)
+        let operand = rir.add_inst(rue_rir::Inst {
+            data: InstData::IntConst(42),
+            span: Span::new(1, 3),
+        });
+        let bitnot = rir.add_inst(rue_rir::Inst {
+            data: InstData::BitNot { operand },
+            span: Span::new(0, 3),
+        });
+
+        let mut cgen = ConstraintGenerator::new(&rir, &interner, &functions, &structs, &enums);
+        let params = HashMap::new();
+        let mut ctx = ConstraintContext::new(&params, Type::I32);
+
+        let info = cgen.generate(bitnot, &mut ctx);
+
+        // Bitwise NOT preserves the operand type
+        assert!(info.ty.is_int_literal());
+        // Should generate 1 constraint: IsInteger for the result
+        assert_eq!(cgen.constraints().len(), 1);
+        match &cgen.constraints()[0] {
+            Constraint::IsInteger(_, _) => {}
+            _ => panic!("Expected IsInteger constraint"),
+        }
+    }
+
+    #[test]
+    fn test_constraint_generator_function_call_arg_count_mismatch() {
+        let (mut rir, mut interner) = make_test_rir_and_interner();
+        let mut functions = HashMap::new();
+        let structs = HashMap::new();
+        let enums = HashMap::new();
+
+        // Register a function that takes 2 parameters
+        let func_name = interner.intern("foo");
+        functions.insert(
+            func_name,
+            FunctionSig {
+                param_types: vec![Type::I32, Type::I32],
+                return_type: Type::Bool,
+            },
+        );
+
+        // Create a call with only 1 argument (mismatch)
+        let arg = rir.add_inst(rue_rir::Inst {
+            data: InstData::IntConst(42),
+            span: Span::new(4, 6),
+        });
+        let call = rir.add_inst(rue_rir::Inst {
+            data: InstData::Call {
+                name: func_name,
+                args: vec![arg],
+            },
+            span: Span::new(0, 7),
+        });
+
+        let mut cgen = ConstraintGenerator::new(&rir, &interner, &functions, &structs, &enums);
+        let params = HashMap::new();
+        let mut ctx = ConstraintContext::new(&params, Type::Bool);
+
+        let info = cgen.generate(call, &mut ctx);
+
+        // Should still return the declared return type
+        assert_eq!(info.ty, InferType::Concrete(Type::Bool));
+        // No constraints generated when arg count mismatches (error will be in sema)
+        assert_eq!(cgen.constraints().len(), 0);
+    }
+
+    #[test]
+    fn test_constraint_generator_unknown_function() {
+        let (mut rir, mut interner) = make_test_rir_and_interner();
+        let functions = HashMap::new(); // Empty - no functions registered
+        let structs = HashMap::new();
+        let enums = HashMap::new();
+
+        // Create a call to an unknown function
+        let unknown_func = interner.intern("unknown");
+        let arg = rir.add_inst(rue_rir::Inst {
+            data: InstData::IntConst(42),
+            span: Span::new(8, 10),
+        });
+        let call = rir.add_inst(rue_rir::Inst {
+            data: InstData::Call {
+                name: unknown_func,
+                args: vec![arg],
+            },
+            span: Span::new(0, 11),
+        });
+
+        let mut cgen = ConstraintGenerator::new(&rir, &interner, &functions, &structs, &enums);
+        let params = HashMap::new();
+        let mut ctx = ConstraintContext::new(&params, Type::I32);
+
+        let info = cgen.generate(call, &mut ctx);
+
+        // Unknown function returns Error type
+        assert_eq!(info.ty, InferType::Concrete(Type::Error));
+        // Arguments should still be processed (but no constraints generated for them)
+        assert_eq!(cgen.constraints().len(), 0);
+    }
+
+    #[test]
+    fn test_constraint_generator_match_multiple_arms() {
+        let (mut rir, interner) = make_test_rir_and_interner();
+        let functions = HashMap::new();
+        let structs = HashMap::new();
+        let enums = HashMap::new();
+
+        // Create: match x { 1 => 10, 2 => 20, _ => 30 }
+        let scrutinee = rir.add_inst(rue_rir::Inst {
+            data: InstData::IntConst(5),
+            span: Span::new(6, 7),
+        });
+
+        // Arm 1: 1 => 10
+        let body1 = rir.add_inst(rue_rir::Inst {
+            data: InstData::IntConst(10),
+            span: Span::new(15, 17),
+        });
+        let pattern1 = rue_rir::RirPattern::Int(1, Span::new(10, 11));
+
+        // Arm 2: 2 => 20
+        let body2 = rir.add_inst(rue_rir::Inst {
+            data: InstData::IntConst(20),
+            span: Span::new(25, 27),
+        });
+        let pattern2 = rue_rir::RirPattern::Int(2, Span::new(20, 21));
+
+        // Arm 3: _ => 30
+        let body3 = rir.add_inst(rue_rir::Inst {
+            data: InstData::IntConst(30),
+            span: Span::new(35, 37),
+        });
+        let pattern3 = rue_rir::RirPattern::Wildcard(Span::new(30, 31));
+
+        let match_inst = rir.add_inst(rue_rir::Inst {
+            data: InstData::Match {
+                scrutinee,
+                arms: vec![(pattern1, body1), (pattern2, body2), (pattern3, body3)],
+            },
+            span: Span::new(0, 40),
+        });
+
+        let mut cgen = ConstraintGenerator::new(&rir, &interner, &functions, &structs, &enums);
+        let params = HashMap::new();
+        let mut ctx = ConstraintContext::new(&params, Type::I32);
+
+        let info = cgen.generate(match_inst, &mut ctx);
+
+        // Result should be a type variable (unified from all arm bodies)
+        assert!(info.ty.is_var());
+
+        // Should generate 6 constraints:
+        // - 3 for pattern types matching scrutinee type (each arm)
+        // - 3 for body types matching result type (each arm)
+        assert_eq!(cgen.constraints().len(), 6);
+
+        // Verify all constraints are Equal constraints
+        for constraint in cgen.constraints() {
+            match constraint {
+                Constraint::Equal(_, _, _) => {}
+                _ => panic!("Expected Equal constraint in match"),
+            }
+        }
     }
 }
