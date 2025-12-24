@@ -36,8 +36,7 @@ const RET_REGS: [Reg; 8] = [
     Reg::X7,
 ];
 
-/// Result of tracing back through a field access chain.
-/// Indicates whether the chain originates from a Load or Param.
+/// Result of tracing back through FieldGet chains to find the original source.
 enum FieldChainBase {
     /// Chain originates from a Load instruction with the given slot.
     Load { slot: u32 },
@@ -65,7 +64,7 @@ pub struct CfgLower<'a> {
     /// Function name (needed to detect main function)
     fn_name: &'a str,
     /// Maps StructInit CFG values to their field vregs
-    struct_field_vregs: HashMap<CfgValue, Vec<VReg>>,
+    struct_slot_vregs: HashMap<CfgValue, Vec<VReg>>,
 }
 
 impl<'a> CfgLower<'a> {
@@ -89,7 +88,7 @@ impl<'a> CfgLower<'a> {
             num_locals,
             num_params,
             fn_name: cfg.fn_name(),
-            struct_field_vregs: HashMap::new(),
+            struct_slot_vregs: HashMap::new(),
         }
     }
 
@@ -121,7 +120,8 @@ impl<'a> CfgLower<'a> {
 
     /// Calculate the total number of slots needed to store a type.
     /// For scalars, this is 1. For arrays, it's length * slot_count(element_type).
-    /// For nested arrays, this recursively multiplies.
+    /// For structs, this is the sum of slot counts for all fields.
+    /// For nested types, this recursively calculates.
     fn type_slot_count(&self, ty: Type) -> u32 {
         match ty {
             Type::Array(array_type_id) => {
@@ -132,7 +132,18 @@ impl<'a> CfgLower<'a> {
                     1
                 }
             }
-            Type::Struct(struct_id) => self.struct_field_count(struct_id),
+            Type::Struct(struct_id) => {
+                // Sum the slot counts of all fields
+                if let Some(struct_def) = self.struct_defs.get(struct_id.0 as usize) {
+                    let mut total = 0u32;
+                    for field in &struct_def.fields {
+                        total += self.type_slot_count(field.ty);
+                    }
+                    total.max(1) // At least 1 slot even for empty struct
+                } else {
+                    1
+                }
+            }
             _ => 1,
         }
     }
@@ -162,11 +173,8 @@ impl<'a> CfgLower<'a> {
         }
     }
 
-    /// Trace back through nested FieldGet operations to find the base
-    /// and compute the total slot offset.
-    ///
-    /// Returns `Some((base, total_offset))` if the chain originates from a Load or Param,
-    /// or `None` if it originates from something else (BlockParam, StructInit, Call, etc).
+    /// Trace back through a chain of FieldGet instructions to find the original
+    /// Load or Param source. Returns the base kind and accumulated slot offset.
     fn trace_field_chain(&self, value: CfgValue) -> Option<(FieldChainBase, u32)> {
         let inst = self.cfg.get_inst(value);
         match &inst.data {
@@ -209,8 +217,8 @@ impl<'a> CfgLower<'a> {
                 result
             }
             _ => {
-                // For non-ArrayInit sources, try struct_field_vregs cache
-                if let Some(vregs) = self.struct_field_vregs.get(&value).cloned() {
+                // For non-ArrayInit sources, try struct_slot_vregs cache
+                if let Some(vregs) = self.struct_slot_vregs.get(&value).cloned() {
                     vregs
                 } else {
                     vec![self.get_vreg(value)]
@@ -242,8 +250,8 @@ impl<'a> CfgLower<'a> {
                 result
             }
             _ => {
-                // For non-StructInit sources, try struct_field_vregs cache
-                if let Some(vregs) = self.struct_field_vregs.get(&value).cloned() {
+                // For non-StructInit sources, try struct_slot_vregs cache
+                if let Some(vregs) = self.struct_slot_vregs.get(&value).cloned() {
                     vregs
                 } else {
                     vec![self.get_vreg(value)]
@@ -303,10 +311,10 @@ impl<'a> CfgLower<'a> {
     /// - StructInit: use the field values directly
     /// - Load: load field values from stack slots
     /// - Param: use parameter registers/slots
-    /// - BlockParam/Call: use cached struct_field_vregs
+    /// - BlockParam/Call: use cached struct_slot_vregs
     fn get_or_compute_field_vregs(&mut self, value: CfgValue) -> Option<Vec<VReg>> {
         // Check cache first
-        if let Some(vregs) = self.struct_field_vregs.get(&value).cloned() {
+        if let Some(vregs) = self.struct_slot_vregs.get(&value).cloned() {
             return Some(vregs);
         }
 
@@ -321,10 +329,10 @@ impl<'a> CfgLower<'a> {
                 Some(fields.iter().map(|f| self.get_vreg(*f)).collect())
             }
             CfgInstData::Load { slot } => {
-                // Load field values from consecutive stack slots
-                let field_count = self.struct_field_count(struct_id);
+                // Load slot values from consecutive stack slots
+                let slot_count = self.type_slot_count(Type::Struct(struct_id));
                 let mut vregs = Vec::new();
-                for i in 0..field_count {
+                for i in 0..slot_count {
                     let vreg = self.mir.alloc_vreg();
                     let offset = self.local_offset(slot + i);
                     self.mir.push(Aarch64Inst::Ldr {
@@ -337,10 +345,10 @@ impl<'a> CfgLower<'a> {
                 Some(vregs)
             }
             CfgInstData::Param { index } => {
-                // Get field values from parameter area
-                let field_count = self.struct_field_count(struct_id);
+                // Get slot values from parameter area
+                let slot_count = self.type_slot_count(Type::Struct(struct_id));
                 let mut vregs = Vec::new();
-                for i in 0..field_count {
+                for i in 0..slot_count {
                     let vreg = self.mir.alloc_vreg();
                     let param_slot = self.num_locals + index + i;
                     let offset = self.local_offset(param_slot);
@@ -363,7 +371,7 @@ impl<'a> CfgLower<'a> {
         let target_param = self.cfg.get_block(target_block).params[param_idx as usize].0;
 
         let src_fields = self.get_or_compute_field_vregs(arg);
-        let dst_fields = self.struct_field_vregs.get(&target_param).cloned();
+        let dst_fields = self.struct_slot_vregs.get(&target_param).cloned();
 
         debug_assert!(
             src_fields.is_some(),
@@ -399,14 +407,14 @@ impl<'a> CfgLower<'a> {
                     .insert((block.id, param_idx as u32), vreg);
                 self.value_map.insert(*param_val, vreg);
 
-                // For struct types, also allocate vregs for each field
+                // For struct types, also allocate vregs for each slot
                 if let Type::Struct(struct_id) = ty {
-                    let field_count = self.struct_field_count(*struct_id);
-                    let mut field_vregs = vec![vreg]; // First field uses main vreg
-                    for _ in 1..field_count {
-                        field_vregs.push(self.mir.alloc_vreg());
+                    let slot_count = self.type_slot_count(Type::Struct(*struct_id));
+                    let mut slot_vregs = vec![vreg]; // First slot uses main vreg
+                    for _ in 1..slot_count {
+                        slot_vregs.push(self.mir.alloc_vreg());
                     }
-                    self.struct_field_vregs.insert(*param_val, field_vregs);
+                    self.struct_slot_vregs.insert(*param_val, slot_vregs);
                 }
             }
         }
@@ -483,8 +491,8 @@ impl<'a> CfgLower<'a> {
                     string_id: *string_id,
                 });
 
-                // Store both in struct_field_vregs for fat pointer access
-                self.struct_field_vregs
+                // Store both in struct_slot_vregs for fat pointer access
+                self.struct_slot_vregs
                     .insert(value, vec![ptr_vreg, len_vreg]);
                 self.value_map.insert(value, ptr_vreg);
             }
@@ -684,14 +692,14 @@ impl<'a> CfgLower<'a> {
                     let vreg = self.mir.alloc_vreg();
                     self.value_map.insert(value, vreg);
 
-                    // Get string fat pointers (ptr, len) from struct_field_vregs
+                    // Get string fat pointers (ptr, len) from struct_slot_vregs
                     let lhs_fields = self
-                        .struct_field_vregs
+                        .struct_slot_vregs
                         .get(lhs)
                         .cloned()
                         .expect("string should have fat pointer fields");
                     let rhs_fields = self
-                        .struct_field_vregs
+                        .struct_slot_vregs
                         .get(rhs)
                         .cloned()
                         .expect("string should have fat pointer fields");
@@ -754,14 +762,14 @@ impl<'a> CfgLower<'a> {
                     let vreg = self.mir.alloc_vreg();
                     self.value_map.insert(value, vreg);
 
-                    // Get string fat pointers (ptr, len) from struct_field_vregs
+                    // Get string fat pointers (ptr, len) from struct_slot_vregs
                     let lhs_fields = self
-                        .struct_field_vregs
+                        .struct_slot_vregs
                         .get(lhs)
                         .cloned()
                         .expect("string should have fat pointer fields");
                     let rhs_fields = self
-                        .struct_field_vregs
+                        .struct_slot_vregs
                         .get(rhs)
                         .cloned()
                         .expect("string should have fat pointer fields");
@@ -1032,7 +1040,7 @@ impl<'a> CfgLower<'a> {
                 } else if init_type == Type::String {
                     // String: store both ptr and len to consecutive slots
                     let field_vregs = self
-                        .struct_field_vregs
+                        .struct_slot_vregs
                         .get(init)
                         .cloned()
                         .expect("string should have fat pointer fields in Alloc");
@@ -1096,7 +1104,7 @@ impl<'a> CfgLower<'a> {
                     });
 
                     // Register fat pointer metadata
-                    self.struct_field_vregs
+                    self.struct_slot_vregs
                         .insert(value, vec![ptr_vreg, len_vreg]);
                     self.value_map.insert(value, ptr_vreg);
                 } else {
@@ -1117,7 +1125,7 @@ impl<'a> CfgLower<'a> {
                 if val_type == Type::String {
                     // String: store both ptr and len to consecutive slots
                     let field_vregs = self
-                        .struct_field_vregs
+                        .struct_slot_vregs
                         .get(val)
                         .cloned()
                         .expect("string should have fat pointer fields in Store");
@@ -1167,37 +1175,36 @@ impl<'a> CfgLower<'a> {
                     match arg_type {
                         Type::Struct(struct_id) => {
                             let arg_data = &self.cfg.get_inst(*arg).data;
+                            let slot_count = self.type_slot_count(Type::Struct(struct_id));
                             match arg_data {
                                 CfgInstData::Load { slot } => {
-                                    let field_count = self.struct_field_count(struct_id);
-                                    for field_idx in 0..field_count {
-                                        let field_vreg = self.mir.alloc_vreg();
-                                        let field_slot = slot + field_idx;
-                                        let offset = self.local_offset(field_slot);
+                                    for slot_idx in 0..slot_count {
+                                        let slot_vreg = self.mir.alloc_vreg();
+                                        let actual_slot = slot + slot_idx;
+                                        let offset = self.local_offset(actual_slot);
                                         self.mir.push(Aarch64Inst::Ldr {
-                                            dst: Operand::Virtual(field_vreg),
+                                            dst: Operand::Virtual(slot_vreg),
                                             base: Reg::Fp,
                                             offset,
                                         });
-                                        flattened_vregs.push(field_vreg);
+                                        flattened_vregs.push(slot_vreg);
                                     }
                                 }
                                 CfgInstData::Param { index } => {
-                                    let field_count = self.struct_field_count(struct_id);
-                                    for field_idx in 0..field_count {
-                                        let field_vreg = self.mir.alloc_vreg();
-                                        let param_slot = self.num_locals + index + field_idx;
+                                    for slot_idx in 0..slot_count {
+                                        let slot_vreg = self.mir.alloc_vreg();
+                                        let param_slot = self.num_locals + index + slot_idx;
                                         let offset = self.local_offset(param_slot);
                                         self.mir.push(Aarch64Inst::Ldr {
-                                            dst: Operand::Virtual(field_vreg),
+                                            dst: Operand::Virtual(slot_vreg),
                                             base: Reg::Fp,
                                             offset,
                                         });
-                                        flattened_vregs.push(field_vreg);
+                                        flattened_vregs.push(slot_vreg);
                                     }
                                 }
                                 CfgInstData::StructInit { .. } | CfgInstData::Call { .. } => {
-                                    if let Some(field_vregs) = self.struct_field_vregs.get(arg) {
+                                    if let Some(field_vregs) = self.struct_slot_vregs.get(arg) {
                                         flattened_vregs.extend(field_vregs.iter().copied());
                                     } else {
                                         flattened_vregs.push(self.get_vreg(*arg));
@@ -1239,7 +1246,7 @@ impl<'a> CfgLower<'a> {
                                     }
                                 }
                                 CfgInstData::ArrayInit { .. } | CfgInstData::Call { .. } => {
-                                    if let Some(elem_vregs) = self.struct_field_vregs.get(arg) {
+                                    if let Some(elem_vregs) = self.struct_slot_vregs.get(arg) {
                                         flattened_vregs.extend(elem_vregs.iter().copied());
                                     } else {
                                         flattened_vregs.push(self.get_vreg(*arg));
@@ -1309,20 +1316,20 @@ impl<'a> CfgLower<'a> {
 
                 // Handle struct return
                 if let Type::Struct(struct_id) = ty {
-                    let field_count = self.struct_field_count(struct_id);
-                    let mut field_vregs = Vec::new();
-                    for field_idx in 0..field_count {
-                        let field_vreg = self.mir.alloc_vreg();
-                        if (field_idx as usize) < RET_REGS.len() {
+                    let slot_count = self.type_slot_count(Type::Struct(struct_id));
+                    let mut slot_vregs = Vec::new();
+                    for slot_idx in 0..slot_count {
+                        let slot_vreg = self.mir.alloc_vreg();
+                        if (slot_idx as usize) < RET_REGS.len() {
                             self.mir.push(Aarch64Inst::MovRR {
-                                dst: Operand::Virtual(field_vreg),
-                                src: Operand::Physical(RET_REGS[field_idx as usize]),
+                                dst: Operand::Virtual(slot_vreg),
+                                src: Operand::Physical(RET_REGS[slot_idx as usize]),
                             });
                         }
-                        field_vregs.push(field_vreg);
+                        slot_vregs.push(slot_vreg);
                     }
-                    self.struct_field_vregs.insert(value, field_vregs.clone());
-                    if let Some(&first_vreg) = field_vregs.first() {
+                    self.struct_slot_vregs.insert(value, slot_vregs.clone());
+                    if let Some(&first_vreg) = slot_vregs.first() {
                         self.mir.push(Aarch64Inst::MovRR {
                             dst: Operand::Virtual(result_vreg),
                             src: Operand::Virtual(first_vreg),
@@ -1344,8 +1351,8 @@ impl<'a> CfgLower<'a> {
 
                     // Handle String arguments separately
                     if arg_type == Type::String {
-                        // String is a fat pointer stored as [ptr_vreg, len_vreg] in struct_field_vregs
-                        if let Some(field_vregs) = self.struct_field_vregs.get(&arg_val) {
+                        // String is a fat pointer stored as [ptr_vreg, len_vreg] in struct_slot_vregs
+                        if let Some(field_vregs) = self.struct_slot_vregs.get(&arg_val) {
                             let ptr_vreg = field_vregs[0];
                             let len_vreg = field_vregs[1];
 
@@ -1364,7 +1371,7 @@ impl<'a> CfgLower<'a> {
                                 symbol: "__rue_dbg_str".to_string(),
                             });
                         } else {
-                            unreachable!("String fat pointer not found in struct_field_vregs");
+                            unreachable!("String fat pointer not found in struct_slot_vregs");
                         }
 
                         let result_vreg = self.mir.alloc_vreg();
@@ -1458,13 +1465,27 @@ impl<'a> CfgLower<'a> {
                 let vreg = self.mir.alloc_vreg();
                 self.value_map.insert(value, vreg);
 
-                let mut field_vregs = Vec::new();
+                // Collect all slot vregs for the struct.
+                // For scalar fields, this is a single vreg.
+                // For nested struct fields, recursively collect all slot vregs.
+                let mut slot_vregs = Vec::new();
                 for field in fields {
-                    let field_vreg = self.get_vreg(*field);
-                    field_vregs.push(field_vreg);
+                    let field_inst = self.cfg.get_inst(*field);
+                    if let Type::Struct(_) = field_inst.ty {
+                        // Nested struct - get all its slot vregs
+                        let nested_vregs = self
+                            .struct_slot_vregs
+                            .get(field)
+                            .cloned()
+                            .expect("nested struct field should have slot vregs in cache");
+                        slot_vregs.extend(nested_vregs);
+                    } else {
+                        // Scalar field - single vreg
+                        slot_vregs.push(self.get_vreg(*field));
+                    }
                 }
 
-                if let Some(&first_vreg) = field_vregs.first() {
+                if let Some(&first_vreg) = slot_vregs.first() {
                     self.mir.push(Aarch64Inst::MovRR {
                         dst: Operand::Virtual(vreg),
                         src: Operand::Virtual(first_vreg),
@@ -1476,7 +1497,7 @@ impl<'a> CfgLower<'a> {
                     });
                 }
 
-                self.struct_field_vregs.insert(value, field_vregs);
+                self.struct_slot_vregs.insert(value, slot_vregs);
             }
 
             CfgInstData::FieldGet {
@@ -1515,29 +1536,22 @@ impl<'a> CfgLower<'a> {
                         }
                     }
                 } else {
-                    // For other sources (BlockParam, StructInit, Call), use field vregs
-                    if let Some(field_vregs) = self.struct_field_vregs.get(base).cloned() {
-                        if let Some(&field_vreg) = field_vregs.get(*field_index as usize) {
-                            self.mir.push(Aarch64Inst::MovRR {
-                                dst: Operand::Virtual(vreg),
-                                src: Operand::Virtual(field_vreg),
-                            });
-                        } else {
-                            // Fallback if field_index out of range
-                            let base_vreg = self.get_vreg(*base);
-                            self.mir.push(Aarch64Inst::MovRR {
-                                dst: Operand::Virtual(vreg),
-                                src: Operand::Virtual(base_vreg),
-                            });
-                        }
-                    } else {
-                        // Fallback for cases without field vregs (e.g., single-field struct)
-                        let base_vreg = self.get_vreg(*base);
-                        self.mir.push(Aarch64Inst::MovRR {
-                            dst: Operand::Virtual(vreg),
-                            src: Operand::Virtual(base_vreg),
-                        });
-                    }
+                    // For other sources (BlockParam, StructInit, Call), use slot vregs.
+                    // IMPORTANT: struct_slot_vregs contains slot vregs (accounting for
+                    // nested struct sizes), so we need to use the slot offset, not field index.
+                    let slot_offset = self.struct_field_slot_offset(*struct_id, *field_index);
+                    let slot_vregs = self
+                        .struct_slot_vregs
+                        .get(base)
+                        .cloned()
+                        .expect("struct base should have slot vregs in cache");
+                    let slot_vreg = *slot_vregs
+                        .get(slot_offset as usize)
+                        .expect("slot_offset should be within slot_vregs bounds");
+                    self.mir.push(Aarch64Inst::MovRR {
+                        dst: Operand::Virtual(vreg),
+                        src: Operand::Virtual(slot_vreg),
+                    });
                 }
             }
 
@@ -1568,7 +1582,7 @@ impl<'a> CfgLower<'a> {
 
                 // Store element vregs for later IndexGet access
                 let element_vregs: Vec<VReg> = elements.iter().map(|e| self.get_vreg(*e)).collect();
-                self.struct_field_vregs.insert(value, element_vregs);
+                self.struct_slot_vregs.insert(value, element_vregs);
 
                 // Move 0 into vreg as placeholder
                 self.mir.push(Aarch64Inst::MovImm {
@@ -1890,8 +1904,7 @@ impl<'a> CfgLower<'a> {
                         // For other sources (ArrayInit), use element vregs if index is constant
                         let index_inst = &self.cfg.get_inst(*index).data;
                         if let CfgInstData::Const(idx) = index_inst {
-                            if let Some(element_vregs) = self.struct_field_vregs.get(base).cloned()
-                            {
+                            if let Some(element_vregs) = self.struct_slot_vregs.get(base).cloned() {
                                 if let Some(&elem_vreg) = element_vregs.get(*idx as usize) {
                                     self.mir.push(Aarch64Inst::MovRR {
                                         dst: Operand::Virtual(vreg),
@@ -2443,11 +2456,11 @@ impl<'a> CfgLower<'a> {
         // Special handling for string comparisons
         if lhs_ty == Type::String {
             // String comparison requires calling __rue_str_eq runtime function
-            // Strings are fat pointers: [ptr_vreg, len_vreg] in struct_field_vregs
+            // Strings are fat pointers: [ptr_vreg, len_vreg] in struct_slot_vregs
 
             // Get left string fat pointer
             let lhs_fields = self
-                .struct_field_vregs
+                .struct_slot_vregs
                 .get(&lhs)
                 .cloned()
                 .expect("String should have fat pointer fields");
@@ -2456,7 +2469,7 @@ impl<'a> CfgLower<'a> {
 
             // Get right string fat pointer
             let rhs_fields = self
-                .struct_field_vregs
+                .struct_slot_vregs
                 .get(&rhs)
                 .cloned()
                 .expect("String should have fat pointer fields");
@@ -2676,42 +2689,42 @@ impl<'a> CfgLower<'a> {
                     });
                 } else if let Type::Struct(struct_id) = return_type {
                     // Return struct in registers
-                    let field_count = self.struct_field_count(struct_id);
+                    let slot_count = self.type_slot_count(Type::Struct(struct_id));
                     let value_data = &self.cfg.get_inst(*value).data;
 
                     match value_data {
                         CfgInstData::StructInit { .. }
                         | CfgInstData::Call { .. }
                         | CfgInstData::BlockParam { .. } => {
-                            // Use field vregs from cache (populated for BlockParam, StructInit, Call)
-                            if let Some(field_vregs) = self.struct_field_vregs.get(value).cloned() {
-                                for (i, field_vreg) in field_vregs.iter().enumerate() {
+                            // Use slot vregs from cache (populated for BlockParam, StructInit, Call)
+                            if let Some(slot_vregs) = self.struct_slot_vregs.get(value).cloned() {
+                                for (i, slot_vreg) in slot_vregs.iter().enumerate() {
                                     if i < RET_REGS.len() {
                                         self.mir.push(Aarch64Inst::MovRR {
                                             dst: Operand::Physical(RET_REGS[i]),
-                                            src: Operand::Virtual(*field_vreg),
+                                            src: Operand::Virtual(*slot_vreg),
                                         });
                                     }
                                 }
                             }
                         }
                         CfgInstData::Param { index } => {
-                            for field_idx in 0..field_count {
-                                let param_slot = self.num_locals + index + field_idx;
+                            for slot_idx in 0..slot_count {
+                                let param_slot = self.num_locals + index + slot_idx;
                                 let offset = self.local_offset(param_slot);
                                 self.mir.push(Aarch64Inst::Ldr {
-                                    dst: Operand::Physical(RET_REGS[field_idx as usize]),
+                                    dst: Operand::Physical(RET_REGS[slot_idx as usize]),
                                     base: Reg::Fp,
                                     offset,
                                 });
                             }
                         }
                         CfgInstData::Load { slot } => {
-                            for field_idx in 0..field_count {
-                                let actual_slot = slot + field_idx;
+                            for slot_idx in 0..slot_count {
+                                let actual_slot = slot + slot_idx;
                                 let offset = self.local_offset(actual_slot);
                                 self.mir.push(Aarch64Inst::Ldr {
-                                    dst: Operand::Physical(RET_REGS[field_idx as usize]),
+                                    dst: Operand::Physical(RET_REGS[slot_idx as usize]),
                                     base: Reg::Fp,
                                     offset,
                                 });
