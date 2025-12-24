@@ -75,6 +75,16 @@ pub enum InferType {
     /// When unified with a concrete integer type, the literal takes that type.
     /// If unconstrained at the end of inference, defaults to `i32`.
     IntLiteral,
+
+    /// An array type during inference.
+    ///
+    /// Unlike `Concrete(Type::Array(id))`, this stores the element type as an
+    /// `InferType` so we can handle cases where the element type is still a
+    /// type variable. After unification, these are converted to `Type::Array`.
+    Array {
+        element: Box<InferType>,
+        length: u64,
+    },
 }
 
 impl InferType {
@@ -134,6 +144,7 @@ impl std::fmt::Display for InferType {
             InferType::Concrete(ty) => write!(f, "{ty}"),
             InferType::Var(id) => write!(f, "{id}"),
             InferType::IntLiteral => write!(f, "{{integer}}"),
+            InferType::Array { element, length } => write!(f, "[{element}; {length}]"),
         }
     }
 }
@@ -263,6 +274,7 @@ impl Substitution {
     /// - `Var(id)` → follows chain until concrete or unbound variable
     /// - `IntLiteral` → `IntLiteral` (unchanged, unless we add IntLiteral
     ///   to variable mappings)
+    /// - `Array { element, length }` → recursively apply to element type
     pub fn apply(&self, ty: &InferType) -> InferType {
         match ty {
             InferType::Concrete(_) => ty.clone(),
@@ -274,6 +286,13 @@ impl Substitution {
                 }
             }
             InferType::IntLiteral => ty.clone(),
+            InferType::Array { element, length } => {
+                let resolved_element = self.apply(element);
+                InferType::Array {
+                    element: Box::new(resolved_element),
+                    length: *length,
+                }
+            }
         }
     }
 
@@ -295,6 +314,7 @@ impl Substitution {
                 }
             }
             InferType::IntLiteral => false,
+            InferType::Array { element, .. } => self.occurs_in(var, element),
         }
     }
 
@@ -332,6 +352,9 @@ pub enum UnifyResult {
 
     /// Type must be an integer but is not.
     NotInteger { ty: Type },
+
+    /// Array lengths don't match.
+    ArrayLengthMismatch { expected: u64, found: u64 },
 }
 
 impl UnifyResult {
@@ -377,6 +400,9 @@ impl UnificationError {
             UnifyResult::NotInteger { ty } => {
                 format!("expected integer type, found {ty}")
             }
+            UnifyResult::ArrayLengthMismatch { expected, found } => {
+                format!("array length mismatch: expected {expected}, found {found}")
+            }
         }
     }
 }
@@ -418,6 +444,8 @@ impl Unifier {
     /// 4. `IntLiteral = Concrete(integer)` → succeeds (literal takes integer type)
     /// 5. `IntLiteral = IntLiteral` → succeeds (both stay as IntLiteral)
     /// 6. `IntLiteral = Concrete(non-integer)` → fails
+    /// 7. `Array(T1, N) = Array(T2, N)` → succeeds if T1 unifies with T2
+    /// 8. `Array(T1, N1) = Array(T2, N2)` where N1 ≠ N2 → fails
     pub fn unify(&mut self, lhs: &InferType, rhs: &InferType) -> UnifyResult {
         // Apply current substitution to get most specific types
         let lhs_resolved = self.substitution.apply(lhs);
@@ -462,6 +490,38 @@ impl Unifier {
 
             // Two IntLiterals unify (both remain as IntLiteral)
             (InferType::IntLiteral, InferType::IntLiteral) => UnifyResult::Ok,
+
+            // Two arrays: lengths must match, element types must unify
+            (
+                InferType::Array {
+                    element: elem1,
+                    length: len1,
+                },
+                InferType::Array {
+                    element: elem2,
+                    length: len2,
+                },
+            ) => {
+                if len1 != len2 {
+                    UnifyResult::ArrayLengthMismatch {
+                        expected: *len1,
+                        found: *len2,
+                    }
+                } else {
+                    // Recursively unify element types
+                    self.unify(elem1, elem2)
+                }
+            }
+
+            // Array with non-array: type mismatch
+            // Note: This also handles Array with IntLiteral since the IntLiteral
+            // cases with Concrete and IntLiteral are already handled above.
+            (InferType::Array { .. }, _) | (_, InferType::Array { .. }) => {
+                UnifyResult::TypeMismatch {
+                    expected: lhs_resolved,
+                    found: rhs_resolved,
+                }
+            }
         }
     }
 
@@ -523,6 +583,8 @@ impl Unifier {
             // For variables and IntLiteral, assume OK for now
             // (IntLiteral defaults to i32 which is signed)
             InferType::Var(_) | InferType::IntLiteral => UnifyResult::Ok,
+            // Arrays are not signed - error will be caught elsewhere
+            InferType::Array { .. } => UnifyResult::Ok,
         }
     }
 
@@ -542,6 +604,8 @@ impl Unifier {
             }
             // Type variables and IntLiteral are OK - they will be resolved to integers
             InferType::Var(_) | InferType::IntLiteral => UnifyResult::Ok,
+            // Arrays are not integers - return error
+            InferType::Array { .. } => UnifyResult::NotInteger { ty: Type::Error },
         }
     }
 
@@ -631,16 +695,39 @@ impl Unifier {
         }
     }
 
+    /// Resolve a type to its final form after applying all substitutions.
+    ///
+    /// Follows the substitution chain and defaults IntLiteral to i32.
+    /// For arrays, recursively resolves the element type.
+    /// Returns the fully-resolved `InferType`.
+    pub fn resolve_infer_type(&self, ty: &InferType) -> InferType {
+        let resolved = self.substitution.apply(ty);
+        match resolved {
+            InferType::Concrete(_) => resolved,
+            InferType::Var(_) => resolved, // Unbound variable stays as-is
+            InferType::IntLiteral => InferType::Concrete(Type::I32), // Default to i32
+            InferType::Array { element, length } => {
+                let resolved_element = self.resolve_infer_type(&element);
+                InferType::Array {
+                    element: Box::new(resolved_element),
+                    length,
+                }
+            }
+        }
+    }
+
     /// Resolve a type to its final concrete type.
     ///
     /// Follows the substitution chain and defaults IntLiteral to i32.
-    /// Returns `None` if the type resolves to an unbound type variable.
+    /// Returns `None` if the type resolves to an unbound type variable or an array
+    /// (arrays need to be handled separately to create ArrayTypeIds).
     pub fn resolve(&self, ty: &InferType) -> Option<Type> {
-        let resolved = self.substitution.apply(ty);
+        let resolved = self.resolve_infer_type(ty);
         match resolved {
             InferType::Concrete(t) => Some(t),
             InferType::Var(_) => None,                // Unbound variable
-            InferType::IntLiteral => Some(Type::I32), // Default to i32
+            InferType::IntLiteral => Some(Type::I32), // Default to i32 (shouldn't happen after resolve_infer_type)
+            InferType::Array { .. } => None,          // Arrays need special handling
         }
     }
 
@@ -649,6 +736,9 @@ impl Unifier {
     /// Like `resolve`, but returns `Type::Error` instead of `None` for
     /// unbound type variables. This allows compilation to continue
     /// with error recovery.
+    ///
+    /// Note: For arrays, this returns `Type::Error`. Use `resolve_infer_type`
+    /// and handle `InferType::Array` explicitly to create proper ArrayTypeIds.
     pub fn resolve_or_error(&self, ty: &InferType) -> Type {
         self.resolve(ty).unwrap_or(Type::Error)
     }
@@ -675,17 +765,21 @@ pub struct LocalVarInfo {
 /// Information about a function parameter during constraint generation.
 #[derive(Debug, Clone)]
 pub struct ParamVarInfo {
-    /// The concrete type of this parameter (from the declaration).
-    pub ty: Type,
+    /// The type of this parameter, as InferType for uniform handling.
+    pub ty: InferType,
 }
 
 /// Information about a function during constraint generation.
+///
+/// Uses `InferType` rather than `Type` so that array types are represented
+/// structurally (as `InferType::Array { element, length }`) rather than by
+/// opaque IDs. This allows uniform handling during inference.
 #[derive(Debug, Clone)]
 pub struct FunctionSig {
-    /// Parameter types (in order).
-    pub param_types: Vec<Type>,
-    /// Return type.
-    pub return_type: Type,
+    /// Parameter types (in order), as InferTypes for uniform handling.
+    pub param_types: Vec<InferType>,
+    /// Return type, as InferType for uniform handling.
+    pub return_type: InferType,
 }
 
 /// Context for constraint generation within a single function.
@@ -849,6 +943,13 @@ impl<'a> ConstraintGenerator<'a> {
         &self.expr_types
     }
 
+    /// Consume the constraint generator and return (constraints, int_literal_vars, expr_types).
+    ///
+    /// This is useful when you need ownership of the expression types map.
+    pub fn into_parts(self) -> (Vec<Constraint>, Vec<TypeVarId>, HashMap<InstRef, InferType>) {
+        (self.constraints, self.int_literal_vars, self.expr_types)
+    }
+
     /// Generate constraints for an expression.
     ///
     /// Returns the inferred type of the expression. Records the type in
@@ -961,7 +1062,7 @@ impl<'a> ConstraintGenerator<'a> {
                 if let Some(local) = ctx.locals.get(name) {
                     local.ty.clone()
                 } else if let Some(param) = ctx.params.get(name) {
-                    InferType::Concrete(param.ty)
+                    param.ty.clone()
                 } else {
                     // Unknown variable - will be caught during semantic analysis
                     InferType::Concrete(Type::Error)
@@ -971,7 +1072,7 @@ impl<'a> ConstraintGenerator<'a> {
             // Parameter reference
             InstData::ParamRef { name, .. } => {
                 if let Some(param) = ctx.params.get(name) {
-                    InferType::Concrete(param.ty)
+                    param.ty.clone()
                 } else {
                     InferType::Concrete(Type::Error)
                 }
@@ -989,14 +1090,13 @@ impl<'a> ConstraintGenerator<'a> {
                 let var_ty = if let Some(ty_sym) = type_annotation {
                     // Explicit type annotation - use it and constrain init to match
                     let ty_name = self.interner.get(*ty_sym);
-                    if let Some(concrete_ty) = self.resolve_type_name(ty_name) {
-                        let concrete = InferType::Concrete(concrete_ty);
+                    if let Some(annotated_ty) = self.resolve_type_name(ty_name) {
                         self.add_constraint(Constraint::equal(
                             init_info.ty,
-                            concrete.clone(),
+                            annotated_ty.clone(),
                             span,
                         ));
-                        concrete
+                        annotated_ty
                     } else {
                         // Unknown type name (e.g., struct/enum) - use init type for now.
                         // Semantic analysis will catch undefined types and verify struct/enum
@@ -1069,18 +1169,18 @@ impl<'a> ConstraintGenerator<'a> {
                             self.generate(*arg_ref, ctx);
                         }
                         // Return the declared return type (error will be caught in sema)
-                        InferType::Concrete(func.return_type)
+                        func.return_type.clone()
                     } else {
                         // Generate constraints for each argument
                         for (arg_ref, param_ty) in args.iter().zip(func.param_types.iter()) {
                             let arg_info = self.generate(*arg_ref, ctx);
                             self.add_constraint(Constraint::equal(
                                 arg_info.ty,
-                                InferType::Concrete(*param_ty),
+                                param_ty.clone(),
                                 arg_info.span,
                             ));
                         }
-                        InferType::Concrete(func.return_type)
+                        func.return_type.clone()
                     }
                 } else {
                     // Unknown function - still process arguments for constraint generation
@@ -1302,9 +1402,13 @@ impl<'a> ConstraintGenerator<'a> {
             // Array initialization
             InstData::ArrayInit { elements } => {
                 if elements.is_empty() {
-                    // Empty array - need type annotation in real usage
+                    // Empty array - need type annotation to know element type
+                    // Use a fresh type variable for the element type
                     let elem_var = self.fresh_var();
-                    InferType::Var(elem_var)
+                    InferType::Array {
+                        element: Box::new(InferType::Var(elem_var)),
+                        length: 0,
+                    }
                 } else {
                     // Get element type from first element, constrain rest to match
                     let first_info = self.generate(elements[0], ctx);
@@ -1316,31 +1420,53 @@ impl<'a> ConstraintGenerator<'a> {
                             elem_info.span,
                         ));
                     }
-                    // Array type itself needs to be registered during sema
-                    // For now, use a fresh variable
-                    let result_var = self.fresh_var();
-                    InferType::Var(result_var)
+                    // Build the array type with the inferred element type
+                    InferType::Array {
+                        element: Box::new(first_info.ty),
+                        length: elements.len() as u64,
+                    }
                 }
             }
 
             // Array index
             InstData::IndexGet { base, index } => {
-                self.generate(*base, ctx);
+                let base_info = self.generate(*base, ctx);
                 let index_info = self.generate(*index, ctx);
                 // Index must be an integer type
                 self.add_constraint(Constraint::is_integer(index_info.ty, index_info.span));
-                // Element type is unknown without array type info
-                let result_var = self.fresh_var();
-                InferType::Var(result_var)
+
+                // Extract element type from array type.
+                // If base is InferType::Array, we can get the element type directly.
+                // Otherwise, we need a fresh variable that will be resolved later.
+                match &base_info.ty {
+                    InferType::Array { element, .. } => (**element).clone(),
+                    _ => {
+                        // Base might be a type variable that will resolve to an array.
+                        // Use a fresh variable for the element type.
+                        let result_var = self.fresh_var();
+                        InferType::Var(result_var)
+                    }
+                }
             }
 
             // Array index assignment
             InstData::IndexSet { base, index, value } => {
-                self.generate(*base, ctx);
+                let base_info = self.generate(*base, ctx);
                 let index_info = self.generate(*index, ctx);
                 // Index must be an integer type
                 self.add_constraint(Constraint::is_integer(index_info.ty, index_info.span));
-                self.generate(*value, ctx);
+
+                let value_info = self.generate(*value, ctx);
+
+                // Constrain value type to match array element type
+                if let InferType::Array { element, .. } = &base_info.ty {
+                    self.add_constraint(Constraint::equal(
+                        value_info.ty,
+                        (**element).clone(),
+                        value_info.span,
+                    ));
+                }
+
                 InferType::Concrete(Type::Unit)
             }
 
@@ -1404,22 +1530,67 @@ impl<'a> ConstraintGenerator<'a> {
         }
     }
 
-    /// Resolve a type name to a concrete Type.
-    fn resolve_type_name(&self, name: &str) -> Option<Type> {
-        match name {
-            "i8" => Some(Type::I8),
-            "i16" => Some(Type::I16),
-            "i32" => Some(Type::I32),
-            "i64" => Some(Type::I64),
-            "u8" => Some(Type::U8),
-            "u16" => Some(Type::U16),
-            "u32" => Some(Type::U32),
-            "u64" => Some(Type::U64),
-            "bool" => Some(Type::Bool),
-            "()" => Some(Type::Unit),
-            "String" => Some(Type::String),
-            _ => None, // Struct/enum types need to be looked up separately
+    /// Resolve a type name to an InferType.
+    ///
+    /// Handles primitive types, array syntax `[T; N]`, and struct/enum types.
+    fn resolve_type_name(&self, name: &str) -> Option<InferType> {
+        // Check for array syntax first: [T; N]
+        if let Some((element_type_str, length)) = Self::parse_array_type_syntax(name) {
+            // Recursively resolve the element type
+            let element_ty = self.resolve_type_name(&element_type_str)?;
+            return Some(InferType::Array {
+                element: Box::new(element_ty),
+                length,
+            });
         }
+
+        // Check primitives
+        let ty = match name {
+            "i8" => Type::I8,
+            "i16" => Type::I16,
+            "i32" => Type::I32,
+            "i64" => Type::I64,
+            "u8" => Type::U8,
+            "u16" => Type::U16,
+            "u32" => Type::U32,
+            "u64" => Type::U64,
+            "bool" => Type::Bool,
+            "()" => Type::Unit,
+            "String" => Type::String,
+            _ => return None, // Struct/enum types need to be looked up separately
+        };
+        Some(InferType::Concrete(ty))
+    }
+
+    /// Parse array type syntax "[T; N]" and return (element_type_str, length).
+    fn parse_array_type_syntax(type_name: &str) -> Option<(String, u64)> {
+        let type_name = type_name.trim();
+        if !type_name.starts_with('[') || !type_name.ends_with(']') {
+            return None;
+        }
+
+        // Remove the outer brackets
+        let inner = &type_name[1..type_name.len() - 1];
+
+        // Find the semicolon separator - need to handle nested arrays
+        // We look for the last `;` that's at nesting level 0
+        let mut bracket_depth = 0;
+        let mut semi_pos = None;
+        for (i, ch) in inner.char_indices() {
+            match ch {
+                '[' => bracket_depth += 1,
+                ']' => bracket_depth -= 1,
+                ';' if bracket_depth == 0 => semi_pos = Some(i),
+                _ => {}
+            }
+        }
+
+        let semi_pos = semi_pos?;
+        let element_type = inner[..semi_pos].trim().to_string();
+        let length_str = inner[semi_pos + 1..].trim();
+        let length: u64 = length_str.parse().ok()?;
+
+        Some((element_type, length))
     }
 }
 
@@ -2077,11 +2248,14 @@ mod tests {
     #[test]
     fn test_function_sig() {
         let sig = FunctionSig {
-            param_types: vec![Type::I32, Type::Bool],
-            return_type: Type::I64,
+            param_types: vec![
+                InferType::Concrete(Type::I32),
+                InferType::Concrete(Type::Bool),
+            ],
+            return_type: InferType::Concrete(Type::I64),
         };
         assert_eq!(sig.param_types.len(), 2);
-        assert_eq!(sig.return_type, Type::I64);
+        assert_eq!(sig.return_type, InferType::Concrete(Type::I64));
     }
 
     #[test]
@@ -2286,8 +2460,11 @@ mod tests {
         functions.insert(
             func_name,
             FunctionSig {
-                param_types: vec![Type::I32, Type::I32],
-                return_type: Type::Bool,
+                param_types: vec![
+                    InferType::Concrete(Type::I32),
+                    InferType::Concrete(Type::I32),
+                ],
+                return_type: InferType::Concrete(Type::Bool),
             },
         );
 

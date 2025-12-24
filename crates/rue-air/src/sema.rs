@@ -179,63 +179,6 @@ struct FunctionInfo {
     return_type: Type,
 }
 
-/// Describes what type we expect from an expression during type checking.
-///
-/// This enables bidirectional type checking in a single pass:
-/// - `Check(ty)`: We know the expected type (top-down), verify the expression matches
-/// - `Synthesize`: We don't know the type, infer it from the expression (bottom-up)
-#[derive(Debug, Clone, Copy)]
-enum TypeExpectation {
-    /// We have a specific type we're checking against (top-down).
-    /// The expression MUST have this type or be coercible to it.
-    Check(Type),
-
-    /// We don't know the type yet - synthesize it (bottom-up).
-    /// The expression determines its own type.
-    Synthesize,
-}
-
-impl TypeExpectation {
-    /// Get the type to use for integer literals.
-    /// Returns the expected type if it's an integer, otherwise defaults to i32.
-    fn integer_type(&self) -> Type {
-        match self {
-            TypeExpectation::Check(ty) if ty.is_integer() => *ty,
-            _ => Type::I32,
-        }
-    }
-
-    /// Check if a synthesized type is compatible with this expectation.
-    /// Returns Ok(()) if compatible, or a type mismatch error if not.
-    fn check(&self, synthesized: Type, span: Span) -> CompileResult<()> {
-        match self {
-            TypeExpectation::Synthesize => Ok(()),
-            TypeExpectation::Check(expected) => {
-                if synthesized == *expected
-                    || synthesized.is_never() // Never coerces to anything (the only coercion in Rue)
-                    || expected.is_error()
-                    || synthesized.is_error()
-                {
-                    Ok(())
-                } else {
-                    Err(CompileError::new(
-                        ErrorKind::TypeMismatch {
-                            expected: expected.name().to_string(),
-                            found: synthesized.name().to_string(),
-                        },
-                        span,
-                    ))
-                }
-            }
-        }
-    }
-
-    /// Returns true if this is a Check expectation for the Unit type.
-    fn is_unit_context(&self) -> bool {
-        matches!(self, TypeExpectation::Check(Type::Unit))
-    }
-}
-
 /// Result of analyzing an instruction: the AIR reference and its synthesized type.
 #[derive(Debug, Clone, Copy)]
 struct AnalysisResult {
@@ -563,12 +506,7 @@ impl<'a> Sema<'a> {
         // Phase 3: AIR Emission
         // ======================================================================
         // Analyze the body expression, emitting AIR with resolved types
-        let body_result = self.analyze_inst(
-            &mut air,
-            body,
-            TypeExpectation::Check(return_type),
-            &mut ctx,
-        )?;
+        let body_result = self.analyze_inst(&mut air, body, &mut ctx)?;
 
         // Add implicit return only if body doesn't already diverge (e.g., explicit return)
         if body_result.ty != Type::Never {
@@ -590,12 +528,13 @@ impl<'a> Sema<'a> {
     ///
     /// Returns a map from RIR instruction refs to their resolved concrete types.
     fn run_type_inference(
-        &self,
+        &mut self,
         return_type: Type,
         params: &[(Symbol, Type)],
         body: InstRef,
     ) -> CompileResult<HashMap<InstRef, Type>> {
-        // Build function signatures map for the constraint generator
+        // Build function signatures map for the constraint generator.
+        // Convert Type to InferType so arrays are represented structurally.
         let func_sigs: HashMap<Symbol, FunctionSig> = self
             .functions
             .iter()
@@ -603,8 +542,12 @@ impl<'a> Sema<'a> {
                 (
                     *name,
                     FunctionSig {
-                        param_types: info.param_types.clone(),
-                        return_type: info.return_type,
+                        param_types: info
+                            .param_types
+                            .iter()
+                            .map(|t| self.type_to_infer_type(*t))
+                            .collect(),
+                        return_type: self.type_to_infer_type(info.return_type),
                     },
                 )
             })
@@ -633,10 +576,18 @@ impl<'a> Sema<'a> {
             &enum_types,
         );
 
-        // Build parameter map for constraint context
+        // Build parameter map for constraint context.
+        // Convert Type to InferType so arrays are represented structurally.
         let param_vars: HashMap<Symbol, ParamVarInfo> = params
             .iter()
-            .map(|(name, ty)| (*name, ParamVarInfo { ty: *ty }))
+            .map(|(name, ty)| {
+                (
+                    *name,
+                    ParamVarInfo {
+                        ty: self.type_to_infer_type(*ty),
+                    },
+                )
+            })
             .collect();
 
         // Create constraint context
@@ -653,8 +604,10 @@ impl<'a> Sema<'a> {
             body_info.span,
         ));
 
+        // Consume the constraint generator to release borrows
+        let (constraints, int_literal_vars, expr_types) = cgen.into_parts();
+
         // Phase 2: Solve constraints via unification
-        let constraints = cgen.constraints().to_vec();
         let mut unifier = Unifier::new();
         let errors = unifier.solve_constraints(&constraints);
 
@@ -673,43 +626,80 @@ impl<'a> Sema<'a> {
         }
 
         // Default any unconstrained integer literals to i32
-        unifier.default_int_literal_vars(cgen.int_literal_vars());
+        unifier.default_int_literal_vars(&int_literal_vars);
 
-        // Build the resolved types map
-        let expr_types = cgen.expr_types();
+        // Build the resolved types map, converting InferType to Type
         let mut resolved_types = HashMap::new();
-        for (inst_ref, infer_ty) in expr_types {
-            let concrete_ty = unifier.resolve_or_error(infer_ty);
+        for (inst_ref, infer_ty) in &expr_types {
+            let resolved = unifier.resolve_infer_type(infer_ty);
+            let concrete_ty = self.infer_type_to_type(&resolved);
             resolved_types.insert(*inst_ref, concrete_ty);
         }
 
         Ok(resolved_types)
     }
 
+    /// Convert a fully-resolved InferType to a concrete Type.
+    ///
+    /// This handles the conversion of InferType::Array to Type::Array(id)
+    /// by using the array type registry.
+    fn infer_type_to_type(&mut self, ty: &InferType) -> Type {
+        match ty {
+            InferType::Concrete(t) => *t,
+            InferType::Var(_) => Type::Error,   // Unbound variable
+            InferType::IntLiteral => Type::I32, // Default (shouldn't happen after resolution)
+            InferType::Array { element, length } => {
+                // Recursively convert element type
+                let elem_ty = self.infer_type_to_type(element);
+                if elem_ty == Type::Error {
+                    return Type::Error;
+                }
+                // Get or create the array type ID
+                let array_type_id = self.get_or_create_array_type(elem_ty, *length);
+                Type::Array(array_type_id)
+            }
+        }
+    }
+
+    /// Convert a concrete Type to InferType for use in constraint generation.
+    ///
+    /// This handles the conversion of Type::Array(id) to InferType::Array
+    /// by looking up the array definition to get element type and length.
+    fn type_to_infer_type(&self, ty: Type) -> InferType {
+        match ty {
+            Type::Array(array_id) => {
+                let array_def = &self.array_type_defs[array_id.0 as usize];
+                let element_infer = self.type_to_infer_type(array_def.element_type);
+                InferType::Array {
+                    element: Box::new(element_infer),
+                    length: array_def.length,
+                }
+            }
+            // All other types wrap directly
+            _ => InferType::Concrete(ty),
+        }
+    }
+
     /// Analyze an RIR instruction, producing AIR instructions.
     ///
-    /// Uses bidirectional type checking: when `expectation` is `Check(ty)`, validates
-    /// that the result is compatible with `ty`. When `Synthesize`, infers the type.
+    /// Types are determined by Hindley-Milner inference (stored in `resolved_types`).
     /// Returns both the AIR reference and the synthesized type.
     fn analyze_inst(
         &mut self,
         air: &mut Air,
         inst_ref: InstRef,
-        expectation: TypeExpectation,
         ctx: &mut AnalysisContext,
     ) -> CompileResult<AnalysisResult> {
         let inst = self.rir.get(inst_ref);
 
         match &inst.data {
             InstData::IntConst(value) => {
-                // Get the type from HM inference, falling back to expectation-based inference
-                // for backwards compatibility during transition.
+                // Get the type from HM inference
                 let ty = ctx
                     .resolved_types
                     .get(&inst_ref)
                     .copied()
-                    .unwrap_or_else(|| expectation.integer_type());
-                expectation.check(ty, inst.span)?;
+                    .expect("HM inference should provide type for all expressions");
 
                 // Check if the literal value fits in the target type's range
                 if !ty.literal_fits(*value) {
@@ -732,8 +722,6 @@ impl<'a> Sema<'a> {
 
             InstData::BoolConst(value) => {
                 let ty = Type::Bool;
-                expectation.check(ty, inst.span)?;
-
                 let air_ref = air.add_inst(AirInst {
                     data: AirInstData::BoolConst(*value),
                     ty,
@@ -744,8 +732,6 @@ impl<'a> Sema<'a> {
 
             InstData::StringConst(symbol) => {
                 let ty = Type::String;
-                expectation.check(ty, inst.span)?;
-
                 // Add string to the string table
                 let string_content = self.interner.get(*symbol).to_string();
                 let string_id = self.add_string(string_content);
@@ -760,8 +746,6 @@ impl<'a> Sema<'a> {
 
             InstData::UnitConst => {
                 let ty = Type::Unit;
-                expectation.check(ty, inst.span)?;
-
                 let air_ref = air.add_inst(AirInst {
                     data: AirInstData::UnitConst,
                     ty,
@@ -770,55 +754,25 @@ impl<'a> Sema<'a> {
                 Ok(AnalysisResult::new(air_ref, ty))
             }
 
-            InstData::Add { lhs, rhs } => self.analyze_binary_arith(
-                air,
-                *lhs,
-                *rhs,
-                expectation,
-                AirInstData::Add,
-                inst.span,
-                ctx,
-            ),
+            InstData::Add { lhs, rhs } => {
+                self.analyze_binary_arith(air, *lhs, *rhs, AirInstData::Add, inst.span, ctx)
+            }
 
-            InstData::Sub { lhs, rhs } => self.analyze_binary_arith(
-                air,
-                *lhs,
-                *rhs,
-                expectation,
-                AirInstData::Sub,
-                inst.span,
-                ctx,
-            ),
+            InstData::Sub { lhs, rhs } => {
+                self.analyze_binary_arith(air, *lhs, *rhs, AirInstData::Sub, inst.span, ctx)
+            }
 
-            InstData::Mul { lhs, rhs } => self.analyze_binary_arith(
-                air,
-                *lhs,
-                *rhs,
-                expectation,
-                AirInstData::Mul,
-                inst.span,
-                ctx,
-            ),
+            InstData::Mul { lhs, rhs } => {
+                self.analyze_binary_arith(air, *lhs, *rhs, AirInstData::Mul, inst.span, ctx)
+            }
 
-            InstData::Div { lhs, rhs } => self.analyze_binary_arith(
-                air,
-                *lhs,
-                *rhs,
-                expectation,
-                AirInstData::Div,
-                inst.span,
-                ctx,
-            ),
+            InstData::Div { lhs, rhs } => {
+                self.analyze_binary_arith(air, *lhs, *rhs, AirInstData::Div, inst.span, ctx)
+            }
 
-            InstData::Mod { lhs, rhs } => self.analyze_binary_arith(
-                air,
-                *lhs,
-                *rhs,
-                expectation,
-                AirInstData::Mod,
-                inst.span,
-                ctx,
-            ),
+            InstData::Mod { lhs, rhs } => {
+                self.analyze_binary_arith(air, *lhs, *rhs, AirInstData::Mod, inst.span, ctx)
+            }
 
             // Comparison operators: operands must be the same type, result is bool.
             // We synthesize the type from the left operand and check the right against it.
@@ -850,10 +804,8 @@ impl<'a> Sema<'a> {
 
             // Logical operators: operands and result are all bool
             InstData::And { lhs, rhs } => {
-                let lhs_result =
-                    self.analyze_inst(air, *lhs, TypeExpectation::Check(Type::Bool), ctx)?;
-                let rhs_result =
-                    self.analyze_inst(air, *rhs, TypeExpectation::Check(Type::Bool), ctx)?;
+                let lhs_result = self.analyze_inst(air, *lhs, ctx)?;
+                let rhs_result = self.analyze_inst(air, *rhs, ctx)?;
 
                 let air_ref = air.add_inst(AirInst {
                     data: AirInstData::And(lhs_result.air_ref, rhs_result.air_ref),
@@ -864,10 +816,8 @@ impl<'a> Sema<'a> {
             }
 
             InstData::Or { lhs, rhs } => {
-                let lhs_result =
-                    self.analyze_inst(air, *lhs, TypeExpectation::Check(Type::Bool), ctx)?;
-                let rhs_result =
-                    self.analyze_inst(air, *rhs, TypeExpectation::Check(Type::Bool), ctx)?;
+                let lhs_result = self.analyze_inst(air, *lhs, ctx)?;
+                let rhs_result = self.analyze_inst(air, *rhs, ctx)?;
 
                 let air_ref = air.add_inst(AirInst {
                     data: AirInstData::Or(lhs_result.air_ref, rhs_result.air_ref),
@@ -878,77 +828,48 @@ impl<'a> Sema<'a> {
             }
 
             // Bitwise operations: operands must be same integer type, result is that type
-            InstData::BitAnd { lhs, rhs } => self.analyze_binary_arith(
-                air,
-                *lhs,
-                *rhs,
-                expectation,
-                AirInstData::BitAnd,
-                inst.span,
-                ctx,
-            ),
+            InstData::BitAnd { lhs, rhs } => {
+                self.analyze_binary_arith(air, *lhs, *rhs, AirInstData::BitAnd, inst.span, ctx)
+            }
 
-            InstData::BitOr { lhs, rhs } => self.analyze_binary_arith(
-                air,
-                *lhs,
-                *rhs,
-                expectation,
-                AirInstData::BitOr,
-                inst.span,
-                ctx,
-            ),
+            InstData::BitOr { lhs, rhs } => {
+                self.analyze_binary_arith(air, *lhs, *rhs, AirInstData::BitOr, inst.span, ctx)
+            }
 
-            InstData::BitXor { lhs, rhs } => self.analyze_binary_arith(
-                air,
-                *lhs,
-                *rhs,
-                expectation,
-                AirInstData::BitXor,
-                inst.span,
-                ctx,
-            ),
+            InstData::BitXor { lhs, rhs } => {
+                self.analyze_binary_arith(air, *lhs, *rhs, AirInstData::BitXor, inst.span, ctx)
+            }
 
-            InstData::Shl { lhs, rhs } => self.analyze_binary_arith(
-                air,
-                *lhs,
-                *rhs,
-                expectation,
-                AirInstData::Shl,
-                inst.span,
-                ctx,
-            ),
+            InstData::Shl { lhs, rhs } => {
+                self.analyze_binary_arith(air, *lhs, *rhs, AirInstData::Shl, inst.span, ctx)
+            }
 
-            InstData::Shr { lhs, rhs } => self.analyze_binary_arith(
-                air,
-                *lhs,
-                *rhs,
-                expectation,
-                AirInstData::Shr,
-                inst.span,
-                ctx,
-            ),
+            InstData::Shr { lhs, rhs } => {
+                self.analyze_binary_arith(air, *lhs, *rhs, AirInstData::Shr, inst.span, ctx)
+            }
 
             InstData::Neg { operand } => {
+                // Get the resolved type from HM inference
+                let ty = ctx
+                    .resolved_types
+                    .get(&inst_ref)
+                    .copied()
+                    .expect("HM inference should provide type for Neg");
+
+                // Check if trying to negate an unsigned type
+                if ty.is_unsigned() {
+                    return Err(CompileError::new(
+                        ErrorKind::CannotNegateUnsigned(ty.name().to_string()),
+                        inst.span,
+                    )
+                    .with_note("unsigned values cannot be negated"));
+                }
+
                 // Special case: negating a literal that equals |MIN| for signed types.
                 // For example, -128 for i8, -32768 for i16, -2147483648 for i32, etc.
                 // The positive literal exceeds the signed MAX, but the negated value is valid.
                 let operand_inst = self.rir.get(*operand);
                 if let InstData::IntConst(value) = &operand_inst.data {
-                    // Determine what type to use
-                    let ty = match expectation {
-                        TypeExpectation::Check(t) if t.is_integer() => t,
-                        _ => Type::I32,
-                    };
-
-                    // Check if trying to negate an unsigned type
-                    if ty.is_unsigned() {
-                        return Err(CompileError::new(
-                            ErrorKind::CannotNegateUnsigned(ty.name().to_string()),
-                            inst.span,
-                        )
-                        .with_note("unsigned values cannot be negated"));
-                    }
-
                     // Check if this value, when negated, fits in the target signed type
                     if ty.negated_literal_fits(*value) && !ty.literal_fits(*value) {
                         // This is the MIN value case - the positive literal is out of range
@@ -970,53 +891,18 @@ impl<'a> Sema<'a> {
                     }
                 }
 
-                // Determine the type: use expected type if integer, otherwise synthesize from operand
-                let (operand_result, op_type) = match expectation {
-                    TypeExpectation::Check(ty) if ty.is_integer() => {
-                        // Check if trying to negate an unsigned type
-                        if ty.is_unsigned() {
-                            return Err(CompileError::new(
-                                ErrorKind::CannotNegateUnsigned(ty.name().to_string()),
-                                inst.span,
-                            )
-                            .with_note("unsigned values cannot be negated"));
-                        }
-                        let result =
-                            self.analyze_inst(air, *operand, TypeExpectation::Check(ty), ctx)?;
-                        (result, ty)
-                    }
-                    _ => {
-                        // Synthesize from operand
-                        let result =
-                            self.analyze_inst(air, *operand, TypeExpectation::Synthesize, ctx)?;
-                        let ty = if result.ty.is_integer() {
-                            result.ty
-                        } else {
-                            Type::I32
-                        };
-                        // Check if trying to negate an unsigned type
-                        if ty.is_unsigned() {
-                            return Err(CompileError::new(
-                                ErrorKind::CannotNegateUnsigned(ty.name().to_string()),
-                                inst.span,
-                            )
-                            .with_note("unsigned values cannot be negated"));
-                        }
-                        (result, ty)
-                    }
-                };
+                let operand_result = self.analyze_inst(air, *operand, ctx)?;
 
                 let air_ref = air.add_inst(AirInst {
                     data: AirInstData::Neg(operand_result.air_ref),
-                    ty: op_type,
+                    ty,
                     span: inst.span,
                 });
-                Ok(AnalysisResult::new(air_ref, op_type))
+                Ok(AnalysisResult::new(air_ref, ty))
             }
 
             InstData::Not { operand } => {
-                let operand_result =
-                    self.analyze_inst(air, *operand, TypeExpectation::Check(Type::Bool), ctx)?;
+                let operand_result = self.analyze_inst(air, *operand, ctx)?;
 
                 let air_ref = air.add_inst(AirInst {
                     data: AirInstData::Not(operand_result.air_ref),
@@ -1027,42 +913,32 @@ impl<'a> Sema<'a> {
             }
 
             InstData::BitNot { operand } => {
+                // Get the resolved type from HM inference
+                let ty = ctx
+                    .resolved_types
+                    .get(&inst_ref)
+                    .copied()
+                    .expect("HM inference should provide type for BitNot");
+
                 // Bitwise NOT operates on integer types only
-                // Determine the type: use expected type if integer, otherwise synthesize from operand
-                let (operand_result, op_type) = match expectation {
-                    TypeExpectation::Check(ty) if ty.is_integer() => {
-                        let result =
-                            self.analyze_inst(air, *operand, TypeExpectation::Check(ty), ctx)?;
-                        (result, ty)
-                    }
-                    _ => {
-                        // Synthesize from operand
-                        let result =
-                            self.analyze_inst(air, *operand, TypeExpectation::Synthesize, ctx)?;
-                        let ty = if result.ty.is_integer() {
-                            result.ty
-                        } else if result.ty == Type::Bool {
-                            // Bitwise NOT is not allowed on booleans
-                            return Err(CompileError::new(
-                                ErrorKind::TypeMismatch {
-                                    expected: "integer type".to_string(),
-                                    found: result.ty.name().to_string(),
-                                },
-                                inst.span,
-                            ));
-                        } else {
-                            Type::I32
-                        };
-                        (result, ty)
-                    }
-                };
+                if !ty.is_integer() && !ty.is_error() && !ty.is_never() {
+                    return Err(CompileError::new(
+                        ErrorKind::TypeMismatch {
+                            expected: "integer type".to_string(),
+                            found: ty.name().to_string(),
+                        },
+                        inst.span,
+                    ));
+                }
+
+                let operand_result = self.analyze_inst(air, *operand, ctx)?;
 
                 let air_ref = air.add_inst(AirInst {
                     data: AirInstData::BitNot(operand_result.air_ref),
-                    ty: op_type,
+                    ty,
                     span: inst.span,
                 });
-                Ok(AnalysisResult::new(air_ref, op_type))
+                Ok(AnalysisResult::new(air_ref, ty))
             }
 
             InstData::Branch {
@@ -1071,8 +947,7 @@ impl<'a> Sema<'a> {
                 else_block,
             } => {
                 // Condition must be bool
-                let cond_result =
-                    self.analyze_inst(air, *cond, TypeExpectation::Check(Type::Bool), ctx)?;
+                let cond_result = self.analyze_inst(air, *cond, ctx)?;
 
                 // Determine the result type:
                 // - If else is present, both branches must have compatible types
@@ -1081,17 +956,14 @@ impl<'a> Sema<'a> {
                 if let Some(else_b) = else_block {
                     // Analyze then branch with its own scope
                     ctx.push_scope();
-                    let then_result = self.analyze_inst(air, *then_block, expectation, ctx)?;
+                    let then_result = self.analyze_inst(air, *then_block, ctx)?;
                     let then_type = then_result.ty;
                     let then_span = self.rir.get(*then_block).span;
                     ctx.pop_scope();
 
                     // Analyze else branch with its own scope
-                    // Use Synthesize to get the actual else type, then compare ourselves
-                    // This allows us to provide better error messages with secondary labels
                     ctx.push_scope();
-                    let else_result =
-                        self.analyze_inst(air, *else_b, TypeExpectation::Synthesize, ctx)?;
+                    let else_result = self.analyze_inst(air, *else_b, ctx)?;
                     let else_type = else_result.ty;
                     let else_span = self.rir.get(*else_b).span;
                     ctx.pop_scope();
@@ -1141,8 +1013,7 @@ impl<'a> Sema<'a> {
                     // No else branch - result is Unit
                     // The then branch must have unit type (spec 4.6:5)
                     ctx.push_scope();
-                    let then_result =
-                        self.analyze_inst(air, *then_block, TypeExpectation::Synthesize, ctx)?;
+                    let then_result = self.analyze_inst(air, *then_block, ctx)?;
                     ctx.pop_scope();
 
                     // Check that the then branch has unit type (or Never/Error)
@@ -1176,17 +1047,13 @@ impl<'a> Sema<'a> {
 
             InstData::Loop { cond, body } => {
                 // While loop: condition must be bool, result is Unit
-                expectation.check(Type::Unit, inst.span)?;
-
-                let cond_result =
-                    self.analyze_inst(air, *cond, TypeExpectation::Check(Type::Bool), ctx)?;
+                let cond_result = self.analyze_inst(air, *cond, ctx)?;
 
                 // Analyze body with its own scope - while body is Unit type
                 // Increment loop_depth so break/continue inside the body are valid
                 ctx.push_scope();
                 ctx.loop_depth += 1;
-                let body_result =
-                    self.analyze_inst(air, *body, TypeExpectation::Check(Type::Unit), ctx)?;
+                let body_result = self.analyze_inst(air, *body, ctx)?;
                 ctx.loop_depth -= 1;
                 ctx.pop_scope();
 
@@ -1209,8 +1076,7 @@ impl<'a> Sema<'a> {
                 // Increment loop_depth so break/continue inside the body are valid
                 ctx.push_scope();
                 ctx.loop_depth += 1;
-                let body_result =
-                    self.analyze_inst(air, *body, TypeExpectation::Check(Type::Unit), ctx)?;
+                let body_result = self.analyze_inst(air, *body, ctx)?;
                 ctx.loop_depth -= 1;
                 ctx.pop_scope();
 
@@ -1226,8 +1092,7 @@ impl<'a> Sema<'a> {
 
             InstData::Match { scrutinee, arms } => {
                 // Analyze the scrutinee to determine its type
-                let scrutinee_result =
-                    self.analyze_inst(air, *scrutinee, TypeExpectation::Synthesize, ctx)?;
+                let scrutinee_result = self.analyze_inst(air, *scrutinee, ctx)?;
                 let scrutinee_type = scrutinee_result.ty;
 
                 // Validate that we can match on this type (integers, booleans, and enums)
@@ -1411,12 +1276,8 @@ impl<'a> Sema<'a> {
                     // Each arm gets its own scope
                     ctx.push_scope();
 
-                    // Analyze arm body with appropriate expectation
-                    let arm_expectation = match result_type {
-                        Some(ty) if !ty.is_never() => TypeExpectation::Check(ty),
-                        _ => expectation,
-                    };
-                    let body_result = self.analyze_inst(air, *body, arm_expectation, ctx)?;
+                    // Analyze arm body
+                    let body_result = self.analyze_inst(air, *body, ctx)?;
                     let body_type = body_result.ty;
 
                     ctx.pop_scope();
@@ -1501,22 +1362,16 @@ impl<'a> Sema<'a> {
             InstData::Alloc {
                 name,
                 is_mut,
-                ty,
+                ty: _,
                 init,
             } => {
-                // Determine the type from annotation or synthesize from initializer
-                let (init_result, var_type) = if let Some(type_sym) = ty {
-                    // Type annotation provided: check initializer against it
-                    let var_type = self.resolve_type(*type_sym, inst.span)?;
-                    let init_result =
-                        self.analyze_inst(air, *init, TypeExpectation::Check(var_type), ctx)?;
-                    (init_result, var_type)
-                } else {
-                    // No annotation: synthesize type from initializer (SINGLE TRAVERSAL)
-                    let init_result =
-                        self.analyze_inst(air, *init, TypeExpectation::Synthesize, ctx)?;
-                    (init_result, init_result.ty)
-                };
+                // Analyze the initializer
+                let init_result = self.analyze_inst(air, *init, ctx)?;
+
+                // The variable type is determined by HM inference (considering any annotation)
+                // If there's a type annotation, HM will have constrained the init to match it.
+                // If no annotation, HM infers from the initializer.
+                let var_type = init_result.ty;
 
                 // If name is None, this is a wildcard pattern `_` that discards the value
                 // We still evaluate the initializer for side effects, but don't allocate a slot
@@ -1559,7 +1414,6 @@ impl<'a> Sema<'a> {
                 // First check if it's a parameter
                 if let Some(param_info) = ctx.params.get(name) {
                     let ty = param_info.ty;
-                    expectation.check(ty, inst.span)?;
 
                     // Emit Param with the ABI slot (not the parameter index).
                     // For struct parameters, this is the starting slot of the first field.
@@ -1587,9 +1441,6 @@ impl<'a> Sema<'a> {
 
                 // Mark variable as used
                 ctx.used_locals.insert(*name);
-
-                // Type check
-                expectation.check(ty, inst.span)?;
 
                 // Load the variable
                 let air_ref = air.add_inst(AirInst {
@@ -1627,8 +1478,7 @@ impl<'a> Sema<'a> {
                 let ty = local.ty;
 
                 // Analyze the value
-                let value_result =
-                    self.analyze_inst(air, *value, TypeExpectation::Check(ty), ctx)?;
+                let value_result = self.analyze_inst(air, *value, ctx)?;
 
                 // Emit store instruction
                 let air_ref = air.add_inst(AirInst {
@@ -1680,13 +1530,8 @@ impl<'a> Sema<'a> {
             InstData::Ret(inner) => {
                 // Handle `return;` without expression (only valid for unit-returning functions)
                 let inner_air_ref = if let Some(inner) = inner {
-                    // Explicit return with value: analyze with the function's return type
-                    let inner_result = self.analyze_inst(
-                        air,
-                        *inner,
-                        TypeExpectation::Check(ctx.return_type),
-                        ctx,
-                    )?;
+                    // Explicit return with value: type is already determined by HM inference
+                    let inner_result = self.analyze_inst(air, *inner, ctx)?;
                     let inner_ty = inner_result.ty;
 
                     // Type check: returned value must match function's return type.
@@ -1739,33 +1584,13 @@ impl<'a> Sema<'a> {
 
                 // Process all instructions in the block
                 // The last one is the final expression (the block's value)
-                // All other instructions are statements and should be typed as Unit
                 let mut statements = Vec::new();
                 let mut last_result: Option<AnalysisResult> = None;
                 let num_insts = inst_refs.len();
                 for (i, &raw_ref) in inst_refs.iter().enumerate() {
                     let inst_ref = InstRef::from_raw(raw_ref);
                     let is_last = i == num_insts - 1;
-                    // Only the final expression should match the expectation;
-                    // statements (let, assign, expr;) don't need type checking
-                    // against the block's expected type.
-                    // When in Unit context (e.g., while loop body), we synthesize
-                    // the type for the final expression since we discard its value.
-                    let inst_expectation = if is_last {
-                        if expectation.is_unit_context() {
-                            // In Unit context, synthesize type (don't enforce Unit on final expr)
-                            TypeExpectation::Synthesize
-                        } else {
-                            expectation
-                        }
-                    } else {
-                        // Non-final statements: synthesize their type but discard the result.
-                        // Let and assignment statements produce Unit naturally.
-                        // Expression statements (e.g., `42;`) produce their expression's type,
-                        // but we don't care - the value is discarded.
-                        TypeExpectation::Synthesize
-                    };
-                    let result = self.analyze_inst(air, inst_ref, inst_expectation, ctx)?;
+                    let result = self.analyze_inst(air, inst_ref, ctx)?;
 
                     if is_last {
                         last_result = Some(result);
@@ -1789,12 +1614,8 @@ impl<'a> Sema<'a> {
                 if statements.is_empty() {
                     Ok(last)
                 } else {
-                    // When in Unit context, the block produces Unit
-                    let ty = if expectation.is_unit_context() {
-                        Type::Unit
-                    } else {
-                        last.ty
-                    };
+                    // Block type comes from HM inference
+                    let ty = last.ty;
                     let air_ref = air.add_inst(AirInst {
                         data: AirInstData::Block {
                             statements,
@@ -1828,20 +1649,12 @@ impl<'a> Sema<'a> {
                 let param_types = fn_info.param_types.clone();
                 let return_type = fn_info.return_type;
 
-                // Analyze arguments with expected parameter types
+                // Analyze arguments (types already determined by HM inference)
                 let mut arg_refs = Vec::new();
-                for (arg, expected_param_type) in args.iter().zip(&param_types) {
-                    let arg_result = self.analyze_inst(
-                        air,
-                        *arg,
-                        TypeExpectation::Check(*expected_param_type),
-                        ctx,
-                    )?;
+                for arg in args.iter() {
+                    let arg_result = self.analyze_inst(air, *arg, ctx)?;
                     arg_refs.push(arg_result.air_ref);
                 }
-
-                // Check that return type matches expectation
-                expectation.check(return_type, inst.span)?;
 
                 let air_ref = air.add_inst(AirInst {
                     data: AirInstData::Call {
@@ -1865,7 +1678,6 @@ impl<'a> Sema<'a> {
                 })?;
 
                 let ty = param_info.ty;
-                expectation.check(ty, inst.span)?;
 
                 // Use the ABI slot (not the RIR index) for proper struct parameter handling
                 let air_ref = air.add_inst(AirInst {
@@ -1896,9 +1708,6 @@ impl<'a> Sema<'a> {
                 // Clone struct def data before mutable borrow
                 let struct_def = self.struct_defs[struct_id.0 as usize].clone();
                 let struct_type = Type::Struct(struct_id);
-
-                // Type check
-                expectation.check(struct_type, inst.span)?;
 
                 // Build a map from field name to struct field index for efficient lookup
                 let field_index_map: std::collections::HashMap<&str, usize> = struct_def
@@ -1957,14 +1766,8 @@ impl<'a> Sema<'a> {
                 for (init_field_name, field_value) in field_inits.iter() {
                     let init_name = self.interner.get(*init_field_name);
                     let field_idx = field_index_map[init_name];
-                    let struct_field = &struct_def.fields[field_idx];
 
-                    let field_result = self.analyze_inst(
-                        air,
-                        *field_value,
-                        TypeExpectation::Check(struct_field.ty),
-                        ctx,
-                    )?;
+                    let field_result = self.analyze_inst(air, *field_value, ctx)?;
                     analyzed_fields[field_idx] = Some(field_result.air_ref);
                     source_order.push(field_idx);
                 }
@@ -1990,8 +1793,7 @@ impl<'a> Sema<'a> {
 
             InstData::FieldGet { base, field } => {
                 // Synthesize the base type in a single traversal
-                let base_result =
-                    self.analyze_inst(air, *base, TypeExpectation::Synthesize, ctx)?;
+                let base_result = self.analyze_inst(air, *base, ctx)?;
                 let base_type = base_result.ty;
 
                 let struct_id = match base_type {
@@ -2021,9 +1823,6 @@ impl<'a> Sema<'a> {
                     })?;
 
                 let field_type = struct_field.ty;
-
-                // Type check
-                expectation.check(field_type, inst.span)?;
 
                 let air_ref = air.add_inst(AirInst {
                     data: AirInstData::FieldGet {
@@ -2164,8 +1963,7 @@ impl<'a> Sema<'a> {
                 let base_slot = root_slot + slot_offset;
 
                 // Analyze the value with the expected field type
-                let value_result =
-                    self.analyze_inst(air, *value, TypeExpectation::Check(field_type), ctx)?;
+                let value_result = self.analyze_inst(air, *value, ctx)?;
 
                 let air_ref = air.add_inst(AirInst {
                     data: AirInstData::FieldSet {
@@ -2204,8 +2002,7 @@ impl<'a> Sema<'a> {
                 }
 
                 // Synthesize the argument type in a single traversal
-                let arg_result =
-                    self.analyze_inst(air, args[0], TypeExpectation::Synthesize, ctx)?;
+                let arg_result = self.analyze_inst(air, args[0], ctx)?;
                 let arg_type = arg_result.ty;
 
                 // Check that argument is a supported type (integer, bool, or string)
@@ -2234,95 +2031,44 @@ impl<'a> Sema<'a> {
             }
 
             InstData::ArrayInit { elements } => {
-                // Determine the element type from expectation or first element
-                if elements.is_empty() {
-                    // Empty array: need a type annotation
-                    // For now, we'll require the expectation to provide the type
-                    match expectation {
-                        TypeExpectation::Check(Type::Array(array_type_id)) => {
-                            let air_ref = air.add_inst(AirInst {
-                                data: AirInstData::ArrayInit {
-                                    array_type_id,
-                                    elements: vec![],
-                                },
-                                ty: Type::Array(array_type_id),
-                                span: inst.span,
-                            });
-                            Ok(AnalysisResult::new(air_ref, Type::Array(array_type_id)))
-                        }
-                        _ => Err(CompileError::new(
-                            ErrorKind::TypeAnnotationRequired,
-                            inst.span,
-                        )),
-                    }
-                } else {
-                    // Non-empty array: infer element type from first element
-                    // or use expectation if available
-                    let (element_type, array_type_id) = match expectation {
-                        TypeExpectation::Check(Type::Array(array_type_id)) => {
-                            let array_def = &self.array_type_defs[array_type_id.0 as usize];
-                            (array_def.element_type, array_type_id)
-                        }
-                        _ => {
-                            // Synthesize element type from first element
-                            let first_result = self.analyze_inst(
-                                air,
-                                elements[0],
-                                TypeExpectation::Synthesize,
-                                ctx,
-                            )?;
-                            let elem_ty = first_result.ty;
-                            let array_type_id =
-                                self.get_or_create_array_type(elem_ty, elements.len() as u64);
-                            (elem_ty, array_type_id)
-                        }
-                    };
-
-                    // Verify length matches if we have an expected type
-                    let expected_len = self.array_type_defs[array_type_id.0 as usize].length;
-                    if elements.len() as u64 != expected_len {
+                // Get the array type from HM inference
+                let array_type_id = match ctx.resolved_types.get(&inst_ref).copied() {
+                    Some(Type::Array(id)) => id,
+                    Some(Type::Error) => {
+                        // Error already reported during type inference
                         return Err(CompileError::new(
-                            ErrorKind::ArrayLengthMismatch {
-                                expected: expected_len,
-                                found: elements.len() as u64,
-                            },
+                            ErrorKind::TypeAnnotationRequired,
                             inst.span,
                         ));
                     }
-
-                    // Analyze all elements with the determined element type.
-                    // Note: When we inferred the type from the first element (Synthesize path),
-                    // we re-analyze it here with Check to get the correct AirRef and ensure
-                    // type compatibility. This is intentional - the first analysis was only
-                    // to determine the element type.
-                    let mut element_refs = Vec::with_capacity(elements.len());
-                    for elem in elements.iter() {
-                        let elem_result = self.analyze_inst(
-                            air,
-                            *elem,
-                            TypeExpectation::Check(element_type),
-                            ctx,
-                        )?;
-                        element_refs.push(elem_result.air_ref);
+                    other => {
+                        // HM should have resolved this to an array type
+                        panic!("ArrayInit should have array type from HM, got {:?}", other);
                     }
+                };
 
-                    let array_type = Type::Array(array_type_id);
-                    let air_ref = air.add_inst(AirInst {
-                        data: AirInstData::ArrayInit {
-                            array_type_id,
-                            elements: element_refs,
-                        },
-                        ty: array_type,
-                        span: inst.span,
-                    });
-                    Ok(AnalysisResult::new(air_ref, array_type))
+                // Analyze all elements
+                let mut element_refs = Vec::with_capacity(elements.len());
+                for elem in elements.iter() {
+                    let elem_result = self.analyze_inst(air, *elem, ctx)?;
+                    element_refs.push(elem_result.air_ref);
                 }
+
+                let array_type = Type::Array(array_type_id);
+                let air_ref = air.add_inst(AirInst {
+                    data: AirInstData::ArrayInit {
+                        array_type_id,
+                        elements: element_refs,
+                    },
+                    ty: array_type,
+                    span: inst.span,
+                });
+                Ok(AnalysisResult::new(air_ref, array_type))
             }
 
             InstData::IndexGet { base, index } => {
                 // Synthesize the base type
-                let base_result =
-                    self.analyze_inst(air, *base, TypeExpectation::Synthesize, ctx)?;
+                let base_result = self.analyze_inst(air, *base, ctx)?;
                 let base_type = base_result.ty;
 
                 let array_type_id = match base_type {
@@ -2338,8 +2084,7 @@ impl<'a> Sema<'a> {
                 };
 
                 // Index must be an integer (we'll use u64 for indexing)
-                let index_result =
-                    self.analyze_inst(air, *index, TypeExpectation::Synthesize, ctx)?;
+                let index_result = self.analyze_inst(air, *index, ctx)?;
                 if !index_result.ty.is_integer() && !index_result.ty.is_error() {
                     return Err(CompileError::new(
                         ErrorKind::TypeMismatch {
@@ -2366,9 +2111,6 @@ impl<'a> Sema<'a> {
                         ));
                     }
                 }
-
-                // Type check against expectation
-                expectation.check(element_type, inst.span)?;
 
                 let air_ref = air.add_inst(AirInst {
                     data: AirInstData::IndexGet {
@@ -2425,8 +2167,7 @@ impl<'a> Sema<'a> {
                 };
 
                 // Index must be an integer
-                let index_result =
-                    self.analyze_inst(air, *index, TypeExpectation::Synthesize, ctx)?;
+                let index_result = self.analyze_inst(air, *index, ctx)?;
                 if !index_result.ty.is_integer() && !index_result.ty.is_error() {
                     return Err(CompileError::new(
                         ErrorKind::TypeMismatch {
@@ -2455,8 +2196,7 @@ impl<'a> Sema<'a> {
                 }
 
                 // Analyze the value with the expected element type
-                let value_result =
-                    self.analyze_inst(air, *value, TypeExpectation::Check(element_type), ctx)?;
+                let value_result = self.analyze_inst(air, *value, ctx)?;
 
                 let air_ref = air.add_inst(AirInst {
                     data: AirInstData::IndexSet {
@@ -2506,7 +2246,6 @@ impl<'a> Sema<'a> {
                 })?;
 
                 let ty = Type::Enum(*enum_id);
-                expectation.check(ty, inst.span)?;
 
                 let air_ref = air.add_inst(AirInst {
                     data: AirInstData::EnumVariant {
@@ -2673,15 +2412,12 @@ impl<'a> Sema<'a> {
     /// Analyze a binary arithmetic operator (+, -, *, /, %).
     ///
     /// Follows Rust's type inference rules:
-    /// - If we have a type expectation (Check mode), use that type
-    /// - If synthesizing, infer the type from the left operand
-    /// - Integer literals adopt the inferred type
+    /// Types are determined by HM inference. Both operands must have the same type.
     fn analyze_binary_arith<F>(
         &mut self,
         air: &mut Air,
         lhs: InstRef,
         rhs: InstRef,
-        expectation: TypeExpectation,
         make_data: F,
         span: Span,
         ctx: &mut AnalysisContext,
@@ -2689,54 +2425,31 @@ impl<'a> Sema<'a> {
     where
         F: FnOnce(AirRef, AirRef) -> AirInstData,
     {
-        // Determine the operation type:
-        // - If we have an expected integer type, use it
-        // - Otherwise, synthesize from LHS and use that
-        let (lhs_result, op_type) = match expectation {
-            TypeExpectation::Check(ty) if ty.is_integer() => {
-                // We know the expected type, check LHS against it
-                let result = self.analyze_inst(air, lhs, TypeExpectation::Check(ty), ctx)?;
-                (result, ty)
-            }
-            _ => {
-                // Synthesize from LHS to determine the type
-                let result = self.analyze_inst(air, lhs, TypeExpectation::Synthesize, ctx)?;
-                let ty = if result.ty.is_integer() {
-                    result.ty
-                } else if result.ty == Type::Bool {
-                    // Arithmetic and bitwise operators are not allowed on booleans
-                    return Err(CompileError::new(
-                        ErrorKind::TypeMismatch {
-                            expected: "integer type".to_string(),
-                            found: result.ty.name().to_string(),
-                        },
-                        span,
-                    ));
-                } else {
-                    // LHS is not an integer (e.g., both operands are literals),
-                    // default to i32
-                    Type::I32
-                };
-                (result, ty)
-            }
-        };
+        let lhs_result = self.analyze_inst(air, lhs, ctx)?;
+        let rhs_result = self.analyze_inst(air, rhs, ctx)?;
 
-        // Now check RHS against the determined type
-        let rhs_result = self.analyze_inst(air, rhs, TypeExpectation::Check(op_type), ctx)?;
+        // Verify the type is integer (HM should have enforced this, but check anyway)
+        if !lhs_result.ty.is_integer() && !lhs_result.ty.is_error() && !lhs_result.ty.is_never() {
+            return Err(CompileError::new(
+                ErrorKind::TypeMismatch {
+                    expected: "integer type".to_string(),
+                    found: lhs_result.ty.name().to_string(),
+                },
+                span,
+            ));
+        }
 
         let air_ref = air.add_inst(AirInst {
             data: make_data(lhs_result.air_ref, rhs_result.air_ref),
-            ty: op_type,
+            ty: lhs_result.ty,
             span,
         });
-        Ok(AnalysisResult::new(air_ref, op_type))
+        Ok(AnalysisResult::new(air_ref, lhs_result.ty))
     }
 
-    /// Analyze a comparison operator with bidirectional type inference.
+    /// Analyze a comparison operator.
     ///
-    /// Uses bidirectional type inference: if the LHS is an integer literal and
-    /// the RHS has a known integer type, the literal adopts that type. Otherwise,
-    /// synthesizes the type from the left operand.
+    /// Types are determined by HM inference. Both operands must have the same type.
     ///
     /// For equality operators (`==`, `!=`), both integers and booleans are allowed.
     /// For ordering operators (`<`, `>`, `<=`, `>=`), only integers are allowed.
@@ -2761,29 +2474,12 @@ impl<'a> Sema<'a> {
                 .with_help("use `&&` to combine comparisons: `a < b && b < c`"));
         }
 
-        // Bidirectional type inference for integer literals:
-        // If LHS is an integer literal, peek at RHS to get a type hint
-        let lhs_expectation = if self.is_integer_literal(lhs) {
-            if let Some(rhs_type) = self.peek_type(rhs, ctx) {
-                if rhs_type.is_integer() {
-                    // Use the RHS type for the LHS literal
-                    TypeExpectation::Check(rhs_type)
-                } else {
-                    TypeExpectation::Synthesize
-                }
-            } else {
-                TypeExpectation::Synthesize
-            }
-        } else {
-            TypeExpectation::Synthesize
-        };
-
-        let lhs_result = self.analyze_inst(air, lhs, lhs_expectation, ctx)?;
+        let lhs_result = self.analyze_inst(air, lhs, ctx)?;
+        let rhs_result = self.analyze_inst(air, rhs, ctx)?;
         let lhs_type = lhs_result.ty;
 
         // Propagate Never/Error without additional type errors
         if lhs_type.is_never() || lhs_type.is_error() {
-            let rhs_result = self.analyze_inst(air, rhs, TypeExpectation::Check(Type::I32), ctx)?;
             let air_ref = air.add_inst(AirInst {
                 data: make_data(lhs_result.air_ref, rhs_result.air_ref),
                 ty: Type::Bool,
@@ -2818,9 +2514,6 @@ impl<'a> Sema<'a> {
                 self.rir.get(lhs).span,
             ));
         }
-
-        // RHS is checked against synthesized LHS type
-        let rhs_result = self.analyze_inst(air, rhs, TypeExpectation::Check(lhs_type), ctx)?;
 
         let air_ref = air.add_inst(AirInst {
             data: make_data(lhs_result.air_ref, rhs_result.air_ref),
@@ -3031,100 +2724,6 @@ impl<'a> Sema<'a> {
                 | InstData::Eq { .. }
                 | InstData::Ne { .. }
         )
-    }
-
-    /// Peek at the type of an expression without emitting AIR.
-    ///
-    /// This is a lightweight type inference pass used for bidirectional type inference.
-    /// When the LHS of a binary operator is an integer literal, we peek at the RHS type
-    /// to determine what type the literal should adopt.
-    ///
-    /// Returns `None` if the type cannot be determined (e.g., for complex expressions
-    /// that would require full analysis), in which case we fall back to default behavior.
-    fn peek_type(&self, inst_ref: InstRef, ctx: &AnalysisContext) -> Option<Type> {
-        let inst = self.rir.get(inst_ref);
-        match &inst.data {
-            // Literals have known types (except integers which default to i32)
-            InstData::IntConst(_) => Some(Type::I32),
-            InstData::BoolConst(_) => Some(Type::Bool),
-
-            // Variables have their declared types
-            InstData::VarRef { name } => {
-                if let Some(local) = ctx.locals.get(name) {
-                    Some(local.ty)
-                } else if let Some(param) = ctx.params.get(name) {
-                    Some(param.ty)
-                } else {
-                    None
-                }
-            }
-
-            // Function parameters have their declared types
-            InstData::ParamRef { name, .. } => ctx.params.get(name).map(|p| p.ty),
-
-            // Function calls have their declared return type
-            InstData::Call { name, .. } => self.functions.get(name).map(|f| f.return_type),
-
-            // Binary arithmetic operations: peek at operands to find integer type
-            InstData::Add { lhs, rhs }
-            | InstData::Sub { lhs, rhs }
-            | InstData::Mul { lhs, rhs }
-            | InstData::Div { lhs, rhs }
-            | InstData::Mod { lhs, rhs }
-            | InstData::BitAnd { lhs, rhs }
-            | InstData::BitOr { lhs, rhs }
-            | InstData::BitXor { lhs, rhs }
-            | InstData::Shl { lhs, rhs }
-            | InstData::Shr { lhs, rhs } => {
-                // Try LHS first, then RHS
-                if let Some(ty) = self.peek_type(*lhs, ctx) {
-                    if ty.is_integer() {
-                        return Some(ty);
-                    }
-                }
-                if let Some(ty) = self.peek_type(*rhs, ctx) {
-                    if ty.is_integer() {
-                        return Some(ty);
-                    }
-                }
-                Some(Type::I32) // Default if both are literals
-            }
-
-            // Unary negation and bitwise NOT: peek at operand
-            InstData::Neg { operand } | InstData::BitNot { operand } => {
-                self.peek_type(*operand, ctx)
-            }
-
-            // Comparisons return bool
-            InstData::Eq { .. }
-            | InstData::Ne { .. }
-            | InstData::Lt { .. }
-            | InstData::Gt { .. }
-            | InstData::Le { .. }
-            | InstData::Ge { .. } => Some(Type::Bool),
-
-            // Logical operators return bool
-            InstData::And { .. } | InstData::Or { .. } | InstData::Not { .. } => Some(Type::Bool),
-
-            // Array index: get element type from array type
-            InstData::IndexGet { base, .. } => {
-                if let Some(array_ty) = self.peek_type(*base, ctx) {
-                    if let Type::Array(id) = array_ty {
-                        // Get the element type from the array type definition
-                        self.array_type_defs
-                            .get(id.0 as usize)
-                            .map(|def| def.element_type)
-                    } else {
-                        None
-                    }
-                } else {
-                    None
-                }
-            }
-
-            // For other expressions, we can't easily peek
-            _ => None,
-        }
     }
 }
 

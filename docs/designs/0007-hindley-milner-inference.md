@@ -1,12 +1,12 @@
 ---
 id: 0007
 title: Hindley-Milner Type Inference
-status: proposal
+status: implemented
 tags: [types, compiler]
 feature-flag: hm-inference
 created: 2025-12-24
-accepted:
-implemented:
+accepted: 2025-12-24
+implemented: 2025-12-24
 spec-sections: []
 superseded-by:
 ---
@@ -15,7 +15,7 @@ superseded-by:
 
 ## Status
 
-Proposal
+Implemented
 
 ## Summary
 
@@ -273,11 +273,11 @@ Code that compiled before will compile after with the same types.
   - Verify all existing spec tests pass
   - Legacy peek_type and integer_type kept as defensive fallbacks (may remove in Phase 5)
 
-- [ ] **Phase 5: Cleanup and stabilization** - tree1-205.5
-  - Remove TypeExpectation (no longer needed)
-  - Simplify error handling
-  - Update documentation
-  - Performance testing
+- [x] **Phase 5: Cleanup and stabilization** - rue-rvm
+  - Remove TypeExpectation enum and peek_type function
+  - Add InferType::Array for structural array type handling during inference
+  - Update FunctionSig and ParamVarInfo to use InferType (not Type)
+  - Pure HM inference without fallbacks
 
 ## Consequences
 
