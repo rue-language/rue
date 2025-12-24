@@ -94,6 +94,11 @@ impl<'a> CfgLower<'a> {
 
     /// Get the length of an array type.
     fn array_length(&self, array_type_id: ArrayTypeId) -> u64 {
+        debug_assert!(
+            (array_type_id.0 as usize) < self.array_types.len(),
+            "invalid array type ID: {:?}",
+            array_type_id
+        );
         self.array_types
             .get(array_type_id.0 as usize)
             .map(|def| def.length)
