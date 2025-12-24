@@ -283,8 +283,11 @@ pub enum X86Inst {
     /// `shl dst, cl` - Shift left 32-bit by count in CL register (dst = dst << CL).
     Shl32RCl { dst: Operand },
 
-    /// `shl dst, imm` - Shift left by immediate (dst = dst << imm).
+    /// `shl dst, imm` - Shift left 64-bit by immediate (dst = dst << imm).
     ShlRI { dst: Operand, imm: u8 },
+
+    /// `shl dst, imm` - Shift left 32-bit by immediate (dst = dst << imm).
+    Shl32RI { dst: Operand, imm: u8 },
 
     /// `shr dst, cl` - Logical shift right 64-bit by count in CL register (dst = dst >> CL).
     ShrRCl { dst: Operand },
@@ -292,8 +295,11 @@ pub enum X86Inst {
     /// `shr dst, cl` - Logical shift right 32-bit by count in CL register (dst = dst >> CL).
     Shr32RCl { dst: Operand },
 
-    /// `shr dst, imm` - Logical shift right by immediate (dst = dst >> imm).
+    /// `shr dst, imm` - Logical shift right 64-bit by immediate (dst = dst >> imm).
     ShrRI { dst: Operand, imm: u8 },
+
+    /// `shr dst, imm` - Logical shift right 32-bit by immediate (dst = dst >> imm).
+    Shr32RI { dst: Operand, imm: u8 },
 
     /// `sar dst, cl` - Arithmetic shift right 64-bit by count in CL register.
     SarRCl { dst: Operand },
@@ -301,8 +307,11 @@ pub enum X86Inst {
     /// `sar dst, cl` - Arithmetic shift right 32-bit by count in CL register.
     Sar32RCl { dst: Operand },
 
-    /// `sar dst, imm` - Arithmetic shift right by immediate.
+    /// `sar dst, imm` - Arithmetic shift right 64-bit by immediate.
     SarRI { dst: Operand, imm: u8 },
+
+    /// `sar dst, imm` - Arithmetic shift right 32-bit by immediate.
+    Sar32RI { dst: Operand, imm: u8 },
 
     /// `cdq` - Sign-extend EAX into EDX:EAX (for division).
     Cdq,
@@ -517,13 +526,16 @@ impl fmt::Display for X86Inst {
             X86Inst::NotR { dst } => write!(f, "not {}", dst),
             X86Inst::ShlRCl { dst } => write!(f, "shlq {}, cl", dst),
             X86Inst::Shl32RCl { dst } => write!(f, "shll {}, cl", dst),
-            X86Inst::ShlRI { dst, imm } => write!(f, "shl {}, {}", dst, imm),
+            X86Inst::ShlRI { dst, imm } => write!(f, "shlq {}, {}", dst, imm),
+            X86Inst::Shl32RI { dst, imm } => write!(f, "shll {}, {}", dst, imm),
             X86Inst::ShrRCl { dst } => write!(f, "shrq {}, cl", dst),
             X86Inst::Shr32RCl { dst } => write!(f, "shrl {}, cl", dst),
-            X86Inst::ShrRI { dst, imm } => write!(f, "shr {}, {}", dst, imm),
+            X86Inst::ShrRI { dst, imm } => write!(f, "shrq {}, {}", dst, imm),
+            X86Inst::Shr32RI { dst, imm } => write!(f, "shrl {}, {}", dst, imm),
             X86Inst::SarRCl { dst } => write!(f, "sarq {}, cl", dst),
             X86Inst::Sar32RCl { dst } => write!(f, "sarl {}, cl", dst),
-            X86Inst::SarRI { dst, imm } => write!(f, "sar {}, {}", dst, imm),
+            X86Inst::SarRI { dst, imm } => write!(f, "sarq {}, {}", dst, imm),
+            X86Inst::Sar32RI { dst, imm } => write!(f, "sarl {}, {}", dst, imm),
             X86Inst::Cdq => write!(f, "cdq"),
             X86Inst::IdivR { src } => write!(f, "idiv {}", src),
             X86Inst::CmpRR { src1, src2 } => write!(f, "cmp {}, {}", src1, src2),

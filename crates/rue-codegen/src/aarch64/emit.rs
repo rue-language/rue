@@ -674,6 +674,24 @@ impl<'a> Emitter<'a> {
                 self.emit_lsl_imm(rd, rn, *imm);
             }
 
+            Aarch64Inst::Lsl32Imm { dst, src, imm } => {
+                let rd = dst.as_physical();
+                let rn = src.as_physical();
+                self.emit_lsl32_imm(rd, rn, *imm);
+            }
+
+            Aarch64Inst::Lsr32Imm { dst, src, imm } => {
+                let rd = dst.as_physical();
+                let rn = src.as_physical();
+                self.emit_lsr32_imm(rd, rn, *imm);
+            }
+
+            Aarch64Inst::Asr32Imm { dst, src, imm } => {
+                let rd = dst.as_physical();
+                let rn = src.as_physical();
+                self.emit_asr32_imm(rd, rn, *imm);
+            }
+
             Aarch64Inst::StringConstPtr { dst, string_id } => {
                 // Load string pointer using ADRP + ADD for PC-relative addressing
                 // This requires relocations to be resolved by the linker
@@ -1405,6 +1423,53 @@ impl<'a> Emitter<'a> {
         let imms = 63 - shift;
         let inst = OPCODE_UBFM_X
             | (immr << 16)
+            | (imms << 10)
+            | (rn.encoding() as u32) << 5
+            | rd.encoding() as u32;
+        self.emit_u32(inst);
+    }
+
+    fn emit_lsl32_imm(&mut self, rd: Reg, rn: Reg, shift: u8) {
+        // LSL Wd, Wn, #shift is an alias for UBFM Wd, Wn, #(-shift mod 32), #(31-shift)
+        // For 32-bit: UBFM with sf=0, N=0
+        // immr = -shift mod 32 = (32 - shift) mod 32
+        // imms = 31 - shift
+        const OPCODE_UBFM_W_BASE: u32 = 0x5300_0000;
+        let shift = shift as u32;
+        let immr = (32 - shift) & 0x1F;
+        let imms = 31 - shift;
+        let inst = OPCODE_UBFM_W_BASE
+            | (immr << 16)
+            | (imms << 10)
+            | (rn.encoding() as u32) << 5
+            | rd.encoding() as u32;
+        self.emit_u32(inst);
+    }
+
+    fn emit_lsr32_imm(&mut self, rd: Reg, rn: Reg, imm: u8) {
+        // LSR Wd, Wn, #imm (32-bit logical shift right by immediate)
+        // Encoded as UBFM Wd, Wn, #imm, #31
+        // UBFM: 0b0101_0011_0000_0000 immr imms Rn Rd
+        // For LSR #imm: immr = imm, imms = 31
+        const OPCODE_UBFM_W: u32 = 0x5300_0000; // 32-bit UBFM base
+        let imms = 31u32;
+        let inst = OPCODE_UBFM_W
+            | ((imm as u32 & 0x1F) << 16)
+            | (imms << 10)
+            | (rn.encoding() as u32) << 5
+            | rd.encoding() as u32;
+        self.emit_u32(inst);
+    }
+
+    fn emit_asr32_imm(&mut self, rd: Reg, rn: Reg, imm: u8) {
+        // ASR Wd, Wn, #imm (32-bit arithmetic shift right by immediate)
+        // Encoded as SBFM Wd, Wn, #imm, #31
+        // SBFM: 0b0001_0011_0000_0000 immr imms Rn Rd
+        // For ASR #imm: immr = imm, imms = 31
+        const OPCODE_SBFM_W: u32 = 0x1300_0000; // 32-bit SBFM base
+        let imms = 31u32;
+        let inst = OPCODE_SBFM_W
+            | ((imm as u32 & 0x1F) << 16)
             | (imms << 10)
             | (rn.encoding() as u32) << 5
             | rd.encoding() as u32;

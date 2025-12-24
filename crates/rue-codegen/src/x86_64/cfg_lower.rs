@@ -811,7 +811,6 @@ impl<'a> CfgLower<'a> {
                 self.value_map.insert(value, vreg);
 
                 let lhs_vreg = self.get_vreg(*lhs);
-                let rhs_vreg = self.get_vreg(*rhs);
 
                 // Move LHS to result
                 self.mir.push(X86Inst::MovRR {
@@ -819,22 +818,43 @@ impl<'a> CfgLower<'a> {
                     src: Operand::Virtual(lhs_vreg),
                 });
 
-                // Move shift amount to RCX (CL is the low byte)
-                self.mir.push(X86Inst::MovRR {
-                    dst: Operand::Physical(Reg::Rcx),
-                    src: Operand::Virtual(rhs_vreg),
-                });
-
-                // Use 64-bit shift for i64/u64, 32-bit shift for smaller types
-                // 32-bit shift masks by 31, 64-bit shift masks by 63
-                if ty.is_64_bit() {
-                    self.mir.push(X86Inst::ShlRCl {
-                        dst: Operand::Virtual(vreg),
-                    });
+                // Check if shift amount is a constant - use immediate form if so
+                let rhs_inst = &self.cfg.get_inst(*rhs).data;
+                if let CfgInstData::Const(shift_amount) = rhs_inst {
+                    let imm = *shift_amount as u8;
+                    // Use 64-bit shift for i64/u64, 32-bit shift for smaller types
+                    if ty.is_64_bit() {
+                        self.mir.push(X86Inst::ShlRI {
+                            dst: Operand::Virtual(vreg),
+                            imm,
+                        });
+                    } else {
+                        self.mir.push(X86Inst::Shl32RI {
+                            dst: Operand::Virtual(vreg),
+                            imm,
+                        });
+                    }
                 } else {
-                    self.mir.push(X86Inst::Shl32RCl {
-                        dst: Operand::Virtual(vreg),
+                    // Variable shift amount - use CL register
+                    let rhs_vreg = self.get_vreg(*rhs);
+
+                    // Move shift amount to RCX (CL is the low byte)
+                    self.mir.push(X86Inst::MovRR {
+                        dst: Operand::Physical(Reg::Rcx),
+                        src: Operand::Virtual(rhs_vreg),
                     });
+
+                    // Use 64-bit shift for i64/u64, 32-bit shift for smaller types
+                    // 32-bit shift masks by 31, 64-bit shift masks by 63
+                    if ty.is_64_bit() {
+                        self.mir.push(X86Inst::ShlRCl {
+                            dst: Operand::Virtual(vreg),
+                        });
+                    } else {
+                        self.mir.push(X86Inst::Shl32RCl {
+                            dst: Operand::Virtual(vreg),
+                        });
+                    }
                 }
             }
 
@@ -843,7 +863,6 @@ impl<'a> CfgLower<'a> {
                 self.value_map.insert(value, vreg);
 
                 let lhs_vreg = self.get_vreg(*lhs);
-                let rhs_vreg = self.get_vreg(*rhs);
 
                 // Move LHS to result
                 self.mir.push(X86Inst::MovRR {
@@ -851,26 +870,57 @@ impl<'a> CfgLower<'a> {
                     src: Operand::Virtual(lhs_vreg),
                 });
 
-                // Move shift amount to RCX (CL is the low byte)
-                self.mir.push(X86Inst::MovRR {
-                    dst: Operand::Physical(Reg::Rcx),
-                    src: Operand::Virtual(rhs_vreg),
-                });
-
-                // Use arithmetic shift (SAR) for signed types, logical shift (SHR) for unsigned
-                // Use 64-bit shift for i64/u64, 32-bit shift for smaller types
-                if ty.is_64_bit() {
-                    if ty.is_signed() {
-                        self.mir.push(X86Inst::SarRCl {
+                // Check if shift amount is a constant - use immediate form if so.
+                // Note: x86 shift instructions mask the shift amount (by 31 for 32-bit,
+                // 63 for 64-bit), so we don't need to validate the range here - the
+                // hardware handles out-of-range shifts correctly.
+                let rhs_inst = &self.cfg.get_inst(*rhs).data;
+                if let CfgInstData::Const(shift_amount) = rhs_inst {
+                    let imm = *shift_amount as u8;
+                    // Use arithmetic shift (SAR) for signed types, logical shift (SHR) for unsigned
+                    // Use 64-bit shift for i64/u64, 32-bit shift for smaller types
+                    if ty.is_64_bit() && ty.is_signed() {
+                        self.mir.push(X86Inst::SarRI {
                             dst: Operand::Virtual(vreg),
+                            imm,
+                        });
+                    } else if ty.is_64_bit() {
+                        self.mir.push(X86Inst::ShrRI {
+                            dst: Operand::Virtual(vreg),
+                            imm,
+                        });
+                    } else if ty.is_signed() {
+                        self.mir.push(X86Inst::Sar32RI {
+                            dst: Operand::Virtual(vreg),
+                            imm,
                         });
                     } else {
-                        self.mir.push(X86Inst::ShrRCl {
+                        self.mir.push(X86Inst::Shr32RI {
                             dst: Operand::Virtual(vreg),
+                            imm,
                         });
                     }
                 } else {
-                    if ty.is_signed() {
+                    // Variable shift amount - use CL register
+                    let rhs_vreg = self.get_vreg(*rhs);
+
+                    // Move shift amount to RCX (CL is the low byte)
+                    self.mir.push(X86Inst::MovRR {
+                        dst: Operand::Physical(Reg::Rcx),
+                        src: Operand::Virtual(rhs_vreg),
+                    });
+
+                    // Use arithmetic shift (SAR) for signed types, logical shift (SHR) for unsigned
+                    // Use 64-bit shift for i64/u64, 32-bit shift for smaller types
+                    if ty.is_64_bit() && ty.is_signed() {
+                        self.mir.push(X86Inst::SarRCl {
+                            dst: Operand::Virtual(vreg),
+                        });
+                    } else if ty.is_64_bit() {
+                        self.mir.push(X86Inst::ShrRCl {
+                            dst: Operand::Virtual(vreg),
+                        });
+                    } else if ty.is_signed() {
                         self.mir.push(X86Inst::Sar32RCl {
                             dst: Operand::Virtual(vreg),
                         });

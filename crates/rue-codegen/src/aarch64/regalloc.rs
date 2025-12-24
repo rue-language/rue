@@ -767,6 +767,105 @@ impl RegAlloc {
                 }
             }
 
+            Aarch64Inst::Lsl32Imm { dst, src, imm } => {
+                let src_op = self.load_operand(mir, src, Reg::X10);
+
+                match self.get_allocation(dst) {
+                    Some(Allocation::Register(reg)) => {
+                        mir.push(Aarch64Inst::Lsl32Imm {
+                            dst: Operand::Physical(reg),
+                            src: src_op,
+                            imm,
+                        });
+                    }
+                    Some(Allocation::Spill(offset)) => {
+                        mir.push(Aarch64Inst::Lsl32Imm {
+                            dst: Operand::Physical(Reg::X9),
+                            src: src_op,
+                            imm,
+                        });
+                        mir.push(Aarch64Inst::Str {
+                            src: Operand::Physical(Reg::X9),
+                            base: Reg::Fp,
+                            offset,
+                        });
+                    }
+                    None => {
+                        mir.push(Aarch64Inst::Lsl32Imm {
+                            dst,
+                            src: src_op,
+                            imm,
+                        });
+                    }
+                }
+            }
+
+            Aarch64Inst::Lsr32Imm { dst, src, imm } => {
+                let src_op = self.load_operand(mir, src, Reg::X10);
+
+                match self.get_allocation(dst) {
+                    Some(Allocation::Register(reg)) => {
+                        mir.push(Aarch64Inst::Lsr32Imm {
+                            dst: Operand::Physical(reg),
+                            src: src_op,
+                            imm,
+                        });
+                    }
+                    Some(Allocation::Spill(offset)) => {
+                        mir.push(Aarch64Inst::Lsr32Imm {
+                            dst: Operand::Physical(Reg::X9),
+                            src: src_op,
+                            imm,
+                        });
+                        mir.push(Aarch64Inst::Str {
+                            src: Operand::Physical(Reg::X9),
+                            base: Reg::Fp,
+                            offset,
+                        });
+                    }
+                    None => {
+                        mir.push(Aarch64Inst::Lsr32Imm {
+                            dst,
+                            src: src_op,
+                            imm,
+                        });
+                    }
+                }
+            }
+
+            Aarch64Inst::Asr32Imm { dst, src, imm } => {
+                let src_op = self.load_operand(mir, src, Reg::X10);
+
+                match self.get_allocation(dst) {
+                    Some(Allocation::Register(reg)) => {
+                        mir.push(Aarch64Inst::Asr32Imm {
+                            dst: Operand::Physical(reg),
+                            src: src_op,
+                            imm,
+                        });
+                    }
+                    Some(Allocation::Spill(offset)) => {
+                        mir.push(Aarch64Inst::Asr32Imm {
+                            dst: Operand::Physical(Reg::X9),
+                            src: src_op,
+                            imm,
+                        });
+                        mir.push(Aarch64Inst::Str {
+                            src: Operand::Physical(Reg::X9),
+                            base: Reg::Fp,
+                            offset,
+                        });
+                    }
+                    None => {
+                        mir.push(Aarch64Inst::Asr32Imm {
+                            dst,
+                            src: src_op,
+                            imm,
+                        });
+                    }
+                }
+            }
+
             Aarch64Inst::StringConstPtr { dst, string_id } => match self.get_allocation(dst) {
                 Some(Allocation::Register(reg)) => {
                     mir.push(Aarch64Inst::StringConstPtr {

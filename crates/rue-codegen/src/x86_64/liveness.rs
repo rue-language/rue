@@ -210,7 +210,12 @@ fn uses(inst: &X86Inst) -> Vec<VReg> {
             // dst is both read and written, CL is implicit physical register
             add_if_virtual(dst, &mut result);
         }
-        X86Inst::ShlRI { dst, .. } | X86Inst::ShrRI { dst, .. } | X86Inst::SarRI { dst, .. } => {
+        X86Inst::ShlRI { dst, .. }
+        | X86Inst::Shl32RI { dst, .. }
+        | X86Inst::ShrRI { dst, .. }
+        | X86Inst::Shr32RI { dst, .. }
+        | X86Inst::SarRI { dst, .. }
+        | X86Inst::Sar32RI { dst, .. } => {
             // dst is both read and written
             add_if_virtual(dst, &mut result);
         }
@@ -336,12 +341,15 @@ fn defs(inst: &X86Inst) -> Vec<VReg> {
         | X86Inst::ShlRCl { dst }
         | X86Inst::Shl32RCl { dst }
         | X86Inst::ShlRI { dst, .. }
+        | X86Inst::Shl32RI { dst, .. }
         | X86Inst::ShrRCl { dst }
         | X86Inst::Shr32RCl { dst }
         | X86Inst::ShrRI { dst, .. }
+        | X86Inst::Shr32RI { dst, .. }
         | X86Inst::SarRCl { dst }
         | X86Inst::Sar32RCl { dst }
-        | X86Inst::SarRI { dst, .. } => {
+        | X86Inst::SarRI { dst, .. }
+        | X86Inst::Sar32RI { dst, .. } => {
             add_if_virtual(dst, &mut result);
         }
         X86Inst::IdivR { .. } => {

@@ -434,8 +434,17 @@ pub enum Aarch64Inst {
     /// `add dst, src, #imm, lsl #12` - Add immediate with shift (for large offsets).
     /// Note: Using regular AddImm for now, this is for future large offset support.
 
-    /// `lsl dst, src, #imm` - Logical shift left by immediate.
+    /// `lsl dst, src, #imm` - Logical shift left by immediate (64-bit).
     LslImm { dst: Operand, src: Operand, imm: u8 },
+
+    /// `lsl dst, src, #imm` - Logical shift left by immediate (32-bit).
+    Lsl32Imm { dst: Operand, src: Operand, imm: u8 },
+
+    /// `lsr dst, src, #imm` - Logical shift right by immediate (32-bit).
+    Lsr32Imm { dst: Operand, src: Operand, imm: u8 },
+
+    /// `asr dst, src, #imm` - Arithmetic shift right by immediate (32-bit).
+    Asr32Imm { dst: Operand, src: Operand, imm: u8 },
 
     // === Arithmetic instructions ===
     /// `add dst, src1, src2` - Add two registers.
@@ -775,6 +784,15 @@ impl fmt::Display for Aarch64Inst {
             Aarch64Inst::LdrIndexed { dst, base } => write!(f, "ldr {}, [{}]", dst, base),
             Aarch64Inst::StrIndexed { src, base } => write!(f, "str {}, [{}]", src, base),
             Aarch64Inst::LslImm { dst, src, imm } => write!(f, "lsl {}, {}, #{}", dst, src, imm),
+            Aarch64Inst::Lsl32Imm { dst, src, imm } => {
+                write!(f, "lsl {}, {}, #{} // 32-bit", dst, src, imm)
+            }
+            Aarch64Inst::Lsr32Imm { dst, src, imm } => {
+                write!(f, "lsr {}, {}, #{} // 32-bit", dst, src, imm)
+            }
+            Aarch64Inst::Asr32Imm { dst, src, imm } => {
+                write!(f, "asr {}, {}, #{} // 32-bit", dst, src, imm)
+            }
             Aarch64Inst::AddRR { dst, src1, src2 } => {
                 write!(f, "add {}, {}, {}", dst, src1, src2)
             }

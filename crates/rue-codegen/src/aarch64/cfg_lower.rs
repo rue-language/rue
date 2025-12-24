@@ -974,6 +974,33 @@ impl<'a> CfgLower<'a> {
                 self.value_map.insert(value, vreg);
 
                 let lhs_vreg = self.get_vreg(*lhs);
+
+                // Check if shift amount is a constant within valid range - use immediate form if so
+                // For 64-bit: 0-63, for 32-bit: 0-31
+                let rhs_inst = &self.cfg.get_inst(*rhs).data;
+                let bit_width = if ty.is_64_bit() { 64 } else { 32 };
+                if let CfgInstData::Const(shift_amount) = rhs_inst {
+                    let shift = *shift_amount;
+                    if shift < bit_width {
+                        let imm = shift as u8;
+                        // Use 64-bit shift for i64/u64, 32-bit shift for smaller types
+                        if ty.is_64_bit() {
+                            self.mir.push(Aarch64Inst::LslImm {
+                                dst: Operand::Virtual(vreg),
+                                src: Operand::Virtual(lhs_vreg),
+                                imm,
+                            });
+                        } else {
+                            self.mir.push(Aarch64Inst::Lsl32Imm {
+                                dst: Operand::Virtual(vreg),
+                                src: Operand::Virtual(lhs_vreg),
+                                imm,
+                            });
+                        }
+                        return;
+                    }
+                }
+                // Variable shift amount or out-of-range constant - use register form
                 let rhs_vreg = self.get_vreg(*rhs);
 
                 // Use 64-bit shift for i64/u64, 32-bit shift for smaller types
@@ -998,38 +1025,74 @@ impl<'a> CfgLower<'a> {
                 self.value_map.insert(value, vreg);
 
                 let lhs_vreg = self.get_vreg(*lhs);
+
+                // Check if shift amount is a constant within valid range - use immediate form if so
+                // For 64-bit: 0-63, for 32-bit: 0-31
+                let rhs_inst = &self.cfg.get_inst(*rhs).data;
+                let bit_width = if ty.is_64_bit() { 64 } else { 32 };
+                if let CfgInstData::Const(shift_amount) = rhs_inst {
+                    let shift = *shift_amount;
+                    if shift < bit_width {
+                        let imm = shift as u8;
+                        // Use arithmetic shift (ASR) for signed types, logical shift (LSR) for unsigned
+                        // Use 64-bit shift for i64/u64, 32-bit shift for smaller types
+                        if ty.is_64_bit() && ty.is_signed() {
+                            self.mir.push(Aarch64Inst::Asr64Imm {
+                                dst: Operand::Virtual(vreg),
+                                src: Operand::Virtual(lhs_vreg),
+                                imm,
+                            });
+                        } else if ty.is_64_bit() {
+                            self.mir.push(Aarch64Inst::Lsr64Imm {
+                                dst: Operand::Virtual(vreg),
+                                src: Operand::Virtual(lhs_vreg),
+                                imm,
+                            });
+                        } else if ty.is_signed() {
+                            self.mir.push(Aarch64Inst::Asr32Imm {
+                                dst: Operand::Virtual(vreg),
+                                src: Operand::Virtual(lhs_vreg),
+                                imm,
+                            });
+                        } else {
+                            self.mir.push(Aarch64Inst::Lsr32Imm {
+                                dst: Operand::Virtual(vreg),
+                                src: Operand::Virtual(lhs_vreg),
+                                imm,
+                            });
+                        }
+                        return;
+                    }
+                }
+                // Variable shift amount or out-of-range constant - use register form
                 let rhs_vreg = self.get_vreg(*rhs);
 
                 // Use arithmetic shift (ASR) for signed types, logical shift (LSR) for unsigned
                 // Use 64-bit shift for i64/u64, 32-bit shift for smaller types
-                if ty.is_64_bit() {
-                    if ty.is_signed() {
-                        self.mir.push(Aarch64Inst::AsrRR {
-                            dst: Operand::Virtual(vreg),
-                            src1: Operand::Virtual(lhs_vreg),
-                            src2: Operand::Virtual(rhs_vreg),
-                        });
-                    } else {
-                        self.mir.push(Aarch64Inst::LsrRR {
-                            dst: Operand::Virtual(vreg),
-                            src1: Operand::Virtual(lhs_vreg),
-                            src2: Operand::Virtual(rhs_vreg),
-                        });
-                    }
+                if ty.is_64_bit() && ty.is_signed() {
+                    self.mir.push(Aarch64Inst::AsrRR {
+                        dst: Operand::Virtual(vreg),
+                        src1: Operand::Virtual(lhs_vreg),
+                        src2: Operand::Virtual(rhs_vreg),
+                    });
+                } else if ty.is_64_bit() {
+                    self.mir.push(Aarch64Inst::LsrRR {
+                        dst: Operand::Virtual(vreg),
+                        src1: Operand::Virtual(lhs_vreg),
+                        src2: Operand::Virtual(rhs_vreg),
+                    });
+                } else if ty.is_signed() {
+                    self.mir.push(Aarch64Inst::Asr32RR {
+                        dst: Operand::Virtual(vreg),
+                        src1: Operand::Virtual(lhs_vreg),
+                        src2: Operand::Virtual(rhs_vreg),
+                    });
                 } else {
-                    if ty.is_signed() {
-                        self.mir.push(Aarch64Inst::Asr32RR {
-                            dst: Operand::Virtual(vreg),
-                            src1: Operand::Virtual(lhs_vreg),
-                            src2: Operand::Virtual(rhs_vreg),
-                        });
-                    } else {
-                        self.mir.push(Aarch64Inst::Lsr32RR {
-                            dst: Operand::Virtual(vreg),
-                            src1: Operand::Virtual(lhs_vreg),
-                            src2: Operand::Virtual(rhs_vreg),
-                        });
-                    }
+                    self.mir.push(Aarch64Inst::Lsr32RR {
+                        dst: Operand::Virtual(vreg),
+                        src1: Operand::Virtual(lhs_vreg),
+                        src2: Operand::Virtual(rhs_vreg),
+                    });
                 }
             }
 

@@ -352,7 +352,10 @@ fn uses(inst: &Aarch64Inst) -> Vec<VReg> {
             add_if_virtual(src, &mut result);
             result.push(*base);
         }
-        Aarch64Inst::LslImm { src, .. } => {
+        Aarch64Inst::LslImm { src, .. }
+        | Aarch64Inst::Lsl32Imm { src, .. }
+        | Aarch64Inst::Lsr32Imm { src, .. }
+        | Aarch64Inst::Asr32Imm { src, .. } => {
             add_if_virtual(src, &mut result);
         }
         Aarch64Inst::StringConstPtr { .. } | Aarch64Inst::StringConstLen { .. } => {
@@ -460,7 +463,10 @@ fn defs(inst: &Aarch64Inst) -> Vec<VReg> {
         Aarch64Inst::StrIndexed { .. } => {
             // Writes to memory
         }
-        Aarch64Inst::LslImm { dst, .. } => {
+        Aarch64Inst::LslImm { dst, .. }
+        | Aarch64Inst::Lsl32Imm { dst, .. }
+        | Aarch64Inst::Lsr32Imm { dst, .. }
+        | Aarch64Inst::Asr32Imm { dst, .. } => {
             add_if_virtual(dst, &mut result);
         }
         Aarch64Inst::StringConstPtr { dst, .. } | Aarch64Inst::StringConstLen { dst, .. } => {

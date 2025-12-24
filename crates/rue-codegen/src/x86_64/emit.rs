@@ -355,6 +355,9 @@ impl<'a> Emitter<'a> {
             X86Inst::ShlRI { dst, imm } => {
                 self.emit_shl_imm(dst.as_physical(), *imm);
             }
+            X86Inst::Shl32RI { dst, imm } => {
+                self.emit_shl32_imm(dst.as_physical(), *imm);
+            }
             X86Inst::ShrRCl { dst } => {
                 self.emit_shr_cl(dst.as_physical());
             }
@@ -364,6 +367,9 @@ impl<'a> Emitter<'a> {
             X86Inst::ShrRI { dst, imm } => {
                 self.emit_shr_imm(dst.as_physical(), *imm);
             }
+            X86Inst::Shr32RI { dst, imm } => {
+                self.emit_shr32_imm(dst.as_physical(), *imm);
+            }
             X86Inst::SarRCl { dst } => {
                 self.emit_sar_cl(dst.as_physical());
             }
@@ -372,6 +378,9 @@ impl<'a> Emitter<'a> {
             }
             X86Inst::SarRI { dst, imm } => {
                 self.emit_sar_imm(dst.as_physical(), *imm);
+            }
+            X86Inst::Sar32RI { dst, imm } => {
+                self.emit_sar32_imm(dst.as_physical(), *imm);
             }
             X86Inst::Cdq => {
                 self.emit_cdq();
@@ -1308,6 +1317,27 @@ impl<'a> Emitter<'a> {
         self.code.push(imm);
     }
 
+    /// Emit `shl r32, imm8`.
+    ///
+    /// Encoding: C1 /4 imm8 (shl r/m32, imm8) - no REX.W for 32-bit
+    fn emit_shl32_imm(&mut self, dst: Reg, imm: u8) {
+        let dst_enc = dst.encoding();
+
+        // REX prefix only if needed for extended registers (no REX.W for 32-bit)
+        if dst.needs_rex() {
+            self.code.push(0x41); // REX.B
+        }
+
+        // Opcode: C1 (group 2, shift by imm8)
+        self.code.push(0xC1);
+
+        // ModR/M: mod=11, reg=4 (SHL), r/m=dst
+        self.code.push(0xE0 | (dst_enc & 7));
+
+        // Immediate
+        self.code.push(imm);
+    }
+
     /// Emit `shr r64, cl`.
     ///
     /// Encoding: REX.W D3 /5 (shr r/m64, CL)
@@ -1351,6 +1381,27 @@ impl<'a> Emitter<'a> {
         self.code.push(imm);
     }
 
+    /// Emit `shr r32, imm8`.
+    ///
+    /// Encoding: C1 /5 imm8 (shr r/m32, imm8) - no REX.W for 32-bit
+    fn emit_shr32_imm(&mut self, dst: Reg, imm: u8) {
+        let dst_enc = dst.encoding();
+
+        // REX prefix only if needed for extended registers (no REX.W for 32-bit)
+        if dst.needs_rex() {
+            self.code.push(0x41); // REX.B
+        }
+
+        // Opcode: C1 (group 2, shift by imm8)
+        self.code.push(0xC1);
+
+        // ModR/M: mod=11, reg=5 (SHR), r/m=dst
+        self.code.push(0xE8 | (dst_enc & 7));
+
+        // Immediate
+        self.code.push(imm);
+    }
+
     /// Emit `sar r64, cl`.
     ///
     /// Encoding: REX.W D3 /7 (sar r/m64, CL)
@@ -1383,6 +1434,27 @@ impl<'a> Emitter<'a> {
             rex |= 0x01; // REX.B
         }
         self.code.push(rex);
+
+        // Opcode: C1 (group 2, shift by imm8)
+        self.code.push(0xC1);
+
+        // ModR/M: mod=11, reg=7 (SAR), r/m=dst
+        self.code.push(0xF8 | (dst_enc & 7));
+
+        // Immediate
+        self.code.push(imm);
+    }
+
+    /// Emit `sar r32, imm8`.
+    ///
+    /// Encoding: C1 /7 imm8 (sar r/m32, imm8) - no REX.W for 32-bit
+    fn emit_sar32_imm(&mut self, dst: Reg, imm: u8) {
+        let dst_enc = dst.encoding();
+
+        // REX prefix only if needed for extended registers (no REX.W for 32-bit)
+        if dst.needs_rex() {
+            self.code.push(0x41); // REX.B
+        }
 
         // Opcode: C1 (group 2, shift by imm8)
         self.code.push(0xC1);

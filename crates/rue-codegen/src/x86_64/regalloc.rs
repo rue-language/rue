@@ -399,6 +399,10 @@ impl RegAlloc {
                 self.emit_unop_imm_u8(mir, dst, imm, |d, i| X86Inst::ShlRI { dst: d, imm: i });
             }
 
+            X86Inst::Shl32RI { dst, imm } => {
+                self.emit_unop_imm_u8(mir, dst, imm, |d, i| X86Inst::Shl32RI { dst: d, imm: i });
+            }
+
             X86Inst::ShrRCl { dst } => {
                 self.emit_unop(mir, dst, |d| X86Inst::ShrRCl { dst: d });
             }
@@ -411,6 +415,10 @@ impl RegAlloc {
                 self.emit_unop_imm_u8(mir, dst, imm, |d, i| X86Inst::ShrRI { dst: d, imm: i });
             }
 
+            X86Inst::Shr32RI { dst, imm } => {
+                self.emit_unop_imm_u8(mir, dst, imm, |d, i| X86Inst::Shr32RI { dst: d, imm: i });
+            }
+
             X86Inst::SarRCl { dst } => {
                 self.emit_unop(mir, dst, |d| X86Inst::SarRCl { dst: d });
             }
@@ -421,6 +429,10 @@ impl RegAlloc {
 
             X86Inst::SarRI { dst, imm } => {
                 self.emit_unop_imm_u8(mir, dst, imm, |d, i| X86Inst::SarRI { dst: d, imm: i });
+            }
+
+            X86Inst::Sar32RI { dst, imm } => {
+                self.emit_unop_imm_u8(mir, dst, imm, |d, i| X86Inst::Sar32RI { dst: d, imm: i });
             }
 
             X86Inst::IdivR { src } => {
