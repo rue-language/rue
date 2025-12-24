@@ -2043,23 +2043,17 @@ impl<'a> CfgLower<'a> {
     /// - Unsigned (u32, u64): C (carry) flag - C=1 means overflow, so branch on Lo (C=0)
     ///
     /// For sub-word types, check if result fits in the type's range.
-    fn emit_overflow_check_add(&mut self, ty: Type, result_vreg: VReg) {
-        let ok_label = self.mir.alloc_label();
-
+    /// Emit a range check for sub-word types (U8, U16, I8, I16).
+    ///
+    /// This checks if the result value fits in the valid range for the type:
+    /// - U8: result <= 255
+    /// - U16: result <= 65535
+    /// - I8: sign-extend and compare with original
+    /// - I16: sign-extend and compare with original
+    ///
+    /// Branches to `ok_label` if the value is in range (no overflow).
+    fn emit_subword_range_check(&mut self, ty: Type, result_vreg: VReg, ok_label: LabelId) {
         match ty {
-            // 32-bit and 64-bit unsigned: C=1 means overflow (carry out)
-            // Branch to ok if C=0 (no overflow)
-            Type::U32 | Type::U64 => {
-                self.mir.push(Aarch64Inst::BCond {
-                    cond: Cond::Lo, // Lo = C=0 (no carry)
-                    label: ok_label,
-                });
-            }
-            // 32-bit and 64-bit signed: V flag indicates overflow
-            Type::I32 | Type::I64 => {
-                self.mir.push(Aarch64Inst::Bvc { label: ok_label });
-            }
-            // Sub-word unsigned types: check if result fits in range [0, max]
             Type::U8 => {
                 // Result must be <= 255
                 self.mir.push(Aarch64Inst::CmpImm {
@@ -2088,7 +2082,6 @@ impl<'a> CfgLower<'a> {
                     label: ok_label,
                 });
             }
-            // Sub-word signed types: check if result fits in range [min, max]
             Type::I8 => {
                 // Sign-extend to 64-bit and compare with original
                 let sext_vreg = self.mir.alloc_vreg();
@@ -2120,6 +2113,32 @@ impl<'a> CfgLower<'a> {
                     cond: Cond::Eq,
                     label: ok_label,
                 });
+            }
+            _ => {
+                // Not a sub-word type, do nothing
+            }
+        }
+    }
+
+    fn emit_overflow_check_add(&mut self, ty: Type, result_vreg: VReg) {
+        let ok_label = self.mir.alloc_label();
+
+        match ty {
+            // 32-bit and 64-bit unsigned: C=1 means overflow (carry out)
+            // Branch to ok if C=0 (no overflow)
+            Type::U32 | Type::U64 => {
+                self.mir.push(Aarch64Inst::BCond {
+                    cond: Cond::Lo, // Lo = C=0 (no carry)
+                    label: ok_label,
+                });
+            }
+            // 32-bit and 64-bit signed: V flag indicates overflow
+            Type::I32 | Type::I64 => {
+                self.mir.push(Aarch64Inst::Bvc { label: ok_label });
+            }
+            // Sub-word types: check if result fits in type's range
+            Type::U8 | Type::U16 | Type::I8 | Type::I16 => {
+                self.emit_subword_range_check(ty, result_vreg, ok_label);
             }
             // Other types don't have arithmetic
             _ => return,
@@ -2153,68 +2172,9 @@ impl<'a> CfgLower<'a> {
             Type::I32 | Type::I64 => {
                 self.mir.push(Aarch64Inst::Bvc { label: ok_label });
             }
-            // Sub-word types: same as ADD - check range
+            // Sub-word types: check if result fits in type's range
             Type::U8 | Type::U16 | Type::I8 | Type::I16 => {
-                // For subtraction, we need to check both overflow (signed) and underflow
-                // Use the same logic as ADD - check if result fits in type's range
-                match ty {
-                    Type::U8 => {
-                        self.mir.push(Aarch64Inst::CmpImm {
-                            src: Operand::Virtual(result_vreg),
-                            imm: 255,
-                        });
-                        self.mir.push(Aarch64Inst::BCond {
-                            cond: Cond::Ls,
-                            label: ok_label,
-                        });
-                    }
-                    Type::U16 => {
-                        let max_vreg = self.mir.alloc_vreg();
-                        self.mir.push(Aarch64Inst::MovImm {
-                            dst: Operand::Virtual(max_vreg),
-                            imm: 65535,
-                        });
-                        self.mir.push(Aarch64Inst::CmpRR {
-                            src1: Operand::Virtual(result_vreg),
-                            src2: Operand::Virtual(max_vreg),
-                        });
-                        self.mir.push(Aarch64Inst::BCond {
-                            cond: Cond::Ls,
-                            label: ok_label,
-                        });
-                    }
-                    Type::I8 => {
-                        let sext_vreg = self.mir.alloc_vreg();
-                        self.mir.push(Aarch64Inst::Sxtb {
-                            dst: Operand::Virtual(sext_vreg),
-                            src: Operand::Virtual(result_vreg),
-                        });
-                        self.mir.push(Aarch64Inst::CmpRR {
-                            src1: Operand::Virtual(result_vreg),
-                            src2: Operand::Virtual(sext_vreg),
-                        });
-                        self.mir.push(Aarch64Inst::BCond {
-                            cond: Cond::Eq,
-                            label: ok_label,
-                        });
-                    }
-                    Type::I16 => {
-                        let sext_vreg = self.mir.alloc_vreg();
-                        self.mir.push(Aarch64Inst::Sxth {
-                            dst: Operand::Virtual(sext_vreg),
-                            src: Operand::Virtual(result_vreg),
-                        });
-                        self.mir.push(Aarch64Inst::CmpRR {
-                            src1: Operand::Virtual(result_vreg),
-                            src2: Operand::Virtual(sext_vreg),
-                        });
-                        self.mir.push(Aarch64Inst::BCond {
-                            cond: Cond::Eq,
-                            label: ok_label,
-                        });
-                    }
-                    _ => unreachable!(),
-                }
+                self.emit_subword_range_check(ty, result_vreg, ok_label);
             }
             // Other types don't have arithmetic
             _ => return,
@@ -2356,65 +2316,7 @@ impl<'a> CfgLower<'a> {
                     src1: Operand::Virtual(lhs_vreg),
                     src2: Operand::Virtual(rhs_vreg),
                 });
-                // Check range using same logic as ADD
-                match ty {
-                    Type::U8 => {
-                        self.mir.push(Aarch64Inst::CmpImm {
-                            src: Operand::Virtual(result_vreg),
-                            imm: 255,
-                        });
-                        self.mir.push(Aarch64Inst::BCond {
-                            cond: Cond::Ls,
-                            label: ok_label,
-                        });
-                    }
-                    Type::U16 => {
-                        let max_vreg = self.mir.alloc_vreg();
-                        self.mir.push(Aarch64Inst::MovImm {
-                            dst: Operand::Virtual(max_vreg),
-                            imm: 65535,
-                        });
-                        self.mir.push(Aarch64Inst::CmpRR {
-                            src1: Operand::Virtual(result_vreg),
-                            src2: Operand::Virtual(max_vreg),
-                        });
-                        self.mir.push(Aarch64Inst::BCond {
-                            cond: Cond::Ls,
-                            label: ok_label,
-                        });
-                    }
-                    Type::I8 => {
-                        let sext_vreg = self.mir.alloc_vreg();
-                        self.mir.push(Aarch64Inst::Sxtb {
-                            dst: Operand::Virtual(sext_vreg),
-                            src: Operand::Virtual(result_vreg),
-                        });
-                        self.mir.push(Aarch64Inst::CmpRR {
-                            src1: Operand::Virtual(result_vreg),
-                            src2: Operand::Virtual(sext_vreg),
-                        });
-                        self.mir.push(Aarch64Inst::BCond {
-                            cond: Cond::Eq,
-                            label: ok_label,
-                        });
-                    }
-                    Type::I16 => {
-                        let sext_vreg = self.mir.alloc_vreg();
-                        self.mir.push(Aarch64Inst::Sxth {
-                            dst: Operand::Virtual(sext_vreg),
-                            src: Operand::Virtual(result_vreg),
-                        });
-                        self.mir.push(Aarch64Inst::CmpRR {
-                            src1: Operand::Virtual(result_vreg),
-                            src2: Operand::Virtual(sext_vreg),
-                        });
-                        self.mir.push(Aarch64Inst::BCond {
-                            cond: Cond::Eq,
-                            label: ok_label,
-                        });
-                    }
-                    _ => unreachable!(),
-                }
+                self.emit_subword_range_check(ty, result_vreg, ok_label);
             }
             _ => return,
         }
@@ -2446,44 +2348,17 @@ impl<'a> CfgLower<'a> {
             Type::I32 | Type::I64 => {
                 self.mir.push(Aarch64Inst::Bvc { label: ok_label });
             }
-            // Sub-word types: check range
+            // Sub-word unsigned types: only 0 is valid (negating to 0)
             Type::U8 | Type::U16 => {
-                // For unsigned negation, only 0 is valid (negating to 0)
                 // Result must be 0 for no overflow
                 self.mir.push(Aarch64Inst::Cbz {
                     src: Operand::Virtual(result_vreg),
                     label: ok_label,
                 });
             }
-            Type::I8 => {
-                let sext_vreg = self.mir.alloc_vreg();
-                self.mir.push(Aarch64Inst::Sxtb {
-                    dst: Operand::Virtual(sext_vreg),
-                    src: Operand::Virtual(result_vreg),
-                });
-                self.mir.push(Aarch64Inst::CmpRR {
-                    src1: Operand::Virtual(result_vreg),
-                    src2: Operand::Virtual(sext_vreg),
-                });
-                self.mir.push(Aarch64Inst::BCond {
-                    cond: Cond::Eq,
-                    label: ok_label,
-                });
-            }
-            Type::I16 => {
-                let sext_vreg = self.mir.alloc_vreg();
-                self.mir.push(Aarch64Inst::Sxth {
-                    dst: Operand::Virtual(sext_vreg),
-                    src: Operand::Virtual(result_vreg),
-                });
-                self.mir.push(Aarch64Inst::CmpRR {
-                    src1: Operand::Virtual(result_vreg),
-                    src2: Operand::Virtual(sext_vreg),
-                });
-                self.mir.push(Aarch64Inst::BCond {
-                    cond: Cond::Eq,
-                    label: ok_label,
-                });
+            // Sub-word signed types: check if result fits in type's range
+            Type::I8 | Type::I16 => {
+                self.emit_subword_range_check(ty, result_vreg, ok_label);
             }
             _ => return,
         }
