@@ -479,3 +479,38 @@ fn main() -> i32 {
 }
 """
 exit_code = 42
+
+# =============================================================================
+# Struct parameters
+# =============================================================================
+
+[[case]]
+name = "struct_param_simple"
+spec = ["6.1:3"]
+description = "Function taking a struct parameter"
+source = """
+struct Point { x: i32, y: i32 }
+fn get_x(p: Point) -> i32 { p.x }
+fn main() -> i32 {
+    let p = Point { x: 42, y: 10 };
+    get_x(p)
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "struct_param_nested_field_access"
+spec = ["6.1:3"]
+description = "Accessing nested fields of a struct parameter computes correct slot offsets"
+source = """
+struct Inner { a: i32, b: i32 }
+struct Outer { inner: Inner, other: i32 }
+fn get_inner_a(o: Outer) -> i32 { o.inner.a }
+fn get_inner_b(o: Outer) -> i32 { o.inner.b }
+fn main() -> i32 {
+    let o = Outer { inner: Inner { a: 10, b: 20 }, other: 100 };
+    get_inner_a(o) + get_inner_b(o)
+}
+"""
+exit_code = 30
+

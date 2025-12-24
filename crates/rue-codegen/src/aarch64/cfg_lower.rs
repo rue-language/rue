@@ -36,6 +36,15 @@ const RET_REGS: [Reg; 8] = [
     Reg::X7,
 ];
 
+/// Result of tracing back through a field access chain.
+/// Indicates whether the chain originates from a Load or Param.
+enum FieldChainBase {
+    /// Chain originates from a Load instruction with the given slot.
+    Load { slot: u32 },
+    /// Chain originates from a Param instruction with the given index.
+    Param { index: u32 },
+}
+
 /// CFG to Aarch64Mir lowering.
 pub struct CfgLower<'a> {
     cfg: &'a Cfg,
@@ -150,6 +159,33 @@ impl<'a> CfgLower<'a> {
             offset
         } else {
             field_index // Fallback to field index if struct not found
+        }
+    }
+
+    /// Trace back through nested FieldGet operations to find the base
+    /// and compute the total slot offset.
+    ///
+    /// Returns `Some((base, total_offset))` if the chain originates from a Load or Param,
+    /// or `None` if it originates from something else (BlockParam, StructInit, Call, etc).
+    fn trace_field_chain(&self, value: CfgValue) -> Option<(FieldChainBase, u32)> {
+        let inst = self.cfg.get_inst(value);
+        match &inst.data {
+            CfgInstData::Load { slot } => Some((FieldChainBase::Load { slot: *slot }, 0)),
+            CfgInstData::Param { index } => Some((FieldChainBase::Param { index: *index }, 0)),
+            CfgInstData::FieldGet {
+                base,
+                struct_id,
+                field_index,
+            } => {
+                // Recursively trace back through the base
+                if let Some((base_kind, accumulated_offset)) = self.trace_field_chain(*base) {
+                    let this_offset = self.struct_field_slot_offset(*struct_id, *field_index);
+                    Some((base_kind, accumulated_offset + this_offset))
+                } else {
+                    None
+                }
+            }
+            _ => None,
         }
     }
 
@@ -1445,68 +1481,75 @@ impl<'a> CfgLower<'a> {
 
             CfgInstData::FieldGet {
                 base,
-                struct_id: _,
+                struct_id,
                 field_index,
             } => {
                 let vreg = self.mir.alloc_vreg();
                 self.value_map.insert(value, vreg);
 
-                let base_data = &self.cfg.get_inst(*base).data;
-                match base_data {
-                    CfgInstData::Load { slot } => {
-                        let actual_slot = slot + field_index;
-                        let offset = self.local_offset(actual_slot);
-                        self.mir.push(Aarch64Inst::Ldr {
-                            dst: Operand::Virtual(vreg),
-                            base: Reg::Fp,
-                            offset,
-                        });
+                // Try to trace back through any chain of FieldGets to find
+                // the original Load or Param. This handles nested struct field access.
+                let this_offset = self.struct_field_slot_offset(*struct_id, *field_index);
+                if let Some((base_kind, accumulated_offset)) = self.trace_field_chain(*base) {
+                    let total_offset = accumulated_offset + this_offset;
+                    match base_kind {
+                        FieldChainBase::Load { slot } => {
+                            // Chain originates from a Load - compute offset from local slot
+                            let actual_slot = slot + total_offset;
+                            let offset = self.local_offset(actual_slot);
+                            self.mir.push(Aarch64Inst::Ldr {
+                                dst: Operand::Virtual(vreg),
+                                base: Reg::Fp,
+                                offset,
+                            });
+                        }
+                        FieldChainBase::Param { index } => {
+                            // Chain originates from a Param - compute offset from param slot
+                            let param_slot = self.num_locals + index + total_offset;
+                            let offset = self.local_offset(param_slot);
+                            self.mir.push(Aarch64Inst::Ldr {
+                                dst: Operand::Virtual(vreg),
+                                base: Reg::Fp,
+                                offset,
+                            });
+                        }
                     }
-                    CfgInstData::Param { index } => {
-                        let param_slot = self.num_locals + index + field_index;
-                        let offset = self.local_offset(param_slot);
-                        self.mir.push(Aarch64Inst::Ldr {
-                            dst: Operand::Virtual(vreg),
-                            base: Reg::Fp,
-                            offset,
-                        });
-                    }
-                    _ => {
-                        // For other sources (BlockParam, StructInit, Call), use field vregs
-                        if let Some(field_vregs) = self.struct_field_vregs.get(base).cloned() {
-                            if let Some(&field_vreg) = field_vregs.get(*field_index as usize) {
-                                self.mir.push(Aarch64Inst::MovRR {
-                                    dst: Operand::Virtual(vreg),
-                                    src: Operand::Virtual(field_vreg),
-                                });
-                            } else {
-                                // Fallback if field_index out of range
-                                let base_vreg = self.get_vreg(*base);
-                                self.mir.push(Aarch64Inst::MovRR {
-                                    dst: Operand::Virtual(vreg),
-                                    src: Operand::Virtual(base_vreg),
-                                });
-                            }
+                } else {
+                    // For other sources (BlockParam, StructInit, Call), use field vregs
+                    if let Some(field_vregs) = self.struct_field_vregs.get(base).cloned() {
+                        if let Some(&field_vreg) = field_vregs.get(*field_index as usize) {
+                            self.mir.push(Aarch64Inst::MovRR {
+                                dst: Operand::Virtual(vreg),
+                                src: Operand::Virtual(field_vreg),
+                            });
                         } else {
-                            // Fallback for cases without field vregs (e.g., single-field struct)
+                            // Fallback if field_index out of range
                             let base_vreg = self.get_vreg(*base);
                             self.mir.push(Aarch64Inst::MovRR {
                                 dst: Operand::Virtual(vreg),
                                 src: Operand::Virtual(base_vreg),
                             });
                         }
+                    } else {
+                        // Fallback for cases without field vregs (e.g., single-field struct)
+                        let base_vreg = self.get_vreg(*base);
+                        self.mir.push(Aarch64Inst::MovRR {
+                            dst: Operand::Virtual(vreg),
+                            src: Operand::Virtual(base_vreg),
+                        });
                     }
                 }
             }
 
             CfgInstData::FieldSet {
                 slot,
-                struct_id: _,
+                struct_id,
                 field_index,
                 value: val,
             } => {
                 let val_vreg = self.get_vreg(*val);
-                let actual_slot = slot + field_index;
+                let field_slot_offset = self.struct_field_slot_offset(*struct_id, *field_index);
+                let actual_slot = slot + field_slot_offset;
                 let offset = self.local_offset(actual_slot);
                 self.mir.push(Aarch64Inst::Str {
                     src: Operand::Virtual(val_vreg),

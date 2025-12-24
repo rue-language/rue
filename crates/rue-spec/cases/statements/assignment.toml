@@ -184,6 +184,21 @@ fn main() -> i32 {
 """
 compile_fail = true
 
+[[case]]
+name = "assign_multi_slot_nested_struct_field"
+spec = ["5.2:11", "5.2:12"]
+description = "Assigning to a field after a multi-slot nested struct computes the correct slot offset"
+source = """
+struct Inner { a: i32, b: i32 }
+struct Outer { inner: Inner, other: i32 }
+fn main() -> i32 {
+    let mut o = Outer { inner: Inner { a: 1, b: 2 }, other: 100 };
+    o.other = 42;
+    o.inner.a + o.inner.b + o.other
+}
+"""
+exit_code = 45
+
 # =============================================================================
 # Assignment Is Statement, Not Expression
 # =============================================================================
