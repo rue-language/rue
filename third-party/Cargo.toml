@@ -15,7 +15,7 @@ path = "/dev/null"
 annotate-snippets = "0.11"
 anyhow = "1.0"
 chumsky = { version = "1.0.0-alpha.7", features = ["pratt"] }
-libtest-mimic = "0.8"
+libtest2-mimic = "0.0.4"
 logos = "0.14"
 once_cell = "1.19"
 regex = "1.11"

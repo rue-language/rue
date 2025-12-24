@@ -1,0 +1,6 @@
+{
+  "git": {
+    "sha1": "93d1ea05308a4f49fbc3e602aef803ae4f3c5af5"
+  },
+  "path_in_vcs": "crates/libtest-lexarg"
+}

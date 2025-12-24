@@ -3,7 +3,7 @@ rust_binary(
     srcs = glob(["src/**/*.rs"]),
     deps = [
         "//crates/rue-test-runner:rue-test-runner",
-        "//third-party:libtest-mimic",
+        "//third-party:libtest2-mimic",
         "//third-party:serde",
         "//third-party:tempfile",
         "//third-party:toml",

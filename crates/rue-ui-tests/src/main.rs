@@ -3,7 +3,7 @@
 //! These tests verify compiler behavior that is not part of the language specification,
 //! such as warnings, diagnostics quality, and compiler flags.
 
-use libtest_mimic::{Arguments, Failed, Trial};
+use libtest2_mimic::{Harness, RunContext, RunError, Trial};
 use rue_test_runner::{Case, find_rue_binary, load_test_files, run_test_case};
 use std::path::{Path, PathBuf};
 
@@ -27,14 +27,20 @@ fn find_cases_dir() -> PathBuf {
         })
 }
 
-/// Wrapper to convert TestResult to libtest_mimic's Failed type.
-fn run_case_wrapper(case: &Case, rue_binary: &Path) -> Result<(), Failed> {
-    run_test_case(case, rue_binary).map_err(|e| e.into())
+/// Wrapper to convert TestResult to libtest2_mimic's RunError type.
+fn run_case_wrapper(
+    case: &Case,
+    rue_binary: &Path,
+    skip: bool,
+    ctx: RunContext<'_>,
+) -> Result<(), RunError> {
+    if skip {
+        return ctx.ignore_for("marked as skip");
+    }
+    run_test_case(case, rue_binary).map_err(|e| RunError::fail(e.to_string()))
 }
 
 fn main() {
-    let args = Arguments::from_args();
-
     // Find the rue binary
     let rue_binary = find_rue_binary();
 
@@ -56,14 +62,9 @@ fn main() {
                 let skip = case.skip;
                 let rue_binary = rue_binary.clone();
 
-                let mut trial =
-                    Trial::test(test_name, move || run_case_wrapper(&case, &rue_binary));
-
-                if skip {
-                    trial = trial.with_ignored_flag(true);
-                }
-
-                trial
+                Trial::test(test_name, move |ctx| {
+                    run_case_wrapper(&case, &rue_binary, skip, ctx)
+                })
             })
         })
         .collect();
@@ -73,5 +74,5 @@ fn main() {
         eprintln!("Make sure test files exist and have the correct format.");
     }
 
-    libtest_mimic::run(&args, tests).exit();
+    Harness::with_env().discover(tests).main();
 }

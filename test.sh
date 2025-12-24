@@ -25,7 +25,7 @@ RUE_BINARY="$(./buck2 build //crates/rue:rue --show-output | tail -1 | awk '{pri
 echo "Running spec tests..."
 RUE_BINARY="$RUE_BINARY" \
 RUE_SPEC_CASES="crates/rue-spec/cases" \
-./buck2 run //crates/rue-spec:rue-spec -- "$@"
+./buck2 run //crates/rue-spec:rue-spec -- --quiet "$@"
 
 # Run traceability check (fails if coverage < 100% or orphan references exist)
 echo "Running spec traceability check..."
@@ -37,4 +37,4 @@ RUE_SPEC_CASES="crates/rue-spec/cases" \
 echo "Running UI tests..."
 RUE_BINARY="$RUE_BINARY" \
 RUE_UI_CASES="crates/rue-ui-tests/cases" \
-./buck2 run //crates/rue-ui-tests:rue-ui-tests -- "$@"
+./buck2 run //crates/rue-ui-tests:rue-ui-tests -- --quiet "$@"

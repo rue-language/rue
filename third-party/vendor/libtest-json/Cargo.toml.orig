@@ -1,0 +1,43 @@
+[package]
+name = "libtest-json"
+version = "0.0.2"
+description = "Definition of the json output for libtest"
+categories = ["development-tools::testing"]
+keywords = ["libtest"]
+repository.workspace = true
+license.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+include.workspace = true
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs", "--generate-link-to-definition"]
+
+[package.metadata.release]
+pre-release-replacements = [
+  {file="CHANGELOG.md", search="Unreleased", replace="{{version}}", min=1},
+  {file="CHANGELOG.md", search="\\.\\.\\.HEAD", replace="...{{tag_name}}", exactly=1},
+  {file="CHANGELOG.md", search="ReleaseDate", replace="{{date}}", min=1},
+  {file="CHANGELOG.md", search="<!-- next-header -->", replace="<!-- next-header -->\n## [Unreleased] - ReleaseDate\n", exactly=1},
+  {file="CHANGELOG.md", search="<!-- next-url -->", replace="<!-- next-url -->\n[Unreleased]: https://github.com/epage/pytest-rs/compare/{{tag_name}}...HEAD", exactly=1},
+]
+
+[features]
+default = []
+serde = ["dep:serde"]
+json = ["dep:json-write"]
+unstable-schema = ["serde", "dep:schemars", "dep:serde_json"]
+
+[dependencies]
+serde = { version = "1.0.160", features = ["derive"], optional = true }
+serde_json = { version = "1.0.96", optional = true }
+schemars = { version = "1.0.0-alpha.17", features = ["preserve_order", "semver1"], optional = true }
+json-write = { version = "0.0.2", path = "../json-write", optional = true }
+
+[dev-dependencies]
+snapbox = "0.6.21"
+serde_json = "1.0.96"
+
+[lints]
+workspace = true

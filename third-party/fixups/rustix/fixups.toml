@@ -1,2 +1,20 @@
-# rustix build script sets up backend selection and cfg flags
-buildscript.run = true
+# rustix build script sets up backend selection and cfg flags.
+#
+# We disable the build script and provide cfg flags manually because Buck2's
+# sandboxed build environment prevents the build script from detecting the
+# linux_raw arch files. We configure for the linux_raw backend on Linux x86_64
+# and aarch64, which uses direct syscalls instead of libc.
+buildscript.run = false
+
+# Platform-specific cfg flags for backend selection
+# Linux x86_64 uses linux_raw backend (direct syscalls)
+['cfg(all(target_os = "linux", target_arch = "x86_64"))']
+cfgs = ["linux_raw", "linux_raw_dep", "linux_like", "linux_kernel"]
+
+# Linux aarch64 uses linux_raw backend (direct syscalls)
+['cfg(all(target_os = "linux", target_arch = "aarch64"))']
+cfgs = ["linux_raw", "linux_raw_dep", "linux_like", "linux_kernel"]
+
+# macOS uses libc backend (no linux_raw_dep!)
+['cfg(target_os = "macos")']
+cfgs = ["libc", "apple", "bsd"]
