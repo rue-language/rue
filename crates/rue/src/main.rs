@@ -5,7 +5,7 @@ use std::path::Path;
 
 use annotate_snippets::{Level, Renderer, Snippet};
 use rue_compiler::{
-    CompileError, CompileOptions, CompileWarning, Lexer, LinkerMode, Parser, PreviewFeature,
+    CompileError, CompileOptions, CompileWarning, Lexer, LinkerMode, Mir, Parser, PreviewFeature,
     PreviewFeatures, compile_frontend_from_ast, compile_with_options, generate_allocated_mir,
     generate_mir,
 };
@@ -381,7 +381,7 @@ fn handle_emit(source: &str, options: &Options) -> Result<(), ()> {
                 println!();
             }
             EmitStage::Mir => {
-                println!("=== MIR ===");
+                println!("=== MIR ({}) ===", options.target);
                 if let Some(ref state) = frontend_state {
                     for func in &state.functions {
                         let mir = generate_mir(
@@ -389,6 +389,7 @@ fn handle_emit(source: &str, options: &Options) -> Result<(), ()> {
                             &state.struct_defs,
                             &state.array_types,
                             &state.strings,
+                            options.target,
                         );
                         println!("function {}:", func.analyzed.name);
                         println!("{}", mir);
@@ -397,7 +398,7 @@ fn handle_emit(source: &str, options: &Options) -> Result<(), ()> {
                 println!();
             }
             EmitStage::Asm => {
-                println!("=== Assembly (x86-64) ===");
+                println!("=== Assembly ({}) ===", options.target);
                 if let Some(ref state) = frontend_state {
                     for func in &state.functions {
                         println!(".globl {}", func.analyzed.name);
@@ -407,6 +408,7 @@ fn handle_emit(source: &str, options: &Options) -> Result<(), ()> {
                             &state.struct_defs,
                             &state.array_types,
                             &state.strings,
+                            options.target,
                         );
                         print_assembly(&mir);
                         println!();
@@ -420,19 +422,30 @@ fn handle_emit(source: &str, options: &Options) -> Result<(), ()> {
     Ok(())
 }
 
-/// Print x86-64 assembly from MIR.
+/// Print assembly from MIR.
 ///
 /// This prints the MIR instructions in assembly-like format.
 /// When called with allocated MIR (post-regalloc), physical registers
-/// like rax, rbx, r12 are shown.
-fn print_assembly(mir: &rue_compiler::X86Mir) {
-    use rue_codegen::x86_64::X86Inst;
-
-    // Print instructions
-    for inst in mir.instructions() {
-        match inst {
-            X86Inst::Label { id } => println!("{}:", id),
-            _ => println!("    {}", inst),
+/// are shown (rax, rbx, r12 for x86-64; x0, x1, x19 for aarch64).
+fn print_assembly(mir: &Mir) {
+    match mir {
+        Mir::X86_64(mir) => {
+            use rue_codegen::x86_64::X86Inst;
+            for inst in mir.instructions() {
+                match inst {
+                    X86Inst::Label { id } => println!("{}:", id),
+                    _ => println!("    {}", inst),
+                }
+            }
+        }
+        Mir::Aarch64(mir) => {
+            use rue_codegen::aarch64::Aarch64Inst;
+            for inst in mir.instructions() {
+                match inst {
+                    Aarch64Inst::Label { id } => println!("{}:", id),
+                    _ => println!("    {}", inst),
+                }
+            }
         }
     }
 }

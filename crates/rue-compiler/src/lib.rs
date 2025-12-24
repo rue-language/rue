@@ -29,7 +29,7 @@ pub fn validate_runtime() -> Result<(), String> {
 // Re-export commonly used types
 pub use rue_air::{Air, AnalyzedFunction, ArrayTypeDef, Sema, SemaOutput, StructDef, Type};
 pub use rue_cfg::{Cfg, CfgBuilder, CfgOutput};
-pub use rue_codegen::X86Mir;
+pub use rue_codegen::{X86Mir, aarch64::Aarch64Mir};
 pub use rue_error::{
     CompileError, CompileResult, CompileWarning, ErrorKind, PreviewFeature, PreviewFeatures,
     WarningKind,
@@ -540,7 +540,27 @@ fn link_system_macos(
     })
 }
 
-/// Generate X86Mir from CFG (for debugging/inspection).
+/// Machine IR that can hold either x86-64 or AArch64 MIR.
+///
+/// This enum allows the `--emit mir` and `--emit asm` commands to work
+/// with any target architecture.
+pub enum Mir {
+    /// x86-64 machine IR.
+    X86_64(X86Mir),
+    /// AArch64 machine IR.
+    Aarch64(Aarch64Mir),
+}
+
+impl std::fmt::Display for Mir {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Mir::X86_64(mir) => write!(f, "{}", mir),
+            Mir::Aarch64(mir) => write!(f, "{}", mir),
+        }
+    }
+}
+
+/// Generate MIR from CFG for the given target (for debugging/inspection).
 ///
 /// This returns the MIR before register allocation, with virtual registers.
 pub fn generate_mir(
@@ -548,11 +568,23 @@ pub fn generate_mir(
     struct_defs: &[StructDef],
     array_types: &[ArrayTypeDef],
     strings: &[String],
-) -> X86Mir {
-    rue_codegen::x86_64::CfgLower::new(cfg, struct_defs, array_types, strings).lower()
+    target: Target,
+) -> Mir {
+    match target.arch() {
+        Arch::X86_64 => {
+            let mir =
+                rue_codegen::x86_64::CfgLower::new(cfg, struct_defs, array_types, strings).lower();
+            Mir::X86_64(mir)
+        }
+        Arch::Aarch64 => {
+            let mir =
+                rue_codegen::aarch64::CfgLower::new(cfg, struct_defs, array_types, strings).lower();
+            Mir::Aarch64(mir)
+        }
+    }
 }
 
-/// Generate X86Mir after register allocation (for debugging/inspection).
+/// Generate MIR after register allocation for the given target (for debugging/inspection).
 ///
 /// This returns the MIR after register allocation, with physical registers.
 /// This is closer to the final assembly that will be emitted.
@@ -561,19 +593,36 @@ pub fn generate_allocated_mir(
     struct_defs: &[StructDef],
     array_types: &[ArrayTypeDef],
     strings: &[String],
-) -> X86Mir {
+    target: Target,
+) -> Mir {
     let num_locals = cfg.num_locals();
     let num_params = cfg.num_params();
-
-    // Lower CFG to X86Mir with virtual registers
-    let mir = rue_codegen::x86_64::CfgLower::new(cfg, struct_defs, array_types, strings).lower();
-
-    // Allocate physical registers
     let existing_slots = num_locals + num_params;
-    let (mir, _num_spills, _used_callee_saved) =
-        rue_codegen::x86_64::RegAlloc::new(mir, existing_slots).allocate_with_spills();
 
-    mir
+    match target.arch() {
+        Arch::X86_64 => {
+            // Lower CFG to X86Mir with virtual registers
+            let mir =
+                rue_codegen::x86_64::CfgLower::new(cfg, struct_defs, array_types, strings).lower();
+
+            // Allocate physical registers
+            let (mir, _num_spills, _used_callee_saved) =
+                rue_codegen::x86_64::RegAlloc::new(mir, existing_slots).allocate_with_spills();
+
+            Mir::X86_64(mir)
+        }
+        Arch::Aarch64 => {
+            // Lower CFG to Aarch64Mir with virtual registers
+            let mir =
+                rue_codegen::aarch64::CfgLower::new(cfg, struct_defs, array_types, strings).lower();
+
+            // Allocate physical registers
+            let (mir, _num_spills, _used_callee_saved) =
+                rue_codegen::aarch64::RegAlloc::new(mir, existing_slots).allocate_with_spills();
+
+            Mir::Aarch64(mir)
+        }
+    }
 }
 
 #[cfg(test)]

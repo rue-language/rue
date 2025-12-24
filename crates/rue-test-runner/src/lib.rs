@@ -181,12 +181,18 @@ pub fn normalize_error_output(s: &str, source_path: &Path) -> String {
     normalize_golden(&normalized)
 }
 
-/// Strip the emit header (e.g., "=== RIR ===") from the output.
+/// Strip the emit header (e.g., "=== RIR ===" or "=== MIR (aarch64-macos) ===") from the output.
 pub fn strip_emit_header(output: &str, stage: &str) -> String {
-    let header = format!("=== {} ===", stage);
+    // Match headers like "=== MIR ===" or "=== MIR (x86-64-linux) ===" or "=== MIR (aarch64-macos) ==="
+    let prefix = format!("=== {} ", stage);
+    let exact = format!("=== {} ===", stage);
     output
         .lines()
-        .filter(|line| line.trim() != header)
+        .filter(|line| {
+            let trimmed = line.trim();
+            // Filter out both "=== STAGE ===" and "=== STAGE (target) ==="
+            trimmed != exact && !(trimmed.starts_with(&prefix) && trimmed.ends_with("==="))
+        })
         .collect::<Vec<_>>()
         .join("\n")
 }
@@ -321,7 +327,11 @@ pub fn run_test_case(case: &Case, rue_binary: &Path) -> TestResult {
         }
 
         if let Some(ref expected) = case.expected_mir {
+            // MIR golden tests use x86-64-linux for consistent output across platforms.
+            // MIR is inherently architecture-specific, so we need a fixed target.
             let output = build_command(rue_binary)
+                .arg("--target")
+                .arg("x86-64-linux")
                 .arg("--emit")
                 .arg("mir")
                 .arg(&source_path)
@@ -336,7 +346,7 @@ pub fn run_test_case(case: &Case, rue_binary: &Path) -> TestResult {
             }
 
             let actual = String::from_utf8_lossy(&output.stdout);
-            // Strip the "=== MIR ===" header for golden comparison
+            // Strip the "=== MIR (target) ===" header for golden comparison
             let actual = strip_emit_header(&actual, "MIR");
             check_golden(&actual, expected, "MIR")?;
         }
