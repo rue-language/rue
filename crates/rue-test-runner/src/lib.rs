@@ -86,8 +86,9 @@ pub struct Case {
     /// are allowed to fail without failing the overall test suite.
     #[serde(default)]
     pub preview: Option<String>,
-    /// Target architecture for MIR golden tests (e.g., "x86-64-linux", "aarch64-macos").
-    /// Required for MIR tests; omitting it causes a test failure.
+    /// Target architecture (e.g., "x86-64-linux", "aarch64-macos").
+    /// When specified, the compiler is invoked with `--target <target>`.
+    /// Required for MIR golden tests; optional for other test types.
     #[serde(default)]
     pub target: Option<String>,
 }
@@ -229,9 +230,12 @@ pub fn run_test_case(case: &Case, rue_binary: &Path) -> TestResult {
         .write_all(case.source.as_bytes())
         .map_err(|e| format!("Failed to write source: {}", e))?;
 
-    // Build base command with preview flags if needed
+    // Build base command with target and preview flags if needed
     let build_command = |binary: &Path| -> Command {
         let mut cmd = Command::new(binary);
+        if let Some(ref target) = case.target {
+            cmd.arg("--target").arg(target);
+        }
         if let Some(ref feature) = case.preview {
             cmd.arg("--preview").arg(feature);
         }
@@ -332,14 +336,14 @@ pub fn run_test_case(case: &Case, rue_binary: &Path) -> TestResult {
 
         if let Some(ref expected) = case.expected_mir {
             // MIR golden tests require an explicit target since MIR is architecture-specific.
-            let target = case.target.as_ref().ok_or_else(|| {
-                "MIR golden tests require a 'target' field (e.g., target = \"x86-64-linux\")"
-                    .to_string()
-            })?;
+            if case.target.is_none() {
+                return Err(
+                    "MIR golden tests require a 'target' field (e.g., target = \"x86-64-linux\")"
+                        .to_string(),
+                );
+            }
 
             let output = build_command(rue_binary)
-                .arg("--target")
-                .arg(target)
                 .arg("--emit")
                 .arg("mir")
                 .arg(&source_path)
