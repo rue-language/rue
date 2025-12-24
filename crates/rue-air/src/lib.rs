@@ -17,7 +17,8 @@ mod types;
 
 pub use inference::{
     Constraint, ConstraintContext, ConstraintGenerator, ExprInfo, FunctionSig, InferType,
-    LocalVarInfo, ParamVarInfo, Substitution, TypeVarAllocator, TypeVarId, Unifier, UnifyResult,
+    LocalVarInfo, ParamVarInfo, Substitution, TypeVarAllocator, TypeVarId, UnificationError,
+    Unifier, UnifyResult,
 };
 pub use inst::{Air, AirInst, AirInstData, AirPattern, AirRef};
 pub use sema::{AnalyzedFunction, Sema, SemaOutput};

@@ -260,7 +260,7 @@ Code that compiled before will compile after with the same types.
   - Preserve span information for error reporting
   - Tests for constraint generation
 
-- [ ] **Phase 3: Unification** - tree1-205.3
+- [x] **Phase 3: Unification** - rue-8sl
   - Implement Algorithm W unification
   - Handle `IntLiteral` special unification rules
   - Apply integer defaulting at the end

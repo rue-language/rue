@@ -329,12 +329,55 @@ pub enum UnifyResult {
 
     /// Type must be signed but is unsigned.
     NotSigned { ty: Type },
+
+    /// Type must be an integer but is not.
+    NotInteger { ty: Type },
 }
 
 impl UnifyResult {
     /// Check if unification succeeded.
     pub fn is_ok(&self) -> bool {
         matches!(self, UnifyResult::Ok)
+    }
+}
+
+/// An error that occurred during unification.
+///
+/// Captures the error details along with the span for error reporting.
+#[derive(Debug, Clone)]
+pub struct UnificationError {
+    /// The type of error that occurred.
+    pub kind: UnifyResult,
+    /// The source location where the error occurred.
+    pub span: Span,
+}
+
+impl UnificationError {
+    /// Create a new unification error.
+    pub fn new(kind: UnifyResult, span: Span) -> Self {
+        Self { kind, span }
+    }
+
+    /// Get a human-readable error message.
+    pub fn message(&self) -> String {
+        match &self.kind {
+            UnifyResult::Ok => unreachable!("UnificationError should never contain Ok"),
+            UnifyResult::TypeMismatch { expected, found } => {
+                format!("type mismatch: expected {expected}, found {found}")
+            }
+            UnifyResult::IntLiteralNonInteger { found } => {
+                format!("integer literal cannot be used as {found}")
+            }
+            UnifyResult::OccursCheck { var, ty } => {
+                format!("infinite type: {var} cannot unify with {ty}")
+            }
+            UnifyResult::NotSigned { ty } => {
+                format!("cannot negate unsigned type {ty}")
+            }
+            UnifyResult::NotInteger { ty } => {
+                format!("expected integer type, found {ty}")
+            }
+        }
     }
 }
 
@@ -377,33 +420,37 @@ impl Unifier {
     /// 6. `IntLiteral = Concrete(non-integer)` → fails
     pub fn unify(&mut self, lhs: &InferType, rhs: &InferType) -> UnifyResult {
         // Apply current substitution to get most specific types
-        let lhs = self.substitution.apply(lhs);
-        let rhs = self.substitution.apply(rhs);
+        let lhs_resolved = self.substitution.apply(lhs);
+        let rhs_resolved = self.substitution.apply(rhs);
 
-        match (&lhs, &rhs) {
+        match (&lhs_resolved, &rhs_resolved) {
             // Same concrete types unify
             (InferType::Concrete(t1), InferType::Concrete(t2)) => {
                 if t1 == t2 || t1.can_coerce_to(t2) || t2.can_coerce_to(t1) {
                     UnifyResult::Ok
                 } else {
                     UnifyResult::TypeMismatch {
-                        expected: lhs,
-                        found: rhs,
+                        expected: lhs_resolved,
+                        found: rhs_resolved,
                     }
                 }
             }
 
             // Variable on left: bind it to right (if occurs check passes)
-            (InferType::Var(var), _) => self.bind(*var, &rhs),
+            (InferType::Var(var), _) => self.bind(*var, &rhs_resolved),
 
             // Variable on right: bind it to left
-            (_, InferType::Var(var)) => self.bind(*var, &lhs),
+            (_, InferType::Var(var)) => self.bind(*var, &lhs_resolved),
 
             // IntLiteral with concrete type
             (InferType::IntLiteral, InferType::Concrete(ty))
             | (InferType::Concrete(ty), InferType::IntLiteral) => {
                 if ty.is_integer() {
-                    // IntLiteral can become any integer type
+                    // IntLiteral can become any integer type.
+                    // If the original type was a variable bound to IntLiteral,
+                    // rebind it to the concrete type.
+                    self.rebind_int_literal_to_concrete(lhs, ty);
+                    self.rebind_int_literal_to_concrete(rhs, ty);
                     UnifyResult::Ok
                 } else if ty.is_error() {
                     // Error type propagates
@@ -415,6 +462,20 @@ impl Unifier {
 
             // Two IntLiterals unify (both remain as IntLiteral)
             (InferType::IntLiteral, InferType::IntLiteral) => UnifyResult::Ok,
+        }
+    }
+
+    /// If the original type was a variable bound to IntLiteral,
+    /// rebind it to the concrete integer type.
+    fn rebind_int_literal_to_concrete(&mut self, original: &InferType, concrete_ty: &Type) {
+        if let InferType::Var(var) = original {
+            // Check if this variable is directly bound to IntLiteral
+            if let Some(bound) = self.substitution.get(*var) {
+                if bound.is_int_literal() {
+                    self.substitution
+                        .insert(*var, InferType::Concrete(*concrete_ty));
+                }
+            }
         }
     }
 
@@ -465,16 +526,112 @@ impl Unifier {
         }
     }
 
-    /// Default any remaining IntLiteral types to i32.
+    /// Check that a type is an integer (signed or unsigned).
+    ///
+    /// Returns an error if the type is a concrete non-integer type.
+    /// For type variables and IntLiterals, the check passes.
+    pub fn check_integer(&self, ty: &InferType) -> UnifyResult {
+        let ty = self.substitution.apply(ty);
+        match &ty {
+            InferType::Concrete(concrete) => {
+                if concrete.is_integer() || concrete.is_error() || concrete.is_never() {
+                    UnifyResult::Ok
+                } else {
+                    UnifyResult::NotInteger { ty: *concrete }
+                }
+            }
+            // Type variables and IntLiteral are OK - they will be resolved to integers
+            InferType::Var(_) | InferType::IntLiteral => UnifyResult::Ok,
+        }
+    }
+
+    /// Solve a list of constraints, collecting any errors.
+    ///
+    /// This is the main entry point for Algorithm W. It processes each constraint
+    /// in order, updates the substitution, and collects errors for reporting.
+    ///
+    /// On error, the unifier continues processing remaining constraints to catch
+    /// as many errors as possible in one pass. Type variables involved in errors
+    /// are bound to `Type::Error` for recovery.
+    ///
+    /// Returns a list of errors (empty if all constraints were satisfied).
+    pub fn solve_constraints(&mut self, constraints: &[Constraint]) -> Vec<UnificationError> {
+        let mut errors = Vec::new();
+
+        for constraint in constraints {
+            let result = match constraint {
+                Constraint::Equal(lhs, rhs, span) => {
+                    let result = self.unify(lhs, rhs);
+                    if !result.is_ok() {
+                        // On error, try to bind any unbound type variables to Error
+                        // for recovery
+                        self.recover_from_error(lhs, rhs);
+                        errors.push(UnificationError::new(result, *span));
+                    }
+                    continue;
+                }
+                Constraint::IsSigned(ty, span) => {
+                    let result = self.check_signed(ty);
+                    (result, *span)
+                }
+                Constraint::IsInteger(ty, span) => {
+                    let result = self.check_integer(ty);
+                    (result, *span)
+                }
+            };
+
+            if !result.0.is_ok() {
+                errors.push(UnificationError::new(result.0, result.1));
+            }
+        }
+
+        errors
+    }
+
+    /// Recover from a unification error by binding unbound type variables to Error.
+    ///
+    /// This allows type checking to continue after an error, catching more
+    /// errors in a single pass.
+    fn recover_from_error(&mut self, lhs: &InferType, rhs: &InferType) {
+        // Apply substitution first to find any unbound variables
+        let lhs_applied = self.substitution.apply(lhs);
+        let rhs_applied = self.substitution.apply(rhs);
+
+        // Bind any unbound type variables to Error for recovery
+        if let InferType::Var(var) = lhs_applied {
+            self.substitution
+                .insert(var, InferType::Concrete(Type::Error));
+        }
+        if let InferType::Var(var) = rhs_applied {
+            self.substitution
+                .insert(var, InferType::Concrete(Type::Error));
+        }
+    }
+
+    /// Default all IntLiteral types bound to type variables to i32.
     ///
     /// Called at the end of unification for a function to resolve
-    /// any unconstrained integer literals.
-    pub fn default_int_literals(&mut self, var: TypeVarId) {
-        if let Some(ty) = self.substitution.get(var) {
-            if ty.is_int_literal() {
-                self.substitution
-                    .insert(var, InferType::Concrete(Type::I32));
-            }
+    /// any unconstrained integer literals. This processes all type variables
+    /// in the substitution that are bound to IntLiteral.
+    pub fn default_all_int_literals(&mut self) {
+        // Collect variables bound to IntLiteral first to avoid borrow issues
+        let to_default: Vec<TypeVarId> = self
+            .substitution
+            .mapping
+            .iter()
+            .filter_map(|(var, ty)| {
+                if ty.is_int_literal() {
+                    Some(*var)
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        // Now update them all to i32
+        for var in to_default {
+            self.substitution
+                .insert(var, InferType::Concrete(Type::I32));
         }
     }
 
@@ -489,6 +646,15 @@ impl Unifier {
             InferType::Var(_) => None,                // Unbound variable
             InferType::IntLiteral => Some(Type::I32), // Default to i32
         }
+    }
+
+    /// Resolve a type to its final concrete type, with error recovery.
+    ///
+    /// Like `resolve`, but returns `Type::Error` instead of `None` for
+    /// unbound type variables. This allows compilation to continue
+    /// with error recovery.
+    pub fn resolve_or_error(&self, ty: &InferType) -> Type {
+        self.resolve(ty).unwrap_or(Type::Error)
     }
 }
 
@@ -2189,5 +2355,506 @@ mod tests {
                 _ => panic!("Expected Equal constraint in match"),
             }
         }
+    }
+
+    // ========================================================================
+    // Phase 3: Unification Tests
+    // ========================================================================
+
+    #[test]
+    fn test_check_integer_with_integer_types() {
+        let unifier = Unifier::new();
+        assert!(
+            unifier
+                .check_integer(&InferType::Concrete(Type::I32))
+                .is_ok()
+        );
+        assert!(
+            unifier
+                .check_integer(&InferType::Concrete(Type::I64))
+                .is_ok()
+        );
+        assert!(
+            unifier
+                .check_integer(&InferType::Concrete(Type::U8))
+                .is_ok()
+        );
+        assert!(
+            unifier
+                .check_integer(&InferType::Concrete(Type::U64))
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn test_check_integer_with_non_integer_type() {
+        let unifier = Unifier::new();
+        let result = unifier.check_integer(&InferType::Concrete(Type::Bool));
+        assert!(!result.is_ok());
+        assert!(matches!(result, UnifyResult::NotInteger { ty: Type::Bool }));
+    }
+
+    #[test]
+    fn test_check_integer_with_int_literal() {
+        let unifier = Unifier::new();
+        // IntLiteral is OK - it will become an integer type
+        assert!(unifier.check_integer(&InferType::IntLiteral).is_ok());
+    }
+
+    #[test]
+    fn test_check_integer_with_type_variable() {
+        let unifier = Unifier::new();
+        // Type variable is OK - it might become an integer type
+        assert!(
+            unifier
+                .check_integer(&InferType::Var(TypeVarId::new(0)))
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn test_check_integer_with_error_type() {
+        let unifier = Unifier::new();
+        // Error type is OK - for error recovery
+        assert!(
+            unifier
+                .check_integer(&InferType::Concrete(Type::Error))
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn test_solve_constraints_empty() {
+        let mut unifier = Unifier::new();
+        let errors = unifier.solve_constraints(&[]);
+        assert!(errors.is_empty());
+    }
+
+    #[test]
+    fn test_solve_constraints_simple_equal() {
+        let mut unifier = Unifier::new();
+        let v0 = TypeVarId::new(0);
+        let constraints = vec![Constraint::equal(
+            InferType::Var(v0),
+            InferType::Concrete(Type::I64),
+            Span::new(0, 5),
+        )];
+        let errors = unifier.solve_constraints(&constraints);
+        assert!(errors.is_empty());
+        assert_eq!(unifier.resolve(&InferType::Var(v0)), Some(Type::I64));
+    }
+
+    #[test]
+    fn test_solve_constraints_multiple_equal() {
+        let mut unifier = Unifier::new();
+        let v0 = TypeVarId::new(0);
+        let v1 = TypeVarId::new(1);
+        let constraints = vec![
+            Constraint::equal(InferType::Var(v0), InferType::Var(v1), Span::new(0, 5)),
+            Constraint::equal(
+                InferType::Var(v1),
+                InferType::Concrete(Type::Bool),
+                Span::new(6, 10),
+            ),
+        ];
+        let errors = unifier.solve_constraints(&constraints);
+        assert!(errors.is_empty());
+        // Both variables should resolve to Bool
+        assert_eq!(unifier.resolve(&InferType::Var(v0)), Some(Type::Bool));
+        assert_eq!(unifier.resolve(&InferType::Var(v1)), Some(Type::Bool));
+    }
+
+    #[test]
+    fn test_solve_constraints_type_mismatch() {
+        let mut unifier = Unifier::new();
+        let constraints = vec![Constraint::equal(
+            InferType::Concrete(Type::I32),
+            InferType::Concrete(Type::Bool),
+            Span::new(0, 5),
+        )];
+        let errors = unifier.solve_constraints(&constraints);
+        assert_eq!(errors.len(), 1);
+        assert!(matches!(errors[0].kind, UnifyResult::TypeMismatch { .. }));
+        assert_eq!(errors[0].span, Span::new(0, 5));
+    }
+
+    #[test]
+    fn test_solve_constraints_int_literal_unifies() {
+        let mut unifier = Unifier::new();
+        let v0 = TypeVarId::new(0);
+        let constraints = vec![
+            Constraint::equal(InferType::Var(v0), InferType::IntLiteral, Span::new(0, 5)),
+            Constraint::equal(
+                InferType::Var(v0),
+                InferType::Concrete(Type::I64),
+                Span::new(6, 10),
+            ),
+        ];
+        let errors = unifier.solve_constraints(&constraints);
+        assert!(errors.is_empty());
+        // Should resolve to i64 (IntLiteral takes the concrete integer type)
+        assert_eq!(unifier.resolve(&InferType::Var(v0)), Some(Type::I64));
+    }
+
+    #[test]
+    fn test_solve_constraints_is_signed() {
+        let mut unifier = Unifier::new();
+        let constraints = vec![Constraint::is_signed(
+            InferType::Concrete(Type::I32),
+            Span::new(0, 5),
+        )];
+        let errors = unifier.solve_constraints(&constraints);
+        assert!(errors.is_empty());
+    }
+
+    #[test]
+    fn test_solve_constraints_is_signed_fails_for_unsigned() {
+        let mut unifier = Unifier::new();
+        let constraints = vec![Constraint::is_signed(
+            InferType::Concrete(Type::U32),
+            Span::new(0, 5),
+        )];
+        let errors = unifier.solve_constraints(&constraints);
+        assert_eq!(errors.len(), 1);
+        assert!(matches!(
+            errors[0].kind,
+            UnifyResult::NotSigned { ty: Type::U32 }
+        ));
+    }
+
+    #[test]
+    fn test_solve_constraints_is_integer() {
+        let mut unifier = Unifier::new();
+        let constraints = vec![Constraint::is_integer(
+            InferType::Concrete(Type::U8),
+            Span::new(0, 5),
+        )];
+        let errors = unifier.solve_constraints(&constraints);
+        assert!(errors.is_empty());
+    }
+
+    #[test]
+    fn test_solve_constraints_is_integer_fails_for_bool() {
+        let mut unifier = Unifier::new();
+        let constraints = vec![Constraint::is_integer(
+            InferType::Concrete(Type::Bool),
+            Span::new(0, 5),
+        )];
+        let errors = unifier.solve_constraints(&constraints);
+        assert_eq!(errors.len(), 1);
+        assert!(matches!(
+            errors[0].kind,
+            UnifyResult::NotInteger { ty: Type::Bool }
+        ));
+    }
+
+    #[test]
+    fn test_solve_constraints_multiple_errors() {
+        let mut unifier = Unifier::new();
+        let constraints = vec![
+            Constraint::equal(
+                InferType::Concrete(Type::I32),
+                InferType::Concrete(Type::Bool),
+                Span::new(0, 5),
+            ),
+            Constraint::is_signed(InferType::Concrete(Type::U64), Span::new(10, 15)),
+        ];
+        let errors = unifier.solve_constraints(&constraints);
+        // Should catch both errors in one pass
+        assert_eq!(errors.len(), 2);
+    }
+
+    #[test]
+    fn test_solve_constraints_error_recovery() {
+        let mut unifier = Unifier::new();
+        let v0 = TypeVarId::new(0);
+        let constraints = vec![
+            // This will fail: can't unify type variable with mismatched concretes
+            Constraint::equal(
+                InferType::Var(v0),
+                InferType::Concrete(Type::I32),
+                Span::new(0, 5),
+            ),
+            Constraint::equal(
+                InferType::Var(v0),
+                InferType::Concrete(Type::Bool),
+                Span::new(6, 10),
+            ),
+        ];
+        let errors = unifier.solve_constraints(&constraints);
+        // Should report the second constraint as an error (first succeeds)
+        assert_eq!(errors.len(), 1);
+        // v0 should still be usable (bound to i32 from first constraint)
+        assert_eq!(unifier.resolve(&InferType::Var(v0)), Some(Type::I32));
+    }
+
+    #[test]
+    fn test_default_all_int_literals() {
+        let mut unifier = Unifier::new();
+        let v0 = TypeVarId::new(0);
+        let v1 = TypeVarId::new(1);
+        let v2 = TypeVarId::new(2);
+
+        // Bind some variables to IntLiteral
+        unifier.substitution.insert(v0, InferType::IntLiteral);
+        unifier.substitution.insert(v1, InferType::IntLiteral);
+        unifier
+            .substitution
+            .insert(v2, InferType::Concrete(Type::Bool));
+
+        unifier.default_all_int_literals();
+
+        // v0 and v1 should now be i32
+        assert_eq!(unifier.resolve(&InferType::Var(v0)), Some(Type::I32));
+        assert_eq!(unifier.resolve(&InferType::Var(v1)), Some(Type::I32));
+        // v2 should still be Bool
+        assert_eq!(unifier.resolve(&InferType::Var(v2)), Some(Type::Bool));
+    }
+
+    #[test]
+    fn test_resolve_or_error_with_bound_var() {
+        let mut unifier = Unifier::new();
+        let v0 = TypeVarId::new(0);
+        unifier
+            .substitution
+            .insert(v0, InferType::Concrete(Type::U8));
+        assert_eq!(unifier.resolve_or_error(&InferType::Var(v0)), Type::U8);
+    }
+
+    #[test]
+    fn test_resolve_or_error_with_unbound_var() {
+        let unifier = Unifier::new();
+        let v0 = TypeVarId::new(0);
+        // Unbound variable should return Error
+        assert_eq!(unifier.resolve_or_error(&InferType::Var(v0)), Type::Error);
+    }
+
+    #[test]
+    fn test_resolve_or_error_with_int_literal() {
+        let unifier = Unifier::new();
+        // IntLiteral defaults to i32
+        assert_eq!(unifier.resolve_or_error(&InferType::IntLiteral), Type::I32);
+    }
+
+    #[test]
+    fn test_unification_error_message() {
+        let error = UnificationError::new(
+            UnifyResult::TypeMismatch {
+                expected: InferType::Concrete(Type::I32),
+                found: InferType::Concrete(Type::Bool),
+            },
+            Span::new(10, 20),
+        );
+        let msg = error.message();
+        assert!(msg.contains("type mismatch"));
+        assert!(msg.contains("i32"));
+        assert!(msg.contains("bool"));
+    }
+
+    #[test]
+    fn test_unification_error_int_literal_non_integer_message() {
+        let error = UnificationError::new(
+            UnifyResult::IntLiteralNonInteger { found: Type::Bool },
+            Span::new(0, 5),
+        );
+        let msg = error.message();
+        assert!(msg.contains("integer literal"));
+        assert!(msg.contains("bool"));
+    }
+
+    #[test]
+    fn test_unification_error_not_signed_message() {
+        let error =
+            UnificationError::new(UnifyResult::NotSigned { ty: Type::U32 }, Span::new(0, 5));
+        let msg = error.message();
+        assert!(msg.contains("negate"));
+        assert!(msg.contains("u32"));
+    }
+
+    #[test]
+    fn test_unification_error_not_integer_message() {
+        let error =
+            UnificationError::new(UnifyResult::NotInteger { ty: Type::Bool }, Span::new(0, 5));
+        let msg = error.message();
+        assert!(msg.contains("expected integer"));
+        assert!(msg.contains("bool"));
+    }
+
+    #[test]
+    fn test_solve_constraints_int_literal_with_non_integer() {
+        let mut unifier = Unifier::new();
+        let constraints = vec![Constraint::equal(
+            InferType::IntLiteral,
+            InferType::Concrete(Type::Bool),
+            Span::new(0, 5),
+        )];
+        let errors = unifier.solve_constraints(&constraints);
+        assert_eq!(errors.len(), 1);
+        assert!(matches!(
+            errors[0].kind,
+            UnifyResult::IntLiteralNonInteger { found: Type::Bool }
+        ));
+    }
+
+    #[test]
+    fn test_solve_constraints_chain_resolution() {
+        // Test: v0 = v1, v1 = v2, v2 = i64
+        // All should resolve to i64
+        let mut unifier = Unifier::new();
+        let v0 = TypeVarId::new(0);
+        let v1 = TypeVarId::new(1);
+        let v2 = TypeVarId::new(2);
+        let constraints = vec![
+            Constraint::equal(InferType::Var(v0), InferType::Var(v1), Span::new(0, 5)),
+            Constraint::equal(InferType::Var(v1), InferType::Var(v2), Span::new(6, 10)),
+            Constraint::equal(
+                InferType::Var(v2),
+                InferType::Concrete(Type::I64),
+                Span::new(11, 15),
+            ),
+        ];
+        let errors = unifier.solve_constraints(&constraints);
+        assert!(errors.is_empty());
+        assert_eq!(unifier.resolve(&InferType::Var(v0)), Some(Type::I64));
+        assert_eq!(unifier.resolve(&InferType::Var(v1)), Some(Type::I64));
+        assert_eq!(unifier.resolve(&InferType::Var(v2)), Some(Type::I64));
+    }
+
+    #[test]
+    fn test_solve_constraints_reverse_chain() {
+        // Test: v2 = i64, v1 = v2, v0 = v1
+        // Should work in any order
+        let mut unifier = Unifier::new();
+        let v0 = TypeVarId::new(0);
+        let v1 = TypeVarId::new(1);
+        let v2 = TypeVarId::new(2);
+        let constraints = vec![
+            Constraint::equal(
+                InferType::Var(v2),
+                InferType::Concrete(Type::I64),
+                Span::new(0, 5),
+            ),
+            Constraint::equal(InferType::Var(v1), InferType::Var(v2), Span::new(6, 10)),
+            Constraint::equal(InferType::Var(v0), InferType::Var(v1), Span::new(11, 15)),
+        ];
+        let errors = unifier.solve_constraints(&constraints);
+        assert!(errors.is_empty());
+        assert_eq!(unifier.resolve(&InferType::Var(v0)), Some(Type::I64));
+    }
+
+    #[test]
+    fn test_solve_constraints_two_int_literals() {
+        // Two IntLiterals that should both become i32 after defaulting
+        let mut unifier = Unifier::new();
+        let v0 = TypeVarId::new(0);
+        let v1 = TypeVarId::new(1);
+        let constraints = vec![
+            Constraint::equal(InferType::Var(v0), InferType::IntLiteral, Span::new(0, 5)),
+            Constraint::equal(InferType::Var(v1), InferType::IntLiteral, Span::new(6, 10)),
+            Constraint::equal(InferType::Var(v0), InferType::Var(v1), Span::new(11, 15)),
+        ];
+        let errors = unifier.solve_constraints(&constraints);
+        assert!(errors.is_empty());
+
+        // Before defaulting, they should both be IntLiteral (through the chain)
+        // After defaulting, both should be i32
+        unifier.default_all_int_literals();
+        assert_eq!(unifier.resolve(&InferType::Var(v0)), Some(Type::I32));
+        assert_eq!(unifier.resolve(&InferType::Var(v1)), Some(Type::I32));
+    }
+
+    #[test]
+    fn test_solve_constraints_is_signed_with_resolved_var() {
+        let mut unifier = Unifier::new();
+        let v0 = TypeVarId::new(0);
+        let constraints = vec![
+            // First bind v0 to u32
+            Constraint::equal(
+                InferType::Var(v0),
+                InferType::Concrete(Type::U32),
+                Span::new(0, 5),
+            ),
+            // Then check if v0 is signed (should fail)
+            Constraint::is_signed(InferType::Var(v0), Span::new(6, 10)),
+        ];
+        let errors = unifier.solve_constraints(&constraints);
+        assert_eq!(errors.len(), 1);
+        assert!(matches!(
+            errors[0].kind,
+            UnifyResult::NotSigned { ty: Type::U32 }
+        ));
+    }
+
+    #[test]
+    fn test_solve_constraints_is_integer_with_resolved_var() {
+        let mut unifier = Unifier::new();
+        let v0 = TypeVarId::new(0);
+        let constraints = vec![
+            // First bind v0 to bool
+            Constraint::equal(
+                InferType::Var(v0),
+                InferType::Concrete(Type::Bool),
+                Span::new(0, 5),
+            ),
+            // Then check if v0 is integer (should fail)
+            Constraint::is_integer(InferType::Var(v0), Span::new(6, 10)),
+        ];
+        let errors = unifier.solve_constraints(&constraints);
+        assert_eq!(errors.len(), 1);
+        assert!(matches!(
+            errors[0].kind,
+            UnifyResult::NotInteger { ty: Type::Bool }
+        ));
+    }
+
+    #[test]
+    fn test_solve_constraints_never_type_coerces() {
+        let mut unifier = Unifier::new();
+        let constraints = vec![
+            Constraint::equal(
+                InferType::Concrete(Type::Never),
+                InferType::Concrete(Type::I32),
+                Span::new(0, 5),
+            ),
+            Constraint::equal(
+                InferType::Concrete(Type::Bool),
+                InferType::Concrete(Type::Never),
+                Span::new(6, 10),
+            ),
+        ];
+        let errors = unifier.solve_constraints(&constraints);
+        assert!(errors.is_empty());
+    }
+
+    #[test]
+    fn test_solve_constraints_error_type_coerces() {
+        let mut unifier = Unifier::new();
+        let constraints = vec![
+            Constraint::equal(
+                InferType::Concrete(Type::Error),
+                InferType::Concrete(Type::I32),
+                Span::new(0, 5),
+            ),
+            Constraint::equal(
+                InferType::Concrete(Type::Bool),
+                InferType::Concrete(Type::Error),
+                Span::new(6, 10),
+            ),
+        ];
+        let errors = unifier.solve_constraints(&constraints);
+        assert!(errors.is_empty());
+    }
+
+    #[test]
+    fn test_int_literal_with_error_type() {
+        let mut unifier = Unifier::new();
+        // IntLiteral should unify with Error (for error recovery)
+        let constraints = vec![Constraint::equal(
+            InferType::IntLiteral,
+            InferType::Concrete(Type::Error),
+            Span::new(0, 5),
+        )];
+        let errors = unifier.solve_constraints(&constraints);
+        assert!(errors.is_empty());
     }
 }
