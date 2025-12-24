@@ -370,7 +370,38 @@ Example: If adding a new comparison instruction variant (e.g., 64-bit compare):
 
 ## Version Control
 
-Uses Jujutsu (jj): `jj status`, `jj diff`, `jj commit -m "msg"`, `jj log`
+**IMPORTANT**: This project uses **Jujutsu (jj)**, NOT git. Never use git commands in this repository.
+
+### Common jj Commands
+
+| Instead of git... | Use jj... |
+|-------------------|-----------|
+| `git status` | `jj status` |
+| `git diff` | `jj diff` |
+| `git add . && git commit -m "msg"` | `jj commit -m "msg"` (auto-adds all changes) |
+| `git log` | `jj log` |
+| `git checkout -b branch` | `jj new -m "description"` |
+| `git stash` | Not needed - jj auto-saves working changes |
+
+### Key Differences from git
+
+- **No staging area**: `jj commit` automatically includes all changes
+- **Working copy is a commit**: Your uncommitted changes are already tracked
+- **Use `jj describe`** to update the current commit message
+- **Use `jj new`** to start a new change on top of current one
+
+### Commit Messages
+
+When committing, use `jj commit -m "message"` or for multi-line messages:
+```bash
+jj commit -m "Short summary
+
+Longer description here.
+
+🤖 Generated with [Claude Code](https://claude.com/claude-code)
+
+Co-Authored-By: Claude <noreply@anthropic.com>"
+```
 
 ## Code Style
 
@@ -426,11 +457,14 @@ bd close bd-42 --reason "Completed" --json
 
 1. **Check ready work**: `bd ready` shows unblocked issues
 2. **Claim your task**: `bd update <id> --status in_progress`
-3. **Work on it**: Implement, test, document
-4. **Discover new work?** Create linked issue:
+3. **Describe the working commit**: `jj describe -m "WIP: bd-42 - short description"`
+   - This makes it easy to see what's being worked on in each workspace
+   - Will be overwritten with the final commit message when complete
+4. **Work on it**: Implement, test, document
+5. **Discover new work?** Create linked issue:
    - `bd create "Found bug" -p 1 --deps discovered-from:<parent-id>`
-5. **Complete**: `bd close <id> --reason "Done"`
-6. **Commit together**: Always commit the `.beads/issues.jsonl` file together with the code changes so issue state stays in sync with code state
+6. **Complete**: `bd close <id> --reason "Done"`
+7. **Commit together**: Always commit the `.beads/issues.jsonl` file together with the code changes so issue state stays in sync with code state
 
 ### Auto-Sync
 
