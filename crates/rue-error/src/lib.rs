@@ -267,6 +267,36 @@ pub enum ErrorKind {
         struct_name: String,
         field_name: String,
     },
+    /// Duplicate method definition in impl blocks for the same type
+    DuplicateMethod {
+        type_name: String,
+        method_name: String,
+    },
+    /// Method not found on a type
+    UndefinedMethod {
+        type_name: String,
+        method_name: String,
+    },
+    /// Associated function not found on a type
+    UndefinedAssocFn {
+        type_name: String,
+        function_name: String,
+    },
+    /// Method call on non-struct type
+    MethodCallOnNonStruct {
+        found: String,
+        method_name: String,
+    },
+    /// Calling a method (with self) as an associated function
+    MethodCalledAsAssocFn {
+        type_name: String,
+        method_name: String,
+    },
+    /// Calling an associated function (without self) as a method
+    AssocFnCalledAsMethod {
+        type_name: String,
+        function_name: String,
+    },
 
     // Enum errors
     DuplicateVariant {
@@ -507,6 +537,59 @@ impl fmt::Display for ErrorKind {
                     f,
                     "duplicate field '{}' in struct '{}'",
                     field_name, struct_name
+                )
+            }
+            ErrorKind::DuplicateMethod {
+                type_name,
+                method_name,
+            } => {
+                write!(
+                    f,
+                    "duplicate method '{}' for type '{}'",
+                    method_name, type_name
+                )
+            }
+            ErrorKind::UndefinedMethod {
+                type_name,
+                method_name,
+            } => {
+                write!(
+                    f,
+                    "no method named '{}' found for type '{}'",
+                    method_name, type_name
+                )
+            }
+            ErrorKind::UndefinedAssocFn {
+                type_name,
+                function_name,
+            } => {
+                write!(
+                    f,
+                    "no associated function named '{}' found for type '{}'",
+                    function_name, type_name
+                )
+            }
+            ErrorKind::MethodCallOnNonStruct { found, method_name } => {
+                write!(f, "no method named '{}' on type '{}'", method_name, found)
+            }
+            ErrorKind::MethodCalledAsAssocFn {
+                type_name,
+                method_name,
+            } => {
+                write!(
+                    f,
+                    "'{}::{}' is a method, not an associated function; use receiver.{}() syntax",
+                    type_name, method_name, method_name
+                )
+            }
+            ErrorKind::AssocFnCalledAsMethod {
+                type_name,
+                function_name,
+            } => {
+                write!(
+                    f,
+                    "'{}' is an associated function, not a method; use {}::{}() syntax",
+                    function_name, type_name, function_name
                 )
             }
             ErrorKind::DuplicateVariant {

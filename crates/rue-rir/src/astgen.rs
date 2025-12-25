@@ -156,8 +156,11 @@ impl<'a> AstGen<'a> {
         // Generate body expression
         let body = self.gen_expr(&method.body);
 
-        // For now, we emit methods as regular FnDecl instructions.
-        // Sema will handle the method resolution and self parameter.
+        // Track whether this method has a self receiver (method vs associated function)
+        let has_self = method.receiver.is_some();
+
+        // Emit methods as FnDecl instructions with has_self flag.
+        // Sema uses has_self to add the implicit self parameter for methods.
         self.rir.add_inst(Inst {
             data: InstData::FnDecl {
                 directives,
@@ -165,6 +168,7 @@ impl<'a> AstGen<'a> {
                 params,
                 return_type,
                 body,
+                has_self,
             },
             span: method.span,
         })
@@ -214,6 +218,7 @@ impl<'a> AstGen<'a> {
         let body = self.gen_expr(&func.body);
 
         // Create function declaration instruction
+        // Regular functions don't have a self receiver
         self.rir.add_inst(Inst {
             data: InstData::FnDecl {
                 directives,
@@ -221,6 +226,7 @@ impl<'a> AstGen<'a> {
                 params,
                 return_type,
                 body,
+                has_self: false,
             },
             span: func.span,
         })
@@ -641,10 +647,12 @@ mod tests {
                 params,
                 return_type,
                 body,
+                has_self,
             } => {
                 assert_eq!(interner.get(*name), "main");
                 assert!(params.is_empty());
                 assert_eq!(interner.get(*return_type), "i32");
+                assert!(!has_self); // Regular functions don't have self
                 // Body should be the int constant
                 let body_inst = rir.get(*body);
                 assert!(matches!(body_inst.data, InstData::IntConst(42)));

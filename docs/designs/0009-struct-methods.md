@@ -144,7 +144,7 @@ Methods can only be defined for structs in the same compilation unit. (This is a
   - Handle method calls in expression generation
   - Parse associated function calls (Type::fn() syntax)
 
-- [ ] **Phase 3: Type Checking** - rue-qs3z.3
+- [x] **Phase 3: Type Checking** - rue-qs3z.3
   - Add method registry to struct definitions
   - Type check impl blocks
   - Resolve method calls to their definitions

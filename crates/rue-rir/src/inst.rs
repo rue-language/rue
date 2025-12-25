@@ -253,6 +253,10 @@ pub enum InstData {
         params: Vec<(Symbol, Symbol)>,
         return_type: Symbol,
         body: InstRef,
+        /// Whether this function/method takes `self` as a receiver.
+        /// Only true for methods in impl blocks that have a self parameter.
+        /// Used by sema to know to add the implicit self parameter.
+        has_self: bool,
     },
 
     /// Function call
@@ -591,9 +595,11 @@ impl<'a, 'b> RirPrinter<'a, 'b> {
                     params,
                     return_type,
                     body,
+                    has_self,
                 } => {
                     let name_str = self.interner.get(*name);
                     let ret_str = self.interner.get(*return_type);
+                    let self_str = if *has_self { "self, " } else { "" };
                     let params_str: Vec<String> = params
                         .iter()
                         .map(|(pname, ptype)| {
@@ -605,8 +611,9 @@ impl<'a, 'b> RirPrinter<'a, 'b> {
                         })
                         .collect();
                     out.push_str(&format!(
-                        "fn {}({}) -> {} {{\n",
+                        "fn {}({}{}) -> {} {{\n",
                         name_str,
+                        self_str,
                         params_str.join(", "),
                         ret_str
                     ));

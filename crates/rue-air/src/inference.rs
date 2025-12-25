@@ -850,6 +850,21 @@ pub struct FunctionSig {
     pub return_type: InferType,
 }
 
+/// Information about a method during constraint generation.
+///
+/// Used for method calls (receiver.method()) and associated function calls (Type::function()).
+#[derive(Debug, Clone)]
+pub struct MethodSig {
+    /// The struct type this method belongs to (as concrete Type::Struct)
+    pub struct_type: Type,
+    /// Whether this is a method (has self) or associated function (no self)
+    pub has_self: bool,
+    /// Parameter types (excluding self), as InferTypes for uniform handling.
+    pub param_types: Vec<InferType>,
+    /// Return type, as InferType for uniform handling.
+    pub return_type: InferType,
+}
+
 /// Context for constraint generation within a single function.
 pub struct ConstraintContext<'a> {
     /// Local variables in scope.
@@ -944,6 +959,8 @@ pub struct ConstraintGenerator<'a> {
     structs: &'a HashMap<Symbol, Type>,
     /// Enum types (name -> Type::Enum(id)).
     enums: &'a HashMap<Symbol, Type>,
+    /// Method signatures: (struct_name, method_name) -> MethodSig
+    methods: &'a HashMap<(Symbol, Symbol), MethodSig>,
     /// Type variables allocated for integer literals.
     /// These start as unbound and need to be defaulted to i32 if unconstrained.
     int_literal_vars: Vec<TypeVarId>,
@@ -957,6 +974,7 @@ impl<'a> ConstraintGenerator<'a> {
         functions: &'a HashMap<Symbol, FunctionSig>,
         structs: &'a HashMap<Symbol, Type>,
         enums: &'a HashMap<Symbol, Type>,
+        methods: &'a HashMap<(Symbol, Symbol), MethodSig>,
     ) -> Self {
         Self {
             rir,
@@ -967,6 +985,7 @@ impl<'a> ConstraintGenerator<'a> {
             functions,
             structs,
             enums,
+            methods,
             int_literal_vars: Vec::new(),
         }
     }
@@ -1554,11 +1573,95 @@ impl<'a> ConstraintGenerator<'a> {
             | InstData::EnumDecl { .. }
             | InstData::ImplDecl { .. } => InferType::Concrete(Type::Unit),
 
-            // Method call - placeholder for Phase 3 (see ADR-0009)
-            InstData::MethodCall { .. } => InferType::Concrete(Type::Unit),
+            // Method call: receiver.method(args)
+            InstData::MethodCall {
+                receiver,
+                method,
+                args,
+            } => {
+                // Generate type for receiver
+                let receiver_info = self.generate(*receiver, ctx);
 
-            // Associated function call - placeholder for Phase 3 (see ADR-0009)
-            InstData::AssocFnCall { .. } => InferType::Concrete(Type::Unit),
+                // Get struct name from receiver type if it's a struct
+                // If we can't determine the struct type, we still generate constraints
+                // for the arguments and return a type variable (actual error is in sema)
+                let result_type = if let InferType::Concrete(Type::Struct(struct_id)) =
+                    &receiver_info.ty
+                {
+                    // Find the struct name symbol
+                    let struct_name = self
+                        .structs
+                        .iter()
+                        .find(|(_, ty)| **ty == Type::Struct(*struct_id))
+                        .map(|(name, _)| *name);
+
+                    if let Some(struct_name) = struct_name {
+                        let method_key = (struct_name, *method);
+                        if let Some(method_sig) = self.methods.get(&method_key) {
+                            // Generate constraints for arguments
+                            for (arg, param_type) in args.iter().zip(method_sig.param_types.iter())
+                            {
+                                let arg_info = self.generate(*arg, ctx);
+                                self.add_constraint(Constraint::equal(
+                                    arg_info.ty,
+                                    param_type.clone(),
+                                    arg_info.span,
+                                ));
+                            }
+                            method_sig.return_type.clone()
+                        } else {
+                            // Method not found - sema will report the error
+                            // Still generate arg types to catch errors in arguments
+                            for arg in args.iter() {
+                                self.generate(*arg, ctx);
+                            }
+                            InferType::Concrete(Type::Error)
+                        }
+                    } else {
+                        // Couldn't find struct name - shouldn't happen but handle gracefully
+                        for arg in args.iter() {
+                            self.generate(*arg, ctx);
+                        }
+                        InferType::Concrete(Type::Error)
+                    }
+                } else {
+                    // Non-struct receiver - sema will report the error
+                    for arg in args.iter() {
+                        self.generate(*arg, ctx);
+                    }
+                    InferType::Concrete(Type::Error)
+                };
+
+                result_type
+            }
+
+            // Associated function call: Type::function(args)
+            InstData::AssocFnCall {
+                type_name,
+                function,
+                args,
+            } => {
+                let method_key = (*type_name, *function);
+                if let Some(method_sig) = self.methods.get(&method_key) {
+                    // Generate constraints for arguments
+                    for (arg, param_type) in args.iter().zip(method_sig.param_types.iter()) {
+                        let arg_info = self.generate(*arg, ctx);
+                        self.add_constraint(Constraint::equal(
+                            arg_info.ty,
+                            param_type.clone(),
+                            arg_info.span,
+                        ));
+                    }
+                    method_sig.return_type.clone()
+                } else {
+                    // Method not found - sema will report the error
+                    // Still generate arg types to catch errors in arguments
+                    for arg in args.iter() {
+                        self.generate(*arg, ctx);
+                    }
+                    InferType::Concrete(Type::Error)
+                }
+            }
         };
 
         // Record the type for this expression
@@ -2002,6 +2105,7 @@ mod tests {
         let functions = HashMap::new();
         let structs = HashMap::new();
         let enums = HashMap::new();
+        let methods: HashMap<(Symbol, Symbol), MethodSig> = HashMap::new();
 
         // Add an integer constant to RIR
         let inst_ref = rir.add_inst(rue_rir::Inst {
@@ -2009,7 +2113,8 @@ mod tests {
             span: Span::new(0, 2),
         });
 
-        let mut cgen = ConstraintGenerator::new(&rir, &interner, &functions, &structs, &enums);
+        let mut cgen =
+            ConstraintGenerator::new(&rir, &interner, &functions, &structs, &enums, &methods);
         let params = HashMap::new();
         let mut ctx = ConstraintContext::new(&params, Type::I32);
 
@@ -2029,13 +2134,15 @@ mod tests {
         let functions = HashMap::new();
         let structs = HashMap::new();
         let enums = HashMap::new();
+        let methods: HashMap<(Symbol, Symbol), MethodSig> = HashMap::new();
 
         let inst_ref = rir.add_inst(rue_rir::Inst {
             data: InstData::BoolConst(true),
             span: Span::new(0, 4),
         });
 
-        let mut cgen = ConstraintGenerator::new(&rir, &interner, &functions, &structs, &enums);
+        let mut cgen =
+            ConstraintGenerator::new(&rir, &interner, &functions, &structs, &enums, &methods);
         let params = HashMap::new();
         let mut ctx = ConstraintContext::new(&params, Type::Bool);
 
@@ -2051,6 +2158,7 @@ mod tests {
         let functions = HashMap::new();
         let structs = HashMap::new();
         let enums = HashMap::new();
+        let methods: HashMap<(Symbol, Symbol), MethodSig> = HashMap::new();
 
         // Create: 1 + 2
         let lhs = rir.add_inst(rue_rir::Inst {
@@ -2066,7 +2174,8 @@ mod tests {
             span: Span::new(0, 5),
         });
 
-        let mut cgen = ConstraintGenerator::new(&rir, &interner, &functions, &structs, &enums);
+        let mut cgen =
+            ConstraintGenerator::new(&rir, &interner, &functions, &structs, &enums, &methods);
         let params = HashMap::new();
         let mut ctx = ConstraintContext::new(&params, Type::I32);
 
@@ -2084,6 +2193,7 @@ mod tests {
         let functions = HashMap::new();
         let structs = HashMap::new();
         let enums = HashMap::new();
+        let methods: HashMap<(Symbol, Symbol), MethodSig> = HashMap::new();
 
         // Create: 1 < 2
         let lhs = rir.add_inst(rue_rir::Inst {
@@ -2099,7 +2209,8 @@ mod tests {
             span: Span::new(0, 5),
         });
 
-        let mut cgen = ConstraintGenerator::new(&rir, &interner, &functions, &structs, &enums);
+        let mut cgen =
+            ConstraintGenerator::new(&rir, &interner, &functions, &structs, &enums, &methods);
         let params = HashMap::new();
         let mut ctx = ConstraintContext::new(&params, Type::Bool);
 
@@ -2117,6 +2228,7 @@ mod tests {
         let functions = HashMap::new();
         let structs = HashMap::new();
         let enums = HashMap::new();
+        let methods: HashMap<(Symbol, Symbol), MethodSig> = HashMap::new();
 
         // Create: true && false
         let lhs = rir.add_inst(rue_rir::Inst {
@@ -2132,7 +2244,8 @@ mod tests {
             span: Span::new(0, 13),
         });
 
-        let mut cgen = ConstraintGenerator::new(&rir, &interner, &functions, &structs, &enums);
+        let mut cgen =
+            ConstraintGenerator::new(&rir, &interner, &functions, &structs, &enums, &methods);
         let params = HashMap::new();
         let mut ctx = ConstraintContext::new(&params, Type::Bool);
 
@@ -2150,6 +2263,7 @@ mod tests {
         let functions = HashMap::new();
         let structs = HashMap::new();
         let enums = HashMap::new();
+        let methods: HashMap<(Symbol, Symbol), MethodSig> = HashMap::new();
 
         // Create: -42
         let operand = rir.add_inst(rue_rir::Inst {
@@ -2161,7 +2275,8 @@ mod tests {
             span: Span::new(0, 3),
         });
 
-        let mut cgen = ConstraintGenerator::new(&rir, &interner, &functions, &structs, &enums);
+        let mut cgen =
+            ConstraintGenerator::new(&rir, &interner, &functions, &structs, &enums, &methods);
         let params = HashMap::new();
         let mut ctx = ConstraintContext::new(&params, Type::I32);
 
@@ -2184,6 +2299,7 @@ mod tests {
         let functions = HashMap::new();
         let structs = HashMap::new();
         let enums = HashMap::new();
+        let methods: HashMap<(Symbol, Symbol), MethodSig> = HashMap::new();
 
         // Create: return 42
         let value = rir.add_inst(rue_rir::Inst {
@@ -2195,7 +2311,8 @@ mod tests {
             span: Span::new(0, 9),
         });
 
-        let mut cgen = ConstraintGenerator::new(&rir, &interner, &functions, &structs, &enums);
+        let mut cgen =
+            ConstraintGenerator::new(&rir, &interner, &functions, &structs, &enums, &methods);
         let params = HashMap::new();
         let mut ctx = ConstraintContext::new(&params, Type::I32);
 
@@ -2213,6 +2330,7 @@ mod tests {
         let functions = HashMap::new();
         let structs = HashMap::new();
         let enums = HashMap::new();
+        let methods: HashMap<(Symbol, Symbol), MethodSig> = HashMap::new();
 
         // Create: if true { 1 } else { 2 }
         let cond = rir.add_inst(rue_rir::Inst {
@@ -2236,7 +2354,8 @@ mod tests {
             span: Span::new(0, 25),
         });
 
-        let mut cgen = ConstraintGenerator::new(&rir, &interner, &functions, &structs, &enums);
+        let mut cgen =
+            ConstraintGenerator::new(&rir, &interner, &functions, &structs, &enums, &methods);
         let params = HashMap::new();
         let mut ctx = ConstraintContext::new(&params, Type::I32);
 
@@ -2254,6 +2373,7 @@ mod tests {
         let functions = HashMap::new();
         let structs = HashMap::new();
         let enums = HashMap::new();
+        let methods: HashMap<(Symbol, Symbol), MethodSig> = HashMap::new();
 
         // Create: while true { 0 }
         let cond = rir.add_inst(rue_rir::Inst {
@@ -2269,7 +2389,8 @@ mod tests {
             span: Span::new(0, 15),
         });
 
-        let mut cgen = ConstraintGenerator::new(&rir, &interner, &functions, &structs, &enums);
+        let mut cgen =
+            ConstraintGenerator::new(&rir, &interner, &functions, &structs, &enums, &methods);
         let params = HashMap::new();
         let mut ctx = ConstraintContext::new(&params, Type::Unit);
 
@@ -2349,6 +2470,7 @@ mod tests {
         let functions = HashMap::new();
         let structs = HashMap::new();
         let enums = HashMap::new();
+        let methods: HashMap<(Symbol, Symbol), MethodSig> = HashMap::new();
 
         // Create: loop { 0 }
         let body = rir.add_inst(rue_rir::Inst {
@@ -2360,7 +2482,8 @@ mod tests {
             span: Span::new(0, 10),
         });
 
-        let mut cgen = ConstraintGenerator::new(&rir, &interner, &functions, &structs, &enums);
+        let mut cgen =
+            ConstraintGenerator::new(&rir, &interner, &functions, &structs, &enums, &methods);
         let params = HashMap::new();
         let mut ctx = ConstraintContext::new(&params, Type::Unit);
 
@@ -2378,13 +2501,15 @@ mod tests {
         let functions = HashMap::new();
         let structs = HashMap::new();
         let enums = HashMap::new();
+        let methods: HashMap<(Symbol, Symbol), MethodSig> = HashMap::new();
 
         let break_inst = rir.add_inst(rue_rir::Inst {
             data: InstData::Break,
             span: Span::new(0, 5),
         });
 
-        let mut cgen = ConstraintGenerator::new(&rir, &interner, &functions, &structs, &enums);
+        let mut cgen =
+            ConstraintGenerator::new(&rir, &interner, &functions, &structs, &enums, &methods);
         let params = HashMap::new();
         let mut ctx = ConstraintContext::new(&params, Type::Unit);
 
@@ -2401,6 +2526,7 @@ mod tests {
         let functions = HashMap::new();
         let structs = HashMap::new();
         let enums = HashMap::new();
+        let methods: HashMap<(Symbol, Symbol), MethodSig> = HashMap::new();
 
         // Create: arr[0]
         let base = rir.add_inst(rue_rir::Inst {
@@ -2416,7 +2542,8 @@ mod tests {
             span: Span::new(0, 6),
         });
 
-        let mut cgen = ConstraintGenerator::new(&rir, &interner, &functions, &structs, &enums);
+        let mut cgen =
+            ConstraintGenerator::new(&rir, &interner, &functions, &structs, &enums, &methods);
         let params = HashMap::new();
         let mut ctx = ConstraintContext::new(&params, Type::I32);
 
@@ -2438,6 +2565,7 @@ mod tests {
         let functions = HashMap::new();
         let structs = HashMap::new();
         let enums = HashMap::new();
+        let methods: HashMap<(Symbol, Symbol), MethodSig> = HashMap::new();
 
         // Create: arr[0] = 42
         let base = rir.add_inst(rue_rir::Inst {
@@ -2457,7 +2585,8 @@ mod tests {
             span: Span::new(0, 11),
         });
 
-        let mut cgen = ConstraintGenerator::new(&rir, &interner, &functions, &structs, &enums);
+        let mut cgen =
+            ConstraintGenerator::new(&rir, &interner, &functions, &structs, &enums, &methods);
         let params = HashMap::new();
         let mut ctx = ConstraintContext::new(&params, Type::Unit);
 
@@ -2479,6 +2608,7 @@ mod tests {
         let functions = HashMap::new();
         let structs = HashMap::new();
         let enums = HashMap::new();
+        let methods: HashMap<(Symbol, Symbol), MethodSig> = HashMap::new();
 
         // Create: { } (empty block)
         let block = rir.add_inst(rue_rir::Inst {
@@ -2489,7 +2619,8 @@ mod tests {
             span: Span::new(0, 2),
         });
 
-        let mut cgen = ConstraintGenerator::new(&rir, &interner, &functions, &structs, &enums);
+        let mut cgen =
+            ConstraintGenerator::new(&rir, &interner, &functions, &structs, &enums, &methods);
         let params = HashMap::new();
         let mut ctx = ConstraintContext::new(&params, Type::Unit);
 
@@ -2506,6 +2637,7 @@ mod tests {
         let functions = HashMap::new();
         let structs = HashMap::new();
         let enums = HashMap::new();
+        let methods: HashMap<(Symbol, Symbol), MethodSig> = HashMap::new();
 
         // Create: !42 (bitwise NOT)
         let operand = rir.add_inst(rue_rir::Inst {
@@ -2517,7 +2649,8 @@ mod tests {
             span: Span::new(0, 3),
         });
 
-        let mut cgen = ConstraintGenerator::new(&rir, &interner, &functions, &structs, &enums);
+        let mut cgen =
+            ConstraintGenerator::new(&rir, &interner, &functions, &structs, &enums, &methods);
         let params = HashMap::new();
         let mut ctx = ConstraintContext::new(&params, Type::I32);
 
@@ -2539,6 +2672,7 @@ mod tests {
         let mut functions = HashMap::new();
         let structs = HashMap::new();
         let enums = HashMap::new();
+        let methods: HashMap<(Symbol, Symbol), MethodSig> = HashMap::new();
 
         // Register a function that takes 2 parameters
         let func_name = interner.intern("foo");
@@ -2566,7 +2700,8 @@ mod tests {
             span: Span::new(0, 7),
         });
 
-        let mut cgen = ConstraintGenerator::new(&rir, &interner, &functions, &structs, &enums);
+        let mut cgen =
+            ConstraintGenerator::new(&rir, &interner, &functions, &structs, &enums, &methods);
         let params = HashMap::new();
         let mut ctx = ConstraintContext::new(&params, Type::Bool);
 
@@ -2584,6 +2719,7 @@ mod tests {
         let functions = HashMap::new(); // Empty - no functions registered
         let structs = HashMap::new();
         let enums = HashMap::new();
+        let methods: HashMap<(Symbol, Symbol), MethodSig> = HashMap::new();
 
         // Create a call to an unknown function
         let unknown_func = interner.intern("unknown");
@@ -2599,7 +2735,8 @@ mod tests {
             span: Span::new(0, 11),
         });
 
-        let mut cgen = ConstraintGenerator::new(&rir, &interner, &functions, &structs, &enums);
+        let mut cgen =
+            ConstraintGenerator::new(&rir, &interner, &functions, &structs, &enums, &methods);
         let params = HashMap::new();
         let mut ctx = ConstraintContext::new(&params, Type::I32);
 
@@ -2617,6 +2754,7 @@ mod tests {
         let functions = HashMap::new();
         let structs = HashMap::new();
         let enums = HashMap::new();
+        let methods: HashMap<(Symbol, Symbol), MethodSig> = HashMap::new();
 
         // Create: match x { 1 => 10, 2 => 20, _ => 30 }
         let scrutinee = rir.add_inst(rue_rir::Inst {
@@ -2653,7 +2791,8 @@ mod tests {
             span: Span::new(0, 40),
         });
 
-        let mut cgen = ConstraintGenerator::new(&rir, &interner, &functions, &structs, &enums);
+        let mut cgen =
+            ConstraintGenerator::new(&rir, &interner, &functions, &structs, &enums, &methods);
         let params = HashMap::new();
         let mut ctx = ConstraintContext::new(&params, Type::I32);
 

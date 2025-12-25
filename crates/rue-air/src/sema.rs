@@ -6,8 +6,8 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::inference::{
-    Constraint, ConstraintContext, ConstraintGenerator, FunctionSig, InferType, ParamVarInfo,
-    Unifier, UnifyResult,
+    Constraint, ConstraintContext, ConstraintGenerator, FunctionSig, InferType, MethodSig,
+    ParamVarInfo, Unifier, UnifyResult,
 };
 use crate::inst::{Air, AirInst, AirInstData, AirPattern, AirRef};
 use crate::types::{
@@ -195,6 +195,25 @@ struct FunctionInfo {
     return_type: Type,
 }
 
+/// Information about a method in an impl block.
+#[derive(Debug, Clone)]
+struct MethodInfo {
+    /// The struct type this method belongs to
+    struct_type: Type,
+    /// Whether this is a method (has self) or associated function (no self)
+    has_self: bool,
+    /// Parameter names (excluding self if present)
+    param_names: Vec<Symbol>,
+    /// Parameter types (excluding self if present)
+    param_types: Vec<Type>,
+    /// Return type
+    return_type: Type,
+    /// The RIR instruction ref for the method body
+    body: InstRef,
+    /// Span of the method declaration
+    span: Span,
+}
+
 /// Result of analyzing an instruction: the AIR reference and its synthesized type.
 #[derive(Debug, Clone, Copy)]
 struct AnalysisResult {
@@ -235,6 +254,10 @@ pub struct Sema<'a> {
     strings: Vec<String>,
     /// Warnings collected during analysis
     warnings: Vec<CompileWarning>,
+    /// Method table: maps (struct_name, method_name) to method info
+    /// Used for resolving method calls (receiver.method()) and associated
+    /// function calls (Type::function())
+    methods: HashMap<(Symbol, Symbol), MethodInfo>,
 }
 
 impl<'a> Sema<'a> {
@@ -253,6 +276,7 @@ impl<'a> Sema<'a> {
             string_table: HashMap::new(),
             strings: Vec::new(),
             warnings: Vec::new(),
+            methods: HashMap::new(),
         }
     }
 
@@ -338,21 +362,39 @@ impl<'a> Sema<'a> {
         self.collect_enum_definitions()?;
         self.collect_struct_definitions()?;
 
-        // Second pass: collect function signatures
+        // Second pass: collect function and method signatures
         self.collect_function_signatures()?;
+        self.collect_method_definitions()?;
 
-        // Third pass: analyze function bodies
+        // Third pass: analyze regular function bodies (not methods)
         let mut functions = Vec::new();
 
+        // Collect method refs from impl blocks so we can skip them in the first pass
+        let mut method_refs: HashSet<InstRef> = HashSet::new();
         for (_, inst) in self.rir.iter() {
+            if let InstData::ImplDecl { methods, .. } = &inst.data {
+                for method_ref in methods {
+                    method_refs.insert(*method_ref);
+                }
+            }
+        }
+
+        // Analyze regular functions (not methods in impl blocks)
+        for (inst_ref, inst) in self.rir.iter() {
             if let InstData::FnDecl {
                 directives: _,
                 name,
                 params,
                 return_type,
                 body,
+                has_self: _,
             } = &inst.data
             {
+                // Skip methods - they'll be analyzed separately with impl block context
+                if method_refs.contains(&inst_ref) {
+                    continue;
+                }
+
                 let fn_name = self.interner.get(*name).to_string();
                 let ret_type = self.resolve_type(*return_type, inst.span)?;
 
@@ -374,6 +416,63 @@ impl<'a> Sema<'a> {
                     num_locals,
                     num_param_slots,
                 });
+            }
+        }
+
+        // Fourth pass: analyze method bodies from impl blocks
+        for (_, inst) in self.rir.iter() {
+            if let InstData::ImplDecl { type_name, methods } = &inst.data {
+                let type_name_str = self.interner.get(*type_name).to_string();
+                let struct_id = *self.structs.get(type_name).unwrap();
+                let struct_type = Type::Struct(struct_id);
+
+                for method_ref in methods {
+                    let method_inst = self.rir.get(*method_ref);
+                    if let InstData::FnDecl {
+                        name: method_name,
+                        params,
+                        return_type,
+                        body,
+                        has_self,
+                        ..
+                    } = &method_inst.data
+                    {
+                        let method_name_str = self.interner.get(*method_name).to_string();
+                        let ret_type = self.resolve_type(*return_type, method_inst.span)?;
+
+                        // Build parameter list, adding self as first parameter for methods
+                        let mut param_info: Vec<(Symbol, Type)> = Vec::new();
+
+                        if *has_self {
+                            // Add self parameter
+                            let self_sym = self.interner.intern("self");
+                            param_info.push((self_sym, struct_type));
+                        }
+
+                        // Add regular parameters
+                        for (pname, ptype) in params.iter() {
+                            let ty = self.resolve_type(*ptype, method_inst.span)?;
+                            param_info.push((*pname, ty));
+                        }
+
+                        let (air, num_locals, num_param_slots) =
+                            self.analyze_function(ret_type, &param_info, *body)?;
+
+                        // Generate method name with struct prefix: "Type.method" or "Type::function"
+                        let full_name = if *has_self {
+                            format!("{}.{}", type_name_str, method_name_str)
+                        } else {
+                            format!("{}::{}", type_name_str, method_name_str)
+                        };
+
+                        functions.push(AnalyzedFunction {
+                            name: full_name,
+                            air,
+                            num_locals,
+                            num_param_slots,
+                        });
+                    }
+                }
             }
         }
 
@@ -495,6 +594,80 @@ impl<'a> Sema<'a> {
         Ok(())
     }
 
+    /// Collect all method definitions from impl blocks.
+    ///
+    /// This processes all ImplDecl instructions and builds the method table
+    /// that maps (struct_name, method_name) to MethodInfo.
+    fn collect_method_definitions(&mut self) -> CompileResult<()> {
+        for (_, inst) in self.rir.iter() {
+            if let InstData::ImplDecl { type_name, methods } = &inst.data {
+                // Check that the type exists
+                let struct_id = match self.structs.get(type_name) {
+                    Some(id) => *id,
+                    None => {
+                        let type_name_str = self.interner.get(*type_name).to_string();
+                        return Err(CompileError::new(
+                            ErrorKind::UnknownType(type_name_str),
+                            inst.span,
+                        ));
+                    }
+                };
+                let struct_type = Type::Struct(struct_id);
+
+                // Process each method in the impl block
+                for method_ref in methods {
+                    let method_inst = self.rir.get(*method_ref);
+                    if let InstData::FnDecl {
+                        name: method_name,
+                        params,
+                        return_type,
+                        body,
+                        has_self,
+                        ..
+                    } = &method_inst.data
+                    {
+                        // Check for duplicate method names
+                        let key = (*type_name, *method_name);
+                        if self.methods.contains_key(&key) {
+                            let type_name_str = self.interner.get(*type_name).to_string();
+                            let method_name_str = self.interner.get(*method_name).to_string();
+                            return Err(CompileError::new(
+                                ErrorKind::DuplicateMethod {
+                                    type_name: type_name_str,
+                                    method_name: method_name_str,
+                                },
+                                method_inst.span,
+                            ));
+                        }
+
+                        // Resolve parameter types
+                        let param_names: Vec<Symbol> =
+                            params.iter().map(|(pname, _)| *pname).collect();
+                        let param_types: Vec<Type> = params
+                            .iter()
+                            .map(|(_, ptype)| self.resolve_type(*ptype, method_inst.span))
+                            .collect::<CompileResult<Vec<_>>>()?;
+                        let ret_type = self.resolve_type(*return_type, method_inst.span)?;
+
+                        self.methods.insert(
+                            key,
+                            MethodInfo {
+                                struct_type,
+                                has_self: *has_self,
+                                param_names,
+                                param_types,
+                                return_type: ret_type,
+                                body: *body,
+                                span: method_inst.span,
+                            },
+                        );
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// Analyze a single function, producing AIR.
     /// Returns (air, num_locals, num_param_slots).
     fn analyze_function(
@@ -607,6 +780,27 @@ impl<'a> Sema<'a> {
             .map(|(name, id)| (*name, Type::Enum(*id)))
             .collect();
 
+        // Build method signatures map for the constraint generator
+        let method_sigs: HashMap<(Symbol, Symbol), MethodSig> = self
+            .methods
+            .iter()
+            .map(|((type_name, method_name), info)| {
+                (
+                    (*type_name, *method_name),
+                    MethodSig {
+                        struct_type: info.struct_type,
+                        has_self: info.has_self,
+                        param_types: info
+                            .param_types
+                            .iter()
+                            .map(|t| self.type_to_infer_type(*t))
+                            .collect(),
+                        return_type: self.type_to_infer_type(info.return_type),
+                    },
+                )
+            })
+            .collect();
+
         // Create constraint generator
         let mut cgen = ConstraintGenerator::new(
             self.rir,
@@ -614,6 +808,7 @@ impl<'a> Sema<'a> {
             &func_sigs,
             &struct_types,
             &enum_types,
+            &method_sigs,
         );
 
         // Build parameter map for constraint context.
@@ -2612,24 +2807,169 @@ impl<'a> Sema<'a> {
                 Ok(AnalysisResult::new(air_ref, Type::Unit))
             }
 
-            // Method call - placeholder for Phase 3 (see ADR-0009)
-            InstData::MethodCall { .. } => {
+            // Method call: receiver.method(args)
+            InstData::MethodCall {
+                receiver,
+                method,
+                args,
+            } => {
+                // Analyze the receiver expression
+                let receiver_result = self.analyze_inst(air, *receiver, ctx)?;
+                let receiver_type = receiver_result.ty;
+
+                // Get the method name as a string for error messages
+                let method_name_str = self.interner.get(*method).to_string();
+
+                // Check that receiver is a struct type
+                let struct_id = match receiver_type {
+                    Type::Struct(id) => id,
+                    _ => {
+                        return Err(CompileError::new(
+                            ErrorKind::MethodCallOnNonStruct {
+                                found: receiver_type.name().to_string(),
+                                method_name: method_name_str,
+                            },
+                            inst.span,
+                        ));
+                    }
+                };
+
+                // Look up the struct name by its ID
+                let struct_def = &self.struct_defs[struct_id.0 as usize];
+                let struct_name_str = struct_def.name.clone();
+
+                // Find the struct name symbol for method lookup
+                let struct_name_sym = self.interner.intern(&struct_name_str);
+
+                // Look up the method
+                let method_key = (struct_name_sym, *method);
+                let method_info = self.methods.get(&method_key).ok_or_else(|| {
+                    CompileError::new(
+                        ErrorKind::UndefinedMethod {
+                            type_name: struct_name_str.clone(),
+                            method_name: method_name_str.clone(),
+                        },
+                        inst.span,
+                    )
+                })?;
+
+                // Check that this is a method (has self), not an associated function
+                if !method_info.has_self {
+                    return Err(CompileError::new(
+                        ErrorKind::AssocFnCalledAsMethod {
+                            type_name: struct_name_str,
+                            function_name: method_name_str,
+                        },
+                        inst.span,
+                    ));
+                }
+
+                // Check argument count (method_info.param_types excludes self)
+                if args.len() != method_info.param_types.len() {
+                    return Err(CompileError::new(
+                        ErrorKind::WrongArgumentCount {
+                            expected: method_info.param_types.len(),
+                            found: args.len(),
+                        },
+                        inst.span,
+                    ));
+                }
+
+                // Clone data needed before mutable borrow
+                let return_type = method_info.return_type;
+
+                // Analyze arguments
+                let mut arg_refs = vec![receiver_result.air_ref];
+                for arg in args.iter() {
+                    let arg_result = self.analyze_inst(air, *arg, ctx)?;
+                    arg_refs.push(arg_result.air_ref);
+                }
+
+                // Generate a method call name: Type.method
+                let call_name = format!("{}.{}", struct_name_str, method_name_str);
+
                 let air_ref = air.add_inst(AirInst {
-                    data: AirInstData::UnitConst,
-                    ty: Type::Unit,
+                    data: AirInstData::Call {
+                        name: call_name,
+                        args: arg_refs,
+                    },
+                    ty: return_type,
                     span: inst.span,
                 });
-                Ok(AnalysisResult::new(air_ref, Type::Unit))
+                Ok(AnalysisResult::new(air_ref, return_type))
             }
 
-            // Associated function call - placeholder for Phase 3 (see ADR-0009)
-            InstData::AssocFnCall { .. } => {
+            // Associated function call: Type::function(args)
+            InstData::AssocFnCall {
+                type_name,
+                function,
+                args,
+            } => {
+                // Get the type and function names for error messages
+                let type_name_str = self.interner.get(*type_name).to_string();
+                let function_name_str = self.interner.get(*function).to_string();
+
+                // Check that the type exists and is a struct
+                let _struct_id = self.structs.get(type_name).ok_or_else(|| {
+                    CompileError::new(ErrorKind::UnknownType(type_name_str.clone()), inst.span)
+                })?;
+
+                // Look up the function
+                let method_key = (*type_name, *function);
+                let method_info = self.methods.get(&method_key).ok_or_else(|| {
+                    CompileError::new(
+                        ErrorKind::UndefinedAssocFn {
+                            type_name: type_name_str.clone(),
+                            function_name: function_name_str.clone(),
+                        },
+                        inst.span,
+                    )
+                })?;
+
+                // Check that this is an associated function (no self), not a method
+                if method_info.has_self {
+                    return Err(CompileError::new(
+                        ErrorKind::MethodCalledAsAssocFn {
+                            type_name: type_name_str,
+                            method_name: function_name_str,
+                        },
+                        inst.span,
+                    ));
+                }
+
+                // Check argument count
+                if args.len() != method_info.param_types.len() {
+                    return Err(CompileError::new(
+                        ErrorKind::WrongArgumentCount {
+                            expected: method_info.param_types.len(),
+                            found: args.len(),
+                        },
+                        inst.span,
+                    ));
+                }
+
+                // Clone data needed before mutable borrow
+                let return_type = method_info.return_type;
+
+                // Analyze arguments
+                let mut arg_refs = Vec::new();
+                for arg in args.iter() {
+                    let arg_result = self.analyze_inst(air, *arg, ctx)?;
+                    arg_refs.push(arg_result.air_ref);
+                }
+
+                // Generate a function call name: Type::function
+                let call_name = format!("{}::{}", type_name_str, function_name_str);
+
                 let air_ref = air.add_inst(AirInst {
-                    data: AirInstData::UnitConst,
-                    ty: Type::Unit,
+                    data: AirInstData::Call {
+                        name: call_name,
+                        args: arg_refs,
+                    },
+                    ty: return_type,
                     span: inst.span,
                 });
-                Ok(AnalysisResult::new(air_ref, Type::Unit))
+                Ok(AnalysisResult::new(air_ref, return_type))
             }
         }
     }
