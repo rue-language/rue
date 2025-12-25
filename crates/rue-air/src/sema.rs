@@ -96,6 +96,13 @@ struct LocalVar {
     allow_unused: bool,
 }
 
+/// Information about a variable that has been moved.
+#[derive(Debug, Clone)]
+struct MoveInfo {
+    /// Span where the move occurred
+    moved_at: Span,
+}
+
 /// Information about a function parameter.
 #[derive(Debug, Clone)]
 struct ParamInfo {
@@ -133,6 +140,9 @@ struct AnalysisContext<'a> {
     /// This is populated by running constraint generation and unification
     /// before AIR emission.
     resolved_types: &'a HashMap<InstRef, Type>,
+    /// Variables that have been moved (for affine type checking).
+    /// Maps variable symbol to move information.
+    moved_vars: HashMap<Symbol, MoveInfo>,
 }
 
 impl AnalysisContext<'_> {
@@ -169,6 +179,10 @@ impl AnalysisContext<'_> {
         if let Some(current_scope) = self.scope_stack.last_mut() {
             current_scope.push((symbol, old_value));
         }
+        // When a variable is (re)declared, clear any moved state for it.
+        // This handles shadowing: `let x = moved_val; let x = new_val;`
+        // The new `x` is a fresh binding and shouldn't carry the old moved state.
+        self.moved_vars.remove(&symbol);
     }
 }
 
@@ -525,6 +539,7 @@ impl<'a> Sema<'a> {
             return_type,
             scope_stack: Vec::new(),
             resolved_types: &resolved_types,
+            moved_vars: HashMap::new(),
         };
 
         // ======================================================================
@@ -737,6 +752,136 @@ impl<'a> Sema<'a> {
             // All other types wrap directly
             _ => InferType::Concrete(ty),
         }
+    }
+
+    /// Analyze an RIR instruction for projection (field access).
+    ///
+    /// This is like `analyze_inst` but does NOT mark non-Copy values as moved.
+    /// Used for field access where we're reading from a struct without consuming it.
+    /// We still check that the variable hasn't already been moved.
+    fn analyze_inst_for_projection(
+        &mut self,
+        air: &mut Air,
+        inst_ref: InstRef,
+        ctx: &mut AnalysisContext,
+    ) -> CompileResult<AnalysisResult> {
+        let inst = self.rir.get(inst_ref);
+
+        // For VarRef, we handle it specially: check for moves but don't mark as moved
+        if let InstData::VarRef { name } = &inst.data {
+            // First check if it's a parameter
+            if let Some(param_info) = ctx.params.get(name) {
+                let ty = param_info.ty;
+
+                // Check if this parameter has been moved
+                if let Some(move_info) = ctx.moved_vars.get(name) {
+                    let name_str = self.interner.get(*name);
+                    return Err(CompileError::new(
+                        ErrorKind::UseAfterMove {
+                            var_name: name_str.to_string(),
+                        },
+                        inst.span,
+                    )
+                    .with_label("value moved here", move_info.moved_at));
+                }
+
+                // NOTE: We do NOT mark as moved here - this is a projection
+
+                let air_ref = air.add_inst(AirInst {
+                    data: AirInstData::Param {
+                        index: param_info.abi_slot,
+                    },
+                    ty,
+                    span: inst.span,
+                });
+                return Ok(AnalysisResult::new(air_ref, ty));
+            }
+
+            // Look up the variable in locals
+            let name_str = self.interner.get(*name);
+            let local = ctx.locals.get(name).ok_or_else(|| {
+                CompileError::new(
+                    ErrorKind::UndefinedVariable(name_str.to_string()),
+                    inst.span,
+                )
+            })?;
+
+            let ty = local.ty;
+            let slot = local.slot;
+
+            // Check if this variable has been moved
+            if let Some(move_info) = ctx.moved_vars.get(name) {
+                return Err(CompileError::new(
+                    ErrorKind::UseAfterMove {
+                        var_name: name_str.to_string(),
+                    },
+                    inst.span,
+                )
+                .with_label("value moved here", move_info.moved_at));
+            }
+
+            // NOTE: We do NOT mark as moved here - this is a projection
+
+            // Mark variable as used
+            ctx.used_locals.insert(*name);
+
+            // Load the variable
+            let air_ref = air.add_inst(AirInst {
+                data: AirInstData::Load { slot },
+                ty,
+                span: inst.span,
+            });
+            return Ok(AnalysisResult::new(air_ref, ty));
+        }
+
+        // For nested field access (e.g., a.b.c), recursively use projection mode
+        if let InstData::FieldGet { base, field } = &inst.data {
+            let base_result = self.analyze_inst_for_projection(air, *base, ctx)?;
+            let base_type = base_result.ty;
+
+            let struct_id = match base_type {
+                Type::Struct(id) => id,
+                _ => {
+                    return Err(CompileError::new(
+                        ErrorKind::FieldAccessOnNonStruct {
+                            found: base_type.name().to_string(),
+                        },
+                        inst.span,
+                    ));
+                }
+            };
+
+            let struct_def = &self.struct_defs[struct_id.0 as usize];
+            let field_name_str = self.interner.get(*field).to_string();
+
+            let (field_index, struct_field) =
+                struct_def.find_field(&field_name_str).ok_or_else(|| {
+                    CompileError::new(
+                        ErrorKind::UnknownField {
+                            struct_name: struct_def.name.clone(),
+                            field_name: field_name_str.clone(),
+                        },
+                        inst.span,
+                    )
+                })?;
+
+            let field_type = struct_field.ty;
+
+            let air_ref = air.add_inst(AirInst {
+                data: AirInstData::FieldGet {
+                    base: base_result.air_ref,
+                    struct_id,
+                    field_index: field_index as u32,
+                },
+                ty: field_type,
+                span: inst.span,
+            });
+            return Ok(AnalysisResult::new(air_ref, field_type));
+        }
+
+        // For other expressions, use the normal analyze_inst
+        // (they will trigger move semantics as expected)
+        self.analyze_inst(air, inst_ref, ctx)
     }
 
     /// Analyze an RIR instruction, producing AIR instructions.
@@ -1483,6 +1628,28 @@ impl<'a> Sema<'a> {
                 if let Some(param_info) = ctx.params.get(name) {
                     let ty = param_info.ty;
 
+                    // Check if this parameter has been moved
+                    if let Some(move_info) = ctx.moved_vars.get(name) {
+                        let name_str = self.interner.get(*name);
+                        return Err(CompileError::new(
+                            ErrorKind::UseAfterMove {
+                                var_name: name_str.to_string(),
+                            },
+                            inst.span,
+                        )
+                        .with_label("value moved here", move_info.moved_at));
+                    }
+
+                    // If type is not Copy, mark as moved
+                    if !ty.is_copy() {
+                        ctx.moved_vars.insert(
+                            *name,
+                            MoveInfo {
+                                moved_at: inst.span,
+                            },
+                        );
+                    }
+
                     // Emit Param with the ABI slot (not the parameter index).
                     // For struct parameters, this is the starting slot of the first field.
                     let air_ref = air.add_inst(AirInst {
@@ -1506,6 +1673,27 @@ impl<'a> Sema<'a> {
 
                 let ty = local.ty;
                 let slot = local.slot;
+
+                // Check if this variable has been moved
+                if let Some(move_info) = ctx.moved_vars.get(name) {
+                    return Err(CompileError::new(
+                        ErrorKind::UseAfterMove {
+                            var_name: name_str.to_string(),
+                        },
+                        inst.span,
+                    )
+                    .with_label("value moved here", move_info.moved_at));
+                }
+
+                // If type is not Copy, mark as moved
+                if !ty.is_copy() {
+                    ctx.moved_vars.insert(
+                        *name,
+                        MoveInfo {
+                            moved_at: inst.span,
+                        },
+                    );
+                }
 
                 // Mark variable as used
                 ctx.used_locals.insert(*name);
@@ -1547,6 +1735,10 @@ impl<'a> Sema<'a> {
 
                 // Analyze the value
                 let value_result = self.analyze_inst(air, *value, ctx)?;
+
+                // Assignment to a mutable variable resets its move state.
+                // The variable is now valid again with a new value.
+                ctx.moved_vars.remove(name);
 
                 // Emit store instruction
                 let air_ref = air.add_inst(AirInst {
@@ -1860,8 +2052,10 @@ impl<'a> Sema<'a> {
             }
 
             InstData::FieldGet { base, field } => {
-                // Synthesize the base type in a single traversal
-                let base_result = self.analyze_inst(air, *base, ctx)?;
+                // Field access is a projection - it reads from the struct without consuming it.
+                // We analyze the base in "projection mode" which checks for moves but doesn't
+                // mark the variable as moved.
+                let base_result = self.analyze_inst_for_projection(air, *base, ctx)?;
                 let base_type = base_result.ty;
 
                 let struct_id = match base_type {
@@ -1921,7 +2115,7 @@ impl<'a> Sema<'a> {
                 let mut current_base = *base;
                 let mut field_symbols: Vec<Symbol> = Vec::new();
 
-                let (var_name, root_slot, root_type, is_mut) = loop {
+                let (var_name, root_slot, root_type, is_mut, _root_symbol) = loop {
                     let current_inst = self.rir.get(current_base);
                     match &current_inst.data {
                         InstData::VarRef { name } => {
@@ -1932,7 +2126,25 @@ impl<'a> Sema<'a> {
                                     inst.span,
                                 )
                             })?;
-                            break (name_str.to_string(), local.slot, local.ty, local.is_mut);
+
+                            // Check if this variable has been moved
+                            if let Some(move_info) = ctx.moved_vars.get(name) {
+                                return Err(CompileError::new(
+                                    ErrorKind::UseAfterMove {
+                                        var_name: name_str.to_string(),
+                                    },
+                                    inst.span,
+                                )
+                                .with_label("value moved here", move_info.moved_at));
+                            }
+
+                            break (
+                                name_str.to_string(),
+                                local.slot,
+                                local.ty,
+                                local.is_mut,
+                                *name,
+                            );
                         }
                         InstData::FieldGet {
                             base: inner_base,
@@ -2167,8 +2379,9 @@ impl<'a> Sema<'a> {
             }
 
             InstData::IndexGet { base, index } => {
-                // Synthesize the base type
-                let base_result = self.analyze_inst(air, *base, ctx)?;
+                // Array indexing is a projection - it reads from the array without consuming it.
+                // Like field access, we analyze the base in projection mode.
+                let base_result = self.analyze_inst_for_projection(air, *base, ctx)?;
                 let base_type = base_result.ty;
 
                 let array_type_id = match base_type {
@@ -2236,6 +2449,18 @@ impl<'a> Sema<'a> {
                                 inst.span,
                             )
                         })?;
+
+                        // Check if this variable has been moved
+                        if let Some(move_info) = ctx.moved_vars.get(name) {
+                            return Err(CompileError::new(
+                                ErrorKind::UseAfterMove {
+                                    var_name: name_str.to_string(),
+                                },
+                                inst.span,
+                            )
+                            .with_label("value moved here", move_info.moved_at));
+                        }
+
                         (name_str.to_string(), local.slot, local.ty, local.is_mut)
                     }
                     _ => {
@@ -2577,8 +2802,10 @@ impl<'a> Sema<'a> {
                 .with_help("use `&&` to combine comparisons: `a < b && b < c`"));
         }
 
-        let lhs_result = self.analyze_inst(air, lhs, ctx)?;
-        let rhs_result = self.analyze_inst(air, rhs, ctx)?;
+        // Comparisons read values without consuming them (like projections).
+        // This matches Rust's PartialEq trait which takes references.
+        let lhs_result = self.analyze_inst_for_projection(air, lhs, ctx)?;
+        let rhs_result = self.analyze_inst_for_projection(air, rhs, ctx)?;
         let lhs_type = lhs_result.ty;
 
         // Propagate Never/Error without additional type errors

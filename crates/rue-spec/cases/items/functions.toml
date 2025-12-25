@@ -505,11 +505,10 @@ description = "Accessing nested fields of a struct parameter computes correct sl
 source = """
 struct Inner { a: i32, b: i32 }
 struct Outer { inner: Inner, other: i32 }
-fn get_inner_a(o: Outer) -> i32 { o.inner.a }
-fn get_inner_b(o: Outer) -> i32 { o.inner.b }
+fn get_inner_sum(o: Outer) -> i32 { o.inner.a + o.inner.b }
 fn main() -> i32 {
     let o = Outer { inner: Inner { a: 10, b: 20 }, other: 100 };
-    get_inner_a(o) + get_inner_b(o)
+    get_inner_sum(o)
 }
 """
 exit_code = 30

@@ -340,6 +340,11 @@ pub enum ErrorKind {
         feature: PreviewFeature,
         what: String,
     },
+
+    // Move semantics errors
+    UseAfterMove {
+        var_name: String,
+    },
 }
 
 impl CompileError {
@@ -626,6 +631,9 @@ impl fmt::Display for ErrorKind {
             ErrorKind::UnsupportedTarget(msg) => write!(f, "unsupported target: {}", msg),
             ErrorKind::PreviewFeatureRequired { feature, what } => {
                 write!(f, "{} requires preview feature `{}`", what, feature.name())
+            }
+            ErrorKind::UseAfterMove { var_name } => {
+                write!(f, "use of moved value '{}'", var_name)
             }
         }
     }

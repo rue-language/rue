@@ -1,0 +1,281 @@
+[section]
+id = "types.move-semantics"
+spec_chapter = "3.8"
+name = "Move Semantics"
+description = "Move and copy semantics for types."
+
+# =============================================================================
+# Value Categories
+# =============================================================================
+
+[[case]]
+name = "types_categorized_by_behavior"
+spec = ["3.8:1"]
+description = "Types are categorized as Copy (can be duplicated) or Move (consumed when used)"
+source = """
+struct MoveType { x: i32 }
+fn main() -> i32 {
+    // Copy type: can use multiple times
+    let n = 42;
+    let a = n;
+    let b = n;
+
+    // Move type: consumed on first use
+    let m = MoveType { x: 10 };
+    let c = m;
+    // m is now invalid
+
+    a + b + c.x
+}
+"""
+exit_code = 94
+
+# =============================================================================
+# Copy Types
+# =============================================================================
+
+[[case]]
+name = "integer_is_copy"
+spec = ["3.8:2", "3.8:9"]
+source = """
+fn main() -> i32 {
+    let x = 42;
+    let a = x;
+    let b = x;
+    a + b
+}
+"""
+exit_code = 84
+
+[[case]]
+name = "bool_is_copy"
+spec = ["3.8:2", "3.8:9"]
+source = """
+fn main() -> i32 {
+    let b = true;
+    let c = b;
+    let d = b;
+    if c && d { 1 } else { 0 }
+}
+"""
+exit_code = 1
+
+[[case]]
+name = "unit_is_copy"
+spec = ["3.8:2"]
+source = """
+fn main() -> i32 {
+    let u = ();
+    let a = u;
+    let b = u;
+    42
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "enum_is_copy"
+spec = ["3.8:2"]
+source = """
+enum Color { Red, Green, Blue }
+fn main() -> i32 {
+    let c = Color::Red;
+    let a = c;
+    let b = c;
+    match a {
+        Color::Red => 1,
+        Color::Green => 2,
+        Color::Blue => 3,
+    }
+}
+"""
+exit_code = 1
+
+# =============================================================================
+# Move Types (Structs)
+# =============================================================================
+
+[[case]]
+name = "struct_is_move_type"
+spec = ["3.8:3", "3.8:4"]
+source = """
+struct Point { x: i32, y: i32 }
+fn main() -> i32 {
+    let p = Point { x: 1, y: 2 };
+    let q = p;
+    q.x + q.y
+}
+"""
+exit_code = 3
+
+[[case]]
+name = "struct_use_after_move_error"
+spec = ["3.8:5", "3.8:6"]
+source = """
+struct Point { x: i32, y: i32 }
+fn main() -> i32 {
+    let p = Point { x: 1, y: 2 };
+    let q = p;
+    let r = p;
+    0
+}
+"""
+compile_fail = true
+error_contains = "use of moved value"
+
+[[case]]
+name = "struct_move_on_assignment"
+spec = ["3.8:7"]
+source = """
+struct Data { value: i32 }
+fn main() -> i32 {
+    let d = Data { value: 42 };
+    let e = d;
+    d.value
+}
+"""
+compile_fail = true
+error_contains = "use of moved value"
+
+[[case]]
+name = "struct_move_on_function_call"
+spec = ["3.8:7", "3.8:8", "3.8:11"]
+source = """
+struct Data { value: i32 }
+fn consume(d: Data) -> i32 { d.value }
+fn main() -> i32 {
+    let d = Data { value: 42 };
+    let result = consume(d);
+    d.value
+}
+"""
+compile_fail = true
+error_contains = "use of moved value"
+
+[[case]]
+name = "struct_move_valid_single_use"
+spec = ["3.8:7", "3.8:8"]
+source = """
+struct Data { value: i32 }
+fn consume(d: Data) -> i32 { d.value }
+fn main() -> i32 {
+    let d = Data { value: 42 };
+    consume(d)
+}
+"""
+exit_code = 42
+
+# =============================================================================
+# Field Access (Projection)
+# =============================================================================
+
+[[case]]
+name = "field_access_no_move"
+spec = ["3.8:3"]
+source = """
+struct Point { x: i32, y: i32 }
+fn main() -> i32 {
+    let p = Point { x: 10, y: 20 };
+    p.x + p.y
+}
+"""
+exit_code = 30
+
+[[case]]
+name = "field_access_then_move"
+spec = ["3.8:3", "3.8:7"]
+source = """
+struct Point { x: i32, y: i32 }
+fn main() -> i32 {
+    let p = Point { x: 1, y: 2 };
+    let x = p.x;
+    let q = p;
+    x + q.y
+}
+"""
+exit_code = 3
+
+[[case]]
+name = "field_access_after_move_error"
+spec = ["3.8:5"]
+source = """
+struct Point { x: i32, y: i32 }
+fn main() -> i32 {
+    let p = Point { x: 1, y: 2 };
+    let q = p;
+    p.x
+}
+"""
+compile_fail = true
+error_contains = "use of moved value"
+
+# =============================================================================
+# Mutable Variable Reassignment
+# =============================================================================
+
+[[case]]
+name = "field_assign_after_move_error"
+spec = ["3.8:5"]
+source = """
+struct Point { x: i32, y: i32 }
+fn main() -> i32 {
+    let mut p = Point { x: 1, y: 2 };
+    let _q = p;
+    p.x = 10;
+    0
+}
+"""
+compile_fail = true
+error_contains = "use of moved value"
+
+# =============================================================================
+# Copy Type Parameters
+# =============================================================================
+
+[[case]]
+name = "copy_type_function_param"
+spec = ["3.8:10", "3.8:11"]
+source = """
+fn double(x: i32) -> i32 { x + x }
+fn main() -> i32 {
+    let n = 21;
+    let result = double(n);
+    n + result
+}
+"""
+exit_code = 63
+
+# =============================================================================
+# Shadowing and Moves
+# =============================================================================
+
+[[case]]
+name = "shadowing_creates_new_binding"
+spec = ["3.8:12"]
+description = "Shadowing creates a new binding, doesn't affect original move state"
+source = """
+struct Data { value: i32 }
+fn main() -> i32 {
+    let d = Data { value: 1 };
+    let _x = d;  // d is moved
+    let d = Data { value: 2 };  // New 'd' shadows the moved one
+    d.value  // This is the new 'd', which is valid
+}
+"""
+exit_code = 2
+
+[[case]]
+name = "shadowing_then_use_original_error"
+spec = ["3.8:12"]
+description = "After shadowing a moved variable, accessing original is still error"
+source = """
+struct Data { value: i32 }
+fn main() -> i32 {
+    let d = Data { value: 1 };
+    let original = d;  // d is moved
+    let d = Data { value: 2 };  // Shadows with new binding
+    let _y = d;  // Use new d
+    original.value  // The original value was moved into 'original'
+}
+"""
+exit_code = 1

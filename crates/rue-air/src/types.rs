@@ -242,6 +242,46 @@ impl Type {
         matches!(self, Type::I8 | Type::I16 | Type::I32 | Type::I64)
     }
 
+    /// Check if this is a Copy type (can be implicitly duplicated).
+    ///
+    /// Copy types are:
+    /// - All integer types (i8-i64, u8-u64)
+    /// - Boolean
+    /// - Unit
+    /// - Enum types
+    /// - Never type and Error type (for convenience in error recovery)
+    ///
+    /// Non-Copy types (move types) are:
+    /// - Struct types
+    /// - String
+    /// - Array types (until we implement Copy arrays with Copy elements)
+    pub fn is_copy(&self) -> bool {
+        match self {
+            // Primitive Copy types
+            Type::I8
+            | Type::I16
+            | Type::I32
+            | Type::I64
+            | Type::U8
+            | Type::U16
+            | Type::U32
+            | Type::U64
+            | Type::Bool
+            | Type::Unit => true,
+            // Enum types are Copy (they're small discriminant values)
+            Type::Enum(_) => true,
+            // Never and Error are Copy for convenience
+            Type::Never | Type::Error => true,
+            // Struct types are move types
+            Type::Struct(_) => false,
+            // String is a move type (owns heap data)
+            Type::String => false,
+            // Arrays are move types for now
+            // TODO: Arrays of Copy types could be Copy
+            Type::Array(_) => false,
+        }
+    }
+
     /// Check if this is a 64-bit type (uses 64-bit operations).
     pub fn is_64_bit(&self) -> bool {
         matches!(self, Type::I64 | Type::U64)

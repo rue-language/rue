@@ -7,7 +7,7 @@ feature-flag: affine-mvs
 created: 2025-12-24
 accepted: 2025-12-24
 implemented:
-spec-sections: []
+spec-sections: ["3.8"]
 superseded-by:
 ---
 
@@ -372,14 +372,17 @@ Epic: rue-dfr8
 
 This is a large feature requiring multiple phases. Each phase is a **vertical slice** - a complete, testable feature end-to-end. This allows kicking the tires at each step.
 
-### Phase 1: Affine structs (rue-dfr8.1)
+### Phase 1: Affine structs (rue-dfr8.1) ✅ COMPLETE
 
 Make user-defined structs affine by default. Primitives remain implicitly Copy.
 
-- Parse structs as usual (no syntax change)
-- Track moves in semantic analysis
-- Detect use-after-move errors for structs
-- Primitives (i32, bool, etc.) are implicitly Copy - no move tracking
+- [x] Parse structs as usual (no syntax change)
+- [x] Track moves in semantic analysis
+- [x] Detect use-after-move errors for structs
+- [x] Primitives (i32, bool, etc.) are implicitly Copy - no move tracking
+- [x] Field access is a projection (doesn't move the struct)
+- [x] Array indexing is a projection (doesn't move the array)
+- [x] Comparison operators don't consume operands
 
 **Testable**: Define a struct, use it twice, get a compile error.
 
