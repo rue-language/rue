@@ -147,6 +147,7 @@ This specification is organized as follows:
 - **Chapter 8: Runtime Behavior** - Overflow, bounds checking, panics
 - **Appendix A: Grammar** - Complete EBNF grammar
 - **Appendix B: Runtime Panics** - Summary of panic conditions
+- **Appendix C: Implementation Limits** - Minimum limits for conforming implementations
 
 ## Version
 

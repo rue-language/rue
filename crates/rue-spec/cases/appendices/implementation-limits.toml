@@ -1,0 +1,237 @@
+[section]
+id = "appendices.implementation-limits"
+spec_chapter = "C"
+name = "Implementation Limits"
+description = "Tests for implementation-defined limits and boundaries."
+
+# =============================================================================
+# Numeric Limits (C.2)
+# =============================================================================
+
+[[case]]
+name = "u64_max_literal"
+spec = ["C.2:1"]
+source = "fn main() -> u64 { 18446744073709551615 }"
+exit_code = 255
+
+[[case]]
+name = "i8_min"
+spec = ["C.2:2"]
+source = "fn main() -> i8 { -128 }"
+exit_code = 128
+
+[[case]]
+name = "i8_max"
+spec = ["C.2:2"]
+source = "fn main() -> i8 { 127 }"
+exit_code = 127
+
+[[case]]
+name = "u8_max"
+spec = ["C.2:2"]
+source = "fn main() -> u8 { 255 }"
+exit_code = 255
+
+[[case]]
+name = "i32_boundary_positive"
+spec = ["C.2:2"]
+source = "fn main() -> i32 { 2147483647 }"
+exit_code = 255
+
+[[case]]
+name = "i32_boundary_negative"
+spec = ["C.2:2"]
+source = """
+fn main() -> i32 {
+    let x: i32 = -2147483648;
+    if x < 0 { 1 } else { 0 }
+}
+"""
+exit_code = 1
+
+[[case]]
+name = "u32_max"
+spec = ["C.2:2"]
+source = """
+fn main() -> u32 {
+    let x: u32 = 4294967295;
+    if x > 0 { 1 } else { 0 }
+}
+"""
+exit_code = 1
+
+# =============================================================================
+# Array Limits (C.4)
+# =============================================================================
+
+[[case]]
+name = "array_small"
+spec = ["C.4:1"]
+source = """
+fn main() -> i32 {
+    let arr: [i32; 10] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9];
+    arr[9]
+}
+"""
+exit_code = 9
+
+[[case]]
+name = "array_larger"
+spec = ["C.4:1"]
+source = """
+fn main() -> i32 {
+    let arr: [i32; 20] = [42, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                          0, 0, 0, 0, 0, 0, 0, 0, 0, 99];
+    arr[0] + arr[19]
+}
+"""
+exit_code = 141
+
+# =============================================================================
+# No Fixed Limits (C.6)
+# =============================================================================
+
+[[case]]
+name = "many_parameters"
+spec = ["C.6:1"]
+source = """
+fn add_ten(a: i32, b: i32, c: i32, d: i32, e: i32,
+           f: i32, g: i32, h: i32, i: i32, j: i32) -> i32 {
+    a + b + c + d + e + f + g + h + i + j
+}
+
+fn main() -> i32 {
+    add_ten(1, 2, 3, 4, 5, 6, 7, 8, 9, 10)
+}
+"""
+exit_code = 55
+
+[[case]]
+name = "many_struct_fields"
+spec = ["C.6:1"]
+source = """
+struct Large {
+    a: i32,
+    b: i32,
+    c: i32,
+    d: i32,
+    e: i32,
+    f: i32,
+    g: i32,
+    h: i32,
+}
+
+fn main() -> i32 {
+    let s = Large { a: 1, b: 2, c: 3, d: 4, e: 5, f: 6, g: 7, h: 8 };
+    s.a + s.b + s.c + s.d + s.e + s.f + s.g + s.h
+}
+"""
+exit_code = 36
+
+[[case]]
+name = "many_enum_variants"
+spec = ["C.6:1"]
+source = """
+enum Color {
+    Red,
+    Orange,
+    Yellow,
+    Green,
+    Blue,
+    Indigo,
+    Violet,
+    Black,
+    White,
+    Gray,
+}
+
+fn main() -> i32 {
+    let c = Color::Violet;
+    match c {
+        Color::Red => 0,
+        Color::Orange => 1,
+        Color::Yellow => 2,
+        Color::Green => 3,
+        Color::Blue => 4,
+        Color::Indigo => 5,
+        Color::Violet => 6,
+        Color::Black => 7,
+        Color::White => 8,
+        Color::Gray => 9,
+    }
+}
+"""
+exit_code = 6
+
+[[case]]
+name = "deep_nesting"
+spec = ["C.6:1"]
+source = """
+fn main() -> i32 {
+    if true {
+        if true {
+            if true {
+                if true {
+                    if true {
+                        if true {
+                            if true {
+                                if true {
+                                    42
+                                } else { 0 }
+                            } else { 0 }
+                        } else { 0 }
+                    } else { 0 }
+                } else { 0 }
+            } else { 0 }
+        } else { 0 }
+    } else { 0 }
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "nested_loops"
+spec = ["C.6:1"]
+source = """
+fn main() -> i32 {
+    let mut sum: i32 = 0;
+    let mut i: i32 = 0;
+    while i < 3 {
+        let mut j: i32 = 0;
+        while j < 3 {
+            let mut k: i32 = 0;
+            while k < 3 {
+                sum = sum + 1;
+                k = k + 1;
+            }
+            j = j + 1;
+        }
+        i = i + 1;
+    }
+    sum
+}
+"""
+exit_code = 27
+
+[[case]]
+name = "nested_blocks"
+spec = ["C.6:1"]
+source = """
+fn main() -> i32 {
+    let a: i32 = {
+        let b: i32 = {
+            let c: i32 = {
+                let d: i32 = {
+                    let e: i32 = 10;
+                    e + 1
+                };
+                d + 1
+            };
+            c + 1
+        };
+        b + 1
+    };
+    a
+}
+"""
+exit_code = 14
