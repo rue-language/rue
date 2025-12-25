@@ -13,7 +13,7 @@ use crate::inst::{Air, AirInst, AirInstData, AirPattern, AirRef};
 use crate::types::{
     ArrayTypeDef, ArrayTypeId, EnumDef, EnumId, StructDef, StructField, StructId, Type,
 };
-use rue_error::{CompileError, CompileResult, CompileWarning, ErrorKind, WarningKind};
+use rue_error::{CompileError, CompileResult, CompileWarning, ErrorKind, OptionExt, WarningKind};
 use rue_intern::{Interner, Symbol};
 use rue_rir::{InstData, InstRef, Rir, RirDirective, RirPattern};
 use rue_span::Span;
@@ -994,12 +994,10 @@ impl<'a> Sema<'a> {
 
             // Look up the variable in locals
             let name_str = self.interner.get(*name);
-            let local = ctx.locals.get(name).ok_or_else(|| {
-                CompileError::new(
-                    ErrorKind::UndefinedVariable(name_str.to_string()),
-                    inst.span,
-                )
-            })?;
+            let local = ctx.locals.get(name).ok_or_compile_error(
+                ErrorKind::UndefinedVariable(name_str.to_string()),
+                inst.span,
+            )?;
 
             let ty = local.ty;
             let slot = local.slot;
@@ -1050,15 +1048,13 @@ impl<'a> Sema<'a> {
             let field_name_str = self.interner.get(*field).to_string();
 
             let (field_index, struct_field) =
-                struct_def.find_field(&field_name_str).ok_or_else(|| {
-                    CompileError::new(
-                        ErrorKind::UnknownField {
-                            struct_name: struct_def.name.clone(),
-                            field_name: field_name_str.clone(),
-                        },
-                        inst.span,
-                    )
-                })?;
+                struct_def.find_field(&field_name_str).ok_or_compile_error(
+                    ErrorKind::UnknownField {
+                        struct_name: struct_def.name.clone(),
+                        field_name: field_name_str.clone(),
+                    },
+                    inst.span,
+                )?;
 
             let field_type = struct_field.ty;
 
@@ -1637,14 +1633,12 @@ impl<'a> Sema<'a> {
                             type_name, variant, ..
                         } => {
                             // Look up the enum type
-                            let enum_id = self.enums.get(type_name).ok_or_else(|| {
-                                CompileError::new(
-                                    ErrorKind::UnknownEnumType(
-                                        self.interner.get(*type_name).to_string(),
-                                    ),
-                                    pattern_span,
-                                )
-                            })?;
+                            let enum_id = self.enums.get(type_name).ok_or_compile_error(
+                                ErrorKind::UnknownEnumType(
+                                    self.interner.get(*type_name).to_string(),
+                                ),
+                                pattern_span,
+                            )?;
                             let enum_def = &self.enum_defs[enum_id.0 as usize];
 
                             // Check that scrutinee type matches the pattern's enum type
@@ -1661,15 +1655,13 @@ impl<'a> Sema<'a> {
                             // Find the variant index
                             let variant_name = self.interner.get(*variant);
                             let variant_index =
-                                enum_def.find_variant(variant_name).ok_or_else(|| {
-                                    CompileError::new(
-                                        ErrorKind::UnknownVariant {
-                                            enum_name: enum_def.name.clone(),
-                                            variant_name: variant_name.to_string(),
-                                        },
-                                        pattern_span,
-                                    )
-                                })?;
+                                enum_def.find_variant(variant_name).ok_or_compile_error(
+                                    ErrorKind::UnknownVariant {
+                                        enum_name: enum_def.name.clone(),
+                                        variant_name: variant_name.to_string(),
+                                    },
+                                    pattern_span,
+                                )?;
 
                             covered_variants.insert(variant_index as u32);
                             pattern_enum_id = Some(*enum_id);
@@ -1876,12 +1868,10 @@ impl<'a> Sema<'a> {
 
                 // Look up the variable in locals
                 let name_str = self.interner.get(*name);
-                let local = ctx.locals.get(name).ok_or_else(|| {
-                    CompileError::new(
-                        ErrorKind::UndefinedVariable(name_str.to_string()),
-                        inst.span,
-                    )
-                })?;
+                let local = ctx.locals.get(name).ok_or_compile_error(
+                    ErrorKind::UndefinedVariable(name_str.to_string()),
+                    inst.span,
+                )?;
 
                 let ty = local.ty;
                 let slot = local.slot;
@@ -1922,12 +1912,10 @@ impl<'a> Sema<'a> {
             InstData::Assign { name, value } => {
                 // Look up the variable
                 let name_str = self.interner.get(*name);
-                let local = ctx.locals.get(name).ok_or_else(|| {
-                    CompileError::new(
-                        ErrorKind::UndefinedVariable(name_str.to_string()),
-                        inst.span,
-                    )
-                })?;
+                let local = ctx.locals.get(name).ok_or_compile_error(
+                    ErrorKind::UndefinedVariable(name_str.to_string()),
+                    inst.span,
+                )?;
 
                 // Check mutability
                 if !local.is_mut {
@@ -2120,9 +2108,10 @@ impl<'a> Sema<'a> {
             InstData::Call { name, args } => {
                 // Look up the function
                 let fn_name_str = self.interner.get(*name).to_string();
-                let fn_info = self.functions.get(name).ok_or_else(|| {
-                    CompileError::new(ErrorKind::UndefinedFunction(fn_name_str.clone()), inst.span)
-                })?;
+                let fn_info = self.functions.get(name).ok_or_compile_error(
+                    ErrorKind::UndefinedFunction(fn_name_str.clone()),
+                    inst.span,
+                )?;
 
                 // Check argument count
                 if args.len() != fn_info.param_types.len() {
@@ -2158,13 +2147,11 @@ impl<'a> Sema<'a> {
 
             InstData::ParamRef { index: _, name } => {
                 // Look up the parameter type and ABI slot from the params map
-                let param_info = ctx.params.get(name).ok_or_else(|| {
-                    let name_str = self.interner.get(*name);
-                    CompileError::new(
-                        ErrorKind::UndefinedVariable(name_str.to_string()),
-                        inst.span,
-                    )
-                })?;
+                let name_str = self.interner.get(*name);
+                let param_info = ctx.params.get(name).ok_or_compile_error(
+                    ErrorKind::UndefinedVariable(name_str.to_string()),
+                    inst.span,
+                )?;
 
                 let ty = param_info.ty;
 
@@ -2195,9 +2182,10 @@ impl<'a> Sema<'a> {
             } => {
                 // Look up the struct type
                 let type_name_str = self.interner.get(*type_name);
-                let struct_id = *self.structs.get(type_name).ok_or_else(|| {
-                    CompileError::new(ErrorKind::UnknownType(type_name_str.to_string()), inst.span)
-                })?;
+                let struct_id = *self.structs.get(type_name).ok_or_compile_error(
+                    ErrorKind::UnknownType(type_name_str.to_string()),
+                    inst.span,
+                )?;
 
                 // Clone struct def data before mutable borrow
                 let struct_def = self.struct_defs[struct_id.0 as usize].clone();
@@ -2314,15 +2302,13 @@ impl<'a> Sema<'a> {
                 let field_name_str = self.interner.get(*field).to_string();
 
                 let (field_index, struct_field) =
-                    struct_def.find_field(&field_name_str).ok_or_else(|| {
-                        CompileError::new(
-                            ErrorKind::UnknownField {
-                                struct_name: struct_def.name.clone(),
-                                field_name: field_name_str.clone(),
-                            },
-                            inst.span,
-                        )
-                    })?;
+                    struct_def.find_field(&field_name_str).ok_or_compile_error(
+                        ErrorKind::UnknownField {
+                            struct_name: struct_def.name.clone(),
+                            field_name: field_name_str.clone(),
+                        },
+                        inst.span,
+                    )?;
 
                 let field_type = struct_field.ty;
 
@@ -2360,12 +2346,10 @@ impl<'a> Sema<'a> {
                     match &current_inst.data {
                         InstData::VarRef { name } => {
                             let name_str = self.interner.get(*name);
-                            let local = ctx.locals.get(name).ok_or_else(|| {
-                                CompileError::new(
-                                    ErrorKind::UndefinedVariable(name_str.to_string()),
-                                    inst.span,
-                                )
-                            })?;
+                            let local = ctx.locals.get(name).ok_or_compile_error(
+                                ErrorKind::UndefinedVariable(name_str.to_string()),
+                                inst.span,
+                            )?;
 
                             // Check if this variable has been moved
                             if let Some(move_info) = ctx.moved_vars.get(name) {
@@ -2435,15 +2419,13 @@ impl<'a> Sema<'a> {
                     let field_name_str = self.interner.get(*field_sym).to_string();
 
                     let (field_index, struct_field) =
-                        struct_def.find_field(&field_name_str).ok_or_else(|| {
-                            CompileError::new(
-                                ErrorKind::UnknownField {
-                                    struct_name: struct_def.name.clone(),
-                                    field_name: field_name_str.clone(),
-                                },
-                                inst.span,
-                            )
-                        })?;
+                        struct_def.find_field(&field_name_str).ok_or_compile_error(
+                            ErrorKind::UnknownField {
+                                struct_name: struct_def.name.clone(),
+                                field_name: field_name_str.clone(),
+                            },
+                            inst.span,
+                        )?;
 
                     slot_offset += self.field_slot_offset(struct_id, field_index);
                     current_type = struct_field.ty;
@@ -2466,15 +2448,13 @@ impl<'a> Sema<'a> {
                 let field_name_str = self.interner.get(*field).to_string();
 
                 let (field_index, struct_field) =
-                    struct_def.find_field(&field_name_str).ok_or_else(|| {
-                        CompileError::new(
-                            ErrorKind::UnknownField {
-                                struct_name: struct_def.name.clone(),
-                                field_name: field_name_str.clone(),
-                            },
-                            inst.span,
-                        )
-                    })?;
+                    struct_def.find_field(&field_name_str).ok_or_compile_error(
+                        ErrorKind::UnknownField {
+                            struct_name: struct_def.name.clone(),
+                            field_name: field_name_str.clone(),
+                        },
+                        inst.span,
+                    )?;
 
                 let field_type = struct_field.ty;
 
@@ -2683,12 +2663,10 @@ impl<'a> Sema<'a> {
                 let (var_name, slot, base_type, is_mut) = match &base_inst.data {
                     InstData::VarRef { name } => {
                         let name_str = self.interner.get(*name);
-                        let local = ctx.locals.get(name).ok_or_else(|| {
-                            CompileError::new(
-                                ErrorKind::UndefinedVariable(name_str.to_string()),
-                                inst.span,
-                            )
-                        })?;
+                        let local = ctx.locals.get(name).ok_or_compile_error(
+                            ErrorKind::UndefinedVariable(name_str.to_string()),
+                            inst.span,
+                        )?;
 
                         // Check if this variable has been moved
                         if let Some(move_info) = ctx.moved_vars.get(name) {
@@ -2790,25 +2768,21 @@ impl<'a> Sema<'a> {
             // Enum variant expression (e.g., Color::Red)
             InstData::EnumVariant { type_name, variant } => {
                 // Look up the enum type
-                let enum_id = self.enums.get(type_name).ok_or_else(|| {
-                    CompileError::new(
-                        ErrorKind::UnknownEnumType(self.interner.get(*type_name).to_string()),
-                        inst.span,
-                    )
-                })?;
+                let enum_id = self.enums.get(type_name).ok_or_compile_error(
+                    ErrorKind::UnknownEnumType(self.interner.get(*type_name).to_string()),
+                    inst.span,
+                )?;
                 let enum_def = &self.enum_defs[enum_id.0 as usize];
 
                 // Find the variant index
                 let variant_name = self.interner.get(*variant);
-                let variant_index = enum_def.find_variant(variant_name).ok_or_else(|| {
-                    CompileError::new(
-                        ErrorKind::UnknownVariant {
-                            enum_name: enum_def.name.clone(),
-                            variant_name: variant_name.to_string(),
-                        },
-                        inst.span,
-                    )
-                })?;
+                let variant_index = enum_def.find_variant(variant_name).ok_or_compile_error(
+                    ErrorKind::UnknownVariant {
+                        enum_name: enum_def.name.clone(),
+                        variant_name: variant_name.to_string(),
+                    },
+                    inst.span,
+                )?;
 
                 let ty = Type::Enum(*enum_id);
 
@@ -2870,15 +2844,13 @@ impl<'a> Sema<'a> {
 
                 // Look up the method
                 let method_key = (struct_name_sym, *method);
-                let method_info = self.methods.get(&method_key).ok_or_else(|| {
-                    CompileError::new(
-                        ErrorKind::UndefinedMethod {
-                            type_name: struct_name_str.clone(),
-                            method_name: method_name_str.clone(),
-                        },
-                        inst.span,
-                    )
-                })?;
+                let method_info = self.methods.get(&method_key).ok_or_compile_error(
+                    ErrorKind::UndefinedMethod {
+                        type_name: struct_name_str.clone(),
+                        method_name: method_name_str.clone(),
+                    },
+                    inst.span,
+                )?;
 
                 // Check that this is a method (has self), not an associated function
                 if !method_info.has_self {
@@ -2937,21 +2909,20 @@ impl<'a> Sema<'a> {
                 let function_name_str = self.interner.get(*function).to_string();
 
                 // Check that the type exists and is a struct
-                let _struct_id = self.structs.get(type_name).ok_or_else(|| {
-                    CompileError::new(ErrorKind::UnknownType(type_name_str.clone()), inst.span)
-                })?;
+                let _struct_id = self.structs.get(type_name).ok_or_compile_error(
+                    ErrorKind::UnknownType(type_name_str.clone()),
+                    inst.span,
+                )?;
 
                 // Look up the function
                 let method_key = (*type_name, *function);
-                let method_info = self.methods.get(&method_key).ok_or_else(|| {
-                    CompileError::new(
-                        ErrorKind::UndefinedAssocFn {
-                            type_name: type_name_str.clone(),
-                            function_name: function_name_str.clone(),
-                        },
-                        inst.span,
-                    )
-                })?;
+                let method_info = self.methods.get(&method_key).ok_or_compile_error(
+                    ErrorKind::UndefinedAssocFn {
+                        type_name: type_name_str.clone(),
+                        function_name: function_name_str.clone(),
+                    },
+                    inst.span,
+                )?;
 
                 // Check that this is an associated function (no self), not a method
                 if method_info.has_self {

@@ -10,6 +10,36 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+// ============================================================================
+// Error Helper Functions
+// ============================================================================
+
+/// Convert a displayable error into a `LinkError` without a source span.
+///
+/// This helper simplifies the common pattern of wrapping various error types
+/// (e.g., from I/O operations, parsing, or linking) into `CompileError`.
+///
+/// # Example
+/// ```ignore
+/// linker.add_object(obj).map_err(link_error)?;
+/// ```
+fn link_error<E: std::fmt::Display>(err: E) -> CompileError {
+    CompileError::without_span(ErrorKind::LinkError(err.to_string()))
+}
+
+/// Convert an I/O result into a `CompileResult` with a contextual message.
+///
+/// This helper wraps `std::io::Error` with a descriptive message explaining
+/// what operation failed.
+///
+/// # Example
+/// ```ignore
+/// std::fs::create_dir_all(&path).map_err(|e| io_link_error("failed to create temp directory", e))?;
+/// ```
+fn io_link_error(context: &str, err: std::io::Error) -> CompileError {
+    CompileError::without_span(ErrorKind::LinkError(format!("{}: {}", context, err)))
+}
+
 /// Counter for generating unique temp directory names.
 static TEMP_DIR_COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -38,12 +68,8 @@ impl TempLinkDir {
     fn new() -> CompileResult<Self> {
         let unique_id = TEMP_DIR_COUNTER.fetch_add(1, Ordering::Relaxed);
         let path = std::env::temp_dir().join(format!("rue-{}-{}", std::process::id(), unique_id));
-        std::fs::create_dir_all(&path).map_err(|e| {
-            CompileError::without_span(ErrorKind::LinkError(format!(
-                "failed to create temp directory: {}",
-                e
-            )))
-        })?;
+        std::fs::create_dir_all(&path)
+            .map_err(|e| io_link_error("failed to create temp directory", e))?;
 
         let runtime_path = path.join("librue_runtime.a");
         let output_path = path.join("output");
@@ -63,18 +89,10 @@ impl TempLinkDir {
     fn write_object_files(&mut self, object_files: &[Vec<u8>]) -> CompileResult<()> {
         for (i, obj_bytes) in object_files.iter().enumerate() {
             let obj_path = self.path.join(format!("obj{}.o", i));
-            let mut file = std::fs::File::create(&obj_path).map_err(|e| {
-                CompileError::without_span(ErrorKind::LinkError(format!(
-                    "failed to create temp object file: {}",
-                    e
-                )))
-            })?;
-            file.write_all(obj_bytes).map_err(|e| {
-                CompileError::without_span(ErrorKind::LinkError(format!(
-                    "failed to write temp object file: {}",
-                    e
-                )))
-            })?;
+            let mut file = std::fs::File::create(&obj_path)
+                .map_err(|e| io_link_error("failed to create temp object file", e))?;
+            file.write_all(obj_bytes)
+                .map_err(|e| io_link_error("failed to write temp object file", e))?;
             self.obj_paths.push(obj_path);
         }
         Ok(())
@@ -82,22 +100,14 @@ impl TempLinkDir {
 
     /// Write the runtime archive to the temporary directory.
     fn write_runtime(&self, runtime_bytes: &[u8]) -> CompileResult<()> {
-        std::fs::write(&self.runtime_path, runtime_bytes).map_err(|e| {
-            CompileError::without_span(ErrorKind::LinkError(format!(
-                "failed to write runtime archive: {}",
-                e
-            )))
-        })
+        std::fs::write(&self.runtime_path, runtime_bytes)
+            .map_err(|e| io_link_error("failed to write runtime archive", e))
     }
 
     /// Read the linked executable from the output path.
     fn read_output(&self) -> CompileResult<Vec<u8>> {
-        std::fs::read(&self.output_path).map_err(|e| {
-            CompileError::without_span(ErrorKind::LinkError(format!(
-                "failed to read linked executable: {}",
-                e
-            )))
-        })
+        std::fs::read(&self.output_path)
+            .map_err(|e| io_link_error("failed to read linked executable", e))
     }
 }
 
@@ -364,12 +374,8 @@ fn link_internal(
 
     // Add all object files to the linker
     for obj_bytes in object_files {
-        let obj = ObjectFile::parse(obj_bytes)
-            .map_err(|e| CompileError::without_span(ErrorKind::LinkError(e.to_string())))?;
-
-        linker
-            .add_object(obj)
-            .map_err(|e| CompileError::without_span(ErrorKind::LinkError(e.to_string())))?;
+        let obj = ObjectFile::parse(obj_bytes).map_err(link_error)?;
+        linker.add_object(obj).map_err(link_error)?;
     }
 
     // Mark _start as required so it gets pulled from the archive.
@@ -378,17 +384,12 @@ fn link_internal(
     linker.require_symbol("_start");
 
     // Add the runtime library
-    let runtime = Archive::parse(RUNTIME_BYTES)
-        .map_err(|e| CompileError::without_span(ErrorKind::LinkError(e.to_string())))?;
-    linker
-        .add_archive(runtime)
-        .map_err(|e| CompileError::without_span(ErrorKind::LinkError(e.to_string())))?;
+    let runtime = Archive::parse(RUNTIME_BYTES).map_err(link_error)?;
+    linker.add_archive(runtime).map_err(link_error)?;
 
     // Link to executable
     // Use _start from the runtime as the entry point (it will call main)
-    let elf = linker
-        .link("_start")
-        .map_err(|e| CompileError::without_span(ErrorKind::LinkError(e.to_string())))?;
+    let elf = linker.link("_start").map_err(link_error)?;
 
     Ok(CompileOutput {
         elf,

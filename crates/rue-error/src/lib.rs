@@ -730,6 +730,34 @@ impl fmt::Display for ErrorKind {
 /// Result type for compilation operations.
 pub type CompileResult<T> = Result<T, CompileError>;
 
+// ============================================================================
+// Error Helper Traits
+// ============================================================================
+
+/// Extension trait for converting `Option<T>` to `CompileResult<T>`.
+///
+/// This trait simplifies the common pattern of converting lookup failures
+/// (returning `None`) into compilation errors with source spans.
+///
+/// # Example
+/// ```ignore
+/// use rue_error::{OptionExt, ErrorKind};
+///
+/// let result = ctx.locals.get(name)
+///     .ok_or_compile_error(ErrorKind::UndefinedVariable(name_str.to_string()), span)?;
+/// ```
+pub trait OptionExt<T> {
+    /// Convert `None` to a `CompileError` with the given kind and span.
+    fn ok_or_compile_error(self, kind: ErrorKind, span: Span) -> CompileResult<T>;
+}
+
+impl<T> OptionExt<T> for Option<T> {
+    #[inline]
+    fn ok_or_compile_error(self, kind: ErrorKind, span: Span) -> CompileResult<T> {
+        self.ok_or_else(|| CompileError::new(kind, span))
+    }
+}
+
 /// The kind of compilation warning.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WarningKind {
@@ -1225,5 +1253,38 @@ mod tests {
             error.to_string(),
             "string concatenation requires preview feature `mutable_strings`"
         );
+    }
+
+    // ========================================================================
+    // OptionExt trait tests
+    // ========================================================================
+
+    #[test]
+    fn test_option_ext_some() {
+        let span = Span::new(10, 20);
+        let result: CompileResult<i32> =
+            Some(42).ok_or_compile_error(ErrorKind::InvalidInteger, span);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), 42);
+    }
+
+    #[test]
+    fn test_option_ext_none() {
+        let span = Span::new(10, 20);
+        let result: CompileResult<i32> = None.ok_or_compile_error(ErrorKind::InvalidInteger, span);
+        assert!(result.is_err());
+        let error = result.unwrap_err();
+        assert_eq!(error.span(), Some(span));
+        matches!(error.kind, ErrorKind::InvalidInteger);
+    }
+
+    #[test]
+    fn test_option_ext_with_complex_error() {
+        let span = Span::new(5, 15);
+        let result: CompileResult<String> =
+            None.ok_or_compile_error(ErrorKind::UndefinedVariable("foo".to_string()), span);
+        assert!(result.is_err());
+        let error = result.unwrap_err();
+        assert_eq!(error.to_string(), "undefined variable 'foo'");
     }
 }
