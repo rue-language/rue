@@ -10,13 +10,14 @@ use rue_intern::Interner;
 const TYPE_INTRINSICS: &[&str] = &["size_of", "align_of"];
 use rue_parser::ast::DropFn;
 use rue_parser::{
-    AssignTarget, Ast, BinaryOp, CallArg, Directive, DirectiveArg, EnumDecl, Expr, Function,
-    ImplBlock, IntrinsicArg, Item, LetPattern, Method, ParamMode, Pattern, Statement, StructDecl,
-    TypeExpr, UnaryOp,
+    ArgMode, AssignTarget, Ast, BinaryOp, CallArg, Directive, DirectiveArg, EnumDecl, Expr,
+    Function, ImplBlock, IntrinsicArg, Item, LetPattern, Method, ParamMode, Pattern, Statement,
+    StructDecl, TypeExpr, UnaryOp,
 };
 
 use crate::inst::{
-    Inst, InstData, InstRef, Rir, RirCallArg, RirDirective, RirParam, RirParamMode, RirPattern,
+    Inst, InstData, InstRef, Rir, RirArgMode, RirCallArg, RirDirective, RirParam, RirParamMode,
+    RirPattern,
 };
 
 /// Generates RIR from an AST.
@@ -221,6 +222,16 @@ impl<'a> AstGen<'a> {
         match mode {
             ParamMode::Normal => RirParamMode::Normal,
             ParamMode::Inout => RirParamMode::Inout,
+            ParamMode::Borrow => RirParamMode::Borrow,
+        }
+    }
+
+    /// Convert AST ArgMode to RIR RirArgMode
+    fn convert_arg_mode(&self, mode: ArgMode) -> RirArgMode {
+        match mode {
+            ArgMode::Normal => RirArgMode::Normal,
+            ArgMode::Inout => RirArgMode::Inout,
+            ArgMode::Borrow => RirArgMode::Borrow,
         }
     }
 
@@ -228,7 +239,7 @@ impl<'a> AstGen<'a> {
     fn convert_call_arg(&mut self, arg: &CallArg) -> RirCallArg {
         RirCallArg {
             value: self.gen_expr(&arg.expr),
-            is_inout: arg.is_inout,
+            mode: self.convert_arg_mode(arg.mode),
         }
     }
 

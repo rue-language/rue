@@ -165,6 +165,8 @@ pub enum ParamMode {
     Normal,
     /// Inout parameter - mutated in place and returned to caller
     Inout,
+    /// Borrow parameter - immutable borrow without ownership transfer
+    Borrow,
 }
 
 impl Default for ParamMode {
@@ -467,15 +469,40 @@ impl Pattern {
     }
 }
 
+/// Argument passing mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ArgMode {
+    /// Normal pass-by-value argument
+    #[default]
+    Normal,
+    /// Inout argument - mutated in place
+    Inout,
+    /// Borrow argument - immutable borrow
+    Borrow,
+}
+
 /// An argument in a function call.
 #[derive(Debug, Clone)]
 pub struct CallArg {
-    /// Whether this argument is passed as inout
-    pub is_inout: bool,
+    /// The passing mode for this argument
+    pub mode: ArgMode,
     /// The argument expression
     pub expr: Expr,
-    /// Span covering the entire argument (including inout keyword if present)
+    /// Span covering the entire argument (including inout/borrow keyword if present)
     pub span: Span,
+}
+
+impl CallArg {
+    /// Returns true if this argument is passed as inout.
+    /// This is a convenience method for backwards compatibility.
+    pub fn is_inout(&self) -> bool {
+        self.mode == ArgMode::Inout
+    }
+
+    /// Returns true if this argument is passed as borrow.
+    pub fn is_borrow(&self) -> bool {
+        self.mode == ArgMode::Borrow
+    }
 }
 
 /// A function call expression.
@@ -835,19 +862,27 @@ fn fmt_method(f: &mut fmt::Formatter<'_>, method: &Method, level: usize) -> fmt:
 }
 
 fn fmt_param(f: &mut fmt::Formatter<'_>, param: &Param) -> fmt::Result {
-    if param.mode == ParamMode::Inout {
-        write!(f, "inout ")?;
+    match param.mode {
+        ParamMode::Inout => write!(f, "inout ")?,
+        ParamMode::Borrow => write!(f, "borrow ")?,
+        ParamMode::Normal => {}
     }
     write!(f, "{}: {}", param.name.name, param.ty)
 }
 
 fn fmt_call_arg(f: &mut fmt::Formatter<'_>, arg: &CallArg, level: usize) -> fmt::Result {
-    if arg.is_inout {
-        indent(f, level)?;
-        writeln!(f, "inout:")?;
-        fmt_expr(f, &arg.expr, level + 1)
-    } else {
-        fmt_expr(f, &arg.expr, level)
+    match arg.mode {
+        ArgMode::Inout => {
+            indent(f, level)?;
+            writeln!(f, "inout:")?;
+            fmt_expr(f, &arg.expr, level + 1)
+        }
+        ArgMode::Borrow => {
+            indent(f, level)?;
+            writeln!(f, "borrow:")?;
+            fmt_expr(f, &arg.expr, level + 1)
+        }
+        ArgMode::Normal => fmt_expr(f, &arg.expr, level),
     }
 }
 

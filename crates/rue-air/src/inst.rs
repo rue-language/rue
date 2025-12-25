@@ -8,18 +8,27 @@ use crate::types::{ArrayTypeId, StructId, Type};
 use rue_span::Span;
 
 /// Parameter passing mode in AIR.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum AirParamMode {
     /// Normal pass-by-value parameter
+    #[default]
     Normal,
     /// Inout parameter - mutated in place and returned to caller
     Inout,
+    /// Borrow parameter - immutable borrow without ownership transfer
+    Borrow,
 }
 
-impl Default for AirParamMode {
-    fn default() -> Self {
-        AirParamMode::Normal
-    }
+/// Argument passing mode in AIR.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum AirArgMode {
+    /// Normal pass-by-value argument
+    #[default]
+    Normal,
+    /// Inout argument - mutated in place
+    Inout,
+    /// Borrow argument - immutable borrow
+    Borrow,
 }
 
 /// An argument in a function call (AIR level).
@@ -27,16 +36,29 @@ impl Default for AirParamMode {
 pub struct AirCallArg {
     /// The argument expression
     pub value: AirRef,
-    /// Whether this argument is passed as inout
-    pub is_inout: bool,
+    /// The passing mode for this argument
+    pub mode: AirArgMode,
+}
+
+impl AirCallArg {
+    /// Returns true if this argument is passed as inout.
+    /// This is a convenience method for backwards compatibility.
+    pub fn is_inout(&self) -> bool {
+        self.mode == AirArgMode::Inout
+    }
+
+    /// Returns true if this argument is passed as borrow.
+    pub fn is_borrow(&self) -> bool {
+        self.mode == AirArgMode::Borrow
+    }
 }
 
 impl fmt::Display for AirCallArg {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        if self.is_inout {
-            write!(f, "inout {}", self.value)
-        } else {
-            write!(f, "{}", self.value)
+        match self.mode {
+            AirArgMode::Inout => write!(f, "inout {}", self.value),
+            AirArgMode::Borrow => write!(f, "borrow {}", self.value),
+            AirArgMode::Normal => write!(f, "{}", self.value),
         }
     }
 }

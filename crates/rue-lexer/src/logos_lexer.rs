@@ -57,6 +57,8 @@ pub enum LogosTokenKind {
     Mut,
     #[token("inout")]
     Inout,
+    #[token("borrow")]
+    Borrow,
     #[token("if")]
     If,
     #[token("else")]
@@ -210,6 +212,7 @@ impl From<LogosTokenKind> for TokenKind {
             LogosTokenKind::Let => TokenKind::Let,
             LogosTokenKind::Mut => TokenKind::Mut,
             LogosTokenKind::Inout => TokenKind::Inout,
+            LogosTokenKind::Borrow => TokenKind::Borrow,
             LogosTokenKind::If => TokenKind::If,
             LogosTokenKind::Else => TokenKind::Else,
             LogosTokenKind::Match => TokenKind::Match,

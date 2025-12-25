@@ -23,7 +23,9 @@ pub mod opt;
 use rue_error::CompileWarning;
 
 pub use build::CfgBuilder;
-pub use inst::{BasicBlock, BlockId, Cfg, CfgCallArg, CfgInst, CfgInstData, CfgValue, Terminator};
+pub use inst::{
+    BasicBlock, BlockId, Cfg, CfgArgMode, CfgCallArg, CfgInst, CfgInstData, CfgValue, Terminator,
+};
 pub use opt::OptLevel;
 
 // Re-export types from rue-air that we use

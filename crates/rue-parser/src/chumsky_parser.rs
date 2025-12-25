@@ -4,13 +4,14 @@
 //! with Pratt parsing for expression precedence.
 
 use crate::ast::{
-    ArrayLitExpr, AssignStatement, AssignTarget, AssocFnCallExpr, Ast, BinaryExpr, BinaryOp,
-    BlockExpr, BoolLit, BreakExpr, CallArg, CallExpr, ContinueExpr, Directive, DirectiveArg,
-    DropFn, EnumDecl, EnumVariant, Expr, FieldDecl, FieldExpr, FieldInit, Function, Ident, IfExpr,
-    ImplBlock, IndexExpr, IntLit, IntrinsicArg, IntrinsicCallExpr, Item, LetPattern, LetStatement,
-    LoopExpr, MatchArm, MatchExpr, Method, MethodCallExpr, NegIntLit, Param, ParamMode, ParenExpr,
-    PathExpr, PathPattern, Pattern, ReturnExpr, SelfExpr, SelfParam, Statement, StringLit,
-    StructDecl, StructLitExpr, TypeExpr, UnaryExpr, UnaryOp, UnitLit, WhileExpr,
+    ArgMode, ArrayLitExpr, AssignStatement, AssignTarget, AssocFnCallExpr, Ast, BinaryExpr,
+    BinaryOp, BlockExpr, BoolLit, BreakExpr, CallArg, CallExpr, ContinueExpr, Directive,
+    DirectiveArg, DropFn, EnumDecl, EnumVariant, Expr, FieldDecl, FieldExpr, FieldInit, Function,
+    Ident, IfExpr, ImplBlock, IndexExpr, IntLit, IntrinsicArg, IntrinsicCallExpr, Item, LetPattern,
+    LetStatement, LoopExpr, MatchArm, MatchExpr, Method, MethodCallExpr, NegIntLit, Param,
+    ParamMode, ParenExpr, PathExpr, PathPattern, Pattern, ReturnExpr, SelfExpr, SelfParam,
+    Statement, StringLit, StructDecl, StructLitExpr, TypeExpr, UnaryExpr, UnaryOp, UnitLit,
+    WhileExpr,
 };
 use chumsky::input::{Input as ChumskyInput, Stream, ValueInput};
 use chumsky::pratt::{infix, left, prefix};
@@ -101,22 +102,30 @@ where
     })
 }
 
-/// Parser for function parameters: [inout] name: type
+/// Parser for parameter mode: inout or borrow
+fn param_mode_parser<'src, I>()
+-> impl Parser<'src, I, ParamMode, extra::Err<Rich<'src, TokenKind>>> + Clone
+where
+    I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
+{
+    choice((
+        just(TokenKind::Inout).to(ParamMode::Inout),
+        just(TokenKind::Borrow).to(ParamMode::Borrow),
+    ))
+}
+
+/// Parser for function parameters: [inout|borrow] name: type
 fn param_parser<'src, I>() -> impl Parser<'src, I, Param, extra::Err<Rich<'src, TokenKind>>> + Clone
 where
     I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
 {
-    just(TokenKind::Inout)
+    param_mode_parser()
         .or_not()
         .then(ident_parser())
         .then_ignore(just(TokenKind::Colon))
         .then(type_parser())
-        .map_with(|((inout, name), ty), e| Param {
-            mode: if inout.is_some() {
-                ParamMode::Inout
-            } else {
-                ParamMode::Normal
-            },
+        .map_with(|((mode, name), ty), e| Param {
+            mode: mode.unwrap_or(ParamMode::Normal),
             name,
             ty,
             span: to_rue_span(e.span()),
@@ -195,18 +204,30 @@ where
     directive_parser().repeated().collect()
 }
 
-/// Parser for a single call argument: [inout] expr
+/// Parser for argument mode: inout or borrow
+fn arg_mode_parser<'src, I>()
+-> impl Parser<'src, I, ArgMode, extra::Err<Rich<'src, TokenKind>>> + Clone
+where
+    I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
+{
+    choice((
+        just(TokenKind::Inout).to(ArgMode::Inout),
+        just(TokenKind::Borrow).to(ArgMode::Borrow),
+    ))
+}
+
+/// Parser for a single call argument: [inout|borrow] expr
 fn call_arg_parser<'src, I>(
     expr: impl Parser<'src, I, Expr, extra::Err<Rich<'src, TokenKind>>> + Clone,
 ) -> impl Parser<'src, I, CallArg, extra::Err<Rich<'src, TokenKind>>> + Clone
 where
     I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
 {
-    just(TokenKind::Inout)
+    arg_mode_parser()
         .or_not()
         .then(expr)
-        .map_with(|(inout, expr), e| CallArg {
-            is_inout: inout.is_some(),
+        .map_with(|(mode, expr), e| CallArg {
+            mode: mode.unwrap_or(ArgMode::Normal),
             expr,
             span: to_rue_span(e.span()),
         })

@@ -9,13 +9,15 @@ use crate::inference::{
     Constraint, ConstraintContext, ConstraintGenerator, FunctionSig, InferType, MethodSig,
     ParamVarInfo, Unifier, UnifyResult,
 };
-use crate::inst::{Air, AirInst, AirInstData, AirPattern, AirRef};
+use crate::inst::{Air, AirArgMode, AirCallArg, AirInst, AirInstData, AirPattern, AirRef};
 use crate::types::{
     ArrayTypeDef, ArrayTypeId, EnumDef, EnumId, StructDef, StructField, StructId, Type,
 };
 use rue_error::{CompileError, CompileResult, CompileWarning, ErrorKind, OptionExt, WarningKind};
 use rue_intern::{Interner, Symbol};
-use rue_rir::{InstData, InstRef, Rir, RirCallArg, RirDirective, RirParamMode, RirPattern};
+use rue_rir::{
+    InstData, InstRef, Rir, RirArgMode, RirCallArg, RirDirective, RirParamMode, RirPattern,
+};
 use rue_span::Span;
 
 /// A value that can be computed at compile time.
@@ -395,7 +397,7 @@ impl<'a> Sema<'a> {
         let mut inout_vars: HashSet<Symbol> = HashSet::new();
 
         for arg in args {
-            if arg.is_inout {
+            if arg.is_inout() {
                 if let Some(var_symbol) = self.extract_root_variable(arg.value) {
                     if !inout_vars.insert(var_symbol) {
                         // Duplicate! This variable was already used as an inout argument
@@ -2387,9 +2389,9 @@ impl<'a> Sema<'a> {
                 let mut air_args = Vec::new();
                 for arg in args.iter() {
                     let arg_result = self.analyze_inst(air, arg.value, ctx)?;
-                    air_args.push(crate::inst::AirCallArg {
+                    air_args.push(AirCallArg {
                         value: arg_result.air_ref,
-                        is_inout: arg.is_inout,
+                        mode: Self::convert_arg_mode(arg.mode),
                     });
                 }
 
@@ -3147,15 +3149,15 @@ impl<'a> Sema<'a> {
                 let return_type = method_info.return_type;
 
                 // Analyze arguments - receiver first, then remaining args
-                let mut air_args = vec![crate::inst::AirCallArg {
+                let mut air_args = vec![AirCallArg {
                     value: receiver_result.air_ref,
-                    is_inout: false, // receiver is not inout
+                    mode: AirArgMode::Normal, // receiver is not inout
                 }];
                 for arg in args.iter() {
                     let arg_result = self.analyze_inst(air, arg.value, ctx)?;
-                    air_args.push(crate::inst::AirCallArg {
+                    air_args.push(AirCallArg {
                         value: arg_result.air_ref,
-                        is_inout: arg.is_inout,
+                        mode: Self::convert_arg_mode(arg.mode),
                     });
                 }
 
@@ -3231,9 +3233,9 @@ impl<'a> Sema<'a> {
                 let mut air_args = Vec::new();
                 for arg in args.iter() {
                     let arg_result = self.analyze_inst(air, arg.value, ctx)?;
-                    air_args.push(crate::inst::AirCallArg {
+                    air_args.push(AirCallArg {
                         value: arg_result.air_ref,
-                        is_inout: arg.is_inout,
+                        mode: Self::convert_arg_mode(arg.mode),
                     });
                 }
 
@@ -3250,6 +3252,15 @@ impl<'a> Sema<'a> {
                 });
                 Ok(AnalysisResult::new(air_ref, return_type))
             }
+        }
+    }
+
+    /// Convert RIR argument mode to AIR argument mode.
+    fn convert_arg_mode(mode: RirArgMode) -> AirArgMode {
+        match mode {
+            RirArgMode::Normal => AirArgMode::Normal,
+            RirArgMode::Inout => AirArgMode::Inout,
+            RirArgMode::Borrow => AirArgMode::Borrow,
         }
     }
 

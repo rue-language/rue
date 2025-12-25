@@ -3,11 +3,13 @@
 //! This module converts the structured control flow in AIR (Branch, Loop)
 //! into explicit basic blocks with terminators.
 
-use rue_air::{Air, AirInstData, AirPattern, AirRef, ArrayTypeDef, StructDef, Type};
+use rue_air::{Air, AirArgMode, AirInstData, AirPattern, AirRef, ArrayTypeDef, StructDef, Type};
 use rue_error::{CompileWarning, WarningKind};
 
 use crate::CfgOutput;
-use crate::inst::{BlockId, Cfg, CfgCallArg, CfgInst, CfgInstData, CfgValue, Terminator};
+use crate::inst::{
+    BlockId, Cfg, CfgArgMode, CfgCallArg, CfgInst, CfgInstData, CfgValue, Terminator,
+};
 
 /// Result of lowering an expression.
 struct ExprResult {
@@ -525,7 +527,7 @@ impl<'a> CfgBuilder<'a> {
                     let value = self.lower_inst(arg.value).value.unwrap();
                     arg_vals.push(CfgCallArg {
                         value,
-                        is_inout: arg.is_inout,
+                        mode: Self::convert_arg_mode(arg.mode),
                     });
                 }
                 let value = self.emit(
@@ -1392,6 +1394,15 @@ impl<'a> CfgBuilder<'a> {
                 let array_def = &self.array_types[array_id.0 as usize];
                 self.type_needs_drop(array_def.element_type)
             }
+        }
+    }
+
+    /// Convert AIR argument mode to CFG argument mode.
+    fn convert_arg_mode(mode: AirArgMode) -> CfgArgMode {
+        match mode {
+            AirArgMode::Normal => CfgArgMode::Normal,
+            AirArgMode::Inout => CfgArgMode::Inout,
+            AirArgMode::Borrow => CfgArgMode::Borrow,
         }
     }
 

@@ -2698,7 +2698,7 @@ mod tests {
                 name: func_name,
                 args: vec![rue_rir::RirCallArg {
                     value: arg,
-                    is_inout: false,
+                    mode: rue_rir::RirArgMode::Normal,
                 }],
             },
             span: Span::new(0, 7),
@@ -2736,7 +2736,7 @@ mod tests {
                 name: unknown_func,
                 args: vec![rue_rir::RirCallArg {
                     value: arg,
-                    is_inout: false,
+                    mode: rue_rir::RirArgMode::Normal,
                 }],
             },
             span: Span::new(0, 11),

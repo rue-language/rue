@@ -40,18 +40,15 @@ pub struct RirDirective {
 }
 
 /// Parameter passing mode in RIR.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum RirParamMode {
     /// Normal pass-by-value parameter
+    #[default]
     Normal,
     /// Inout parameter - mutated in place and returned to caller
     Inout,
-}
-
-impl Default for RirParamMode {
-    fn default() -> Self {
-        RirParamMode::Normal
-    }
+    /// Borrow parameter - immutable borrow without ownership transfer
+    Borrow,
 }
 
 /// A parameter in a function declaration.
@@ -65,13 +62,38 @@ pub struct RirParam {
     pub mode: RirParamMode,
 }
 
+/// Argument passing mode in RIR.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum RirArgMode {
+    /// Normal pass-by-value argument
+    #[default]
+    Normal,
+    /// Inout argument - mutated in place
+    Inout,
+    /// Borrow argument - immutable borrow
+    Borrow,
+}
+
 /// An argument in a function call.
 #[derive(Debug, Clone)]
 pub struct RirCallArg {
     /// The argument expression
     pub value: InstRef,
-    /// Whether this argument is passed as inout
-    pub is_inout: bool,
+    /// The passing mode for this argument
+    pub mode: RirArgMode,
+}
+
+impl RirCallArg {
+    /// Returns true if this argument is passed as inout.
+    /// This is a convenience method for backwards compatibility.
+    pub fn is_inout(&self) -> bool {
+        self.mode == RirArgMode::Inout
+    }
+
+    /// Returns true if this argument is passed as borrow.
+    pub fn is_borrow(&self) -> bool {
+        self.mode == RirArgMode::Borrow
+    }
 }
 
 /// A pattern in a match expression (RIR level - untyped).
@@ -650,6 +672,7 @@ impl<'a, 'b> RirPrinter<'a, 'b> {
                         .map(|p| {
                             let mode_prefix = match p.mode {
                                 RirParamMode::Inout => "inout ",
+                                RirParamMode::Borrow => "borrow ",
                                 RirParamMode::Normal => "",
                             };
                             format!(
@@ -681,12 +704,10 @@ impl<'a, 'b> RirPrinter<'a, 'b> {
                     let name_str = self.interner.get(*name);
                     let args_str: Vec<String> = args
                         .iter()
-                        .map(|a| {
-                            if a.is_inout {
-                                format!("inout {}", a.value)
-                            } else {
-                                format!("{}", a.value)
-                            }
+                        .map(|a| match a.mode {
+                            RirArgMode::Inout => format!("inout {}", a.value),
+                            RirArgMode::Borrow => format!("borrow {}", a.value),
+                            RirArgMode::Normal => format!("{}", a.value),
                         })
                         .collect();
                     out.push_str(&format!("call {}({})\n", name_str, args_str.join(", ")));
@@ -838,12 +859,10 @@ impl<'a, 'b> RirPrinter<'a, 'b> {
                     let method_str = self.interner.get(*method);
                     let args_str: Vec<String> = args
                         .iter()
-                        .map(|a| {
-                            if a.is_inout {
-                                format!("inout {}", a.value)
-                            } else {
-                                format!("{}", a.value)
-                            }
+                        .map(|a| match a.mode {
+                            RirArgMode::Inout => format!("inout {}", a.value),
+                            RirArgMode::Borrow => format!("borrow {}", a.value),
+                            RirArgMode::Normal => format!("{}", a.value),
                         })
                         .collect();
                     out.push_str(&format!(
@@ -862,12 +881,10 @@ impl<'a, 'b> RirPrinter<'a, 'b> {
                     let func_str = self.interner.get(*function);
                     let args_str: Vec<String> = args
                         .iter()
-                        .map(|a| {
-                            if a.is_inout {
-                                format!("inout {}", a.value)
-                            } else {
-                                format!("{}", a.value)
-                            }
+                        .map(|a| match a.mode {
+                            RirArgMode::Inout => format!("inout {}", a.value),
+                            RirArgMode::Borrow => format!("borrow {}", a.value),
+                            RirArgMode::Normal => format!("{}", a.value),
                         })
                         .collect();
                     out.push_str(&format!(

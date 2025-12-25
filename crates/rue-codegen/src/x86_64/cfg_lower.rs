@@ -1367,7 +1367,7 @@ impl<'a> CfgLower<'a> {
                     let arg_type = self.cfg.get_inst(arg_value).ty;
 
                     // For inout args, pass address instead of value
-                    if arg.is_inout {
+                    if arg.is_inout() {
                         let arg_data = &self.cfg.get_inst(arg_value).data;
                         let addr_vreg = self.mir.alloc_vreg();
 

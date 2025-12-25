@@ -64,13 +64,32 @@ pub struct CfgInst {
     pub span: Span,
 }
 
+/// Argument passing mode in CFG.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CfgArgMode {
+    /// Normal pass-by-value argument
+    #[default]
+    Normal,
+    /// Inout argument - mutated in place
+    Inout,
+    /// Borrow argument - immutable borrow
+    Borrow,
+}
+
 /// An argument in a function call.
 #[derive(Debug, Clone, Copy)]
 pub struct CfgCallArg {
     /// The argument value
     pub value: CfgValue,
-    /// Whether this argument is passed as inout (by reference)
-    pub is_inout: bool,
+    /// The passing mode for this argument
+    pub mode: CfgArgMode,
+}
+
+impl CfgCallArg {
+    /// Returns true if this argument is passed as inout (by reference).
+    pub fn is_inout(&self) -> bool {
+        self.mode == CfgArgMode::Inout
+    }
 }
 
 /// CFG instruction data.
@@ -658,10 +677,10 @@ impl Cfg {
                     if i > 0 {
                         write!(f, ", ")?;
                     }
-                    if arg.is_inout {
-                        write!(f, "inout {}", arg.value)?;
-                    } else {
-                        write!(f, "{}", arg.value)?;
+                    match arg.mode {
+                        CfgArgMode::Inout => write!(f, "inout {}", arg.value)?,
+                        CfgArgMode::Borrow => write!(f, "borrow {}", arg.value)?,
+                        CfgArgMode::Normal => write!(f, "{}", arg.value)?,
                     }
                 }
                 write!(f, ")")
