@@ -1,20 +1,32 @@
 +++
-title = "Runtime Panics"
+title = "Undefined Behavior and Runtime Panics"
 weight = 2
 template = "spec/page.html"
 +++
 
-# Appendix B: Runtime Panics
-
-This appendix summarizes all conditions that cause runtime panics in Rue.
+# Appendix B: Undefined Behavior and Runtime Panics
 
 {{ rule(id="B.1:1") }}
+
+Rue currently has no undefined behavior. All operations in Rue have defined semantics: they either complete successfully, fail to compile, or cause a runtime panic.
+
+{{ rule(id="B.1:2") }}
+
+This is a deliberate design choice. Where other systems languages define certain conditions as undefined behavior (allowing implementations to assume they never occur), Rue instead detects these conditions and responds with a defined runtime panic.
+
+{{ rule(id="B.1:3") }}
+
+Future versions of Rue may introduce undefined behavior for specific low-level operations (such as unchecked arithmetic or raw pointer manipulation), but these will be explicitly marked as such and will require opt-in syntax.
+
+## Runtime Panics
+
+{{ rule(id="B.2:1") }}
 
 Rue detects certain error conditions at runtime and responds with a panic, terminating the program with a specific exit code.
 
 ## Integer Overflow
 
-{{ rule(id="B.1:2") }}
+{{ rule(id="B.2:2") }}
 
 Signed or unsigned integer arithmetic that overflows the representable range causes a runtime panic.
 
@@ -28,7 +40,7 @@ Signed or unsigned integer arithmetic that overflows the representable range cau
 
 ## Division by Zero
 
-{{ rule(id="B.1:3") }}
+{{ rule(id="B.2:3") }}
 
 Division or remainder with a divisor of zero causes a runtime panic.
 
@@ -40,7 +52,7 @@ Division or remainder with a divisor of zero causes a runtime panic.
 
 ## Array Bounds Violation
 
-{{ rule(id="B.1:4") }}
+{{ rule(id="B.2:4") }}
 
 Accessing an array element with an index outside the valid range `[0, length)` causes a runtime panic.
 
@@ -58,6 +70,6 @@ Accessing an array element with an index outside the valid range `[0, length)` c
 | Division by zero | 101 |
 | Array out of bounds | 101 |
 
-{{ rule(id="B.1:5") }}
+{{ rule(id="B.2:5") }}
 
 All runtime panics produce exit code 101, matching Rust's convention for unwinding panics.

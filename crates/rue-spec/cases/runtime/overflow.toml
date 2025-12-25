@@ -10,7 +10,7 @@ description = "Integer overflow causes a runtime panic with exit code 101."
 
 [[case]]
 name = "overflow_add_exit_101"
-spec = ["8.1:2", "B.1:2"]
+spec = ["8.1:2", "B.2:2"]
 source = """
 fn main() -> i32 {
     let x: i32 = 2147483647;
@@ -21,7 +21,7 @@ exit_code = 101
 
 [[case]]
 name = "overflow_sub_exit_101"
-spec = ["8.1:2", "B.1:2"]
+spec = ["8.1:2", "B.2:2"]
 source = """
 fn main() -> i32 {
     let x: i32 = -2147483648;
@@ -32,7 +32,7 @@ exit_code = 101
 
 [[case]]
 name = "overflow_mul_exit_101"
-spec = ["8.1:2", "B.1:2"]
+spec = ["8.1:2", "B.2:2"]
 source = """
 fn main() -> i32 {
     let x: i32 = 2147483647;
