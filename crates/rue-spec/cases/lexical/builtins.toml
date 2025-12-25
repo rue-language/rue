@@ -228,7 +228,6 @@ no_warnings = true
 name = "copy_directive_on_struct"
 spec = ["2.5:27", "2.5:28"]
 description = "@copy directive marks a struct as Copy type"
-preview = "affine-mvs"
 source = """
 @copy
 struct Point { x: i32, y: i32 }
@@ -245,7 +244,6 @@ exit_code = 2
 name = "copy_directive_no_args"
 spec = ["2.5:29"]
 description = "@copy takes no arguments"
-preview = "affine-mvs"
 source = """
 @copy
 struct Point { x: i32, y: i32 }

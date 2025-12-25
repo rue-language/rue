@@ -416,7 +416,6 @@ error_contains = "use of moved value"
 name = "copy_struct_multiple_uses"
 spec = ["3.8:14", "3.8:15", "3.8:16", "3.8:17"]
 description = "@copy struct can be used multiple times without moving"
-preview = "affine-mvs"
 source = """
 @copy
 struct Point { x: i32, y: i32 }
@@ -433,7 +432,6 @@ exit_code = 3
 name = "copy_struct_pass_to_function"
 spec = ["3.8:16"]
 description = "@copy struct can be passed to function and still used"
-preview = "affine-mvs"
 source = """
 @copy
 struct Point { x: i32, y: i32 }
@@ -451,7 +449,6 @@ exit_code = 60
 name = "copy_struct_all_primitive_fields"
 spec = ["3.8:20"]
 description = "@copy struct with all primitive Copy fields"
-preview = "affine-mvs"
 source = """
 @copy
 struct Data { a: i32, b: bool, c: i64 }
@@ -468,7 +465,6 @@ exit_code = 43
 name = "copy_struct_nested_copy"
 spec = ["3.8:20", "3.8:21"]
 description = "@copy struct containing other @copy structs"
-preview = "affine-mvs"
 source = """
 @copy
 struct Point { x: i32, y: i32 }
@@ -488,10 +484,31 @@ fn main() -> i32 {
 exit_code = 10
 
 [[case]]
+name = "copy_struct_deeply_nested"
+spec = ["3.8:20", "3.8:21"]
+description = "@copy struct with 3+ levels of nesting"
+source = """
+@copy
+struct Level0 { value: i32 }
+
+@copy
+struct Level1 { inner: Level0, x: i32 }
+
+@copy
+struct Level2 { inner: Level1, y: i32 }
+
+fn main() -> i32 {
+    let l = Level2 { inner: Level1 { inner: Level0 { value: 1 }, x: 2 }, y: 3 };
+    let l2 = l;
+    l.inner.inner.value + l2.inner.x + l.y
+}
+"""
+exit_code = 6
+
+[[case]]
 name = "copy_struct_non_copy_field_error"
 spec = ["3.8:18", "3.8:19"]
 description = "@copy struct with non-Copy field is a compile error"
-preview = "affine-mvs"
 source = """
 struct Inner { value: i32 }
 
@@ -507,7 +524,6 @@ error_contains = "non-Copy type"
 name = "copy_struct_enum_field"
 spec = ["3.8:20"]
 description = "@copy struct with enum field (enums are Copy)"
-preview = "affine-mvs"
 source = """
 enum Status { Active, Inactive }
 
@@ -529,7 +545,6 @@ exit_code = 20
 name = "non_copy_struct_still_moves"
 spec = ["3.8:3"]
 description = "Struct without @copy still has move semantics"
-preview = "affine-mvs"
 source = """
 struct Point { x: i32, y: i32 }
 fn main() -> i32 {

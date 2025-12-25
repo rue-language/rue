@@ -115,14 +115,6 @@ impl<'a> CfgLower<'a> {
         }
     }
 
-    /// Get the number of fields for a struct type.
-    fn struct_field_count(&self, struct_id: StructId) -> u32 {
-        self.struct_defs
-            .get(struct_id.0 as usize)
-            .map(|def| def.field_count() as u32)
-            .unwrap_or(1)
-    }
-
     /// Get the length of an array type.
     fn array_length(&self, array_type_id: ArrayTypeId) -> u64 {
         debug_assert!(
@@ -1066,11 +1058,11 @@ impl<'a> CfgLower<'a> {
                         .insert(value, vec![ptr_vreg, len_vreg]);
                     self.value_map.insert(value, ptr_vreg);
                 } else if let Type::Struct(struct_id) = load_type {
-                    // Struct: load all field slots
-                    let field_count = self.struct_field_count(struct_id);
-                    let mut slot_vregs = Vec::with_capacity(field_count as usize);
+                    // Struct: load all field slots (recursively flattened)
+                    let slot_count = self.type_slot_count(Type::Struct(struct_id));
+                    let mut slot_vregs = Vec::with_capacity(slot_count as usize);
 
-                    for i in 0..field_count {
+                    for i in 0..slot_count {
                         let field_vreg = self.mir.alloc_vreg();
                         let field_offset = self.local_offset(slot + i);
                         self.mir.push(Aarch64Inst::Ldr {

@@ -155,7 +155,7 @@ where
         .collect()
 }
 
-/// Parser for a single directive: @name(arg1, arg2, ...)
+/// Parser for a single directive: @name or @name(arg1, arg2, ...)
 fn directive_parser<'src, I>()
 -> impl Parser<'src, I, Directive, extra::Err<Rich<'src, TokenKind>>> + Clone
 where
@@ -169,11 +169,12 @@ where
                 .separated_by(just(TokenKind::Comma))
                 .allow_trailing()
                 .collect::<Vec<_>>()
-                .delimited_by(just(TokenKind::LParen), just(TokenKind::RParen)),
+                .delimited_by(just(TokenKind::LParen), just(TokenKind::RParen))
+                .or_not(),
         )
         .map_with(|(name, args), e| Directive {
             name,
-            args,
+            args: args.unwrap_or_default(),
             span: to_rue_span(e.span()),
         })
 }
