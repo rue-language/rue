@@ -542,8 +542,8 @@ impl<'a> Emitter<'a> {
                 }
 
                 // If dst is RCX, that's a conflict (dst would be clobbered by the move above
-                // or would shift itself by itself). Better to assert first.
-                debug_assert!(
+                // or would shift itself by itself).
+                assert!(
                     dst != Reg::Rcx,
                     "Shl dst allocated to RCX, but x86 requires count in CL; \
          regalloc must avoid assigning dst=RCX for Shl"
