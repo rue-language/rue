@@ -13,11 +13,11 @@ use std::collections::{HashMap, HashSet};
 
 use super::mir::{Aarch64Inst, Aarch64Mir, LabelId, Operand, Reg, VReg};
 
-// Re-export shared types from the common liveness module
-pub use crate::liveness::LiveRange;
+// Re-export shared types from the regalloc module
+pub use crate::regalloc::LiveRange;
 
 /// Type alias for aarch64-specific liveness info.
-pub type LivenessInfo = crate::liveness::LivenessInfo<Reg>;
+pub type LivenessInfo = crate::regalloc::LivenessInfo<Reg>;
 
 /// Compute liveness information for Aarch64Mir.
 ///

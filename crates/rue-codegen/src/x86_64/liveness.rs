@@ -15,11 +15,11 @@ use std::collections::{HashMap, HashSet};
 
 use super::mir::{Operand, Reg, VReg, X86Inst, X86Mir};
 
-// Re-export shared types from the common liveness module
-pub use crate::liveness::LiveRange;
+// Re-export shared types from the regalloc module
+pub use crate::regalloc::LiveRange;
 
 /// Type alias for x86_64-specific liveness info.
-pub type LivenessInfo = crate::liveness::LivenessInfo<Reg>;
+pub type LivenessInfo = crate::regalloc::LivenessInfo<Reg>;
 
 /// Compute liveness information for X86Mir.
 pub fn analyze(mir: &X86Mir) -> LivenessInfo {
