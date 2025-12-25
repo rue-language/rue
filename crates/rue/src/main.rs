@@ -32,20 +32,36 @@ enum EmitStage {
     Asm,
 }
 
-impl EmitStage {
-    fn from_str(s: &str) -> Option<Self> {
+/// Error returned when parsing an emit stage name fails.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ParseEmitStageError(String);
+
+impl std::fmt::Display for ParseEmitStageError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "unknown emit stage '{}'", self.0)
+    }
+}
+
+impl std::error::Error for ParseEmitStageError {}
+
+impl std::str::FromStr for EmitStage {
+    type Err = ParseEmitStageError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
-            "tokens" => Some(EmitStage::Tokens),
-            "ast" => Some(EmitStage::Ast),
-            "rir" => Some(EmitStage::Rir),
-            "air" => Some(EmitStage::Air),
-            "cfg" => Some(EmitStage::Cfg),
-            "mir" => Some(EmitStage::Mir),
-            "asm" => Some(EmitStage::Asm),
-            _ => None,
+            "tokens" => Ok(EmitStage::Tokens),
+            "ast" => Ok(EmitStage::Ast),
+            "rir" => Ok(EmitStage::Rir),
+            "air" => Ok(EmitStage::Air),
+            "cfg" => Ok(EmitStage::Cfg),
+            "mir" => Ok(EmitStage::Mir),
+            "asm" => Ok(EmitStage::Asm),
+            _ => Err(ParseEmitStageError(s.to_string())),
         }
     }
+}
 
+impl EmitStage {
     fn all_names() -> &'static str {
         "tokens, ast, rir, air, cfg, mir, asm"
     }
@@ -103,10 +119,10 @@ fn parse_args() -> Option<Options> {
                     eprintln!("Valid stages: {}", EmitStage::all_names());
                     return None;
                 };
-                match EmitStage::from_str(stage_str) {
-                    Some(stage) => emit_stages.push(stage),
-                    None => {
-                        eprintln!("Error: unknown emit stage '{}'", stage_str);
+                match stage_str.parse::<EmitStage>() {
+                    Ok(stage) => emit_stages.push(stage),
+                    Err(e) => {
+                        eprintln!("Error: {}", e);
                         eprintln!("Valid stages: {}", EmitStage::all_names());
                         return None;
                     }
@@ -144,12 +160,12 @@ fn parse_args() -> Option<Options> {
                     eprintln!("Available features: {}", PreviewFeature::all_names());
                     return None;
                 };
-                match PreviewFeature::from_str(feature_str) {
-                    Some(feature) => {
+                match feature_str.parse::<PreviewFeature>() {
+                    Ok(feature) => {
                         preview_features.insert(feature);
                     }
-                    None => {
-                        eprintln!("Error: unknown preview feature '{}'", feature_str);
+                    Err(e) => {
+                        eprintln!("Error: {}", e);
                         eprintln!("Available features: {}", PreviewFeature::all_names());
                         return None;
                     }

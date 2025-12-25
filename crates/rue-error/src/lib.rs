@@ -43,6 +43,18 @@ pub enum PreviewFeature {
     Destructors,
 }
 
+/// Error returned when parsing a preview feature name fails.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ParsePreviewFeatureError(String);
+
+impl fmt::Display for ParsePreviewFeatureError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "unknown preview feature '{}'", self.0)
+    }
+}
+
+impl std::error::Error for ParsePreviewFeatureError {}
+
 impl PreviewFeature {
     /// Get the CLI name for this feature (used with `--preview`).
     pub fn name(&self) -> &'static str {
@@ -50,16 +62,6 @@ impl PreviewFeature {
             PreviewFeature::MutableStrings => "mutable_strings",
             PreviewFeature::HmInference => "hm_inference",
             PreviewFeature::Destructors => "destructors",
-        }
-    }
-
-    /// Parse a feature name from a string.
-    pub fn from_str(s: &str) -> Option<Self> {
-        match s {
-            "mutable_strings" => Some(PreviewFeature::MutableStrings),
-            "hm_inference" => Some(PreviewFeature::HmInference),
-            "destructors" => Some(PreviewFeature::Destructors),
-            _ => None,
         }
     }
 
@@ -88,6 +90,19 @@ impl PreviewFeature {
             .map(|f| f.name())
             .collect::<Vec<_>>()
             .join(", ")
+    }
+}
+
+impl std::str::FromStr for PreviewFeature {
+    type Err = ParsePreviewFeatureError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "mutable_strings" => Ok(PreviewFeature::MutableStrings),
+            "hm_inference" => Ok(PreviewFeature::HmInference),
+            "destructors" => Ok(PreviewFeature::Destructors),
+            _ => Err(ParsePreviewFeatureError(s.to_string())),
+        }
     }
 }
 
@@ -1178,11 +1193,17 @@ mod tests {
     #[test]
     fn test_preview_feature_from_str() {
         assert_eq!(
-            PreviewFeature::from_str("mutable_strings"),
-            Some(PreviewFeature::MutableStrings)
+            "mutable_strings".parse::<PreviewFeature>(),
+            Ok(PreviewFeature::MutableStrings)
         );
-        assert_eq!(PreviewFeature::from_str("unknown"), None);
-        assert_eq!(PreviewFeature::from_str(""), None);
+        assert!("unknown".parse::<PreviewFeature>().is_err());
+        assert!("".parse::<PreviewFeature>().is_err());
+    }
+
+    #[test]
+    fn test_parse_preview_feature_error_display() {
+        let err = "bad_feature".parse::<PreviewFeature>().unwrap_err();
+        assert_eq!(err.to_string(), "unknown preview feature 'bad_feature'");
     }
 
     #[test]
