@@ -67,6 +67,14 @@ mod aarch64_macos;
 #[cfg(all(target_arch = "aarch64", target_os = "linux"))]
 mod aarch64_linux;
 
+// Heap allocation (available on all supported platforms)
+#[cfg(any(
+    all(target_arch = "x86_64", target_os = "linux"),
+    all(target_arch = "aarch64", target_os = "macos"),
+    all(target_arch = "aarch64", target_os = "linux")
+))]
+mod heap;
+
 #[cfg(all(target_arch = "x86_64", target_os = "linux"))]
 use x86_64_linux as platform;
 
@@ -86,6 +94,95 @@ compile_error!(
     "rue-runtime only supports x86-64 Linux, aarch64 Linux, and aarch64 macOS. \
      Other platforms are not currently supported."
 );
+
+// ============================================================================
+// Memory intrinsics
+// ============================================================================
+//
+// These functions are required by LLVM/rustc when using ptr::copy_nonoverlapping,
+// ptr::write_bytes, etc. in no_std environments. They provide the same functionality
+// as the libc functions but are implemented in pure Rust.
+
+/// Copy `n` bytes from `src` to `dst`. The memory regions must not overlap.
+///
+/// # Safety
+///
+/// - `dst` must be valid for writes of `n` bytes
+/// - `src` must be valid for reads of `n` bytes
+/// - The memory regions must not overlap
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn memcpy(dst: *mut u8, src: *const u8, n: usize) -> *mut u8 {
+    let mut i = 0;
+    while i < n {
+        *dst.add(i) = *src.add(i);
+        i += 1;
+    }
+    dst
+}
+
+/// Copy `n` bytes from `src` to `dst`. The memory regions may overlap.
+///
+/// # Safety
+///
+/// - `dst` must be valid for writes of `n` bytes
+/// - `src` must be valid for reads of `n` bytes
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn memmove(dst: *mut u8, src: *const u8, n: usize) -> *mut u8 {
+    if (dst as usize) < (src as usize) {
+        // Copy forwards
+        let mut i = 0;
+        while i < n {
+            *dst.add(i) = *src.add(i);
+            i += 1;
+        }
+    } else {
+        // Copy backwards to handle overlap
+        let mut i = n;
+        while i > 0 {
+            i -= 1;
+            *dst.add(i) = *src.add(i);
+        }
+    }
+    dst
+}
+
+/// Fill `n` bytes of memory at `dst` with the byte `c`.
+///
+/// # Safety
+///
+/// - `dst` must be valid for writes of `n` bytes
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn memset(dst: *mut u8, c: i32, n: usize) -> *mut u8 {
+    let byte = c as u8;
+    let mut i = 0;
+    while i < n {
+        *dst.add(i) = byte;
+        i += 1;
+    }
+    dst
+}
+
+/// Compare `n` bytes of memory at `s1` and `s2`.
+///
+/// Returns 0 if equal, negative if s1 < s2, positive if s1 > s2.
+///
+/// # Safety
+///
+/// - `s1` must be valid for reads of `n` bytes
+/// - `s2` must be valid for reads of `n` bytes
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn memcmp(s1: *const u8, s2: *const u8, n: usize) -> i32 {
+    let mut i = 0;
+    while i < n {
+        let a = *s1.add(i);
+        let b = *s2.add(i);
+        if a != b {
+            return (a as i32) - (b as i32);
+        }
+        i += 1;
+    }
+    0
+}
 
 /// Panic handler for `#![no_std]` environments.
 ///
@@ -622,6 +719,132 @@ pub extern "C" fn __rue_str_eq(ptr1: *const u8, len1: u64, ptr2: *const u8, len2
         }
     }
     1
+}
+
+// =============================================================================
+// Heap Allocation
+// =============================================================================
+
+/// Allocate memory from the heap.
+///
+/// This is the main allocation function for Rue programs. Memory is allocated
+/// from a bump allocator backed by `mmap`.
+///
+/// # Arguments
+///
+/// * `size` - Number of bytes to allocate
+/// * `align` - Required alignment (must be a power of 2)
+///
+/// # Returns
+///
+/// A pointer to the allocated memory, or null on failure.
+/// The memory is zero-initialized.
+///
+/// # ABI
+///
+/// ```text
+/// extern "C" fn __rue_alloc(size: u64, align: u64) -> *mut u8
+/// ```
+///
+/// - `size` is passed in the first argument register (rdi on x86_64, x0 on aarch64)
+/// - `align` is passed in the second argument register (rsi on x86_64, x1 on aarch64)
+/// - Returns pointer in rax (x86_64) or x0 (aarch64)
+#[cfg(all(target_arch = "x86_64", target_os = "linux"))]
+#[unsafe(no_mangle)]
+pub extern "C" fn __rue_alloc(size: u64, align: u64) -> *mut u8 {
+    heap::alloc(size, align)
+}
+
+#[cfg(all(target_arch = "aarch64", target_os = "macos"))]
+#[unsafe(no_mangle)]
+pub extern "C" fn __rue_alloc(size: u64, align: u64) -> *mut u8 {
+    heap::alloc(size, align)
+}
+
+#[cfg(all(target_arch = "aarch64", target_os = "linux"))]
+#[unsafe(no_mangle)]
+pub extern "C" fn __rue_alloc(size: u64, align: u64) -> *mut u8 {
+    heap::alloc(size, align)
+}
+
+/// Free memory previously allocated by `__rue_alloc`.
+///
+/// # Arguments
+///
+/// * `ptr` - Pointer to the memory to free
+/// * `size` - Size of the allocation (for future compatibility)
+/// * `align` - Alignment of the allocation (for future compatibility)
+///
+/// # Current Implementation
+///
+/// This is a **no-op** in the current bump allocator. Memory is only
+/// reclaimed when the program exits. The size and align parameters are
+/// accepted for API compatibility with future allocators.
+///
+/// # ABI
+///
+/// ```text
+/// extern "C" fn __rue_free(ptr: *mut u8, size: u64, align: u64)
+/// ```
+#[cfg(all(target_arch = "x86_64", target_os = "linux"))]
+#[unsafe(no_mangle)]
+pub extern "C" fn __rue_free(ptr: *mut u8, size: u64, align: u64) {
+    heap::free(ptr, size, align)
+}
+
+#[cfg(all(target_arch = "aarch64", target_os = "macos"))]
+#[unsafe(no_mangle)]
+pub extern "C" fn __rue_free(ptr: *mut u8, size: u64, align: u64) {
+    heap::free(ptr, size, align)
+}
+
+#[cfg(all(target_arch = "aarch64", target_os = "linux"))]
+#[unsafe(no_mangle)]
+pub extern "C" fn __rue_free(ptr: *mut u8, size: u64, align: u64) {
+    heap::free(ptr, size, align)
+}
+
+/// Reallocate memory to a new size.
+///
+/// # Arguments
+///
+/// * `ptr` - Pointer to the existing allocation (or null for new allocation)
+/// * `old_size` - Size of the existing allocation (ignored if ptr is null)
+/// * `new_size` - Desired new size
+/// * `align` - Required alignment (must be a power of 2)
+///
+/// # Returns
+///
+/// A pointer to the reallocated memory, or null on failure.
+///
+/// # Behavior
+///
+/// - If `ptr` is null: behaves like `__rue_alloc(new_size, align)`
+/// - If `new_size` is 0: frees the memory and returns null
+/// - If `new_size <= old_size`: returns `ptr` unchanged
+/// - If `new_size > old_size`: allocates new block, copies data, returns new pointer
+///
+/// # ABI
+///
+/// ```text
+/// extern "C" fn __rue_realloc(ptr: *mut u8, old_size: u64, new_size: u64, align: u64) -> *mut u8
+/// ```
+#[cfg(all(target_arch = "x86_64", target_os = "linux"))]
+#[unsafe(no_mangle)]
+pub extern "C" fn __rue_realloc(ptr: *mut u8, old_size: u64, new_size: u64, align: u64) -> *mut u8 {
+    heap::realloc(ptr, old_size, new_size, align)
+}
+
+#[cfg(all(target_arch = "aarch64", target_os = "macos"))]
+#[unsafe(no_mangle)]
+pub extern "C" fn __rue_realloc(ptr: *mut u8, old_size: u64, new_size: u64, align: u64) -> *mut u8 {
+    heap::realloc(ptr, old_size, new_size, align)
+}
+
+#[cfg(all(target_arch = "aarch64", target_os = "linux"))]
+#[unsafe(no_mangle)]
+pub extern "C" fn __rue_realloc(ptr: *mut u8, old_size: u64, new_size: u64, align: u64) -> *mut u8 {
+    heap::realloc(ptr, old_size, new_size, align)
 }
 
 // Re-export platform functions for tests

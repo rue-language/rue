@@ -30,6 +30,12 @@ use core::arch::asm;
 /// Linux syscall number for write (see `man 2 write`).
 const SYS_WRITE: i64 = 1;
 
+/// Linux syscall number for mmap (see `man 2 mmap`).
+const SYS_MMAP: i64 = 9;
+
+/// Linux syscall number for munmap (see `man 2 munmap`).
+const SYS_MUNMAP: i64 = 11;
+
 /// Linux syscall number for exit (see `man 2 exit`).
 const SYS_EXIT: i64 = 60;
 
@@ -243,6 +249,98 @@ pub fn print_bool(value: bool) {
     }
 }
 
+/// Map anonymous memory pages.
+///
+/// This is a wrapper around the Linux `mmap(2)` syscall configured for
+/// anonymous private memory allocation (no file backing).
+///
+/// # Arguments
+///
+/// * `size` - Number of bytes to allocate. Will be rounded up to page size by the kernel.
+///
+/// # Returns
+///
+/// On success, returns a pointer to the mapped memory region.
+/// On error, returns a null pointer.
+///
+/// # Memory Protection
+///
+/// The mapped region is readable and writable (PROT_READ | PROT_WRITE).
+///
+/// # Safety
+///
+/// The returned pointer (if non-null) points to valid, zero-initialized memory.
+/// The caller is responsible for calling `munmap` when done.
+pub fn mmap(size: usize) -> *mut u8 {
+    // mmap flags
+    const PROT_READ: i64 = 0x1;
+    const PROT_WRITE: i64 = 0x2;
+    const MAP_PRIVATE: i64 = 0x02;
+    const MAP_ANONYMOUS: i64 = 0x20;
+
+    let result: i64;
+    // SAFETY: mmap syscall with anonymous mapping is safe.
+    // We're requesting private anonymous memory with read/write permissions.
+    unsafe {
+        asm!(
+            "syscall",
+            in("rax") SYS_MMAP,
+            in("rdi") 0i64,           // addr: NULL (let kernel choose)
+            in("rsi") size,           // length
+            in("rdx") PROT_READ | PROT_WRITE,  // prot
+            in("r10") MAP_PRIVATE | MAP_ANONYMOUS,  // flags
+            in("r8") -1i64,           // fd: -1 for anonymous
+            in("r9") 0i64,            // offset: 0
+            lateout("rax") result,
+            out("rcx") _,
+            out("r11") _,
+        );
+    }
+
+    // mmap returns MAP_FAILED (-1 as usize) on error
+    if result < 0 {
+        core::ptr::null_mut()
+    } else {
+        result as *mut u8
+    }
+}
+
+/// Unmap memory pages previously mapped with `mmap`.
+///
+/// This is a wrapper around the Linux `munmap(2)` syscall.
+///
+/// # Arguments
+///
+/// * `addr` - Pointer to the start of the mapped region (must be page-aligned)
+/// * `size` - Size of the region to unmap (will be rounded up to page size)
+///
+/// # Returns
+///
+/// Returns 0 on success, or a negative errno on failure.
+///
+/// # Safety
+///
+/// The caller must ensure:
+/// - `addr` was returned by a previous `mmap` call
+/// - `size` matches the size used in the `mmap` call
+/// - The memory is not accessed after this call
+pub fn munmap(addr: *mut u8, size: usize) -> i64 {
+    let result: i64;
+    // SAFETY: munmap is safe if addr/size are valid from a previous mmap.
+    unsafe {
+        asm!(
+            "syscall",
+            in("rax") SYS_MUNMAP,
+            in("rdi") addr,
+            in("rsi") size,
+            lateout("rax") result,
+            out("rcx") _,
+            out("r11") _,
+        );
+    }
+    result
+}
+
 /// Exit the process with the given status code.
 ///
 /// This performs a direct syscall to `exit(2)` and never returns.
@@ -347,7 +445,77 @@ mod tests {
     fn test_syscall_constants() {
         // Verify our syscall numbers match Linux x86-64 ABI
         assert_eq!(SYS_WRITE, 1);
+        assert_eq!(SYS_MMAP, 9);
+        assert_eq!(SYS_MUNMAP, 11);
         assert_eq!(SYS_EXIT, 60);
         assert_eq!(STDERR, 2);
+    }
+
+    #[test]
+    fn test_mmap_basic() {
+        // Allocate a page of memory
+        let size = 4096;
+        let ptr = mmap(size);
+        assert!(!ptr.is_null());
+
+        // Memory should be zero-initialized and writable
+        unsafe {
+            assert_eq!(*ptr, 0);
+            *ptr = 42;
+            assert_eq!(*ptr, 42);
+        }
+
+        // Clean up
+        let result = munmap(ptr, size);
+        assert_eq!(result, 0);
+    }
+
+    #[test]
+    fn test_mmap_large() {
+        // Allocate 1 MB
+        let size = 1024 * 1024;
+        let ptr = mmap(size);
+        assert!(!ptr.is_null());
+
+        // Write to first and last bytes
+        unsafe {
+            *ptr = 1;
+            *ptr.add(size - 1) = 2;
+            assert_eq!(*ptr, 1);
+            assert_eq!(*ptr.add(size - 1), 2);
+        }
+
+        let result = munmap(ptr, size);
+        assert_eq!(result, 0);
+    }
+
+    #[test]
+    fn test_mmap_multiple() {
+        // Allocate multiple regions
+        let size = 4096;
+        let ptr1 = mmap(size);
+        let ptr2 = mmap(size);
+        let ptr3 = mmap(size);
+
+        assert!(!ptr1.is_null());
+        assert!(!ptr2.is_null());
+        assert!(!ptr3.is_null());
+
+        // They should be different addresses
+        assert_ne!(ptr1, ptr2);
+        assert_ne!(ptr2, ptr3);
+        assert_ne!(ptr1, ptr3);
+
+        // Clean up all
+        assert_eq!(munmap(ptr1, size), 0);
+        assert_eq!(munmap(ptr2, size), 0);
+        assert_eq!(munmap(ptr3, size), 0);
+    }
+
+    #[test]
+    fn test_mmap_zero_size() {
+        // Zero-size mmap should fail (returns EINVAL on Linux)
+        let ptr = mmap(0);
+        assert!(ptr.is_null());
     }
 }

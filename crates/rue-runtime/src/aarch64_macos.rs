@@ -34,6 +34,12 @@ const SYS_EXIT: u64 = 1;
 /// macOS syscall number for write (SYS_write).
 const SYS_WRITE: u64 = 4;
 
+/// macOS syscall number for mmap (SYS_mmap).
+const SYS_MMAP: u64 = 197;
+
+/// macOS syscall number for munmap (SYS_munmap).
+const SYS_MUNMAP: u64 = 73;
+
 /// Standard error file descriptor.
 const STDERR: u64 = 2;
 
@@ -210,6 +216,107 @@ pub fn print_bool(value: bool) {
     }
 }
 
+/// Map anonymous memory pages.
+///
+/// This is a wrapper around the macOS `mmap(2)` syscall configured for
+/// anonymous private memory allocation (no file backing).
+///
+/// # Arguments
+///
+/// * `size` - Number of bytes to allocate. Will be rounded up to page size by the kernel.
+///
+/// # Returns
+///
+/// On success, returns a pointer to the mapped memory region.
+/// On error, returns a null pointer.
+///
+/// # Memory Protection
+///
+/// The mapped region is readable and writable (PROT_READ | PROT_WRITE).
+///
+/// # Safety
+///
+/// The returned pointer (if non-null) points to valid, zero-initialized memory.
+/// The caller is responsible for calling `munmap` when done.
+pub fn mmap(size: usize) -> *mut u8 {
+    // mmap flags (same values as Linux/BSD)
+    const PROT_READ: u64 = 0x1;
+    const PROT_WRITE: u64 = 0x2;
+    const MAP_PRIVATE: u64 = 0x02;
+    const MAP_ANONYMOUS: u64 = 0x1000; // Note: macOS uses 0x1000, not 0x20 like Linux
+
+    let result: i64;
+    let err_flag: u64;
+
+    // SAFETY: mmap syscall with anonymous mapping is safe.
+    // We're requesting private anonymous memory with read/write permissions.
+    unsafe {
+        asm!(
+            "svc #0x80",
+            // Check carry flag for error
+            "cset {err}, cs",
+            inlateout("x16") SYS_MMAP => _,
+            in("x0") 0u64,                    // addr: NULL (let kernel choose)
+            in("x1") size,                    // length
+            in("x2") PROT_READ | PROT_WRITE,  // prot
+            in("x3") MAP_PRIVATE | MAP_ANONYMOUS,  // flags
+            in("x4") -1i64 as u64,            // fd: -1 for anonymous
+            in("x5") 0u64,                    // offset: 0
+            lateout("x0") result,
+            err = out(reg) err_flag,
+            out("x17") _,
+        );
+    }
+
+    // If carry flag was set, syscall failed
+    if err_flag != 0 {
+        core::ptr::null_mut()
+    } else {
+        result as *mut u8
+    }
+}
+
+/// Unmap memory pages previously mapped with `mmap`.
+///
+/// This is a wrapper around the macOS `munmap(2)` syscall.
+///
+/// # Arguments
+///
+/// * `addr` - Pointer to the start of the mapped region (must be page-aligned)
+/// * `size` - Size of the region to unmap (will be rounded up to page size)
+///
+/// # Returns
+///
+/// Returns 0 on success, or a negative errno on failure.
+///
+/// # Safety
+///
+/// The caller must ensure:
+/// - `addr` was returned by a previous `mmap` call
+/// - `size` matches the size used in the `mmap` call
+/// - The memory is not accessed after this call
+pub fn munmap(addr: *mut u8, size: usize) -> i64 {
+    let result: i64;
+    let err_flag: u64;
+
+    // SAFETY: munmap is safe if addr/size are valid from a previous mmap.
+    unsafe {
+        asm!(
+            "svc #0x80",
+            "cset {err}, cs",
+            inlateout("x16") SYS_MUNMAP => _,
+            in("x0") addr,
+            in("x1") size,
+            lateout("x0") result,
+            err = out(reg) err_flag,
+            out("x17") _,
+        );
+    }
+
+    // If carry flag was set, result is errno (positive), negate it
+    if err_flag != 0 { -result } else { result }
+}
+
 /// Exit the process with the given status code.
 ///
 /// This performs a direct syscall to `exit(2)` and never returns.
@@ -277,7 +384,77 @@ mod tests {
         // Verify our syscall numbers match macOS
         assert_eq!(SYS_EXIT, 1);
         assert_eq!(SYS_WRITE, 4);
+        assert_eq!(SYS_MMAP, 197);
+        assert_eq!(SYS_MUNMAP, 73);
         assert_eq!(STDERR, 2);
         assert_eq!(STDOUT, 1);
+    }
+
+    #[test]
+    fn test_mmap_basic() {
+        // Allocate a page of memory
+        let size = 4096;
+        let ptr = mmap(size);
+        assert!(!ptr.is_null());
+
+        // Memory should be zero-initialized and writable
+        unsafe {
+            assert_eq!(*ptr, 0);
+            *ptr = 42;
+            assert_eq!(*ptr, 42);
+        }
+
+        // Clean up
+        let result = munmap(ptr, size);
+        assert_eq!(result, 0);
+    }
+
+    #[test]
+    fn test_mmap_large() {
+        // Allocate 1 MB
+        let size = 1024 * 1024;
+        let ptr = mmap(size);
+        assert!(!ptr.is_null());
+
+        // Write to first and last bytes
+        unsafe {
+            *ptr = 1;
+            *ptr.add(size - 1) = 2;
+            assert_eq!(*ptr, 1);
+            assert_eq!(*ptr.add(size - 1), 2);
+        }
+
+        let result = munmap(ptr, size);
+        assert_eq!(result, 0);
+    }
+
+    #[test]
+    fn test_mmap_multiple() {
+        // Allocate multiple regions
+        let size = 4096;
+        let ptr1 = mmap(size);
+        let ptr2 = mmap(size);
+        let ptr3 = mmap(size);
+
+        assert!(!ptr1.is_null());
+        assert!(!ptr2.is_null());
+        assert!(!ptr3.is_null());
+
+        // They should be different addresses
+        assert_ne!(ptr1, ptr2);
+        assert_ne!(ptr2, ptr3);
+        assert_ne!(ptr1, ptr3);
+
+        // Clean up all
+        assert_eq!(munmap(ptr1, size), 0);
+        assert_eq!(munmap(ptr2, size), 0);
+        assert_eq!(munmap(ptr3, size), 0);
+    }
+
+    #[test]
+    fn test_mmap_zero_size() {
+        // Zero-size mmap should fail (returns EINVAL on macOS)
+        let ptr = mmap(0);
+        assert!(ptr.is_null());
     }
 }

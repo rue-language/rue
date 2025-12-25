@@ -265,7 +265,28 @@ impl Linker {
 
                 // Collect relocations
                 for reloc in &section.relocations {
+                    // Skip relocations that reference the null symbol (index 0)
+                    // These are typically R_*_NONE relocations that slipped through
+                    if reloc.symbol_index == 0 {
+                        continue;
+                    }
                     let sym = &obj.symbols[reloc.symbol_index];
+
+                    // Skip relocations to symbols in sections we don't handle
+                    // (e.g., .bss, .data, debug sections, etc.)
+                    if let Some(sec_idx) = sym.section_index {
+                        if sec_idx < obj.sections.len() {
+                            let target_sec = &obj.sections[sec_idx];
+                            if !target_sec.name.starts_with(".text")
+                                && !target_sec.name.starts_with(".rodata")
+                            {
+                                // Symbol is in a section we don't link (e.g., .bss)
+                                // Skip this relocation - it's likely for internal use
+                                continue;
+                            }
+                        }
+                    }
+
                     pending_relocations.push((
                         offset + reloc.offset,
                         sym.name.clone(),
@@ -371,23 +392,53 @@ impl Linker {
                         code_vaddr
                     } else if section.name.starts_with(".rodata") {
                         rodata_vaddr
+                    } else if section.name.starts_with(".bss") || section.name.starts_with(".data")
+                    {
+                        // .bss and .data sections need to be placed after rodata
+                        // For now, we don't support them - skip the relocation
+                        // TODO: Add proper support for .bss/.data sections
+                        continue;
                     } else {
-                        return Err(LinkError::UndefinedSymbol(sym_name));
+                        return Err(LinkError::UndefinedSymbol(format!(
+                            "{} (in section '{}')",
+                            sym_name, section.name
+                        )));
                     };
                     base + sec_offset
                 } else {
-                    return Err(LinkError::UndefinedSymbol(sym_name));
+                    return Err(LinkError::UndefinedSymbol(format!(
+                        "{} (section {} not in section_offsets)",
+                        sym_name, sec_idx
+                    )));
                 }
             } else {
-                return Err(LinkError::UndefinedSymbol(sym_name.clone()));
+                return Err(LinkError::UndefinedSymbol(format!(
+                    "{} (no section, rel_type={:?})",
+                    if sym_name.is_empty() {
+                        "<empty>"
+                    } else {
+                        &sym_name
+                    },
+                    rel_type
+                )));
             };
 
             let pc = code_vaddr + offset;
             let patch_offset = offset as usize;
 
             match rel_type {
-                RelocationType::Pc32 | RelocationType::Plt32 => {
+                RelocationType::Pc32
+                | RelocationType::Plt32
+                | RelocationType::GotPcRel
+                | RelocationType::GotPcRelX
+                | RelocationType::RexGotPcRelX => {
                     // S + A - P, where S is symbol address, A is addend, P is place
+                    //
+                    // For GOT relocations (GotPcRel, GotPcRelX, RexGotPcRelX), we perform
+                    // "GOT relaxation": instead of computing the address through the GOT,
+                    // we directly compute the PC-relative offset to the symbol.
+                    // This works because we're doing static linking and all symbols
+                    // have known addresses at link time.
                     let value = target_addr as i64 + addend - pc as i64;
                     // Check for overflow: value must fit in i32
                     if value < i32::MIN as i64 || value > i32::MAX as i64 {

@@ -247,13 +247,16 @@ impl ObjectBuilder {
                 RelocationType::Abs64 => 1,
                 RelocationType::Pc32 => 2,
                 RelocationType::Plt32 => 4,
+                RelocationType::GotPcRel => 9, // R_X86_64_GOTPCREL
                 RelocationType::Abs32 => 10,
                 RelocationType::Abs32S => 11,
-                RelocationType::Jump26 => 282, // R_AARCH64_JUMP26
-                RelocationType::Call26 => 283, // R_AARCH64_CALL26
+                RelocationType::GotPcRelX => 41, // R_X86_64_GOTPCRELX
+                RelocationType::RexGotPcRelX => 42, // R_X86_64_REX_GOTPCRELX
+                RelocationType::Jump26 => 282,   // R_AARCH64_JUMP26
+                RelocationType::Call26 => 283,   // R_AARCH64_CALL26
                 RelocationType::Aarch64Abs64 => 257, // R_AARCH64_ABS64
                 RelocationType::AdrpPage21 => 275, // R_AARCH64_ADR_PREL_PG_HI21
-                RelocationType::AddLo12 => 277, // R_AARCH64_ADD_ABS_LO12_NC
+                RelocationType::AddLo12 => 277,  // R_AARCH64_ADD_ABS_LO12_NC
                 RelocationType::Unknown(t) => t,
             };
             let r_info = ((sym_idx as u64) << 32) | (r_type as u64);

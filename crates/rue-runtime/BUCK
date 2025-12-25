@@ -9,6 +9,13 @@ rust_library(
         "-Cpanic=abort",
         "-Copt-level=z",
         "-Clto=true",
+        # Use static relocation model to avoid GOT-relative relocations
+        # that our simple linker doesn't support
+        "-Crelocation-model=static",
+        # Disable LSE atomics on aarch64 to avoid __aarch64_have_lse_atomics
+        # runtime detection symbol from compiler-rt that we don't have.
+        # We need both -lse (the feature) and -lse2 (newer extension).
+        "-Ctarget-feature=-lse,-lse2,-outline-atomics",
     ],
     visibility = ["PUBLIC"],
 )

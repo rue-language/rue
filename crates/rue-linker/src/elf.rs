@@ -186,6 +186,15 @@ pub enum RelocationType {
     Pc32,
     /// R_X86_64_PLT32: 32-bit PLT-relative (treated as PC32 for static linking).
     Plt32,
+    /// R_X86_64_GOTPCREL: 32-bit PC-relative GOT offset.
+    /// For static linking, we relax this to a direct PC-relative reference.
+    GotPcRel,
+    /// R_X86_64_REX_GOTPCRELX: Relaxable 32-bit PC-relative GOT offset (with REX prefix).
+    /// For static linking, we relax this to a direct PC-relative reference.
+    RexGotPcRelX,
+    /// R_X86_64_GOTPCRELX: Relaxable 32-bit PC-relative GOT offset.
+    /// For static linking, we relax this to a direct PC-relative reference.
+    GotPcRelX,
     /// R_X86_64_32: 32-bit absolute address.
     Abs32,
     /// R_X86_64_32S: 32-bit signed absolute address.
@@ -211,8 +220,11 @@ impl RelocationType {
                 1 => RelocationType::Abs64,
                 2 => RelocationType::Pc32,
                 4 => RelocationType::Plt32,
+                9 => RelocationType::GotPcRel, // R_X86_64_GOTPCREL
                 10 => RelocationType::Abs32,
                 11 => RelocationType::Abs32S,
+                41 => RelocationType::GotPcRelX, // R_X86_64_GOTPCRELX
+                42 => RelocationType::RexGotPcRelX, // R_X86_64_REX_GOTPCRELX
                 _ => RelocationType::Unknown(r_type),
             },
             ElfMachine::Aarch64 => match r_type {
@@ -598,6 +610,11 @@ impl ObjectFile {
 
                 let r_sym = (r_info >> 32) as usize;
                 let r_type = (r_info & 0xffffffff) as u32;
+
+                // Skip R_*_NONE relocations (type 0) - these are no-ops used for padding
+                if r_type == 0 {
+                    continue;
+                }
 
                 sections[target_section].relocations.push(Relocation {
                     offset: r_offset,
