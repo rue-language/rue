@@ -375,13 +375,22 @@ pub struct CallExpr {
     pub span: Span,
 }
 
-/// An intrinsic call expression (e.g., `@dbg(42)`).
+/// An argument to an intrinsic call (can be an expression or a type).
+#[derive(Debug, Clone)]
+pub enum IntrinsicArg {
+    /// An expression argument (e.g., `@dbg(42)`)
+    Expr(Expr),
+    /// A type argument (e.g., `@size_of(i32)`)
+    Type(TypeExpr),
+}
+
+/// An intrinsic call expression (e.g., `@dbg(42)` or `@size_of(i32)`).
 #[derive(Debug, Clone)]
 pub struct IntrinsicCallExpr {
     /// Intrinsic name (without the @)
     pub name: Ident,
-    /// Arguments
-    pub args: Vec<Expr>,
+    /// Arguments (can be expressions or types)
+    pub args: Vec<IntrinsicArg>,
     pub span: Span,
 }
 
@@ -730,7 +739,13 @@ fn fmt_expr(f: &mut fmt::Formatter<'_>, expr: &Expr, level: usize) -> fmt::Resul
         Expr::IntrinsicCall(intrinsic) => {
             writeln!(f, "Intrinsic @{}", intrinsic.name.name)?;
             for arg in &intrinsic.args {
-                fmt_expr(f, arg, level + 1)?;
+                match arg {
+                    IntrinsicArg::Expr(expr) => fmt_expr(f, expr, level + 1)?,
+                    IntrinsicArg::Type(ty) => {
+                        indent(f, level + 1)?;
+                        writeln!(f, "Type {:?}", ty)?;
+                    }
+                }
             }
             Ok(())
         }

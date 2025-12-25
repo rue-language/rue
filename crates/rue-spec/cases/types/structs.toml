@@ -80,3 +80,95 @@ fn main() -> i32 {
 """
 exit_code = 42
 
+# =============================================================================
+# Memory Layout
+# =============================================================================
+
+[[case]]
+name = "scalar_size_8_bytes"
+spec = ["3.6:8"]
+source = """
+fn main() -> i32 {
+    @size_of(i32)
+}
+"""
+exit_code = 8
+
+[[case]]
+name = "bool_size_8_bytes"
+spec = ["3.6:8"]
+source = """
+fn main() -> i32 {
+    @size_of(bool)
+}
+"""
+exit_code = 8
+
+[[case]]
+name = "unit_size_8_bytes"
+spec = ["3.6:8"]
+source = """
+fn main() -> i32 {
+    @size_of(())
+}
+"""
+exit_code = 8
+
+[[case]]
+name = "struct_fields_declaration_order"
+spec = ["3.6:9"]
+source = """
+struct Point { x: i32, y: i32 }
+fn main() -> i32 {
+    // Two fields, each 8 bytes = 16 bytes total
+    @size_of(Point)
+}
+"""
+exit_code = 16
+
+[[case]]
+name = "struct_size_sum_of_fields"
+spec = ["3.6:10"]
+source = """
+struct Triple { a: i32, b: i32, c: i32 }
+fn main() -> i32 {
+    // Three fields, each 8 bytes = 24 bytes
+    @size_of(Triple)
+}
+"""
+exit_code = 24
+
+[[case]]
+name = "nested_struct_size"
+spec = ["3.6:10"]
+source = """
+struct Point { x: i32, y: i32 }
+struct Line { start: Point, end: Point }
+fn main() -> i32 {
+    // Two Points, each 16 bytes = 32 bytes
+    @size_of(Line)
+}
+"""
+exit_code = 32
+
+[[case]]
+name = "struct_alignment_8_bytes"
+spec = ["3.6:12"]
+source = """
+struct Point { x: i32, y: i32 }
+fn main() -> i32 {
+    @align_of(Point)
+}
+"""
+exit_code = 8
+
+[[case]]
+name = "scalar_alignment_8_bytes"
+spec = ["3.6:12"]
+source = """
+fn main() -> i32 {
+    @align_of(i64)
+}
+"""
+exit_code = 8
+

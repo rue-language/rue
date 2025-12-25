@@ -2030,6 +2030,37 @@ impl<'a> Sema<'a> {
                 Ok(AnalysisResult::new(air_ref, Type::Unit))
             }
 
+            InstData::TypeIntrinsic { name, type_arg } => {
+                let intrinsic_name = self.interner.get(*name).to_string();
+                let ty = self.resolve_type(*type_arg, inst.span)?;
+
+                let value: u64 = match intrinsic_name.as_str() {
+                    "size_of" => {
+                        // Calculate size in bytes (slot count * 8)
+                        let slot_count = self.abi_slot_count(ty);
+                        (slot_count * 8) as u64
+                    }
+                    "align_of" => {
+                        // All types currently have 8-byte alignment
+                        8u64
+                    }
+                    _ => {
+                        return Err(CompileError::new(
+                            ErrorKind::UnknownIntrinsic(intrinsic_name),
+                            inst.span,
+                        ));
+                    }
+                };
+
+                // Emit a constant with the computed value
+                let air_ref = air.add_inst(AirInst {
+                    data: AirInstData::Const(value),
+                    ty: Type::I32,
+                    span: inst.span,
+                });
+                Ok(AnalysisResult::new(air_ref, Type::I32))
+            }
+
             InstData::ArrayInit { elements } => {
                 // Get the array type from HM inference
                 let array_type_id = match ctx.resolved_types.get(&inst_ref).copied() {

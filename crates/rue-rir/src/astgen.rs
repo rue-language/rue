@@ -5,8 +5,8 @@
 
 use rue_intern::Interner;
 use rue_parser::{
-    AssignTarget, Ast, BinaryOp, EnumDecl, Expr, Function, Item, LetPattern, Pattern, Statement,
-    StructDecl, TypeExpr, UnaryOp,
+    AssignTarget, Ast, BinaryOp, EnumDecl, Expr, Function, IntrinsicArg, Item, LetPattern, Pattern,
+    Statement, StructDecl, TypeExpr, UnaryOp,
 };
 
 use crate::inst::{Inst, InstData, InstRef, Rir, RirPattern};
@@ -311,7 +311,41 @@ impl<'a> AstGen<'a> {
             }
             Expr::IntrinsicCall(intrinsic) => {
                 let name = self.interner.intern(&intrinsic.name.name);
-                let args: Vec<_> = intrinsic.args.iter().map(|a| self.gen_expr(a)).collect();
+                let intrinsic_name = &intrinsic.name.name;
+
+                // Check if this is a type intrinsic (size_of, align_of)
+                let is_type_intrinsic = intrinsic_name == "size_of" || intrinsic_name == "align_of";
+
+                if is_type_intrinsic && intrinsic.args.len() == 1 {
+                    // Handle explicit type argument
+                    if let IntrinsicArg::Type(ty) = &intrinsic.args[0] {
+                        let type_arg = self.intern_type(ty);
+                        return self.rir.add_inst(Inst {
+                            data: InstData::TypeIntrinsic { name, type_arg },
+                            span: intrinsic.span,
+                        });
+                    }
+
+                    // Handle identifier expression that should be interpreted as a type
+                    // (e.g., @size_of(Point) where Point is parsed as Ident expression)
+                    if let IntrinsicArg::Expr(Expr::Ident(ident)) = &intrinsic.args[0] {
+                        let type_arg = self.interner.intern(&ident.name);
+                        return self.rir.add_inst(Inst {
+                            data: InstData::TypeIntrinsic { name, type_arg },
+                            span: intrinsic.span,
+                        });
+                    }
+                }
+
+                // Otherwise, treat as an expression intrinsic
+                let args: Vec<_> = intrinsic
+                    .args
+                    .iter()
+                    .filter_map(|a| match a {
+                        IntrinsicArg::Expr(expr) => Some(self.gen_expr(expr)),
+                        IntrinsicArg::Type(_) => None, // This shouldn't happen for expr intrinsics
+                    })
+                    .collect();
 
                 self.rir.add_inst(Inst {
                     data: InstData::Intrinsic { name, args },

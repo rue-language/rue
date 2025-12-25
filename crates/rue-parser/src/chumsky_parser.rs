@@ -6,8 +6,8 @@
 use crate::ast::{
     ArrayLitExpr, AssignStatement, AssignTarget, Ast, BinaryExpr, BinaryOp, BlockExpr, BoolLit,
     BreakExpr, CallExpr, ContinueExpr, EnumDecl, EnumVariant, Expr, FieldDecl, FieldExpr,
-    FieldInit, Function, Ident, IfExpr, IndexExpr, IntLit, IntrinsicCallExpr, Item, LetPattern,
-    LetStatement, LoopExpr, MatchArm, MatchExpr, NegIntLit, Param, ParenExpr, PathExpr,
+    FieldInit, Function, Ident, IfExpr, IndexExpr, IntLit, IntrinsicArg, IntrinsicCallExpr, Item,
+    LetPattern, LetStatement, LoopExpr, MatchArm, MatchExpr, NegIntLit, Param, ParenExpr, PathExpr,
     PathPattern, Pattern, ReturnExpr, Statement, StringLit, StructDecl, StructLitExpr, TypeExpr,
     UnaryExpr, UnaryOp, UnitLit, WhileExpr,
 };
@@ -599,11 +599,62 @@ where
     // Block expression
     let block_expr = block_parser(expr.clone());
 
+    // Intrinsic argument: can be either a type or an expression
+    // We parse as type only for unambiguous type syntax (primitives, (), !, [T;N])
+    // Bare identifiers are parsed as expressions since they could be variables
+    let unambiguous_type = {
+        // Unit type: ()
+        let unit_type = just(TokenKind::LParen)
+            .then(just(TokenKind::RParen))
+            .map_with(|_, e| IntrinsicArg::Type(TypeExpr::Unit(to_rue_span(e.span()))));
+
+        // Never type: !
+        let never_type = just(TokenKind::Bang)
+            .map_with(|_, e| IntrinsicArg::Type(TypeExpr::Never(to_rue_span(e.span()))));
+
+        // Array type: [T; N]
+        let array_type = just(TokenKind::LBracket)
+            .ignore_then(type_parser())
+            .then_ignore(just(TokenKind::Semi))
+            .then(select! {
+                TokenKind::Int(n) => n as u64,
+            })
+            .then_ignore(just(TokenKind::RBracket))
+            .map_with(|(element, length), e| {
+                IntrinsicArg::Type(TypeExpr::Array {
+                    element: Box::new(element),
+                    length,
+                    span: to_rue_span(e.span()),
+                })
+            });
+
+        // Primitive type keywords (these can't be variable names)
+        let primitive_type = select! {
+            TokenKind::I8 = e => IntrinsicArg::Type(TypeExpr::Named(Ident { name: "i8".to_string(), span: to_rue_span(e.span()) })),
+            TokenKind::I16 = e => IntrinsicArg::Type(TypeExpr::Named(Ident { name: "i16".to_string(), span: to_rue_span(e.span()) })),
+            TokenKind::I32 = e => IntrinsicArg::Type(TypeExpr::Named(Ident { name: "i32".to_string(), span: to_rue_span(e.span()) })),
+            TokenKind::I64 = e => IntrinsicArg::Type(TypeExpr::Named(Ident { name: "i64".to_string(), span: to_rue_span(e.span()) })),
+            TokenKind::U8 = e => IntrinsicArg::Type(TypeExpr::Named(Ident { name: "u8".to_string(), span: to_rue_span(e.span()) })),
+            TokenKind::U16 = e => IntrinsicArg::Type(TypeExpr::Named(Ident { name: "u16".to_string(), span: to_rue_span(e.span()) })),
+            TokenKind::U32 = e => IntrinsicArg::Type(TypeExpr::Named(Ident { name: "u32".to_string(), span: to_rue_span(e.span()) })),
+            TokenKind::U64 = e => IntrinsicArg::Type(TypeExpr::Named(Ident { name: "u64".to_string(), span: to_rue_span(e.span()) })),
+            TokenKind::Bool = e => IntrinsicArg::Type(TypeExpr::Named(Ident { name: "bool".to_string(), span: to_rue_span(e.span()) })),
+        };
+
+        choice((unit_type, never_type, array_type, primitive_type))
+    };
+
+    // Try unambiguous type syntax first, then fall back to expression
+    let intrinsic_arg = unambiguous_type.or(expr.clone().map(IntrinsicArg::Expr));
+
     // Intrinsic call: @name(args)
     let intrinsic_call = just(TokenKind::At)
         .ignore_then(ident_parser())
         .then(
-            args_parser(expr.clone())
+            intrinsic_arg
+                .separated_by(just(TokenKind::Comma))
+                .allow_trailing()
+                .collect::<Vec<_>>()
                 .delimited_by(just(TokenKind::LParen), just(TokenKind::RParen)),
         )
         .map_with(|(name, args), e| {

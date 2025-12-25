@@ -20,6 +20,17 @@ fn main() -> i32 {
 exit_code = 0
 
 [[case]]
+name = "intrinsic_type_argument"
+spec = ["4.13:2a"]
+source = """
+fn main() -> i32 {
+    // Intrinsics can take type arguments
+    @size_of(i32)
+}
+"""
+exit_code = 8
+
+[[case]]
 name = "unknown_intrinsic"
 spec = ["4.13:5"]
 source = """
@@ -162,3 +173,114 @@ fn main() -> i32 {
 }
 """
 compile_fail = true
+
+# =============================================================================
+# @size_of Intrinsic
+# =============================================================================
+
+[[case]]
+name = "size_of_returns_size"
+spec = ["4.13:12", "4.13:13"]
+source = """
+fn main() -> i32 {
+    @size_of(i32)
+}
+"""
+exit_code = 8
+
+[[case]]
+name = "size_of_returns_i32"
+spec = ["4.13:14"]
+source = """
+fn takes_i32(x: i32) -> i32 { x }
+fn main() -> i32 {
+    takes_i32(@size_of(i32))
+}
+"""
+exit_code = 8
+
+[[case]]
+name = "size_of_compile_time"
+spec = ["4.13:15"]
+source = """
+fn main() -> i32 {
+    // Can be used in constant context
+    let size: i32 = @size_of(i32);
+    size
+}
+"""
+exit_code = 8
+
+[[case]]
+name = "size_of_struct"
+spec = ["4.13:12", "4.13:13"]
+source = """
+struct Point { x: i32, y: i32 }
+fn main() -> i32 {
+    @size_of(Point)
+}
+"""
+exit_code = 16
+
+[[case]]
+name = "size_of_array"
+spec = ["4.13:12", "4.13:13"]
+source = """
+fn main() -> i32 {
+    @size_of([i32; 3])
+}
+"""
+exit_code = 24
+
+# =============================================================================
+# @align_of Intrinsic
+# =============================================================================
+
+[[case]]
+name = "align_of_returns_alignment"
+spec = ["4.13:18", "4.13:19"]
+source = """
+fn main() -> i32 {
+    @align_of(i32)
+}
+"""
+exit_code = 8
+
+[[case]]
+name = "align_of_returns_i32"
+spec = ["4.13:20"]
+source = """
+fn takes_i32(x: i32) -> i32 { x }
+fn main() -> i32 {
+    takes_i32(@align_of(i32))
+}
+"""
+exit_code = 8
+
+[[case]]
+name = "align_of_compile_time"
+spec = ["4.13:21"]
+source = """
+fn main() -> i32 {
+    // Can be used in constant context
+    let align: i32 = @align_of(i32);
+    align
+}
+"""
+exit_code = 8
+
+[[case]]
+name = "align_of_all_types_8"
+spec = ["4.13:22"]
+source = """
+struct Point { x: i32, y: i32 }
+fn main() -> i32 {
+    // All types currently have 8-byte alignment
+    if @align_of(i8) != 8 { return 1; }
+    if @align_of(i64) != 8 { return 2; }
+    if @align_of(bool) != 8 { return 3; }
+    if @align_of(Point) != 8 { return 4; }
+    0
+}
+"""
+exit_code = 0

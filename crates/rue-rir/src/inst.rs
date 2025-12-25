@@ -250,12 +250,20 @@ pub enum InstData {
         args: Vec<InstRef>,
     },
 
-    /// Intrinsic call (e.g., @dbg)
+    /// Intrinsic call with expression arguments (e.g., @dbg)
     Intrinsic {
         /// Intrinsic name (without @)
         name: Symbol,
         /// Argument instruction refs
         args: Vec<InstRef>,
+    },
+
+    /// Intrinsic call with a type argument (e.g., @size_of, @align_of)
+    TypeIntrinsic {
+        /// Intrinsic name (without @)
+        name: Symbol,
+        /// Type argument (as an interned string, e.g., "i32", "Point", "[i32; 4]")
+        type_arg: Symbol,
     },
 
     /// Reference to a function parameter
@@ -580,6 +588,11 @@ impl<'a, 'b> RirPrinter<'a, 'b> {
                         name_str,
                         args_str.join(", ")
                     ));
+                }
+                InstData::TypeIntrinsic { name, type_arg } => {
+                    let name_str = self.interner.get(*name);
+                    let type_str = self.interner.get(*type_arg);
+                    out.push_str(&format!("type_intrinsic @{}({})\n", name_str, type_str));
                 }
                 InstData::ParamRef { index, name } => {
                     let name_str = self.interner.get(*name);

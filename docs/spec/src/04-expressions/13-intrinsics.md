@@ -13,8 +13,13 @@ An intrinsic expression invokes a compiler-provided primitive operation.
 {{ rule(id="4.13:2", cat="normative") }}
 
 ```ebnf
-intrinsic = "@" IDENT "(" [ expression { "," expression } ] ")" ;
+intrinsic = "@" IDENT "(" [ intrinsic_arg { "," intrinsic_arg } ] ")" ;
+intrinsic_arg = expression | type ;
 ```
+
+{{ rule(id="4.13:2a", cat="normative") }}
+
+Intrinsics may accept expressions, types, or a combination of both as arguments, depending on the specific intrinsic.
 
 {{ rule(id="4.13:3", cat="normative") }}
 
@@ -76,5 +81,71 @@ fn factorial(n: i32) -> i32 {
 
 fn main() -> i32 {
     factorial(5)
+}
+```
+
+## `@size_of`
+
+{{ rule(id="4.13:12", cat="normative") }}
+
+The `@size_of` intrinsic returns the size of a type in bytes.
+
+{{ rule(id="4.13:13", cat="normative") }}
+
+`@size_of` accepts exactly one argument, which must be a type.
+
+{{ rule(id="4.13:14", cat="normative") }}
+
+The return type of `@size_of` is `i32`.
+
+{{ rule(id="4.13:15", cat="normative") }}
+
+The value returned by `@size_of` is determined at compile time.
+
+{{ rule(id="4.13:16") }}
+
+```rue
+fn main() -> i32 {
+    @size_of(i32)     // 8 (one 8-byte slot)
+}
+```
+
+{{ rule(id="4.13:17") }}
+
+```rue
+struct Point { x: i32, y: i32 }
+
+fn main() -> i32 {
+    @size_of(Point)   // 16 (two 8-byte slots)
+}
+```
+
+## `@align_of`
+
+{{ rule(id="4.13:18", cat="normative") }}
+
+The `@align_of` intrinsic returns the alignment of a type in bytes.
+
+{{ rule(id="4.13:19", cat="normative") }}
+
+`@align_of` accepts exactly one argument, which must be a type.
+
+{{ rule(id="4.13:20", cat="normative") }}
+
+The return type of `@align_of` is `i32`.
+
+{{ rule(id="4.13:21", cat="normative") }}
+
+The value returned by `@align_of` is determined at compile time.
+
+{{ rule(id="4.13:22", cat="normative") }}
+
+All types in Rue currently have 8-byte alignment.
+
+{{ rule(id="4.13:23") }}
+
+```rue
+fn main() -> i32 {
+    @align_of(i32)    // 8
 }
 ```

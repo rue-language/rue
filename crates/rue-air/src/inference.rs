@@ -1201,6 +1201,15 @@ impl<'a> ConstraintGenerator<'a> {
                 InferType::Concrete(Type::Unit)
             }
 
+            // Type intrinsic (@size_of, @align_of)
+            InstData::TypeIntrinsic {
+                name: _,
+                type_arg: _,
+            } => {
+                // Type intrinsics return i32 (the size or alignment value)
+                InferType::Concrete(Type::I32)
+            }
+
             // Block
             InstData::Block { extra_start, len } => {
                 ctx.push_scope();
