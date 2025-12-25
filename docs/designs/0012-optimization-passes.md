@@ -1,7 +1,7 @@
 ---
 id: 0012
 title: Compiler Optimization Passes
-status: proposal
+status: implemented
 tags: [compiler, codegen]
 feature-flag: none
 created: 2025-12-25
@@ -19,7 +19,7 @@ superseded-by:
 
 ## Status
 
-Proposal
+Implemented
 
 ## Summary
 
@@ -252,12 +252,12 @@ CFG optimization is target-independent - it operates on typed CFG instructions b
   - Add UI test infrastructure with `opt_level` support
   - Wire up in rue-compiler
 
-- [ ] **Phase 2: Constant folding** - rue-aapc.2
+- [x] **Phase 2: Constant folding** - rue-aapc.2
   - Implement `constfold.rs`
   - Add tests verifying folding occurs at -O1+
   - Update golden tests as needed
 
-- [ ] **Phase 3: Dead code elimination** - rue-aapc.3
+- [x] **Phase 3: Dead code elimination** - rue-aapc.3
   - Implement `dce.rs` with liveness analysis
   - Handle side-effects correctly (calls, escaping stores)
   - Add tests for dead store/block elimination
