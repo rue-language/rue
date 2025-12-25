@@ -21,6 +21,7 @@
 //! ```
 
 mod constfold;
+mod dce;
 
 use crate::Cfg;
 
@@ -136,8 +137,8 @@ pub fn optimize(cfg: &mut Cfg, level: OptLevel) {
             // Constant folding: fold operations on compile-time constants
             constfold::run(cfg);
 
-            // TODO: Add dead code elimination (Phase 3)
-            // dce::run(cfg);
+            // Dead code elimination: remove unused values and unreachable blocks
+            dce::run(cfg);
         }
     }
 }
