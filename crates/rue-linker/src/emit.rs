@@ -6,6 +6,80 @@ use std::collections::HashMap;
 
 use rue_target::Target;
 
+/// ELF section layout with explicit indices.
+///
+/// The section header table layout is:
+/// ```text
+/// Index  Section     Condition
+/// ─────  ──────────  ─────────────────
+/// 0      (null)      always
+/// 1      .text       always
+/// 2      .rodata     if has_rodata
+/// N      .symtab     follows .rodata if present, else follows .text
+/// N+1    .strtab     follows .symtab
+/// N+2    .shstrtab   follows .strtab
+/// N+3    .rela.text  follows .shstrtab
+/// ```
+///
+/// Symbol table references section indices, so they must be consistent:
+/// - `.text` section symbol points to section 1
+/// - `.rodata` section symbol points to section 2 (if present)
+/// - Relocations in `.rela.text` target section 1 (`.text`)
+#[derive(Debug, Clone, Copy)]
+struct ElfSectionLayout {
+    /// Whether .rodata section is present
+    has_rodata: bool,
+}
+
+impl ElfSectionLayout {
+    /// Create a new section layout.
+    fn new(has_rodata: bool) -> Self {
+        Self { has_rodata }
+    }
+
+    /// Null section (always index 0).
+    const NULL: u16 = 0;
+
+    /// .text section (always index 1).
+    const TEXT: u16 = 1;
+
+    /// .rodata section index (2 if present, otherwise unused).
+    fn rodata(&self) -> u16 {
+        debug_assert!(
+            self.has_rodata,
+            "rodata index requested but rodata not present"
+        );
+        2
+    }
+
+    /// .symtab section index.
+    fn symtab(&self) -> u16 {
+        if self.has_rodata { 3 } else { 2 }
+    }
+
+    /// .strtab section index.
+    fn strtab(&self) -> u16 {
+        if self.has_rodata { 4 } else { 3 }
+    }
+
+    /// .shstrtab section index.
+    fn shstrtab(&self) -> u16 {
+        if self.has_rodata { 5 } else { 4 }
+    }
+
+    /// Total number of sections.
+    fn count(&self) -> u16 {
+        if self.has_rodata { 7 } else { 6 }
+    }
+
+    /// Get the section index for the rodata section, or 0 if not present.
+    /// Used for symbols that reference rodata - returns 0 (null) if rodata
+    /// doesn't exist, which would make the symbol undefined.
+    fn rodata_or_null(&self) -> u16 {
+        if self.has_rodata { 2 } else { 0 }
+    }
+}
+
 use crate::elf::RelocationType;
 
 /// Information needed to create an object file.
@@ -80,12 +154,9 @@ impl ObjectBuilder {
     fn build_elf(self) -> Vec<u8> {
         let mut elf = Vec::new();
 
-        // We'll create a minimal ELF with:
-        // - ELF header
-        // - Section headers at the end
-        // - Sections: null, .text, .rodata (if strings), .symtab, .strtab, .shstrtab, .rela.text
-
+        // Determine section layout based on whether we have rodata
         let has_rodata = !self.strings.is_empty();
+        let layout = ElfSectionLayout::new(has_rodata);
 
         // Build .rodata content from strings
         let mut rodata = Vec::new();
@@ -171,12 +242,11 @@ impl ObjectBuilder {
         symtab.extend_from_slice(&0_u32.to_le_bytes()); // st_name (empty)
         symtab.push(0x03); // st_info: STB_LOCAL, STT_SECTION
         symtab.push(0); // st_other
-        symtab.extend_from_slice(&1_u16.to_le_bytes()); // st_shndx: .text section
+        symtab.extend_from_slice(&ElfSectionLayout::TEXT.to_le_bytes()); // st_shndx: .text section
         symtab.extend_from_slice(&0_u64.to_le_bytes()); // st_value
         symtab.extend_from_slice(&0_u64.to_le_bytes()); // st_size
 
         // Track symbol indices
-        let rodata_section_idx: u16 = if has_rodata { 2 } else { 0 };
         let mut next_sym_idx = 2_usize;
 
         // Symbol 2: .rodata section symbol (if has_rodata)
@@ -184,7 +254,7 @@ impl ObjectBuilder {
             symtab.extend_from_slice(&0_u32.to_le_bytes()); // st_name (empty)
             symtab.push(0x03); // st_info: STB_LOCAL, STT_SECTION
             symtab.push(0); // st_other
-            symtab.extend_from_slice(&rodata_section_idx.to_le_bytes()); // st_shndx: .rodata section
+            symtab.extend_from_slice(&layout.rodata().to_le_bytes()); // st_shndx: .rodata section
             symtab.extend_from_slice(&0_u64.to_le_bytes()); // st_value
             symtab.extend_from_slice(&0_u64.to_le_bytes()); // st_size
             next_sym_idx += 1;
@@ -196,7 +266,7 @@ impl ObjectBuilder {
             symtab.extend_from_slice(&(string_symbol_offsets[i] as u32).to_le_bytes()); // st_name
             symtab.push(0x00); // st_info: STB_LOCAL, STT_NOTYPE
             symtab.push(0); // st_other
-            symtab.extend_from_slice(&rodata_section_idx.to_le_bytes()); // st_shndx: .rodata
+            symtab.extend_from_slice(&layout.rodata_or_null().to_le_bytes()); // st_shndx: .rodata
             symtab.extend_from_slice(&(*offset as u64).to_le_bytes()); // st_value: offset in .rodata
             symtab.extend_from_slice(&0_u64.to_le_bytes()); // st_size
             next_sym_idx += 1;
@@ -210,7 +280,7 @@ impl ObjectBuilder {
         symtab.extend_from_slice(&(strtab_name as u32).to_le_bytes()); // st_name
         symtab.push(0x12); // st_info: STB_GLOBAL, STT_FUNC
         symtab.push(0); // st_other
-        symtab.extend_from_slice(&1_u16.to_le_bytes()); // st_shndx: .text
+        symtab.extend_from_slice(&ElfSectionLayout::TEXT.to_le_bytes()); // st_shndx: .text
         symtab.extend_from_slice(&0_u64.to_le_bytes()); // st_value
         symtab.extend_from_slice(&(self.code.len() as u64).to_le_bytes()); // st_size
         next_sym_idx += 1;
@@ -268,18 +338,9 @@ impl ObjectBuilder {
             rela.extend_from_slice(&reloc.addend.to_le_bytes());
         }
 
-        // Calculate section layout
+        // Calculate section layout (see ElfSectionLayout for section ordering)
         const ELF_HEADER_SIZE: usize = 64;
         const SECTION_HEADER_SIZE: usize = 64;
-        // Sections: null, .text, .rodata (optional), .symtab, .strtab, .shstrtab, .rela.text
-        let num_sections = if has_rodata { 7 } else { 6 };
-
-        // Section indices depend on whether .rodata is present
-        let symtab_section_idx = if has_rodata { 3 } else { 2 };
-        let strtab_section_idx = if has_rodata { 4 } else { 3 };
-        let shstrtab_section_idx = if has_rodata { 5 } else { 4 };
-        let rela_section_idx = if has_rodata { 6 } else { 5 };
-        let _ = rela_section_idx; // suppress unused warning
 
         // Sections start right after ELF header
         let text_offset = ELF_HEADER_SIZE;
@@ -331,8 +392,8 @@ impl ObjectBuilder {
         elf.extend_from_slice(&0_u16.to_le_bytes()); // e_phentsize
         elf.extend_from_slice(&0_u16.to_le_bytes()); // e_phnum
         elf.extend_from_slice(&(SECTION_HEADER_SIZE as u16).to_le_bytes()); // e_shentsize
-        elf.extend_from_slice(&(num_sections as u16).to_le_bytes()); // e_shnum
-        elf.extend_from_slice(&(shstrtab_section_idx as u16).to_le_bytes()); // e_shstrndx
+        elf.extend_from_slice(&layout.count().to_le_bytes()); // e_shnum
+        elf.extend_from_slice(&layout.shstrtab().to_le_bytes()); // e_shstrndx
 
         // === Sections ===
         // .text
@@ -371,7 +432,8 @@ impl ObjectBuilder {
 
         // === Section Headers ===
 
-        // Section 0: null
+        // Section 0: null (ElfSectionLayout::NULL)
+        let _ = ElfSectionLayout::NULL; // Assert this is section 0
         elf.extend_from_slice(&[0u8; 64]);
 
         // Section 1: .text
@@ -407,7 +469,7 @@ impl ObjectBuilder {
         elf.extend_from_slice(&0_u64.to_le_bytes()); // sh_addr
         elf.extend_from_slice(&(symtab_offset as u64).to_le_bytes()); // sh_offset
         elf.extend_from_slice(&(symtab_size as u64).to_le_bytes()); // sh_size
-        elf.extend_from_slice(&(strtab_section_idx as u32).to_le_bytes()); // sh_link: .strtab
+        elf.extend_from_slice(&(layout.strtab() as u32).to_le_bytes()); // sh_link: .strtab
         elf.extend_from_slice(&(first_global_sym as u32).to_le_bytes()); // sh_info: first non-local symbol
         elf.extend_from_slice(&8_u64.to_le_bytes()); // sh_addralign
         elf.extend_from_slice(&24_u64.to_le_bytes()); // sh_entsize
@@ -443,8 +505,8 @@ impl ObjectBuilder {
         elf.extend_from_slice(&0_u64.to_le_bytes()); // sh_addr
         elf.extend_from_slice(&(rela_offset as u64).to_le_bytes()); // sh_offset
         elf.extend_from_slice(&(rela_size as u64).to_le_bytes()); // sh_size
-        elf.extend_from_slice(&(symtab_section_idx as u32).to_le_bytes()); // sh_link: .symtab
-        elf.extend_from_slice(&1_u32.to_le_bytes()); // sh_info: .text section
+        elf.extend_from_slice(&(layout.symtab() as u32).to_le_bytes()); // sh_link: .symtab
+        elf.extend_from_slice(&(ElfSectionLayout::TEXT as u32).to_le_bytes()); // sh_info: .text section
         elf.extend_from_slice(&8_u64.to_le_bytes()); // sh_addralign
         elf.extend_from_slice(&24_u64.to_le_bytes()); // sh_entsize
 
