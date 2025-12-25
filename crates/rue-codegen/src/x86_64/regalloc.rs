@@ -1194,11 +1194,11 @@ mod tests {
 
         // v0 and v1 should get different registers
         let d0 = match &mir.instructions()[0] {
-            X86Inst::MovRI32 { dst, .. } => dst.clone(),
+            X86Inst::MovRI32 { dst, .. } => *dst,
             _ => panic!("expected MovRI32"),
         };
         let d1 = match &mir.instructions()[1] {
-            X86Inst::MovRI32 { dst, .. } => dst.clone(),
+            X86Inst::MovRI32 { dst, .. } => *dst,
             _ => panic!("expected MovRI32"),
         };
 
