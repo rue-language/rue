@@ -25,6 +25,12 @@ pub enum LinkError {
         section_size: usize,
         rel_type: String,
     },
+    /// Symbol references invalid section index.
+    InvalidSectionIndex {
+        symbol: String,
+        section_index: usize,
+        section_count: usize,
+    },
 }
 
 impl std::fmt::Display for LinkError {
@@ -47,6 +53,17 @@ impl std::fmt::Display for LinkError {
                     "relocation patch extends beyond code section: {} relocation at offset {} \
                      requires {} bytes, but code section is only {} bytes",
                     rel_type, patch_offset, patch_size, section_size
+                )
+            }
+            LinkError::InvalidSectionIndex {
+                symbol,
+                section_index,
+                section_count,
+            } => {
+                write!(
+                    f,
+                    "symbol '{}' references invalid section index {} (object has {} sections)",
+                    symbol, section_index, section_count
                 )
             }
         }
@@ -356,6 +373,11 @@ impl Linker {
                 }
 
                 if let Some(sec_idx) = sym.section_index {
+                    // Validate section index before use (defense in depth - section_offsets
+                    // lookup also implicitly validates, but explicit check is clearer)
+                    if sec_idx >= obj.sections.len() {
+                        continue;
+                    }
                     if let Some(&section_offset) = section_offsets.get(&(obj_idx, sec_idx)) {
                         let section = &obj.sections[sec_idx];
                         let base = if section.name.starts_with(".text") {
@@ -406,6 +428,13 @@ impl Linker {
             } else if let Some(sec_idx) = sym_section {
                 // Section-relative symbol - look up the section's address
                 let obj = &self.objects[obj_idx];
+                if sec_idx >= obj.sections.len() {
+                    return Err(LinkError::InvalidSectionIndex {
+                        symbol: sym_name.clone(),
+                        section_index: sec_idx,
+                        section_count: obj.sections.len(),
+                    });
+                }
                 let section = &obj.sections[sec_idx];
                 if let Some(&sec_offset) = section_offsets.get(&(obj_idx, sec_idx)) {
                     let base = if section.name.starts_with(".text") {
@@ -1038,5 +1067,87 @@ mod tests {
 
         let result = linker.link("main");
         assert!(matches!(result, Err(LinkError::UnsupportedRelocation(_))));
+    }
+
+    #[test]
+    fn test_invalid_section_index_error_display() {
+        let err = LinkError::InvalidSectionIndex {
+            symbol: "bad_sym".into(),
+            section_index: 42,
+            section_count: 3,
+        };
+        assert_eq!(
+            err.to_string(),
+            "symbol 'bad_sym' references invalid section index 42 (object has 3 sections)"
+        );
+    }
+
+    #[test]
+    fn test_invalid_section_index_in_relocation() {
+        use crate::elf::{Relocation, Section, SectionFlags, Symbol, SymbolBinding, SymbolType};
+
+        // Create an object file manually with a symbol referencing an invalid section index.
+        // This simulates a malformed object file.
+        let text_section = Section {
+            name: ".text".into(),
+            data: vec![
+                0xE8, 0x00, 0x00, 0x00, 0x00, // call <placeholder>
+                0xC3, // ret
+            ],
+            flags: SectionFlags::ALLOC | SectionFlags::EXEC,
+            relocations: vec![Relocation {
+                offset: 1,
+                symbol_index: 1, // References the symbol with invalid section
+                rel_type: RelocationType::Pc32,
+                addend: -4,
+            }],
+            align: 16,
+        };
+
+        // Symbol with invalid section index (section 999 doesn't exist)
+        let bad_symbol = Symbol {
+            name: "bad_target".into(),
+            section_index: Some(999), // Invalid!
+            value: 0,
+            size: 0,
+            binding: SymbolBinding::Global,
+            sym_type: SymbolType::Func,
+        };
+
+        // The main symbol
+        let main_symbol = Symbol {
+            name: "main".into(),
+            section_index: Some(0), // Valid - references .text section
+            value: 0,
+            size: 6,
+            binding: SymbolBinding::Global,
+            sym_type: SymbolType::Func,
+        };
+
+        // Null symbol at index 0
+        let null_symbol = Symbol {
+            name: String::new(),
+            section_index: None,
+            value: 0,
+            size: 0,
+            binding: SymbolBinding::Local,
+            sym_type: SymbolType::None,
+        };
+
+        let obj = ObjectFile {
+            sections: vec![text_section],
+            symbols: vec![null_symbol, bad_symbol, main_symbol],
+            section_map: HashMap::from([(".text".into(), 0)]),
+        };
+
+        let mut linker = Linker::new(ELF_TARGET);
+        linker.add_object(obj).unwrap();
+
+        let result = linker.link("main");
+        assert!(
+            matches!(result, Err(LinkError::InvalidSectionIndex { .. })),
+            "Expected InvalidSectionIndex error, got: {:?}",
+            result
+        );
     }
 }
