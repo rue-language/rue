@@ -148,7 +148,10 @@ pub use rue_rir::{AstGen, Rir, RirPrinter};
 pub use rue_span::Span;
 pub use rue_target::{Arch, Target};
 
-/// Which linker to use for final linking.
+/// Which linker to use for the final linking phase.
+///
+/// The Rue compiler can either use its built-in ELF linker or delegate to
+/// an external system linker like `clang`, `gcc`, or `ld`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LinkerMode {
     /// Use the internal linker (default).
@@ -163,7 +166,20 @@ impl Default for LinkerMode {
     }
 }
 
-/// Options for compilation.
+/// Configuration options for compilation.
+///
+/// Controls target architecture, linker selection, and feature flags.
+///
+/// # Example
+///
+/// ```ignore
+/// let options = CompileOptions {
+///     target: Target::host(),
+///     linker: LinkerMode::Internal,
+///     preview_features: PreviewFeatures::new(),
+/// };
+/// let output = compile_with_options(source, &options)?;
+/// ```
 #[derive(Debug, Clone)]
 pub struct CompileOptions {
     /// The target architecture and OS.
@@ -218,6 +234,10 @@ pub struct CompileState {
 }
 
 /// Output from successful compilation.
+///
+/// Contains the compiled executable binary and any warnings generated
+/// during compilation. The binary format depends on the target platform
+/// (ELF for Linux, Mach-O for macOS).
 pub struct CompileOutput {
     /// The compiled ELF binary.
     pub elf: Vec<u8>,
