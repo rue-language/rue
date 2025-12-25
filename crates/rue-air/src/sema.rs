@@ -283,13 +283,16 @@ impl<'a> Sema<'a> {
     /// Add a string to the string table, returning its index.
     /// Deduplicates identical strings.
     fn add_string(&mut self, content: String) -> u32 {
-        if let Some(&id) = self.string_table.get(&content) {
-            return id;
+        use std::collections::hash_map::Entry;
+        match self.string_table.entry(content) {
+            Entry::Occupied(e) => *e.get(),
+            Entry::Vacant(e) => {
+                let id = self.strings.len() as u32;
+                self.strings.push(e.key().clone());
+                e.insert(id);
+                id
+            }
         }
-        let id = self.strings.len() as u32;
-        self.string_table.insert(content.clone(), id);
-        self.strings.push(content);
-        id
     }
 
     /// Check if directives contain @allow for a specific warning name.
