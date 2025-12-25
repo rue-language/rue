@@ -2,6 +2,8 @@
 //!
 //! Creates ELF64 relocatable object files from machine code and relocation info.
 
+use std::collections::HashMap;
+
 use rue_target::Target;
 
 use crate::elf::RelocationType;
@@ -132,14 +134,18 @@ impl ObjectBuilder {
         }
 
         // Collect external symbols for relocations (excluding string constants)
+        // Use HashMap for O(1) lookup during relocation processing
         let mut extern_symbols: Vec<String> = Vec::new();
         let mut extern_symbol_offsets: Vec<usize> = Vec::new();
+        let mut extern_symbol_indices: HashMap<String, usize> = HashMap::new();
         for reloc in &self.relocations {
             // Skip string constant symbols - they're local, not external
             if reloc.symbol.starts_with(".rodata.str") {
                 continue;
             }
-            if !extern_symbols.contains(&reloc.symbol) {
+            if !extern_symbol_indices.contains_key(&reloc.symbol) {
+                let idx = extern_symbols.len();
+                extern_symbol_indices.insert(reloc.symbol.clone(), idx);
                 extern_symbol_offsets.push(strtab.len());
                 strtab.extend_from_slice(reloc.symbol.as_bytes());
                 strtab.push(0);
@@ -235,12 +241,8 @@ impl ObjectBuilder {
                     .unwrap();
                 first_string_sym + string_id
             } else {
-                // External symbol
-                extern_symbols
-                    .iter()
-                    .position(|s| s == &reloc.symbol)
-                    .unwrap()
-                    + first_extern_sym
+                // External symbol - O(1) lookup via HashMap
+                extern_symbol_indices[&reloc.symbol] + first_extern_sym
             };
 
             let r_type: u32 = match reloc.rel_type {
