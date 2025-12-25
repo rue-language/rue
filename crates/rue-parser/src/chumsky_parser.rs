@@ -1657,4 +1657,266 @@ mod tests {
             parse("fn main() -> i32 { let mut x = 0; while x < 10 { x = x + 1; } x }").unwrap();
         assert_eq!(ast.items.len(), 1);
     }
+
+    // ==================== Impl Block and Method Parsing Tests ====================
+
+    #[test]
+    fn test_impl_block_empty() {
+        let ast = parse("struct Point { x: i32, y: i32 } impl Point {}").unwrap();
+        assert_eq!(ast.items.len(), 2);
+        match &ast.items[1] {
+            Item::Impl(impl_block) => {
+                assert_eq!(impl_block.type_name.name, "Point");
+                assert!(impl_block.methods.is_empty());
+            }
+            _ => panic!("expected Impl"),
+        }
+    }
+
+    #[test]
+    fn test_impl_block_single_method() {
+        let ast = parse("struct Point { x: i32 } impl Point { fn get_x(self) -> i32 { self.x } }")
+            .unwrap();
+        assert_eq!(ast.items.len(), 2);
+        match &ast.items[1] {
+            Item::Impl(impl_block) => {
+                assert_eq!(impl_block.type_name.name, "Point");
+                assert_eq!(impl_block.methods.len(), 1);
+                let method = &impl_block.methods[0];
+                assert_eq!(method.name.name, "get_x");
+                assert!(method.receiver.is_some()); // has self
+                assert!(method.params.is_empty()); // no additional params
+            }
+            _ => panic!("expected Impl"),
+        }
+    }
+
+    #[test]
+    fn test_impl_block_method_with_params() {
+        let ast = parse(
+            "struct Point { x: i32 } impl Point { fn add(self, n: i32) -> i32 { self.x + n } }",
+        )
+        .unwrap();
+        assert_eq!(ast.items.len(), 2);
+        match &ast.items[1] {
+            Item::Impl(impl_block) => {
+                let method = &impl_block.methods[0];
+                assert_eq!(method.name.name, "add");
+                assert!(method.receiver.is_some());
+                assert_eq!(method.params.len(), 1);
+                assert_eq!(method.params[0].name.name, "n");
+            }
+            _ => panic!("expected Impl"),
+        }
+    }
+
+    #[test]
+    fn test_impl_block_associated_function() {
+        // Associated function (no self)
+        let ast = parse(
+            "struct Point { x: i32, y: i32 } impl Point { fn new(x: i32, y: i32) -> Point { Point { x: x, y: y } } }",
+        )
+        .unwrap();
+        assert_eq!(ast.items.len(), 2);
+        match &ast.items[1] {
+            Item::Impl(impl_block) => {
+                let method = &impl_block.methods[0];
+                assert_eq!(method.name.name, "new");
+                assert!(method.receiver.is_none()); // no self
+                assert_eq!(method.params.len(), 2);
+            }
+            _ => panic!("expected Impl"),
+        }
+    }
+
+    #[test]
+    fn test_impl_block_multiple_methods() {
+        let ast = parse(
+            "struct Counter { value: i32 }
+             impl Counter {
+                 fn new() -> Counter { Counter { value: 0 } }
+                 fn get(self) -> i32 { self.value }
+                 fn increment(self) -> i32 { self.value + 1 }
+             }",
+        )
+        .unwrap();
+        assert_eq!(ast.items.len(), 2);
+        match &ast.items[1] {
+            Item::Impl(impl_block) => {
+                assert_eq!(impl_block.methods.len(), 3);
+                // First is associated function (no self)
+                assert!(impl_block.methods[0].receiver.is_none());
+                assert_eq!(impl_block.methods[0].name.name, "new");
+                // Second is method (has self)
+                assert!(impl_block.methods[1].receiver.is_some());
+                assert_eq!(impl_block.methods[1].name.name, "get");
+                // Third is method (has self)
+                assert!(impl_block.methods[2].receiver.is_some());
+                assert_eq!(impl_block.methods[2].name.name, "increment");
+            }
+            _ => panic!("expected Impl"),
+        }
+    }
+
+    #[test]
+    fn test_impl_method_with_directive() {
+        let ast = parse("struct Foo {} impl Foo { @inline fn bar(self) -> i32 { 42 } }").unwrap();
+        match &ast.items[1] {
+            Item::Impl(impl_block) => {
+                let method = &impl_block.methods[0];
+                assert_eq!(method.directives.len(), 1);
+                assert_eq!(method.directives[0].name.name, "inline");
+            }
+            _ => panic!("expected Impl"),
+        }
+    }
+
+    // ==================== Method Call Parsing Tests ====================
+
+    #[test]
+    fn test_method_call_simple() {
+        let expr = parse_expr("x.foo()").unwrap();
+        match expr {
+            Expr::MethodCall(call) => {
+                assert_eq!(call.method.name, "foo");
+                assert!(call.args.is_empty());
+                match *call.receiver {
+                    Expr::Ident(ident) => assert_eq!(ident.name, "x"),
+                    _ => panic!("expected Ident receiver"),
+                }
+            }
+            _ => panic!("expected MethodCall, got {:?}", expr),
+        }
+    }
+
+    #[test]
+    fn test_method_call_with_args() {
+        let expr = parse_expr("point.add(5, 10)").unwrap();
+        match expr {
+            Expr::MethodCall(call) => {
+                assert_eq!(call.method.name, "add");
+                assert_eq!(call.args.len(), 2);
+            }
+            _ => panic!("expected MethodCall"),
+        }
+    }
+
+    #[test]
+    fn test_method_call_chained() {
+        let expr = parse_expr("x.foo().bar()").unwrap();
+        match expr {
+            Expr::MethodCall(outer) => {
+                assert_eq!(outer.method.name, "bar");
+                match *outer.receiver {
+                    Expr::MethodCall(inner) => {
+                        assert_eq!(inner.method.name, "foo");
+                    }
+                    _ => panic!("expected inner MethodCall"),
+                }
+            }
+            _ => panic!("expected outer MethodCall"),
+        }
+    }
+
+    #[test]
+    fn test_method_call_on_field_access() {
+        let expr = parse_expr("obj.field.method()").unwrap();
+        match expr {
+            Expr::MethodCall(call) => {
+                assert_eq!(call.method.name, "method");
+                match *call.receiver {
+                    Expr::Field(field) => {
+                        assert_eq!(field.field.name, "field");
+                    }
+                    _ => panic!("expected Field receiver"),
+                }
+            }
+            _ => panic!("expected MethodCall"),
+        }
+    }
+
+    #[test]
+    fn test_field_access_not_method_call() {
+        // .field (not followed by parens) should parse as FieldExpr, not MethodCall
+        let expr = parse_expr("x.field").unwrap();
+        match expr {
+            Expr::Field(field) => {
+                assert_eq!(field.field.name, "field");
+            }
+            _ => panic!("expected Field, got {:?}", expr),
+        }
+    }
+
+    #[test]
+    fn test_method_call_on_struct_literal() {
+        let ast =
+            parse("struct Point { x: i32 } fn main() -> i32 { Point { x: 1 }.get() }").unwrap();
+        match &ast.items[1] {
+            Item::Function(f) => match &f.body {
+                Expr::Block(block) => match block.expr.as_ref() {
+                    Expr::MethodCall(call) => {
+                        assert_eq!(call.method.name, "get");
+                        match call.receiver.as_ref() {
+                            Expr::StructLit(lit) => assert_eq!(lit.name.name, "Point"),
+                            _ => panic!("expected StructLit receiver"),
+                        }
+                    }
+                    _ => panic!("expected MethodCall"),
+                },
+                _ => panic!("expected Block"),
+            },
+            _ => panic!("expected Function"),
+        }
+    }
+
+    #[test]
+    fn test_method_call_on_paren_expr() {
+        let expr = parse_expr("(x).method()").unwrap();
+        match expr {
+            Expr::MethodCall(call) => {
+                assert_eq!(call.method.name, "method");
+                match *call.receiver {
+                    Expr::Paren(_) => {}
+                    _ => panic!("expected Paren receiver"),
+                }
+            }
+            _ => panic!("expected MethodCall"),
+        }
+    }
+
+    #[test]
+    fn test_method_call_mixed_with_index() {
+        // Complex chain: array[0].method().field
+        let expr = parse_expr("arr[0].get().value").unwrap();
+        match expr {
+            Expr::Field(field) => {
+                assert_eq!(field.field.name, "value");
+                match *field.base {
+                    Expr::MethodCall(call) => {
+                        assert_eq!(call.method.name, "get");
+                        match *call.receiver {
+                            Expr::Index(_) => {}
+                            _ => panic!("expected Index receiver"),
+                        }
+                    }
+                    _ => panic!("expected MethodCall"),
+                }
+            }
+            _ => panic!("expected Field"),
+        }
+    }
+
+    #[test]
+    fn test_associated_function_call() {
+        // Type::function(args) syntax
+        let expr = parse_expr("Point::new(1, 2)").unwrap();
+        match expr {
+            Expr::AssocFnCall(call) => {
+                assert_eq!(call.type_name.name, "Point");
+                assert_eq!(call.function.name, "new");
+                assert_eq!(call.args.len(), 2);
+            }
+            _ => panic!("expected AssocFnCall, got {:?}", expr),
+        }
+    }
 }
