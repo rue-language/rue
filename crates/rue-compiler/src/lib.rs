@@ -4,6 +4,25 @@
 //! Source -> Lexer -> Parser -> AstGen -> Sema -> CodeGen -> ELF
 //!
 //! It re-exports types from the component crates for convenience.
+//!
+//! # Diagnostic Formatting
+//!
+//! The [`DiagnosticFormatter`] provides a clean API for formatting errors and warnings:
+//!
+//! ```ignore
+//! use rue_compiler::{DiagnosticFormatter, SourceInfo};
+//!
+//! let source_info = SourceInfo::new(&source, "example.rue");
+//! let formatter = DiagnosticFormatter::new(&source_info);
+//!
+//! // Format an error
+//! let error_output = formatter.format_error(&error);
+//! eprintln!("{}", error_output);
+//! ```
+
+mod diagnostic;
+
+pub use diagnostic::{DiagnosticFormatter, SourceInfo};
 
 use std::io::Write;
 use std::path::PathBuf;
@@ -575,6 +594,46 @@ impl std::fmt::Display for Mir {
             Mir::X86_64(mir) => write!(f, "{}", mir),
             Mir::Aarch64(mir) => write!(f, "{}", mir),
         }
+    }
+}
+
+impl Mir {
+    /// Format MIR as assembly text.
+    ///
+    /// This prints the MIR instructions in assembly-like format.
+    /// When called with allocated MIR (post-regalloc), physical registers
+    /// are shown (rax, rbx, r12 for x86-64; x0, x1, x19 for aarch64).
+    pub fn format_assembly(&self) -> String {
+        let mut output = String::new();
+        match self {
+            Mir::X86_64(mir) => {
+                use rue_codegen::x86_64::X86Inst;
+                for inst in mir.instructions() {
+                    match inst {
+                        X86Inst::Label { id } => {
+                            output.push_str(&format!("{}:\n", id));
+                        }
+                        _ => {
+                            output.push_str(&format!("    {}\n", inst));
+                        }
+                    }
+                }
+            }
+            Mir::Aarch64(mir) => {
+                use rue_codegen::aarch64::Aarch64Inst;
+                for inst in mir.instructions() {
+                    match inst {
+                        Aarch64Inst::Label { id } => {
+                            output.push_str(&format!("{}:\n", id));
+                        }
+                        _ => {
+                            output.push_str(&format!("    {}\n", inst));
+                        }
+                    }
+                }
+            }
+        }
+        output
     }
 }
 

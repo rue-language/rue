@@ -1,13 +1,11 @@
-use std::collections::HashMap;
 use std::env;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 
-use annotate_snippets::{Level, Renderer, Snippet};
 use rue_compiler::{
-    CompileError, CompileOptions, CompileWarning, Diagnostic, Lexer, LinkerMode, Mir, Parser,
-    PreviewFeature, PreviewFeatures, Span, compile_frontend_from_ast, compile_with_options,
+    CompileOptions, DiagnosticFormatter, Lexer, LinkerMode, Parser, PreviewFeature,
+    PreviewFeatures, SourceInfo, compile_frontend_from_ast, compile_with_options,
     generate_allocated_mir, generate_mir,
 };
 use rue_rir::RirPrinter;
@@ -218,10 +216,13 @@ fn main() {
         std::process::exit(1);
     });
 
+    // Create source info for diagnostic formatting
+    let source_info = SourceInfo::new(&source, &options.source_path);
+    let formatter = DiagnosticFormatter::new(&source_info);
+
     // Handle emit modes
     if !options.emit_stages.is_empty() {
-        if let Err(e) = handle_emit(&source, &options) {
-            print_error(&e, &source, &options.source_path);
+        if let Err(()) = handle_emit(&source, &options, &formatter) {
             std::process::exit(1);
         }
         return;
@@ -235,8 +236,10 @@ fn main() {
     };
     match compile_with_options(&source, &compile_options) {
         Ok(output) => {
-            // Print warnings with line numbers when needed for disambiguation
-            print_warnings(&output.warnings, &source, &options.source_path);
+            // Print warnings using the diagnostic formatter
+            if !output.warnings.is_empty() {
+                eprintln!("{}", formatter.format_warnings(&output.warnings));
+            }
 
             // Write output
             if let Err(e) = fs::write(&options.output_path, &output.elf) {
@@ -275,7 +278,7 @@ fn main() {
             );
         }
         Err(e) => {
-            print_error(&e, &source, &options.source_path);
+            eprintln!("{}", formatter.format_error(&e));
             std::process::exit(1);
         }
     }
@@ -285,7 +288,7 @@ fn main() {
 ///
 /// This uses a single-pass approach: each compilation stage is run at most once,
 /// and the results are reused for later stages.
-fn handle_emit(source: &str, options: &Options) -> Result<(), CompileError> {
+fn handle_emit(source: &str, options: &Options, formatter: &DiagnosticFormatter) -> Result<(), ()> {
     // Determine the highest stage we need to compute
     let max_stage = options
         .emit_stages
@@ -304,7 +307,8 @@ fn handle_emit(source: &str, options: &Options) -> Result<(), CompileError> {
         match lexer.tokenize() {
             Ok(tokens) => Some(tokens),
             Err(e) => {
-                return Err(e);
+                eprintln!("{}", formatter.format_error(&e));
+                return Err(());
             }
         }
     } else {
@@ -325,7 +329,8 @@ fn handle_emit(source: &str, options: &Options) -> Result<(), CompileError> {
         match parser.parse() {
             Ok(ast) => (kept_tokens, Some(ast)),
             Err(e) => {
-                return Err(e);
+                eprintln!("{}", formatter.format_error(&e));
+                return Err(());
             }
         }
     } else {
@@ -337,7 +342,8 @@ fn handle_emit(source: &str, options: &Options) -> Result<(), CompileError> {
         match compile_frontend_from_ast(ast.clone().unwrap()) {
             Ok(state) => Some(state),
             Err(e) => {
-                return Err(e);
+                eprintln!("{}", formatter.format_error(&e));
+                return Err(());
             }
         }
     } else {
@@ -425,11 +431,11 @@ fn handle_emit(source: &str, options: &Options) -> Result<(), CompileError> {
                         ) {
                             Ok(mir) => mir,
                             Err(e) => {
-                                return Err(e);
+                                eprintln!("{}", formatter.format_error(&e));
+                                return Err(());
                             }
                         };
-                        print_assembly(&mir);
-                        println!();
+                        print!("{}", mir.format_assembly());
                     }
                 }
                 println!();
@@ -438,152 +444,4 @@ fn handle_emit(source: &str, options: &Options) -> Result<(), CompileError> {
     }
 
     Ok(())
-}
-
-/// Print assembly from MIR.
-///
-/// This prints the MIR instructions in assembly-like format.
-/// When called with allocated MIR (post-regalloc), physical registers
-/// are shown (rax, rbx, r12 for x86-64; x0, x1, x19 for aarch64).
-fn print_assembly(mir: &Mir) {
-    match mir {
-        Mir::X86_64(mir) => {
-            use rue_codegen::x86_64::X86Inst;
-            for inst in mir.instructions() {
-                match inst {
-                    X86Inst::Label { id } => println!("{}:", id),
-                    _ => println!("    {}", inst),
-                }
-            }
-        }
-        Mir::Aarch64(mir) => {
-            use rue_codegen::aarch64::Aarch64Inst;
-            for inst in mir.instructions() {
-                match inst {
-                    Aarch64Inst::Label { id } => println!("{}:", id),
-                    _ => println!("    {}", inst),
-                }
-            }
-        }
-    }
-}
-
-/// Print a diagnostic message (error or warning) to stderr.
-///
-/// This is the common implementation used by both `print_error` and `print_warning`.
-/// It handles building the annotated source snippet and rendering the full diagnostic
-/// with labels, notes, and help messages.
-fn print_diagnostic(
-    level: Level,
-    message: &str,
-    span: Option<Span>,
-    diagnostic: &Diagnostic,
-    source: &str,
-    source_path: &str,
-) {
-    let renderer = Renderer::plain();
-
-    // For diagnostics without a span, just print the message with any footers
-    let Some(span) = span else {
-        let mut report = level.title(message);
-        // Add notes and helps as footers
-        for note in &diagnostic.notes {
-            report = report.footer(Level::Note.title(note.0.as_str()));
-        }
-        for help in &diagnostic.helps {
-            report = report.footer(Level::Help.title(help.0.as_str()));
-        }
-        eprintln!("{}", renderer.render(report));
-        return;
-    };
-
-    // Build snippet with primary annotation
-    let mut snippet = Snippet::source(source)
-        .origin(source_path)
-        .fold(true)
-        .annotation(level.span(span.start as usize..span.end as usize));
-
-    // Add secondary labels as Info annotations
-    for label in &diagnostic.labels {
-        snippet = snippet.annotation(
-            Level::Info
-                .span(label.span.start as usize..label.span.end as usize)
-                .label(&label.message),
-        );
-    }
-
-    let mut report = level.title(message).snippet(snippet);
-
-    // Add notes and helps as footers
-    for note in &diagnostic.notes {
-        report = report.footer(Level::Note.title(note.0.as_str()));
-    }
-    for help in &diagnostic.helps {
-        report = report.footer(Level::Help.title(help.0.as_str()));
-    }
-
-    eprintln!("{}", renderer.render(report));
-}
-
-fn print_error(error: &CompileError, source: &str, source_path: &str) {
-    print_diagnostic(
-        Level::Error,
-        &error.to_string(),
-        error.span(),
-        error.diagnostic(),
-        source,
-        source_path,
-    );
-}
-
-/// Print all warnings, adding line numbers when multiple variables share the same name.
-///
-/// This improves error messages by disambiguating when there are multiple unused
-/// variables with the same name (e.g., shadowed variables in different scopes).
-fn print_warnings(warnings: &[CompileWarning], source: &str, source_path: &str) {
-    // Count occurrences of each unused variable name
-    let mut var_name_counts: HashMap<&str, usize> = HashMap::new();
-    for warning in warnings {
-        if let Some(name) = warning.kind.unused_variable_name() {
-            *var_name_counts.entry(name).or_insert(0) += 1;
-        }
-    }
-
-    // Print each warning, adding line number if there are duplicates
-    for warning in warnings {
-        let needs_line_number = warning
-            .kind
-            .unused_variable_name()
-            .is_some_and(|name| var_name_counts.get(name).copied().unwrap_or(0) > 1);
-
-        print_warning(warning, source, source_path, needs_line_number);
-    }
-}
-
-fn print_warning(
-    warning: &CompileWarning,
-    source: &str,
-    source_path: &str,
-    include_line_number: bool,
-) {
-    // Get the message, optionally with line number for disambiguation
-    let message = if include_line_number {
-        if let Some(span) = warning.span() {
-            let line = span.line_number(source);
-            warning.kind.format_with_line(Some(line))
-        } else {
-            warning.to_string()
-        }
-    } else {
-        warning.to_string()
-    };
-
-    print_diagnostic(
-        Level::Warning,
-        &message,
-        warning.span(),
-        warning.diagnostic(),
-        source,
-        source_path,
-    );
 }

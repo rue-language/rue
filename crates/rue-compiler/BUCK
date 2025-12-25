@@ -17,6 +17,7 @@ rust_library(
         "//crates/rue-rir:rue-rir",
         "//crates/rue-span:rue-span",
         "//crates/rue-target:rue-target",
+        "//third-party:annotate-snippets",
     ],
     visibility = ["PUBLIC"],
 )
@@ -39,5 +40,6 @@ rust_test(
         "//crates/rue-rir:rue-rir",
         "//crates/rue-span:rue-span",
         "//crates/rue-target:rue-target",
+        "//third-party:annotate-snippets",
     ],
 )
