@@ -61,8 +61,19 @@ impl Span {
     /// Compute the 1-based line number for this span's start position.
     ///
     /// Returns the line number (1-indexed) where this span begins.
+    ///
+    /// # Panics
+    ///
+    /// In debug builds, panics if `self.start` exceeds `source.len()`.
+    /// In release builds, out-of-bounds offsets are clamped to `source.len()`.
     #[inline]
     pub fn line_number(&self, source: &str) -> usize {
+        debug_assert!(
+            (self.start as usize) <= source.len(),
+            "span start {} exceeds source length {}",
+            self.start,
+            source.len()
+        );
         byte_offset_to_line(source, self.start as usize)
     }
 }
@@ -70,6 +81,7 @@ impl Span {
 /// Convert a byte offset to a 1-based line number.
 ///
 /// Counts the number of newlines before the given byte offset and adds 1.
+/// If `offset` exceeds `source.len()`, it is clamped to `source.len()`.
 #[inline]
 pub fn byte_offset_to_line(source: &str, offset: usize) -> usize {
     source[..offset.min(source.len())]
@@ -174,5 +186,32 @@ mod tests {
         // Span on line 3
         let span3 = Span::new(22, 32);
         assert_eq!(span3.line_number(source), 3);
+    }
+
+    #[test]
+    fn test_byte_offset_to_line_at_bounds() {
+        let source = "hello";
+        // At exactly the end of source
+        assert_eq!(byte_offset_to_line(source, 5), 1);
+        // Beyond source bounds - should clamp to source length
+        assert_eq!(byte_offset_to_line(source, 100), 1);
+    }
+
+    #[test]
+    fn test_byte_offset_to_line_empty_source() {
+        let source = "";
+        // Empty source should return line 1
+        assert_eq!(byte_offset_to_line(source, 0), 1);
+    }
+
+    #[test]
+    fn test_span_line_number_at_newline() {
+        let source = "a\nb";
+        // Span at the newline character itself
+        let span = Span::new(1, 2);
+        assert_eq!(span.line_number(source), 1);
+        // Span right after the newline
+        let span2 = Span::new(2, 3);
+        assert_eq!(span2.line_number(source), 2);
     }
 }
