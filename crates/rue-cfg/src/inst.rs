@@ -405,6 +405,18 @@ impl Cfg {
         &self.values[value.0 as usize]
     }
 
+    /// Get a mutable instruction by value reference.
+    #[inline]
+    pub fn get_inst_mut(&mut self, value: CfgValue) -> &mut CfgInst {
+        &mut self.values[value.0 as usize]
+    }
+
+    /// Get the total number of values (instructions) in the CFG.
+    #[inline]
+    pub fn value_count(&self) -> usize {
+        self.values.len()
+    }
+
     /// Add an instruction to a block.
     pub fn add_inst_to_block(&mut self, block: BlockId, inst: CfgInst) -> CfgValue {
         let value = self.add_inst(inst);

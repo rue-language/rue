@@ -20,6 +20,8 @@
 //! AIR -> CfgBuilder -> CFG -> [optimize] -> CfgLower -> MIR
 //! ```
 
+mod constfold;
+
 use crate::Cfg;
 
 /// Optimization level, following standard compiler conventions.
@@ -131,14 +133,11 @@ pub fn optimize(cfg: &mut Cfg, level: OptLevel) {
             // No optimization
         }
         OptLevel::O1 | OptLevel::O2 | OptLevel::O3 => {
-            // TODO: Add constant folding (Phase 2)
-            // constfold::run(cfg);
+            // Constant folding: fold operations on compile-time constants
+            constfold::run(cfg);
 
             // TODO: Add dead code elimination (Phase 3)
             // dce::run(cfg);
-
-            // For now, this is a no-op until we implement the passes
-            let _ = cfg;
         }
     }
 }
