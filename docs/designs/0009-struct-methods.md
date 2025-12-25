@@ -155,7 +155,7 @@ Methods can only be defined for structs in the same compilation unit. (This is a
     3. Resolving the method name
     4. Type checking the arguments against method signature
 
-- [ ] **Phase 4: Code Generation** - rue-qs3z.4
+- [x] **Phase 4: Code Generation** - rue-qs3z.4
   - Lower method calls to regular calls with receiver as first argument
   - Update both x86_64 and aarch64 backends
   - Handle associated function calls (`Type::method()`)
