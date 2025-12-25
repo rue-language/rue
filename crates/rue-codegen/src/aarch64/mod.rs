@@ -51,7 +51,7 @@ pub fn generate(
     // Emit machine code bytes
     let total_locals = num_locals + num_spills;
     let (code, relocations) =
-        Emitter::new(&mir, total_locals, num_params, &used_callee_saved, strings).emit();
+        Emitter::new(&mir, total_locals, num_params, &used_callee_saved, strings).emit()?;
 
     Ok(MachineCode {
         code,

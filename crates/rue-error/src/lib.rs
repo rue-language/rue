@@ -350,6 +350,9 @@ pub enum ErrorKind {
     UseAfterMove {
         var_name: String,
     },
+
+    // Internal compiler errors (bugs in the compiler itself)
+    InternalError(String),
 }
 
 impl CompileError {
@@ -639,6 +642,9 @@ impl fmt::Display for ErrorKind {
             }
             ErrorKind::UseAfterMove { var_name } => {
                 write!(f, "use of moved value '{}'", var_name)
+            }
+            ErrorKind::InternalError(msg) => {
+                write!(f, "internal compiler error: {}", msg)
             }
         }
     }

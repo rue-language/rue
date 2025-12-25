@@ -5,6 +5,8 @@
 
 use std::collections::HashMap;
 
+use rue_error::{CompileError, CompileResult, ErrorKind};
+
 use super::mir::{Aarch64Inst, Aarch64Mir, Cond, LabelId, Reg};
 use crate::EmittedRelocation;
 
@@ -197,7 +199,24 @@ impl<'a> Emitter<'a> {
     }
 
     /// Emit machine code for all instructions.
-    pub fn emit(mut self) -> (Vec<u8>, Vec<EmittedRelocation>) {
+    pub fn emit(mut self) -> CompileResult<(Vec<u8>, Vec<EmittedRelocation>)> {
+        // Verify no LdrIndexed or StrIndexed survived into emission
+        // These should have been lowered by regalloc into Ldr/Str with physical registers
+        for (i, inst) in self.mir.iter().enumerate() {
+            if matches!(
+                inst,
+                Aarch64Inst::LdrIndexed { .. } | Aarch64Inst::StrIndexed { .. }
+            ) {
+                return Err(CompileError::without_span(ErrorKind::InternalError(
+                    format!(
+                        "post-regalloc verification failed: instruction {} is {:?}, \
+                         which should have been lowered by regalloc",
+                        i, inst
+                    ),
+                )));
+            }
+        }
+
         if self.num_locals > 0 || self.num_params > 0 || !self.callee_saved.is_empty() {
             self.has_frame = true;
             self.emit_prologue();
@@ -208,7 +227,7 @@ impl<'a> Emitter<'a> {
         }
 
         self.apply_fixups();
-        (self.code, self.relocations)
+        Ok((self.code, self.relocations))
     }
 
     /// Emit function prologue.
@@ -652,20 +671,9 @@ impl<'a> Emitter<'a> {
                 self.emit_ldp_post(rt1, rt2, *offset);
             }
 
-            Aarch64Inst::LdrIndexed { dst, base } => {
-                let rd = dst.as_physical();
-                // base is a VReg; after regalloc it should be allocated to a physical register
-                // We need to look it up in the allocation. For now, assume it's already physical
-                // after regalloc rewrites.
-                // Actually, the regalloc phase should have rewritten this instruction.
-                // For now, emit a simple load from the register
-                self.emit_ldr(rd, Reg::X9, 0); // Temporary - should use allocated base reg
-            }
-
-            Aarch64Inst::StrIndexed { src, base: _ } => {
-                let rs = src.as_physical();
-                // Same as above - regalloc should handle this
-                self.emit_str(rs, Reg::X9, 0);
+            // These instructions should be caught by the verification at the start of emit()
+            Aarch64Inst::LdrIndexed { .. } | Aarch64Inst::StrIndexed { .. } => {
+                unreachable!("LdrIndexed/StrIndexed should be caught by emit() verification")
             }
 
             Aarch64Inst::LslImm { dst, src, imm } => {
@@ -1692,7 +1700,7 @@ mod tests {
     fn emit_single(inst: Aarch64Inst) -> Vec<u8> {
         let mut mir = Aarch64Mir::new();
         mir.push(inst);
-        Emitter::new(&mir, 0, 0, &[], &[]).emit().0
+        Emitter::new(&mir, 0, 0, &[], &[]).emit().unwrap().0
     }
 
     // --- Move instructions ---
@@ -2200,7 +2208,7 @@ mod tests {
             id: LabelId::new(0),
         });
 
-        let (code, _) = Emitter::new(&mir, 0, 0, &[], &[]).emit();
+        let (code, _) = Emitter::new(&mir, 0, 0, &[], &[]).emit().unwrap();
 
         // b forward -> 0x14000002 (offset = 2 instructions = 8 bytes / 4)
         let inst = u32::from_le_bytes(code[0..4].try_into().unwrap());
@@ -2219,7 +2227,7 @@ mod tests {
             id: LabelId::new(0),
         });
 
-        let (code, _) = Emitter::new(&mir, 0, 0, &[], &[]).emit();
+        let (code, _) = Emitter::new(&mir, 0, 0, &[], &[]).emit().unwrap();
 
         // b.eq -> 0x54000000 + condition (eq = 0)
         let inst = u32::from_le_bytes(code[0..4].try_into().unwrap());
@@ -2237,7 +2245,7 @@ mod tests {
             id: LabelId::new(0),
         });
 
-        let (code, _) = Emitter::new(&mir, 0, 0, &[], &[]).emit();
+        let (code, _) = Emitter::new(&mir, 0, 0, &[], &[]).emit().unwrap();
 
         // cbz x0, label
         let inst = u32::from_le_bytes(code[0..4].try_into().unwrap());
@@ -2256,7 +2264,7 @@ mod tests {
             id: LabelId::new(0),
         });
 
-        let (code, _) = Emitter::new(&mir, 0, 0, &[], &[]).emit();
+        let (code, _) = Emitter::new(&mir, 0, 0, &[], &[]).emit().unwrap();
 
         // cbnz x0, label
         let inst = u32::from_le_bytes(code[0..4].try_into().unwrap());
@@ -2270,7 +2278,7 @@ mod tests {
             symbol: "test_func".to_string(),
         });
 
-        let (code, relocs) = Emitter::new(&mir, 0, 0, &[], &[]).emit();
+        let (code, relocs) = Emitter::new(&mir, 0, 0, &[], &[]).emit().unwrap();
 
         // bl -> 0x94000000
         let inst = u32::from_le_bytes(code[0..4].try_into().unwrap());

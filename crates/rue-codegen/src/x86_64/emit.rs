@@ -5,6 +5,8 @@
 
 use std::collections::HashMap;
 
+use rue_error::{CompileError, CompileResult, ErrorKind};
+
 use super::EmittedRelocation;
 use super::mir::{LabelId, Reg, X86Inst, X86Mir};
 
@@ -81,20 +83,21 @@ impl<'a> Emitter<'a> {
     /// Emit machine code for all instructions.
     ///
     /// Returns (code bytes, relocations).
-    pub fn emit(mut self) -> (Vec<u8>, Vec<EmittedRelocation>) {
+    pub fn emit(mut self) -> CompileResult<(Vec<u8>, Vec<EmittedRelocation>)> {
         // Verify no MovRMIndexed or MovMRIndexed survived into emission
         // These should have been lowered by regalloc into MovRM/MovMR
-        #[cfg(debug_assertions)]
         for (i, inst) in self.mir.iter().enumerate() {
             if matches!(
                 inst,
                 X86Inst::MovRMIndexed { .. } | X86Inst::MovMRIndexed { .. }
             ) {
-                panic!(
-                    "Post-regalloc verification failed: instruction {} is {:?}, \
-                     which should have been lowered by regalloc",
-                    i, inst
-                );
+                return Err(CompileError::without_span(ErrorKind::InternalError(
+                    format!(
+                        "post-regalloc verification failed: instruction {} is {:?}, \
+                         which should have been lowered by regalloc",
+                        i, inst
+                    ),
+                )));
             }
         }
 
@@ -107,7 +110,7 @@ impl<'a> Emitter<'a> {
             self.emit_inst(inst);
         }
         self.apply_fixups();
-        (self.code, self.relocations)
+        Ok((self.code, self.relocations))
     }
 
     /// Emit function prologue to set up the stack frame.
@@ -1791,7 +1794,7 @@ mod tests {
     fn emit_single(inst: X86Inst) -> Vec<u8> {
         let mut mir = X86Mir::new();
         mir.push(inst);
-        Emitter::new(&mir, 0, 0, 0, &[], &[]).emit().0
+        Emitter::new(&mir, 0, 0, 0, &[], &[]).emit().unwrap().0
     }
 
     #[test]
@@ -1913,7 +1916,7 @@ mod tests {
         });
         mir.push(X86Inst::Syscall);
 
-        let (code, _) = Emitter::new(&mir, 0, 0, 0, &[], &[]).emit();
+        let (code, _) = Emitter::new(&mir, 0, 0, 0, &[], &[]).emit().unwrap();
 
         // 41 BA 2A 00 00 00  mov r10d, 42
         // 4C 89 D7           mov rdi, r10
@@ -1937,7 +1940,7 @@ mod tests {
             symbol: "__rue_exit".into(),
         });
 
-        let (code, relocs) = Emitter::new(&mir, 0, 0, 0, &[], &[]).emit();
+        let (code, relocs) = Emitter::new(&mir, 0, 0, 0, &[], &[]).emit().unwrap();
 
         // call rel32 -> E8 00 00 00 00
         assert_eq!(code, vec![0xE8, 0x00, 0x00, 0x00, 0x00]);
@@ -2164,7 +2167,7 @@ mod tests {
     fn test_prologue_one_local() {
         // With 1 local, we need 8 bytes, aligned to 16 = 16 bytes
         let mir = X86Mir::new();
-        let (code, _) = Emitter::new(&mir, 1, 1, 0, &[], &[]).emit();
+        let (code, _) = Emitter::new(&mir, 1, 1, 0, &[], &[]).emit().unwrap();
 
         // push rbp: 55
         // mov rbp, rsp: 48 89 E5
@@ -2183,7 +2186,7 @@ mod tests {
     fn test_no_prologue_no_locals() {
         // With 0 locals, no prologue should be emitted
         let mir = X86Mir::new();
-        let (code, _) = Emitter::new(&mir, 0, 0, 0, &[], &[]).emit();
+        let (code, _) = Emitter::new(&mir, 0, 0, 0, &[], &[]).emit().unwrap();
         assert!(code.is_empty());
     }
 
@@ -2701,7 +2704,7 @@ mod tests {
             id: LabelId::new(0),
         });
 
-        let (code, _) = Emitter::new(&mir, 0, 0, 0, &[], &[]).emit();
+        let (code, _) = Emitter::new(&mir, 0, 0, 0, &[], &[]).emit().unwrap();
 
         // jmp rel32 -> E9 xx xx xx xx (displacement = 5)
         assert_eq!(code[0], 0xE9);
@@ -2723,7 +2726,7 @@ mod tests {
             id: LabelId::new(0),
         });
 
-        let (code, _) = Emitter::new(&mir, 0, 0, 0, &[], &[]).emit();
+        let (code, _) = Emitter::new(&mir, 0, 0, 0, &[], &[]).emit().unwrap();
 
         // jz rel32 -> 0F 84 xx xx xx xx (displacement = 5)
         assert_eq!(code[0], 0x0F);
@@ -2746,7 +2749,7 @@ mod tests {
             id: LabelId::new(0),
         });
 
-        let (code, _) = Emitter::new(&mir, 0, 0, 0, &[], &[]).emit();
+        let (code, _) = Emitter::new(&mir, 0, 0, 0, &[], &[]).emit().unwrap();
 
         // jnz rel32 -> 0F 85 xx xx xx xx (displacement = 5)
         assert_eq!(code[0], 0x0F);
@@ -2763,7 +2766,7 @@ mod tests {
             id: LabelId::new(0),
         });
 
-        let (code, _) = Emitter::new(&mir, 0, 0, 0, &[], &[]).emit();
+        let (code, _) = Emitter::new(&mir, 0, 0, 0, &[], &[]).emit().unwrap();
 
         // jo rel32 -> 0F 80 00 00 00 00
         assert_eq!(&code[0..6], &[0x0F, 0x80, 0x00, 0x00, 0x00, 0x00]);
@@ -2779,7 +2782,7 @@ mod tests {
             id: LabelId::new(0),
         });
 
-        let (code, _) = Emitter::new(&mir, 0, 0, 0, &[], &[]).emit();
+        let (code, _) = Emitter::new(&mir, 0, 0, 0, &[], &[]).emit().unwrap();
 
         // jno rel32 -> 0F 81 00 00 00 00
         assert_eq!(&code[0..6], &[0x0F, 0x81, 0x00, 0x00, 0x00, 0x00]);
@@ -2795,7 +2798,7 @@ mod tests {
             id: LabelId::new(0),
         });
 
-        let (code, _) = Emitter::new(&mir, 0, 0, 0, &[], &[]).emit();
+        let (code, _) = Emitter::new(&mir, 0, 0, 0, &[], &[]).emit().unwrap();
 
         // jb rel32 -> 0F 82 00 00 00 00
         assert_eq!(&code[0..6], &[0x0F, 0x82, 0x00, 0x00, 0x00, 0x00]);
@@ -2811,7 +2814,7 @@ mod tests {
             id: LabelId::new(0),
         });
 
-        let (code, _) = Emitter::new(&mir, 0, 0, 0, &[], &[]).emit();
+        let (code, _) = Emitter::new(&mir, 0, 0, 0, &[], &[]).emit().unwrap();
 
         // jae rel32 -> 0F 83 00 00 00 00
         assert_eq!(&code[0..6], &[0x0F, 0x83, 0x00, 0x00, 0x00, 0x00]);
@@ -2827,7 +2830,7 @@ mod tests {
             id: LabelId::new(0),
         });
 
-        let (code, _) = Emitter::new(&mir, 0, 0, 0, &[], &[]).emit();
+        let (code, _) = Emitter::new(&mir, 0, 0, 0, &[], &[]).emit().unwrap();
 
         // jbe rel32 -> 0F 86 00 00 00 00
         assert_eq!(&code[0..6], &[0x0F, 0x86, 0x00, 0x00, 0x00, 0x00]);
@@ -2869,7 +2872,7 @@ mod tests {
             string_id: 0,
         });
 
-        let (code, _) = Emitter::new(&mir, 0, 0, 0, &[], &strings).emit();
+        let (code, _) = Emitter::new(&mir, 0, 0, 0, &[], &strings).emit().unwrap();
 
         // mov rax, 5 -> 48 B8 05 00 00 00 00 00 00 00
         assert_eq!(

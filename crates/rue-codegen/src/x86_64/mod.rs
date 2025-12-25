@@ -64,7 +64,7 @@ pub fn generate(
         &used_callee_saved,
         strings,
     )
-    .emit();
+    .emit()?;
 
     Ok(MachineCode {
         code,
