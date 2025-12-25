@@ -29,8 +29,15 @@ jobs:
   test:
     strategy:
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        include:
+          - os: ubuntu-latest
+            name: linux-x64
+          - os: ubuntu-24.04-arm
+            name: linux-arm64
+          - os: macos-latest
+            name: macos
     runs-on: ${{ matrix.os }}
+    name: test (${{ matrix.name }})
     steps:
       - uses: actions/checkout@v4
 
@@ -44,9 +51,9 @@ jobs:
           path: |
             buck-out/v2/gen
             ~/.cache/buck2
-          key: buck2-${{ runner.os }}-${{ hashFiles('**/BUCK', 'toolchains/rust/defs.bzl') }}
+          key: buck2-${{ matrix.name }}-${{ hashFiles('**/BUCK', 'toolchains/rust/defs.bzl') }}
           restore-keys: |
-            buck2-${{ runner.os }}-
+            buck2-${{ matrix.name }}-
 
       # Uses hermetic Rust toolchain downloaded by Buck2
       - name: Run tests

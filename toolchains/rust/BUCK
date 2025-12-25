@@ -15,6 +15,16 @@ http_archive(
     visibility = [],
 )
 
+# Download Rust for Linux ARM64
+http_archive(
+    name = "rust-linux-aarch64",
+    urls = [RUST_RELEASES["aarch64-unknown-linux-gnu"].url],
+    sha256 = RUST_RELEASES["aarch64-unknown-linux-gnu"].sha256,
+    strip_prefix = "rust-{}-aarch64-unknown-linux-gnu".format(RUST_VERSION),
+    type = "tar.xz",
+    visibility = [],
+)
+
 # Download Rust for macOS ARM64 (Apple Silicon)
 http_archive(
     name = "rust-macos-aarch64",
@@ -44,6 +54,15 @@ hermetic_rust_toolchain(
     visibility = ["PUBLIC"],
 )
 
+# Hermetic toolchain for Linux ARM64
+hermetic_rust_toolchain(
+    name = "hermetic-linux-aarch64",
+    distribution = ":rust-linux-aarch64",
+    target_triple = "aarch64-unknown-linux-gnu",
+    default_edition = "2024",
+    visibility = ["PUBLIC"],
+)
+
 # Hermetic toolchain for macOS ARM64
 hermetic_rust_toolchain(
     name = "hermetic-macos-aarch64",
@@ -66,6 +85,12 @@ hermetic_rust_toolchain(
 rustfmt(
     name = "rustfmt-linux-x86_64",
     distribution = ":rust-linux-x86_64",
+    visibility = ["PUBLIC"],
+)
+
+rustfmt(
+    name = "rustfmt-linux-aarch64",
+    distribution = ":rust-linux-aarch64",
     visibility = ["PUBLIC"],
 )
 

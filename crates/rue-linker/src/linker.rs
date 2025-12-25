@@ -405,7 +405,7 @@ impl Linker {
                     merged_code[patch_offset..patch_offset + 4]
                         .copy_from_slice(&(value as i32).to_le_bytes());
                 }
-                RelocationType::Abs64 => {
+                RelocationType::Abs64 | RelocationType::Aarch64Abs64 => {
                     let value = (target_addr as i64 + addend) as u64;
                     if patch_offset + 8 > merged_code.len() {
                         return Err(LinkError::UnsupportedRelocation(format!(
@@ -452,17 +452,22 @@ impl Linker {
                     merged_code[patch_offset..patch_offset + 4]
                         .copy_from_slice(&(value as i32).to_le_bytes());
                 }
-                RelocationType::Call26 => {
-                    // AArch64 branch with link - 26-bit PC-relative offset
-                    // This is used for BL instructions
+                RelocationType::Jump26 | RelocationType::Call26 => {
+                    // AArch64 branch (B) or branch with link (BL) - 26-bit PC-relative offset
+                    // Both use identical encoding for the immediate field
                     let value = target_addr as i64 + addend - pc as i64;
                     // Offset is in units of 4 bytes (instructions)
                     let offset = value >> 2;
                     // Check for overflow: must fit in 26 bits signed
+                    let rel_name = if matches!(rel_type, RelocationType::Jump26) {
+                        "Jump26"
+                    } else {
+                        "Call26"
+                    };
                     if offset < -(1 << 25) || offset >= (1 << 25) {
                         return Err(LinkError::RelocationOverflow {
                             symbol: sym_name.clone(),
-                            rel_type: "Call26".to_string(),
+                            rel_type: rel_name.to_string(),
                         });
                     }
                     if patch_offset + 4 > merged_code.len() {
@@ -478,6 +483,63 @@ impl Linker {
                             .unwrap(),
                     );
                     inst = (inst & 0xFC000000) | ((offset as u32) & 0x03FFFFFF);
+                    merged_code[patch_offset..patch_offset + 4]
+                        .copy_from_slice(&inst.to_le_bytes());
+                }
+                RelocationType::AdrpPage21 => {
+                    // AArch64 ADRP - loads PC-relative page address (21-bit page offset)
+                    // target_addr must be page-aligned, PC is the instruction address
+                    // Result is the page containing target minus page containing PC
+                    let target_page = target_addr & !0xFFF;
+                    let pc_page = pc & !0xFFF;
+                    let page_offset = (target_page as i64) - (pc_page as i64);
+                    // ADRP encodes a 21-bit signed page offset (each unit = 4KB page)
+                    let page_count = page_offset >> 12;
+                    // Check for overflow: must fit in 21 bits signed
+                    if page_count < -(1 << 20) || page_count >= (1 << 20) {
+                        return Err(LinkError::RelocationOverflow {
+                            symbol: sym_name.clone(),
+                            rel_type: "AdrpPage21".to_string(),
+                        });
+                    }
+                    if patch_offset + 4 > merged_code.len() {
+                        return Err(LinkError::UnsupportedRelocation(format!(
+                            "patch offset {} out of bounds",
+                            patch_offset
+                        )));
+                    }
+                    // ADRP instruction format: imm is split into immlo (bits 29-30) and immhi (bits 5-23)
+                    let imm = page_count as u32;
+                    let immlo = (imm & 0x3) << 29; // bits 0-1 of imm -> bits 29-30
+                    let immhi = ((imm >> 2) & 0x7FFFF) << 5; // bits 2-20 of imm -> bits 5-23
+                    let mut inst = u32::from_le_bytes(
+                        merged_code[patch_offset..patch_offset + 4]
+                            .try_into()
+                            .unwrap(),
+                    );
+                    // Clear immlo and immhi fields, then set them
+                    inst = (inst & 0x9F00001F) | immlo | immhi;
+                    merged_code[patch_offset..patch_offset + 4]
+                        .copy_from_slice(&inst.to_le_bytes());
+                }
+                RelocationType::AddLo12 => {
+                    // AArch64 ADD - adds 12-bit page offset
+                    // target_addr's low 12 bits are the offset within the page
+                    let page_offset = (target_addr & 0xFFF) as u32;
+                    if patch_offset + 4 > merged_code.len() {
+                        return Err(LinkError::UnsupportedRelocation(format!(
+                            "patch offset {} out of bounds",
+                            patch_offset
+                        )));
+                    }
+                    // ADD instruction format: imm12 is in bits 10-21
+                    let mut inst = u32::from_le_bytes(
+                        merged_code[patch_offset..patch_offset + 4]
+                            .try_into()
+                            .unwrap(),
+                    );
+                    // Clear imm12 field (bits 10-21) and set it
+                    inst = (inst & 0xFFC003FF) | (page_offset << 10);
                     merged_code[patch_offset..patch_offset + 4]
                         .copy_from_slice(&inst.to_le_bytes());
                 }

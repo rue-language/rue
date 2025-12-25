@@ -698,8 +698,10 @@ impl<'a> Emitter<'a> {
                 let rd = dst.as_physical();
                 let string_id = *string_id;
 
-                // Create a symbol name for this string constant
-                let symbol = format!("__rue_string_{}", string_id);
+                // Use .rodata.strN symbol (same as x86-64) with @PAGE/@PAGEOFF suffix
+                // to distinguish between the ADRP and ADD relocations.
+                // For Mach-O (macOS): clang understands @PAGE/@PAGEOFF
+                // For ELF (Linux): the compiler maps these to R_AARCH64_ADR_PREL_PG_HI21/R_AARCH64_ADD_ABS_LO12_NC
 
                 // ADRP dst, <symbol>@PAGE
                 // This loads the 4KB-aligned page address of the symbol
@@ -707,11 +709,10 @@ impl<'a> Emitter<'a> {
                 let adrp = 0x90000000_u32 | rd.encoding() as u32;
                 self.emit_u32(adrp);
 
-                // Record relocation for ADRP (ARM64_RELOC_PAGE21)
-                // Use @PAGE suffix to indicate PAGE21 relocation
+                // Record relocation for ADRP
                 self.relocations.push(EmittedRelocation {
                     offset: offset as u64,
-                    symbol: format!("{}@PAGE", symbol),
+                    symbol: format!(".rodata.str{}@PAGE", string_id),
                     addend: 0,
                 });
 
@@ -721,11 +722,10 @@ impl<'a> Emitter<'a> {
                 let add = 0x91000000_u32 | (rd.encoding() as u32) << 5 | rd.encoding() as u32;
                 self.emit_u32(add);
 
-                // Record relocation for ADD (ARM64_RELOC_PAGEOFF12)
-                // Use @PAGEOFF suffix to indicate PAGEOFF12 relocation
+                // Record relocation for ADD
                 self.relocations.push(EmittedRelocation {
                     offset: offset as u64,
-                    symbol: format!("{}@PAGEOFF", symbol),
+                    symbol: format!(".rodata.str{}@PAGEOFF", string_id),
                     addend: 0,
                 });
             }

@@ -398,14 +398,6 @@ fn link_system(
 
 /// Compile for AArch64 target.
 fn compile_aarch64(state: &CompileState, options: &CompileOptions) -> CompileResult<CompileOutput> {
-    // AArch64 Linux is not yet supported - only macOS works for now.
-    // The internal ELF linker needs testing with AArch64 relocations before enabling.
-    if options.target == Target::Aarch64Linux {
-        return Err(CompileError::without_span(ErrorKind::UnsupportedTarget(
-            "aarch64-linux is not yet supported; use aarch64-macos or x86-64-linux".into(),
-        )));
-    }
-
     // Generate machine code for all functions using the aarch64 backend
     let mut object_files: Vec<Vec<u8>> = Vec::new();
 
@@ -422,11 +414,22 @@ fn compile_aarch64(state: &CompileState, options: &CompileOptions) -> CompileRes
             .strings(machine_code.strings);
 
         for reloc in machine_code.relocations {
-            // TODO: Handle string constants for aarch64 (similar to x86_64)
+            // Determine relocation type based on symbol suffix
+            let (symbol, rel_type) = if let Some(base) = reloc.symbol.strip_suffix("@PAGE") {
+                // ADRP instruction - loads page-aligned address
+                (base.to_string(), RelocationType::AdrpPage21)
+            } else if let Some(base) = reloc.symbol.strip_suffix("@PAGEOFF") {
+                // ADD instruction - adds page offset
+                (base.to_string(), RelocationType::AddLo12)
+            } else {
+                // Function call
+                (reloc.symbol, RelocationType::Call26)
+            };
+
             obj_builder = obj_builder.relocation(CodeRelocation {
                 offset: reloc.offset,
-                symbol: reloc.symbol,
-                rel_type: RelocationType::Call26,
+                symbol,
+                rel_type,
                 addend: reloc.addend,
             });
         }
@@ -434,8 +437,12 @@ fn compile_aarch64(state: &CompileState, options: &CompileOptions) -> CompileRes
         object_files.push(obj_builder.build());
     }
 
-    // For macOS/ARM64, we always use the system linker
-    link_system_macos(state, options, &object_files)
+    // For macOS, use the system linker (clang); for Linux, use the internal ELF linker
+    match options.target {
+        Target::Aarch64Macos => link_system_macos(state, options, &object_files),
+        Target::Aarch64Linux => link_internal(state, options, &object_files),
+        _ => unreachable!("compile_aarch64 called with non-aarch64 target"),
+    }
 }
 
 /// Link using the macOS system linker (clang).

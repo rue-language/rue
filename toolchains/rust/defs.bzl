@@ -16,6 +16,11 @@ RUST_RELEASES = {
         sha256 = "d2ccef59dd9f7439f2c694948069f789a044dc1addcc0803613232af8f88ee0c",
         triple = "x86_64-unknown-linux-gnu",
     ),
+    "aarch64-unknown-linux-gnu": struct(
+        url = "https://static.rust-lang.org/dist/rust-1.92.0-aarch64-unknown-linux-gnu.tar.xz",
+        sha256 = "3e383f8b4fca710d0600d0c1de97b78281672be2cda6575ecbe1c183a12e3822",
+        triple = "aarch64-unknown-linux-gnu",
+    ),
     "aarch64-apple-darwin": struct(
         url = "https://static.rust-lang.org/dist/rust-1.92.0-aarch64-apple-darwin.tar.xz",
         sha256 = "22276ecf826b22e718f099d7bf7ddb8c88aa46230fdba74962ab3c5031472268",
@@ -208,6 +213,8 @@ def host_rustfmt(name: str, visibility: list[str] = []):
 
     if os.is_linux and arch.is_x86_64:
         actual = ":rustfmt-linux-x86_64"
+    elif os.is_linux and arch.is_aarch64:
+        actual = ":rustfmt-linux-aarch64"
     elif os.is_macos and arch.is_aarch64:
         actual = ":rustfmt-macos-aarch64"
     elif os.is_macos and arch.is_x86_64:

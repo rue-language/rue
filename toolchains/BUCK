@@ -9,7 +9,7 @@
 #
 # Note: Building the Rue *compiler* is hermetic. However, *running* the Rue
 # compiler to produce executables has platform-specific requirements:
-# - Linux x86_64: Fully hermetic (uses internal ELF linker)
+# - Linux x86_64/ARM64: Fully hermetic (uses internal ELF linker)
 # - macOS ARM64/x86_64: Requires Xcode Command Line Tools (uses system clang)
 
 load("@prelude//toolchains:cxx.bzl", "system_cxx_toolchain")
@@ -37,13 +37,17 @@ system_python_bootstrap_toolchain(
 # Platform selection happens via select() based on host OS and CPU.
 #
 # Supported platforms:
-# - Linux x86_64: toolchains//rust:hermetic-linux-x86_64
-# - macOS ARM64:  toolchains//rust:hermetic-macos-aarch64
-# - macOS x86_64: toolchains//rust:hermetic-macos-x86_64
+# - Linux x86_64:  toolchains//rust:hermetic-linux-x86_64
+# - Linux ARM64:   toolchains//rust:hermetic-linux-aarch64
+# - macOS ARM64:   toolchains//rust:hermetic-macos-aarch64
+# - macOS x86_64:  toolchains//rust:hermetic-macos-x86_64
 toolchain_alias(
     name = "rust",
     actual = select({
-        "prelude//os:linux": "toolchains//rust:hermetic-linux-x86_64",
+        "prelude//os:linux": select({
+            "prelude//cpu:arm64": "toolchains//rust:hermetic-linux-aarch64",
+            "prelude//cpu:x86_64": "toolchains//rust:hermetic-linux-x86_64",
+        }),
         "prelude//os:macos": select({
             "prelude//cpu:arm64": "toolchains//rust:hermetic-macos-aarch64",
             "prelude//cpu:x86_64": "toolchains//rust:hermetic-macos-x86_64",

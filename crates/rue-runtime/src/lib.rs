@@ -64,19 +64,26 @@ mod x86_64_linux;
 #[cfg(all(target_arch = "aarch64", target_os = "macos"))]
 mod aarch64_macos;
 
+#[cfg(all(target_arch = "aarch64", target_os = "linux"))]
+mod aarch64_linux;
+
 #[cfg(all(target_arch = "x86_64", target_os = "linux"))]
 use x86_64_linux as platform;
 
 #[cfg(all(target_arch = "aarch64", target_os = "macos"))]
 use aarch64_macos as platform;
 
+#[cfg(all(target_arch = "aarch64", target_os = "linux"))]
+use aarch64_linux as platform;
+
 // Compile error for unsupported platforms
 #[cfg(not(any(
     all(target_arch = "x86_64", target_os = "linux"),
-    all(target_arch = "aarch64", target_os = "macos")
+    all(target_arch = "aarch64", target_os = "macos"),
+    all(target_arch = "aarch64", target_os = "linux")
 )))]
 compile_error!(
-    "rue-runtime only supports x86-64 Linux and aarch64 macOS. \
+    "rue-runtime only supports x86-64 Linux, aarch64 Linux, and aarch64 macOS. \
      Other platforms are not currently supported."
 );
 
@@ -96,7 +103,8 @@ compile_error!(
     not(test),
     any(
         all(target_arch = "x86_64", target_os = "linux"),
-        all(target_arch = "aarch64", target_os = "macos")
+        all(target_arch = "aarch64", target_os = "macos"),
+        all(target_arch = "aarch64", target_os = "linux")
     )
 ))]
 #[panic_handler]
@@ -211,6 +219,36 @@ pub unsafe extern "C" fn _main() -> ! {
     platform::exit(exit_code)
 }
 
+/// Program entry point for Linux aarch64.
+///
+/// On Linux, the entry point is `_start`. The kernel starts execution
+/// with SP 16-byte aligned. The AAPCS64 ABI expects SP to be 16-byte
+/// aligned at function entry.
+#[cfg(all(not(test), target_arch = "aarch64", target_os = "linux"))]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn _start() -> ! {
+    use core::arch::asm;
+
+    // main is defined by the user's code
+    unsafe extern "C" {
+        fn main() -> i32;
+    }
+
+    let exit_code: i32;
+    // SAFETY: We're setting up the stack frame and calling main.
+    unsafe {
+        asm!(
+            // Call user's main function
+            "bl {main}",
+            // Return value is in w0
+            main = sym main,
+            lateout("w0") exit_code,
+            clobber_abi("C"),
+        );
+    }
+    platform::exit(exit_code)
+}
+
 #[cfg(all(target_arch = "x86_64", target_os = "linux"))]
 #[unsafe(no_mangle)]
 pub extern "C" fn __rue_exit(status: i32) -> ! {
@@ -218,6 +256,12 @@ pub extern "C" fn __rue_exit(status: i32) -> ! {
 }
 
 #[cfg(all(target_arch = "aarch64", target_os = "macos"))]
+#[unsafe(no_mangle)]
+pub extern "C" fn __rue_exit(status: i32) -> ! {
+    platform::exit(status)
+}
+
+#[cfg(all(target_arch = "aarch64", target_os = "linux"))]
 #[unsafe(no_mangle)]
 pub extern "C" fn __rue_exit(status: i32) -> ! {
     platform::exit(status)
@@ -255,6 +299,13 @@ pub extern "C" fn __rue_div_by_zero() -> ! {
     platform::exit(101)
 }
 
+#[cfg(all(target_arch = "aarch64", target_os = "linux"))]
+#[unsafe(no_mangle)]
+pub extern "C" fn __rue_div_by_zero() -> ! {
+    platform::write_stderr(b"error: division by zero\n");
+    platform::exit(101)
+}
+
 /// Runtime error: integer overflow.
 ///
 /// Called when an arithmetic operation overflows. This is typically triggered
@@ -281,6 +332,13 @@ pub extern "C" fn __rue_overflow() -> ! {
 }
 
 #[cfg(all(target_arch = "aarch64", target_os = "macos"))]
+#[unsafe(no_mangle)]
+pub extern "C" fn __rue_overflow() -> ! {
+    platform::write_stderr(b"error: integer overflow\n");
+    platform::exit(101)
+}
+
+#[cfg(all(target_arch = "aarch64", target_os = "linux"))]
 #[unsafe(no_mangle)]
 pub extern "C" fn __rue_overflow() -> ! {
     platform::write_stderr(b"error: integer overflow\n");
@@ -326,6 +384,13 @@ pub extern "C" fn __rue_bounds_check() -> ! {
     platform::exit(101)
 }
 
+#[cfg(all(target_arch = "aarch64", target_os = "linux"))]
+#[unsafe(no_mangle)]
+pub extern "C" fn __rue_bounds_check() -> ! {
+    platform::write_stderr(b"error: index out of bounds\n");
+    platform::exit(101)
+}
+
 /// Debug intrinsic: print a signed 64-bit integer.
 ///
 /// Called by `@dbg(expr)` when the expression is a signed integer type.
@@ -345,6 +410,12 @@ pub extern "C" fn __rue_dbg_i64(value: i64) {
 }
 
 #[cfg(all(target_arch = "aarch64", target_os = "macos"))]
+#[unsafe(no_mangle)]
+pub extern "C" fn __rue_dbg_i64(value: i64) {
+    platform::print_i64(value);
+}
+
+#[cfg(all(target_arch = "aarch64", target_os = "linux"))]
 #[unsafe(no_mangle)]
 pub extern "C" fn __rue_dbg_i64(value: i64) {
     platform::print_i64(value);
@@ -374,6 +445,12 @@ pub extern "C" fn __rue_dbg_u64(value: u64) {
     platform::print_u64(value);
 }
 
+#[cfg(all(target_arch = "aarch64", target_os = "linux"))]
+#[unsafe(no_mangle)]
+pub extern "C" fn __rue_dbg_u64(value: u64) {
+    platform::print_u64(value);
+}
+
 /// Debug intrinsic: print a boolean.
 ///
 /// Called by `@dbg(expr)` when the expression is a boolean.
@@ -394,6 +471,12 @@ pub extern "C" fn __rue_dbg_bool(value: i64) {
 }
 
 #[cfg(all(target_arch = "aarch64", target_os = "macos"))]
+#[unsafe(no_mangle)]
+pub extern "C" fn __rue_dbg_bool(value: i64) {
+    platform::print_bool(value != 0);
+}
+
+#[cfg(all(target_arch = "aarch64", target_os = "linux"))]
 #[unsafe(no_mangle)]
 pub extern "C" fn __rue_dbg_bool(value: i64) {
     platform::print_bool(value != 0);
@@ -429,6 +512,15 @@ pub extern "C" fn __rue_dbg_str(ptr: *const u8, len: u64) {
 }
 
 #[cfg(all(target_arch = "aarch64", target_os = "macos"))]
+#[unsafe(no_mangle)]
+pub extern "C" fn __rue_dbg_str(ptr: *const u8, len: u64) {
+    // SAFETY: The caller guarantees ptr and len are valid
+    let bytes = unsafe { core::slice::from_raw_parts(ptr, len as usize) };
+    platform::write_stdout(bytes);
+    platform::write_stdout(b"\n");
+}
+
+#[cfg(all(target_arch = "aarch64", target_os = "linux"))]
 #[unsafe(no_mangle)]
 pub extern "C" fn __rue_dbg_str(ptr: *const u8, len: u64) {
     // SAFETY: The caller guarantees ptr and len are valid
@@ -510,12 +602,37 @@ pub extern "C" fn __rue_str_eq(ptr1: *const u8, len1: u64, ptr2: *const u8, len2
     1
 }
 
+#[cfg(all(target_arch = "aarch64", target_os = "linux"))]
+#[unsafe(no_mangle)]
+pub extern "C" fn __rue_str_eq(ptr1: *const u8, len1: u64, ptr2: *const u8, len2: u64) -> u8 {
+    // Fast path: different lengths means not equal
+    if len1 != len2 {
+        return 0;
+    }
+
+    // Slow path: compare bytes one by one
+    // We avoid slice comparison (==) because it generates a call to bcmp,
+    // which is a libc function not available in our no_std runtime.
+    // SAFETY: Caller guarantees pointers are valid for their respective lengths
+    for i in 0..len1 as usize {
+        let b1 = unsafe { *ptr1.add(i) };
+        let b2 = unsafe { *ptr2.add(i) };
+        if b1 != b2 {
+            return 0;
+        }
+    }
+    1
+}
+
 // Re-export platform functions for tests
 #[cfg(all(test, target_arch = "x86_64", target_os = "linux"))]
 pub use x86_64_linux::{exit, write, write_all, write_stderr};
 
 #[cfg(all(test, target_arch = "aarch64", target_os = "macos"))]
 pub use aarch64_macos::{exit, write, write_all, write_stderr};
+
+#[cfg(all(test, target_arch = "aarch64", target_os = "linux"))]
+pub use aarch64_linux::{exit, write, write_all, write_stderr};
 
 #[cfg(test)]
 mod tests {

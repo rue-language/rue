@@ -168,6 +168,15 @@ pub struct Relocation {
     pub addend: i64,
 }
 
+/// Machine type for ELF files.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ElfMachine {
+    /// x86-64 (EM_X86_64 = 0x3E)
+    X86_64,
+    /// AArch64 (EM_AARCH64 = 0xB7)
+    Aarch64,
+}
+
 /// Relocation types we support (x86-64 and AArch64).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RelocationType {
@@ -181,21 +190,39 @@ pub enum RelocationType {
     Abs32,
     /// R_X86_64_32S: 32-bit signed absolute address.
     Abs32S,
+    /// R_AARCH64_JUMP26: AArch64 unconditional branch instruction.
+    Jump26,
     /// R_AARCH64_CALL26: AArch64 branch with link instruction.
     Call26,
+    /// R_AARCH64_ABS64: AArch64 64-bit absolute address.
+    Aarch64Abs64,
+    /// R_AARCH64_ADR_PREL_PG_HI21: AArch64 ADRP instruction page address.
+    AdrpPage21,
+    /// R_AARCH64_ADD_ABS_LO12_NC: AArch64 ADD instruction page offset.
+    AddLo12,
     /// Unknown relocation type.
     Unknown(u32),
 }
 
 impl RelocationType {
-    fn from_elf(r_type: u32) -> Self {
-        match r_type {
-            1 => RelocationType::Abs64,
-            2 => RelocationType::Pc32,
-            4 => RelocationType::Plt32,
-            10 => RelocationType::Abs32,
-            11 => RelocationType::Abs32S,
-            _ => RelocationType::Unknown(r_type),
+    fn from_elf(r_type: u32, machine: ElfMachine) -> Self {
+        match machine {
+            ElfMachine::X86_64 => match r_type {
+                1 => RelocationType::Abs64,
+                2 => RelocationType::Pc32,
+                4 => RelocationType::Plt32,
+                10 => RelocationType::Abs32,
+                11 => RelocationType::Abs32S,
+                _ => RelocationType::Unknown(r_type),
+            },
+            ElfMachine::Aarch64 => match r_type {
+                257 => RelocationType::Aarch64Abs64, // R_AARCH64_ABS64
+                275 => RelocationType::AdrpPage21,   // R_AARCH64_ADR_PREL_PG_HI21
+                277 => RelocationType::AddLo12,      // R_AARCH64_ADD_ABS_LO12_NC
+                282 => RelocationType::Jump26,       // R_AARCH64_JUMP26
+                283 => RelocationType::Call26,       // R_AARCH64_CALL26
+                _ => RelocationType::Unknown(r_type),
+            },
         }
     }
 }
@@ -213,8 +240,8 @@ pub enum ParseError {
     NotLittleEndian,
     /// Not a relocatable object file.
     NotRelocatable,
-    /// Not an x86-64 object file.
-    NotX86_64,
+    /// Unsupported machine architecture.
+    UnsupportedMachine(u16),
     /// Invalid section header.
     InvalidSection(String),
     /// Invalid symbol table.
@@ -237,7 +264,9 @@ impl std::fmt::Display for ParseError {
             ParseError::Not64Bit => write!(f, "not a 64-bit ELF file"),
             ParseError::NotLittleEndian => write!(f, "not a little-endian ELF file"),
             ParseError::NotRelocatable => write!(f, "not a relocatable object file"),
-            ParseError::NotX86_64 => write!(f, "not an x86-64 object file"),
+            ParseError::UnsupportedMachine(m) => {
+                write!(f, "unsupported ELF machine type: 0x{:x}", m)
+            }
             ParseError::InvalidSection(s) => write!(f, "invalid section: {}", s),
             ParseError::InvalidSymbol(s) => write!(f, "invalid symbol: {}", s),
             ParseError::InvalidStringTable => write!(f, "invalid string table"),
@@ -279,11 +308,13 @@ impl ObjectFile {
             return Err(ParseError::NotRelocatable);
         }
 
-        // Check x86-64 (e_machine == EM_X86_64 == 0x3E)
+        // Check machine type (x86-64 or aarch64)
         let e_machine = u16::from_le_bytes([data[18], data[19]]);
-        if e_machine != 0x3E {
-            return Err(ParseError::NotX86_64);
-        }
+        let machine = match e_machine {
+            0x3E => ElfMachine::X86_64,  // EM_X86_64
+            0xB7 => ElfMachine::Aarch64, // EM_AARCH64
+            _ => return Err(ParseError::UnsupportedMachine(e_machine)),
+        };
 
         // Parse header fields - safe because we checked data.len() >= 64 above
         let e_shoff = read_u64(data, 40) as usize;
@@ -571,7 +602,7 @@ impl ObjectFile {
                 sections[target_section].relocations.push(Relocation {
                     offset: r_offset,
                     symbol_index: r_sym,
-                    rel_type: RelocationType::from_elf(r_type),
+                    rel_type: RelocationType::from_elf(r_type, machine),
                     addend: r_addend,
                 });
             }
@@ -622,8 +653,8 @@ mod tests {
             "not a relocatable object file"
         );
         assert_eq!(
-            ParseError::NotX86_64.to_string(),
-            "not an x86-64 object file"
+            ParseError::UnsupportedMachine(0x99).to_string(),
+            "unsupported ELF machine type: 0x99"
         );
         assert_eq!(
             ParseError::InvalidSection("test".into()).to_string(),
@@ -707,16 +738,16 @@ mod tests {
     }
 
     #[test]
-    fn test_not_x86_64() {
+    fn test_unsupported_machine() {
         let mut data = [0u8; 64];
         data[0..4].copy_from_slice(b"\x7FELF");
         data[4] = 2; // 64-bit
         data[5] = 1; // Little endian
         data[16..18].copy_from_slice(&1_u16.to_le_bytes()); // ET_REL
-        data[18..20].copy_from_slice(&0x03_u16.to_le_bytes()); // EM_386 instead of EM_X86_64
+        data[18..20].copy_from_slice(&0x03_u16.to_le_bytes()); // EM_386 (unsupported)
         assert!(matches!(
             ObjectFile::parse(&data),
-            Err(ParseError::NotX86_64)
+            Err(ParseError::UnsupportedMachine(0x03))
         ));
     }
 
@@ -799,13 +830,46 @@ mod tests {
     }
 
     #[test]
-    fn test_relocation_type_from_elf() {
-        assert_eq!(RelocationType::from_elf(1), RelocationType::Abs64);
-        assert_eq!(RelocationType::from_elf(2), RelocationType::Pc32);
-        assert_eq!(RelocationType::from_elf(4), RelocationType::Plt32);
-        assert_eq!(RelocationType::from_elf(10), RelocationType::Abs32);
-        assert_eq!(RelocationType::from_elf(11), RelocationType::Abs32S);
-        assert_eq!(RelocationType::from_elf(99), RelocationType::Unknown(99));
+    fn test_relocation_type_from_elf_x86_64() {
+        use ElfMachine::X86_64;
+        assert_eq!(RelocationType::from_elf(1, X86_64), RelocationType::Abs64);
+        assert_eq!(RelocationType::from_elf(2, X86_64), RelocationType::Pc32);
+        assert_eq!(RelocationType::from_elf(4, X86_64), RelocationType::Plt32);
+        assert_eq!(RelocationType::from_elf(10, X86_64), RelocationType::Abs32);
+        assert_eq!(RelocationType::from_elf(11, X86_64), RelocationType::Abs32S);
+        assert_eq!(
+            RelocationType::from_elf(99, X86_64),
+            RelocationType::Unknown(99)
+        );
+    }
+
+    #[test]
+    fn test_relocation_type_from_elf_aarch64() {
+        use ElfMachine::Aarch64;
+        assert_eq!(
+            RelocationType::from_elf(257, Aarch64),
+            RelocationType::Aarch64Abs64
+        );
+        assert_eq!(
+            RelocationType::from_elf(275, Aarch64),
+            RelocationType::AdrpPage21
+        );
+        assert_eq!(
+            RelocationType::from_elf(277, Aarch64),
+            RelocationType::AddLo12
+        );
+        assert_eq!(
+            RelocationType::from_elf(282, Aarch64),
+            RelocationType::Jump26
+        );
+        assert_eq!(
+            RelocationType::from_elf(283, Aarch64),
+            RelocationType::Call26
+        );
+        assert_eq!(
+            RelocationType::from_elf(99, Aarch64),
+            RelocationType::Unknown(99)
+        );
     }
 
     #[test]

@@ -249,7 +249,11 @@ impl ObjectBuilder {
                 RelocationType::Plt32 => 4,
                 RelocationType::Abs32 => 10,
                 RelocationType::Abs32S => 11,
+                RelocationType::Jump26 => 282, // R_AARCH64_JUMP26
                 RelocationType::Call26 => 283, // R_AARCH64_CALL26
+                RelocationType::Aarch64Abs64 => 257, // R_AARCH64_ABS64
+                RelocationType::AdrpPage21 => 275, // R_AARCH64_ADR_PREL_PG_HI21
+                RelocationType::AddLo12 => 277, // R_AARCH64_ADD_ABS_LO12_NC
                 RelocationType::Unknown(t) => t,
             };
             let r_info = ((sym_idx as u64) << 32) | (r_type as u64);
@@ -525,8 +529,8 @@ impl ObjectBuilder {
 
         for reloc in &self.relocations {
             // Check if this is a string relocation
-            // String relocations have @PAGE or @PAGEOFF suffix
-            if reloc.symbol.contains("__rue_string_") {
+            // String relocations use .rodata.strN format (possibly with @PAGE/@PAGEOFF suffix)
+            if reloc.symbol.starts_with(".rodata.str") {
                 // String relocations go in text section (they're PC-relative loads)
                 text_relocs.push(reloc);
             } else {
@@ -572,9 +576,9 @@ impl ObjectBuilder {
         let mut extern_symbols: Vec<String> = Vec::new();
         let mut extern_name_offsets: Vec<usize> = Vec::new();
         for reloc in &self.relocations {
-            // Skip string symbols - they're handled above
-            // Also skip if it has @PAGE or @PAGEOFF suffix (internal markers)
-            if reloc.symbol.contains("__rue_string_") {
+            // Skip string symbols - they're handled via local symbols
+            // String symbols use .rodata.strN format (possibly with @PAGE/@PAGEOFF suffix)
+            if reloc.symbol.starts_with(".rodata.str") {
                 continue;
             }
             // Always add underscore prefix for macOS
@@ -739,26 +743,12 @@ impl ObjectBuilder {
         // r_extern: 1-bit (1 = symbol index, 0 = section ordinal)
         // r_type: 4-bit relocation type
         for reloc in &text_relocs {
-            // Extract the base symbol name and detect relocation type from suffix
-            let (base_symbol, r_type_override) = if reloc.symbol.ends_with("@PAGE") {
-                (
-                    reloc.symbol.strip_suffix("@PAGE").unwrap(),
-                    Some(ARM64_RELOC_PAGE21),
-                )
-            } else if reloc.symbol.ends_with("@PAGEOFF") {
-                (
-                    reloc.symbol.strip_suffix("@PAGEOFF").unwrap(),
-                    Some(ARM64_RELOC_PAGEOFF12),
-                )
-            } else {
-                (reloc.symbol.as_str(), None)
-            };
-
             // Look up the symbol
-            let (sym_num, is_extern) = if base_symbol.starts_with("__rue_string_") {
+            let (sym_num, is_extern) = if reloc.symbol.starts_with(".rodata.str") {
                 // String symbol - local symbol (indices 0, 1, 2...)
-                let string_id: usize = base_symbol
-                    .strip_prefix("__rue_string_")
+                let string_id: usize = reloc
+                    .symbol
+                    .strip_prefix(".rodata.str")
                     .unwrap()
                     .parse()
                     .unwrap();
@@ -767,12 +757,12 @@ impl ObjectBuilder {
             } else {
                 // External symbol (function or undefined external)
                 // First check if it's the function itself
-                if base_symbol == self.name {
+                if reloc.symbol == self.name {
                     // Function symbol is the first external symbol
                     (num_local_syms as u32, true)
                 } else {
                     // Undefined external symbol
-                    let macho_sym = format!("_{}", base_symbol);
+                    let macho_sym = format!("_{}", reloc.symbol);
                     let sym_idx = extern_symbols.iter().position(|s| s == &macho_sym).unwrap();
                     // External symbols start after local symbols, function is first external
                     (num_local_syms as u32 + 1 + sym_idx as u32, true)
@@ -782,20 +772,12 @@ impl ObjectBuilder {
             // r_address (4 bytes)
             macho.extend_from_slice(&(reloc.offset as u32).to_le_bytes());
 
-            // Determine relocation type and r_pcrel flag
-            let (r_type, r_pcrel) = if let Some(override_type) = r_type_override {
-                // PAGE21 is PC-relative, PAGEOFF12 is not
-                let pcrel = if override_type == ARM64_RELOC_PAGE21 {
-                    1
-                } else {
-                    0
-                };
-                (override_type, pcrel)
-            } else {
-                match reloc.rel_type {
-                    RelocationType::Call26 => (ARM64_RELOC_BRANCH26, 1),
-                    _ => (ARM64_RELOC_BRANCH26, 1), // Default to branch for now
-                }
+            // Determine relocation type and r_pcrel flag from rel_type
+            let (r_type, r_pcrel) = match reloc.rel_type {
+                RelocationType::AdrpPage21 => (ARM64_RELOC_PAGE21, 1), // PC-relative
+                RelocationType::AddLo12 => (ARM64_RELOC_PAGEOFF12, 0), // Not PC-relative
+                RelocationType::Call26 | RelocationType::Jump26 => (ARM64_RELOC_BRANCH26, 1),
+                _ => (ARM64_RELOC_BRANCH26, 1), // Default to branch
             };
 
             let info: u32 = (sym_num & 0x00FFFFFF)  // r_symbolnum (bits 0-23)
