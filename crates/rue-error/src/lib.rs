@@ -41,6 +41,8 @@ pub enum PreviewFeature {
     HmInference,
     /// Struct methods and impl blocks (ADR-0009).
     Methods,
+    /// Destructors for automatic cleanup (ADR-0010).
+    Destructors,
 }
 
 impl PreviewFeature {
@@ -50,6 +52,7 @@ impl PreviewFeature {
             PreviewFeature::MutableStrings => "mutable_strings",
             PreviewFeature::HmInference => "hm_inference",
             PreviewFeature::Methods => "methods",
+            PreviewFeature::Destructors => "destructors",
         }
     }
 
@@ -59,6 +62,7 @@ impl PreviewFeature {
             "mutable_strings" => Some(PreviewFeature::MutableStrings),
             "hm_inference" => Some(PreviewFeature::HmInference),
             "methods" => Some(PreviewFeature::Methods),
+            "destructors" => Some(PreviewFeature::Destructors),
             _ => None,
         }
     }
@@ -69,6 +73,7 @@ impl PreviewFeature {
             PreviewFeature::MutableStrings => "ADR-019",
             PreviewFeature::HmInference => "ADR-0007",
             PreviewFeature::Methods => "ADR-0009",
+            PreviewFeature::Destructors => "ADR-0010",
         }
     }
 
@@ -78,6 +83,7 @@ impl PreviewFeature {
             PreviewFeature::MutableStrings,
             PreviewFeature::HmInference,
             PreviewFeature::Methods,
+            PreviewFeature::Destructors,
         ]
     }
 
