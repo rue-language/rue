@@ -91,7 +91,7 @@ impl<'a> Emitter<'a> {
                 inst,
                 X86Inst::MovRMIndexed { .. } | X86Inst::MovMRIndexed { .. }
             ) {
-                return Err(CompileError::without_span(ErrorKind::InternalError(
+                return Err(CompileError::without_span(ErrorKind::InternalCodegenError(
                     format!(
                         "post-regalloc verification failed: instruction {} is {:?}, \
                          which should have been lowered by regalloc",
