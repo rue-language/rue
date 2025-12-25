@@ -5,15 +5,12 @@ name = "Impl Blocks and Methods"
 description = "Impl block definitions and method calls."
 
 # =============================================================================
-# Basic Impl Block Syntax (Parsing Only - Phase 1)
+# Basic Impl Block Syntax
 # =============================================================================
 
-# These tests verify that impl blocks and method calls parse correctly.
-# They are expected to fail at later compilation stages until Phase 2-4 are complete.
-
 [[case]]
-name = "impl_block_basic_parse"
-preview = "methods"
+name = "impl_block_basic"
+spec = ["6.4:1", "6.4:2", "6.4:3", "6.4:4", "6.4:5"]
 source = """
 struct Point { x: i32, y: i32 }
 
@@ -30,28 +27,13 @@ fn main() -> i32 {
 """
 exit_code = 42
 
-[[case]]
-name = "impl_block_associated_function"
-preview = "methods"
-source = """
-struct Point { x: i32, y: i32 }
-
-impl Point {
-    fn origin() -> Point {
-        Point { x: 0, y: 0 }
-    }
-}
-
-fn main() -> i32 {
-    let p = Point::origin();
-    p.x
-}
-"""
-exit_code = 0
+# =============================================================================
+# Method Calls
+# =============================================================================
 
 [[case]]
-name = "impl_block_method_with_args"
-preview = "methods"
+name = "method_call_with_args"
+spec = ["6.4:6", "6.4:7", "6.4:8", "6.4:9"]
 source = """
 struct Point { x: i32, y: i32 }
 
@@ -69,9 +51,13 @@ fn main() -> i32 {
 """
 exit_code = 42
 
+# =============================================================================
+# Method Chaining
+# =============================================================================
+
 [[case]]
 name = "method_call_chain"
-preview = "methods"
+spec = ["6.4:10", "6.4:11"]
 source = """
 struct Counter { value: i32 }
 
@@ -88,9 +74,55 @@ fn main() -> i32 {
 """
 exit_code = 42
 
+# =============================================================================
+# Associated Functions
+# =============================================================================
+
+[[case]]
+name = "associated_function_basic"
+spec = ["6.4:12", "6.4:13", "6.4:14"]
+source = """
+struct Point { x: i32, y: i32 }
+
+impl Point {
+    fn origin() -> Point {
+        Point { x: 0, y: 0 }
+    }
+}
+
+fn main() -> i32 {
+    let p = Point::origin();
+    p.x
+}
+"""
+exit_code = 0
+
+[[case]]
+name = "associated_function_with_args"
+spec = ["6.4:12", "6.4:13"]
+source = """
+struct Point { x: i32, y: i32 }
+
+impl Point {
+    fn new(x: i32, y: i32) -> Point {
+        Point { x: x, y: y }
+    }
+}
+
+fn main() -> i32 {
+    let p = Point::new(42, 10);
+    p.x
+}
+"""
+exit_code = 42
+
+# =============================================================================
+# Multiple Impl Blocks
+# =============================================================================
+
 [[case]]
 name = "multiple_impl_blocks"
-preview = "methods"
+spec = ["6.4:15", "6.4:17"]
 source = """
 struct Point { x: i32, y: i32 }
 
@@ -105,6 +137,201 @@ impl Point {
         self.y
     }
 }
+
+fn main() -> i32 {
+    let p = Point { x: 42, y: 10 };
+    p.get_x()
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "multiple_impl_blocks_use_both"
+spec = ["6.4:15"]
+source = """
+struct Point { x: i32, y: i32 }
+
+impl Point {
+    fn get_x(self) -> i32 {
+        self.x
+    }
+}
+
+impl Point {
+    fn get_y(self) -> i32 {
+        self.y
+    }
+}
+
+fn main() -> i32 {
+    let p1 = Point { x: 10, y: 32 };
+    let p2 = Point { x: 10, y: 32 };
+    p1.get_x() + p2.get_y()
+}
+"""
+exit_code = 42
+
+# =============================================================================
+# Method and Associated Function Together
+# =============================================================================
+
+[[case]]
+name = "method_and_associated_function"
+spec = ["6.4:3", "6.4:12"]
+source = """
+struct Counter { value: i32 }
+
+impl Counter {
+    fn new(start: i32) -> Counter {
+        Counter { value: start }
+    }
+
+    fn get(self) -> i32 {
+        self.value
+    }
+}
+
+fn main() -> i32 {
+    let c = Counter::new(42);
+    c.get()
+}
+"""
+exit_code = 42
+
+# =============================================================================
+# Self Field Access
+# =============================================================================
+
+[[case]]
+name = "self_field_access"
+spec = ["6.4:4"]
+source = """
+struct Rectangle { width: i32, height: i32 }
+
+impl Rectangle {
+    fn area(self) -> i32 {
+        self.width * self.height
+    }
+}
+
+fn main() -> i32 {
+    let r = Rectangle { width: 6, height: 7 };
+    r.area()
+}
+"""
+exit_code = 42
+
+# =============================================================================
+# Error Cases
+# =============================================================================
+
+[[case]]
+name = "method_on_non_struct_error"
+spec = ["6.4:20"]
+source = """
+fn main() -> i32 {
+    let x: i32 = 42;
+    x.foo()
+}
+"""
+compile_fail = true
+error_contains = "no method named"
+
+[[case]]
+name = "undefined_method_error"
+spec = ["6.4:21"]
+source = """
+struct Point { x: i32, y: i32 }
+
+fn main() -> i32 {
+    let p = Point { x: 42, y: 10 };
+    p.undefined_method()
+}
+"""
+compile_fail = true
+error_contains = "undefined"
+
+[[case]]
+name = "assoc_fn_called_as_method_error"
+spec = ["6.4:22"]
+source = """
+struct Point { x: i32, y: i32 }
+
+impl Point {
+    fn origin() -> Point {
+        Point { x: 0, y: 0 }
+    }
+}
+
+fn main() -> i32 {
+    let p = Point { x: 1, y: 2 };
+    let q = p.origin();
+    q.x
+}
+"""
+compile_fail = true
+error_contains = "associated function"
+
+[[case]]
+name = "method_called_as_assoc_fn_error"
+spec = ["6.4:23"]
+source = """
+struct Point { x: i32, y: i32 }
+
+impl Point {
+    fn get_x(self) -> i32 {
+        self.x
+    }
+}
+
+fn main() -> i32 {
+    Point::get_x()
+}
+"""
+compile_fail = true
+error_contains = "method"
+
+[[case]]
+name = "impl_for_undefined_struct_error"
+spec = ["6.4:19"]
+source = """
+impl UndefinedType {
+    fn foo(self) -> i32 { 0 }
+}
+
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = "unknown type"
+
+[[case]]
+name = "duplicate_method_name_error"
+spec = ["6.4:16"]
+source = """
+struct Point { x: i32, y: i32 }
+
+impl Point {
+    fn get_x(self) -> i32 { self.x }
+}
+
+impl Point {
+    fn get_x(self) -> i32 { self.x }
+}
+
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = "duplicate"
+
+[[case]]
+name = "impl_before_struct"
+spec = ["6.4:18"]
+source = """
+impl Point {
+    fn get_x(self) -> i32 { self.x }
+}
+
+struct Point { x: i32, y: i32 }
 
 fn main() -> i32 {
     let p = Point { x: 42, y: 10 };

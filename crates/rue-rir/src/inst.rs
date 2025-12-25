@@ -410,7 +410,7 @@ pub enum InstData {
         value: InstRef,
     },
 
-    // Method operations (preview: methods)
+    // Method operations
     /// Impl block declaration
     ImplDecl {
         /// Type name this impl block is for

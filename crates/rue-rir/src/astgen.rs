@@ -505,6 +505,14 @@ impl<'a> AstGen<'a> {
                     span: assoc_fn_call.span,
                 })
             }
+            Expr::SelfExpr(self_expr) => {
+                // `self` in method bodies is just a variable reference to the implicit self parameter
+                let name = self.interner.intern("self");
+                self.rir.add_inst(Inst {
+                    data: InstData::VarRef { name },
+                    span: self_expr.span,
+                })
+            }
         }
     }
 

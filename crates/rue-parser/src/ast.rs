@@ -259,6 +259,8 @@ pub enum Expr {
     Path(PathExpr),
     /// Associated function call (e.g., `Point::origin()`)
     AssocFnCall(AssocFnCallExpr),
+    /// Self expression (e.g., `self` in method bodies)
+    SelfExpr(SelfExpr),
 }
 
 /// An integer literal.
@@ -646,6 +648,12 @@ pub struct ReturnExpr {
     pub span: Span,
 }
 
+/// A self expression (the `self` keyword in method bodies).
+#[derive(Debug, Clone)]
+pub struct SelfExpr {
+    pub span: Span,
+}
+
 impl Expr {
     /// Get the span of this expression.
     pub fn span(&self) -> Span {
@@ -675,6 +683,7 @@ impl Expr {
             Expr::Index(index_expr) => index_expr.span,
             Expr::Path(path_expr) => path_expr.span,
             Expr::AssocFnCall(assoc_fn_call) => assoc_fn_call.span,
+            Expr::SelfExpr(self_expr) => self_expr.span,
         }
     }
 }
@@ -944,6 +953,9 @@ fn fmt_expr(f: &mut fmt::Formatter<'_>, expr: &Expr, level: usize) -> fmt::Resul
                 fmt_expr(f, arg, level + 1)?;
             }
             Ok(())
+        }
+        Expr::SelfExpr(_) => {
+            writeln!(f, "SelfExpr")
         }
     }
 }

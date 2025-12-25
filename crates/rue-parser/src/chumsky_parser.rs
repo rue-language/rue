@@ -9,8 +9,8 @@ use crate::ast::{
     EnumVariant, Expr, FieldDecl, FieldExpr, FieldInit, Function, Ident, IfExpr, ImplBlock,
     IndexExpr, IntLit, IntrinsicArg, IntrinsicCallExpr, Item, LetPattern, LetStatement, LoopExpr,
     MatchArm, MatchExpr, Method, MethodCallExpr, NegIntLit, Param, ParenExpr, PathExpr,
-    PathPattern, Pattern, ReturnExpr, SelfParam, Statement, StringLit, StructDecl, StructLitExpr,
-    TypeExpr, UnaryExpr, UnaryOp, UnitLit, WhileExpr,
+    PathPattern, Pattern, ReturnExpr, SelfExpr, SelfParam, Statement, StringLit, StructDecl,
+    StructLitExpr, TypeExpr, UnaryExpr, UnaryOp, UnitLit, WhileExpr,
 };
 use chumsky::input::{Input as ChumskyInput, Stream, ValueInput};
 use chumsky::pratt::{infix, left, prefix};
@@ -491,6 +491,11 @@ where
         TokenKind::Continue = e => Expr::Continue(ContinueExpr { span: to_rue_span(e.span()) }),
     };
 
+    // Self expression (in method bodies)
+    let self_expr = select! {
+        TokenKind::SelfValue = e => Expr::SelfExpr(SelfExpr { span: to_rue_span(e.span()) }),
+    };
+
     // Return expression: return <expr>? (expression is optional for unit-returning functions)
     let return_expr = just(TokenKind::Return)
         .ignore_then(expr.clone().or_not())
@@ -722,6 +727,7 @@ where
 
     // Primary expression (before field access and indexing)
     // Note: unit_lit must come before paren_expr so () is parsed as unit, not empty parens
+    // Note: self_expr must come before ident_or_call_or_struct_or_path since self is a keyword
     let primary = choice((
         int_lit,
         string_lit,
@@ -730,6 +736,7 @@ where
         unit_lit,
         break_expr,
         continue_expr,
+        self_expr,
         return_expr,
         if_expr,
         match_expr,

@@ -1,13 +1,13 @@
 ---
 id: 0009
 title: Struct Methods
-status: proposal
+status: implemented
 tags: [types, syntax]
 feature-flag: methods
 created: 2025-12-24
-accepted:
-implemented:
-spec-sections: []
+accepted: 2025-12-24
+implemented: 2025-12-25
+spec-sections: ["6.4"]
 superseded-by:
 ---
 
@@ -15,7 +15,7 @@ superseded-by:
 
 ## Status
 
-Proposal
+Implemented
 
 ## Summary
 
@@ -160,7 +160,7 @@ Methods can only be defined for structs in the same compilation unit. (This is a
   - Update both x86_64 and aarch64 backends
   - Handle associated function calls (`Type::method()`)
 
-- [ ] **Phase 5: Specification & Tests** - rue-qs3z.5
+- [x] **Phase 5: Specification & Tests** - rue-qs3z.5
   - Add spec chapter 6.4 for impl blocks and methods
   - Add comprehensive spec tests
   - Ensure traceability coverage
