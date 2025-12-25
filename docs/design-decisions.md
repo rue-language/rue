@@ -304,6 +304,70 @@ When implementing FFI or optimizing memory usage, we should:
 
 ---
 
+## ADR-012: Internal Compiler Error Handling
+
+**Status:** Accepted
+
+**Context:**
+Compilers encounter two kinds of errors:
+1. **User errors**: Invalid syntax, type mismatches, undefined variables - errors in the user's code
+2. **Internal errors**: Invalid invariants, out-of-bounds indices, unreachable code paths - bugs in the compiler itself
+
+How should we handle internal errors? Options include:
+1. **Return `Result<_, InternalError>`**: Propagate through the error system like user errors
+2. **Panic with `expect()`/`unwrap()`**: Fail fast with a stack trace
+3. **Hybrid**: Use Result where convenient, panic where not
+
+**Decision:**
+Use `panic!` (via `expect()` or `unreachable!()`) for internal compiler errors, not `Result`.
+
+**Rationale:**
+- **Semantic clarity**: A panic says "this is a compiler bug" while `Result` implies recoverable/expected errors
+- **Fail fast**: Don't continue executing with corrupted state; a stack trace helps debug the compiler
+- **No viral `?`**: Avoid polluting every function signature to propagate errors that should never occur
+- **Simplicity**: Methods like `format_type_name()` or `is_type_copy()` shouldn't need to return `Result`
+
+Internal invariants (like valid `StructId` indices) are enforced by construction:
+- `StructId` values are only created when registering a struct in `struct_defs`
+- `Type::Struct(id)` values are only created through the type resolution path
+- If an ID is invalid, it means the compiler has a bug, not the user's code
+
+**Pattern:**
+```rust
+// Good: Clear panic message for compiler bugs
+fn get_struct_def(&self, id: StructId) -> &StructDef {
+    &self.struct_defs[id.0 as usize]  // Panics with index out of bounds if bug
+}
+
+// Also acceptable: Custom panic message
+fn get_struct_def(&self, id: StructId) -> &StructDef {
+    self.struct_defs.get(id.0 as usize)
+        .expect("ICE: invalid StructId")
+}
+
+// Avoid: Treating internal errors as recoverable
+fn get_struct_def(&self, id: StructId, span: Span) -> Result<&StructDef, CompileError> {
+    self.struct_defs.get(id.0 as usize)
+        .ok_or_else(|| CompileError::new(ErrorKind::InternalError(...), span))
+}
+```
+
+**When to use `ErrorKind::InternalError`:**
+Reserve `InternalError` for cases where:
+- You're already in a `Result`-returning context
+- You have a meaningful source span to report
+- The error message benefits from the standard error formatting
+
+Example: "FnDecl should not appear in expression context" - this is an internal error that happens during analysis where we have a span and are already returning `Result`.
+
+**Consequences:**
+- Compiler panics on internal bugs (desirable - fail fast)
+- Stack traces help developers debug the compiler
+- User-facing code paths remain clean and focused on user errors
+- `ErrorKind::InternalError` is rarely used, only in specific contexts
+
+---
+
 ## Future Considerations
 
 Decisions we've deferred or are still considering:
