@@ -220,7 +220,8 @@ fn main() {
 
     // Handle emit modes
     if !options.emit_stages.is_empty() {
-        if let Err(()) = handle_emit(&source, &options) {
+        if let Err(e) = handle_emit(&source, &options) {
+            print_error(&e, &source, &options.source_path);
             std::process::exit(1);
         }
         return;
@@ -284,7 +285,7 @@ fn main() {
 ///
 /// This uses a single-pass approach: each compilation stage is run at most once,
 /// and the results are reused for later stages.
-fn handle_emit(source: &str, options: &Options) -> Result<(), ()> {
+fn handle_emit(source: &str, options: &Options) -> Result<(), CompileError> {
     // Determine the highest stage we need to compute
     let max_stage = options
         .emit_stages
@@ -303,8 +304,7 @@ fn handle_emit(source: &str, options: &Options) -> Result<(), ()> {
         match lexer.tokenize() {
             Ok(tokens) => Some(tokens),
             Err(e) => {
-                print_error(&e, source, &options.source_path);
-                return Err(());
+                return Err(e);
             }
         }
     } else {
@@ -325,8 +325,7 @@ fn handle_emit(source: &str, options: &Options) -> Result<(), ()> {
         match parser.parse() {
             Ok(ast) => (kept_tokens, Some(ast)),
             Err(e) => {
-                print_error(&e, source, &options.source_path);
-                return Err(());
+                return Err(e);
             }
         }
     } else {
@@ -338,8 +337,7 @@ fn handle_emit(source: &str, options: &Options) -> Result<(), ()> {
         match compile_frontend_from_ast(ast.clone().unwrap()) {
             Ok(state) => Some(state),
             Err(e) => {
-                print_error(&e, source, &options.source_path);
-                return Err(());
+                return Err(e);
             }
         }
     } else {
@@ -427,8 +425,7 @@ fn handle_emit(source: &str, options: &Options) -> Result<(), ()> {
                         ) {
                             Ok(mir) => mir,
                             Err(e) => {
-                                print_error(&e, source, &options.source_path);
-                                return Err(());
+                                return Err(e);
                             }
                         };
                         print_assembly(&mir);
