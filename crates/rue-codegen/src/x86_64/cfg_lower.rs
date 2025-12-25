@@ -97,6 +97,10 @@ pub struct CfgLower<'a> {
     fn_name: &'a str,
     /// Maps StructInit CFG values to their field vregs
     struct_slot_vregs: HashMap<CfgValue, Vec<VReg>>,
+    /// Maps inout parameter indices to their pointer vregs.
+    /// For inout params, the slot contains a pointer to the caller's memory.
+    /// This map stores the vreg holding that pointer so Store can use it.
+    inout_param_ptrs: HashMap<u32, VReg>,
 }
 
 impl<'a> CfgLower<'a> {
@@ -123,6 +127,7 @@ impl<'a> CfgLower<'a> {
             num_params,
             fn_name: cfg.fn_name(),
             struct_slot_vregs: HashMap::new(),
+            inout_param_ptrs: HashMap::new(),
         }
     }
 
@@ -254,6 +259,18 @@ impl<'a> CfgLower<'a> {
     /// Calculate the stack offset for a local variable slot.
     fn local_offset(&self, slot: u32) -> i32 {
         -((slot as i32 + 1) * 8)
+    }
+
+    /// Check if a slot corresponds to an inout parameter.
+    /// Returns Some(param_index) if it's an inout param slot, None otherwise.
+    fn slot_to_inout_param_index(&self, slot: u32) -> Option<u32> {
+        if slot >= self.num_locals && slot < self.num_locals + self.num_params {
+            let param_index = slot - self.num_locals;
+            if self.cfg.is_param_inout(param_index) {
+                return Some(param_index);
+            }
+        }
+        None
     }
 
     /// Emit a bounds check for array indexing.
@@ -526,24 +543,65 @@ impl<'a> CfgLower<'a> {
             }
 
             CfgInstData::Param { index } => {
-                let vreg = self.mir.alloc_vreg();
-                self.value_map.insert(value, vreg);
+                // Check if this is an inout parameter
+                let is_inout = self.cfg.is_param_inout(*index);
 
-                if (*index as usize) < ARG_REGS.len() {
-                    let slot = self.num_locals + *index;
-                    let offset = self.local_offset(slot);
-                    self.mir.push(X86Inst::MovRM {
-                        dst: Operand::Virtual(vreg),
-                        base: Reg::Rbp,
-                        offset,
+                if is_inout {
+                    // For inout params, the slot contains a POINTER to the caller's memory.
+                    // Load the pointer, then dereference to get the value.
+                    let ptr_vreg = self.mir.alloc_vreg();
+                    let val_vreg = self.mir.alloc_vreg();
+
+                    // Load the pointer from the param slot
+                    if (*index as usize) < ARG_REGS.len() {
+                        let slot = self.num_locals + *index;
+                        let offset = self.local_offset(slot);
+                        self.mir.push(X86Inst::MovRM {
+                            dst: Operand::Virtual(ptr_vreg),
+                            base: Reg::Rbp,
+                            offset,
+                        });
+                    } else {
+                        let stack_offset = 16 + ((*index as i32) - 6) * 8;
+                        self.mir.push(X86Inst::MovRM {
+                            dst: Operand::Virtual(ptr_vreg),
+                            base: Reg::Rbp,
+                            offset: stack_offset,
+                        });
+                    }
+
+                    // Store the pointer vreg for later use by Store
+                    self.inout_param_ptrs.insert(*index, ptr_vreg);
+
+                    // Dereference the pointer to get the actual value
+                    self.mir.push(X86Inst::MovRMIndexed {
+                        dst: Operand::Virtual(val_vreg),
+                        base: ptr_vreg,
+                        offset: 0,
                     });
+
+                    self.value_map.insert(value, val_vreg);
                 } else {
-                    let stack_offset = 16 + ((*index as i32) - 6) * 8;
-                    self.mir.push(X86Inst::MovRM {
-                        dst: Operand::Virtual(vreg),
-                        base: Reg::Rbp,
-                        offset: stack_offset,
-                    });
+                    // Normal parameter: load the value directly from the slot
+                    let vreg = self.mir.alloc_vreg();
+                    self.value_map.insert(value, vreg);
+
+                    if (*index as usize) < ARG_REGS.len() {
+                        let slot = self.num_locals + *index;
+                        let offset = self.local_offset(slot);
+                        self.mir.push(X86Inst::MovRM {
+                            dst: Operand::Virtual(vreg),
+                            base: Reg::Rbp,
+                            offset,
+                        });
+                    } else {
+                        let stack_offset = 16 + ((*index as i32) - 6) * 8;
+                        self.mir.push(X86Inst::MovRM {
+                            dst: Operand::Virtual(vreg),
+                            base: Reg::Rbp,
+                            offset: stack_offset,
+                        });
+                    }
                 }
             }
 
@@ -1269,12 +1327,32 @@ impl<'a> CfgLower<'a> {
                     });
                 } else {
                     let val_vreg = self.get_vreg(*val);
-                    let offset = self.local_offset(*slot);
-                    self.mir.push(X86Inst::MovMR {
-                        base: Reg::Rbp,
-                        offset,
-                        src: Operand::Virtual(val_vreg),
-                    });
+
+                    // Check if this slot corresponds to an inout parameter
+                    if let Some(param_index) = self.slot_to_inout_param_index(*slot) {
+                        // For inout params, store through the pointer
+                        if let Some(ptr_vreg) = self.inout_param_ptrs.get(&param_index).copied() {
+                            self.mir.push(X86Inst::MovMRIndexed {
+                                base: ptr_vreg,
+                                offset: 0,
+                                src: Operand::Virtual(val_vreg),
+                            });
+                        } else {
+                            // Fallback: shouldn't happen if Param was lowered first
+                            panic!(
+                                "inout param pointer not found for param index {}",
+                                param_index
+                            );
+                        }
+                    } else {
+                        // Normal local variable: store to stack slot
+                        let offset = self.local_offset(*slot);
+                        self.mir.push(X86Inst::MovMR {
+                            base: Reg::Rbp,
+                            offset,
+                            src: Operand::Virtual(val_vreg),
+                        });
+                    }
                 }
             }
 
@@ -1282,12 +1360,69 @@ impl<'a> CfgLower<'a> {
                 let result_vreg = self.mir.alloc_vreg();
                 self.value_map.insert(value, result_vreg);
 
-                // Flatten struct arguments
-                // TODO: For inout args, pass address instead of value
+                // Flatten struct arguments and handle inout arguments
                 let mut flattened_vregs: Vec<VReg> = Vec::new();
                 for arg in args {
                     let arg_value = arg.value;
                     let arg_type = self.cfg.get_inst(arg_value).ty;
+
+                    // For inout args, pass address instead of value
+                    if arg.is_inout {
+                        let arg_data = &self.cfg.get_inst(arg_value).data;
+                        let addr_vreg = self.mir.alloc_vreg();
+
+                        match arg_data {
+                            CfgInstData::Load { slot } => {
+                                // Emit lea to get the address of the local variable
+                                let offset = self.local_offset(*slot);
+                                self.mir.push(X86Inst::Lea {
+                                    dst: Operand::Virtual(addr_vreg),
+                                    base: Reg::Rbp,
+                                    index: None,
+                                    scale: 1,
+                                    disp: offset,
+                                });
+                            }
+                            CfgInstData::Param { index } => {
+                                // Check if this param is itself an inout param (forwarding case)
+                                if self.cfg.is_param_inout(*index) {
+                                    // For inout param, just pass the pointer we received
+                                    if let Some(ptr_vreg) =
+                                        self.inout_param_ptrs.get(index).copied()
+                                    {
+                                        self.mir.push(X86Inst::MovRR {
+                                            dst: Operand::Virtual(addr_vreg),
+                                            src: Operand::Virtual(ptr_vreg),
+                                        });
+                                    } else {
+                                        panic!(
+                                            "inout param pointer not found for forwarding param {}",
+                                            index
+                                        );
+                                    }
+                                } else {
+                                    // Normal param: emit lea to get its address
+                                    let param_slot = self.num_locals + *index;
+                                    let offset = self.local_offset(param_slot);
+                                    self.mir.push(X86Inst::Lea {
+                                        dst: Operand::Virtual(addr_vreg),
+                                        base: Reg::Rbp,
+                                        index: None,
+                                        scale: 1,
+                                        disp: offset,
+                                    });
+                                }
+                            }
+                            _ => {
+                                // For other sources (StructInit, Call result, etc.),
+                                // we can't take an address - this should have been caught earlier
+                                panic!("inout argument must be a variable, not {:?}", arg_data);
+                            }
+                        }
+                        flattened_vregs.push(addr_vreg);
+                        continue;
+                    }
+
                     match arg_type {
                         Type::Struct(struct_id) => {
                             let arg_data = &self.cfg.get_inst(arg_value).data;
