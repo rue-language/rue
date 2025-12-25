@@ -343,6 +343,25 @@ pub enum AirInstData {
         /// The value to drop
         value: AirRef,
     },
+
+    // Storage liveness operations (for drop elaboration)
+    /// Marks that a local slot becomes live (storage allocated).
+    /// Emitted when a variable binding is created.
+    /// The type is stored in AirInst.ty for drop elaboration.
+    StorageLive {
+        /// The slot that becomes live
+        slot: u32,
+    },
+
+    /// Marks that a local slot becomes dead (storage can be deallocated).
+    /// Emitted at scope exit for variables declared in that scope.
+    /// The type is stored in AirInst.ty for drop elaboration.
+    /// Drop elaboration will insert a Drop before this if the type needs drop
+    /// and the value wasn't moved.
+    StorageDead {
+        /// The slot that becomes dead
+        slot: u32,
+    },
 }
 
 impl fmt::Display for AirRef {
@@ -537,6 +556,12 @@ impl fmt::Display for Air {
                 }
                 AirInstData::Drop { value } => {
                     writeln!(f, "drop {}", value)?;
+                }
+                AirInstData::StorageLive { slot } => {
+                    writeln!(f, "storage_live ${}", slot)?;
+                }
+                AirInstData::StorageDead { slot } => {
+                    writeln!(f, "storage_dead ${}", slot)?;
                 }
             }
         }

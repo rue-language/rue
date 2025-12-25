@@ -1806,8 +1806,15 @@ impl<'a> Sema<'a> {
                     },
                 );
 
+                // Emit StorageLive to mark the slot as live (for drop elaboration)
+                let storage_live_ref = air.add_inst(AirInst {
+                    data: AirInstData::StorageLive { slot },
+                    ty: var_type,
+                    span: inst.span,
+                });
+
                 // Emit the alloc instruction
-                let air_ref = air.add_inst(AirInst {
+                let alloc_ref = air.add_inst(AirInst {
                     data: AirInstData::Alloc {
                         slot,
                         init: init_result.air_ref,
@@ -1815,7 +1822,17 @@ impl<'a> Sema<'a> {
                     ty: Type::Unit,
                     span: inst.span,
                 });
-                Ok(AnalysisResult::new(air_ref, Type::Unit))
+
+                // Return a block containing both StorageLive and Alloc
+                let block_ref = air.add_inst(AirInst {
+                    data: AirInstData::Block {
+                        statements: vec![storage_live_ref],
+                        value: alloc_ref,
+                    },
+                    ty: Type::Unit,
+                    span: inst.span,
+                });
+                Ok(AnalysisResult::new(block_ref, Type::Unit))
             }
 
             InstData::VarRef { name } => {
@@ -3539,22 +3556,29 @@ mod tests {
         assert_eq!(output.functions[0].num_locals, 1);
 
         let air = &output.functions[0].air;
-        // Const(42) + Alloc + Load + Block([Alloc], Load) + Ret = 5 instructions
-        assert_eq!(air.len(), 5);
+        // Const(42) + StorageLive + Alloc + Block([StorageLive], Alloc) + Load + Block([alloc block], Load) + Ret = 7 instructions
+        assert_eq!(air.len(), 7);
+
+        // Check storage_live instruction
+        let storage_live_inst = air.get(AirRef::from_raw(1));
+        assert!(matches!(
+            storage_live_inst.data,
+            AirInstData::StorageLive { slot: 0 }
+        ));
 
         // Check alloc instruction
-        let alloc_inst = air.get(AirRef::from_raw(1));
+        let alloc_inst = air.get(AirRef::from_raw(2));
         assert!(matches!(
             alloc_inst.data,
             AirInstData::Alloc { slot: 0, .. }
         ));
 
         // Check load instruction
-        let load_inst = air.get(AirRef::from_raw(2));
+        let load_inst = air.get(AirRef::from_raw(4));
         assert!(matches!(load_inst.data, AirInstData::Load { slot: 0 }));
 
         // Check block instruction groups the alloc with the load
-        let block_inst = air.get(AirRef::from_raw(3));
+        let block_inst = air.get(AirRef::from_raw(5));
         assert!(matches!(block_inst.data, AirInstData::Block { .. }));
     }
 
@@ -3563,18 +3587,18 @@ mod tests {
         let output = compile_to_air("fn main() -> i32 { let mut x = 10; x = 20; x }").unwrap();
 
         let air = &output.functions[0].air;
-        // Const(10) + Alloc + Const(20) + Store + Load + Block([Alloc, Store], Load) + Ret = 7 instructions
-        assert_eq!(air.len(), 7);
+        // Const(10) + StorageLive + Alloc + Block([StorageLive], Alloc) + Const(20) + Store + Load + Block([alloc block, Store], Load) + Ret = 9 instructions
+        assert_eq!(air.len(), 9);
 
         // Check store instruction
-        let store_inst = air.get(AirRef::from_raw(3));
+        let store_inst = air.get(AirRef::from_raw(5));
         assert!(matches!(
             store_inst.data,
             AirInstData::Store { slot: 0, .. }
         ));
 
         // Check block instruction groups statements
-        let block_inst = air.get(AirRef::from_raw(5));
+        let block_inst = air.get(AirRef::from_raw(7));
         assert!(matches!(block_inst.data, AirInstData::Block { .. }));
     }
 

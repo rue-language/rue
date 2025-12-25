@@ -237,3 +237,105 @@ source = """
 fn main() -> i32 { 0 }
 """
 exit_code = 0
+
+# =============================================================================
+# Golden Tests: CFG Storage Liveness
+# =============================================================================
+
+# These tests verify that StorageLive/StorageDead instructions are emitted
+# correctly in the CFG for drop elaboration.
+
+[[case]]
+name = "cfg_simple_scope_storage"
+preview = "destructors"
+description = "CFG shows StorageLive at let binding, StorageDead at scope exit"
+source = """
+fn main() -> i32 {
+    let x = 42;
+    x
+}
+"""
+expected_cfg = """
+cfg main (return_type: i32) {
+  bb0:
+    v0 : () = storage_live $0
+    v1 : i32 = const 42
+    v2 : () = alloc $0 = v1
+    v3 : i32 = load $0
+    v4 : () = storage_dead $0
+    return v3
+
+}
+"""
+
+[[case]]
+name = "cfg_multiple_variables_drop_order"
+preview = "destructors"
+description = "CFG shows StorageDead in reverse declaration order (LIFO)"
+source = """
+fn main() -> i32 {
+    let a = 1;
+    let b = 2;
+    a + b
+}
+"""
+expected_cfg = """
+cfg main (return_type: i32) {
+  bb0:
+    v0 : () = storage_live $0
+    v1 : i32 = const 1
+    v2 : () = alloc $0 = v1
+    v3 : () = storage_live $1
+    v4 : i32 = const 2
+    v5 : () = alloc $1 = v4
+    v6 : i32 = load $0
+    v7 : i32 = load $1
+    v8 : i32 = add v6, v7
+    v9 : () = storage_dead $1
+    v10 : () = storage_dead $0
+    return v8
+
+}
+"""
+
+[[case]]
+name = "cfg_early_return_drops"
+preview = "destructors"
+description = "CFG shows StorageDead before early return"
+source = """
+fn foo(cond: bool) -> i32 {
+    let a = 1;
+    if cond {
+        return 42;
+    }
+    a
+}
+"""
+expected_cfg = """
+cfg foo (return_type: i32) {
+  bb0:
+    v0 : () = storage_live $0
+    v1 : i32 = const 1
+    v2 : () = alloc $0 = v1
+    v3 : bool = param 0
+    branch v3, bb1, bb2
+
+  bb1:
+    ; preds: bb0
+    v4 : i32 = const 42
+    v5 : () = storage_dead $0
+    return v4
+
+  bb2:
+    ; preds: bb0
+    v6 : () = const 0
+    goto bb3
+
+  bb3:
+    ; preds: bb2
+    v7 : i32 = load $0
+    v8 : () = storage_dead $0
+    return v7
+
+}
+"""

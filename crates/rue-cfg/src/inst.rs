@@ -196,6 +196,20 @@ pub enum CfgInstData {
     Drop {
         value: CfgValue,
     },
+
+    // Storage liveness operations (for drop elaboration and stack allocation)
+    /// Marks that a local slot becomes live (storage allocated).
+    /// The slot is now valid to write to.
+    StorageLive {
+        slot: u32,
+    },
+
+    /// Marks that a local slot becomes dead (storage can be deallocated).
+    /// The slot is now invalid to read from.
+    /// Drop elaboration inserts Drop before this if the type needs drop.
+    StorageDead {
+        slot: u32,
+    },
 }
 
 /// Block terminator - how control leaves a basic block.
@@ -682,6 +696,12 @@ impl Cfg {
             }
             CfgInstData::Drop { value } => {
                 write!(f, "drop {}", value)
+            }
+            CfgInstData::StorageLive { slot } => {
+                write!(f, "storage_live ${}", slot)
+            }
+            CfgInstData::StorageDead { slot } => {
+                write!(f, "storage_dead ${}", slot)
             }
         }
     }

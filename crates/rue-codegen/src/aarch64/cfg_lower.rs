@@ -1783,6 +1783,18 @@ impl<'a> CfgLower<'a> {
                     "Drop instruction reached codegen but no types currently need drop"
                 );
             }
+
+            CfgInstData::StorageLive { slot: _ } => {
+                // StorageLive marks a slot as valid for use.
+                // Currently a no-op in codegen. In the future, this could be used
+                // for stack slot optimization (LLVM lifetime intrinsics).
+            }
+
+            CfgInstData::StorageDead { slot: _ } => {
+                // StorageDead marks a slot as no longer in use.
+                // Currently a no-op in codegen. In the future, this could be used
+                // for stack slot optimization (LLVM lifetime intrinsics).
+            }
         }
     }
 

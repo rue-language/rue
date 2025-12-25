@@ -33,6 +33,18 @@ struct LoopContext {
     exit: BlockId,
 }
 
+/// Information about a slot that became live in a scope.
+/// Used for drop elaboration.
+#[derive(Debug, Clone)]
+struct LiveSlot {
+    /// The slot number
+    slot: u32,
+    /// The type of value stored in the slot
+    ty: Type,
+    /// The span where the slot became live (for error reporting)
+    span: rue_span::Span,
+}
+
 /// Builder that converts AIR to CFG.
 pub struct CfgBuilder<'a> {
     air: &'a Air,
@@ -49,6 +61,10 @@ pub struct CfgBuilder<'a> {
     value_cache: Vec<Option<CfgValue>>,
     /// Warnings collected during CFG construction (e.g., unreachable code)
     warnings: Vec<CompileWarning>,
+    /// Stack of scopes for drop elaboration.
+    /// Each scope contains the slots that became live in that scope.
+    /// Used to emit StorageDead (and Drop if needed) at scope exit.
+    scope_stack: Vec<Vec<LiveSlot>>,
 }
 
 impl<'a> CfgBuilder<'a> {
@@ -78,6 +94,7 @@ impl<'a> CfgBuilder<'a> {
             loop_stack: Vec::new(),
             value_cache: vec![None; air.len()],
             warnings: Vec::new(),
+            scope_stack: vec![Vec::new()], // Start with one scope for the function body
         };
 
         // Create entry block
@@ -618,6 +635,18 @@ impl<'a> CfgBuilder<'a> {
             }
 
             AirInstData::Block { statements, value } => {
+                // Check if this is a "wrapper block" that only contains StorageLive statements.
+                // These are synthetic blocks created to pair StorageLive with Alloc, and they
+                // should NOT create a new scope for drop elaboration.
+                let is_storage_live_wrapper = statements.iter().all(|stmt| {
+                    matches!(self.air.get(*stmt).data, AirInstData::StorageLive { .. })
+                });
+
+                // Only push a scope if this is a real syntactic block (not a StorageLive wrapper)
+                if !is_storage_live_wrapper {
+                    self.scope_stack.push(Vec::new());
+                }
+
                 // Lower each statement.
                 //
                 // Design decision: When a statement diverges (break/continue/return), we only
@@ -672,6 +701,8 @@ impl<'a> CfgBuilder<'a> {
                                 );
                             }
                         }
+                        // Note: drops were already emitted by the diverging statement
+                        // (break/continue/return handle their own drops)
                         return ExprResult {
                             value: None,
                             continuation: Continuation::Diverged,
@@ -680,7 +711,33 @@ impl<'a> CfgBuilder<'a> {
                 }
 
                 // Lower the final value
-                self.lower_inst(*value)
+                let result = self.lower_inst(*value);
+
+                // Pop scope and emit StorageDead (with Drop if needed) in reverse order
+                if !is_storage_live_wrapper {
+                    if let Some(scope_slots) = self.scope_stack.pop() {
+                        for live_slot in scope_slots.into_iter().rev() {
+                            // TODO: When we have types that need drop, emit Drop before StorageDead
+                            // if self.type_needs_drop(live_slot.ty) {
+                            //     let slot_val = self.emit(
+                            //         CfgInstData::Load { slot: live_slot.slot },
+                            //         live_slot.ty,
+                            //         live_slot.span,
+                            //     );
+                            //     self.emit(CfgInstData::Drop { value: slot_val }, Type::Unit, live_slot.span);
+                            // }
+                            self.emit(
+                                CfgInstData::StorageDead {
+                                    slot: live_slot.slot,
+                                },
+                                Type::Unit,
+                                live_slot.span,
+                            );
+                        }
+                    }
+                }
+
+                result
             }
 
             AirInstData::Branch {
@@ -1063,11 +1120,14 @@ impl<'a> CfgBuilder<'a> {
             }
 
             AirInstData::Break => {
-                let ctx = self.loop_stack.last().expect("break outside loop");
+                // Emit drops for all live slots before jumping out
+                self.emit_drops_for_all_scopes(span);
+
+                let exit_block = self.loop_stack.last().expect("break outside loop").exit;
                 self.cfg.set_terminator(
                     self.current_block,
                     Terminator::Goto {
-                        target: ctx.exit,
+                        target: exit_block,
                         args: vec![],
                     },
                 );
@@ -1079,11 +1139,18 @@ impl<'a> CfgBuilder<'a> {
             }
 
             AirInstData::Continue => {
-                let ctx = self.loop_stack.last().expect("continue outside loop");
+                // Emit drops for all live slots before jumping out
+                self.emit_drops_for_all_scopes(span);
+
+                let header_block = self
+                    .loop_stack
+                    .last()
+                    .expect("continue outside loop")
+                    .header;
                 self.cfg.set_terminator(
                     self.current_block,
                     Terminator::Goto {
-                        target: ctx.header,
+                        target: header_block,
                         args: vec![],
                     },
                 );
@@ -1111,6 +1178,10 @@ impl<'a> CfgBuilder<'a> {
                     }
                     None => None,
                 };
+
+                // Emit drops for all live slots before returning
+                self.emit_drops_for_all_scopes(span);
+
                 self.cfg
                     .set_terminator(self.current_block, Terminator::Return { value: val });
 
@@ -1228,6 +1299,35 @@ impl<'a> CfgBuilder<'a> {
                     continuation: Continuation::Continues,
                 }
             }
+
+            AirInstData::StorageLive { slot } => {
+                // Emit StorageLive to CFG
+                self.emit(CfgInstData::StorageLive { slot: *slot }, Type::Unit, span);
+
+                // Record this slot as live in the current scope for drop elaboration
+                if let Some(scope) = self.scope_stack.last_mut() {
+                    scope.push(LiveSlot {
+                        slot: *slot,
+                        ty,
+                        span,
+                    });
+                }
+
+                ExprResult {
+                    value: None,
+                    continuation: Continuation::Continues,
+                }
+            }
+
+            AirInstData::StorageDead { slot } => {
+                // StorageDead in AIR is a hint; CFG builder emits these at scope exit
+                // This case handles explicit StorageDead if any (currently unused)
+                self.emit(CfgInstData::StorageDead { slot: *slot }, Type::Unit, span);
+                ExprResult {
+                    value: None,
+                    continuation: Continuation::Continues,
+                }
+            }
         }
     }
 
@@ -1286,6 +1386,39 @@ impl<'a> CfgBuilder<'a> {
                 let array_def = &self.array_types[array_id.0 as usize];
                 self.type_needs_drop(array_def.element_type)
             }
+        }
+    }
+
+    /// Emit drops for all live slots in all scopes (for return/break).
+    /// Drops are emitted in reverse order (LIFO) across all scopes.
+    fn emit_drops_for_all_scopes(&mut self, span: rue_span::Span) {
+        // Collect all live slots in reverse order across all scopes
+        let all_slots: Vec<LiveSlot> = self
+            .scope_stack
+            .iter()
+            .rev()
+            .flat_map(|scope| scope.iter().rev().cloned())
+            .collect();
+
+        for live_slot in all_slots {
+            // Emit Drop if the type needs it
+            if self.type_needs_drop(live_slot.ty) {
+                let slot_val = self.emit(
+                    CfgInstData::Load {
+                        slot: live_slot.slot,
+                    },
+                    live_slot.ty,
+                    span,
+                );
+                self.emit(CfgInstData::Drop { value: slot_val }, Type::Unit, span);
+            }
+            self.emit(
+                CfgInstData::StorageDead {
+                    slot: live_slot.slot,
+                },
+                Type::Unit,
+                span,
+            );
         }
     }
 }
