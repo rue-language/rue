@@ -6,9 +6,9 @@ use std::path::Path;
 
 use annotate_snippets::{Level, Renderer, Snippet};
 use rue_compiler::{
-    CompileError, CompileOptions, CompileWarning, Lexer, LinkerMode, Mir, Parser, PreviewFeature,
-    PreviewFeatures, compile_frontend_from_ast, compile_with_options, generate_allocated_mir,
-    generate_mir,
+    CompileError, CompileOptions, CompileWarning, Diagnostic, Lexer, LinkerMode, Mir, Parser,
+    PreviewFeature, PreviewFeatures, Span, compile_frontend_from_ast, compile_with_options,
+    generate_allocated_mir, generate_mir,
 };
 use rue_rir::RirPrinter;
 use rue_target::Target;
@@ -455,14 +455,24 @@ fn print_assembly(mir: &Mir) {
     }
 }
 
-fn print_error(error: &CompileError, source: &str, source_path: &str) {
-    let message = error.to_string();
+/// Print a diagnostic message (error or warning) to stderr.
+///
+/// This is the common implementation used by both `print_error` and `print_warning`.
+/// It handles building the annotated source snippet and rendering the full diagnostic
+/// with labels, notes, and help messages.
+fn print_diagnostic(
+    level: Level,
+    message: &str,
+    span: Option<Span>,
+    diagnostic: &Diagnostic,
+    source: &str,
+    source_path: &str,
+) {
     let renderer = Renderer::plain();
-    let diagnostic = error.diagnostic();
 
-    // For errors without a span, just print the message with any footers
-    let Some(span) = error.span() else {
-        let mut report = Level::Error.title(&message);
+    // For diagnostics without a span, just print the message with any footers
+    let Some(span) = span else {
+        let mut report = level.title(message);
         // Add notes and helps as footers
         for note in &diagnostic.notes {
             report = report.footer(Level::Note.title(note.0.as_str()));
@@ -478,7 +488,7 @@ fn print_error(error: &CompileError, source: &str, source_path: &str) {
     let mut snippet = Snippet::source(source)
         .origin(source_path)
         .fold(true)
-        .annotation(Level::Error.span(span.start as usize..span.end as usize));
+        .annotation(level.span(span.start as usize..span.end as usize));
 
     // Add secondary labels as Info annotations
     for label in &diagnostic.labels {
@@ -489,7 +499,7 @@ fn print_error(error: &CompileError, source: &str, source_path: &str) {
         );
     }
 
-    let mut report = Level::Error.title(&message).snippet(snippet);
+    let mut report = level.title(message).snippet(snippet);
 
     // Add notes and helps as footers
     for note in &diagnostic.notes {
@@ -500,6 +510,17 @@ fn print_error(error: &CompileError, source: &str, source_path: &str) {
     }
 
     eprintln!("{}", renderer.render(report));
+}
+
+fn print_error(error: &CompileError, source: &str, source_path: &str) {
+    print_diagnostic(
+        Level::Error,
+        &error.to_string(),
+        error.span(),
+        error.diagnostic(),
+        source,
+        source_path,
+    );
 }
 
 /// Print all warnings, adding line numbers when multiple variables share the same name.
@@ -532,10 +553,7 @@ fn print_warning(
     source_path: &str,
     include_line_number: bool,
 ) {
-    let renderer = Renderer::plain();
-    let diagnostic = warning.diagnostic();
-
-    // Get the message, optionally with line number
+    // Get the message, optionally with line number for disambiguation
     let message = if include_line_number {
         if let Some(span) = warning.span() {
             let line = span.line_number(source);
@@ -547,44 +565,12 @@ fn print_warning(
         warning.to_string()
     };
 
-    // For warnings without a span, just print the message with any footers
-    let Some(span) = warning.span() else {
-        let mut report = Level::Warning.title(&message);
-        // Add notes and helps as footers
-        for note in &diagnostic.notes {
-            report = report.footer(Level::Note.title(note.0.as_str()));
-        }
-        for help in &diagnostic.helps {
-            report = report.footer(Level::Help.title(help.0.as_str()));
-        }
-        eprintln!("{}", renderer.render(report));
-        return;
-    };
-
-    // Build snippet with primary annotation
-    let mut snippet = Snippet::source(source)
-        .origin(source_path)
-        .fold(true)
-        .annotation(Level::Warning.span(span.start as usize..span.end as usize));
-
-    // Add secondary labels as Info annotations
-    for label in &diagnostic.labels {
-        snippet = snippet.annotation(
-            Level::Info
-                .span(label.span.start as usize..label.span.end as usize)
-                .label(&label.message),
-        );
-    }
-
-    let mut report = Level::Warning.title(&message).snippet(snippet);
-
-    // Add notes and helps as footers
-    for note in &diagnostic.notes {
-        report = report.footer(Level::Note.title(note.0.as_str()));
-    }
-    for help in &diagnostic.helps {
-        report = report.footer(Level::Help.title(help.0.as_str()));
-    }
-
-    eprintln!("{}", renderer.render(report));
+    print_diagnostic(
+        Level::Warning,
+        &message,
+        warning.span(),
+        warning.diagnostic(),
+        source,
+        source_path,
+    );
 }

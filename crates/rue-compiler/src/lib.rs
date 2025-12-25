@@ -127,8 +127,8 @@ pub use rue_air::{Air, AnalyzedFunction, ArrayTypeDef, Sema, SemaOutput, StructD
 pub use rue_cfg::{Cfg, CfgBuilder, CfgOutput};
 pub use rue_codegen::{X86Mir, aarch64::Aarch64Mir};
 pub use rue_error::{
-    CompileError, CompileResult, CompileWarning, ErrorKind, PreviewFeature, PreviewFeatures,
-    WarningKind,
+    CompileError, CompileResult, CompileWarning, Diagnostic, ErrorKind, PreviewFeature,
+    PreviewFeatures, WarningKind,
 };
 pub use rue_intern::{Interner, Symbol};
 pub use rue_lexer::{Lexer, Token, TokenKind};
