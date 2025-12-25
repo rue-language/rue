@@ -18,6 +18,13 @@ pub enum LinkError {
     UnsupportedRelocation(String),
     /// Relocation overflow (value doesn't fit).
     RelocationOverflow { symbol: String, rel_type: String },
+    /// Relocation patch extends beyond code section bounds.
+    RelocationPatchOutOfBounds {
+        patch_offset: usize,
+        patch_size: usize,
+        section_size: usize,
+        rel_type: String,
+    },
 }
 
 impl std::fmt::Display for LinkError {
@@ -28,6 +35,19 @@ impl std::fmt::Display for LinkError {
             LinkError::UnsupportedRelocation(s) => write!(f, "unsupported relocation: {}", s),
             LinkError::RelocationOverflow { symbol, rel_type } => {
                 write!(f, "relocation overflow for {} ({})", symbol, rel_type)
+            }
+            LinkError::RelocationPatchOutOfBounds {
+                patch_offset,
+                patch_size,
+                section_size,
+                rel_type,
+            } => {
+                write!(
+                    f,
+                    "relocation patch extends beyond code section: {} relocation at offset {} \
+                     requires {} bytes, but code section is only {} bytes",
+                    rel_type, patch_offset, patch_size, section_size
+                )
             }
         }
     }
@@ -448,10 +468,12 @@ impl Linker {
                         });
                     }
                     if patch_offset + 4 > merged_code.len() {
-                        return Err(LinkError::UnsupportedRelocation(format!(
-                            "patch offset {} out of bounds",
-                            patch_offset
-                        )));
+                        return Err(LinkError::RelocationPatchOutOfBounds {
+                            patch_offset,
+                            patch_size: 4,
+                            section_size: merged_code.len(),
+                            rel_type: format!("{:?}", rel_type),
+                        });
                     }
                     merged_code[patch_offset..patch_offset + 4]
                         .copy_from_slice(&(value as i32).to_le_bytes());
@@ -459,10 +481,12 @@ impl Linker {
                 RelocationType::Abs64 | RelocationType::Aarch64Abs64 => {
                     let value = (target_addr as i64 + addend) as u64;
                     if patch_offset + 8 > merged_code.len() {
-                        return Err(LinkError::UnsupportedRelocation(format!(
-                            "patch offset {} out of bounds",
-                            patch_offset
-                        )));
+                        return Err(LinkError::RelocationPatchOutOfBounds {
+                            patch_offset,
+                            patch_size: 8,
+                            section_size: merged_code.len(),
+                            rel_type: format!("{:?}", rel_type),
+                        });
                     }
                     merged_code[patch_offset..patch_offset + 8]
                         .copy_from_slice(&value.to_le_bytes());
@@ -477,10 +501,12 @@ impl Linker {
                         });
                     }
                     if patch_offset + 4 > merged_code.len() {
-                        return Err(LinkError::UnsupportedRelocation(format!(
-                            "patch offset {} out of bounds",
-                            patch_offset
-                        )));
+                        return Err(LinkError::RelocationPatchOutOfBounds {
+                            patch_offset,
+                            patch_size: 4,
+                            section_size: merged_code.len(),
+                            rel_type: "Abs32".to_string(),
+                        });
                     }
                     merged_code[patch_offset..patch_offset + 4]
                         .copy_from_slice(&(value as u32).to_le_bytes());
@@ -495,10 +521,12 @@ impl Linker {
                         });
                     }
                     if patch_offset + 4 > merged_code.len() {
-                        return Err(LinkError::UnsupportedRelocation(format!(
-                            "patch offset {} out of bounds",
-                            patch_offset
-                        )));
+                        return Err(LinkError::RelocationPatchOutOfBounds {
+                            patch_offset,
+                            patch_size: 4,
+                            section_size: merged_code.len(),
+                            rel_type: "Abs32S".to_string(),
+                        });
                     }
                     merged_code[patch_offset..patch_offset + 4]
                         .copy_from_slice(&(value as i32).to_le_bytes());
@@ -522,10 +550,12 @@ impl Linker {
                         });
                     }
                     if patch_offset + 4 > merged_code.len() {
-                        return Err(LinkError::UnsupportedRelocation(format!(
-                            "patch offset {} out of bounds",
-                            patch_offset
-                        )));
+                        return Err(LinkError::RelocationPatchOutOfBounds {
+                            patch_offset,
+                            patch_size: 4,
+                            section_size: merged_code.len(),
+                            rel_type: rel_name.to_string(),
+                        });
                     }
                     // Read existing instruction and patch the immediate field
                     let mut inst = u32::from_le_bytes(
@@ -554,10 +584,12 @@ impl Linker {
                         });
                     }
                     if patch_offset + 4 > merged_code.len() {
-                        return Err(LinkError::UnsupportedRelocation(format!(
-                            "patch offset {} out of bounds",
-                            patch_offset
-                        )));
+                        return Err(LinkError::RelocationPatchOutOfBounds {
+                            patch_offset,
+                            patch_size: 4,
+                            section_size: merged_code.len(),
+                            rel_type: "AdrpPage21".to_string(),
+                        });
                     }
                     // ADRP instruction format: imm is split into immlo (bits 29-30) and immhi (bits 5-23)
                     let imm = page_count as u32;
@@ -578,10 +610,12 @@ impl Linker {
                     // target_addr's low 12 bits are the offset within the page
                     let page_offset = (target_addr & 0xFFF) as u32;
                     if patch_offset + 4 > merged_code.len() {
-                        return Err(LinkError::UnsupportedRelocation(format!(
-                            "patch offset {} out of bounds",
-                            patch_offset
-                        )));
+                        return Err(LinkError::RelocationPatchOutOfBounds {
+                            patch_offset,
+                            patch_size: 4,
+                            section_size: merged_code.len(),
+                            rel_type: "AddLo12".to_string(),
+                        });
                     }
                     // ADD instruction format: imm12 is in bits 10-21
                     let mut inst = u32::from_le_bytes(
