@@ -2,6 +2,98 @@
 //!
 //! This phase converts X86Mir instructions (with physical registers) to
 //! machine code bytes.
+//!
+//! # Stack Frame Layout
+//!
+//! The x86-64 backend uses a standard RBP-based frame layout. After the prologue
+//! executes, the stack looks like this (addresses grow downward):
+//!
+//! ```text
+//! High addresses
+//! ┌────────────────────────┐
+//! │ arg N (if >6 args)     │ [rbp + 16 + (N-7)*8]  ← Stack arguments
+//! │ ...                    │
+//! │ arg 7 (first on stack) │ [rbp + 16]
+//! ├────────────────────────┤
+//! │ return address         │ [rbp + 8]   ← Pushed by CALL
+//! ├────────────────────────┤
+//! │ saved RBP              │ [rbp + 0]   ← Frame pointer points here
+//! ├────────────────────────┤
+//! │ callee-saved regs      │ [rbp - 8]   ← R12, R13, etc. (if used)
+//! │ (pushed after RBP)     │ [rbp - 16]
+//! │ ...                    │
+//! ├────────────────────────┤
+//! │ local 0                │ [rbp - callee_saved_size - 8]
+//! │ local 1                │ [rbp - callee_saved_size - 16]
+//! │ ...                    │
+//! │ local N-1              │ [rbp - callee_saved_size - N*8]
+//! ├────────────────────────┤
+//! │ param 0 spill slot     │ [rbp - callee_saved_size - (num_locals+1)*8]
+//! │ param 1 spill slot     │ [rbp - callee_saved_size - (num_locals+2)*8]
+//! │ ...                    │
+//! │ param 5 spill slot     │ [rbp - callee_saved_size - (num_locals+6)*8]
+//! ├────────────────────────┤
+//! │ (alignment padding)    │   ← Ensures RSP is 16-byte aligned
+//! └────────────────────────┘
+//! Low addresses (RSP points here)
+//! ```
+//!
+//! ## Prologue Sequence
+//!
+//! The function prologue sets up the frame:
+//!
+//! ```asm
+//! push rbp                 ; Save caller's frame pointer
+//! mov rbp, rsp             ; Establish our frame pointer
+//! push r12                 ; Save callee-saved registers (if used)
+//! push r13
+//! ...
+//! sub rsp, N               ; Allocate space for locals + params (16-aligned)
+//! mov [rbp-X], rdi         ; Spill register params to stack (first 6 args)
+//! mov [rbp-X], rsi
+//! ...
+//! ```
+//!
+//! ## Epilogue Sequence
+//!
+//! The function epilogue restores the caller's state:
+//!
+//! ```asm
+//! lea rsp, [rbp - callee_saved_size]  ; Deallocate locals, preserve callee-saved
+//! pop r13                              ; Restore callee-saved in reverse order
+//! pop r12
+//! pop rbp                              ; Restore caller's frame pointer
+//! ret                                  ; Return to caller
+//! ```
+//!
+//! ## Key Invariants
+//!
+//! 1. **RBP-relative stack arguments**: Stack arguments (7th argument and beyond)
+//!    are accessed at fixed positive offsets from RBP (`[rbp + 16]`, `[rbp + 24]`, etc.).
+//!    These offsets are stable regardless of callee-saved register usage.
+//!
+//! 2. **Offset adjustment for locals**: CfgLower generates local variable offsets
+//!    assuming `[rbp - 8]` is slot 0. The emit phase adjusts all negative RBP-relative
+//!    offsets by `callee_saved_size` to account for registers pushed after RBP setup.
+//!    See the `MovRM` and `MovMR` handlers in [`Emitter::emit_inst`].
+//!
+//! 3. **16-byte stack alignment**: RSP is aligned to 16 bytes after the prologue.
+//!    The alignment calculation accounts for the number of callee-saved pushes.
+//!
+//! 4. **Callee-saved registers**: R12-R15 and RBX are callee-saved per System V AMD64 ABI.
+//!    Register allocation determines which are actually used and need saving.
+//!
+//! 5. **Two-phase stack allocation**: The prologue first pushes callee-saved registers
+//!    (variable number), then allocates remaining space via `sub rsp, N`. This allows
+//!    calculating the exact alignment padding needed.
+//!
+//! ## Calling Convention (System V AMD64 ABI)
+//!
+//! - Arguments 1-6: RDI, RSI, RDX, RCX, R8, R9
+//! - Arguments 7+: Pushed right-to-left onto stack (arg7 at [rbp+16])
+//! - Return value: RAX (second value in RDX for 128-bit returns)
+//! - Caller-saved: RAX, RCX, RDX, RSI, RDI, R8-R11, XMM0-XMM15
+//! - Callee-saved: RBX, RBP, R12-R15
 
 use std::collections::HashMap;
 
