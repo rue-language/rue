@@ -15,7 +15,7 @@ use crate::types::{
 };
 use rue_error::{CompileError, CompileResult, CompileWarning, ErrorKind, OptionExt, WarningKind};
 use rue_intern::{Interner, Symbol};
-use rue_rir::{InstData, InstRef, Rir, RirDirective, RirParamMode, RirPattern};
+use rue_rir::{InstData, InstRef, Rir, RirCallArg, RirDirective, RirParamMode, RirPattern};
 use rue_span::Span;
 
 /// A value that can be computed at compile time.
@@ -357,6 +357,58 @@ impl<'a> Sema<'a> {
                     )),
             );
         }
+    }
+
+    /// Extract the root variable symbol from an expression, if it refers to a variable.
+    ///
+    /// For inout arguments, we need to track which variable is being passed to detect
+    /// when the same variable is passed to multiple inout parameters.
+    ///
+    /// Returns Some(symbol) for:
+    /// - VarRef { name } -> the variable symbol
+    /// - ParamRef { name, .. } -> the parameter symbol
+    /// - FieldGet { base, .. } -> recursively extract from base
+    /// - IndexGet { base, .. } -> recursively extract from base
+    ///
+    /// Returns None for expressions that don't refer to a variable (literals, calls, etc.)
+    fn extract_root_variable(&self, inst_ref: InstRef) -> Option<Symbol> {
+        let inst = self.rir.get(inst_ref);
+        match &inst.data {
+            InstData::VarRef { name } => Some(*name),
+            InstData::ParamRef { name, .. } => Some(*name),
+            InstData::FieldGet { base, .. } => self.extract_root_variable(*base),
+            InstData::IndexGet { base, .. } => self.extract_root_variable(*base),
+            _ => None,
+        }
+    }
+
+    /// Check that the same variable is not passed to multiple inout parameters in a call.
+    ///
+    /// This prevents aliasing of mutable references within a single call, which could
+    /// lead to undefined behavior (e.g., `swap(inout x, inout x)`).
+    fn check_inout_exclusive_access(
+        &self,
+        args: &[RirCallArg],
+        call_span: Span,
+    ) -> CompileResult<()> {
+        use std::collections::HashSet;
+        let mut inout_vars: HashSet<Symbol> = HashSet::new();
+
+        for arg in args {
+            if arg.is_inout {
+                if let Some(var_symbol) = self.extract_root_variable(arg.value) {
+                    if !inout_vars.insert(var_symbol) {
+                        // Duplicate! This variable was already used as an inout argument
+                        let var_name = self.interner.get(var_symbol).to_string();
+                        return Err(CompileError::new(
+                            ErrorKind::InoutExclusiveAccess { variable: var_name },
+                            call_span,
+                        ));
+                    }
+                }
+            }
+        }
+        Ok(())
     }
 
     /// Analyze all functions in the RIR.
@@ -2324,6 +2376,9 @@ impl<'a> Sema<'a> {
                     ));
                 }
 
+                // Check for exclusive access violation: same variable passed to multiple inout params
+                self.check_inout_exclusive_access(args, inst.span)?;
+
                 // Clone the data we need before mutable borrow
                 let param_types = fn_info.param_types.clone();
                 let return_type = fn_info.return_type;
@@ -3085,6 +3140,9 @@ impl<'a> Sema<'a> {
                     ));
                 }
 
+                // Check for exclusive access violation in method args
+                self.check_inout_exclusive_access(args, inst.span)?;
+
                 // Clone data needed before mutable borrow
                 let return_type = method_info.return_type;
 
@@ -3162,6 +3220,9 @@ impl<'a> Sema<'a> {
                         inst.span,
                     ));
                 }
+
+                // Check for exclusive access violation in assoc fn args
+                self.check_inout_exclusive_access(args, inst.span)?;
 
                 // Clone data needed before mutable borrow
                 let return_type = method_info.return_type;

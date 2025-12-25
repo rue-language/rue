@@ -345,6 +345,12 @@ pub enum ErrorKind {
         found: String,
     },
     InvalidAssignmentTarget,
+    /// Inout argument is not an lvalue (variable, field, or array element)
+    InoutNonLvalue,
+    /// Same variable passed to multiple inout parameters in a single call
+    InoutExclusiveAccess {
+        variable: String,
+    },
 
     // Control flow errors
     BreakOutsideLoop,
@@ -680,6 +686,19 @@ impl fmt::Display for ErrorKind {
             }
             ErrorKind::InvalidAssignmentTarget => {
                 write!(f, "invalid assignment target")
+            }
+            ErrorKind::InoutNonLvalue => {
+                write!(
+                    f,
+                    "inout argument must be an lvalue (variable, field, or array element)"
+                )
+            }
+            ErrorKind::InoutExclusiveAccess { variable } => {
+                write!(
+                    f,
+                    "cannot pass same variable '{}' to multiple inout parameters",
+                    variable
+                )
             }
             ErrorKind::BreakOutsideLoop => write!(f, "'break' outside of loop"),
             ErrorKind::ContinueOutsideLoop => write!(f, "'continue' outside of loop"),

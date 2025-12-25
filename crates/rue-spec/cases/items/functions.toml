@@ -705,3 +705,43 @@ fn main() -> i32 {
 """
 compile_fail = true
 error_contains = "lvalue"
+
+[[case]]
+name = "inout_exclusive_access"
+spec = ["6.1:20"]
+description = "Cannot pass same variable to multiple inout parameters"
+preview = "affine_types"
+source = """
+fn swap(inout a: i32, inout b: i32) {
+    let tmp = a;
+    a = b;
+    b = tmp;
+}
+fn main() -> i32 {
+    let mut x = 1;
+    swap(inout x, inout x);
+    0
+}
+"""
+compile_fail = true
+error_contains = "same variable"
+
+[[case]]
+name = "inout_exclusive_access_different_vars"
+spec = ["6.1:20"]
+description = "Different variables can be passed to multiple inout parameters"
+preview = "affine_types"
+source = """
+fn swap(inout a: i32, inout b: i32) {
+    let tmp = a;
+    a = b;
+    b = tmp;
+}
+fn main() -> i32 {
+    let mut x = 1;
+    let mut y = 2;
+    swap(inout x, inout y);
+    x + y * 10
+}
+"""
+exit_code = 12

@@ -85,6 +85,26 @@ fn main() -> i32 {
 }
 ```
 
+{{ rule(id="6.1:20", cat="legality-rule") }}
+
+A single function call **MUST NOT** pass the same variable to multiple `inout` parameters. This prevents aliasing of mutable references within a single call.
+
+{{ rule(id="6.1:21", cat="example") }}
+
+```rue
+fn swap(inout a: i32, inout b: i32) {
+    let tmp = a;
+    a = b;
+    b = tmp;
+}
+
+fn main() -> i32 {
+    let mut x = 1;
+    swap(inout x, inout x);  // error: cannot pass same variable to multiple inout parameters
+    0
+}
+```
+
 ## Entry Point
 
 {{ rule(id="6.1:7", cat="legality-rule") }}
