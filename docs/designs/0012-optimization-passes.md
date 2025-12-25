@@ -246,7 +246,7 @@ CFG optimization is target-independent - it operates on typed CFG instructions b
 
 ## Implementation Phases
 
-- [ ] **Phase 1: Optimization framework** - rue-aapc.1
+- [x] **Phase 1: Optimization framework** - rue-aapc.1
   - Create `rue-cfg/src/opt/mod.rs` with `OptLevel` enum and pass orchestration
   - Add `-O0` through `-O3` flags to CLI
   - Add UI test infrastructure with `opt_level` support

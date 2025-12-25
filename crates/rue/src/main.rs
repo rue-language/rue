@@ -4,8 +4,8 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 
 use rue_compiler::{
-    CompileOptions, DiagnosticFormatter, Lexer, LinkerMode, Parser, PreviewFeature,
-    PreviewFeatures, SourceInfo, compile_frontend_from_ast, compile_with_options,
+    CompileOptions, DiagnosticFormatter, Lexer, LinkerMode, OptLevel, Parser, PreviewFeature,
+    PreviewFeatures, SourceInfo, compile_frontend_from_ast_with_options, compile_with_options,
     generate_allocated_mir, generate_mir,
 };
 use rue_rir::RirPrinter;
@@ -71,6 +71,7 @@ struct Options {
     emit_stages: Vec<EmitStage>,
     target: Target,
     linker: LinkerMode,
+    opt_level: OptLevel,
     preview_features: PreviewFeatures,
 }
 
@@ -83,6 +84,8 @@ fn print_usage() {
     eprintln!("  --linker <linker>    Set linker to use (default: internal)");
     eprintln!("                       Use 'internal' for built-in linker, or a command");
     eprintln!("                       like 'clang', 'gcc', or 'ld' for system linker");
+    eprintln!("  -O<level>            Set optimization level (default: -O0)");
+    eprintln!("                       Levels: {}", OptLevel::all_names());
     eprintln!("  --emit <stage>       Emit intermediate representation and exit");
     eprintln!("                       Can be specified multiple times for multiple outputs");
     eprintln!("                       Stages: tokens, ast, rir, air, cfg, mir, asm");
@@ -105,6 +108,7 @@ fn parse_args() -> Option<Options> {
     let mut emit_stages = Vec::new();
     let mut target: Option<Target> = None;
     let mut linker: Option<LinkerMode> = None;
+    let mut opt_level: Option<OptLevel> = None;
     let mut preview_features = PreviewFeatures::new();
     let mut positional = Vec::new();
     let mut args_iter = args.iter().peekable();
@@ -173,6 +177,18 @@ fn parse_args() -> Option<Options> {
                 print_usage();
                 return None;
             }
+            _ if arg.starts_with("-O") => {
+                // Parse -O0, -O1, -O2, -O3
+                let level_str = &arg[2..];
+                match level_str.parse::<OptLevel>() {
+                    Ok(level) => opt_level = Some(level),
+                    Err(e) => {
+                        eprintln!("Error: {}", e);
+                        eprintln!("Valid levels: {}", OptLevel::all_names());
+                        return None;
+                    }
+                }
+            }
             _ if arg.starts_with('-') => {
                 eprintln!("Unknown option: {}", arg);
                 print_usage();
@@ -200,6 +216,7 @@ fn parse_args() -> Option<Options> {
         emit_stages,
         target: target.unwrap_or_else(Target::host),
         linker: linker.unwrap_or_default(),
+        opt_level: opt_level.unwrap_or_default(),
         preview_features,
     })
 }
@@ -232,6 +249,7 @@ fn main() {
     let compile_options = CompileOptions {
         target: options.target,
         linker: options.linker.clone(),
+        opt_level: options.opt_level,
         preview_features: options.preview_features.clone(),
     };
     match compile_with_options(&source, &compile_options) {
@@ -338,8 +356,9 @@ fn handle_emit(source: &str, options: &Options, formatter: &DiagnosticFormatter)
     };
 
     // Stage 2: Full frontend (RIR, AIR, CFG) - reuses the already-parsed AST
+    // Applies optimization based on the -O level
     let frontend_state = if max_stage >= 2 {
-        match compile_frontend_from_ast(ast.clone().unwrap()) {
+        match compile_frontend_from_ast_with_options(ast.clone().unwrap(), options.opt_level) {
             Ok(state) => Some(state),
             Err(e) => {
                 eprintln!("{}", formatter.format_error(&e));

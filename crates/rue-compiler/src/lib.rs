@@ -153,7 +153,7 @@ pub fn validate_runtime() -> Result<(), String> {
 
 // Re-export commonly used types
 pub use rue_air::{Air, AnalyzedFunction, ArrayTypeDef, Sema, SemaOutput, StructDef, Type};
-pub use rue_cfg::{Cfg, CfgBuilder, CfgOutput};
+pub use rue_cfg::{Cfg, CfgBuilder, CfgOutput, OptLevel};
 pub use rue_codegen::{RelocationKind, X86Mir, aarch64::Aarch64Mir};
 pub use rue_error::{
     CompileError, CompileResult, CompileWarning, Diagnostic, ErrorKind, PreviewFeature,
@@ -187,7 +187,7 @@ impl Default for LinkerMode {
 
 /// Configuration options for compilation.
 ///
-/// Controls target architecture, linker selection, and feature flags.
+/// Controls target architecture, linker selection, optimization level, and feature flags.
 ///
 /// # Example
 ///
@@ -195,6 +195,7 @@ impl Default for LinkerMode {
 /// let options = CompileOptions {
 ///     target: Target::host(),
 ///     linker: LinkerMode::Internal,
+///     opt_level: OptLevel::O1,
 ///     preview_features: PreviewFeatures::new(),
 /// };
 /// let output = compile_with_options(source, &options)?;
@@ -205,6 +206,8 @@ pub struct CompileOptions {
     pub target: Target,
     /// Which linker to use.
     pub linker: LinkerMode,
+    /// Optimization level.
+    pub opt_level: OptLevel,
     /// Enabled preview features.
     pub preview_features: PreviewFeatures,
 }
@@ -214,6 +217,7 @@ impl Default for CompileOptions {
         Self {
             target: Target::host(),
             linker: LinkerMode::Internal,
+            opt_level: OptLevel::default(),
             preview_features: PreviewFeatures::new(),
         }
     }
@@ -268,7 +272,21 @@ pub struct CompileOutput {
 ///
 /// This runs: lexing → parsing → AST to RIR → semantic analysis → CFG construction.
 /// Returns the compile state which can be inspected for debugging.
+///
+/// Uses default optimization level (O0). For custom optimization, use
+/// [`compile_frontend_with_options`].
 pub fn compile_frontend(source: &str) -> CompileResult<CompileState> {
+    compile_frontend_with_options(source, OptLevel::default())
+}
+
+/// Compile source code through all frontend phases with optimization.
+///
+/// This runs: lexing → parsing → AST to RIR → semantic analysis → CFG construction → optimization.
+/// Returns the compile state which can be inspected for debugging.
+pub fn compile_frontend_with_options(
+    source: &str,
+    opt_level: OptLevel,
+) -> CompileResult<CompileState> {
     // Lexing
     let mut lexer = Lexer::new(source);
     let tokens = lexer.tokenize()?;
@@ -277,7 +295,7 @@ pub fn compile_frontend(source: &str) -> CompileResult<CompileState> {
     let mut parser = Parser::new(tokens);
     let ast = parser.parse()?;
 
-    compile_frontend_from_ast(ast)
+    compile_frontend_from_ast_with_options(ast, opt_level)
 }
 
 /// Compile from an already-parsed AST through all remaining frontend phases.
@@ -285,7 +303,22 @@ pub fn compile_frontend(source: &str) -> CompileResult<CompileState> {
 /// This runs: AST to RIR → semantic analysis → CFG construction.
 /// Use this when you already have a parsed AST (e.g., for `--emit` modes that
 /// need both AST output and later stage output without double-parsing).
+///
+/// Uses default optimization level (O0). For custom optimization, use
+/// [`compile_frontend_from_ast_with_options`].
 pub fn compile_frontend_from_ast(ast: Ast) -> CompileResult<CompileState> {
+    compile_frontend_from_ast_with_options(ast, OptLevel::default())
+}
+
+/// Compile from an already-parsed AST through all remaining frontend phases with optimization.
+///
+/// This runs: AST to RIR → semantic analysis → CFG construction → optimization.
+/// Use this when you already have a parsed AST (e.g., for `--emit` modes that
+/// need both AST output and later stage output without double-parsing).
+pub fn compile_frontend_from_ast_with_options(
+    ast: Ast,
+    opt_level: OptLevel,
+) -> CompileResult<CompileState> {
     // AST to RIR (untyped IR)
     let mut interner = Interner::new();
     let astgen = AstGen::new(&ast, &mut interner);
@@ -310,9 +343,14 @@ pub fn compile_frontend_from_ast(ast: Ast) -> CompileResult<CompileState> {
             func.param_modes.clone(),
         );
         warnings.extend(cfg_output.warnings);
+
+        // Apply optimizations to the CFG
+        let mut cfg = cfg_output.cfg;
+        rue_cfg::opt::optimize(&mut cfg, opt_level);
+
         functions.push(FunctionWithCfg {
             analyzed: func,
-            cfg: cfg_output.cfg,
+            cfg,
         });
     }
 
@@ -338,12 +376,12 @@ pub fn compile(source: &str) -> CompileResult<CompileOutput> {
 
 /// Compile source code to an ELF binary with the given options.
 ///
-/// This allows specifying the target architecture and other compilation options.
+/// This allows specifying the target architecture, optimization level, and other compilation options.
 pub fn compile_with_options(
     source: &str,
     options: &CompileOptions,
 ) -> CompileResult<CompileOutput> {
-    let state = compile_frontend(source)?;
+    let state = compile_frontend_with_options(source, options.opt_level)?;
 
     // Check for main function
     let _main_fn = state

@@ -97,6 +97,11 @@ pub struct Case {
     /// Required for MIR golden tests; optional for other test types.
     #[serde(default)]
     pub target: Option<String>,
+    /// Optimization level (0, 1, 2, or 3).
+    /// When specified, the compiler is invoked with `-O<level>`.
+    /// Defaults to 0 (no optimization) if not specified.
+    #[serde(default)]
+    pub opt_level: Option<u8>,
 }
 
 /// A test file containing a section and its cases.
@@ -236,7 +241,7 @@ pub fn run_test_case(case: &Case, rue_binary: &Path) -> TestResult {
         .write_all(case.source.as_bytes())
         .map_err(|e| format!("Failed to write source: {}", e))?;
 
-    // Build base command with target and preview flags if needed
+    // Build base command with target, preview, and optimization flags if needed
     let build_command = |binary: &Path| -> Command {
         let mut cmd = Command::new(binary);
         if let Some(ref target) = case.target {
@@ -244,6 +249,9 @@ pub fn run_test_case(case: &Case, rue_binary: &Path) -> TestResult {
         }
         if let Some(ref feature) = case.preview {
             cmd.arg("--preview").arg(feature);
+        }
+        if let Some(level) = case.opt_level {
+            cmd.arg(format!("-O{}", level));
         }
         cmd
     };
