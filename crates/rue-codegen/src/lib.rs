@@ -15,6 +15,8 @@
 
 pub mod aarch64;
 pub mod index_map;
+pub mod liveness;
+pub mod regalloc;
 pub mod types;
 pub mod vreg;
 pub mod x86_64;

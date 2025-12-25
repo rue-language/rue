@@ -10,13 +10,12 @@
 //! 3. For each vreg, try to assign a register not used by interfering vregs
 //! 4. If no register is available, spill the longest-range vreg to stack
 
-use std::collections::HashSet;
-
 use rue_error::{CompileError, CompileResult, ErrorKind};
 
-use super::liveness::{self, LiveRange, LivenessInfo};
+use super::liveness::{self, LivenessInfo};
 use super::mir::{Operand, Reg, VReg, X86Inst, X86Mir};
 use crate::index_map::IndexMap;
+use crate::regalloc::{Allocation, linear_scan};
 
 /// Available registers for allocation.
 ///
@@ -39,29 +38,19 @@ const ALLOCATABLE_REGS: &[Reg] = &[
     Reg::Rbx, // Callee-saved
 ];
 
-/// Allocation result for a virtual register.
-#[derive(Debug, Clone, Copy)]
-enum Allocation {
-    /// Allocated to a physical register.
-    Register(Reg),
-    /// Spilled to a stack slot (offset from RBP).
-    Spill(i32),
-}
-
 /// Register allocator with liveness-based allocation.
 pub struct RegAlloc {
     mir: X86Mir,
     /// Maps virtual register to its allocation (register or spill slot).
-    allocation: IndexMap<VReg, Option<Allocation>>,
+    allocation: IndexMap<VReg, Option<Allocation<Reg>>>,
     /// Liveness information.
     liveness: LivenessInfo,
-    /// Next spill slot offset (negative from RBP).
-    /// Starts after the existing local variables.
-    next_spill_offset: i32,
     /// Number of spill slots used.
     num_spills: u32,
     /// Callee-saved registers that were used and need to be saved/restored.
     used_callee_saved: Vec<Reg>,
+    /// Number of existing local variable slots.
+    existing_locals: u32,
 }
 
 impl RegAlloc {
@@ -73,10 +62,6 @@ impl RegAlloc {
         let vreg_count = mir.vreg_count() as usize;
         let liveness = liveness::analyze(&mir);
 
-        // Spill slots start after existing locals
-        // Each local is 8 bytes, slot 0 is at [rbp-8], etc.
-        let next_spill_offset = -((existing_locals as i32 + 1) * 8);
-
         let mut allocation = IndexMap::with_capacity(vreg_count);
         allocation.resize(vreg_count, None);
 
@@ -84,9 +69,9 @@ impl RegAlloc {
             mir,
             allocation,
             liveness,
-            next_spill_offset,
             num_spills: 0,
             used_callee_saved: Vec::new(),
+            existing_locals,
         }
     }
 
@@ -121,84 +106,15 @@ impl RegAlloc {
 
     /// Assign physical registers to all virtual registers using linear scan.
     fn assign_registers(&mut self) {
-        // Pre-allocate for the maximum possible size (all vregs may have live ranges)
-        let mut vregs_by_start: Vec<(VReg, LiveRange)> =
-            Vec::with_capacity(self.mir.vreg_count() as usize);
-        for vreg_idx in 0..self.mir.vreg_count() {
-            let vreg = VReg::new(vreg_idx);
-            if let Some(&range) = self.liveness.range(vreg) {
-                vregs_by_start.push((vreg, range));
-            }
-        }
-        vregs_by_start.sort_by_key(|(_, range)| range.start);
-
-        // Track which registers are currently in use and when they become free
-        // Pre-allocate for typical register pressure (bounded by allocatable registers)
-        let mut active: Vec<(VReg, Reg, usize)> = Vec::with_capacity(ALLOCATABLE_REGS.len());
-
-        for (vreg, range) in vregs_by_start {
-            // Expire old intervals - registers whose vregs are no longer live
-            active.retain(|&(_, _, end)| end >= range.start);
-
-            // Find registers currently in use
-            let used_regs: HashSet<Reg> = active.iter().map(|&(_, reg, _)| reg).collect();
-
-            // Try to find a free register
-            let mut allocated_reg = None;
-            for &reg in ALLOCATABLE_REGS {
-                if !used_regs.contains(&reg) {
-                    allocated_reg = Some(reg);
-                    break;
-                }
-            }
-
-            if let Some(reg) = allocated_reg {
-                // Assign this register
-                self.allocation[vreg] = Some(Allocation::Register(reg));
-                active.push((vreg, reg, range.end));
-                // Track callee-saved register usage
-                if !self.used_callee_saved.contains(&reg) {
-                    self.used_callee_saved.push(reg);
-                }
-            } else {
-                // No free register - need to spill
-                // Strategy: spill the vreg with the longest remaining live range
-                // (including the current one)
-
-                // Find the vreg with the longest remaining range
-                let mut longest_idx = None;
-                let mut longest_end = range.end;
-                for (i, &(_, _, end)) in active.iter().enumerate() {
-                    if end > longest_end {
-                        longest_end = end;
-                        longest_idx = Some(i);
-                    }
-                }
-
-                if let Some(idx) = longest_idx {
-                    // Spill the existing vreg with longest range
-                    let (spilled_vreg, freed_reg, _) = active.remove(idx);
-                    let spill_offset = self.alloc_spill_slot();
-                    self.allocation[spilled_vreg] = Some(Allocation::Spill(spill_offset));
-
-                    // Give the freed register to the current vreg
-                    self.allocation[vreg] = Some(Allocation::Register(freed_reg));
-                    active.push((vreg, freed_reg, range.end));
-                } else {
-                    // Current vreg has the longest range, spill it
-                    let spill_offset = self.alloc_spill_slot();
-                    self.allocation[vreg] = Some(Allocation::Spill(spill_offset));
-                }
-            }
-        }
-    }
-
-    /// Allocate a new spill slot on the stack.
-    fn alloc_spill_slot(&mut self) -> i32 {
-        let offset = self.next_spill_offset;
-        self.next_spill_offset -= 8;
-        self.num_spills += 1;
-        offset
+        let (allocation, num_spills, used_callee_saved) = linear_scan(
+            self.mir.vreg_count(),
+            &self.liveness,
+            ALLOCATABLE_REGS,
+            self.existing_locals,
+        );
+        self.allocation = allocation;
+        self.num_spills = num_spills;
+        self.used_callee_saved = used_callee_saved;
     }
 
     /// Rewrite all instructions to use physical registers and handle spills.
@@ -903,7 +819,7 @@ impl RegAlloc {
     }
 
     /// Get the allocation for an operand (returns None for physical registers).
-    fn get_allocation(&self, operand: Operand) -> Option<Allocation> {
+    fn get_allocation(&self, operand: Operand) -> Option<Allocation<Reg>> {
         match operand {
             Operand::Virtual(vreg) => self.allocation[vreg],
             Operand::Physical(_) => None,

@@ -3,13 +3,12 @@
 //! This module allocates physical registers to virtual registers using
 //! liveness analysis and linear scan allocation.
 
-use std::collections::HashSet;
-
 use rue_error::{CompileError, CompileResult, ErrorKind};
 
-use super::liveness::{self, LiveRange, LivenessInfo};
+use super::liveness::{self, LivenessInfo};
 use super::mir::{Aarch64Inst, Aarch64Mir, Operand, Reg, VReg};
 use crate::index_map::IndexMap;
+use crate::regalloc::{Allocation, linear_scan};
 
 /// Available registers for allocation.
 ///
@@ -38,24 +37,16 @@ const ALLOCATABLE_REGS: &[Reg] = &[
     Reg::X28,
 ];
 
-/// Allocation result for a virtual register.
-#[derive(Debug, Clone, Copy)]
-enum Allocation {
-    /// Allocated to a physical register.
-    Register(Reg),
-    /// Spilled to a stack slot (offset from FP).
-    Spill(i32),
-}
-
 /// Register allocator for AArch64.
 pub struct RegAlloc {
     mir: Aarch64Mir,
     /// Maps virtual register to its allocation (register or spill slot).
-    allocation: IndexMap<VReg, Option<Allocation>>,
+    allocation: IndexMap<VReg, Option<Allocation<Reg>>>,
     liveness: LivenessInfo,
-    next_spill_offset: i32,
     num_spills: u32,
     used_callee_saved: Vec<Reg>,
+    /// Number of existing local variable slots.
+    existing_locals: u32,
 }
 
 impl RegAlloc {
@@ -63,7 +54,6 @@ impl RegAlloc {
     pub fn new(mir: Aarch64Mir, existing_locals: u32) -> Self {
         let vreg_count = mir.vreg_count() as usize;
         let liveness = liveness::analyze(&mir);
-        let next_spill_offset = -((existing_locals as i32 + 1) * 8);
 
         let mut allocation = IndexMap::with_capacity(vreg_count);
         allocation.resize(vreg_count, None);
@@ -72,9 +62,9 @@ impl RegAlloc {
             mir,
             allocation,
             liveness,
-            next_spill_offset,
             num_spills: 0,
             used_callee_saved: Vec::new(),
+            existing_locals,
         }
     }
 
@@ -101,68 +91,15 @@ impl RegAlloc {
 
     /// Assign physical registers to all virtual registers using linear scan.
     fn assign_registers(&mut self) {
-        // Pre-allocate for the maximum possible size (all vregs may have live ranges)
-        let mut vregs_by_start: Vec<(VReg, LiveRange)> =
-            Vec::with_capacity(self.mir.vreg_count() as usize);
-        for vreg_idx in 0..self.mir.vreg_count() {
-            let vreg = VReg::new(vreg_idx);
-            if let Some(&range) = self.liveness.range(vreg) {
-                vregs_by_start.push((vreg, range));
-            }
-        }
-        vregs_by_start.sort_by_key(|(_, range)| range.start);
-
-        // Pre-allocate for typical register pressure (bounded by allocatable registers)
-        let mut active: Vec<(VReg, Reg, usize)> = Vec::with_capacity(ALLOCATABLE_REGS.len());
-
-        for (vreg, range) in vregs_by_start {
-            active.retain(|&(_, _, end)| end >= range.start);
-
-            let used_regs: HashSet<Reg> = active.iter().map(|&(_, reg, _)| reg).collect();
-
-            let mut allocated_reg = None;
-            for &reg in ALLOCATABLE_REGS {
-                if !used_regs.contains(&reg) {
-                    allocated_reg = Some(reg);
-                    break;
-                }
-            }
-
-            if let Some(reg) = allocated_reg {
-                self.allocation[vreg] = Some(Allocation::Register(reg));
-                active.push((vreg, reg, range.end));
-                if !self.used_callee_saved.contains(&reg) {
-                    self.used_callee_saved.push(reg);
-                }
-            } else {
-                let mut longest_idx = None;
-                let mut longest_end = range.end;
-                for (i, &(_, _, end)) in active.iter().enumerate() {
-                    if end > longest_end {
-                        longest_end = end;
-                        longest_idx = Some(i);
-                    }
-                }
-
-                if let Some(idx) = longest_idx {
-                    let (spilled_vreg, freed_reg, _) = active.remove(idx);
-                    let spill_offset = self.alloc_spill_slot();
-                    self.allocation[spilled_vreg] = Some(Allocation::Spill(spill_offset));
-                    self.allocation[vreg] = Some(Allocation::Register(freed_reg));
-                    active.push((vreg, freed_reg, range.end));
-                } else {
-                    let spill_offset = self.alloc_spill_slot();
-                    self.allocation[vreg] = Some(Allocation::Spill(spill_offset));
-                }
-            }
-        }
-    }
-
-    fn alloc_spill_slot(&mut self) -> i32 {
-        let offset = self.next_spill_offset;
-        self.next_spill_offset -= 8;
-        self.num_spills += 1;
-        offset
+        let (allocation, num_spills, used_callee_saved) = linear_scan(
+            self.mir.vreg_count(),
+            &self.liveness,
+            ALLOCATABLE_REGS,
+            self.existing_locals,
+        );
+        self.allocation = allocation;
+        self.num_spills = num_spills;
+        self.used_callee_saved = used_callee_saved;
     }
 
     fn rewrite_instructions(&mut self) -> CompileResult<()> {
@@ -934,7 +871,7 @@ impl RegAlloc {
         Ok(())
     }
 
-    fn get_allocation(&self, operand: Operand) -> Option<Allocation> {
+    fn get_allocation(&self, operand: Operand) -> Option<Allocation<Reg>> {
         match operand {
             Operand::Virtual(vreg) => self.allocation[vreg],
             Operand::Physical(_) => None,

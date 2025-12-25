@@ -15,74 +15,11 @@ use std::collections::{HashMap, HashSet};
 
 use super::mir::{Operand, Reg, VReg, X86Inst, X86Mir};
 
-/// Live range for a virtual register.
-///
-/// Represents the instruction range where this vreg's value is needed.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct LiveRange {
-    /// Instruction index where the vreg is defined (first write).
-    pub start: usize,
-    /// Instruction index where the vreg is last used (last read).
-    pub end: usize,
-}
+// Re-export shared types from the common liveness module
+pub use crate::liveness::LiveRange;
 
-impl LiveRange {
-    /// Check if this live range overlaps with another.
-    pub fn overlaps(&self, other: &LiveRange) -> bool {
-        self.start <= other.end && other.start <= self.end
-    }
-}
-
-/// Result of liveness analysis.
-pub struct LivenessInfo {
-    /// Live range for each virtual register.
-    pub ranges: HashMap<VReg, LiveRange>,
-    /// For each instruction, which vregs are live after it executes.
-    /// This is useful for determining which registers are in use at any point.
-    pub live_at: Vec<HashSet<VReg>>,
-    /// For each instruction index, the physical registers clobbered by that instruction.
-    /// This is used to prevent allocating vregs to registers that would be clobbered.
-    pub clobbers_at: Vec<Vec<Reg>>,
-}
-
-impl LivenessInfo {
-    /// Get vregs that are live at a given instruction index.
-    pub fn live_at(&self, inst_idx: usize) -> &HashSet<VReg> {
-        &self.live_at[inst_idx]
-    }
-
-    /// Get the live range for a vreg.
-    pub fn range(&self, vreg: VReg) -> Option<&LiveRange> {
-        self.ranges.get(&vreg)
-    }
-
-    /// Check if two vregs interfere (have overlapping live ranges).
-    pub fn interferes(&self, a: VReg, b: VReg) -> bool {
-        match (self.ranges.get(&a), self.ranges.get(&b)) {
-            (Some(ra), Some(rb)) => ra.overlaps(rb),
-            _ => false,
-        }
-    }
-
-    /// Get the physical registers clobbered at a given instruction index.
-    pub fn clobbers_at(&self, inst_idx: usize) -> &[Reg] {
-        &self.clobbers_at[inst_idx]
-    }
-
-    /// Check if a physical register is clobbered while a vreg is live.
-    ///
-    /// Returns true if `reg` is clobbered by any instruction during the live range of `vreg`.
-    pub fn is_clobbered_during(&self, vreg: VReg, reg: Reg) -> bool {
-        if let Some(range) = self.ranges.get(&vreg) {
-            for idx in range.start..=range.end {
-                if idx < self.clobbers_at.len() && self.clobbers_at[idx].contains(&reg) {
-                    return true;
-                }
-            }
-        }
-        false
-    }
-}
+/// Type alias for x86_64-specific liveness info.
+pub type LivenessInfo = crate::liveness::LivenessInfo<Reg>;
 
 /// Compute liveness information for X86Mir.
 pub fn analyze(mir: &X86Mir) -> LivenessInfo {
@@ -126,7 +63,7 @@ pub fn analyze(mir: &X86Mir) -> LivenessInfo {
     for vreg_idx in 0..mir.vreg_count() {
         let vreg = VReg::new(vreg_idx);
         if let (Some(&start), Some(&end)) = (first_def.get(&vreg), last_use.get(&vreg)) {
-            ranges.insert(vreg, LiveRange { start, end });
+            ranges.insert(vreg, LiveRange::new(start, end));
         }
     }
 
@@ -448,9 +385,9 @@ mod tests {
         let info = analyze(&mir);
 
         // v0 is defined at 0, last used at 1
-        assert_eq!(info.ranges.get(&v0), Some(&LiveRange { start: 0, end: 1 }));
+        assert_eq!(info.ranges.get(&v0), Some(&LiveRange::new(0, 1)));
         // v1 is defined at 1, last used at 1 (no further use)
-        assert_eq!(info.ranges.get(&v1), Some(&LiveRange { start: 1, end: 1 }));
+        assert_eq!(info.ranges.get(&v1), Some(&LiveRange::new(1, 1)));
     }
 
     #[test]
