@@ -27,6 +27,8 @@ pub enum TokenKind {
     False,
     Struct,
     Enum,
+    Impl,
+    SelfValue, // self (value, not type)
 
     // Type keywords
     I8,
@@ -111,6 +113,8 @@ impl TokenKind {
             TokenKind::False => "'false'",
             TokenKind::Struct => "'struct'",
             TokenKind::Enum => "'enum'",
+            TokenKind::Impl => "'impl'",
+            TokenKind::SelfValue => "'self'",
             TokenKind::I8 => "type 'i8'",
             TokenKind::I16 => "type 'i16'",
             TokenKind::I32 => "type 'i32'",
@@ -199,6 +203,8 @@ impl std::fmt::Display for TokenKind {
             TokenKind::False => write!(f, "FALSE"),
             TokenKind::Struct => write!(f, "STRUCT"),
             TokenKind::Enum => write!(f, "ENUM"),
+            TokenKind::Impl => write!(f, "IMPL"),
+            TokenKind::SelfValue => write!(f, "SELF"),
             TokenKind::I8 => write!(f, "TYPE(i8)"),
             TokenKind::I16 => write!(f, "TYPE(i16)"),
             TokenKind::I32 => write!(f, "TYPE(i32)"),

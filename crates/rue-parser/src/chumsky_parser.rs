@@ -6,10 +6,11 @@
 use crate::ast::{
     ArrayLitExpr, AssignStatement, AssignTarget, Ast, BinaryExpr, BinaryOp, BlockExpr, BoolLit,
     BreakExpr, CallExpr, ContinueExpr, Directive, DirectiveArg, EnumDecl, EnumVariant, Expr,
-    FieldDecl, FieldExpr, FieldInit, Function, Ident, IfExpr, IndexExpr, IntLit, IntrinsicArg,
-    IntrinsicCallExpr, Item, LetPattern, LetStatement, LoopExpr, MatchArm, MatchExpr, NegIntLit,
-    Param, ParenExpr, PathExpr, PathPattern, Pattern, ReturnExpr, Statement, StringLit, StructDecl,
-    StructLitExpr, TypeExpr, UnaryExpr, UnaryOp, UnitLit, WhileExpr,
+    FieldDecl, FieldExpr, FieldInit, Function, Ident, IfExpr, ImplBlock, IndexExpr, IntLit,
+    IntrinsicArg, IntrinsicCallExpr, Item, LetPattern, LetStatement, LoopExpr, MatchArm, MatchExpr,
+    Method, MethodCallExpr, NegIntLit, Param, ParenExpr, PathExpr, PathPattern, Pattern,
+    ReturnExpr, SelfParam, Statement, StringLit, StructDecl, StructLitExpr, TypeExpr, UnaryExpr,
+    UnaryOp, UnitLit, WhileExpr,
 };
 use chumsky::input::{Input as ChumskyInput, Stream, ValueInput};
 use chumsky::pratt::{infix, left, prefix};
@@ -729,31 +730,60 @@ where
         block_expr,
     ));
 
-    // Suffix for field access (.field) or indexing ([expr])
+    // Suffix for field access (.field), method call (.method(args)), or indexing ([expr])
     #[derive(Clone)]
     enum Suffix {
         Field(Ident),
+        MethodCall(Ident, Vec<Expr>),
         Index(Expr),
     }
 
+    // Method call: .ident(args)
+    let method_call_suffix = just(TokenKind::Dot)
+        .ignore_then(ident_parser())
+        .then(
+            args_parser(expr.clone())
+                .delimited_by(just(TokenKind::LParen), just(TokenKind::RParen)),
+        )
+        .map(|(method, args)| Suffix::MethodCall(method, args));
+
+    // Field access: .ident (but NOT followed by ()
     let field_suffix = just(TokenKind::Dot)
         .ignore_then(ident_parser())
+        .then_ignore(none_of([TokenKind::LParen]).rewind())
         .map(Suffix::Field);
 
     let index_suffix = expr
         .delimited_by(just(TokenKind::LBracket), just(TokenKind::RBracket))
         .map(Suffix::Index);
 
-    // Field access and indexing suffix: .field or [expr]
-    // Handles chains like a.b.c or a[0][1] or a[0].field
+    // Field access, method call, and indexing suffix: .field, .method(), or [expr]
+    // Method call must come before field access to catch .method(args) before .field
+    // Handles chains like a.b.c or a[0][1] or a[0].field or a.method().field
     primary.foldl(
-        choice((field_suffix, index_suffix)).repeated(),
+        choice((method_call_suffix, field_suffix, index_suffix)).repeated(),
         |base, suffix| match suffix {
             Suffix::Field(field) => {
                 let span = Span::new(base.span().start, field.span.end);
                 Expr::Field(FieldExpr {
                     base: Box::new(base),
                     field,
+                    span,
+                })
+            }
+            Suffix::MethodCall(method, args) => {
+                let end = if args.is_empty() {
+                    // Span ends after the closing paren, but we don't have that span
+                    // We'll use the method name span end + 2 for "()" as approximation
+                    method.span.end + 2
+                } else {
+                    args.last().unwrap().span().end + 1
+                };
+                let span = Span::new(base.span().start, end);
+                Expr::MethodCall(MethodCallExpr {
+                    receiver: Box::new(base),
+                    method,
+                    args,
                     span,
                 })
             }
@@ -1166,7 +1196,79 @@ where
         })
 }
 
-/// Parser for top-level items (functions, structs, and enums)
+/// Parser for method definitions: [@directive]* fn name(self, params) -> Type { body }
+/// Methods differ from functions in that they can have `self` as the first parameter.
+fn method_parser<'src, I>()
+-> impl Parser<'src, I, Method, extra::Err<Rich<'src, TokenKind>>> + Clone
+where
+    I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
+{
+    let expr = expr_parser();
+
+    // Parse optional self parameter
+    let self_param = just(TokenKind::SelfValue).map_with(|_, e| SelfParam {
+        span: to_rue_span(e.span()),
+    });
+
+    // Parse self followed by optional regular params
+    let self_then_params = self_param
+        .then(
+            just(TokenKind::Comma)
+                .ignore_then(params_parser())
+                .or_not()
+                .map(|opt| opt.unwrap_or_default()),
+        )
+        .map(|(self_param, params)| (Some(self_param), params));
+
+    // Parse just regular params (no self) - this is an associated function
+    let just_params = params_parser().map(|params| (None, params));
+
+    // Try self first, then fall back to regular params
+    let params_with_optional_self = self_then_params.or(just_params);
+
+    directives_parser()
+        .then(just(TokenKind::Fn).ignore_then(ident_parser()))
+        .then(
+            params_with_optional_self
+                .delimited_by(just(TokenKind::LParen), just(TokenKind::RParen)),
+        )
+        .then(just(TokenKind::Arrow).ignore_then(type_parser()).or_not())
+        .then(block_parser(expr))
+        .map_with(
+            |((((directives, name), (receiver, params)), return_type), body), e| Method {
+                directives,
+                name,
+                receiver,
+                params,
+                return_type,
+                body,
+                span: to_rue_span(e.span()),
+            },
+        )
+}
+
+/// Parser for impl blocks: impl Type { fn... }
+fn impl_parser<'src, I>()
+-> impl Parser<'src, I, ImplBlock, extra::Err<Rich<'src, TokenKind>>> + Clone
+where
+    I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
+{
+    just(TokenKind::Impl)
+        .ignore_then(ident_parser())
+        .then(
+            method_parser()
+                .repeated()
+                .collect::<Vec<_>>()
+                .delimited_by(just(TokenKind::LBrace), just(TokenKind::RBrace)),
+        )
+        .map_with(|(type_name, methods), e| ImplBlock {
+            type_name,
+            methods,
+            span: to_rue_span(e.span()),
+        })
+}
+
+/// Parser for top-level items (functions, structs, enums, and impl blocks)
 fn item_parser<'src, I>() -> impl Parser<'src, I, Item, extra::Err<Rich<'src, TokenKind>>> + Clone
 where
     I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
@@ -1175,6 +1277,7 @@ where
         function_parser().map(Item::Function),
         struct_parser().map(Item::Struct),
         enum_parser().map(Item::Enum),
+        impl_parser().map(Item::Impl),
     ))
 }
 
@@ -1296,6 +1399,7 @@ mod tests {
             },
             Item::Struct(_) => panic!("parse_expr helper should only be used with functions"),
             Item::Enum(_) => panic!("parse_expr helper should only be used with functions"),
+            Item::Impl(_) => panic!("parse_expr helper should only be used with functions"),
         }
     }
 
@@ -1321,6 +1425,7 @@ mod tests {
             }
             Item::Struct(_) => panic!("expected Function"),
             Item::Enum(_) => panic!("expected Function"),
+            Item::Impl(_) => panic!("expected Function"),
         }
     }
 
@@ -1386,6 +1491,7 @@ mod tests {
             },
             Item::Struct(_) => panic!("expected Function"),
             Item::Enum(_) => panic!("expected Function"),
+            Item::Impl(_) => panic!("expected Function"),
         }
     }
 

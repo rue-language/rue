@@ -405,6 +405,25 @@ pub enum InstData {
         /// Value to store
         value: InstRef,
     },
+
+    // Method operations (preview: methods)
+    /// Impl block declaration
+    ImplDecl {
+        /// Type name this impl block is for
+        type_name: Symbol,
+        /// Methods defined in this impl block (references to FnDecl instructions)
+        methods: Vec<InstRef>,
+    },
+
+    /// Method call: receiver.method(args)
+    MethodCall {
+        /// Receiver expression (the struct value)
+        receiver: InstRef,
+        /// Method name
+        method: Symbol,
+        /// Argument instruction refs
+        args: Vec<InstRef>,
+    },
 }
 
 impl fmt::Display for InstRef {
@@ -709,6 +728,30 @@ impl<'a, 'b> RirPrinter<'a, 'b> {
                 }
                 InstData::IndexSet { base, index, value } => {
                     out.push_str(&format!("index_set {}[{}] = {}\n", base, index, value));
+                }
+                InstData::ImplDecl { type_name, methods } => {
+                    let type_str = self.interner.get(*type_name);
+                    let methods_str: Vec<String> =
+                        methods.iter().map(|m| format!("{}", m)).collect();
+                    out.push_str(&format!(
+                        "impl {} {{ {} }}\n",
+                        type_str,
+                        methods_str.join(", ")
+                    ));
+                }
+                InstData::MethodCall {
+                    receiver,
+                    method,
+                    args,
+                } => {
+                    let method_str = self.interner.get(*method);
+                    let args_str: Vec<String> = args.iter().map(|a| format!("{}", a)).collect();
+                    out.push_str(&format!(
+                        "method_call {}.{}({})\n",
+                        receiver,
+                        method_str,
+                        args_str.join(", ")
+                    ));
                 }
             }
         }

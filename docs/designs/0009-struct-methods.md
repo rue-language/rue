@@ -132,7 +132,7 @@ Methods can only be defined for structs in the same compilation unit. (This is a
 
 ## Implementation Phases
 
-- [ ] **Phase 1: Parsing** - rue-qs3z.1
+- [x] **Phase 1: Parsing** - rue-qs3z.1
   - Add `impl` keyword to lexer
   - Parse `impl Type { fn... }` blocks
   - Add `Item::ImplBlock` to AST
@@ -148,6 +148,11 @@ Methods can only be defined for structs in the same compilation unit. (This is a
   - Type check impl blocks
   - Resolve method calls to their definitions
   - Handle `self` parameter binding
+  - Method resolution requires:
+    1. Looking up the receiver type
+    2. Finding the impl block for that type
+    3. Resolving the method name
+    4. Type checking the arguments against method signature
 
 - [ ] **Phase 4: Code Generation** - rue-qs3z.4
   - Lower method calls to regular calls with receiver as first argument

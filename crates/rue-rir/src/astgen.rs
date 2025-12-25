@@ -9,8 +9,8 @@ use rue_intern::Interner;
 /// These intrinsics operate on types at compile time (e.g., @size_of(i32)).
 const TYPE_INTRINSICS: &[&str] = &["size_of", "align_of"];
 use rue_parser::{
-    AssignTarget, Ast, BinaryOp, Directive, DirectiveArg, EnumDecl, Expr, Function, IntrinsicArg,
-    Item, LetPattern, Pattern, Statement, StructDecl, TypeExpr, UnaryOp,
+    AssignTarget, Ast, BinaryOp, Directive, DirectiveArg, EnumDecl, Expr, Function, ImplBlock,
+    IntrinsicArg, Item, LetPattern, Method, Pattern, Statement, StructDecl, TypeExpr, UnaryOp,
 };
 
 use crate::inst::{Inst, InstData, InstRef, Rir, RirDirective, RirPattern};
@@ -53,6 +53,11 @@ impl<'a> AstGen<'a> {
             }
             Item::Enum(enum_decl) => {
                 self.gen_enum(enum_decl);
+            }
+            Item::Impl(impl_block) => {
+                // Impl blocks are handled in Phase 2 (RIR Generation)
+                // For now, store them for later processing by sema
+                self.gen_impl_block(impl_block);
             }
         }
     }
@@ -107,6 +112,61 @@ impl<'a> AstGen<'a> {
         self.rir.add_inst(Inst {
             data: InstData::EnumDecl { name, variants },
             span: enum_decl.span,
+        })
+    }
+
+    fn gen_impl_block(&mut self, impl_block: &ImplBlock) -> InstRef {
+        let type_name = self.interner.intern(&impl_block.type_name.name);
+
+        // Generate each method in the impl block
+        let methods: Vec<_> = impl_block
+            .methods
+            .iter()
+            .map(|m| self.gen_method(m))
+            .collect();
+
+        self.rir.add_inst(Inst {
+            data: InstData::ImplDecl { type_name, methods },
+            span: impl_block.span,
+        })
+    }
+
+    fn gen_method(&mut self, method: &Method) -> InstRef {
+        // Convert directives
+        let directives = self.convert_directives(&method.directives);
+
+        // Intern the method name and return type
+        let name = self.interner.intern(&method.name.name);
+        let return_type = match &method.return_type {
+            Some(ty) => self.intern_type(ty),
+            None => self.interner.intern("()"), // Default to unit type
+        };
+
+        // Intern parameters (excluding self, which is handled specially by sema)
+        let params: Vec<_> = method
+            .params
+            .iter()
+            .map(|p| {
+                let param_name = self.interner.intern(&p.name.name);
+                let param_type = self.intern_type(&p.ty);
+                (param_name, param_type)
+            })
+            .collect();
+
+        // Generate body expression
+        let body = self.gen_expr(&method.body);
+
+        // For now, we emit methods as regular FnDecl instructions.
+        // Sema will handle the method resolution and self parameter.
+        self.rir.add_inst(Inst {
+            data: InstData::FnDecl {
+                directives,
+                name,
+                params,
+                return_type,
+                body,
+            },
+            span: method.span,
         })
     }
 
@@ -405,6 +465,20 @@ impl<'a> AstGen<'a> {
                 self.rir.add_inst(Inst {
                     data: InstData::EnumVariant { type_name, variant },
                     span: path_expr.span,
+                })
+            }
+            Expr::MethodCall(method_call) => {
+                let receiver = self.gen_expr(&method_call.receiver);
+                let method = self.interner.intern(&method_call.method.name);
+                let args: Vec<_> = method_call.args.iter().map(|a| self.gen_expr(a)).collect();
+
+                self.rir.add_inst(Inst {
+                    data: InstData::MethodCall {
+                        receiver,
+                        method,
+                        args,
+                    },
+                    span: method_call.span,
                 })
             }
         }

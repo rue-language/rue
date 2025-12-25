@@ -1,0 +1,114 @@
+[section]
+id = "items.impl-blocks"
+spec_chapter = "6.4"
+name = "Impl Blocks and Methods"
+description = "Impl block definitions and method calls."
+
+# =============================================================================
+# Basic Impl Block Syntax (Parsing Only - Phase 1)
+# =============================================================================
+
+# These tests verify that impl blocks and method calls parse correctly.
+# They are expected to fail at later compilation stages until Phase 2-4 are complete.
+
+[[case]]
+name = "impl_block_basic_parse"
+preview = "methods"
+source = """
+struct Point { x: i32, y: i32 }
+
+impl Point {
+    fn get_x(self) -> i32 {
+        self.x
+    }
+}
+
+fn main() -> i32 {
+    let p = Point { x: 42, y: 10 };
+    p.get_x()
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "impl_block_associated_function"
+preview = "methods"
+source = """
+struct Point { x: i32, y: i32 }
+
+impl Point {
+    fn origin() -> Point {
+        Point { x: 0, y: 0 }
+    }
+}
+
+fn main() -> i32 {
+    let p = Point::origin();
+    p.x
+}
+"""
+exit_code = 0
+
+[[case]]
+name = "impl_block_method_with_args"
+preview = "methods"
+source = """
+struct Point { x: i32, y: i32 }
+
+impl Point {
+    fn add(self, dx: i32, dy: i32) -> Point {
+        Point { x: self.x + dx, y: self.y + dy }
+    }
+}
+
+fn main() -> i32 {
+    let p = Point { x: 10, y: 20 };
+    let p2 = p.add(32, 0);
+    p2.x
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "method_call_chain"
+preview = "methods"
+source = """
+struct Counter { value: i32 }
+
+impl Counter {
+    fn inc(self) -> Counter {
+        Counter { value: self.value + 1 }
+    }
+}
+
+fn main() -> i32 {
+    let c = Counter { value: 39 };
+    c.inc().inc().inc().value
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "multiple_impl_blocks"
+preview = "methods"
+source = """
+struct Point { x: i32, y: i32 }
+
+impl Point {
+    fn get_x(self) -> i32 {
+        self.x
+    }
+}
+
+impl Point {
+    fn get_y(self) -> i32 {
+        self.y
+    }
+}
+
+fn main() -> i32 {
+    let p = Point { x: 42, y: 10 };
+    p.get_x()
+}
+"""
+exit_code = 42

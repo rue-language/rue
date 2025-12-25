@@ -79,6 +79,10 @@ pub enum LogosTokenKind {
     Struct,
     #[token("enum")]
     Enum,
+    #[token("impl")]
+    Impl,
+    #[token("self")]
+    SelfValue,
 
     // Type keywords
     #[token("i8")]
@@ -213,6 +217,8 @@ impl From<LogosTokenKind> for TokenKind {
             LogosTokenKind::False => TokenKind::False,
             LogosTokenKind::Struct => TokenKind::Struct,
             LogosTokenKind::Enum => TokenKind::Enum,
+            LogosTokenKind::Impl => TokenKind::Impl,
+            LogosTokenKind::SelfValue => TokenKind::SelfValue,
             LogosTokenKind::I8 => TokenKind::I8,
             LogosTokenKind::I16 => TokenKind::I16,
             LogosTokenKind::I32 => TokenKind::I32,

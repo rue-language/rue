@@ -1549,9 +1549,13 @@ impl<'a> ConstraintGenerator<'a> {
             }
 
             // Type declarations don't produce values
-            InstData::FnDecl { .. } | InstData::StructDecl { .. } | InstData::EnumDecl { .. } => {
-                InferType::Concrete(Type::Unit)
-            }
+            InstData::FnDecl { .. }
+            | InstData::StructDecl { .. }
+            | InstData::EnumDecl { .. }
+            | InstData::ImplDecl { .. } => InferType::Concrete(Type::Unit),
+
+            // Method call - placeholder for Phase 3 (see ADR-0009)
+            InstData::MethodCall { .. } => InferType::Concrete(Type::Unit),
         };
 
         // Record the type for this expression

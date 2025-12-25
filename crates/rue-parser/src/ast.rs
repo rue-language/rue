@@ -41,6 +41,7 @@ pub enum Item {
     Function(Function),
     Struct(StructDecl),
     Enum(EnumDecl),
+    Impl(ImplBlock),
 }
 
 /// A struct declaration.
@@ -82,6 +83,43 @@ pub struct EnumVariant {
     /// Variant name
     pub name: Ident,
     /// Span covering the variant
+    pub span: Span,
+}
+
+/// An impl block containing methods for a type.
+#[derive(Debug, Clone)]
+pub struct ImplBlock {
+    /// The type this impl block is for
+    pub type_name: Ident,
+    /// Methods in this impl block
+    pub methods: Vec<Method>,
+    /// Span covering the entire impl block
+    pub span: Span,
+}
+
+/// A method definition in an impl block.
+#[derive(Debug, Clone)]
+pub struct Method {
+    /// Directives applied to this method
+    pub directives: Vec<Directive>,
+    /// Method name
+    pub name: Ident,
+    /// Whether this method takes self (None = associated function, Some = method with receiver)
+    pub receiver: Option<SelfParam>,
+    /// Method parameters (excluding self)
+    pub params: Vec<Param>,
+    /// Return type (None means implicit unit `()`)
+    pub return_type: Option<TypeExpr>,
+    /// Method body
+    pub body: Expr,
+    /// Span covering the entire method
+    pub span: Span,
+}
+
+/// A self parameter in a method.
+#[derive(Debug, Clone)]
+pub struct SelfParam {
+    /// Span covering the `self` keyword
     pub span: Span,
 }
 
@@ -209,6 +247,8 @@ pub enum Expr {
     StructLit(StructLitExpr),
     /// Field access (e.g., `point.x`)
     Field(FieldExpr),
+    /// Method call (e.g., `point.distance()`)
+    MethodCall(MethodCallExpr),
     /// Intrinsic call (e.g., `@dbg(42)`)
     IntrinsicCall(IntrinsicCallExpr),
     /// Array literal (e.g., `[1, 2, 3]`)
@@ -447,6 +487,18 @@ pub struct FieldExpr {
     pub span: Span,
 }
 
+/// A method call expression (e.g., `point.distance()`).
+#[derive(Debug, Clone)]
+pub struct MethodCallExpr {
+    /// Base expression (the receiver)
+    pub receiver: Box<Expr>,
+    /// Method name
+    pub method: Ident,
+    /// Arguments (excluding self)
+    pub args: Vec<Expr>,
+    pub span: Span,
+}
+
 /// An array literal expression (e.g., `[1, 2, 3]`).
 #[derive(Debug, Clone)]
 pub struct ArrayLitExpr {
@@ -603,6 +655,7 @@ impl Expr {
             Expr::Return(return_expr) => return_expr.span,
             Expr::StructLit(struct_lit) => struct_lit.span,
             Expr::Field(field_expr) => field_expr.span,
+            Expr::MethodCall(method_call) => method_call.span,
             Expr::IntrinsicCall(intrinsic) => intrinsic.span,
             Expr::ArrayLit(array_lit) => array_lit.span,
             Expr::Index(index_expr) => index_expr.span,
@@ -632,6 +685,7 @@ impl<'a> fmt::Display for AstPrinter<'a> {
                 Item::Function(func) => fmt_function(f, func, 0)?,
                 Item::Struct(s) => fmt_struct(f, s, 0)?,
                 Item::Enum(e) => fmt_enum(f, e, 0)?,
+                Item::Impl(impl_block) => fmt_impl_block(f, impl_block, 0)?,
             }
         }
         Ok(())
@@ -662,6 +716,40 @@ fn fmt_enum(f: &mut fmt::Formatter<'_>, e: &EnumDecl, level: usize) -> fmt::Resu
         indent(f, level + 1)?;
         writeln!(f, "Variant {}", variant.name.name)?;
     }
+    Ok(())
+}
+
+fn fmt_impl_block(f: &mut fmt::Formatter<'_>, impl_block: &ImplBlock, level: usize) -> fmt::Result {
+    indent(f, level)?;
+    writeln!(f, "Impl {}", impl_block.type_name.name)?;
+    for method in &impl_block.methods {
+        fmt_method(f, method, level + 1)?;
+    }
+    Ok(())
+}
+
+fn fmt_method(f: &mut fmt::Formatter<'_>, method: &Method, level: usize) -> fmt::Result {
+    indent(f, level)?;
+    write!(f, "Method {}", method.name.name)?;
+    write!(f, "(")?;
+    if method.receiver.is_some() {
+        write!(f, "self")?;
+        if !method.params.is_empty() {
+            write!(f, ", ")?;
+        }
+    }
+    for (i, param) in method.params.iter().enumerate() {
+        if i > 0 {
+            write!(f, ", ")?;
+        }
+        write!(f, "{}: {}", param.name.name, param.ty)?;
+    }
+    write!(f, ")")?;
+    if let Some(ref ret) = method.return_type {
+        write!(f, " -> {}", ret)?;
+    }
+    writeln!(f)?;
+    fmt_expr(f, &method.body, level + 1)?;
     Ok(())
 }
 
@@ -796,6 +884,20 @@ fn fmt_expr(f: &mut fmt::Formatter<'_>, expr: &Expr, level: usize) -> fmt::Resul
         Expr::Field(field) => {
             writeln!(f, "Field .{}", field.field.name)?;
             fmt_expr(f, &field.base, level + 1)
+        }
+        Expr::MethodCall(method_call) => {
+            writeln!(f, "MethodCall .{}", method_call.method.name)?;
+            indent(f, level + 1)?;
+            writeln!(f, "Receiver:")?;
+            fmt_expr(f, &method_call.receiver, level + 2)?;
+            if !method_call.args.is_empty() {
+                indent(f, level + 1)?;
+                writeln!(f, "Args:")?;
+                for arg in &method_call.args {
+                    fmt_expr(f, arg, level + 2)?;
+                }
+            }
+            Ok(())
         }
         Expr::ArrayLit(array) => {
             writeln!(f, "ArrayLit")?;

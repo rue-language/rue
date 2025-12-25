@@ -2600,6 +2600,27 @@ impl<'a> Sema<'a> {
                 });
                 Ok(AnalysisResult::new(air_ref, ty))
             }
+
+            // Impl block declarations are processed during collection phase, skip here
+            InstData::ImplDecl { .. } => {
+                // Return Unit - impl blocks don't produce a value
+                let air_ref = air.add_inst(AirInst {
+                    data: AirInstData::UnitConst,
+                    ty: Type::Unit,
+                    span: inst.span,
+                });
+                Ok(AnalysisResult::new(air_ref, Type::Unit))
+            }
+
+            // Method call - placeholder for Phase 3 (see ADR-0009)
+            InstData::MethodCall { .. } => {
+                let air_ref = air.add_inst(AirInst {
+                    data: AirInstData::UnitConst,
+                    ty: Type::Unit,
+                    span: inst.span,
+                });
+                Ok(AnalysisResult::new(air_ref, Type::Unit))
+            }
         }
     }
 
