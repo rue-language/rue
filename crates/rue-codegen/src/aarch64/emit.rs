@@ -110,6 +110,10 @@ const OPCODE_ASRV_W: u32 = 0x1AC02800;
 /// CMP Xn, #imm12 - Compare immediate (alias for SUBS XZR, Xn, #imm12)
 const OPCODE_CMP_IMM_X: u32 = 0xF1000000;
 
+// PC-relative addressing
+/// ADRP Xd, label - PC-relative address to 4KB page
+const OPCODE_ADRP: u32 = 0x90000000;
+
 // Branch instructions
 /// B label - Unconditional branch
 const OPCODE_B: u32 = 0x14000000;
@@ -131,6 +135,34 @@ const OPCODE_CSINC_CSET: u32 = 0x9A9F07E0;
 const OPCODE_SBFM_X: u32 = 0x93400000;
 /// UBFM Xd, Xn, #immr, #imms - Unsigned bit field move (64-bit)
 const OPCODE_UBFM_X: u32 = 0xD3400000;
+/// SBFM Wd, Wn, #immr, #imms - Signed bit field move (32-bit)
+const OPCODE_SBFM_W: u32 = 0x13000000;
+/// UBFM Wd, Wn, #immr, #imms - Unsigned bit field move (32-bit)
+const OPCODE_UBFM_W: u32 = 0x53000000;
+/// LSR Xd, Xn, #imm - Logical shift right (64-bit, encoded as UBFM with imms=63)
+const OPCODE_LSR_X: u32 = 0xD340FC00;
+/// ASR Xd, Xn, #imm - Arithmetic shift right (64-bit, encoded as SBFM with imms=63)
+const OPCODE_ASR_X: u32 = 0x9340FC00;
+
+// Multiply-accumulate instructions
+/// UMULL Xd, Wn, Wm - Unsigned multiply long (32->64, alias for UMADDL Xd, Wn, Wm, XZR)
+const OPCODE_UMULL: u32 = 0x9BA07C00;
+/// SMULH Xd, Xn, Xm - Signed multiply high (upper 64 bits of 64x64)
+const OPCODE_SMULH: u32 = 0x9B407C00;
+/// UMULH Xd, Xn, Xm - Unsigned multiply high (upper 64 bits of 64x64)
+const OPCODE_UMULH: u32 = 0x9BC07C00;
+
+// Immediate masks for instruction encoding
+/// Mask for 16-bit immediate chunks
+const IMM16_MASK: u64 = 0xFFFF;
+/// Branch offset mask for B instruction (imm26)
+const BRANCH_OFFSET_MASK: u32 = 0x03FFFFFF;
+/// Branch opcode mask for B instruction
+const BRANCH_OPCODE_MASK: u32 = 0xFC000000;
+/// Conditional branch offset mask (imm19)
+const COND_BRANCH_OFFSET_MASK: u32 = 0x7FFFF;
+/// Conditional branch opcode mask
+const COND_BRANCH_OPCODE_MASK: u32 = 0xFF00001F;
 
 /// A pending fixup for a forward branch.
 struct Fixup {
@@ -709,7 +741,7 @@ impl<'a> Emitter<'a> {
                 // ADRP dst, <symbol>
                 // This loads the 4KB-aligned page address of the symbol
                 let offset = self.code.len();
-                let adrp = 0x90000000_u32 | rd.encoding() as u32;
+                let adrp = OPCODE_ADRP | rd.encoding() as u32;
                 self.emit_u32(adrp);
 
                 // Record relocation for ADRP using the helper
@@ -720,7 +752,7 @@ impl<'a> Emitter<'a> {
                 // ADD dst, dst, <symbol>
                 // This adds the offset within the page
                 let offset = self.code.len();
-                let add = 0x91000000_u32 | (rd.encoding() as u32) << 5 | rd.encoding() as u32;
+                let add = OPCODE_ADD_IMM_X | (rd.encoding() as u32) << 5 | rd.encoding() as u32;
                 self.emit_u32(add);
 
                 // Record relocation for ADD using the helper
@@ -804,7 +836,8 @@ impl<'a> Emitter<'a> {
                                 .try_into()
                                 .unwrap(),
                         );
-                        let new_inst = (inst & 0xFC000000) | ((offset as u32) & 0x03FFFFFF);
+                        let new_inst =
+                            (inst & BRANCH_OPCODE_MASK) | ((offset as u32) & BRANCH_OFFSET_MASK);
                         self.code[fixup.offset..fixup.offset + 4]
                             .copy_from_slice(&new_inst.to_le_bytes());
                     }
@@ -815,7 +848,8 @@ impl<'a> Emitter<'a> {
                                 .try_into()
                                 .unwrap(),
                         );
-                        let new_inst = (inst & 0xFF00001F) | (((offset as u32) & 0x7FFFF) << 5);
+                        let new_inst = (inst & COND_BRANCH_OPCODE_MASK)
+                            | (((offset as u32) & COND_BRANCH_OFFSET_MASK) << 5);
                         self.code[fixup.offset..fixup.offset + 4]
                             .copy_from_slice(&new_inst.to_le_bytes());
                     }
@@ -841,23 +875,23 @@ impl<'a> Emitter<'a> {
         // Check if MOVN would be more efficient by counting how many
         // 16-bit chunks are all 1s vs all 0s
         let chunks = [
-            (uimm >> 0) & 0xFFFF,
-            (uimm >> 16) & 0xFFFF,
-            (uimm >> 32) & 0xFFFF,
-            (uimm >> 48) & 0xFFFF,
+            (uimm >> 0) & IMM16_MASK,
+            (uimm >> 16) & IMM16_MASK,
+            (uimm >> 32) & IMM16_MASK,
+            (uimm >> 48) & IMM16_MASK,
         ];
 
         let zeros = chunks.iter().filter(|&&c| c == 0).count();
-        let ones = chunks.iter().filter(|&&c| c == 0xFFFF).count();
+        let ones = chunks.iter().filter(|&&c| c == IMM16_MASK).count();
 
         if ones > zeros {
             // Use MOVN: find first chunk that isn't all 1s
             let inverted = !uimm;
             let inv_chunks = [
-                (inverted >> 0) & 0xFFFF,
-                (inverted >> 16) & 0xFFFF,
-                (inverted >> 32) & 0xFFFF,
-                (inverted >> 48) & 0xFFFF,
+                (inverted >> 0) & IMM16_MASK,
+                (inverted >> 16) & IMM16_MASK,
+                (inverted >> 32) & IMM16_MASK,
+                (inverted >> 48) & IMM16_MASK,
             ];
 
             // Find first non-zero inverted chunk for MOVN
@@ -874,9 +908,9 @@ impl<'a> Emitter<'a> {
                 OPCODE_MOVN_X | (hw << 21) | ((first_val as u32) << 5) | rd.encoding() as u32;
             self.emit_u32(inst);
 
-            // Use MOVK for remaining non-0xFFFF chunks in original value
+            // Use MOVK for remaining non-IMM16_MASK chunks in original value
             for (i, &chunk) in chunks.iter().enumerate() {
-                if i != first_idx && chunk != 0xFFFF {
+                if i != first_idx && chunk != IMM16_MASK {
                     let base = match i {
                         0 => OPCODE_MOVK_X_LSL0,
                         1 => OPCODE_MOVK_X_LSL16,
@@ -890,25 +924,25 @@ impl<'a> Emitter<'a> {
             }
         } else {
             // Use MOVZ/MOVK sequence for non-negative or sparse values
-            let inst = OPCODE_MOVZ_X | ((uimm & 0xFFFF) << 5) as u32 | rd.encoding() as u32;
+            let inst = OPCODE_MOVZ_X | ((uimm & IMM16_MASK) << 5) as u32 | rd.encoding() as u32;
             self.emit_u32(inst);
 
             // If more bits needed, use MOVK
-            if (uimm >> 16) & 0xFFFF != 0 {
+            if (uimm >> 16) & IMM16_MASK != 0 {
                 let inst = OPCODE_MOVK_X_LSL16
-                    | (((uimm >> 16) & 0xFFFF) << 5) as u32
+                    | (((uimm >> 16) & IMM16_MASK) << 5) as u32
                     | rd.encoding() as u32;
                 self.emit_u32(inst);
             }
-            if (uimm >> 32) & 0xFFFF != 0 {
+            if (uimm >> 32) & IMM16_MASK != 0 {
                 let inst = OPCODE_MOVK_X_LSL32
-                    | (((uimm >> 32) & 0xFFFF) << 5) as u32
+                    | (((uimm >> 32) & IMM16_MASK) << 5) as u32
                     | rd.encoding() as u32;
                 self.emit_u32(inst);
             }
-            if (uimm >> 48) & 0xFFFF != 0 {
+            if (uimm >> 48) & IMM16_MASK != 0 {
                 let inst = OPCODE_MOVK_X_LSL48
-                    | (((uimm >> 48) & 0xFFFF) << 5) as u32
+                    | (((uimm >> 48) & IMM16_MASK) << 5) as u32
                     | rd.encoding() as u32;
                 self.emit_u32(inst);
             }
@@ -1117,8 +1151,6 @@ impl<'a> Emitter<'a> {
 
     fn emit_umull(&mut self, rd: Reg, rn: Reg, rm: Reg) {
         // UMULL Xd, Wn, Wm (unsigned multiply long 32x32->64)
-        // Same encoding as SMULL but uses UMADDL opcode
-        const OPCODE_UMULL: u32 = 0x9BA0_7C00; // UMADDL with Ra=XZR
         let inst = OPCODE_UMULL
             | (rm.encoding() as u32) << 16
             | (rn.encoding() as u32) << 5
@@ -1128,7 +1160,6 @@ impl<'a> Emitter<'a> {
 
     fn emit_smulh(&mut self, rd: Reg, rn: Reg, rm: Reg) {
         // SMULH Xd, Xn, Xm (high 64 bits of 64x64 signed multiply)
-        const OPCODE_SMULH: u32 = 0x9B40_7C00;
         let inst = OPCODE_SMULH
             | (rm.encoding() as u32) << 16
             | (rn.encoding() as u32) << 5
@@ -1138,7 +1169,6 @@ impl<'a> Emitter<'a> {
 
     fn emit_umulh(&mut self, rd: Reg, rn: Reg, rm: Reg) {
         // UMULH Xd, Xn, Xm (high 64 bits of 64x64 unsigned multiply)
-        const OPCODE_UMULH: u32 = 0x9BC0_7C00;
         let inst = OPCODE_UMULH
             | (rm.encoding() as u32) << 16
             | (rn.encoding() as u32) << 5
@@ -1149,10 +1179,7 @@ impl<'a> Emitter<'a> {
     fn emit_lsr_imm(&mut self, rd: Reg, rn: Reg, imm: u8) {
         // LSR Xd, Xn, #imm (64-bit logical shift right by immediate)
         // Encoded as UBFM Xd, Xn, #imm, #63
-        // UBFM: 0b1101_0011_0100_0000 immr imms Rn Rd
-        // For LSR #imm: immr = imm, imms = 63
-        const OPCODE_UBFM_X: u32 = 0xD340_FC00; // 64-bit UBFM with imms=63
-        let inst = OPCODE_UBFM_X
+        let inst = OPCODE_LSR_X
             | ((imm as u32 & 0x3F) << 16)
             | (rn.encoding() as u32) << 5
             | rd.encoding() as u32;
@@ -1162,10 +1189,7 @@ impl<'a> Emitter<'a> {
     fn emit_asr_imm(&mut self, rd: Reg, rn: Reg, imm: u8) {
         // ASR Xd, Xn, #imm (64-bit arithmetic shift right by immediate)
         // Encoded as SBFM Xd, Xn, #imm, #63
-        // SBFM: 0b1001_0011_0100_0000 immr imms Rn Rd
-        // For ASR #imm: immr = imm, imms = 63
-        const OPCODE_SBFM_X: u32 = 0x9340_FC00; // 64-bit SBFM with imms=63
-        let inst = OPCODE_SBFM_X
+        let inst = OPCODE_ASR_X
             | ((imm as u32 & 0x3F) << 16)
             | (rn.encoding() as u32) << 5
             | rd.encoding() as u32;
@@ -1430,11 +1454,10 @@ impl<'a> Emitter<'a> {
         // For 32-bit: UBFM with sf=0, N=0
         // immr = -shift mod 32 = (32 - shift) mod 32
         // imms = 31 - shift
-        const OPCODE_UBFM_W_BASE: u32 = 0x5300_0000;
         let shift = shift as u32;
         let immr = (32 - shift) & 0x1F;
         let imms = 31 - shift;
-        let inst = OPCODE_UBFM_W_BASE
+        let inst = OPCODE_UBFM_W
             | (immr << 16)
             | (imms << 10)
             | (rn.encoding() as u32) << 5
@@ -1445,9 +1468,6 @@ impl<'a> Emitter<'a> {
     fn emit_lsr32_imm(&mut self, rd: Reg, rn: Reg, imm: u8) {
         // LSR Wd, Wn, #imm (32-bit logical shift right by immediate)
         // Encoded as UBFM Wd, Wn, #imm, #31
-        // UBFM: 0b0101_0011_0000_0000 immr imms Rn Rd
-        // For LSR #imm: immr = imm, imms = 31
-        const OPCODE_UBFM_W: u32 = 0x5300_0000; // 32-bit UBFM base
         let imms = 31u32;
         let inst = OPCODE_UBFM_W
             | ((imm as u32 & 0x1F) << 16)
@@ -1460,9 +1480,6 @@ impl<'a> Emitter<'a> {
     fn emit_asr32_imm(&mut self, rd: Reg, rn: Reg, imm: u8) {
         // ASR Wd, Wn, #imm (32-bit arithmetic shift right by immediate)
         // Encoded as SBFM Wd, Wn, #imm, #31
-        // SBFM: 0b0001_0011_0000_0000 immr imms Rn Rd
-        // For ASR #imm: immr = imm, imms = 31
-        const OPCODE_SBFM_W: u32 = 0x1300_0000; // 32-bit SBFM base
         let imms = 31u32;
         let inst = OPCODE_SBFM_W
             | ((imm as u32 & 0x1F) << 16)
