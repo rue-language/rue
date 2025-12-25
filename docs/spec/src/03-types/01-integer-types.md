@@ -96,7 +96,23 @@ fn main() -> i32 {
 
 A compile-time error occurs when an integer literal value exceeds the representable range of its target type.
 
-{{ rule(id="3.1:18") }}
+{{ rule(id="3.1:18", cat="normative") }}
+
+When an integer literal is the operand of a unary negation operator, and the negated value would be representable in the target signed integer type, the expression is valid even if the literal value itself exceeds the positive range of that type. This allows the minimum value of each signed integer type to be written as a negated literal.
+
+{{ rule(id="3.1:19") }}
+
+```rue
+fn main() -> i32 {
+    let a: i8 = -128;                       // valid: -128 is in i8 range
+    let b: i8 = 128;                        // error: 128 exceeds i8 range
+    let c: i32 = -2147483648;               // valid: i32 minimum value
+    let d: i64 = -9223372036854775808;      // valid: i64 minimum value
+    0
+}
+```
+
+{{ rule(id="3.1:20") }}
 
 ```rue
 fn main() -> i32 {

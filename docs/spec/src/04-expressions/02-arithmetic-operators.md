@@ -78,6 +78,24 @@ fn main() -> i32 {
 }
 ```
 
+{{ rule(id="4.2:15", cat="normative") }}
+
+When a negated integer literal represents the minimum value of a signed integer type, the compiler evaluates the negation at compile time and produces the minimum value directly. This special case allows expressions like `-128: i8` without runtime overflow.
+
+{{ rule(id="4.2:16", cat="normative") }}
+
+When negation is applied to a non-literal expression holding the minimum value of a signed integer type, the operation overflows and causes a runtime panic.
+
+{{ rule(id="4.2:17") }}
+
+```rue
+fn main() -> i32 {
+    let x: i8 = -128;    // valid: compile-time constant
+    let y: i8 = -x;      // runtime panic: negating -128 overflows
+    0
+}
+```
+
 ## Overflow
 
 {{ rule(id="4.2:9", cat="normative") }}

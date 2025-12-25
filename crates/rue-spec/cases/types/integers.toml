@@ -966,7 +966,7 @@ error_contains = "out of range"
 
 [[case]]
 name = "i8_min_via_negation"
-spec = ["3.1:17"]
+spec = ["3.1:18"]
 description = "i8::MIN (-128) via negation is valid"
 source = """
 fn main() -> i32 {
@@ -978,7 +978,7 @@ exit_code = 1
 
 [[case]]
 name = "i16_min_via_negation"
-spec = ["3.1:17"]
+spec = ["3.1:18"]
 description = "i16::MIN (-32768) via negation is valid"
 source = """
 fn main() -> i32 {
@@ -990,7 +990,7 @@ exit_code = 1
 
 [[case]]
 name = "i32_min_via_negation"
-spec = ["3.1:17"]
+spec = ["3.1:18"]
 description = "i32::MIN (-2147483648) via negation is valid"
 source = """
 fn main() -> i32 {
@@ -1002,7 +1002,7 @@ exit_code = 1
 
 [[case]]
 name = "i64_min_via_negation"
-spec = ["3.1:17"]
+spec = ["3.1:18"]
 description = "i64::MIN (-9223372036854775808) via negation is valid"
 source = """
 fn main() -> i32 {

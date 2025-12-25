@@ -364,6 +364,68 @@ source = "fn main() -> i32 { -10 % 3 }"
 exit_code = 255
 
 # =============================================================================
+# Negated MIN Literals (Compile-Time Constant)
+# =============================================================================
+# These tests verify that negated MIN value literals are evaluated at compile
+# time, avoiding runtime overflow.
+
+[[case]]
+name = "negated_min_literal_i8"
+spec = ["4.2:15"]
+description = "Negated i8::MIN literal is a compile-time constant"
+source = """
+fn main() -> i32 {
+    let x: i8 = -128;
+    if x < 0 { 1 } else { 0 }
+}
+"""
+exit_code = 1
+
+[[case]]
+name = "negated_min_literal_i32"
+spec = ["4.2:15"]
+description = "Negated i32::MIN literal is a compile-time constant"
+source = """
+fn main() -> i32 {
+    let x: i32 = -2147483648;
+    if x < 0 { 1 } else { 0 }
+}
+"""
+exit_code = 1
+
+# =============================================================================
+# Runtime Negation of MIN Value (Overflow)
+# =============================================================================
+# These tests verify that negating a non-literal MIN value at runtime
+# causes an overflow panic.
+
+[[case]]
+name = "runtime_negation_min_i32"
+spec = ["4.2:16"]
+description = "Negating i32::MIN at runtime causes overflow"
+source = """
+fn main() -> i32 {
+    let x: i32 = -2147483648;
+    let y: i32 = -x;
+    y
+}
+"""
+runtime_error = "integer overflow"
+
+[[case]]
+name = "runtime_negation_min_i8"
+spec = ["4.2:16"]
+description = "Negating i8::MIN at runtime causes overflow"
+source = """
+fn main() -> i32 {
+    let x: i8 = -128;
+    let y: i8 = -x;
+    0
+}
+"""
+runtime_error = "integer overflow"
+
+# =============================================================================
 # Unsigned Negation is an Error
 # =============================================================================
 
