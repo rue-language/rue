@@ -334,6 +334,15 @@ pub enum AirInstData {
         /// The variant index (0-based)
         variant_index: u32,
     },
+
+    // Drop/destructor operations
+    /// Drop a value, running its destructor if the type has one.
+    /// For trivially droppable types, this is a no-op.
+    /// The type is stored in the AirInst.ty field.
+    Drop {
+        /// The value to drop
+        value: AirRef,
+    },
 }
 
 impl fmt::Display for AirRef {
@@ -525,6 +534,9 @@ impl fmt::Display for Air {
                     variant_index,
                 } => {
                     writeln!(f, "enum_variant #{}::{}", enum_id.0, variant_index)?;
+                }
+                AirInstData::Drop { value } => {
+                    writeln!(f, "drop {}", value)?;
                 }
             }
         }

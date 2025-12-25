@@ -3,7 +3,7 @@
 //! This module converts the structured control flow in AIR (Branch, Loop)
 //! into explicit basic blocks with terminators.
 
-use rue_air::{Air, AirInstData, AirPattern, AirRef, Type};
+use rue_air::{Air, AirInstData, AirPattern, AirRef, ArrayTypeDef, StructDef, Type};
 use rue_error::{CompileWarning, WarningKind};
 
 use crate::CfgOutput;
@@ -37,6 +37,10 @@ struct LoopContext {
 pub struct CfgBuilder<'a> {
     air: &'a Air,
     cfg: Cfg,
+    /// Struct definitions for type queries (e.g., needs_drop)
+    struct_defs: &'a [StructDef],
+    /// Array type definitions for type queries
+    array_types: &'a [ArrayTypeDef],
     /// Current block we're building
     current_block: BlockId,
     /// Stack of loop contexts for nested loops
@@ -49,7 +53,17 @@ pub struct CfgBuilder<'a> {
 
 impl<'a> CfgBuilder<'a> {
     /// Build a CFG from AIR, returning the CFG and any warnings.
-    pub fn build(air: &'a Air, num_locals: u32, num_params: u32, fn_name: &str) -> CfgOutput {
+    ///
+    /// The `struct_defs` and `array_types` parameters provide type definitions
+    /// needed for queries like `type_needs_drop`.
+    pub fn build(
+        air: &'a Air,
+        num_locals: u32,
+        num_params: u32,
+        fn_name: &str,
+        struct_defs: &'a [StructDef],
+        array_types: &'a [ArrayTypeDef],
+    ) -> CfgOutput {
         let mut builder = CfgBuilder {
             air,
             cfg: Cfg::new(
@@ -58,6 +72,8 @@ impl<'a> CfgBuilder<'a> {
                 num_params,
                 fn_name.to_string(),
             ),
+            struct_defs,
+            array_types,
             current_block: BlockId(0),
             loop_stack: Vec::new(),
             value_cache: vec![None; air.len()],
@@ -1192,6 +1208,26 @@ impl<'a> CfgBuilder<'a> {
                     continuation: Continuation::Continues,
                 }
             }
+
+            AirInstData::Drop { value } => {
+                // Lower the value to drop
+                let val = self.lower_inst(*value).value.unwrap();
+                let val_ty = self.air.get(*value).ty;
+
+                // Only emit a Drop instruction if the type needs drop.
+                // For trivially droppable types, this is a no-op.
+                // We use self.type_needs_drop() which has access to struct/array
+                // definitions to recursively check if fields need drop.
+                if self.type_needs_drop(val_ty) {
+                    self.emit(CfgInstData::Drop { value: val }, Type::Unit, span);
+                }
+
+                // Drop is a statement, produces no value
+                ExprResult {
+                    value: None,
+                    continuation: Continuation::Continues,
+                }
+            }
         }
     }
 
@@ -1204,6 +1240,53 @@ impl<'a> CfgBuilder<'a> {
     /// Cache a value for an AIR ref.
     fn cache(&mut self, air_ref: AirRef, value: CfgValue) {
         self.value_cache[air_ref.as_u32() as usize] = Some(value);
+    }
+
+    /// Check if a type needs to be dropped (has a destructor).
+    ///
+    /// This method has access to struct and array definitions, allowing it to
+    /// recursively check if struct fields or array elements need drop.
+    ///
+    /// A type needs drop if dropping it requires cleanup actions:
+    /// - Primitives, bool, unit, never, error, enums: trivially droppable (no)
+    /// - String: will need drop when mutable strings land (currently no)
+    /// - Struct: needs drop if any field needs drop
+    /// - Array: needs drop if element type needs drop
+    fn type_needs_drop(&self, ty: Type) -> bool {
+        match ty {
+            // Primitive types are trivially droppable
+            Type::I8
+            | Type::I16
+            | Type::I32
+            | Type::I64
+            | Type::U8
+            | Type::U16
+            | Type::U32
+            | Type::U64
+            | Type::Bool
+            | Type::Unit
+            | Type::Never
+            | Type::Error => false,
+
+            // Enum types are trivially droppable (just discriminant values)
+            Type::Enum(_) => false,
+
+            // String will need drop when mutable strings land (heap allocation)
+            // For now, string literals are static and don't need drop
+            Type::String => false,
+
+            // Struct types need drop if any field needs drop
+            Type::Struct(struct_id) => {
+                let struct_def = &self.struct_defs[struct_id.0 as usize];
+                struct_def.fields.iter().any(|f| self.type_needs_drop(f.ty))
+            }
+
+            // Array types need drop if element type needs drop
+            Type::Array(array_id) => {
+                let array_def = &self.array_types[array_id.0 as usize];
+                self.type_needs_drop(array_def.element_type)
+            }
+        }
     }
 }
 
@@ -1230,7 +1313,15 @@ mod tests {
         let output = sema.analyze_all().unwrap();
 
         let func = &output.functions[0];
-        CfgBuilder::build(&func.air, func.num_locals, func.num_param_slots, &func.name).cfg
+        CfgBuilder::build(
+            &func.air,
+            func.num_locals,
+            func.num_param_slots,
+            &func.name,
+            &output.struct_defs,
+            &output.array_types,
+        )
+        .cfg
     }
 
     #[test]

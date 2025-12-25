@@ -292,7 +292,7 @@ Following spec-first, test-driven development: each phase writes spec paragraphs
 
 **Implementation**:
 - Add `Drop` instruction to AIR
-- Add `needs_drop()` method to `Type`
+- Add `type_needs_drop()` method to `CfgBuilder` (requires access to struct/array type definitions)
 - Add drop elaboration pass stub in CFG builder
 
 ### Phase 2: Drop Elaboration (rue-wjha.8)

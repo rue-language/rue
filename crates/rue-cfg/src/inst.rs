@@ -189,6 +189,13 @@ pub enum CfgInstData {
         enum_id: EnumId,
         variant_index: u32,
     },
+
+    // Drop/destructor operations
+    /// Drop a value, running its destructor if the type has one.
+    /// For trivially droppable types, this is a no-op that will be elided.
+    Drop {
+        value: CfgValue,
+    },
 }
 
 /// Block terminator - how control leaves a basic block.
@@ -672,6 +679,9 @@ impl Cfg {
                 variant_index,
             } => {
                 write!(f, "enum_variant #{}::{}", enum_id.0, variant_index)
+            }
+            CfgInstData::Drop { value } => {
+                write!(f, "drop {}", value)
             }
         }
     }

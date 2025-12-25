@@ -1770,6 +1770,19 @@ impl<'a> CfgLower<'a> {
                     imm: *variant_index as i64,
                 });
             }
+
+            CfgInstData::Drop { value: _ } => {
+                // Drop instruction - runs destructor if the type needs one.
+                // The CFG builder already elides Drop for trivially droppable types,
+                // so reaching here means we need to emit actual cleanup code.
+                //
+                // This will be implemented in Phase 3 (rue-wjha.9) when we add
+                // types with destructors (e.g., mutable strings).
+                debug_assert!(
+                    false,
+                    "Drop instruction reached codegen but no types currently need drop"
+                );
+            }
         }
     }
 
@@ -2628,8 +2641,14 @@ mod tests {
         let struct_defs = &output.struct_defs;
         let array_types = &output.array_types;
         let strings = &output.strings;
-        let cfg_output =
-            CfgBuilder::build(&func.air, func.num_locals, func.num_param_slots, &func.name);
+        let cfg_output = CfgBuilder::build(
+            &func.air,
+            func.num_locals,
+            func.num_param_slots,
+            &func.name,
+            struct_defs,
+            array_types,
+        );
 
         CfgLower::new(&cfg_output.cfg, struct_defs, array_types, strings).lower()
     }

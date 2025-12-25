@@ -75,8 +75,8 @@ mod tests {
             span: Span::new(0, 2),
         });
 
-        // Build CFG from AIR
-        let cfg_output = CfgBuilder::build(&air, 0, 0, "main");
+        // Build CFG from AIR (no struct/array types in this simple test)
+        let cfg_output = CfgBuilder::build(&air, 0, 0, "main", &[], &[]);
 
         // Test the generate function
         let machine_code = generate(&cfg_output.cfg, &[], &[], &[]).unwrap();

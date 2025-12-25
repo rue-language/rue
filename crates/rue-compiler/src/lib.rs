@@ -251,8 +251,14 @@ pub fn compile_frontend_from_ast(ast: Ast) -> CompileResult<CompileState> {
     let mut warnings = sema_output.warnings;
 
     for func in sema_output.functions {
-        let cfg_output =
-            CfgBuilder::build(&func.air, func.num_locals, func.num_param_slots, &func.name);
+        let cfg_output = CfgBuilder::build(
+            &func.air,
+            func.num_locals,
+            func.num_param_slots,
+            &func.name,
+            &sema_output.struct_defs,
+            &sema_output.array_types,
+        );
         warnings.extend(cfg_output.warnings);
         functions.push(FunctionWithCfg {
             analyzed: func,
