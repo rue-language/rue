@@ -22,9 +22,13 @@ pub fn array_type_def<'a>(
 /// For scalars, this is 1. For arrays, it's `length * slot_count(element_type)`.
 /// For structs, this is the sum of slot counts for all fields.
 /// For nested types, this recursively calculates.
+/// Zero-sized types (unit, never, empty structs, zero-length arrays) return 0.
 pub fn type_slot_count(struct_defs: &[StructDef], array_types: &[ArrayTypeDef], ty: Type) -> u32 {
     match ty {
+        // Zero-sized types
+        Type::Unit | Type::Never => 0,
         Type::Array(array_type_id) => {
+            // Zero-length arrays naturally get 0 slots (0 * element_slots)
             if let Some(def) = array_type_def(array_types, array_type_id) {
                 let elem_slots = type_slot_count(struct_defs, array_types, def.element_type);
                 (def.length as u32) * elem_slots
@@ -34,12 +38,13 @@ pub fn type_slot_count(struct_defs: &[StructDef], array_types: &[ArrayTypeDef], 
         }
         Type::Struct(struct_id) => {
             // Sum the slot counts of all fields
+            // Empty structs naturally get 0 slots here
             if let Some(struct_def) = struct_defs.get(struct_id.0 as usize) {
                 let mut total = 0u32;
                 for field in &struct_def.fields {
                     total += type_slot_count(struct_defs, array_types, field.ty);
                 }
-                total.max(1) // At least 1 slot even for empty struct
+                total
             } else {
                 1
             }

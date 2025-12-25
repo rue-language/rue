@@ -105,14 +105,14 @@ fn main() -> i32 {
 exit_code = 8
 
 [[case]]
-name = "unit_size_8_bytes"
-spec = ["3.6:8"]
+name = "unit_size_zero"
+spec = ["3.0:2", "3.0:3", "3.3:4"]
 source = """
 fn main() -> i32 {
     @size_of(())
 }
 """
-exit_code = 8
+exit_code = 0
 
 [[case]]
 name = "struct_fields_declaration_order"
@@ -171,4 +171,93 @@ fn main() -> i32 {
 }
 """
 exit_code = 8
+
+# =============================================================================
+# Empty Struct (Zero-Sized Type)
+# =============================================================================
+
+[[case]]
+name = "empty_struct_definition"
+spec = ["3.6:13", "3.0:2"]
+source = """
+struct Empty {}
+fn main() -> i32 {
+    let e = Empty {};
+    42
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "empty_struct_size_zero"
+spec = ["3.6:13", "3.0:2"]
+source = """
+struct Empty {}
+fn main() -> i32 {
+    @size_of(Empty)
+}
+"""
+exit_code = 0
+
+[[case]]
+name = "empty_struct_alignment_one"
+spec = ["3.6:12", "3.0:4"]
+source = """
+struct Empty {}
+fn main() -> i32 {
+    @align_of(Empty)
+}
+"""
+exit_code = 1
+
+[[case]]
+name = "empty_struct_pass_by_value"
+spec = ["3.6:13", "3.0:2"]
+source = """
+struct Empty {}
+fn take_empty(e: Empty) -> i32 { 42 }
+fn main() -> i32 {
+    let e = Empty {};
+    take_empty(e)
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "empty_struct_return_by_value"
+spec = ["3.6:13", "3.0:2"]
+source = """
+struct Empty {}
+fn make_empty() -> Empty { Empty {} }
+fn main() -> i32 {
+    let e = make_empty();
+    42
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "struct_with_empty_field"
+spec = ["3.6:10", "3.6:13"]
+source = """
+struct Empty {}
+struct Container { value: i32, marker: Empty }
+fn main() -> i32 {
+    // Empty field contributes 0 bytes, so size is just value's 8 bytes
+    @size_of(Container)
+}
+"""
+exit_code = 8
+
+[[case]]
+name = "nested_empty_structs"
+spec = ["3.6:10", "3.6:13"]
+source = """
+struct Empty {}
+struct AlsoEmpty { e: Empty }
+fn main() -> i32 {
+    @size_of(AlsoEmpty)
+}
+"""
+exit_code = 0
 

@@ -63,3 +63,9 @@ fn main() -> i32 { diverges(5) }
 {{ rule(id="3.4:8", cat="normative") }}
 
 A function with return type `!` never returns normally.
+
+## Memory Representation
+
+{{ rule(id="3.4:9", cat="normative") }}
+
+The never type is a zero-sized type. See [Zero-Sized Types](../#zero-sized-types) for the general definition.

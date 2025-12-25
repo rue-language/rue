@@ -64,7 +64,27 @@ exit_code = 3
 
 [[case]]
 name = "unit_zero_size"
-spec = ["3.3:4"]
+spec = ["3.3:4", "3.0:2", "3.0:3"]
+source = """
+fn main() -> i32 {
+    @size_of(())
+}
+"""
+exit_code = 0
+
+[[case]]
+name = "unit_alignment_one"
+spec = ["3.3:4", "3.0:4"]
+source = """
+fn main() -> i32 {
+    @align_of(())
+}
+"""
+exit_code = 1
+
+[[case]]
+name = "unit_pass_and_return"
+spec = ["3.3:4", "3.0:2"]
 source = """
 fn returns_unit() -> () {}
 fn main() -> i32 {

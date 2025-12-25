@@ -121,3 +121,38 @@ fn main() -> i32 {
 }
 """
 exit_code = 101
+
+# =============================================================================
+# Zero-Length Arrays (Zero-Sized Types)
+# =============================================================================
+
+[[case]]
+name = "zero_length_array_size"
+spec = ["3.5:4", "3.0:2", "3.0:3"]
+source = """
+fn main() -> i32 {
+    @size_of([i32; 0])
+}
+"""
+exit_code = 0
+
+[[case]]
+name = "zero_length_array_alignment"
+spec = ["3.5:4", "3.0:4"]
+source = """
+fn main() -> i32 {
+    @align_of([i32; 0])
+}
+"""
+exit_code = 1
+
+[[case]]
+name = "zero_length_array_definition"
+spec = ["3.5:4", "3.0:2"]
+source = """
+fn main() -> i32 {
+    let arr: [i32; 0] = [];
+    42
+}
+"""
+exit_code = 42

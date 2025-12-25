@@ -2079,8 +2079,9 @@ impl<'a> Sema<'a> {
                         (slot_count * 8) as u64
                     }
                     "align_of" => {
-                        // All types currently have 8-byte alignment
-                        8u64
+                        // Zero-sized types have 1-byte alignment, others have 8-byte
+                        let slot_count = self.abi_slot_count(ty);
+                        if slot_count == 0 { 1u64 } else { 8u64 }
                     }
                     _ => {
                         return Err(CompileError::new(
@@ -2433,6 +2434,7 @@ impl<'a> Sema<'a> {
     /// Get the number of ABI slots required for a type.
     /// Scalar types (i8, i16, i32, i64, u8, u16, u32, u64, bool) use 1 slot,
     /// structs use 1 slot per field, arrays use 1 slot per element.
+    /// Zero-sized types (unit, never, empty structs, zero-length arrays) use 0 slots.
     fn abi_slot_count(&self, ty: Type) -> u32 {
         match ty {
             Type::I8
@@ -2444,15 +2446,16 @@ impl<'a> Sema<'a> {
             | Type::U32
             | Type::U64
             | Type::Bool
-            | Type::Unit
-            | Type::Error
-            | Type::Never => 1,
+            | Type::Error => 1,
+            // Zero-sized types use 0 slots
+            Type::Unit | Type::Never => 0,
             // Enums are represented as their discriminant type (a scalar), so 1 slot
             Type::Enum(_) => 1,
             // Strings are fat pointers (ptr + len), so 2 slots
             Type::String => 2,
             Type::Struct(struct_id) => {
                 // Sum the slot counts of all fields (handles arrays and nested structs)
+                // Empty structs naturally get 0 slots here
                 let struct_def = &self.struct_defs[struct_id.0 as usize];
                 struct_def
                     .fields
@@ -2461,6 +2464,7 @@ impl<'a> Sema<'a> {
                     .sum()
             }
             Type::Array(array_type_id) => {
+                // Zero-length arrays naturally get 0 slots (0 * element_slots)
                 let array_def = &self.array_type_defs[array_type_id.0 as usize];
                 let element_slots = self.abi_slot_count(array_def.element_type);
                 element_slots * array_def.length as u32

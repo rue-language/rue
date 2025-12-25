@@ -20,7 +20,7 @@ Expressions that produce side effects but no meaningful value have type `()`.
 
 {{ rule(id="3.3:4", cat="normative") }}
 
-The unit value `()` occupies zero bytes in memory.
+The unit type is a zero-sized type. See [Zero-Sized Types](../#zero-sized-types) for the general definition.
 
 {{ rule(id="3.3:5") }}
 

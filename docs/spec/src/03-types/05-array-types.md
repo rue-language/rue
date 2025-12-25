@@ -20,7 +20,7 @@ All elements of an array must have the same type `T`.
 
 {{ rule(id="3.5:4", cat="normative") }}
 
-Arrays are stored contiguously in memory. The size of `[T; N]` is `N * size_of(T)`.
+Arrays are stored contiguously in memory. The size of `[T; N]` is `N * size_of(T)`. Zero-length arrays `[T; 0]` are zero-sized types. See [Zero-Sized Types](../#zero-sized-types) for the general definition.
 
 {{ rule(id="3.5:5") }}
 

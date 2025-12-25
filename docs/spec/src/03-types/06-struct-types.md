@@ -54,7 +54,7 @@ The memory layout rules described in this section are provisional and may change
 
 {{ rule(id="3.6:8", cat="normative") }}
 
-All types in Rue occupy one or more 8-byte slots. Scalar types (`i8`, `i16`, `i32`, `i64`, `u8`, `u16`, `u32`, `u64`, `bool`) each occupy one slot. The `unit` type occupies one slot.
+Non-zero-sized types in Rue occupy one or more 8-byte slots. Scalar types (`i8`, `i16`, `i32`, `i64`, `u8`, `u16`, `u32`, `u64`, `bool`) each occupy one slot.
 
 {{ rule(id="3.6:9", cat="normative") }}
 
@@ -76,4 +76,20 @@ struct Line { start: Point, end: Point }  // 4 slots (32 bytes)
 
 {{ rule(id="3.6:12", cat="normative") }}
 
-All structs have 8-byte alignment.
+Structs with one or more fields have 8-byte alignment. Empty structs (zero-sized types) have 1-byte alignment.
+
+{{ rule(id="3.6:13", cat="normative") }}
+
+A struct with no fields is a zero-sized type. See [Zero-Sized Types](../#zero-sized-types) for the general definition.
+
+{{ rule(id="3.6:14") }}
+
+```rue
+// An empty struct is a zero-sized type
+struct Empty {}
+
+fn main() -> i32 {
+    let e = Empty {};
+    @size_of(Empty)  // 0
+}
+```

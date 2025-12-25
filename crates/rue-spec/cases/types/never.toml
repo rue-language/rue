@@ -150,3 +150,27 @@ fn diverge(x: i32) -> i32 {
 fn main() -> i32 { diverge(5) }
 """
 exit_code = 5
+
+# =============================================================================
+# Memory Representation (3.4:9)
+# =============================================================================
+
+[[case]]
+name = "never_size_zero"
+spec = ["3.4:9", "3.0:2", "3.0:3"]
+source = """
+fn main() -> i32 {
+    @size_of(!)
+}
+"""
+exit_code = 0
+
+[[case]]
+name = "never_alignment_one"
+spec = ["3.4:9", "3.0:4"]
+source = """
+fn main() -> i32 {
+    @align_of(!)
+}
+"""
+exit_code = 1
