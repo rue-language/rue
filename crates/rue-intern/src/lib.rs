@@ -262,4 +262,27 @@ mod tests {
         interner.intern("a"); // duplicate
         assert_eq!(interner.len(), initial_len + 2);
     }
+
+    #[test]
+    fn test_try_get_returns_none_for_invalid_symbol() {
+        let interner = Interner::new();
+        // Create an invalid symbol with an index beyond the interner's capacity
+        let invalid_sym = Symbol::from_raw(9999);
+        assert!(interner.try_get(invalid_sym).is_none());
+    }
+
+    #[test]
+    fn test_try_get_returns_some_for_valid_symbol() {
+        let mut interner = Interner::new();
+        let sym = interner.intern("test_string");
+        assert_eq!(interner.try_get(sym), Some("test_string"));
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_get_panics_for_invalid_symbol() {
+        let interner = Interner::new();
+        let invalid_sym = Symbol::from_raw(9999);
+        let _ = interner.get(invalid_sym); // Should panic
+    }
 }
