@@ -925,66 +925,8 @@ impl<'a> CfgLower<'a> {
 
                 if lhs_ty == Type::String {
                     // String equality: call __rue_str_eq(ptr1, len1, ptr2, len2)
-                    let vreg = self.mir.alloc_vreg();
+                    let vreg = self.emit_string_eq_call(*lhs, *rhs);
                     self.value_map.insert(value, vreg);
-
-                    // Get string fat pointers (ptr, len) from struct_slot_vregs
-                    let lhs_fields = self
-                        .struct_slot_vregs
-                        .get(lhs)
-                        .cloned()
-                        .expect("string should have fat pointer fields");
-                    let rhs_fields = self
-                        .struct_slot_vregs
-                        .get(rhs)
-                        .cloned()
-                        .expect("string should have fat pointer fields");
-
-                    debug_assert_eq!(
-                        lhs_fields.len(),
-                        2,
-                        "string should have 2 fields (ptr, len)"
-                    );
-                    debug_assert_eq!(
-                        rhs_fields.len(),
-                        2,
-                        "string should have 2 fields (ptr, len)"
-                    );
-
-                    let lhs_ptr = lhs_fields[0];
-                    let lhs_len = lhs_fields[1];
-                    let rhs_ptr = rhs_fields[0];
-                    let rhs_len = rhs_fields[1];
-
-                    // Move arguments to calling convention registers
-                    // RDI = ptr1, RSI = len1, RDX = ptr2, RCX = len2
-                    self.mir.push(X86Inst::MovRR {
-                        dst: Operand::Physical(Reg::Rdi),
-                        src: Operand::Virtual(lhs_ptr),
-                    });
-                    self.mir.push(X86Inst::MovRR {
-                        dst: Operand::Physical(Reg::Rsi),
-                        src: Operand::Virtual(lhs_len),
-                    });
-                    self.mir.push(X86Inst::MovRR {
-                        dst: Operand::Physical(Reg::Rdx),
-                        src: Operand::Virtual(rhs_ptr),
-                    });
-                    self.mir.push(X86Inst::MovRR {
-                        dst: Operand::Physical(Reg::Rcx),
-                        src: Operand::Virtual(rhs_len),
-                    });
-
-                    // Call __rue_str_eq
-                    self.mir.push(X86Inst::CallRel {
-                        symbol: "__rue_str_eq".to_string(),
-                    });
-
-                    // Result is in RAX (0 or 1)
-                    self.mir.push(X86Inst::MovRR {
-                        dst: Operand::Virtual(vreg),
-                        src: Operand::Physical(Reg::Rax),
-                    });
                 } else if lhs_ty == Type::Unit {
                     // Unit equality: () == () is always true
                     let vreg = self.mir.alloc_vreg();
@@ -1010,66 +952,9 @@ impl<'a> CfgLower<'a> {
 
                 if lhs_ty == Type::String {
                     // String inequality: call __rue_str_eq and invert result
-                    let vreg = self.mir.alloc_vreg();
+                    let vreg = self.emit_string_eq_call(*lhs, *rhs);
                     self.value_map.insert(value, vreg);
-
-                    // Get string fat pointers (ptr, len) from struct_slot_vregs
-                    let lhs_fields = self
-                        .struct_slot_vregs
-                        .get(lhs)
-                        .cloned()
-                        .expect("string should have fat pointer fields");
-                    let rhs_fields = self
-                        .struct_slot_vregs
-                        .get(rhs)
-                        .cloned()
-                        .expect("string should have fat pointer fields");
-
-                    debug_assert_eq!(
-                        lhs_fields.len(),
-                        2,
-                        "string should have 2 fields (ptr, len)"
-                    );
-                    debug_assert_eq!(
-                        rhs_fields.len(),
-                        2,
-                        "string should have 2 fields (ptr, len)"
-                    );
-
-                    let lhs_ptr = lhs_fields[0];
-                    let lhs_len = lhs_fields[1];
-                    let rhs_ptr = rhs_fields[0];
-                    let rhs_len = rhs_fields[1];
-
-                    // Move arguments to calling convention registers
-                    // RDI = ptr1, RSI = len1, RDX = ptr2, RCX = len2
-                    self.mir.push(X86Inst::MovRR {
-                        dst: Operand::Physical(Reg::Rdi),
-                        src: Operand::Virtual(lhs_ptr),
-                    });
-                    self.mir.push(X86Inst::MovRR {
-                        dst: Operand::Physical(Reg::Rsi),
-                        src: Operand::Virtual(lhs_len),
-                    });
-                    self.mir.push(X86Inst::MovRR {
-                        dst: Operand::Physical(Reg::Rdx),
-                        src: Operand::Virtual(rhs_ptr),
-                    });
-                    self.mir.push(X86Inst::MovRR {
-                        dst: Operand::Physical(Reg::Rcx),
-                        src: Operand::Virtual(rhs_len),
-                    });
-
-                    // Call __rue_str_eq
-                    self.mir.push(X86Inst::CallRel {
-                        symbol: "__rue_str_eq".to_string(),
-                    });
-
-                    // Result is in RAX (0 or 1), invert it with XOR 1
-                    self.mir.push(X86Inst::MovRR {
-                        dst: Operand::Virtual(vreg),
-                        src: Operand::Physical(Reg::Rax),
-                    });
+                    // Invert result: 0 -> 1, 1 -> 0
                     self.mir.push(X86Inst::XorRI {
                         dst: Operand::Virtual(vreg),
                         imm: 1,
@@ -2223,6 +2108,73 @@ impl<'a> CfgLower<'a> {
                 imm: 1,
             });
         }
+    }
+
+    /// Emit a call to __rue_str_eq for string comparison.
+    ///
+    /// Returns the vreg containing the result (0 or 1).
+    fn emit_string_eq_call(&mut self, lhs: CfgValue, rhs: CfgValue) -> VReg {
+        let result_vreg = self.mir.alloc_vreg();
+
+        // Get string fat pointers (ptr, len) from struct_slot_vregs
+        let lhs_fields = self
+            .struct_slot_vregs
+            .get(&lhs)
+            .cloned()
+            .expect("string should have fat pointer fields");
+        let rhs_fields = self
+            .struct_slot_vregs
+            .get(&rhs)
+            .cloned()
+            .expect("string should have fat pointer fields");
+
+        debug_assert_eq!(
+            lhs_fields.len(),
+            2,
+            "string should have 2 fields (ptr, len)"
+        );
+        debug_assert_eq!(
+            rhs_fields.len(),
+            2,
+            "string should have 2 fields (ptr, len)"
+        );
+
+        let lhs_ptr = lhs_fields[0];
+        let lhs_len = lhs_fields[1];
+        let rhs_ptr = rhs_fields[0];
+        let rhs_len = rhs_fields[1];
+
+        // Move arguments to calling convention registers
+        // RDI = ptr1, RSI = len1, RDX = ptr2, RCX = len2
+        self.mir.push(X86Inst::MovRR {
+            dst: Operand::Physical(Reg::Rdi),
+            src: Operand::Virtual(lhs_ptr),
+        });
+        self.mir.push(X86Inst::MovRR {
+            dst: Operand::Physical(Reg::Rsi),
+            src: Operand::Virtual(lhs_len),
+        });
+        self.mir.push(X86Inst::MovRR {
+            dst: Operand::Physical(Reg::Rdx),
+            src: Operand::Virtual(rhs_ptr),
+        });
+        self.mir.push(X86Inst::MovRR {
+            dst: Operand::Physical(Reg::Rcx),
+            src: Operand::Virtual(rhs_len),
+        });
+
+        // Call __rue_str_eq
+        self.mir.push(X86Inst::CallRel {
+            symbol: "__rue_str_eq".to_string(),
+        });
+
+        // Result is in RAX (0 or 1)
+        self.mir.push(X86Inst::MovRR {
+            dst: Operand::Virtual(result_vreg),
+            src: Operand::Physical(Reg::Rax),
+        });
+
+        result_vreg
     }
 
     /// Lower a block terminator.
