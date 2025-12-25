@@ -249,10 +249,9 @@ pub enum ErrorKind {
     },
 
     // Struct errors
-    WrongFieldCount {
+    MissingFields {
         struct_name: String,
-        expected: usize,
-        found: usize,
+        missing_fields: Vec<String>,
     },
     UnknownField {
         struct_name: String,
@@ -460,23 +459,23 @@ impl fmt::Display for ErrorKind {
                     write!(f, "expected {} arguments, found {}", expected, found)
                 }
             }
-            ErrorKind::WrongFieldCount {
+            ErrorKind::MissingFields {
                 struct_name,
-                expected,
-                found,
+                missing_fields,
             } => {
-                if *expected == 1 {
+                if missing_fields.len() == 1 {
                     write!(
                         f,
-                        "struct '{}' has {} field, but {} were supplied",
-                        struct_name, expected, found
+                        "missing field '{}' in struct '{}'",
+                        missing_fields[0], struct_name
                     )
                 } else {
-                    write!(
-                        f,
-                        "struct '{}' has {} fields, but {} were supplied",
-                        struct_name, expected, found
-                    )
+                    let fields = missing_fields
+                        .iter()
+                        .map(|f| format!("'{}'", f))
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    write!(f, "missing fields {} in struct '{}'", fields, struct_name)
                 }
             }
             ErrorKind::UnknownField {

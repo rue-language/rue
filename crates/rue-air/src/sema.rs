@@ -1815,11 +1815,17 @@ impl<'a> Sema<'a> {
 
                 // Check that all fields are provided
                 if field_inits.len() != struct_def.fields.len() {
+                    // Find which fields are missing
+                    let missing_fields: Vec<String> = struct_def
+                        .fields
+                        .iter()
+                        .filter(|f| !seen_fields.contains(f.name.as_str()))
+                        .map(|f| f.name.clone())
+                        .collect();
                     return Err(CompileError::new(
-                        ErrorKind::WrongFieldCount {
+                        ErrorKind::MissingFields {
                             struct_name: struct_def.name.clone(),
-                            expected: struct_def.fields.len(),
-                            found: field_inits.len(),
+                            missing_fields,
                         },
                         inst.span,
                     ));
