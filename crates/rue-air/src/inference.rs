@@ -1253,15 +1253,15 @@ impl<'a> ConstraintGenerator<'a> {
                     // panicking and process what we can.
                     if args.len() != func.param_types.len() {
                         // Still process all arguments to catch type errors within them
-                        for arg_ref in args.iter() {
-                            self.generate(*arg_ref, ctx);
+                        for arg in args.iter() {
+                            self.generate(arg.value, ctx);
                         }
                         // Return the declared return type (error will be caught in sema)
                         func.return_type.clone()
                     } else {
                         // Generate constraints for each argument
-                        for (arg_ref, param_ty) in args.iter().zip(func.param_types.iter()) {
-                            let arg_info = self.generate(*arg_ref, ctx);
+                        for (arg, param_ty) in args.iter().zip(func.param_types.iter()) {
+                            let arg_info = self.generate(arg.value, ctx);
                             self.add_constraint(Constraint::equal(
                                 arg_info.ty,
                                 param_ty.clone(),
@@ -1272,8 +1272,8 @@ impl<'a> ConstraintGenerator<'a> {
                     }
                 } else {
                     // Unknown function - still process arguments for constraint generation
-                    for arg_ref in args.iter() {
-                        self.generate(*arg_ref, ctx);
+                    for arg in args.iter() {
+                        self.generate(arg.value, ctx);
                     }
                     InferType::Concrete(Type::Error)
                 }
@@ -1602,7 +1602,7 @@ impl<'a> ConstraintGenerator<'a> {
                             // Generate constraints for arguments
                             for (arg, param_type) in args.iter().zip(method_sig.param_types.iter())
                             {
-                                let arg_info = self.generate(*arg, ctx);
+                                let arg_info = self.generate(arg.value, ctx);
                                 self.add_constraint(Constraint::equal(
                                     arg_info.ty,
                                     param_type.clone(),
@@ -1614,21 +1614,21 @@ impl<'a> ConstraintGenerator<'a> {
                             // Method not found - sema will report the error
                             // Still generate arg types to catch errors in arguments
                             for arg in args.iter() {
-                                self.generate(*arg, ctx);
+                                self.generate(arg.value, ctx);
                             }
                             InferType::Concrete(Type::Error)
                         }
                     } else {
                         // Couldn't find struct name - shouldn't happen but handle gracefully
                         for arg in args.iter() {
-                            self.generate(*arg, ctx);
+                            self.generate(arg.value, ctx);
                         }
                         InferType::Concrete(Type::Error)
                     }
                 } else {
                     // Non-struct receiver - sema will report the error
                     for arg in args.iter() {
-                        self.generate(*arg, ctx);
+                        self.generate(arg.value, ctx);
                     }
                     InferType::Concrete(Type::Error)
                 };
@@ -1646,7 +1646,7 @@ impl<'a> ConstraintGenerator<'a> {
                 if let Some(method_sig) = self.methods.get(&method_key) {
                     // Generate constraints for arguments
                     for (arg, param_type) in args.iter().zip(method_sig.param_types.iter()) {
-                        let arg_info = self.generate(*arg, ctx);
+                        let arg_info = self.generate(arg.value, ctx);
                         self.add_constraint(Constraint::equal(
                             arg_info.ty,
                             param_type.clone(),
@@ -1658,7 +1658,7 @@ impl<'a> ConstraintGenerator<'a> {
                     // Method not found - sema will report the error
                     // Still generate arg types to catch errors in arguments
                     for arg in args.iter() {
-                        self.generate(*arg, ctx);
+                        self.generate(arg.value, ctx);
                     }
                     InferType::Concrete(Type::Error)
                 }
@@ -2696,7 +2696,10 @@ mod tests {
         let call = rir.add_inst(rue_rir::Inst {
             data: InstData::Call {
                 name: func_name,
-                args: vec![arg],
+                args: vec![rue_rir::RirCallArg {
+                    value: arg,
+                    is_inout: false,
+                }],
             },
             span: Span::new(0, 7),
         });
@@ -2731,7 +2734,10 @@ mod tests {
         let call = rir.add_inst(rue_rir::Inst {
             data: InstData::Call {
                 name: unknown_func,
-                args: vec![arg],
+                args: vec![rue_rir::RirCallArg {
+                    value: arg,
+                    is_inout: false,
+                }],
             },
             span: Span::new(0, 11),
         });

@@ -1148,12 +1148,14 @@ impl<'a> CfgLower<'a> {
                 self.value_map.insert(value, result_vreg);
 
                 // Flatten struct arguments
+                // TODO: For inout args, pass address instead of value
                 let mut flattened_vregs: Vec<VReg> = Vec::new();
                 for arg in args {
-                    let arg_type = self.cfg.get_inst(*arg).ty;
+                    let arg_value = arg.value;
+                    let arg_type = self.cfg.get_inst(arg_value).ty;
                     match arg_type {
                         Type::Struct(struct_id) => {
-                            let arg_data = &self.cfg.get_inst(*arg).data;
+                            let arg_data = &self.cfg.get_inst(arg_value).data;
                             let slot_count = self.type_slot_count(Type::Struct(struct_id));
                             match arg_data {
                                 CfgInstData::Load { slot } => {
@@ -1183,19 +1185,21 @@ impl<'a> CfgLower<'a> {
                                     }
                                 }
                                 CfgInstData::StructInit { .. } | CfgInstData::Call { .. } => {
-                                    if let Some(field_vregs) = self.struct_slot_vregs.get(arg) {
+                                    if let Some(field_vregs) =
+                                        self.struct_slot_vregs.get(&arg_value)
+                                    {
                                         flattened_vregs.extend(field_vregs.iter().copied());
                                     } else {
-                                        flattened_vregs.push(self.get_vreg(*arg));
+                                        flattened_vregs.push(self.get_vreg(arg_value));
                                     }
                                 }
                                 _ => {
-                                    flattened_vregs.push(self.get_vreg(*arg));
+                                    flattened_vregs.push(self.get_vreg(arg_value));
                                 }
                             }
                         }
                         Type::Array(array_type_id) => {
-                            let arg_data = &self.cfg.get_inst(*arg).data;
+                            let arg_data = &self.cfg.get_inst(arg_value).data;
                             let array_len = self.array_length(array_type_id) as u32;
                             match arg_data {
                                 CfgInstData::Load { slot } => {
@@ -1225,19 +1229,20 @@ impl<'a> CfgLower<'a> {
                                     }
                                 }
                                 CfgInstData::ArrayInit { .. } | CfgInstData::Call { .. } => {
-                                    if let Some(elem_vregs) = self.struct_slot_vregs.get(arg) {
+                                    if let Some(elem_vregs) = self.struct_slot_vregs.get(&arg_value)
+                                    {
                                         flattened_vregs.extend(elem_vregs.iter().copied());
                                     } else {
-                                        flattened_vregs.push(self.get_vreg(*arg));
+                                        flattened_vregs.push(self.get_vreg(arg_value));
                                     }
                                 }
                                 _ => {
-                                    flattened_vregs.push(self.get_vreg(*arg));
+                                    flattened_vregs.push(self.get_vreg(arg_value));
                                 }
                             }
                         }
                         _ => {
-                            flattened_vregs.push(self.get_vreg(*arg));
+                            flattened_vregs.push(self.get_vreg(arg_value));
                         }
                     }
                 }
@@ -2703,6 +2708,7 @@ mod tests {
             &func.name,
             struct_defs,
             array_types,
+            func.param_modes.clone(),
         );
 
         CfgLower::new(&cfg_output.cfg, struct_defs, array_types, strings).lower()

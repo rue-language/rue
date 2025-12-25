@@ -64,6 +64,15 @@ pub struct CfgInst {
     pub span: Span,
 }
 
+/// An argument in a function call.
+#[derive(Debug, Clone, Copy)]
+pub struct CfgCallArg {
+    /// The argument value
+    pub value: CfgValue,
+    /// Whether this argument is passed as inout (by reference)
+    pub is_inout: bool,
+}
+
 /// CFG instruction data.
 ///
 /// Unlike AIR, there are NO control flow instructions here.
@@ -140,7 +149,7 @@ pub enum CfgInstData {
     // Function calls
     Call {
         name: String,
-        args: Vec<CfgValue>,
+        args: Vec<CfgCallArg>,
     },
 
     /// Intrinsic call (e.g., @dbg)
@@ -300,11 +309,19 @@ pub struct Cfg {
     num_params: u32,
     /// Function name
     fn_name: String,
+    /// Whether each parameter slot is inout (passed by reference)
+    param_modes: Vec<bool>,
 }
 
 impl Cfg {
     /// Create a new CFG.
-    pub fn new(return_type: Type, num_locals: u32, num_params: u32, fn_name: String) -> Self {
+    pub fn new(
+        return_type: Type,
+        num_locals: u32,
+        num_params: u32,
+        fn_name: String,
+        param_modes: Vec<bool>,
+    ) -> Self {
         Self {
             blocks: Vec::new(),
             entry: BlockId(0),
@@ -313,6 +330,7 @@ impl Cfg {
             num_locals,
             num_params,
             fn_name,
+            param_modes,
         }
     }
 
@@ -338,6 +356,21 @@ impl Cfg {
     #[inline]
     pub fn fn_name(&self) -> &str {
         &self.fn_name
+    }
+
+    /// Get whether a parameter slot is inout.
+    #[inline]
+    pub fn is_param_inout(&self, slot: u32) -> bool {
+        self.param_modes
+            .get(slot as usize)
+            .copied()
+            .unwrap_or(false)
+    }
+
+    /// Get the parameter modes slice.
+    #[inline]
+    pub fn param_modes(&self) -> &[bool] {
+        &self.param_modes
     }
 
     /// Create a new basic block and return its ID.
@@ -613,7 +646,11 @@ impl Cfg {
                     if i > 0 {
                         write!(f, ", ")?;
                     }
-                    write!(f, "{}", arg)?;
+                    if arg.is_inout {
+                        write!(f, "inout {}", arg.value)?;
+                    } else {
+                        write!(f, "{}", arg.value)?;
+                    }
                 }
                 write!(f, ")")
             }
@@ -723,7 +760,7 @@ mod tests {
 
     #[test]
     fn test_create_cfg() {
-        let mut cfg = Cfg::new(Type::I32, 0, 0, "test".to_string());
+        let mut cfg = Cfg::new(Type::I32, 0, 0, "test".to_string(), vec![]);
         let entry = cfg.new_block();
         cfg.entry = entry;
 

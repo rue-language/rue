@@ -15,7 +15,7 @@ use crate::types::{
 };
 use rue_error::{CompileError, CompileResult, CompileWarning, ErrorKind, OptionExt, WarningKind};
 use rue_intern::{Interner, Symbol};
-use rue_rir::{InstData, InstRef, Rir, RirDirective, RirPattern};
+use rue_rir::{InstData, InstRef, Rir, RirDirective, RirParamMode, RirPattern};
 use rue_span::Span;
 
 /// A value that can be computed at compile time.
@@ -59,6 +59,10 @@ pub struct AnalyzedFunction {
     /// For scalar types (i32, bool), each parameter uses 1 slot.
     /// For struct types, each field uses 1 slot (flattened ABI).
     pub num_param_slots: u32,
+    /// Whether each parameter slot is passed as inout (by reference).
+    /// Length matches num_param_slots - for struct params, all slots share
+    /// the same mode as the original parameter.
+    pub param_modes: Vec<bool>,
 }
 
 /// Output from semantic analysis.
@@ -407,16 +411,17 @@ impl<'a> Sema<'a> {
                 let fn_name = self.interner.get(*name).to_string();
                 let ret_type = self.resolve_type(*return_type, inst.span)?;
 
-                // Resolve parameter types
-                let param_info: Vec<(Symbol, Type)> = params
+                // Resolve parameter types and modes
+                let param_info: Vec<(Symbol, Type, bool)> = params
                     .iter()
-                    .map(|(pname, ptype)| {
-                        let ty = self.resolve_type(*ptype, inst.span)?;
-                        Ok((*pname, ty))
+                    .map(|p| {
+                        let ty = self.resolve_type(p.ty, inst.span)?;
+                        let is_inout = p.mode == RirParamMode::Inout;
+                        Ok((p.name, ty, is_inout))
                     })
                     .collect::<CompileResult<Vec<_>>>()?;
 
-                let (air, num_locals, num_param_slots) =
+                let (air, num_locals, num_param_slots, param_modes) =
                     self.analyze_function(ret_type, &param_info, *body)?;
 
                 functions.push(AnalyzedFunction {
@@ -424,6 +429,7 @@ impl<'a> Sema<'a> {
                     air,
                     num_locals,
                     num_param_slots,
+                    param_modes,
                 });
             }
         }
@@ -450,21 +456,23 @@ impl<'a> Sema<'a> {
                         let ret_type = self.resolve_type(*return_type, method_inst.span)?;
 
                         // Build parameter list, adding self as first parameter for methods
-                        let mut param_info: Vec<(Symbol, Type)> = Vec::new();
+                        // Note: self is never inout (it's passed by value for now)
+                        let mut param_info: Vec<(Symbol, Type, bool)> = Vec::new();
 
                         if *has_self {
-                            // Add self parameter
+                            // Add self parameter (not inout)
                             let self_sym = self.interner.intern("self");
-                            param_info.push((self_sym, struct_type));
+                            param_info.push((self_sym, struct_type, false));
                         }
 
-                        // Add regular parameters
-                        for (pname, ptype) in params.iter() {
-                            let ty = self.resolve_type(*ptype, method_inst.span)?;
-                            param_info.push((*pname, ty));
+                        // Add regular parameters with their modes
+                        for p in params.iter() {
+                            let ty = self.resolve_type(p.ty, method_inst.span)?;
+                            let is_inout = p.mode == RirParamMode::Inout;
+                            param_info.push((p.name, ty, is_inout));
                         }
 
-                        let (air, num_locals, num_param_slots) =
+                        let (air, num_locals, num_param_slots, param_modes) =
                             self.analyze_function(ret_type, &param_info, *body)?;
 
                         // Generate method name with struct prefix: "Type.method" or "Type::function"
@@ -479,6 +487,7 @@ impl<'a> Sema<'a> {
                             air,
                             num_locals,
                             num_param_slots,
+                            param_modes,
                         });
                     }
                 }
@@ -493,10 +502,11 @@ impl<'a> Sema<'a> {
                 let struct_type = Type::Struct(struct_id);
 
                 // Destructors take self parameter and return unit
+                // self is passed by value (not inout) - the destructor consumes it
                 let self_sym = self.interner.intern("self");
-                let param_info: Vec<(Symbol, Type)> = vec![(self_sym, struct_type)];
+                let param_info: Vec<(Symbol, Type, bool)> = vec![(self_sym, struct_type, false)];
 
-                let (air, num_locals, num_param_slots) =
+                let (air, num_locals, num_param_slots, param_modes) =
                     self.analyze_function(Type::Unit, &param_info, *body)?;
 
                 // Generate destructor name: "TypeName.__drop"
@@ -507,6 +517,7 @@ impl<'a> Sema<'a> {
                     air,
                     num_locals,
                     num_param_slots,
+                    param_modes,
                 });
             }
         }
@@ -772,7 +783,7 @@ impl<'a> Sema<'a> {
                 let ret_type = self.resolve_type(*return_type, inst.span)?;
                 let param_types: Vec<Type> = params
                     .iter()
-                    .map(|(_, ptype)| self.resolve_type(*ptype, inst.span))
+                    .map(|p| self.resolve_type(p.ty, inst.span))
                     .collect::<CompileResult<Vec<_>>>()?;
 
                 self.functions.insert(
@@ -834,11 +845,10 @@ impl<'a> Sema<'a> {
                         }
 
                         // Resolve parameter types
-                        let param_names: Vec<Symbol> =
-                            params.iter().map(|(pname, _)| *pname).collect();
+                        let param_names: Vec<Symbol> = params.iter().map(|p| p.name).collect();
                         let param_types: Vec<Type> = params
                             .iter()
-                            .map(|(_, ptype)| self.resolve_type(*ptype, method_inst.span))
+                            .map(|p| self.resolve_type(p.ty, method_inst.span))
                             .collect::<CompileResult<Vec<_>>>()?;
                         let ret_type = self.resolve_type(*return_type, method_inst.span)?;
 
@@ -862,21 +872,22 @@ impl<'a> Sema<'a> {
     }
 
     /// Analyze a single function, producing AIR.
-    /// Returns (air, num_locals, num_param_slots).
+    /// Returns (air, num_locals, num_param_slots, param_modes).
     fn analyze_function(
         &mut self,
         return_type: Type,
-        params: &[(Symbol, Type)],
+        params: &[(Symbol, Type, bool)], // (name, type, is_inout)
         body: InstRef,
-    ) -> CompileResult<(Air, u32, u32)> {
+    ) -> CompileResult<(Air, u32, u32, Vec<bool>)> {
         let mut air = Air::new(return_type);
         let mut param_map: HashMap<Symbol, ParamInfo> = HashMap::new();
+        let mut param_modes: Vec<bool> = Vec::new();
 
         // Add parameters to the param map, tracking ABI slot offsets.
         // Each parameter starts at the next available ABI slot.
         // For struct parameters, the slot count is the number of fields.
         let mut next_abi_slot: u32 = 0;
-        for (pname, ptype) in params.iter() {
+        for (pname, ptype, is_inout) in params.iter() {
             param_map.insert(
                 *pname,
                 ParamInfo {
@@ -884,7 +895,12 @@ impl<'a> Sema<'a> {
                     ty: *ptype,
                 },
             );
-            next_abi_slot += self.abi_slot_count(*ptype);
+            let slot_count = self.abi_slot_count(*ptype);
+            // All slots for this parameter share the same inout mode
+            for _ in 0..slot_count {
+                param_modes.push(*is_inout);
+            }
+            next_abi_slot += slot_count;
         }
         let num_param_slots = next_abi_slot;
 
@@ -923,7 +939,7 @@ impl<'a> Sema<'a> {
             });
         }
 
-        Ok((air, ctx.next_slot, num_param_slots))
+        Ok((air, ctx.next_slot, num_param_slots, param_modes))
     }
 
     /// Run Hindley-Milner type inference on a function body.
@@ -936,7 +952,7 @@ impl<'a> Sema<'a> {
     fn run_type_inference(
         &mut self,
         return_type: Type,
-        params: &[(Symbol, Type)],
+        params: &[(Symbol, Type, bool)],
         body: InstRef,
     ) -> CompileResult<HashMap<InstRef, Type>> {
         // Build function signatures map for the constraint generator.
@@ -1008,7 +1024,7 @@ impl<'a> Sema<'a> {
         // Convert Type to InferType so arrays are represented structurally.
         let param_vars: HashMap<Symbol, ParamVarInfo> = params
             .iter()
-            .map(|(name, ty)| {
+            .map(|(name, ty, _is_inout)| {
                 (
                     *name,
                     ParamVarInfo {
@@ -2313,16 +2329,19 @@ impl<'a> Sema<'a> {
                 let return_type = fn_info.return_type;
 
                 // Analyze arguments (move checking happens in analyze_inst for VarRef)
-                let mut arg_refs = Vec::new();
+                let mut air_args = Vec::new();
                 for arg in args.iter() {
-                    let arg_result = self.analyze_inst(air, *arg, ctx)?;
-                    arg_refs.push(arg_result.air_ref);
+                    let arg_result = self.analyze_inst(air, arg.value, ctx)?;
+                    air_args.push(crate::inst::AirCallArg {
+                        value: arg_result.air_ref,
+                        is_inout: arg.is_inout,
+                    });
                 }
 
                 let air_ref = air.add_inst(AirInst {
                     data: AirInstData::Call {
                         name: fn_name_str,
-                        args: arg_refs,
+                        args: air_args,
                     },
                     ty: return_type,
                     span: inst.span,
@@ -3069,11 +3088,17 @@ impl<'a> Sema<'a> {
                 // Clone data needed before mutable borrow
                 let return_type = method_info.return_type;
 
-                // Analyze arguments
-                let mut arg_refs = vec![receiver_result.air_ref];
+                // Analyze arguments - receiver first, then remaining args
+                let mut air_args = vec![crate::inst::AirCallArg {
+                    value: receiver_result.air_ref,
+                    is_inout: false, // receiver is not inout
+                }];
                 for arg in args.iter() {
-                    let arg_result = self.analyze_inst(air, *arg, ctx)?;
-                    arg_refs.push(arg_result.air_ref);
+                    let arg_result = self.analyze_inst(air, arg.value, ctx)?;
+                    air_args.push(crate::inst::AirCallArg {
+                        value: arg_result.air_ref,
+                        is_inout: arg.is_inout,
+                    });
                 }
 
                 // Generate a method call name: Type.method
@@ -3082,7 +3107,7 @@ impl<'a> Sema<'a> {
                 let air_ref = air.add_inst(AirInst {
                     data: AirInstData::Call {
                         name: call_name,
-                        args: arg_refs,
+                        args: air_args,
                     },
                     ty: return_type,
                     span: inst.span,
@@ -3142,10 +3167,13 @@ impl<'a> Sema<'a> {
                 let return_type = method_info.return_type;
 
                 // Analyze arguments
-                let mut arg_refs = Vec::new();
+                let mut air_args = Vec::new();
                 for arg in args.iter() {
-                    let arg_result = self.analyze_inst(air, *arg, ctx)?;
-                    arg_refs.push(arg_result.air_ref);
+                    let arg_result = self.analyze_inst(air, arg.value, ctx)?;
+                    air_args.push(crate::inst::AirCallArg {
+                        value: arg_result.air_ref,
+                        is_inout: arg.is_inout,
+                    });
                 }
 
                 // Generate a function call name: Type::function
@@ -3154,7 +3182,7 @@ impl<'a> Sema<'a> {
                 let air_ref = air.add_inst(AirInst {
                     data: AirInstData::Call {
                         name: call_name,
-                        args: arg_refs,
+                        args: air_args,
                     },
                     ty: return_type,
                     span: inst.span,

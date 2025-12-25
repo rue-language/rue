@@ -185,7 +185,7 @@ mod tests {
         });
 
         // Build CFG from AIR (no struct/array types in this simple test)
-        let cfg_output = CfgBuilder::build(&air, 0, 0, "main", &[], &[]);
+        let cfg_output = CfgBuilder::build(&air, 0, 0, "main", &[], &[], vec![]);
 
         // Test the generate function
         let machine_code = generate(&cfg_output.cfg, &[], &[], &[]).unwrap();

@@ -39,6 +39,41 @@ pub struct RirDirective {
     pub span: Span,
 }
 
+/// Parameter passing mode in RIR.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RirParamMode {
+    /// Normal pass-by-value parameter
+    Normal,
+    /// Inout parameter - mutated in place and returned to caller
+    Inout,
+}
+
+impl Default for RirParamMode {
+    fn default() -> Self {
+        RirParamMode::Normal
+    }
+}
+
+/// A parameter in a function declaration.
+#[derive(Debug, Clone)]
+pub struct RirParam {
+    /// Parameter name
+    pub name: Symbol,
+    /// Parameter type
+    pub ty: Symbol,
+    /// Parameter passing mode
+    pub mode: RirParamMode,
+}
+
+/// An argument in a function call.
+#[derive(Debug, Clone)]
+pub struct RirCallArg {
+    /// The argument expression
+    pub value: InstRef,
+    /// Whether this argument is passed as inout
+    pub is_inout: bool,
+}
+
 /// A pattern in a match expression (RIR level - untyped).
 #[derive(Debug, Clone)]
 pub enum RirPattern {
@@ -249,8 +284,8 @@ pub enum InstData {
         /// Directives applied to this function
         directives: Vec<RirDirective>,
         name: Symbol,
-        /// Parameter symbols and their type symbols: [(param_name, param_type), ...]
-        params: Vec<(Symbol, Symbol)>,
+        /// Parameters with names, types, and modes
+        params: Vec<RirParam>,
         return_type: Symbol,
         body: InstRef,
         /// Whether this function/method takes `self` as a receiver.
@@ -263,8 +298,8 @@ pub enum InstData {
     Call {
         /// Function name
         name: Symbol,
-        /// Argument instruction refs
-        args: Vec<InstRef>,
+        /// Arguments with optional inout flags
+        args: Vec<RirCallArg>,
     },
 
     /// Intrinsic call with expression arguments (e.g., @dbg)
@@ -427,8 +462,8 @@ pub enum InstData {
         receiver: InstRef,
         /// Method name
         method: Symbol,
-        /// Argument instruction refs
-        args: Vec<InstRef>,
+        /// Arguments with optional inout flags
+        args: Vec<RirCallArg>,
     },
 
     /// Associated function call: Type::function(args)
@@ -437,8 +472,8 @@ pub enum InstData {
         type_name: Symbol,
         /// Function name (e.g., origin)
         function: Symbol,
-        /// Argument instruction refs
-        args: Vec<InstRef>,
+        /// Arguments with optional inout flags
+        args: Vec<RirCallArg>,
     },
 
     /// User-defined destructor declaration: drop fn TypeName(self) { ... }
@@ -612,11 +647,16 @@ impl<'a, 'b> RirPrinter<'a, 'b> {
                     let self_str = if *has_self { "self, " } else { "" };
                     let params_str: Vec<String> = params
                         .iter()
-                        .map(|(pname, ptype)| {
+                        .map(|p| {
+                            let mode_prefix = match p.mode {
+                                RirParamMode::Inout => "inout ",
+                                RirParamMode::Normal => "",
+                            };
                             format!(
-                                "{}: {}",
-                                self.interner.get(*pname),
-                                self.interner.get(*ptype)
+                                "{}{}: {}",
+                                mode_prefix,
+                                self.interner.get(p.name),
+                                self.interner.get(p.ty)
                             )
                         })
                         .collect();
@@ -639,7 +679,16 @@ impl<'a, 'b> RirPrinter<'a, 'b> {
                 }
                 InstData::Call { name, args } => {
                     let name_str = self.interner.get(*name);
-                    let args_str: Vec<String> = args.iter().map(|a| format!("{}", a)).collect();
+                    let args_str: Vec<String> = args
+                        .iter()
+                        .map(|a| {
+                            if a.is_inout {
+                                format!("inout {}", a.value)
+                            } else {
+                                format!("{}", a.value)
+                            }
+                        })
+                        .collect();
                     out.push_str(&format!("call {}({})\n", name_str, args_str.join(", ")));
                 }
                 InstData::Intrinsic { name, args } => {
@@ -787,7 +836,16 @@ impl<'a, 'b> RirPrinter<'a, 'b> {
                     args,
                 } => {
                     let method_str = self.interner.get(*method);
-                    let args_str: Vec<String> = args.iter().map(|a| format!("{}", a)).collect();
+                    let args_str: Vec<String> = args
+                        .iter()
+                        .map(|a| {
+                            if a.is_inout {
+                                format!("inout {}", a.value)
+                            } else {
+                                format!("{}", a.value)
+                            }
+                        })
+                        .collect();
                     out.push_str(&format!(
                         "method_call {}.{}({})\n",
                         receiver,
@@ -802,7 +860,16 @@ impl<'a, 'b> RirPrinter<'a, 'b> {
                 } => {
                     let type_str = self.interner.get(*type_name);
                     let func_str = self.interner.get(*function);
-                    let args_str: Vec<String> = args.iter().map(|a| format!("{}", a)).collect();
+                    let args_str: Vec<String> = args
+                        .iter()
+                        .map(|a| {
+                            if a.is_inout {
+                                format!("inout {}", a.value)
+                            } else {
+                                format!("{}", a.value)
+                            }
+                        })
+                        .collect();
                     out.push_str(&format!(
                         "assoc_fn_call {}::{}({})\n",
                         type_str,

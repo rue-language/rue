@@ -307,6 +307,7 @@ pub fn compile_frontend_from_ast(ast: Ast) -> CompileResult<CompileState> {
             &func.name,
             &sema_output.struct_defs,
             &sema_output.array_types,
+            func.param_modes.clone(),
         );
         warnings.extend(cfg_output.warnings);
         functions.push(FunctionWithCfg {

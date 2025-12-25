@@ -44,6 +44,47 @@ fn do_nothing() {
 }
 ```
 
+## Inout Parameters
+
+{{ rule(id="6.1:14", cat="normative") }}
+
+A parameter **MAY** be marked with the `inout` keyword to indicate that it is passed by reference and may be mutated by the callee. Changes made to an `inout` parameter are visible to the caller after the call returns.
+
+{{ rule(id="6.1:15", cat="syntax") }}
+
+```ebnf
+param = [ "inout" ] IDENT ":" type ;
+```
+
+{{ rule(id="6.1:16", cat="legality-rule") }}
+
+At the call site, an argument passed to an `inout` parameter **MUST** be marked with the `inout` keyword.
+
+{{ rule(id="6.1:17", cat="legality-rule") }}
+
+An argument to an `inout` parameter **MUST** be an lvalue (a variable, field access, or array index expression).
+
+{{ rule(id="6.1:18", cat="dynamic-semantics") }}
+
+When a function is called with an `inout` argument:
+1. The address of the argument is passed to the callee
+2. The callee reads and writes to the argument through this address
+3. After the call returns, the original variable holds the updated value
+
+{{ rule(id="6.1:19", cat="example") }}
+
+```rue
+fn increment(inout x: i32) {
+    x = x + 1;
+}
+
+fn main() -> i32 {
+    let mut n = 10;
+    increment(inout n);
+    n  // 11
+}
+```
+
 ## Entry Point
 
 {{ rule(id="6.1:7", cat="legality-rule") }}

@@ -22,7 +22,7 @@ mod inst;
 use rue_error::CompileWarning;
 
 pub use build::CfgBuilder;
-pub use inst::{BasicBlock, BlockId, Cfg, CfgInst, CfgInstData, CfgValue, Terminator};
+pub use inst::{BasicBlock, BlockId, Cfg, CfgCallArg, CfgInst, CfgInstData, CfgValue, Terminator};
 
 // Re-export types from rue-air that we use
 pub use rue_air::{StructDef, StructId, Type};

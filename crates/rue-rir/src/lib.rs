@@ -14,4 +14,7 @@ mod astgen;
 mod inst;
 
 pub use astgen::AstGen;
-pub use inst::{Inst, InstData, InstRef, Rir, RirDirective, RirPattern, RirPrinter};
+pub use inst::{
+    Inst, InstData, InstRef, Rir, RirCallArg, RirDirective, RirParam, RirParamMode, RirPattern,
+    RirPrinter,
+};

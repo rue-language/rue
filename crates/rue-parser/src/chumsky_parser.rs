@@ -5,12 +5,12 @@
 
 use crate::ast::{
     ArrayLitExpr, AssignStatement, AssignTarget, AssocFnCallExpr, Ast, BinaryExpr, BinaryOp,
-    BlockExpr, BoolLit, BreakExpr, CallExpr, ContinueExpr, Directive, DirectiveArg, DropFn,
-    EnumDecl, EnumVariant, Expr, FieldDecl, FieldExpr, FieldInit, Function, Ident, IfExpr,
+    BlockExpr, BoolLit, BreakExpr, CallArg, CallExpr, ContinueExpr, Directive, DirectiveArg,
+    DropFn, EnumDecl, EnumVariant, Expr, FieldDecl, FieldExpr, FieldInit, Function, Ident, IfExpr,
     ImplBlock, IndexExpr, IntLit, IntrinsicArg, IntrinsicCallExpr, Item, LetPattern, LetStatement,
-    LoopExpr, MatchArm, MatchExpr, Method, MethodCallExpr, NegIntLit, Param, ParenExpr, PathExpr,
-    PathPattern, Pattern, ReturnExpr, SelfExpr, SelfParam, Statement, StringLit, StructDecl,
-    StructLitExpr, TypeExpr, UnaryExpr, UnaryOp, UnitLit, WhileExpr,
+    LoopExpr, MatchArm, MatchExpr, Method, MethodCallExpr, NegIntLit, Param, ParamMode, ParenExpr,
+    PathExpr, PathPattern, Pattern, ReturnExpr, SelfExpr, SelfParam, Statement, StringLit,
+    StructDecl, StructLitExpr, TypeExpr, UnaryExpr, UnaryOp, UnitLit, WhileExpr,
 };
 use chumsky::input::{Input as ChumskyInput, Stream, ValueInput};
 use chumsky::pratt::{infix, left, prefix};
@@ -101,15 +101,22 @@ where
     })
 }
 
-/// Parser for function parameters: name: type
+/// Parser for function parameters: [inout] name: type
 fn param_parser<'src, I>() -> impl Parser<'src, I, Param, extra::Err<Rich<'src, TokenKind>>> + Clone
 where
     I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
 {
-    ident_parser()
+    just(TokenKind::Inout)
+        .or_not()
+        .then(ident_parser())
         .then_ignore(just(TokenKind::Colon))
         .then(type_parser())
-        .map_with(|(name, ty), e| Param {
+        .map_with(|((inout, name), ty), e| Param {
+            mode: if inout.is_some() {
+                ParamMode::Inout
+            } else {
+                ParamMode::Normal
+            },
             name,
             ty,
             span: to_rue_span(e.span()),
@@ -188,7 +195,36 @@ where
     directive_parser().repeated().collect()
 }
 
-/// Parser for comma-separated expression arguments
+/// Parser for a single call argument: [inout] expr
+fn call_arg_parser<'src, I>(
+    expr: impl Parser<'src, I, Expr, extra::Err<Rich<'src, TokenKind>>> + Clone,
+) -> impl Parser<'src, I, CallArg, extra::Err<Rich<'src, TokenKind>>> + Clone
+where
+    I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
+{
+    just(TokenKind::Inout)
+        .or_not()
+        .then(expr)
+        .map_with(|(inout, expr), e| CallArg {
+            is_inout: inout.is_some(),
+            expr,
+            span: to_rue_span(e.span()),
+        })
+}
+
+/// Parser for comma-separated call arguments with optional inout
+fn call_args_parser<'src, I>(
+    expr: impl Parser<'src, I, Expr, extra::Err<Rich<'src, TokenKind>>> + Clone,
+) -> impl Parser<'src, I, Vec<CallArg>, extra::Err<Rich<'src, TokenKind>>> + Clone
+where
+    I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
+{
+    call_arg_parser(expr)
+        .separated_by(just(TokenKind::Comma))
+        .collect()
+}
+
+/// Parser for comma-separated expression arguments (for contexts that don't support inout)
 fn args_parser<'src, I>(
     expr: impl Parser<'src, I, Expr, extra::Err<Rich<'src, TokenKind>>> + Clone,
 ) -> impl Parser<'src, I, Vec<Expr>, extra::Err<Rich<'src, TokenKind>>> + Clone
@@ -656,10 +692,10 @@ where
 /// What can follow an identifier: call args, struct fields, path (::variant), path call (::fn()), or nothing
 #[derive(Clone)]
 enum IdentSuffix {
-    Call(Vec<Expr>),
+    Call(Vec<CallArg>),
     StructLit(Vec<FieldInit>),
-    Path(Ident),                // ::Variant (for enum variants)
-    PathCall(Ident, Vec<Expr>), // ::function() (for associated functions)
+    Path(Ident),                   // ::Variant (for enum variants)
+    PathCall(Ident, Vec<CallArg>), // ::function() (for associated functions)
     None,
 }
 
@@ -674,7 +710,7 @@ where
         .then(
             choice((
                 // Function call: (args)
-                args_parser(expr.clone())
+                call_args_parser(expr.clone())
                     .delimited_by(just(TokenKind::LParen), just(TokenKind::RParen))
                     .map(IdentSuffix::Call),
                 // Struct literal: { field: value, ... }
@@ -685,7 +721,7 @@ where
                 just(TokenKind::ColonColon)
                     .ignore_then(ident_parser())
                     .then(
-                        args_parser(expr)
+                        call_args_parser(expr.clone())
                             .delimited_by(just(TokenKind::LParen), just(TokenKind::RParen)),
                     )
                     .map(|(func, args)| IdentSuffix::PathCall(func, args)),
@@ -728,7 +764,7 @@ where
 enum Suffix {
     Field(Ident),
     /// Method call with method name, arguments, and closing paren position
-    MethodCall(Ident, Vec<Expr>, u32),
+    MethodCall(Ident, Vec<CallArg>, u32),
     /// Index expression with the inner expression and closing bracket position
     Index(Expr, u32),
 }
@@ -745,7 +781,7 @@ where
     let method_call_suffix = just(TokenKind::Dot)
         .ignore_then(ident_parser())
         .then(
-            args_parser(expr.clone())
+            call_args_parser(expr.clone())
                 .delimited_by(just(TokenKind::LParen), just(TokenKind::RParen)),
         )
         .map_with(|(method, args), e| Suffix::MethodCall(method, args, e.span().end as u32));

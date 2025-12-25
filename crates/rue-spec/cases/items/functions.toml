@@ -575,3 +575,133 @@ fn main() -> i32 {
 }
 """
 exit_code = 42
+
+# =============================================================================
+# Inout parameters
+# =============================================================================
+
+[[case]]
+name = "inout_param_increment"
+spec = ["6.1:14", "6.1:15", "6.1:16", "6.1:18"]
+description = "Basic inout parameter that modifies a variable"
+preview = "affine_types"
+source = """
+fn increment(inout x: i32) {
+    x = x + 1;
+}
+fn main() -> i32 {
+    let mut n = 41;
+    increment(inout n);
+    n
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "inout_param_double"
+spec = ["6.1:14", "6.1:18"]
+description = "Inout parameter that doubles a value"
+preview = "affine_types"
+source = """
+fn double(inout x: i32) {
+    x = x * 2;
+}
+fn main() -> i32 {
+    let mut n = 21;
+    double(inout n);
+    n
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "inout_param_swap"
+spec = ["6.1:14", "6.1:18"]
+description = "Multiple inout parameters for swap"
+preview = "affine_types"
+source = """
+fn swap(inout a: i32, inout b: i32) {
+    let tmp = a;
+    a = b;
+    b = tmp;
+}
+fn main() -> i32 {
+    let mut x = 10;
+    let mut y = 42;
+    swap(inout x, inout y);
+    x
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "inout_param_with_regular_param"
+spec = ["6.1:14", "6.1:15"]
+description = "Mixing inout and regular parameters"
+preview = "affine_types"
+source = """
+fn add_to(inout x: i32, amount: i32) {
+    x = x + amount;
+}
+fn main() -> i32 {
+    let mut n = 32;
+    add_to(inout n, 10);
+    n
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "inout_param_multiple_calls"
+spec = ["6.1:14", "6.1:18"]
+description = "Multiple calls with inout accumulate changes"
+preview = "affine_types"
+source = """
+fn increment(inout x: i32) {
+    x = x + 1;
+}
+fn main() -> i32 {
+    let mut n = 39;
+    increment(inout n);
+    increment(inout n);
+    increment(inout n);
+    n
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "inout_param_return_value"
+spec = ["6.1:14", "6.1:18"]
+description = "Inout function that also returns a value"
+preview = "affine_types"
+source = """
+fn increment_and_return_old(inout x: i32) -> i32 {
+    let old = x;
+    x = x + 1;
+    old
+}
+fn main() -> i32 {
+    let mut n = 41;
+    let old = increment_and_return_old(inout n);
+    old + 1
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "inout_requires_lvalue"
+spec = ["6.1:17"]
+description = "Inout argument must be an lvalue (not a literal)"
+preview = "affine_types"
+source = """
+fn increment(inout x: i32) {
+    x = x + 1;
+}
+fn main() -> i32 {
+    increment(inout 42);
+    0
+}
+"""
+compile_fail = true
+error_contains = "lvalue"

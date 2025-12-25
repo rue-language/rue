@@ -158,9 +158,26 @@ pub struct Function {
     pub span: Span,
 }
 
+/// Parameter passing mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ParamMode {
+    /// Normal pass-by-value parameter
+    Normal,
+    /// Inout parameter - mutated in place and returned to caller
+    Inout,
+}
+
+impl Default for ParamMode {
+    fn default() -> Self {
+        ParamMode::Normal
+    }
+}
+
 /// A function parameter.
 #[derive(Debug, Clone)]
 pub struct Param {
+    /// Parameter passing mode (normal or inout)
+    pub mode: ParamMode,
     /// Parameter name
     pub name: Ident,
     /// Parameter type
@@ -450,13 +467,24 @@ impl Pattern {
     }
 }
 
+/// An argument in a function call.
+#[derive(Debug, Clone)]
+pub struct CallArg {
+    /// Whether this argument is passed as inout
+    pub is_inout: bool,
+    /// The argument expression
+    pub expr: Expr,
+    /// Span covering the entire argument (including inout keyword if present)
+    pub span: Span,
+}
+
 /// A function call expression.
 #[derive(Debug, Clone)]
 pub struct CallExpr {
     /// Function name
     pub name: Ident,
     /// Arguments
-    pub args: Vec<Expr>,
+    pub args: Vec<CallArg>,
     pub span: Span,
 }
 
@@ -517,7 +545,7 @@ pub struct MethodCallExpr {
     /// Method name
     pub method: Ident,
     /// Arguments (excluding self)
-    pub args: Vec<Expr>,
+    pub args: Vec<CallArg>,
     pub span: Span,
 }
 
@@ -557,7 +585,7 @@ pub struct AssocFnCallExpr {
     /// The function name (e.g., `origin`)
     pub function: Ident,
     /// Arguments
-    pub args: Vec<Expr>,
+    pub args: Vec<CallArg>,
     pub span: Span,
 }
 
@@ -795,7 +823,7 @@ fn fmt_method(f: &mut fmt::Formatter<'_>, method: &Method, level: usize) -> fmt:
         if i > 0 {
             write!(f, ", ")?;
         }
-        write!(f, "{}: {}", param.name.name, param.ty)?;
+        fmt_param(f, param)?;
     }
     write!(f, ")")?;
     if let Some(ref ret) = method.return_type {
@@ -804,6 +832,23 @@ fn fmt_method(f: &mut fmt::Formatter<'_>, method: &Method, level: usize) -> fmt:
     writeln!(f)?;
     fmt_expr(f, &method.body, level + 1)?;
     Ok(())
+}
+
+fn fmt_param(f: &mut fmt::Formatter<'_>, param: &Param) -> fmt::Result {
+    if param.mode == ParamMode::Inout {
+        write!(f, "inout ")?;
+    }
+    write!(f, "{}: {}", param.name.name, param.ty)
+}
+
+fn fmt_call_arg(f: &mut fmt::Formatter<'_>, arg: &CallArg, level: usize) -> fmt::Result {
+    if arg.is_inout {
+        indent(f, level)?;
+        writeln!(f, "inout:")?;
+        fmt_expr(f, &arg.expr, level + 1)
+    } else {
+        fmt_expr(f, &arg.expr, level)
+    }
 }
 
 fn fmt_function(f: &mut fmt::Formatter<'_>, func: &Function, level: usize) -> fmt::Result {
@@ -815,7 +860,7 @@ fn fmt_function(f: &mut fmt::Formatter<'_>, func: &Function, level: usize) -> fm
             if i > 0 {
                 write!(f, ", ")?;
             }
-            write!(f, "{}: {}", param.name.name, param.ty)?;
+            fmt_param(f, param)?;
         }
         write!(f, ")")?;
     }
@@ -898,7 +943,7 @@ fn fmt_expr(f: &mut fmt::Formatter<'_>, expr: &Expr, level: usize) -> fmt::Resul
         Expr::Call(call) => {
             writeln!(f, "Call {}", call.name.name)?;
             for arg in &call.args {
-                fmt_expr(f, arg, level + 1)?;
+                fmt_call_arg(f, arg, level + 1)?;
             }
             Ok(())
         }
@@ -947,7 +992,7 @@ fn fmt_expr(f: &mut fmt::Formatter<'_>, expr: &Expr, level: usize) -> fmt::Resul
                 indent(f, level + 1)?;
                 writeln!(f, "Args:")?;
                 for arg in &method_call.args {
-                    fmt_expr(f, arg, level + 2)?;
+                    fmt_call_arg(f, arg, level + 2)?;
                 }
             }
             Ok(())
@@ -978,8 +1023,7 @@ fn fmt_expr(f: &mut fmt::Formatter<'_>, expr: &Expr, level: usize) -> fmt::Resul
                 assoc_fn_call.type_name.name, assoc_fn_call.function.name
             )?;
             for arg in &assoc_fn_call.args {
-                indent(f, level + 1)?;
-                fmt_expr(f, arg, level + 1)?;
+                fmt_call_arg(f, arg, level + 1)?;
             }
             Ok(())
         }

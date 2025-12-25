@@ -10,11 +10,14 @@ use rue_intern::Interner;
 const TYPE_INTRINSICS: &[&str] = &["size_of", "align_of"];
 use rue_parser::ast::DropFn;
 use rue_parser::{
-    AssignTarget, Ast, BinaryOp, Directive, DirectiveArg, EnumDecl, Expr, Function, ImplBlock,
-    IntrinsicArg, Item, LetPattern, Method, Pattern, Statement, StructDecl, TypeExpr, UnaryOp,
+    AssignTarget, Ast, BinaryOp, CallArg, Directive, DirectiveArg, EnumDecl, Expr, Function,
+    ImplBlock, IntrinsicArg, Item, LetPattern, Method, ParamMode, Pattern, Statement, StructDecl,
+    TypeExpr, UnaryOp,
 };
 
-use crate::inst::{Inst, InstData, InstRef, Rir, RirDirective, RirPattern};
+use crate::inst::{
+    Inst, InstData, InstRef, Rir, RirCallArg, RirDirective, RirParam, RirParamMode, RirPattern,
+};
 
 /// Generates RIR from an AST.
 pub struct AstGen<'a> {
@@ -167,10 +170,10 @@ impl<'a> AstGen<'a> {
         let params: Vec<_> = method
             .params
             .iter()
-            .map(|p| {
-                let param_name = self.interner.intern(&p.name.name);
-                let param_type = self.intern_type(&p.ty);
-                (param_name, param_type)
+            .map(|p| RirParam {
+                name: self.interner.intern(&p.name.name),
+                ty: self.intern_type(&p.ty),
+                mode: self.convert_param_mode(p.mode),
             })
             .collect();
 
@@ -213,6 +216,22 @@ impl<'a> AstGen<'a> {
             .collect()
     }
 
+    /// Convert AST ParamMode to RIR RirParamMode
+    fn convert_param_mode(&self, mode: ParamMode) -> RirParamMode {
+        match mode {
+            ParamMode::Normal => RirParamMode::Normal,
+            ParamMode::Inout => RirParamMode::Inout,
+        }
+    }
+
+    /// Convert a CallArg to RirCallArg
+    fn convert_call_arg(&mut self, arg: &CallArg) -> RirCallArg {
+        RirCallArg {
+            value: self.gen_expr(&arg.expr),
+            is_inout: arg.is_inout,
+        }
+    }
+
     fn gen_function(&mut self, func: &Function) -> InstRef {
         // Convert directives
         let directives = self.convert_directives(&func.directives);
@@ -228,10 +247,10 @@ impl<'a> AstGen<'a> {
         let params: Vec<_> = func
             .params
             .iter()
-            .map(|p| {
-                let param_name = self.interner.intern(&p.name.name);
-                let param_type = self.intern_type(&p.ty);
-                (param_name, param_type)
+            .map(|p| RirParam {
+                name: self.interner.intern(&p.name.name),
+                ty: self.intern_type(&p.ty),
+                mode: self.convert_param_mode(p.mode),
             })
             .collect();
 
@@ -374,7 +393,7 @@ impl<'a> AstGen<'a> {
             }
             Expr::Call(call) => {
                 let name = self.interner.intern(&call.name.name);
-                let args: Vec<_> = call.args.iter().map(|a| self.gen_expr(a)).collect();
+                let args: Vec<_> = call.args.iter().map(|a| self.convert_call_arg(a)).collect();
 
                 self.rir.add_inst(Inst {
                     data: InstData::Call { name, args },
@@ -497,7 +516,11 @@ impl<'a> AstGen<'a> {
             Expr::MethodCall(method_call) => {
                 let receiver = self.gen_expr(&method_call.receiver);
                 let method = self.interner.intern(&method_call.method.name);
-                let args: Vec<_> = method_call.args.iter().map(|a| self.gen_expr(a)).collect();
+                let args: Vec<_> = method_call
+                    .args
+                    .iter()
+                    .map(|a| self.convert_call_arg(a))
+                    .collect();
 
                 self.rir.add_inst(Inst {
                     data: InstData::MethodCall {
@@ -514,7 +537,7 @@ impl<'a> AstGen<'a> {
                 let args: Vec<_> = assoc_fn_call
                     .args
                     .iter()
-                    .map(|a| self.gen_expr(a))
+                    .map(|a| self.convert_call_arg(a))
                     .collect();
 
                 self.rir.add_inst(Inst {

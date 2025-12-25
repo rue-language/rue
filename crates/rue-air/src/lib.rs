@@ -20,7 +20,7 @@ pub use inference::{
     LocalVarInfo, ParamVarInfo, Substitution, TypeVarAllocator, TypeVarId, UnificationError,
     Unifier, UnifyResult,
 };
-pub use inst::{Air, AirInst, AirInstData, AirPattern, AirRef};
+pub use inst::{Air, AirCallArg, AirInst, AirInstData, AirParamMode, AirPattern, AirRef};
 pub use sema::{AnalyzedFunction, Sema, SemaOutput};
 pub use types::{
     ArrayTypeDef, ArrayTypeId, EnumDef, EnumId, StructDef, StructField, StructId, Type,

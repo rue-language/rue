@@ -7,6 +7,40 @@ use std::fmt;
 use crate::types::{ArrayTypeId, StructId, Type};
 use rue_span::Span;
 
+/// Parameter passing mode in AIR.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AirParamMode {
+    /// Normal pass-by-value parameter
+    Normal,
+    /// Inout parameter - mutated in place and returned to caller
+    Inout,
+}
+
+impl Default for AirParamMode {
+    fn default() -> Self {
+        AirParamMode::Normal
+    }
+}
+
+/// An argument in a function call (AIR level).
+#[derive(Debug, Clone)]
+pub struct AirCallArg {
+    /// The argument expression
+    pub value: AirRef,
+    /// Whether this argument is passed as inout
+    pub is_inout: bool,
+}
+
+impl fmt::Display for AirCallArg {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if self.is_inout {
+            write!(f, "inout {}", self.value)
+        } else {
+            write!(f, "{}", self.value)
+        }
+    }
+}
+
 /// A pattern in a match expression (AIR level - typed).
 #[derive(Debug, Clone)]
 pub enum AirPattern {
@@ -232,8 +266,8 @@ pub enum AirInstData {
     Call {
         /// Function name
         name: String,
-        /// Argument AIR refs
-        args: Vec<AirRef>,
+        /// Arguments with inout flags
+        args: Vec<AirCallArg>,
     },
 
     /// Intrinsic call (e.g., @dbg)

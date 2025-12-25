@@ -7,7 +7,7 @@ use rue_air::{Air, AirInstData, AirPattern, AirRef, ArrayTypeDef, StructDef, Typ
 use rue_error::{CompileWarning, WarningKind};
 
 use crate::CfgOutput;
-use crate::inst::{BlockId, Cfg, CfgInst, CfgInstData, CfgValue, Terminator};
+use crate::inst::{BlockId, Cfg, CfgCallArg, CfgInst, CfgInstData, CfgValue, Terminator};
 
 /// Result of lowering an expression.
 struct ExprResult {
@@ -79,6 +79,7 @@ impl<'a> CfgBuilder<'a> {
         fn_name: &str,
         struct_defs: &'a [StructDef],
         array_types: &'a [ArrayTypeDef],
+        param_modes: Vec<bool>,
     ) -> CfgOutput {
         let mut builder = CfgBuilder {
             air,
@@ -87,6 +88,7 @@ impl<'a> CfgBuilder<'a> {
                 num_locals,
                 num_params,
                 fn_name.to_string(),
+                param_modes,
             ),
             struct_defs,
             array_types,
@@ -520,7 +522,11 @@ impl<'a> CfgBuilder<'a> {
             AirInstData::Call { name, args } => {
                 let mut arg_vals = Vec::new();
                 for arg in args {
-                    arg_vals.push(self.lower_inst(*arg).value.unwrap());
+                    let value = self.lower_inst(arg.value).value.unwrap();
+                    arg_vals.push(CfgCallArg {
+                        value,
+                        is_inout: arg.is_inout,
+                    });
                 }
                 let value = self.emit(
                     CfgInstData::Call {
@@ -1453,6 +1459,7 @@ mod tests {
             &func.name,
             &output.struct_defs,
             &output.array_types,
+            func.param_modes.clone(),
         )
         .cfg
     }
