@@ -56,7 +56,6 @@ additive       = multiplicative { ( "+" | "-" ) multiplicative } ;
 multiplicative = unary { ( "*" | "/" | "%" ) unary } ;
 unary          = "-" unary | "!" unary | "~" unary | postfix ;
 postfix        = primary { "[" expression "]" | "(" [ args ] ")" | "." IDENT } ;
-intrinsic      = "@" IDENT "(" [ args ] ")" ;
 args           = expression { "," expression } ;
 primary        = INTEGER | BOOL | IDENT | enum_variant_expr
                | "(" expression ")"
@@ -71,6 +70,9 @@ primary        = INTEGER | BOOL | IDENT | enum_variant_expr
                | struct_literal
                | intrinsic ;
 enum_variant_expr = IDENT "::" IDENT ;
+intrinsic      = "@" IDENT "(" [ intrinsic_args ] ")" ;
+intrinsic_args = intrinsic_arg { "," intrinsic_arg } ;
+intrinsic_arg  = expression | type ;
 
 (* Compound expressions *)
 block_expr     = "{" block "}" ;
