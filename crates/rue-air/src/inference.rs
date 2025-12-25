@@ -1148,6 +1148,7 @@ impl<'a> ConstraintGenerator<'a> {
 
             // Local variable allocation
             InstData::Alloc {
+                directives: _,
                 name,
                 is_mut,
                 ty: type_annotation,

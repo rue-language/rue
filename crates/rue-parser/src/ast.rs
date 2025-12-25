@@ -14,6 +14,27 @@ pub struct Ast {
     pub items: Vec<Item>,
 }
 
+/// A directive that modifies compiler behavior for the following item or statement.
+///
+/// Directives use the `@name(args)` syntax and appear before items or statements.
+/// For example: `@allow(unused_variable)`
+#[derive(Debug, Clone)]
+pub struct Directive {
+    /// The directive name (without the @)
+    pub name: Ident,
+    /// Arguments to the directive
+    pub args: Vec<DirectiveArg>,
+    /// Span covering the entire directive
+    pub span: Span,
+}
+
+/// An argument to a directive.
+#[derive(Debug, Clone)]
+pub enum DirectiveArg {
+    /// An identifier argument (e.g., `unused_variable` in `@allow(unused_variable)`)
+    Ident(Ident),
+}
+
 /// A top-level item in a source file.
 #[derive(Debug, Clone)]
 pub enum Item {
@@ -67,6 +88,8 @@ pub struct EnumVariant {
 /// A function definition.
 #[derive(Debug, Clone)]
 pub struct Function {
+    /// Directives applied to this function
+    pub directives: Vec<Directive>,
     /// Function name
     pub name: Ident,
     /// Function parameters
@@ -485,6 +508,8 @@ impl LetPattern {
 /// A let binding statement.
 #[derive(Debug, Clone)]
 pub struct LetStatement {
+    /// Directives applied to this let binding
+    pub directives: Vec<Directive>,
     /// Whether the binding is mutable
     pub is_mut: bool,
     /// The binding pattern (identifier or wildcard)

@@ -8,7 +8,7 @@ template = "spec/page.html"
 
 {{ rule(id="4.13:1", cat="normative") }}
 
-An intrinsic expression invokes a compiler-provided primitive operation.
+An intrinsic expression is a [builtin](@/02-lexical-structure/05-builtins.md) that appears in expression position and produces a value.
 
 {{ rule(id="4.13:2", cat="normative") }}
 
@@ -23,15 +23,15 @@ Intrinsics may accept expressions, types, or a combination of both as arguments,
 
 {{ rule(id="4.13:3", cat="normative") }}
 
-Intrinsics are prefixed with `@` to distinguish them from user-defined functions.
-
-{{ rule(id="4.13:4", cat="normative") }}
-
 Each intrinsic has a fixed signature specifying the number and types of arguments it accepts.
 
-{{ rule(id="4.13:5", cat="normative") }}
+{{ rule(id="4.13:4", cat="legality-rule") }}
 
-Using an unknown intrinsic name is a compile-time error.
+It is a compile-time error to call an intrinsic with the wrong number of arguments.
+
+{{ rule(id="4.13:5", cat="legality-rule") }}
+
+It is a compile-time error to use an unknown intrinsic name.
 
 ## `@dbg`
 

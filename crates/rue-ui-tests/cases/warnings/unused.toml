@@ -258,6 +258,48 @@ exit_code = 0
 no_warnings = true
 
 # =============================================================================
+# @allow directive tests
+# =============================================================================
+
+[[case]]
+name = "allow_unused_variable_suppresses_warning"
+source = """
+fn main() -> i32 {
+    @allow(unused_variable)
+    let x = 42;
+    0
+}
+"""
+exit_code = 0
+no_warnings = true
+
+[[case]]
+name = "allow_unused_variable_only_affects_annotated"
+source = """
+fn main() -> i32 {
+    @allow(unused_variable)
+    let x = 42;
+    let y = 10;
+    0
+}
+"""
+exit_code = 0
+warning_contains = ["unused variable", "'y'"]
+expected_warning_count = 1
+
+[[case]]
+name = "allow_unused_variable_multiple_args"
+source = """
+fn main() -> i32 {
+    @allow(unused_variable, unreachable_code)
+    let x = 42;
+    0
+}
+"""
+exit_code = 0
+no_warnings = true
+
+# =============================================================================
 # Mixed unused warnings
 # =============================================================================
 

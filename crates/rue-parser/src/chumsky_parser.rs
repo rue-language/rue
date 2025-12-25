@@ -5,11 +5,11 @@
 
 use crate::ast::{
     ArrayLitExpr, AssignStatement, AssignTarget, Ast, BinaryExpr, BinaryOp, BlockExpr, BoolLit,
-    BreakExpr, CallExpr, ContinueExpr, EnumDecl, EnumVariant, Expr, FieldDecl, FieldExpr,
-    FieldInit, Function, Ident, IfExpr, IndexExpr, IntLit, IntrinsicArg, IntrinsicCallExpr, Item,
-    LetPattern, LetStatement, LoopExpr, MatchArm, MatchExpr, NegIntLit, Param, ParenExpr, PathExpr,
-    PathPattern, Pattern, ReturnExpr, Statement, StringLit, StructDecl, StructLitExpr, TypeExpr,
-    UnaryExpr, UnaryOp, UnitLit, WhileExpr,
+    BreakExpr, CallExpr, ContinueExpr, Directive, DirectiveArg, EnumDecl, EnumVariant, Expr,
+    FieldDecl, FieldExpr, FieldInit, Function, Ident, IfExpr, IndexExpr, IntLit, IntrinsicArg,
+    IntrinsicCallExpr, Item, LetPattern, LetStatement, LoopExpr, MatchArm, MatchExpr, NegIntLit,
+    Param, ParenExpr, PathExpr, PathPattern, Pattern, ReturnExpr, Statement, StringLit, StructDecl,
+    StructLitExpr, TypeExpr, UnaryExpr, UnaryOp, UnitLit, WhileExpr,
 };
 use chumsky::input::{Input as ChumskyInput, Stream, ValueInput};
 use chumsky::pratt::{infix, left, prefix};
@@ -144,6 +144,38 @@ where
     param_parser()
         .separated_by(just(TokenKind::Comma))
         .collect()
+}
+
+/// Parser for a single directive: @name(arg1, arg2, ...)
+fn directive_parser<'src, I>()
+-> impl Parser<'src, I, Directive, extra::Err<Rich<'src, TokenKind>>> + Clone
+where
+    I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
+{
+    just(TokenKind::At)
+        .ignore_then(ident_parser())
+        .then(
+            ident_parser()
+                .map(DirectiveArg::Ident)
+                .separated_by(just(TokenKind::Comma))
+                .allow_trailing()
+                .collect::<Vec<_>>()
+                .delimited_by(just(TokenKind::LParen), just(TokenKind::RParen)),
+        )
+        .map_with(|(name, args), e| Directive {
+            name,
+            args,
+            span: to_rue_span(e.span()),
+        })
+}
+
+/// Parser for zero or more directives
+fn directives_parser<'src, I>()
+-> impl Parser<'src, I, Vec<Directive>, extra::Err<Rich<'src, TokenKind>>> + Clone
+where
+    I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
+{
+    directive_parser().repeated().collect()
 }
 
 /// Parser for comma-separated expression arguments
@@ -756,22 +788,23 @@ where
     ident.or(wildcard)
 }
 
-/// Parser for let statements: let [mut] pattern [: type] = expr;
+/// Parser for let statements: [@directive]* let [mut] pattern [: type] = expr;
 fn let_statement_parser<'src, I>(
     expr: impl Parser<'src, I, Expr, extra::Err<Rich<'src, TokenKind>>> + Clone,
 ) -> impl Parser<'src, I, Statement, extra::Err<Rich<'src, TokenKind>>> + Clone
 where
     I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
 {
-    just(TokenKind::Let)
-        .ignore_then(just(TokenKind::Mut).or_not().map(|m| m.is_some()))
+    directives_parser()
+        .then(just(TokenKind::Let).ignore_then(just(TokenKind::Mut).or_not().map(|m| m.is_some())))
         .then(let_pattern_parser())
         .then(just(TokenKind::Colon).ignore_then(type_parser()).or_not())
         .then_ignore(just(TokenKind::Eq))
         .then(expr)
         .then_ignore(just(TokenKind::Semi))
-        .map_with(|(((is_mut, pattern), ty), init), e| {
+        .map_with(|((((directives, is_mut), pattern), ty), init), e| {
             Statement::Let(LetStatement {
+                directives,
                 is_mut,
                 pattern,
                 ty,
@@ -1052,7 +1085,7 @@ where
         })
 }
 
-/// Parser for function definitions: fn name(params) -> Type { body }
+/// Parser for function definitions: [@directive]* fn name(params) -> Type { body }
 fn function_parser<'src, I>()
 -> impl Parser<'src, I, Function, extra::Err<Rich<'src, TokenKind>>> + Clone
 where
@@ -1060,18 +1093,21 @@ where
 {
     let expr = expr_parser();
 
-    just(TokenKind::Fn)
-        .ignore_then(ident_parser())
+    directives_parser()
+        .then(just(TokenKind::Fn).ignore_then(ident_parser()))
         .then(params_parser().delimited_by(just(TokenKind::LParen), just(TokenKind::RParen)))
         .then(just(TokenKind::Arrow).ignore_then(type_parser()).or_not())
         .then(block_parser(expr))
-        .map_with(|(((name, params), return_type), body), e| Function {
-            name,
-            params,
-            return_type,
-            body,
-            span: to_rue_span(e.span()),
-        })
+        .map_with(
+            |((((directives, name), params), return_type), body), e| Function {
+                directives,
+                name,
+                params,
+                return_type,
+                body,
+                span: to_rue_span(e.span()),
+            },
+        )
 }
 
 /// Parser for struct definitions: struct Name { field: Type, ... }

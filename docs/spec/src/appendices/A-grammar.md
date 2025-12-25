@@ -11,7 +11,15 @@ This appendix contains the complete EBNF grammar for Rue.
 ```ebnf
 (* Program structure *)
 program        = { item } ;
-item           = function | struct_def | enum_def ;
+item           = [ directive ] ( function | struct_def | enum_def ) ;
+
+(* Builtins *)
+directive      = "@" IDENT "(" [ directive_args ] ")" ;
+directive_args = directive_arg { "," directive_arg } ;
+directive_arg  = IDENT ;
+intrinsic      = "@" IDENT "(" [ intrinsic_args ] ")" ;
+intrinsic_args = intrinsic_arg { "," intrinsic_arg } ;
+intrinsic_arg  = expression | type ;
 
 (* Functions *)
 function       = "fn" IDENT "(" [ params ] ")" [ "->" type ] "{" block "}" ;
@@ -29,7 +37,7 @@ enum_def       = "enum" IDENT "{" [ enum_variants ] "}" ;
 enum_variants  = IDENT { "," IDENT } [ "," ] ;
 
 (* Statements *)
-statement      = let_stmt | assign_stmt | expr_stmt ;
+statement      = [ directive ] ( let_stmt | assign_stmt | expr_stmt ) ;
 let_stmt       = "let" [ "mut" ] IDENT [ ":" type ] "=" expression ";" ;
 assign_stmt    = IDENT "=" expression ";"
                | IDENT "[" expression "]" "=" expression ";"
@@ -70,9 +78,6 @@ primary        = INTEGER | BOOL | IDENT | enum_variant_expr
                | struct_literal
                | intrinsic ;
 enum_variant_expr = IDENT "::" IDENT ;
-intrinsic      = "@" IDENT "(" [ intrinsic_args ] ")" ;
-intrinsic_args = intrinsic_arg { "," intrinsic_arg } ;
-intrinsic_arg  = expression | type ;
 
 (* Compound expressions *)
 block_expr     = "{" block "}" ;

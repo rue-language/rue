@@ -190,6 +190,13 @@ impl Interner {
         Some(&self.data[start..end])
     }
 
+    /// Look up a string's symbol without interning it.
+    /// Returns None if the string has not been interned.
+    #[inline]
+    pub fn get_symbol(&self, s: &str) -> Option<Symbol> {
+        self.map.get(s).copied()
+    }
+
     /// Returns the number of interned strings.
     #[inline]
     pub fn len(&self) -> usize {

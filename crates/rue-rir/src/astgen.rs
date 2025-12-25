@@ -9,11 +9,11 @@ use rue_intern::Interner;
 /// These intrinsics operate on types at compile time (e.g., @size_of(i32)).
 const TYPE_INTRINSICS: &[&str] = &["size_of", "align_of"];
 use rue_parser::{
-    AssignTarget, Ast, BinaryOp, EnumDecl, Expr, Function, IntrinsicArg, Item, LetPattern, Pattern,
-    Statement, StructDecl, TypeExpr, UnaryOp,
+    AssignTarget, Ast, BinaryOp, Directive, DirectiveArg, EnumDecl, Expr, Function, IntrinsicArg,
+    Item, LetPattern, Pattern, Statement, StructDecl, TypeExpr, UnaryOp,
 };
 
-use crate::inst::{Inst, InstData, InstRef, Rir, RirPattern};
+use crate::inst::{Inst, InstData, InstRef, Rir, RirDirective, RirPattern};
 
 /// Generates RIR from an AST.
 pub struct AstGen<'a> {
@@ -110,7 +110,28 @@ impl<'a> AstGen<'a> {
         })
     }
 
+    /// Convert AST directives to RIR directives
+    fn convert_directives(&mut self, directives: &[Directive]) -> Vec<RirDirective> {
+        directives
+            .iter()
+            .map(|d| RirDirective {
+                name: self.interner.intern(&d.name.name),
+                args: d
+                    .args
+                    .iter()
+                    .map(|arg| match arg {
+                        DirectiveArg::Ident(ident) => self.interner.intern(&ident.name),
+                    })
+                    .collect(),
+                span: d.span,
+            })
+            .collect()
+    }
+
     fn gen_function(&mut self, func: &Function) -> InstRef {
+        // Convert directives
+        let directives = self.convert_directives(&func.directives);
+
         // Intern the function name and return type
         let name = self.interner.intern(&func.name.name);
         let return_type = match &func.return_type {
@@ -135,6 +156,7 @@ impl<'a> AstGen<'a> {
         // Create function declaration instruction
         self.rir.add_inst(Inst {
             data: InstData::FnDecl {
+                directives,
                 name,
                 params,
                 return_type,
@@ -438,6 +460,7 @@ impl<'a> AstGen<'a> {
     fn gen_statement(&mut self, stmt: &Statement) -> InstRef {
         match stmt {
             Statement::Let(let_stmt) => {
+                let directives = self.convert_directives(&let_stmt.directives);
                 let name = match &let_stmt.pattern {
                     LetPattern::Ident(ident) => Some(self.interner.intern(&ident.name)),
                     LetPattern::Wildcard(_) => None,
@@ -446,6 +469,7 @@ impl<'a> AstGen<'a> {
                 let init = self.gen_expr(&let_stmt.init);
                 self.rir.add_inst(Inst {
                     data: InstData::Alloc {
+                        directives,
                         name,
                         is_mut: let_stmt.is_mut,
                         ty,
@@ -520,6 +544,7 @@ mod tests {
         let (_, fn_inst) = rir.iter().last().unwrap();
         match &fn_inst.data {
             InstData::FnDecl {
+                directives: _,
                 name,
                 params,
                 return_type,
@@ -671,6 +696,7 @@ mod tests {
         let (_, inst) = alloc_inst.unwrap();
         match &inst.data {
             InstData::Alloc {
+                directives: _,
                 name,
                 is_mut,
                 ty,

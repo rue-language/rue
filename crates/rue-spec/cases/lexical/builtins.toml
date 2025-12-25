@@ -1,0 +1,221 @@
+[section]
+id = "lexical.builtins"
+spec_chapter = "2.5"
+name = "Builtins"
+description = "Builtins are compiler-provided constructs prefixed with @."
+
+# =============================================================================
+# Builtin Syntax
+# =============================================================================
+
+[[case]]
+name = "builtin_at_prefix"
+spec = ["2.5:1", "2.5:3"]
+source = """
+fn main() -> i32 {
+    @dbg(42);
+    0
+}
+"""
+exit_code = 0
+
+[[case]]
+name = "builtin_kinds_intrinsic"
+spec = ["2.5:5", "2.5:6"]
+source = """
+fn main() -> i32 {
+    @size_of(i32)
+}
+"""
+exit_code = 8
+
+[[case]]
+name = "builtin_kinds_directive"
+spec = ["2.5:5", "2.5:7", "2.5:8"]
+source = """
+fn main() -> i32 {
+    @allow(unused_variable)
+    let x = 42;
+    0
+}
+"""
+exit_code = 0
+no_warnings = true
+
+[[case]]
+name = "unknown_builtin_error"
+spec = ["2.5:4"]
+source = """
+fn main() -> i32 {
+    @unknown_builtin(42);
+    0
+}
+"""
+compile_fail = true
+error_contains = "unknown intrinsic"
+
+# =============================================================================
+# Directive Syntax
+# =============================================================================
+
+[[case]]
+name = "directive_grammar"
+spec = ["2.5:2", "2.5:9"]
+source = """
+fn main() -> i32 {
+    @allow(unused_variable)
+    let x = 42;
+    0
+}
+"""
+exit_code = 0
+no_warnings = true
+
+[[case]]
+name = "directive_must_precede_item"
+spec = ["2.5:10"]
+skip = true  # TODO: This error isn't implemented yet
+source = """
+fn main() -> i32 {
+    @allow(unused_variable)
+}
+"""
+compile_fail = true
+error_contains = "directive must precede"
+
+# =============================================================================
+# @allow Directive
+# =============================================================================
+
+[[case]]
+name = "allow_suppresses_warnings"
+spec = ["2.5:11"]
+source = """
+fn main() -> i32 {
+    @allow(unused_variable)
+    let x = 42;
+    0
+}
+"""
+exit_code = 0
+no_warnings = true
+
+[[case]]
+name = "allow_accepts_warning_names"
+spec = ["2.5:12", "2.5:13"]
+source = """
+fn main() -> i32 {
+    @allow(unused_variable)
+    let x = 42;
+    0
+}
+"""
+exit_code = 0
+no_warnings = true
+
+[[case]]
+name = "allow_unknown_warning_error"
+spec = ["2.5:14"]
+skip = true  # TODO: This error isn't implemented yet
+source = """
+fn main() -> i32 {
+    @allow(nonexistent_warning)
+    let x = 42;
+    0
+}
+"""
+compile_fail = true
+error_contains = "unrecognized warning"
+
+[[case]]
+name = "allow_unused_variable_on_let"
+spec = ["2.5:15"]
+source = """
+fn main() -> i32 {
+    @allow(unused_variable)
+    let x = 42;
+    0
+}
+"""
+exit_code = 0
+no_warnings = true
+
+[[case]]
+name = "allow_unused_variable_on_function"
+spec = ["2.5:17"]
+skip = true  # TODO: Function-level @allow not yet implemented
+source = """
+@allow(unused_variable)
+fn example() -> i32 {
+    let a = 1;
+    let b = 2;
+    0
+}
+
+fn main() -> i32 {
+    example()
+}
+"""
+exit_code = 0
+no_warnings = true
+
+[[case]]
+name = "allow_unused_function"
+spec = ["2.5:19"]
+skip = true  # TODO: Unused function warnings not yet implemented
+source = """
+@allow(unused_function)
+fn helper() -> i32 { 42 }
+
+fn main() -> i32 {
+    0
+}
+"""
+exit_code = 0
+no_warnings = true
+
+[[case]]
+name = "allow_unreachable_code"
+spec = ["2.5:21"]
+skip = true  # TODO: Need to propagate directives to CFG
+source = """
+@allow(unreachable_code)
+fn example() -> i32 {
+    return 0;
+    let x = 42;
+    x
+}
+
+fn main() -> i32 {
+    example()
+}
+"""
+exit_code = 0
+no_warnings = true
+
+[[case]]
+name = "allow_multiple_warnings"
+spec = ["2.5:23"]
+source = """
+fn main() -> i32 {
+    @allow(unused_variable, unreachable_code)
+    let x = 42;
+    0
+}
+"""
+exit_code = 0
+no_warnings = true
+
+[[case]]
+name = "allow_vs_underscore_prefix"
+spec = ["2.5:25"]
+source = """
+fn main() -> i32 {
+    let _x = 42;
+    @allow(unused_variable)
+    let y = 10;
+    0
+}
+"""
+exit_code = 0
+no_warnings = true

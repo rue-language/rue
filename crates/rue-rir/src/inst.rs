@@ -28,6 +28,17 @@ impl InstRef {
     }
 }
 
+/// A directive in the RIR (e.g., @allow(unused_variable))
+#[derive(Debug, Clone)]
+pub struct RirDirective {
+    /// Directive name (e.g., "allow")
+    pub name: Symbol,
+    /// Arguments (e.g., ["unused_variable"])
+    pub args: Vec<Symbol>,
+    /// Span covering the directive
+    pub span: Span,
+}
+
 /// A pattern in a match expression (RIR level - untyped).
 #[derive(Debug, Clone)]
 pub enum RirPattern {
@@ -235,6 +246,8 @@ pub enum InstData {
     /// Function definition
     /// Contains: name symbol, parameters, return type symbol, body instruction ref
     FnDecl {
+        /// Directives applied to this function
+        directives: Vec<RirDirective>,
         name: Symbol,
         /// Parameter symbols and their type symbols: [(param_name, param_type), ...]
         params: Vec<(Symbol, Symbol)>,
@@ -290,6 +303,8 @@ pub enum InstData {
     /// Local variable declaration: allocates storage and initializes
     /// If name is None, this is a wildcard pattern that discards the value
     Alloc {
+        /// Directives applied to this let binding
+        directives: Vec<RirDirective>,
         /// Variable name (None for wildcard `_` pattern that discards the value)
         name: Option<Symbol>,
         /// Whether the variable is mutable
@@ -542,6 +557,7 @@ impl<'a, 'b> RirPrinter<'a, 'b> {
                     out.push_str("continue\n");
                 }
                 InstData::FnDecl {
+                    directives: _,
                     name,
                     params,
                     return_type,
@@ -602,6 +618,7 @@ impl<'a, 'b> RirPrinter<'a, 'b> {
                     out.push_str(&format!("block({}, {})\n", extra_start, len));
                 }
                 InstData::Alloc {
+                    directives: _,
                     name,
                     is_mut,
                     ty,

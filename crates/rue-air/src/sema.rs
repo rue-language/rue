@@ -15,7 +15,7 @@ use crate::types::{
 };
 use rue_error::{CompileError, CompileResult, CompileWarning, ErrorKind, WarningKind};
 use rue_intern::{Interner, Symbol};
-use rue_rir::{InstData, InstRef, Rir, RirPattern};
+use rue_rir::{InstData, InstRef, Rir, RirDirective, RirPattern};
 use rue_span::Span;
 
 /// A value that can be computed at compile time.
@@ -92,6 +92,8 @@ struct LocalVar {
     is_mut: bool,
     /// Span of the variable declaration (for unused variable warnings)
     span: Span,
+    /// Whether @allow(unused_variable) was applied to this binding
+    allow_unused: bool,
 }
 
 /// Information about a function parameter.
@@ -252,6 +254,23 @@ impl<'a> Sema<'a> {
         id
     }
 
+    /// Check if directives contain @allow for a specific warning name.
+    fn has_allow_directive(&self, directives: &[RirDirective], warning_name: &str) -> bool {
+        let allow_sym = self.interner.get_symbol("allow");
+        let warning_sym = self.interner.get_symbol(warning_name);
+
+        for directive in directives {
+            if Some(directive.name) == allow_sym {
+                for arg in &directive.args {
+                    if Some(*arg) == warning_sym {
+                        return true;
+                    }
+                }
+            }
+        }
+        false
+    }
+
     /// Check for unused local variables in the current scope (before popping it).
     /// Uses the scope stack to determine which variables were added in the current scope.
     fn check_unused_locals_in_current_scope(&mut self, ctx: &AnalysisContext) {
@@ -276,6 +295,11 @@ impl<'a> Sema<'a> {
 
             // Skip variables starting with underscore (convention for intentionally unused)
             if name.starts_with('_') {
+                continue;
+            }
+
+            // Skip if @allow(unused_variable) was applied
+            if local.allow_unused {
                 continue;
             }
 
@@ -308,6 +332,7 @@ impl<'a> Sema<'a> {
 
         for (_, inst) in self.rir.iter() {
             if let InstData::FnDecl {
+                directives: _,
                 name,
                 params,
                 return_type,
@@ -1398,6 +1423,7 @@ impl<'a> Sema<'a> {
             }
 
             InstData::Alloc {
+                directives,
                 name,
                 is_mut,
                 ty: _,
@@ -1419,6 +1445,9 @@ impl<'a> Sema<'a> {
                     return Ok(AnalysisResult::new(init_result.air_ref, Type::Unit));
                 };
 
+                // Check if @allow(unused_variable) directive is present
+                let allow_unused = self.has_allow_directive(directives, "unused_variable");
+
                 // Allocate slots - structs and arrays need multiple slots
                 // Use abi_slot_count which recursively computes total slots for nested types
                 let slot = ctx.next_slot;
@@ -1433,6 +1462,7 @@ impl<'a> Sema<'a> {
                         ty: var_type,
                         is_mut: *is_mut,
                         span: inst.span,
+                        allow_unused,
                     },
                 );
 
