@@ -232,3 +232,154 @@ expected_stdout = """
 20
 10
 """
+
+# =============================================================================
+# Mutable State Side-Effect Tests
+# These tests use mutable variables to definitively verify evaluation order.
+# Each block expression mutates a counter and returns its value, making
+# the evaluation order observable through the final result.
+# =============================================================================
+
+[[case]]
+name = "binary_add_left_to_right_mutable"
+spec = ["4.0:2", "4.0:3"]
+source = """
+fn main() -> i32 {
+    let mut x = 0;
+    // Left operand evaluated first: sees x=0, sets x=1, returns 1
+    // Right operand evaluated second: sees x=1, sets x=2, returns 2
+    // Result: 1 + 2 = 3
+    { x = x + 1; x } + { x = x + 1; x }
+}
+"""
+exit_code = 3
+
+[[case]]
+name = "binary_sub_left_to_right_mutable"
+spec = ["4.0:2", "4.0:3"]
+source = """
+fn main() -> i32 {
+    let mut x = 0;
+    // Left operand: x becomes 1, returns 1
+    // Right operand: x becomes 2, returns 2
+    // We use multiplication to encode order: left*10 + right
+    // If left-to-right: 1*10 + 2 = 12
+    // If right-to-left: 2*10 + 1 = 21
+    let left = { x = x + 1; x };
+    let right = { x = x + 1; x };
+    left * 10 + right
+}
+"""
+exit_code = 12
+
+[[case]]
+name = "binary_mul_operand_order_mutable"
+spec = ["4.0:2", "4.0:3"]
+source = """
+fn main() -> i32 {
+    let mut x = 0;
+    // Using addition to encode: left + right*10
+    // If left-to-right: 1 + 2*10 = 21
+    // If right-to-left: 2 + 1*10 = 12
+    let left = { x = x + 1; x };
+    let right = { x = x + 1; x };
+    left + right * 10
+}
+"""
+exit_code = 21
+
+[[case]]
+name = "function_args_left_to_right_mutable"
+spec = ["4.0:2", "4.0:4"]
+source = """
+fn encode(a: i32, b: i32) -> i32 {
+    a * 10 + b
+}
+
+fn main() -> i32 {
+    let mut x = 0;
+    // First arg evaluated first: x becomes 1, returns 1
+    // Second arg evaluated second: x becomes 2, returns 2
+    // If left-to-right: encode(1, 2) = 12
+    // If right-to-left: encode(2, 1) = 21
+    encode({ x = x + 1; x }, { x = x + 1; x })
+}
+"""
+exit_code = 12
+
+[[case]]
+name = "function_args_three_params_mutable"
+spec = ["4.0:2", "4.0:4"]
+source = """
+fn encode(a: i32, b: i32, c: i32) -> i32 {
+    a * 100 + b * 10 + c
+}
+
+fn main() -> i32 {
+    let mut x = 0;
+    // If left-to-right: encode(1, 2, 3) = 123
+    encode({ x = x + 1; x }, { x = x + 1; x }, { x = x + 1; x })
+}
+"""
+exit_code = 123
+
+[[case]]
+name = "nested_function_calls_mutable"
+spec = ["4.0:2", "4.0:4"]
+source = """
+fn add(a: i32, b: i32) -> i32 { a + b }
+
+fn main() -> i32 {
+    let mut x = 0;
+    // Outer call: first arg is add(...), second arg is block
+    // Inner add call: both args are blocks
+    // Evaluation order should be left-to-right at each level:
+    // 1. Start outer add call
+    // 2. Evaluate first arg: add(block, block)
+    //    2a. Evaluate first block: x=1, returns 1
+    //    2b. Evaluate second block: x=2, returns 2
+    //    2c. add(1, 2) = 3
+    // 3. Evaluate second arg: x=3, returns 3
+    // 4. add(3, 3) = 6
+    add(add({ x = x + 1; x }, { x = x + 1; x }), { x = x + 1; x })
+}
+"""
+exit_code = 6
+
+[[case]]
+name = "index_base_before_index_mutable"
+spec = ["4.0:2", "4.0:5"]
+source = """
+fn main() -> i32 {
+    let mut x = 0;
+    let arr: [i32; 3] = [10, 20, 30];
+    // Base (arr) is evaluated first, then index
+    // The array lookup itself doesn't mutate, but we verify order
+    // by mutating in the index expression
+    let idx: u64 = { x = x + 1; 1 };
+    // x is now 1, and arr[1] = 20
+    // Add x to prove the mutation happened: 20 + 1 = 21
+    arr[idx] + x
+}
+"""
+exit_code = 21
+
+[[case]]
+name = "compound_expression_order_mutable"
+spec = ["4.0:2", "4.0:3", "4.0:4"]
+source = """
+fn mul(a: i32, b: i32) -> i32 { a * b }
+
+fn main() -> i32 {
+    let mut x = 0;
+    // Complex expression: mul(block, block) + block * block
+    // Order: left-to-right evaluation throughout
+    // 1. mul(block1, block2): x=1, x=2, mul(1,2)=2
+    // 2. block3: x=3, returns 3
+    // 3. block4: x=4, returns 4
+    // 4. 3*4 = 12
+    // 5. 2 + 12 = 14
+    mul({ x = x + 1; x }, { x = x + 1; x }) + { x = x + 1; x } * { x = x + 1; x }
+}
+"""
+exit_code = 14
