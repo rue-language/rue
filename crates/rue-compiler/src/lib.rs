@@ -365,11 +365,21 @@ fn compile_x86_64(state: &CompileState, options: &CompileOptions) -> CompileResu
 }
 
 /// Link using the internal linker.
+///
+/// For ELF targets (Linux), uses the built-in ELF linker.
+/// For Mach-O targets (macOS), delegates to the system linker (clang) since
+/// the internal linker only supports ELF.
 fn link_internal(
     state: &CompileState,
     options: &CompileOptions,
     object_files: &[Vec<u8>],
 ) -> CompileResult<CompileOutput> {
+    // For macOS targets, the internal linker doesn't support Mach-O,
+    // so we delegate to the system linker (clang).
+    if options.target.is_macho() {
+        return link_system(state, options, object_files, "clang");
+    }
+
     let mut linker = Linker::new(options.target);
 
     // Add all object files to the linker
@@ -398,9 +408,11 @@ fn link_internal(
 }
 
 /// Link using an external system linker.
+///
+/// Handles target-specific linker flags for both Linux and macOS.
 fn link_system(
     state: &CompileState,
-    _options: &CompileOptions,
+    options: &CompileOptions,
     object_files: &[Vec<u8>],
     linker_cmd: &str,
 ) -> CompileResult<CompileOutput> {
@@ -412,9 +424,18 @@ fn link_system(
     // Build the linker command
     let mut cmd = Command::new(linker_cmd);
 
-    // Add common flags for static linking
-    cmd.arg("-static");
-    cmd.arg("-nostdlib");
+    // Add target-specific linker flags
+    if options.target.is_macho() {
+        // macOS-specific flags
+        cmd.arg("-nostdlib");
+        cmd.arg("-arch").arg("arm64");
+        cmd.arg("-e").arg("__main");
+    } else {
+        // Linux/ELF-specific flags
+        cmd.arg("-static");
+        cmd.arg("-nostdlib");
+    }
+
     cmd.arg("-o");
     cmd.arg(&temp_dir.output_path);
 
@@ -425,6 +446,11 @@ fn link_system(
 
     // Add the runtime library
     cmd.arg(&temp_dir.runtime_path);
+
+    // macOS requires libSystem for syscalls
+    if options.target.is_macho() {
+        cmd.arg("-lSystem");
+    }
 
     // Run the linker
     let output = cmd.output().map_err(|e| {
@@ -491,71 +517,11 @@ fn compile_aarch64(state: &CompileState, options: &CompileOptions) -> CompileRes
         object_files.push(obj_builder.build());
     }
 
-    // For macOS, use the system linker (clang); for Linux, use the internal ELF linker
-    match options.target {
-        Target::Aarch64Macos => link_system_macos(state, options, &object_files),
-        Target::Aarch64Linux => link_internal(state, options, &object_files),
-        _ => unreachable!("compile_aarch64 called with non-aarch64 target"),
+    // Link to executable (linker selection is handled at the top level, not here)
+    match &options.linker {
+        LinkerMode::Internal => link_internal(state, options, &object_files),
+        LinkerMode::System(linker_cmd) => link_system(state, options, &object_files, linker_cmd),
     }
-}
-
-/// Link using the macOS system linker (clang).
-fn link_system_macos(
-    state: &CompileState,
-    _options: &CompileOptions,
-    object_files: &[Vec<u8>],
-) -> CompileResult<CompileOutput> {
-    // Set up temporary directory with object files and runtime
-    let mut temp_dir = TempLinkDir::new()?;
-    temp_dir.write_object_files(object_files)?;
-    temp_dir.write_runtime(RUNTIME_BYTES)?;
-
-    // Use clang as the linker on macOS
-    let mut cmd = Command::new("clang");
-
-    // macOS-specific flags for static linking without libc
-    cmd.arg("-nostdlib");
-    cmd.arg("-arch").arg("arm64");
-    cmd.arg("-e").arg("__main");
-    cmd.arg("-o");
-    cmd.arg(&temp_dir.output_path);
-
-    // Add object files
-    for path in &temp_dir.obj_paths {
-        cmd.arg(path);
-    }
-
-    // Add the runtime library
-    cmd.arg(&temp_dir.runtime_path);
-
-    // Link with libSystem for syscalls on macOS
-    cmd.arg("-lSystem");
-
-    // Run the linker
-    let output = cmd.output().map_err(|e| {
-        CompileError::without_span(ErrorKind::LinkError(format!(
-            "failed to execute linker 'clang': {}",
-            e
-        )))
-    })?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        // temp_dir is dropped here, cleaning up automatically
-        return Err(CompileError::without_span(ErrorKind::LinkError(format!(
-            "linker failed: {}",
-            stderr
-        ))));
-    }
-
-    // Read the resulting executable
-    let elf = temp_dir.read_output()?;
-
-    // temp_dir is dropped here, cleaning up automatically
-    Ok(CompileOutput {
-        elf,
-        warnings: state.warnings.clone(),
-    })
 }
 
 /// Machine IR that can hold either x86-64 or AArch64 MIR.
