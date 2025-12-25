@@ -754,8 +754,10 @@ where
     #[derive(Clone)]
     enum Suffix {
         Field(Ident),
-        MethodCall(Ident, Vec<Expr>),
-        Index(Expr),
+        /// Method call with method name, arguments, and closing paren position
+        MethodCall(Ident, Vec<Expr>, u32),
+        /// Index expression with the inner expression and closing bracket position
+        Index(Expr, u32),
     }
 
     // Method call: .ident(args)
@@ -765,7 +767,7 @@ where
             args_parser(expr.clone())
                 .delimited_by(just(TokenKind::LParen), just(TokenKind::RParen)),
         )
-        .map(|(method, args)| Suffix::MethodCall(method, args));
+        .map_with(|(method, args), e| Suffix::MethodCall(method, args, e.span().end as u32));
 
     // Field access: .ident (but NOT followed by ()
     let field_suffix = just(TokenKind::Dot)
@@ -775,7 +777,7 @@ where
 
     let index_suffix = expr
         .delimited_by(just(TokenKind::LBracket), just(TokenKind::RBracket))
-        .map(Suffix::Index);
+        .map_with(|index, e| Suffix::Index(index, e.span().end as u32));
 
     // Field access, method call, and indexing suffix: .field, .method(), or [expr]
     // Method call must come before field access to catch .method(args) before .field
@@ -791,14 +793,7 @@ where
                     span,
                 })
             }
-            Suffix::MethodCall(method, args) => {
-                let end = if args.is_empty() {
-                    // Span ends after the closing paren, but we don't have that span
-                    // We'll use the method name span end + 2 for "()" as approximation
-                    method.span.end + 2
-                } else {
-                    args.last().unwrap().span().end + 1
-                };
+            Suffix::MethodCall(method, args, end) => {
                 let span = Span::new(base.span().start, end);
                 Expr::MethodCall(MethodCallExpr {
                     receiver: Box::new(base),
@@ -807,8 +802,8 @@ where
                     span,
                 })
             }
-            Suffix::Index(index) => {
-                let span = Span::new(base.span().start, index.span().end);
+            Suffix::Index(index, end) => {
+                let span = Span::new(base.span().start, end);
                 Expr::Index(IndexExpr {
                     base: Box::new(base),
                     index: Box::new(index),
