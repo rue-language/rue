@@ -1,0 +1,48 @@
+[section]
+id = "expressions.general"
+spec_chapter = "4.0"
+name = "General Expression Properties"
+description = "General properties that apply to all expressions."
+
+# =============================================================================
+# Expression Typing (4.0:2)
+# =============================================================================
+
+# The rule "Every expression has a type" is verified by the type checker.
+# These tests demonstrate that expressions have types by showing the
+# type system rejects type mismatches.
+
+[[case]]
+name = "expression_has_type_literal"
+spec = ["4.0:2"]
+description = "Integer literals have type i32, demonstrated by successful compilation."
+source = """
+fn main() -> i32 {
+    42
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "expression_has_type_boolean"
+spec = ["4.0:2"]
+description = "Boolean literals have type bool, demonstrated by successful use in if condition."
+source = """
+fn main() -> i32 {
+    if true { 42 } else { 0 }
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "expression_type_mismatch_rejected"
+spec = ["4.0:2"]
+description = "Type mismatch is rejected, proving expressions have types that are checked."
+source = """
+fn main() -> i32 {
+    let x: i32 = true;
+    0
+}
+"""
+compile_fail = true
+error_contains = "type mismatch"

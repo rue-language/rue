@@ -10,7 +10,7 @@ description = "Evaluation order of subexpressions within compound expressions."
 
 [[case]]
 name = "binary_add_left_to_right"
-spec = ["4.0:2", "4.0:3"]
+spec = ["4.0:3", "4.0:4"]
 source = """
 fn main() -> i32 {
     1 + 2
@@ -20,7 +20,7 @@ exit_code = 3
 
 [[case]]
 name = "binary_sub_left_to_right"
-spec = ["4.0:2", "4.0:3"]
+spec = ["4.0:3", "4.0:4"]
 source = """
 fn main() -> i32 {
     50 - 8
@@ -30,7 +30,7 @@ exit_code = 42
 
 [[case]]
 name = "binary_mul_left_to_right"
-spec = ["4.0:2", "4.0:3"]
+spec = ["4.0:3", "4.0:4"]
 source = """
 fn main() -> i32 {
     6 * 7
@@ -40,7 +40,7 @@ exit_code = 42
 
 [[case]]
 name = "binary_div_left_to_right"
-spec = ["4.0:2", "4.0:3"]
+spec = ["4.0:3", "4.0:4"]
 source = """
 fn main() -> i32 {
     84 / 2
@@ -50,7 +50,7 @@ exit_code = 42
 
 [[case]]
 name = "binary_comparison_left_to_right"
-spec = ["4.0:2", "4.0:3"]
+spec = ["4.0:3", "4.0:4"]
 source = """
 fn main() -> i32 {
     if 1 < 2 { 42 } else { 0 }
@@ -64,7 +64,7 @@ exit_code = 42
 
 [[case]]
 name = "call_args_left_to_right"
-spec = ["4.0:2", "4.0:4"]
+spec = ["4.0:3", "4.0:5"]
 source = """
 fn sub(x: i32, y: i32) -> i32 { x - y }
 fn main() -> i32 { sub(50, 8) }
@@ -73,7 +73,7 @@ exit_code = 42
 
 [[case]]
 name = "call_nested_args"
-spec = ["4.0:2", "4.0:4"]
+spec = ["4.0:3", "4.0:5"]
 source = """
 fn add(x: i32, y: i32) -> i32 { x + y }
 fn main() -> i32 {
@@ -88,7 +88,7 @@ exit_code = 42
 
 [[case]]
 name = "index_base_before_index"
-spec = ["4.0:2", "4.0:5"]
+spec = ["4.0:3", "4.0:6"]
 source = """
 fn main() -> i32 {
     let arr: [i32; 3] = [10, 42, 100];
@@ -99,7 +99,7 @@ exit_code = 42
 
 [[case]]
 name = "index_nested"
-spec = ["4.0:2", "4.0:5"]
+spec = ["4.0:3", "4.0:6"]
 source = """
 fn main() -> i32 {
     let arr: [[i32; 2]; 2] = [[1, 2], [3, 42]];
@@ -114,7 +114,7 @@ exit_code = 42
 
 [[case]]
 name = "field_base_before_field"
-spec = ["4.0:2", "4.0:6"]
+spec = ["4.0:3", "4.0:7"]
 source = """
 struct Point { x: i32, y: i32 }
 fn main() -> i32 {
@@ -126,7 +126,7 @@ exit_code = 42
 
 [[case]]
 name = "field_chained"
-spec = ["4.0:2", "4.0:6"]
+spec = ["4.0:3", "4.0:7"]
 source = """
 struct Inner { value: i32 }
 struct Outer { inner: Inner }
@@ -143,7 +143,7 @@ exit_code = 42
 
 [[case]]
 name = "short_circuit_and_skips_right"
-spec = ["4.0:7"]
+spec = ["4.0:8"]
 source = """
 fn main() -> i32 {
     if false && true { 1 } else { 42 }
@@ -153,7 +153,7 @@ exit_code = 42
 
 [[case]]
 name = "short_circuit_or_skips_right"
-spec = ["4.0:7"]
+spec = ["4.0:8"]
 source = """
 fn main() -> i32 {
     if true || false { 42 } else { 0 }
@@ -167,7 +167,7 @@ exit_code = 42
 
 [[case]]
 name = "struct_init_source_order"
-spec = ["4.0:2", "4.0:8"]
+spec = ["4.0:3", "4.0:9"]
 source = """
 struct Point { x: i32, y: i32 }
 fn main() -> i32 {
@@ -179,7 +179,7 @@ exit_code = 42
 
 [[case]]
 name = "struct_init_reverse_order"
-spec = ["4.0:2", "4.0:8"]
+spec = ["4.0:3", "4.0:9"]
 source = """
 struct Point { x: i32, y: i32 }
 fn main() -> i32 {
@@ -193,7 +193,7 @@ exit_code = 42
 
 [[case]]
 name = "struct_init_nested"
-spec = ["4.0:2", "4.0:8"]
+spec = ["4.0:3", "4.0:9"]
 source = """
 struct Inner { value: i32 }
 struct Outer { first: Inner, second: Inner }
@@ -210,7 +210,7 @@ exit_code = 42
 
 [[case]]
 name = "struct_init_source_order_observable"
-spec = ["4.0:2", "4.0:8"]
+spec = ["4.0:3", "4.0:9"]
 source = """
 fn side_effect(val: i32) -> i32 {
     @dbg(val);
