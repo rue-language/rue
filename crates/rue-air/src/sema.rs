@@ -2508,14 +2508,14 @@ impl<'a> Sema<'a> {
                 }
 
                 // Now resolve the field chain from root to the immediate base.
-                // field_symbols is in reverse order (innermost first), so reverse it.
-                field_symbols.reverse();
+                // field_symbols is in reverse order (innermost first), so iterate in reverse
+                // to process from root to leaf without allocating a reversed copy.
 
                 // Walk through the field chain to compute the slot offset and find the base struct
                 let mut current_type = root_type;
                 let mut slot_offset: u32 = 0;
 
-                for field_sym in &field_symbols {
+                for field_sym in field_symbols.iter().rev() {
                     let struct_id = match current_type {
                         Type::Struct(id) => id,
                         _ => {
