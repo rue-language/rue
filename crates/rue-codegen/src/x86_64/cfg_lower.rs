@@ -221,66 +221,19 @@ impl<'a> CfgLower<'a> {
     }
 
     /// Recursively collect all scalar vregs from an array value.
-    /// For nested arrays, this flattens them to a list of scalar vregs.
+    /// Delegates to the shared implementation in `types`.
     fn collect_array_scalar_vregs(&mut self, value: CfgValue) -> Vec<VReg> {
-        let inst = self.cfg.get_inst(value);
-        match &inst.data.clone() {
-            CfgInstData::ArrayInit { elements, .. } => {
-                let mut result = Vec::new();
-                for elem in elements {
-                    let elem_inst = self.cfg.get_inst(*elem);
-                    if matches!(elem_inst.ty, Type::Array(_)) {
-                        // Recursively collect from nested array
-                        result.extend(self.collect_array_scalar_vregs(*elem));
-                    } else {
-                        // Scalar element - get its vreg
-                        result.push(self.get_vreg(*elem));
-                    }
-                }
-                result
-            }
-            _ => {
-                // For non-ArrayInit sources, try struct_slot_vregs cache
-                if let Some(vregs) = self.struct_slot_vregs.get(&value).cloned() {
-                    vregs
-                } else {
-                    vec![self.get_vreg(value)]
-                }
-            }
-        }
+        // Clone struct_slot_vregs to avoid borrow conflict with get_vreg
+        let slot_vregs = self.struct_slot_vregs.clone();
+        types::collect_array_scalar_vregs(self.cfg, &slot_vregs, value, &mut |v| self.get_vreg(v))
     }
 
     /// Recursively collect all scalar vregs from a struct value.
-    /// This flattens any array fields to their scalar elements.
+    /// Delegates to the shared implementation in `types`.
     fn collect_struct_scalar_vregs(&mut self, value: CfgValue) -> Vec<VReg> {
-        let inst = self.cfg.get_inst(value);
-        match &inst.data.clone() {
-            CfgInstData::StructInit { fields, .. } => {
-                let mut result = Vec::new();
-                for field in fields {
-                    let field_inst = self.cfg.get_inst(*field);
-                    if matches!(field_inst.ty, Type::Array(_)) {
-                        // Recursively collect from array field
-                        result.extend(self.collect_array_scalar_vregs(*field));
-                    } else if matches!(field_inst.ty, Type::Struct(_)) {
-                        // Recursively collect from nested struct field
-                        result.extend(self.collect_struct_scalar_vregs(*field));
-                    } else {
-                        // Scalar field - get its vreg
-                        result.push(self.get_vreg(*field));
-                    }
-                }
-                result
-            }
-            _ => {
-                // For non-StructInit sources, try struct_slot_vregs cache
-                if let Some(vregs) = self.struct_slot_vregs.get(&value).cloned() {
-                    vregs
-                } else {
-                    vec![self.get_vreg(value)]
-                }
-            }
-        }
+        // Clone struct_slot_vregs to avoid borrow conflict with get_vreg
+        let slot_vregs = self.struct_slot_vregs.clone();
+        types::collect_struct_scalar_vregs(self.cfg, &slot_vregs, value, &mut |v| self.get_vreg(v))
     }
 
     /// Calculate the stack offset for a local variable slot.

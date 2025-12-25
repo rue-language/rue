@@ -15,6 +15,7 @@
 
 pub mod aarch64;
 pub mod types;
+pub mod vreg;
 pub mod x86_64;
 
 /// A relocation emitted by the code generator.
@@ -45,8 +46,11 @@ pub struct MachineCode {
 // Re-export the generate function for x86_64 (default)
 pub use x86_64::generate;
 
-// Re-export commonly used types for convenience
-pub use x86_64::{Operand, Reg, VReg, X86Inst, X86Mir};
+// Re-export shared types
+pub use vreg::{LabelId, VReg};
+
+// Re-export commonly used x86_64 types for convenience
+pub use x86_64::{Operand, Reg, X86Inst, X86Mir};
 
 #[cfg(test)]
 mod tests {

@@ -4,7 +4,10 @@
 //! field offsets, shared between x86_64 and aarch64 backends.
 
 use rue_air::{ArrayTypeDef, ArrayTypeId};
-use rue_cfg::{StructDef, StructId, Type};
+use rue_cfg::{Cfg, CfgInstData, CfgValue, StructDef, StructId, Type};
+use std::collections::HashMap;
+
+use crate::vreg::VReg;
 
 /// Get the array type definition for an array type ID.
 pub fn array_type_def<'a>(
@@ -77,5 +80,111 @@ pub fn struct_field_slot_offset(
         offset
     } else {
         field_index // Fallback to field index if struct not found
+    }
+}
+
+/// Recursively collect all scalar vregs from an array value.
+///
+/// For nested arrays, this flattens them to a list of scalar vregs.
+/// This is used during code generation to handle array arguments that need
+/// to be passed in registers or stored to memory slot by slot.
+///
+/// # Arguments
+/// * `cfg` - The control flow graph containing the instructions
+/// * `struct_slot_vregs` - Cache mapping CFG values to their slot vregs
+/// * `value` - The CFG value to collect vregs from
+/// * `get_vreg` - Closure to get/allocate a vreg for a given CFG value
+pub fn collect_array_scalar_vregs(
+    cfg: &Cfg,
+    struct_slot_vregs: &HashMap<CfgValue, Vec<VReg>>,
+    value: CfgValue,
+    get_vreg: &mut impl FnMut(CfgValue) -> VReg,
+) -> Vec<VReg> {
+    let inst = cfg.get_inst(value);
+    match &inst.data {
+        CfgInstData::ArrayInit { elements, .. } => {
+            let mut result = Vec::new();
+            for elem in elements {
+                let elem_inst = cfg.get_inst(*elem);
+                if matches!(elem_inst.ty, Type::Array(_)) {
+                    // Recursively collect from nested array
+                    result.extend(collect_array_scalar_vregs(
+                        cfg,
+                        struct_slot_vregs,
+                        *elem,
+                        get_vreg,
+                    ));
+                } else {
+                    // Scalar element - get its vreg
+                    result.push(get_vreg(*elem));
+                }
+            }
+            result
+        }
+        _ => {
+            // For non-ArrayInit sources, try struct_slot_vregs cache
+            if let Some(vregs) = struct_slot_vregs.get(&value).cloned() {
+                vregs
+            } else {
+                vec![get_vreg(value)]
+            }
+        }
+    }
+}
+
+/// Recursively collect all scalar vregs from a struct value.
+///
+/// This flattens any array fields to their scalar elements.
+/// This is used during code generation to handle struct arguments that need
+/// to be passed in registers or stored to memory slot by slot.
+///
+/// # Arguments
+/// * `cfg` - The control flow graph containing the instructions
+/// * `struct_slot_vregs` - Cache mapping CFG values to their slot vregs
+/// * `value` - The CFG value to collect vregs from
+/// * `get_vreg` - Closure to get/allocate a vreg for a given CFG value
+pub fn collect_struct_scalar_vregs(
+    cfg: &Cfg,
+    struct_slot_vregs: &HashMap<CfgValue, Vec<VReg>>,
+    value: CfgValue,
+    get_vreg: &mut impl FnMut(CfgValue) -> VReg,
+) -> Vec<VReg> {
+    let inst = cfg.get_inst(value);
+    match &inst.data {
+        CfgInstData::StructInit { fields, .. } => {
+            let mut result = Vec::new();
+            for field in fields {
+                let field_inst = cfg.get_inst(*field);
+                if matches!(field_inst.ty, Type::Array(_)) {
+                    // Recursively collect from array field
+                    result.extend(collect_array_scalar_vregs(
+                        cfg,
+                        struct_slot_vregs,
+                        *field,
+                        get_vreg,
+                    ));
+                } else if matches!(field_inst.ty, Type::Struct(_)) {
+                    // Recursively collect from nested struct field
+                    result.extend(collect_struct_scalar_vregs(
+                        cfg,
+                        struct_slot_vregs,
+                        *field,
+                        get_vreg,
+                    ));
+                } else {
+                    // Scalar field - get its vreg
+                    result.push(get_vreg(*field));
+                }
+            }
+            result
+        }
+        _ => {
+            // For non-StructInit sources, try struct_slot_vregs cache
+            if let Some(vregs) = struct_slot_vregs.get(&value).cloned() {
+                vregs
+            } else {
+                vec![get_vreg(value)]
+            }
+        }
     }
 }

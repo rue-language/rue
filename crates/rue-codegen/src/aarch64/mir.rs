@@ -7,59 +7,7 @@
 
 use std::fmt;
 
-/// A virtual register.
-///
-/// Virtual registers are unlimited and allocated to physical registers
-/// during register allocation.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct VReg(u32);
-
-impl VReg {
-    /// Create a new virtual register with the given index.
-    #[inline]
-    pub const fn new(index: u32) -> Self {
-        Self(index)
-    }
-
-    /// Get the index of this virtual register.
-    #[inline]
-    pub const fn index(self) -> u32 {
-        self.0
-    }
-}
-
-impl fmt::Display for VReg {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "v{}", self.0)
-    }
-}
-
-/// A label identifier.
-///
-/// Labels are local to a function and are represented as a lightweight u32 index
-/// rather than as heap-allocated strings. This avoids allocations during codegen.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct LabelId(u32);
-
-impl LabelId {
-    /// Create a new label with the given index.
-    #[inline]
-    pub const fn new(index: u32) -> Self {
-        Self(index)
-    }
-
-    /// Get the index of this label.
-    #[inline]
-    pub const fn index(self) -> u32 {
-        self.0
-    }
-}
-
-impl fmt::Display for LabelId {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, ".L{}", self.0)
-    }
-}
+pub use crate::vreg::{LabelId, VReg};
 
 /// A physical AArch64 register.
 ///
