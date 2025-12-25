@@ -92,6 +92,30 @@ fn main() -> i32 {
 exit_code = 15
 
 [[case]]
+name = "let_shadow_multiple_refs_in_init"
+spec = ["5.1:12"]
+source = """
+fn main() -> i32 {
+    let x = 5;
+    let x = x + x;
+    x
+}
+"""
+exit_code = 10
+
+[[case]]
+name = "let_shadow_complex_init_expr"
+spec = ["5.1:12"]
+source = """
+fn main() -> i32 {
+    let x = 3;
+    let x = x * (x + 1);
+    x
+}
+"""
+exit_code = 12
+
+[[case]]
 name = "let_shadow_different_type"
 spec = ["5.1:10", "5.1:11"]
 source = """
@@ -102,6 +126,35 @@ fn main() -> i32 {
 }
 """
 exit_code = 42
+
+[[case]]
+name = "let_shadow_in_fn_call"
+spec = ["5.1:12"]
+source = """
+fn add(a: i32, b: i32) -> i32 {
+    a + b
+}
+fn main() -> i32 {
+    let x = 10;
+    let x = add(x, 5);
+    x
+}
+"""
+exit_code = 15
+
+[[case]]
+name = "let_shadow_chained"
+spec = ["5.1:12"]
+source = """
+fn main() -> i32 {
+    let x = 1;
+    let x = x + 1;
+    let x = x + 1;
+    let x = x + 1;
+    x
+}
+"""
+exit_code = 4
 
 [[case]]
 name = "let_complex_expression"
