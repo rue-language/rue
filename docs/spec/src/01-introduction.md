@@ -109,6 +109,22 @@ The following terms are used throughout this specification:
 
 **Informative**: Content that provides explanation or context but does not define required behavior.
 
+{{ rule(id="1.4:15") }}
+
+**Value**: An instance of a type. Expressions evaluate to values.
+
+{{ rule(id="1.4:16") }}
+
+**Coercion**: An implicit type conversion that occurs automatically during type checking. See section 3.4 for the complete set of coercions in Rue.
+
+{{ rule(id="1.4:17") }}
+
+**Compatible type**: A type is compatible with another type if they are the same type, or if the first type can be coerced to the second type.
+
+{{ rule(id="1.4:18") }}
+
+**Panic**: A runtime error condition that terminates program execution with a specific exit code. See Appendix B for the complete list of panic conditions.
+
 ## Notation
 
 {{ rule(id="1.5:1") }}
