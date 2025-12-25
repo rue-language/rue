@@ -6,11 +6,107 @@
 //! It re-exports types from the component crates for convenience.
 
 use std::io::Write;
+use std::path::PathBuf;
 use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 /// Counter for generating unique temp directory names.
 static TEMP_DIR_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+/// A temporary directory for linking that automatically cleans up on drop.
+///
+/// This struct manages the creation of a unique temporary directory for the
+/// linking process and automatically removes it when dropped (whether via
+/// normal completion or early error return).
+struct TempLinkDir {
+    /// Path to the temporary directory.
+    path: PathBuf,
+    /// Paths to the object files written to the directory.
+    obj_paths: Vec<PathBuf>,
+    /// Path to the runtime archive in the directory.
+    runtime_path: PathBuf,
+    /// Path where the linked executable will be written.
+    output_path: PathBuf,
+}
+
+impl TempLinkDir {
+    /// Create a new temporary directory for linking.
+    ///
+    /// Creates a unique directory in the system temp directory with the
+    /// format `rue-<pid>-<counter>` to ensure uniqueness even in parallel
+    /// test execution.
+    fn new() -> CompileResult<Self> {
+        let unique_id = TEMP_DIR_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let path = std::env::temp_dir().join(format!("rue-{}-{}", std::process::id(), unique_id));
+        std::fs::create_dir_all(&path).map_err(|e| {
+            CompileError::without_span(ErrorKind::LinkError(format!(
+                "failed to create temp directory: {}",
+                e
+            )))
+        })?;
+
+        let runtime_path = path.join("librue_runtime.a");
+        let output_path = path.join("output");
+
+        Ok(Self {
+            path,
+            obj_paths: Vec::new(),
+            runtime_path,
+            output_path,
+        })
+    }
+
+    /// Write object files to the temporary directory.
+    ///
+    /// Each object file is written to a file named `obj{N}.o` where N is
+    /// the index. The paths are stored in `self.obj_paths`.
+    fn write_object_files(&mut self, object_files: &[Vec<u8>]) -> CompileResult<()> {
+        for (i, obj_bytes) in object_files.iter().enumerate() {
+            let obj_path = self.path.join(format!("obj{}.o", i));
+            let mut file = std::fs::File::create(&obj_path).map_err(|e| {
+                CompileError::without_span(ErrorKind::LinkError(format!(
+                    "failed to create temp object file: {}",
+                    e
+                )))
+            })?;
+            file.write_all(obj_bytes).map_err(|e| {
+                CompileError::without_span(ErrorKind::LinkError(format!(
+                    "failed to write temp object file: {}",
+                    e
+                )))
+            })?;
+            self.obj_paths.push(obj_path);
+        }
+        Ok(())
+    }
+
+    /// Write the runtime archive to the temporary directory.
+    fn write_runtime(&self, runtime_bytes: &[u8]) -> CompileResult<()> {
+        std::fs::write(&self.runtime_path, runtime_bytes).map_err(|e| {
+            CompileError::without_span(ErrorKind::LinkError(format!(
+                "failed to write runtime archive: {}",
+                e
+            )))
+        })
+    }
+
+    /// Read the linked executable from the output path.
+    fn read_output(&self) -> CompileResult<Vec<u8>> {
+        std::fs::read(&self.output_path).map_err(|e| {
+            CompileError::without_span(ErrorKind::LinkError(format!(
+                "failed to read linked executable: {}",
+                e
+            )))
+        })
+    }
+}
+
+impl Drop for TempLinkDir {
+    fn drop(&mut self) {
+        // Best-effort cleanup; ignore errors
+        let _ = std::fs::remove_dir_all(&self.path);
+    }
+}
 
 /// The rue-runtime staticlib archive bytes, embedded at compile time.
 /// This is linked into every Rue executable.
@@ -303,47 +399,10 @@ fn link_system(
     object_files: &[Vec<u8>],
     linker_cmd: &str,
 ) -> CompileResult<CompileOutput> {
-    // Create a temporary directory for object files.
-    // Use pid + atomic counter to ensure uniqueness even in parallel test execution.
-    let unique_id = TEMP_DIR_COUNTER.fetch_add(1, Ordering::Relaxed);
-    let temp_dir = std::env::temp_dir().join(format!("rue-{}-{}", std::process::id(), unique_id));
-    std::fs::create_dir_all(&temp_dir).map_err(|e| {
-        CompileError::without_span(ErrorKind::LinkError(format!(
-            "failed to create temp directory: {}",
-            e
-        )))
-    })?;
-
-    // Write object files to temp directory
-    let mut obj_paths = Vec::new();
-    for (i, obj_bytes) in object_files.iter().enumerate() {
-        let path = temp_dir.join(format!("obj{}.o", i));
-        let mut file = std::fs::File::create(&path).map_err(|e| {
-            CompileError::without_span(ErrorKind::LinkError(format!(
-                "failed to create temp object file: {}",
-                e
-            )))
-        })?;
-        file.write_all(obj_bytes).map_err(|e| {
-            CompileError::without_span(ErrorKind::LinkError(format!(
-                "failed to write temp object file: {}",
-                e
-            )))
-        })?;
-        obj_paths.push(path);
-    }
-
-    // Write the runtime archive to temp directory
-    let runtime_path = temp_dir.join("librue_runtime.a");
-    std::fs::write(&runtime_path, RUNTIME_BYTES).map_err(|e| {
-        CompileError::without_span(ErrorKind::LinkError(format!(
-            "failed to write runtime archive: {}",
-            e
-        )))
-    })?;
-
-    // Output path for linked executable
-    let output_path = temp_dir.join("output");
+    // Set up temporary directory with object files and runtime
+    let mut temp_dir = TempLinkDir::new()?;
+    temp_dir.write_object_files(object_files)?;
+    temp_dir.write_runtime(RUNTIME_BYTES)?;
 
     // Build the linker command
     let mut cmd = Command::new(linker_cmd);
@@ -352,15 +411,15 @@ fn link_system(
     cmd.arg("-static");
     cmd.arg("-nostdlib");
     cmd.arg("-o");
-    cmd.arg(&output_path);
+    cmd.arg(&temp_dir.output_path);
 
     // Add object files
-    for path in &obj_paths {
+    for path in &temp_dir.obj_paths {
         cmd.arg(path);
     }
 
     // Add the runtime library
-    cmd.arg(&runtime_path);
+    cmd.arg(&temp_dir.runtime_path);
 
     // Run the linker
     let output = cmd.output().map_err(|e| {
@@ -372,7 +431,7 @@ fn link_system(
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        let _ = std::fs::remove_dir_all(&temp_dir);
+        // temp_dir is dropped here, cleaning up automatically
         return Err(CompileError::without_span(ErrorKind::LinkError(format!(
             "linker '{}' failed: {}",
             linker_cmd, stderr
@@ -380,16 +439,9 @@ fn link_system(
     }
 
     // Read the resulting executable
-    let elf = std::fs::read(&output_path).map_err(|e| {
-        CompileError::without_span(ErrorKind::LinkError(format!(
-            "failed to read linked executable: {}",
-            e
-        )))
-    })?;
+    let elf = temp_dir.read_output()?;
 
-    // Clean up temp directory
-    let _ = std::fs::remove_dir_all(&temp_dir);
-
+    // temp_dir is dropped here, cleaning up automatically
     Ok(CompileOutput {
         elf,
         warnings: state.warnings.clone(),
@@ -451,46 +503,10 @@ fn link_system_macos(
     _options: &CompileOptions,
     object_files: &[Vec<u8>],
 ) -> CompileResult<CompileOutput> {
-    // Create a temporary directory for object files.
-    let unique_id = TEMP_DIR_COUNTER.fetch_add(1, Ordering::Relaxed);
-    let temp_dir = std::env::temp_dir().join(format!("rue-{}-{}", std::process::id(), unique_id));
-    std::fs::create_dir_all(&temp_dir).map_err(|e| {
-        CompileError::without_span(ErrorKind::LinkError(format!(
-            "failed to create temp directory: {}",
-            e
-        )))
-    })?;
-
-    // Write object files to temp directory
-    let mut obj_paths = Vec::new();
-    for (i, obj_bytes) in object_files.iter().enumerate() {
-        let path = temp_dir.join(format!("obj{}.o", i));
-        let mut file = std::fs::File::create(&path).map_err(|e| {
-            CompileError::without_span(ErrorKind::LinkError(format!(
-                "failed to create temp object file: {}",
-                e
-            )))
-        })?;
-        file.write_all(obj_bytes).map_err(|e| {
-            CompileError::without_span(ErrorKind::LinkError(format!(
-                "failed to write temp object file: {}",
-                e
-            )))
-        })?;
-        obj_paths.push(path);
-    }
-
-    // Write the runtime archive to temp directory
-    let runtime_path = temp_dir.join("librue_runtime.a");
-    std::fs::write(&runtime_path, RUNTIME_BYTES).map_err(|e| {
-        CompileError::without_span(ErrorKind::LinkError(format!(
-            "failed to write runtime archive: {}",
-            e
-        )))
-    })?;
-
-    // Output path for linked executable
-    let output_path = temp_dir.join("output");
+    // Set up temporary directory with object files and runtime
+    let mut temp_dir = TempLinkDir::new()?;
+    temp_dir.write_object_files(object_files)?;
+    temp_dir.write_runtime(RUNTIME_BYTES)?;
 
     // Use clang as the linker on macOS
     let mut cmd = Command::new("clang");
@@ -500,15 +516,15 @@ fn link_system_macos(
     cmd.arg("-arch").arg("arm64");
     cmd.arg("-e").arg("__main");
     cmd.arg("-o");
-    cmd.arg(&output_path);
+    cmd.arg(&temp_dir.output_path);
 
     // Add object files
-    for path in &obj_paths {
+    for path in &temp_dir.obj_paths {
         cmd.arg(path);
     }
 
     // Add the runtime library
-    cmd.arg(&runtime_path);
+    cmd.arg(&temp_dir.runtime_path);
 
     // Link with libSystem for syscalls on macOS
     cmd.arg("-lSystem");
@@ -523,7 +539,7 @@ fn link_system_macos(
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        let _ = std::fs::remove_dir_all(&temp_dir);
+        // temp_dir is dropped here, cleaning up automatically
         return Err(CompileError::without_span(ErrorKind::LinkError(format!(
             "linker failed: {}",
             stderr
@@ -531,16 +547,9 @@ fn link_system_macos(
     }
 
     // Read the resulting executable
-    let elf = std::fs::read(&output_path).map_err(|e| {
-        CompileError::without_span(ErrorKind::LinkError(format!(
-            "failed to read linked executable: {}",
-            e
-        )))
-    })?;
+    let elf = temp_dir.read_output()?;
 
-    // Clean up temp directory
-    let _ = std::fs::remove_dir_all(&temp_dir);
-
+    // temp_dir is dropped here, cleaning up automatically
     Ok(CompileOutput {
         elf,
         warnings: state.warnings.clone(),
