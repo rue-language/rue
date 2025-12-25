@@ -247,8 +247,6 @@ impl std::fmt::Display for TokenKind {
             TokenKind::Comma => write!(f, "COMMA"),
             TokenKind::Dot => write!(f, "DOT"),
             TokenKind::At => write!(f, "AT"),
-            TokenKind::LBracket => write!(f, "LBRACKET"),
-            TokenKind::RBracket => write!(f, "RBRACKET"),
             TokenKind::Eof => write!(f, "EOF"),
         }
     }
