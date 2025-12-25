@@ -11,7 +11,7 @@ This appendix contains the complete EBNF grammar for Rue.
 ```ebnf
 (* Program structure *)
 program        = { item } ;
-item           = function | struct_def ;
+item           = function | struct_def | enum_def ;
 
 (* Functions *)
 function       = "fn" IDENT "(" [ params ] ")" [ "->" type ] "{" block "}" ;
@@ -23,6 +23,10 @@ block          = { statement } [ expression ] ;
 struct_def     = "struct" IDENT "{" [ struct_fields ] "}" ;
 struct_fields  = struct_field { "," struct_field } [ "," ] ;
 struct_field   = IDENT ":" type ;
+
+(* Enums *)
+enum_def       = "enum" IDENT "{" [ enum_variants ] "}" ;
+enum_variants  = IDENT { "," IDENT } [ "," ] ;
 
 (* Statements *)
 statement      = let_stmt | assign_stmt | expr_stmt ;
@@ -54,7 +58,7 @@ unary          = "-" unary | "!" unary | "~" unary | postfix ;
 postfix        = primary { "[" expression "]" | "(" [ args ] ")" | "." IDENT } ;
 intrinsic      = "@" IDENT "(" [ args ] ")" ;
 args           = expression { "," expression } ;
-primary        = INTEGER | BOOL | IDENT
+primary        = INTEGER | BOOL | IDENT | enum_variant_expr
                | "(" expression ")"
                | block_expr
                | if_expr
@@ -66,6 +70,7 @@ primary        = INTEGER | BOOL | IDENT
                | array_literal
                | struct_literal
                | intrinsic ;
+enum_variant_expr = IDENT "::" IDENT ;
 
 (* Compound expressions *)
 block_expr     = "{" block "}" ;
@@ -73,7 +78,8 @@ if_expr        = "if" expression "{" block "}" [ else_clause ] ;
 else_clause    = "else" ( "{" block "}" | if_expr ) ;
 match_expr     = "match" expression "{" { match_arm "," } [ match_arm ] "}" ;
 match_arm      = pattern "=>" expression ;
-pattern        = "_" | INTEGER | BOOL ;
+pattern        = "_" | INTEGER | BOOL | enum_variant_pattern ;
+enum_variant_pattern = IDENT "::" IDENT ;
 while_expr     = "while" expression "{" block "}" ;
 loop_expr      = "loop" "{" block "}" ;
 return_expr    = "return" expression ;
