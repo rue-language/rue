@@ -1048,12 +1048,10 @@ fn process_block_items(items: Vec<BlockItem>, block_span: Span) -> (Vec<Statemen
     for item in items {
         match item {
             BlockItem::Statement(stmt) => {
-                if final_expr.is_some() {
-                    // Had a non-semicolon expr before, but now we have more items
-                    // This shouldn't happen with correct grammar, but handle gracefully
-                    if let Some(e) = final_expr.take() {
-                        statements.push(Statement::Expr(e));
-                    }
+                // Had a non-semicolon expr before, but now we have more items
+                // This shouldn't happen with correct grammar, but handle gracefully
+                if let Some(e) = final_expr.take() {
+                    statements.push(Statement::Expr(e));
                 }
                 statements.push(stmt);
             }
