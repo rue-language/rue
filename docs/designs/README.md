@@ -167,3 +167,5 @@ See [ADR-0005: Preview Features](0005-preview-features.md) for details on the ga
 | [0004](0004-enum-types.md) | Enum Types | Implemented | types, syntax |
 | [0005](0005-preview-features.md) | Preview Features | Accepted | process |
 | [0006](0006-zola-unified-website.md) | Unified Zola Website | Implemented | tooling, documentation |
+| [0007](0007-hindley-milner-inference.md) | Hindley-Milner Type Inference | Implemented | types, compiler |
+| [0008](0008-affine-types-mvs.md) | Affine Types and Mutable Value Semantics | Accepted | types, semantics, ownership |
