@@ -4,6 +4,10 @@
 //! This is analogous to Zig's AstGen phase.
 
 use rue_intern::Interner;
+
+/// Known type intrinsics that take a type argument rather than an expression.
+/// These intrinsics operate on types at compile time (e.g., @size_of(i32)).
+const TYPE_INTRINSICS: &[&str] = &["size_of", "align_of"];
 use rue_parser::{
     AssignTarget, Ast, BinaryOp, EnumDecl, Expr, Function, IntrinsicArg, Item, LetPattern, Pattern,
     Statement, StructDecl, TypeExpr, UnaryOp,
@@ -313,8 +317,7 @@ impl<'a> AstGen<'a> {
                 let name = self.interner.intern(&intrinsic.name.name);
                 let intrinsic_name = &intrinsic.name.name;
 
-                // Check if this is a type intrinsic (size_of, align_of)
-                let is_type_intrinsic = intrinsic_name == "size_of" || intrinsic_name == "align_of";
+                let is_type_intrinsic = TYPE_INTRINSICS.contains(&intrinsic_name.as_str());
 
                 if is_type_intrinsic && intrinsic.args.len() == 1 {
                     // Handle explicit type argument
