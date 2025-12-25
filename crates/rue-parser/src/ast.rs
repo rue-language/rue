@@ -257,6 +257,8 @@ pub enum Expr {
     Index(IndexExpr),
     /// Path expression (e.g., `Color::Red`)
     Path(PathExpr),
+    /// Associated function call (e.g., `Point::origin()`)
+    AssocFnCall(AssocFnCallExpr),
 }
 
 /// An integer literal.
@@ -527,6 +529,18 @@ pub struct PathExpr {
     pub span: Span,
 }
 
+/// An associated function call expression (e.g., `Point::origin()`).
+#[derive(Debug, Clone)]
+pub struct AssocFnCallExpr {
+    /// The type name (e.g., `Point`)
+    pub type_name: Ident,
+    /// The function name (e.g., `origin`)
+    pub function: Ident,
+    /// Arguments
+    pub args: Vec<Expr>,
+    pub span: Span,
+}
+
 /// A statement (does not produce a value).
 #[derive(Debug, Clone)]
 pub enum Statement {
@@ -660,6 +674,7 @@ impl Expr {
             Expr::ArrayLit(array_lit) => array_lit.span,
             Expr::Index(index_expr) => index_expr.span,
             Expr::Path(path_expr) => path_expr.span,
+            Expr::AssocFnCall(assoc_fn_call) => assoc_fn_call.span,
         }
     }
 }
@@ -917,6 +932,18 @@ fn fmt_expr(f: &mut fmt::Formatter<'_>, expr: &Expr, level: usize) -> fmt::Resul
         }
         Expr::Path(path) => {
             writeln!(f, "Path {}::{}", path.type_name.name, path.variant.name)
+        }
+        Expr::AssocFnCall(assoc_fn_call) => {
+            writeln!(
+                f,
+                "AssocFnCall {}::{}",
+                assoc_fn_call.type_name.name, assoc_fn_call.function.name
+            )?;
+            for arg in &assoc_fn_call.args {
+                indent(f, level + 1)?;
+                fmt_expr(f, arg, level + 1)?;
+            }
+            Ok(())
         }
     }
 }

@@ -1556,6 +1556,9 @@ impl<'a> ConstraintGenerator<'a> {
 
             // Method call - placeholder for Phase 3 (see ADR-0009)
             InstData::MethodCall { .. } => InferType::Concrete(Type::Unit),
+
+            // Associated function call - placeholder for Phase 3 (see ADR-0009)
+            InstData::AssocFnCall { .. } => InferType::Concrete(Type::Unit),
         };
 
         // Record the type for this expression

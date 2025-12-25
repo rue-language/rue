@@ -424,6 +424,16 @@ pub enum InstData {
         /// Argument instruction refs
         args: Vec<InstRef>,
     },
+
+    /// Associated function call: Type::function(args)
+    AssocFnCall {
+        /// Type name (e.g., Point)
+        type_name: Symbol,
+        /// Function name (e.g., origin)
+        function: Symbol,
+        /// Argument instruction refs
+        args: Vec<InstRef>,
+    },
 }
 
 impl fmt::Display for InstRef {
@@ -750,6 +760,21 @@ impl<'a, 'b> RirPrinter<'a, 'b> {
                         "method_call {}.{}({})\n",
                         receiver,
                         method_str,
+                        args_str.join(", ")
+                    ));
+                }
+                InstData::AssocFnCall {
+                    type_name,
+                    function,
+                    args,
+                } => {
+                    let type_str = self.interner.get(*type_name);
+                    let func_str = self.interner.get(*function);
+                    let args_str: Vec<String> = args.iter().map(|a| format!("{}", a)).collect();
+                    out.push_str(&format!(
+                        "assoc_fn_call {}::{}({})\n",
+                        type_str,
+                        func_str,
                         args_str.join(", ")
                     ));
                 }

@@ -2621,6 +2621,16 @@ impl<'a> Sema<'a> {
                 });
                 Ok(AnalysisResult::new(air_ref, Type::Unit))
             }
+
+            // Associated function call - placeholder for Phase 3 (see ADR-0009)
+            InstData::AssocFnCall { .. } => {
+                let air_ref = air.add_inst(AirInst {
+                    data: AirInstData::UnitConst,
+                    ty: Type::Unit,
+                    span: inst.span,
+                });
+                Ok(AnalysisResult::new(air_ref, Type::Unit))
+            }
         }
     }
 

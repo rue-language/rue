@@ -481,6 +481,24 @@ impl<'a> AstGen<'a> {
                     span: method_call.span,
                 })
             }
+            Expr::AssocFnCall(assoc_fn_call) => {
+                let type_name = self.interner.intern(&assoc_fn_call.type_name.name);
+                let function = self.interner.intern(&assoc_fn_call.function.name);
+                let args: Vec<_> = assoc_fn_call
+                    .args
+                    .iter()
+                    .map(|a| self.gen_expr(a))
+                    .collect();
+
+                self.rir.add_inst(Inst {
+                    data: InstData::AssocFnCall {
+                        type_name,
+                        function,
+                        args,
+                    },
+                    span: assoc_fn_call.span,
+                })
+            }
         }
     }
 

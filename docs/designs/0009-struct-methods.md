@@ -138,10 +138,11 @@ Methods can only be defined for structs in the same compilation unit. (This is a
   - Add `Item::ImplBlock` to AST
   - Parse method calls as a variant of field access
 
-- [ ] **Phase 2: RIR Generation** - rue-qs3z.2
-  - Add method info to RIR
+- [x] **Phase 2: RIR Generation** - rue-qs3z.2
+  - Add method info to RIR (ImplDecl, MethodCall, AssocFnCall instructions)
   - Generate RIR for impl blocks
   - Handle method calls in expression generation
+  - Parse associated function calls (Type::fn() syntax)
 
 - [ ] **Phase 3: Type Checking** - rue-qs3z.3
   - Add method registry to struct definitions

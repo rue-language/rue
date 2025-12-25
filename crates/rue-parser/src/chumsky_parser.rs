@@ -4,13 +4,13 @@
 //! with Pratt parsing for expression precedence.
 
 use crate::ast::{
-    ArrayLitExpr, AssignStatement, AssignTarget, Ast, BinaryExpr, BinaryOp, BlockExpr, BoolLit,
-    BreakExpr, CallExpr, ContinueExpr, Directive, DirectiveArg, EnumDecl, EnumVariant, Expr,
-    FieldDecl, FieldExpr, FieldInit, Function, Ident, IfExpr, ImplBlock, IndexExpr, IntLit,
-    IntrinsicArg, IntrinsicCallExpr, Item, LetPattern, LetStatement, LoopExpr, MatchArm, MatchExpr,
-    Method, MethodCallExpr, NegIntLit, Param, ParenExpr, PathExpr, PathPattern, Pattern,
-    ReturnExpr, SelfParam, Statement, StringLit, StructDecl, StructLitExpr, TypeExpr, UnaryExpr,
-    UnaryOp, UnitLit, WhileExpr,
+    ArrayLitExpr, AssignStatement, AssignTarget, AssocFnCallExpr, Ast, BinaryExpr, BinaryOp,
+    BlockExpr, BoolLit, BreakExpr, CallExpr, ContinueExpr, Directive, DirectiveArg, EnumDecl,
+    EnumVariant, Expr, FieldDecl, FieldExpr, FieldInit, Function, Ident, IfExpr, ImplBlock,
+    IndexExpr, IntLit, IntrinsicArg, IntrinsicCallExpr, Item, LetPattern, LetStatement, LoopExpr,
+    MatchArm, MatchExpr, Method, MethodCallExpr, NegIntLit, Param, ParenExpr, PathExpr,
+    PathPattern, Pattern, ReturnExpr, SelfParam, Statement, StringLit, StructDecl, StructLitExpr,
+    TypeExpr, UnaryExpr, UnaryOp, UnitLit, WhileExpr,
 };
 use chumsky::input::{Input as ChumskyInput, Stream, ValueInput};
 use chumsky::pratt::{infix, left, prefix};
@@ -577,12 +577,13 @@ where
         })
         .boxed();
 
-    // What can follow an identifier: call args, struct fields, path (::variant), or nothing
+    // What can follow an identifier: call args, struct fields, path (::variant), path call (::fn()), or nothing
     #[derive(Clone)]
     enum IdentSuffix {
         Call(Vec<Expr>),
         StructLit(Vec<FieldInit>),
-        Path(Ident), // ::Variant
+        Path(Ident),                // ::Variant (for enum variants)
+        PathCall(Ident, Vec<Expr>), // ::function() (for associated functions)
         None,
     }
 
@@ -598,6 +599,14 @@ where
                 field_inits_parser(expr.clone())
                     .delimited_by(just(TokenKind::LBrace), just(TokenKind::RBrace))
                     .map(IdentSuffix::StructLit),
+                // Associated function call: ::function(args)
+                just(TokenKind::ColonColon)
+                    .ignore_then(ident_parser())
+                    .then(
+                        args_parser(expr.clone())
+                            .delimited_by(just(TokenKind::LParen), just(TokenKind::RParen)),
+                    )
+                    .map(|(func, args)| IdentSuffix::PathCall(func, args)),
                 // Path: ::Variant (for enum variants)
                 just(TokenKind::ColonColon)
                     .ignore_then(ident_parser())
@@ -615,6 +624,12 @@ where
             IdentSuffix::StructLit(fields) => Expr::StructLit(StructLitExpr {
                 name,
                 fields,
+                span: to_rue_span(e.span()),
+            }),
+            IdentSuffix::PathCall(function, args) => Expr::AssocFnCall(AssocFnCallExpr {
+                type_name: name,
+                function,
+                args,
                 span: to_rue_span(e.span()),
             }),
             IdentSuffix::Path(variant) => Expr::Path(PathExpr {
