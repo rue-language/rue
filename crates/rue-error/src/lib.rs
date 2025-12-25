@@ -18,6 +18,7 @@
 //! ```
 
 use rue_span::Span;
+use std::borrow::Cow;
 use std::collections::HashSet;
 use std::fmt;
 
@@ -241,11 +242,11 @@ pub enum ErrorKind {
 
     // Parser errors
     UnexpectedToken {
-        expected: &'static str,
-        found: String,
+        expected: Cow<'static, str>,
+        found: Cow<'static, str>,
     },
     UnexpectedEof {
-        expected: &'static str,
+        expected: Cow<'static, str>,
     },
 
     // Semantic errors
@@ -945,15 +946,17 @@ mod tests {
     #[test]
     fn test_unexpected_token_message() {
         let error = CompileError::without_span(ErrorKind::UnexpectedToken {
-            expected: "identifier",
-            found: "'+'".to_string(),
+            expected: Cow::Borrowed("identifier"),
+            found: Cow::Borrowed("'+'"),
         });
         assert_eq!(error.to_string(), "expected identifier, found '+'");
     }
 
     #[test]
     fn test_unexpected_eof_message() {
-        let error = CompileError::without_span(ErrorKind::UnexpectedEof { expected: "'}'" });
+        let error = CompileError::without_span(ErrorKind::UnexpectedEof {
+            expected: Cow::Borrowed("'}'"),
+        });
         assert_eq!(error.to_string(), "unexpected end of file, expected '}'");
     }
 

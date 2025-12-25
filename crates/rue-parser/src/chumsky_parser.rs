@@ -18,6 +18,7 @@ use chumsky::prelude::*;
 use rue_error::{CompileError, CompileResult, ErrorKind};
 use rue_lexer::TokenKind;
 use rue_span::Span;
+use std::borrow::Cow;
 
 /// Convert chumsky SimpleSpan to rue_span::Span
 fn to_rue_span(span: SimpleSpan) -> Span {
@@ -1317,26 +1318,27 @@ fn convert_error(err: Rich<'_, TokenKind>) -> CompileError {
 
     match err.reason() {
         chumsky::error::RichReason::ExpectedFound { expected, found } => {
-            let expected_str = if expected.is_empty() {
-                "something".to_string()
+            let expected_str: Cow<'static, str> = if expected.is_empty() {
+                Cow::Borrowed("something")
             } else {
-                expected
-                    .iter()
-                    .take(3) // Limit to first 3 for readability
-                    .map(|e| format!("{:?}", e))
-                    .collect::<Vec<_>>()
-                    .join(" or ")
+                Cow::Owned(
+                    expected
+                        .iter()
+                        .take(3) // Limit to first 3 for readability
+                        .map(|e| format!("{:?}", e))
+                        .collect::<Vec<_>>()
+                        .join(" or "),
+                )
             };
 
-            let found_str = found
-                .as_ref()
-                .map(|t| t.name())
-                .unwrap_or("end of file")
-                .to_string();
+            let found_str: Cow<'static, str> = match found.as_ref() {
+                Some(t) => Cow::Owned(t.name().to_string()),
+                None => Cow::Borrowed("end of file"),
+            };
 
             CompileError::new(
                 ErrorKind::UnexpectedToken {
-                    expected: Box::leak(expected_str.into_boxed_str()),
+                    expected: expected_str,
                     found: found_str,
                 },
                 span,
@@ -1344,8 +1346,8 @@ fn convert_error(err: Rich<'_, TokenKind>) -> CompileError {
         }
         _ => CompileError::new(
             ErrorKind::UnexpectedToken {
-                expected: "valid syntax",
-                found: "parse error".to_string(),
+                expected: Cow::Borrowed("valid syntax"),
+                found: Cow::Borrowed("parse error"),
             },
             span,
         ),
