@@ -166,3 +166,126 @@ fn main() -> i32 {
 }
 """
 exit_code = 42
+
+# =============================================================================
+# Maximal Munch (lexer longest-match principle)
+# =============================================================================
+
+[[case]]
+name = "maximal_munch_left_shift"
+spec = ["2.0:2"]
+source = """
+fn main() -> i32 {
+    let x = 1 << 2;
+    x
+}
+"""
+exit_code = 4
+
+[[case]]
+name = "maximal_munch_right_shift"
+spec = ["2.0:2"]
+source = """
+fn main() -> i32 {
+    let x = 16 >> 2;
+    x
+}
+"""
+exit_code = 4
+
+[[case]]
+name = "maximal_munch_less_than_or_equal"
+spec = ["2.0:2"]
+source = """
+fn main() -> i32 {
+    if 5 <= 10 { 1 } else { 0 }
+}
+"""
+exit_code = 1
+
+[[case]]
+name = "maximal_munch_greater_than_or_equal"
+spec = ["2.0:2"]
+source = """
+fn main() -> i32 {
+    if 10 >= 5 { 1 } else { 0 }
+}
+"""
+exit_code = 1
+
+[[case]]
+name = "maximal_munch_logical_and"
+spec = ["2.0:2"]
+source = """
+fn main() -> i32 {
+    if true && true { 1 } else { 0 }
+}
+"""
+exit_code = 1
+
+[[case]]
+name = "maximal_munch_logical_or"
+spec = ["2.0:2"]
+source = """
+fn main() -> i32 {
+    if false || true { 1 } else { 0 }
+}
+"""
+exit_code = 1
+
+[[case]]
+name = "maximal_munch_equal_equal"
+spec = ["2.0:2"]
+source = """
+fn main() -> i32 {
+    if 5 == 5 { 1 } else { 0 }
+}
+"""
+exit_code = 1
+
+[[case]]
+name = "maximal_munch_not_equal"
+spec = ["2.0:2"]
+source = """
+fn main() -> i32 {
+    if 5 != 10 { 1 } else { 0 }
+}
+"""
+exit_code = 1
+
+[[case]]
+name = "maximal_munch_arrow"
+spec = ["2.0:2"]
+source = """
+fn foo() -> i32 { 42 }
+fn main() -> i32 { foo() }
+"""
+exit_code = 42
+
+[[case]]
+name = "maximal_munch_fat_arrow"
+spec = ["2.0:2"]
+source = """
+fn main() -> i32 {
+    match 1 {
+        1 => 42,
+        _ => 0,
+    }
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "maximal_munch_colon_colon"
+spec = ["2.0:2"]
+source = """
+enum Color { Red, Green, Blue }
+fn main() -> i32 {
+    match Color::Red {
+        Color::Red => 1,
+        Color::Green => 2,
+        Color::Blue => 3,
+    }
+}
+"""
+exit_code = 1
