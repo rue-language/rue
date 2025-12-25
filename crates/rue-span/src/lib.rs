@@ -57,6 +57,26 @@ impl Span {
     pub const fn as_range(&self) -> std::ops::Range<usize> {
         self.start as usize..self.end as usize
     }
+
+    /// Compute the 1-based line number for this span's start position.
+    ///
+    /// Returns the line number (1-indexed) where this span begins.
+    #[inline]
+    pub fn line_number(&self, source: &str) -> usize {
+        byte_offset_to_line(source, self.start as usize)
+    }
+}
+
+/// Convert a byte offset to a 1-based line number.
+///
+/// Counts the number of newlines before the given byte offset and adds 1.
+#[inline]
+pub fn byte_offset_to_line(source: &str, offset: usize) -> usize {
+    source[..offset.min(source.len())]
+        .bytes()
+        .filter(|&b| b == b'\n')
+        .count()
+        + 1
 }
 
 impl From<std::ops::Range<usize>> for Span {
@@ -126,5 +146,33 @@ mod tests {
         let span: Span = (5usize..10usize).into();
         assert_eq!(span.start, 5);
         assert_eq!(span.end, 10);
+    }
+
+    #[test]
+    fn test_byte_offset_to_line() {
+        let source = "line1\nline2\nline3";
+        // First line (offset 0-4)
+        assert_eq!(byte_offset_to_line(source, 0), 1);
+        assert_eq!(byte_offset_to_line(source, 4), 1);
+        // Second line (offset 6-10)
+        assert_eq!(byte_offset_to_line(source, 6), 2);
+        assert_eq!(byte_offset_to_line(source, 10), 2);
+        // Third line (offset 12+)
+        assert_eq!(byte_offset_to_line(source, 12), 3);
+        assert_eq!(byte_offset_to_line(source, 16), 3);
+    }
+
+    #[test]
+    fn test_span_line_number() {
+        let source = "let x = 1;\nlet y = 2;\nlet z = 3;";
+        // Span on line 1
+        let span1 = Span::new(0, 10);
+        assert_eq!(span1.line_number(source), 1);
+        // Span on line 2
+        let span2 = Span::new(11, 21);
+        assert_eq!(span2.line_number(source), 2);
+        // Span on line 3
+        let span3 = Span::new(22, 32);
+        assert_eq!(span3.line_number(source), 3);
     }
 }

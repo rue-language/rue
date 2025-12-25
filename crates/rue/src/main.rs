@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::env;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
@@ -217,10 +218,8 @@ fn main() {
     };
     match compile_with_options(&source, &compile_options) {
         Ok(output) => {
-            // Print warnings first
-            for warning in &output.warnings {
-                print_warning(warning, &source, &options.source_path);
-            }
+            // Print warnings with line numbers when needed for disambiguation
+            print_warnings(&output.warnings, &source, &options.source_path);
 
             // Write output
             if let Err(e) = fs::write(&options.output_path, &output.elf) {
@@ -497,10 +496,50 @@ fn print_error(error: &CompileError, source: &str, source_path: &str) {
     eprintln!("{}", renderer.render(report));
 }
 
-fn print_warning(warning: &CompileWarning, source: &str, source_path: &str) {
-    let message = warning.to_string();
+/// Print all warnings, adding line numbers when multiple variables share the same name.
+///
+/// This improves error messages by disambiguating when there are multiple unused
+/// variables with the same name (e.g., shadowed variables in different scopes).
+fn print_warnings(warnings: &[CompileWarning], source: &str, source_path: &str) {
+    // Count occurrences of each unused variable name
+    let mut var_name_counts: HashMap<&str, usize> = HashMap::new();
+    for warning in warnings {
+        if let Some(name) = warning.kind.unused_variable_name() {
+            *var_name_counts.entry(name).or_insert(0) += 1;
+        }
+    }
+
+    // Print each warning, adding line number if there are duplicates
+    for warning in warnings {
+        let needs_line_number = warning
+            .kind
+            .unused_variable_name()
+            .is_some_and(|name| var_name_counts.get(name).copied().unwrap_or(0) > 1);
+
+        print_warning(warning, source, source_path, needs_line_number);
+    }
+}
+
+fn print_warning(
+    warning: &CompileWarning,
+    source: &str,
+    source_path: &str,
+    include_line_number: bool,
+) {
     let renderer = Renderer::plain();
     let diagnostic = warning.diagnostic();
+
+    // Get the message, optionally with line number
+    let message = if include_line_number {
+        if let Some(span) = warning.span() {
+            let line = span.line_number(source);
+            warning.kind.format_with_line(Some(line))
+        } else {
+            warning.to_string()
+        }
+    } else {
+        warning.to_string()
+    };
 
     // For warnings without a span, just print the message with any footers
     let Some(span) = warning.span() else {

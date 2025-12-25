@@ -727,6 +727,33 @@ impl fmt::Display for CompileWarning {
     }
 }
 
+impl WarningKind {
+    /// Returns the variable name if this is an UnusedVariable warning.
+    pub fn unused_variable_name(&self) -> Option<&str> {
+        match self {
+            WarningKind::UnusedVariable(name) => Some(name),
+            _ => None,
+        }
+    }
+
+    /// Format the warning message with an optional line number.
+    ///
+    /// When `line_number` is Some, the line number is appended to the message
+    /// for warnings that have a name (like unused variables). This helps
+    /// disambiguate when multiple variables share the same name.
+    pub fn format_with_line(&self, line_number: Option<usize>) -> String {
+        match (self, line_number) {
+            (WarningKind::UnusedVariable(name), Some(line)) => {
+                format!("unused variable '{}' (line {})", name, line)
+            }
+            (WarningKind::UnusedFunction(name), Some(line)) => {
+                format!("unused function '{}' (line {})", name, line)
+            }
+            _ => self.to_string(),
+        }
+    }
+}
+
 impl fmt::Display for WarningKind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {

@@ -180,6 +180,22 @@ exit_code = 1
 warning_contains = ["unused variable", "'x'"]
 expected_warning_count = 2
 
+[[case]]
+name = "shadowed_variables_include_line_numbers"
+description = "When multiple unused variables share the same name, include line numbers for disambiguation"
+source = """
+fn main() -> i32 {
+    let x = 1;
+    {
+        let x = 2;
+    };
+    0
+}
+"""
+exit_code = 0
+warning_contains = ["unused variable 'x' (line", "line 2)", "line 4)"]
+expected_warning_count = 2
+
 # =============================================================================
 # Unused Functions
 # =============================================================================
