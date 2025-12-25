@@ -117,8 +117,9 @@ impl RegAlloc {
 
     /// Assign physical registers to all virtual registers using linear scan.
     fn assign_registers(&mut self) {
-        // Collect vregs with their live ranges, sorted by start position
-        let mut vregs_by_start: Vec<(VReg, LiveRange)> = Vec::new();
+        // Pre-allocate for the maximum possible size (all vregs may have live ranges)
+        let mut vregs_by_start: Vec<(VReg, LiveRange)> =
+            Vec::with_capacity(self.mir.vreg_count() as usize);
         for vreg_idx in 0..self.mir.vreg_count() {
             let vreg = VReg::new(vreg_idx);
             if let Some(&range) = self.liveness.range(vreg) {
@@ -128,8 +129,8 @@ impl RegAlloc {
         vregs_by_start.sort_by_key(|(_, range)| range.start);
 
         // Track which registers are currently in use and when they become free
-        // Map from register to (vreg using it, end of that vreg's live range)
-        let mut active: Vec<(VReg, Reg, usize)> = Vec::new(); // (vreg, reg, end)
+        // Pre-allocate for typical register pressure (bounded by allocatable registers)
+        let mut active: Vec<(VReg, Reg, usize)> = Vec::with_capacity(ALLOCATABLE_REGS.len());
 
         for (vreg, range) in vregs_by_start {
             // Expire old intervals - registers whose vregs are no longer live

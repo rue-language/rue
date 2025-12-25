@@ -284,7 +284,8 @@ impl<'a> LogosLexer<'a> {
 
     /// Tokenize the entire source, returning all tokens.
     pub fn tokenize(&mut self) -> CompileResult<Vec<Token>> {
-        let mut tokens = Vec::new();
+        // Estimate capacity: source length / 4 is a rough heuristic for token density
+        let mut tokens = Vec::with_capacity(self.source.len() / 4);
 
         for (result, span) in LogosTokenKind::lexer(self.source).spanned() {
             match result {

@@ -437,8 +437,9 @@ pub fn parse_test_files(cases_dir: &Path) -> Vec<TestFile> {
             .to_string();
 
         // Get cases
-        let mut cases = Vec::new();
-        if let Some(case_array) = table.get("case").and_then(|c| c.as_array()) {
+        let case_array_opt = table.get("case").and_then(|c| c.as_array());
+        let mut cases = Vec::with_capacity(case_array_opt.map(|a| a.len()).unwrap_or(0));
+        if let Some(case_array) = case_array_opt {
             for case in case_array {
                 let name = case
                     .get("name")

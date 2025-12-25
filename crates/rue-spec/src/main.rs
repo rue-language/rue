@@ -132,7 +132,9 @@ fn main() {
     let specs = load_test_files(&cases_dir);
 
     // Build test trials, separating stable and preview tests
-    let mut tests: Vec<Trial> = Vec::new();
+    // Pre-allocate based on total case count across all specs
+    let total_cases: usize = specs.iter().map(|(_, s)| s.case.len()).sum();
+    let mut tests: Vec<Trial> = Vec::with_capacity(total_cases);
 
     for (_, spec) in specs {
         let section_id = spec.section.id.clone();

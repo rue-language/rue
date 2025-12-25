@@ -148,7 +148,8 @@ pub fn analyze(mir: &X86Mir) -> LivenessInfo {
 
 /// Get virtual registers used (read) by an instruction.
 fn uses(inst: &X86Inst) -> Vec<VReg> {
-    let mut result = Vec::new();
+    // Most instructions have 0-2 operands; pre-allocate for common case
+    let mut result = Vec::with_capacity(2);
 
     let add_if_virtual = |op: &Operand, vec: &mut Vec<VReg>| {
         if let Operand::Virtual(vreg) = op {
@@ -301,7 +302,8 @@ fn uses(inst: &X86Inst) -> Vec<VReg> {
 
 /// Get virtual registers defined (written) by an instruction.
 fn defs(inst: &X86Inst) -> Vec<VReg> {
-    let mut result = Vec::new();
+    // Most instructions define 0-1 registers; pre-allocate for common case
+    let mut result = Vec::with_capacity(1);
 
     let add_if_virtual = |op: &Operand, vec: &mut Vec<VReg>| {
         if let Operand::Virtual(vreg) = op {

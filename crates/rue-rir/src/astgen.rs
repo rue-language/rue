@@ -545,7 +545,8 @@ impl<'a> AstGen<'a> {
             self.gen_expr(&block.expr)
         } else {
             // Collect all instruction refs for the block
-            let mut inst_refs = Vec::new();
+            // statements + 1 for the final expression
+            let mut inst_refs = Vec::with_capacity(block.statements.len() + 1);
 
             // Generate all statements first
             for stmt in &block.statements {

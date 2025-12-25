@@ -319,7 +319,7 @@ impl<'a> CfgLower<'a> {
             CfgInstData::Load { slot } => {
                 // Load slot values from consecutive stack slots
                 let slot_count = self.type_slot_count(Type::Struct(struct_id));
-                let mut vregs = Vec::new();
+                let mut vregs = Vec::with_capacity(slot_count as usize);
                 for i in 0..slot_count {
                     let vreg = self.mir.alloc_vreg();
                     let offset = self.local_offset(slot + i);
@@ -335,7 +335,7 @@ impl<'a> CfgLower<'a> {
             CfgInstData::Param { index } => {
                 // Get slot values from parameter area
                 let slot_count = self.type_slot_count(Type::Struct(struct_id));
-                let mut vregs = Vec::new();
+                let mut vregs = Vec::with_capacity(slot_count as usize);
                 for i in 0..slot_count {
                     let vreg = self.mir.alloc_vreg();
                     let param_slot = self.num_locals + index + i;
