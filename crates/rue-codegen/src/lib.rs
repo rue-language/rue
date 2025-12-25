@@ -79,7 +79,7 @@ mod tests {
         let cfg_output = CfgBuilder::build(&air, 0, 0, "main");
 
         // Test the generate function
-        let machine_code = generate(&cfg_output.cfg, &[], &[], &[]);
+        let machine_code = generate(&cfg_output.cfg, &[], &[], &[]).unwrap();
 
         // Should generate working code
         assert!(!machine_code.code.is_empty());

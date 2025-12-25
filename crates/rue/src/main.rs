@@ -402,13 +402,19 @@ fn handle_emit(source: &str, options: &Options) -> Result<(), ()> {
                     for func in &state.functions {
                         println!(".globl {}", func.analyzed.name);
                         println!("{}:", func.analyzed.name);
-                        let mir = generate_allocated_mir(
+                        let mir = match generate_allocated_mir(
                             &func.cfg,
                             &state.struct_defs,
                             &state.array_types,
                             &state.strings,
                             options.target,
-                        );
+                        ) {
+                            Ok(mir) => mir,
+                            Err(e) => {
+                                print_error(&e, source, &options.source_path);
+                                return Err(());
+                            }
+                        };
                         print_assembly(&mir);
                         println!();
                     }

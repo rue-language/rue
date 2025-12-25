@@ -12,6 +12,8 @@
 
 use std::collections::HashSet;
 
+use rue_error::{CompileError, CompileResult, ErrorKind};
+
 use super::liveness::{self, LiveRange, LivenessInfo};
 use super::mir::{Operand, Reg, VReg, X86Inst, X86Mir};
 
@@ -90,27 +92,27 @@ impl RegAlloc {
     }
 
     /// Perform register allocation and return the updated MIR.
-    pub fn allocate(mut self) -> X86Mir {
+    pub fn allocate(mut self) -> CompileResult<X86Mir> {
         // Phase 1: Assign physical registers (or spill) to virtual registers
         self.assign_registers();
 
         // Phase 2: Rewrite instructions to use physical registers and insert spill code
-        self.rewrite_instructions();
+        self.rewrite_instructions()?;
 
-        self.mir
+        Ok(self.mir)
     }
 
     /// Perform register allocation and return the MIR, spill count, and used callee-saved registers.
-    pub fn allocate_with_spills(mut self) -> (X86Mir, u32, Vec<Reg>) {
+    pub fn allocate_with_spills(mut self) -> CompileResult<(X86Mir, u32, Vec<Reg>)> {
         // Phase 1: Assign physical registers (or spill) to virtual registers
         self.assign_registers();
 
         // Phase 2: Rewrite instructions to use physical registers and insert spill code
-        self.rewrite_instructions();
+        self.rewrite_instructions()?;
 
         let num_spills = self.num_spills;
         let used_callee_saved = self.used_callee_saved;
-        (self.mir, num_spills, used_callee_saved)
+        Ok((self.mir, num_spills, used_callee_saved))
     }
 
     /// Assign physical registers to all virtual registers using linear scan.
@@ -196,21 +198,22 @@ impl RegAlloc {
     }
 
     /// Rewrite all instructions to use physical registers and handle spills.
-    fn rewrite_instructions(&mut self) {
+    fn rewrite_instructions(&mut self) -> CompileResult<()> {
         // For spilled vregs, we need to insert load/store operations.
         // This is done by building a new instruction list.
         let old_instructions = std::mem::take(&mut self.mir).into_instructions();
         let mut new_mir = X86Mir::new();
 
         for inst in old_instructions {
-            self.rewrite_inst(&mut new_mir, inst);
+            self.rewrite_inst(&mut new_mir, inst)?;
         }
 
         self.mir = new_mir;
+        Ok(())
     }
 
     /// Rewrite a single instruction, handling spills.
-    fn rewrite_inst(&self, mir: &mut X86Mir, inst: X86Inst) {
+    fn rewrite_inst(&self, mir: &mut X86Mir, inst: X86Inst) -> CompileResult<()> {
         match inst {
             X86Inst::MovRI32 { dst, imm } => {
                 match self.get_allocation(dst) {
@@ -264,7 +267,7 @@ impl RegAlloc {
             },
 
             X86Inst::MovRR { dst, src } => {
-                let src_op = self.load_operand(mir, src, Reg::Rax);
+                let src_op = self.load_operand(mir, src, Reg::Rax)?;
                 let dst_alloc = self.get_allocation(dst);
 
                 match dst_alloc {
@@ -323,7 +326,7 @@ impl RegAlloc {
             }
 
             X86Inst::MovMR { base, offset, src } => {
-                let src_op = self.load_operand(mir, src, Reg::Rax);
+                let src_op = self.load_operand(mir, src, Reg::Rax)?;
                 mir.push(X86Inst::MovMR {
                     base,
                     offset,
@@ -332,11 +335,11 @@ impl RegAlloc {
             }
 
             X86Inst::AddRR { dst, src } => {
-                self.emit_binop(mir, dst, src, |d, s| X86Inst::AddRR { dst: d, src: s });
+                self.emit_binop(mir, dst, src, |d, s| X86Inst::AddRR { dst: d, src: s })?;
             }
 
             X86Inst::AddRR64 { dst, src } => {
-                self.emit_binop(mir, dst, src, |d, s| X86Inst::AddRR64 { dst: d, src: s });
+                self.emit_binop(mir, dst, src, |d, s| X86Inst::AddRR64 { dst: d, src: s })?;
             }
 
             X86Inst::AddRI { dst, imm } => {
@@ -344,19 +347,19 @@ impl RegAlloc {
             }
 
             X86Inst::SubRR { dst, src } => {
-                self.emit_binop(mir, dst, src, |d, s| X86Inst::SubRR { dst: d, src: s });
+                self.emit_binop(mir, dst, src, |d, s| X86Inst::SubRR { dst: d, src: s })?;
             }
 
             X86Inst::SubRR64 { dst, src } => {
-                self.emit_binop(mir, dst, src, |d, s| X86Inst::SubRR64 { dst: d, src: s });
+                self.emit_binop(mir, dst, src, |d, s| X86Inst::SubRR64 { dst: d, src: s })?;
             }
 
             X86Inst::ImulRR { dst, src } => {
-                self.emit_binop(mir, dst, src, |d, s| X86Inst::ImulRR { dst: d, src: s });
+                self.emit_binop(mir, dst, src, |d, s| X86Inst::ImulRR { dst: d, src: s })?;
             }
 
             X86Inst::ImulRR64 { dst, src } => {
-                self.emit_binop(mir, dst, src, |d, s| X86Inst::ImulRR64 { dst: d, src: s });
+                self.emit_binop(mir, dst, src, |d, s| X86Inst::ImulRR64 { dst: d, src: s })?;
             }
 
             X86Inst::Neg { dst } => {
@@ -372,15 +375,15 @@ impl RegAlloc {
             }
 
             X86Inst::AndRR { dst, src } => {
-                self.emit_binop(mir, dst, src, |d, s| X86Inst::AndRR { dst: d, src: s });
+                self.emit_binop(mir, dst, src, |d, s| X86Inst::AndRR { dst: d, src: s })?;
             }
 
             X86Inst::OrRR { dst, src } => {
-                self.emit_binop(mir, dst, src, |d, s| X86Inst::OrRR { dst: d, src: s });
+                self.emit_binop(mir, dst, src, |d, s| X86Inst::OrRR { dst: d, src: s })?;
             }
 
             X86Inst::XorRR { dst, src } => {
-                self.emit_binop(mir, dst, src, |d, s| X86Inst::XorRR { dst: d, src: s });
+                self.emit_binop(mir, dst, src, |d, s| X86Inst::XorRR { dst: d, src: s })?;
             }
 
             X86Inst::NotR { dst } => {
@@ -436,13 +439,13 @@ impl RegAlloc {
             }
 
             X86Inst::IdivR { src } => {
-                let src_op = self.load_operand(mir, src, Reg::R10);
+                let src_op = self.load_operand(mir, src, Reg::R10)?;
                 mir.push(X86Inst::IdivR { src: src_op });
             }
 
             X86Inst::TestRR { src1, src2 } => {
-                let src1_op = self.load_operand(mir, src1, Reg::Rax);
-                let src2_op = self.load_operand(mir, src2, Reg::R10);
+                let src1_op = self.load_operand(mir, src1, Reg::Rax)?;
+                let src2_op = self.load_operand(mir, src2, Reg::R10)?;
                 mir.push(X86Inst::TestRR {
                     src1: src1_op,
                     src2: src2_op,
@@ -450,8 +453,8 @@ impl RegAlloc {
             }
 
             X86Inst::CmpRR { src1, src2 } => {
-                let src1_op = self.load_operand(mir, src1, Reg::Rax);
-                let src2_op = self.load_operand(mir, src2, Reg::R10);
+                let src1_op = self.load_operand(mir, src1, Reg::Rax)?;
+                let src2_op = self.load_operand(mir, src2, Reg::R10)?;
                 mir.push(X86Inst::CmpRR {
                     src1: src1_op,
                     src2: src2_op,
@@ -459,8 +462,8 @@ impl RegAlloc {
             }
 
             X86Inst::Cmp64RR { src1, src2 } => {
-                let src1_op = self.load_operand(mir, src1, Reg::Rax);
-                let src2_op = self.load_operand(mir, src2, Reg::R10);
+                let src1_op = self.load_operand(mir, src1, Reg::Rax)?;
+                let src2_op = self.load_operand(mir, src2, Reg::R10)?;
                 mir.push(X86Inst::Cmp64RR {
                     src1: src1_op,
                     src2: src2_op,
@@ -468,7 +471,7 @@ impl RegAlloc {
             }
 
             X86Inst::CmpRI { src, imm } => {
-                let src_op = self.load_operand(mir, src, Reg::Rax);
+                let src_op = self.load_operand(mir, src, Reg::Rax)?;
                 mir.push(X86Inst::CmpRI { src: src_op, imm });
             }
 
@@ -513,7 +516,7 @@ impl RegAlloc {
             }
 
             X86Inst::Movzx { dst, src } => {
-                let src_op = self.load_operand(mir, src, Reg::Rax);
+                let src_op = self.load_operand(mir, src, Reg::Rax)?;
                 match self.get_allocation(dst) {
                     Some(Allocation::Register(reg)) => {
                         mir.push(X86Inst::Movzx {
@@ -539,7 +542,7 @@ impl RegAlloc {
             }
 
             X86Inst::Movsx8To64 { dst, src } => {
-                let src_op = self.load_operand(mir, src, Reg::Rax);
+                let src_op = self.load_operand(mir, src, Reg::Rax)?;
                 match self.get_allocation(dst) {
                     Some(Allocation::Register(reg)) => {
                         mir.push(X86Inst::Movsx8To64 {
@@ -565,7 +568,7 @@ impl RegAlloc {
             }
 
             X86Inst::Movsx16To64 { dst, src } => {
-                let src_op = self.load_operand(mir, src, Reg::Rax);
+                let src_op = self.load_operand(mir, src, Reg::Rax)?;
                 match self.get_allocation(dst) {
                     Some(Allocation::Register(reg)) => {
                         mir.push(X86Inst::Movsx16To64 {
@@ -591,7 +594,7 @@ impl RegAlloc {
             }
 
             X86Inst::Movsx32To64 { dst, src } => {
-                let src_op = self.load_operand(mir, src, Reg::Rax);
+                let src_op = self.load_operand(mir, src, Reg::Rax)?;
                 match self.get_allocation(dst) {
                     Some(Allocation::Register(reg)) => {
                         mir.push(X86Inst::Movsx32To64 {
@@ -617,7 +620,7 @@ impl RegAlloc {
             }
 
             X86Inst::Movzx8To64 { dst, src } => {
-                let src_op = self.load_operand(mir, src, Reg::Rax);
+                let src_op = self.load_operand(mir, src, Reg::Rax)?;
                 match self.get_allocation(dst) {
                     Some(Allocation::Register(reg)) => {
                         mir.push(X86Inst::Movzx8To64 {
@@ -643,7 +646,7 @@ impl RegAlloc {
             }
 
             X86Inst::Movzx16To64 { dst, src } => {
-                let src_op = self.load_operand(mir, src, Reg::Rax);
+                let src_op = self.load_operand(mir, src, Reg::Rax)?;
                 match self.get_allocation(dst) {
                     Some(Allocation::Register(reg)) => {
                         mir.push(X86Inst::Movzx16To64 {
@@ -690,7 +693,7 @@ impl RegAlloc {
             },
 
             X86Inst::Push { src } => {
-                let src_op = self.load_operand(mir, src, Reg::Rax);
+                let src_op = self.load_operand(mir, src, Reg::Rax)?;
                 mir.push(X86Inst::Push { src: src_op });
             }
 
@@ -737,7 +740,7 @@ impl RegAlloc {
 
             X86Inst::Shl { dst, count } => {
                 // SHL needs count in RCX
-                let count_op = self.load_operand(mir, count, Reg::Rcx);
+                let count_op = self.load_operand(mir, count, Reg::Rcx)?;
                 if count_op != Operand::Physical(Reg::Rcx) {
                     mir.push(X86Inst::MovRR {
                         dst: Operand::Physical(Reg::Rcx),
@@ -780,7 +783,7 @@ impl RegAlloc {
             X86Inst::MovRMIndexed { dst, base, offset } => {
                 // Load base vreg into scratch register
                 let base_op = Operand::Virtual(base);
-                let base_reg = self.load_operand(mir, base_op, Reg::Rax);
+                let base_reg = self.load_operand(mir, base_op, Reg::Rax)?;
                 let base_phys = match base_reg {
                     Operand::Physical(r) => r,
                     _ => Reg::Rax,
@@ -817,9 +820,9 @@ impl RegAlloc {
             }
 
             X86Inst::MovMRIndexed { base, offset, src } => {
-                let src_op = self.load_operand(mir, src, Reg::Rdx);
+                let src_op = self.load_operand(mir, src, Reg::Rdx)?;
                 let base_op = Operand::Virtual(base);
-                let base_reg = self.load_operand(mir, base_op, Reg::Rax);
+                let base_reg = self.load_operand(mir, base_op, Reg::Rax)?;
                 let base_phys = match base_reg {
                     Operand::Physical(r) => r,
                     _ => Reg::Rax,
@@ -892,6 +895,7 @@ impl RegAlloc {
             X86Inst::Syscall => mir.push(X86Inst::Syscall),
             X86Inst::Ret => mir.push(X86Inst::Ret),
         }
+        Ok(())
     }
 
     /// Get the allocation for an operand (returns None for physical registers).
@@ -904,31 +908,45 @@ impl RegAlloc {
 
     /// Load an operand into a physical register, inserting a load if spilled.
     /// Returns the operand to use (either the allocated register or the scratch register).
-    fn load_operand(&self, mir: &mut X86Mir, operand: Operand, scratch: Reg) -> Operand {
+    fn load_operand(
+        &self,
+        mir: &mut X86Mir,
+        operand: Operand,
+        scratch: Reg,
+    ) -> CompileResult<Operand> {
         match operand {
             Operand::Virtual(vreg) => match self.allocation[vreg.index() as usize] {
-                Some(Allocation::Register(reg)) => Operand::Physical(reg),
+                Some(Allocation::Register(reg)) => Ok(Operand::Physical(reg)),
                 Some(Allocation::Spill(offset)) => {
                     mir.push(X86Inst::MovRM {
                         dst: Operand::Physical(scratch),
                         base: Reg::Rbp,
                         offset,
                     });
-                    Operand::Physical(scratch)
+                    Ok(Operand::Physical(scratch))
                 }
-                None => panic!("vreg {} not allocated", vreg.index()),
+                None => Err(CompileError::without_span(ErrorKind::LinkError(format!(
+                    "internal codegen error: virtual register {} was not allocated",
+                    vreg.index()
+                )))),
             },
-            Operand::Physical(reg) => Operand::Physical(reg),
+            Operand::Physical(reg) => Ok(Operand::Physical(reg)),
         }
     }
 
     /// Emit a binary operation (dst = dst op src).
-    fn emit_binop<F>(&self, mir: &mut X86Mir, dst: Operand, src: Operand, make_inst: F)
+    fn emit_binop<F>(
+        &self,
+        mir: &mut X86Mir,
+        dst: Operand,
+        src: Operand,
+        make_inst: F,
+    ) -> CompileResult<()>
     where
         F: FnOnce(Operand, Operand) -> X86Inst,
     {
         // Load src first (use R10 as scratch to avoid clobbering RAX)
-        let src_op = self.load_operand(mir, src, Reg::R10);
+        let src_op = self.load_operand(mir, src, Reg::R10)?;
 
         match self.get_allocation(dst) {
             Some(Allocation::Register(reg)) => {
@@ -955,6 +973,7 @@ impl RegAlloc {
                 mir.push(make_inst(dst, src_op));
             }
         }
+        Ok(())
     }
 
     /// Emit a unary operation (dst = op dst).
@@ -1083,12 +1102,12 @@ mod tests {
             imm: 42,
         });
 
-        let mir = RegAlloc::new(mir, 0).allocate();
+        let mir = RegAlloc::new(mir, 0).allocate().unwrap();
 
         // v0 should be allocated to R12 (first allocatable)
         match &mir.instructions()[0] {
             X86Inst::MovRI32 { dst, imm } => {
-                assert_eq!(*dst, Operand::Physical(Reg::R12));
+                assert_eq!(dst, &Operand::Physical(Reg::R12));
                 assert_eq!(*imm, 42);
             }
             _ => panic!("expected MovRI32"),
@@ -1105,11 +1124,11 @@ mod tests {
             imm: 60,
         });
 
-        let mir = RegAlloc::new(mir, 0).allocate();
+        let mir = RegAlloc::new(mir, 0).allocate().unwrap();
 
         match &mir.instructions()[0] {
             X86Inst::MovRI32 { dst, imm } => {
-                assert_eq!(*dst, Operand::Physical(Reg::Rdi));
+                assert_eq!(dst, &Operand::Physical(Reg::Rdi));
                 assert_eq!(*imm, 60);
             }
             _ => panic!("expected MovRI32"),
@@ -1134,14 +1153,14 @@ mod tests {
             imm: 2,
         });
 
-        let mir = RegAlloc::new(mir, 0).allocate();
+        let mir = RegAlloc::new(mir, 0).allocate().unwrap();
 
         // Both can be allocated to R12 since they don't interfere
         match (&mir.instructions()[0], &mir.instructions()[1]) {
             (X86Inst::MovRI32 { dst: d0, .. }, X86Inst::MovRI32 { dst: d1, .. }) => {
                 // They should both get R12 since v0 is dead before v1 is defined
-                assert_eq!(*d0, Operand::Physical(Reg::R12));
-                assert_eq!(*d1, Operand::Physical(Reg::R12));
+                assert_eq!(d0, &Operand::Physical(Reg::R12));
+                assert_eq!(d1, &Operand::Physical(Reg::R12));
             }
             _ => panic!("expected two MovRI32"),
         }
@@ -1170,15 +1189,15 @@ mod tests {
             src: Operand::Virtual(v0),
         });
 
-        let mir = RegAlloc::new(mir, 0).allocate();
+        let mir = RegAlloc::new(mir, 0).allocate().unwrap();
 
         // v0 and v1 should get different registers
         let d0 = match &mir.instructions()[0] {
-            X86Inst::MovRI32 { dst, .. } => *dst,
+            X86Inst::MovRI32 { dst, .. } => dst.clone(),
             _ => panic!("expected MovRI32"),
         };
         let d1 = match &mir.instructions()[1] {
-            X86Inst::MovRI32 { dst, .. } => *dst,
+            X86Inst::MovRI32 { dst, .. } => dst.clone(),
             _ => panic!("expected MovRI32"),
         };
 

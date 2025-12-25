@@ -24,6 +24,7 @@ pub use regalloc::RegAlloc;
 
 use rue_air::{ArrayTypeDef, StructDef};
 use rue_cfg::Cfg;
+use rue_error::CompileResult;
 
 use crate::MachineCode;
 
@@ -35,7 +36,7 @@ pub fn generate(
     struct_defs: &[StructDef],
     array_types: &[ArrayTypeDef],
     strings: &[String],
-) -> MachineCode {
+) -> CompileResult<MachineCode> {
     let num_locals = cfg.num_locals();
     let num_params = cfg.num_params();
 
@@ -45,16 +46,16 @@ pub fn generate(
     // Allocate physical registers
     let existing_slots = num_locals + num_params;
     let (mir, num_spills, used_callee_saved) =
-        RegAlloc::new(mir, existing_slots).allocate_with_spills();
+        RegAlloc::new(mir, existing_slots).allocate_with_spills()?;
 
     // Emit machine code bytes
     let total_locals = num_locals + num_spills;
     let (code, relocations) =
         Emitter::new(&mir, total_locals, num_params, &used_callee_saved, strings).emit();
 
-    MachineCode {
+    Ok(MachineCode {
         code,
         relocations,
         strings: strings.to_vec(),
-    }
+    })
 }

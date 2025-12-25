@@ -24,6 +24,7 @@ pub use regalloc::RegAlloc;
 
 use rue_air::{ArrayTypeDef, StructDef};
 use rue_cfg::Cfg;
+use rue_error::CompileResult;
 
 // Re-export from parent
 pub use super::{EmittedRelocation, MachineCode};
@@ -37,7 +38,7 @@ pub fn generate(
     struct_defs: &[StructDef],
     array_types: &[ArrayTypeDef],
     strings: &[String],
-) -> MachineCode {
+) -> CompileResult<MachineCode> {
     let num_locals = cfg.num_locals();
     let num_params = cfg.num_params();
 
@@ -48,7 +49,7 @@ pub fn generate(
     // Spill slots go after both locals AND parameters to avoid conflicts
     let existing_slots = num_locals + num_params;
     let (mir, num_spills, used_callee_saved) =
-        RegAlloc::new(mir, existing_slots).allocate_with_spills();
+        RegAlloc::new(mir, existing_slots).allocate_with_spills()?;
 
     // Emit machine code bytes (with prologue for stack frame setup)
     // Total local slots = local variables + spill slots (params handled separately)
@@ -65,9 +66,9 @@ pub fn generate(
     )
     .emit();
 
-    MachineCode {
+    Ok(MachineCode {
         code,
         relocations,
         strings: strings.to_vec(),
-    }
+    })
 }

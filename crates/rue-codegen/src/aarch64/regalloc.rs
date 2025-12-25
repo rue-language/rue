@@ -5,6 +5,8 @@
 
 use std::collections::HashSet;
 
+use rue_error::{CompileError, CompileResult, ErrorKind};
+
 use super::liveness::{self, LiveRange, LivenessInfo};
 use super::mir::{Aarch64Inst, Aarch64Mir, Operand, Reg, VReg};
 
@@ -77,19 +79,19 @@ impl RegAlloc {
     }
 
     /// Perform register allocation and return the updated MIR.
-    pub fn allocate(mut self) -> Aarch64Mir {
+    pub fn allocate(mut self) -> CompileResult<Aarch64Mir> {
         self.assign_registers();
-        self.rewrite_instructions();
-        self.mir
+        self.rewrite_instructions()?;
+        Ok(self.mir)
     }
 
     /// Perform register allocation and return the MIR, spill count, and used callee-saved registers.
-    pub fn allocate_with_spills(mut self) -> (Aarch64Mir, u32, Vec<Reg>) {
+    pub fn allocate_with_spills(mut self) -> CompileResult<(Aarch64Mir, u32, Vec<Reg>)> {
         self.assign_registers();
-        self.rewrite_instructions();
+        self.rewrite_instructions()?;
         let num_spills = self.num_spills;
         let used_callee_saved = self.used_callee_saved;
-        (self.mir, num_spills, used_callee_saved)
+        Ok((self.mir, num_spills, used_callee_saved))
     }
 
     /// Assign physical registers to all virtual registers using linear scan.
@@ -156,18 +158,19 @@ impl RegAlloc {
         offset
     }
 
-    fn rewrite_instructions(&mut self) {
+    fn rewrite_instructions(&mut self) -> CompileResult<()> {
         let old_instructions = std::mem::take(&mut self.mir).into_instructions();
         let mut new_mir = Aarch64Mir::new();
 
         for inst in old_instructions {
-            self.rewrite_inst(&mut new_mir, inst);
+            self.rewrite_inst(&mut new_mir, inst)?;
         }
 
         self.mir = new_mir;
+        Ok(())
     }
 
-    fn rewrite_inst(&self, mir: &mut Aarch64Mir, inst: Aarch64Inst) {
+    fn rewrite_inst(&self, mir: &mut Aarch64Mir, inst: Aarch64Inst) -> CompileResult<()> {
         match inst {
             Aarch64Inst::MovImm { dst, imm } => {
                 match self.get_allocation(dst) {
@@ -196,7 +199,7 @@ impl RegAlloc {
             }
 
             Aarch64Inst::MovRR { dst, src } => {
-                let src_op = self.load_operand(mir, src, Reg::X9);
+                let src_op = self.load_operand(mir, src, Reg::X9)?;
                 let dst_alloc = self.get_allocation(dst);
 
                 match dst_alloc {
@@ -251,7 +254,7 @@ impl RegAlloc {
             },
 
             Aarch64Inst::Str { src, base, offset } => {
-                let src_op = self.load_operand(mir, src, Reg::X9);
+                let src_op = self.load_operand(mir, src, Reg::X9)?;
                 mir.push(Aarch64Inst::Str {
                     src: src_op,
                     base,
@@ -264,7 +267,7 @@ impl RegAlloc {
                     dst: d,
                     src1: s1,
                     src2: s2,
-                });
+                })?;
             }
 
             Aarch64Inst::AddsRR { dst, src1, src2 } => {
@@ -272,7 +275,7 @@ impl RegAlloc {
                     dst: d,
                     src1: s1,
                     src2: s2,
-                });
+                })?;
             }
 
             Aarch64Inst::AddsRR64 { dst, src1, src2 } => {
@@ -280,7 +283,7 @@ impl RegAlloc {
                     dst: d,
                     src1: s1,
                     src2: s2,
-                });
+                })?;
             }
 
             Aarch64Inst::AddImm { dst, src, imm } => {
@@ -288,7 +291,7 @@ impl RegAlloc {
                     dst: d,
                     src: s,
                     imm: i,
-                });
+                })?;
             }
 
             Aarch64Inst::SubRR { dst, src1, src2 } => {
@@ -296,7 +299,7 @@ impl RegAlloc {
                     dst: d,
                     src1: s1,
                     src2: s2,
-                });
+                })?;
             }
 
             Aarch64Inst::SubsRR { dst, src1, src2 } => {
@@ -304,7 +307,7 @@ impl RegAlloc {
                     dst: d,
                     src1: s1,
                     src2: s2,
-                });
+                })?;
             }
 
             Aarch64Inst::SubsRR64 { dst, src1, src2 } => {
@@ -312,7 +315,7 @@ impl RegAlloc {
                     dst: d,
                     src1: s1,
                     src2: s2,
-                });
+                })?;
             }
 
             Aarch64Inst::SubImm { dst, src, imm } => {
@@ -320,7 +323,7 @@ impl RegAlloc {
                     dst: d,
                     src: s,
                     imm: i,
-                });
+                })?;
             }
 
             Aarch64Inst::MulRR { dst, src1, src2 } => {
@@ -328,7 +331,7 @@ impl RegAlloc {
                     dst: d,
                     src1: s1,
                     src2: s2,
-                });
+                })?;
             }
 
             Aarch64Inst::SmullRR { dst, src1, src2 } => {
@@ -336,7 +339,7 @@ impl RegAlloc {
                     dst: d,
                     src1: s1,
                     src2: s2,
-                });
+                })?;
             }
 
             Aarch64Inst::UmullRR { dst, src1, src2 } => {
@@ -344,7 +347,7 @@ impl RegAlloc {
                     dst: d,
                     src1: s1,
                     src2: s2,
-                });
+                })?;
             }
 
             Aarch64Inst::SmulhRR { dst, src1, src2 } => {
@@ -352,7 +355,7 @@ impl RegAlloc {
                     dst: d,
                     src1: s1,
                     src2: s2,
-                });
+                })?;
             }
 
             Aarch64Inst::UmulhRR { dst, src1, src2 } => {
@@ -360,7 +363,7 @@ impl RegAlloc {
                     dst: d,
                     src1: s1,
                     src2: s2,
-                });
+                })?;
             }
 
             Aarch64Inst::Lsr64Imm { dst, src, imm } => {
@@ -368,7 +371,7 @@ impl RegAlloc {
                     dst: d,
                     src: s,
                     imm,
-                });
+                })?;
             }
 
             Aarch64Inst::Asr64Imm { dst, src, imm } => {
@@ -376,7 +379,7 @@ impl RegAlloc {
                     dst: d,
                     src: s,
                     imm,
-                });
+                })?;
             }
 
             Aarch64Inst::SdivRR { dst, src1, src2 } => {
@@ -384,7 +387,7 @@ impl RegAlloc {
                     dst: d,
                     src1: s1,
                     src2: s2,
-                });
+                })?;
             }
 
             Aarch64Inst::Msub {
@@ -395,9 +398,9 @@ impl RegAlloc {
             } => {
                 // Use X10, X11, X12 for sources to avoid conflict with X9 used for spilled dst.
                 // X9 is reserved for the destination when it's spilled.
-                let src1_op = self.load_operand(mir, src1, Reg::X10);
-                let src2_op = self.load_operand(mir, src2, Reg::X11);
-                let src3_op = self.load_operand(mir, src3, Reg::X12);
+                let src1_op = self.load_operand(mir, src1, Reg::X10)?;
+                let src2_op = self.load_operand(mir, src2, Reg::X11)?;
+                let src3_op = self.load_operand(mir, src3, Reg::X12)?;
                 match self.get_allocation(dst) {
                     Some(Allocation::Register(reg)) => {
                         mir.push(Aarch64Inst::Msub {
@@ -432,15 +435,15 @@ impl RegAlloc {
             }
 
             Aarch64Inst::Neg { dst, src } => {
-                self.emit_binop(mir, dst, src, |d, s| Aarch64Inst::Neg { dst: d, src: s });
+                self.emit_binop(mir, dst, src, |d, s| Aarch64Inst::Neg { dst: d, src: s })?;
             }
 
             Aarch64Inst::Negs { dst, src } => {
-                self.emit_binop(mir, dst, src, |d, s| Aarch64Inst::Negs { dst: d, src: s });
+                self.emit_binop(mir, dst, src, |d, s| Aarch64Inst::Negs { dst: d, src: s })?;
             }
 
             Aarch64Inst::Negs32 { dst, src } => {
-                self.emit_binop(mir, dst, src, |d, s| Aarch64Inst::Negs32 { dst: d, src: s });
+                self.emit_binop(mir, dst, src, |d, s| Aarch64Inst::Negs32 { dst: d, src: s })?;
             }
 
             Aarch64Inst::AndRR { dst, src1, src2 } => {
@@ -448,7 +451,7 @@ impl RegAlloc {
                     dst: d,
                     src1: s1,
                     src2: s2,
-                });
+                })?;
             }
 
             Aarch64Inst::OrrRR { dst, src1, src2 } => {
@@ -456,7 +459,7 @@ impl RegAlloc {
                     dst: d,
                     src1: s1,
                     src2: s2,
-                });
+                })?;
             }
 
             Aarch64Inst::EorRR { dst, src1, src2 } => {
@@ -464,11 +467,11 @@ impl RegAlloc {
                     dst: d,
                     src1: s1,
                     src2: s2,
-                });
+                })?;
             }
 
             Aarch64Inst::EorImm { dst, src, imm } => {
-                let src_op = self.load_operand(mir, src, Reg::X10);
+                let src_op = self.load_operand(mir, src, Reg::X10)?;
                 match self.get_allocation(dst) {
                     Some(Allocation::Register(reg)) => {
                         mir.push(Aarch64Inst::EorImm {
@@ -500,7 +503,7 @@ impl RegAlloc {
             }
 
             Aarch64Inst::MvnRR { dst, src } => {
-                self.emit_binop(mir, dst, src, |d, s| Aarch64Inst::MvnRR { dst: d, src: s });
+                self.emit_binop(mir, dst, src, |d, s| Aarch64Inst::MvnRR { dst: d, src: s })?;
             }
 
             Aarch64Inst::LslRR { dst, src1, src2 } => {
@@ -508,7 +511,7 @@ impl RegAlloc {
                     dst: d,
                     src1: s1,
                     src2: s2,
-                });
+                })?;
             }
 
             Aarch64Inst::Lsl32RR { dst, src1, src2 } => {
@@ -516,7 +519,7 @@ impl RegAlloc {
                     dst: d,
                     src1: s1,
                     src2: s2,
-                });
+                })?;
             }
 
             Aarch64Inst::LsrRR { dst, src1, src2 } => {
@@ -524,7 +527,7 @@ impl RegAlloc {
                     dst: d,
                     src1: s1,
                     src2: s2,
-                });
+                })?;
             }
 
             Aarch64Inst::Lsr32RR { dst, src1, src2 } => {
@@ -532,7 +535,7 @@ impl RegAlloc {
                     dst: d,
                     src1: s1,
                     src2: s2,
-                });
+                })?;
             }
 
             Aarch64Inst::AsrRR { dst, src1, src2 } => {
@@ -540,7 +543,7 @@ impl RegAlloc {
                     dst: d,
                     src1: s1,
                     src2: s2,
-                });
+                })?;
             }
 
             Aarch64Inst::Asr32RR { dst, src1, src2 } => {
@@ -548,12 +551,12 @@ impl RegAlloc {
                     dst: d,
                     src1: s1,
                     src2: s2,
-                });
+                })?;
             }
 
             Aarch64Inst::CmpRR { src1, src2 } => {
-                let src1_op = self.load_operand(mir, src1, Reg::X9);
-                let src2_op = self.load_operand(mir, src2, Reg::X10);
+                let src1_op = self.load_operand(mir, src1, Reg::X9)?;
+                let src2_op = self.load_operand(mir, src2, Reg::X10)?;
                 mir.push(Aarch64Inst::CmpRR {
                     src1: src1_op,
                     src2: src2_op,
@@ -561,8 +564,8 @@ impl RegAlloc {
             }
 
             Aarch64Inst::Cmp64RR { src1, src2 } => {
-                let src1_op = self.load_operand(mir, src1, Reg::X9);
-                let src2_op = self.load_operand(mir, src2, Reg::X10);
+                let src1_op = self.load_operand(mir, src1, Reg::X9)?;
+                let src2_op = self.load_operand(mir, src2, Reg::X10)?;
                 mir.push(Aarch64Inst::Cmp64RR {
                     src1: src1_op,
                     src2: src2_op,
@@ -570,17 +573,17 @@ impl RegAlloc {
             }
 
             Aarch64Inst::CmpImm { src, imm } => {
-                let src_op = self.load_operand(mir, src, Reg::X9);
+                let src_op = self.load_operand(mir, src, Reg::X9)?;
                 mir.push(Aarch64Inst::CmpImm { src: src_op, imm });
             }
 
             Aarch64Inst::Cbz { src, label } => {
-                let src_op = self.load_operand(mir, src, Reg::X9);
+                let src_op = self.load_operand(mir, src, Reg::X9)?;
                 mir.push(Aarch64Inst::Cbz { src: src_op, label });
             }
 
             Aarch64Inst::Cbnz { src, label } => {
-                let src_op = self.load_operand(mir, src, Reg::X9);
+                let src_op = self.load_operand(mir, src, Reg::X9)?;
                 mir.push(Aarch64Inst::Cbnz { src: src_op, label });
             }
 
@@ -608,8 +611,8 @@ impl RegAlloc {
             },
 
             Aarch64Inst::TstRR { src1, src2 } => {
-                let src1_op = self.load_operand(mir, src1, Reg::X9);
-                let src2_op = self.load_operand(mir, src2, Reg::X10);
+                let src1_op = self.load_operand(mir, src1, Reg::X9)?;
+                let src2_op = self.load_operand(mir, src2, Reg::X10)?;
                 mir.push(Aarch64Inst::TstRR {
                     src1: src1_op,
                     src2: src2_op,
@@ -617,28 +620,28 @@ impl RegAlloc {
             }
 
             Aarch64Inst::Sxtb { dst, src } => {
-                self.emit_binop(mir, dst, src, |d, s| Aarch64Inst::Sxtb { dst: d, src: s });
+                self.emit_binop(mir, dst, src, |d, s| Aarch64Inst::Sxtb { dst: d, src: s })?;
             }
 
             Aarch64Inst::Sxth { dst, src } => {
-                self.emit_binop(mir, dst, src, |d, s| Aarch64Inst::Sxth { dst: d, src: s });
+                self.emit_binop(mir, dst, src, |d, s| Aarch64Inst::Sxth { dst: d, src: s })?;
             }
 
             Aarch64Inst::Sxtw { dst, src } => {
-                self.emit_binop(mir, dst, src, |d, s| Aarch64Inst::Sxtw { dst: d, src: s });
+                self.emit_binop(mir, dst, src, |d, s| Aarch64Inst::Sxtw { dst: d, src: s })?;
             }
 
             Aarch64Inst::Uxtb { dst, src } => {
-                self.emit_binop(mir, dst, src, |d, s| Aarch64Inst::Uxtb { dst: d, src: s });
+                self.emit_binop(mir, dst, src, |d, s| Aarch64Inst::Uxtb { dst: d, src: s })?;
             }
 
             Aarch64Inst::Uxth { dst, src } => {
-                self.emit_binop(mir, dst, src, |d, s| Aarch64Inst::Uxth { dst: d, src: s });
+                self.emit_binop(mir, dst, src, |d, s| Aarch64Inst::Uxth { dst: d, src: s })?;
             }
 
             Aarch64Inst::StpPre { src1, src2, offset } => {
-                let src1_op = self.load_operand(mir, src1, Reg::X9);
-                let src2_op = self.load_operand(mir, src2, Reg::X10);
+                let src1_op = self.load_operand(mir, src1, Reg::X9)?;
+                let src2_op = self.load_operand(mir, src2, Reg::X10)?;
                 mir.push(Aarch64Inst::StpPre {
                     src1: src1_op,
                     src2: src2_op,
@@ -683,7 +686,7 @@ impl RegAlloc {
             Aarch64Inst::LdrIndexed { dst, base } => {
                 // Load base vreg into scratch, then emit load with the result allocation
                 let base_op = Operand::Virtual(base);
-                let base_reg = self.load_operand(mir, base_op, Reg::X9);
+                let base_reg = self.load_operand(mir, base_op, Reg::X9)?;
                 let base_phys = match base_reg {
                     Operand::Physical(r) => r,
                     _ => Reg::X9,
@@ -720,9 +723,9 @@ impl RegAlloc {
             }
 
             Aarch64Inst::StrIndexed { src, base } => {
-                let src_op = self.load_operand(mir, src, Reg::X9);
+                let src_op = self.load_operand(mir, src, Reg::X9)?;
                 let base_vreg_op = Operand::Virtual(base);
-                let base_reg = self.load_operand(mir, base_vreg_op, Reg::X10);
+                let base_reg = self.load_operand(mir, base_vreg_op, Reg::X10)?;
                 let base_phys = match base_reg {
                     Operand::Physical(r) => r,
                     _ => Reg::X10,
@@ -735,7 +738,7 @@ impl RegAlloc {
             }
 
             Aarch64Inst::LslImm { dst, src, imm } => {
-                let src_op = self.load_operand(mir, src, Reg::X10);
+                let src_op = self.load_operand(mir, src, Reg::X10)?;
 
                 match self.get_allocation(dst) {
                     Some(Allocation::Register(reg)) => {
@@ -768,7 +771,7 @@ impl RegAlloc {
             }
 
             Aarch64Inst::Lsl32Imm { dst, src, imm } => {
-                let src_op = self.load_operand(mir, src, Reg::X10);
+                let src_op = self.load_operand(mir, src, Reg::X10)?;
 
                 match self.get_allocation(dst) {
                     Some(Allocation::Register(reg)) => {
@@ -801,7 +804,7 @@ impl RegAlloc {
             }
 
             Aarch64Inst::Lsr32Imm { dst, src, imm } => {
-                let src_op = self.load_operand(mir, src, Reg::X10);
+                let src_op = self.load_operand(mir, src, Reg::X10)?;
 
                 match self.get_allocation(dst) {
                     Some(Allocation::Register(reg)) => {
@@ -834,7 +837,7 @@ impl RegAlloc {
             }
 
             Aarch64Inst::Asr32Imm { dst, src, imm } => {
-                let src_op = self.load_operand(mir, src, Reg::X10);
+                let src_op = self.load_operand(mir, src, Reg::X10)?;
 
                 match self.get_allocation(dst) {
                     Some(Allocation::Register(reg)) => {
@@ -921,6 +924,7 @@ impl RegAlloc {
             Aarch64Inst::Bl { symbol } => mir.push(Aarch64Inst::Bl { symbol }),
             Aarch64Inst::Ret => mir.push(Aarch64Inst::Ret),
         }
+        Ok(())
     }
 
     fn get_allocation(&self, operand: Operand) -> Option<Allocation> {
@@ -930,29 +934,43 @@ impl RegAlloc {
         }
     }
 
-    fn load_operand(&self, mir: &mut Aarch64Mir, operand: Operand, scratch: Reg) -> Operand {
+    fn load_operand(
+        &self,
+        mir: &mut Aarch64Mir,
+        operand: Operand,
+        scratch: Reg,
+    ) -> CompileResult<Operand> {
         match operand {
             Operand::Virtual(vreg) => match self.allocation[vreg.index() as usize] {
-                Some(Allocation::Register(reg)) => Operand::Physical(reg),
+                Some(Allocation::Register(reg)) => Ok(Operand::Physical(reg)),
                 Some(Allocation::Spill(offset)) => {
                     mir.push(Aarch64Inst::Ldr {
                         dst: Operand::Physical(scratch),
                         base: Reg::Fp,
                         offset,
                     });
-                    Operand::Physical(scratch)
+                    Ok(Operand::Physical(scratch))
                 }
-                None => panic!("vreg {} not allocated", vreg.index()),
+                None => Err(CompileError::without_span(ErrorKind::LinkError(format!(
+                    "internal codegen error: virtual register {} was not allocated",
+                    vreg.index()
+                )))),
             },
-            Operand::Physical(reg) => Operand::Physical(reg),
+            Operand::Physical(reg) => Ok(Operand::Physical(reg)),
         }
     }
 
-    fn emit_binop<F>(&self, mir: &mut Aarch64Mir, dst: Operand, src: Operand, make_inst: F)
+    fn emit_binop<F>(
+        &self,
+        mir: &mut Aarch64Mir,
+        dst: Operand,
+        src: Operand,
+        make_inst: F,
+    ) -> CompileResult<()>
     where
         F: FnOnce(Operand, Operand) -> Aarch64Inst,
     {
-        let src_op = self.load_operand(mir, src, Reg::X10);
+        let src_op = self.load_operand(mir, src, Reg::X10)?;
         match self.get_allocation(dst) {
             Some(Allocation::Register(reg)) => {
                 mir.push(make_inst(Operand::Physical(reg), src_op));
@@ -969,6 +987,7 @@ impl RegAlloc {
                 mir.push(make_inst(dst, src_op));
             }
         }
+        Ok(())
     }
 
     fn emit_ternop<F>(
@@ -978,11 +997,12 @@ impl RegAlloc {
         src1: Operand,
         src2: Operand,
         make_inst: F,
-    ) where
+    ) -> CompileResult<()>
+    where
         F: FnOnce(Operand, Operand, Operand) -> Aarch64Inst,
     {
-        let src1_op = self.load_operand(mir, src1, Reg::X10);
-        let src2_op = self.load_operand(mir, src2, Reg::X11);
+        let src1_op = self.load_operand(mir, src1, Reg::X10)?;
+        let src2_op = self.load_operand(mir, src2, Reg::X11)?;
         match self.get_allocation(dst) {
             Some(Allocation::Register(reg)) => {
                 mir.push(make_inst(Operand::Physical(reg), src1_op, src2_op));
@@ -999,6 +1019,7 @@ impl RegAlloc {
                 mir.push(make_inst(dst, src1_op, src2_op));
             }
         }
+        Ok(())
     }
 
     fn emit_binop_imm<F>(
@@ -1008,10 +1029,11 @@ impl RegAlloc {
         src: Operand,
         imm: i32,
         make_inst: F,
-    ) where
+    ) -> CompileResult<()>
+    where
         F: FnOnce(Operand, Operand, i32) -> Aarch64Inst,
     {
-        let src_op = self.load_operand(mir, src, Reg::X10);
+        let src_op = self.load_operand(mir, src, Reg::X10)?;
         match self.get_allocation(dst) {
             Some(Allocation::Register(reg)) => {
                 mir.push(make_inst(Operand::Physical(reg), src_op, imm));
@@ -1028,6 +1050,7 @@ impl RegAlloc {
                 mir.push(make_inst(dst, src_op, imm));
             }
         }
+        Ok(())
     }
 }
 
@@ -1045,11 +1068,11 @@ mod tests {
             imm: 42,
         });
 
-        let mir = RegAlloc::new(mir, 0).allocate();
+        let mir = RegAlloc::new(mir, 0).allocate().unwrap();
 
         match &mir.instructions()[0] {
             Aarch64Inst::MovImm { dst, imm } => {
-                assert_eq!(*dst, Operand::Physical(Reg::X19));
+                assert_eq!(dst, &Operand::Physical(Reg::X19));
                 assert_eq!(*imm, 42);
             }
             _ => panic!("expected MovImm"),
@@ -1065,11 +1088,11 @@ mod tests {
             imm: 60,
         });
 
-        let mir = RegAlloc::new(mir, 0).allocate();
+        let mir = RegAlloc::new(mir, 0).allocate().unwrap();
 
         match &mir.instructions()[0] {
             Aarch64Inst::MovImm { dst, imm } => {
-                assert_eq!(*dst, Operand::Physical(Reg::X0));
+                assert_eq!(dst, &Operand::Physical(Reg::X0));
                 assert_eq!(*imm, 60);
             }
             _ => panic!("expected MovImm"),
@@ -1111,7 +1134,7 @@ mod tests {
         }
 
         // Allocate - this should succeed without panicking
-        let result = RegAlloc::new(mir, 0).allocate();
+        let result = RegAlloc::new(mir, 0).allocate().unwrap();
 
         // Verify the Msub instruction was generated
         let has_msub = result
@@ -1146,7 +1169,7 @@ mod tests {
             src2: Operand::Virtual(v1),
         });
 
-        let mir = RegAlloc::new(mir, 0).allocate();
+        let mir = RegAlloc::new(mir, 0).allocate().unwrap();
 
         // Verify all instructions have physical registers
         for inst in mir.instructions() {
@@ -1188,7 +1211,7 @@ mod tests {
             });
         }
 
-        let (mir, num_spills, _) = RegAlloc::new(mir, 0).allocate_with_spills();
+        let (mir, num_spills, _) = RegAlloc::new(mir, 0).allocate_with_spills().unwrap();
 
         // With 15 vregs and 10 allocatable registers, we should have spills
         assert!(
