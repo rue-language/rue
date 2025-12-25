@@ -807,9 +807,12 @@ impl<'a> CfgLower<'a> {
                 });
 
                 // Check if shift amount is a constant - use immediate form if so
+                // Mask shift amount to match x86-64 hardware semantics:
+                // 63 (0x3F) for 64-bit shifts, 31 (0x1F) for 32-bit shifts
                 let rhs_inst = &self.cfg.get_inst(*rhs).data;
                 if let CfgInstData::Const(shift_amount) = rhs_inst {
-                    let imm = *shift_amount as u8;
+                    let mask = if ty.is_64_bit() { 0x3F } else { 0x1F };
+                    let imm = (*shift_amount & mask) as u8;
                     // Use 64-bit shift for i64/u64, 32-bit shift for smaller types
                     if ty.is_64_bit() {
                         self.mir.push(X86Inst::ShlRI {
@@ -859,12 +862,12 @@ impl<'a> CfgLower<'a> {
                 });
 
                 // Check if shift amount is a constant - use immediate form if so.
-                // Note: x86 shift instructions mask the shift amount (by 31 for 32-bit,
-                // 63 for 64-bit), so we don't need to validate the range here - the
-                // hardware handles out-of-range shifts correctly.
+                // Mask shift amount to match x86-64 hardware semantics:
+                // 63 (0x3F) for 64-bit shifts, 31 (0x1F) for 32-bit shifts
                 let rhs_inst = &self.cfg.get_inst(*rhs).data;
                 if let CfgInstData::Const(shift_amount) = rhs_inst {
-                    let imm = *shift_amount as u8;
+                    let mask = if ty.is_64_bit() { 0x3F } else { 0x1F };
+                    let imm = (*shift_amount & mask) as u8;
                     // Use arithmetic shift (SAR) for signed types, logical shift (SHR) for unsigned
                     // Use 64-bit shift for i64/u64, 32-bit shift for smaller types
                     if ty.is_64_bit() && ty.is_signed() {
