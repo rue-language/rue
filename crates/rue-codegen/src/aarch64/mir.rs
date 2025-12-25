@@ -4,6 +4,26 @@
 //! - Maps closely to actual AArch64 instructions
 //! - Uses virtual registers (unlimited) that are later allocated to physical registers
 //! - Can be emitted to machine code or assembly text
+//!
+//! # Label Namespace Separation
+//!
+//! During lowering, we need to generate labels for two distinct purposes:
+//!
+//! 1. **Block labels** - Each CFG basic block gets a label for control flow
+//!    (jumps, branches, etc.). These are derived deterministically from block IDs.
+//!
+//! 2. **Inline labels** - Generated during instruction lowering for things like
+//!    overflow checks, bounds checks, division-by-zero checks, and conditional
+//!    branches within a single CFG instruction.
+//!
+//! To prevent collisions, we partition the `u32` label ID space:
+//!
+//! - **Inline labels**: IDs `0` to `u32::MAX / 2 - 1` (allocated via [`Aarch64Mir::alloc_label`])
+//! - **Block labels**: IDs `u32::MAX / 2` to `u32::MAX` (computed via [`Aarch64Mir::block_label`])
+//!
+//! This gives each namespace ~2 billion IDs, which is more than sufficient for
+//! any realistic function. The separation is handled automatically by the
+//! respective methods.
 
 use std::fmt;
 
@@ -865,7 +885,10 @@ pub struct Aarch64Mir {
     instructions: Vec<Aarch64Inst>,
     /// The next virtual register index.
     next_vreg: u32,
-    /// The next label index.
+    /// Next inline label ID for generating unique labels.
+    ///
+    /// Inline labels (for overflow checks, bounds checks, etc.) use IDs from
+    /// the lower half of the `u32` space. See module docs for namespace details.
     next_label: u32,
 }
 
@@ -886,20 +909,28 @@ impl Aarch64Mir {
         vreg
     }
 
-    /// Allocate a new label.
+    /// Allocate a new inline label ID.
+    ///
+    /// These labels are used for control flow within instruction lowering
+    /// (overflow checks, bounds checks, etc.). IDs are allocated starting
+    /// from 0 and incrementing, staying within the lower half of the ID space.
+    ///
+    /// See the module documentation for details on label namespace separation.
     pub fn alloc_label(&mut self) -> LabelId {
         let label = LabelId::new(self.next_label);
         self.next_label += 1;
         label
     }
 
-    /// Get the label for a block.
+    /// Get the label for a CFG basic block.
     ///
-    /// Block IDs are mapped to label IDs with a simple offset to avoid
-    /// collisions with other allocated labels. Block labels use IDs starting
-    /// at u32::MAX / 2.
+    /// Block labels use IDs in the upper half of the `u32` space (starting at
+    /// `u32::MAX / 2`) to avoid collisions with inline labels allocated by
+    /// [`Self::alloc_label`]. The mapping is deterministic: `block_id` maps to
+    /// `u32::MAX / 2 + block_id`.
+    ///
+    /// See the module documentation for details on label namespace separation.
     pub fn block_label(block_id: u32) -> LabelId {
-        // Use high label IDs for blocks to avoid collision with alloc_label()
         LabelId::new(u32::MAX / 2 + block_id)
     }
 

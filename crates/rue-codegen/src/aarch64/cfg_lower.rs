@@ -280,7 +280,10 @@ impl<'a> CfgLower<'a> {
         self.mir.push(Aarch64Inst::Label { id: ok_label });
     }
 
-    /// Get the label for a block.
+    /// Get the label for a CFG basic block.
+    ///
+    /// Delegates to [`Aarch64Mir::block_label`]. See the mir module docs for
+    /// details on label namespace separation.
     fn block_label(&self, block_id: BlockId) -> LabelId {
         Aarch64Mir::block_label(block_id.as_u32())
     }
