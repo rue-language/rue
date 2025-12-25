@@ -279,3 +279,131 @@ fn main() -> i32 {
 }
 """
 exit_code = 1
+
+# =============================================================================
+# Return Moves
+# =============================================================================
+
+[[case]]
+name = "struct_returned_from_function"
+spec = ["3.8:7"]
+description = "Returning a struct from a function transfers ownership to the caller"
+source = """
+struct Point { x: i32, y: i32 }
+fn make_point() -> Point { Point { x: 1, y: 2 } }
+fn main() -> i32 {
+    let p = make_point();
+    p.x + p.y
+}
+"""
+exit_code = 3
+
+[[case]]
+name = "struct_returned_then_moved"
+spec = ["3.8:7"]
+description = "Struct returned from function can be moved like any other owned value"
+source = """
+struct Data { value: i32 }
+fn create() -> Data { Data { value: 42 } }
+fn consume(d: Data) -> i32 { d.value }
+fn main() -> i32 {
+    let d = create();
+    consume(d)
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "struct_returned_use_after_move_error"
+spec = ["3.8:5", "3.8:7"]
+description = "Struct returned from function follows normal move rules"
+source = """
+struct Data { value: i32 }
+fn create() -> Data { Data { value: 42 } }
+fn main() -> i32 {
+    let d = create();
+    let e = d;
+    d.value
+}
+"""
+compile_fail = true
+error_contains = "use of moved value"
+
+[[case]]
+name = "return_moves_local_variable"
+spec = ["3.8:7"]
+description = "Returning a local variable moves it out of the function"
+source = """
+struct Point { x: i32, y: i32 }
+fn make_point() -> Point {
+    let p = Point { x: 10, y: 20 };
+    p
+}
+fn main() -> i32 {
+    let result = make_point();
+    result.x + result.y
+}
+"""
+exit_code = 30
+
+[[case]]
+name = "return_expression_creates_value"
+spec = ["3.8:7"]
+description = "Struct literal in return position transfers ownership directly"
+source = """
+struct Pair { a: i32, b: i32 }
+fn make_pair(x: i32, y: i32) -> Pair {
+    Pair { a: x, b: y }
+}
+fn main() -> i32 {
+    let p = make_pair(3, 4);
+    p.a * p.b
+}
+"""
+exit_code = 12
+
+[[case]]
+name = "chained_returns"
+spec = ["3.8:7"]
+description = "Ownership can transfer through multiple function returns"
+source = """
+struct Value { n: i32 }
+fn inner() -> Value { Value { n: 5 } }
+fn outer() -> Value { inner() }
+fn main() -> i32 {
+    let v = outer();
+    v.n
+}
+"""
+exit_code = 5
+
+[[case]]
+name = "return_parameter"
+spec = ["3.8:7", "3.8:11"]
+description = "Function can return its parameter, transferring ownership back"
+source = """
+struct Data { value: i32 }
+fn identity(d: Data) -> Data { d }
+fn main() -> i32 {
+    let d = Data { value: 100 };
+    let e = identity(d);
+    e.value
+}
+"""
+exit_code = 100
+
+[[case]]
+name = "return_parameter_original_invalid"
+spec = ["3.8:5", "3.8:7", "3.8:11"]
+description = "After passing to function that returns it, original binding is still moved"
+source = """
+struct Data { value: i32 }
+fn identity(d: Data) -> Data { d }
+fn main() -> i32 {
+    let d = Data { value: 100 };
+    let _e = identity(d);
+    d.value
+}
+"""
+compile_fail = true
+error_contains = "use of moved value"
