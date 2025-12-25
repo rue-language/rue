@@ -276,7 +276,7 @@ impl Linker {
                 // Align
                 let align = section.align.max(1);
                 let padding = align_up(merged_code.len() as u64, align) - merged_code.len() as u64;
-                merged_code.extend(std::iter::repeat(0xCC).take(padding as usize)); // INT3 padding
+                merged_code.resize(merged_code.len() + padding as usize, 0xCC); // INT3 padding
 
                 let offset = merged_code.len() as u64;
                 section_offsets.insert((obj_idx, sec_idx), offset);
@@ -333,7 +333,7 @@ impl Linker {
                 let align = section.align.max(1);
                 let padding =
                     align_up(merged_rodata.len() as u64, align) - merged_rodata.len() as u64;
-                merged_rodata.extend(std::iter::repeat(0).take(padding as usize));
+                merged_rodata.resize(merged_rodata.len() + padding as usize, 0);
 
                 let offset = merged_rodata.len() as u64;
                 section_offsets.insert((obj_idx, sec_idx), offset);
