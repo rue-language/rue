@@ -291,7 +291,7 @@ exit_code = 10
 name = "array_param_access_index"
 spec = ["7.1:22", "7.1:23"]
 source = """
-fn get_element(arr: [i32; 4], idx: i32) -> i32 {
+fn get_element(arr: [i32; 4], idx: u64) -> i32 {
     arr[idx]
 }
 

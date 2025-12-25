@@ -31,7 +31,7 @@ For variable indices, bounds checking is performed at runtime before the access.
 ```rue
 fn main() -> i32 {
     let arr: [i32; 3] = [1, 2, 3];
-    let idx = 10;
+    let idx: u64 = 10;
     arr[idx]  // Runtime error: index out of bounds
 }
 ```
@@ -53,7 +53,3 @@ fn main() -> i32 {
     arr[1 + 5]  // Compile-time error: index out of bounds
 }
 ```
-
-{{ rule(id="8.2:9", cat="normative") }}
-
-Negative indices, when used with signed integer types, result in out-of-bounds errors because they represent large unsigned values when converted.

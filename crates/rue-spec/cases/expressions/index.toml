@@ -31,16 +31,16 @@ fn main() -> i32 {
 exit_code = 42
 
 # =============================================================================
-# Index Type Must Be Integer
+# Index Type Must Be Unsigned Integer
 # =============================================================================
 
 [[case]]
-name = "index_with_variable"
+name = "index_with_unsigned_variable"
 spec = ["4.11:4"]
 source = """
 fn main() -> i32 {
     let arr: [i32; 3] = [10, 20, 30];
-    let i = 1;
+    let i: u64 = 1;
     arr[i]
 }
 """
@@ -56,6 +56,19 @@ fn main() -> i32 {
 }
 """
 compile_fail = true
+
+[[case]]
+name = "index_type_signed_error"
+spec = ["4.11:4"]
+source = """
+fn main() -> i32 {
+    let arr: [i32; 3] = [10, 20, 30];
+    let i: i32 = 1;
+    arr[i]
+}
+"""
+compile_fail = true
+error_contains = "unsigned"
 
 # =============================================================================
 # Result Type is Element Type
@@ -98,7 +111,7 @@ spec = ["4.11:8", "4.11:9"]
 source = """
 fn main() -> i32 {
     let arr: [i32; 3] = [10, 20, 30];
-    let i = 5;
+    let i: u64 = 5;
     arr[i]
 }
 """

@@ -181,6 +181,11 @@ pub enum Constraint {
     ///
     /// Generated for bitwise NOT which works on any integer type.
     IsInteger(InferType, Span),
+
+    /// Type must be an unsigned integer: τ ∈ {u8, u16, u32, u64}.
+    ///
+    /// Generated for array indexing which requires non-negative indices.
+    IsUnsigned(InferType, Span),
 }
 
 impl Constraint {
@@ -199,12 +204,18 @@ impl Constraint {
         Constraint::IsInteger(ty, span)
     }
 
+    /// Create a "must be unsigned" constraint.
+    pub fn is_unsigned(ty: InferType, span: Span) -> Self {
+        Constraint::IsUnsigned(ty, span)
+    }
+
     /// Get the span for this constraint (for error reporting).
     pub fn span(&self) -> Span {
         match self {
             Constraint::Equal(_, _, span)
             | Constraint::IsSigned(_, span)
-            | Constraint::IsInteger(_, span) => *span,
+            | Constraint::IsInteger(_, span)
+            | Constraint::IsUnsigned(_, span) => *span,
         }
     }
 }
@@ -353,6 +364,9 @@ pub enum UnifyResult {
     /// Type must be an integer but is not.
     NotInteger { ty: Type },
 
+    /// Type must be unsigned but is signed.
+    NotUnsigned { ty: Type },
+
     /// Array lengths don't match.
     ArrayLengthMismatch { expected: u64, found: u64 },
 }
@@ -399,6 +413,9 @@ impl UnificationError {
             }
             UnifyResult::NotInteger { ty } => {
                 format!("expected integer type, found {ty}")
+            }
+            UnifyResult::NotUnsigned { ty } => {
+                format!("array index must be unsigned integer type, found {ty}")
             }
             UnifyResult::ArrayLengthMismatch { expected, found } => {
                 format!("array length mismatch: expected {expected}, found {found}")
@@ -609,6 +626,33 @@ impl Unifier {
         }
     }
 
+    /// Check that a type is an unsigned integer.
+    ///
+    /// Returns an error if the type is a concrete signed integer or non-integer type.
+    /// For type variables, the check is deferred.
+    /// For IntLiteral, we allow it and it will be bound to u64 (the default unsigned type).
+    pub fn check_unsigned(&self, ty: &InferType) -> UnifyResult {
+        let ty = self.substitution.apply(ty);
+        match &ty {
+            InferType::Concrete(concrete) => {
+                if concrete.is_unsigned() || concrete.is_error() || concrete.is_never() {
+                    UnifyResult::Ok
+                } else if concrete.is_signed() {
+                    UnifyResult::NotUnsigned { ty: *concrete }
+                } else {
+                    // Non-integer type - report as not unsigned
+                    UnifyResult::NotUnsigned { ty: *concrete }
+                }
+            }
+            // Type variables - defer check (will be validated in sema)
+            InferType::Var(_) => UnifyResult::Ok,
+            // IntLiteral can be used as unsigned - it will be inferred to u64
+            InferType::IntLiteral => UnifyResult::Ok,
+            // Arrays are not unsigned integers
+            InferType::Array { .. } => UnifyResult::NotUnsigned { ty: Type::Error },
+        }
+    }
+
     /// Solve a list of constraints, collecting any errors.
     ///
     /// This is the main entry point for Algorithm W. It processes each constraint
@@ -640,6 +684,30 @@ impl Unifier {
                 }
                 Constraint::IsInteger(ty, span) => {
                     let result = self.check_integer(ty);
+                    (result, *span)
+                }
+                Constraint::IsUnsigned(ty, span) => {
+                    // Special handling: if the type is an unbound variable or IntLiteral,
+                    // bind it to u64. This handles integer literals used as array indices.
+                    let applied = self.substitution.apply(ty);
+                    match &applied {
+                        InferType::IntLiteral => {
+                            // IntLiteral bound through a chain - bind the variable to u64
+                            if let InferType::Var(var) = ty {
+                                self.substitution
+                                    .insert(*var, InferType::Concrete(Type::U64));
+                            }
+                        }
+                        InferType::Var(var) => {
+                            // Unbound variable - bind it to u64
+                            // This happens for integer literal variables that haven't
+                            // been constrained yet.
+                            self.substitution
+                                .insert(*var, InferType::Concrete(Type::U64));
+                        }
+                        _ => {}
+                    }
+                    let result = self.check_unsigned(ty);
                     (result, *span)
                 }
             };
@@ -1441,8 +1509,8 @@ impl<'a> ConstraintGenerator<'a> {
             InstData::IndexGet { base, index } => {
                 let base_info = self.generate(*base, ctx);
                 let index_info = self.generate(*index, ctx);
-                // Index must be an integer type
-                self.add_constraint(Constraint::is_integer(index_info.ty, index_info.span));
+                // Index must be an unsigned integer type
+                self.add_constraint(Constraint::is_unsigned(index_info.ty, index_info.span));
 
                 // Extract element type from array type.
                 // If base is InferType::Array, we can get the element type directly.
@@ -1462,8 +1530,8 @@ impl<'a> ConstraintGenerator<'a> {
             InstData::IndexSet { base, index, value } => {
                 let base_info = self.generate(*base, ctx);
                 let index_info = self.generate(*index, ctx);
-                // Index must be an integer type
-                self.add_constraint(Constraint::is_integer(index_info.ty, index_info.span));
+                // Index must be an unsigned integer type
+                self.add_constraint(Constraint::is_unsigned(index_info.ty, index_info.span));
 
                 let value_info = self.generate(*value, ctx);
 
@@ -2348,11 +2416,11 @@ mod tests {
 
         // Result is a type variable (element type unknown)
         assert!(info.ty.is_var());
-        // Should generate 1 constraint: index must be integer
+        // Should generate 1 constraint: index must be unsigned
         assert_eq!(cgen.constraints().len(), 1);
         match &cgen.constraints()[0] {
-            Constraint::IsInteger(_, _) => {}
-            _ => panic!("Expected IsInteger constraint for index"),
+            Constraint::IsUnsigned(_, _) => {}
+            _ => panic!("Expected IsUnsigned constraint for index"),
         }
     }
 
@@ -2389,11 +2457,11 @@ mod tests {
 
         // Index assignment produces Unit
         assert_eq!(info.ty, InferType::Concrete(Type::Unit));
-        // Should generate 1 constraint: index must be integer
+        // Should generate 1 constraint: index must be unsigned
         assert_eq!(cgen.constraints().len(), 1);
         match &cgen.constraints()[0] {
-            Constraint::IsInteger(_, _) => {}
-            _ => panic!("Expected IsInteger constraint for index"),
+            Constraint::IsUnsigned(_, _) => {}
+            _ => panic!("Expected IsUnsigned constraint for index"),
         }
     }
 
@@ -3053,6 +3121,45 @@ mod tests {
             errors[0].kind,
             UnifyResult::NotInteger { ty: Type::Bool }
         ));
+    }
+
+    #[test]
+    fn test_solve_constraints_is_unsigned_binds_literal_to_u64() {
+        let mut unifier = Unifier::new();
+        let v0 = TypeVarId::new(0);
+        // Simulate what happens for an integer literal used as an array index
+        // when the variable is bound to IntLiteral
+        unifier.substitution.insert(v0, InferType::IntLiteral);
+        let constraints = vec![Constraint::is_unsigned(InferType::Var(v0), Span::new(0, 5))];
+        let errors = unifier.solve_constraints(&constraints);
+        assert!(errors.is_empty(), "IsUnsigned on IntLiteral should succeed");
+        // The literal should now be bound to U64
+        assert_eq!(
+            unifier.resolve(&InferType::Var(v0)),
+            Some(Type::U64),
+            "IntLiteral should be bound to U64 after IsUnsigned constraint"
+        );
+    }
+
+    #[test]
+    fn test_solve_constraints_is_unsigned_binds_unbound_var_to_u64() {
+        let mut unifier = Unifier::new();
+        let v0 = TypeVarId::new(0);
+        // Simulate what happens for an integer literal used as an array index
+        // when the variable is still unbound (this is the real scenario)
+        // v0 is NOT bound to anything initially
+        let constraints = vec![Constraint::is_unsigned(InferType::Var(v0), Span::new(0, 5))];
+        let errors = unifier.solve_constraints(&constraints);
+        assert!(
+            errors.is_empty(),
+            "IsUnsigned on unbound var should succeed"
+        );
+        // The unbound variable should now be bound to U64
+        assert_eq!(
+            unifier.resolve(&InferType::Var(v0)),
+            Some(Type::U64),
+            "Unbound var should be bound to U64 after IsUnsigned constraint"
+        );
     }
 
     #[test]

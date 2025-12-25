@@ -637,6 +637,10 @@ impl<'a> Sema<'a> {
                     expected: "integer type".to_string(),
                     found: ty.name().to_string(),
                 },
+                UnifyResult::NotUnsigned { ty } => ErrorKind::TypeMismatch {
+                    expected: "unsigned integer type".to_string(),
+                    found: ty.name().to_string(),
+                },
                 UnifyResult::ArrayLengthMismatch { expected, found } => {
                     ErrorKind::ArrayLengthMismatch {
                         expected: *expected,
@@ -2148,12 +2152,12 @@ impl<'a> Sema<'a> {
                     }
                 };
 
-                // Index must be an integer (we'll use u64 for indexing)
+                // Index must be an unsigned integer
                 let index_result = self.analyze_inst(air, *index, ctx)?;
-                if !index_result.ty.is_integer() && !index_result.ty.is_error() {
+                if !index_result.ty.is_unsigned() && !index_result.ty.is_error() {
                     return Err(CompileError::new(
                         ErrorKind::TypeMismatch {
-                            expected: "integer".to_string(),
+                            expected: "unsigned integer type".to_string(),
                             found: index_result.ty.name().to_string(),
                         },
                         self.rir.get(*index).span,
@@ -2231,12 +2235,12 @@ impl<'a> Sema<'a> {
                     }
                 };
 
-                // Index must be an integer
+                // Index must be an unsigned integer
                 let index_result = self.analyze_inst(air, *index, ctx)?;
-                if !index_result.ty.is_integer() && !index_result.ty.is_error() {
+                if !index_result.ty.is_unsigned() && !index_result.ty.is_error() {
                     return Err(CompileError::new(
                         ErrorKind::TypeMismatch {
-                            expected: "integer".to_string(),
+                            expected: "unsigned integer type".to_string(),
                             found: index_result.ty.name().to_string(),
                         },
                         self.rir.get(*index).span,

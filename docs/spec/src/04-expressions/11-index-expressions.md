@@ -22,7 +22,7 @@ The expression before the brackets must have an array type `[T; N]`.
 
 {{ rule(id="4.11:4", cat="normative") }}
 
-The index expression must have an integer type.
+The index expression must have an unsigned integer type (`u8`, `u16`, `u32`, or `u64`).
 
 {{ rule(id="4.11:5", cat="normative") }}
 
