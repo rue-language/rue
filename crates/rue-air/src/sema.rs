@@ -1996,7 +1996,12 @@ impl<'a> Sema<'a> {
 
             InstData::FnDecl { .. } => {
                 // Function declarations are handled at the top level
-                unreachable!("FnDecl should not appear in expression context")
+                Err(CompileError::new(
+                    ErrorKind::InternalError(
+                        "FnDecl should not appear in expression context".to_string(),
+                    ),
+                    inst.span,
+                ))
             }
 
             InstData::Ret(inner) => {
@@ -2176,7 +2181,12 @@ impl<'a> Sema<'a> {
 
             InstData::StructDecl { .. } => {
                 // Struct declarations are handled at the top level during collect_struct_definitions
-                unreachable!("StructDecl should not appear in expression context")
+                Err(CompileError::new(
+                    ErrorKind::InternalError(
+                        "StructDecl should not appear in expression context".to_string(),
+                    ),
+                    inst.span,
+                ))
             }
 
             InstData::StructInit {
