@@ -706,36 +706,26 @@ impl<'a> Emitter<'a> {
                 let rd = dst.as_physical();
                 let string_id = *string_id;
 
-                // Use .rodata.strN symbol (same as x86-64) with @PAGE/@PAGEOFF suffix
-                // to distinguish between the ADRP and ADD relocations.
-                // For Mach-O (macOS): clang understands @PAGE/@PAGEOFF
-                // For ELF (Linux): the compiler maps these to R_AARCH64_ADR_PREL_PG_HI21/R_AARCH64_ADD_ABS_LO12_NC
-
-                // ADRP dst, <symbol>@PAGE
+                // ADRP dst, <symbol>
                 // This loads the 4KB-aligned page address of the symbol
                 let offset = self.code.len();
                 let adrp = 0x90000000_u32 | rd.encoding() as u32;
                 self.emit_u32(adrp);
 
-                // Record relocation for ADRP
-                self.relocations.push(EmittedRelocation {
-                    offset: offset as u64,
-                    symbol: format!(".rodata.str{}@PAGE", string_id),
-                    addend: 0,
-                });
+                // Record relocation for ADRP using the helper
+                let symbol = format!(".rodata.str{}", string_id);
+                self.relocations
+                    .push(EmittedRelocation::aarch64_adrp(offset as u64, &symbol));
 
-                // ADD dst, dst, <symbol>@PAGEOFF
+                // ADD dst, dst, <symbol>
                 // This adds the offset within the page
                 let offset = self.code.len();
                 let add = 0x91000000_u32 | (rd.encoding() as u32) << 5 | rd.encoding() as u32;
                 self.emit_u32(add);
 
-                // Record relocation for ADD
-                self.relocations.push(EmittedRelocation {
-                    offset: offset as u64,
-                    symbol: format!(".rodata.str{}@PAGEOFF", string_id),
-                    addend: 0,
-                });
+                // Record relocation for ADD using the helper
+                self.relocations
+                    .push(EmittedRelocation::aarch64_add_lo12(offset as u64, &symbol));
             }
 
             Aarch64Inst::StringConstLen { dst, string_id } => {
@@ -1409,11 +1399,9 @@ impl<'a> Emitter<'a> {
         let offset = self.code.len();
         self.emit_u32(OPCODE_BL);
 
-        self.relocations.push(EmittedRelocation {
-            offset: offset as u64,
-            symbol: symbol.to_string(),
-            addend: 0,
-        });
+        // Record relocation using the helper
+        self.relocations
+            .push(EmittedRelocation::aarch64_call(offset as u64, symbol));
     }
 
     fn emit_ret(&mut self) {
@@ -2273,6 +2261,8 @@ mod tests {
 
     #[test]
     fn test_bl() {
+        use crate::RelocationKind;
+
         let mut mir = Aarch64Mir::new();
         mir.push(Aarch64Inst::Bl {
             symbol: "test_func".to_string(),
@@ -2287,6 +2277,12 @@ mod tests {
         // Should have a relocation
         assert_eq!(relocs.len(), 1, "Should have one relocation");
         assert_eq!(relocs[0].symbol, "test_func", "Symbol should match");
+        assert_eq!(
+            relocs[0].kind,
+            RelocationKind::Aarch64Call26,
+            "Should be Call26 relocation"
+        );
+        assert_eq!(relocs[0].addend, 0, "Addend should be 0");
     }
 
     // --- Stack operations ---

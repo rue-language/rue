@@ -922,13 +922,9 @@ impl<'a> Emitter<'a> {
         // Placeholder for rel32 (will be filled by linker)
         self.code.extend_from_slice(&[0x00, 0x00, 0x00, 0x00]);
 
-        // Record relocation: PC-relative, addend = -4 because the displacement
-        // is calculated from the end of the instruction (after the 4-byte displacement)
-        self.relocations.push(EmittedRelocation {
-            offset: reloc_offset,
-            symbol: symbol.to_string(),
-            addend: -4,
-        });
+        // Record relocation using the helper
+        self.relocations
+            .push(EmittedRelocation::x86_call(reloc_offset, symbol));
     }
 
     /// Emit LEA dst, [rip + offset] for loading string constant address.
@@ -956,14 +952,10 @@ impl<'a> Emitter<'a> {
         // Placeholder for disp32 (will be filled by linker)
         self.code.extend_from_slice(&[0x00, 0x00, 0x00, 0x00]);
 
-        // Record relocation to string symbol
-        // The symbol will be .rodata.str{string_id}
-        // Addend = -4 because RIP points to the next instruction
-        self.relocations.push(EmittedRelocation {
-            offset: reloc_offset,
-            symbol: format!(".rodata.str{}", string_id),
-            addend: -4,
-        });
+        // Record relocation to string symbol using the helper
+        let symbol = format!(".rodata.str{}", string_id);
+        self.relocations
+            .push(EmittedRelocation::x86_pc32(reloc_offset, symbol));
     }
 
     /// Emit `add r32, r32`.
@@ -1935,6 +1927,8 @@ mod tests {
 
     #[test]
     fn test_call_rel() {
+        use crate::RelocationKind;
+
         let mut mir = X86Mir::new();
         mir.push(X86Inst::CallRel {
             symbol: "__rue_exit".into(),
@@ -1949,6 +1943,7 @@ mod tests {
         assert_eq!(relocs.len(), 1);
         assert_eq!(relocs[0].offset, 1); // After the opcode
         assert_eq!(relocs[0].symbol, "__rue_exit");
+        assert_eq!(relocs[0].kind, RelocationKind::X86Plt32);
         assert_eq!(relocs[0].addend, -4);
     }
 

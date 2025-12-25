@@ -125,7 +125,7 @@ pub fn validate_runtime() -> Result<(), String> {
 // Re-export commonly used types
 pub use rue_air::{Air, AnalyzedFunction, ArrayTypeDef, Sema, SemaOutput, StructDef, Type};
 pub use rue_cfg::{Cfg, CfgBuilder, CfgOutput};
-pub use rue_codegen::{X86Mir, aarch64::Aarch64Mir};
+pub use rue_codegen::{RelocationKind, X86Mir, aarch64::Aarch64Mir};
 pub use rue_error::{
     CompileError, CompileResult, CompileWarning, ErrorKind, PreviewFeature, PreviewFeatures,
     WarningKind,
@@ -327,15 +327,13 @@ fn compile_x86_64(state: &CompileState, options: &CompileOptions) -> CompileResu
             .code(machine_code.code)
             .strings(machine_code.strings);
 
-        // Add relocations from codegen (convert emitted relocations to linker relocations).
-        // String constant references (.rodata.strN) use PC32 relocation type.
-        // Function calls use PLT32 relocation type (treated same as PC32 for static linking).
+        // Add relocations from codegen (convert RelocationKind to RelocationType).
         for reloc in machine_code.relocations {
-            // String constants use .rodata.strN symbols and PC32 relocations
-            let rel_type = if reloc.symbol.starts_with(".rodata.str") {
-                RelocationType::Pc32
-            } else {
-                RelocationType::Plt32
+            let rel_type = match reloc.kind {
+                RelocationKind::X86Pc32 => RelocationType::Pc32,
+                RelocationKind::X86Plt32 => RelocationType::Plt32,
+                // These shouldn't appear for x86_64, but handle gracefully
+                _ => RelocationType::Pc32,
             };
 
             obj_builder = obj_builder.relocation(CodeRelocation {
@@ -471,22 +469,19 @@ fn compile_aarch64(state: &CompileState, options: &CompileOptions) -> CompileRes
             .code(machine_code.code)
             .strings(machine_code.strings);
 
+        // Add relocations from codegen (convert RelocationKind to RelocationType).
         for reloc in machine_code.relocations {
-            // Determine relocation type based on symbol suffix
-            let (symbol, rel_type) = if let Some(base) = reloc.symbol.strip_suffix("@PAGE") {
-                // ADRP instruction - loads page-aligned address
-                (base.to_string(), RelocationType::AdrpPage21)
-            } else if let Some(base) = reloc.symbol.strip_suffix("@PAGEOFF") {
-                // ADD instruction - adds page offset
-                (base.to_string(), RelocationType::AddLo12)
-            } else {
-                // Function call
-                (reloc.symbol, RelocationType::Call26)
+            let rel_type = match reloc.kind {
+                RelocationKind::Aarch64AdrpPage21 => RelocationType::AdrpPage21,
+                RelocationKind::Aarch64AddLo12 => RelocationType::AddLo12,
+                RelocationKind::Aarch64Call26 => RelocationType::Call26,
+                // These shouldn't appear for AArch64, but handle gracefully
+                _ => RelocationType::Call26,
             };
 
             obj_builder = obj_builder.relocation(CodeRelocation {
                 offset: reloc.offset,
-                symbol,
+                symbol: reloc.symbol,
                 rel_type,
                 addend: reloc.addend,
             });
