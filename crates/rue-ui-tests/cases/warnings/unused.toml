@@ -122,6 +122,64 @@ exit_code = 0
 warning_contains = ["unused variable"]
 expected_warning_count = 2
 
+[[case]]
+name = "deeply_nested_shadowing_all_unused"
+source = """
+fn main() -> i32 {
+    let x = 1;
+    {
+        let x = 2;
+        {
+            let x = 3;
+            {
+                let x = 4;
+            };
+        };
+    };
+    0
+}
+"""
+exit_code = 0
+warning_contains = ["unused variable", "'x'"]
+expected_warning_count = 4
+
+[[case]]
+name = "deeply_nested_shadowing_innermost_used"
+source = """
+fn main() -> i32 {
+    let x = 1;
+    {
+        let x = 2;
+        {
+            let x = 3;
+            x
+        }
+    }
+}
+"""
+exit_code = 3
+# When innermost is used as the return value, shadowed outer variables
+# are not warned about (consistent with used_shadowed_variable_no_warning)
+no_warnings = true
+
+[[case]]
+name = "deeply_nested_shadowing_outermost_used"
+source = """
+fn main() -> i32 {
+    let x = 1;
+    {
+        let x = 2;
+        {
+            let x = 3;
+        };
+    };
+    x
+}
+"""
+exit_code = 1
+warning_contains = ["unused variable", "'x'"]
+expected_warning_count = 2
+
 # =============================================================================
 # Unused Functions
 # =============================================================================
