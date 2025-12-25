@@ -339,3 +339,73 @@ cfg foo (return_type: i32) {
 
 }
 """
+
+# =============================================================================
+# Code Generation Tests
+# =============================================================================
+
+# Tests for spec paragraphs 3.9:18, 3.9:19, 3.9:20
+
+[[case]]
+name = "codegen_nontrivial_drop_call"
+spec = ["3.9:18"]
+preview = "destructors"
+description = "Non-trivially droppable types generate destructor calls"
+skip = true
+source = """
+// Placeholder: will test with mutable String when available
+// Expected behavior: drop instruction generates call to __rue_drop_String
+fn main() -> i32 { 0 }
+"""
+exit_code = 0
+
+[[case]]
+name = "codegen_trivial_no_drop"
+spec = ["3.9:19", "3.9:20"]
+preview = "destructors"
+description = "Trivially droppable types do not generate drop instructions in CFG"
+source = """
+fn main() -> i32 {
+    let x: i32 = 42;
+    let y: bool = true;
+    let z = 10;
+    x + z
+}
+"""
+expected_cfg = """
+cfg main (return_type: i32) {
+  bb0:
+    v0 : () = storage_live $0
+    v1 : i32 = const 42
+    v2 : () = alloc $0 = v1
+    v3 : () = storage_live $1
+    v4 : bool = const true
+    v5 : () = alloc $1 = v4
+    v6 : () = storage_live $2
+    v7 : i32 = const 10
+    v8 : () = alloc $2 = v7
+    v9 : i32 = load $0
+    v10 : i32 = load $2
+    v11 : i32 = add v9, v10
+    v12 : () = storage_dead $2
+    v13 : () = storage_dead $1
+    v14 : () = storage_dead $0
+    return v11
+
+}
+"""
+
+[[case]]
+name = "codegen_trivial_struct_no_drop"
+spec = ["3.9:9", "3.9:19", "3.9:20"]
+preview = "destructors"
+description = "Structs with only trivially droppable fields are trivially droppable"
+source = """
+struct Point { x: i32, y: i32 }
+
+fn main() -> i32 {
+    let p = Point { x: 10, y: 20 };
+    p.x + p.y
+}
+"""
+exit_code = 30

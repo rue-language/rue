@@ -1771,17 +1771,49 @@ impl<'a> CfgLower<'a> {
                 });
             }
 
-            CfgInstData::Drop { value: _ } => {
+            CfgInstData::Drop {
+                value: dropped_value,
+            } => {
                 // Drop instruction - runs destructor if the type needs one.
                 // The CFG builder already elides Drop for trivially droppable types,
                 // so reaching here means we need to emit actual cleanup code.
                 //
-                // This will be implemented in Phase 3 (rue-wjha.9) when we add
-                // types with destructors (e.g., mutable strings).
-                debug_assert!(
-                    false,
-                    "Drop instruction reached codegen but no types currently need drop"
-                );
+                // Get the type of the value being dropped to determine which
+                // destructor function to call.
+                let dropped_ty = self.cfg.get_inst(*dropped_value).ty;
+
+                // Get the destructor function name based on type.
+                // The naming convention is __rue_drop_<TypeName>.
+                let drop_fn_name = match dropped_ty {
+                    Type::Struct(struct_id) => {
+                        // For structs, use the struct name
+                        let struct_def = &self.struct_defs[struct_id.0 as usize];
+                        format!("__rue_drop_{}", struct_def.name)
+                    }
+                    Type::String => "__rue_drop_String".to_string(),
+                    // Other types that might need drop in the future can be added here
+                    _ => {
+                        // For now, any other type reaching here is unexpected
+                        debug_assert!(
+                            false,
+                            "Drop instruction reached codegen for unexpected type: {:?}",
+                            dropped_ty
+                        );
+                        return;
+                    }
+                };
+
+                // Load the value to drop into the first argument register (X0)
+                let val_vreg = self.get_vreg(*dropped_value);
+                self.mir.push(Aarch64Inst::MovRR {
+                    dst: Operand::Physical(ARG_REGS[0]),
+                    src: Operand::Virtual(val_vreg),
+                });
+
+                // Call the drop function
+                self.mir.push(Aarch64Inst::Bl {
+                    symbol: drop_fn_name,
+                });
             }
 
             CfgInstData::StorageLive { slot: _ } => {

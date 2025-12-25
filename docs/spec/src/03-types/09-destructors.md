@@ -126,3 +126,17 @@ fn example(condition: bool) -> i32 {
     0  // c dropped, then a dropped
 }
 ```
+
+## Code Generation
+
+{{ rule(id="3.9:18", cat="dynamic-semantics") }}
+
+When a non-trivially droppable value is dropped, the compiler generates a call to the value's destructor function.
+
+{{ rule(id="3.9:19", cat="dynamic-semantics") }}
+
+When a trivially droppable value is dropped, no code is generated. The drop is elided as a no-op.
+
+{{ rule(id="3.9:20", cat="informative") }}
+
+The distinction between trivially droppable and non-trivially droppable types allows the compiler to avoid generating unnecessary cleanup code for simple types like integers and structs containing only integers.

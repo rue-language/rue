@@ -59,6 +59,9 @@ pub struct Case {
     /// Expected MIR dump (golden test)
     #[serde(default)]
     pub expected_mir: Option<String>,
+    /// Expected CFG dump (golden test)
+    #[serde(default)]
+    pub expected_cfg: Option<String>,
     /// Expected runtime error message (program compiles but fails at runtime)
     #[serde(default)]
     pub runtime_error: Option<String>,
@@ -245,11 +248,12 @@ pub fn run_test_case(case: &Case, rue_binary: &Path) -> TestResult {
         cmd
     };
 
-    // Check for golden IR tests (tokens, AST, RIR, AIR, MIR)
+    // Check for golden IR tests (tokens, AST, RIR, AIR, CFG, MIR)
     if case.expected_tokens.is_some()
         || case.expected_ast.is_some()
         || case.expected_rir.is_some()
         || case.expected_air.is_some()
+        || case.expected_cfg.is_some()
         || case.expected_mir.is_some()
     {
         // Run dump commands and check golden output
@@ -335,6 +339,27 @@ pub fn run_test_case(case: &Case, rue_binary: &Path) -> TestResult {
             // Strip the "=== AIR ===" header for golden comparison
             let actual = strip_emit_header(&actual, "AIR");
             check_golden(&actual, expected, "AIR")?;
+        }
+
+        if let Some(ref expected) = case.expected_cfg {
+            let output = build_command(rue_binary)
+                .arg("--emit")
+                .arg("cfg")
+                .arg(&source_path)
+                .output()
+                .map_err(|e| format!("Failed to run rue --emit cfg: {}", e))?;
+
+            if !output.status.success() {
+                return Err(format!(
+                    "rue --emit cfg failed:\n{}",
+                    String::from_utf8_lossy(&output.stderr)
+                ));
+            }
+
+            let actual = String::from_utf8_lossy(&output.stdout);
+            // Strip the "=== CFG ===" header for golden comparison
+            let actual = strip_emit_header(&actual, "CFG");
+            check_golden(&actual, expected, "CFG")?;
         }
 
         if let Some(ref expected) = case.expected_mir {
