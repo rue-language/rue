@@ -36,6 +36,26 @@ where
     }
 }
 
+/// Parser for primitive type keywords: i8, i16, i32, i64, u8, u16, u32, u64, bool
+/// These are reserved keywords that cannot be used as identifiers.
+fn primitive_type_parser<'src, I>()
+-> impl Parser<'src, I, TypeExpr, extra::Err<Rich<'src, TokenKind>>> + Clone
+where
+    I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
+{
+    select! {
+        TokenKind::I8 = e => TypeExpr::Named(Ident { name: "i8".to_string(), span: to_rue_span(e.span()) }),
+        TokenKind::I16 = e => TypeExpr::Named(Ident { name: "i16".to_string(), span: to_rue_span(e.span()) }),
+        TokenKind::I32 = e => TypeExpr::Named(Ident { name: "i32".to_string(), span: to_rue_span(e.span()) }),
+        TokenKind::I64 = e => TypeExpr::Named(Ident { name: "i64".to_string(), span: to_rue_span(e.span()) }),
+        TokenKind::U8 = e => TypeExpr::Named(Ident { name: "u8".to_string(), span: to_rue_span(e.span()) }),
+        TokenKind::U16 = e => TypeExpr::Named(Ident { name: "u16".to_string(), span: to_rue_span(e.span()) }),
+        TokenKind::U32 = e => TypeExpr::Named(Ident { name: "u32".to_string(), span: to_rue_span(e.span()) }),
+        TokenKind::U64 = e => TypeExpr::Named(Ident { name: "u64".to_string(), span: to_rue_span(e.span()) }),
+        TokenKind::Bool = e => TypeExpr::Named(Ident { name: "bool".to_string(), span: to_rue_span(e.span()) }),
+    }
+}
+
 /// Parser for type expressions: primitive types (i32, bool, etc.), () for unit, ! for never, or [T; N] for arrays
 fn type_parser<'src, I>()
 -> impl Parser<'src, I, TypeExpr, extra::Err<Rich<'src, TokenKind>>> + Clone
@@ -66,19 +86,6 @@ where
                 span: to_rue_span(e.span()),
             });
 
-        // Primitive type keywords: i8, i16, i32, i64, u8, u16, u32, u64, bool
-        let primitive_type = select! {
-            TokenKind::I8 = e => TypeExpr::Named(Ident { name: "i8".to_string(), span: to_rue_span(e.span()) }),
-            TokenKind::I16 = e => TypeExpr::Named(Ident { name: "i16".to_string(), span: to_rue_span(e.span()) }),
-            TokenKind::I32 = e => TypeExpr::Named(Ident { name: "i32".to_string(), span: to_rue_span(e.span()) }),
-            TokenKind::I64 = e => TypeExpr::Named(Ident { name: "i64".to_string(), span: to_rue_span(e.span()) }),
-            TokenKind::U8 = e => TypeExpr::Named(Ident { name: "u8".to_string(), span: to_rue_span(e.span()) }),
-            TokenKind::U16 = e => TypeExpr::Named(Ident { name: "u16".to_string(), span: to_rue_span(e.span()) }),
-            TokenKind::U32 = e => TypeExpr::Named(Ident { name: "u32".to_string(), span: to_rue_span(e.span()) }),
-            TokenKind::U64 = e => TypeExpr::Named(Ident { name: "u64".to_string(), span: to_rue_span(e.span()) }),
-            TokenKind::Bool = e => TypeExpr::Named(Ident { name: "bool".to_string(), span: to_rue_span(e.span()) }),
-        };
-
         // Named type: user-defined types like MyStruct
         let named_type = ident_parser().map(TypeExpr::Named);
 
@@ -86,7 +93,7 @@ where
             unit_type,
             never_type,
             array_type,
-            primitive_type,
+            primitive_type_parser(),
             named_type,
         ))
     })
@@ -661,17 +668,7 @@ where
             });
 
         // Primitive type keywords (these can't be variable names)
-        let primitive_type = select! {
-            TokenKind::I8 = e => IntrinsicArg::Type(TypeExpr::Named(Ident { name: "i8".to_string(), span: to_rue_span(e.span()) })),
-            TokenKind::I16 = e => IntrinsicArg::Type(TypeExpr::Named(Ident { name: "i16".to_string(), span: to_rue_span(e.span()) })),
-            TokenKind::I32 = e => IntrinsicArg::Type(TypeExpr::Named(Ident { name: "i32".to_string(), span: to_rue_span(e.span()) })),
-            TokenKind::I64 = e => IntrinsicArg::Type(TypeExpr::Named(Ident { name: "i64".to_string(), span: to_rue_span(e.span()) })),
-            TokenKind::U8 = e => IntrinsicArg::Type(TypeExpr::Named(Ident { name: "u8".to_string(), span: to_rue_span(e.span()) })),
-            TokenKind::U16 = e => IntrinsicArg::Type(TypeExpr::Named(Ident { name: "u16".to_string(), span: to_rue_span(e.span()) })),
-            TokenKind::U32 = e => IntrinsicArg::Type(TypeExpr::Named(Ident { name: "u32".to_string(), span: to_rue_span(e.span()) })),
-            TokenKind::U64 = e => IntrinsicArg::Type(TypeExpr::Named(Ident { name: "u64".to_string(), span: to_rue_span(e.span()) })),
-            TokenKind::Bool = e => IntrinsicArg::Type(TypeExpr::Named(Ident { name: "bool".to_string(), span: to_rue_span(e.span()) })),
-        };
+        let primitive_type = primitive_type_parser().map(IntrinsicArg::Type);
 
         choice((unit_type, never_type, array_type, primitive_type))
     };
