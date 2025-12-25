@@ -17,8 +17,8 @@ mod types;
 
 pub use inference::{
     Constraint, ConstraintContext, ConstraintGenerator, ExprInfo, FunctionSig, InferType,
-    LocalVarInfo, ParamVarInfo, Substitution, TypeVarAllocator, TypeVarId, UnificationError,
-    Unifier, UnifyResult,
+    LocalVarInfo, MethodSig, ParamVarInfo, Substitution, TypeVarAllocator, TypeVarId,
+    UnificationError, Unifier, UnifyResult,
 };
 pub use inst::{
     Air, AirArgMode, AirCallArg, AirInst, AirInstData, AirParamMode, AirPattern, AirRef,
