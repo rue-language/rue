@@ -7,7 +7,7 @@ use std::collections::{HashMap, HashSet};
 
 use crate::inference::{
     Constraint, ConstraintContext, ConstraintGenerator, FunctionSig, InferType, ParamVarInfo,
-    Unifier,
+    Unifier, UnifyResult,
 };
 use crate::inst::{Air, AirInst, AirInstData, AirPattern, AirRef};
 use crate::types::{
@@ -615,14 +615,44 @@ impl<'a> Sema<'a> {
         // For now, we collect the first error. In the future, we could
         // report multiple errors for better diagnostics.
         if let Some(err) = errors.first() {
-            // Use the message() method for a human-readable error description
-            return Err(CompileError::new(
-                ErrorKind::TypeMismatch {
-                    expected: err.message(),
-                    found: "incompatible type".to_string(),
+            // Map each UnifyResult variant to the appropriate ErrorKind
+            let error_kind = match &err.kind {
+                UnifyResult::Ok => unreachable!("UnificationError should never contain Ok"),
+                UnifyResult::TypeMismatch { expected, found } => ErrorKind::TypeMismatch {
+                    expected: expected.to_string(),
+                    found: found.to_string(),
                 },
-                err.span,
-            ));
+                UnifyResult::IntLiteralNonInteger { found } => ErrorKind::TypeMismatch {
+                    expected: "integer type".to_string(),
+                    found: found.name().to_string(),
+                },
+                UnifyResult::OccursCheck { var, ty } => ErrorKind::TypeMismatch {
+                    expected: "non-recursive type".to_string(),
+                    found: format!("{var} = {ty} (infinite type)"),
+                },
+                UnifyResult::NotSigned { ty } => {
+                    ErrorKind::CannotNegateUnsigned(ty.name().to_string())
+                }
+                UnifyResult::NotInteger { ty } => ErrorKind::TypeMismatch {
+                    expected: "integer type".to_string(),
+                    found: ty.name().to_string(),
+                },
+                UnifyResult::ArrayLengthMismatch { expected, found } => {
+                    ErrorKind::ArrayLengthMismatch {
+                        expected: *expected,
+                        found: *found,
+                    }
+                }
+            };
+
+            let mut compile_error = CompileError::new(error_kind, err.span);
+
+            // Add note for unsigned negation errors
+            if matches!(err.kind, UnifyResult::NotSigned { .. }) {
+                compile_error = compile_error.with_note("unsigned values cannot be negated");
+            }
+
+            return Err(compile_error);
         }
 
         // Default any unconstrained integer literals to i32
@@ -856,7 +886,11 @@ impl<'a> Sema<'a> {
                     .copied()
                     .expect("HM inference should provide type for Neg");
 
-                // Check if trying to negate an unsigned type
+                // Check if trying to negate an unsigned type.
+                // Note: HM inference also checks this via IsSigned constraint, but that
+                // check happens before type variables are fully resolved. For cases like
+                // `let x: u32 = -5`, the literal's type variable isn't bound to u32 until
+                // after the IsSigned check runs, so this sema check catches those cases.
                 if ty.is_unsigned() {
                     return Err(CompileError::new(
                         ErrorKind::CannotNegateUnsigned(ty.name().to_string()),
