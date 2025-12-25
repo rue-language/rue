@@ -16,6 +16,7 @@ use rue_error::{CompileError, CompileResult, ErrorKind};
 
 use super::liveness::{self, LiveRange, LivenessInfo};
 use super::mir::{Operand, Reg, VReg, X86Inst, X86Mir};
+use crate::index_map::IndexMap;
 
 /// Available registers for allocation.
 ///
@@ -50,8 +51,8 @@ enum Allocation {
 /// Register allocator with liveness-based allocation.
 pub struct RegAlloc {
     mir: X86Mir,
-    /// Maps virtual register index to allocation.
-    allocation: Vec<Option<Allocation>>,
+    /// Maps virtual register to its allocation (register or spill slot).
+    allocation: IndexMap<VReg, Option<Allocation>>,
     /// Liveness information.
     liveness: LivenessInfo,
     /// Next spill slot offset (negative from RBP).
@@ -76,9 +77,12 @@ impl RegAlloc {
         // Each local is 8 bytes, slot 0 is at [rbp-8], etc.
         let next_spill_offset = -((existing_locals as i32 + 1) * 8);
 
+        let mut allocation = IndexMap::with_capacity(vreg_count);
+        allocation.resize(vreg_count, None);
+
         Self {
             mir,
-            allocation: vec![None; vreg_count],
+            allocation,
             liveness,
             next_spill_offset,
             num_spills: 0,
@@ -149,7 +153,7 @@ impl RegAlloc {
 
             if let Some(reg) = allocated_reg {
                 // Assign this register
-                self.allocation[vreg.index() as usize] = Some(Allocation::Register(reg));
+                self.allocation[vreg] = Some(Allocation::Register(reg));
                 active.push((vreg, reg, range.end));
                 // Track callee-saved register usage
                 if !self.used_callee_saved.contains(&reg) {
@@ -174,16 +178,15 @@ impl RegAlloc {
                     // Spill the existing vreg with longest range
                     let (spilled_vreg, freed_reg, _) = active.remove(idx);
                     let spill_offset = self.alloc_spill_slot();
-                    self.allocation[spilled_vreg.index() as usize] =
-                        Some(Allocation::Spill(spill_offset));
+                    self.allocation[spilled_vreg] = Some(Allocation::Spill(spill_offset));
 
                     // Give the freed register to the current vreg
-                    self.allocation[vreg.index() as usize] = Some(Allocation::Register(freed_reg));
+                    self.allocation[vreg] = Some(Allocation::Register(freed_reg));
                     active.push((vreg, freed_reg, range.end));
                 } else {
                     // Current vreg has the longest range, spill it
                     let spill_offset = self.alloc_spill_slot();
-                    self.allocation[vreg.index() as usize] = Some(Allocation::Spill(spill_offset));
+                    self.allocation[vreg] = Some(Allocation::Spill(spill_offset));
                 }
             }
         }
@@ -901,7 +904,7 @@ impl RegAlloc {
     /// Get the allocation for an operand (returns None for physical registers).
     fn get_allocation(&self, operand: Operand) -> Option<Allocation> {
         match operand {
-            Operand::Virtual(vreg) => self.allocation[vreg.index() as usize],
+            Operand::Virtual(vreg) => self.allocation[vreg],
             Operand::Physical(_) => None,
         }
     }
@@ -915,7 +918,7 @@ impl RegAlloc {
         scratch: Reg,
     ) -> CompileResult<Operand> {
         match operand {
-            Operand::Virtual(vreg) => match self.allocation[vreg.index() as usize] {
+            Operand::Virtual(vreg) => match self.allocation[vreg] {
                 Some(Allocation::Register(reg)) => Ok(Operand::Physical(reg)),
                 Some(Allocation::Spill(offset)) => {
                     mir.push(X86Inst::MovRM {

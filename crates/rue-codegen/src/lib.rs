@@ -14,6 +14,7 @@
 //! virtual registers to physical registers before final emission.
 
 pub mod aarch64;
+pub mod index_map;
 pub mod types;
 pub mod vreg;
 pub mod x86_64;
@@ -152,6 +153,7 @@ pub struct MachineCode {
 pub use x86_64::generate;
 
 // Re-export shared types
+pub use index_map::{Handle, IndexMap};
 pub use vreg::{LabelId, VReg};
 
 // Re-export commonly used x86_64 types for convenience

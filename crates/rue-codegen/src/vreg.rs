@@ -6,6 +6,8 @@
 
 use std::fmt;
 
+use crate::index_map::Handle;
+
 /// A virtual register.
 ///
 /// Virtual registers are unlimited and allocated to physical registers
@@ -31,6 +33,16 @@ impl VReg {
 impl fmt::Display for VReg {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "v{}", self.0)
+    }
+}
+
+impl Handle for VReg {
+    fn index(self) -> u32 {
+        self.0
+    }
+
+    fn from_index(index: u32) -> Self {
+        Self(index)
     }
 }
 

@@ -9,6 +9,7 @@ use rue_error::{CompileError, CompileResult, ErrorKind};
 
 use super::liveness::{self, LiveRange, LivenessInfo};
 use super::mir::{Aarch64Inst, Aarch64Mir, Operand, Reg, VReg};
+use crate::index_map::IndexMap;
 
 /// Available registers for allocation.
 ///
@@ -49,7 +50,8 @@ enum Allocation {
 /// Register allocator for AArch64.
 pub struct RegAlloc {
     mir: Aarch64Mir,
-    allocation: Vec<Option<Allocation>>,
+    /// Maps virtual register to its allocation (register or spill slot).
+    allocation: IndexMap<VReg, Option<Allocation>>,
     liveness: LivenessInfo,
     next_spill_offset: i32,
     num_spills: u32,
@@ -63,9 +65,12 @@ impl RegAlloc {
         let liveness = liveness::analyze(&mir);
         let next_spill_offset = -((existing_locals as i32 + 1) * 8);
 
+        let mut allocation = IndexMap::with_capacity(vreg_count);
+        allocation.resize(vreg_count, None);
+
         Self {
             mir,
-            allocation: vec![None; vreg_count],
+            allocation,
             liveness,
             next_spill_offset,
             num_spills: 0,
@@ -121,7 +126,7 @@ impl RegAlloc {
             }
 
             if let Some(reg) = allocated_reg {
-                self.allocation[vreg.index() as usize] = Some(Allocation::Register(reg));
+                self.allocation[vreg] = Some(Allocation::Register(reg));
                 active.push((vreg, reg, range.end));
                 if !self.used_callee_saved.contains(&reg) {
                     self.used_callee_saved.push(reg);
@@ -139,13 +144,12 @@ impl RegAlloc {
                 if let Some(idx) = longest_idx {
                     let (spilled_vreg, freed_reg, _) = active.remove(idx);
                     let spill_offset = self.alloc_spill_slot();
-                    self.allocation[spilled_vreg.index() as usize] =
-                        Some(Allocation::Spill(spill_offset));
-                    self.allocation[vreg.index() as usize] = Some(Allocation::Register(freed_reg));
+                    self.allocation[spilled_vreg] = Some(Allocation::Spill(spill_offset));
+                    self.allocation[vreg] = Some(Allocation::Register(freed_reg));
                     active.push((vreg, freed_reg, range.end));
                 } else {
                     let spill_offset = self.alloc_spill_slot();
-                    self.allocation[vreg.index() as usize] = Some(Allocation::Spill(spill_offset));
+                    self.allocation[vreg] = Some(Allocation::Spill(spill_offset));
                 }
             }
         }
@@ -929,7 +933,7 @@ impl RegAlloc {
 
     fn get_allocation(&self, operand: Operand) -> Option<Allocation> {
         match operand {
-            Operand::Virtual(vreg) => self.allocation[vreg.index() as usize],
+            Operand::Virtual(vreg) => self.allocation[vreg],
             Operand::Physical(_) => None,
         }
     }
@@ -941,7 +945,7 @@ impl RegAlloc {
         scratch: Reg,
     ) -> CompileResult<Operand> {
         match operand {
-            Operand::Virtual(vreg) => match self.allocation[vreg.index() as usize] {
+            Operand::Virtual(vreg) => match self.allocation[vreg] {
                 Some(Allocation::Register(reg)) => Ok(Operand::Physical(reg)),
                 Some(Allocation::Spill(offset)) => {
                     mir.push(Aarch64Inst::Ldr {
