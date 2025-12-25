@@ -435,10 +435,8 @@ where
         })
 }
 
-/// Atom parser - primary expressions (literals, identifiers, parens, blocks, control flow)
-fn atom_parser<'src, I>(
-    expr: impl Parser<'src, I, Expr, extra::Err<Rich<'src, TokenKind>>> + Clone + 'src,
-) -> impl Parser<'src, I, Expr, extra::Err<Rich<'src, TokenKind>>> + Clone
+/// Parser for literal expressions: integers, strings, booleans, and unit
+fn literal_parser<'src, I>() -> impl Parser<'src, I, Expr, extra::Err<Rich<'src, TokenKind>>> + Clone
 where
     I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
 {
@@ -482,6 +480,16 @@ where
             })
         });
 
+    choice((int_lit, string_lit, bool_true, bool_false, unit_lit))
+}
+
+/// Parser for control flow expressions: break, continue, return, if, while, loop, match
+fn control_flow_parser<'src, I>(
+    expr: impl Parser<'src, I, Expr, extra::Err<Rich<'src, TokenKind>>> + Clone + 'src,
+) -> impl Parser<'src, I, Expr, extra::Err<Rich<'src, TokenKind>>> + Clone
+where
+    I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
+{
     // Break
     let break_expr = select! {
         TokenKind::Break = e => Expr::Break(BreakExpr { span: to_rue_span(e.span()) }),
@@ -490,11 +498,6 @@ where
     // Continue
     let continue_expr = select! {
         TokenKind::Continue = e => Expr::Continue(ContinueExpr { span: to_rue_span(e.span()) }),
-    };
-
-    // Self expression (in method bodies)
-    let self_expr = select! {
-        TokenKind::SelfValue = e => Expr::SelfExpr(SelfExpr { span: to_rue_span(e.span()) }),
     };
 
     // Return expression: return <expr>? (expression is optional for unit-returning functions)
@@ -568,7 +571,7 @@ where
     let match_expr = just(TokenKind::Match)
         .ignore_then(expr.clone())
         .then(
-            match_arm_parser(expr.clone())
+            match_arm_parser(expr)
                 .separated_by(just(TokenKind::Comma))
                 .allow_trailing()
                 .collect::<Vec<_>>()
@@ -583,18 +586,35 @@ where
         })
         .boxed();
 
-    // What can follow an identifier: call args, struct fields, path (::variant), path call (::fn()), or nothing
-    #[derive(Clone)]
-    enum IdentSuffix {
-        Call(Vec<Expr>),
-        StructLit(Vec<FieldInit>),
-        Path(Ident),                // ::Variant (for enum variants)
-        PathCall(Ident, Vec<Expr>), // ::function() (for associated functions)
-        None,
-    }
+    choice((
+        break_expr,
+        continue_expr,
+        return_expr,
+        if_expr,
+        while_expr,
+        loop_expr,
+        match_expr,
+    ))
+}
 
-    // Identifier followed by optional call args, struct literal, path, or nothing
-    let ident_or_call_or_struct_or_path = ident_parser()
+/// What can follow an identifier: call args, struct fields, path (::variant), path call (::fn()), or nothing
+#[derive(Clone)]
+enum IdentSuffix {
+    Call(Vec<Expr>),
+    StructLit(Vec<FieldInit>),
+    Path(Ident),                // ::Variant (for enum variants)
+    PathCall(Ident, Vec<Expr>), // ::function() (for associated functions)
+    None,
+}
+
+/// Parser for identifier-based expressions: identifiers, function calls, struct literals, and paths
+fn call_and_access_parser<'src, I>(
+    expr: impl Parser<'src, I, Expr, extra::Err<Rich<'src, TokenKind>>> + Clone,
+) -> impl Parser<'src, I, Expr, extra::Err<Rich<'src, TokenKind>>> + Clone
+where
+    I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
+{
+    ident_parser()
         .then(
             choice((
                 // Function call: (args)
@@ -609,7 +629,7 @@ where
                 just(TokenKind::ColonColon)
                     .ignore_then(ident_parser())
                     .then(
-                        args_parser(expr.clone())
+                        args_parser(expr)
                             .delimited_by(just(TokenKind::LParen), just(TokenKind::RParen)),
                     )
                     .map(|(func, args)| IdentSuffix::PathCall(func, args)),
@@ -644,7 +664,92 @@ where
                 span: to_rue_span(e.span()),
             }),
             IdentSuffix::None => Expr::Ident(name),
-        });
+        })
+}
+
+/// Suffix for field access (.field), method call (.method(args)), or indexing ([expr])
+#[derive(Clone)]
+enum Suffix {
+    Field(Ident),
+    /// Method call with method name, arguments, and closing paren position
+    MethodCall(Ident, Vec<Expr>, u32),
+    /// Index expression with the inner expression and closing bracket position
+    Index(Expr, u32),
+}
+
+/// Wraps a primary expression parser with field access, method call, and indexing suffixes
+fn with_suffix_parser<'src, I>(
+    primary: impl Parser<'src, I, Expr, extra::Err<Rich<'src, TokenKind>>> + Clone,
+    expr: impl Parser<'src, I, Expr, extra::Err<Rich<'src, TokenKind>>> + Clone,
+) -> impl Parser<'src, I, Expr, extra::Err<Rich<'src, TokenKind>>> + Clone
+where
+    I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
+{
+    // Method call: .ident(args)
+    let method_call_suffix = just(TokenKind::Dot)
+        .ignore_then(ident_parser())
+        .then(
+            args_parser(expr.clone())
+                .delimited_by(just(TokenKind::LParen), just(TokenKind::RParen)),
+        )
+        .map_with(|(method, args), e| Suffix::MethodCall(method, args, e.span().end as u32));
+
+    // Field access: .ident (but NOT followed by ()
+    let field_suffix = just(TokenKind::Dot)
+        .ignore_then(ident_parser())
+        .then_ignore(none_of([TokenKind::LParen]).rewind())
+        .map(Suffix::Field);
+
+    let index_suffix = expr
+        .delimited_by(just(TokenKind::LBracket), just(TokenKind::RBracket))
+        .map_with(|index, e| Suffix::Index(index, e.span().end as u32));
+
+    // Field access, method call, and indexing suffix: .field, .method(), or [expr]
+    // Method call must come before field access to catch .method(args) before .field
+    // Handles chains like a.b.c or a[0][1] or a[0].field or a.method().field
+    primary.foldl(
+        choice((method_call_suffix, field_suffix, index_suffix)).repeated(),
+        |base, suffix| match suffix {
+            Suffix::Field(field) => {
+                let span = Span::new(base.span().start, field.span.end);
+                Expr::Field(FieldExpr {
+                    base: Box::new(base),
+                    field,
+                    span,
+                })
+            }
+            Suffix::MethodCall(method, args, end) => {
+                let span = Span::new(base.span().start, end);
+                Expr::MethodCall(MethodCallExpr {
+                    receiver: Box::new(base),
+                    method,
+                    args,
+                    span,
+                })
+            }
+            Suffix::Index(index, end) => {
+                let span = Span::new(base.span().start, end);
+                Expr::Index(IndexExpr {
+                    base: Box::new(base),
+                    index: Box::new(index),
+                    span,
+                })
+            }
+        },
+    )
+}
+
+/// Atom parser - primary expressions (literals, identifiers, parens, blocks, control flow)
+fn atom_parser<'src, I>(
+    expr: impl Parser<'src, I, Expr, extra::Err<Rich<'src, TokenKind>>> + Clone + 'src,
+) -> impl Parser<'src, I, Expr, extra::Err<Rich<'src, TokenKind>>> + Clone
+where
+    I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
+{
+    // Self expression (in method bodies)
+    let self_expr = select! {
+        TokenKind::SelfValue = e => Expr::SelfExpr(SelfExpr { span: to_rue_span(e.span()) }),
+    };
 
     // Parenthesized expression
     let paren_expr = expr
@@ -727,91 +832,22 @@ where
         });
 
     // Primary expression (before field access and indexing)
-    // Note: unit_lit must come before paren_expr so () is parsed as unit, not empty parens
-    // Note: self_expr must come before ident_or_call_or_struct_or_path since self is a keyword
+    // Note: literal_parser() includes unit_lit which must come before paren_expr
+    // so () is parsed as unit, not empty parens
+    // Note: self_expr must come before call_and_access_parser since self is a keyword
     let primary = choice((
-        int_lit,
-        string_lit,
-        bool_true,
-        bool_false,
-        unit_lit,
-        break_expr,
-        continue_expr,
+        literal_parser(),
+        control_flow_parser(expr.clone()),
         self_expr,
-        return_expr,
-        if_expr,
-        match_expr,
-        while_expr,
-        loop_expr,
         intrinsic_call,
         array_lit,
-        ident_or_call_or_struct_or_path,
+        call_and_access_parser(expr.clone()),
         paren_expr,
         block_expr,
     ));
 
-    // Suffix for field access (.field), method call (.method(args)), or indexing ([expr])
-    #[derive(Clone)]
-    enum Suffix {
-        Field(Ident),
-        /// Method call with method name, arguments, and closing paren position
-        MethodCall(Ident, Vec<Expr>, u32),
-        /// Index expression with the inner expression and closing bracket position
-        Index(Expr, u32),
-    }
-
-    // Method call: .ident(args)
-    let method_call_suffix = just(TokenKind::Dot)
-        .ignore_then(ident_parser())
-        .then(
-            args_parser(expr.clone())
-                .delimited_by(just(TokenKind::LParen), just(TokenKind::RParen)),
-        )
-        .map_with(|(method, args), e| Suffix::MethodCall(method, args, e.span().end as u32));
-
-    // Field access: .ident (but NOT followed by ()
-    let field_suffix = just(TokenKind::Dot)
-        .ignore_then(ident_parser())
-        .then_ignore(none_of([TokenKind::LParen]).rewind())
-        .map(Suffix::Field);
-
-    let index_suffix = expr
-        .delimited_by(just(TokenKind::LBracket), just(TokenKind::RBracket))
-        .map_with(|index, e| Suffix::Index(index, e.span().end as u32));
-
-    // Field access, method call, and indexing suffix: .field, .method(), or [expr]
-    // Method call must come before field access to catch .method(args) before .field
-    // Handles chains like a.b.c or a[0][1] or a[0].field or a.method().field
-    primary.foldl(
-        choice((method_call_suffix, field_suffix, index_suffix)).repeated(),
-        |base, suffix| match suffix {
-            Suffix::Field(field) => {
-                let span = Span::new(base.span().start, field.span.end);
-                Expr::Field(FieldExpr {
-                    base: Box::new(base),
-                    field,
-                    span,
-                })
-            }
-            Suffix::MethodCall(method, args, end) => {
-                let span = Span::new(base.span().start, end);
-                Expr::MethodCall(MethodCallExpr {
-                    receiver: Box::new(base),
-                    method,
-                    args,
-                    span,
-                })
-            }
-            Suffix::Index(index, end) => {
-                let span = Span::new(base.span().start, end);
-                Expr::Index(IndexExpr {
-                    base: Box::new(base),
-                    index: Box::new(index),
-                    span,
-                })
-            }
-        },
-    )
+    // Wrap primary expressions with field access, method call, and indexing suffixes
+    with_suffix_parser(primary, expr)
 }
 
 /// A block item is either a statement or an expression (potentially the final one)
