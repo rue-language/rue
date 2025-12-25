@@ -7,6 +7,7 @@ use rue_error::{CompileError, CompileResult, ErrorKind};
 
 use super::liveness::{self, LivenessInfo};
 use super::mir::{Aarch64Inst, Aarch64Mir, Operand, Reg, VReg};
+use crate::alloc_dst;
 use crate::index_map::IndexMap;
 use crate::regalloc::{Allocation, linear_scan};
 
@@ -117,29 +118,18 @@ impl RegAlloc {
     fn rewrite_inst(&self, mir: &mut Aarch64Mir, inst: Aarch64Inst) -> CompileResult<()> {
         match inst {
             Aarch64Inst::MovImm { dst, imm } => {
-                match self.get_allocation(dst) {
-                    Some(Allocation::Register(reg)) => {
-                        mir.push(Aarch64Inst::MovImm {
-                            dst: Operand::Physical(reg),
-                            imm,
-                        });
-                    }
-                    Some(Allocation::Spill(offset)) => {
-                        // Use X9 as scratch
-                        mir.push(Aarch64Inst::MovImm {
-                            dst: Operand::Physical(Reg::X9),
-                            imm,
-                        });
+                alloc_dst!(self.get_allocation(dst), dst, Reg::X9 =>
+                    emit |dst_op| {
+                        mir.push(Aarch64Inst::MovImm { dst: dst_op, imm });
+                    },
+                    store |offset| {
                         mir.push(Aarch64Inst::Str {
                             src: Operand::Physical(Reg::X9),
                             base: Reg::Fp,
                             offset,
                         });
-                    }
-                    None => {
-                        mir.push(Aarch64Inst::MovImm { dst, imm });
-                    }
-                }
+                    },
+                );
             }
 
             Aarch64Inst::MovRR { dst, src } => {
@@ -172,30 +162,20 @@ impl RegAlloc {
                 }
             }
 
-            Aarch64Inst::Ldr { dst, base, offset } => match self.get_allocation(dst) {
-                Some(Allocation::Register(reg)) => {
-                    mir.push(Aarch64Inst::Ldr {
-                        dst: Operand::Physical(reg),
-                        base,
-                        offset,
-                    });
-                }
-                Some(Allocation::Spill(spill_offset)) => {
-                    mir.push(Aarch64Inst::Ldr {
-                        dst: Operand::Physical(Reg::X9),
-                        base,
-                        offset,
-                    });
-                    mir.push(Aarch64Inst::Str {
-                        src: Operand::Physical(Reg::X9),
-                        base: Reg::Fp,
-                        offset: spill_offset,
-                    });
-                }
-                None => {
-                    mir.push(Aarch64Inst::Ldr { dst, base, offset });
-                }
-            },
+            Aarch64Inst::Ldr { dst, base, offset } => {
+                alloc_dst!(self.get_allocation(dst), dst, Reg::X9 =>
+                    emit |dst_op| {
+                        mir.push(Aarch64Inst::Ldr { dst: dst_op, base, offset });
+                    },
+                    store |spill_offset| {
+                        mir.push(Aarch64Inst::Str {
+                            src: Operand::Physical(Reg::X9),
+                            base: Reg::Fp,
+                            offset: spill_offset,
+                        });
+                    },
+                );
+            }
 
             Aarch64Inst::Str { src, base, offset } => {
                 let src_op = self.load_operand(mir, src, Reg::X9)?;
@@ -345,37 +325,23 @@ impl RegAlloc {
                 let src1_op = self.load_operand(mir, src1, Reg::X10)?;
                 let src2_op = self.load_operand(mir, src2, Reg::X11)?;
                 let src3_op = self.load_operand(mir, src3, Reg::X12)?;
-                match self.get_allocation(dst) {
-                    Some(Allocation::Register(reg)) => {
+                alloc_dst!(self.get_allocation(dst), dst, Reg::X9 =>
+                    emit |dst_op| {
                         mir.push(Aarch64Inst::Msub {
-                            dst: Operand::Physical(reg),
+                            dst: dst_op,
                             src1: src1_op,
                             src2: src2_op,
                             src3: src3_op,
                         });
-                    }
-                    Some(Allocation::Spill(offset)) => {
-                        mir.push(Aarch64Inst::Msub {
-                            dst: Operand::Physical(Reg::X9),
-                            src1: src1_op,
-                            src2: src2_op,
-                            src3: src3_op,
-                        });
+                    },
+                    store |offset| {
                         mir.push(Aarch64Inst::Str {
                             src: Operand::Physical(Reg::X9),
                             base: Reg::Fp,
                             offset,
                         });
-                    }
-                    None => {
-                        mir.push(Aarch64Inst::Msub {
-                            dst,
-                            src1: src1_op,
-                            src2: src2_op,
-                            src3: src3_op,
-                        });
-                    }
-                }
+                    },
+                );
             }
 
             Aarch64Inst::Neg { dst, src } => {
@@ -416,34 +382,18 @@ impl RegAlloc {
 
             Aarch64Inst::EorImm { dst, src, imm } => {
                 let src_op = self.load_operand(mir, src, Reg::X10)?;
-                match self.get_allocation(dst) {
-                    Some(Allocation::Register(reg)) => {
-                        mir.push(Aarch64Inst::EorImm {
-                            dst: Operand::Physical(reg),
-                            src: src_op,
-                            imm,
-                        });
-                    }
-                    Some(Allocation::Spill(offset)) => {
-                        mir.push(Aarch64Inst::EorImm {
-                            dst: Operand::Physical(Reg::X9),
-                            src: src_op,
-                            imm,
-                        });
+                alloc_dst!(self.get_allocation(dst), dst, Reg::X9 =>
+                    emit |dst_op| {
+                        mir.push(Aarch64Inst::EorImm { dst: dst_op, src: src_op, imm });
+                    },
+                    store |offset| {
                         mir.push(Aarch64Inst::Str {
                             src: Operand::Physical(Reg::X9),
                             base: Reg::Fp,
                             offset,
                         });
-                    }
-                    None => {
-                        mir.push(Aarch64Inst::EorImm {
-                            dst,
-                            src: src_op,
-                            imm,
-                        });
-                    }
-                }
+                    },
+                );
             }
 
             Aarch64Inst::MvnRR { dst, src } => {
@@ -531,28 +481,20 @@ impl RegAlloc {
                 mir.push(Aarch64Inst::Cbnz { src: src_op, label });
             }
 
-            Aarch64Inst::Cset { dst, cond } => match self.get_allocation(dst) {
-                Some(Allocation::Register(reg)) => {
-                    mir.push(Aarch64Inst::Cset {
-                        dst: Operand::Physical(reg),
-                        cond,
-                    });
-                }
-                Some(Allocation::Spill(offset)) => {
-                    mir.push(Aarch64Inst::Cset {
-                        dst: Operand::Physical(Reg::X9),
-                        cond,
-                    });
-                    mir.push(Aarch64Inst::Str {
-                        src: Operand::Physical(Reg::X9),
-                        base: Reg::Fp,
-                        offset,
-                    });
-                }
-                None => {
-                    mir.push(Aarch64Inst::Cset { dst, cond });
-                }
-            },
+            Aarch64Inst::Cset { dst, cond } => {
+                alloc_dst!(self.get_allocation(dst), dst, Reg::X9 =>
+                    emit |dst_op| {
+                        mir.push(Aarch64Inst::Cset { dst: dst_op, cond });
+                    },
+                    store |offset| {
+                        mir.push(Aarch64Inst::Str {
+                            src: Operand::Physical(Reg::X9),
+                            base: Reg::Fp,
+                            offset,
+                        });
+                    },
+                );
+            }
 
             Aarch64Inst::TstRR { src1, src2 } => {
                 let src1_op = self.load_operand(mir, src1, Reg::X9)?;
@@ -683,181 +625,97 @@ impl RegAlloc {
 
             Aarch64Inst::LslImm { dst, src, imm } => {
                 let src_op = self.load_operand(mir, src, Reg::X10)?;
-
-                match self.get_allocation(dst) {
-                    Some(Allocation::Register(reg)) => {
-                        mir.push(Aarch64Inst::LslImm {
-                            dst: Operand::Physical(reg),
-                            src: src_op,
-                            imm,
-                        });
-                    }
-                    Some(Allocation::Spill(offset)) => {
-                        mir.push(Aarch64Inst::LslImm {
-                            dst: Operand::Physical(Reg::X9),
-                            src: src_op,
-                            imm,
-                        });
+                alloc_dst!(self.get_allocation(dst), dst, Reg::X9 =>
+                    emit |dst_op| {
+                        mir.push(Aarch64Inst::LslImm { dst: dst_op, src: src_op, imm });
+                    },
+                    store |offset| {
                         mir.push(Aarch64Inst::Str {
                             src: Operand::Physical(Reg::X9),
                             base: Reg::Fp,
                             offset,
                         });
-                    }
-                    None => {
-                        mir.push(Aarch64Inst::LslImm {
-                            dst,
-                            src: src_op,
-                            imm,
-                        });
-                    }
-                }
+                    },
+                );
             }
 
             Aarch64Inst::Lsl32Imm { dst, src, imm } => {
                 let src_op = self.load_operand(mir, src, Reg::X10)?;
-
-                match self.get_allocation(dst) {
-                    Some(Allocation::Register(reg)) => {
-                        mir.push(Aarch64Inst::Lsl32Imm {
-                            dst: Operand::Physical(reg),
-                            src: src_op,
-                            imm,
-                        });
-                    }
-                    Some(Allocation::Spill(offset)) => {
-                        mir.push(Aarch64Inst::Lsl32Imm {
-                            dst: Operand::Physical(Reg::X9),
-                            src: src_op,
-                            imm,
-                        });
+                alloc_dst!(self.get_allocation(dst), dst, Reg::X9 =>
+                    emit |dst_op| {
+                        mir.push(Aarch64Inst::Lsl32Imm { dst: dst_op, src: src_op, imm });
+                    },
+                    store |offset| {
                         mir.push(Aarch64Inst::Str {
                             src: Operand::Physical(Reg::X9),
                             base: Reg::Fp,
                             offset,
                         });
-                    }
-                    None => {
-                        mir.push(Aarch64Inst::Lsl32Imm {
-                            dst,
-                            src: src_op,
-                            imm,
-                        });
-                    }
-                }
+                    },
+                );
             }
 
             Aarch64Inst::Lsr32Imm { dst, src, imm } => {
                 let src_op = self.load_operand(mir, src, Reg::X10)?;
-
-                match self.get_allocation(dst) {
-                    Some(Allocation::Register(reg)) => {
-                        mir.push(Aarch64Inst::Lsr32Imm {
-                            dst: Operand::Physical(reg),
-                            src: src_op,
-                            imm,
-                        });
-                    }
-                    Some(Allocation::Spill(offset)) => {
-                        mir.push(Aarch64Inst::Lsr32Imm {
-                            dst: Operand::Physical(Reg::X9),
-                            src: src_op,
-                            imm,
-                        });
+                alloc_dst!(self.get_allocation(dst), dst, Reg::X9 =>
+                    emit |dst_op| {
+                        mir.push(Aarch64Inst::Lsr32Imm { dst: dst_op, src: src_op, imm });
+                    },
+                    store |offset| {
                         mir.push(Aarch64Inst::Str {
                             src: Operand::Physical(Reg::X9),
                             base: Reg::Fp,
                             offset,
                         });
-                    }
-                    None => {
-                        mir.push(Aarch64Inst::Lsr32Imm {
-                            dst,
-                            src: src_op,
-                            imm,
-                        });
-                    }
-                }
+                    },
+                );
             }
 
             Aarch64Inst::Asr32Imm { dst, src, imm } => {
                 let src_op = self.load_operand(mir, src, Reg::X10)?;
-
-                match self.get_allocation(dst) {
-                    Some(Allocation::Register(reg)) => {
-                        mir.push(Aarch64Inst::Asr32Imm {
-                            dst: Operand::Physical(reg),
-                            src: src_op,
-                            imm,
-                        });
-                    }
-                    Some(Allocation::Spill(offset)) => {
-                        mir.push(Aarch64Inst::Asr32Imm {
-                            dst: Operand::Physical(Reg::X9),
-                            src: src_op,
-                            imm,
-                        });
+                alloc_dst!(self.get_allocation(dst), dst, Reg::X9 =>
+                    emit |dst_op| {
+                        mir.push(Aarch64Inst::Asr32Imm { dst: dst_op, src: src_op, imm });
+                    },
+                    store |offset| {
                         mir.push(Aarch64Inst::Str {
                             src: Operand::Physical(Reg::X9),
                             base: Reg::Fp,
                             offset,
                         });
-                    }
-                    None => {
-                        mir.push(Aarch64Inst::Asr32Imm {
-                            dst,
-                            src: src_op,
-                            imm,
-                        });
-                    }
-                }
+                    },
+                );
             }
 
-            Aarch64Inst::StringConstPtr { dst, string_id } => match self.get_allocation(dst) {
-                Some(Allocation::Register(reg)) => {
-                    mir.push(Aarch64Inst::StringConstPtr {
-                        dst: Operand::Physical(reg),
-                        string_id,
-                    });
-                }
-                Some(Allocation::Spill(offset)) => {
-                    mir.push(Aarch64Inst::StringConstPtr {
-                        dst: Operand::Physical(Reg::X9),
-                        string_id,
-                    });
-                    mir.push(Aarch64Inst::Str {
-                        src: Operand::Physical(Reg::X9),
-                        base: Reg::Fp,
-                        offset,
-                    });
-                }
-                None => {
-                    mir.push(Aarch64Inst::StringConstPtr { dst, string_id });
-                }
-            },
+            Aarch64Inst::StringConstPtr { dst, string_id } => {
+                alloc_dst!(self.get_allocation(dst), dst, Reg::X9 =>
+                    emit |dst_op| {
+                        mir.push(Aarch64Inst::StringConstPtr { dst: dst_op, string_id });
+                    },
+                    store |offset| {
+                        mir.push(Aarch64Inst::Str {
+                            src: Operand::Physical(Reg::X9),
+                            base: Reg::Fp,
+                            offset,
+                        });
+                    },
+                );
+            }
 
-            Aarch64Inst::StringConstLen { dst, string_id } => match self.get_allocation(dst) {
-                Some(Allocation::Register(reg)) => {
-                    mir.push(Aarch64Inst::StringConstLen {
-                        dst: Operand::Physical(reg),
-                        string_id,
-                    });
-                }
-                Some(Allocation::Spill(offset)) => {
-                    mir.push(Aarch64Inst::StringConstLen {
-                        dst: Operand::Physical(Reg::X9),
-                        string_id,
-                    });
-                    mir.push(Aarch64Inst::Str {
-                        src: Operand::Physical(Reg::X9),
-                        base: Reg::Fp,
-                        offset,
-                    });
-                }
-                None => {
-                    mir.push(Aarch64Inst::StringConstLen { dst, string_id });
-                }
-            },
+            Aarch64Inst::StringConstLen { dst, string_id } => {
+                alloc_dst!(self.get_allocation(dst), dst, Reg::X9 =>
+                    emit |dst_op| {
+                        mir.push(Aarch64Inst::StringConstLen { dst: dst_op, string_id });
+                    },
+                    store |offset| {
+                        mir.push(Aarch64Inst::Str {
+                            src: Operand::Physical(Reg::X9),
+                            base: Reg::Fp,
+                            offset,
+                        });
+                    },
+                );
+            }
 
             // Pass-through instructions
             Aarch64Inst::B { label } => mir.push(Aarch64Inst::B { label }),

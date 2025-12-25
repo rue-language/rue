@@ -140,9 +140,98 @@ impl<Reg: Copy + Eq + std::hash::Hash> Default for LivenessInfo<Reg> {
 }
 
 // ============================================================================
-// Register Allocation Types
+// Register Allocation Macros
 // ============================================================================
 
+/// Macro for handling the 3-way allocation match pattern on a destination operand.
+///
+/// This is the most common pattern in register allocation: when rewriting an instruction,
+/// we check whether the destination operand is:
+/// 1. Allocated to a physical register: use that register
+/// 2. Spilled to stack: use scratch register, then store to stack
+/// 3. Already physical (None): pass through unchanged
+///
+/// # Syntax
+///
+/// ```ignore
+/// // Form 1: Different behavior for register vs spill vs passthrough
+/// alloc_dst!(alloc_result =>
+///     Register(reg) => { /* emit with reg */ },
+///     Spill(offset) => { /* emit with scratch */ } then { /* store to offset */ },
+///     Passthrough(dst) => { /* emit with dst unchanged */ }
+/// );
+///
+/// // Form 2: Same emit logic, just different operand
+/// alloc_dst!(alloc_result, dst, scratch =>
+///     emit |dst_op| { mir.push(Inst { dst: dst_op }) },
+///     store |offset| { mir.push(Store { offset, src: scratch }) }
+/// );
+/// ```
+///
+/// # Example: Form 1 (explicit arms)
+///
+/// ```ignore
+/// alloc_dst!(self.get_allocation(dst) =>
+///     Register(reg) => {
+///         mir.push(X86Inst::MovRI32 { dst: Operand::Physical(reg), imm });
+///     },
+///     Spill(offset) => {
+///         mir.push(X86Inst::MovRI32 { dst: Operand::Physical(Reg::Rax), imm });
+///     } then {
+///         mir.push(X86Inst::MovMR { base: Reg::Rbp, offset, src: Operand::Physical(Reg::Rax) });
+///     },
+///     Passthrough(dst) => {
+///         mir.push(X86Inst::MovRI32 { dst, imm });
+///     }
+/// );
+/// ```
+#[macro_export]
+macro_rules! alloc_dst {
+    // Form 1: Explicit arms with different behavior
+    ($alloc:expr =>
+        Register($reg:ident) => $emit_reg:block,
+        Spill($offset:ident) => $emit_spill:block then $store:block,
+        Passthrough($pass_dst:ident) => $emit_pass:block $(,)?
+    ) => {
+        match $alloc {
+            Some($crate::regalloc::Allocation::Register($reg)) => $emit_reg,
+            Some($crate::regalloc::Allocation::Spill($offset)) => {
+                $emit_spill
+                $store
+            }
+            None => {
+                let $pass_dst = $pass_dst;
+                $emit_pass
+            }
+        }
+    };
+
+    // Form 2: Common case - same emit, different operand
+    ($alloc:expr, $dst:expr, $scratch:expr =>
+        emit |$op:ident| $emit:block,
+        store |$off:ident| $store_body:block $(,)?
+    ) => {
+        match $alloc {
+            Some($crate::regalloc::Allocation::Register(reg)) => {
+                let $op = Operand::Physical(reg);
+                $emit
+            }
+            Some($crate::regalloc::Allocation::Spill($off)) => {
+                let $op = Operand::Physical($scratch);
+                $emit
+                $store_body
+            }
+            None => {
+                let $op = $dst;
+                $emit
+            }
+        }
+    };
+}
+
+// ============================================================================
+// Register Allocation Types
+// ============================================================================
 /// Allocation result for a virtual register.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Allocation<Reg: Copy> {
