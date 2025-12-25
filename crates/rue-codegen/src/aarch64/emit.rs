@@ -1679,4 +1679,675 @@ mod tests {
         assert_eq!(OPCODE_ADD_X, 0x8B000000);
         assert_eq!(OPCODE_SUB_X, 0xCB000000);
     }
+
+    // =========================================================================
+    // Comprehensive instruction encoding tests
+    // These tests verify correct encoding against ARM Reference Manual
+    // =========================================================================
+
+    use crate::LabelId;
+    use crate::aarch64::mir::Operand;
+
+    /// Helper to emit a single instruction and return the encoded bytes
+    fn emit_single(inst: Aarch64Inst) -> Vec<u8> {
+        let mut mir = Aarch64Mir::new();
+        mir.push(inst);
+        Emitter::new(&mir, 0, 0, &[], &[]).emit().0
+    }
+
+    // --- Move instructions ---
+
+    #[test]
+    fn test_mov_rr_x0_x1() {
+        let code = emit_single(Aarch64Inst::MovRR {
+            dst: Operand::Physical(Reg::X0),
+            src: Operand::Physical(Reg::X1),
+        });
+        // mov x0, x1 -> orr x0, xzr, x1
+        // 0xAA0103E0: sf=1, opc=01, shift=00, N=0, Rm=1, imm6=0, Rn=31(xzr), Rd=0
+        let inst = u32::from_le_bytes(code[0..4].try_into().unwrap());
+        assert_eq!(inst & 0xFFE0FFE0, 0xAA0003E0, "Should be MOV (ORR) pattern");
+        assert_eq!(inst & 0x1F, 0, "Rd should be X0");
+        assert_eq!((inst >> 16) & 0x1F, 1, "Rm should be X1");
+    }
+
+    #[test]
+    fn test_mov_imm_small() {
+        let code = emit_single(Aarch64Inst::MovImm {
+            dst: Operand::Physical(Reg::X0),
+            imm: 42,
+        });
+        // mov x0, #42 -> movz x0, #42
+        let inst = u32::from_le_bytes(code[0..4].try_into().unwrap());
+        assert_eq!(inst & 0xFF800000, 0xD2800000, "Should be MOVZ");
+        assert_eq!(inst & 0x1F, 0, "Rd should be X0");
+        assert_eq!((inst >> 5) & 0xFFFF, 42, "Immediate should be 42");
+    }
+
+    // --- Arithmetic instructions ---
+
+    #[test]
+    fn test_add_rr() {
+        let code = emit_single(Aarch64Inst::AddRR {
+            dst: Operand::Physical(Reg::X0),
+            src1: Operand::Physical(Reg::X1),
+            src2: Operand::Physical(Reg::X2),
+        });
+        // add x0, x1, x2 -> 0x8B020020
+        let inst = u32::from_le_bytes(code[0..4].try_into().unwrap());
+        assert_eq!(
+            inst & 0xFF200000,
+            0x8B000000,
+            "Should be ADD (shifted register)"
+        );
+        assert_eq!(inst & 0x1F, 0, "Rd should be X0");
+        assert_eq!((inst >> 5) & 0x1F, 1, "Rn should be X1");
+        assert_eq!((inst >> 16) & 0x1F, 2, "Rm should be X2");
+    }
+
+    #[test]
+    fn test_adds_rr_32bit() {
+        let code = emit_single(Aarch64Inst::AddsRR {
+            dst: Operand::Physical(Reg::X0),
+            src1: Operand::Physical(Reg::X1),
+            src2: Operand::Physical(Reg::X2),
+        });
+        // adds w0, w1, w2 (32-bit)
+        let inst = u32::from_le_bytes(code[0..4].try_into().unwrap());
+        assert_eq!(inst & 0xFF200000, 0x2B000000, "Should be ADDS 32-bit");
+        assert_eq!(inst & 0x1F, 0, "Rd should be X0");
+    }
+
+    #[test]
+    fn test_adds_rr_64bit() {
+        let code = emit_single(Aarch64Inst::AddsRR64 {
+            dst: Operand::Physical(Reg::X0),
+            src1: Operand::Physical(Reg::X1),
+            src2: Operand::Physical(Reg::X2),
+        });
+        // adds x0, x1, x2 (64-bit)
+        let inst = u32::from_le_bytes(code[0..4].try_into().unwrap());
+        assert_eq!(inst & 0xFF200000, 0xAB000000, "Should be ADDS 64-bit");
+    }
+
+    #[test]
+    fn test_add_imm() {
+        let code = emit_single(Aarch64Inst::AddImm {
+            dst: Operand::Physical(Reg::X0),
+            src: Operand::Physical(Reg::X1),
+            imm: 16,
+        });
+        // add x0, x1, #16
+        let inst = u32::from_le_bytes(code[0..4].try_into().unwrap());
+        assert_eq!(inst & 0xFF000000, 0x91000000, "Should be ADD immediate");
+        assert_eq!(inst & 0x1F, 0, "Rd should be X0");
+        assert_eq!((inst >> 5) & 0x1F, 1, "Rn should be X1");
+        assert_eq!((inst >> 10) & 0xFFF, 16, "Immediate should be 16");
+    }
+
+    #[test]
+    fn test_sub_rr() {
+        let code = emit_single(Aarch64Inst::SubRR {
+            dst: Operand::Physical(Reg::X0),
+            src1: Operand::Physical(Reg::X1),
+            src2: Operand::Physical(Reg::X2),
+        });
+        // sub x0, x1, x2 -> 0xCB020020
+        let inst = u32::from_le_bytes(code[0..4].try_into().unwrap());
+        assert_eq!(
+            inst & 0xFF200000,
+            0xCB000000,
+            "Should be SUB (shifted register)"
+        );
+    }
+
+    #[test]
+    fn test_subs_rr_32bit() {
+        let code = emit_single(Aarch64Inst::SubsRR {
+            dst: Operand::Physical(Reg::X0),
+            src1: Operand::Physical(Reg::X1),
+            src2: Operand::Physical(Reg::X2),
+        });
+        // subs w0, w1, w2 (32-bit)
+        let inst = u32::from_le_bytes(code[0..4].try_into().unwrap());
+        assert_eq!(inst & 0xFF200000, 0x6B000000, "Should be SUBS 32-bit");
+    }
+
+    #[test]
+    fn test_subs_rr_64bit() {
+        let code = emit_single(Aarch64Inst::SubsRR64 {
+            dst: Operand::Physical(Reg::X0),
+            src1: Operand::Physical(Reg::X1),
+            src2: Operand::Physical(Reg::X2),
+        });
+        // subs x0, x1, x2 (64-bit)
+        let inst = u32::from_le_bytes(code[0..4].try_into().unwrap());
+        assert_eq!(inst & 0xFF200000, 0xEB000000, "Should be SUBS 64-bit");
+    }
+
+    #[test]
+    fn test_mul_rr() {
+        let code = emit_single(Aarch64Inst::MulRR {
+            dst: Operand::Physical(Reg::X0),
+            src1: Operand::Physical(Reg::X1),
+            src2: Operand::Physical(Reg::X2),
+        });
+        // mul x0, x1, x2 (alias for madd x0, x1, x2, xzr)
+        let inst = u32::from_le_bytes(code[0..4].try_into().unwrap());
+        // MUL: 0x9B007C00 (MADD with Ra=XZR)
+        assert_eq!(inst & 0xFFE0FC00, 0x9B007C00, "Should be MUL pattern");
+    }
+
+    #[test]
+    fn test_smull_rr() {
+        let code = emit_single(Aarch64Inst::SmullRR {
+            dst: Operand::Physical(Reg::X0),
+            src1: Operand::Physical(Reg::X1),
+            src2: Operand::Physical(Reg::X2),
+        });
+        // smull x0, w1, w2
+        let inst = u32::from_le_bytes(code[0..4].try_into().unwrap());
+        assert_eq!(inst & 0xFFE0FC00, 0x9B207C00, "Should be SMULL pattern");
+    }
+
+    #[test]
+    fn test_sdiv_rr() {
+        let code = emit_single(Aarch64Inst::SdivRR {
+            dst: Operand::Physical(Reg::X0),
+            src1: Operand::Physical(Reg::X1),
+            src2: Operand::Physical(Reg::X2),
+        });
+        // sdiv w0, w1, w2 (32-bit)
+        let inst = u32::from_le_bytes(code[0..4].try_into().unwrap());
+        assert_eq!(
+            inst & 0xFFE0FC00,
+            0x1AC00C00,
+            "Should be SDIV 32-bit pattern"
+        );
+    }
+
+    #[test]
+    fn test_msub() {
+        let code = emit_single(Aarch64Inst::Msub {
+            dst: Operand::Physical(Reg::X0),
+            src1: Operand::Physical(Reg::X1),
+            src2: Operand::Physical(Reg::X2),
+            src3: Operand::Physical(Reg::X3),
+        });
+        // msub w0, w1, w2, w3 (32-bit)
+        let inst = u32::from_le_bytes(code[0..4].try_into().unwrap());
+        assert_eq!(
+            inst & 0xFFE08000,
+            0x1B008000,
+            "Should be MSUB 32-bit pattern"
+        );
+    }
+
+    #[test]
+    fn test_neg() {
+        let code = emit_single(Aarch64Inst::Neg {
+            dst: Operand::Physical(Reg::X0),
+            src: Operand::Physical(Reg::X1),
+        });
+        // neg x0, x1 -> sub x0, xzr, x1
+        let inst = u32::from_le_bytes(code[0..4].try_into().unwrap());
+        assert_eq!(inst & 0xFF200000, 0xCB000000, "Should be SUB pattern");
+        // Rn (bits 5-9) should be XZR (31)
+        assert_eq!((inst >> 5) & 0x1F, 31, "Rn should be XZR");
+    }
+
+    // --- Logical instructions ---
+
+    #[test]
+    fn test_and_rr() {
+        let code = emit_single(Aarch64Inst::AndRR {
+            dst: Operand::Physical(Reg::X0),
+            src1: Operand::Physical(Reg::X1),
+            src2: Operand::Physical(Reg::X2),
+        });
+        // and x0, x1, x2
+        let inst = u32::from_le_bytes(code[0..4].try_into().unwrap());
+        assert_eq!(inst & 0xFF200000, 0x8A000000, "Should be AND pattern");
+    }
+
+    #[test]
+    fn test_orr_rr() {
+        let code = emit_single(Aarch64Inst::OrrRR {
+            dst: Operand::Physical(Reg::X0),
+            src1: Operand::Physical(Reg::X1),
+            src2: Operand::Physical(Reg::X2),
+        });
+        // orr x0, x1, x2
+        let inst = u32::from_le_bytes(code[0..4].try_into().unwrap());
+        assert_eq!(inst & 0xFF200000, 0xAA000000, "Should be ORR pattern");
+    }
+
+    #[test]
+    fn test_eor_rr() {
+        let code = emit_single(Aarch64Inst::EorRR {
+            dst: Operand::Physical(Reg::X0),
+            src1: Operand::Physical(Reg::X1),
+            src2: Operand::Physical(Reg::X2),
+        });
+        // eor x0, x1, x2
+        let inst = u32::from_le_bytes(code[0..4].try_into().unwrap());
+        assert_eq!(inst & 0xFF200000, 0xCA000000, "Should be EOR pattern");
+    }
+
+    #[test]
+    fn test_mvn_rr() {
+        let code = emit_single(Aarch64Inst::MvnRR {
+            dst: Operand::Physical(Reg::X0),
+            src: Operand::Physical(Reg::X1),
+        });
+        // mvn x0, x1 -> orn x0, xzr, x1
+        let inst = u32::from_le_bytes(code[0..4].try_into().unwrap());
+        assert_eq!(inst & 0xFF200000, 0xAA200000, "Should be ORN pattern");
+        // Rn (bits 5-9) should be XZR (31)
+        assert_eq!((inst >> 5) & 0x1F, 31, "Rn should be XZR");
+    }
+
+    // --- Shift instructions ---
+
+    #[test]
+    fn test_lsl_imm() {
+        let code = emit_single(Aarch64Inst::LslImm {
+            dst: Operand::Physical(Reg::X0),
+            src: Operand::Physical(Reg::X1),
+            imm: 4,
+        });
+        // lsl x0, x1, #4 (alias for ubfm)
+        let inst = u32::from_le_bytes(code[0..4].try_into().unwrap());
+        // UBFM for LSL: sf=1, opc=10, N=1 -> 0xD3400000
+        assert_eq!(inst & 0xFFC00000, 0xD3400000, "Should be UBFM 64-bit");
+    }
+
+    #[test]
+    fn test_lsl32_imm() {
+        let code = emit_single(Aarch64Inst::Lsl32Imm {
+            dst: Operand::Physical(Reg::X0),
+            src: Operand::Physical(Reg::X1),
+            imm: 4,
+        });
+        // lsl w0, w1, #4 (32-bit)
+        let inst = u32::from_le_bytes(code[0..4].try_into().unwrap());
+        // UBFM 32-bit: sf=0
+        assert_eq!(inst & 0xFF800000, 0x53000000, "Should be UBFM 32-bit");
+    }
+
+    #[test]
+    fn test_lsr_rr() {
+        let code = emit_single(Aarch64Inst::LsrRR {
+            dst: Operand::Physical(Reg::X0),
+            src1: Operand::Physical(Reg::X1),
+            src2: Operand::Physical(Reg::X2),
+        });
+        // lsr x0, x1, x2 (lsrv 64-bit)
+        let inst = u32::from_le_bytes(code[0..4].try_into().unwrap());
+        assert_eq!(inst & 0xFFE0FC00, 0x9AC02400, "Should be LSRV 64-bit");
+    }
+
+    #[test]
+    fn test_asr_rr() {
+        let code = emit_single(Aarch64Inst::AsrRR {
+            dst: Operand::Physical(Reg::X0),
+            src1: Operand::Physical(Reg::X1),
+            src2: Operand::Physical(Reg::X2),
+        });
+        // asr x0, x1, x2 (asrv 64-bit)
+        let inst = u32::from_le_bytes(code[0..4].try_into().unwrap());
+        assert_eq!(inst & 0xFFE0FC00, 0x9AC02800, "Should be ASRV 64-bit");
+    }
+
+    // --- Comparison instructions ---
+
+    #[test]
+    fn test_cmp_rr() {
+        let code = emit_single(Aarch64Inst::CmpRR {
+            src1: Operand::Physical(Reg::X0),
+            src2: Operand::Physical(Reg::X1),
+        });
+        // cmp w0, w1 -> subs wzr, w0, w1 (32-bit)
+        let inst = u32::from_le_bytes(code[0..4].try_into().unwrap());
+        assert_eq!(inst & 0xFF200000, 0x6B000000, "Should be SUBS 32-bit");
+        // Rd should be WZR (31)
+        assert_eq!(inst & 0x1F, 31, "Rd should be WZR");
+    }
+
+    #[test]
+    fn test_cmp64_rr() {
+        let code = emit_single(Aarch64Inst::Cmp64RR {
+            src1: Operand::Physical(Reg::X0),
+            src2: Operand::Physical(Reg::X1),
+        });
+        // cmp x0, x1 -> subs xzr, x0, x1 (64-bit)
+        let inst = u32::from_le_bytes(code[0..4].try_into().unwrap());
+        assert_eq!(inst & 0xFF200000, 0xEB000000, "Should be SUBS 64-bit");
+        // Rd should be XZR (31)
+        assert_eq!(inst & 0x1F, 31, "Rd should be XZR");
+    }
+
+    #[test]
+    fn test_cmp_imm() {
+        let code = emit_single(Aarch64Inst::CmpImm {
+            src: Operand::Physical(Reg::X0),
+            imm: 0,
+        });
+        // cmp x0, #0 -> subs xzr, x0, #0
+        let inst = u32::from_le_bytes(code[0..4].try_into().unwrap());
+        assert_eq!(inst & 0xFF000000, 0xF1000000, "Should be SUBS immediate");
+        // Rd should be XZR (31)
+        assert_eq!(inst & 0x1F, 31, "Rd should be XZR");
+    }
+
+    #[test]
+    fn test_cset() {
+        let code = emit_single(Aarch64Inst::Cset {
+            dst: Operand::Physical(Reg::X0),
+            cond: Cond::Eq,
+        });
+        // cset x0, eq -> csinc x0, xzr, xzr, ne
+        let inst = u32::from_le_bytes(code[0..4].try_into().unwrap());
+        // CSINC: sf=1, op=0, S=0, opcode2=01 -> 1001 1010 1xxx xxxx xxxx xxxx xxxx xxxx
+        // Mask out Rd (bits 0-4), Rn (bits 5-9), cond (bits 12-15), Rm (bits 16-20)
+        // Fixed opcode bits: 1001 1010 100x xxxx 0000 01xx xxx0 0000
+        assert_eq!(inst & 0xFFE00C00, 0x9A800400, "Should be CSINC/CSET opcode");
+        assert_eq!(inst & 0x1F, 0, "Rd should be X0");
+    }
+
+    #[test]
+    fn test_tst_rr() {
+        let code = emit_single(Aarch64Inst::TstRR {
+            src1: Operand::Physical(Reg::X0),
+            src2: Operand::Physical(Reg::X1),
+        });
+        // tst x0, x1 -> ands xzr, x0, x1
+        let inst = u32::from_le_bytes(code[0..4].try_into().unwrap());
+        assert_eq!(inst & 0xFF200000, 0xEA000000, "Should be ANDS pattern");
+        // Rd should be XZR (31)
+        assert_eq!(inst & 0x1F, 31, "Rd should be XZR");
+    }
+
+    // --- Sign/Zero extension ---
+
+    #[test]
+    fn test_sxtb() {
+        let code = emit_single(Aarch64Inst::Sxtb {
+            dst: Operand::Physical(Reg::X0),
+            src: Operand::Physical(Reg::X1),
+        });
+        // sxtb x0, x1 -> sbfm x0, x1, #0, #7
+        let inst = u32::from_le_bytes(code[0..4].try_into().unwrap());
+        // SBFM 64-bit: sf=1, opc=00, N=1 -> 0x93400000
+        assert_eq!(inst & 0xFFC00000, 0x93400000, "Should be SBFM 64-bit");
+        // imms should be 7
+        assert_eq!((inst >> 10) & 0x3F, 7, "imms should be 7");
+    }
+
+    #[test]
+    fn test_sxth() {
+        let code = emit_single(Aarch64Inst::Sxth {
+            dst: Operand::Physical(Reg::X0),
+            src: Operand::Physical(Reg::X1),
+        });
+        // sxth x0, x1 -> sbfm x0, x1, #0, #15
+        let inst = u32::from_le_bytes(code[0..4].try_into().unwrap());
+        // SBFM 64-bit: sf=1, opc=00, N=1 -> 0x93400000
+        assert_eq!(inst & 0xFFC00000, 0x93400000, "Should be SBFM 64-bit");
+        // imms should be 15
+        assert_eq!((inst >> 10) & 0x3F, 15, "imms should be 15");
+    }
+
+    #[test]
+    fn test_sxtw() {
+        let code = emit_single(Aarch64Inst::Sxtw {
+            dst: Operand::Physical(Reg::X0),
+            src: Operand::Physical(Reg::X1),
+        });
+        // sxtw x0, x1 -> sbfm x0, x1, #0, #31
+        let inst = u32::from_le_bytes(code[0..4].try_into().unwrap());
+        // SBFM 64-bit: sf=1, opc=00, N=1 -> 0x93400000
+        assert_eq!(inst & 0xFFC00000, 0x93400000, "Should be SBFM 64-bit");
+        // imms should be 31
+        assert_eq!((inst >> 10) & 0x3F, 31, "imms should be 31");
+    }
+
+    #[test]
+    fn test_uxtb() {
+        let code = emit_single(Aarch64Inst::Uxtb {
+            dst: Operand::Physical(Reg::X0),
+            src: Operand::Physical(Reg::X1),
+        });
+        // uxtb x0, x1 -> ubfm x0, x1, #0, #7
+        let inst = u32::from_le_bytes(code[0..4].try_into().unwrap());
+        // UBFM 64-bit: sf=1, opc=10, N=1 -> 0xD3400000
+        assert_eq!(inst & 0xFFC00000, 0xD3400000, "Should be UBFM 64-bit");
+        // imms should be 7
+        assert_eq!((inst >> 10) & 0x3F, 7, "imms should be 7");
+    }
+
+    #[test]
+    fn test_uxth() {
+        let code = emit_single(Aarch64Inst::Uxth {
+            dst: Operand::Physical(Reg::X0),
+            src: Operand::Physical(Reg::X1),
+        });
+        // uxth x0, x1 -> ubfm x0, x1, #0, #15
+        let inst = u32::from_le_bytes(code[0..4].try_into().unwrap());
+        // UBFM 64-bit: sf=1, opc=10, N=1 -> 0xD3400000
+        assert_eq!(inst & 0xFFC00000, 0xD3400000, "Should be UBFM 64-bit");
+        // imms should be 15
+        assert_eq!((inst >> 10) & 0x3F, 15, "imms should be 15");
+    }
+
+    // --- Load/Store instructions ---
+
+    #[test]
+    fn test_ldr_scaled_offset() {
+        let code = emit_single(Aarch64Inst::Ldr {
+            dst: Operand::Physical(Reg::X0),
+            base: Reg::Fp,
+            offset: 16,
+        });
+        // ldr x0, [fp, #16] (scaled unsigned offset)
+        let inst = u32::from_le_bytes(code[0..4].try_into().unwrap());
+        assert_eq!(
+            inst & 0xFFC00000,
+            0xF9400000,
+            "Should be LDR unsigned offset"
+        );
+        // imm12 = offset/8 = 2, at bits 10-21
+        assert_eq!((inst >> 10) & 0xFFF, 2, "imm12 should be 2");
+    }
+
+    #[test]
+    fn test_str_scaled_offset() {
+        let code = emit_single(Aarch64Inst::Str {
+            src: Operand::Physical(Reg::X0),
+            base: Reg::Fp,
+            offset: 16,
+        });
+        // str x0, [fp, #16] (scaled unsigned offset)
+        let inst = u32::from_le_bytes(code[0..4].try_into().unwrap());
+        assert_eq!(
+            inst & 0xFFC00000,
+            0xF9000000,
+            "Should be STR unsigned offset"
+        );
+    }
+
+    // --- Control flow ---
+
+    #[test]
+    fn test_ret() {
+        let code = emit_single(Aarch64Inst::Ret);
+        // ret -> 0xD65F03C0
+        let inst = u32::from_le_bytes(code[0..4].try_into().unwrap());
+        assert_eq!(inst, 0xD65F03C0, "Should be RET");
+    }
+
+    #[test]
+    fn test_b_forward() {
+        let mut mir = Aarch64Mir::new();
+        mir.push(Aarch64Inst::B {
+            label: LabelId::new(0),
+        });
+        mir.push(Aarch64Inst::MovImm {
+            dst: Operand::Physical(Reg::X0),
+            imm: 42,
+        }); // 4 bytes
+        mir.push(Aarch64Inst::Label {
+            id: LabelId::new(0),
+        });
+
+        let (code, _) = Emitter::new(&mir, 0, 0, &[], &[]).emit();
+
+        // b forward -> 0x14000002 (offset = 2 instructions = 8 bytes / 4)
+        let inst = u32::from_le_bytes(code[0..4].try_into().unwrap());
+        assert_eq!(inst & 0xFC000000, 0x14000000, "Should be B opcode");
+        assert_eq!(inst & 0x03FFFFFF, 2, "Offset should be 2 instructions");
+    }
+
+    #[test]
+    fn test_bcond_eq() {
+        let mut mir = Aarch64Mir::new();
+        mir.push(Aarch64Inst::BCond {
+            cond: Cond::Eq,
+            label: LabelId::new(0),
+        });
+        mir.push(Aarch64Inst::Label {
+            id: LabelId::new(0),
+        });
+
+        let (code, _) = Emitter::new(&mir, 0, 0, &[], &[]).emit();
+
+        // b.eq -> 0x54000000 + condition (eq = 0)
+        let inst = u32::from_le_bytes(code[0..4].try_into().unwrap());
+        assert_eq!(inst & 0xFF00001F, 0x54000000, "Should be B.cond with EQ");
+    }
+
+    #[test]
+    fn test_cbz() {
+        let mut mir = Aarch64Mir::new();
+        mir.push(Aarch64Inst::Cbz {
+            src: Operand::Physical(Reg::X0),
+            label: LabelId::new(0),
+        });
+        mir.push(Aarch64Inst::Label {
+            id: LabelId::new(0),
+        });
+
+        let (code, _) = Emitter::new(&mir, 0, 0, &[], &[]).emit();
+
+        // cbz x0, label
+        let inst = u32::from_le_bytes(code[0..4].try_into().unwrap());
+        assert_eq!(inst & 0xFF00001F, 0xB4000000, "Should be CBZ");
+        assert_eq!(inst & 0x1F, 0, "Rt should be X0");
+    }
+
+    #[test]
+    fn test_cbnz() {
+        let mut mir = Aarch64Mir::new();
+        mir.push(Aarch64Inst::Cbnz {
+            src: Operand::Physical(Reg::X0),
+            label: LabelId::new(0),
+        });
+        mir.push(Aarch64Inst::Label {
+            id: LabelId::new(0),
+        });
+
+        let (code, _) = Emitter::new(&mir, 0, 0, &[], &[]).emit();
+
+        // cbnz x0, label
+        let inst = u32::from_le_bytes(code[0..4].try_into().unwrap());
+        assert_eq!(inst & 0xFF00001F, 0xB5000000, "Should be CBNZ");
+    }
+
+    #[test]
+    fn test_bl() {
+        let mut mir = Aarch64Mir::new();
+        mir.push(Aarch64Inst::Bl {
+            symbol: "test_func".to_string(),
+        });
+
+        let (code, relocs) = Emitter::new(&mir, 0, 0, &[], &[]).emit();
+
+        // bl -> 0x94000000
+        let inst = u32::from_le_bytes(code[0..4].try_into().unwrap());
+        assert_eq!(inst & 0xFC000000, 0x94000000, "Should be BL opcode");
+
+        // Should have a relocation
+        assert_eq!(relocs.len(), 1, "Should have one relocation");
+        assert_eq!(relocs[0].symbol, "test_func", "Symbol should match");
+    }
+
+    // --- Stack operations ---
+
+    #[test]
+    fn test_stp_pre() {
+        let code = emit_single(Aarch64Inst::StpPre {
+            src1: Operand::Physical(Reg::Fp),
+            src2: Operand::Physical(Reg::Lr),
+            offset: -16,
+        });
+        // stp fp, lr, [sp, #-16]!
+        let inst = u32::from_le_bytes(code[0..4].try_into().unwrap());
+        // STP pre-index: 0xA9800000 base
+        assert_eq!(inst & 0xFFC00000, 0xA9800000, "Should be STP pre-index");
+        assert_eq!(inst & 0x1F, 29, "Rt1 should be FP (29)");
+        assert_eq!((inst >> 10) & 0x1F, 30, "Rt2 should be LR (30)");
+    }
+
+    #[test]
+    fn test_ldp_post() {
+        let code = emit_single(Aarch64Inst::LdpPost {
+            dst1: Operand::Physical(Reg::Fp),
+            dst2: Operand::Physical(Reg::Lr),
+            offset: 16,
+        });
+        // ldp fp, lr, [sp], #16
+        let inst = u32::from_le_bytes(code[0..4].try_into().unwrap());
+        // LDP post-index: 0xA8C00000 base
+        assert_eq!(inst & 0xFFC00000, 0xA8C00000, "Should be LDP post-index");
+    }
+
+    // --- Condition code encoding ---
+
+    #[test]
+    fn test_condition_codes() {
+        // Verify condition code encodings match ARM spec
+        assert_eq!(Cond::Eq.encoding(), 0b0000);
+        assert_eq!(Cond::Ne.encoding(), 0b0001);
+        assert_eq!(Cond::Hs.encoding(), 0b0010);
+        assert_eq!(Cond::Lo.encoding(), 0b0011);
+        assert_eq!(Cond::Hi.encoding(), 0b1000);
+        assert_eq!(Cond::Ls.encoding(), 0b1001);
+        assert_eq!(Cond::Ge.encoding(), 0b1010);
+        assert_eq!(Cond::Lt.encoding(), 0b1011);
+        assert_eq!(Cond::Gt.encoding(), 0b1100);
+        assert_eq!(Cond::Le.encoding(), 0b1101);
+    }
+
+    #[test]
+    fn test_condition_invert() {
+        assert_eq!(Cond::Eq.invert(), Cond::Ne);
+        assert_eq!(Cond::Ne.invert(), Cond::Eq);
+        assert_eq!(Cond::Lt.invert(), Cond::Ge);
+        assert_eq!(Cond::Gt.invert(), Cond::Le);
+        assert_eq!(Cond::Le.invert(), Cond::Gt);
+        assert_eq!(Cond::Ge.invert(), Cond::Lt);
+    }
+
+    // --- Register encoding ---
+
+    #[test]
+    fn test_register_encoding() {
+        assert_eq!(Reg::X0.encoding(), 0);
+        assert_eq!(Reg::X1.encoding(), 1);
+        assert_eq!(Reg::X19.encoding(), 19);
+        assert_eq!(Reg::Fp.encoding(), 29);
+        assert_eq!(Reg::Lr.encoding(), 30);
+        assert_eq!(Reg::Sp.encoding(), 31);
+        assert_eq!(Reg::Xzr.encoding(), 31);
+    }
 }
