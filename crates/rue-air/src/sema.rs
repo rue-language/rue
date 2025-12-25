@@ -1675,7 +1675,19 @@ impl<'a> Sema<'a> {
                 // This is a future optimization opportunity.
                 ctx.pop_scope();
 
-                let last = last_result.expect("block should have at least one instruction");
+                // Handle empty blocks - they evaluate to Unit
+                let last = match last_result {
+                    Some(result) => result,
+                    None => {
+                        // Empty block: create a UnitConst
+                        let air_ref = air.add_inst(AirInst {
+                            data: AirInstData::UnitConst,
+                            ty: Type::Unit,
+                            span: inst.span,
+                        });
+                        AnalysisResult::new(air_ref, Type::Unit)
+                    }
+                };
 
                 // Only create a Block instruction if there are statements;
                 // otherwise just return the value directly (optimization)
@@ -2983,5 +2995,18 @@ mod tests {
         let output = compile_to_air("fn main() -> i32 { let x = 10; let y = 20; x + y }").unwrap();
 
         assert_eq!(output.functions[0].num_locals, 2);
+    }
+
+    #[test]
+    fn test_empty_block_evaluates_to_unit() {
+        // Empty block should evaluate to () and not panic
+        let output = compile_to_air("fn main() { let _x: () = {}; }").unwrap();
+
+        let air = &output.functions[0].air;
+        // Should have a UnitConst instruction for the empty block
+        let has_unit_const = air
+            .iter()
+            .any(|(_, inst)| matches!(inst.data, AirInstData::UnitConst));
+        assert!(has_unit_const, "Empty block should produce UnitConst");
     }
 }
