@@ -11,6 +11,7 @@ use rue_cfg::{
 };
 
 use super::mir::{LabelId, Operand, Reg, VReg, X86Inst, X86Mir};
+use crate::types;
 
 /// Argument passing registers per System V AMD64 ABI.
 const ARG_REGS: [Reg; 6] = [Reg::Rdi, Reg::Rsi, Reg::Rdx, Reg::Rcx, Reg::R8, Reg::R9];
@@ -125,62 +126,22 @@ impl<'a> CfgLower<'a> {
 
     /// Get the array type definition.
     fn array_type_def(&self, array_type_id: ArrayTypeId) -> Option<&ArrayTypeDef> {
-        self.array_types.get(array_type_id.0 as usize)
+        types::array_type_def(self.array_types, array_type_id)
     }
 
     /// Calculate the total number of slots needed to store a type.
-    /// For scalars, this is 1. For arrays, it's length * slot_count(element_type).
-    /// For structs, this is the sum of slot counts for all fields.
-    /// For nested types, this recursively calculates.
     fn type_slot_count(&self, ty: Type) -> u32 {
-        match ty {
-            Type::Array(array_type_id) => {
-                if let Some(def) = self.array_type_def(array_type_id) {
-                    let elem_slots = self.type_slot_count(def.element_type);
-                    (def.length as u32) * elem_slots
-                } else {
-                    1
-                }
-            }
-            Type::Struct(struct_id) => {
-                // Sum the slot counts of all fields
-                if let Some(struct_def) = self.struct_defs.get(struct_id.0 as usize) {
-                    let mut total = 0u32;
-                    for field in &struct_def.fields {
-                        total += self.type_slot_count(field.ty);
-                    }
-                    total.max(1) // At least 1 slot even for empty struct
-                } else {
-                    1
-                }
-            }
-            _ => 1,
-        }
+        types::type_slot_count(self.struct_defs, self.array_types, ty)
     }
 
     /// Calculate the slot count for a single element of an array type.
     fn array_element_slot_count(&self, array_type_id: ArrayTypeId) -> u32 {
-        if let Some(def) = self.array_type_def(array_type_id) {
-            self.type_slot_count(def.element_type)
-        } else {
-            1
-        }
+        types::array_element_slot_count(self.struct_defs, self.array_types, array_type_id)
     }
 
     /// Calculate the slot offset for a field within a struct.
-    /// This accounts for the sizes of all preceding fields.
     fn struct_field_slot_offset(&self, struct_id: StructId, field_index: u32) -> u32 {
-        if let Some(struct_def) = self.struct_defs.get(struct_id.0 as usize) {
-            let mut offset = 0u32;
-            for i in 0..(field_index as usize) {
-                if let Some(field) = struct_def.fields.get(i) {
-                    offset += self.type_slot_count(field.ty);
-                }
-            }
-            offset
-        } else {
-            field_index // Fallback to field index if struct not found
-        }
+        types::struct_field_slot_offset(self.struct_defs, self.array_types, struct_id, field_index)
     }
 
     /// Trace back through a chain of FieldGet instructions to find the original

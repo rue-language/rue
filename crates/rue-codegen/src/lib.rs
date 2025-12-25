@@ -14,6 +14,7 @@
 //! virtual registers to physical registers before final emission.
 
 pub mod aarch64;
+pub mod types;
 pub mod x86_64;
 
 /// A relocation emitted by the code generator.
