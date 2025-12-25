@@ -455,6 +455,20 @@ fn main() -> i32 {
 """
 exit_code = 12
 
+# Nested array bounds checking
+
+[[case]]
+name = "nested_array_outer_index_out_of_bounds"
+spec = ["7.1:10", "7.1:11"]
+source = """
+fn main() -> i32 {
+    let matrix: [[i32; 2]; 2] = [[1, 2], [3, 4]];
+    let i = 10;
+    matrix[i][0]
+}
+"""
+exit_code = 101
+
 # Arrays in structs
 
 [[case]]
