@@ -169,3 +169,4 @@ See [ADR-0005: Preview Features](0005-preview-features.md) for details on the ga
 | [0006](0006-zola-unified-website.md) | Unified Zola Website | Implemented | tooling, documentation |
 | [0007](0007-hindley-milner-inference.md) | Hindley-Milner Type Inference | Implemented | types, compiler |
 | [0008](0008-affine-types-mvs.md) | Affine Types and Mutable Value Semantics | Accepted | types, semantics, ownership |
+| [0009](0009-struct-methods.md) | Struct Methods | Proposal | types, syntax |

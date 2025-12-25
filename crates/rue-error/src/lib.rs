@@ -39,6 +39,8 @@ pub enum PreviewFeature {
     MutableStrings,
     /// Hindley-Milner type inference (ADR-0007).
     HmInference,
+    /// Struct methods and impl blocks (ADR-0009).
+    Methods,
 }
 
 impl PreviewFeature {
@@ -47,6 +49,7 @@ impl PreviewFeature {
         match self {
             PreviewFeature::MutableStrings => "mutable_strings",
             PreviewFeature::HmInference => "hm_inference",
+            PreviewFeature::Methods => "methods",
         }
     }
 
@@ -55,6 +58,7 @@ impl PreviewFeature {
         match s {
             "mutable_strings" => Some(PreviewFeature::MutableStrings),
             "hm_inference" => Some(PreviewFeature::HmInference),
+            "methods" => Some(PreviewFeature::Methods),
             _ => None,
         }
     }
@@ -64,12 +68,17 @@ impl PreviewFeature {
         match self {
             PreviewFeature::MutableStrings => "ADR-019",
             PreviewFeature::HmInference => "ADR-0007",
+            PreviewFeature::Methods => "ADR-0009",
         }
     }
 
     /// Get all available preview features.
     pub fn all() -> &'static [PreviewFeature] {
-        &[PreviewFeature::MutableStrings, PreviewFeature::HmInference]
+        &[
+            PreviewFeature::MutableStrings,
+            PreviewFeature::HmInference,
+            PreviewFeature::Methods,
+        ]
     }
 
     /// Get a comma-separated list of all feature names (for help text).
