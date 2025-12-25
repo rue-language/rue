@@ -6,17 +6,17 @@ template = "spec/page.html"
 
 # Division by Zero
 
-{{ rule(id="8.3:1", cat="normative") }}
+{{ rule(id="8.3:1", cat="dynamic-semantics") }}
 
-Division or remainder by zero causes a runtime panic.
+Division or remainder by zero **MUST** cause a runtime panic.
 
-{{ rule(id="8.3:2", cat="normative") }}
+{{ rule(id="8.3:2", cat="dynamic-semantics") }}
 
-On division by zero, the program terminates with exit code 101 and prints an error message.
+On division by zero, the program **MUST** terminate with exit code 101 and print an error message.
 
 {{ rule(id="8.3:3", cat="normative") }}
 
-Both the division operator (`/`) and remainder operator (`%`) can cause division-by-zero errors.
+Both the division operator (`/`) and remainder operator (`%`) **MAY** cause division-by-zero errors.
 
 {{ rule(id="8.3:4") }}
 

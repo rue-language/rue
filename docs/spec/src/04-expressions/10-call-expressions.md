@@ -16,13 +16,13 @@ A call expression invokes a function with a list of arguments.
 call_expr = expression "(" [ expression { "," expression } ] ")" ;
 ```
 
-{{ rule(id="4.10:3", cat="normative") }}
+{{ rule(id="4.10:3", cat="legality-rule") }}
 
-The number of arguments must match the number of parameters in the function signature.
+The number of arguments **MUST** match the number of parameters in the function signature.
 
-{{ rule(id="4.10:4", cat="normative") }}
+{{ rule(id="4.10:4", cat="legality-rule") }}
 
-Each argument type must be compatible with the corresponding parameter type.
+Each argument type **MUST** be compatible with the corresponding parameter type.
 
 {{ rule(id="4.10:5", cat="normative") }}
 

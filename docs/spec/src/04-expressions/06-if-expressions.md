@@ -17,17 +17,17 @@ if_expr     = "if" expression "{" block "}" [ else_clause ] ;
 else_clause = "else" ( "{" block "}" | if_expr ) ;
 ```
 
-{{ rule(id="4.6:3", cat="normative") }}
+{{ rule(id="4.6:3", cat="legality-rule") }}
 
-The condition expression must have type `bool`.
+The condition expression **MUST** have type `bool`.
 
-{{ rule(id="4.6:4", cat="normative") }}
+{{ rule(id="4.6:4", cat="legality-rule") }}
 
-If an `else` branch is present, both branches must have the same type. The type of the if expression is the type of its branches.
+If an `else` branch is present, both branches **MUST** have the same type. The type of the if expression is the type of its branches.
 
-{{ rule(id="4.6:5", cat="normative") }}
+{{ rule(id="4.6:5", cat="legality-rule") }}
 
-If no `else` branch is present, the `then` branch must have type `()`.
+If no `else` branch is present, the `then` branch **MUST** have type `()`.
 
 {{ rule(id="4.6:6") }}
 

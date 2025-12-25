@@ -26,9 +26,9 @@ Rue detects certain error conditions at runtime and responds with a panic, termi
 
 ## Integer Overflow
 
-{{ rule(id="B.2:2") }}
+{{ rule(id="B.2:2", cat="dynamic-semantics") }}
 
-Signed or unsigned integer arithmetic that overflows the representable range causes a runtime panic.
+Signed or unsigned integer arithmetic that overflows the representable range **MUST** cause a runtime panic.
 
 **Operations affected:**
 - Addition (`+`)
@@ -40,9 +40,9 @@ Signed or unsigned integer arithmetic that overflows the representable range cau
 
 ## Division by Zero
 
-{{ rule(id="B.2:3") }}
+{{ rule(id="B.2:3", cat="dynamic-semantics") }}
 
-Division or remainder with a divisor of zero causes a runtime panic.
+Division or remainder with a divisor of zero **MUST** cause a runtime panic.
 
 **Operations affected:**
 - Division (`/`)
@@ -52,9 +52,9 @@ Division or remainder with a divisor of zero causes a runtime panic.
 
 ## Array Bounds Violation
 
-{{ rule(id="B.2:4") }}
+{{ rule(id="B.2:4", cat="dynamic-semantics") }}
 
-Accessing an array element with an index outside the valid range `[0, length)` causes a runtime panic.
+Accessing an array element with an index outside the valid range `[0, length)` **MUST** cause a runtime panic.
 
 **Operations affected:**
 - Array indexing (`arr[i]`)

@@ -6,17 +6,17 @@ template = "spec/page.html"
 
 # Integer Overflow
 
-{{ rule(id="8.1:1", cat="normative") }}
+{{ rule(id="8.1:1", cat="dynamic-semantics") }}
 
-Integer overflow during arithmetic operations causes a runtime panic.
+Integer overflow during arithmetic operations **MUST** cause a runtime panic.
 
-{{ rule(id="8.1:2", cat="normative") }}
+{{ rule(id="8.1:2", cat="dynamic-semantics") }}
 
-On overflow, the program terminates with exit code 101 and prints an error message.
+On overflow, the program **MUST** terminate with exit code 101 and print an error message.
 
 {{ rule(id="8.1:3", cat="normative") }}
 
-The following operations can overflow:
+The following operations **MAY** overflow:
 - Addition (`+`)
 - Subtraction (`-`)
 - Multiplication (`*`)

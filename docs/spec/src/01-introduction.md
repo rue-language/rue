@@ -49,33 +49,63 @@ Paragraphs marked with rule categories are normative unless explicitly marked as
 | `informative` | Explanatory text that is not normative |
 | `example` | Code examples that are not normative |
 
-## Definitions
+## Normative Language
 
 {{ rule(id="1.4:1") }}
 
+This specification uses terminology from [RFC 2119](https://datatracker.ietf.org/doc/html/rfc2119) to indicate requirement levels. The key words are interpreted as follows:
+
+{{ rule(id="1.4:2", cat="informative") }}
+
+**MUST** and **SHALL**: An absolute requirement. A conforming implementation is required to satisfy this.
+
+{{ rule(id="1.4:3", cat="informative") }}
+
+**MUST NOT** and **SHALL NOT**: An absolute prohibition. A conforming implementation is required not to do this.
+
+{{ rule(id="1.4:4", cat="informative") }}
+
+**SHOULD** and **RECOMMENDED**: There may be valid reasons to ignore this requirement, but the implications must be understood.
+
+{{ rule(id="1.4:5", cat="informative") }}
+
+**SHOULD NOT** and **NOT RECOMMENDED**: There may be valid reasons to accept this behavior, but the implications must be understood.
+
+{{ rule(id="1.4:6", cat="informative") }}
+
+**MAY** and **OPTIONAL**: An item is truly optional. Implementations may or may not include it.
+
+{{ rule(id="1.4:7") }}
+
+These keywords appear in **bold** throughout this specification to distinguish normative requirements from descriptive text.
+
+## Definitions
+
+{{ rule(id="1.4:8") }}
+
 The following terms are used throughout this specification:
 
-{{ rule(id="1.4:2") }}
+{{ rule(id="1.4:9") }}
 
 **Expression**: A syntactic construct that evaluates to a value.
 
-{{ rule(id="1.4:3") }}
+{{ rule(id="1.4:10") }}
 
 **Statement**: A syntactic construct that performs an action but does not produce a value.
 
-{{ rule(id="1.4:4") }}
+{{ rule(id="1.4:11") }}
 
 **Item**: A top-level definition in a program, such as a function or struct.
 
-{{ rule(id="1.4:5") }}
+{{ rule(id="1.4:12") }}
 
 **Type**: A classification that determines what values an expression can produce and what operations are valid on those values.
 
-{{ rule(id="1.4:6") }}
+{{ rule(id="1.4:13") }}
 
 **Normative**: Content that defines required behavior for conforming implementations.
 
-{{ rule(id="1.4:7") }}
+{{ rule(id="1.4:14") }}
 
 **Informative**: Content that provides explanation or context but does not define required behavior.
 

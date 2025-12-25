@@ -16,13 +16,13 @@ An index expression accesses an element of an array.
 index_expr = expression "[" expression "]" ;
 ```
 
-{{ rule(id="4.11:3", cat="normative") }}
+{{ rule(id="4.11:3", cat="legality-rule") }}
 
-The expression before the brackets must have an array type `[T; N]`.
+The expression before the brackets **MUST** have an array type `[T; N]`.
 
-{{ rule(id="4.11:4", cat="normative") }}
+{{ rule(id="4.11:4", cat="legality-rule") }}
 
-The index expression must have an unsigned integer type (`u8`, `u16`, `u32`, or `u64`).
+The index expression **MUST** have an unsigned integer type (`u8`, `u16`, `u32`, or `u64`).
 
 {{ rule(id="4.11:5", cat="normative") }}
 
@@ -39,17 +39,17 @@ fn main() -> i32 {
 
 ## Bounds Checking
 
-{{ rule(id="4.11:7", cat="normative") }}
+{{ rule(id="4.11:7", cat="legality-rule") }}
 
-For constant indices, bounds checking is performed at compile time.
+For constant indices, bounds checking **MUST** be performed at compile time.
 
-{{ rule(id="4.11:8", cat="normative") }}
+{{ rule(id="4.11:8", cat="dynamic-semantics") }}
 
-For variable indices, bounds checking is performed at runtime.
+For variable indices, bounds checking **MUST** be performed at runtime.
 
-{{ rule(id="4.11:9", cat="normative") }}
+{{ rule(id="4.11:9", cat="dynamic-semantics") }}
 
-An out-of-bounds access causes a runtime panic.
+An out-of-bounds access **MUST** cause a runtime panic.
 
 {{ rule(id="4.11:10") }}
 

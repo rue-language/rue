@@ -18,9 +18,9 @@ let_stmt = "let" [ "mut" ] IDENT [ ":" type ] "=" expression ";" ;
 
 ## Immutable Bindings
 
-{{ rule(id="5.1:3", cat="normative") }}
+{{ rule(id="5.1:3", cat="legality-rule") }}
 
-By default, variables are immutable. An immutable variable cannot be reassigned.
+By default, variables are immutable. An immutable variable **MUST NOT** be reassigned.
 
 {{ rule(id="5.1:4", cat="normative") }}
 
@@ -35,7 +35,7 @@ fn main() -> i32 {
 
 {{ rule(id="5.1:5", cat="normative") }}
 
-The `mut` keyword creates a mutable binding that can be reassigned.
+The `mut` keyword creates a mutable binding that **MAY** be reassigned.
 
 {{ rule(id="5.1:6") }}
 
@@ -53,9 +53,9 @@ fn main() -> i32 {
 
 Type annotations are optional when the type can be inferred from the initializer.
 
-{{ rule(id="5.1:8", cat="normative") }}
+{{ rule(id="5.1:8", cat="legality-rule") }}
 
-When a type annotation is present, the initializer must be compatible with that type.
+When a type annotation is present, the initializer **MUST** be compatible with that type.
 
 {{ rule(id="5.1:9") }}
 
@@ -72,11 +72,11 @@ fn main() -> i32 {
 
 {{ rule(id="5.1:10", cat="normative") }}
 
-A variable can shadow a previous variable of the same name in the same scope.
+A variable **MAY** shadow a previous variable of the same name in the same scope.
 
 {{ rule(id="5.1:11", cat="normative") }}
 
-When shadowing, the new variable can have a different type.
+When shadowing, the new variable **MAY** have a different type.
 
 {{ rule(id="5.1:12", cat="normative") }}
 

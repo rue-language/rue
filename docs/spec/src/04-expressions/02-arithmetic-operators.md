@@ -60,9 +60,9 @@ fn main() -> i32 {
 
 The unary negation operator `-` takes a single signed integer operand and produces its arithmetic negation.
 
-{{ rule(id="4.2:14", cat="normative") }}
+{{ rule(id="4.2:14", cat="legality-rule") }}
 
-Unary negation on unsigned integer types is a compile-time error.
+A compiler **MUST** reject unary negation applied to unsigned integer types.
 
 {{ rule(id="4.2:7", cat="normative") }}
 
@@ -82,9 +82,9 @@ fn main() -> i32 {
 
 When a negated integer literal represents the minimum value of a signed integer type, the compiler evaluates the negation at compile time and produces the minimum value directly. This special case allows expressions like `-128: i8` without runtime overflow.
 
-{{ rule(id="4.2:16", cat="normative") }}
+{{ rule(id="4.2:16", cat="dynamic-semantics") }}
 
-When negation is applied to a non-literal expression holding the minimum value of a signed integer type, the operation overflows and causes a runtime panic.
+When negation is applied to a non-literal expression holding the minimum value of a signed integer type, the operation overflows and **MUST** cause a runtime panic.
 
 {{ rule(id="4.2:17") }}
 
@@ -98,9 +98,9 @@ fn main() -> i32 {
 
 ## Overflow
 
-{{ rule(id="4.2:9", cat="normative") }}
+{{ rule(id="4.2:9", cat="dynamic-semantics") }}
 
-Arithmetic operations that overflow the range of their type cause a runtime panic.
+Arithmetic operations that overflow the range of their type **MUST** cause a runtime panic.
 
 {{ rule(id="4.2:10") }}
 
@@ -112,9 +112,9 @@ fn main() -> i32 {
 
 ## Division by Zero
 
-{{ rule(id="4.2:11", cat="normative") }}
+{{ rule(id="4.2:11", cat="dynamic-semantics") }}
 
-Division or remainder by zero causes a runtime panic.
+Division or remainder by zero **MUST** cause a runtime panic.
 
 {{ rule(id="4.2:12") }}
 

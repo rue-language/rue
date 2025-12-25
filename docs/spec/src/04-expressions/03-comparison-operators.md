@@ -72,9 +72,9 @@ Ordering operators work only on integers.
 | `<=` | Less or equal | True if left <= right |
 | `>=` | Greater or equal | True if left >= right |
 
-{{ rule(id="4.3:6", cat="normative") }}
+{{ rule(id="4.3:6", cat="legality-rule") }}
 
-Ordering operators on boolean, string, unit, or struct values are a compile-time error.
+Ordering operators on boolean, string, unit, or struct values are a compile-time error. Implementations **MUST** reject such programs.
 
 {{ rule(id="4.3:7") }}
 
@@ -102,9 +102,9 @@ fn main() -> i32 {
 
 ## Type Checking
 
-{{ rule(id="4.3:10", cat="normative") }}
+{{ rule(id="4.3:10", cat="legality-rule") }}
 
-Both operands of a comparison must have the same type.
+Both operands of a comparison **MUST** have the same type.
 
 {{ rule(id="4.3:11", cat="normative") }}
 

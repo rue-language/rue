@@ -20,13 +20,13 @@ param = IDENT ":" type ;
 
 ## Function Signature
 
-{{ rule(id="6.1:3", cat="normative") }}
+{{ rule(id="6.1:3", cat="legality-rule") }}
 
-Parameters must have explicit type annotations.
+Parameters **MUST** have explicit type annotations.
 
-{{ rule(id="6.1:4", cat="normative") }}
+{{ rule(id="6.1:4", cat="legality-rule") }}
 
-If a return type is specified, the function body must produce a value of that type.
+If a return type is specified, the function body **MUST** produce a value of that type.
 
 {{ rule(id="6.1:5", cat="normative") }}
 
@@ -46,13 +46,13 @@ fn do_nothing() {
 
 ## Entry Point
 
-{{ rule(id="6.1:7", cat="normative") }}
+{{ rule(id="6.1:7", cat="legality-rule") }}
 
-A program must have a function named `main`.
+A program **MUST** have a function named `main`.
 
-{{ rule(id="6.1:8", cat="normative") }}
+{{ rule(id="6.1:8", cat="legality-rule") }}
 
-The `main` function must either return `i32` or `()`. When it returns `i32`, that value becomes the program's exit code. When it returns `()`, the exit code is 0.
+The `main` function **MUST** return either `i32` or `()`. When it returns `i32`, that value becomes the program's exit code. When it returns `()`, the exit code is 0.
 
 {{ rule(id="6.1:9") }}
 
@@ -66,7 +66,7 @@ fn main() -> i32 {
 
 {{ rule(id="6.1:10", cat="normative") }}
 
-Functions can call themselves recursively.
+Functions **MAY** call themselves recursively.
 
 {{ rule(id="6.1:11") }}
 
@@ -85,7 +85,7 @@ fn main() -> i32 {
 
 {{ rule(id="6.1:12", cat="normative") }}
 
-Functions can call any function defined in the same module, regardless of definition order.
+Functions **MAY** call any function defined in the same module, regardless of definition order.
 
 {{ rule(id="6.1:13") }}
 

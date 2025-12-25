@@ -20,13 +20,13 @@ assign_stmt = IDENT "=" expression ";"
 
 ## Variable Assignment
 
-{{ rule(id="5.2:3", cat="normative") }}
+{{ rule(id="5.2:3", cat="legality-rule") }}
 
-The variable must have been declared with `let mut`.
+The variable **MUST** have been declared with `let mut`.
 
-{{ rule(id="5.2:4", cat="normative") }}
+{{ rule(id="5.2:4", cat="legality-rule") }}
 
-The expression type must be compatible with the variable's type.
+The expression type **MUST** be compatible with the variable's type.
 
 {{ rule(id="5.2:5") }}
 
@@ -98,6 +98,6 @@ fn main() -> i32 {
 
 ## Assignment is Not an Expression
 
-{{ rule(id="5.2:10", cat="normative") }}
+{{ rule(id="5.2:10", cat="legality-rule") }}
 
-Assignment is a statement, not an expression. It cannot be used in expression position.
+Assignment is a statement, not an expression. It **MUST NOT** be used in expression position.

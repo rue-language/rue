@@ -18,13 +18,13 @@ array_literal = "[" [ expression { "," expression } ] "]" ;
 
 An array literal creates an array with the given elements.
 
-{{ rule(id="7.1:3", cat="normative") }}
+{{ rule(id="7.1:3", cat="legality-rule") }}
 
-All elements must have the same type.
+All elements **MUST** have the same type.
 
-{{ rule(id="7.1:4", cat="normative") }}
+{{ rule(id="7.1:4", cat="legality-rule") }}
 
-The number of elements must match the declared array size.
+The number of elements **MUST** match the declared array size.
 
 {{ rule(id="7.1:5") }}
 
@@ -41,9 +41,9 @@ fn main() -> i32 {
 
 Array elements are accessed using bracket notation `arr[index]`.
 
-{{ rule(id="7.1:7", cat="normative") }}
+{{ rule(id="7.1:7", cat="legality-rule") }}
 
-The index must be an integer type.
+The index **MUST** be an integer type.
 
 {{ rule(id="7.1:8") }}
 
@@ -56,17 +56,17 @@ fn main() -> i32 {
 
 ## Bounds Checking
 
-{{ rule(id="7.1:9", cat="normative") }}
+{{ rule(id="7.1:9", cat="legality-rule") }}
 
-For constant indices, bounds are checked at compile time.
+For constant indices, bounds **MUST** be checked at compile time.
 
-{{ rule(id="7.1:10", cat="normative") }}
+{{ rule(id="7.1:10", cat="dynamic-semantics") }}
 
-For variable indices, bounds are checked at runtime.
+For variable indices, bounds **MUST** be checked at runtime.
 
-{{ rule(id="7.1:11", cat="normative") }}
+{{ rule(id="7.1:11", cat="dynamic-semantics") }}
 
-Out-of-bounds access causes a runtime panic.
+Out-of-bounds access **MUST** cause a runtime panic.
 
 ## Mutable Arrays
 
@@ -93,15 +93,15 @@ fn main() -> i32 {
 array_type = "[" type ";" INTEGER "]" ;
 ```
 
-{{ rule(id="7.1:15", cat="normative") }}
+{{ rule(id="7.1:15", cat="legality-rule") }}
 
-The size must be a non-negative integer literal.
+The size **MUST** be a non-negative integer literal.
 
 ## Nested Arrays
 
 {{ rule(id="7.1:16", cat="normative") }}
 
-Arrays may contain other arrays as elements, forming multi-dimensional arrays.
+Arrays **MAY** contain other arrays as elements, forming multi-dimensional arrays.
 
 {{ rule(id="7.1:17", cat="normative") }}
 
@@ -120,7 +120,7 @@ fn main() -> i32 {
 
 {{ rule(id="7.1:19", cat="normative") }}
 
-Struct fields may have array types.
+Struct fields **MAY** have array types.
 
 {{ rule(id="7.1:20", cat="normative") }}
 
@@ -141,7 +141,7 @@ fn main() -> i32 {
 
 {{ rule(id="7.1:22", cat="normative") }}
 
-Functions may accept arrays as parameters.
+Functions **MAY** accept arrays as parameters.
 
 {{ rule(id="7.1:23", cat="normative") }}
 

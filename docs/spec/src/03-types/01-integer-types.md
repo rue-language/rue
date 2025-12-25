@@ -28,9 +28,9 @@ The type `i32` represents signed integers in the range [-2147483648, 2147483647]
 
 The type `i64` represents signed integers in the range [-9223372036854775808, 9223372036854775807].
 
-{{ rule(id="3.1:6", cat="normative") }}
+{{ rule(id="3.1:6", cat="dynamic-semantics") }}
 
-Signed integer arithmetic that overflows causes a runtime panic.
+Signed integer arithmetic that overflows **MUST** cause a runtime panic.
 
 {{ rule(id="3.1:7") }}
 
@@ -66,9 +66,9 @@ The type `u32` represents unsigned integers in the range [0, 4294967295].
 
 The type `u64` represents unsigned integers in the range [0, 18446744073709551615].
 
-{{ rule(id="3.1:13", cat="normative") }}
+{{ rule(id="3.1:13", cat="dynamic-semantics") }}
 
-Unsigned integer arithmetic that overflows causes a runtime panic.
+Unsigned integer arithmetic that overflows **MUST** cause a runtime panic.
 
 ## Integer Literal Type Inference
 
@@ -92,9 +92,9 @@ fn main() -> i32 {
 
 ## Integer Literal Range Validation
 
-{{ rule(id="3.1:17", cat="normative") }}
+{{ rule(id="3.1:17", cat="legality-rule") }}
 
-A compile-time error occurs when an integer literal value exceeds the representable range of its target type.
+A compiler **MUST** reject programs where an integer literal value exceeds the representable range of its target type.
 
 {{ rule(id="3.1:18", cat="normative") }}
 

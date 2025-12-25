@@ -85,6 +85,6 @@ fn main() -> i32 {
 
 ## Type Checking
 
-{{ rule(id="4.4:12", cat="normative") }}
+{{ rule(id="4.4:12", cat="legality-rule") }}
 
-All operands of logical operators must have type `bool`.
+All operands of logical operators **MUST** have type `bool`.

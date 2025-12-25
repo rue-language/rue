@@ -20,9 +20,9 @@ return_expr = "return" expression? ;
 
 If the expression is omitted, it is equivalent to `return ()`.
 
-{{ rule(id="4.9:4", cat="normative") }}
+{{ rule(id="4.9:4", cat="legality-rule") }}
 
-The expression following `return` (or the implicit `()`) must have a type compatible with the function's declared return type.
+The expression following `return` (or the implicit `()`) **MUST** have a type compatible with the function's declared return type.
 
 {{ rule(id="4.9:5", cat="normative") }}
 

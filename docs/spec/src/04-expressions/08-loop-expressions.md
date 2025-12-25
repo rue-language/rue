@@ -18,9 +18,9 @@ A while loop repeatedly executes its body while a condition is true.
 while_expr = "while" expression "{" block "}" ;
 ```
 
-{{ rule(id="4.8:3", cat="normative") }}
+{{ rule(id="4.8:3", cat="legality-rule") }}
 
-The condition expression must have type `bool`.
+The condition expression **MUST** have type `bool`.
 
 {{ rule(id="4.8:4", cat="normative") }}
 
@@ -105,9 +105,9 @@ The `break` expression exits the innermost enclosing loop.
 
 The `continue` expression skips to the next iteration of the innermost enclosing loop.
 
-{{ rule(id="4.8:9", cat="normative") }}
+{{ rule(id="4.8:9", cat="legality-rule") }}
 
-Both `break` and `continue` must appear within a loop. Using them outside a loop is a compile-time error.
+Both `break` and `continue` **MUST** appear within a loop. Using them outside a loop is a compile-time error.
 
 {{ rule(id="4.8:10", cat="normative") }}
 

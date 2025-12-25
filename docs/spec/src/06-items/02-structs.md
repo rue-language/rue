@@ -20,9 +20,9 @@ struct_field = IDENT ":" type ;
 
 ## Struct Definition
 
-{{ rule(id="6.2:3", cat="normative") }}
+{{ rule(id="6.2:3", cat="legality-rule") }}
 
-Field names must be unique within a struct.
+Field names **MUST** be unique within a struct.
 
 {{ rule(id="6.2:4") }}
 
@@ -35,13 +35,13 @@ struct Point {
 
 ## Struct Instantiation
 
-{{ rule(id="6.2:5", cat="normative") }}
+{{ rule(id="6.2:5", cat="legality-rule") }}
 
-All fields must be initialized when creating a struct instance.
+All fields **MUST** be initialized when creating a struct instance.
 
 {{ rule(id="6.2:6", cat="normative") }}
 
-Field initializers may be provided in any order.
+Field initializers **MAY** be provided in any order.
 
 {{ rule(id="6.2:7") }}
 
