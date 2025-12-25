@@ -1571,7 +1571,8 @@ impl<'a> ConstraintGenerator<'a> {
             InstData::FnDecl { .. }
             | InstData::StructDecl { .. }
             | InstData::EnumDecl { .. }
-            | InstData::ImplDecl { .. } => InferType::Concrete(Type::Unit),
+            | InstData::ImplDecl { .. }
+            | InstData::DropFnDecl { .. } => InferType::Concrete(Type::Unit),
 
             // Method call: receiver.method(args)
             InstData::MethodCall {

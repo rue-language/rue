@@ -42,6 +42,7 @@ pub enum Item {
     Struct(StructDecl),
     Enum(EnumDecl),
     Impl(ImplBlock),
+    DropFn(DropFn),
 }
 
 /// A struct declaration.
@@ -96,6 +97,21 @@ pub struct ImplBlock {
     /// Methods in this impl block
     pub methods: Vec<Method>,
     /// Span covering the entire impl block
+    pub span: Span,
+}
+
+/// A user-defined destructor declaration.
+///
+/// Syntax: `drop fn TypeName(self) { body }`
+#[derive(Debug, Clone)]
+pub struct DropFn {
+    /// The struct type this destructor is for
+    pub type_name: Ident,
+    /// The self parameter
+    pub self_param: SelfParam,
+    /// Destructor body
+    pub body: Expr,
+    /// Span covering the entire drop fn
     pub span: Span,
 }
 
@@ -712,6 +728,7 @@ impl<'a> fmt::Display for AstPrinter<'a> {
                 Item::Struct(s) => fmt_struct(f, s, 0)?,
                 Item::Enum(e) => fmt_enum(f, e, 0)?,
                 Item::Impl(impl_block) => fmt_impl_block(f, impl_block, 0)?,
+                Item::DropFn(drop_fn) => fmt_drop_fn(f, drop_fn, 0)?,
             }
         }
         Ok(())
@@ -754,6 +771,13 @@ fn fmt_impl_block(f: &mut fmt::Formatter<'_>, impl_block: &ImplBlock, level: usi
     for method in &impl_block.methods {
         fmt_method(f, method, level + 1)?;
     }
+    Ok(())
+}
+
+fn fmt_drop_fn(f: &mut fmt::Formatter<'_>, drop_fn: &DropFn, level: usize) -> fmt::Result {
+    indent(f, level)?;
+    writeln!(f, "DropFn {}(self)", drop_fn.type_name.name)?;
+    fmt_expr(f, &drop_fn.body, level + 1)?;
     Ok(())
 }
 

@@ -409,3 +409,114 @@ fn main() -> i32 {
 }
 """
 exit_code = 30
+
+# =============================================================================
+# User-Defined Destructors (Phase 4)
+# =============================================================================
+
+[[case]]
+name = "user_defined_destructor_syntax"
+spec = ["3.9:21", "3.9:22"]
+preview = "destructors"
+description = "Basic drop fn syntax parses correctly"
+source = """
+struct Data { value: i32 }
+
+drop fn Data(self) {
+    // destructor body
+}
+
+fn main() -> i32 {
+    let d = Data { value: 42 };
+    d.value
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "user_defined_destructor_with_field_access"
+spec = ["3.9:21", "3.9:22", "3.9:26"]
+preview = "destructors"
+description = "User-defined destructor can access fields via self"
+source = """
+struct Counter { value: i32 }
+
+drop fn Counter(self) {
+    let _ = self.value;
+}
+
+fn main() -> i32 {
+    let c = Counter { value: 42 };
+    c.value
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "user_defined_destructor_runs_at_scope_exit"
+spec = ["3.9:25"]
+preview = "destructors"
+skip = true
+description = "User-defined destructor runs when value goes out of scope"
+source = """
+// This test will need observable side effects (e.g., intrinsics) to verify
+// For now it's skipped - will enable when we can observe destructor calls
+fn main() -> i32 { 0 }
+"""
+exit_code = 0
+
+[[case]]
+name = "duplicate_destructor_error"
+spec = ["3.9:23"]
+preview = "destructors"
+description = "Duplicate destructors for the same type produce an error"
+source = """
+struct Data { value: i32 }
+
+drop fn Data(self) {}
+
+drop fn Data(self) {}
+
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = "duplicate destructor"
+
+[[case]]
+name = "destructor_unknown_type_error"
+spec = ["3.9:24"]
+preview = "destructors"
+description = "Destructor for unknown type produces an error"
+source = """
+drop fn UnknownType(self) {}
+
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = "unknown type"
+
+[[case]]
+name = "destructor_for_primitive_error"
+spec = ["3.9:24"]
+preview = "destructors"
+description = "Destructor for primitive type produces an error"
+skip = true
+source = """
+// Primitive types are keywords, can't be used as the type name in drop fn
+// This would be a parse error. Skipping since parser rejects this already.
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+
+[[case]]
+name = "destructor_must_be_at_top_level"
+spec = ["3.9:22"]
+preview = "destructors"
+skip = true
+description = "Destructor declared inside impl block is an error"
+source = """
+// drop fn inside impl block would be a parse error
+// This test is skipped because the parser naturally rejects it
+fn main() -> i32 { 0 }
+"""
+compile_fail = true

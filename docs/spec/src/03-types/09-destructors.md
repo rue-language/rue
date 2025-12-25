@@ -140,3 +140,48 @@ When a trivially droppable value is dropped, no code is generated. The drop is e
 {{ rule(id="3.9:20", cat="informative") }}
 
 The distinction between trivially droppable and non-trivially droppable types allows the compiler to avoid generating unnecessary cleanup code for simple types like integers and structs containing only integers.
+
+## User-Defined Destructors
+
+{{ rule(id="3.9:21", cat="syntax") }}
+
+A user-defined destructor is declared using the `drop fn` syntax:
+
+```rue
+drop fn TypeName(self) {
+    // cleanup code
+}
+```
+
+{{ rule(id="3.9:22", cat="normative") }}
+
+A user-defined destructor must be declared at the top level, outside of any `impl` block. It must take exactly one parameter named `self` and return nothing (implicit unit type).
+
+{{ rule(id="3.9:23", cat="legality-rule") }}
+
+Each struct type may have at most one user-defined destructor. A compile-time error is raised if multiple destructors are declared for the same type.
+
+{{ rule(id="3.9:24", cat="legality-rule") }}
+
+A user-defined destructor can only be declared for a struct type that is defined in the same compilation unit. A compile-time error is raised if the destructor references an unknown type or a non-struct type.
+
+{{ rule(id="3.9:25", cat="dynamic-semantics") }}
+
+When a value with a user-defined destructor is dropped, the user-defined destructor runs first, followed by the automatic dropping of any fields that have destructors.
+
+{{ rule(id="3.9:26", cat="example") }}
+
+```rue
+struct FileHandle {
+    fd: i32,
+}
+
+drop fn FileHandle(self) {
+    // Close the file descriptor
+    close(self.fd);
+}
+```
+
+{{ rule(id="3.9:27", cat="informative") }}
+
+The `drop fn` syntax was chosen because it clearly indicates the purpose of the function while being distinct from regular functions and methods. The destructor is not part of any impl block because it has special calling semantics: it is invoked automatically by the compiler when values go out of scope.

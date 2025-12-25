@@ -8,6 +8,7 @@ use rue_intern::Interner;
 /// Known type intrinsics that take a type argument rather than an expression.
 /// These intrinsics operate on types at compile time (e.g., @size_of(i32)).
 const TYPE_INTRINSICS: &[&str] = &["size_of", "align_of"];
+use rue_parser::ast::DropFn;
 use rue_parser::{
     AssignTarget, Ast, BinaryOp, Directive, DirectiveArg, EnumDecl, Expr, Function, ImplBlock,
     IntrinsicArg, Item, LetPattern, Method, Pattern, Statement, StructDecl, TypeExpr, UnaryOp,
@@ -58,6 +59,9 @@ impl<'a> AstGen<'a> {
                 // Impl blocks are handled in Phase 2 (RIR Generation)
                 // For now, store them for later processing by sema
                 self.gen_impl_block(impl_block);
+            }
+            Item::DropFn(drop_fn) => {
+                self.gen_drop_fn(drop_fn);
             }
         }
     }
@@ -133,6 +137,18 @@ impl<'a> AstGen<'a> {
         self.rir.add_inst(Inst {
             data: InstData::ImplDecl { type_name, methods },
             span: impl_block.span,
+        })
+    }
+
+    fn gen_drop_fn(&mut self, drop_fn: &DropFn) -> InstRef {
+        let type_name = self.interner.intern(&drop_fn.type_name.name);
+
+        // Generate the body expression
+        let body = self.gen_expr(&drop_fn.body);
+
+        self.rir.add_inst(Inst {
+            data: InstData::DropFnDecl { type_name, body },
+            span: drop_fn.span,
         })
     }
 

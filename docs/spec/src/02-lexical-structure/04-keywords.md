@@ -32,6 +32,10 @@ The following words are keywords and cannot be used as identifiers:
 | `true` | Boolean literal |
 | `false` | Boolean literal |
 | `struct` | Struct definition |
+| `enum` | Enum definition |
+| `impl` | Impl block |
+| `self` | Self parameter in methods |
+| `drop` | Destructor declaration |
 
 ## Type Names
 

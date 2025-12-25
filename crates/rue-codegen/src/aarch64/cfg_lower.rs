@@ -1774,6 +1774,29 @@ impl<'a> CfgLower<'a> {
                 // destructor function to call.
                 let dropped_ty = self.cfg.get_inst(*dropped_value).ty;
 
+                // Load the value to drop into the first argument register (X0)
+                let val_vreg = self.get_vreg(*dropped_value);
+                self.mir.push(Aarch64Inst::MovRR {
+                    dst: Operand::Physical(ARG_REGS[0]),
+                    src: Operand::Virtual(val_vreg),
+                });
+
+                // For structs, check if there's a user-defined destructor to call first
+                if let Type::Struct(struct_id) = dropped_ty {
+                    let struct_def = &self.struct_defs[struct_id.0 as usize];
+                    if let Some(ref destructor_name) = struct_def.destructor {
+                        // Call user-defined destructor first
+                        self.mir.push(Aarch64Inst::Bl {
+                            symbol: destructor_name.clone(),
+                        });
+                        // Reload self into X0 since the call may have clobbered it
+                        self.mir.push(Aarch64Inst::MovRR {
+                            dst: Operand::Physical(ARG_REGS[0]),
+                            src: Operand::Virtual(val_vreg),
+                        });
+                    }
+                }
+
                 // Get the destructor function name based on type.
                 // The naming convention is __rue_drop_<TypeName>.
                 let drop_fn_name = match dropped_ty {
@@ -1795,14 +1818,7 @@ impl<'a> CfgLower<'a> {
                     }
                 };
 
-                // Load the value to drop into the first argument register (X0)
-                let val_vreg = self.get_vreg(*dropped_value);
-                self.mir.push(Aarch64Inst::MovRR {
-                    dst: Operand::Physical(ARG_REGS[0]),
-                    src: Operand::Virtual(val_vreg),
-                });
-
-                // Call the drop function
+                // Call the runtime drop function (handles field drops)
                 self.mir.push(Aarch64Inst::Bl {
                     symbol: drop_fn_name,
                 });

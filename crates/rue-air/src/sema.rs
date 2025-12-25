@@ -368,6 +368,9 @@ impl<'a> Sema<'a> {
         // Validate @copy struct fields are all Copy types
         self.validate_copy_structs()?;
 
+        // Collect user-defined destructors
+        self.collect_destructor_definitions()?;
+
         // Second pass: collect function and method signatures
         self.collect_function_signatures()?;
         self.collect_method_definitions()?;
@@ -482,6 +485,32 @@ impl<'a> Sema<'a> {
             }
         }
 
+        // Fifth pass: analyze destructor bodies
+        for (_, inst) in self.rir.iter() {
+            if let InstData::DropFnDecl { type_name, body } = &inst.data {
+                let type_name_str = self.interner.get(*type_name).to_string();
+                let struct_id = *self.structs.get(type_name).unwrap();
+                let struct_type = Type::Struct(struct_id);
+
+                // Destructors take self parameter and return unit
+                let self_sym = self.interner.intern("self");
+                let param_info: Vec<(Symbol, Type)> = vec![(self_sym, struct_type)];
+
+                let (air, num_locals, num_param_slots) =
+                    self.analyze_function(Type::Unit, &param_info, *body)?;
+
+                // Generate destructor name: "TypeName.__drop"
+                let full_name = format!("{}.__drop", type_name_str);
+
+                functions.push(AnalyzedFunction {
+                    name: full_name,
+                    air,
+                    num_locals,
+                    num_param_slots,
+                });
+            }
+        }
+
         Ok(SemaOutput {
             functions,
             struct_defs: self.struct_defs,
@@ -545,6 +574,7 @@ impl<'a> Sema<'a> {
                     name: struct_name,
                     fields: resolved_fields,
                     is_copy,
+                    destructor: None, // Filled in during collect_destructor_definitions
                 });
                 self.structs.insert(*name, struct_id);
             }
@@ -684,6 +714,46 @@ impl<'a> Sema<'a> {
                         ));
                     }
                 }
+            }
+        }
+        Ok(())
+    }
+
+    /// Collect all user-defined destructor definitions.
+    /// Must be called after collect_struct_definitions.
+    fn collect_destructor_definitions(&mut self) -> CompileResult<()> {
+        for (_, inst) in self.rir.iter() {
+            if let InstData::DropFnDecl { type_name, body: _ } = &inst.data {
+                let type_name_str = self.interner.get(*type_name).to_string();
+
+                // Check that the type exists and is a struct
+                let struct_id = match self.structs.get(type_name) {
+                    Some(id) => *id,
+                    None => {
+                        return Err(CompileError::new(
+                            ErrorKind::DestructorUnknownType {
+                                type_name: type_name_str,
+                            },
+                            inst.span,
+                        ));
+                    }
+                };
+
+                // Check for duplicate destructor
+                let struct_def = &self.struct_defs[struct_id.0 as usize];
+                if struct_def.destructor.is_some() {
+                    return Err(CompileError::new(
+                        ErrorKind::DuplicateDestructor {
+                            type_name: type_name_str,
+                        },
+                        inst.span,
+                    ));
+                }
+
+                // Register the destructor with the struct
+                // The destructor function will be named "TypeName.__drop"
+                let destructor_name = format!("{}.__drop", type_name_str);
+                self.struct_defs[struct_id.0 as usize].destructor = Some(destructor_name);
             }
         }
         Ok(())
@@ -2911,6 +2981,17 @@ impl<'a> Sema<'a> {
             // Impl block declarations are processed during collection phase, skip here
             InstData::ImplDecl { .. } => {
                 // Return Unit - impl blocks don't produce a value
+                let air_ref = air.add_inst(AirInst {
+                    data: AirInstData::UnitConst,
+                    ty: Type::Unit,
+                    span: inst.span,
+                });
+                Ok(AnalysisResult::new(air_ref, Type::Unit))
+            }
+
+            // Drop fn declarations are processed during collection phase, skip here
+            InstData::DropFnDecl { .. } => {
+                // Return Unit - drop fn declarations don't produce a value
                 let air_ref = air.add_inst(AirInst {
                     data: AirInstData::UnitConst,
                     ty: Type::Unit,

@@ -63,6 +63,8 @@ pub struct StructDef {
     pub fields: Vec<StructField>,
     /// Whether this struct is marked with @copy (can be implicitly duplicated)
     pub is_copy: bool,
+    /// User-defined destructor function name, if any (e.g., "Data.__drop")
+    pub destructor: Option<String>,
 }
 
 /// A field in a struct definition.

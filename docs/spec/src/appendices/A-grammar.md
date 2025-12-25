@@ -11,7 +11,7 @@ This appendix contains the complete EBNF grammar for Rue.
 ```ebnf
 (* Program structure *)
 program        = { item } ;
-item           = [ directive ] ( function | struct_def | enum_def ) ;
+item           = [ directive ] ( function | struct_def | enum_def | impl_block | drop_fn ) ;
 
 (* Builtins *)
 directive      = "@" IDENT "(" [ directive_args ] ")" ;
@@ -35,6 +35,13 @@ struct_field   = IDENT ":" type ;
 (* Enums *)
 enum_def       = "enum" IDENT "{" [ enum_variants ] "}" ;
 enum_variants  = IDENT { "," IDENT } [ "," ] ;
+
+(* Impl blocks *)
+impl_block     = "impl" IDENT "{" { method } "}" ;
+method         = "fn" IDENT "(" [ "self" [ "," params ] | params ] ")" [ "->" type ] "{" block "}" ;
+
+(* Destructors *)
+drop_fn        = "drop" "fn" IDENT "(" "self" ")" "{" block "}" ;
 
 (* Statements *)
 statement      = [ directive ] ( let_stmt | assign_stmt | expr_stmt ) ;

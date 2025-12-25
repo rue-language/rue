@@ -440,6 +440,14 @@ pub enum InstData {
         /// Argument instruction refs
         args: Vec<InstRef>,
     },
+
+    /// User-defined destructor declaration: drop fn TypeName(self) { ... }
+    DropFnDecl {
+        /// The struct type this destructor is for
+        type_name: Symbol,
+        /// Destructor body instruction ref
+        body: InstRef,
+    },
 }
 
 impl fmt::Display for InstRef {
@@ -801,6 +809,12 @@ impl<'a, 'b> RirPrinter<'a, 'b> {
                         func_str,
                         args_str.join(", ")
                     ));
+                }
+                InstData::DropFnDecl { type_name, body } => {
+                    let type_str = self.interner.get(*type_name);
+                    out.push_str(&format!("drop fn {}(self) {{\n", type_str));
+                    out.push_str(&format!("    {}\n", body));
+                    out.push_str("}\n");
                 }
             }
         }

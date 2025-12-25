@@ -316,6 +316,16 @@ pub enum ErrorKind {
         function_name: String,
     },
 
+    // Destructor errors
+    /// Duplicate destructor for the same type
+    DuplicateDestructor {
+        type_name: String,
+    },
+    /// Destructor for unknown type
+    DestructorUnknownType {
+        type_name: String,
+    },
+
     // Enum errors
     DuplicateVariant {
         enum_name: String,
@@ -624,6 +634,12 @@ impl fmt::Display for ErrorKind {
                     "'{}' is an associated function, not a method; use {}::{}() syntax",
                     function_name, type_name, function_name
                 )
+            }
+            ErrorKind::DuplicateDestructor { type_name } => {
+                write!(f, "duplicate destructor for type '{}'", type_name)
+            }
+            ErrorKind::DestructorUnknownType { type_name } => {
+                write!(f, "unknown type '{}' in destructor", type_name)
             }
             ErrorKind::DuplicateVariant {
                 enum_name,
