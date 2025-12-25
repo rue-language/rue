@@ -555,7 +555,15 @@ impl ObjectFile {
                 let section_index = if st_shndx == 0 || st_shndx >= 0xff00 {
                     None
                 } else {
-                    Some(st_shndx as usize)
+                    let idx = st_shndx as usize;
+                    if idx >= raw_sections.len() {
+                        return Err(ParseError::InvalidSymbol(format!(
+                            "section index {} out of bounds (have {} sections)",
+                            idx,
+                            raw_sections.len()
+                        )));
+                    }
+                    Some(idx)
                 };
 
                 symbols.push(Symbol {
@@ -926,5 +934,144 @@ mod tests {
             ObjectFile::parse(&data),
             Err(ParseError::InvalidShstrndx)
         ));
+    }
+
+    #[test]
+    fn test_symbol_section_index_out_of_bounds() {
+        // Tests that a symbol with a section index exceeding the section count
+        // returns an error rather than panicking.
+        //
+        // Layout:
+        // - ELF header (64 bytes)
+        // - Section headers at offset 64:
+        //   - [0] NULL section
+        //   - [1] .shstrtab (section name string table)
+        //   - [2] .strtab (symbol string table)
+        //   - [3] .symtab (symbol table)
+        // - Data area:
+        //   - .shstrtab strings
+        //   - .strtab strings
+        //   - .symtab entries
+
+        const ELF_HDR_SIZE: usize = 64;
+        const SHENT_SIZE: usize = 64;
+        const NUM_SECTIONS: usize = 4;
+        const SHDR_START: usize = ELF_HDR_SIZE;
+        const SHDR_SIZE: usize = SHENT_SIZE * NUM_SECTIONS;
+        const DATA_START: usize = SHDR_START + SHDR_SIZE;
+
+        // Section name string table: "\0.shstrtab\0.strtab\0.symtab\0"
+        let shstrtab_data = b"\0.shstrtab\0.strtab\0.symtab\0";
+        let shstrtab_offset = DATA_START;
+        let shstrtab_size = shstrtab_data.len();
+
+        // Symbol string table: "\0test_symbol\0"
+        let strtab_data = b"\0test_symbol\0";
+        let strtab_offset = shstrtab_offset + shstrtab_size;
+        let strtab_size = strtab_data.len();
+
+        // Symbol table: one symbol entry (24 bytes) with section index = 99 (way out of bounds)
+        let symtab_offset = strtab_offset + strtab_size;
+        const SYM_ENTRY_SIZE: usize = 24;
+        let mut sym_entry = [0u8; SYM_ENTRY_SIZE];
+        // st_name = 1 (offset to "test_symbol" in strtab)
+        sym_entry[0..4].copy_from_slice(&1_u32.to_le_bytes());
+        // st_info = 0x10 (STB_GLOBAL << 4 | STT_NOTYPE)
+        sym_entry[4] = 0x10;
+        // st_other = 0
+        sym_entry[5] = 0;
+        // st_shndx = 99 (out of bounds - we only have 4 sections)
+        sym_entry[6..8].copy_from_slice(&99_u16.to_le_bytes());
+        // st_value = 0
+        sym_entry[8..16].copy_from_slice(&0_u64.to_le_bytes());
+        // st_size = 0
+        sym_entry[16..24].copy_from_slice(&0_u64.to_le_bytes());
+
+        let total_size = symtab_offset + SYM_ENTRY_SIZE;
+        let mut data = vec![0u8; total_size];
+
+        // ELF header
+        data[0..4].copy_from_slice(b"\x7FELF");
+        data[4] = 2; // 64-bit
+        data[5] = 1; // Little endian
+        data[6] = 1; // EV_CURRENT
+        data[16..18].copy_from_slice(&1_u16.to_le_bytes()); // ET_REL
+        data[18..20].copy_from_slice(&0x3E_u16.to_le_bytes()); // EM_X86_64
+        data[40..48].copy_from_slice(&(SHDR_START as u64).to_le_bytes()); // e_shoff
+        data[58..60].copy_from_slice(&(SHENT_SIZE as u16).to_le_bytes()); // e_shentsize
+        data[60..62].copy_from_slice(&(NUM_SECTIONS as u16).to_le_bytes()); // e_shnum
+        data[62..64].copy_from_slice(&1_u16.to_le_bytes()); // e_shstrndx = 1
+
+        // Section header helper
+        fn write_shdr(
+            data: &mut [u8],
+            index: usize,
+            sh_name: u32,
+            sh_type: u32,
+            sh_offset: u64,
+            sh_size: u64,
+            sh_link: u32,
+            sh_entsize: u64,
+        ) {
+            let base = SHDR_START + index * SHENT_SIZE;
+            data[base..base + 4].copy_from_slice(&sh_name.to_le_bytes());
+            data[base + 4..base + 8].copy_from_slice(&sh_type.to_le_bytes());
+            data[base + 24..base + 32].copy_from_slice(&sh_offset.to_le_bytes());
+            data[base + 32..base + 40].copy_from_slice(&sh_size.to_le_bytes());
+            data[base + 40..base + 44].copy_from_slice(&sh_link.to_le_bytes());
+            data[base + 56..base + 64].copy_from_slice(&sh_entsize.to_le_bytes());
+        }
+
+        // [0] NULL section
+        write_shdr(&mut data, 0, 0, 0, 0, 0, 0, 0);
+
+        // [1] .shstrtab (name at offset 1 in shstrtab)
+        write_shdr(
+            &mut data,
+            1,
+            1, // ".shstrtab" starts at offset 1
+            3, // SHT_STRTAB
+            shstrtab_offset as u64,
+            shstrtab_size as u64,
+            0,
+            0,
+        );
+
+        // [2] .strtab (name at offset 11 in shstrtab)
+        write_shdr(
+            &mut data,
+            2,
+            11, // ".strtab" starts at offset 11
+            3,  // SHT_STRTAB
+            strtab_offset as u64,
+            strtab_size as u64,
+            0,
+            0,
+        );
+
+        // [3] .symtab (name at offset 19 in shstrtab, sh_link = 2 for strtab)
+        write_shdr(
+            &mut data,
+            3,
+            19, // ".symtab" starts at offset 19
+            2,  // SHT_SYMTAB
+            symtab_offset as u64,
+            SYM_ENTRY_SIZE as u64,
+            2, // sh_link = strtab section
+            SYM_ENTRY_SIZE as u64,
+        );
+
+        // Write section data
+        data[shstrtab_offset..shstrtab_offset + shstrtab_size].copy_from_slice(shstrtab_data);
+        data[strtab_offset..strtab_offset + strtab_size].copy_from_slice(strtab_data);
+        data[symtab_offset..symtab_offset + SYM_ENTRY_SIZE].copy_from_slice(&sym_entry);
+
+        // Parse should fail with InvalidSymbol due to section index out of bounds
+        let result = ObjectFile::parse(&data);
+        assert!(
+            matches!(&result, Err(ParseError::InvalidSymbol(msg)) if msg.contains("section index")),
+            "Expected InvalidSymbol error about section index, got: {:?}",
+            result
+        );
     }
 }
