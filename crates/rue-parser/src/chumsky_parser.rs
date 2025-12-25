@@ -1159,16 +1159,17 @@ where
         )
 }
 
-/// Parser for struct definitions: struct Name { field: Type, ... }
+/// Parser for struct definitions: [@directive]* struct Name { field: Type, ... }
 fn struct_parser<'src, I>()
 -> impl Parser<'src, I, StructDecl, extra::Err<Rich<'src, TokenKind>>> + Clone
 where
     I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
 {
-    just(TokenKind::Struct)
-        .ignore_then(ident_parser())
+    directives_parser()
+        .then(just(TokenKind::Struct).ignore_then(ident_parser()))
         .then(field_decls_parser().delimited_by(just(TokenKind::LBrace), just(TokenKind::RBrace)))
-        .map_with(|(name, fields), e| StructDecl {
+        .map_with(|((directives, name), fields), e| StructDecl {
+            directives,
             name,
             fields,
             span: to_rue_span(e.span()),

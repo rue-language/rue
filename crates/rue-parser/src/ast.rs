@@ -47,6 +47,8 @@ pub enum Item {
 /// A struct declaration.
 #[derive(Debug, Clone)]
 pub struct StructDecl {
+    /// Directives applied to this struct (e.g., @copy)
+    pub directives: Vec<Directive>,
     /// Struct name
     pub name: Ident,
     /// Struct fields
@@ -725,6 +727,9 @@ fn indent(f: &mut fmt::Formatter<'_>, level: usize) -> fmt::Result {
 
 fn fmt_struct(f: &mut fmt::Formatter<'_>, s: &StructDecl, level: usize) -> fmt::Result {
     indent(f, level)?;
+    for directive in &s.directives {
+        write!(f, "@{} ", directive.name.name)?;
+    }
     writeln!(f, "Struct {}", s.name.name)?;
     for field in &s.fields {
         indent(f, level + 1)?;

@@ -84,6 +84,7 @@ impl<'a> AstGen<'a> {
     }
 
     fn gen_struct(&mut self, struct_decl: &StructDecl) -> InstRef {
+        let directives = self.convert_directives(&struct_decl.directives);
         let name = self.interner.intern(&struct_decl.name.name);
         let fields: Vec<_> = struct_decl
             .fields
@@ -96,7 +97,11 @@ impl<'a> AstGen<'a> {
             .collect();
 
         self.rir.add_inst(Inst {
-            data: InstData::StructDecl { name, fields },
+            data: InstData::StructDecl {
+                directives,
+                name,
+                fields,
+            },
             span: struct_decl.span,
         })
     }

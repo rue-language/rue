@@ -336,6 +336,8 @@ pub enum InstData {
     // Struct operations
     /// Struct type declaration
     StructDecl {
+        /// Directives applied to the struct (e.g., @copy)
+        directives: Vec<RirDirective>,
         /// Struct name
         name: Symbol,
         /// Fields: [(field_name, field_type), ...]
@@ -680,7 +682,11 @@ impl<'a, 'b> RirPrinter<'a, 'b> {
                     let name_str = self.interner.get(*name);
                     out.push_str(&format!("assign {} = {}\n", name_str, value));
                 }
-                InstData::StructDecl { name, fields } => {
+                InstData::StructDecl {
+                    directives,
+                    name,
+                    fields,
+                } => {
                     let name_str = self.interner.get(*name);
                     let fields_str: Vec<String> = fields
                         .iter()
@@ -692,8 +698,19 @@ impl<'a, 'b> RirPrinter<'a, 'b> {
                             )
                         })
                         .collect();
+                    // Format directives
+                    let directives_str = if directives.is_empty() {
+                        String::new()
+                    } else {
+                        let dir_names: Vec<String> = directives
+                            .iter()
+                            .map(|d| format!("@{}", self.interner.get(d.name)))
+                            .collect();
+                        format!("{} ", dir_names.join(" "))
+                    };
                     out.push_str(&format!(
-                        "struct {} {{ {} }}\n",
+                        "{}struct {} {{ {} }}\n",
+                        directives_str,
                         name_str,
                         fields_str.join(", ")
                     ));

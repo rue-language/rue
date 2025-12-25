@@ -400,9 +400,9 @@ fn main() -> i32 {
 
 Allow opting structs into Copy semantics.
 
-- Add `@copy` directive parsing (piggyback on directive system)
-- `@copy` structs bypass move tracking
-- Validate: `@copy` structs can only contain `@copy` fields
+- [x] Add `@copy` directive parsing (piggyback on directive system)
+- [x] `@copy` structs bypass move tracking
+- [x] Validate: `@copy` structs can only contain `@copy` fields
 
 **Testable**: Mark a struct `@copy`, use it multiple times without error.
 

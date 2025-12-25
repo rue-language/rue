@@ -261,6 +261,12 @@ pub enum ErrorKind {
         struct_name: String,
         field_name: String,
     },
+    /// @copy struct contains a field with non-Copy type
+    CopyStructNonCopyField {
+        struct_name: String,
+        field_name: String,
+        field_type: String,
+    },
     /// Duplicate method definition in impl blocks for the same type
     DuplicateMethod {
         type_name: String,
@@ -534,6 +540,17 @@ impl fmt::Display for ErrorKind {
                     f,
                     "duplicate field '{}' in struct '{}'",
                     field_name, struct_name
+                )
+            }
+            ErrorKind::CopyStructNonCopyField {
+                struct_name,
+                field_name,
+                field_type,
+            } => {
+                write!(
+                    f,
+                    "@copy struct '{}' has field '{}' with non-Copy type '{}'",
+                    struct_name, field_name, field_type
                 )
             }
             ErrorKind::DuplicateMethod {

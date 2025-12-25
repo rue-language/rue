@@ -61,6 +61,8 @@ pub struct StructDef {
     pub name: String,
     /// Fields in declaration order
     pub fields: Vec<StructField>,
+    /// Whether this struct is marked with @copy (can be implicitly duplicated)
+    pub is_copy: bool,
 }
 
 /// A field in a struct definition.

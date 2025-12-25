@@ -35,7 +35,7 @@ There are two kinds of builtins, distinguished by their syntactic position:
 | Kind | Position | Purpose | Examples |
 |------|----------|---------|----------|
 | Intrinsic | Expression | Produces a value | `@dbg`, `@size_of`, `@align_of` |
-| Directive | Before item/statement | Modifies compiler behavior | `@allow` |
+| Directive | Before item/statement | Modifies compiler behavior | `@allow`, `@copy` |
 
 {{ rule(id="2.5:6", cat="normative") }}
 
@@ -191,3 +191,34 @@ fn main() -> i32 {
     0
 }
 ```
+
+## `@copy`
+
+{{ rule(id="2.5:27", cat="normative") }}
+
+The `@copy` directive marks a struct type as a Copy type.
+
+{{ rule(id="2.5:28", cat="normative") }}
+
+`@copy` must appear immediately before a struct definition.
+
+{{ rule(id="2.5:29", cat="normative") }}
+
+`@copy` takes no arguments.
+
+{{ rule(id="2.5:30") }}
+
+```rue
+@copy
+struct Point { x: i32, y: i32 }
+
+fn main() -> i32 {
+    let p = Point { x: 1, y: 2 };
+    let q = p;  // p is copied, not moved
+    p.x + q.x   // both are valid
+}
+```
+
+{{ rule(id="2.5:31", cat="informative") }}
+
+See [Move Semantics](@/03-types/08-move-semantics.md#the-copy-directive) for the full semantics of `@copy` structs.

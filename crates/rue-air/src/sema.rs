@@ -362,6 +362,9 @@ impl<'a> Sema<'a> {
         self.collect_enum_definitions()?;
         self.collect_struct_definitions()?;
 
+        // Validate @copy struct fields are all Copy types
+        self.validate_copy_structs()?;
+
         // Second pass: collect function and method signatures
         self.collect_function_signatures()?;
         self.collect_method_definitions()?;
@@ -486,12 +489,29 @@ impl<'a> Sema<'a> {
         })
     }
 
+    /// Check if a directive list contains the @copy directive
+    fn has_copy_directive(&self, directives: &[RirDirective]) -> bool {
+        let copy_sym = self.interner.get_symbol("copy");
+        for directive in directives {
+            if Some(directive.name) == copy_sym {
+                return true;
+            }
+        }
+        false
+    }
+
     /// Collect all struct definitions from the RIR.
     fn collect_struct_definitions(&mut self) -> CompileResult<()> {
         for (_, inst) in self.rir.iter() {
-            if let InstData::StructDecl { name, fields } = &inst.data {
+            if let InstData::StructDecl {
+                directives,
+                name,
+                fields,
+            } = &inst.data
+            {
                 let struct_id = StructId(self.struct_defs.len() as u32);
                 let struct_name = self.interner.get(*name).to_string();
+                let is_copy = self.has_copy_directive(directives);
 
                 // Check for duplicate field names
                 let mut seen_fields: HashSet<Symbol> = HashSet::new();
@@ -521,6 +541,7 @@ impl<'a> Sema<'a> {
                 self.struct_defs.push(StructDef {
                     name: struct_name,
                     fields: resolved_fields,
+                    is_copy,
                 });
                 self.structs.insert(*name, struct_id);
             }
@@ -561,6 +582,105 @@ impl<'a> Sema<'a> {
                     variants: variant_names,
                 });
                 self.enums.insert(*name, enum_id);
+            }
+        }
+        Ok(())
+    }
+
+    /// Get a human-readable name for a type.
+    fn format_type_name(&self, ty: Type) -> String {
+        match ty {
+            Type::I8 => "i8".to_string(),
+            Type::I16 => "i16".to_string(),
+            Type::I32 => "i32".to_string(),
+            Type::I64 => "i64".to_string(),
+            Type::U8 => "u8".to_string(),
+            Type::U16 => "u16".to_string(),
+            Type::U32 => "u32".to_string(),
+            Type::U64 => "u64".to_string(),
+            Type::Bool => "bool".to_string(),
+            Type::Unit => "()".to_string(),
+            Type::Never => "!".to_string(),
+            Type::Error => "<error>".to_string(),
+            Type::String => "String".to_string(),
+            Type::Struct(struct_id) => self.struct_defs[struct_id.0 as usize].name.clone(),
+            Type::Enum(enum_id) => self.enum_defs[enum_id.0 as usize].name.clone(),
+            Type::Array(array_id) => {
+                let array_def = &self.array_type_defs[array_id.0 as usize];
+                format!(
+                    "[{}; {}]",
+                    self.format_type_name(array_def.element_type),
+                    array_def.length
+                )
+            }
+        }
+    }
+
+    /// Check if a type is a Copy type.
+    /// This differs from Type::is_copy() because it can look up struct definitions
+    /// to check if a struct is marked with @copy.
+    fn is_type_copy(&self, ty: Type) -> bool {
+        match ty {
+            // Primitive Copy types
+            Type::I8
+            | Type::I16
+            | Type::I32
+            | Type::I64
+            | Type::U8
+            | Type::U16
+            | Type::U32
+            | Type::U64
+            | Type::Bool
+            | Type::Unit => true,
+            // Enum types are Copy (they're small discriminant values)
+            Type::Enum(_) => true,
+            // Never and Error are Copy for convenience
+            Type::Never | Type::Error => true,
+            // Struct types: check if marked with @copy
+            Type::Struct(struct_id) => {
+                let struct_def = &self.struct_defs[struct_id.0 as usize];
+                struct_def.is_copy
+            }
+            // String is a move type (owns heap data)
+            Type::String => false,
+            // Arrays are move types for now
+            // TODO: Arrays of Copy types could be Copy
+            Type::Array(_) => false,
+        }
+    }
+
+    /// Validate that @copy structs only contain Copy type fields.
+    /// Must be called after collect_struct_definitions.
+    fn validate_copy_structs(&self) -> CompileResult<()> {
+        for (_, inst) in self.rir.iter() {
+            if let InstData::StructDecl {
+                directives,
+                name,
+                fields: _,
+            } = &inst.data
+            {
+                let is_copy = self.has_copy_directive(directives);
+                if !is_copy {
+                    continue;
+                }
+
+                let struct_name = self.interner.get(*name).to_string();
+                let struct_id = *self.structs.get(name).unwrap();
+                let struct_def = &self.struct_defs[struct_id.0 as usize];
+
+                for field in &struct_def.fields {
+                    if !self.is_type_copy(field.ty) {
+                        let field_type_name = self.format_type_name(field.ty);
+                        return Err(CompileError::new(
+                            ErrorKind::CopyStructNonCopyField {
+                                struct_name,
+                                field_name: field.name.clone(),
+                                field_type: field_type_name,
+                            },
+                            inst.span,
+                        ));
+                    }
+                }
             }
         }
         Ok(())
@@ -1853,7 +1973,7 @@ impl<'a> Sema<'a> {
                     }
 
                     // If type is not Copy, mark as moved
-                    if !ty.is_copy() {
+                    if !self.is_type_copy(ty) {
                         ctx.moved_vars.insert(
                             *name,
                             MoveInfo {
@@ -1898,7 +2018,7 @@ impl<'a> Sema<'a> {
                 }
 
                 // If type is not Copy, mark as moved
-                if !ty.is_copy() {
+                if !self.is_type_copy(ty) {
                     ctx.moved_vars.insert(
                         *name,
                         MoveInfo {

@@ -40,6 +40,72 @@ fn main() -> i32 {
 }
 ```
 
+## The `@copy` Directive
+
+{{ rule(id="3.8:14", cat="normative") }}
+
+A struct type may be declared as a Copy type using the `@copy` directive before the struct definition.
+
+{{ rule(id="3.8:15", cat="syntax") }}
+
+```ebnf
+copy_struct = "@copy" struct_def ;
+```
+
+{{ rule(id="3.8:16", cat="normative") }}
+
+A struct marked with `@copy` is a Copy type. Using a `@copy` struct value does not consume it; the value is implicitly duplicated.
+
+{{ rule(id="3.8:17", cat="example") }}
+
+```rue
+@copy
+struct Point { x: i32, y: i32 }
+
+fn main() -> i32 {
+    let p = Point { x: 1, y: 2 };
+    let q = p;      // p is copied, not moved
+    let r = p;      // p can be used again
+    p.x + q.x + r.x // all three are valid
+}
+```
+
+{{ rule(id="3.8:18", cat="legality-rule") }}
+
+A `@copy` struct must contain only fields that are themselves Copy types. It is a compile-time error to mark a struct as `@copy` if any of its fields are move types.
+
+{{ rule(id="3.8:19", cat="example") }}
+
+```rue
+struct Inner { value: i32 }  // move type (no @copy)
+
+@copy
+struct Outer { inner: Inner }  // ERROR: field 'inner' has non-Copy type 'Inner'
+```
+
+{{ rule(id="3.8:20", cat="normative") }}
+
+A `@copy` struct may contain fields of primitive Copy types (integers, booleans, unit), enum types, or other `@copy` struct types.
+
+{{ rule(id="3.8:21", cat="example") }}
+
+```rue
+@copy
+struct Point { x: i32, y: i32 }
+
+@copy
+struct Rect { top_left: Point, bottom_right: Point }  // OK: Point is @copy
+
+fn main() -> i32 {
+    let r = Rect {
+        top_left: Point { x: 0, y: 0 },
+        bottom_right: Point { x: 10, y: 10 }
+    };
+    let r2 = r;     // r is copied
+    r.top_left.x    // r is still valid
+}
+```
+
 ## Use After Move
 
 {{ rule(id="3.8:5", cat="legality-rule") }}

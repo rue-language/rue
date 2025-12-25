@@ -219,3 +219,41 @@ fn main() -> i32 {
 """
 exit_code = 0
 no_warnings = true
+
+# =============================================================================
+# @copy Directive
+# =============================================================================
+
+[[case]]
+name = "copy_directive_on_struct"
+spec = ["2.5:27", "2.5:28"]
+description = "@copy directive marks a struct as Copy type"
+preview = "affine-mvs"
+source = """
+@copy
+struct Point { x: i32, y: i32 }
+
+fn main() -> i32 {
+    let p = Point { x: 1, y: 2 };
+    let q = p;
+    p.x + q.x
+}
+"""
+exit_code = 2
+
+[[case]]
+name = "copy_directive_no_args"
+spec = ["2.5:29"]
+description = "@copy takes no arguments"
+preview = "affine-mvs"
+source = """
+@copy
+struct Point { x: i32, y: i32 }
+
+fn main() -> i32 {
+    let p = Point { x: 5, y: 10 };
+    let q = p;
+    p.y
+}
+"""
+exit_code = 10

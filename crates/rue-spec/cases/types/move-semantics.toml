@@ -407,3 +407,137 @@ fn main() -> i32 {
 """
 compile_fail = true
 error_contains = "use of moved value"
+
+# =============================================================================
+# @copy Directive
+# =============================================================================
+
+[[case]]
+name = "copy_struct_multiple_uses"
+spec = ["3.8:14", "3.8:15", "3.8:16", "3.8:17"]
+description = "@copy struct can be used multiple times without moving"
+preview = "affine-mvs"
+source = """
+@copy
+struct Point { x: i32, y: i32 }
+fn main() -> i32 {
+    let p = Point { x: 1, y: 2 };
+    let q = p;
+    let r = p;
+    p.x + q.x + r.x
+}
+"""
+exit_code = 3
+
+[[case]]
+name = "copy_struct_pass_to_function"
+spec = ["3.8:16"]
+description = "@copy struct can be passed to function and still used"
+preview = "affine-mvs"
+source = """
+@copy
+struct Point { x: i32, y: i32 }
+fn sum(p: Point) -> i32 { p.x + p.y }
+fn main() -> i32 {
+    let p = Point { x: 10, y: 20 };
+    let a = sum(p);
+    let b = sum(p);
+    a + b
+}
+"""
+exit_code = 60
+
+[[case]]
+name = "copy_struct_all_primitive_fields"
+spec = ["3.8:20"]
+description = "@copy struct with all primitive Copy fields"
+preview = "affine-mvs"
+source = """
+@copy
+struct Data { a: i32, b: bool, c: i64 }
+fn main() -> i32 {
+    let d = Data { a: 42, b: true, c: 100 };
+    let e = d;
+    let f = d;
+    d.a + if e.b { 1 } else { 0 }
+}
+"""
+exit_code = 43
+
+[[case]]
+name = "copy_struct_nested_copy"
+spec = ["3.8:20", "3.8:21"]
+description = "@copy struct containing other @copy structs"
+preview = "affine-mvs"
+source = """
+@copy
+struct Point { x: i32, y: i32 }
+
+@copy
+struct Rect { top_left: Point, bottom_right: Point }
+
+fn main() -> i32 {
+    let r = Rect {
+        top_left: Point { x: 0, y: 0 },
+        bottom_right: Point { x: 10, y: 10 }
+    };
+    let r2 = r;
+    r.top_left.x + r2.bottom_right.x
+}
+"""
+exit_code = 10
+
+[[case]]
+name = "copy_struct_non_copy_field_error"
+spec = ["3.8:18", "3.8:19"]
+description = "@copy struct with non-Copy field is a compile error"
+preview = "affine-mvs"
+source = """
+struct Inner { value: i32 }
+
+@copy
+struct Outer { inner: Inner }
+
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = "non-Copy type"
+
+[[case]]
+name = "copy_struct_enum_field"
+spec = ["3.8:20"]
+description = "@copy struct with enum field (enums are Copy)"
+preview = "affine-mvs"
+source = """
+enum Status { Active, Inactive }
+
+@copy
+struct Data { status: Status, value: i32 }
+
+fn main() -> i32 {
+    let d = Data { status: Status::Active, value: 10 };
+    let e = d;
+    match d.status {
+        Status::Active => d.value + e.value,
+        Status::Inactive => 0,
+    }
+}
+"""
+exit_code = 20
+
+[[case]]
+name = "non_copy_struct_still_moves"
+spec = ["3.8:3"]
+description = "Struct without @copy still has move semantics"
+preview = "affine-mvs"
+source = """
+struct Point { x: i32, y: i32 }
+fn main() -> i32 {
+    let p = Point { x: 1, y: 2 };
+    let q = p;
+    let r = p;
+    0
+}
+"""
+compile_fail = true
+error_contains = "use of moved value"
