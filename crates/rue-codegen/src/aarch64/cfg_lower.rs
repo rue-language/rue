@@ -1489,7 +1489,7 @@ impl<'a> CfgLower<'a> {
                     });
                 }
 
-                // Handle struct return
+                // Handle struct and string returns (multi-slot types)
                 if let Type::Struct(struct_id) = ty {
                     let slot_count = self.type_slot_count(Type::Struct(struct_id));
                     let mut slot_vregs = Vec::new();
@@ -1510,6 +1510,22 @@ impl<'a> CfgLower<'a> {
                             src: Operand::Virtual(first_vreg),
                         });
                     }
+                } else if ty == Type::String {
+                    // String is 3 slots: ptr (x0), len (x1), cap (x2)
+                    let mut slot_vregs = Vec::new();
+                    for slot_idx in 0..3 {
+                        let slot_vreg = self.mir.alloc_vreg();
+                        self.mir.push(Aarch64Inst::MovRR {
+                            dst: Operand::Virtual(slot_vreg),
+                            src: Operand::Physical(RET_REGS[slot_idx]),
+                        });
+                        slot_vregs.push(slot_vreg);
+                    }
+                    self.struct_slot_vregs.insert(value, slot_vregs.clone());
+                    self.mir.push(Aarch64Inst::MovRR {
+                        dst: Operand::Virtual(result_vreg),
+                        src: Operand::Virtual(slot_vregs[0]),
+                    });
                 } else {
                     // Move result from X0
                     self.mir.push(Aarch64Inst::MovRR {
@@ -2130,6 +2146,38 @@ impl<'a> CfgLower<'a> {
                 // destructor function to call.
                 let dropped_ty = self.cfg.get_inst(*dropped_value).ty;
 
+                // Handle String specially - it's a fat pointer (ptr, len, cap)
+                if dropped_ty == Type::String {
+                    // String requires all 3 slots as arguments to __rue_drop_String
+                    if let Some(field_vregs) = self.struct_slot_vregs.get(dropped_value).cloned() {
+                        debug_assert_eq!(
+                            field_vregs.len(),
+                            3,
+                            "String should have 3 slots (ptr, len, cap)"
+                        );
+                        // Move all 3 components into argument registers
+                        self.mir.push(Aarch64Inst::MovRR {
+                            dst: Operand::Physical(ARG_REGS[0]),
+                            src: Operand::Virtual(field_vregs[0]), // ptr
+                        });
+                        self.mir.push(Aarch64Inst::MovRR {
+                            dst: Operand::Physical(ARG_REGS[1]),
+                            src: Operand::Virtual(field_vregs[1]), // len
+                        });
+                        self.mir.push(Aarch64Inst::MovRR {
+                            dst: Operand::Physical(ARG_REGS[2]),
+                            src: Operand::Virtual(field_vregs[2]), // cap
+                        });
+                    } else {
+                        unreachable!("String value should have field vregs for fat pointer");
+                    }
+
+                    self.mir.push(Aarch64Inst::Bl {
+                        symbol: "__rue_drop_String".to_string(),
+                    });
+                    return;
+                }
+
                 // Load the value to drop into the first argument register (X0)
                 let val_vreg = self.get_vreg(*dropped_value);
                 self.mir.push(Aarch64Inst::MovRR {
@@ -2161,7 +2209,7 @@ impl<'a> CfgLower<'a> {
                         let struct_def = &self.struct_defs[struct_id.0 as usize];
                         format!("__rue_drop_{}", struct_def.name)
                     }
-                    Type::String => "__rue_drop_String".to_string(),
+                    Type::String => unreachable!("String should be handled above"),
                     // Other types that might need drop in the future can be added here
                     _ => {
                         // For now, any other type reaching here is unexpected

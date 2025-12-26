@@ -878,6 +878,154 @@ define_for_all_platforms! {
     }
 }
 
+// =========================================================================
+// String Construction Functions
+// =========================================================================
+
+/// Create an empty String with no allocation.
+///
+/// Returns an empty String (ptr=null, len=0, cap=0). This represents an empty
+/// string that points to no data. Any mutation will trigger heap allocation.
+///
+/// Since we want to return 3 values in registers (to match Rue's multi-value
+/// return convention), we return 3 separate u64 values:
+/// - ptr (first return value)
+/// - len (second return value)
+/// - cap (third return value)
+///
+/// This approach avoids struct ABI differences where large structs (>16 bytes
+/// on ARM64) would be returned via pointer.
+///
+/// # ABI
+///
+/// ```text
+/// extern "C" fn String__new() -> u64  // ptr in rax/x0, len in rdx/x1, cap in rcx/x2
+/// ```
+///
+/// Uses assembly to ensure multi-register returns work correctly.
+#[cfg(all(target_arch = "x86_64", target_os = "linux"))]
+#[unsafe(no_mangle)]
+#[unsafe(naked)]
+#[allow(non_snake_case)]
+pub unsafe extern "C" fn String__new() {
+    // Returns: rax=ptr(0), rdx=len(0), rcx=cap(0)
+    core::arch::naked_asm!(
+        "xor eax, eax", // ptr = 0
+        "xor edx, edx", // len = 0
+        "xor ecx, ecx", // cap = 0
+        "ret",
+    );
+}
+
+#[cfg(all(target_arch = "aarch64", target_os = "macos"))]
+#[unsafe(no_mangle)]
+#[unsafe(naked)]
+#[allow(non_snake_case)]
+pub unsafe extern "C" fn String__new() {
+    // Returns: x0=ptr(0), x1=len(0), x2=cap(0)
+    core::arch::naked_asm!(
+        "mov x0, xzr", // ptr = 0
+        "mov x1, xzr", // len = 0
+        "mov x2, xzr", // cap = 0
+        "ret",
+    );
+}
+
+#[cfg(all(target_arch = "aarch64", target_os = "linux"))]
+#[unsafe(no_mangle)]
+#[unsafe(naked)]
+#[allow(non_snake_case)]
+pub unsafe extern "C" fn String__new() {
+    // Returns: x0=ptr(0), x1=len(0), x2=cap(0)
+    core::arch::naked_asm!(
+        "mov x0, xzr", // ptr = 0
+        "mov x1, xzr", // len = 0
+        "mov x2, xzr", // cap = 0
+        "ret",
+    );
+}
+
+/// Create an empty String with pre-allocated capacity.
+///
+/// Allocates a heap buffer with the given capacity (at least STRING_MIN_CAPACITY).
+/// Returns a String with len=0 but capacity available for appending.
+///
+/// # Arguments
+///
+/// * `cap` - Desired capacity in bytes (will be at least STRING_MIN_CAPACITY)
+///
+/// # ABI
+///
+/// ```text
+/// extern "C" fn String__with_capacity(cap: u64) -> (ptr, len, cap)
+/// ```
+///
+/// On x86-64: cap in rdi, returns ptr in rax, len in rdx, cap in rcx
+/// On aarch64: cap in x0, returns ptr in x0, len in x1, cap in x2
+#[cfg(all(target_arch = "x86_64", target_os = "linux"))]
+#[unsafe(no_mangle)]
+#[allow(non_snake_case)]
+pub extern "C" fn String__with_capacity(requested_cap: u64) -> u64 {
+    let actual_cap = if requested_cap < STRING_MIN_CAPACITY {
+        STRING_MIN_CAPACITY
+    } else {
+        requested_cap
+    };
+    let ptr = heap::alloc(actual_cap, 1);
+    // Returns ptr in rax; we need to also set rdx=0 (len) and rcx=actual_cap
+    // We do this via inline asm since the C ABI doesn't support multi-value returns
+    unsafe {
+        core::arch::asm!(
+            "xor edx, edx",     // len = 0
+            in("rcx") actual_cap, // cap = actual_cap
+            options(nostack, nomem),
+        );
+    }
+    ptr as u64
+}
+
+#[cfg(all(target_arch = "aarch64", target_os = "macos"))]
+#[unsafe(no_mangle)]
+#[allow(non_snake_case)]
+pub extern "C" fn String__with_capacity(requested_cap: u64) -> u64 {
+    let actual_cap = if requested_cap < STRING_MIN_CAPACITY {
+        STRING_MIN_CAPACITY
+    } else {
+        requested_cap
+    };
+    let ptr = heap::alloc(actual_cap, 1);
+    // Returns ptr in x0; we need to also set x1=0 (len) and x2=actual_cap
+    unsafe {
+        core::arch::asm!(
+            "mov x1, xzr",      // len = 0
+            in("x2") actual_cap, // cap = actual_cap
+            options(nostack, nomem),
+        );
+    }
+    ptr as u64
+}
+
+#[cfg(all(target_arch = "aarch64", target_os = "linux"))]
+#[unsafe(no_mangle)]
+#[allow(non_snake_case)]
+pub extern "C" fn String__with_capacity(requested_cap: u64) -> u64 {
+    let actual_cap = if requested_cap < STRING_MIN_CAPACITY {
+        STRING_MIN_CAPACITY
+    } else {
+        requested_cap
+    };
+    let ptr = heap::alloc(actual_cap, 1);
+    // Returns ptr in x0; we need to also set x1=0 (len) and x2=actual_cap
+    unsafe {
+        core::arch::asm!(
+            "mov x1, xzr",      // len = 0
+            in("x2") actual_cap, // cap = actual_cap
+            options(nostack, nomem),
+        );
+    }
+    ptr as u64
+}
+
 // Re-export platform functions for tests
 #[cfg(all(test, target_arch = "x86_64", target_os = "linux"))]
 pub use x86_64_linux::{exit, write, write_all, write_stderr};

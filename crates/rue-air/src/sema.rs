@@ -3623,6 +3623,20 @@ impl<'a> Sema<'a> {
                 let type_name_str = self.interner.get(*type_name).to_string();
                 let function_name_str = self.interner.get(*function).to_string();
 
+                // Check if this is a built-in type with associated functions
+                let well_known = self.interner.well_known();
+
+                // Handle String::new() and String::with_capacity()
+                if *type_name == well_known.string {
+                    return self.analyze_string_assoc_fn(
+                        air,
+                        ctx,
+                        &function_name_str,
+                        args,
+                        inst.span,
+                    );
+                }
+
                 // Check that the type exists and is a struct
                 let _struct_id = self.structs.get(type_name).ok_or_compile_error(
                     ErrorKind::UnknownType(type_name_str.clone()),
@@ -4133,6 +4147,97 @@ impl<'a> Sema<'a> {
                 | InstData::Eq { .. }
                 | InstData::Ne { .. }
         )
+    }
+
+    /// Analyze a String associated function call (String::new, String::with_capacity).
+    ///
+    /// These are built-in functions for the String type that construct new String values.
+    fn analyze_string_assoc_fn(
+        &mut self,
+        air: &mut Air,
+        ctx: &mut AnalysisContext,
+        function_name: &str,
+        args: &[RirCallArg],
+        span: Span,
+    ) -> CompileResult<AnalysisResult> {
+        match function_name {
+            "new" => {
+                // String::new() takes no arguments and returns an empty String
+                if !args.is_empty() {
+                    return Err(CompileError::new(
+                        ErrorKind::WrongArgumentCount {
+                            expected: 0,
+                            found: args.len(),
+                        },
+                        span,
+                    ));
+                }
+
+                // Generate a call to String__new (runtime function)
+                // We use double underscore because :: is not valid in C symbol names
+                let air_ref = air.add_inst(AirInst {
+                    data: AirInstData::Call {
+                        name: "String__new".to_string(),
+                        args: vec![],
+                    },
+                    ty: Type::String,
+                    span,
+                });
+                Ok(AnalysisResult::new(air_ref, Type::String))
+            }
+
+            "with_capacity" => {
+                // String::with_capacity(cap: u64) takes one u64 argument
+                if args.len() != 1 {
+                    return Err(CompileError::new(
+                        ErrorKind::WrongArgumentCount {
+                            expected: 1,
+                            found: args.len(),
+                        },
+                        span,
+                    ));
+                }
+
+                // Analyze the capacity argument
+                let cap_result = self.analyze_inst(air, args[0].value, ctx)?;
+
+                // Verify the type is u64
+                if cap_result.ty != Type::U64 && !cap_result.ty.is_error() {
+                    return Err(CompileError::new(
+                        ErrorKind::TypeMismatch {
+                            expected: "u64".to_string(),
+                            found: cap_result.ty.name().to_string(),
+                        },
+                        span,
+                    ));
+                }
+
+                // Generate a call to String__with_capacity (runtime function)
+                let air_ref = air.add_inst(AirInst {
+                    data: AirInstData::Call {
+                        name: "String__with_capacity".to_string(),
+                        args: vec![AirCallArg {
+                            value: cap_result.air_ref,
+                            mode: AirArgMode::Normal,
+                        }],
+                    },
+                    ty: Type::String,
+                    span,
+                });
+                Ok(AnalysisResult::new(air_ref, Type::String))
+            }
+
+            _ => {
+                // Unknown associated function for String
+                Err(CompileError::new(
+                    ErrorKind::UndefinedAssocFn {
+                        type_name: "String".to_string(),
+                        function_name: function_name.to_string(),
+                    },
+                    span,
+                ))
+            }
+        }
     }
 }
 
