@@ -623,6 +623,60 @@ impl RegAlloc {
                 });
             }
 
+            Aarch64Inst::LdrIndexedOffset { dst, base, offset } => {
+                // Load base vreg into scratch, then emit load with offset
+                let base_op = Operand::Virtual(base);
+                let base_reg = self.load_operand(mir, base_op, Reg::X9)?;
+                let base_phys = match base_reg {
+                    Operand::Physical(r) => r,
+                    _ => Reg::X9,
+                };
+
+                match self.get_allocation(dst) {
+                    Some(Allocation::Register(reg)) => {
+                        mir.push(Aarch64Inst::Ldr {
+                            dst: Operand::Physical(reg),
+                            base: base_phys,
+                            offset,
+                        });
+                    }
+                    Some(Allocation::Spill(spill_offset)) => {
+                        mir.push(Aarch64Inst::Ldr {
+                            dst: Operand::Physical(Reg::X10),
+                            base: base_phys,
+                            offset,
+                        });
+                        mir.push(Aarch64Inst::Str {
+                            src: Operand::Physical(Reg::X10),
+                            base: Reg::Fp,
+                            offset: spill_offset,
+                        });
+                    }
+                    None => {
+                        mir.push(Aarch64Inst::Ldr {
+                            dst,
+                            base: base_phys,
+                            offset,
+                        });
+                    }
+                }
+            }
+
+            Aarch64Inst::StrIndexedOffset { src, base, offset } => {
+                let src_op = self.load_operand(mir, src, Reg::X9)?;
+                let base_vreg_op = Operand::Virtual(base);
+                let base_reg = self.load_operand(mir, base_vreg_op, Reg::X10)?;
+                let base_phys = match base_reg {
+                    Operand::Physical(r) => r,
+                    _ => Reg::X10,
+                };
+                mir.push(Aarch64Inst::Str {
+                    src: src_op,
+                    base: base_phys,
+                    offset,
+                });
+            }
+
             Aarch64Inst::LslImm { dst, src, imm } => {
                 let src_op = self.load_operand(mir, src, Reg::X10)?;
                 alloc_dst!(self.get_allocation(dst), dst, Reg::X9 =>

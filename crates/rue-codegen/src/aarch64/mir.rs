@@ -399,6 +399,20 @@ pub enum Aarch64Inst {
     /// `str src, [base]` - Store to memory via register (indexed).
     StrIndexed { src: Operand, base: VReg },
 
+    /// `ldr dst, [base, #offset]` - Load from memory via register with offset.
+    LdrIndexedOffset {
+        dst: Operand,
+        base: VReg,
+        offset: i32,
+    },
+
+    /// `str src, [base, #offset]` - Store to memory via register with offset.
+    StrIndexedOffset {
+        src: Operand,
+        base: VReg,
+        offset: i32,
+    },
+
     /// `add dst, src, #imm, lsl #12` - Add immediate with shift (for large offsets).
     /// Note: Using regular AddImm for now, this is for future large offset support.
 
@@ -751,6 +765,20 @@ impl fmt::Display for Aarch64Inst {
             }
             Aarch64Inst::LdrIndexed { dst, base } => write!(f, "ldr {}, [{}]", dst, base),
             Aarch64Inst::StrIndexed { src, base } => write!(f, "str {}, [{}]", src, base),
+            Aarch64Inst::LdrIndexedOffset { dst, base, offset } => {
+                if *offset == 0 {
+                    write!(f, "ldr {}, [{}]", dst, base)
+                } else {
+                    write!(f, "ldr {}, [{}, #{}]", dst, base, offset)
+                }
+            }
+            Aarch64Inst::StrIndexedOffset { src, base, offset } => {
+                if *offset == 0 {
+                    write!(f, "str {}, [{}]", src, base)
+                } else {
+                    write!(f, "str {}, [{}, #{}]", src, base, offset)
+                }
+            }
             Aarch64Inst::LslImm { dst, src, imm } => write!(f, "lsl {}, {}, #{}", dst, src, imm),
             Aarch64Inst::Lsl32Imm { dst, src, imm } => {
                 write!(f, "lsl {}, {}, #{} // 32-bit", dst, src, imm)

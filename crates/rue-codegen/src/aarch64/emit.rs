@@ -232,12 +232,15 @@ impl<'a> Emitter<'a> {
 
     /// Emit machine code for all instructions.
     pub fn emit(mut self) -> CompileResult<(Vec<u8>, Vec<EmittedRelocation>)> {
-        // Verify no LdrIndexed or StrIndexed survived into emission
+        // Verify no LdrIndexed/StrIndexed variants survived into emission
         // These should have been lowered by regalloc into Ldr/Str with physical registers
         for (i, inst) in self.mir.iter().enumerate() {
             if matches!(
                 inst,
-                Aarch64Inst::LdrIndexed { .. } | Aarch64Inst::StrIndexed { .. }
+                Aarch64Inst::LdrIndexed { .. }
+                    | Aarch64Inst::StrIndexed { .. }
+                    | Aarch64Inst::LdrIndexedOffset { .. }
+                    | Aarch64Inst::StrIndexedOffset { .. }
             ) {
                 return Err(CompileError::without_span(ErrorKind::InternalCodegenError(
                     format!(
@@ -386,7 +389,20 @@ impl<'a> Emitter<'a> {
             Aarch64Inst::AddImm { dst, src, imm } => {
                 let rd = dst.as_physical();
                 let rn = src.as_physical();
-                self.emit_add_imm(rd, rn, *imm as u32);
+                // Adjust offset for FP-relative address calculations (same as Ldr/Str).
+                // This is used when computing addresses of locals for inout arguments.
+                let adjusted_imm = if rn == Reg::Fp && *imm < 0 {
+                    let callee_saved_size = self.callee_saved_stack_size();
+                    *imm - callee_saved_size
+                } else {
+                    *imm
+                };
+                if adjusted_imm < 0 {
+                    // Negative immediate: use SUB with the absolute value
+                    self.emit_sub_imm(rd, rn, (-adjusted_imm) as u32);
+                } else {
+                    self.emit_add_imm(rd, rn, adjusted_imm as u32);
+                }
             }
 
             Aarch64Inst::SubRR { dst, src1, src2 } => {
@@ -704,8 +720,13 @@ impl<'a> Emitter<'a> {
             }
 
             // These instructions should be caught by the verification at the start of emit()
-            Aarch64Inst::LdrIndexed { .. } | Aarch64Inst::StrIndexed { .. } => {
-                unreachable!("LdrIndexed/StrIndexed should be caught by emit() verification")
+            Aarch64Inst::LdrIndexed { .. }
+            | Aarch64Inst::StrIndexed { .. }
+            | Aarch64Inst::LdrIndexedOffset { .. }
+            | Aarch64Inst::StrIndexedOffset { .. } => {
+                unreachable!(
+                    "LdrIndexed/StrIndexed variants should be caught by emit() verification"
+                )
             }
 
             Aarch64Inst::LslImm { dst, src, imm } => {

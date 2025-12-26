@@ -174,6 +174,11 @@ pub enum CfgInstData {
         slot: u32,
         value: CfgValue,
     },
+    /// Store value to a parameter (for inout params)
+    ParamStore {
+        param_slot: u32,
+        value: CfgValue,
+    },
 
     // Function calls
     Call {
@@ -199,6 +204,16 @@ pub enum CfgInstData {
     },
     FieldSet {
         slot: u32,
+        struct_id: StructId,
+        field_index: u32,
+        value: CfgValue,
+    },
+    /// Store a value to a struct field (for parameters, including inout)
+    ParamFieldSet {
+        /// The parameter's ABI slot (relative to params, not locals)
+        param_slot: u32,
+        /// Offset within the struct for nested field access
+        inner_offset: u32,
         struct_id: StructId,
         field_index: u32,
         value: CfgValue,
@@ -681,6 +696,9 @@ impl Cfg {
             CfgInstData::Alloc { slot, init } => write!(f, "alloc ${} = {}", slot, init),
             CfgInstData::Load { slot } => write!(f, "load ${}", slot),
             CfgInstData::Store { slot, value } => write!(f, "store ${} = {}", slot, value),
+            CfgInstData::ParamStore { param_slot, value } => {
+                write!(f, "param_store %{} = {}", param_slot, value)
+            }
             CfgInstData::Call { name, args } => {
                 write!(f, "call {}(", name)?;
                 for (i, arg) in args.iter().enumerate() {
@@ -732,6 +750,19 @@ impl Cfg {
                     f,
                     "field_set ${}.#{}.{} = {}",
                     slot, struct_id.0, field_index, value
+                )
+            }
+            CfgInstData::ParamFieldSet {
+                param_slot,
+                inner_offset,
+                struct_id,
+                field_index,
+                value,
+            } => {
+                write!(
+                    f,
+                    "param_field_set %{}+{}.#{}.{} = {}",
+                    param_slot, inner_offset, struct_id.0, field_index, value
                 )
             }
             CfgInstData::ArrayInit {

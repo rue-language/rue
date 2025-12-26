@@ -296,6 +296,13 @@ fn uses(inst: &Aarch64Inst) -> Vec<VReg> {
             add_if_virtual(src, &mut result);
             result.push(*base);
         }
+        Aarch64Inst::LdrIndexedOffset { base, .. } => {
+            result.push(*base);
+        }
+        Aarch64Inst::StrIndexedOffset { src, base, .. } => {
+            add_if_virtual(src, &mut result);
+            result.push(*base);
+        }
         Aarch64Inst::LslImm { src, .. }
         | Aarch64Inst::Lsl32Imm { src, .. }
         | Aarch64Inst::Lsr32Imm { src, .. }
@@ -406,6 +413,12 @@ fn defs(inst: &Aarch64Inst) -> Vec<VReg> {
             add_if_virtual(dst, &mut result);
         }
         Aarch64Inst::StrIndexed { .. } => {
+            // Writes to memory
+        }
+        Aarch64Inst::LdrIndexedOffset { dst, .. } => {
+            add_if_virtual(dst, &mut result);
+        }
+        Aarch64Inst::StrIndexedOffset { .. } => {
             // Writes to memory
         }
         Aarch64Inst::LslImm { dst, .. }

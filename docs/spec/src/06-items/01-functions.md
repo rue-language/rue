@@ -185,6 +185,27 @@ fn main() -> i32 {
 }
 ```
 
+## Parameter Immutability
+
+{{ rule(id="6.1:32", cat="legality-rule") }}
+
+A parameter that is not marked `inout` is immutable within the function body. Assigning to such a parameter or modifying its fields is a compile-time error.
+
+{{ rule(id="6.1:33", cat="example") }}
+
+```rue
+fn bad(x: i32) {
+    x = 5;  // error: cannot assign to immutable parameter 'x'
+}
+
+struct Point { x: i32, y: i32 }
+
+fn also_bad(p: Point) {
+    p.x = 10;  // error: cannot assign to immutable parameter 'p'
+}
+```
+
+
 ## Entry Point
 
 {{ rule(id="6.1:7", cat="legality-rule") }}

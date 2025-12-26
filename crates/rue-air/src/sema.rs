@@ -434,6 +434,42 @@ impl<'a> Sema<'a> {
         Ok(())
     }
 
+    /// Analyze a list of call arguments, handling inout unmove logic.
+    ///
+    /// For inout arguments, the variable is "unmoving" after analysis - this is because
+    /// inout is a mutable borrow, not a move. The value stays valid after the call.
+    fn analyze_call_args(
+        &mut self,
+        air: &mut Air,
+        args: &[RirCallArg],
+        ctx: &mut AnalysisContext,
+    ) -> CompileResult<Vec<AirCallArg>> {
+        let mut air_args = Vec::new();
+        for arg in args.iter() {
+            // For inout arguments, extract the variable name before analysis
+            // so we can "unmove" it after - inout is a borrow, not a move
+            let inout_var = if arg.is_inout() {
+                self.extract_root_variable(arg.value)
+            } else {
+                None
+            };
+
+            let arg_result = self.analyze_inst(air, arg.value, ctx)?;
+
+            // If this was an inout argument, the variable shouldn't be marked as moved
+            // because inout is a mutable borrow - the value stays valid after the call
+            if let Some(var_symbol) = inout_var {
+                ctx.moved_vars.remove(&var_symbol);
+            }
+
+            air_args.push(AirCallArg {
+                value: arg_result.air_ref,
+                mode: Self::convert_arg_mode(arg.mode),
+            });
+        }
+        Ok(air_args)
+    }
+
     /// Analyze all functions in the RIR.
     ///
     /// Consumes the Sema and returns a [`SemaOutput`] containing all analyzed
@@ -2213,8 +2249,60 @@ impl<'a> Sema<'a> {
             }
 
             InstData::Assign { name, value } => {
-                // Look up the variable
                 let name_str = self.interner.get(*name);
+
+                // First check if it's a parameter (for inout params)
+                if let Some(param_info) = ctx.params.get(name) {
+                    // Check parameter mode - only inout can be assigned to
+                    match param_info.mode {
+                        RirParamMode::Normal => {
+                            // Non-inout parameters are immutable
+                            return Err(CompileError::new(
+                                ErrorKind::AssignToImmutable(name_str.to_string()),
+                                inst.span,
+                            )
+                            .with_help(format!(
+                                "consider making parameter `{}` inout: `inout {}: {}`",
+                                name_str,
+                                name_str,
+                                param_info.ty.name()
+                            )));
+                        }
+                        RirParamMode::Inout => {
+                            // Inout parameters can be assigned to - that's their purpose
+                        }
+                        RirParamMode::Borrow => {
+                            // Borrow parameters CANNOT be assigned to
+                            return Err(CompileError::new(
+                                ErrorKind::MutateBorrowedValue {
+                                    variable: name_str.to_string(),
+                                },
+                                inst.span,
+                            ));
+                        }
+                    }
+
+                    let abi_slot = param_info.abi_slot;
+
+                    // Analyze the value
+                    let value_result = self.analyze_inst(air, *value, ctx)?;
+
+                    // Assignment to a parameter resets its move state
+                    ctx.moved_vars.remove(name);
+
+                    // Emit store to param slot (codegen will use the inout pointer)
+                    let air_ref = air.add_inst(AirInst {
+                        data: AirInstData::ParamStore {
+                            param_slot: abi_slot,
+                            value: value_result.air_ref,
+                        },
+                        ty: Type::Unit,
+                        span: inst.span,
+                    });
+                    return Ok(AnalysisResult::new(air_ref, Type::Unit));
+                }
+
+                // Look up local variable
                 let local = ctx.locals.get(name).ok_or_compile_error(
                     ErrorKind::UndefinedVariable(name_str.to_string()),
                     inst.span,
@@ -2434,14 +2522,7 @@ impl<'a> Sema<'a> {
                 let return_type = fn_info.return_type;
 
                 // Analyze arguments (move checking happens in analyze_inst for VarRef)
-                let mut air_args = Vec::new();
-                for arg in args.iter() {
-                    let arg_result = self.analyze_inst(air, arg.value, ctx)?;
-                    air_args.push(AirCallArg {
-                        value: arg_result.air_ref,
-                        mode: Self::convert_arg_mode(arg.mode),
-                    });
-                }
+                let air_args = self.analyze_call_args(air, args, ctx)?;
 
                 let air_ref = air.add_inst(AirInst {
                     data: AirInstData::Call {
@@ -2661,10 +2742,6 @@ impl<'a> Sema<'a> {
                     match &current_inst.data {
                         InstData::VarRef { name } => {
                             let name_str = self.interner.get(*name);
-                            let local = ctx.locals.get(name).ok_or_compile_error(
-                                ErrorKind::UndefinedVariable(name_str.to_string()),
-                                inst.span,
-                            )?;
 
                             // Check if this variable has been moved
                             if let Some(move_info) = ctx.moved_vars.get(name) {
@@ -2674,6 +2751,25 @@ impl<'a> Sema<'a> {
                                 )
                                 .with_label("value moved here", move_info.moved_at));
                             }
+
+                            // First check if it's a parameter
+                            if let Some(param_info) = ctx.params.get(name) {
+                                break (
+                                    name_str.to_string(),
+                                    RootKind::Param {
+                                        abi_slot: param_info.abi_slot,
+                                        mode: param_info.mode,
+                                    },
+                                    param_info.ty,
+                                    *name,
+                                );
+                            }
+
+                            // Then check locals
+                            let local = ctx.locals.get(name).ok_or_compile_error(
+                                ErrorKind::UndefinedVariable(name_str.to_string()),
+                                inst.span,
+                            )?;
 
                             break (
                                 name_str.to_string(),
@@ -2741,8 +2837,17 @@ impl<'a> Sema<'a> {
                     RootKind::Param { abi_slot, mode } => {
                         match mode {
                             RirParamMode::Normal => {
-                                // Normal (owned) parameters can be mutated
-                                // (though this is unusual - you'd typically use inout)
+                                // Non-inout parameters are immutable - cannot modify their fields
+                                return Err(CompileError::new(
+                                    ErrorKind::AssignToImmutable(var_name.clone()),
+                                    inst.span,
+                                )
+                                .with_help(format!(
+                                    "consider making parameter `{}` inout: `inout {}: {}`",
+                                    var_name,
+                                    var_name,
+                                    root_type.name()
+                                )));
                             }
                             RirParamMode::Inout => {
                                 // Inout parameters can be mutated - that's their purpose
@@ -2815,7 +2920,7 @@ impl<'a> Sema<'a> {
                 let struct_def = &self.struct_defs[struct_id.0 as usize];
                 let field_name_str = self.interner.get(*field).to_string();
 
-                let (field_index, struct_field) =
+                let (field_index, _struct_field) =
                     struct_def.find_field(&field_name_str).ok_or_compile_error(
                         ErrorKind::UnknownField {
                             struct_name: struct_def.name.clone(),
@@ -2824,25 +2929,42 @@ impl<'a> Sema<'a> {
                         inst.span,
                     )?;
 
-                let field_type = struct_field.ty;
-
-                // Compute the slot of the containing struct (the immediate base).
-                // Codegen will add field_index to get the actual field slot.
-                let base_slot = root_slot + slot_offset;
-
                 // Analyze the value with the expected field type
                 let value_result = self.analyze_inst(air, *value, ctx)?;
 
-                let air_ref = air.add_inst(AirInst {
-                    data: AirInstData::FieldSet {
-                        slot: base_slot,
-                        struct_id,
-                        field_index: field_index as u32,
-                        value: value_result.air_ref,
-                    },
-                    ty: Type::Unit,
-                    span: inst.span,
-                });
+                // Emit the appropriate instruction based on whether root is a local or param
+                let air_ref = match root_kind {
+                    RootKind::Local { slot, .. } => {
+                        // Compute the slot of the containing struct (the immediate base).
+                        // Codegen will add field_index to get the actual field slot.
+                        let base_slot = slot + slot_offset;
+                        air.add_inst(AirInst {
+                            data: AirInstData::FieldSet {
+                                slot: base_slot,
+                                struct_id,
+                                field_index: field_index as u32,
+                                value: value_result.air_ref,
+                            },
+                            ty: Type::Unit,
+                            span: inst.span,
+                        })
+                    }
+                    RootKind::Param { abi_slot, .. } => {
+                        // For inout parameters, emit ParamFieldSet.
+                        // We've already verified is_inout is true above.
+                        air.add_inst(AirInst {
+                            data: AirInstData::ParamFieldSet {
+                                param_slot: abi_slot,
+                                inner_offset: slot_offset,
+                                struct_id,
+                                field_index: field_index as u32,
+                                value: value_result.air_ref,
+                            },
+                            ty: Type::Unit,
+                            span: inst.span,
+                        })
+                    }
+                };
                 Ok(AnalysisResult::new(air_ref, Type::Unit))
             }
 
@@ -3324,13 +3446,7 @@ impl<'a> Sema<'a> {
                     value: receiver_result.air_ref,
                     mode: AirArgMode::Normal, // receiver is not inout
                 }];
-                for arg in args.iter() {
-                    let arg_result = self.analyze_inst(air, arg.value, ctx)?;
-                    air_args.push(AirCallArg {
-                        value: arg_result.air_ref,
-                        mode: Self::convert_arg_mode(arg.mode),
-                    });
-                }
+                air_args.extend(self.analyze_call_args(air, args, ctx)?);
 
                 // Generate a method call name: Type.method
                 let call_name = format!("{}.{}", struct_name_str, method_name_str);
@@ -3401,14 +3517,7 @@ impl<'a> Sema<'a> {
                 let return_type = method_info.return_type;
 
                 // Analyze arguments
-                let mut air_args = Vec::new();
-                for arg in args.iter() {
-                    let arg_result = self.analyze_inst(air, arg.value, ctx)?;
-                    air_args.push(AirCallArg {
-                        value: arg_result.air_ref,
-                        mode: Self::convert_arg_mode(arg.mode),
-                    });
-                }
+                let air_args = self.analyze_call_args(air, args, ctx)?;
 
                 // Generate a function call name: Type::function
                 let call_name = format!("{}::{}", type_name_str, function_name_str);

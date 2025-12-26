@@ -1220,6 +1220,33 @@ impl<'a> CfgLower<'a> {
                 }
             }
 
+            CfgInstData::ParamStore {
+                param_slot,
+                value: val,
+            } => {
+                // ParamStore is used for inout params - store through the pointer
+                let val_vreg = self.get_vreg(*val);
+
+                // For inout params, param_slot is the first ABI slot for that param.
+                // For scalar params, param_slot = param_index.
+                // For struct params, param_slot is the first slot (same as param_index for first param).
+                if self.cfg.is_param_inout(*param_slot) {
+                    if let Some(ptr_vreg) = self.inout_param_ptrs.get(param_slot).copied() {
+                        self.mir.push(Aarch64Inst::StrIndexed {
+                            src: Operand::Virtual(val_vreg),
+                            base: ptr_vreg,
+                        });
+                    } else {
+                        panic!(
+                            "ParamStore: inout param pointer not found for param slot {}",
+                            param_slot
+                        );
+                    }
+                } else {
+                    panic!("ParamStore used on non-inout param slot {}", param_slot);
+                }
+            }
+
             CfgInstData::Call { name, args } => {
                 let result_vreg = self.mir.alloc_vreg();
                 self.value_map.insert(value, result_vreg);
@@ -1640,14 +1667,33 @@ impl<'a> CfgLower<'a> {
                             });
                         }
                         FieldChainBase::Param { index } => {
-                            // Chain originates from a Param - compute offset from param slot
-                            let param_slot = self.num_locals + index + total_offset;
-                            let offset = self.local_offset(param_slot);
-                            self.mir.push(Aarch64Inst::Ldr {
-                                dst: Operand::Virtual(vreg),
-                                base: Reg::Fp,
-                                offset,
-                            });
+                            // Check if this is an inout parameter
+                            if self.cfg.is_param_inout(index) {
+                                // For inout params, use the pointer we stored earlier
+                                if let Some(ptr_vreg) = self.inout_param_ptrs.get(&index).copied() {
+                                    // Load from pointer + field offset
+                                    self.mir.push(Aarch64Inst::LdrIndexedOffset {
+                                        dst: Operand::Virtual(vreg),
+                                        base: ptr_vreg,
+                                        offset: (total_offset as i32) * 8,
+                                    });
+                                } else {
+                                    panic!(
+                                        "FieldGet: inout param pointer not found for param index {} - \
+                                         Param instruction must be lowered before FieldGet",
+                                        index
+                                    );
+                                }
+                            } else {
+                                // Non-inout param: struct is copied to our stack
+                                let param_slot = self.num_locals + index + total_offset;
+                                let offset = self.local_offset(param_slot);
+                                self.mir.push(Aarch64Inst::Ldr {
+                                    dst: Operand::Virtual(vreg),
+                                    base: Reg::Fp,
+                                    offset,
+                                });
+                            }
                         }
                     }
                 } else {
@@ -1685,6 +1731,45 @@ impl<'a> CfgLower<'a> {
                     base: Reg::Fp,
                     offset,
                 });
+            }
+
+            CfgInstData::ParamFieldSet {
+                param_slot,
+                inner_offset,
+                struct_id,
+                field_index,
+                value: val,
+            } => {
+                let val_vreg = self.get_vreg(*val);
+                let field_slot_offset = self.struct_field_slot_offset(*struct_id, *field_index);
+                let total_offset = *inner_offset + field_slot_offset;
+
+                // Check if this is an inout parameter
+                if self.cfg.is_param_inout(*param_slot) {
+                    // For inout params, store through the pointer
+                    if let Some(ptr_vreg) = self.inout_param_ptrs.get(param_slot).copied() {
+                        self.mir.push(Aarch64Inst::StrIndexedOffset {
+                            src: Operand::Virtual(val_vreg),
+                            base: ptr_vreg,
+                            offset: (total_offset as i32) * 8,
+                        });
+                    } else {
+                        panic!(
+                            "ParamFieldSet: inout param pointer not found for param slot {} - \
+                             Param instruction must be lowered before ParamFieldSet",
+                            param_slot
+                        );
+                    }
+                } else {
+                    // Non-inout param: struct is on our stack
+                    let param_stack_slot = self.num_locals + *param_slot + total_offset;
+                    let offset = self.local_offset(param_stack_slot);
+                    self.mir.push(Aarch64Inst::Str {
+                        src: Operand::Virtual(val_vreg),
+                        base: Reg::Fp,
+                        offset,
+                    });
+                }
             }
 
             CfgInstData::ArrayInit {

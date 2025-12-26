@@ -521,6 +521,22 @@ impl<'a> CfgBuilder<'a> {
                 }
             }
 
+            AirInstData::ParamStore { param_slot, value } => {
+                let val = self.lower_inst(*value).value.unwrap();
+                self.emit(
+                    CfgInstData::ParamStore {
+                        param_slot: *param_slot,
+                        value: val,
+                    },
+                    Type::Unit,
+                    span,
+                );
+                ExprResult {
+                    value: None,
+                    continuation: Continuation::Continues,
+                }
+            }
+
             AirInstData::Call { name, args } => {
                 let mut arg_vals = Vec::new();
                 for arg in args {
@@ -629,6 +645,31 @@ impl<'a> CfgBuilder<'a> {
                 self.emit(
                     CfgInstData::FieldSet {
                         slot: *slot,
+                        struct_id: *struct_id,
+                        field_index: *field_index,
+                        value: val,
+                    },
+                    Type::Unit,
+                    span,
+                );
+                ExprResult {
+                    value: None,
+                    continuation: Continuation::Continues,
+                }
+            }
+
+            AirInstData::ParamFieldSet {
+                param_slot,
+                inner_offset,
+                struct_id,
+                field_index,
+                value,
+            } => {
+                let val = self.lower_inst(*value).value.unwrap();
+                self.emit(
+                    CfgInstData::ParamFieldSet {
+                        param_slot: *param_slot,
+                        inner_offset: *inner_offset,
                         struct_id: *struct_id,
                         field_index: *field_index,
                         value: val,

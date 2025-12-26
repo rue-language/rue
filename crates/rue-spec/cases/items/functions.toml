@@ -1035,3 +1035,239 @@ fn main() -> i32 {
 """
 compile_fail = true
 error_contains = "cannot mutate borrowed"
+
+# =============================================================================
+# Inout parameters with structs
+# =============================================================================
+
+[[case]]
+name = "inout_struct_field_set"
+spec = ["6.1:14", "6.1:15", "6.1:16", "6.1:18"]
+description = "Inout struct parameter allows modifying a field"
+preview = "affine_types"
+source = """
+struct Point { x: i32, y: i32 }
+
+fn increment_x(inout p: Point) {
+    p.x = p.x + 1;
+}
+
+fn main() -> i32 {
+    let mut pt = Point { x: 41, y: 0 };
+    increment_x(inout pt);
+    pt.x
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "inout_struct_field_get"
+spec = ["6.1:14", "6.1:18"]
+description = "Inout struct parameter allows reading fields"
+preview = "affine_types"
+source = """
+struct Point { x: i32, y: i32 }
+
+fn get_sum(inout p: Point) -> i32 {
+    p.x + p.y
+}
+
+fn main() -> i32 {
+    let mut pt = Point { x: 20, y: 22 };
+    get_sum(inout pt)
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "inout_struct_multiple_fields"
+spec = ["6.1:14", "6.1:18"]
+description = "Inout struct parameter allows modifying multiple fields"
+preview = "affine_types"
+source = """
+struct Point { x: i32, y: i32 }
+
+fn swap_xy(inout p: Point) {
+    let tmp = p.x;
+    p.x = p.y;
+    p.y = tmp;
+}
+
+fn main() -> i32 {
+    let mut pt = Point { x: 10, y: 42 };
+    swap_xy(inout pt);
+    pt.x
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "inout_struct_return_and_modify"
+spec = ["6.1:14", "6.1:18"]
+description = "Inout struct parameter with return value"
+preview = "affine_types"
+source = """
+struct Point { x: i32, y: i32 }
+
+fn increment_x_return_old(inout p: Point) -> i32 {
+    let old = p.x;
+    p.x = p.x + 1;
+    old
+}
+
+fn main() -> i32 {
+    let mut pt = Point { x: 40, y: 0 };
+    let old = increment_x_return_old(inout pt);
+    old + pt.x
+}
+"""
+exit_code = 81
+
+[[case]]
+name = "inout_struct_multiple_calls"
+spec = ["6.1:14", "6.1:18"]
+description = "Multiple calls with inout struct accumulate changes"
+preview = "affine_types"
+source = """
+struct Counter { value: i32 }
+
+fn increment(inout c: Counter) {
+    c.value = c.value + 1;
+}
+
+fn main() -> i32 {
+    let mut counter = Counter { value: 39 };
+    increment(inout counter);
+    increment(inout counter);
+    increment(inout counter);
+    counter.value
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "inout_struct_with_regular_param"
+spec = ["6.1:14", "6.1:15"]
+description = "Mixing inout struct and regular parameters"
+preview = "affine_types"
+source = """
+struct Counter { value: i32 }
+
+fn add_to(inout c: Counter, amount: i32) {
+    c.value = c.value + amount;
+}
+
+fn main() -> i32 {
+    let mut counter = Counter { value: 32 };
+    add_to(inout counter, 10);
+    counter.value
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "inout_nested_struct"
+spec = ["6.1:14", "6.1:18"]
+description = "Inout with nested struct - modify inner field"
+preview = "affine_types"
+source = """
+struct Inner { value: i32 }
+struct Outer { inner: Inner, extra: i32 }
+
+fn increment_inner(inout o: Outer) {
+    o.inner.value = o.inner.value + 1;
+}
+
+fn main() -> i32 {
+    let mut data = Outer { inner: Inner { value: 41 }, extra: 0 };
+    increment_inner(inout data);
+    data.inner.value
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "inout_forward_struct"
+spec = ["6.1:14", "6.1:18"]
+description = "Forwarding inout struct parameter to another function"
+preview = "affine_types"
+source = """
+struct Counter { value: i32 }
+
+fn increment_by(inout c: Counter, amount: i32) {
+    c.value = c.value + amount;
+}
+
+fn double_increment(inout c: Counter) {
+    increment_by(inout c, 2);
+}
+
+fn main() -> i32 {
+    let mut counter = Counter { value: 40 };
+    double_increment(inout counter);
+    counter.value
+}
+"""
+exit_code = 42
+
+# =============================================================================
+# Parameter immutability (non-inout params cannot be assigned)
+# =============================================================================
+
+[[case]]
+name = "assign_to_non_inout_param"
+spec = ["6.1:32"]
+description = "Cannot assign to a non-inout parameter"
+preview = "affine_types"
+source = """
+fn bad(x: i32) {
+    x = 5;
+}
+fn main() -> i32 {
+    bad(10);
+    0
+}
+"""
+compile_fail = true
+error_contains = "immutable"
+
+[[case]]
+name = "assign_to_non_inout_struct_param_field"
+spec = ["6.1:32"]
+description = "Cannot assign to a field of a non-inout struct parameter"
+preview = "affine_types"
+source = """
+struct Point { x: i32, y: i32 }
+
+fn bad(p: Point) {
+    p.x = 10;
+}
+fn main() -> i32 {
+    let pt = Point { x: 1, y: 2 };
+    bad(pt);
+    0
+}
+"""
+compile_fail = true
+error_contains = "immutable"
+
+[[case]]
+name = "assign_to_non_inout_nested_struct_param_field"
+spec = ["6.1:32"]
+description = "Cannot assign to a nested field of a non-inout struct parameter"
+preview = "affine_types"
+source = """
+struct Inner { value: i32 }
+struct Outer { inner: Inner }
+
+fn bad(o: Outer) {
+    o.inner.value = 10;
+}
+fn main() -> i32 {
+    let data = Outer { inner: Inner { value: 1 } };
+    bad(data);
+    0
+}
+"""
+compile_fail = true
+error_contains = "immutable"

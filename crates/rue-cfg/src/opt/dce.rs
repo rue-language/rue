@@ -101,7 +101,9 @@ fn has_side_effects(cfg: &Cfg, value: CfgValue) -> bool {
         // Memory writes
         CfgInstData::Alloc { .. } => true,
         CfgInstData::Store { .. } => true,
+        CfgInstData::ParamStore { .. } => true,
         CfgInstData::FieldSet { .. } => true,
+        CfgInstData::ParamFieldSet { .. } => true,
         CfgInstData::IndexSet { .. } => true,
 
         // Drop runs destructors
@@ -174,6 +176,7 @@ fn instruction_uses(cfg: &Cfg, value: CfgValue) -> Vec<CfgValue> {
         CfgInstData::Alloc { init, .. } => vec![*init],
         CfgInstData::Load { .. } => vec![],
         CfgInstData::Store { value, .. } => vec![*value],
+        CfgInstData::ParamStore { value, .. } => vec![*value],
 
         // Function calls
         CfgInstData::Call { args, .. } => args.iter().map(|a| a.value).collect(),
@@ -183,6 +186,7 @@ fn instruction_uses(cfg: &Cfg, value: CfgValue) -> Vec<CfgValue> {
         CfgInstData::StructInit { fields, .. } => fields.clone(),
         CfgInstData::FieldGet { base, .. } => vec![*base],
         CfgInstData::FieldSet { value, .. } => vec![*value],
+        CfgInstData::ParamFieldSet { value, .. } => vec![*value],
 
         // Array operations
         CfgInstData::ArrayInit { elements, .. } => elements.clone(),

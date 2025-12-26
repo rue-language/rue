@@ -281,6 +281,14 @@ pub enum AirInstData {
         value: AirRef,
     },
 
+    /// Store value to a parameter (for inout params)
+    ParamStore {
+        /// Parameter's ABI slot (relative to params, not locals)
+        param_slot: u32,
+        /// Value to store
+        value: AirRef,
+    },
+
     /// Return from function (None for `return;` in unit-returning functions)
     Ret(Option<AirRef>),
 
@@ -339,11 +347,25 @@ pub enum AirInstData {
         field_index: u32,
     },
 
-    /// Store a value to a struct field
+    /// Store a value to a struct field (for local variables)
     FieldSet {
         /// The struct variable slot
         slot: u32,
         /// The struct type
+        struct_id: StructId,
+        /// Field index (0-based, in declaration order)
+        field_index: u32,
+        /// Value to store
+        value: AirRef,
+    },
+
+    /// Store a value to a struct field (for parameters, including inout)
+    ParamFieldSet {
+        /// The parameter's ABI slot (relative to params, not locals)
+        param_slot: u32,
+        /// Offset within the struct for nested field access (e.g., p.inner.x)
+        inner_offset: u32,
+        /// The struct type containing the field being set
         struct_id: StructId,
         /// Field index (0-based, in declaration order)
         field_index: u32,
@@ -494,6 +516,9 @@ impl fmt::Display for Air {
                 AirInstData::Alloc { slot, init } => writeln!(f, "alloc ${} = {}", slot, init)?,
                 AirInstData::Load { slot } => writeln!(f, "load ${}", slot)?,
                 AirInstData::Store { slot, value } => writeln!(f, "store ${} = {}", slot, value)?,
+                AirInstData::ParamStore { param_slot, value } => {
+                    writeln!(f, "param_store %{} = {}", param_slot, value)?
+                }
                 AirInstData::Ret(inner) => {
                     if let Some(inner) = inner {
                         writeln!(f, "ret {}", inner)?
@@ -570,6 +595,19 @@ impl fmt::Display for Air {
                         f,
                         "field_set ${}.#{}.{} = {}",
                         slot, struct_id.0, field_index, value
+                    )?;
+                }
+                AirInstData::ParamFieldSet {
+                    param_slot,
+                    inner_offset,
+                    struct_id,
+                    field_index,
+                    value,
+                } => {
+                    writeln!(
+                        f,
+                        "param_field_set %{}+{}.#{}.{} = {}",
+                        param_slot, inner_offset, struct_id.0, field_index, value
                     )?;
                 }
                 AirInstData::ArrayInit {
