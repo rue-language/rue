@@ -1,0 +1,499 @@
+[section]
+id = "types.mutable_strings"
+spec_chapter = "3.10"
+name = "Mutable Strings"
+description = "Mutable string capabilities building on the core String type."
+
+# =============================================================================
+# String Representation (3.10:1 - 3.10:3)
+# =============================================================================
+
+# Note: The three-field representation (ptr, len, cap) is tested indirectly
+# through the query methods len() and capacity(). The ptr field is internal.
+
+[[case]]
+name = "string_representation_len_cap"
+spec = ["3.10:1", "3.10:2"]
+description = "String has length and capacity (proving three-field representation)"
+preview = "mutable_strings"
+source = """
+fn main() -> i32 {
+    let s = "hello";
+    // len and capacity are separately queryable, proving ptr/len/cap structure
+    let l = s.len();
+    let c = s.capacity();
+    // Literal has cap=0, len=5
+    if l == 5 && c == 0 { 0 } else { 1 }
+}
+"""
+exit_code = 0
+
+[[case]]
+name = "string_literal_read_only"
+spec = ["3.10:2"]
+description = "Literal has capacity zero (pointing to read-only memory)"
+preview = "mutable_strings"
+source = """
+fn main() -> i32 {
+    let s = "hello world";
+    // capacity == 0 means read-only memory (literal)
+    if s.capacity() == 0 { 0 } else { 1 }
+}
+"""
+exit_code = 0
+
+# =============================================================================
+# String Ownership (3.10:4 - 3.10:6)
+# =============================================================================
+
+[[case]]
+name = "string_affine_move"
+spec = ["3.10:4", "3.10:5", "3.10:6"]
+description = "String is moved when passed to a function"
+preview = "mutable_strings"
+source = """
+fn takes_string(s: String) -> i32 {
+    0
+}
+
+fn main() -> i32 {
+    var s = "hello";
+    takes_string(s)
+}
+"""
+exit_code = 0
+
+[[case]]
+name = "string_affine_use_after_move"
+spec = ["3.10:4", "3.10:5"]
+description = "Using a string after move is an error"
+preview = "mutable_strings"
+source = """
+fn takes_string(s: String) -> i32 { 0 }
+
+fn main() -> i32 {
+    var s = "hello";
+    takes_string(s);
+    takes_string(s)
+}
+"""
+compile_fail = true
+error_contains = "use of moved value"
+
+# =============================================================================
+# Construction (3.10:7 - 3.10:9)
+# =============================================================================
+
+[[case]]
+name = "string_new_empty"
+spec = ["3.10:7", "3.10:9"]
+description = "String::new() creates an empty string"
+preview = "mutable_strings"
+source = """
+fn main() -> i32 {
+    let s = String::new();
+    if s.is_empty() { 0 } else { 1 }
+}
+"""
+exit_code = 0
+
+[[case]]
+name = "string_with_capacity"
+spec = ["3.10:8", "3.10:9"]
+description = "String::with_capacity() pre-allocates"
+preview = "mutable_strings"
+source = """
+fn main() -> i32 {
+    let s = String::with_capacity(100);
+    if s.capacity() >= 100 { 0 } else { 1 }
+}
+"""
+exit_code = 0
+
+# =============================================================================
+# Query Methods (3.10:10 - 3.10:14)
+# =============================================================================
+
+[[case]]
+name = "string_len_literal"
+spec = ["3.10:10", "3.10:13", "3.10:14"]
+description = "len() returns byte length of string literal"
+preview = "mutable_strings"
+source = """
+fn main() -> i32 {
+    let s = "hello";
+    if s.len() == 5 { 0 } else { 1 }
+}
+"""
+exit_code = 0
+
+[[case]]
+name = "string_len_empty"
+spec = ["3.10:10", "3.10:12"]
+description = "len() returns 0 for empty string"
+preview = "mutable_strings"
+source = """
+fn main() -> i32 {
+    let s = "";
+    if s.len() == 0 && s.is_empty() { 0 } else { 1 }
+}
+"""
+exit_code = 0
+
+[[case]]
+name = "string_capacity_literal"
+spec = ["3.10:11", "3.10:13"]
+description = "capacity() returns 0 for string literal"
+preview = "mutable_strings"
+source = """
+fn main() -> i32 {
+    let s = "hello";
+    if s.capacity() == 0 { 0 } else { 1 }
+}
+"""
+exit_code = 0
+
+[[case]]
+name = "string_is_empty_true"
+spec = ["3.10:12", "3.10:13"]
+description = "is_empty() returns true for empty string"
+preview = "mutable_strings"
+source = """
+fn main() -> i32 {
+    let s = "";
+    if s.is_empty() { 0 } else { 1 }
+}
+"""
+exit_code = 0
+
+[[case]]
+name = "string_is_empty_false"
+spec = ["3.10:12", "3.10:13"]
+description = "is_empty() returns false for non-empty string"
+preview = "mutable_strings"
+source = """
+fn main() -> i32 {
+    let s = "hello";
+    if !s.is_empty() { 0 } else { 1 }
+}
+"""
+exit_code = 0
+
+[[case]]
+name = "string_query_borrow_valid"
+spec = ["3.10:13"]
+description = "Query methods borrow, string remains valid"
+preview = "mutable_strings"
+source = """
+fn main() -> i32 {
+    let s = "hello";
+    let len = s.len();
+    let empty = s.is_empty();
+    let cap = s.capacity();
+    if len == 5 && !empty && cap == 0 { 0 } else { 1 }
+}
+"""
+exit_code = 0
+
+# =============================================================================
+# Mutation Methods (3.10:15 - 3.10:20)
+# =============================================================================
+
+[[case]]
+name = "string_push_str_basic"
+spec = ["3.10:15", "3.10:19", "3.10:20"]
+description = "push_str() appends string content"
+preview = "mutable_strings"
+source = """
+fn main() -> i32 {
+    var s = String::new();
+    s.push_str("hello");
+    if s.len() == 5 { 0 } else { 1 }
+}
+"""
+exit_code = 0
+
+[[case]]
+name = "string_push_str_multiple"
+spec = ["3.10:15", "3.10:20"]
+description = "Multiple push_str() calls accumulate"
+preview = "mutable_strings"
+source = """
+fn main() -> i32 {
+    var s = String::new();
+    s.push_str("hello");
+    s.push_str(" world");
+    if s.len() == 11 { 0 } else { 1 }
+}
+"""
+exit_code = 0
+
+[[case]]
+name = "string_push_byte"
+spec = ["3.10:16", "3.10:19"]
+description = "push() appends a single byte"
+preview = "mutable_strings"
+source = """
+fn main() -> i32 {
+    var s = String::new();
+    s.push_str("hello");
+    s.push(33);  // '!'
+    if s.len() == 6 { 0 } else { 1 }
+}
+"""
+exit_code = 0
+
+[[case]]
+name = "string_clear"
+spec = ["3.10:17", "3.10:19"]
+description = "clear() removes content but retains capacity"
+preview = "mutable_strings"
+source = """
+fn main() -> i32 {
+    var s = String::with_capacity(100);
+    s.push_str("hello");
+    let cap_before = s.capacity();
+    s.clear();
+    if s.is_empty() && s.capacity() == cap_before { 0 } else { 1 }
+}
+"""
+exit_code = 0
+
+[[case]]
+name = "string_reserve"
+spec = ["3.10:18", "3.10:19"]
+description = "reserve() ensures additional capacity"
+preview = "mutable_strings"
+source = """
+fn main() -> i32 {
+    var s = String::new();
+    s.push_str("hi");
+    s.reserve(100);
+    if s.capacity() >= 102 { 0 } else { 1 }
+}
+"""
+exit_code = 0
+
+[[case]]
+name = "string_mutation_requires_var"
+spec = ["3.10:19"]
+description = "Mutation methods require var binding"
+preview = "mutable_strings"
+source = """
+fn main() -> i32 {
+    let s = String::new();
+    s.push_str("hello");
+    0
+}
+"""
+compile_fail = true
+error_contains = "cannot assign"
+
+# =============================================================================
+# Heap Promotion (3.10:21 - 3.10:23)
+# =============================================================================
+
+[[case]]
+name = "string_heap_promotion"
+spec = ["3.10:21", "3.10:22", "3.10:23"]
+description = "Literal is promoted to heap on mutation"
+preview = "mutable_strings"
+source = """
+fn main() -> i32 {
+    var s = "hello";
+    s.push_str("!");
+    if s.capacity() > 0 && s.len() == 6 { 0 } else { 1 }
+}
+"""
+exit_code = 0
+
+[[case]]
+name = "string_literal_no_capacity"
+spec = ["3.10:21", "3.10:22"]
+description = "Unmodified literal has zero capacity"
+preview = "mutable_strings"
+source = """
+fn main() -> i32 {
+    let s = "hello";
+    if s.capacity() == 0 { 0 } else { 1 }
+}
+"""
+exit_code = 0
+
+# =============================================================================
+# Growth Strategy (3.10:24 - 3.10:25)
+# =============================================================================
+
+[[case]]
+name = "string_growth_on_append"
+spec = ["3.10:24", "3.10:25"]
+description = "String grows capacity when needed"
+preview = "mutable_strings"
+source = """
+fn main() -> i32 {
+    var s = String::new();
+    s.push_str("hello");
+    let cap1 = s.capacity();
+    // Append enough to exceed initial capacity
+    s.push_str(" world hello world hello world");
+    let cap2 = s.capacity();
+    if cap2 > cap1 { 0 } else { 1 }
+}
+"""
+exit_code = 0
+
+# =============================================================================
+# Clone (3.10:26 - 3.10:28)
+# =============================================================================
+
+[[case]]
+name = "string_clone_basic"
+spec = ["3.10:26", "3.10:27", "3.10:28"]
+description = "clone() creates a deep copy"
+preview = "mutable_strings"
+source = """
+fn main() -> i32 {
+    let a = "hello";
+    let b = a.clone();
+    // Both should be valid and equal
+    if a == b { 0 } else { 1 }
+}
+"""
+exit_code = 0
+
+[[case]]
+name = "string_clone_independent"
+spec = ["3.10:26", "3.10:27"]
+description = "Cloned strings are independent"
+preview = "mutable_strings"
+source = """
+fn main() -> i32 {
+    var a = "hello";
+    var b = a.clone();
+    b.push_str("!");
+    // a should still be "hello", b should be "hello!"
+    if a.len() == 5 && b.len() == 6 { 0 } else { 1 }
+}
+"""
+exit_code = 0
+
+[[case]]
+name = "string_clone_borrow"
+spec = ["3.10:27"]
+description = "Clone borrows, original remains valid"
+preview = "mutable_strings"
+source = """
+fn main() -> i32 {
+    let a = "hello";
+    let b = a.clone();
+    let c = a.clone();  // a still valid after first clone
+    if a.len() == 5 && b.len() == 5 && c.len() == 5 { 0 } else { 1 }
+}
+"""
+exit_code = 0
+
+# =============================================================================
+# Destructor (3.10:29 - 3.10:31)
+# =============================================================================
+
+# Note: Destructor behavior is tested indirectly through memory correctness.
+# Valgrind testing would verify no leaks.
+
+[[case]]
+name = "string_destructor_heap"
+spec = ["3.10:29", "3.10:30", "3.10:31"]
+description = "Heap-allocated strings are freed when dropped"
+preview = "mutable_strings"
+source = """
+fn make_string() -> i32 {
+    var s = "hello";
+    s.push_str(" world");
+    // s goes out of scope, destructor should free heap
+    42
+}
+
+fn main() -> i32 {
+    let result = make_string();
+    result - 42
+}
+"""
+exit_code = 0
+
+[[case]]
+name = "string_destructor_literal"
+spec = ["3.10:29", "3.10:30"]
+description = "Literal strings (cap=0) are not freed"
+preview = "mutable_strings"
+source = """
+fn use_literal() -> u64 {
+    let s = "hello";
+    // s is a literal, no heap to free
+    // When s goes out of scope, destructor should be a no-op (cap=0)
+    s.len()
+}
+
+fn main() -> i32 {
+    let len = use_literal();
+    if len == 5 { 0 } else { 1 }
+}
+"""
+exit_code = 0
+
+# =============================================================================
+# Byte String Semantics (3.10:32 - 3.10:33)
+# =============================================================================
+
+# Note: UTF-8 semantics are informative and don't have strict tests.
+# The type allows any bytes at runtime.
+
+[[case]]
+name = "string_byte_semantics"
+spec = ["3.10:32"]
+description = "Strings are byte sequences"
+preview = "mutable_strings"
+source = """
+fn main() -> i32 {
+    var s = String::new();
+    // Push some bytes
+    s.push(72);   // 'H'
+    s.push(105);  // 'i'
+    if s.len() == 2 { 0 } else { 1 }
+}
+"""
+exit_code = 0
+
+# =============================================================================
+# Integration Tests
+# =============================================================================
+
+[[case]]
+name = "string_building_message"
+spec = ["3.10:15", "3.10:16", "3.10:20"]
+description = "Build a complete message through appending"
+preview = "mutable_strings"
+source = """
+fn main() -> i32 {
+    var msg = String::new();
+    msg.push_str("Hello");
+    msg.push_str(", ");
+    msg.push_str("world");
+    msg.push(33);  // '!'
+    // "Hello, world!" is 13 bytes
+    if msg.len() == 13 { 0 } else { 1 }
+}
+"""
+exit_code = 0
+
+[[case]]
+name = "string_equality_after_mutation"
+spec = ["3.10:15", "3.7:9", "3.7:10"]
+description = "Mutated string can be compared"
+preview = "mutable_strings"
+source = """
+fn main() -> i32 {
+    var s = String::new();
+    s.push_str("hello");
+    if s == "hello" { 0 } else { 1 }
+}
+"""
+exit_code = 0

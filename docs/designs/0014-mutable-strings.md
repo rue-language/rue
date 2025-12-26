@@ -277,17 +277,17 @@ Epic: rue-0hef
 
 All functionality is gated behind `--preview mutable_strings`. Spec and tests come first.
 
-### Phase 1: Specification and Feature Gate
+### Phase 1: Specification and Feature Gate - rue-0hef.1 (COMPLETE)
 
 Write the specification first:
 
-- Add `MutableStrings` to `PreviewFeature` enum in `rue-error`
-- Add spec section 3.10 for mutable strings
-- Define String representation (ptr, len, cap)
-- Define all method signatures and semantics
-- Add spec tests with `preview = "mutable_strings"` (these will fail initially)
+- [x] Add `MutableStrings` to `PreviewFeature` enum in `rue-error`
+- [x] Add spec section 3.10 for mutable strings
+- [x] Define String representation (ptr, len, cap)
+- [x] Define all method signatures and semantics
+- [x] Add spec tests with `preview = "mutable_strings"` (these will fail initially)
 
-**Testable**: Spec tests exist and fail with "not yet implemented" or similar.
+**Testable**: Spec tests exist and are ignored (preview feature not yet implemented).
 
 ### Phase 2: Three-Field String Representation
 
