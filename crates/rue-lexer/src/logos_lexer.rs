@@ -115,7 +115,7 @@ pub enum LogosTokenKind {
     Underscore,
 
     // Integer literals
-    #[regex(r"[0-9]+", |lex| lex.slice().parse::<u64>().ok())]
+    #[regex(r"[0-9]+", |lex| lex.slice().parse::<u64>().map_err(|_| LexError::InvalidInteger))]
     Int(u64),
 
     // String literals
@@ -572,6 +572,16 @@ mod tests {
         let mut lexer = LogosLexer::new("a >= b");
         let tokens = lexer.tokenize().unwrap();
         assert!(matches!(tokens[1].kind, TokenKind::GtEq));
+    }
+
+    #[test]
+    fn test_logos_integer_overflow() {
+        // A number too large for u64 should produce InvalidInteger error
+        let mut lexer = LogosLexer::new("99999999999999999999999");
+        let result = lexer.tokenize();
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(matches!(err.kind, ErrorKind::InvalidInteger));
     }
 
     #[test]
