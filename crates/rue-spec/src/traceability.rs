@@ -3,7 +3,7 @@
 //! Generates a report showing which spec paragraphs are covered by tests
 //! and which remain uncovered.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::Path;
 
@@ -492,17 +492,14 @@ pub fn generate_report(spec_dir: &Path, cases_dir: &Path) -> TraceabilityReport 
         coverage.insert(id.clone(), Vec::new());
     }
 
-    // Track which references are valid
-    let valid_ids: BTreeSet<_> = paragraphs.keys().cloned().collect();
-
     // Process test files
     for test_file in &test_files {
         for case in &test_file.cases {
             let test_name = format!("{}::{}", test_file.section_id, case.name);
 
             for spec_ref in &case.spec_refs {
-                if valid_ids.contains(spec_ref) {
-                    coverage.get_mut(spec_ref).unwrap().push(TestReference {
+                if let Some(tests) = coverage.get_mut(spec_ref) {
+                    tests.push(TestReference {
                         test_name: test_name.clone(),
                         source_file: test_file.source_file.clone(),
                     });
