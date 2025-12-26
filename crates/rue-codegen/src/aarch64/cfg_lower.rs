@@ -1432,6 +1432,56 @@ impl<'a> CfgLower<'a> {
                                 }
                             }
                         }
+                        Type::String => {
+                            // String has 3 slots: ptr, len, cap
+                            // Handle like a struct with 3 fields
+                            let arg_data = &self.cfg.get_inst(arg_value).data;
+                            match arg_data {
+                                CfgInstData::Load { slot } => {
+                                    // Load all 3 String fields from stack
+                                    for field_idx in 0..3u32 {
+                                        let field_vreg = self.mir.alloc_vreg();
+                                        let field_slot = slot + field_idx;
+                                        let offset = self.local_offset(field_slot);
+                                        self.mir.push(Aarch64Inst::Ldr {
+                                            dst: Operand::Virtual(field_vreg),
+                                            base: Reg::Fp,
+                                            offset,
+                                        });
+                                        flattened_vregs.push(field_vreg);
+                                    }
+                                }
+                                CfgInstData::Param { index } => {
+                                    // Load all 3 String fields from param slots
+                                    for field_idx in 0..3u32 {
+                                        let field_vreg = self.mir.alloc_vreg();
+                                        let param_slot = self.num_locals + index + field_idx;
+                                        let offset = self.local_offset(param_slot);
+                                        self.mir.push(Aarch64Inst::Ldr {
+                                            dst: Operand::Virtual(field_vreg),
+                                            base: Reg::Fp,
+                                            offset,
+                                        });
+                                        flattened_vregs.push(field_vreg);
+                                    }
+                                }
+                                CfgInstData::StringConst(_) | CfgInstData::Call { .. } => {
+                                    // String from a call result or string const - use vregs
+                                    if let Some(field_vregs) =
+                                        self.struct_slot_vregs.get(&arg_value)
+                                    {
+                                        flattened_vregs.extend(field_vregs.iter().copied());
+                                    } else {
+                                        // Single vreg case (shouldn't happen for String)
+                                        flattened_vregs.push(self.get_vreg(arg_value));
+                                    }
+                                }
+                                _ => {
+                                    // Fallback - should be rare for String
+                                    flattened_vregs.push(self.get_vreg(arg_value));
+                                }
+                            }
+                        }
                         _ => {
                             flattened_vregs.push(self.get_vreg(arg_value));
                         }

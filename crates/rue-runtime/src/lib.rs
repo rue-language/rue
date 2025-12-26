@@ -1026,6 +1026,112 @@ pub extern "C" fn String__with_capacity(requested_cap: u64) -> u64 {
     ptr as u64
 }
 
+// =============================================================================
+// String Query Methods (Phase 6: len, capacity, is_empty)
+// =============================================================================
+//
+// These methods take a String (ptr, len, cap) and return a single value.
+// They use `borrow self` semantics - the String is not consumed.
+//
+// ABI: String is passed as 3 separate arguments (ptr, len, cap)
+// - x86-64: ptr in rdi, len in rsi, cap in rdx
+// - aarch64: ptr in x0, len in x1, cap in x2
+//
+// Return value is in rax (x86-64) or x0 (aarch64)
+
+/// Get the length of a String in bytes.
+///
+/// # Arguments
+/// * `_ptr` - Pointer to string data (unused, but part of ABI)
+/// * `len` - Length in bytes
+/// * `_cap` - Capacity (unused, but part of ABI)
+///
+/// # Returns
+/// The length in bytes (u64)
+#[cfg(all(target_arch = "x86_64", target_os = "linux"))]
+#[unsafe(no_mangle)]
+#[allow(non_snake_case)]
+pub extern "C" fn String__len(_ptr: *const u8, len: u64, _cap: u64) -> u64 {
+    len
+}
+
+#[cfg(all(target_arch = "aarch64", target_os = "macos"))]
+#[unsafe(no_mangle)]
+#[allow(non_snake_case)]
+pub extern "C" fn String__len(_ptr: *const u8, len: u64, _cap: u64) -> u64 {
+    len
+}
+
+#[cfg(all(target_arch = "aarch64", target_os = "linux"))]
+#[unsafe(no_mangle)]
+#[allow(non_snake_case)]
+pub extern "C" fn String__len(_ptr: *const u8, len: u64, _cap: u64) -> u64 {
+    len
+}
+
+/// Get the capacity of a String in bytes.
+///
+/// Returns 0 for string literals (pointing to rodata).
+/// Returns the allocated heap capacity for mutable strings.
+///
+/// # Arguments
+/// * `_ptr` - Pointer to string data (unused, but part of ABI)
+/// * `_len` - Length (unused, but part of ABI)
+/// * `cap` - Capacity in bytes
+///
+/// # Returns
+/// The capacity in bytes (u64)
+#[cfg(all(target_arch = "x86_64", target_os = "linux"))]
+#[unsafe(no_mangle)]
+#[allow(non_snake_case)]
+pub extern "C" fn String__capacity(_ptr: *const u8, _len: u64, cap: u64) -> u64 {
+    cap
+}
+
+#[cfg(all(target_arch = "aarch64", target_os = "macos"))]
+#[unsafe(no_mangle)]
+#[allow(non_snake_case)]
+pub extern "C" fn String__capacity(_ptr: *const u8, _len: u64, cap: u64) -> u64 {
+    cap
+}
+
+#[cfg(all(target_arch = "aarch64", target_os = "linux"))]
+#[unsafe(no_mangle)]
+#[allow(non_snake_case)]
+pub extern "C" fn String__capacity(_ptr: *const u8, _len: u64, cap: u64) -> u64 {
+    cap
+}
+
+/// Check if a String is empty.
+///
+/// # Arguments
+/// * `_ptr` - Pointer to string data (unused, but part of ABI)
+/// * `len` - Length in bytes
+/// * `_cap` - Capacity (unused, but part of ABI)
+///
+/// # Returns
+/// 1 (true) if len == 0, 0 (false) otherwise
+#[cfg(all(target_arch = "x86_64", target_os = "linux"))]
+#[unsafe(no_mangle)]
+#[allow(non_snake_case)]
+pub extern "C" fn String__is_empty(_ptr: *const u8, len: u64, _cap: u64) -> u8 {
+    if len == 0 { 1 } else { 0 }
+}
+
+#[cfg(all(target_arch = "aarch64", target_os = "macos"))]
+#[unsafe(no_mangle)]
+#[allow(non_snake_case)]
+pub extern "C" fn String__is_empty(_ptr: *const u8, len: u64, _cap: u64) -> u8 {
+    if len == 0 { 1 } else { 0 }
+}
+
+#[cfg(all(target_arch = "aarch64", target_os = "linux"))]
+#[unsafe(no_mangle)]
+#[allow(non_snake_case)]
+pub extern "C" fn String__is_empty(_ptr: *const u8, len: u64, _cap: u64) -> u8 {
+    if len == 0 { 1 } else { 0 }
+}
+
 // Re-export platform functions for tests
 #[cfg(all(test, target_arch = "x86_64", target_os = "linux"))]
 pub use x86_64_linux::{exit, write, write_all, write_stderr};

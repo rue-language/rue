@@ -3541,12 +3541,40 @@ impl<'a> Sema<'a> {
                 method,
                 args,
             } => {
+                // For String borrow methods, we need to extract the root variable before
+                // analyzing the receiver so we can "unmove" it afterwards. String query
+                // methods (len, capacity, is_empty) use `borrow self` semantics - they
+                // don't consume the String.
+                let receiver_var = self.extract_root_variable(*receiver);
+
                 // Analyze the receiver expression
                 let receiver_result = self.analyze_inst(air, *receiver, ctx)?;
                 let receiver_type = receiver_result.ty;
 
                 // Get the method name as a string for error messages
                 let method_name_str = self.interner.get(*method).to_string();
+
+                // Handle String methods specially
+                if receiver_type == Type::String {
+                    // String query methods (len, capacity, is_empty) use borrow semantics.
+                    // The receiver was marked as moved during analysis, but we need to
+                    // "unmove" it since it's actually being borrowed, not consumed.
+                    let is_borrow_method =
+                        matches!(method_name_str.as_str(), "len" | "capacity" | "is_empty");
+                    if is_borrow_method {
+                        if let Some(var_symbol) = receiver_var {
+                            ctx.moved_vars.remove(&var_symbol);
+                        }
+                    }
+                    return self.analyze_string_method(
+                        air,
+                        ctx,
+                        &method_name_str,
+                        receiver_result,
+                        args,
+                        inst.span,
+                    );
+                }
 
                 // Check that receiver is a struct type
                 let struct_id = match receiver_type {
@@ -4248,6 +4276,123 @@ impl<'a> Sema<'a> {
                     ErrorKind::UndefinedAssocFn {
                         type_name: "String".to_string(),
                         function_name: function_name.to_string(),
+                    },
+                    span,
+                ))
+            }
+        }
+    }
+
+    /// Analyze a String method call (len, capacity, is_empty, etc.).
+    ///
+    /// These are built-in methods for the String type that query the string's state.
+    /// Query methods use `borrow self` semantics - they don't consume the string.
+    fn analyze_string_method(
+        &mut self,
+        air: &mut Air,
+        _ctx: &mut AnalysisContext,
+        method_name: &str,
+        receiver: AnalysisResult,
+        args: &[RirCallArg],
+        span: Span,
+    ) -> CompileResult<AnalysisResult> {
+        match method_name {
+            "len" => {
+                // fn len(borrow self) -> u64
+                // Returns the length of the string in bytes
+                if !args.is_empty() {
+                    return Err(CompileError::new(
+                        ErrorKind::WrongArgumentCount {
+                            expected: 0,
+                            found: args.len(),
+                        },
+                        span,
+                    ));
+                }
+
+                // Generate a call to String__len (runtime function)
+                // We pass the String by value (its 3 fields) but don't consume it semantically.
+                // The caller still owns the String after this call.
+                // Using Normal mode instead of Borrow because String's 3 fields should be
+                // passed directly, not by reference.
+                let air_ref = air.add_inst(AirInst {
+                    data: AirInstData::Call {
+                        name: "String__len".to_string(),
+                        args: vec![AirCallArg {
+                            value: receiver.air_ref,
+                            mode: AirArgMode::Normal,
+                        }],
+                    },
+                    ty: Type::U64,
+                    span,
+                });
+                Ok(AnalysisResult::new(air_ref, Type::U64))
+            }
+
+            "capacity" => {
+                // fn capacity(borrow self) -> u64
+                // Returns the allocated capacity (0 for string literals)
+                if !args.is_empty() {
+                    return Err(CompileError::new(
+                        ErrorKind::WrongArgumentCount {
+                            expected: 0,
+                            found: args.len(),
+                        },
+                        span,
+                    ));
+                }
+
+                // Generate a call to String__capacity (runtime function)
+                // Same pattern as len() - pass by value, don't consume.
+                let air_ref = air.add_inst(AirInst {
+                    data: AirInstData::Call {
+                        name: "String__capacity".to_string(),
+                        args: vec![AirCallArg {
+                            value: receiver.air_ref,
+                            mode: AirArgMode::Normal,
+                        }],
+                    },
+                    ty: Type::U64,
+                    span,
+                });
+                Ok(AnalysisResult::new(air_ref, Type::U64))
+            }
+
+            "is_empty" => {
+                // fn is_empty(borrow self) -> bool
+                // Returns true if the string length is zero
+                if !args.is_empty() {
+                    return Err(CompileError::new(
+                        ErrorKind::WrongArgumentCount {
+                            expected: 0,
+                            found: args.len(),
+                        },
+                        span,
+                    ));
+                }
+
+                // Generate a call to String__is_empty (runtime function)
+                // Same pattern as len() - pass by value, don't consume.
+                let air_ref = air.add_inst(AirInst {
+                    data: AirInstData::Call {
+                        name: "String__is_empty".to_string(),
+                        args: vec![AirCallArg {
+                            value: receiver.air_ref,
+                            mode: AirArgMode::Normal,
+                        }],
+                    },
+                    ty: Type::Bool,
+                    span,
+                });
+                Ok(AnalysisResult::new(air_ref, Type::Bool))
+            }
+
+            _ => {
+                // Unknown method for String
+                Err(CompileError::new(
+                    ErrorKind::UndefinedMethod {
+                        type_name: "String".to_string(),
+                        method_name: method_name.to_string(),
                     },
                     span,
                 ))
