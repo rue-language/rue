@@ -861,15 +861,21 @@ impl<'a> CfgBuilder<'a> {
                 if !is_storage_live_wrapper {
                     if let Some(scope_slots) = self.scope_stack.pop() {
                         for live_slot in scope_slots.into_iter().rev() {
-                            // TODO: When we have types that need drop, emit Drop before StorageDead
-                            // if self.type_needs_drop(live_slot.ty) {
-                            //     let slot_val = self.emit(
-                            //         CfgInstData::Load { slot: live_slot.slot },
-                            //         live_slot.ty,
-                            //         live_slot.span,
-                            //     );
-                            //     self.emit(CfgInstData::Drop { value: slot_val }, Type::Unit, live_slot.span);
-                            // }
+                            // Emit Drop for types that need cleanup (e.g., heap-allocated String)
+                            if self.type_needs_drop(live_slot.ty) {
+                                let slot_val = self.emit(
+                                    CfgInstData::Load {
+                                        slot: live_slot.slot,
+                                    },
+                                    live_slot.ty,
+                                    live_slot.span,
+                                );
+                                self.emit(
+                                    CfgInstData::Drop { value: slot_val },
+                                    Type::Unit,
+                                    live_slot.span,
+                                );
+                            }
                             self.emit(
                                 CfgInstData::StorageDead {
                                     slot: live_slot.slot,
@@ -1600,9 +1606,10 @@ impl<'a> CfgBuilder<'a> {
             // Enum types are trivially droppable (just discriminant values)
             Type::Enum(_) => false,
 
-            // String will need drop when mutable strings land (heap allocation)
-            // For now, string literals are static and don't need drop
-            Type::String => false,
+            // String needs drop - heap-allocated strings must be freed.
+            // String literals have cap=0 and the runtime __rue_drop_String
+            // function is a no-op for them.
+            Type::String => true,
 
             // Struct types need drop if any field needs drop
             Type::Struct(struct_id) => {

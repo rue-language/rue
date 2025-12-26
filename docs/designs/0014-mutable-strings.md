@@ -312,13 +312,13 @@ Add string-specific functions to runtime:
 
 **Testable**: Unit tests in Rust for allocation/reallocation.
 
-### Phase 4: String Destructor Integration
+### Phase 4: String Destructor Integration - rue-0hef.4 (COMPLETE)
 
 Wire String type to use destructors:
 
-- Mark String as `needs_drop` in type system
-- Drop elaboration inserts Drop instructions for String
-- Codegen calls `__rue_drop_String`
+- [x] Mark String as `needs_drop` in type system
+- [x] Drop elaboration inserts Drop instructions for String
+- [x] Codegen calls `__rue_drop_String`
 
 **Testable**: Valgrind-clean string allocation and deallocation.
 
