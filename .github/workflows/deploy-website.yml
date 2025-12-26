@@ -48,7 +48,7 @@ jobs:
           path: website/public
 
   deploy:
-    if: github.ref == 'refs/heads/trunk'
+    if: github.ref == 'refs/heads/trunk' && github.repository == 'rue-language/rue'
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
