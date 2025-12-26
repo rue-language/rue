@@ -1383,7 +1383,7 @@ mod tests {
         assert!(result.is_err());
         let error = result.unwrap_err();
         assert_eq!(error.span(), Some(span));
-        matches!(error.kind, ErrorKind::InvalidInteger);
+        assert!(matches!(error.kind, ErrorKind::InvalidInteger));
     }
 
     #[test]
