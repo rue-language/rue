@@ -304,9 +304,13 @@ fn uses(inst: &X86Inst) -> Vec<VReg> {
         X86Inst::Push { src } => {
             add_if_virtual(src, &mut result);
         }
-        X86Inst::Lea { dst, .. } => {
-            add_if_virtual(dst, &mut result);
-            // base is physical register
+        X86Inst::Lea { index, .. } => {
+            // LEA only defines dst, it does not read dst's previous value.
+            // base is physical register (Reg), so no vreg use.
+            // index is an optional VReg that IS used if present.
+            if let Some(idx) = index {
+                result.push(*idx);
+            }
         }
         X86Inst::Shl { dst, count } => {
             add_if_virtual(dst, &mut result);
@@ -739,5 +743,41 @@ mod tests {
         let v0_range = info.ranges.get(&v0).expect("v0 should have a range");
         assert_eq!(v0_range.start, 0);
         assert!(v0_range.end >= 4, "v0 should be live through CMP");
+    }
+
+    #[test]
+    fn test_lea_only_defines_dst() {
+        // LEA only defines its destination; it does NOT use it.
+        // This is different from instructions like AddRR where dst is both read and written.
+        // LEA computes an address and writes it to dst without reading dst's previous value.
+        //
+        // Bug: The uses() function was incorrectly listing dst as a use for LEA.
+
+        let mut mir = X86Mir::new();
+        let v0 = mir.alloc_vreg();
+
+        // lea v0, [rbp-8]
+        // This should ONLY define v0, not use it.
+        mir.push(X86Inst::Lea {
+            dst: Operand::Virtual(v0),
+            base: Reg::Rbp,
+            index: None,
+            scale: 1,
+            disp: -8,
+        });
+
+        let info = analyze(&mir);
+
+        // v0 should have a range starting at 0 (where it's defined)
+        let v0_range = info.ranges.get(&v0).expect("v0 should have a range");
+        assert_eq!(v0_range.start, 0, "LEA defines v0 at instruction 0");
+
+        // The instruction's uses should NOT include v0
+        let inst_uses = uses(&mir.instructions()[0]);
+        assert!(
+            !inst_uses.contains(&v0),
+            "LEA should not list dst in uses(); found uses: {:?}",
+            inst_uses
+        );
     }
 }
