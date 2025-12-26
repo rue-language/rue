@@ -134,7 +134,7 @@ impl<'a> CfgBuilder<'a> {
         let span = inst.span;
         let ty = inst.ty;
 
-        match &inst.data.clone() {
+        match &inst.data {
             AirInstData::Const(v) => {
                 let value = self.emit(CfgInstData::Const(*v), ty, span);
                 self.cache(air_ref, value);
