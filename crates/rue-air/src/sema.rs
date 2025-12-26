@@ -3184,9 +3184,24 @@ impl<'a> Sema<'a> {
                             inst.span,
                         ));
                     }
-                    other => {
-                        // HM should have resolved this to an array type
-                        panic!("ArrayInit should have array type from HM, got {:?}", other);
+                    None => {
+                        // HM didn't resolve the type - this is an internal error
+                        return Err(CompileError::new(
+                            ErrorKind::InternalError(
+                                "array type inference failed: type not resolved".to_string(),
+                            ),
+                            inst.span,
+                        ));
+                    }
+                    Some(other) => {
+                        // HM resolved to an unexpected type - this is an internal error
+                        return Err(CompileError::new(
+                            ErrorKind::InternalError(format!(
+                                "array type inference failed: expected array type, got {:?}",
+                                other
+                            )),
+                            inst.span,
+                        ));
                     }
                 };
 
