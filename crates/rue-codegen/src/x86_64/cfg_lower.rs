@@ -1360,14 +1360,14 @@ impl<'a> CfgLower<'a> {
                 let result_vreg = self.mir.alloc_vreg();
                 self.value_map.insert(value, result_vreg);
 
-                // Flatten struct arguments and handle inout arguments
+                // Flatten struct arguments and handle by-ref arguments (inout and borrow)
                 let mut flattened_vregs: Vec<VReg> = Vec::new();
                 for arg in args {
                     let arg_value = arg.value;
                     let arg_type = self.cfg.get_inst(arg_value).ty;
 
-                    // For inout args, pass address instead of value
-                    if arg.is_inout() {
+                    // For by-ref args (inout or borrow), pass address instead of value
+                    if arg.is_by_ref() {
                         let arg_data = &self.cfg.get_inst(arg_value).data;
                         let addr_vreg = self.mir.alloc_vreg();
 
@@ -1384,9 +1384,9 @@ impl<'a> CfgLower<'a> {
                                 });
                             }
                             CfgInstData::Param { index } => {
-                                // Check if this param is itself an inout param (forwarding case)
+                                // Check if this param is itself a by-ref param (forwarding case)
                                 if self.cfg.is_param_inout(*index) {
-                                    // For inout param, just pass the pointer we received
+                                    // For by-ref param, just pass the pointer we received
                                     if let Some(ptr_vreg) =
                                         self.inout_param_ptrs.get(index).copied()
                                     {
@@ -1396,7 +1396,7 @@ impl<'a> CfgLower<'a> {
                                         });
                                     } else {
                                         panic!(
-                                            "inout param pointer not found for forwarding param {}",
+                                            "by-ref param pointer not found for forwarding param {}",
                                             index
                                         );
                                     }
@@ -1416,7 +1416,7 @@ impl<'a> CfgLower<'a> {
                             _ => {
                                 // For other sources (StructInit, Call result, etc.),
                                 // we can't take an address - this should have been caught earlier
-                                panic!("inout argument must be a variable, not {:?}", arg_data);
+                                panic!("by-ref argument must be a variable, not {:?}", arg_data);
                             }
                         }
                         flattened_vregs.push(addr_vreg);

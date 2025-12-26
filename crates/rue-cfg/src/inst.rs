@@ -86,9 +86,19 @@ pub struct CfgCallArg {
 }
 
 impl CfgCallArg {
-    /// Returns true if this argument is passed as inout (by reference).
+    /// Returns true if this argument is passed as inout (mutable by reference).
     pub fn is_inout(&self) -> bool {
         self.mode == CfgArgMode::Inout
+    }
+
+    /// Returns true if this argument is passed as borrow (immutable by reference).
+    pub fn is_borrow(&self) -> bool {
+        self.mode == CfgArgMode::Borrow
+    }
+
+    /// Returns true if this argument is passed by reference (either inout or borrow).
+    pub fn is_by_ref(&self) -> bool {
+        matches!(self.mode, CfgArgMode::Inout | CfgArgMode::Borrow)
     }
 }
 
