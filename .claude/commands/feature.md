@@ -1,51 +1,35 @@
 ---
-description: Plan and implement a new feature (convenience wrapper)
+description: Plan and implement a new feature (use /design + /implement instead)
 allowed-tools: Bash, Read, Write, Edit, Glob, Grep, Task
 argument-hint: <feature description>
 ---
 
-## Task
+## Deprecated
 
-Plan and implement this feature: $ARGUMENTS
+This command is deprecated. Use the new workflow instead:
 
-## Instructions
+1. **`/design`** - Design the feature (creates ADR + bd issues)
+2. **`/implement <bd-id>`** - Implement a bd issue
+3. **`/ship`** - Rebase, review, test, commit, push
 
-This command combines `/plan` and `/implement`. For better context management on large features, use them separately.
+## Legacy Behavior
 
-Read the process documentation:
-- `docs/process/README.md` - Overall workflow
-- `docs/process/planning.md` - Planning details
-- `docs/process/implementation.md` - Implementation details
+If you still want the old combined behavior, this command will:
 
-## Workflow
+1. **Design** - Create ADR and bd issues (via `/design` workflow)
+2. **Implement** - Work on the feature (via `/implement` workflow)
+3. **Ship** - Review, test, commit, push (via `/ship` workflow)
 
-1. **Plan** - Follow `docs/process/planning.md`:
-   - Understand the feature
-   - Assess size (small vs large)
-   - Draft plan (bd issue, or ADR + epic for large)
-   - Get user approval
+Feature to design and implement: $ARGUMENTS
 
-2. **Implement** - Follow `docs/process/implementation.md`:
-   - Update spec if needed
-   - Add tests first
-   - Make code changes
-   - Run `./test.sh`
+## Recommendation
 
-3. **Finish**:
-   - `/code-review`
-   - `/commit`
+For better control and context management, run the commands separately:
 
-## Size Guidelines
-
-| Small | Large |
-|-------|-------|
-| 1-3 files, one session | Many files, multiple phases |
-| Add `%` operator | Mutable strings |
-| Add `else if` syntax | Inout parameters |
-| New warning type | Trait system |
-
-## Important
-
-- For large features, prefer `/plan` then `/implement` separately
-- Each commit should leave tests passing
-- Always run `/code-review` before `/commit`
+```
+/design <feature description>
+# Review and approve the design
+/implement <bd-id>
+# Work on implementation
+/ship
+```
