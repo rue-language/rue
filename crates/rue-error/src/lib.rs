@@ -211,6 +211,7 @@ impl Diagnostic {
 ///     .with_help("consider adding a type conversion")
 /// ```
 #[derive(Debug, Clone)]
+#[must_use = "compiler errors should not be ignored"]
 pub struct CompileError {
     pub kind: ErrorKind,
     span: Option<Span>,
@@ -881,6 +882,7 @@ pub enum WarningKind {
 ///     .with_help("if this is intentional, prefix it with an underscore: `_x`")
 /// ```
 #[derive(Debug, Clone)]
+#[must_use = "compiler warnings should not be ignored"]
 pub struct CompileWarning {
     pub kind: WarningKind,
     span: Option<Span>,
