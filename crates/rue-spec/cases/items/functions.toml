@@ -746,13 +746,49 @@ fn main() -> i32 {
 """
 exit_code = 12
 
+[[case]]
+name = "inout_allows_mutation_vs_borrow"
+spec = ["6.1:14", "6.1:18"]
+description = "Inout allows mutation while borrow does not (contrast test)"
+preview = "affine_types"
+source = """
+struct Counter { value: i32 }
+fn increment_inout(inout c: Counter) {
+    c.value = c.value + 1;
+}
+fn main() -> i32 {
+    let mut c = Counter { value: 41 };
+    increment_inout(inout c);
+    c.value
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "inout_value_valid_after_call"
+spec = ["6.1:18"]
+description = "Variable is still valid after inout call (no ownership transfer)"
+preview = "affine_types"
+source = """
+fn double(inout x: i32) {
+    x = x * 2;
+}
+fn main() -> i32 {
+    let mut n = 10;
+    double(inout n);
+    double(inout n);
+    n + 2
+}
+"""
+exit_code = 42
+
 # =============================================================================
-# Borrow parameters (Phase 2: Semantic Analysis)
+# Borrow parameters
 # =============================================================================
 
 [[case]]
 name = "borrow_param_read_only"
-spec = ["6.1:14"]
+spec = ["6.1:22", "6.1:23", "6.1:26"]
 description = "Basic borrow parameter that reads a value without ownership transfer"
 preview = "affine_types"
 source = """
@@ -769,8 +805,8 @@ exit_code = 42
 
 [[case]]
 name = "borrow_param_multiple_uses"
-spec = ["6.1:14"]
-description = "Borrowed value can be used multiple times (not moved)"
+spec = ["6.1:22", "6.1:26"]
+description = "Borrowed value can be used multiple times after call (not moved)"
 preview = "affine_types"
 source = """
 struct Point { x: i32, y: i32 }
@@ -789,7 +825,7 @@ exit_code = 42
 
 [[case]]
 name = "borrow_cannot_mutate_field"
-spec = ["6.1:14"]
+spec = ["6.1:24"]
 description = "Cannot mutate fields of a borrowed value"
 preview = "affine_types"
 source = """
@@ -808,7 +844,7 @@ error_contains = "cannot mutate borrowed"
 
 [[case]]
 name = "borrow_cannot_mutate_array"
-spec = ["6.1:14"]
+spec = ["6.1:24"]
 description = "Cannot mutate elements of a borrowed array"
 preview = "affine_types"
 source = """
@@ -826,7 +862,7 @@ error_contains = "cannot mutate borrowed"
 
 [[case]]
 name = "borrow_cannot_move_out"
-spec = ["6.1:14"]
+spec = ["6.1:25"]
 description = "Cannot move out of a borrowed value"
 preview = "affine_types"
 source = """
@@ -845,7 +881,7 @@ error_contains = "cannot move out of borrowed"
 
 [[case]]
 name = "borrow_inout_conflict"
-spec = ["6.1:20"]
+spec = ["6.1:30"]
 description = "Cannot borrow and inout the same variable in one call"
 preview = "affine_types"
 source = """
@@ -863,7 +899,7 @@ error_contains = "borrow"
 
 [[case]]
 name = "borrow_multiple_same_var_ok"
-spec = ["6.1:14"]
+spec = ["6.1:28"]
 description = "Multiple borrows of the same variable is allowed"
 preview = "affine_types"
 source = """
@@ -879,7 +915,7 @@ exit_code = 42
 
 [[case]]
 name = "borrow_with_regular_param"
-spec = ["6.1:14", "6.1:15"]
+spec = ["6.1:22", "6.1:15"]
 description = "Mixing borrow and regular parameters"
 preview = "affine_types"
 source = """
@@ -893,3 +929,109 @@ fn main() -> i32 {
 }
 """
 exit_code = 42
+
+[[case]]
+name = "borrow_value_still_valid_after"
+spec = ["6.1:26", "6.1:27"]
+description = "Value can be used after being borrowed"
+preview = "affine_types"
+source = """
+struct Point { x: i32, y: i32 }
+fn read_x(borrow p: Point) -> i32 {
+    p.x
+}
+fn main() -> i32 {
+    let p = Point { x: 42, y: 10 };
+    let first = read_x(borrow p);
+    let second = p.y;
+    first
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "borrow_integer_param"
+spec = ["6.1:22", "6.1:23"]
+description = "Borrow works with primitive integer types"
+preview = "affine_types"
+source = """
+fn double(borrow x: i32) -> i32 {
+    x + x
+}
+fn main() -> i32 {
+    let n = 21;
+    double(borrow n)
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "borrow_array_read"
+spec = ["6.1:22", "6.1:26"]
+description = "Can read elements from a borrowed array"
+preview = "affine_types"
+source = """
+fn first(borrow arr: [i32; 3]) -> i32 {
+    arr[0]
+}
+fn main() -> i32 {
+    let a = [42, 2, 3];
+    first(borrow a)
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "borrow_nested_struct"
+spec = ["6.1:22", "6.1:26"]
+description = "Can read nested fields from a borrowed struct"
+preview = "affine_types"
+source = """
+struct Inner { value: i32 }
+struct Outer { inner: Inner }
+fn get_inner_value(borrow o: Outer) -> i32 {
+    o.inner.value
+}
+fn main() -> i32 {
+    let o = Outer { inner: Inner { value: 42 } };
+    get_inner_value(borrow o)
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "borrow_call_site_missing_keyword"
+spec = ["6.1:23"]
+description = "Call site must include borrow keyword"
+preview = "affine_types"
+source = """
+struct Point { x: i32, y: i32 }
+fn read(borrow p: Point) -> i32 {
+    p.x
+}
+fn main() -> i32 {
+    let p = Point { x: 1, y: 2 };
+    read(p)
+}
+"""
+compile_fail = true
+error_contains = "borrow"
+
+[[case]]
+name = "borrow_cannot_assign_to_param"
+spec = ["6.1:24"]
+description = "Cannot assign to the borrowed parameter itself"
+preview = "affine_types"
+source = """
+struct Data { value: i32 }
+fn try_reassign(borrow d: Data) -> i32 {
+    d = Data { value: 99 };
+    d.value
+}
+fn main() -> i32 {
+    let d = Data { value: 42 };
+    try_reassign(borrow d)
+}
+"""
+compile_fail = true
+error_contains = "cannot mutate borrowed"

@@ -24,7 +24,8 @@ intrinsic_arg  = expression | type ;
 (* Functions *)
 function       = "fn" IDENT "(" [ params ] ")" [ "->" type ] "{" block "}" ;
 params         = param { "," param } ;
-param          = IDENT ":" type ;
+param          = [ param_mode ] IDENT ":" type ;
+param_mode     = "inout" | "borrow" ;
 block          = { statement } [ expression ] ;
 
 (* Structs *)
@@ -71,7 +72,8 @@ additive       = multiplicative { ( "+" | "-" ) multiplicative } ;
 multiplicative = unary { ( "*" | "/" | "%" ) unary } ;
 unary          = "-" unary | "!" unary | "~" unary | postfix ;
 postfix        = primary { "[" expression "]" | "(" [ args ] ")" | "." IDENT } ;
-args           = expression { "," expression } ;
+args           = arg { "," arg } ;
+arg            = [ param_mode ] expression ;
 primary        = INTEGER | BOOL | IDENT | enum_variant_expr
                | "(" expression ")"
                | block_expr

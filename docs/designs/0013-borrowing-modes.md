@@ -1,11 +1,11 @@
 ---
 id: 0013
 title: Borrowing Modes
-status: proposal
+status: accepted
 tags: [types, semantics, ownership, borrowing]
 feature-flag: borrowing-modes
 created: 2025-12-25
-accepted:
+accepted: 2025-12-25
 implemented:
 spec-sections: ["6.1"]
 superseded-by:
@@ -15,7 +15,7 @@ superseded-by:
 
 ## Status
 
-Proposal
+Accepted (behind `affine_types` preview feature)
 
 ## Summary
 
@@ -313,31 +313,10 @@ This keeps the type system simple and avoids lifetime complexity.
 
 Epic: rue-7lii
 
-### Phase 1: Parser support - rue-7lii.1
-
-- Add `borrow` keyword
-- Parse `borrow` in parameter declarations
-- Parse `borrow` at call sites
-- Update RIR and AIR to track borrow mode
-
-### Phase 2: Semantic analysis - rue-7lii.2
-
-- Enforce immutability of borrowed values
-- Prevent moving out of borrowed values
-- Implement non-escaping check
-- Law of exclusivity: borrow/inout conflict detection
-
-### Phase 3: Codegen - rue-7lii.3
-
-- Pass borrowed values by pointer (like inout)
-- Generate read-only accesses
-- Optimization: pass small @copy types by value
-
-### Phase 4: Specification and tests - rue-7lii.4
-
-- Add spec section for borrowing
-- Comprehensive test cases
-- Update existing inout tests to show distinction
+- [x] **Phase 1: Parser support** - rue-7lii.1 - Add `borrow` keyword, parse in parameter declarations and call sites
+- [x] **Phase 2: Semantic analysis** - rue-7lii.2 - Enforce immutability, prevent move-out, non-escaping check, exclusivity
+- [x] **Phase 3: Codegen** - rue-7lii.3 - Pass borrowed values by pointer, generate read-only accesses
+- [x] **Phase 4: Specification and tests** - rue-7lii.4 - Add spec sections, comprehensive tests
 
 ## Consequences
 
