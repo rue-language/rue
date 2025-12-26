@@ -576,6 +576,8 @@ pub struct X86Mir {
     instructions: Vec<X86Inst>,
     /// The next virtual register index.
     next_vreg: u32,
+    /// The next label index.
+    next_label: u32,
 }
 
 impl X86Mir {
@@ -584,6 +586,7 @@ impl X86Mir {
         Self {
             instructions: Vec::new(),
             next_vreg: 0,
+            next_label: 0,
         }
     }
 
@@ -592,6 +595,13 @@ impl X86Mir {
         let vreg = VReg::new(self.next_vreg);
         self.next_vreg += 1;
         vreg
+    }
+
+    /// Allocate a new label ID.
+    pub fn alloc_label(&mut self) -> LabelId {
+        let label = LabelId::new(self.next_label);
+        self.next_label += 1;
+        label
     }
 
     /// Get the number of virtual registers allocated.

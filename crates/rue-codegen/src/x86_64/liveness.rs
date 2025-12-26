@@ -4,16 +4,14 @@
 //! be used) at each program point. This information is used by the register
 //! allocator to determine when registers can be reused.
 //!
-//! The analysis works backwards through the program:
-//! - A vreg becomes live when it is used (read)
-//! - A vreg becomes dead when it is defined (written)
-//!
-//! For now, we compute live ranges as simple intervals [def, last_use] since
-//! X86Mir is mostly straight-line code with jumps for control flow.
+//! The analysis handles control flow by:
+//! 1. Building a CFG from labels and branch instructions
+//! 2. Computing live-out sets using backward dataflow analysis
+//! 3. Extending live ranges to account for values live across branches
 
 use std::collections::{HashMap, HashSet};
 
-use super::mir::{Operand, Reg, VReg, X86Inst, X86Mir};
+use super::mir::{LabelId, Operand, Reg, VReg, X86Inst, X86Mir};
 
 // Re-export shared types from the regalloc module
 pub use crate::regalloc::LiveRange;
@@ -22,59 +20,167 @@ pub use crate::regalloc::LiveRange;
 pub type LivenessInfo = crate::regalloc::LivenessInfo<Reg>;
 
 /// Compute liveness information for X86Mir.
+///
+/// This performs proper dataflow analysis that handles control flow:
+/// 1. Build a map of labels to instruction indices
+/// 2. For each instruction, compute successors (next instruction or branch targets)
+/// 3. Do backward dataflow to compute live-in/live-out sets
+/// 4. Build live ranges from the dataflow results
 pub fn analyze(mir: &X86Mir) -> LivenessInfo {
     let instructions = mir.instructions();
     let num_insts = instructions.len();
 
-    // Track first definition and last use for each vreg
-    let mut first_def: HashMap<VReg, usize> = HashMap::new();
-    let mut last_use: HashMap<VReg, usize> = HashMap::new();
-
-    // Track clobbers at each instruction
-    let mut clobbers_at: Vec<Vec<Reg>> = Vec::with_capacity(num_insts);
-
-    // Forward pass: find definitions, uses, and clobbers
-    for (idx, inst) in instructions.iter().enumerate() {
-        // Record uses (reads) first - this is important because a use before def
-        // in the same instruction means the value was live before
-        for vreg in uses(inst) {
-            // Update last use (always update - later uses override earlier)
-            last_use.insert(vreg, idx);
-            // If not defined yet, this is an error in the IR, but we handle gracefully
-            if !first_def.contains_key(&vreg) {
-                first_def.insert(vreg, 0); // Assume defined at start
-            }
-        }
-
-        // Record definitions (writes)
-        for vreg in defs(inst) {
-            // Only record first definition
-            first_def.entry(vreg).or_insert(idx);
-            // If this is also the first use, update last_use
-            last_use.entry(vreg).or_insert(idx);
-        }
-
-        // Record clobbers
-        clobbers_at.push(inst.clobbers().to_vec());
+    if num_insts == 0 {
+        return LivenessInfo {
+            ranges: HashMap::new(),
+            live_at: Vec::new(),
+            clobbers_at: Vec::new(),
+        };
     }
 
-    // Build live ranges
+    // Step 1: Build label -> instruction index map
+    let mut label_to_idx: HashMap<LabelId, usize> = HashMap::new();
+    for (idx, inst) in instructions.iter().enumerate() {
+        if let X86Inst::Label { id } = inst {
+            label_to_idx.insert(*id, idx);
+        }
+    }
+
+    // Step 2: Build successor lists for each instruction
+    let mut successors: Vec<Vec<usize>> = vec![Vec::new(); num_insts];
+    for (idx, inst) in instructions.iter().enumerate() {
+        match inst {
+            // Unconditional jump - only successor is the target
+            X86Inst::Jmp { label } => {
+                if let Some(&target) = label_to_idx.get(label) {
+                    successors[idx].push(target);
+                }
+            }
+            // Conditional branches - successor is both target and fall-through
+            X86Inst::Jz { label }
+            | X86Inst::Jnz { label }
+            | X86Inst::Jo { label }
+            | X86Inst::Jno { label }
+            | X86Inst::Jb { label }
+            | X86Inst::Jae { label }
+            | X86Inst::Jbe { label } => {
+                // Fall-through to next instruction
+                if idx + 1 < num_insts {
+                    successors[idx].push(idx + 1);
+                }
+                // Branch target
+                if let Some(&target) = label_to_idx.get(label) {
+                    successors[idx].push(target);
+                }
+            }
+            // Return has no successors
+            X86Inst::Ret => {}
+            // Function calls fall through (callee returns)
+            X86Inst::CallRel { .. } => {
+                if idx + 1 < num_insts {
+                    successors[idx].push(idx + 1);
+                }
+            }
+            // All other instructions fall through to the next
+            _ => {
+                if idx + 1 < num_insts {
+                    successors[idx].push(idx + 1);
+                }
+            }
+        }
+    }
+
+    // Step 3: Backward dataflow analysis to compute live sets
+    // live_out[i] = union of live_in[s] for all successors s of i
+    // live_in[i] = uses[i] ∪ (live_out[i] - defs[i])
+    let mut live_in: Vec<HashSet<VReg>> = vec![HashSet::new(); num_insts];
+    let mut live_out: Vec<HashSet<VReg>> = vec![HashSet::new(); num_insts];
+
+    // Pre-compute uses and defs for each instruction
+    let inst_uses: Vec<Vec<VReg>> = instructions.iter().map(uses).collect();
+    let inst_defs: Vec<Vec<VReg>> = instructions.iter().map(defs).collect();
+
+    // Iterate until fixed point
+    let mut changed = true;
+    while changed {
+        changed = false;
+
+        // Process instructions in reverse order for faster convergence
+        for idx in (0..num_insts).rev() {
+            // Compute live_out as union of live_in of all successors
+            let mut new_live_out = HashSet::new();
+            for &succ in &successors[idx] {
+                new_live_out.extend(&live_in[succ]);
+            }
+
+            // Compute live_in = uses ∪ (live_out - defs)
+            let mut new_live_in: HashSet<VReg> = new_live_out.clone();
+            for vreg in &inst_defs[idx] {
+                new_live_in.remove(vreg);
+            }
+            for vreg in &inst_uses[idx] {
+                new_live_in.insert(*vreg);
+            }
+
+            // Check if anything changed
+            if new_live_in != live_in[idx] || new_live_out != live_out[idx] {
+                changed = true;
+                live_in[idx] = new_live_in;
+                live_out[idx] = new_live_out;
+            }
+        }
+    }
+
+    // Step 4: Build live ranges from dataflow results
+    // A vreg is live at instruction i if it's in live_in[i] or live_out[i] or defined/used at i
+    let mut first_live: HashMap<VReg, usize> = HashMap::new();
+    let mut last_live: HashMap<VReg, usize> = HashMap::new();
+
+    for idx in 0..num_insts {
+        // Check definitions
+        for vreg in &inst_defs[idx] {
+            first_live.entry(*vreg).or_insert(idx);
+            last_live.insert(*vreg, idx);
+        }
+        // Check uses
+        for vreg in &inst_uses[idx] {
+            first_live.entry(*vreg).or_insert(idx);
+            last_live.insert(*vreg, idx);
+        }
+        // Check live_in
+        for vreg in &live_in[idx] {
+            first_live.entry(*vreg).or_insert(idx);
+            if last_live.get(vreg).is_none_or(|&last| idx > last) {
+                last_live.insert(*vreg, idx);
+            }
+        }
+        // Check live_out
+        for vreg in &live_out[idx] {
+            first_live.entry(*vreg).or_insert(idx);
+            if last_live.get(vreg).is_none_or(|&last| idx > last) {
+                last_live.insert(*vreg, idx);
+            }
+        }
+    }
+
+    // Build ranges
     let mut ranges: HashMap<VReg, LiveRange> = HashMap::new();
     for vreg_idx in 0..mir.vreg_count() {
         let vreg = VReg::new(vreg_idx);
-        if let (Some(&start), Some(&end)) = (first_def.get(&vreg), last_use.get(&vreg)) {
+        if let (Some(&start), Some(&end)) = (first_live.get(&vreg), last_live.get(&vreg)) {
             ranges.insert(vreg, LiveRange::new(start, end));
         }
     }
 
-    // Compute live_at for each instruction
-    // A vreg is live at instruction i if: start <= i <= end
+    // Compute live_at for each instruction (union of live_in and live_out)
     let mut live_at = vec![HashSet::new(); num_insts];
-    for (&vreg, range) in &ranges {
-        for i in range.start..=range.end.min(num_insts.saturating_sub(1)) {
-            live_at[i].insert(vreg);
-        }
+    for (idx, (li, lo)) in live_in.iter().zip(live_out.iter()).enumerate() {
+        live_at[idx].extend(li);
+        live_at[idx].extend(lo);
     }
+
+    // Collect clobbers
+    let clobbers_at: Vec<Vec<Reg>> = instructions.iter().map(|i| i.clobbers().to_vec()).collect();
 
     LivenessInfo {
         ranges,
@@ -407,11 +513,12 @@ mod tests {
             dst: Operand::Virtual(v1),
             imm: 2,
         });
-        // v2 = v0 + v1
+        // v2 = v0
         mir.push(X86Inst::MovRR {
             dst: Operand::Virtual(v2),
             src: Operand::Virtual(v0),
         });
+        // v2 += v1
         mir.push(X86Inst::AddRR {
             dst: Operand::Virtual(v2),
             src: Operand::Virtual(v1),
@@ -449,5 +556,188 @@ mod tests {
 
         // v0 and v1 don't interfere (v0 is not used after being defined)
         assert!(!info.interferes(v0, v1));
+    }
+
+    #[test]
+    fn test_empty_mir() {
+        let mir = X86Mir::new();
+        let info = analyze(&mir);
+
+        assert!(info.ranges.is_empty());
+        assert!(info.live_at.is_empty());
+        assert!(info.clobbers_at.is_empty());
+    }
+
+    #[test]
+    fn test_liveness_across_branch() {
+        // Test that liveness analysis correctly handles control flow.
+        // Code pattern:
+        //   v0 = 1
+        //   cmp v0, 0
+        //   jz label_else
+        //   v1 = v0  ; v0 used in then branch
+        //   jmp label_end
+        // label_else:
+        //   v1 = 2
+        // label_end:
+        //   ret
+
+        let mut mir = X86Mir::new();
+        let v0 = mir.alloc_vreg();
+        let v1 = mir.alloc_vreg();
+        let label_else = mir.alloc_label();
+        let label_end = mir.alloc_label();
+
+        // v0 = 1
+        mir.push(X86Inst::MovRI32 {
+            dst: Operand::Virtual(v0),
+            imm: 1,
+        });
+
+        // cmp v0, 0
+        mir.push(X86Inst::CmpRI {
+            src: Operand::Virtual(v0),
+            imm: 0,
+        });
+
+        // jz label_else
+        mir.push(X86Inst::Jz { label: label_else });
+
+        // v1 = v0 (then branch)
+        mir.push(X86Inst::MovRR {
+            dst: Operand::Virtual(v1),
+            src: Operand::Virtual(v0),
+        });
+
+        // jmp label_end
+        mir.push(X86Inst::Jmp { label: label_end });
+
+        // label_else:
+        mir.push(X86Inst::Label { id: label_else });
+
+        // v1 = 2 (else branch)
+        mir.push(X86Inst::MovRI32 {
+            dst: Operand::Virtual(v1),
+            imm: 2,
+        });
+
+        // label_end:
+        mir.push(X86Inst::Label { id: label_end });
+
+        // Use v1 at the end
+        mir.push(X86Inst::MovRR {
+            dst: Operand::Physical(Reg::Rax),
+            src: Operand::Virtual(v1),
+        });
+
+        mir.push(X86Inst::Ret);
+
+        let info = analyze(&mir);
+
+        // v0 should be live from definition (0) through use in CMP (1) and MOV (3)
+        let v0_range = info.ranges.get(&v0).expect("v0 should have a range");
+        assert_eq!(v0_range.start, 0);
+        assert!(
+            v0_range.end >= 3,
+            "v0 should be live through its last use at instruction 3"
+        );
+
+        // v1 should be live from first definition through final use
+        let v1_range = info.ranges.get(&v1).expect("v1 should have a range");
+        assert!(v1_range.end >= 8, "v1 should be live until the MOV to RAX");
+    }
+
+    #[test]
+    fn test_liveness_with_conditional_branch() {
+        // Test Jnz handling
+        let mut mir = X86Mir::new();
+        let v0 = mir.alloc_vreg();
+        let skip_label = mir.alloc_label();
+
+        mir.push(X86Inst::MovRI32 {
+            dst: Operand::Virtual(v0),
+            imm: 42,
+        });
+
+        mir.push(X86Inst::CmpRI {
+            src: Operand::Virtual(v0),
+            imm: 0,
+        });
+
+        mir.push(X86Inst::Jnz { label: skip_label });
+
+        // v0 is used after the conditional branch
+        mir.push(X86Inst::MovRR {
+            dst: Operand::Physical(Reg::Rax),
+            src: Operand::Virtual(v0),
+        });
+
+        mir.push(X86Inst::Label { id: skip_label });
+
+        mir.push(X86Inst::Ret);
+
+        let info = analyze(&mir);
+
+        // v0 should be live from 0 through at least instruction 3 (use in MOV)
+        let v0_range = info.ranges.get(&v0).expect("v0 should have a range");
+        assert_eq!(v0_range.start, 0);
+        assert!(v0_range.end >= 3);
+    }
+
+    #[test]
+    fn test_liveness_loop_pattern() {
+        // Test a simple loop pattern where a value is used across a back edge
+        //   v0 = 10
+        // loop:
+        //   v1 = v0
+        //   v0 = v0 - 1
+        //   cmp v0, 0
+        //   jnz loop
+        //   ret
+
+        let mut mir = X86Mir::new();
+        let v0 = mir.alloc_vreg();
+        let v1 = mir.alloc_vreg();
+        let loop_label = mir.alloc_label();
+
+        // v0 = 10
+        mir.push(X86Inst::MovRI32 {
+            dst: Operand::Virtual(v0),
+            imm: 10,
+        });
+
+        // loop:
+        mir.push(X86Inst::Label { id: loop_label });
+
+        // v1 = v0
+        mir.push(X86Inst::MovRR {
+            dst: Operand::Virtual(v1),
+            src: Operand::Virtual(v0),
+        });
+
+        // v0 = v0 - 1 (using SubRR with itself, which is a bit odd but works for test)
+        // Actually, let's use AddRI with -1
+        mir.push(X86Inst::AddRI {
+            dst: Operand::Virtual(v0),
+            imm: -1,
+        });
+
+        // cmp v0, 0
+        mir.push(X86Inst::CmpRI {
+            src: Operand::Virtual(v0),
+            imm: 0,
+        });
+
+        // jnz loop
+        mir.push(X86Inst::Jnz { label: loop_label });
+
+        mir.push(X86Inst::Ret);
+
+        let info = analyze(&mir);
+
+        // v0 should be live throughout the loop (from def to last use in CMP)
+        let v0_range = info.ranges.get(&v0).expect("v0 should have a range");
+        assert_eq!(v0_range.start, 0);
+        assert!(v0_range.end >= 4, "v0 should be live through CMP");
     }
 }
