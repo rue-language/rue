@@ -576,7 +576,7 @@ impl<'a> CfgBuilder<'a> {
 
             AirInstData::Load { slot } => {
                 let value = self.emit(CfgInstData::Load { slot: *slot }, ty, span);
-                // Don't cache loads - they need to be re-evaluated
+                self.cache(air_ref, value);
                 ExprResult {
                     value: Some(value),
                     continuation: Continuation::Continues,
@@ -661,6 +661,7 @@ impl<'a> CfgBuilder<'a> {
                     ty,
                     span,
                 );
+                self.cache(air_ref, value);
                 ExprResult {
                     value: Some(value),
                     continuation: Continuation::Continues,
@@ -720,6 +721,7 @@ impl<'a> CfgBuilder<'a> {
                     ty,
                     span,
                 );
+                self.cache(air_ref, value);
                 ExprResult {
                     value: Some(value),
                     continuation: Continuation::Continues,
@@ -1389,6 +1391,7 @@ impl<'a> CfgBuilder<'a> {
                     ty,
                     span,
                 );
+                self.cache(air_ref, value);
                 ExprResult {
                     value: Some(value),
                     continuation: Continuation::Continues,
