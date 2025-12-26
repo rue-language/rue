@@ -300,15 +300,15 @@ Extend String from 2 fields (ptr, len) to 3 fields (ptr, len, cap):
 
 **Testable**: Existing string tests still pass with new representation.
 
-### Phase 3: Runtime String Functions
+### Phase 3: Runtime String Functions - rue-0hef.3 (COMPLETE)
 
 Add string-specific functions to runtime:
 
-- `__rue_string_alloc(cap: u64) -> (*mut u8, u64)` - allocate buffer
-- `__rue_string_realloc(ptr: *mut u8, old_cap: u64, new_cap: u64) -> (*mut u8, u64)` - grow buffer
-- `__rue_string_clone(ptr: *const u8, len: u64) -> (*mut u8, u64, u64)` - deep copy
-- `__rue_drop_String(ptr: *mut u8, len: u64, cap: u64)` - free if heap
-- Growth strategy implementation (2x, min 16)
+- [x] `__rue_string_alloc(cap: u64) -> *mut u8` - allocate buffer (min 16 bytes)
+- [x] `__rue_string_realloc(ptr: *mut u8, old_cap: u64, new_cap: u64) -> *mut u8` - grow buffer
+- [x] `__rue_string_clone(ptr: *const u8, len: u64) -> *mut u8` - deep copy
+- [x] `__rue_drop_String(ptr: *mut u8, len: u64, cap: u64)` - free if heap (cap > 0)
+- [x] Growth strategy implementation (2x, min 16)
 
 **Testable**: Unit tests in Rust for allocation/reallocation.
 

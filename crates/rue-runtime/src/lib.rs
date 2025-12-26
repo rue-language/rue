@@ -852,6 +852,233 @@ pub extern "C" fn __rue_realloc(ptr: *mut u8, old_size: u64, new_size: u64, alig
     heap::realloc(ptr, old_size, new_size, align)
 }
 
+// =============================================================================
+// String Runtime Functions
+// =============================================================================
+
+/// Minimum capacity for string buffers.
+/// This provides room for small appends without immediate reallocation.
+const STRING_MIN_CAPACITY: u64 = 16;
+
+/// Allocate a new string buffer with the given capacity.
+///
+/// # Arguments
+///
+/// * `cap` - Desired capacity in bytes (will be at least STRING_MIN_CAPACITY)
+///
+/// # Returns
+///
+/// A pointer to the allocated buffer, or null on failure.
+/// The memory is zero-initialized.
+///
+/// # ABI
+///
+/// ```text
+/// extern "C" fn __rue_string_alloc(cap: u64) -> *mut u8
+/// ```
+#[cfg(all(target_arch = "x86_64", target_os = "linux"))]
+#[unsafe(no_mangle)]
+pub extern "C" fn __rue_string_alloc(cap: u64) -> *mut u8 {
+    let actual_cap = if cap < STRING_MIN_CAPACITY {
+        STRING_MIN_CAPACITY
+    } else {
+        cap
+    };
+    heap::alloc(actual_cap, 1) // Strings are byte-aligned
+}
+
+#[cfg(all(target_arch = "aarch64", target_os = "macos"))]
+#[unsafe(no_mangle)]
+pub extern "C" fn __rue_string_alloc(cap: u64) -> *mut u8 {
+    let actual_cap = if cap < STRING_MIN_CAPACITY {
+        STRING_MIN_CAPACITY
+    } else {
+        cap
+    };
+    heap::alloc(actual_cap, 1)
+}
+
+#[cfg(all(target_arch = "aarch64", target_os = "linux"))]
+#[unsafe(no_mangle)]
+pub extern "C" fn __rue_string_alloc(cap: u64) -> *mut u8 {
+    let actual_cap = if cap < STRING_MIN_CAPACITY {
+        STRING_MIN_CAPACITY
+    } else {
+        cap
+    };
+    heap::alloc(actual_cap, 1)
+}
+
+/// Reallocate a string buffer to a new capacity.
+///
+/// Implements the growth strategy: 2x current capacity, minimum STRING_MIN_CAPACITY.
+///
+/// # Arguments
+///
+/// * `ptr` - Pointer to the existing buffer (or null for new allocation)
+/// * `old_cap` - Current capacity (used for copying data)
+/// * `new_cap` - Desired new capacity (will grow by at least 2x if larger)
+///
+/// # Returns
+///
+/// A pointer to the new buffer with old data copied, or null on failure.
+///
+/// # Growth Strategy
+///
+/// If `new_cap > old_cap`, the actual capacity will be:
+/// - `max(new_cap, old_cap * 2, STRING_MIN_CAPACITY)`
+///
+/// This amortizes allocation cost over many appends.
+///
+/// # ABI
+///
+/// ```text
+/// extern "C" fn __rue_string_realloc(ptr: *mut u8, old_cap: u64, new_cap: u64) -> *mut u8
+/// ```
+#[cfg(all(target_arch = "x86_64", target_os = "linux"))]
+#[unsafe(no_mangle)]
+pub extern "C" fn __rue_string_realloc(ptr: *mut u8, old_cap: u64, new_cap: u64) -> *mut u8 {
+    string_realloc_impl(ptr, old_cap, new_cap)
+}
+
+#[cfg(all(target_arch = "aarch64", target_os = "macos"))]
+#[unsafe(no_mangle)]
+pub extern "C" fn __rue_string_realloc(ptr: *mut u8, old_cap: u64, new_cap: u64) -> *mut u8 {
+    string_realloc_impl(ptr, old_cap, new_cap)
+}
+
+#[cfg(all(target_arch = "aarch64", target_os = "linux"))]
+#[unsafe(no_mangle)]
+pub extern "C" fn __rue_string_realloc(ptr: *mut u8, old_cap: u64, new_cap: u64) -> *mut u8 {
+    string_realloc_impl(ptr, old_cap, new_cap)
+}
+
+/// Implementation of string realloc, shared across platforms.
+#[cfg(any(
+    all(target_arch = "x86_64", target_os = "linux"),
+    all(target_arch = "aarch64", target_os = "macos"),
+    all(target_arch = "aarch64", target_os = "linux")
+))]
+fn string_realloc_impl(ptr: *mut u8, old_cap: u64, new_cap: u64) -> *mut u8 {
+    // Calculate actual new capacity with growth strategy
+    let grown_cap = old_cap.saturating_mul(2);
+    let actual_cap = new_cap.max(grown_cap).max(STRING_MIN_CAPACITY);
+
+    // Use the general realloc, which handles null ptr and copying
+    heap::realloc(ptr, old_cap, actual_cap, 1)
+}
+
+/// Clone a string by allocating a new buffer and copying the content.
+///
+/// # Arguments
+///
+/// * `ptr` - Pointer to the source string data
+/// * `len` - Length of the string in bytes
+///
+/// # Returns
+///
+/// A pointer to a new buffer containing a copy of the string data,
+/// or null on allocation failure.
+///
+/// The new buffer has capacity equal to len (minimum STRING_MIN_CAPACITY).
+///
+/// # Safety
+///
+/// The caller must ensure `ptr` points to valid memory of at least `len` bytes.
+///
+/// # ABI
+///
+/// ```text
+/// extern "C" fn __rue_string_clone(ptr: *const u8, len: u64) -> *mut u8
+/// ```
+#[cfg(all(target_arch = "x86_64", target_os = "linux"))]
+#[unsafe(no_mangle)]
+pub extern "C" fn __rue_string_clone(ptr: *const u8, len: u64) -> *mut u8 {
+    string_clone_impl(ptr, len)
+}
+
+#[cfg(all(target_arch = "aarch64", target_os = "macos"))]
+#[unsafe(no_mangle)]
+pub extern "C" fn __rue_string_clone(ptr: *const u8, len: u64) -> *mut u8 {
+    string_clone_impl(ptr, len)
+}
+
+#[cfg(all(target_arch = "aarch64", target_os = "linux"))]
+#[unsafe(no_mangle)]
+pub extern "C" fn __rue_string_clone(ptr: *const u8, len: u64) -> *mut u8 {
+    string_clone_impl(ptr, len)
+}
+
+/// Implementation of string clone, shared across platforms.
+#[cfg(any(
+    all(target_arch = "x86_64", target_os = "linux"),
+    all(target_arch = "aarch64", target_os = "macos"),
+    all(target_arch = "aarch64", target_os = "linux")
+))]
+fn string_clone_impl(ptr: *const u8, len: u64) -> *mut u8 {
+    // Allocate new buffer with capacity >= len
+    let cap = len.max(STRING_MIN_CAPACITY);
+    let new_ptr = heap::alloc(cap, 1);
+    if new_ptr.is_null() {
+        return new_ptr;
+    }
+
+    // Copy the string content
+    if len > 0 && !ptr.is_null() {
+        // SAFETY: Caller guarantees ptr is valid for len bytes
+        // and new_ptr is freshly allocated with at least len bytes
+        unsafe {
+            core::ptr::copy_nonoverlapping(ptr, new_ptr, len as usize);
+        }
+    }
+
+    new_ptr
+}
+
+/// Drop a String, freeing its heap buffer if it was heap-allocated.
+///
+/// # Arguments
+///
+/// * `ptr` - Pointer to the string data
+/// * `len` - Length of the string (unused, but part of the String struct)
+/// * `cap` - Capacity of the buffer
+///
+/// # Behavior
+///
+/// - If `cap == 0`: The string is a literal pointing to rodata; do nothing.
+/// - If `cap > 0`: The string is heap-allocated; free the buffer.
+///
+/// # ABI
+///
+/// ```text
+/// extern "C" fn __rue_drop_String(ptr: *mut u8, len: u64, cap: u64)
+/// ```
+#[cfg(all(target_arch = "x86_64", target_os = "linux"))]
+#[unsafe(no_mangle)]
+pub extern "C" fn __rue_drop_String(ptr: *mut u8, _len: u64, cap: u64) {
+    // Only free heap-allocated strings (cap > 0)
+    // Rodata strings have cap == 0 and must not be freed
+    if cap > 0 {
+        heap::free(ptr, cap, 1);
+    }
+}
+
+#[cfg(all(target_arch = "aarch64", target_os = "macos"))]
+#[unsafe(no_mangle)]
+pub extern "C" fn __rue_drop_String(ptr: *mut u8, _len: u64, cap: u64) {
+    if cap > 0 {
+        heap::free(ptr, cap, 1);
+    }
+}
+
+#[cfg(all(target_arch = "aarch64", target_os = "linux"))]
+#[unsafe(no_mangle)]
+pub extern "C" fn __rue_drop_String(ptr: *mut u8, _len: u64, cap: u64) {
+    if cap > 0 {
+        heap::free(ptr, cap, 1);
+    }
+}
+
 // Re-export platform functions for tests
 #[cfg(all(test, target_arch = "x86_64", target_os = "linux"))]
 pub use x86_64_linux::{exit, write, write_all, write_stderr};
@@ -885,5 +1112,225 @@ mod tests {
 
         assert!(core::str::from_utf8(div_msg).is_ok());
         assert!(core::str::from_utf8(overflow_msg).is_ok());
+    }
+
+    // =========================================================================
+    // String Runtime Function Tests
+    // =========================================================================
+
+    use super::STRING_MIN_CAPACITY;
+    use core::ptr;
+
+    #[test]
+    fn test_string_alloc_basic() {
+        let ptr = super::__rue_string_alloc(32);
+        assert!(!ptr.is_null());
+
+        // Should be usable
+        unsafe {
+            *ptr = b'H';
+            *ptr.add(1) = b'i';
+            assert_eq!(*ptr, b'H');
+            assert_eq!(*ptr.add(1), b'i');
+        }
+    }
+
+    #[test]
+    fn test_string_alloc_enforces_minimum() {
+        // Even with cap=0, should allocate at least STRING_MIN_CAPACITY
+        let ptr = super::__rue_string_alloc(0);
+        assert!(!ptr.is_null());
+
+        // Should be able to write STRING_MIN_CAPACITY bytes
+        unsafe {
+            for i in 0..STRING_MIN_CAPACITY as usize {
+                *ptr.add(i) = i as u8;
+            }
+            for i in 0..STRING_MIN_CAPACITY as usize {
+                assert_eq!(*ptr.add(i), i as u8);
+            }
+        }
+    }
+
+    #[test]
+    fn test_string_alloc_small_request() {
+        // Request less than minimum - should still get at least minimum
+        let ptr = super::__rue_string_alloc(1);
+        assert!(!ptr.is_null());
+
+        // Should be able to write STRING_MIN_CAPACITY bytes
+        unsafe {
+            for i in 0..STRING_MIN_CAPACITY as usize {
+                *ptr.add(i) = (i + 100) as u8;
+            }
+        }
+    }
+
+    #[test]
+    fn test_string_realloc_from_null() {
+        // Realloc with null pointer should allocate
+        let ptr = super::__rue_string_realloc(ptr::null_mut(), 0, 64);
+        assert!(!ptr.is_null());
+
+        unsafe {
+            *ptr = 42;
+            assert_eq!(*ptr, 42);
+        }
+    }
+
+    #[test]
+    fn test_string_realloc_growth_strategy() {
+        // Start with a small allocation
+        let ptr1 = super::__rue_string_alloc(16);
+        assert!(!ptr1.is_null());
+
+        // Write some data
+        unsafe {
+            for i in 0..16 {
+                *ptr1.add(i) = i as u8;
+            }
+        }
+
+        // Realloc to grow - should use 2x strategy
+        // Requesting 24 bytes with old_cap=16 should give us max(24, 32, 16) = 32
+        let ptr2 = super::__rue_string_realloc(ptr1, 16, 24);
+        assert!(!ptr2.is_null());
+
+        // Data should be preserved
+        unsafe {
+            for i in 0..16 {
+                assert_eq!(*ptr2.add(i), i as u8, "byte {} not preserved", i);
+            }
+        }
+    }
+
+    #[test]
+    fn test_string_realloc_large_request() {
+        let ptr1 = super::__rue_string_alloc(16);
+        assert!(!ptr1.is_null());
+
+        unsafe {
+            *ptr1 = 0xAB;
+        }
+
+        // Request much larger than 2x current
+        let ptr2 = super::__rue_string_realloc(ptr1, 16, 1000);
+        assert!(!ptr2.is_null());
+
+        // Original data preserved
+        unsafe {
+            assert_eq!(*ptr2, 0xAB);
+            // Can write to the new larger area
+            *ptr2.add(999) = 0xCD;
+            assert_eq!(*ptr2.add(999), 0xCD);
+        }
+    }
+
+    #[test]
+    fn test_string_clone_basic() {
+        let source = b"Hello, World!";
+        let ptr = super::__rue_string_clone(source.as_ptr(), source.len() as u64);
+        assert!(!ptr.is_null());
+
+        // Verify content was copied
+        unsafe {
+            for (i, &byte) in source.iter().enumerate() {
+                assert_eq!(*ptr.add(i), byte, "byte {} differs", i);
+            }
+        }
+    }
+
+    #[test]
+    fn test_string_clone_empty() {
+        // Clone an empty string
+        let ptr = super::__rue_string_clone(ptr::null(), 0);
+        assert!(!ptr.is_null()); // Should still allocate minimum capacity
+    }
+
+    #[test]
+    fn test_string_clone_small() {
+        // Clone a small string - should still get minimum capacity
+        let source = b"Hi";
+        let ptr = super::__rue_string_clone(source.as_ptr(), source.len() as u64);
+        assert!(!ptr.is_null());
+
+        unsafe {
+            assert_eq!(*ptr, b'H');
+            assert_eq!(*ptr.add(1), b'i');
+        }
+    }
+
+    #[test]
+    fn test_drop_string_heap() {
+        // Allocate a heap string and drop it
+        let ptr = super::__rue_string_alloc(64);
+        assert!(!ptr.is_null());
+
+        // Write some data
+        unsafe {
+            *ptr = 0xFF;
+        }
+
+        // Drop should not crash (it's a no-op in bump allocator, but validates cap > 0 path)
+        super::__rue_drop_String(ptr, 10, 64);
+    }
+
+    #[test]
+    fn test_drop_string_rodata() {
+        // Simulate a rodata string (cap == 0)
+        // This should NOT try to free the pointer
+        let rodata = b"hello";
+        super::__rue_drop_String(rodata.as_ptr() as *mut u8, 5, 0);
+        // If we get here without crashing, the test passes
+    }
+
+    #[test]
+    fn test_drop_string_null() {
+        // Drop with null pointer should be safe when cap == 0
+        super::__rue_drop_String(ptr::null_mut(), 0, 0);
+    }
+
+    #[test]
+    fn test_string_lifecycle() {
+        // Test a typical string lifecycle: alloc, write, clone, drop
+
+        // Allocate initial buffer
+        let ptr = super::__rue_string_alloc(32);
+        assert!(!ptr.is_null());
+
+        // Write content
+        let content = b"test string";
+        unsafe {
+            for (i, &byte) in content.iter().enumerate() {
+                *ptr.add(i) = byte;
+            }
+        }
+
+        // Clone it
+        let clone_ptr = super::__rue_string_clone(ptr, content.len() as u64);
+        assert!(!clone_ptr.is_null());
+        assert_ne!(ptr, clone_ptr); // Should be different pointers
+
+        // Verify clone content
+        unsafe {
+            for (i, &byte) in content.iter().enumerate() {
+                assert_eq!(*clone_ptr.add(i), byte);
+            }
+        }
+
+        // Grow original
+        let new_ptr = super::__rue_string_realloc(ptr, 32, 100);
+        assert!(!new_ptr.is_null());
+
+        // Original content still there
+        unsafe {
+            for (i, &byte) in content.iter().enumerate() {
+                assert_eq!(*new_ptr.add(i), byte);
+            }
+        }
+
+        // Drop both
+        super::__rue_drop_String(new_ptr, content.len() as u64, 100);
+        super::__rue_drop_String(clone_ptr, content.len() as u64, 32);
     }
 }
