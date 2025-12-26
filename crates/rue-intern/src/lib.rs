@@ -143,6 +143,19 @@ impl Interner {
             return sym;
         }
 
+        // Debug assertions for u32 overflow - these are critical for catching
+        // pathological inputs during development without affecting release perf
+        debug_assert!(
+            self.data.len() <= u32::MAX as usize,
+            "interner data buffer overflow: {} bytes exceeds u32::MAX",
+            self.data.len()
+        );
+        debug_assert!(
+            self.offsets.len() < u32::MAX as usize,
+            "interner symbol count overflow: {} symbols exceeds u32::MAX - 1",
+            self.offsets.len()
+        );
+
         let start = self.data.len() as u32;
         let sym = Symbol::from_raw(self.offsets.len() as u32);
 
