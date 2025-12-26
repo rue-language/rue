@@ -2064,6 +2064,28 @@ impl<'a> CfgLower<'a> {
                 });
             }
 
+            CfgInstData::IntCast {
+                value: src_value,
+                from_ty,
+            } => {
+                // Integer cast with runtime range check
+                let vreg = self.mir.alloc_vreg();
+                self.value_map.insert(value, vreg);
+
+                let src_vreg = self.get_vreg(*src_value);
+                let to_ty = self.cfg.get_inst(value).ty;
+
+                // Emit range check and panic if out of bounds
+                self.emit_int_cast_check(src_vreg, *from_ty, to_ty);
+
+                // Move the value to the result vreg (the bits are already correct
+                // after sign/zero extension from the range check or simple copy)
+                self.mir.push(Aarch64Inst::MovRR {
+                    dst: Operand::Virtual(vreg),
+                    src: Operand::Virtual(src_vreg),
+                });
+            }
+
             CfgInstData::Drop {
                 value: dropped_value,
             } => {
@@ -2477,6 +2499,241 @@ impl<'a> CfgLower<'a> {
             symbol: "__rue_overflow".to_string(),
         });
         self.mir.push(Aarch64Inst::Label { id: ok_label });
+    }
+
+    /// Emit integer cast range check.
+    ///
+    /// Checks if the source value can be represented in the target type.
+    /// Panics via `__rue_intcast_overflow` if the value is out of range.
+    fn emit_int_cast_check(&mut self, src_vreg: VReg, from_ty: Type, to_ty: Type) {
+        // Get type properties
+        let from_signed = from_ty.is_signed();
+        let to_signed = to_ty.is_signed();
+        let from_bits = Self::type_bits(from_ty);
+        let to_bits = Self::type_bits(to_ty);
+
+        // If casting to a larger or equal-sized type with compatible signedness,
+        // and source is unsigned or both are signed, no check needed
+        if to_bits >= from_bits {
+            // Widening or same-size cast
+            if from_signed == to_signed {
+                // Same signedness, widening - always safe
+                return;
+            }
+            if !from_signed && to_signed && to_bits > from_bits {
+                // Unsigned to larger signed - always safe
+                return;
+            }
+            // Signed to same-size unsigned needs check (negative values fail)
+            // Unsigned to same-size signed needs check (large values fail)
+        }
+
+        let ok_label = self.mir.alloc_label();
+
+        // Calculate the min and max values for the target type
+        let (min_val, max_val) = Self::type_range(to_ty);
+
+        if from_signed {
+            // Source is signed - need to check both min and max
+            if to_signed {
+                // Signed to signed: check MIN <= value <= MAX
+                if to_bits < from_bits || (to_bits == from_bits && min_val != i64::MIN) {
+                    // Check lower bound
+                    let min_vreg = self.mir.alloc_vreg();
+                    self.mir.push(Aarch64Inst::MovImm {
+                        dst: Operand::Virtual(min_vreg),
+                        imm: min_val,
+                    });
+                    self.mir.push(Aarch64Inst::CmpRR {
+                        src1: Operand::Virtual(src_vreg),
+                        src2: Operand::Virtual(min_vreg),
+                    });
+                    // For signed comparison, branch if greater or equal
+                    self.mir.push(Aarch64Inst::BCond {
+                        cond: Cond::Ge,
+                        label: ok_label,
+                    });
+
+                    // Below min - panic
+                    self.mir.push(Aarch64Inst::Bl {
+                        symbol: "__rue_intcast_overflow".to_string(),
+                    });
+                    self.mir.push(Aarch64Inst::Label { id: ok_label });
+
+                    let ok_label2 = self.mir.alloc_label();
+                    // Check upper bound
+                    let max_vreg = self.mir.alloc_vreg();
+                    self.mir.push(Aarch64Inst::MovImm {
+                        dst: Operand::Virtual(max_vreg),
+                        imm: max_val,
+                    });
+                    self.mir.push(Aarch64Inst::CmpRR {
+                        src1: Operand::Virtual(src_vreg),
+                        src2: Operand::Virtual(max_vreg),
+                    });
+                    // For signed comparison, branch if less or equal
+                    self.mir.push(Aarch64Inst::BCond {
+                        cond: Cond::Le,
+                        label: ok_label2,
+                    });
+
+                    // Above max - panic
+                    self.mir.push(Aarch64Inst::Bl {
+                        symbol: "__rue_intcast_overflow".to_string(),
+                    });
+                    self.mir.push(Aarch64Inst::Label { id: ok_label2 });
+                }
+            } else {
+                // Signed to unsigned: value must be >= 0 and <= max
+                // Check for negative
+                //
+                // For sub-64-bit types, we need to sign-extend first because
+                // ARM64 32-bit operations zero-extend to 64 bits, which would
+                // make -1 appear as a large positive number in 64-bit compare.
+                let compare_vreg = if from_bits < 64 {
+                    let sext_vreg = self.mir.alloc_vreg();
+                    match from_ty {
+                        Type::I8 => {
+                            self.mir.push(Aarch64Inst::Sxtb {
+                                dst: Operand::Virtual(sext_vreg),
+                                src: Operand::Virtual(src_vreg),
+                            });
+                        }
+                        Type::I16 => {
+                            self.mir.push(Aarch64Inst::Sxth {
+                                dst: Operand::Virtual(sext_vreg),
+                                src: Operand::Virtual(src_vreg),
+                            });
+                        }
+                        Type::I32 => {
+                            self.mir.push(Aarch64Inst::Sxtw {
+                                dst: Operand::Virtual(sext_vreg),
+                                src: Operand::Virtual(src_vreg),
+                            });
+                        }
+                        _ => unreachable!("non-integer type in intcast"),
+                    }
+                    sext_vreg
+                } else {
+                    src_vreg
+                };
+
+                self.mir.push(Aarch64Inst::CmpImm {
+                    src: Operand::Virtual(compare_vreg),
+                    imm: 0,
+                });
+                self.mir.push(Aarch64Inst::BCond {
+                    cond: Cond::Ge,
+                    label: ok_label,
+                });
+
+                // Negative - panic
+                self.mir.push(Aarch64Inst::Bl {
+                    symbol: "__rue_intcast_overflow".to_string(),
+                });
+                self.mir.push(Aarch64Inst::Label { id: ok_label });
+
+                // Also check upper bound if narrowing
+                if to_bits < from_bits {
+                    let ok_label2 = self.mir.alloc_label();
+                    let max_vreg = self.mir.alloc_vreg();
+                    self.mir.push(Aarch64Inst::MovImm {
+                        dst: Operand::Virtual(max_vreg),
+                        imm: max_val,
+                    });
+                    self.mir.push(Aarch64Inst::CmpRR {
+                        src1: Operand::Virtual(src_vreg),
+                        src2: Operand::Virtual(max_vreg),
+                    });
+                    // Unsigned comparison for upper bound check
+                    self.mir.push(Aarch64Inst::BCond {
+                        cond: Cond::Ls, // Ls = unsigned less or same
+                        label: ok_label2,
+                    });
+
+                    // Above max - panic
+                    self.mir.push(Aarch64Inst::Bl {
+                        symbol: "__rue_intcast_overflow".to_string(),
+                    });
+                    self.mir.push(Aarch64Inst::Label { id: ok_label2 });
+                }
+            }
+        } else {
+            // Source is unsigned
+            if to_signed {
+                // Unsigned to signed: value must fit in positive range of target
+                // Check that value <= signed max
+                let max_vreg = self.mir.alloc_vreg();
+                self.mir.push(Aarch64Inst::MovImm {
+                    dst: Operand::Virtual(max_vreg),
+                    imm: max_val,
+                });
+                self.mir.push(Aarch64Inst::CmpRR {
+                    src1: Operand::Virtual(src_vreg),
+                    src2: Operand::Virtual(max_vreg),
+                });
+                // Unsigned comparison (Ls = below or same)
+                self.mir.push(Aarch64Inst::BCond {
+                    cond: Cond::Ls,
+                    label: ok_label,
+                });
+
+                // Above max - panic
+                self.mir.push(Aarch64Inst::Bl {
+                    symbol: "__rue_intcast_overflow".to_string(),
+                });
+                self.mir.push(Aarch64Inst::Label { id: ok_label });
+            } else {
+                // Unsigned to unsigned: narrowing check
+                if to_bits < from_bits {
+                    let max_vreg = self.mir.alloc_vreg();
+                    self.mir.push(Aarch64Inst::MovImm {
+                        dst: Operand::Virtual(max_vreg),
+                        imm: max_val,
+                    });
+                    self.mir.push(Aarch64Inst::CmpRR {
+                        src1: Operand::Virtual(src_vreg),
+                        src2: Operand::Virtual(max_vreg),
+                    });
+                    self.mir.push(Aarch64Inst::BCond {
+                        cond: Cond::Ls,
+                        label: ok_label,
+                    });
+
+                    // Above max - panic
+                    self.mir.push(Aarch64Inst::Bl {
+                        symbol: "__rue_intcast_overflow".to_string(),
+                    });
+                    self.mir.push(Aarch64Inst::Label { id: ok_label });
+                }
+            }
+        }
+    }
+
+    /// Get the bit width of an integer type.
+    fn type_bits(ty: Type) -> u32 {
+        match ty {
+            Type::I8 | Type::U8 => 8,
+            Type::I16 | Type::U16 => 16,
+            Type::I32 | Type::U32 => 32,
+            Type::I64 | Type::U64 => 64,
+            _ => panic!("type_bits called on non-integer type: {:?}", ty),
+        }
+    }
+
+    /// Get the min and max values for an integer type.
+    fn type_range(ty: Type) -> (i64, i64) {
+        match ty {
+            Type::I8 => (i8::MIN as i64, i8::MAX as i64),
+            Type::I16 => (i16::MIN as i64, i16::MAX as i64),
+            Type::I32 => (i32::MIN as i64, i32::MAX as i64),
+            Type::I64 => (i64::MIN, i64::MAX),
+            Type::U8 => (0, u8::MAX as i64),
+            Type::U16 => (0, u16::MAX as i64),
+            Type::U32 => (0, u32::MAX as i64),
+            Type::U64 => (0, i64::MAX), // Can't represent u64::MAX in i64, but we use unsigned compare
+            _ => panic!("type_range called on non-integer type: {:?}", ty),
+        }
     }
 
     /// Emit a comparison instruction.

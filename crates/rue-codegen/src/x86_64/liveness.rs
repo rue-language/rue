@@ -63,7 +63,9 @@ pub fn analyze(mir: &X86Mir) -> LivenessInfo {
             | X86Inst::Jno { label }
             | X86Inst::Jb { label }
             | X86Inst::Jae { label }
-            | X86Inst::Jbe { label } => {
+            | X86Inst::Jbe { label }
+            | X86Inst::Jge { label }
+            | X86Inst::Jle { label } => {
                 // Fall-through to next instruction
                 if idx + 1 < num_insts {
                     successors[idx].push(idx + 1);
@@ -275,7 +277,7 @@ fn uses(inst: &X86Inst) -> Vec<VReg> {
             add_if_virtual(src1, &mut result);
             add_if_virtual(src2, &mut result);
         }
-        X86Inst::CmpRI { src, .. } => {
+        X86Inst::CmpRI { src, .. } | X86Inst::Cmp64RI { src, .. } => {
             add_if_virtual(src, &mut result);
         }
         X86Inst::Sete { .. }
@@ -335,6 +337,8 @@ fn uses(inst: &X86Inst) -> Vec<VReg> {
         | X86Inst::Jb { .. }
         | X86Inst::Jae { .. }
         | X86Inst::Jbe { .. }
+        | X86Inst::Jge { .. }
+        | X86Inst::Jle { .. }
         | X86Inst::Jmp { .. }
         | X86Inst::Label { .. }
         | X86Inst::CallRel { .. }
@@ -407,7 +411,8 @@ fn defs(inst: &X86Inst) -> Vec<VReg> {
         X86Inst::TestRR { .. }
         | X86Inst::CmpRR { .. }
         | X86Inst::Cmp64RR { .. }
-        | X86Inst::CmpRI { .. } => {
+        | X86Inst::CmpRI { .. }
+        | X86Inst::Cmp64RI { .. } => {
             // Only sets flags, no register def
         }
         X86Inst::Sete { dst }
@@ -459,6 +464,8 @@ fn defs(inst: &X86Inst) -> Vec<VReg> {
         | X86Inst::Jb { .. }
         | X86Inst::Jae { .. }
         | X86Inst::Jbe { .. }
+        | X86Inst::Jge { .. }
+        | X86Inst::Jle { .. }
         | X86Inst::Jmp { .. }
         | X86Inst::Label { .. }
         | X86Inst::CallRel { .. }

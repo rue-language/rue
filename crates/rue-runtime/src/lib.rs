@@ -442,6 +442,44 @@ pub extern "C" fn __rue_overflow() -> ! {
     platform::exit(101)
 }
 
+/// Runtime error: integer cast overflow.
+///
+/// Called when `@intCast` would produce a value that cannot be represented
+/// in the target type. For example, casting `-1i32` to `u8` or `256u32` to `u8`.
+///
+/// # Behavior
+///
+/// 1. Writes `"error: integer cast overflow\n"` to stderr (best-effort)
+/// 2. Exits with code 101
+///
+/// # ABI
+///
+/// ```text
+/// extern "C" fn __rue_intcast_overflow() -> !
+/// ```
+///
+/// No arguments. Never returns.
+#[cfg(all(target_arch = "x86_64", target_os = "linux"))]
+#[unsafe(no_mangle)]
+pub extern "C" fn __rue_intcast_overflow() -> ! {
+    platform::write_stderr(b"error: integer cast overflow\n");
+    platform::exit(101)
+}
+
+#[cfg(all(target_arch = "aarch64", target_os = "macos"))]
+#[unsafe(no_mangle)]
+pub extern "C" fn __rue_intcast_overflow() -> ! {
+    platform::write_stderr(b"error: integer cast overflow\n");
+    platform::exit(101)
+}
+
+#[cfg(all(target_arch = "aarch64", target_os = "linux"))]
+#[unsafe(no_mangle)]
+pub extern "C" fn __rue_intcast_overflow() -> ! {
+    platform::write_stderr(b"error: integer cast overflow\n");
+    platform::exit(101)
+}
+
 /// Runtime error: index out of bounds.
 ///
 /// Called when an array index operation accesses an element outside the

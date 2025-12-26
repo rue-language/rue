@@ -254,6 +254,17 @@ pub enum CfgInstData {
         variant_index: u32,
     },
 
+    // Type conversion operations
+    /// Integer cast: convert between integer types with runtime range check.
+    /// Panics if the value cannot be represented in the target type.
+    /// The target type is stored in CfgInst.ty.
+    IntCast {
+        /// The value to cast
+        value: CfgValue,
+        /// The source type (for determining signedness and size)
+        from_ty: Type,
+    },
+
     // Drop/destructor operations
     /// Drop a value, running its destructor if the type has one.
     /// For trivially droppable types, this is a no-op that will be elided.
@@ -825,6 +836,9 @@ impl Cfg {
                 variant_index,
             } => {
                 write!(f, "enum_variant #{}::{}", enum_id.0, variant_index)
+            }
+            CfgInstData::IntCast { value, from_ty } => {
+                write!(f, "intcast {} from {}", value, from_ty.name())
             }
             CfgInstData::Drop { value } => {
                 write!(f, "drop {}", value)

@@ -362,6 +362,11 @@ impl RegAlloc {
                 mir.push(X86Inst::CmpRI { src: src_op, imm });
             }
 
+            X86Inst::Cmp64RI { src, imm } => {
+                let src_op = self.load_operand(mir, src, Reg::Rax)?;
+                mir.push(X86Inst::Cmp64RI { src: src_op, imm });
+            }
+
             X86Inst::Sete { dst } => {
                 self.emit_setcc(mir, dst, |d| X86Inst::Sete { dst: d });
             }
@@ -674,6 +679,8 @@ impl RegAlloc {
             X86Inst::Jb { label } => mir.push(X86Inst::Jb { label }),
             X86Inst::Jae { label } => mir.push(X86Inst::Jae { label }),
             X86Inst::Jbe { label } => mir.push(X86Inst::Jbe { label }),
+            X86Inst::Jge { label } => mir.push(X86Inst::Jge { label }),
+            X86Inst::Jle { label } => mir.push(X86Inst::Jle { label }),
             X86Inst::Jmp { label } => mir.push(X86Inst::Jmp { label }),
             X86Inst::Label { id } => mir.push(X86Inst::Label { id }),
             X86Inst::CallRel { symbol } => mir.push(X86Inst::CallRel { symbol }),

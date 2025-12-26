@@ -284,3 +284,246 @@ fn main() -> i32 {
 }
 """
 exit_code = 0
+
+# =============================================================================
+# @intCast Intrinsic
+# =============================================================================
+
+[[case]]
+name = "intcast_i32_to_u8"
+spec = ["4.13:24", "4.13:25", "4.13:26"]
+source = """
+fn main() -> i32 {
+    let x: i32 = 100;
+    let y: u8 = @intCast(x);
+    @intCast(y)
+}
+"""
+exit_code = 100
+
+[[case]]
+name = "intcast_u8_to_i32"
+spec = ["4.13:24", "4.13:25", "4.13:26"]
+source = """
+fn main() -> i32 {
+    let x: u8 = 255;
+    let y: i32 = @intCast(x);
+    y
+}
+"""
+exit_code = 255
+
+[[case]]
+name = "intcast_i64_to_i32"
+spec = ["4.13:24", "4.13:25"]
+source = """
+fn main() -> i32 {
+    let x: i64 = 42;
+    let y: i32 = @intCast(x);
+    y
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "intcast_inferred_from_function_param"
+spec = ["4.13:26"]
+source = """
+fn takes_u8(x: u8) -> i32 {
+    @intCast(x)
+}
+fn main() -> i32 {
+    let x: i32 = 50;
+    takes_u8(@intCast(x))
+}
+"""
+exit_code = 50
+
+[[case]]
+name = "intcast_inferred_from_return"
+spec = ["4.13:26"]
+source = """
+fn cast_to_u8(x: i32) -> u8 {
+    @intCast(x)
+}
+fn main() -> i32 {
+    let y: u8 = cast_to_u8(77);
+    @intCast(y)
+}
+"""
+exit_code = 77
+
+[[case]]
+name = "intcast_type_not_inferred"
+spec = ["4.13:27"]
+source = """
+fn main() -> i32 {
+    let x: i32 = 100;
+    // No context to infer target type
+    @intCast(x);
+    0
+}
+"""
+compile_fail = true
+error_contains = "type annotation required"
+
+[[case]]
+name = "intcast_non_integer_argument"
+spec = ["4.13:25"]
+source = """
+fn main() -> i32 {
+    let x: bool = true;
+    let y: i32 = @intCast(x);
+    y
+}
+"""
+compile_fail = true
+error_contains = "integer"
+
+[[case]]
+name = "intcast_wrong_arg_count_zero"
+spec = ["4.13:4", "4.13:25"]
+source = """
+fn main() -> i32 {
+    let y: i32 = @intCast();
+    y
+}
+"""
+compile_fail = true
+
+[[case]]
+name = "intcast_wrong_arg_count_two"
+spec = ["4.13:4", "4.13:25"]
+source = """
+fn main() -> i32 {
+    let x: i32 = 1;
+    let y: i32 = @intCast(x, x);
+    y
+}
+"""
+compile_fail = true
+
+[[case]]
+name = "intcast_overflow_u8_max"
+spec = ["4.13:28"]
+source = """
+fn main() -> i32 {
+    let x: i32 = 256;
+    let y: u8 = @intCast(x);
+    0
+}
+"""
+exit_code = 101
+stderr_contains = "integer cast overflow"
+
+[[case]]
+name = "intcast_overflow_negative_to_unsigned"
+spec = ["4.13:28"]
+source = """
+fn main() -> i32 {
+    let x: i32 = -1;
+    let y: u32 = @intCast(x);
+    0
+}
+"""
+exit_code = 101
+stderr_contains = "integer cast overflow"
+
+[[case]]
+name = "intcast_overflow_i8_max"
+spec = ["4.13:28"]
+source = """
+fn main() -> i32 {
+    let x: i32 = 128;
+    let y: i8 = @intCast(x);
+    0
+}
+"""
+exit_code = 101
+stderr_contains = "integer cast overflow"
+
+[[case]]
+name = "intcast_overflow_i8_min"
+spec = ["4.13:28"]
+source = """
+fn main() -> i32 {
+    let x: i32 = -129;
+    let y: i8 = @intCast(x);
+    0
+}
+"""
+exit_code = 101
+stderr_contains = "integer cast overflow"
+
+[[case]]
+name = "intcast_boundary_i8_max"
+spec = ["4.13:24", "4.13:28"]
+source = """
+fn main() -> i32 {
+    let x: i32 = 127;
+    let y: i8 = @intCast(x);
+    @intCast(y)
+}
+"""
+exit_code = 127
+
+[[case]]
+name = "intcast_boundary_i8_min"
+spec = ["4.13:24", "4.13:28"]
+source = """
+fn main() -> i32 {
+    let x: i32 = -128;
+    let y: i8 = @intCast(x);
+    @intCast(y)
+}
+"""
+exit_code = 128
+
+[[case]]
+name = "intcast_boundary_u8_max"
+spec = ["4.13:24", "4.13:28"]
+source = """
+fn main() -> i32 {
+    let x: i32 = 255;
+    let y: u8 = @intCast(x);
+    @intCast(y)
+}
+"""
+exit_code = 255
+
+[[case]]
+name = "intcast_signed_to_unsigned_same_size"
+spec = ["4.13:24", "4.13:28"]
+source = """
+fn main() -> i32 {
+    let x: i32 = 100;
+    let y: u32 = @intCast(x);
+    @intCast(y)
+}
+"""
+exit_code = 100
+
+[[case]]
+name = "intcast_unsigned_to_signed_same_size"
+spec = ["4.13:24", "4.13:28"]
+source = """
+fn main() -> i32 {
+    let x: u32 = 100;
+    let y: i32 = @intCast(x);
+    y
+}
+"""
+exit_code = 100
+
+[[case]]
+name = "intcast_unsigned_to_signed_overflow"
+spec = ["4.13:28"]
+source = """
+fn main() -> i32 {
+    let x: u32 = 2147483648;  // i32::MAX + 1
+    let y: i32 = @intCast(x);
+    y
+}
+"""
+exit_code = 101
+stderr_contains = "integer cast overflow"

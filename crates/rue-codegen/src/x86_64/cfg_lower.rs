@@ -2231,6 +2231,28 @@ impl<'a> CfgLower<'a> {
                 });
             }
 
+            CfgInstData::IntCast {
+                value: src_value,
+                from_ty,
+            } => {
+                // Integer cast with runtime range check
+                let vreg = self.mir.alloc_vreg();
+                self.value_map.insert(value, vreg);
+
+                let src_vreg = self.get_vreg(*src_value);
+                let to_ty = self.cfg.get_inst(value).ty;
+
+                // Emit range check and panic if out of bounds
+                self.emit_int_cast_check(src_vreg, *from_ty, to_ty);
+
+                // Move the value to the result vreg (the bits are already correct
+                // after sign/zero extension from the range check or simple copy)
+                self.mir.push(X86Inst::MovRR {
+                    dst: Operand::Virtual(vreg),
+                    src: Operand::Virtual(src_vreg),
+                });
+            }
+
             CfgInstData::Drop {
                 value: dropped_value,
             } => {
@@ -2399,6 +2421,233 @@ impl<'a> CfgLower<'a> {
             symbol: "__rue_overflow".to_string(),
         });
         self.mir.push(X86Inst::Label { id: ok_label });
+    }
+
+    /// Emit integer cast range check.
+    ///
+    /// Checks if the source value can be represented in the target type.
+    /// Panics via `__rue_intcast_overflow` if the value is out of range.
+    fn emit_int_cast_check(&mut self, src_vreg: VReg, from_ty: Type, to_ty: Type) {
+        // Get type properties
+        let from_signed = from_ty.is_signed();
+        let to_signed = to_ty.is_signed();
+        let from_bits = Self::type_bits(from_ty);
+        let to_bits = Self::type_bits(to_ty);
+
+        // If casting to a larger or equal-sized type with compatible signedness,
+        // and source is unsigned or both are signed, no check needed
+        if to_bits >= from_bits {
+            // Widening or same-size cast
+            if from_signed == to_signed {
+                // Same signedness, widening - always safe
+                return;
+            }
+            if !from_signed && to_signed && to_bits > from_bits {
+                // Unsigned to larger signed - always safe
+                return;
+            }
+            // Signed to same-size unsigned needs check (negative values fail)
+            // Unsigned to same-size signed needs check (large values fail)
+        }
+
+        let ok_label = self.new_label();
+
+        // Calculate the min and max values for the target type
+        let (min_val, max_val) = Self::type_range(to_ty);
+
+        if from_signed {
+            // Source is signed - need to check both min and max
+            if to_signed {
+                // Signed to signed: check MIN <= value <= MAX
+                if to_bits < from_bits || (to_bits == from_bits && min_val != i64::MIN) {
+                    // Check lower bound
+                    let min_vreg = self.mir.alloc_vreg();
+                    self.mir.push(X86Inst::MovRI64 {
+                        dst: Operand::Virtual(min_vreg),
+                        imm: min_val,
+                    });
+                    if from_bits > 32 {
+                        self.mir.push(X86Inst::Cmp64RR {
+                            src1: Operand::Virtual(src_vreg),
+                            src2: Operand::Virtual(min_vreg),
+                        });
+                    } else {
+                        self.mir.push(X86Inst::CmpRR {
+                            src1: Operand::Virtual(src_vreg),
+                            src2: Operand::Virtual(min_vreg),
+                        });
+                    }
+                    // For signed comparison, use Jge (jump if greater or equal to min)
+                    self.mir.push(X86Inst::Jge { label: ok_label });
+
+                    // Below min - panic
+                    self.mir.push(X86Inst::CallRel {
+                        symbol: "__rue_intcast_overflow".to_string(),
+                    });
+                    self.mir.push(X86Inst::Label { id: ok_label });
+
+                    let ok_label2 = self.new_label();
+                    // Check upper bound
+                    let max_vreg = self.mir.alloc_vreg();
+                    self.mir.push(X86Inst::MovRI64 {
+                        dst: Operand::Virtual(max_vreg),
+                        imm: max_val,
+                    });
+                    if from_bits > 32 {
+                        self.mir.push(X86Inst::Cmp64RR {
+                            src1: Operand::Virtual(src_vreg),
+                            src2: Operand::Virtual(max_vreg),
+                        });
+                    } else {
+                        self.mir.push(X86Inst::CmpRR {
+                            src1: Operand::Virtual(src_vreg),
+                            src2: Operand::Virtual(max_vreg),
+                        });
+                    }
+                    self.mir.push(X86Inst::Jle { label: ok_label2 });
+
+                    // Above max - panic
+                    self.mir.push(X86Inst::CallRel {
+                        symbol: "__rue_intcast_overflow".to_string(),
+                    });
+                    self.mir.push(X86Inst::Label { id: ok_label2 });
+                }
+            } else {
+                // Signed to unsigned: value must be >= 0 and <= max
+                // Check for negative
+                if from_bits > 32 {
+                    self.mir.push(X86Inst::Cmp64RI {
+                        src: Operand::Virtual(src_vreg),
+                        imm: 0,
+                    });
+                } else {
+                    self.mir.push(X86Inst::CmpRI {
+                        src: Operand::Virtual(src_vreg),
+                        imm: 0,
+                    });
+                }
+                self.mir.push(X86Inst::Jge { label: ok_label });
+
+                // Negative - panic
+                self.mir.push(X86Inst::CallRel {
+                    symbol: "__rue_intcast_overflow".to_string(),
+                });
+                self.mir.push(X86Inst::Label { id: ok_label });
+
+                // Also check upper bound if narrowing
+                if to_bits < from_bits {
+                    let ok_label2 = self.new_label();
+                    let max_vreg = self.mir.alloc_vreg();
+                    self.mir.push(X86Inst::MovRI64 {
+                        dst: Operand::Virtual(max_vreg),
+                        imm: max_val,
+                    });
+                    if from_bits > 32 {
+                        self.mir.push(X86Inst::Cmp64RR {
+                            src1: Operand::Virtual(src_vreg),
+                            src2: Operand::Virtual(max_vreg),
+                        });
+                        // Unsigned comparison for upper bound check
+                        self.mir.push(X86Inst::Jbe { label: ok_label2 });
+                    } else {
+                        self.mir.push(X86Inst::CmpRR {
+                            src1: Operand::Virtual(src_vreg),
+                            src2: Operand::Virtual(max_vreg),
+                        });
+                        self.mir.push(X86Inst::Jbe { label: ok_label2 });
+                    }
+
+                    // Above max - panic
+                    self.mir.push(X86Inst::CallRel {
+                        symbol: "__rue_intcast_overflow".to_string(),
+                    });
+                    self.mir.push(X86Inst::Label { id: ok_label2 });
+                }
+            }
+        } else {
+            // Source is unsigned
+            if to_signed {
+                // Unsigned to signed: value must fit in positive range of target
+                // Check that value <= signed max
+                let max_vreg = self.mir.alloc_vreg();
+                self.mir.push(X86Inst::MovRI64 {
+                    dst: Operand::Virtual(max_vreg),
+                    imm: max_val,
+                });
+                if from_bits > 32 {
+                    self.mir.push(X86Inst::Cmp64RR {
+                        src1: Operand::Virtual(src_vreg),
+                        src2: Operand::Virtual(max_vreg),
+                    });
+                } else {
+                    self.mir.push(X86Inst::CmpRR {
+                        src1: Operand::Virtual(src_vreg),
+                        src2: Operand::Virtual(max_vreg),
+                    });
+                }
+                // Unsigned comparison
+                self.mir.push(X86Inst::Jbe { label: ok_label });
+
+                // Above max - panic
+                self.mir.push(X86Inst::CallRel {
+                    symbol: "__rue_intcast_overflow".to_string(),
+                });
+                self.mir.push(X86Inst::Label { id: ok_label });
+            } else {
+                // Unsigned to unsigned: narrowing check
+                if to_bits < from_bits {
+                    let max_vreg = self.mir.alloc_vreg();
+                    self.mir.push(X86Inst::MovRI64 {
+                        dst: Operand::Virtual(max_vreg),
+                        imm: max_val,
+                    });
+                    if from_bits > 32 {
+                        self.mir.push(X86Inst::Cmp64RR {
+                            src1: Operand::Virtual(src_vreg),
+                            src2: Operand::Virtual(max_vreg),
+                        });
+                    } else {
+                        self.mir.push(X86Inst::CmpRR {
+                            src1: Operand::Virtual(src_vreg),
+                            src2: Operand::Virtual(max_vreg),
+                        });
+                    }
+                    self.mir.push(X86Inst::Jbe { label: ok_label });
+
+                    // Above max - panic
+                    self.mir.push(X86Inst::CallRel {
+                        symbol: "__rue_intcast_overflow".to_string(),
+                    });
+                    self.mir.push(X86Inst::Label { id: ok_label });
+                }
+            }
+        }
+    }
+
+    /// Get the bit width of an integer type.
+    fn type_bits(ty: Type) -> u32 {
+        match ty {
+            Type::I8 | Type::U8 => 8,
+            Type::I16 | Type::U16 => 16,
+            Type::I32 | Type::U32 => 32,
+            Type::I64 | Type::U64 => 64,
+            _ => panic!("type_bits called on non-integer type: {:?}", ty),
+        }
+    }
+
+    /// Get the min and max values for an integer type.
+    fn type_range(ty: Type) -> (i64, i64) {
+        match ty {
+            Type::I8 => (i8::MIN as i64, i8::MAX as i64),
+            Type::I16 => (i16::MIN as i64, i16::MAX as i64),
+            Type::I32 => (i32::MIN as i64, i32::MAX as i64),
+            Type::I64 => (i64::MIN, i64::MAX),
+            Type::U8 => (0, u8::MAX as i64),
+            Type::U16 => (0, u16::MAX as i64),
+            Type::U32 => (0, u32::MAX as i64),
+            Type::U64 => (0, i64::MAX), // Can't represent u64::MAX in i64, but we use unsigned compare
+            _ => panic!("type_range called on non-integer type: {:?}", ty),
+        }
     }
 
     /// Emit a comparison instruction.

@@ -149,3 +149,69 @@ fn main() -> i32 {
     @align_of(i32)    // 8
 }
 ```
+
+## `@intCast`
+
+{{ rule(id="4.13:24", cat="normative") }}
+
+The `@intCast` intrinsic converts an integer value from one integer type to another.
+
+{{ rule(id="4.13:25", cat="normative") }}
+
+`@intCast` accepts exactly one argument, which must be an integer type (any of `i8`, `i16`, `i32`, `i64`, `u8`, `u16`, `u32`, `u64`).
+
+{{ rule(id="4.13:26", cat="normative") }}
+
+The target type of the conversion is inferred from the context where `@intCast` is used.
+
+{{ rule(id="4.13:27", cat="legality-rule") }}
+
+It is a compile-time error if the target type cannot be inferred or is not an integer type.
+
+{{ rule(id="4.13:28", cat="dynamic-semantics") }}
+
+If the source value cannot be exactly represented in the target type, a runtime panic occurs.
+
+{{ rule(id="4.13:29") }}
+
+```rue
+fn main() -> i32 {
+    let x: i32 = 100;
+    let y: u8 = @intCast(x);  // OK: 100 fits in u8
+    @intCast(y)               // Convert back to i32
+}
+```
+
+{{ rule(id="4.13:30") }}
+
+```rue
+fn takes_u8(x: u8) -> u8 { x }
+
+fn main() -> i32 {
+    let x: i32 = 50;
+    takes_u8(@intCast(x));    // Target type inferred from parameter
+    0
+}
+```
+
+{{ rule(id="4.13:31") }}
+
+```rue
+// This panics at runtime: 256 doesn't fit in u8
+fn main() -> i32 {
+    let x: i32 = 256;
+    let y: u8 = @intCast(x);  // panic: integer cast overflow
+    0
+}
+```
+
+{{ rule(id="4.13:32") }}
+
+```rue
+// This panics at runtime: negative values don't fit in unsigned types
+fn main() -> i32 {
+    let x: i32 = -1;
+    let y: u32 = @intCast(x); // panic: integer cast overflow
+    0
+}
+```

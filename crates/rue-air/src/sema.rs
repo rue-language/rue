@@ -3022,53 +3022,122 @@ impl<'a> Sema<'a> {
             InstData::Intrinsic { name, args } => {
                 let intrinsic_name = self.interner.get(*name).to_string();
 
-                // Currently only @dbg is supported
-                if intrinsic_name != "dbg" {
-                    return Err(CompileError::new(
+                match intrinsic_name.as_str() {
+                    "dbg" => {
+                        // @dbg expects exactly one argument
+                        if args.len() != 1 {
+                            return Err(CompileError::new(
+                                ErrorKind::IntrinsicWrongArgCount {
+                                    name: intrinsic_name,
+                                    expected: 1,
+                                    found: args.len(),
+                                },
+                                inst.span,
+                            ));
+                        }
+
+                        // Synthesize the argument type in a single traversal
+                        let arg_result = self.analyze_inst(air, args[0], ctx)?;
+                        let arg_type = arg_result.ty;
+
+                        // Check that argument is a supported type (integer, bool, or string)
+                        let is_supported = arg_type.is_integer()
+                            || arg_type == Type::Bool
+                            || arg_type == Type::String;
+                        if !is_supported {
+                            return Err(CompileError::new(
+                                ErrorKind::IntrinsicTypeMismatch {
+                                    name: intrinsic_name,
+                                    expected: "integer, bool, or string".to_string(),
+                                    found: arg_type.name().to_string(),
+                                },
+                                inst.span,
+                            ));
+                        }
+
+                        let air_ref = air.add_inst(AirInst {
+                            data: AirInstData::Intrinsic {
+                                name: intrinsic_name,
+                                args: vec![arg_result.air_ref],
+                            },
+                            ty: Type::Unit,
+                            span: inst.span,
+                        });
+                        Ok(AnalysisResult::new(air_ref, Type::Unit))
+                    }
+                    "intCast" => {
+                        // @intCast expects exactly one argument
+                        if args.len() != 1 {
+                            return Err(CompileError::new(
+                                ErrorKind::IntrinsicWrongArgCount {
+                                    name: intrinsic_name,
+                                    expected: 1,
+                                    found: args.len(),
+                                },
+                                inst.span,
+                            ));
+                        }
+
+                        // Analyze the argument
+                        let arg_result = self.analyze_inst(air, args[0], ctx)?;
+                        let from_ty = arg_result.ty;
+
+                        // Argument must be an integer type
+                        if !from_ty.is_integer() {
+                            return Err(CompileError::new(
+                                ErrorKind::IntrinsicTypeMismatch {
+                                    name: intrinsic_name,
+                                    expected: "integer".to_string(),
+                                    found: from_ty.name().to_string(),
+                                },
+                                inst.span,
+                            ));
+                        }
+
+                        // Get the target type from HM inference
+                        let target_ty = match ctx.resolved_types.get(&inst_ref).copied() {
+                            Some(ty) if ty.is_integer() => ty,
+                            Some(Type::Error) => {
+                                // Error already reported during type inference
+                                return Err(CompileError::new(
+                                    ErrorKind::TypeAnnotationRequired,
+                                    inst.span,
+                                ));
+                            }
+                            Some(ty) => {
+                                return Err(CompileError::new(
+                                    ErrorKind::IntrinsicTypeMismatch {
+                                        name: intrinsic_name,
+                                        expected: "integer".to_string(),
+                                        found: ty.name().to_string(),
+                                    },
+                                    inst.span,
+                                ));
+                            }
+                            None => {
+                                // Type inference couldn't determine the target type
+                                return Err(CompileError::new(
+                                    ErrorKind::TypeAnnotationRequired,
+                                    inst.span,
+                                ));
+                            }
+                        };
+
+                        let air_ref = air.add_inst(AirInst {
+                            data: AirInstData::IntCast {
+                                value: arg_result.air_ref,
+                                from_ty,
+                            },
+                            ty: target_ty,
+                            span: inst.span,
+                        });
+                        Ok(AnalysisResult::new(air_ref, target_ty))
+                    }
+                    _ => Err(CompileError::new(
                         ErrorKind::UnknownIntrinsic(intrinsic_name),
                         inst.span,
-                    ));
+                    )),
                 }
-
-                // @dbg expects exactly one argument
-                if args.len() != 1 {
-                    return Err(CompileError::new(
-                        ErrorKind::IntrinsicWrongArgCount {
-                            name: intrinsic_name,
-                            expected: 1,
-                            found: args.len(),
-                        },
-                        inst.span,
-                    ));
-                }
-
-                // Synthesize the argument type in a single traversal
-                let arg_result = self.analyze_inst(air, args[0], ctx)?;
-                let arg_type = arg_result.ty;
-
-                // Check that argument is a supported type (integer, bool, or string)
-                let is_supported =
-                    arg_type.is_integer() || arg_type == Type::Bool || arg_type == Type::String;
-                if !is_supported {
-                    return Err(CompileError::new(
-                        ErrorKind::IntrinsicTypeMismatch {
-                            name: intrinsic_name,
-                            expected: "integer, bool, or string".to_string(),
-                            found: arg_type.name().to_string(),
-                        },
-                        inst.span,
-                    ));
-                }
-
-                let air_ref = air.add_inst(AirInst {
-                    data: AirInstData::Intrinsic {
-                        name: intrinsic_name,
-                        args: vec![arg_result.air_ref],
-                    },
-                    ty: Type::Unit,
-                    span: inst.span,
-                });
-                Ok(AnalysisResult::new(air_ref, Type::Unit))
             }
 
             InstData::TypeIntrinsic { name, type_arg } => {

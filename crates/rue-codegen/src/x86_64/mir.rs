@@ -275,8 +275,11 @@ pub enum X86Inst {
     /// `cmp src1, src2` - Compare 64-bit (subtract and set flags, discard result).
     Cmp64RR { src1: Operand, src2: Operand },
 
-    /// `cmp src, imm` - Compare register with immediate.
+    /// `cmp src, imm` - Compare register with immediate (32-bit).
     CmpRI { src: Operand, imm: i32 },
+
+    /// `cmp src, imm` - Compare register with immediate (64-bit).
+    Cmp64RI { src: Operand, imm: i32 },
 
     /// `sete dst` - Set byte if equal (ZF=1).
     Sete { dst: Operand },
@@ -349,6 +352,12 @@ pub enum X86Inst {
 
     /// `jbe label` - Jump if below or equal (unsigned: CF=1 or ZF=1).
     Jbe { label: LabelId },
+
+    /// `jge label` - Jump if greater or equal (signed: SF=OF).
+    Jge { label: LabelId },
+
+    /// `jle label` - Jump if less or equal (signed: ZF=1 or SF≠OF).
+    Jle { label: LabelId },
 
     /// `jmp label` - Unconditional jump.
     Jmp { label: LabelId },
@@ -489,6 +498,7 @@ impl fmt::Display for X86Inst {
             X86Inst::CmpRR { src1, src2 } => write!(f, "cmp {}, {}", src1, src2),
             X86Inst::Cmp64RR { src1, src2 } => write!(f, "cmpq {}, {}", src1, src2),
             X86Inst::CmpRI { src, imm } => write!(f, "cmp {}, {}", src, imm),
+            X86Inst::Cmp64RI { src, imm } => write!(f, "cmpq {}, {}", src, imm),
             X86Inst::Sete { dst } => write!(f, "sete {}", dst),
             X86Inst::Setne { dst } => write!(f, "setne {}", dst),
             X86Inst::Setl { dst } => write!(f, "setl {}", dst),
@@ -513,6 +523,8 @@ impl fmt::Display for X86Inst {
             X86Inst::Jb { label } => write!(f, "jb {}", label),
             X86Inst::Jae { label } => write!(f, "jae {}", label),
             X86Inst::Jbe { label } => write!(f, "jbe {}", label),
+            X86Inst::Jge { label } => write!(f, "jge {}", label),
+            X86Inst::Jle { label } => write!(f, "jle {}", label),
             X86Inst::Jmp { label } => write!(f, "jmp {}", label),
             X86Inst::Label { id } => write!(f, "{}:", id),
             X86Inst::CallRel { symbol } => write!(f, "call {}", symbol),

@@ -425,6 +425,17 @@ pub enum AirInstData {
         variant_index: u32,
     },
 
+    // Type conversion operations
+    /// Integer cast: convert between integer types with runtime range check.
+    /// Panics if the value cannot be represented in the target type.
+    /// The target type is stored in AirInst.ty.
+    IntCast {
+        /// The value to cast
+        value: AirRef,
+        /// The source type (for determining signedness and size)
+        from_ty: Type,
+    },
+
     // Drop/destructor operations
     /// Drop a value, running its destructor if the type has one.
     /// For trivially droppable types, this is a no-op.
@@ -671,6 +682,9 @@ impl fmt::Display for Air {
                     variant_index,
                 } => {
                     writeln!(f, "enum_variant #{}::{}", enum_id.0, variant_index)?;
+                }
+                AirInstData::IntCast { value, from_ty } => {
+                    writeln!(f, "intcast {} from {}", value, from_ty.name())?;
                 }
                 AirInstData::Drop { value } => {
                     writeln!(f, "drop {}", value)?;

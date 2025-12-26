@@ -475,13 +475,29 @@ impl<'a> ConstraintGenerator<'a> {
             }
 
             // Intrinsic call
-            InstData::Intrinsic { name: _, args } => {
-                // Generate constraints for arguments (they need to be processed)
-                for arg_ref in args.iter() {
-                    self.generate(*arg_ref, ctx);
+            InstData::Intrinsic { name, args } => {
+                let intrinsic_name = self.interner.get(*name);
+
+                if intrinsic_name == "intCast" {
+                    // @intCast: target type is inferred from context
+                    // The argument must be an integer type
+                    if !args.is_empty() {
+                        let arg_info = self.generate(args[0], ctx);
+                        // Constraint: argument must be an integer
+                        // We'll check this in sema, for now just process the argument
+                        let _ = arg_info;
+                    }
+                    // Return type is inferred from context - create a fresh type variable
+                    let result_var = self.fresh_var();
+                    InferType::Var(result_var)
+                } else {
+                    // Generate constraints for arguments (they need to be processed)
+                    for arg_ref in args.iter() {
+                        self.generate(*arg_ref, ctx);
+                    }
+                    // @dbg returns Unit
+                    InferType::Concrete(Type::Unit)
                 }
-                // Currently only @dbg is supported, which returns Unit
-                InferType::Concrete(Type::Unit)
             }
 
             // Type intrinsic (@size_of, @align_of)

@@ -114,6 +114,9 @@ fn has_side_effects(cfg: &Cfg, value: CfgValue) -> bool {
         CfgInstData::StorageLive { .. } => true,
         CfgInstData::StorageDead { .. } => true,
 
+        // IntCast can panic (range check), so it has side effects
+        CfgInstData::IntCast { .. } => true,
+
         // Everything else is pure computation
         _ => false,
     }
@@ -197,6 +200,9 @@ fn instruction_uses(cfg: &Cfg, value: CfgValue) -> Vec<CfgValue> {
 
         // Enum operations
         CfgInstData::EnumVariant { .. } => vec![],
+
+        // Type conversion
+        CfgInstData::IntCast { value, .. } => vec![*value],
 
         // Drop
         CfgInstData::Drop { value } => vec![*value],

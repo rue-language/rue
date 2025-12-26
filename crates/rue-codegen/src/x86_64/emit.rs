@@ -492,6 +492,9 @@ impl<'a> Emitter<'a> {
             X86Inst::CmpRI { src, imm } => {
                 self.emit_cmp_ri(src.as_physical(), *imm);
             }
+            X86Inst::Cmp64RI { src, imm } => {
+                self.emit_cmp64_ri(src.as_physical(), *imm);
+            }
             X86Inst::Sete { dst } => {
                 self.emit_setcc(0x94, dst.as_physical()); // SETE opcode
             }
@@ -563,6 +566,12 @@ impl<'a> Emitter<'a> {
             }
             X86Inst::Jbe { label } => {
                 self.emit_jcc(0x76, *label); // JBE rel8 opcode (CF=1 or ZF=1)
+            }
+            X86Inst::Jge { label } => {
+                self.emit_jcc(0x7D, *label); // JGE rel8 opcode (SF=OF)
+            }
+            X86Inst::Jle { label } => {
+                self.emit_jcc(0x7E, *label); // JLE rel8 opcode (ZF=1 or SF≠OF)
             }
             X86Inst::Jmp { label } => {
                 self.emit_jmp(*label);
@@ -1665,6 +1674,30 @@ impl<'a> Emitter<'a> {
         self.code.push(modrm);
 
         // Immediate (32-bit little-endian)
+        self.code.extend_from_slice(&imm.to_le_bytes());
+    }
+
+    /// Emit `cmp r64, imm32` (sign-extended).
+    ///
+    /// Encoding: REX.W 81 /7 imm32 (cmp r/m64, imm32)
+    fn emit_cmp64_ri(&mut self, src: Reg, imm: i32) {
+        let src_enc = src.encoding();
+
+        // REX prefix: REX.W for 64-bit operand size, plus REX.B if extended register
+        let mut rex = 0x48; // REX.W
+        if src.needs_rex() {
+            rex |= 0x01; // REX.B
+        }
+        self.code.push(rex);
+
+        // Opcode: 81 (group 1, /7 for CMP)
+        self.code.push(0x81);
+
+        // ModR/M: mod=11, reg=7 (CMP), r/m=src
+        let modrm = 0xC0 | (7 << 3) | (src_enc & 7);
+        self.code.push(modrm);
+
+        // Immediate (32-bit sign-extended to 64-bit by CPU)
         self.code.extend_from_slice(&imm.to_le_bytes());
     }
 

@@ -1465,6 +1465,28 @@ impl<'a> CfgBuilder<'a> {
                 }
             }
 
+            AirInstData::IntCast { value, from_ty } => {
+                // Lower the value to cast
+                let Some(val) = self.lower_value(*value) else {
+                    return Self::diverged();
+                };
+
+                // Emit the IntCast instruction
+                let result = self.emit(
+                    CfgInstData::IntCast {
+                        value: val,
+                        from_ty: *from_ty,
+                    },
+                    ty,
+                    span,
+                );
+                self.cache(air_ref, result);
+                ExprResult {
+                    value: Some(result),
+                    continuation: Continuation::Continues,
+                }
+            }
+
             AirInstData::Drop { value } => {
                 // Lower the value to drop
                 let Some(val) = self.lower_value(*value) else {
