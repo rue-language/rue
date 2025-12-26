@@ -16,9 +16,14 @@
 //!
 //! # Platform Requirements
 //!
-//! This runtime only supports **x86-64 Linux**. It uses direct syscalls and
-//! contains platform-specific assembly. Attempting to compile on other platforms
-//! will result in a compile error.
+//! This runtime supports the following platforms:
+//!
+//! - **x86-64 Linux**
+//! - **aarch64 Linux**
+//! - **aarch64 macOS**
+//!
+//! It uses direct syscalls and contains platform-specific assembly.
+//! Attempting to compile on other platforms will result in a compile error.
 //!
 //! # Design Philosophy
 //!
