@@ -298,4 +298,116 @@ mod tests {
         let invalid_sym = Symbol::from_raw(9999);
         let _ = interner.get(invalid_sym); // Should panic
     }
+
+    #[test]
+    fn test_with_capacity() {
+        let mut interner = Interner::with_capacity(100, 1000);
+
+        // Well-known symbols should still be pre-interned
+        assert_eq!(interner.len(), 12);
+
+        // Should work normally after creation
+        let sym = interner.intern("test");
+        assert_eq!(interner.get(sym), "test");
+        assert_eq!(interner.len(), 13);
+    }
+
+    #[test]
+    fn test_get_symbol() {
+        let mut interner = Interner::new();
+
+        // Non-existent string returns None
+        assert!(interner.get_symbol("nonexistent").is_none());
+
+        // After interning, get_symbol returns the symbol
+        let sym = interner.intern("hello");
+        assert_eq!(interner.get_symbol("hello"), Some(sym));
+
+        // Well-known symbols can be found
+        let wk = interner.well_known();
+        assert_eq!(interner.get_symbol("i32"), Some(wk.i32));
+        assert_eq!(interner.get_symbol("bool"), Some(wk.bool));
+    }
+
+    #[test]
+    fn test_well_known_symbols() {
+        let interner = Interner::new();
+        let wk = interner.well_known();
+
+        // Verify all well-known symbols resolve to correct strings
+        assert_eq!(interner.get(wk.i8), "i8");
+        assert_eq!(interner.get(wk.i16), "i16");
+        assert_eq!(interner.get(wk.i32), "i32");
+        assert_eq!(interner.get(wk.i64), "i64");
+        assert_eq!(interner.get(wk.u8), "u8");
+        assert_eq!(interner.get(wk.u16), "u16");
+        assert_eq!(interner.get(wk.u32), "u32");
+        assert_eq!(interner.get(wk.u64), "u64");
+        assert_eq!(interner.get(wk.bool), "bool");
+        assert_eq!(interner.get(wk.unit), "()");
+        assert_eq!(interner.get(wk.never), "!");
+        assert_eq!(interner.get(wk.string), "String");
+    }
+
+    #[test]
+    fn test_well_known_symbols_are_unique() {
+        let interner = Interner::new();
+        let wk = interner.well_known();
+
+        // All well-known symbols should be distinct
+        let symbols = [
+            wk.i8, wk.i16, wk.i32, wk.i64, wk.u8, wk.u16, wk.u32, wk.u64, wk.bool, wk.unit,
+            wk.never, wk.string,
+        ];
+        for (i, &a) in symbols.iter().enumerate() {
+            for (j, &b) in symbols.iter().enumerate() {
+                if i != j {
+                    assert_ne!(a, b, "well-known symbols at {} and {} should differ", i, j);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_unicode_strings() {
+        let mut interner = Interner::new();
+
+        // Basic unicode
+        let sym1 = interner.intern("héllo");
+        assert_eq!(interner.get(sym1), "héllo");
+
+        // Emoji
+        let sym2 = interner.intern("🦀");
+        assert_eq!(interner.get(sym2), "🦀");
+
+        // CJK characters
+        let sym3 = interner.intern("你好");
+        assert_eq!(interner.get(sym3), "你好");
+
+        // Mixed unicode and ASCII
+        let sym4 = interner.intern("hello_世界_🌍");
+        assert_eq!(interner.get(sym4), "hello_世界_🌍");
+
+        // Duplicate unicode string returns same symbol
+        let sym5 = interner.intern("héllo");
+        assert_eq!(sym1, sym5);
+    }
+
+    #[test]
+    fn test_bytes_used() {
+        let mut interner = Interner::new();
+        let initial_bytes = interner.bytes_used();
+
+        // "test" is 4 bytes
+        interner.intern("test");
+        assert_eq!(interner.bytes_used(), initial_bytes + 4);
+
+        // "🦀" is 4 bytes (U+1F980)
+        interner.intern("🦀");
+        assert_eq!(interner.bytes_used(), initial_bytes + 8);
+
+        // Duplicate doesn't add more bytes
+        interner.intern("test");
+        assert_eq!(interner.bytes_used(), initial_bytes + 8);
+    }
 }
