@@ -1,7 +1,13 @@
-name: Deploy Website
+name: Website
 
 on:
   push:
+    branches: [trunk]
+    paths:
+      - 'website/**'
+      - 'docs/spec/**'
+      - '.github/workflows/deploy-website.yml'
+  pull_request:
     branches: [trunk]
     paths:
       - 'website/**'
@@ -15,7 +21,7 @@ permissions:
   id-token: write
 
 concurrency:
-  group: "pages"
+  group: "pages-${{ github.ref }}"
   cancel-in-progress: true
 
 jobs:
@@ -29,16 +35,20 @@ jobs:
         uses: facebook/install-dotslash@latest
 
       - name: Build website
-        run: |
-          website/build.sh
-          echo "rue-lang.dev" > website/public/CNAME
+        run: website/build.sh
+
+      - name: Add CNAME
+        if: github.ref == 'refs/heads/trunk'
+        run: echo "rue-lang.dev" > website/public/CNAME
 
       - name: Upload artifact
+        if: github.ref == 'refs/heads/trunk'
         uses: actions/upload-pages-artifact@v3
         with:
           path: website/public
 
   deploy:
+    if: github.ref == 'refs/heads/trunk'
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}

@@ -15,6 +15,15 @@ echo "Copying spec content..."
 rm -rf website/content/spec
 cp -r docs/spec/src website/content/spec
 
+# Rewrite internal links: spec files use @/XX-... but once copied to
+# website/content/spec/, the links need to be @/spec/XX-...
+echo "Rewriting spec internal links..."
+if [[ "$OSTYPE" == "darwin"* ]]; then
+    find website/content/spec -name "*.md" -exec sed -i '' 's|@/\([0-9]\)|@/spec/\1|g' {} \;
+else
+    find website/content/spec -name "*.md" -exec sed -i 's|@/\([0-9]\)|@/spec/\1|g' {} \;
+fi
+
 # Build Tailwind CSS
 echo "Building Tailwind CSS..."
 cd website
