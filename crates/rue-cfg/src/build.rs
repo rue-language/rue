@@ -184,8 +184,12 @@ impl<'a> CfgBuilder<'a> {
             }
 
             AirInstData::Add(lhs, rhs) => {
-                let lhs_val = self.lower_inst(*lhs).value.unwrap();
-                let rhs_val = self.lower_inst(*rhs).value.unwrap();
+                let Some(lhs_val) = self.lower_value(*lhs) else {
+                    return Self::diverged();
+                };
+                let Some(rhs_val) = self.lower_value(*rhs) else {
+                    return Self::diverged();
+                };
                 let value = self.emit(CfgInstData::Add(lhs_val, rhs_val), ty, span);
                 self.cache(air_ref, value);
                 ExprResult {
@@ -195,8 +199,12 @@ impl<'a> CfgBuilder<'a> {
             }
 
             AirInstData::Sub(lhs, rhs) => {
-                let lhs_val = self.lower_inst(*lhs).value.unwrap();
-                let rhs_val = self.lower_inst(*rhs).value.unwrap();
+                let Some(lhs_val) = self.lower_value(*lhs) else {
+                    return Self::diverged();
+                };
+                let Some(rhs_val) = self.lower_value(*rhs) else {
+                    return Self::diverged();
+                };
                 let value = self.emit(CfgInstData::Sub(lhs_val, rhs_val), ty, span);
                 self.cache(air_ref, value);
                 ExprResult {
@@ -206,8 +214,12 @@ impl<'a> CfgBuilder<'a> {
             }
 
             AirInstData::Mul(lhs, rhs) => {
-                let lhs_val = self.lower_inst(*lhs).value.unwrap();
-                let rhs_val = self.lower_inst(*rhs).value.unwrap();
+                let Some(lhs_val) = self.lower_value(*lhs) else {
+                    return Self::diverged();
+                };
+                let Some(rhs_val) = self.lower_value(*rhs) else {
+                    return Self::diverged();
+                };
                 let value = self.emit(CfgInstData::Mul(lhs_val, rhs_val), ty, span);
                 self.cache(air_ref, value);
                 ExprResult {
@@ -217,8 +229,12 @@ impl<'a> CfgBuilder<'a> {
             }
 
             AirInstData::Div(lhs, rhs) => {
-                let lhs_val = self.lower_inst(*lhs).value.unwrap();
-                let rhs_val = self.lower_inst(*rhs).value.unwrap();
+                let Some(lhs_val) = self.lower_value(*lhs) else {
+                    return Self::diverged();
+                };
+                let Some(rhs_val) = self.lower_value(*rhs) else {
+                    return Self::diverged();
+                };
                 let value = self.emit(CfgInstData::Div(lhs_val, rhs_val), ty, span);
                 self.cache(air_ref, value);
                 ExprResult {
@@ -228,8 +244,12 @@ impl<'a> CfgBuilder<'a> {
             }
 
             AirInstData::Mod(lhs, rhs) => {
-                let lhs_val = self.lower_inst(*lhs).value.unwrap();
-                let rhs_val = self.lower_inst(*rhs).value.unwrap();
+                let Some(lhs_val) = self.lower_value(*lhs) else {
+                    return Self::diverged();
+                };
+                let Some(rhs_val) = self.lower_value(*rhs) else {
+                    return Self::diverged();
+                };
                 let value = self.emit(CfgInstData::Mod(lhs_val, rhs_val), ty, span);
                 self.cache(air_ref, value);
                 ExprResult {
@@ -239,8 +259,12 @@ impl<'a> CfgBuilder<'a> {
             }
 
             AirInstData::Eq(lhs, rhs) => {
-                let lhs_val = self.lower_inst(*lhs).value.unwrap();
-                let rhs_val = self.lower_inst(*rhs).value.unwrap();
+                let Some(lhs_val) = self.lower_value(*lhs) else {
+                    return Self::diverged();
+                };
+                let Some(rhs_val) = self.lower_value(*rhs) else {
+                    return Self::diverged();
+                };
                 let value = self.emit(CfgInstData::Eq(lhs_val, rhs_val), ty, span);
                 self.cache(air_ref, value);
                 ExprResult {
@@ -250,8 +274,12 @@ impl<'a> CfgBuilder<'a> {
             }
 
             AirInstData::Ne(lhs, rhs) => {
-                let lhs_val = self.lower_inst(*lhs).value.unwrap();
-                let rhs_val = self.lower_inst(*rhs).value.unwrap();
+                let Some(lhs_val) = self.lower_value(*lhs) else {
+                    return Self::diverged();
+                };
+                let Some(rhs_val) = self.lower_value(*rhs) else {
+                    return Self::diverged();
+                };
                 let value = self.emit(CfgInstData::Ne(lhs_val, rhs_val), ty, span);
                 self.cache(air_ref, value);
                 ExprResult {
@@ -261,8 +289,12 @@ impl<'a> CfgBuilder<'a> {
             }
 
             AirInstData::Lt(lhs, rhs) => {
-                let lhs_val = self.lower_inst(*lhs).value.unwrap();
-                let rhs_val = self.lower_inst(*rhs).value.unwrap();
+                let Some(lhs_val) = self.lower_value(*lhs) else {
+                    return Self::diverged();
+                };
+                let Some(rhs_val) = self.lower_value(*rhs) else {
+                    return Self::diverged();
+                };
                 let value = self.emit(CfgInstData::Lt(lhs_val, rhs_val), ty, span);
                 self.cache(air_ref, value);
                 ExprResult {
@@ -272,8 +304,12 @@ impl<'a> CfgBuilder<'a> {
             }
 
             AirInstData::Gt(lhs, rhs) => {
-                let lhs_val = self.lower_inst(*lhs).value.unwrap();
-                let rhs_val = self.lower_inst(*rhs).value.unwrap();
+                let Some(lhs_val) = self.lower_value(*lhs) else {
+                    return Self::diverged();
+                };
+                let Some(rhs_val) = self.lower_value(*rhs) else {
+                    return Self::diverged();
+                };
                 let value = self.emit(CfgInstData::Gt(lhs_val, rhs_val), ty, span);
                 self.cache(air_ref, value);
                 ExprResult {
@@ -283,8 +319,12 @@ impl<'a> CfgBuilder<'a> {
             }
 
             AirInstData::Le(lhs, rhs) => {
-                let lhs_val = self.lower_inst(*lhs).value.unwrap();
-                let rhs_val = self.lower_inst(*rhs).value.unwrap();
+                let Some(lhs_val) = self.lower_value(*lhs) else {
+                    return Self::diverged();
+                };
+                let Some(rhs_val) = self.lower_value(*rhs) else {
+                    return Self::diverged();
+                };
                 let value = self.emit(CfgInstData::Le(lhs_val, rhs_val), ty, span);
                 self.cache(air_ref, value);
                 ExprResult {
@@ -294,8 +334,12 @@ impl<'a> CfgBuilder<'a> {
             }
 
             AirInstData::Ge(lhs, rhs) => {
-                let lhs_val = self.lower_inst(*lhs).value.unwrap();
-                let rhs_val = self.lower_inst(*rhs).value.unwrap();
+                let Some(lhs_val) = self.lower_value(*lhs) else {
+                    return Self::diverged();
+                };
+                let Some(rhs_val) = self.lower_value(*rhs) else {
+                    return Self::diverged();
+                };
                 let value = self.emit(CfgInstData::Ge(lhs_val, rhs_val), ty, span);
                 self.cache(air_ref, value);
                 ExprResult {
@@ -307,7 +351,9 @@ impl<'a> CfgBuilder<'a> {
             AirInstData::And(lhs, rhs) => {
                 // Short-circuit: if lhs is false, result is false
                 // We need to create blocks for this
-                let lhs_val = self.lower_inst(*lhs).value.unwrap();
+                let Some(lhs_val) = self.lower_value(*lhs) else {
+                    return Self::diverged();
+                };
 
                 let rhs_block = self.cfg.new_block();
                 let join_block = self.cfg.new_block();
@@ -330,7 +376,9 @@ impl<'a> CfgBuilder<'a> {
 
                 // In rhs_block, evaluate rhs and go to join
                 self.current_block = rhs_block;
-                let rhs_val = self.lower_inst(*rhs).value.unwrap();
+                let Some(rhs_val) = self.lower_value(*rhs) else {
+                    return Self::diverged();
+                };
                 self.cfg.set_terminator(
                     self.current_block,
                     Terminator::Goto {
@@ -350,7 +398,9 @@ impl<'a> CfgBuilder<'a> {
 
             AirInstData::Or(lhs, rhs) => {
                 // Short-circuit: if lhs is true, result is true
-                let lhs_val = self.lower_inst(*lhs).value.unwrap();
+                let Some(lhs_val) = self.lower_value(*lhs) else {
+                    return Self::diverged();
+                };
 
                 let rhs_block = self.cfg.new_block();
                 let join_block = self.cfg.new_block();
@@ -373,7 +423,9 @@ impl<'a> CfgBuilder<'a> {
 
                 // In rhs_block, evaluate rhs and go to join
                 self.current_block = rhs_block;
-                let rhs_val = self.lower_inst(*rhs).value.unwrap();
+                let Some(rhs_val) = self.lower_value(*rhs) else {
+                    return Self::diverged();
+                };
                 self.cfg.set_terminator(
                     self.current_block,
                     Terminator::Goto {
@@ -392,7 +444,9 @@ impl<'a> CfgBuilder<'a> {
             }
 
             AirInstData::Neg(operand) => {
-                let op_val = self.lower_inst(*operand).value.unwrap();
+                let Some(op_val) = self.lower_value(*operand) else {
+                    return Self::diverged();
+                };
                 let value = self.emit(CfgInstData::Neg(op_val), ty, span);
                 self.cache(air_ref, value);
                 ExprResult {
@@ -402,7 +456,9 @@ impl<'a> CfgBuilder<'a> {
             }
 
             AirInstData::Not(operand) => {
-                let op_val = self.lower_inst(*operand).value.unwrap();
+                let Some(op_val) = self.lower_value(*operand) else {
+                    return Self::diverged();
+                };
                 let value = self.emit(CfgInstData::Not(op_val), ty, span);
                 self.cache(air_ref, value);
                 ExprResult {
@@ -412,7 +468,9 @@ impl<'a> CfgBuilder<'a> {
             }
 
             AirInstData::BitNot(operand) => {
-                let op_val = self.lower_inst(*operand).value.unwrap();
+                let Some(op_val) = self.lower_value(*operand) else {
+                    return Self::diverged();
+                };
                 let value = self.emit(CfgInstData::BitNot(op_val), ty, span);
                 self.cache(air_ref, value);
                 ExprResult {
@@ -422,8 +480,12 @@ impl<'a> CfgBuilder<'a> {
             }
 
             AirInstData::BitAnd(lhs, rhs) => {
-                let lhs_val = self.lower_inst(*lhs).value.unwrap();
-                let rhs_val = self.lower_inst(*rhs).value.unwrap();
+                let Some(lhs_val) = self.lower_value(*lhs) else {
+                    return Self::diverged();
+                };
+                let Some(rhs_val) = self.lower_value(*rhs) else {
+                    return Self::diverged();
+                };
                 let value = self.emit(CfgInstData::BitAnd(lhs_val, rhs_val), ty, span);
                 self.cache(air_ref, value);
                 ExprResult {
@@ -433,8 +495,12 @@ impl<'a> CfgBuilder<'a> {
             }
 
             AirInstData::BitOr(lhs, rhs) => {
-                let lhs_val = self.lower_inst(*lhs).value.unwrap();
-                let rhs_val = self.lower_inst(*rhs).value.unwrap();
+                let Some(lhs_val) = self.lower_value(*lhs) else {
+                    return Self::diverged();
+                };
+                let Some(rhs_val) = self.lower_value(*rhs) else {
+                    return Self::diverged();
+                };
                 let value = self.emit(CfgInstData::BitOr(lhs_val, rhs_val), ty, span);
                 self.cache(air_ref, value);
                 ExprResult {
@@ -444,8 +510,12 @@ impl<'a> CfgBuilder<'a> {
             }
 
             AirInstData::BitXor(lhs, rhs) => {
-                let lhs_val = self.lower_inst(*lhs).value.unwrap();
-                let rhs_val = self.lower_inst(*rhs).value.unwrap();
+                let Some(lhs_val) = self.lower_value(*lhs) else {
+                    return Self::diverged();
+                };
+                let Some(rhs_val) = self.lower_value(*rhs) else {
+                    return Self::diverged();
+                };
                 let value = self.emit(CfgInstData::BitXor(lhs_val, rhs_val), ty, span);
                 self.cache(air_ref, value);
                 ExprResult {
@@ -455,8 +525,12 @@ impl<'a> CfgBuilder<'a> {
             }
 
             AirInstData::Shl(lhs, rhs) => {
-                let lhs_val = self.lower_inst(*lhs).value.unwrap();
-                let rhs_val = self.lower_inst(*rhs).value.unwrap();
+                let Some(lhs_val) = self.lower_value(*lhs) else {
+                    return Self::diverged();
+                };
+                let Some(rhs_val) = self.lower_value(*rhs) else {
+                    return Self::diverged();
+                };
                 let value = self.emit(CfgInstData::Shl(lhs_val, rhs_val), ty, span);
                 self.cache(air_ref, value);
                 ExprResult {
@@ -466,8 +540,12 @@ impl<'a> CfgBuilder<'a> {
             }
 
             AirInstData::Shr(lhs, rhs) => {
-                let lhs_val = self.lower_inst(*lhs).value.unwrap();
-                let rhs_val = self.lower_inst(*rhs).value.unwrap();
+                let Some(lhs_val) = self.lower_value(*lhs) else {
+                    return Self::diverged();
+                };
+                let Some(rhs_val) = self.lower_value(*rhs) else {
+                    return Self::diverged();
+                };
                 let value = self.emit(CfgInstData::Shr(lhs_val, rhs_val), ty, span);
                 self.cache(air_ref, value);
                 ExprResult {
@@ -506,7 +584,9 @@ impl<'a> CfgBuilder<'a> {
             }
 
             AirInstData::Store { slot, value } => {
-                let val = self.lower_inst(*value).value.unwrap();
+                let Some(val) = self.lower_value(*value) else {
+                    return Self::diverged();
+                };
                 self.emit(
                     CfgInstData::Store {
                         slot: *slot,
@@ -522,7 +602,9 @@ impl<'a> CfgBuilder<'a> {
             }
 
             AirInstData::ParamStore { param_slot, value } => {
-                let val = self.lower_inst(*value).value.unwrap();
+                let Some(val) = self.lower_value(*value) else {
+                    return Self::diverged();
+                };
                 self.emit(
                     CfgInstData::ParamStore {
                         param_slot: *param_slot,
@@ -540,7 +622,9 @@ impl<'a> CfgBuilder<'a> {
             AirInstData::Call { name, args } => {
                 let mut arg_vals = Vec::new();
                 for arg in args {
-                    let value = self.lower_inst(arg.value).value.unwrap();
+                    let Some(value) = self.lower_value(arg.value) else {
+                        return Self::diverged();
+                    };
                     arg_vals.push(CfgCallArg {
                         value,
                         mode: Self::convert_arg_mode(arg.mode),
@@ -564,7 +648,10 @@ impl<'a> CfgBuilder<'a> {
             AirInstData::Intrinsic { name, args } => {
                 let mut arg_vals = Vec::new();
                 for arg in args {
-                    arg_vals.push(self.lower_inst(*arg).value.unwrap());
+                    let Some(val) = self.lower_value(*arg) else {
+                        return Self::diverged();
+                    };
+                    arg_vals.push(val);
                 }
                 let value = self.emit(
                     CfgInstData::Intrinsic {
@@ -589,7 +676,9 @@ impl<'a> CfgBuilder<'a> {
                 // The source_order tells us which declaration-order index to evaluate at each step
                 let mut lowered_fields: Vec<Option<CfgValue>> = vec![None; fields.len()];
                 for &decl_idx in source_order {
-                    let lowered = self.lower_inst(fields[decl_idx]).value.unwrap();
+                    let Some(lowered) = self.lower_value(fields[decl_idx]) else {
+                        return Self::diverged();
+                    };
                     lowered_fields[decl_idx] = Some(lowered);
                 }
 
@@ -619,7 +708,9 @@ impl<'a> CfgBuilder<'a> {
                 struct_id,
                 field_index,
             } => {
-                let base_val = self.lower_inst(*base).value.unwrap();
+                let Some(base_val) = self.lower_value(*base) else {
+                    return Self::diverged();
+                };
                 let value = self.emit(
                     CfgInstData::FieldGet {
                         base: base_val,
@@ -641,7 +732,9 @@ impl<'a> CfgBuilder<'a> {
                 field_index,
                 value,
             } => {
-                let val = self.lower_inst(*value).value.unwrap();
+                let Some(val) = self.lower_value(*value) else {
+                    return Self::diverged();
+                };
                 self.emit(
                     CfgInstData::FieldSet {
                         slot: *slot,
@@ -665,7 +758,9 @@ impl<'a> CfgBuilder<'a> {
                 field_index,
                 value,
             } => {
-                let val = self.lower_inst(*value).value.unwrap();
+                let Some(val) = self.lower_value(*value) else {
+                    return Self::diverged();
+                };
                 self.emit(
                     CfgInstData::ParamFieldSet {
                         param_slot: *param_slot,
@@ -794,7 +889,9 @@ impl<'a> CfgBuilder<'a> {
                 then_value,
                 else_value,
             } => {
-                let cond_val = self.lower_inst(*cond).value.unwrap();
+                let Some(cond_val) = self.lower_value(*cond) else {
+                    return Self::diverged();
+                };
 
                 let then_block = self.cfg.new_block();
                 let else_block = self.cfg.new_block();
@@ -933,7 +1030,9 @@ impl<'a> CfgBuilder<'a> {
 
                 // Lower condition in header
                 self.current_block = header_block;
-                let cond_val = self.lower_inst(*cond).value.unwrap();
+                let Some(cond_val) = self.lower_value(*cond) else {
+                    return Self::diverged();
+                };
 
                 // Branch: if true go to body, if false exit
                 self.cfg.set_terminator(
@@ -1040,7 +1139,9 @@ impl<'a> CfgBuilder<'a> {
 
             AirInstData::Match { scrutinee, arms } => {
                 // Lower the scrutinee
-                let scrutinee_val = self.lower_inst(*scrutinee).value.unwrap();
+                let Some(scrutinee_val) = self.lower_value(*scrutinee) else {
+                    return Self::diverged();
+                };
 
                 // Create blocks for each arm and a join block
                 let arm_blocks: Vec<_> = arms.iter().map(|_| self.cfg.new_block()).collect();
@@ -1213,17 +1314,13 @@ impl<'a> CfgBuilder<'a> {
             AirInstData::Ret(value) => {
                 let val = match value {
                     Some(v) => {
-                        let result = self.lower_inst(*v);
-                        if matches!(result.continuation, Continuation::Diverged) {
+                        let Some(val) = self.lower_value(*v) else {
                             // The return value expression itself diverged (e.g., a block
                             // containing an earlier return). The terminator was already set
                             // by the inner diverging expression, so just propagate divergence.
-                            return ExprResult {
-                                value: None,
-                                continuation: Continuation::Diverged,
-                            };
-                        }
-                        Some(result.value.unwrap())
+                            return Self::diverged();
+                        };
+                        Some(val)
                     }
                     None => None,
                 };
@@ -1246,7 +1343,10 @@ impl<'a> CfgBuilder<'a> {
             } => {
                 let mut element_vals = Vec::new();
                 for elem in elements {
-                    element_vals.push(self.lower_inst(*elem).value.unwrap());
+                    let Some(val) = self.lower_value(*elem) else {
+                        return Self::diverged();
+                    };
+                    element_vals.push(val);
                 }
                 let value = self.emit(
                     CfgInstData::ArrayInit {
@@ -1268,8 +1368,12 @@ impl<'a> CfgBuilder<'a> {
                 array_type_id,
                 index,
             } => {
-                let base_val = self.lower_inst(*base).value.unwrap();
-                let index_val = self.lower_inst(*index).value.unwrap();
+                let Some(base_val) = self.lower_value(*base) else {
+                    return Self::diverged();
+                };
+                let Some(index_val) = self.lower_value(*index) else {
+                    return Self::diverged();
+                };
                 let value = self.emit(
                     CfgInstData::IndexGet {
                         base: base_val,
@@ -1291,8 +1395,12 @@ impl<'a> CfgBuilder<'a> {
                 index,
                 value,
             } => {
-                let index_val = self.lower_inst(*index).value.unwrap();
-                let val = self.lower_inst(*value).value.unwrap();
+                let Some(index_val) = self.lower_value(*index) else {
+                    return Self::diverged();
+                };
+                let Some(val) = self.lower_value(*value) else {
+                    return Self::diverged();
+                };
                 self.emit(
                     CfgInstData::IndexSet {
                         slot: *slot,
@@ -1315,8 +1423,12 @@ impl<'a> CfgBuilder<'a> {
                 index,
                 value,
             } => {
-                let index_val = self.lower_inst(*index).value.unwrap();
-                let val = self.lower_inst(*value).value.unwrap();
+                let Some(index_val) = self.lower_value(*index) else {
+                    return Self::diverged();
+                };
+                let Some(val) = self.lower_value(*value) else {
+                    return Self::diverged();
+                };
                 self.emit(
                     CfgInstData::ParamIndexSet {
                         param_slot: *param_slot,
@@ -1355,7 +1467,9 @@ impl<'a> CfgBuilder<'a> {
 
             AirInstData::Drop { value } => {
                 // Lower the value to drop
-                let val = self.lower_inst(*value).value.unwrap();
+                let Some(val) = self.lower_value(*value) else {
+                    return Self::diverged();
+                };
                 let val_ty = self.air.get(*value).ty;
 
                 // Only emit a Drop instruction if the type needs drop.
@@ -1413,6 +1527,26 @@ impl<'a> CfgBuilder<'a> {
     /// Cache a value for an AIR ref.
     fn cache(&mut self, air_ref: AirRef, value: CfgValue) {
         self.value_cache[air_ref.as_u32() as usize] = Some(value);
+    }
+
+    /// Lower an instruction and return its value, or None if it diverged.
+    /// This is a helper for use with the `?` operator when processing operands.
+    /// If the operand diverged, the caller should propagate the divergence.
+    fn lower_value(&mut self, air_ref: AirRef) -> Option<CfgValue> {
+        let result = self.lower_inst(air_ref);
+        if matches!(result.continuation, Continuation::Diverged) {
+            None
+        } else {
+            result.value
+        }
+    }
+
+    /// Create a diverged ExprResult. Used when an operand diverges.
+    fn diverged() -> ExprResult {
+        ExprResult {
+            value: None,
+            continuation: Continuation::Diverged,
+        }
     }
 
     /// Check if a type needs to be dropped (has a destructor).
@@ -1573,5 +1707,27 @@ mod tests {
 
         // && creates extra blocks for short-circuit evaluation
         assert!(cfg.block_count() >= 3);
+    }
+
+    #[test]
+    fn test_diverging_in_if_condition() {
+        // Test that a diverging expression (block with return) in an if condition
+        // is handled correctly without panicking.
+        let cfg = build_cfg("fn main() -> i32 { if { return 1; true } { 2 } else { 3 } }");
+
+        // Should have at least entry block
+        assert!(cfg.block_count() >= 1);
+        // The function should return from the block in the condition
+        let entry = cfg.get_block(cfg.entry);
+        assert!(matches!(entry.terminator, Terminator::Return { .. }));
+    }
+
+    #[test]
+    fn test_diverging_in_loop_body() {
+        // Test that a return inside a loop body is handled correctly.
+        let cfg = build_cfg("fn main() -> i32 { loop { return 42; } }");
+
+        // The function should return from within the loop
+        assert!(cfg.block_count() >= 2);
     }
 }
