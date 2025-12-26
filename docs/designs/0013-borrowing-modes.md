@@ -1,12 +1,12 @@
 ---
 id: 0013
 title: Borrowing Modes
-status: accepted
+status: implemented
 tags: [types, semantics, ownership, borrowing]
-feature-flag: borrowing-modes
+feature-flag:
 created: 2025-12-25
 accepted: 2025-12-25
-implemented:
+implemented: 2025-12-25
 spec-sections: ["6.1"]
 superseded-by:
 ---
@@ -15,7 +15,7 @@ superseded-by:
 
 ## Status
 
-Accepted (behind `affine_types` preview feature)
+Implemented
 
 ## Summary
 

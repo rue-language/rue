@@ -1811,11 +1811,11 @@ impl<'a> CfgLower<'a> {
                             if self.cfg.is_param_inout(index) {
                                 // For inout params, use the pointer we stored earlier
                                 if let Some(ptr_vreg) = self.inout_param_ptrs.get(&index).copied() {
-                                    // Load from pointer + field offset
+                                    // Load from pointer - field offset (negative because stack grows down)
                                     self.mir.push(X86Inst::MovRMIndexed {
                                         dst: Operand::Virtual(vreg),
                                         base: ptr_vreg,
-                                        offset: (total_offset as i32) * 8,
+                                        offset: -((total_offset as i32) * 8),
                                     });
                                 } else {
                                     panic!(
@@ -1888,9 +1888,10 @@ impl<'a> CfgLower<'a> {
                 if self.cfg.is_param_inout(*param_slot) {
                     // For inout params, store through the pointer
                     if let Some(ptr_vreg) = self.inout_param_ptrs.get(param_slot).copied() {
+                        // Negative offset because stack grows down
                         self.mir.push(X86Inst::MovMRIndexed {
                             base: ptr_vreg,
-                            offset: (total_offset as i32) * 8,
+                            offset: -((total_offset as i32) * 8),
                             src: Operand::Virtual(val_vreg),
                         });
                     } else {

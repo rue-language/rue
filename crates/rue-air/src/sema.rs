@@ -199,6 +199,8 @@ impl AnalysisContext<'_> {
 struct FunctionInfo {
     /// Parameter types (in order)
     param_types: Vec<Type>,
+    /// Parameter modes (in order)
+    param_modes: Vec<RirParamMode>,
     /// Return type
     return_type: Type,
 }
@@ -400,7 +402,23 @@ impl<'a> Sema<'a> {
         let mut borrow_vars: HashSet<Symbol> = HashSet::new();
 
         for arg in args {
-            if let Some(var_symbol) = self.extract_root_variable(arg.value) {
+            let maybe_var_symbol = self.extract_root_variable(arg.value);
+
+            // Check that inout/borrow arguments are lvalues
+            if arg.is_inout() && maybe_var_symbol.is_none() {
+                return Err(CompileError::new(
+                    ErrorKind::InoutNonLvalue,
+                    self.rir.get(arg.value).span,
+                ));
+            }
+            if arg.is_borrow() && maybe_var_symbol.is_none() {
+                return Err(CompileError::new(
+                    ErrorKind::BorrowNonLvalue,
+                    self.rir.get(arg.value).span,
+                ));
+            }
+
+            if let Some(var_symbol) = maybe_var_symbol {
                 if arg.is_inout() {
                     // Check for duplicate inout access
                     if !inout_vars.insert(var_symbol) {
@@ -446,9 +464,9 @@ impl<'a> Sema<'a> {
     ) -> CompileResult<Vec<AirCallArg>> {
         let mut air_args = Vec::new();
         for arg in args.iter() {
-            // For inout arguments, extract the variable name before analysis
-            // so we can "unmove" it after - inout is a borrow, not a move
-            let inout_var = if arg.is_inout() {
+            // For inout/borrow arguments, extract the variable name before analysis
+            // so we can "unmove" it after - these are borrows, not moves
+            let borrowed_var = if arg.is_inout() || arg.is_borrow() {
                 self.extract_root_variable(arg.value)
             } else {
                 None
@@ -456,9 +474,9 @@ impl<'a> Sema<'a> {
 
             let arg_result = self.analyze_inst(air, arg.value, ctx)?;
 
-            // If this was an inout argument, the variable shouldn't be marked as moved
-            // because inout is a mutable borrow - the value stays valid after the call
-            if let Some(var_symbol) = inout_var {
+            // If this was an inout/borrow argument, the variable shouldn't be marked as moved
+            // because these are borrows - the value stays valid after the call
+            if let Some(var_symbol) = borrowed_var {
                 ctx.moved_vars.remove(&var_symbol);
             }
 
@@ -895,11 +913,13 @@ impl<'a> Sema<'a> {
                     .iter()
                     .map(|p| self.resolve_type(p.ty, inst.span))
                     .collect::<CompileResult<Vec<_>>>()?;
+                let param_modes: Vec<RirParamMode> = params.iter().map(|p| p.mode).collect();
 
                 self.functions.insert(
                     *name,
                     FunctionInfo {
                         param_types,
+                        param_modes,
                         return_type: ret_type,
                     },
                 );
@@ -1006,9 +1026,14 @@ impl<'a> Sema<'a> {
                     mode: *mode,
                 },
             );
-            let slot_count = self.abi_slot_count(*ptype);
-            // Both inout and borrow are passed by reference
+            // Both inout and borrow are passed by reference (as a pointer = 1 slot)
             let is_by_ref = *mode != RirParamMode::Normal;
+            let slot_count = if is_by_ref {
+                // By-ref parameters are always 1 slot (pointer)
+                1
+            } else {
+                self.abi_slot_count(*ptype)
+            };
             for _ in 0..slot_count {
                 param_modes.push(is_by_ref);
             }
@@ -2519,7 +2544,33 @@ impl<'a> Sema<'a> {
 
                 // Clone the data we need before mutable borrow
                 let param_types = fn_info.param_types.clone();
+                let param_modes = fn_info.param_modes.clone();
                 let return_type = fn_info.return_type;
+
+                // Check that call-site argument modes match function parameter modes
+                for (i, (arg, expected_mode)) in args.iter().zip(param_modes.iter()).enumerate() {
+                    match expected_mode {
+                        RirParamMode::Inout => {
+                            if arg.mode != RirArgMode::Inout {
+                                return Err(CompileError::new(
+                                    ErrorKind::InoutKeywordMissing,
+                                    self.rir.get(args[i].value).span,
+                                ));
+                            }
+                        }
+                        RirParamMode::Borrow => {
+                            if arg.mode != RirArgMode::Borrow {
+                                return Err(CompileError::new(
+                                    ErrorKind::BorrowKeywordMissing,
+                                    self.rir.get(args[i].value).span,
+                                ));
+                            }
+                        }
+                        RirParamMode::Normal => {
+                            // Normal params accept any mode (for now)
+                        }
+                    }
+                }
 
                 // Analyze arguments (move checking happens in analyze_inst for VarRef)
                 let air_args = self.analyze_call_args(air, args, ctx)?;

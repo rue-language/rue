@@ -356,6 +356,10 @@ pub enum ErrorKind {
     BorrowInoutConflict {
         variable: String,
     },
+    /// Argument to inout parameter is missing `inout` keyword at call site
+    InoutKeywordMissing,
+    /// Argument to borrow parameter is missing `borrow` keyword at call site
+    BorrowKeywordMissing,
 
     // Control flow errors
     BreakOutsideLoop,
@@ -723,6 +727,12 @@ impl fmt::Display for ErrorKind {
                     "cannot borrow '{}' while it is mutably borrowed (inout)",
                     variable
                 )
+            }
+            ErrorKind::InoutKeywordMissing => {
+                write!(f, "argument to inout parameter must use 'inout' keyword")
+            }
+            ErrorKind::BorrowKeywordMissing => {
+                write!(f, "argument to borrow parameter must use 'borrow' keyword")
             }
             ErrorKind::BreakOutsideLoop => write!(f, "'break' outside of loop"),
             ErrorKind::ContinueOutsideLoop => write!(f, "'continue' outside of loop"),

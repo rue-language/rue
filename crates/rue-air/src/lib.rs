@@ -27,3 +27,12 @@ pub use sema::{AnalyzedFunction, Sema, SemaOutput};
 pub use types::{
     ArrayTypeDef, ArrayTypeId, EnumDef, EnumId, StructDef, StructField, StructId, Type,
 };
+
+/// Sentinel value used to encode parameter slots in AIR instructions.
+///
+/// When a slot value is >= this marker, it indicates a parameter slot rather than
+/// a local variable slot. The actual parameter index is `slot - PARAM_SLOT_MARKER`.
+///
+/// This allows sema to emit Store/Load instructions for parameters without knowing
+/// the total number of locals at analysis time.
+pub const PARAM_SLOT_MARKER: u32 = 0x4000_0000;

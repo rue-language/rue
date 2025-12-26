@@ -95,14 +95,12 @@ compile_fail = true
 [[case]]
 name = "keyword_inout_reserved"
 spec = ["2.4:1", "2.4:2"]
-preview = "affine_types"
 source = "fn main() -> i32 { let inout = 1; 0 }"
 compile_fail = true
 
 [[case]]
 name = "keyword_borrow_reserved"
 spec = ["2.4:1", "2.4:2"]
-preview = "affine_types"
 source = "fn main() -> i32 { let borrow = 1; 0 }"
 compile_fail = true
 
