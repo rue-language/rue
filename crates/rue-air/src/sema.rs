@@ -12,6 +12,7 @@ use crate::inference::{
 use crate::inst::{Air, AirArgMode, AirCallArg, AirInst, AirInstData, AirPattern, AirRef};
 use crate::types::{
     ArrayTypeDef, ArrayTypeId, EnumDef, EnumId, StructDef, StructField, StructId, Type,
+    parse_array_type_syntax,
 };
 use rue_error::{CompileError, CompileResult, CompileWarning, ErrorKind, OptionExt, WarningKind};
 use rue_intern::{Interner, Symbol};
@@ -3732,7 +3733,7 @@ impl<'a> Sema<'a> {
         } else {
             // Check for array type syntax: [T; N]
             let type_name = self.interner.get(type_sym);
-            if let Some((element_type, length)) = Self::parse_array_type_syntax(type_name) {
+            if let Some((element_type, length)) = parse_array_type_syntax(type_name) {
                 // Resolve the element type first
                 let element_sym = self.interner.intern(&element_type);
                 let element_ty = self.resolve_type(element_sym, span)?;
@@ -3746,37 +3747,6 @@ impl<'a> Sema<'a> {
                 ))
             }
         }
-    }
-
-    /// Parse array type syntax "[T; N]" and return (element_type_str, length).
-    fn parse_array_type_syntax(type_name: &str) -> Option<(String, u64)> {
-        let type_name = type_name.trim();
-        if !type_name.starts_with('[') || !type_name.ends_with(']') {
-            return None;
-        }
-
-        // Remove the outer brackets
-        let inner = &type_name[1..type_name.len() - 1];
-
-        // Find the semicolon separator - need to handle nested arrays
-        // We look for the last `;` that's at nesting level 0
-        let mut bracket_depth = 0;
-        let mut semi_pos = None;
-        for (i, ch) in inner.char_indices() {
-            match ch {
-                '[' => bracket_depth += 1,
-                ']' => bracket_depth -= 1,
-                ';' if bracket_depth == 0 => semi_pos = Some(i),
-                _ => {}
-            }
-        }
-
-        let semi_pos = semi_pos?;
-        let element_type = inner[..semi_pos].trim().to_string();
-        let length_str = inner[semi_pos + 1..].trim();
-        let length: u64 = length_str.parse().ok()?;
-
-        Some((element_type, length))
     }
 
     /// Get or create an array type for the given element type and length.

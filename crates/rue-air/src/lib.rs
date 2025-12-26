@@ -26,6 +26,7 @@ pub use inst::{
 pub use sema::{AnalyzedFunction, Sema, SemaOutput};
 pub use types::{
     ArrayTypeDef, ArrayTypeId, EnumDef, EnumId, StructDef, StructField, StructId, Type,
+    parse_array_type_syntax,
 };
 
 /// Sentinel value used to encode parameter slots in AIR instructions.

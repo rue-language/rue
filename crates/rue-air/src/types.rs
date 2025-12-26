@@ -351,6 +351,40 @@ impl std::fmt::Display for Type {
     }
 }
 
+/// Parse array type syntax "[T; N]" and return (element_type_str, length).
+///
+/// This handles nested arrays correctly by tracking bracket depth.
+/// For example, `[[i32; 3]; 4]` returns `("[i32; 3]", 4)`.
+pub fn parse_array_type_syntax(type_name: &str) -> Option<(String, u64)> {
+    let type_name = type_name.trim();
+    if !type_name.starts_with('[') || !type_name.ends_with(']') {
+        return None;
+    }
+
+    // Remove the outer brackets
+    let inner = &type_name[1..type_name.len() - 1];
+
+    // Find the semicolon separator - need to handle nested arrays
+    // We look for the last `;` that's at nesting level 0
+    let mut bracket_depth = 0;
+    let mut semi_pos = None;
+    for (i, ch) in inner.char_indices() {
+        match ch {
+            '[' => bracket_depth += 1,
+            ']' => bracket_depth -= 1,
+            ';' if bracket_depth == 0 => semi_pos = Some(i),
+            _ => {}
+        }
+    }
+
+    let semi_pos = semi_pos?;
+    let element_type = inner[..semi_pos].trim().to_string();
+    let length_str = inner[semi_pos + 1..].trim();
+    let length: u64 = length_str.parse().ok()?;
+
+    Some((element_type, length))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
