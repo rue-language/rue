@@ -38,8 +38,6 @@ use std::fmt;
 pub enum PreviewFeature {
     /// Mutable strings with heap allocation and concatenation (ADR-019).
     MutableStrings,
-    /// Hindley-Milner type inference (ADR-0007).
-    HmInference,
 }
 
 /// Error returned when parsing a preview feature name fails.
@@ -59,7 +57,6 @@ impl PreviewFeature {
     pub fn name(&self) -> &'static str {
         match self {
             PreviewFeature::MutableStrings => "mutable_strings",
-            PreviewFeature::HmInference => "hm_inference",
         }
     }
 
@@ -67,13 +64,12 @@ impl PreviewFeature {
     pub fn adr(&self) -> &'static str {
         match self {
             PreviewFeature::MutableStrings => "ADR-019",
-            PreviewFeature::HmInference => "ADR-0007",
         }
     }
 
     /// Get all available preview features.
     pub fn all() -> &'static [PreviewFeature] {
-        &[PreviewFeature::MutableStrings, PreviewFeature::HmInference]
+        &[PreviewFeature::MutableStrings]
     }
 
     /// Get a comma-separated list of all feature names (for help text).
@@ -92,7 +88,6 @@ impl std::str::FromStr for PreviewFeature {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
             "mutable_strings" => Ok(PreviewFeature::MutableStrings),
-            "hm_inference" => Ok(PreviewFeature::HmInference),
             _ => Err(ParsePreviewFeatureError(s.to_string())),
         }
     }
