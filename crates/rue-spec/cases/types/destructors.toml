@@ -11,7 +11,6 @@ description = "Drop semantics and destructor behavior."
 [[case]]
 name = "value_dropped_at_scope_exit"
 spec = ["3.9:1", "3.9:2"]
-preview = "destructors"
 description = "Values are dropped when their binding goes out of scope"
 source = """
 struct Data { value: i32 }
@@ -26,7 +25,6 @@ exit_code = 42
 [[case]]
 name = "moved_value_not_dropped_at_original_site"
 spec = ["3.9:2", "3.9:3"]
-preview = "destructors"
 description = "Moved values are not dropped at their original binding"
 source = """
 struct Data { value: i32 }
@@ -47,7 +45,6 @@ exit_code = 42
 [[case]]
 name = "drop_order_reverse_declaration"
 spec = ["3.9:4", "3.9:5", "3.9:6"]
-preview = "destructors"
 description = "Multiple values dropped in reverse declaration order (LIFO)"
 source = """
 struct Data { value: i32 }
@@ -67,7 +64,6 @@ exit_code = 3
 [[case]]
 name = "primitives_trivially_droppable"
 spec = ["3.9:7", "3.9:8"]
-preview = "destructors"
 description = "Primitive types are trivially droppable (no destructor)"
 source = """
 fn main() -> i32 {
@@ -82,7 +78,6 @@ exit_code = 42
 [[case]]
 name = "struct_with_trivial_fields_is_trivial"
 spec = ["3.9:9", "3.9:10"]
-preview = "destructors"
 description = "Struct with only trivially droppable fields is trivially droppable"
 source = """
 struct Point { x: i32, y: i32 }
@@ -97,7 +92,6 @@ exit_code = 30
 [[case]]
 name = "enum_trivially_droppable"
 spec = ["3.9:8"]
-preview = "destructors"
 description = "Enum types are trivially droppable"
 source = """
 enum Color { Red, Green, Blue }
@@ -116,7 +110,6 @@ exit_code = 2
 [[case]]
 name = "array_of_trivial_is_trivial"
 spec = ["3.9:8"]
-preview = "destructors"
 description = "Arrays of trivially droppable types are trivially droppable"
 source = """
 fn main() -> i32 {
@@ -133,7 +126,6 @@ exit_code = 6
 [[case]]
 name = "drop_at_block_scope_end"
 spec = ["3.9:15"]
-preview = "destructors"
 description = "Values are dropped at end of block scope"
 source = """
 struct Data { value: i32 }
@@ -151,7 +143,6 @@ exit_code = 42
 [[case]]
 name = "drop_before_early_return"
 spec = ["3.9:15", "3.9:17"]
-preview = "destructors"
 description = "Values are dropped before early return"
 source = """
 struct Data { value: i32 }
@@ -173,7 +164,6 @@ exit_code = 42
 [[case]]
 name = "drop_in_each_branch"
 spec = ["3.9:16", "3.9:17"]
-preview = "destructors"
 description = "Each branch independently drops its bindings"
 source = """
 struct Data { value: i32 }
@@ -205,7 +195,6 @@ exit_code = 3
 [[case]]
 name = "type_with_destructor"
 spec = ["3.9:11"]
-preview = "destructors"
 description = "A type has a destructor if dropping requires cleanup"
 skip = true
 source = """
@@ -217,7 +206,6 @@ exit_code = 0
 [[case]]
 name = "struct_with_destructor_field"
 spec = ["3.9:12"]
-preview = "destructors"
 description = "Struct has destructor if any field has destructor"
 skip = true
 source = """
@@ -229,7 +217,6 @@ exit_code = 0
 [[case]]
 name = "field_drop_order"
 spec = ["3.9:13"]
-preview = "destructors"
 description = "Fields dropped in declaration order"
 skip = true
 source = """
@@ -247,7 +234,6 @@ exit_code = 0
 
 [[case]]
 name = "cfg_simple_scope_storage"
-preview = "destructors"
 description = "CFG shows StorageLive at let binding, StorageDead at scope exit"
 source = """
 fn main() -> i32 {
@@ -270,7 +256,6 @@ cfg main (return_type: i32) {
 
 [[case]]
 name = "cfg_multiple_variables_drop_order"
-preview = "destructors"
 description = "CFG shows StorageDead in reverse declaration order (LIFO)"
 source = """
 fn main() -> i32 {
@@ -300,7 +285,6 @@ cfg main (return_type: i32) {
 
 [[case]]
 name = "cfg_early_return_drops"
-preview = "destructors"
 description = "CFG shows StorageDead before early return"
 source = """
 fn foo(cond: bool) -> i32 {
@@ -349,7 +333,6 @@ cfg foo (return_type: i32) {
 [[case]]
 name = "codegen_nontrivial_drop_call"
 spec = ["3.9:18"]
-preview = "destructors"
 description = "Non-trivially droppable types generate destructor calls"
 skip = true
 source = """
@@ -362,7 +345,6 @@ exit_code = 0
 [[case]]
 name = "codegen_trivial_no_drop"
 spec = ["3.9:19", "3.9:20"]
-preview = "destructors"
 description = "Trivially droppable types do not generate drop instructions in CFG"
 source = """
 fn main() -> i32 {
@@ -398,7 +380,6 @@ cfg main (return_type: i32) {
 [[case]]
 name = "codegen_trivial_struct_no_drop"
 spec = ["3.9:9", "3.9:19", "3.9:20"]
-preview = "destructors"
 description = "Structs with only trivially droppable fields are trivially droppable"
 source = """
 struct Point { x: i32, y: i32 }
@@ -417,7 +398,6 @@ exit_code = 30
 [[case]]
 name = "user_defined_destructor_syntax"
 spec = ["3.9:21", "3.9:22"]
-preview = "destructors"
 description = "Basic drop fn syntax parses correctly"
 source = """
 struct Data { value: i32 }
@@ -436,7 +416,6 @@ exit_code = 42
 [[case]]
 name = "user_defined_destructor_with_field_access"
 spec = ["3.9:21", "3.9:22", "3.9:26"]
-preview = "destructors"
 description = "User-defined destructor can access fields via self"
 source = """
 struct Counter { value: i32 }
@@ -455,7 +434,6 @@ exit_code = 42
 [[case]]
 name = "user_defined_destructor_runs_at_scope_exit"
 spec = ["3.9:25"]
-preview = "destructors"
 skip = true
 description = "User-defined destructor runs when value goes out of scope"
 source = """
@@ -468,7 +446,6 @@ exit_code = 0
 [[case]]
 name = "duplicate_destructor_error"
 spec = ["3.9:23"]
-preview = "destructors"
 description = "Duplicate destructors for the same type produce an error"
 source = """
 struct Data { value: i32 }
@@ -485,7 +462,6 @@ error_contains = "duplicate destructor"
 [[case]]
 name = "destructor_unknown_type_error"
 spec = ["3.9:24"]
-preview = "destructors"
 description = "Destructor for unknown type produces an error"
 source = """
 drop fn UnknownType(self) {}
@@ -498,7 +474,6 @@ error_contains = "unknown type"
 [[case]]
 name = "destructor_for_primitive_error"
 spec = ["3.9:24"]
-preview = "destructors"
 description = "Destructor for primitive type produces an error"
 skip = true
 source = """
@@ -511,7 +486,6 @@ compile_fail = true
 [[case]]
 name = "destructor_must_be_at_top_level"
 spec = ["3.9:22"]
-preview = "destructors"
 skip = true
 description = "Destructor declared inside impl block is an error"
 source = """
