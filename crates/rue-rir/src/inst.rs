@@ -145,6 +145,13 @@ impl Rir {
 
     /// Add an instruction and return its reference.
     pub fn add_inst(&mut self, inst: Inst) -> InstRef {
+        // Debug assertion for u32 overflow - catches pathological inputs during development
+        debug_assert!(
+            self.instructions.len() < u32::MAX as usize,
+            "RIR instruction count overflow: {} instructions exceeds u32::MAX - 1",
+            self.instructions.len()
+        );
+
         let index = self.instructions.len() as u32;
         self.instructions.push(inst);
         InstRef::from_raw(index)
@@ -184,6 +191,19 @@ impl Rir {
 
     /// Add extra data and return the start index.
     pub fn add_extra(&mut self, data: &[u32]) -> u32 {
+        // Debug assertions for u32 overflow - catches pathological inputs during development
+        debug_assert!(
+            self.extra.len() <= u32::MAX as usize,
+            "RIR extra data overflow: {} entries exceeds u32::MAX",
+            self.extra.len()
+        );
+        debug_assert!(
+            self.extra.len().saturating_add(data.len()) <= u32::MAX as usize,
+            "RIR extra data would overflow: {} + {} exceeds u32::MAX",
+            self.extra.len(),
+            data.len()
+        );
+
         let start = self.extra.len() as u32;
         self.extra.extend_from_slice(data);
         start
