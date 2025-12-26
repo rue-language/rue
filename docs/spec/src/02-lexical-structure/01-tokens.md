@@ -66,11 +66,15 @@ escape_sequence = "\\" | "\"" ;
 
 String literals support escape sequences: `\\` for a backslash and `\"` for a double quote.
 
-{{ rule(id="2.1:8", cat="normative") }}
+{{ rule(id="2.1:8", cat="legality-rule") }}
 
 An invalid escape sequence in a string literal is a compile-time error.
 
-{{ rule(id="2.1:9") }}
+{{ rule(id="2.1:9", cat="legality-rule") }}
+
+An unterminated string literal (reaching end-of-file or end-of-line without a closing quote) is a compile-time error.
+
+{{ rule(id="2.1:10") }}
 
 ```rue
 fn main() -> i32 {
@@ -83,7 +87,7 @@ fn main() -> i32 {
 
 ## Identifiers
 
-{{ rule(id="2.1:10", cat="normative") }}
+{{ rule(id="2.1:11", cat="normative") }}
 
 An identifier starts with a letter or underscore, followed by any number of letters, digits, or underscores.
 
@@ -92,25 +96,25 @@ identifier = (letter | "_") { letter | digit | "_" } ;
 letter = "a" | ... | "z" | "A" | ... | "Z" ;
 ```
 
-{{ rule(id="2.1:11", cat="normative") }}
+{{ rule(id="2.1:12", cat="normative") }}
 
 Identifiers cannot be keywords.
 
 ## Underscore Identifier
 
-{{ rule(id="2.1:12", cat="normative") }}
+{{ rule(id="2.1:13", cat="normative") }}
 
 The identifier `_` (single underscore) is a *wildcard* that discards its value without creating a binding. When used in a let statement, the initializer expression is evaluated for its side effects, but no variable is created and no storage is allocated.
 
-{{ rule(id="2.1:13", cat="normative") }}
+{{ rule(id="2.1:14", cat="normative") }}
 
 A reference to `_` as an expression is a compile-time error. The wildcard identifier cannot be used to retrieve a previously discarded value.
 
-{{ rule(id="2.1:14", cat="normative") }}
+{{ rule(id="2.1:15", cat="normative") }}
 
 Multiple occurrences of `_` are permitted in the same scope. Each occurrence independently discards its value.
 
-{{ rule(id="2.1:15") }}
+{{ rule(id="2.1:16") }}
 
 ```rue
 fn main() -> i32 {
@@ -122,11 +126,11 @@ fn main() -> i32 {
 
 ## Underscore-Prefixed Identifiers
 
-{{ rule(id="2.1:16", cat="normative") }}
+{{ rule(id="2.1:17", cat="normative") }}
 
 An identifier that begins with an underscore followed by one or more characters (e.g., `_unused`, `_x`) is a normal identifier that creates a binding. Such identifiers suppress unused variable warnings but can otherwise be used like any other identifier.
 
-{{ rule(id="2.1:17") }}
+{{ rule(id="2.1:18") }}
 
 ```rue
 fn main() -> i32 {

@@ -44,12 +44,99 @@ fn main() -> i32 {
 exit_code = 42
 
 # =============================================================================
+# String Literals (syntax and legality)
+# =============================================================================
+
+[[case]]
+name = "string_literal_basic"
+spec = ["2.1:6"]
+source = """
+fn main() -> i32 {
+    let _s = "hello world";
+    0
+}
+"""
+exit_code = 0
+
+[[case]]
+name = "string_literal_escape_quote"
+spec = ["2.1:6", "2.1:7"]
+source = '''
+fn main() -> i32 {
+    let _s = "with \"quotes\"";
+    0
+}
+'''
+exit_code = 0
+
+[[case]]
+name = "string_literal_escape_backslash"
+spec = ["2.1:6", "2.1:7"]
+source = """
+fn main() -> i32 {
+    let _s = "with \\\\ backslash";
+    0
+}
+"""
+exit_code = 0
+
+[[case]]
+name = "string_literal_empty"
+spec = ["2.1:6"]
+source = '''
+fn main() -> i32 {
+    let _s = "";
+    0
+}
+'''
+exit_code = 0
+
+[[case]]
+name = "string_literal_invalid_escape"
+spec = ["2.1:8"]
+source = '''
+fn main() -> i32 {
+    let _s = "bad \n escape";
+    0
+}
+'''
+compile_fail = true
+error_contains = "invalid escape"
+
+[[case]]
+name = "string_literal_unterminated_eof"
+spec = ["2.1:9"]
+source = '''fn main() -> i32 { let _s = "hello'''
+compile_fail = true
+error_contains = "unterminated string"
+
+[[case]]
+name = "string_literal_unterminated_newline"
+spec = ["2.1:9"]
+source = """
+fn main() -> i32 {
+    let _s = "hello
+world";
+    0
+}
+"""
+compile_fail = true
+error_contains = "unterminated string"
+
+[[case]]
+name = "string_literal_unterminated_just_quote"
+spec = ["2.1:9"]
+source = 'fn main() -> i32 { "'
+compile_fail = true
+error_contains = "unterminated string"
+
+# =============================================================================
 # Identifiers (syntax and legality)
 # =============================================================================
 
 [[case]]
 name = "identifier_letter_start"
-spec = ["2.1:10"]
+spec = ["2.1:11"]
 source = """
 fn main() -> i32 {
     let x = 42;
@@ -60,7 +147,7 @@ exit_code = 42
 
 [[case]]
 name = "identifier_underscore_start"
-spec = ["2.1:10"]
+spec = ["2.1:11"]
 source = """
 fn main() -> i32 {
     let _x = 42;
@@ -71,7 +158,7 @@ exit_code = 42
 
 [[case]]
 name = "identifier_with_digits"
-spec = ["2.1:10"]
+spec = ["2.1:11"]
 source = """
 fn main() -> i32 {
     let x1 = 42;
@@ -82,7 +169,7 @@ exit_code = 42
 
 [[case]]
 name = "identifier_mixed"
-spec = ["2.1:10"]
+spec = ["2.1:11"]
 source = """
 fn main() -> i32 {
     let my_var_123 = 42;
@@ -93,7 +180,7 @@ exit_code = 42
 
 [[case]]
 name = "identifier_uppercase"
-spec = ["2.1:10"]
+spec = ["2.1:11"]
 source = """
 fn main() -> i32 {
     let MyVar = 42;
@@ -104,25 +191,25 @@ exit_code = 42
 
 [[case]]
 name = "identifier_cannot_be_keyword_fn"
-spec = ["2.1:11"]
+spec = ["2.1:12"]
 source = "fn main() -> i32 { let fn = 1; fn }"
 compile_fail = true
 
 [[case]]
 name = "identifier_cannot_be_keyword_let"
-spec = ["2.1:11"]
+spec = ["2.1:12"]
 source = "fn main() -> i32 { let let = 1; 0 }"
 compile_fail = true
 
 [[case]]
 name = "identifier_cannot_be_keyword_if"
-spec = ["2.1:11"]
+spec = ["2.1:12"]
 source = "fn main() -> i32 { let if = 1; 0 }"
 compile_fail = true
 
 [[case]]
 name = "identifier_unused_underscore"
-spec = ["2.1:12"]
+spec = ["2.1:13"]
 source = """
 fn main() -> i32 {
     let _ = 100;
@@ -133,7 +220,7 @@ exit_code = 42
 
 [[case]]
 name = "underscore_multiple_bindings"
-spec = ["2.1:14"]
+spec = ["2.1:15"]
 source = """
 fn main() -> i32 {
     let _ = 42;
@@ -146,7 +233,7 @@ exit_code = 0
 
 [[case]]
 name = "underscore_cannot_be_referenced"
-spec = ["2.1:13"]
+spec = ["2.1:14"]
 source = """
 fn main() -> i32 {
     let _ = 42;
@@ -158,7 +245,7 @@ error_contains = "found '_'"
 
 [[case]]
 name = "underscore_prefixed_is_normal_variable"
-spec = ["2.1:16"]
+spec = ["2.1:17"]
 source = """
 fn main() -> i32 {
     let _unused = 42;

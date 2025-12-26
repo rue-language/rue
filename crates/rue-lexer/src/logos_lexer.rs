@@ -17,28 +17,67 @@ pub enum LexError {
     UnterminatedString,
 }
 
-/// Process a string literal, handling escape sequences.
-/// Input includes the surrounding quotes.
-fn process_string_literal(lex: &mut logos::Lexer<LogosTokenKind>) -> Result<String, LexError> {
-    let slice = lex.slice();
-    // Remove surrounding quotes
-    let inner = &slice[1..slice.len() - 1];
-
-    let mut result = String::with_capacity(inner.len());
-    let mut chars = inner.chars().peekable();
+/// Process a string literal starting from an opening quote.
+/// This manually scans for the string content and closing quote,
+/// enabling detection of unterminated strings.
+fn process_string_from_quote(lex: &mut logos::Lexer<LogosTokenKind>) -> Result<String, LexError> {
+    // At this point we've matched just the opening quote "
+    // We need to scan remainder for string content and closing quote
+    let remainder = lex.remainder();
+    let mut chars = remainder.chars();
+    let mut consumed = 0;
+    let mut result = String::new();
+    let mut found_close = false;
 
     while let Some(c) = chars.next() {
-        if c == '\\' {
+        if c == '"' {
+            // Found closing quote
+            consumed += 1;
+            found_close = true;
+            break;
+        } else if c == '\\' {
+            // Escape sequence
+            consumed += c.len_utf8();
             match chars.next() {
-                Some('\\') => result.push('\\'),
-                Some('"') => result.push('"'),
-                Some(_) | None => return Err(LexError::InvalidStringEscape),
+                Some('\\') => {
+                    consumed += 1;
+                    result.push('\\');
+                }
+                Some('"') => {
+                    consumed += 1;
+                    result.push('"');
+                }
+                Some(other) => {
+                    // Invalid escape - consume the char to get better error position
+                    consumed += other.len_utf8();
+                    lex.bump(consumed);
+                    return Err(LexError::InvalidStringEscape);
+                }
+                None => {
+                    // Backslash at end of input
+                    lex.bump(consumed);
+                    return Err(LexError::UnterminatedString);
+                }
             }
+        } else if c == '\n' {
+            // Newline in string - string is unterminated at this line
+            // Don't consume the newline so error span points to string start
+            lex.bump(consumed);
+            return Err(LexError::UnterminatedString);
         } else {
+            consumed += c.len_utf8();
             result.push(c);
         }
     }
 
+    if !found_close {
+        // Reached end of input without closing quote
+        lex.bump(consumed);
+        return Err(LexError::UnterminatedString);
+    }
+
+    // Advance past the string content and closing quote
+    lex.bump(consumed);
     Ok(result)
 }
 
@@ -118,8 +157,9 @@ pub enum LogosTokenKind {
     #[regex(r"[0-9]+", |lex| lex.slice().parse::<u64>().map_err(|_| LexError::InvalidInteger))]
     Int(u64),
 
-    // String literals
-    #[regex(r#""([^"\\]|\\.)*""#, process_string_literal)]
+    // String literals - match opening quote and process content manually
+    // This allows detection of unterminated strings
+    #[token("\"", process_string_from_quote)]
     String(String),
 
     // Identifiers (lower priority than keywords)
@@ -608,5 +648,52 @@ mod tests {
         assert!(matches!(tokens[1].kind, TokenKind::Ident(ref s) if s == "i64ptr"));
         assert!(matches!(tokens[2].kind, TokenKind::Ident(ref s) if s == "boolish"));
         assert!(matches!(tokens[3].kind, TokenKind::Ident(ref s) if s == "u8_data"));
+    }
+
+    #[test]
+    fn test_logos_unterminated_string() {
+        // String without closing quote at end of input
+        let mut lexer = LogosLexer::new(r#""hello"#);
+        let result = lexer.tokenize();
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(matches!(err.kind, ErrorKind::UnterminatedString));
+
+        // String without closing quote followed by newline
+        let mut lexer = LogosLexer::new("\"hello\nworld");
+        let result = lexer.tokenize();
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(matches!(err.kind, ErrorKind::UnterminatedString));
+
+        // Just an opening quote
+        let mut lexer = LogosLexer::new("\"");
+        let result = lexer.tokenize();
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(matches!(err.kind, ErrorKind::UnterminatedString));
+    }
+
+    #[test]
+    fn test_logos_valid_strings() {
+        // Valid complete string
+        let mut lexer = LogosLexer::new(r#""hello""#);
+        let tokens = lexer.tokenize().unwrap();
+        assert!(matches!(tokens[0].kind, TokenKind::String(ref s) if s == "hello"));
+
+        // Empty string
+        let mut lexer = LogosLexer::new(r#""""#);
+        let tokens = lexer.tokenize().unwrap();
+        assert!(matches!(tokens[0].kind, TokenKind::String(ref s) if s.is_empty()));
+
+        // String with escaped quote
+        let mut lexer = LogosLexer::new(r#""hello\"world""#);
+        let tokens = lexer.tokenize().unwrap();
+        assert!(matches!(tokens[0].kind, TokenKind::String(ref s) if s == "hello\"world"));
+
+        // String with escaped backslash
+        let mut lexer = LogosLexer::new(r#""hello\\world""#);
+        let tokens = lexer.tokenize().unwrap();
+        assert!(matches!(tokens[0].kind, TokenKind::String(ref s) if s == "hello\\world"));
     }
 }
