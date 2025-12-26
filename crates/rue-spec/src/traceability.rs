@@ -7,6 +7,19 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::Path;
 
+/// Truncate a string to at most `max_chars` characters, appending "..." if truncated.
+/// This is safe for UTF-8 strings as it counts characters, not bytes.
+fn truncate_with_ellipsis(s: &str, max_chars: usize) -> String {
+    let char_count = s.chars().count();
+    if char_count <= max_chars {
+        s.to_string()
+    } else {
+        // Take max_chars - 3 characters to leave room for "..."
+        let truncated: String = s.chars().take(max_chars.saturating_sub(3)).collect();
+        format!("{}...", truncated)
+    }
+}
+
 /// A paragraph from the specification.
 #[derive(Debug, Clone)]
 pub struct SpecParagraph {
@@ -211,12 +224,7 @@ impl TraceabilityReport {
             println!("Uncovered normative paragraphs ({}):", normative_uncovered);
             for id in uncovered_normative {
                 if let Some(para) = self.paragraphs.get(id) {
-                    // Truncate text to 60 chars
-                    let text = if para.text.len() > 60 {
-                        format!("{}...", &para.text[..57])
-                    } else {
-                        para.text.clone()
-                    };
+                    let text = truncate_with_ellipsis(&para.text, 60);
                     println!("  {} [{}]: {}", id, para.category, text);
                 }
             }
@@ -256,11 +264,7 @@ impl TraceabilityReport {
                 let test_count = tests.map(|t| t.len()).unwrap_or(0);
 
                 let status = if test_count > 0 { "✓" } else { "⚠" };
-                let text = if para.text.len() > 50 {
-                    format!("{}...", &para.text[..47])
-                } else {
-                    para.text.clone()
-                };
+                let text = truncate_with_ellipsis(&para.text, 50);
 
                 println!("  {} {}  [{}]", status, para.id, para.category);
                 println!("    {}", text);
@@ -646,5 +650,45 @@ fn main() { }
         assert_eq!(report.covered_count(), 1);
         assert_eq!(report.uncovered_count(), 1);
         assert_eq!(report.coverage_percentage(), 50.0);
+    }
+
+    #[test]
+    fn test_truncate_with_ellipsis_ascii() {
+        // Short string - no truncation
+        assert_eq!(truncate_with_ellipsis("hello", 10), "hello");
+
+        // Exact length - no truncation
+        assert_eq!(truncate_with_ellipsis("hello", 5), "hello");
+
+        // Needs truncation
+        assert_eq!(truncate_with_ellipsis("hello world", 8), "hello...");
+    }
+
+    #[test]
+    fn test_truncate_with_ellipsis_utf8() {
+        // Japanese characters (3 bytes each in UTF-8)
+        let japanese = "こんにちは世界"; // 7 characters
+
+        // No truncation needed
+        assert_eq!(truncate_with_ellipsis(japanese, 10), japanese);
+
+        // Truncate at character boundary (not byte boundary)
+        let truncated = truncate_with_ellipsis(japanese, 6);
+        assert_eq!(truncated, "こんに..."); // 3 chars + "..."
+
+        // Mixed ASCII and UTF-8: "Hello世界" is 7 characters
+        let mixed = "Hello世界";
+        assert_eq!(truncate_with_ellipsis(mixed, 10), mixed);
+        assert_eq!(truncate_with_ellipsis(mixed, 7), mixed); // Exactly 7 chars, no truncation
+        assert_eq!(truncate_with_ellipsis(mixed, 6), "Hel..."); // 6 chars means 3 content + "..."
+    }
+
+    #[test]
+    fn test_truncate_with_ellipsis_emoji() {
+        // Emoji are multi-byte
+        let emoji = "🎉🎊🎁🎈";
+        assert_eq!(truncate_with_ellipsis(emoji, 10), emoji);
+        assert_eq!(truncate_with_ellipsis(emoji, 4), emoji);
+        assert_eq!(truncate_with_ellipsis(emoji, 3), "...");
     }
 }
