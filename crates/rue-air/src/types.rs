@@ -350,3 +350,568 @@ impl std::fmt::Display for Type {
         write!(f, "{}", self.name())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ========== Type ID tests ==========
+
+    #[test]
+    fn test_struct_id_equality() {
+        let id1 = StructId(0);
+        let id2 = StructId(0);
+        let id3 = StructId(1);
+        assert_eq!(id1, id2);
+        assert_ne!(id1, id3);
+    }
+
+    #[test]
+    fn test_enum_id_equality() {
+        let id1 = EnumId(0);
+        let id2 = EnumId(0);
+        let id3 = EnumId(1);
+        assert_eq!(id1, id2);
+        assert_ne!(id1, id3);
+    }
+
+    #[test]
+    fn test_array_type_id_equality() {
+        let id1 = ArrayTypeId(0);
+        let id2 = ArrayTypeId(0);
+        let id3 = ArrayTypeId(1);
+        assert_eq!(id1, id2);
+        assert_ne!(id1, id3);
+    }
+
+    // ========== Type::name() tests ==========
+
+    #[test]
+    fn test_type_name_integers() {
+        assert_eq!(Type::I8.name(), "i8");
+        assert_eq!(Type::I16.name(), "i16");
+        assert_eq!(Type::I32.name(), "i32");
+        assert_eq!(Type::I64.name(), "i64");
+        assert_eq!(Type::U8.name(), "u8");
+        assert_eq!(Type::U16.name(), "u16");
+        assert_eq!(Type::U32.name(), "u32");
+        assert_eq!(Type::U64.name(), "u64");
+    }
+
+    #[test]
+    fn test_type_name_other() {
+        assert_eq!(Type::Bool.name(), "bool");
+        assert_eq!(Type::Unit.name(), "()");
+        assert_eq!(Type::String.name(), "String");
+        assert_eq!(Type::Error.name(), "<error>");
+        assert_eq!(Type::Never.name(), "!");
+    }
+
+    #[test]
+    fn test_type_name_composite() {
+        assert_eq!(Type::Struct(StructId(0)).name(), "<struct>");
+        assert_eq!(Type::Enum(EnumId(0)).name(), "<enum>");
+        assert_eq!(Type::Array(ArrayTypeId(0)).name(), "<array>");
+    }
+
+    // ========== Type::is_integer() tests ==========
+
+    #[test]
+    fn test_is_integer_signed() {
+        assert!(Type::I8.is_integer());
+        assert!(Type::I16.is_integer());
+        assert!(Type::I32.is_integer());
+        assert!(Type::I64.is_integer());
+    }
+
+    #[test]
+    fn test_is_integer_unsigned() {
+        assert!(Type::U8.is_integer());
+        assert!(Type::U16.is_integer());
+        assert!(Type::U32.is_integer());
+        assert!(Type::U64.is_integer());
+    }
+
+    #[test]
+    fn test_is_integer_non_integers() {
+        assert!(!Type::Bool.is_integer());
+        assert!(!Type::Unit.is_integer());
+        assert!(!Type::String.is_integer());
+        assert!(!Type::Struct(StructId(0)).is_integer());
+        assert!(!Type::Enum(EnumId(0)).is_integer());
+        assert!(!Type::Array(ArrayTypeId(0)).is_integer());
+        assert!(!Type::Error.is_integer());
+        assert!(!Type::Never.is_integer());
+    }
+
+    // ========== Type::is_signed() tests ==========
+
+    #[test]
+    fn test_is_signed() {
+        assert!(Type::I8.is_signed());
+        assert!(Type::I16.is_signed());
+        assert!(Type::I32.is_signed());
+        assert!(Type::I64.is_signed());
+
+        assert!(!Type::U8.is_signed());
+        assert!(!Type::U16.is_signed());
+        assert!(!Type::U32.is_signed());
+        assert!(!Type::U64.is_signed());
+        assert!(!Type::Bool.is_signed());
+    }
+
+    // ========== Type::is_unsigned() tests ==========
+
+    #[test]
+    fn test_is_unsigned() {
+        assert!(Type::U8.is_unsigned());
+        assert!(Type::U16.is_unsigned());
+        assert!(Type::U32.is_unsigned());
+        assert!(Type::U64.is_unsigned());
+
+        assert!(!Type::I8.is_unsigned());
+        assert!(!Type::I16.is_unsigned());
+        assert!(!Type::I32.is_unsigned());
+        assert!(!Type::I64.is_unsigned());
+        assert!(!Type::Bool.is_unsigned());
+    }
+
+    // ========== Type::is_64_bit() tests ==========
+
+    #[test]
+    fn test_is_64_bit() {
+        assert!(Type::I64.is_64_bit());
+        assert!(Type::U64.is_64_bit());
+
+        assert!(!Type::I8.is_64_bit());
+        assert!(!Type::I16.is_64_bit());
+        assert!(!Type::I32.is_64_bit());
+        assert!(!Type::U8.is_64_bit());
+        assert!(!Type::U16.is_64_bit());
+        assert!(!Type::U32.is_64_bit());
+        assert!(!Type::Bool.is_64_bit());
+    }
+
+    // ========== Type::is_error() tests ==========
+
+    #[test]
+    fn test_is_error() {
+        assert!(Type::Error.is_error());
+        assert!(!Type::I32.is_error());
+        assert!(!Type::Never.is_error());
+    }
+
+    // ========== Type::is_never() tests ==========
+
+    #[test]
+    fn test_is_never() {
+        assert!(Type::Never.is_never());
+        assert!(!Type::I32.is_never());
+        assert!(!Type::Error.is_never());
+    }
+
+    // ========== Type::is_struct() and as_struct() tests ==========
+
+    #[test]
+    fn test_is_struct() {
+        assert!(Type::Struct(StructId(0)).is_struct());
+        assert!(Type::Struct(StructId(42)).is_struct());
+        assert!(!Type::I32.is_struct());
+        assert!(!Type::Enum(EnumId(0)).is_struct());
+    }
+
+    #[test]
+    fn test_as_struct() {
+        assert_eq!(Type::Struct(StructId(5)).as_struct(), Some(StructId(5)));
+        assert_eq!(Type::I32.as_struct(), None);
+        assert_eq!(Type::Enum(EnumId(0)).as_struct(), None);
+    }
+
+    // ========== Type::is_enum() and as_enum() tests ==========
+
+    #[test]
+    fn test_is_enum() {
+        assert!(Type::Enum(EnumId(0)).is_enum());
+        assert!(Type::Enum(EnumId(42)).is_enum());
+        assert!(!Type::I32.is_enum());
+        assert!(!Type::Struct(StructId(0)).is_enum());
+    }
+
+    #[test]
+    fn test_as_enum() {
+        assert_eq!(Type::Enum(EnumId(5)).as_enum(), Some(EnumId(5)));
+        assert_eq!(Type::I32.as_enum(), None);
+        assert_eq!(Type::Struct(StructId(0)).as_enum(), None);
+    }
+
+    // ========== Type::is_array() and as_array() tests ==========
+
+    #[test]
+    fn test_is_array() {
+        assert!(Type::Array(ArrayTypeId(0)).is_array());
+        assert!(Type::Array(ArrayTypeId(42)).is_array());
+        assert!(!Type::I32.is_array());
+        assert!(!Type::Struct(StructId(0)).is_array());
+    }
+
+    #[test]
+    fn test_as_array() {
+        assert_eq!(Type::Array(ArrayTypeId(5)).as_array(), Some(ArrayTypeId(5)));
+        assert_eq!(Type::I32.as_array(), None);
+        assert_eq!(Type::Struct(StructId(0)).as_array(), None);
+    }
+
+    // ========== Type::is_string() tests ==========
+
+    #[test]
+    fn test_is_string() {
+        assert!(Type::String.is_string());
+        assert!(!Type::I32.is_string());
+        assert!(!Type::Array(ArrayTypeId(0)).is_string());
+    }
+
+    // ========== Type::is_copy() tests ==========
+
+    #[test]
+    fn test_is_copy_primitives() {
+        // All integer types are Copy
+        assert!(Type::I8.is_copy());
+        assert!(Type::I16.is_copy());
+        assert!(Type::I32.is_copy());
+        assert!(Type::I64.is_copy());
+        assert!(Type::U8.is_copy());
+        assert!(Type::U16.is_copy());
+        assert!(Type::U32.is_copy());
+        assert!(Type::U64.is_copy());
+
+        // Bool and Unit are Copy
+        assert!(Type::Bool.is_copy());
+        assert!(Type::Unit.is_copy());
+    }
+
+    #[test]
+    fn test_is_copy_special() {
+        // Enum types are Copy
+        assert!(Type::Enum(EnumId(0)).is_copy());
+
+        // Never and Error are Copy for convenience
+        assert!(Type::Never.is_copy());
+        assert!(Type::Error.is_copy());
+    }
+
+    #[test]
+    fn test_is_copy_move_types() {
+        // Struct, String, and Array are move types
+        assert!(!Type::Struct(StructId(0)).is_copy());
+        assert!(!Type::String.is_copy());
+        assert!(!Type::Array(ArrayTypeId(0)).is_copy());
+    }
+
+    // ========== Type::can_coerce_to() tests ==========
+
+    #[test]
+    fn test_can_coerce_to_same_type() {
+        assert!(Type::I32.can_coerce_to(&Type::I32));
+        assert!(Type::Bool.can_coerce_to(&Type::Bool));
+        assert!(Type::String.can_coerce_to(&Type::String));
+    }
+
+    #[test]
+    fn test_can_coerce_to_never_coerces_to_anything() {
+        assert!(Type::Never.can_coerce_to(&Type::I32));
+        assert!(Type::Never.can_coerce_to(&Type::Bool));
+        assert!(Type::Never.can_coerce_to(&Type::String));
+        assert!(Type::Never.can_coerce_to(&Type::Struct(StructId(0))));
+    }
+
+    #[test]
+    fn test_can_coerce_to_error_coerces_to_anything() {
+        assert!(Type::Error.can_coerce_to(&Type::I32));
+        assert!(Type::Error.can_coerce_to(&Type::Bool));
+        assert!(Type::Error.can_coerce_to(&Type::String));
+    }
+
+    #[test]
+    fn test_can_coerce_to_different_types_fail() {
+        assert!(!Type::I32.can_coerce_to(&Type::Bool));
+        assert!(!Type::Bool.can_coerce_to(&Type::I32));
+        assert!(!Type::I32.can_coerce_to(&Type::I64));
+        assert!(!Type::String.can_coerce_to(&Type::I32));
+    }
+
+    // ========== Type::literal_fits() tests ==========
+
+    #[test]
+    fn test_literal_fits_i8() {
+        assert!(Type::I8.literal_fits(0));
+        assert!(Type::I8.literal_fits(127)); // i8::MAX
+        assert!(!Type::I8.literal_fits(128));
+    }
+
+    #[test]
+    fn test_literal_fits_i16() {
+        assert!(Type::I16.literal_fits(0));
+        assert!(Type::I16.literal_fits(32767)); // i16::MAX
+        assert!(!Type::I16.literal_fits(32768));
+    }
+
+    #[test]
+    fn test_literal_fits_i32() {
+        assert!(Type::I32.literal_fits(0));
+        assert!(Type::I32.literal_fits(2147483647)); // i32::MAX
+        assert!(!Type::I32.literal_fits(2147483648));
+    }
+
+    #[test]
+    fn test_literal_fits_i64() {
+        assert!(Type::I64.literal_fits(0));
+        assert!(Type::I64.literal_fits(9223372036854775807)); // i64::MAX
+        assert!(!Type::I64.literal_fits(9223372036854775808));
+    }
+
+    #[test]
+    fn test_literal_fits_u8() {
+        assert!(Type::U8.literal_fits(0));
+        assert!(Type::U8.literal_fits(255)); // u8::MAX
+        assert!(!Type::U8.literal_fits(256));
+    }
+
+    #[test]
+    fn test_literal_fits_u16() {
+        assert!(Type::U16.literal_fits(0));
+        assert!(Type::U16.literal_fits(65535)); // u16::MAX
+        assert!(!Type::U16.literal_fits(65536));
+    }
+
+    #[test]
+    fn test_literal_fits_u32() {
+        assert!(Type::U32.literal_fits(0));
+        assert!(Type::U32.literal_fits(4294967295)); // u32::MAX
+        assert!(!Type::U32.literal_fits(4294967296));
+    }
+
+    #[test]
+    fn test_literal_fits_u64() {
+        assert!(Type::U64.literal_fits(0));
+        assert!(Type::U64.literal_fits(u64::MAX)); // Any u64 fits
+    }
+
+    #[test]
+    fn test_literal_fits_non_integer() {
+        assert!(!Type::Bool.literal_fits(0));
+        assert!(!Type::String.literal_fits(0));
+        assert!(!Type::Unit.literal_fits(0));
+    }
+
+    // ========== Type::negated_literal_fits() tests ==========
+
+    #[test]
+    fn test_negated_literal_fits_i8() {
+        assert!(Type::I8.negated_literal_fits(128)); // -128 = i8::MIN
+        assert!(!Type::I8.negated_literal_fits(129));
+    }
+
+    #[test]
+    fn test_negated_literal_fits_i16() {
+        assert!(Type::I16.negated_literal_fits(32768)); // -32768 = i16::MIN
+        assert!(!Type::I16.negated_literal_fits(32769));
+    }
+
+    #[test]
+    fn test_negated_literal_fits_i32() {
+        assert!(Type::I32.negated_literal_fits(2147483648)); // -2147483648 = i32::MIN
+        assert!(!Type::I32.negated_literal_fits(2147483649));
+    }
+
+    #[test]
+    fn test_negated_literal_fits_i64() {
+        assert!(Type::I64.negated_literal_fits(9223372036854775808)); // i64::MIN abs
+        assert!(!Type::I64.negated_literal_fits(9223372036854775809));
+    }
+
+    #[test]
+    fn test_negated_literal_fits_unsigned() {
+        // Unsigned types don't support negated literals
+        assert!(!Type::U8.negated_literal_fits(1));
+        assert!(!Type::U16.negated_literal_fits(1));
+        assert!(!Type::U32.negated_literal_fits(1));
+        assert!(!Type::U64.negated_literal_fits(1));
+    }
+
+    #[test]
+    fn test_negated_literal_fits_non_integer() {
+        assert!(!Type::Bool.negated_literal_fits(1));
+        assert!(!Type::String.negated_literal_fits(1));
+    }
+
+    // ========== Type Display tests ==========
+
+    #[test]
+    fn test_type_display() {
+        assert_eq!(format!("{}", Type::I32), "i32");
+        assert_eq!(format!("{}", Type::Bool), "bool");
+        assert_eq!(format!("{}", Type::Never), "!");
+    }
+
+    // ========== Type Default tests ==========
+
+    #[test]
+    fn test_type_default() {
+        assert_eq!(Type::default(), Type::Unit);
+    }
+
+    // ========== StructDef tests ==========
+
+    #[test]
+    fn test_struct_def_find_field() {
+        let def = StructDef {
+            name: "Point".to_string(),
+            fields: vec![
+                StructField {
+                    name: "x".to_string(),
+                    ty: Type::I32,
+                },
+                StructField {
+                    name: "y".to_string(),
+                    ty: Type::I32,
+                },
+            ],
+            is_copy: false,
+            destructor: None,
+        };
+
+        let (idx, field) = def.find_field("x").unwrap();
+        assert_eq!(idx, 0);
+        assert_eq!(field.name, "x");
+        assert_eq!(field.ty, Type::I32);
+
+        let (idx, field) = def.find_field("y").unwrap();
+        assert_eq!(idx, 1);
+        assert_eq!(field.name, "y");
+
+        assert!(def.find_field("z").is_none());
+    }
+
+    #[test]
+    fn test_struct_def_field_count() {
+        let empty = StructDef {
+            name: "Empty".to_string(),
+            fields: vec![],
+            is_copy: false,
+            destructor: None,
+        };
+        assert_eq!(empty.field_count(), 0);
+
+        let with_fields = StructDef {
+            name: "Data".to_string(),
+            fields: vec![
+                StructField {
+                    name: "a".to_string(),
+                    ty: Type::I32,
+                },
+                StructField {
+                    name: "b".to_string(),
+                    ty: Type::Bool,
+                },
+                StructField {
+                    name: "c".to_string(),
+                    ty: Type::I64,
+                },
+            ],
+            is_copy: false,
+            destructor: None,
+        };
+        assert_eq!(with_fields.field_count(), 3);
+    }
+
+    // ========== ArrayTypeDef tests ==========
+
+    #[test]
+    fn test_array_type_def_len() {
+        let arr = ArrayTypeDef {
+            element_type: Type::I32,
+            length: 10,
+        };
+        assert_eq!(arr.len(), 10);
+    }
+
+    #[test]
+    fn test_array_type_def_is_empty() {
+        let empty = ArrayTypeDef {
+            element_type: Type::I32,
+            length: 0,
+        };
+        assert!(empty.is_empty());
+
+        let non_empty = ArrayTypeDef {
+            element_type: Type::I32,
+            length: 1,
+        };
+        assert!(!non_empty.is_empty());
+    }
+
+    // ========== EnumDef tests ==========
+
+    #[test]
+    fn test_enum_def_variant_count() {
+        let empty = EnumDef {
+            name: "Empty".to_string(),
+            variants: vec![],
+        };
+        assert_eq!(empty.variant_count(), 0);
+
+        let color = EnumDef {
+            name: "Color".to_string(),
+            variants: vec!["Red".to_string(), "Green".to_string(), "Blue".to_string()],
+        };
+        assert_eq!(color.variant_count(), 3);
+    }
+
+    #[test]
+    fn test_enum_def_find_variant() {
+        let color = EnumDef {
+            name: "Color".to_string(),
+            variants: vec!["Red".to_string(), "Green".to_string(), "Blue".to_string()],
+        };
+
+        assert_eq!(color.find_variant("Red"), Some(0));
+        assert_eq!(color.find_variant("Green"), Some(1));
+        assert_eq!(color.find_variant("Blue"), Some(2));
+        assert_eq!(color.find_variant("Yellow"), None);
+    }
+
+    #[test]
+    fn test_enum_def_discriminant_type_empty() {
+        let empty = EnumDef {
+            name: "Empty".to_string(),
+            variants: vec![],
+        };
+        assert_eq!(empty.discriminant_type(), Type::Never);
+    }
+
+    #[test]
+    fn test_enum_def_discriminant_type_small() {
+        // 1-256 variants -> U8
+        let small = EnumDef {
+            name: "Small".to_string(),
+            variants: vec!["A".to_string()],
+        };
+        assert_eq!(small.discriminant_type(), Type::U8);
+
+        let max_u8 = EnumDef {
+            name: "MaxU8".to_string(),
+            variants: (0..256).map(|i| format!("V{}", i)).collect(),
+        };
+        assert_eq!(max_u8.discriminant_type(), Type::U8);
+    }
+
+    #[test]
+    fn test_enum_def_discriminant_type_medium() {
+        // 257-65536 variants -> U16
+        let medium = EnumDef {
+            name: "Medium".to_string(),
+            variants: (0..257).map(|i| format!("V{}", i)).collect(),
+        };
+        assert_eq!(medium.discriminant_type(), Type::U16);
+    }
+}
