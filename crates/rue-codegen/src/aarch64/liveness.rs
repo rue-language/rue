@@ -309,7 +309,9 @@ fn uses(inst: &Aarch64Inst) -> Vec<VReg> {
         | Aarch64Inst::Asr32Imm { src, .. } => {
             add_if_virtual(src, &mut result);
         }
-        Aarch64Inst::StringConstPtr { .. } | Aarch64Inst::StringConstLen { .. } => {
+        Aarch64Inst::StringConstPtr { .. }
+        | Aarch64Inst::StringConstLen { .. }
+        | Aarch64Inst::StringConstCap { .. } => {
             // Only defines, no uses
         }
         Aarch64Inst::B { .. }
@@ -427,7 +429,9 @@ fn defs(inst: &Aarch64Inst) -> Vec<VReg> {
         | Aarch64Inst::Asr32Imm { dst, .. } => {
             add_if_virtual(dst, &mut result);
         }
-        Aarch64Inst::StringConstPtr { dst, .. } | Aarch64Inst::StringConstLen { dst, .. } => {
+        Aarch64Inst::StringConstPtr { dst, .. }
+        | Aarch64Inst::StringConstLen { dst, .. }
+        | Aarch64Inst::StringConstCap { dst, .. } => {
             add_if_virtual(dst, &mut result);
         }
         Aarch64Inst::B { .. }

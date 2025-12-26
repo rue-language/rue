@@ -45,7 +45,7 @@ pub enum Type {
     Enum(EnumId),
     /// Fixed-size array type: [T; N]
     Array(ArrayTypeId),
-    /// String type (fat pointer: ptr + len, 16 bytes)
+    /// String type (ptr + len + cap, 24 bytes)
     String,
     /// An error type (used during type checking to continue after errors)
     Error,

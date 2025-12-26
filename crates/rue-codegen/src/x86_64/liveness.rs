@@ -324,7 +324,9 @@ fn uses(inst: &X86Inst) -> Vec<VReg> {
             result.push(*base);
             add_if_virtual(src, &mut result);
         }
-        X86Inst::StringConstPtr { .. } | X86Inst::StringConstLen { .. } => {
+        X86Inst::StringConstPtr { .. }
+        | X86Inst::StringConstLen { .. }
+        | X86Inst::StringConstCap { .. } => {
             // Only defines, no uses
         }
         X86Inst::Cdq
@@ -448,7 +450,9 @@ fn defs(inst: &X86Inst) -> Vec<VReg> {
         X86Inst::MovMRIndexed { .. } => {
             // Writes to memory
         }
-        X86Inst::StringConstPtr { dst, .. } | X86Inst::StringConstLen { dst, .. } => {
+        X86Inst::StringConstPtr { dst, .. }
+        | X86Inst::StringConstLen { dst, .. }
+        | X86Inst::StringConstCap { dst, .. } => {
             add_if_virtual(dst, &mut result);
         }
         X86Inst::Cdq

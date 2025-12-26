@@ -289,14 +289,14 @@ Write the specification first:
 
 **Testable**: Spec tests exist and are ignored (preview feature not yet implemented).
 
-### Phase 2: Three-Field String Representation
+### Phase 2: Three-Field String Representation - rue-0hef.2 (COMPLETE)
 
 Extend String from 2 fields (ptr, len) to 3 fields (ptr, len, cap):
 
-- Update AIR String type to carry capacity
-- Update codegen for 24-byte String type
-- Literals have cap=0
-- Gate new behavior behind preview feature
+- [x] Update AIR String type to carry capacity
+- [x] Update codegen for 24-byte String type
+- [x] Literals have cap=0
+- [x] Gate new behavior behind preview feature
 
 **Testable**: Existing string tests still pass with new representation.
 

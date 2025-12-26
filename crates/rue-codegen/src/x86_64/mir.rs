@@ -405,6 +405,10 @@ pub enum X86Inst {
 
     /// Load string length (pseudo-instruction resolved during emission)
     StringConstLen { dst: Operand, string_id: u32 },
+
+    /// Load string capacity (pseudo-instruction resolved during emission)
+    /// For string literals, this is always 0 (indicating rodata, not heap)
+    StringConstCap { dst: Operand, string_id: u32 },
 }
 
 impl X86Inst {
@@ -564,6 +568,9 @@ impl fmt::Display for X86Inst {
             }
             X86Inst::StringConstLen { dst, string_id } => {
                 write!(f, "string_const_len {}, str{}", dst, string_id)
+            }
+            X86Inst::StringConstCap { dst, string_id } => {
+                write!(f, "string_const_cap {}, str{}", dst, string_id)
             }
         }
     }

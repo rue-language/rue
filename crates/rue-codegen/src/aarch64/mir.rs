@@ -707,6 +707,10 @@ pub enum Aarch64Inst {
 
     /// Load string length (pseudo-instruction resolved during emission)
     StringConstLen { dst: Operand, string_id: u32 },
+
+    /// Load string capacity (pseudo-instruction resolved during emission)
+    /// For string literals, this is always 0 (indicating rodata, not heap)
+    StringConstCap { dst: Operand, string_id: u32 },
 }
 
 impl Aarch64Inst {
@@ -901,6 +905,9 @@ impl fmt::Display for Aarch64Inst {
             }
             Aarch64Inst::StringConstLen { dst, string_id } => {
                 write!(f, "string_const_len {}, str{}", dst, string_id)
+            }
+            Aarch64Inst::StringConstCap { dst, string_id } => {
+                write!(f, "string_const_cap {}, str{}", dst, string_id)
             }
         }
     }

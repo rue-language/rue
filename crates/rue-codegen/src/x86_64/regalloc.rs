@@ -665,6 +665,21 @@ impl RegAlloc {
                 );
             }
 
+            X86Inst::StringConstCap { dst, string_id } => {
+                alloc_dst!(self.get_allocation(dst), dst, Reg::Rax =>
+                    emit |dst_op| {
+                        mir.push(X86Inst::StringConstCap { dst: dst_op, string_id });
+                    },
+                    store |offset| {
+                        mir.push(X86Inst::MovMR {
+                            base: Reg::Rbp,
+                            offset,
+                            src: Operand::Physical(Reg::Rax),
+                        });
+                    },
+                );
+            }
+
             // Instructions without register operands pass through unchanged
             X86Inst::Cdq => mir.push(X86Inst::Cdq),
             X86Inst::Jz { label } => mir.push(X86Inst::Jz { label }),

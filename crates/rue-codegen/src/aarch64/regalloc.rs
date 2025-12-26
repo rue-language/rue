@@ -771,6 +771,21 @@ impl RegAlloc {
                 );
             }
 
+            Aarch64Inst::StringConstCap { dst, string_id } => {
+                alloc_dst!(self.get_allocation(dst), dst, Reg::X9 =>
+                    emit |dst_op| {
+                        mir.push(Aarch64Inst::StringConstCap { dst: dst_op, string_id });
+                    },
+                    store |offset| {
+                        mir.push(Aarch64Inst::Str {
+                            src: Operand::Physical(Reg::X9),
+                            base: Reg::Fp,
+                            offset,
+                        });
+                    },
+                );
+            }
+
             // Pass-through instructions
             Aarch64Inst::B { label } => mir.push(Aarch64Inst::B { label }),
             Aarch64Inst::BCond { cond, label } => mir.push(Aarch64Inst::BCond { cond, label }),

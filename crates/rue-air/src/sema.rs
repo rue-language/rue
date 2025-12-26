@@ -3746,8 +3746,8 @@ impl<'a> Sema<'a> {
             Type::Unit | Type::Never => 0,
             // Enums are represented as their discriminant type (a scalar), so 1 slot
             Type::Enum(_) => 1,
-            // Strings are fat pointers (ptr + len), so 2 slots
-            Type::String => 2,
+            // Strings are (ptr + len + cap), so 3 slots
+            Type::String => 3,
             Type::Struct(struct_id) => {
                 // Sum the slot counts of all fields (handles arrays and nested structs)
                 // Empty structs naturally get 0 slots here

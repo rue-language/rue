@@ -682,6 +682,12 @@ impl<'a> Emitter<'a> {
                     .unwrap_or(0);
                 self.emit_mov_ri64(dst.as_physical(), string_len);
             }
+
+            X86Inst::StringConstCap { dst, string_id: _ } => {
+                // MOV dst, 0 - String literals have capacity 0 (rodata, not heap)
+                // This distinguishes rodata strings from heap-allocated ones
+                self.emit_mov_ri64(dst.as_physical(), 0);
+            }
         }
     }
 

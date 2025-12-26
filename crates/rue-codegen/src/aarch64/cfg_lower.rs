@@ -480,6 +480,7 @@ impl<'a> CfgLower<'a> {
             CfgInstData::StringConst(string_id) => {
                 let ptr_vreg = self.mir.alloc_vreg();
                 let len_vreg = self.mir.alloc_vreg();
+                let cap_vreg = self.mir.alloc_vreg();
 
                 self.mir.push(Aarch64Inst::StringConstPtr {
                     dst: Operand::Virtual(ptr_vreg),
@@ -491,9 +492,14 @@ impl<'a> CfgLower<'a> {
                     string_id: *string_id,
                 });
 
-                // Store both in struct_slot_vregs for fat pointer access
+                self.mir.push(Aarch64Inst::StringConstCap {
+                    dst: Operand::Virtual(cap_vreg),
+                    string_id: *string_id,
+                });
+
+                // Store all three in struct_slot_vregs for String (ptr, len, cap)
                 self.struct_slot_vregs
-                    .insert(value, vec![ptr_vreg, len_vreg]);
+                    .insert(value, vec![ptr_vreg, len_vreg, cap_vreg]);
                 self.value_map.insert(value, ptr_vreg);
             }
 
@@ -1049,7 +1055,7 @@ impl<'a> CfgLower<'a> {
                         });
                     }
                 } else if init_type == Type::String {
-                    // String: store both ptr and len to consecutive slots
+                    // String: store ptr, len, and cap to consecutive slots
                     let field_vregs = self
                         .struct_slot_vregs
                         .get(init)
@@ -1057,12 +1063,13 @@ impl<'a> CfgLower<'a> {
                         .expect("string should have fat pointer fields in Alloc");
                     debug_assert_eq!(
                         field_vregs.len(),
-                        2,
-                        "string should have 2 fields (ptr, len)"
+                        3,
+                        "string should have 3 fields (ptr, len, cap)"
                     );
 
                     let ptr_vreg = field_vregs[0];
                     let len_vreg = field_vregs[1];
+                    let cap_vreg = field_vregs[2];
 
                     // Store ptr to slot
                     let ptr_offset = self.local_offset(*slot);
@@ -1079,6 +1086,14 @@ impl<'a> CfgLower<'a> {
                         base: Reg::Fp,
                         offset: len_offset,
                     });
+
+                    // Store cap to slot + 2
+                    let cap_offset = self.local_offset(slot + 2);
+                    self.mir.push(Aarch64Inst::Str {
+                        src: Operand::Virtual(cap_vreg),
+                        base: Reg::Fp,
+                        offset: cap_offset,
+                    });
                 } else {
                     let init_vreg = self.get_vreg(*init);
                     let offset = self.local_offset(*slot);
@@ -1094,9 +1109,10 @@ impl<'a> CfgLower<'a> {
                 let load_type = self.cfg.get_inst(value).ty;
 
                 if load_type == Type::String {
-                    // String: load both ptr and len from consecutive slots
+                    // String: load ptr, len, and cap from consecutive slots
                     let ptr_vreg = self.mir.alloc_vreg();
                     let len_vreg = self.mir.alloc_vreg();
+                    let cap_vreg = self.mir.alloc_vreg();
 
                     // Load ptr from slot
                     let ptr_offset = self.local_offset(*slot);
@@ -1114,9 +1130,17 @@ impl<'a> CfgLower<'a> {
                         offset: len_offset,
                     });
 
-                    // Register fat pointer metadata
+                    // Load cap from slot + 2
+                    let cap_offset = self.local_offset(slot + 2);
+                    self.mir.push(Aarch64Inst::Ldr {
+                        dst: Operand::Virtual(cap_vreg),
+                        base: Reg::Fp,
+                        offset: cap_offset,
+                    });
+
+                    // Register String fields (ptr, len, cap)
                     self.struct_slot_vregs
-                        .insert(value, vec![ptr_vreg, len_vreg]);
+                        .insert(value, vec![ptr_vreg, len_vreg, cap_vreg]);
                     self.value_map.insert(value, ptr_vreg);
                 } else if let Type::Struct(struct_id) = load_type {
                     // Struct: load all field slots (recursively flattened)
@@ -1160,7 +1184,7 @@ impl<'a> CfgLower<'a> {
             CfgInstData::Store { slot, value: val } => {
                 let val_type = self.cfg.get_inst(*val).ty;
                 if val_type == Type::String {
-                    // String: store both ptr and len to consecutive slots
+                    // String: store ptr, len, and cap to consecutive slots
                     let field_vregs = self
                         .struct_slot_vregs
                         .get(val)
@@ -1168,12 +1192,13 @@ impl<'a> CfgLower<'a> {
                         .expect("string should have fat pointer fields in Store");
                     debug_assert_eq!(
                         field_vregs.len(),
-                        2,
-                        "string should have 2 fields (ptr, len)"
+                        3,
+                        "string should have 3 fields (ptr, len, cap)"
                     );
 
                     let ptr_vreg = field_vregs[0];
                     let len_vreg = field_vregs[1];
+                    let cap_vreg = field_vregs[2];
 
                     // Store ptr to slot
                     let ptr_offset = self.local_offset(*slot);
@@ -1189,6 +1214,14 @@ impl<'a> CfgLower<'a> {
                         src: Operand::Virtual(len_vreg),
                         base: Reg::Fp,
                         offset: len_offset,
+                    });
+
+                    // Store cap to slot + 2
+                    let cap_offset = self.local_offset(slot + 2);
+                    self.mir.push(Aarch64Inst::Str {
+                        src: Operand::Virtual(cap_vreg),
+                        base: Reg::Fp,
+                        offset: cap_offset,
                     });
                 } else {
                     let val_vreg = self.get_vreg(*val);
@@ -2669,7 +2702,8 @@ impl<'a> CfgLower<'a> {
     fn emit_string_eq_call(&mut self, lhs: CfgValue, rhs: CfgValue) -> VReg {
         let result_vreg = self.mir.alloc_vreg();
 
-        // Get string fat pointers (ptr, len) from struct_slot_vregs
+        // Get string fields (ptr, len, cap) from struct_slot_vregs
+        // For comparison, we only use ptr and len (cap is not compared)
         let lhs_fields = self
             .struct_slot_vregs
             .get(&lhs)
@@ -2683,19 +2717,21 @@ impl<'a> CfgLower<'a> {
 
         debug_assert_eq!(
             lhs_fields.len(),
-            2,
-            "string should have 2 fields (ptr, len)"
+            3,
+            "string should have 3 fields (ptr, len, cap)"
         );
         debug_assert_eq!(
             rhs_fields.len(),
-            2,
-            "string should have 2 fields (ptr, len)"
+            3,
+            "string should have 3 fields (ptr, len, cap)"
         );
 
         let lhs_ptr = lhs_fields[0];
         let lhs_len = lhs_fields[1];
+        // lhs_fields[2] is cap, not used for comparison
         let rhs_ptr = rhs_fields[0];
         let rhs_len = rhs_fields[1];
+        // rhs_fields[2] is cap, not used for comparison
 
         // Move arguments to calling convention registers (AAPCS64)
         // X0 = ptr1, X1 = len1, X2 = ptr2, X3 = len2

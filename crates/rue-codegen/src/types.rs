@@ -49,6 +49,8 @@ pub fn type_slot_count(struct_defs: &[StructDef], array_types: &[ArrayTypeDef], 
                 1
             }
         }
+        // Strings are (ptr + len + cap), so 3 slots
+        Type::String => 3,
         _ => 1,
     }
 }

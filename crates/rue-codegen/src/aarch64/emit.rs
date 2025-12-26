@@ -797,6 +797,13 @@ impl<'a> Emitter<'a> {
                 // Emit the length as an immediate
                 self.emit_mov_imm(rd, len);
             }
+
+            Aarch64Inst::StringConstCap { dst, string_id: _ } => {
+                // String literals have capacity 0 (rodata, not heap)
+                // This distinguishes rodata strings from heap-allocated ones
+                let rd = dst.as_physical();
+                self.emit_mov_imm(rd, 0);
+            }
         }
     }
 
