@@ -1,11 +1,11 @@
 ---
 id: 0015
 title: Test Suite Optimization
-status: proposal
+status: accepted
 tags: [process, testing, compiler]
 feature-flag: null
 created: 2025-12-26
-accepted:
+accepted: 2025-12-26
 implemented:
 spec-sections: []
 superseded-by:
@@ -15,7 +15,7 @@ superseded-by:
 
 ## Status
 
-Proposal
+Accepted
 
 ## Summary
 
@@ -56,11 +56,40 @@ Many language features are tested at multiple levels:
 
 ## Decision
 
-### 1. Add Parameterized Test Support (Single-Process)
+### 1. Parameterized Test Support
 
-The key insight: instead of spawning N processes for N parameter combinations, generate a **single program** that tests all variants internally. This eliminates process overhead which dominates spec test time.
+#### Phase 1: Multi-Process Expansion (Implemented)
 
-#### Test Format
+The initial implementation uses a simple template expansion approach where each parameter set generates a separate test case that runs in its own process:
+
+```toml
+[[case]]
+name = "{type}_return"
+spec = ["3.1:1"]
+params = [
+  { type = "i8", value = "42", exit_code = 42, spec_extra = ["3.1:2"] },
+  { type = "i16", value = "100", exit_code = 100, spec_extra = ["3.1:3"] },
+  { type = "i32", value = "42", exit_code = 42, spec_extra = ["3.1:4"] },
+  { type = "u8", value = "42", exit_code = 42, spec_extra = ["3.1:9"] },
+]
+source = "fn main() -> {type} { {value} }"
+```
+
+**Template syntax**: `{param_name}` placeholders are replaced with parameter values.
+
+**Field overrides**: Parameters can override case fields like `exit_code`, `compile_fail`, `skip`, etc.
+
+**Spec merging**: `spec_extra` in params is appended to the base `spec` array.
+
+This approach:
+- Reduces test file verbosity significantly (8 cases → 1 definition)
+- Maintains spec traceability per variant via `spec_extra`
+- Works with existing test infrastructure (no changes to test execution)
+- Each variant still runs as a separate process
+
+#### Future: Single-Process Execution (Phase 2+)
+
+For maximum performance, a future enhancement could generate a single program that tests all variants internally:
 
 ```toml
 [[case]]
@@ -69,72 +98,15 @@ spec = ["3.1:1", "3.1:2", "3.1:3", "3.1:4", "3.1:8", "3.1:9", "3.1:10", "3.1:11"
 parameters = [
     { type = "i8", value = "42", expected = "42" },
     { type = "i16", value = "100", expected = "100" },
-    { type = "i32", value = "42", expected = "42" },
-    { type = "i64", value = "42", expected = "42" },
-    { type = "u8", value = "42", expected = "42" },
-    { type = "u16", value = "100", expected = "100" },
-    { type = "u32", value = "42", expected = "42" },
-    { type = "u64", value = "42", expected = "42" },
+    # ...
 ]
 test_fn = """
 fn test_${type}() -> ${type} { ${value} }
 """
-expected_fn = "${expected}"  # Expected return value for each test_fn
+expected_fn = "${expected}"
 ```
 
-#### Generated Program
-
-The test runner generates a single program with all test functions and a harness:
-
-```rust
-// Generated from parameterized test
-fn test_i8() -> i8 { 42 }
-fn test_i16() -> i16 { 100 }
-fn test_i32() -> i32 { 42 }
-fn test_i64() -> i64 { 42 }
-fn test_u8() -> u8 { 42 }
-fn test_u16() -> u16 { 100 }
-fn test_u32() -> u32 { 42 }
-fn test_u64() -> u64 { 42 }
-
-fn main() -> i32 {
-    // Run all tests, return 0 on success or test index + 1 on first failure
-    if test_i8() as i64 != 42 { return 1; }
-    if test_i16() as i64 != 100 { return 2; }
-    if test_i32() as i64 != 42 { return 3; }
-    if test_i64() as i64 != 42 { return 4; }
-    if test_u8() as i64 != 42 { return 5; }
-    if test_u16() as i64 != 100 { return 6; }
-    if test_u32() as i64 != 42 { return 7; }
-    if test_u64() as i64 != 42 { return 8; }
-    0  // All tests passed
-}
-```
-
-#### Benefits
-
-- **8 tests → 1 process**: Eliminates 7 process spawns per parameterized test
-- **Compile once**: Single compilation for all variants
-- **Clear failure reporting**: Exit code indicates which variant failed (0 = all pass, N = variant N failed)
-- **Spec traceability preserved**: All spec paragraphs listed in the test definition
-
-#### Template Syntax
-
-- `${param_name}` for parameter interpolation
-- Parameters are key-value maps with arbitrary keys
-- `test_fn` defines the per-variant function template
-- `expected_fn` defines the expected return value (as string, parsed per-type)
-
-#### Failure Reporting
-
-When a parameterized test fails:
-```
-FAILED: integers::integer_return (variant 3: type=i32, value=42)
-  Expected: 42
-  Actual: (exit code indicates variant 3 failed)
-```
-
-The test runner maps exit codes back to parameter sets for clear error messages.
+This would generate a single program with all test functions and a harness, eliminating per-variant process overhead.
 
 ### 2. Consolidate Spec Tests
 
@@ -200,12 +172,12 @@ Add a new script `./quick-test.sh` that runs only unit tests for faster iteratio
 
 ## Implementation Phases
 
-- [ ] **Phase 1: Parameterized Test Support** - rue-9jdv.1
-  - Add `parameters`, `test_fn`, `expected_fn` fields to `Case` struct in `rue-test-runner`
-  - Implement template expansion with `${param}` syntax
-  - Implement single-program generation with test harness
-  - Implement exit-code-to-variant mapping for failure reporting
-  - Add documentation for the new format
+- [x] **Phase 1: Parameterized Test Support** - rue-9jdv.1
+  - Added `ParamSet` struct and `params` field to `Case` in `rue-test-runner`
+  - Implemented template expansion with `{param}` syntax
+  - Implemented `expand_case()` and `expand_test_file()` functions
+  - Added unit tests for expansion logic
+  - Added example parameterized test to `integers.toml`
 
 - [ ] **Phase 2: Consolidate Integer Tests** - rue-9jdv.2
   - Rewrite `integers.toml` using parameterized format
@@ -231,14 +203,11 @@ Add a new script `./quick-test.sh` that runs only unit tests for faster iteratio
 
 ### Positive
 
-- **Dramatically faster spec tests**: Single-process parameterized tests eliminate per-variant process overhead
-  - Current: 8 type variants = 8 compile + 8 execute = 16 process spawns
-  - New: 8 type variants = 1 compile + 1 execute = 2 process spawns
-  - Estimated improvement: ~70-80% reduction in spec test time for parameterized tests
-- **Faster development iteration**: Unit tests provide sub-second feedback
-- **Maintained spec coverage**: Parameterization preserves traceability while reducing duplication
+- **Reduced test file verbosity**: 8 similar tests become 1 parameterized definition
+- **Easier maintenance**: Change pattern once, affects all variations
+- **Maintained spec coverage**: Parameterization preserves traceability via `spec_extra`
 - **Better test organization**: Clear separation between development tests (fast) and verification tests (comprehensive)
-- **Easier maintenance**: Parameterized tests mean one place to update when behavior changes
+- **Future optimization path**: Can evolve to single-process execution for further speedup
 
 ### Negative
 
@@ -253,14 +222,16 @@ Add a new script `./quick-test.sh` that runs only unit tests for faster iteratio
 
 ## Open Questions
 
-1. **Template syntax**: Should we use `${param}` or `{param}` or `{{param}}`? (`${param}` matches shell conventions)
+1. ~~**Template syntax**: Should we use `${param}` or `{param}` or `{{param}}`?~~
+   Resolved: Using `{param}` for simplicity in Phase 1.
 
-2. **Complex expressions**: Should parameterized exit codes support expressions like `${a} + ${b}`? (Probably not for v1 - YAGNI)
+2. **Single-process optimization**: Should Phase 2+ implement single-process test generation for performance? (Deferred - current approach may be sufficient)
 
 3. **Nested parameters**: Should we support arrays of arrays for testing combinations? (e.g., type × operator combinations)
 
 ## Future Work
 
+- **Single-process parameterized tests**: Generate one program testing all variants for maximum speed
 - **Test performance metrics**: Add timing to test output to identify slow tests
 - **Parallel spec tests**: Run spec tests in parallel for faster full-suite runs
 - **Test coverage visualization**: Generate coverage reports showing which spec paragraphs are most/least tested
@@ -269,4 +240,5 @@ Add a new script `./quick-test.sh` that runs only unit tests for faster iteratio
 
 - [ADR-0005: Preview Features](0005-preview-features.md) - Feature gating mechanism
 - [CLAUDE.md](../../CLAUDE.md) - Development workflow documentation
-- `crates/rue-test-runner/src/lib.rs` - Current test infrastructure
+- `crates/rue-test-runner/src/lib.rs` - Test infrastructure with parameterized support
+- Similar concepts: pytest parametrize, JUnit @ParameterizedTest, Go table-driven tests

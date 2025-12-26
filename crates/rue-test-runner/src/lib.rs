@@ -4,6 +4,7 @@
 //! including test case parsing, execution, and output comparison.
 
 use serde::Deserialize;
+use std::collections::HashMap;
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -22,6 +23,21 @@ pub struct Section {
     #[allow(dead_code)]
     #[serde(default)]
     pub spec_chapter: Option<String>,
+}
+
+/// A parameter set for parameterized tests.
+///
+/// Each parameter set generates one test instance. Parameters can:
+/// - Provide values for `{placeholder}` substitution in string fields
+/// - Override case fields like `exit_code`, `compile_fail`, etc.
+/// - Add extra spec references via `spec_extra`
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct ParamSet {
+    /// All parameter values as a flat map.
+    /// Special keys: `exit_code`, `compile_fail`, `skip`, `spec_extra`, etc.
+    /// Other keys are used for `{key}` substitution in templates.
+    #[serde(flatten)]
+    pub values: HashMap<String, toml::Value>,
 }
 
 /// A single test case.
@@ -102,6 +118,11 @@ pub struct Case {
     /// Defaults to 0 (no optimization) if not specified.
     #[serde(default)]
     pub opt_level: Option<u8>,
+    /// Parameter sets for generating multiple test instances from a template.
+    /// When present, this case is expanded into multiple cases, one per param set.
+    /// Template placeholders like `{type}` in `source` and `name` are substituted.
+    #[serde(default)]
+    pub params: Vec<ParamSet>,
 }
 
 /// A test file containing a section and its cases.
@@ -114,6 +135,155 @@ pub struct TestFile {
 
 /// Result of running a test.
 pub type TestResult = Result<(), String>;
+
+/// Convert a TOML value to a string for template substitution.
+fn toml_value_to_string(value: &toml::Value) -> String {
+    match value {
+        toml::Value::String(s) => s.clone(),
+        toml::Value::Integer(i) => i.to_string(),
+        toml::Value::Float(f) => f.to_string(),
+        toml::Value::Boolean(b) => b.to_string(),
+        // Arrays and tables are stringified as TOML
+        other => other.to_string(),
+    }
+}
+
+/// Substitute `{key}` placeholders in a string with values from the param set.
+fn substitute_placeholders(template: &str, params: &HashMap<String, toml::Value>) -> String {
+    let mut result = template.to_string();
+    for (key, value) in params {
+        let placeholder = format!("{{{}}}", key);
+        let replacement = toml_value_to_string(value);
+        result = result.replace(&placeholder, &replacement);
+    }
+    result
+}
+
+/// Expand a single case with params into multiple concrete cases.
+/// If the case has no params, returns the case unchanged (in a vec).
+pub fn expand_case(case: Case) -> Vec<Case> {
+    if case.params.is_empty() {
+        return vec![case];
+    }
+
+    case.params
+        .iter()
+        .map(|param_set| {
+            let params = &param_set.values;
+            let mut expanded = Case {
+                // Substitute placeholders in string fields
+                name: substitute_placeholders(&case.name, params),
+                source: substitute_placeholders(&case.source, params),
+                error_contains: case
+                    .error_contains
+                    .as_ref()
+                    .map(|s| substitute_placeholders(s, params)),
+                expected_error: case
+                    .expected_error
+                    .as_ref()
+                    .map(|s| substitute_placeholders(s, params)),
+                runtime_error: case
+                    .runtime_error
+                    .as_ref()
+                    .map(|s| substitute_placeholders(s, params)),
+                expected_stdout: case
+                    .expected_stdout
+                    .as_ref()
+                    .map(|s| substitute_placeholders(s, params)),
+
+                // Copy non-template fields with potential overrides
+                exit_code: case.exit_code,
+                compile_fail: case.compile_fail,
+                compile_only: case.compile_only,
+                expected_tokens: case.expected_tokens.clone(),
+                expected_ast: case.expected_ast.clone(),
+                expected_rir: case.expected_rir.clone(),
+                expected_air: case.expected_air.clone(),
+                expected_mir: case.expected_mir.clone(),
+                expected_cfg: case.expected_cfg.clone(),
+                runtime_exit_code: case.runtime_exit_code,
+                skip: case.skip,
+                warning_contains: case.warning_contains.clone(),
+                expected_warning_count: case.expected_warning_count,
+                no_warnings: case.no_warnings,
+                spec: case.spec.clone(),
+                preview: case.preview.clone(),
+                target: case.target.clone(),
+                opt_level: case.opt_level,
+
+                // Clear params on expanded case
+                params: vec![],
+            };
+
+            // Apply field overrides from params
+            if let Some(value) = params.get("exit_code") {
+                if let Some(i) = value.as_integer() {
+                    expanded.exit_code = Some(i as i32);
+                }
+            }
+            if let Some(value) = params.get("compile_fail") {
+                if let Some(b) = value.as_bool() {
+                    expanded.compile_fail = b;
+                }
+            }
+            if let Some(value) = params.get("compile_only") {
+                if let Some(b) = value.as_bool() {
+                    expanded.compile_only = b;
+                }
+            }
+            if let Some(value) = params.get("skip") {
+                if let Some(b) = value.as_bool() {
+                    expanded.skip = b;
+                }
+            }
+            if let Some(value) = params.get("runtime_exit_code") {
+                if let Some(i) = value.as_integer() {
+                    expanded.runtime_exit_code = Some(i as i32);
+                }
+            }
+            if let Some(value) = params.get("no_warnings") {
+                if let Some(b) = value.as_bool() {
+                    expanded.no_warnings = b;
+                }
+            }
+            if let Some(value) = params.get("opt_level") {
+                if let Some(i) = value.as_integer() {
+                    expanded.opt_level = Some(i as u8);
+                }
+            }
+            if let Some(value) = params.get("target") {
+                if let Some(s) = value.as_str() {
+                    expanded.target = Some(s.to_string());
+                }
+            }
+            if let Some(value) = params.get("preview") {
+                if let Some(s) = value.as_str() {
+                    expanded.preview = Some(s.to_string());
+                }
+            }
+
+            // Merge spec_extra into spec
+            if let Some(value) = params.get("spec_extra") {
+                if let Some(arr) = value.as_array() {
+                    for item in arr {
+                        if let Some(s) = item.as_str() {
+                            expanded.spec.push(s.to_string());
+                        }
+                    }
+                }
+            }
+
+            expanded
+        })
+        .collect()
+}
+
+/// Expand all parameterized cases in a test file.
+pub fn expand_test_file(mut test_file: TestFile) -> TestFile {
+    let expanded_cases: Vec<Case> = test_file.case.drain(..).flat_map(expand_case).collect();
+    test_file.case = expanded_cases;
+    test_file
+}
 
 /// Recursively collect all TOML files from a directory.
 pub fn collect_toml_files(dir: &Path, files: &mut Vec<PathBuf>) {
@@ -156,6 +326,9 @@ pub fn load_test_files(cases_dir: &Path) -> Vec<(String, TestFile)> {
 
         match toml::from_str::<TestFile>(&content) {
             Ok(spec) => {
+                // Expand any parameterized test cases
+                let spec = expand_test_file(spec);
+
                 // Build a relative path from cases_dir to create the identifier
                 // e.g., "expressions/match" for "cases/expressions/match.toml"
                 let relative = path
@@ -585,4 +758,222 @@ pub fn find_rue_binary() -> PathBuf {
             // Default - will likely fail but with a clear error
             Path::new("rue").to_path_buf()
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_substitute_placeholders_basic() {
+        let mut params = HashMap::new();
+        params.insert("type".to_string(), toml::Value::String("i32".to_string()));
+        params.insert("value".to_string(), toml::Value::Integer(42));
+
+        let result = substitute_placeholders("fn main() -> {type} { {value} }", &params);
+        assert_eq!(result, "fn main() -> i32 { 42 }");
+    }
+
+    #[test]
+    fn test_substitute_placeholders_multiple_occurrences() {
+        let mut params = HashMap::new();
+        params.insert("type".to_string(), toml::Value::String("i64".to_string()));
+
+        let result = substitute_placeholders("{type} and {type} again", &params);
+        assert_eq!(result, "i64 and i64 again");
+    }
+
+    #[test]
+    fn test_substitute_placeholders_no_match() {
+        let params = HashMap::new();
+        let result = substitute_placeholders("no placeholders here", &params);
+        assert_eq!(result, "no placeholders here");
+    }
+
+    #[test]
+    fn test_expand_case_no_params() {
+        let case = Case {
+            name: "test".to_string(),
+            source: "fn main() {}".to_string(),
+            exit_code: Some(0),
+            compile_fail: false,
+            compile_only: false,
+            error_contains: None,
+            expected_error: None,
+            expected_tokens: None,
+            expected_ast: None,
+            expected_rir: None,
+            expected_air: None,
+            expected_mir: None,
+            expected_cfg: None,
+            runtime_error: None,
+            runtime_exit_code: None,
+            skip: false,
+            warning_contains: None,
+            expected_warning_count: None,
+            no_warnings: false,
+            spec: vec!["1.0:1".to_string()],
+            expected_stdout: None,
+            preview: None,
+            target: None,
+            opt_level: None,
+            params: vec![],
+        };
+
+        let expanded = expand_case(case);
+        assert_eq!(expanded.len(), 1);
+        assert_eq!(expanded[0].name, "test");
+    }
+
+    #[test]
+    fn test_expand_case_with_params() {
+        let mut param1 = HashMap::new();
+        param1.insert("type".to_string(), toml::Value::String("i8".to_string()));
+        param1.insert("exit_code".to_string(), toml::Value::Integer(42));
+
+        let mut param2 = HashMap::new();
+        param2.insert("type".to_string(), toml::Value::String("i16".to_string()));
+        param2.insert("exit_code".to_string(), toml::Value::Integer(100));
+
+        let case = Case {
+            name: "{type}_return".to_string(),
+            source: "fn main() -> {type} { 0 }".to_string(),
+            exit_code: None, // Will be overridden
+            compile_fail: false,
+            compile_only: false,
+            error_contains: None,
+            expected_error: None,
+            expected_tokens: None,
+            expected_ast: None,
+            expected_rir: None,
+            expected_air: None,
+            expected_mir: None,
+            expected_cfg: None,
+            runtime_error: None,
+            runtime_exit_code: None,
+            skip: false,
+            warning_contains: None,
+            expected_warning_count: None,
+            no_warnings: false,
+            spec: vec!["3.1:1".to_string()],
+            expected_stdout: None,
+            preview: None,
+            target: None,
+            opt_level: None,
+            params: vec![ParamSet { values: param1 }, ParamSet { values: param2 }],
+        };
+
+        let expanded = expand_case(case);
+        assert_eq!(expanded.len(), 2);
+
+        assert_eq!(expanded[0].name, "i8_return");
+        assert_eq!(expanded[0].source, "fn main() -> i8 { 0 }");
+        assert_eq!(expanded[0].exit_code, Some(42));
+        assert!(expanded[0].params.is_empty());
+
+        assert_eq!(expanded[1].name, "i16_return");
+        assert_eq!(expanded[1].source, "fn main() -> i16 { 0 }");
+        assert_eq!(expanded[1].exit_code, Some(100));
+        assert!(expanded[1].params.is_empty());
+    }
+
+    #[test]
+    fn test_expand_case_spec_extra() {
+        let mut params = HashMap::new();
+        params.insert("type".to_string(), toml::Value::String("i8".to_string()));
+        params.insert(
+            "spec_extra".to_string(),
+            toml::Value::Array(vec![toml::Value::String("3.1:2".to_string())]),
+        );
+
+        let case = Case {
+            name: "{type}_test".to_string(),
+            source: "fn main() {}".to_string(),
+            exit_code: Some(0),
+            compile_fail: false,
+            compile_only: false,
+            error_contains: None,
+            expected_error: None,
+            expected_tokens: None,
+            expected_ast: None,
+            expected_rir: None,
+            expected_air: None,
+            expected_mir: None,
+            expected_cfg: None,
+            runtime_error: None,
+            runtime_exit_code: None,
+            skip: false,
+            warning_contains: None,
+            expected_warning_count: None,
+            no_warnings: false,
+            spec: vec!["3.1:1".to_string()],
+            expected_stdout: None,
+            preview: None,
+            target: None,
+            opt_level: None,
+            params: vec![ParamSet { values: params }],
+        };
+
+        let expanded = expand_case(case);
+        assert_eq!(expanded.len(), 1);
+        assert_eq!(expanded[0].spec, vec!["3.1:1", "3.1:2"]);
+    }
+
+    #[test]
+    fn test_expand_case_compile_fail_override() {
+        let mut params = HashMap::new();
+        params.insert("type".to_string(), toml::Value::String("i8".to_string()));
+        params.insert("compile_fail".to_string(), toml::Value::Boolean(true));
+        params.insert(
+            "error_msg".to_string(),
+            toml::Value::String("type mismatch".to_string()),
+        );
+
+        let case = Case {
+            name: "{type}_error".to_string(),
+            source: "fn main() -> {type} { true }".to_string(),
+            exit_code: None,
+            compile_fail: false, // Will be overridden
+            compile_only: false,
+            error_contains: Some("{error_msg}".to_string()),
+            expected_error: None,
+            expected_tokens: None,
+            expected_ast: None,
+            expected_rir: None,
+            expected_air: None,
+            expected_mir: None,
+            expected_cfg: None,
+            runtime_error: None,
+            runtime_exit_code: None,
+            skip: false,
+            warning_contains: None,
+            expected_warning_count: None,
+            no_warnings: false,
+            spec: vec![],
+            expected_stdout: None,
+            preview: None,
+            target: None,
+            opt_level: None,
+            params: vec![ParamSet { values: params }],
+        };
+
+        let expanded = expand_case(case);
+        assert_eq!(expanded.len(), 1);
+        assert!(expanded[0].compile_fail);
+        assert_eq!(
+            expanded[0].error_contains,
+            Some("type mismatch".to_string())
+        );
+    }
+
+    #[test]
+    fn test_toml_value_to_string() {
+        assert_eq!(
+            toml_value_to_string(&toml::Value::String("hello".to_string())),
+            "hello"
+        );
+        assert_eq!(toml_value_to_string(&toml::Value::Integer(42)), "42");
+        assert_eq!(toml_value_to_string(&toml::Value::Float(3.14)), "3.14");
+        assert_eq!(toml_value_to_string(&toml::Value::Boolean(true)), "true");
+    }
 }

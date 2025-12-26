@@ -8,3 +8,13 @@ rust_library(
     ],
     visibility = ["PUBLIC"],
 )
+
+rust_test(
+    name = "rue-test-runner-test",
+    srcs = glob(["src/**/*.rs"]),
+    deps = [
+        "//third-party:serde",
+        "//third-party:tempfile",
+        "//third-party:toml",
+    ],
+)
