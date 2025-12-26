@@ -745,3 +745,151 @@ fn main() -> i32 {
 }
 """
 exit_code = 12
+
+# =============================================================================
+# Borrow parameters (Phase 2: Semantic Analysis)
+# =============================================================================
+
+[[case]]
+name = "borrow_param_read_only"
+spec = ["6.1:14"]
+description = "Basic borrow parameter that reads a value without ownership transfer"
+preview = "affine_types"
+source = """
+struct Point { x: i32, y: i32 }
+fn sum(borrow p: Point) -> i32 {
+    p.x + p.y
+}
+fn main() -> i32 {
+    let p = Point { x: 10, y: 32 };
+    sum(borrow p)
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "borrow_param_multiple_uses"
+spec = ["6.1:14"]
+description = "Borrowed value can be used multiple times (not moved)"
+preview = "affine_types"
+source = """
+struct Point { x: i32, y: i32 }
+fn get_x(borrow p: Point) -> i32 {
+    p.x
+}
+fn get_y(borrow p: Point) -> i32 {
+    p.y
+}
+fn main() -> i32 {
+    let p = Point { x: 21, y: 21 };
+    get_x(borrow p) + get_y(borrow p)
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "borrow_cannot_mutate_field"
+spec = ["6.1:14"]
+description = "Cannot mutate fields of a borrowed value"
+preview = "affine_types"
+source = """
+struct Point { x: i32, y: i32 }
+fn try_mutate(borrow p: Point) -> i32 {
+    p.x = 10;
+    p.x
+}
+fn main() -> i32 {
+    let p = Point { x: 1, y: 2 };
+    try_mutate(borrow p)
+}
+"""
+compile_fail = true
+error_contains = "cannot mutate borrowed"
+
+[[case]]
+name = "borrow_cannot_mutate_array"
+spec = ["6.1:14"]
+description = "Cannot mutate elements of a borrowed array"
+preview = "affine_types"
+source = """
+fn try_mutate(borrow arr: [i32; 3]) -> i32 {
+    arr[0] = 99;
+    arr[0]
+}
+fn main() -> i32 {
+    let a = [1, 2, 3];
+    try_mutate(borrow a)
+}
+"""
+compile_fail = true
+error_contains = "cannot mutate borrowed"
+
+[[case]]
+name = "borrow_cannot_move_out"
+spec = ["6.1:14"]
+description = "Cannot move out of a borrowed value"
+preview = "affine_types"
+source = """
+struct Data { value: i32 }
+fn try_move(borrow d: Data) -> Data {
+    d
+}
+fn main() -> i32 {
+    let d = Data { value: 42 };
+    let e = try_move(borrow d);
+    e.value
+}
+"""
+compile_fail = true
+error_contains = "cannot move out of borrowed"
+
+[[case]]
+name = "borrow_inout_conflict"
+spec = ["6.1:20"]
+description = "Cannot borrow and inout the same variable in one call"
+preview = "affine_types"
+source = """
+fn conflict(borrow a: i32, inout b: i32) {
+    b = a + 1;
+}
+fn main() -> i32 {
+    let mut x = 41;
+    conflict(borrow x, inout x);
+    x
+}
+"""
+compile_fail = true
+error_contains = "borrow"
+
+[[case]]
+name = "borrow_multiple_same_var_ok"
+spec = ["6.1:14"]
+description = "Multiple borrows of the same variable is allowed"
+preview = "affine_types"
+source = """
+fn sum_both(borrow a: i32, borrow b: i32) -> i32 {
+    a + b
+}
+fn main() -> i32 {
+    let x = 21;
+    sum_both(borrow x, borrow x)
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "borrow_with_regular_param"
+spec = ["6.1:14", "6.1:15"]
+description = "Mixing borrow and regular parameters"
+preview = "affine_types"
+source = """
+struct Point { x: i32, y: i32 }
+fn offset_x(borrow p: Point, delta: i32) -> i32 {
+    p.x + delta
+}
+fn main() -> i32 {
+    let p = Point { x: 32, y: 0 };
+    offset_x(borrow p, 10)
+}
+"""
+exit_code = 42

@@ -351,6 +351,20 @@ pub enum ErrorKind {
     InoutExclusiveAccess {
         variable: String,
     },
+    /// Borrow argument is not an lvalue (variable, field, or array element)
+    BorrowNonLvalue,
+    /// Cannot mutate a borrowed value
+    MutateBorrowedValue {
+        variable: String,
+    },
+    /// Cannot move out of a borrowed value
+    MoveOutOfBorrow {
+        variable: String,
+    },
+    /// Same variable passed to both borrow and inout parameters (law of exclusivity)
+    BorrowInoutConflict {
+        variable: String,
+    },
 
     // Control flow errors
     BreakOutsideLoop,
@@ -697,6 +711,25 @@ impl fmt::Display for ErrorKind {
                 write!(
                     f,
                     "cannot pass same variable '{}' to multiple inout parameters",
+                    variable
+                )
+            }
+            ErrorKind::BorrowNonLvalue => {
+                write!(
+                    f,
+                    "borrow argument must be a variable, field, or array element"
+                )
+            }
+            ErrorKind::MutateBorrowedValue { variable } => {
+                write!(f, "cannot mutate borrowed value '{}'", variable)
+            }
+            ErrorKind::MoveOutOfBorrow { variable } => {
+                write!(f, "cannot move out of borrowed value '{}'", variable)
+            }
+            ErrorKind::BorrowInoutConflict { variable } => {
+                write!(
+                    f,
+                    "cannot borrow '{}' while it is mutably borrowed (inout)",
                     variable
                 )
             }

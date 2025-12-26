@@ -118,6 +118,8 @@ struct ParamInfo {
     abi_slot: u32,
     /// Parameter type
     ty: Type,
+    /// Parameter passing mode
+    mode: RirParamMode,
 }
 
 /// Context for analyzing instructions within a function.
@@ -384,26 +386,45 @@ impl<'a> Sema<'a> {
         }
     }
 
-    /// Check that the same variable is not passed to multiple inout parameters in a call.
+    /// Check exclusivity rules for inout and borrow parameters in a call.
     ///
-    /// This prevents aliasing of mutable references within a single call, which could
-    /// lead to undefined behavior (e.g., `swap(inout x, inout x)`).
-    fn check_inout_exclusive_access(
-        &self,
-        args: &[RirCallArg],
-        call_span: Span,
-    ) -> CompileResult<()> {
+    /// This enforces two rules:
+    /// 1. Same variable cannot be passed to multiple inout parameters (prevents aliasing)
+    /// 2. Same variable cannot be passed to both inout and borrow (law of exclusivity)
+    ///
+    /// The law of exclusivity: either one mutable (inout) access OR any number of
+    /// immutable (borrow) accesses, never both simultaneously.
+    fn check_exclusive_access(&self, args: &[RirCallArg], call_span: Span) -> CompileResult<()> {
         use std::collections::HashSet;
         let mut inout_vars: HashSet<Symbol> = HashSet::new();
+        let mut borrow_vars: HashSet<Symbol> = HashSet::new();
 
         for arg in args {
-            if arg.is_inout() {
-                if let Some(var_symbol) = self.extract_root_variable(arg.value) {
+            if let Some(var_symbol) = self.extract_root_variable(arg.value) {
+                if arg.is_inout() {
+                    // Check for duplicate inout access
                     if !inout_vars.insert(var_symbol) {
-                        // Duplicate! This variable was already used as an inout argument
                         let var_name = self.interner.get(var_symbol).to_string();
                         return Err(CompileError::new(
                             ErrorKind::InoutExclusiveAccess { variable: var_name },
+                            call_span,
+                        ));
+                    }
+                    // Check for borrow/inout conflict
+                    if borrow_vars.contains(&var_symbol) {
+                        let var_name = self.interner.get(var_symbol).to_string();
+                        return Err(CompileError::new(
+                            ErrorKind::BorrowInoutConflict { variable: var_name },
+                            call_span,
+                        ));
+                    }
+                } else if arg.is_borrow() {
+                    borrow_vars.insert(var_symbol);
+                    // Check for borrow/inout conflict
+                    if inout_vars.contains(&var_symbol) {
+                        let var_name = self.interner.get(var_symbol).to_string();
+                        return Err(CompileError::new(
+                            ErrorKind::BorrowInoutConflict { variable: var_name },
                             call_span,
                         ));
                     }
@@ -466,12 +487,11 @@ impl<'a> Sema<'a> {
                 let ret_type = self.resolve_type(*return_type, inst.span)?;
 
                 // Resolve parameter types and modes
-                let param_info: Vec<(Symbol, Type, bool)> = params
+                let param_info: Vec<(Symbol, Type, RirParamMode)> = params
                     .iter()
                     .map(|p| {
                         let ty = self.resolve_type(p.ty, inst.span)?;
-                        let is_inout = p.mode == RirParamMode::Inout;
-                        Ok((p.name, ty, is_inout))
+                        Ok((p.name, ty, p.mode))
                     })
                     .collect::<CompileResult<Vec<_>>>()?;
 
@@ -510,20 +530,19 @@ impl<'a> Sema<'a> {
                         let ret_type = self.resolve_type(*return_type, method_inst.span)?;
 
                         // Build parameter list, adding self as first parameter for methods
-                        // Note: self is never inout (it's passed by value for now)
-                        let mut param_info: Vec<(Symbol, Type, bool)> = Vec::new();
+                        // Note: self is passed by value (Normal mode) for now
+                        let mut param_info: Vec<(Symbol, Type, RirParamMode)> = Vec::new();
 
                         if *has_self {
-                            // Add self parameter (not inout)
+                            // Add self parameter (Normal mode - passed by value)
                             let self_sym = self.interner.intern("self");
-                            param_info.push((self_sym, struct_type, false));
+                            param_info.push((self_sym, struct_type, RirParamMode::Normal));
                         }
 
                         // Add regular parameters with their modes
                         for p in params.iter() {
                             let ty = self.resolve_type(p.ty, method_inst.span)?;
-                            let is_inout = p.mode == RirParamMode::Inout;
-                            param_info.push((p.name, ty, is_inout));
+                            param_info.push((p.name, ty, p.mode));
                         }
 
                         let (air, num_locals, num_param_slots, param_modes) =
@@ -556,9 +575,10 @@ impl<'a> Sema<'a> {
                 let struct_type = Type::Struct(struct_id);
 
                 // Destructors take self parameter and return unit
-                // self is passed by value (not inout) - the destructor consumes it
+                // self is passed by value (Normal mode) - the destructor consumes it
                 let self_sym = self.interner.intern("self");
-                let param_info: Vec<(Symbol, Type, bool)> = vec![(self_sym, struct_type, false)];
+                let param_info: Vec<(Symbol, Type, RirParamMode)> =
+                    vec![(self_sym, struct_type, RirParamMode::Normal)];
 
                 let (air, num_locals, num_param_slots, param_modes) =
                     self.analyze_function(Type::Unit, &param_info, *body)?;
@@ -930,7 +950,7 @@ impl<'a> Sema<'a> {
     fn analyze_function(
         &mut self,
         return_type: Type,
-        params: &[(Symbol, Type, bool)], // (name, type, is_inout)
+        params: &[(Symbol, Type, RirParamMode)], // (name, type, mode)
         body: InstRef,
     ) -> CompileResult<(Air, u32, u32, Vec<bool>)> {
         let mut air = Air::new(return_type);
@@ -941,18 +961,20 @@ impl<'a> Sema<'a> {
         // Each parameter starts at the next available ABI slot.
         // For struct parameters, the slot count is the number of fields.
         let mut next_abi_slot: u32 = 0;
-        for (pname, ptype, is_inout) in params.iter() {
+        for (pname, ptype, mode) in params.iter() {
             param_map.insert(
                 *pname,
                 ParamInfo {
                     abi_slot: next_abi_slot,
                     ty: *ptype,
+                    mode: *mode,
                 },
             );
             let slot_count = self.abi_slot_count(*ptype);
-            // All slots for this parameter share the same inout mode
+            // Both inout and borrow are passed by reference
+            let is_by_ref = *mode != RirParamMode::Normal;
             for _ in 0..slot_count {
-                param_modes.push(*is_inout);
+                param_modes.push(is_by_ref);
             }
             next_abi_slot += slot_count;
         }
@@ -1006,7 +1028,7 @@ impl<'a> Sema<'a> {
     fn run_type_inference(
         &mut self,
         return_type: Type,
-        params: &[(Symbol, Type, bool)],
+        params: &[(Symbol, Type, RirParamMode)],
         body: InstRef,
     ) -> CompileResult<HashMap<InstRef, Type>> {
         // Build function signatures map for the constraint generator.
@@ -1078,7 +1100,7 @@ impl<'a> Sema<'a> {
         // Convert Type to InferType so arrays are represented structurally.
         let param_vars: HashMap<Symbol, ParamVarInfo> = params
             .iter()
-            .map(|(name, ty, _is_inout)| {
+            .map(|(name, ty, _mode)| {
                 (
                     *name,
                     ParamVarInfo {
@@ -2101,14 +2123,40 @@ impl<'a> Sema<'a> {
                         .with_label("value moved here", move_info.moved_at));
                     }
 
-                    // If type is not Copy, mark as moved
+                    // Handle move semantics based on parameter mode
                     if !self.is_type_copy(ty) {
-                        ctx.moved_vars.insert(
-                            *name,
-                            MoveInfo {
-                                moved_at: inst.span,
-                            },
-                        );
+                        match param_info.mode {
+                            RirParamMode::Normal => {
+                                // Normal (owned) parameters can be moved
+                                ctx.moved_vars.insert(
+                                    *name,
+                                    MoveInfo {
+                                        moved_at: inst.span,
+                                    },
+                                );
+                            }
+                            RirParamMode::Inout => {
+                                // Inout parameters cannot be moved out of - they're returned to caller
+                                // For now, we treat them like normal owned for move tracking
+                                // (The caller still owns it, we just have mutable access)
+                                ctx.moved_vars.insert(
+                                    *name,
+                                    MoveInfo {
+                                        moved_at: inst.span,
+                                    },
+                                );
+                            }
+                            RirParamMode::Borrow => {
+                                // Cannot move out of a borrowed parameter!
+                                let name_str = self.interner.get(*name);
+                                return Err(CompileError::new(
+                                    ErrorKind::MoveOutOfBorrow {
+                                        variable: name_str.to_string(),
+                                    },
+                                    inst.span,
+                                ));
+                            }
+                        }
                     }
 
                     // Emit Param with the ABI slot (not the parameter index).
@@ -2379,7 +2427,7 @@ impl<'a> Sema<'a> {
                 }
 
                 // Check for exclusive access violation: same variable passed to multiple inout params
-                self.check_inout_exclusive_access(args, inst.span)?;
+                self.check_exclusive_access(args, inst.span)?;
 
                 // Clone the data we need before mutable borrow
                 let param_types = fn_info.param_types.clone();
@@ -2602,7 +2650,13 @@ impl<'a> Sema<'a> {
                 let mut current_base = *base;
                 let mut field_symbols: Vec<Symbol> = Vec::new();
 
-                let (var_name, root_slot, root_type, is_mut, _root_symbol) = loop {
+                // Result is either (Local, slot, type, is_mut, name) or (Param, abi_slot, type, mode, name)
+                enum RootKind {
+                    Local { slot: u32, is_mut: bool },
+                    Param { abi_slot: u32, mode: RirParamMode },
+                }
+
+                let (var_name, root_kind, root_type, root_symbol) = loop {
                     let current_inst = self.rir.get(current_base);
                     match &current_inst.data {
                         InstData::VarRef { name } => {
@@ -2623,9 +2677,37 @@ impl<'a> Sema<'a> {
 
                             break (
                                 name_str.to_string(),
-                                local.slot,
+                                RootKind::Local {
+                                    slot: local.slot,
+                                    is_mut: local.is_mut,
+                                },
                                 local.ty,
-                                local.is_mut,
+                                *name,
+                            );
+                        }
+                        InstData::ParamRef { name, .. } => {
+                            let name_str = self.interner.get(*name);
+                            let param_info = ctx.params.get(name).ok_or_compile_error(
+                                ErrorKind::UndefinedVariable(name_str.to_string()),
+                                inst.span,
+                            )?;
+
+                            // Check if this parameter has been moved
+                            if let Some(move_info) = ctx.moved_vars.get(name) {
+                                return Err(CompileError::new(
+                                    ErrorKind::UseAfterMove(name_str.to_string()),
+                                    inst.span,
+                                )
+                                .with_label("value moved here", move_info.moved_at));
+                            }
+
+                            break (
+                                name_str.to_string(),
+                                RootKind::Param {
+                                    abi_slot: param_info.abi_slot,
+                                    mode: param_info.mode,
+                                },
+                                param_info.ty,
                                 *name,
                             );
                         }
@@ -2645,13 +2727,40 @@ impl<'a> Sema<'a> {
                     }
                 };
 
-                // Check mutability of the root variable
-                if !is_mut {
-                    return Err(CompileError::new(
-                        ErrorKind::AssignToImmutable(var_name),
-                        inst.span,
-                    ));
-                }
+                // Check mutability based on root kind
+                let root_slot = match root_kind {
+                    RootKind::Local { slot, is_mut } => {
+                        if !is_mut {
+                            return Err(CompileError::new(
+                                ErrorKind::AssignToImmutable(var_name),
+                                inst.span,
+                            ));
+                        }
+                        slot
+                    }
+                    RootKind::Param { abi_slot, mode } => {
+                        match mode {
+                            RirParamMode::Normal => {
+                                // Normal (owned) parameters can be mutated
+                                // (though this is unusual - you'd typically use inout)
+                            }
+                            RirParamMode::Inout => {
+                                // Inout parameters can be mutated - that's their purpose
+                            }
+                            RirParamMode::Borrow => {
+                                // Borrow parameters CANNOT be mutated
+                                return Err(CompileError::new(
+                                    ErrorKind::MutateBorrowedValue { variable: var_name },
+                                    inst.span,
+                                ));
+                            }
+                        }
+                        abi_slot
+                    }
+                };
+
+                // Suppress unused variable warning
+                let _ = root_symbol;
 
                 // Now resolve the field chain from root to the immediate base.
                 // field_symbols is in reverse order (innermost first), so iterate in reverse
@@ -2917,9 +3026,16 @@ impl<'a> Sema<'a> {
             }
 
             InstData::IndexSet { base, index, value } => {
-                // For index assignment, we need the base to be a local variable
+                // For index assignment, we need the base to be a local variable or parameter
                 let base_inst = self.rir.get(*base);
-                let (var_name, slot, base_type, is_mut) = match &base_inst.data {
+
+                // Root kind to distinguish locals from params
+                enum IndexSetRootKind {
+                    Local { slot: u32, is_mut: bool },
+                    Param { abi_slot: u32, mode: RirParamMode },
+                }
+
+                let (var_name, root_kind, base_type) = match &base_inst.data {
                     InstData::VarRef { name } => {
                         let name_str = self.interner.get(*name);
                         let local = ctx.locals.get(name).ok_or_compile_error(
@@ -2936,7 +3052,39 @@ impl<'a> Sema<'a> {
                             .with_label("value moved here", move_info.moved_at));
                         }
 
-                        (name_str.to_string(), local.slot, local.ty, local.is_mut)
+                        (
+                            name_str.to_string(),
+                            IndexSetRootKind::Local {
+                                slot: local.slot,
+                                is_mut: local.is_mut,
+                            },
+                            local.ty,
+                        )
+                    }
+                    InstData::ParamRef { name, .. } => {
+                        let name_str = self.interner.get(*name);
+                        let param_info = ctx.params.get(name).ok_or_compile_error(
+                            ErrorKind::UndefinedVariable(name_str.to_string()),
+                            inst.span,
+                        )?;
+
+                        // Check if this parameter has been moved
+                        if let Some(move_info) = ctx.moved_vars.get(name) {
+                            return Err(CompileError::new(
+                                ErrorKind::UseAfterMove(name_str.to_string()),
+                                inst.span,
+                            )
+                            .with_label("value moved here", move_info.moved_at));
+                        }
+
+                        (
+                            name_str.to_string(),
+                            IndexSetRootKind::Param {
+                                abi_slot: param_info.abi_slot,
+                                mode: param_info.mode,
+                            },
+                            param_info.ty,
+                        )
                     }
                     _ => {
                         return Err(CompileError::new(
@@ -2946,13 +3094,36 @@ impl<'a> Sema<'a> {
                     }
                 };
 
-                // Check mutability
-                if !is_mut {
-                    return Err(CompileError::new(
-                        ErrorKind::AssignToImmutable(var_name),
-                        inst.span,
-                    ));
-                }
+                // Check mutability based on root kind
+                let slot = match root_kind {
+                    IndexSetRootKind::Local { slot, is_mut } => {
+                        if !is_mut {
+                            return Err(CompileError::new(
+                                ErrorKind::AssignToImmutable(var_name),
+                                inst.span,
+                            ));
+                        }
+                        slot
+                    }
+                    IndexSetRootKind::Param { abi_slot, mode } => {
+                        match mode {
+                            RirParamMode::Normal => {
+                                // Normal (owned) parameters can be mutated
+                            }
+                            RirParamMode::Inout => {
+                                // Inout parameters can be mutated
+                            }
+                            RirParamMode::Borrow => {
+                                // Borrow parameters CANNOT be mutated
+                                return Err(CompileError::new(
+                                    ErrorKind::MutateBorrowedValue { variable: var_name },
+                                    inst.span,
+                                ));
+                            }
+                        }
+                        abi_slot
+                    }
+                };
 
                 let array_type_id = match base_type {
                     Type::Array(id) => id,
@@ -3143,7 +3314,7 @@ impl<'a> Sema<'a> {
                 }
 
                 // Check for exclusive access violation in method args
-                self.check_inout_exclusive_access(args, inst.span)?;
+                self.check_exclusive_access(args, inst.span)?;
 
                 // Clone data needed before mutable borrow
                 let return_type = method_info.return_type;
@@ -3224,7 +3395,7 @@ impl<'a> Sema<'a> {
                 }
 
                 // Check for exclusive access violation in assoc fn args
-                self.check_inout_exclusive_access(args, inst.span)?;
+                self.check_exclusive_access(args, inst.span)?;
 
                 // Clone data needed before mutable borrow
                 let return_type = method_info.return_type;
