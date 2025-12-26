@@ -404,6 +404,18 @@ pub enum AirInstData {
         value: AirRef,
     },
 
+    /// Store a value to an array element of an inout parameter
+    ParamIndexSet {
+        /// The parameter's ABI slot (relative to params, not locals)
+        param_slot: u32,
+        /// The array type
+        array_type_id: ArrayTypeId,
+        /// Index expression
+        index: AirRef,
+        /// Value to store
+        value: AirRef,
+    },
+
     // Enum operations
     /// Create an enum variant value
     EnumVariant {
@@ -640,6 +652,18 @@ impl fmt::Display for Air {
                         f,
                         "index_set ${}(@{})[{}] = {}",
                         slot, array_type_id.0, index, value
+                    )?;
+                }
+                AirInstData::ParamIndexSet {
+                    param_slot,
+                    array_type_id,
+                    index,
+                    value,
+                } => {
+                    writeln!(
+                        f,
+                        "param_index_set param{}(@{})[{}] = {}",
+                        param_slot, array_type_id.0, index, value
                     )?;
                 }
                 AirInstData::EnumVariant {

@@ -1309,6 +1309,30 @@ impl<'a> CfgBuilder<'a> {
                 }
             }
 
+            AirInstData::ParamIndexSet {
+                param_slot,
+                array_type_id,
+                index,
+                value,
+            } => {
+                let index_val = self.lower_inst(*index).value.unwrap();
+                let val = self.lower_inst(*value).value.unwrap();
+                self.emit(
+                    CfgInstData::ParamIndexSet {
+                        param_slot: *param_slot,
+                        array_type_id: *array_type_id,
+                        index: index_val,
+                        value: val,
+                    },
+                    Type::Unit,
+                    span,
+                );
+                ExprResult {
+                    value: None,
+                    continuation: Continuation::Continues,
+                }
+            }
+
             AirInstData::EnumVariant {
                 enum_id,
                 variant_index,

@@ -3160,10 +3160,6 @@ impl<'a> Sema<'a> {
                 let (var_name, root_kind, base_type) = match &base_inst.data {
                     InstData::VarRef { name } => {
                         let name_str = self.interner.get(*name);
-                        let local = ctx.locals.get(name).ok_or_compile_error(
-                            ErrorKind::UndefinedVariable(name_str.to_string()),
-                            inst.span,
-                        )?;
 
                         // Check if this variable has been moved
                         if let Some(move_info) = ctx.moved_vars.get(name) {
@@ -3174,14 +3170,32 @@ impl<'a> Sema<'a> {
                             .with_label("value moved here", move_info.moved_at));
                         }
 
-                        (
-                            name_str.to_string(),
-                            IndexSetRootKind::Local {
-                                slot: local.slot,
-                                is_mut: local.is_mut,
-                            },
-                            local.ty,
-                        )
+                        // First check if it's a parameter (like FieldSet does)
+                        if let Some(param_info) = ctx.params.get(name) {
+                            (
+                                name_str.to_string(),
+                                IndexSetRootKind::Param {
+                                    abi_slot: param_info.abi_slot,
+                                    mode: param_info.mode,
+                                },
+                                param_info.ty,
+                            )
+                        } else {
+                            // Then check locals
+                            let local = ctx.locals.get(name).ok_or_compile_error(
+                                ErrorKind::UndefinedVariable(name_str.to_string()),
+                                inst.span,
+                            )?;
+
+                            (
+                                name_str.to_string(),
+                                IndexSetRootKind::Local {
+                                    slot: local.slot,
+                                    is_mut: local.is_mut,
+                                },
+                                local.ty,
+                            )
+                        }
                     }
                     InstData::ParamRef { name, .. } => {
                         let name_str = self.interner.get(*name);
@@ -3217,7 +3231,7 @@ impl<'a> Sema<'a> {
                 };
 
                 // Check mutability based on root kind
-                let slot = match root_kind {
+                let (is_inout_param, slot) = match root_kind {
                     IndexSetRootKind::Local { slot, is_mut } => {
                         if !is_mut {
                             return Err(CompileError::new(
@@ -3225,15 +3239,17 @@ impl<'a> Sema<'a> {
                                 inst.span,
                             ));
                         }
-                        slot
+                        (false, slot)
                     }
                     IndexSetRootKind::Param { abi_slot, mode } => {
-                        match mode {
+                        let is_inout = match mode {
                             RirParamMode::Normal => {
                                 // Normal (owned) parameters can be mutated
+                                false
                             }
                             RirParamMode::Inout => {
                                 // Inout parameters can be mutated
+                                true
                             }
                             RirParamMode::Borrow => {
                                 // Borrow parameters CANNOT be mutated
@@ -3242,8 +3258,8 @@ impl<'a> Sema<'a> {
                                     inst.span,
                                 ));
                             }
-                        }
-                        abi_slot
+                        };
+                        (is_inout, abi_slot)
                     }
                 };
 
@@ -3291,16 +3307,30 @@ impl<'a> Sema<'a> {
                 // Analyze the value with the expected element type
                 let value_result = self.analyze_inst(air, *value, ctx)?;
 
-                let air_ref = air.add_inst(AirInst {
-                    data: AirInstData::IndexSet {
-                        slot,
-                        array_type_id,
-                        index: index_result.air_ref,
-                        value: value_result.air_ref,
-                    },
-                    ty: Type::Unit,
-                    span: inst.span,
-                });
+                // Emit appropriate instruction based on whether this is an inout parameter
+                let air_ref = if is_inout_param {
+                    air.add_inst(AirInst {
+                        data: AirInstData::ParamIndexSet {
+                            param_slot: slot,
+                            array_type_id,
+                            index: index_result.air_ref,
+                            value: value_result.air_ref,
+                        },
+                        ty: Type::Unit,
+                        span: inst.span,
+                    })
+                } else {
+                    air.add_inst(AirInst {
+                        data: AirInstData::IndexSet {
+                            slot,
+                            array_type_id,
+                            index: index_result.air_ref,
+                            value: value_result.air_ref,
+                        },
+                        ty: Type::Unit,
+                        span: inst.span,
+                    })
+                };
                 Ok(AnalysisResult::new(air_ref, Type::Unit))
             }
 

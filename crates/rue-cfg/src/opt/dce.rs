@@ -105,6 +105,7 @@ fn has_side_effects(cfg: &Cfg, value: CfgValue) -> bool {
         CfgInstData::FieldSet { .. } => true,
         CfgInstData::ParamFieldSet { .. } => true,
         CfgInstData::IndexSet { .. } => true,
+        CfgInstData::ParamIndexSet { .. } => true,
 
         // Drop runs destructors
         CfgInstData::Drop { .. } => true,
@@ -192,6 +193,7 @@ fn instruction_uses(cfg: &Cfg, value: CfgValue) -> Vec<CfgValue> {
         CfgInstData::ArrayInit { elements, .. } => elements.clone(),
         CfgInstData::IndexGet { base, index, .. } => vec![*base, *index],
         CfgInstData::IndexSet { index, value, .. } => vec![*index, *value],
+        CfgInstData::ParamIndexSet { index, value, .. } => vec![*index, *value],
 
         // Enum operations
         CfgInstData::EnumVariant { .. } => vec![],

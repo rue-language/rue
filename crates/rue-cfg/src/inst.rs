@@ -235,6 +235,17 @@ pub enum CfgInstData {
         index: CfgValue,
         value: CfgValue,
     },
+    /// Store a value to an array element of an inout parameter
+    ParamIndexSet {
+        /// The parameter's ABI slot (relative to params, not locals)
+        param_slot: u32,
+        /// The array type
+        array_type_id: ArrayTypeId,
+        /// Index expression
+        index: CfgValue,
+        /// Value to store
+        value: CfgValue,
+    },
 
     // Enum operations
     /// Create an enum variant (discriminant value)
@@ -795,6 +806,18 @@ impl Cfg {
                     f,
                     "index_set ${}(@{})[{}] = {}",
                     slot, array_type_id.0, index, value
+                )
+            }
+            CfgInstData::ParamIndexSet {
+                param_slot,
+                array_type_id,
+                index,
+                value,
+            } => {
+                write!(
+                    f,
+                    "param_index_set %{}(@{})[{}] = {}",
+                    param_slot, array_type_id.0, index, value
                 )
             }
             CfgInstData::EnumVariant {

@@ -1271,3 +1271,159 @@ fn main() -> i32 {
 """
 compile_fail = true
 error_contains = "immutable"
+
+# =============================================================================
+# Inout parameters with arrays
+# =============================================================================
+
+[[case]]
+name = "inout_array_element_get"
+spec = ["6.1:14", "6.1:18"]
+description = "Inout array parameter allows reading elements"
+preview = "affine_types"
+source = """
+fn get_first(inout arr: [i32; 3]) -> i32 {
+    arr[0]
+}
+
+fn main() -> i32 {
+    let mut a = [42, 0, 0];
+    get_first(inout a)
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "inout_array_element_set"
+spec = ["6.1:14", "6.1:18"]
+description = "Inout array parameter allows modifying elements"
+preview = "affine_types"
+source = """
+fn increment_first(inout arr: [i32; 3]) {
+    arr[0] = arr[0] + 1;
+}
+
+fn main() -> i32 {
+    let mut a = [41, 0, 0];
+    increment_first(inout a);
+    a[0]
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "inout_array_multiple_elements"
+spec = ["6.1:14", "6.1:18"]
+description = "Inout array parameter allows modifying multiple elements"
+preview = "affine_types"
+source = """
+fn swap_first_two(inout arr: [i32; 3]) {
+    let tmp = arr[0];
+    arr[0] = arr[1];
+    arr[1] = tmp;
+}
+
+fn main() -> i32 {
+    let mut a = [10, 42, 0];
+    swap_first_two(inout a);
+    a[0]
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "inout_array_return_and_modify"
+spec = ["6.1:14", "6.1:18"]
+description = "Inout array parameter with return value"
+preview = "affine_types"
+source = """
+fn increment_return_old(inout arr: [i32; 3]) -> i32 {
+    let old = arr[0];
+    arr[0] = arr[0] + 1;
+    old
+}
+
+fn main() -> i32 {
+    let mut a = [40, 0, 0];
+    let old = increment_return_old(inout a);
+    old + a[0]
+}
+"""
+exit_code = 81
+
+[[case]]
+name = "inout_array_multiple_calls"
+spec = ["6.1:14", "6.1:18"]
+description = "Multiple calls with inout array accumulate changes"
+preview = "affine_types"
+source = """
+fn increment_first(inout arr: [i32; 3]) {
+    arr[0] = arr[0] + 1;
+}
+
+fn main() -> i32 {
+    let mut a = [39, 0, 0];
+    increment_first(inout a);
+    increment_first(inout a);
+    increment_first(inout a);
+    a[0]
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "inout_array_with_index_variable"
+spec = ["6.1:14", "6.1:18"]
+description = "Inout array with variable index"
+preview = "affine_types"
+source = """
+fn set_element(inout arr: [i32; 3], idx: u64, val: i32) {
+    arr[idx] = val;
+}
+
+fn main() -> i32 {
+    let mut a = [0, 0, 0];
+    set_element(inout a, 1, 42);
+    a[1]
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "inout_array_forward"
+spec = ["6.1:14", "6.1:18"]
+description = "Forwarding inout array parameter to another function"
+preview = "affine_types"
+source = """
+fn increment_by(inout arr: [i32; 3], amount: i32) {
+    arr[0] = arr[0] + amount;
+}
+
+fn double_increment(inout arr: [i32; 3]) {
+    increment_by(inout arr, 2);
+}
+
+fn main() -> i32 {
+    let mut a = [40, 0, 0];
+    double_increment(inout a);
+    a[0]
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "inout_array_sum"
+spec = ["6.1:14", "6.1:18"]
+description = "Reading all elements of an inout array"
+preview = "affine_types"
+source = """
+fn sum_array(inout arr: [i32; 3]) -> i32 {
+    arr[0] + arr[1] + arr[2]
+}
+
+fn main() -> i32 {
+    let mut a = [10, 20, 12];
+    sum_array(inout a)
+}
+"""
+exit_code = 42

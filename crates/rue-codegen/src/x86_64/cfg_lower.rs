@@ -1982,22 +1982,6 @@ impl<'a> CfgLower<'a> {
                     let array_length = self.array_length(*array_type_id);
                     self.emit_bounds_check(innermost_index_vreg, array_length);
 
-                    // Determine the base offset
-                    let base_offset = match &chain_base {
-                        IndexChainBase::Load { slot } => self.local_offset(*slot),
-                        IndexChainBase::Param { index: param_index } => {
-                            let base_slot = self.num_locals + *param_index as u32;
-                            self.local_offset(base_slot)
-                        }
-                        IndexChainBase::FieldGet {
-                            struct_base_slot,
-                            field_slot_offset,
-                        } => {
-                            let array_base_slot = struct_base_slot + field_slot_offset;
-                            self.local_offset(array_base_slot)
-                        }
-                    };
-
                     // Calculate total offset by summing index * stride for each level
                     let mut total_offset_vreg: Option<VReg> = None;
 
@@ -2048,8 +2032,55 @@ impl<'a> CfgLower<'a> {
                         }
                     }
 
-                    // Compute base address
+                    // Compute base address - different for inout params vs locals/normal params
                     let addr_vreg = self.mir.alloc_vreg();
+
+                    if let IndexChainBase::Param { index: param_index } = &chain_base {
+                        // Check if this is an inout parameter
+                        if self.cfg.is_param_inout(*param_index) {
+                            // For inout params, use the stored pointer
+                            if let Some(ptr_vreg) = self.inout_param_ptrs.get(param_index).copied()
+                            {
+                                self.mir.push(X86Inst::MovRR {
+                                    dst: Operand::Virtual(addr_vreg),
+                                    src: Operand::Virtual(ptr_vreg),
+                                });
+
+                                // Subtract total offset
+                                if let Some(total) = total_offset_vreg {
+                                    self.mir.push(X86Inst::SubRR64 {
+                                        dst: Operand::Virtual(addr_vreg),
+                                        src: Operand::Virtual(total),
+                                    });
+                                }
+
+                                // Load from computed address
+                                self.mir.push(X86Inst::MovRMIndexed {
+                                    dst: Operand::Virtual(vreg),
+                                    base: addr_vreg,
+                                    offset: 0,
+                                });
+                                return;
+                            }
+                        }
+                    }
+
+                    // Normal case: compute from RBP offset
+                    let base_offset = match &chain_base {
+                        IndexChainBase::Load { slot } => self.local_offset(*slot),
+                        IndexChainBase::Param { index: param_index } => {
+                            let base_slot = self.num_locals + *param_index as u32;
+                            self.local_offset(base_slot)
+                        }
+                        IndexChainBase::FieldGet {
+                            struct_base_slot,
+                            field_slot_offset,
+                        } => {
+                            let array_base_slot = struct_base_slot + field_slot_offset;
+                            self.local_offset(array_base_slot)
+                        }
+                    };
+
                     self.mir.push(X86Inst::Lea {
                         dst: Operand::Virtual(addr_vreg),
                         base: Reg::Rbp,
@@ -2129,6 +2160,63 @@ impl<'a> CfgLower<'a> {
                     offset: 0,
                     src: Operand::Virtual(val_vreg),
                 });
+            }
+
+            CfgInstData::ParamIndexSet {
+                param_slot,
+                array_type_id,
+                index,
+                value: val,
+            } => {
+                let val_vreg = self.get_vreg(*val);
+                let index_vreg = self.get_vreg(*index);
+
+                // Emit runtime bounds check
+                let array_length = self.array_length(*array_type_id);
+                self.emit_bounds_check(index_vreg, array_length);
+
+                // Scale index by 8 (element size)
+                let scaled_index = self.mir.alloc_vreg();
+                self.mir.push(X86Inst::MovRR {
+                    dst: Operand::Virtual(scaled_index),
+                    src: Operand::Virtual(index_vreg),
+                });
+                let eight = self.mir.alloc_vreg();
+                self.mir.push(X86Inst::MovRI32 {
+                    dst: Operand::Virtual(eight),
+                    imm: 3,
+                });
+                self.mir.push(X86Inst::Shl {
+                    dst: Operand::Virtual(scaled_index),
+                    count: Operand::Virtual(eight),
+                });
+
+                // For inout params, store through the pointer
+                if let Some(ptr_vreg) = self.inout_param_ptrs.get(param_slot).copied() {
+                    // Calculate address: ptr - (index * 8)
+                    // (Arrays are stored with element 0 at the highest address)
+                    let addr_vreg = self.mir.alloc_vreg();
+                    self.mir.push(X86Inst::MovRR {
+                        dst: Operand::Virtual(addr_vreg),
+                        src: Operand::Virtual(ptr_vreg),
+                    });
+                    self.mir.push(X86Inst::SubRR64 {
+                        dst: Operand::Virtual(addr_vreg),
+                        src: Operand::Virtual(scaled_index),
+                    });
+
+                    self.mir.push(X86Inst::MovMRIndexed {
+                        base: addr_vreg,
+                        offset: 0,
+                        src: Operand::Virtual(val_vreg),
+                    });
+                } else {
+                    panic!(
+                        "ParamIndexSet: inout param pointer not found for param slot {} - \
+                         Param instruction must be lowered before ParamIndexSet",
+                        param_slot
+                    );
+                }
             }
 
             CfgInstData::EnumVariant { variant_index, .. } => {
