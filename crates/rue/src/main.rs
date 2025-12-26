@@ -80,7 +80,10 @@ fn print_usage() {
     eprintln!();
     eprintln!("Options:");
     eprintln!("  --target <target>    Set compilation target (default: host)");
-    eprintln!("                       Valid targets: x86-64-linux, aarch64-linux");
+    eprintln!(
+        "                       Valid targets: {}",
+        Target::all_names()
+    );
     eprintln!("  --linker <linker>    Set linker to use (default: internal)");
     eprintln!("                       Use 'internal' for built-in linker, or a command");
     eprintln!("                       like 'clang', 'gcc', or 'ld' for system linker");
@@ -133,7 +136,7 @@ fn parse_args() -> Option<Options> {
             "--target" => {
                 let Some(target_str) = args_iter.next() else {
                     eprintln!("Error: --target requires a value");
-                    eprintln!("Valid targets: x86-64-linux, aarch64-linux");
+                    eprintln!("Valid targets: {}", Target::all_names());
                     return None;
                 };
                 match target_str.parse::<Target>() {

@@ -147,6 +147,11 @@ impl Target {
             Target::Aarch64Macos,
         ]
     }
+
+    /// Returns a comma-separated string of all target names for help text.
+    pub fn all_names() -> &'static str {
+        "x86-64-linux, aarch64-linux, aarch64-macos"
+    }
 }
 
 impl fmt::Display for Target {
