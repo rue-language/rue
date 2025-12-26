@@ -175,7 +175,7 @@ fn parse_args() -> Option<Options> {
             }
             "--help" | "-h" => {
                 print_usage();
-                return None;
+                std::process::exit(0);
             }
             _ if arg.starts_with("-O") => {
                 // Parse -O0, -O1, -O2, -O3
