@@ -101,6 +101,51 @@ compile_error!(
 );
 
 // ============================================================================
+// Platform-agnostic macro for reducing code duplication
+// ============================================================================
+//
+// Many runtime functions have identical implementations across platforms,
+// differing only in their `#[cfg]` attributes. This macro generates all
+// three platform-specific versions from a single definition.
+
+/// Define a function for all supported platforms with identical implementation.
+///
+/// This macro generates three `#[cfg]`-gated versions of the same function,
+/// one for each supported platform (x86_64 Linux, aarch64 macOS, aarch64 Linux).
+///
+/// # Usage
+///
+/// ```ignore
+/// define_for_all_platforms! {
+///     /// Documentation for the function
+///     pub extern "C" fn function_name(arg: Type) -> ReturnType {
+///         // implementation
+///     }
+/// }
+/// ```
+macro_rules! define_for_all_platforms {
+    (
+        $(#[$meta:meta])*
+        pub extern "C" fn $name:ident($($arg:ident : $arg_ty:ty),* $(,)?) $(-> $ret:ty)? $body:block
+    ) => {
+        #[cfg(all(target_arch = "x86_64", target_os = "linux"))]
+        $(#[$meta])*
+        #[unsafe(no_mangle)]
+        pub extern "C" fn $name($($arg : $arg_ty),*) $(-> $ret)? $body
+
+        #[cfg(all(target_arch = "aarch64", target_os = "macos"))]
+        $(#[$meta])*
+        #[unsafe(no_mangle)]
+        pub extern "C" fn $name($($arg : $arg_ty),*) $(-> $ret)? $body
+
+        #[cfg(all(target_arch = "aarch64", target_os = "linux"))]
+        $(#[$meta])*
+        #[unsafe(no_mangle)]
+        pub extern "C" fn $name($($arg : $arg_ty),*) $(-> $ret)? $body
+    };
+}
+
+// ============================================================================
 // Memory intrinsics
 // ============================================================================
 //
@@ -351,22 +396,10 @@ pub unsafe extern "C" fn _start() -> ! {
     platform::exit(exit_code)
 }
 
-#[cfg(all(target_arch = "x86_64", target_os = "linux"))]
-#[unsafe(no_mangle)]
-pub extern "C" fn __rue_exit(status: i32) -> ! {
-    platform::exit(status)
-}
-
-#[cfg(all(target_arch = "aarch64", target_os = "macos"))]
-#[unsafe(no_mangle)]
-pub extern "C" fn __rue_exit(status: i32) -> ! {
-    platform::exit(status)
-}
-
-#[cfg(all(target_arch = "aarch64", target_os = "linux"))]
-#[unsafe(no_mangle)]
-pub extern "C" fn __rue_exit(status: i32) -> ! {
-    platform::exit(status)
+define_for_all_platforms! {
+    pub extern "C" fn __rue_exit(status: i32) -> ! {
+        platform::exit(status)
+    }
 }
 
 /// Runtime error: division by zero.
@@ -387,25 +420,11 @@ pub extern "C" fn __rue_exit(status: i32) -> ! {
 /// ```
 ///
 /// No arguments. Never returns.
-#[cfg(all(target_arch = "x86_64", target_os = "linux"))]
-#[unsafe(no_mangle)]
-pub extern "C" fn __rue_div_by_zero() -> ! {
-    platform::write_stderr(b"error: division by zero\n");
-    platform::exit(101)
-}
-
-#[cfg(all(target_arch = "aarch64", target_os = "macos"))]
-#[unsafe(no_mangle)]
-pub extern "C" fn __rue_div_by_zero() -> ! {
-    platform::write_stderr(b"error: division by zero\n");
-    platform::exit(101)
-}
-
-#[cfg(all(target_arch = "aarch64", target_os = "linux"))]
-#[unsafe(no_mangle)]
-pub extern "C" fn __rue_div_by_zero() -> ! {
-    platform::write_stderr(b"error: division by zero\n");
-    platform::exit(101)
+define_for_all_platforms! {
+    pub extern "C" fn __rue_div_by_zero() -> ! {
+        platform::write_stderr(b"error: division by zero\n");
+        platform::exit(101)
+    }
 }
 
 /// Runtime error: integer overflow.
@@ -426,25 +445,11 @@ pub extern "C" fn __rue_div_by_zero() -> ! {
 /// ```
 ///
 /// No arguments. Never returns.
-#[cfg(all(target_arch = "x86_64", target_os = "linux"))]
-#[unsafe(no_mangle)]
-pub extern "C" fn __rue_overflow() -> ! {
-    platform::write_stderr(b"error: integer overflow\n");
-    platform::exit(101)
-}
-
-#[cfg(all(target_arch = "aarch64", target_os = "macos"))]
-#[unsafe(no_mangle)]
-pub extern "C" fn __rue_overflow() -> ! {
-    platform::write_stderr(b"error: integer overflow\n");
-    platform::exit(101)
-}
-
-#[cfg(all(target_arch = "aarch64", target_os = "linux"))]
-#[unsafe(no_mangle)]
-pub extern "C" fn __rue_overflow() -> ! {
-    platform::write_stderr(b"error: integer overflow\n");
-    platform::exit(101)
+define_for_all_platforms! {
+    pub extern "C" fn __rue_overflow() -> ! {
+        platform::write_stderr(b"error: integer overflow\n");
+        platform::exit(101)
+    }
 }
 
 /// Runtime error: integer cast overflow.
@@ -464,25 +469,11 @@ pub extern "C" fn __rue_overflow() -> ! {
 /// ```
 ///
 /// No arguments. Never returns.
-#[cfg(all(target_arch = "x86_64", target_os = "linux"))]
-#[unsafe(no_mangle)]
-pub extern "C" fn __rue_intcast_overflow() -> ! {
-    platform::write_stderr(b"error: integer cast overflow\n");
-    platform::exit(101)
-}
-
-#[cfg(all(target_arch = "aarch64", target_os = "macos"))]
-#[unsafe(no_mangle)]
-pub extern "C" fn __rue_intcast_overflow() -> ! {
-    platform::write_stderr(b"error: integer cast overflow\n");
-    platform::exit(101)
-}
-
-#[cfg(all(target_arch = "aarch64", target_os = "linux"))]
-#[unsafe(no_mangle)]
-pub extern "C" fn __rue_intcast_overflow() -> ! {
-    platform::write_stderr(b"error: integer cast overflow\n");
-    platform::exit(101)
+define_for_all_platforms! {
+    pub extern "C" fn __rue_intcast_overflow() -> ! {
+        platform::write_stderr(b"error: integer cast overflow\n");
+        platform::exit(101)
+    }
 }
 
 /// Runtime error: index out of bounds.
@@ -510,25 +501,11 @@ pub extern "C" fn __rue_intcast_overflow() -> ! {
 /// message, we keep this simple for minimal runtime size. The compiler
 /// already performs compile-time checks for constant indices, so this
 /// handler is only reached for dynamic indices that fail at runtime.
-#[cfg(all(target_arch = "x86_64", target_os = "linux"))]
-#[unsafe(no_mangle)]
-pub extern "C" fn __rue_bounds_check() -> ! {
-    platform::write_stderr(b"error: index out of bounds\n");
-    platform::exit(101)
-}
-
-#[cfg(all(target_arch = "aarch64", target_os = "macos"))]
-#[unsafe(no_mangle)]
-pub extern "C" fn __rue_bounds_check() -> ! {
-    platform::write_stderr(b"error: index out of bounds\n");
-    platform::exit(101)
-}
-
-#[cfg(all(target_arch = "aarch64", target_os = "linux"))]
-#[unsafe(no_mangle)]
-pub extern "C" fn __rue_bounds_check() -> ! {
-    platform::write_stderr(b"error: index out of bounds\n");
-    platform::exit(101)
+define_for_all_platforms! {
+    pub extern "C" fn __rue_bounds_check() -> ! {
+        platform::write_stderr(b"error: index out of bounds\n");
+        platform::exit(101)
+    }
 }
 
 /// Debug intrinsic: print a signed 64-bit integer.
@@ -543,22 +520,10 @@ pub extern "C" fn __rue_bounds_check() -> ! {
 /// ```
 ///
 /// - `value` is passed in the `rdi` register (System V AMD64 ABI)
-#[cfg(all(target_arch = "x86_64", target_os = "linux"))]
-#[unsafe(no_mangle)]
-pub extern "C" fn __rue_dbg_i64(value: i64) {
-    platform::print_i64(value);
-}
-
-#[cfg(all(target_arch = "aarch64", target_os = "macos"))]
-#[unsafe(no_mangle)]
-pub extern "C" fn __rue_dbg_i64(value: i64) {
-    platform::print_i64(value);
-}
-
-#[cfg(all(target_arch = "aarch64", target_os = "linux"))]
-#[unsafe(no_mangle)]
-pub extern "C" fn __rue_dbg_i64(value: i64) {
-    platform::print_i64(value);
+define_for_all_platforms! {
+    pub extern "C" fn __rue_dbg_i64(value: i64) {
+        platform::print_i64(value);
+    }
 }
 
 /// Debug intrinsic: print an unsigned 64-bit integer.
@@ -573,22 +538,10 @@ pub extern "C" fn __rue_dbg_i64(value: i64) {
 /// ```
 ///
 /// - `value` is passed in the `rdi` register (System V AMD64 ABI)
-#[cfg(all(target_arch = "x86_64", target_os = "linux"))]
-#[unsafe(no_mangle)]
-pub extern "C" fn __rue_dbg_u64(value: u64) {
-    platform::print_u64(value);
-}
-
-#[cfg(all(target_arch = "aarch64", target_os = "macos"))]
-#[unsafe(no_mangle)]
-pub extern "C" fn __rue_dbg_u64(value: u64) {
-    platform::print_u64(value);
-}
-
-#[cfg(all(target_arch = "aarch64", target_os = "linux"))]
-#[unsafe(no_mangle)]
-pub extern "C" fn __rue_dbg_u64(value: u64) {
-    platform::print_u64(value);
+define_for_all_platforms! {
+    pub extern "C" fn __rue_dbg_u64(value: u64) {
+        platform::print_u64(value);
+    }
 }
 
 /// Debug intrinsic: print a boolean.
@@ -604,22 +557,10 @@ pub extern "C" fn __rue_dbg_u64(value: u64) {
 ///
 /// - `value` is passed in the `rdi` register (System V AMD64 ABI)
 /// - Non-zero values are treated as true, zero as false
-#[cfg(all(target_arch = "x86_64", target_os = "linux"))]
-#[unsafe(no_mangle)]
-pub extern "C" fn __rue_dbg_bool(value: i64) {
-    platform::print_bool(value != 0);
-}
-
-#[cfg(all(target_arch = "aarch64", target_os = "macos"))]
-#[unsafe(no_mangle)]
-pub extern "C" fn __rue_dbg_bool(value: i64) {
-    platform::print_bool(value != 0);
-}
-
-#[cfg(all(target_arch = "aarch64", target_os = "linux"))]
-#[unsafe(no_mangle)]
-pub extern "C" fn __rue_dbg_bool(value: i64) {
-    platform::print_bool(value != 0);
+define_for_all_platforms! {
+    pub extern "C" fn __rue_dbg_bool(value: i64) {
+        platform::print_bool(value != 0);
+    }
 }
 
 /// Debug intrinsic: print a string.
@@ -642,31 +583,13 @@ pub extern "C" fn __rue_dbg_bool(value: i64) {
 /// The caller must ensure:
 /// - `ptr` points to a valid UTF-8 string of `len` bytes
 /// - The memory region remains valid for the duration of the call
-#[cfg(all(target_arch = "x86_64", target_os = "linux"))]
-#[unsafe(no_mangle)]
-pub extern "C" fn __rue_dbg_str(ptr: *const u8, len: u64) {
-    // SAFETY: The caller guarantees ptr and len are valid
-    let bytes = unsafe { core::slice::from_raw_parts(ptr, len as usize) };
-    platform::write_stdout(bytes);
-    platform::write_stdout(b"\n");
-}
-
-#[cfg(all(target_arch = "aarch64", target_os = "macos"))]
-#[unsafe(no_mangle)]
-pub extern "C" fn __rue_dbg_str(ptr: *const u8, len: u64) {
-    // SAFETY: The caller guarantees ptr and len are valid
-    let bytes = unsafe { core::slice::from_raw_parts(ptr, len as usize) };
-    platform::write_stdout(bytes);
-    platform::write_stdout(b"\n");
-}
-
-#[cfg(all(target_arch = "aarch64", target_os = "linux"))]
-#[unsafe(no_mangle)]
-pub extern "C" fn __rue_dbg_str(ptr: *const u8, len: u64) {
-    // SAFETY: The caller guarantees ptr and len are valid
-    let bytes = unsafe { core::slice::from_raw_parts(ptr, len as usize) };
-    platform::write_stdout(bytes);
-    platform::write_stdout(b"\n");
+define_for_all_platforms! {
+    pub extern "C" fn __rue_dbg_str(ptr: *const u8, len: u64) {
+        // SAFETY: The caller guarantees ptr and len are valid
+        let bytes = unsafe { core::slice::from_raw_parts(ptr, len as usize) };
+        platform::write_stdout(bytes);
+        platform::write_stdout(b"\n");
+    }
 }
 
 /// String equality comparison.
@@ -698,70 +621,26 @@ pub extern "C" fn __rue_dbg_str(ptr: *const u8, len: u64) {
 /// - `ptr1` points to a valid buffer of at least `len1` bytes
 /// - `ptr2` points to a valid buffer of at least `len2` bytes
 /// - Both pointers remain valid for the duration of the call
-#[cfg(all(target_arch = "x86_64", target_os = "linux"))]
-#[unsafe(no_mangle)]
-pub extern "C" fn __rue_str_eq(ptr1: *const u8, len1: u64, ptr2: *const u8, len2: u64) -> u8 {
-    // Fast path: different lengths means not equal
-    if len1 != len2 {
-        return 0;
-    }
-
-    // Slow path: compare bytes one by one
-    // We avoid slice comparison (==) because it generates a call to bcmp,
-    // which is a libc function not available in our no_std runtime.
-    // SAFETY: Caller guarantees pointers are valid for their respective lengths
-    for i in 0..len1 as usize {
-        let b1 = unsafe { *ptr1.add(i) };
-        let b2 = unsafe { *ptr2.add(i) };
-        if b1 != b2 {
+define_for_all_platforms! {
+    pub extern "C" fn __rue_str_eq(ptr1: *const u8, len1: u64, ptr2: *const u8, len2: u64) -> u8 {
+        // Fast path: different lengths means not equal
+        if len1 != len2 {
             return 0;
         }
-    }
-    1
-}
 
-#[cfg(all(target_arch = "aarch64", target_os = "macos"))]
-#[unsafe(no_mangle)]
-pub extern "C" fn __rue_str_eq(ptr1: *const u8, len1: u64, ptr2: *const u8, len2: u64) -> u8 {
-    // Fast path: different lengths means not equal
-    if len1 != len2 {
-        return 0;
-    }
-
-    // Slow path: compare bytes one by one
-    // We avoid slice comparison (==) because it generates a call to bcmp,
-    // which may not be available in all runtime environments.
-    // SAFETY: Caller guarantees pointers are valid for their respective lengths
-    for i in 0..len1 as usize {
-        let b1 = unsafe { *ptr1.add(i) };
-        let b2 = unsafe { *ptr2.add(i) };
-        if b1 != b2 {
-            return 0;
+        // Slow path: compare bytes one by one
+        // We avoid slice comparison (==) because it generates a call to bcmp,
+        // which is a libc function not available in our no_std runtime.
+        // SAFETY: Caller guarantees pointers are valid for their respective lengths
+        for i in 0..len1 as usize {
+            let b1 = unsafe { *ptr1.add(i) };
+            let b2 = unsafe { *ptr2.add(i) };
+            if b1 != b2 {
+                return 0;
+            }
         }
+        1
     }
-    1
-}
-
-#[cfg(all(target_arch = "aarch64", target_os = "linux"))]
-#[unsafe(no_mangle)]
-pub extern "C" fn __rue_str_eq(ptr1: *const u8, len1: u64, ptr2: *const u8, len2: u64) -> u8 {
-    // Fast path: different lengths means not equal
-    if len1 != len2 {
-        return 0;
-    }
-
-    // Slow path: compare bytes one by one
-    // We avoid slice comparison (==) because it generates a call to bcmp,
-    // which is a libc function not available in our no_std runtime.
-    // SAFETY: Caller guarantees pointers are valid for their respective lengths
-    for i in 0..len1 as usize {
-        let b1 = unsafe { *ptr1.add(i) };
-        let b2 = unsafe { *ptr2.add(i) };
-        if b1 != b2 {
-            return 0;
-        }
-    }
-    1
 }
 
 // =============================================================================
@@ -792,22 +671,10 @@ pub extern "C" fn __rue_str_eq(ptr1: *const u8, len1: u64, ptr2: *const u8, len2
 /// - `size` is passed in the first argument register (rdi on x86_64, x0 on aarch64)
 /// - `align` is passed in the second argument register (rsi on x86_64, x1 on aarch64)
 /// - Returns pointer in rax (x86_64) or x0 (aarch64)
-#[cfg(all(target_arch = "x86_64", target_os = "linux"))]
-#[unsafe(no_mangle)]
-pub extern "C" fn __rue_alloc(size: u64, align: u64) -> *mut u8 {
-    heap::alloc(size, align)
-}
-
-#[cfg(all(target_arch = "aarch64", target_os = "macos"))]
-#[unsafe(no_mangle)]
-pub extern "C" fn __rue_alloc(size: u64, align: u64) -> *mut u8 {
-    heap::alloc(size, align)
-}
-
-#[cfg(all(target_arch = "aarch64", target_os = "linux"))]
-#[unsafe(no_mangle)]
-pub extern "C" fn __rue_alloc(size: u64, align: u64) -> *mut u8 {
-    heap::alloc(size, align)
+define_for_all_platforms! {
+    pub extern "C" fn __rue_alloc(size: u64, align: u64) -> *mut u8 {
+        heap::alloc(size, align)
+    }
 }
 
 /// Free memory previously allocated by `__rue_alloc`.
@@ -829,22 +696,10 @@ pub extern "C" fn __rue_alloc(size: u64, align: u64) -> *mut u8 {
 /// ```text
 /// extern "C" fn __rue_free(ptr: *mut u8, size: u64, align: u64)
 /// ```
-#[cfg(all(target_arch = "x86_64", target_os = "linux"))]
-#[unsafe(no_mangle)]
-pub extern "C" fn __rue_free(ptr: *mut u8, size: u64, align: u64) {
-    heap::free(ptr, size, align)
-}
-
-#[cfg(all(target_arch = "aarch64", target_os = "macos"))]
-#[unsafe(no_mangle)]
-pub extern "C" fn __rue_free(ptr: *mut u8, size: u64, align: u64) {
-    heap::free(ptr, size, align)
-}
-
-#[cfg(all(target_arch = "aarch64", target_os = "linux"))]
-#[unsafe(no_mangle)]
-pub extern "C" fn __rue_free(ptr: *mut u8, size: u64, align: u64) {
-    heap::free(ptr, size, align)
+define_for_all_platforms! {
+    pub extern "C" fn __rue_free(ptr: *mut u8, size: u64, align: u64) {
+        heap::free(ptr, size, align)
+    }
 }
 
 /// Reallocate memory to a new size.
@@ -872,22 +727,10 @@ pub extern "C" fn __rue_free(ptr: *mut u8, size: u64, align: u64) {
 /// ```text
 /// extern "C" fn __rue_realloc(ptr: *mut u8, old_size: u64, new_size: u64, align: u64) -> *mut u8
 /// ```
-#[cfg(all(target_arch = "x86_64", target_os = "linux"))]
-#[unsafe(no_mangle)]
-pub extern "C" fn __rue_realloc(ptr: *mut u8, old_size: u64, new_size: u64, align: u64) -> *mut u8 {
-    heap::realloc(ptr, old_size, new_size, align)
-}
-
-#[cfg(all(target_arch = "aarch64", target_os = "macos"))]
-#[unsafe(no_mangle)]
-pub extern "C" fn __rue_realloc(ptr: *mut u8, old_size: u64, new_size: u64, align: u64) -> *mut u8 {
-    heap::realloc(ptr, old_size, new_size, align)
-}
-
-#[cfg(all(target_arch = "aarch64", target_os = "linux"))]
-#[unsafe(no_mangle)]
-pub extern "C" fn __rue_realloc(ptr: *mut u8, old_size: u64, new_size: u64, align: u64) -> *mut u8 {
-    heap::realloc(ptr, old_size, new_size, align)
+define_for_all_platforms! {
+    pub extern "C" fn __rue_realloc(ptr: *mut u8, old_size: u64, new_size: u64, align: u64) -> *mut u8 {
+        heap::realloc(ptr, old_size, new_size, align)
+    }
 }
 
 // =============================================================================
@@ -914,37 +757,15 @@ const STRING_MIN_CAPACITY: u64 = 16;
 /// ```text
 /// extern "C" fn __rue_string_alloc(cap: u64) -> *mut u8
 /// ```
-#[cfg(all(target_arch = "x86_64", target_os = "linux"))]
-#[unsafe(no_mangle)]
-pub extern "C" fn __rue_string_alloc(cap: u64) -> *mut u8 {
-    let actual_cap = if cap < STRING_MIN_CAPACITY {
-        STRING_MIN_CAPACITY
-    } else {
-        cap
-    };
-    heap::alloc(actual_cap, 1) // Strings are byte-aligned
-}
-
-#[cfg(all(target_arch = "aarch64", target_os = "macos"))]
-#[unsafe(no_mangle)]
-pub extern "C" fn __rue_string_alloc(cap: u64) -> *mut u8 {
-    let actual_cap = if cap < STRING_MIN_CAPACITY {
-        STRING_MIN_CAPACITY
-    } else {
-        cap
-    };
-    heap::alloc(actual_cap, 1)
-}
-
-#[cfg(all(target_arch = "aarch64", target_os = "linux"))]
-#[unsafe(no_mangle)]
-pub extern "C" fn __rue_string_alloc(cap: u64) -> *mut u8 {
-    let actual_cap = if cap < STRING_MIN_CAPACITY {
-        STRING_MIN_CAPACITY
-    } else {
-        cap
-    };
-    heap::alloc(actual_cap, 1)
+define_for_all_platforms! {
+    pub extern "C" fn __rue_string_alloc(cap: u64) -> *mut u8 {
+        let actual_cap = if cap < STRING_MIN_CAPACITY {
+            STRING_MIN_CAPACITY
+        } else {
+            cap
+        };
+        heap::alloc(actual_cap, 1) // Strings are byte-aligned
+    }
 }
 
 /// Reallocate a string buffer to a new capacity.
@@ -973,37 +794,15 @@ pub extern "C" fn __rue_string_alloc(cap: u64) -> *mut u8 {
 /// ```text
 /// extern "C" fn __rue_string_realloc(ptr: *mut u8, old_cap: u64, new_cap: u64) -> *mut u8
 /// ```
-#[cfg(all(target_arch = "x86_64", target_os = "linux"))]
-#[unsafe(no_mangle)]
-pub extern "C" fn __rue_string_realloc(ptr: *mut u8, old_cap: u64, new_cap: u64) -> *mut u8 {
-    string_realloc_impl(ptr, old_cap, new_cap)
-}
+define_for_all_platforms! {
+    pub extern "C" fn __rue_string_realloc(ptr: *mut u8, old_cap: u64, new_cap: u64) -> *mut u8 {
+        // Calculate actual new capacity with growth strategy
+        let grown_cap = old_cap.saturating_mul(2);
+        let actual_cap = new_cap.max(grown_cap).max(STRING_MIN_CAPACITY);
 
-#[cfg(all(target_arch = "aarch64", target_os = "macos"))]
-#[unsafe(no_mangle)]
-pub extern "C" fn __rue_string_realloc(ptr: *mut u8, old_cap: u64, new_cap: u64) -> *mut u8 {
-    string_realloc_impl(ptr, old_cap, new_cap)
-}
-
-#[cfg(all(target_arch = "aarch64", target_os = "linux"))]
-#[unsafe(no_mangle)]
-pub extern "C" fn __rue_string_realloc(ptr: *mut u8, old_cap: u64, new_cap: u64) -> *mut u8 {
-    string_realloc_impl(ptr, old_cap, new_cap)
-}
-
-/// Implementation of string realloc, shared across platforms.
-#[cfg(any(
-    all(target_arch = "x86_64", target_os = "linux"),
-    all(target_arch = "aarch64", target_os = "macos"),
-    all(target_arch = "aarch64", target_os = "linux")
-))]
-fn string_realloc_impl(ptr: *mut u8, old_cap: u64, new_cap: u64) -> *mut u8 {
-    // Calculate actual new capacity with growth strategy
-    let grown_cap = old_cap.saturating_mul(2);
-    let actual_cap = new_cap.max(grown_cap).max(STRING_MIN_CAPACITY);
-
-    // Use the general realloc, which handles null ptr and copying
-    heap::realloc(ptr, old_cap, actual_cap, 1)
+        // Use the general realloc, which handles null ptr and copying
+        heap::realloc(ptr, old_cap, actual_cap, 1)
+    }
 }
 
 /// Clone a string by allocating a new buffer and copying the content.
@@ -1029,48 +828,26 @@ fn string_realloc_impl(ptr: *mut u8, old_cap: u64, new_cap: u64) -> *mut u8 {
 /// ```text
 /// extern "C" fn __rue_string_clone(ptr: *const u8, len: u64) -> *mut u8
 /// ```
-#[cfg(all(target_arch = "x86_64", target_os = "linux"))]
-#[unsafe(no_mangle)]
-pub extern "C" fn __rue_string_clone(ptr: *const u8, len: u64) -> *mut u8 {
-    string_clone_impl(ptr, len)
-}
-
-#[cfg(all(target_arch = "aarch64", target_os = "macos"))]
-#[unsafe(no_mangle)]
-pub extern "C" fn __rue_string_clone(ptr: *const u8, len: u64) -> *mut u8 {
-    string_clone_impl(ptr, len)
-}
-
-#[cfg(all(target_arch = "aarch64", target_os = "linux"))]
-#[unsafe(no_mangle)]
-pub extern "C" fn __rue_string_clone(ptr: *const u8, len: u64) -> *mut u8 {
-    string_clone_impl(ptr, len)
-}
-
-/// Implementation of string clone, shared across platforms.
-#[cfg(any(
-    all(target_arch = "x86_64", target_os = "linux"),
-    all(target_arch = "aarch64", target_os = "macos"),
-    all(target_arch = "aarch64", target_os = "linux")
-))]
-fn string_clone_impl(ptr: *const u8, len: u64) -> *mut u8 {
-    // Allocate new buffer with capacity >= len
-    let cap = len.max(STRING_MIN_CAPACITY);
-    let new_ptr = heap::alloc(cap, 1);
-    if new_ptr.is_null() {
-        return new_ptr;
-    }
-
-    // Copy the string content
-    if len > 0 && !ptr.is_null() {
-        // SAFETY: Caller guarantees ptr is valid for len bytes
-        // and new_ptr is freshly allocated with at least len bytes
-        unsafe {
-            core::ptr::copy_nonoverlapping(ptr, new_ptr, len as usize);
+define_for_all_platforms! {
+    pub extern "C" fn __rue_string_clone(ptr: *const u8, len: u64) -> *mut u8 {
+        // Allocate new buffer with capacity >= len
+        let cap = len.max(STRING_MIN_CAPACITY);
+        let new_ptr = heap::alloc(cap, 1);
+        if new_ptr.is_null() {
+            return new_ptr;
         }
-    }
 
-    new_ptr
+        // Copy the string content
+        if len > 0 && !ptr.is_null() {
+            // SAFETY: Caller guarantees ptr is valid for len bytes
+            // and new_ptr is freshly allocated with at least len bytes
+            unsafe {
+                core::ptr::copy_nonoverlapping(ptr, new_ptr, len as usize);
+            }
+        }
+
+        new_ptr
+    }
 }
 
 /// Drop a String, freeing its heap buffer if it was heap-allocated.
@@ -1091,29 +868,13 @@ fn string_clone_impl(ptr: *const u8, len: u64) -> *mut u8 {
 /// ```text
 /// extern "C" fn __rue_drop_String(ptr: *mut u8, len: u64, cap: u64)
 /// ```
-#[cfg(all(target_arch = "x86_64", target_os = "linux"))]
-#[unsafe(no_mangle)]
-pub extern "C" fn __rue_drop_String(ptr: *mut u8, _len: u64, cap: u64) {
-    // Only free heap-allocated strings (cap > 0)
-    // Rodata strings have cap == 0 and must not be freed
-    if cap > 0 {
-        heap::free(ptr, cap, 1);
-    }
-}
-
-#[cfg(all(target_arch = "aarch64", target_os = "macos"))]
-#[unsafe(no_mangle)]
-pub extern "C" fn __rue_drop_String(ptr: *mut u8, _len: u64, cap: u64) {
-    if cap > 0 {
-        heap::free(ptr, cap, 1);
-    }
-}
-
-#[cfg(all(target_arch = "aarch64", target_os = "linux"))]
-#[unsafe(no_mangle)]
-pub extern "C" fn __rue_drop_String(ptr: *mut u8, _len: u64, cap: u64) {
-    if cap > 0 {
-        heap::free(ptr, cap, 1);
+define_for_all_platforms! {
+    pub extern "C" fn __rue_drop_String(ptr: *mut u8, _len: u64, cap: u64) {
+        // Only free heap-allocated strings (cap > 0)
+        // Rodata strings have cap == 0 and must not be freed
+        if cap > 0 {
+            heap::free(ptr, cap, 1);
+        }
     }
 }
 
