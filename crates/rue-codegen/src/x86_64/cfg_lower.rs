@@ -31,6 +31,7 @@ use rue_cfg::{
 };
 
 use super::mir::{LabelId, Operand, Reg, VReg, X86Inst, X86Mir};
+use crate::cfg_lower::{FieldChainBase, IndexChainBase, IndexLevel};
 use crate::types;
 
 /// Argument passing registers per System V AMD64 ABI.
@@ -38,36 +39,6 @@ const ARG_REGS: [Reg; 6] = [Reg::Rdi, Reg::Rsi, Reg::Rdx, Reg::Rcx, Reg::R8, Reg
 
 /// Return value registers per System V AMD64 ABI.
 const RET_REGS: [Reg; 6] = [Reg::Rax, Reg::Rdx, Reg::Rcx, Reg::R8, Reg::R9, Reg::R10];
-
-/// Result of tracing back through FieldGet chains to find the original source.
-enum FieldChainBase {
-    /// Chain originates from a Load instruction with the given slot.
-    Load { slot: u32 },
-    /// Chain originates from a Param instruction with the given index.
-    Param { index: u32 },
-}
-
-/// Result of tracing back through IndexGet chains to find the original source.
-#[derive(Clone)]
-enum IndexChainBase {
-    /// Chain originates from a Load instruction with the given slot.
-    Load { slot: u32 },
-    /// Chain originates from a Param instruction with the given index.
-    Param { index: u32 },
-    /// Chain originates from a FieldGet (array within a struct).
-    FieldGet {
-        struct_base_slot: u32,
-        field_slot_offset: u32,
-    },
-}
-
-/// Represents an index operation in a chain: the index value and the stride (slots per element).
-#[derive(Clone)]
-struct IndexLevel {
-    index: CfgValue,
-    elem_slot_count: u32,
-    array_type_id: ArrayTypeId,
-}
 
 /// CFG to X86Mir lowering.
 pub struct CfgLower<'a> {

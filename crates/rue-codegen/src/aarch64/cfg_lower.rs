@@ -11,6 +11,7 @@ use rue_cfg::{
 };
 
 use super::mir::{Aarch64Inst, Aarch64Mir, Cond, LabelId, Operand, Reg, VReg};
+use crate::cfg_lower::{FieldChainBase, IndexChainBase, IndexLevel};
 use crate::types;
 
 /// Argument passing registers per AAPCS64.
@@ -36,36 +37,6 @@ const RET_REGS: [Reg; 8] = [
     Reg::X6,
     Reg::X7,
 ];
-
-/// Result of tracing back through FieldGet chains to find the original source.
-enum FieldChainBase {
-    /// Chain originates from a Load instruction with the given slot.
-    Load { slot: u32 },
-    /// Chain originates from a Param instruction with the given index.
-    Param { index: u32 },
-}
-
-/// Result of tracing back through IndexGet chains to find the original source.
-#[derive(Clone)]
-enum IndexChainBase {
-    /// Chain originates from a Load instruction with the given slot.
-    Load { slot: u32 },
-    /// Chain originates from a Param instruction with the given index.
-    Param { index: u32 },
-    /// Chain originates from a FieldGet (array within a struct).
-    FieldGet {
-        struct_base_slot: u32,
-        field_slot_offset: u32,
-    },
-}
-
-/// Represents an index operation in a chain: the index value and the stride (slots per element).
-#[derive(Clone)]
-struct IndexLevel {
-    index: CfgValue,
-    elem_slot_count: u32,
-    array_type_id: ArrayTypeId,
-}
 
 /// CFG to Aarch64Mir lowering.
 pub struct CfgLower<'a> {

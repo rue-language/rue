@@ -14,6 +14,7 @@
 //! virtual registers to physical registers before final emission.
 
 pub mod aarch64;
+pub mod cfg_lower;
 pub mod index_map;
 pub mod liveness;
 pub mod regalloc;
