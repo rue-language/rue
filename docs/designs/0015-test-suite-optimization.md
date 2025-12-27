@@ -179,10 +179,10 @@ Add a new script `./quick-test.sh` that runs only unit tests for faster iteratio
   - Added unit tests for expansion logic
   - Added example parameterized test to `integers.toml`
 
-- [ ] **Phase 2: Consolidate Integer Tests** - rue-9jdv.2
-  - Rewrite `integers.toml` using parameterized format
-  - Verify 100% spec coverage maintained via traceability check
-  - Target: 95 → ~30 cases
+- [x] **Phase 2: Consolidate Integer Tests** - rue-9jdv.2
+  - Rewrote `integers.toml` using parameterized format (95 → 41 case definitions)
+  - Fixed traceability report to handle parameterized tests with `spec_extra`
+  - Verified 100% spec coverage maintained via traceability check
 
 - [ ] **Phase 3: Consolidate Other Spec Tests** - rue-9jdv.3
   - Consolidate `arithmetic.toml`, `let.toml`, `functions.toml` (inout section)

@@ -5,37 +5,61 @@ name = "Integer Types"
 description = "Signed and unsigned integer types: i8, i16, i32, i64, u8, u16, u32, u64"
 
 # =============================================================================
-# i8 Type
+# Basic Integer Type Tests (Parameterized)
 # =============================================================================
+# These tests verify that each integer type can hold and return values.
 
 [[case]]
-name = "i8_return"
-spec = ["3.1:1", "3.1:2"]
-source = "fn main() -> i8 { 42 }"
-exit_code = 42
+name = "{type}_return"
+spec = ["3.1:1"]
+source = "fn main() -> {type} { {value} }"
+params = [
+  { type = "i8", value = "42", exit_code = 42, spec_extra = ["3.1:2"] },
+  { type = "i16", value = "100", exit_code = 100, spec_extra = ["3.1:3"] },
+  { type = "i32", value = "42", exit_code = 42, spec_extra = ["3.1:4"] },
+  { type = "i64", value = "42", exit_code = 42, spec_extra = ["3.1:5"] },
+  { type = "u8", value = "42", exit_code = 42, spec_extra = ["3.1:8", "3.1:9"] },
+  { type = "u16", value = "100", exit_code = 100, spec_extra = ["3.1:8", "3.1:10"] },
+  { type = "u32", value = "42", exit_code = 42, spec_extra = ["3.1:8", "3.1:11"] },
+  { type = "u64", value = "42", exit_code = 42, spec_extra = ["3.1:8", "3.1:12"] },
+]
 
 [[case]]
-name = "i8_zero"
-spec = ["3.1:1", "3.1:2"]
-source = "fn main() -> i8 { 0 }"
+name = "{type}_zero"
+spec = ["3.1:1"]
+source = "fn main() -> {type} { 0 }"
 exit_code = 0
+params = [
+  { type = "i8", spec_extra = ["3.1:2"] },
+  { type = "i16", spec_extra = ["3.1:3"] },
+  { type = "i32", spec_extra = ["3.1:4"] },
+  { type = "i64", spec_extra = ["3.1:5"] },
+  { type = "u8", spec_extra = ["3.1:8", "3.1:9"] },
+  { type = "u16", spec_extra = ["3.1:8", "3.1:10"] },
+  { type = "u32", spec_extra = ["3.1:8", "3.1:11"] },
+  { type = "u64", spec_extra = ["3.1:8", "3.1:12"] },
+]
+
+[[case]]
+name = "{type}_variable"
+spec = ["3.1:1"]
+source = """
+fn main() -> {type} {
+    let x: {type} = {value};
+    x
+}
+"""
+params = [
+  { type = "i8", value = "50", exit_code = 50, spec_extra = ["3.1:2"] },
+  { type = "i16", value = "200", exit_code = 200, spec_extra = ["3.1:3"] },
+  { type = "i64", value = "123", exit_code = 123, spec_extra = ["3.1:5"] },
+]
 
 [[case]]
 name = "i8_max_positive"
 spec = ["3.1:2"]
 source = "fn main() -> i8 { 127 }"
 exit_code = 127
-
-[[case]]
-name = "i8_variable"
-spec = ["3.1:1", "3.1:2"]
-source = """
-fn main() -> i8 {
-    let x: i8 = 50;
-    x
-}
-"""
-exit_code = 50
 
 [[case]]
 name = "i8_arithmetic"
@@ -49,48 +73,15 @@ fn main() -> i8 {
 """
 exit_code = 15
 
-# =============================================================================
-# i16 Type
-# =============================================================================
-
 [[case]]
-name = "i16_return"
-spec = ["3.1:1", "3.1:3"]
-source = "fn main() -> i16 { 100 }"
-exit_code = 100
-
-[[case]]
-name = "i16_zero"
-spec = ["3.1:1", "3.1:3"]
-source = "fn main() -> i16 { 0 }"
-exit_code = 0
-
-[[case]]
-name = "i16_variable"
-spec = ["3.1:1", "3.1:3"]
-source = """
-fn main() -> i16 {
-    let x: i16 = 200;
-    x
-}
-"""
-exit_code = 200
+name = "u8_max"
+spec = ["3.1:9"]
+source = "fn main() -> u8 { 255 }"
+exit_code = 255
 
 # =============================================================================
-# i32 Type
+# Integer Literal Type Inference
 # =============================================================================
-
-[[case]]
-name = "i32_return"
-spec = ["3.1:1", "3.1:4"]
-source = "fn main() -> i32 { 42 }"
-exit_code = 42
-
-[[case]]
-name = "i32_zero"
-spec = ["3.1:1", "3.1:4"]
-source = "fn main() -> i32 { 0 }"
-exit_code = 0
 
 [[case]]
 name = "i32_default_type"
@@ -113,153 +104,57 @@ fn main() -> i32 { takes_i32(42) }
 exit_code = 42
 
 # =============================================================================
-# i64 Type
-# =============================================================================
-
-[[case]]
-name = "i64_return"
-spec = ["3.1:1", "3.1:5"]
-source = "fn main() -> i64 { 42 }"
-exit_code = 42
-
-[[case]]
-name = "i64_zero"
-spec = ["3.1:1", "3.1:5"]
-source = "fn main() -> i64 { 0 }"
-exit_code = 0
-
-[[case]]
-name = "i64_variable"
-spec = ["3.1:1", "3.1:5"]
-source = """
-fn main() -> i64 {
-    let x: i64 = 123;
-    x
-}
-"""
-exit_code = 123
-
-# =============================================================================
-# u8 Type
-# =============================================================================
-
-[[case]]
-name = "u8_return"
-spec = ["3.1:8", "3.1:9"]
-source = "fn main() -> u8 { 42 }"
-exit_code = 42
-
-[[case]]
-name = "u8_zero"
-spec = ["3.1:8", "3.1:9"]
-source = "fn main() -> u8 { 0 }"
-exit_code = 0
-
-[[case]]
-name = "u8_max"
-spec = ["3.1:9"]
-source = "fn main() -> u8 { 255 }"
-exit_code = 255
-
-# =============================================================================
-# u16 Type
-# =============================================================================
-
-[[case]]
-name = "u16_return"
-spec = ["3.1:8", "3.1:10"]
-source = "fn main() -> u16 { 100 }"
-exit_code = 100
-
-[[case]]
-name = "u16_zero"
-spec = ["3.1:8", "3.1:10"]
-source = "fn main() -> u16 { 0 }"
-exit_code = 0
-
-# =============================================================================
-# u32 Type
-# =============================================================================
-
-[[case]]
-name = "u32_return"
-spec = ["3.1:8", "3.1:11"]
-source = "fn main() -> u32 { 42 }"
-exit_code = 42
-
-[[case]]
-name = "u32_zero"
-spec = ["3.1:8", "3.1:11"]
-source = "fn main() -> u32 { 0 }"
-exit_code = 0
-
-# =============================================================================
-# u64 Type
-# =============================================================================
-
-[[case]]
-name = "u64_return"
-spec = ["3.1:8", "3.1:12"]
-source = "fn main() -> u64 { 42 }"
-exit_code = 42
-
-[[case]]
-name = "u64_zero"
-spec = ["3.1:8", "3.1:12"]
-source = "fn main() -> u64 { 0 }"
-exit_code = 0
-
-# =============================================================================
 # Type Mismatch Errors
 # =============================================================================
 
 [[case]]
-name = "type_mismatch_i8_i32"
+name = "type_mismatch_{from}_{to}"
 spec = ["3.1:1"]
+compile_fail = true
 source = """
-fn main() -> i32 {
-    let x: i8 = 42;
+fn main() -> {to} {
+    let x: {from} = 42;
     x
 }
 """
-compile_fail = true
-
-[[case]]
-name = "type_mismatch_i32_u32"
-spec = ["3.1:1", "3.1:8"]
-source = """
-fn main() -> u32 {
-    let x: i32 = 42;
-    x
-}
-"""
-compile_fail = true
+params = [
+  { from = "i8", to = "i32" },
+  { from = "i32", to = "u32", spec_extra = ["3.1:8"] },
+]
 
 # =============================================================================
 # Signed Integer Overflow (Runtime Panic - Exit 101)
 # =============================================================================
 
 [[case]]
-name = "i8_overflow_addition"
+name = "{type}_overflow_addition"
 spec = ["3.1:6"]
+exit_code = 101
 source = """
-fn main() -> i8 {
-    let x: i8 = 127;
+fn main() -> {type} {
+    let x: {type} = {max};
     x + 1
 }
 """
-exit_code = 101
+params = [
+  { type = "i8", max = "127" },
+  { type = "i16", max = "32767" },
+]
 
 [[case]]
-name = "i8_overflow_subtraction"
+name = "{type}_overflow_subtraction"
 spec = ["3.1:6"]
+exit_code = 101
 source = """
-fn main() -> i8 {
-    let x: i8 = -128;
+fn main() -> {type} {
+    let x: {type} = {min};
     x - 1
 }
 """
-exit_code = 101
+params = [
+  { type = "i8", min = "-128" },
+  { type = "i16", min = "-32768" },
+]
 
 [[case]]
 name = "i8_overflow_multiplication"
@@ -268,28 +163,6 @@ source = """
 fn main() -> i8 {
     let x: i8 = 16;
     x * 16
-}
-"""
-exit_code = 101
-
-[[case]]
-name = "i16_overflow_addition"
-spec = ["3.1:6"]
-source = """
-fn main() -> i16 {
-    let x: i16 = 32767;
-    x + 1
-}
-"""
-exit_code = 101
-
-[[case]]
-name = "i16_overflow_subtraction"
-spec = ["3.1:6"]
-source = """
-fn main() -> i16 {
-    let x: i16 = -32768;
-    x - 1
 }
 """
 exit_code = 101
@@ -345,15 +218,20 @@ exit_code = 101
 # =============================================================================
 
 [[case]]
-name = "u8_overflow_addition"
+name = "{type}_overflow_addition"
 spec = ["3.1:13"]
+exit_code = 101
 source = """
-fn main() -> u8 {
-    let x: u8 = 255;
+fn main() -> {type} {
+    let x: {type} = {max};
     x + 1
 }
 """
-exit_code = 101
+params = [
+  { type = "u8", max = "255" },
+  { type = "u16", max = "65535" },
+  { type = "u32", max = "4294967295" },
+]
 
 [[case]]
 name = "u8_overflow_addition_rhs"
@@ -368,81 +246,36 @@ fn main() -> u8 {
 exit_code = 101
 
 [[case]]
-name = "u8_overflow_subtraction"
+name = "{type}_overflow_subtraction"
 spec = ["3.1:13"]
+exit_code = 101
 source = """
-fn main() -> u8 {
-    let x: u8 = 0;
+fn main() -> {type} {
+    let x: {type} = 0;
     x - 1
 }
 """
-exit_code = 101
+params = [
+  { type = "u8" },
+  { type = "u16" },
+  { type = "u32" },
+  { type = "u64" },
+]
 
 [[case]]
-name = "u8_overflow_multiplication"
+name = "{type}_overflow_multiplication"
 spec = ["3.1:13"]
+exit_code = 101
 source = """
-fn main() -> u8 {
-    let x: u8 = 16;
-    x * 16
+fn main() -> {type} {
+    let x: {type} = {value};
+    x * {value}
 }
 """
-exit_code = 101
-
-[[case]]
-name = "u16_overflow_addition"
-spec = ["3.1:13"]
-source = """
-fn main() -> u16 {
-    let x: u16 = 65535;
-    x + 1
-}
-"""
-exit_code = 101
-
-[[case]]
-name = "u16_overflow_subtraction"
-spec = ["3.1:13"]
-source = """
-fn main() -> u16 {
-    let x: u16 = 0;
-    x - 1
-}
-"""
-exit_code = 101
-
-[[case]]
-name = "u32_overflow_addition"
-spec = ["3.1:13"]
-source = """
-fn main() -> u32 {
-    let x: u32 = 4294967295;
-    x + 1
-}
-"""
-exit_code = 101
-
-[[case]]
-name = "u32_overflow_subtraction"
-spec = ["3.1:13"]
-source = """
-fn main() -> u32 {
-    let x: u32 = 0;
-    x - 1
-}
-"""
-exit_code = 101
-
-[[case]]
-name = "u32_overflow_multiplication"
-spec = ["3.1:13"]
-source = """
-fn main() -> u32 {
-    let x: u32 = 100000;
-    x * 100000
-}
-"""
-exit_code = 101
+params = [
+  { type = "u8", value = "16" },
+  { type = "u32", value = "100000" },
+]
 
 [[case]]
 name = "u64_overflow_addition"
@@ -456,31 +289,22 @@ fn main() -> u64 {
 """
 exit_code = 101
 
-[[case]]
-name = "u64_overflow_subtraction"
-spec = ["3.1:13"]
-source = """
-fn main() -> u64 {
-    let x: u64 = 0;
-    x - 1
-}
-"""
-exit_code = 101
-
 # =============================================================================
 # Valid Arithmetic (No Overflow)
 # =============================================================================
 
 [[case]]
-name = "i8_near_max_no_overflow"
+name = "{type}_near_max_no_overflow"
 spec = ["3.1:6"]
 source = """
-fn main() -> i8 {
-    let x: i8 = 126;
+fn main() -> {type} {
+    let x: {type} = {near_max};
     x + 1
 }
 """
-exit_code = 127
+params = [
+  { type = "i8", near_max = "126", exit_code = 127 },
+]
 
 [[case]]
 name = "i16_near_max_no_overflow"
@@ -507,15 +331,17 @@ fn main() -> i32 {
 exit_code = 42
 
 [[case]]
-name = "u8_near_max_no_overflow"
+name = "{type}_near_max_no_overflow"
 spec = ["3.1:13"]
 source = """
-fn main() -> u8 {
-    let x: u8 = 254;
+fn main() -> {type} {
+    let x: {type} = {near_max};
     x + 1
 }
 """
-exit_code = 255
+params = [
+  { type = "u8", near_max = "254", exit_code = 255 },
+]
 
 [[case]]
 name = "u32_near_max_no_overflow"
@@ -532,198 +358,49 @@ exit_code = 42
 # =============================================================================
 # Bidirectional Type Inference for Literals (literal on left side)
 # =============================================================================
-# These tests verify that integer literals on the LEFT side of binary operators
-# correctly infer their type from the RIGHT operand. This enables code like
-# `100 == x` where x: i64 to work (literal adopts i64 type from x).
-
-# --- Comparison operators with literal on left ---
 
 [[case]]
-name = "literal_left_comparison_i64_eq"
+name = "literal_left_comparison_{type}_{op}"
 spec = ["3.1:15"]
 source = """
 fn main() -> i32 {
-    let x: i64 = 100;
-    if 100 == x { 1 } else { 0 }
+    let x: {type} = {rhs};
+    if {lhs} {cmp} x { 1 } else { 0 }
 }
 """
 exit_code = 1
+params = [
+  { type = "i64", op = "eq", lhs = "100", cmp = "==", rhs = "100" },
+  { type = "i64", op = "ne", lhs = "50", cmp = "!=", rhs = "100" },
+  { type = "i64", op = "lt", lhs = "50", cmp = "<", rhs = "100" },
+  { type = "i64", op = "gt", lhs = "100", cmp = ">", rhs = "50" },
+  { type = "i64", op = "le", lhs = "100", cmp = "<=", rhs = "100" },
+  { type = "i64", op = "ge", lhs = "100", cmp = ">=", rhs = "100" },
+  { type = "i8", op = "eq", lhs = "42", cmp = "==", rhs = "42" },
+  { type = "u64", op = "lt", lhs = "500", cmp = "<", rhs = "1000" },
+  { type = "u8", op = "lt", lhs = "100", cmp = "<", rhs = "200" },
+]
 
 [[case]]
-name = "literal_left_comparison_i64_ne"
+name = "literal_left_{op}_{type}"
 spec = ["3.1:15"]
 source = """
 fn main() -> i32 {
-    let x: i64 = 100;
-    if 50 != x { 1 } else { 0 }
+    let x: {type} = {rhs};
+    let result: {type} = {lhs} {oper} x;
+    if result == {expected} { 1 } else { 0 }
 }
 """
 exit_code = 1
-
-[[case]]
-name = "literal_left_comparison_i64_lt"
-spec = ["3.1:15"]
-source = """
-fn main() -> i32 {
-    let x: i64 = 100;
-    if 50 < x { 1 } else { 0 }
-}
-"""
-exit_code = 1
-
-[[case]]
-name = "literal_left_comparison_i64_gt"
-spec = ["3.1:15"]
-source = """
-fn main() -> i32 {
-    let x: i64 = 50;
-    if 100 > x { 1 } else { 0 }
-}
-"""
-exit_code = 1
-
-[[case]]
-name = "literal_left_comparison_i64_le"
-spec = ["3.1:15"]
-source = """
-fn main() -> i32 {
-    let x: i64 = 100;
-    if 100 <= x { 1 } else { 0 }
-}
-"""
-exit_code = 1
-
-[[case]]
-name = "literal_left_comparison_i64_ge"
-spec = ["3.1:15"]
-source = """
-fn main() -> i32 {
-    let x: i64 = 100;
-    if 100 >= x { 1 } else { 0 }
-}
-"""
-exit_code = 1
-
-[[case]]
-name = "literal_left_comparison_i8"
-spec = ["3.1:15"]
-source = """
-fn main() -> i32 {
-    let x: i8 = 42;
-    if 42 == x { 1 } else { 0 }
-}
-"""
-exit_code = 1
-
-[[case]]
-name = "literal_left_comparison_u64"
-spec = ["3.1:15"]
-source = """
-fn main() -> i32 {
-    let x: u64 = 1000;
-    if 500 < x { 1 } else { 0 }
-}
-"""
-exit_code = 1
-
-[[case]]
-name = "literal_left_comparison_u8"
-spec = ["3.1:15"]
-source = """
-fn main() -> i32 {
-    let x: u8 = 200;
-    if 100 < x { 1 } else { 0 }
-}
-"""
-exit_code = 1
-
-# --- Arithmetic operators with literal on left ---
-
-[[case]]
-name = "literal_left_add_i64"
-spec = ["3.1:15"]
-source = """
-fn main() -> i32 {
-    let x: i64 = 100;
-    let result: i64 = 50 + x;
-    if result == 150 { 1 } else { 0 }
-}
-"""
-exit_code = 1
-
-[[case]]
-name = "literal_left_sub_i64"
-spec = ["3.1:15"]
-source = """
-fn main() -> i32 {
-    let x: i64 = 50;
-    let result: i64 = 100 - x;
-    if result == 50 { 1 } else { 0 }
-}
-"""
-exit_code = 1
-
-[[case]]
-name = "literal_left_mul_i64"
-spec = ["3.1:15"]
-source = """
-fn main() -> i32 {
-    let x: i64 = 10;
-    let result: i64 = 5 * x;
-    if result == 50 { 1 } else { 0 }
-}
-"""
-exit_code = 1
-
-[[case]]
-name = "literal_left_div_i64"
-spec = ["3.1:15"]
-source = """
-fn main() -> i32 {
-    let x: i64 = 10;
-    let result: i64 = 100 / x;
-    if result == 10 { 1 } else { 0 }
-}
-"""
-exit_code = 1
-
-[[case]]
-name = "literal_left_mod_i64"
-spec = ["3.1:15"]
-source = """
-fn main() -> i32 {
-    let x: i64 = 7;
-    let result: i64 = 100 % x;
-    if result == 2 { 1 } else { 0 }
-}
-"""
-exit_code = 1
-
-[[case]]
-name = "literal_left_add_u64"
-spec = ["3.1:15"]
-source = """
-fn main() -> i32 {
-    let x: u64 = 100;
-    let result: u64 = 50 + x;
-    if result == 150 { 1 } else { 0 }
-}
-"""
-exit_code = 1
-
-[[case]]
-name = "literal_left_add_i8"
-spec = ["3.1:15"]
-source = """
-fn main() -> i32 {
-    let x: i8 = 20;
-    let result: i8 = 10 + x;
-    if result == 30 { 1 } else { 0 }
-}
-"""
-exit_code = 1
-
-# --- Both operands are literals (should still default to i32) ---
+params = [
+  { type = "i64", op = "add", lhs = "50", oper = "+", rhs = "100", expected = "150" },
+  { type = "i64", op = "sub", lhs = "100", oper = "-", rhs = "50", expected = "50" },
+  { type = "i64", op = "mul", lhs = "5", oper = "*", rhs = "10", expected = "50" },
+  { type = "i64", op = "div", lhs = "100", oper = "/", rhs = "10", expected = "10" },
+  { type = "i64", op = "mod", lhs = "100", oper = "%", rhs = "7", expected = "2" },
+  { type = "u64", op = "add", lhs = "50", oper = "+", rhs = "100", expected = "150" },
+  { type = "i8", op = "add", lhs = "10", oper = "+", rhs = "20", expected = "30" },
+]
 
 [[case]]
 name = "both_literals_comparison"
@@ -744,8 +421,6 @@ fn main() -> i32 {
 }
 """
 exit_code = 100
-
-# --- Nested expressions with literals ---
 
 [[case]]
 name = "literal_left_complex_expr"
@@ -774,44 +449,22 @@ exit_code = 1
 # =============================================================================
 # Large u64 Literals (values > i64::MAX)
 # =============================================================================
-# These tests verify that integer literals larger than i64::MAX can be parsed
-# and used correctly with u64 type. i64::MAX is 9223372036854775807 (2^63 - 1).
 
 [[case]]
-name = "u64_i64_max_plus_one"
+name = "u64_large_literal_{variant}"
 spec = ["3.1:12"]
-description = "u64 literal that is exactly i64::MAX + 1 (2^63)"
 source = """
 fn main() -> i32 {
-    let x: u64 = 9223372036854775808;
+    let x: u64 = {value};
     if x > 0 { 1 } else { 0 }
 }
 """
 exit_code = 1
-
-[[case]]
-name = "u64_large_literal"
-spec = ["3.1:12"]
-description = "u64 literal significantly larger than i64::MAX"
-source = """
-fn main() -> i32 {
-    let x: u64 = 10000000000000000000;
-    if x > 0 { 1 } else { 0 }
-}
-"""
-exit_code = 1
-
-[[case]]
-name = "u64_max"
-spec = ["3.1:12"]
-description = "u64::MAX literal (2^64 - 1)"
-source = """
-fn main() -> i32 {
-    let x: u64 = 18446744073709551615;
-    if x > 0 { 1 } else { 0 }
-}
-"""
-exit_code = 1
+params = [
+  { variant = "i64_max_plus_one", value = "9223372036854775808" },
+  { variant = "large", value = "10000000000000000000" },
+  { variant = "max", value = "18446744073709551615" },
+]
 
 [[case]]
 name = "u64_large_arithmetic"
@@ -843,20 +496,26 @@ exit_code = 1
 # =============================================================================
 # Compile-Time Integer Literal Range Validation
 # =============================================================================
-# These tests verify that integer literals exceeding the target type's range
-# are rejected at compile time with an appropriate error.
 
 [[case]]
-name = "i8_literal_out_of_range"
+name = "{type}_literal_out_of_range"
 spec = ["3.1:17"]
-description = "i8 literal exceeds maximum value (127)"
-source = """
-fn main() -> i8 {
-    128
-}
-"""
 compile_fail = true
 error_contains = "out of range"
+source = """
+fn main() -> {type} {
+    {value}
+}
+"""
+params = [
+  { type = "i8", value = "128" },
+  { type = "i16", value = "32768" },
+  { type = "i32", value = "2147483648" },
+  { type = "i64", value = "9223372036854775808" },
+  { type = "u8", value = "256" },
+  { type = "u16", value = "65536" },
+  { type = "u32", value = "4294967296" },
+]
 
 [[case]]
 name = "i8_literal_large_out_of_range"
@@ -866,30 +525,6 @@ source = """
 fn main() -> i32 {
     let x: i8 = 1000;
     0
-}
-"""
-compile_fail = true
-error_contains = "out of range"
-
-[[case]]
-name = "i16_literal_out_of_range"
-spec = ["3.1:17"]
-description = "i16 literal exceeds maximum value (32767)"
-source = """
-fn main() -> i16 {
-    32768
-}
-"""
-compile_fail = true
-error_contains = "out of range"
-
-[[case]]
-name = "i32_literal_out_of_range"
-spec = ["3.1:17"]
-description = "i32 literal exceeds maximum value (2147483647)"
-source = """
-fn main() -> i32 {
-    2147483648
 }
 """
 compile_fail = true
@@ -907,54 +542,6 @@ fn main() -> i32 {
 compile_fail = true
 error_contains = "out of range"
 
-[[case]]
-name = "i64_literal_out_of_range"
-spec = ["3.1:17"]
-description = "i64 literal exceeds maximum value (9223372036854775807)"
-source = """
-fn main() -> i64 {
-    9223372036854775808
-}
-"""
-compile_fail = true
-error_contains = "out of range"
-
-[[case]]
-name = "u8_literal_out_of_range"
-spec = ["3.1:17"]
-description = "u8 literal exceeds maximum value (255)"
-source = """
-fn main() -> u8 {
-    256
-}
-"""
-compile_fail = true
-error_contains = "out of range"
-
-[[case]]
-name = "u16_literal_out_of_range"
-spec = ["3.1:17"]
-description = "u16 literal exceeds maximum value (65535)"
-source = """
-fn main() -> u16 {
-    65536
-}
-"""
-compile_fail = true
-error_contains = "out of range"
-
-[[case]]
-name = "u32_literal_out_of_range"
-spec = ["3.1:17"]
-description = "u32 literal exceeds maximum value (4294967295)"
-source = """
-fn main() -> u32 {
-    4294967296
-}
-"""
-compile_fail = true
-error_contains = "out of range"
-
 # Note: There is no u64_literal_out_of_range test because u64 can represent any
 # value that fits in the lexer's u64 representation. Literals exceeding u64::MAX
 # would fail during lexing, not during semantic analysis range checking.
@@ -962,43 +549,22 @@ error_contains = "out of range"
 # =============================================================================
 # Valid Edge Cases (MIN values via negation)
 # =============================================================================
-# These tests verify that negated literals representing MIN values are accepted.
 
 [[case]]
-name = "i8_min_via_negation"
+name = "{type}_min_via_negation"
 spec = ["3.1:18"]
-description = "i8::MIN (-128) via negation is valid"
 source = """
 fn main() -> i32 {
-    let x: i8 = -128;
-    if x == -128 { 1 } else { 0 }
+    let x: {type} = {min_value};
+    if x == {min_value} { 1 } else { 0 }
 }
 """
 exit_code = 1
-
-[[case]]
-name = "i16_min_via_negation"
-spec = ["3.1:18"]
-description = "i16::MIN (-32768) via negation is valid"
-source = """
-fn main() -> i32 {
-    let x: i16 = -32768;
-    if x == -32768 { 1 } else { 0 }
-}
-"""
-exit_code = 1
-
-[[case]]
-name = "i32_min_via_negation"
-spec = ["3.1:18"]
-description = "i32::MIN (-2147483648) via negation is valid"
-source = """
-fn main() -> i32 {
-    let x: i32 = -2147483648;
-    if x == -2147483648 { 1 } else { 0 }
-}
-"""
-exit_code = 1
+params = [
+  { type = "i8", min_value = "-128" },
+  { type = "i16", min_value = "-32768" },
+  { type = "i32", min_value = "-2147483648" },
+]
 
 [[case]]
 name = "i64_min_via_negation"
@@ -1015,93 +581,22 @@ exit_code = 1
 # =============================================================================
 # Valid MAX Values
 # =============================================================================
-# These tests verify that literals at the MAX boundary are accepted.
 
 [[case]]
-name = "i8_max_boundary"
+name = "{type}_max_boundary"
 spec = ["3.1:17"]
-description = "i8::MAX (127) is valid"
 source = """
 fn main() -> i32 {
-    let x: i8 = 127;
-    if x == 127 { 1 } else { 0 }
+    let x: {type} = {max_value};
+    if x == {max_value} { 1 } else { 0 }
 }
 """
 exit_code = 1
-
-[[case]]
-name = "i16_max_boundary"
-spec = ["3.1:17"]
-description = "i16::MAX (32767) is valid"
-source = """
-fn main() -> i32 {
-    let x: i16 = 32767;
-    if x == 32767 { 1 } else { 0 }
-}
-"""
-exit_code = 1
-
-[[case]]
-name = "i32_max_boundary"
-spec = ["3.1:17"]
-description = "i32::MAX (2147483647) is valid"
-source = """
-fn main() -> i32 {
-    let x: i32 = 2147483647;
-    if x == 2147483647 { 1 } else { 0 }
-}
-"""
-exit_code = 1
-
-[[case]]
-name = "u8_max_boundary"
-spec = ["3.1:17"]
-description = "u8::MAX (255) is valid"
-source = """
-fn main() -> i32 {
-    let x: u8 = 255;
-    if x == 255 { 1 } else { 0 }
-}
-"""
-exit_code = 1
-
-[[case]]
-name = "u16_max_boundary"
-spec = ["3.1:17"]
-description = "u16::MAX (65535) is valid"
-source = """
-fn main() -> i32 {
-    let x: u16 = 65535;
-    if x == 65535 { 1 } else { 0 }
-}
-"""
-exit_code = 1
-
-[[case]]
-name = "u32_max_boundary"
-spec = ["3.1:17"]
-description = "u32::MAX (4294967295) is valid"
-source = """
-fn main() -> i32 {
-    let x: u32 = 4294967295;
-    if x == 4294967295 { 1 } else { 0 }
-}
-"""
-exit_code = 1
-
-# =============================================================================
-# Parameterized Test Example
-# =============================================================================
-# This demonstrates the parameterized test feature - one test definition
-# expands into multiple concrete tests for each parameter set.
-
-[[case]]
-name = "{type}_param_test"
-spec = ["3.1:1"]
-source = "fn main() -> {type} { {value} }"
 params = [
-  { type = "i8", value = "10", exit_code = 10, spec_extra = ["3.1:2"] },
-  { type = "i16", value = "20", exit_code = 20, spec_extra = ["3.1:3"] },
-  { type = "i32", value = "30", exit_code = 30, spec_extra = ["3.1:4"] },
-  { type = "u8", value = "40", exit_code = 40, spec_extra = ["3.1:9"] },
+  { type = "i8", max_value = "127" },
+  { type = "i16", max_value = "32767" },
+  { type = "i32", max_value = "2147483647" },
+  { type = "u8", max_value = "255" },
+  { type = "u16", max_value = "65535" },
+  { type = "u32", max_value = "4294967295" },
 ]

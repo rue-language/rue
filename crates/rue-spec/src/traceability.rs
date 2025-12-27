@@ -414,6 +414,7 @@ pub struct TestCase {
 }
 
 /// Parse test files and extract spec references.
+/// Handles parameterized tests by expanding them and merging spec_extra.
 pub fn parse_test_files(cases_dir: &Path) -> Vec<TestFile> {
     let mut test_files = Vec::new();
 
@@ -442,16 +443,16 @@ pub fn parse_test_files(cases_dir: &Path) -> Vec<TestFile> {
 
         // Get cases
         let case_array_opt = table.get("case").and_then(|c| c.as_array());
-        let mut cases = Vec::with_capacity(case_array_opt.map(|a| a.len()).unwrap_or(0));
+        let mut cases = Vec::new();
         if let Some(case_array) = case_array_opt {
             for case in case_array {
-                let name = case
+                let base_name = case
                     .get("name")
                     .and_then(|n| n.as_str())
                     .unwrap_or("unnamed")
                     .to_string();
 
-                let spec_refs: Vec<String> = case
+                let base_spec_refs: Vec<String> = case
                     .get("spec")
                     .and_then(|s| s.as_array())
                     .map(|arr| {
@@ -461,7 +462,51 @@ pub fn parse_test_files(cases_dir: &Path) -> Vec<TestFile> {
                     })
                     .unwrap_or_default();
 
-                cases.push(TestCase { name, spec_refs });
+                // Check if this is a parameterized test
+                if let Some(params_array) = case.get("params").and_then(|p| p.as_array()) {
+                    // Expand parameterized test - each param set becomes a test case
+                    for param_set in params_array {
+                        let param_table = match param_set.as_table() {
+                            Some(t) => t,
+                            None => continue,
+                        };
+
+                        // Substitute placeholders in name
+                        let mut expanded_name = base_name.clone();
+                        for (key, value) in param_table {
+                            let placeholder = format!("{{{}}}", key);
+                            let replacement = match value {
+                                toml::Value::String(s) => s.clone(),
+                                toml::Value::Integer(i) => i.to_string(),
+                                other => other.to_string(),
+                            };
+                            expanded_name = expanded_name.replace(&placeholder, &replacement);
+                        }
+
+                        // Merge base spec refs with spec_extra from params
+                        let mut spec_refs = base_spec_refs.clone();
+                        if let Some(spec_extra) = param_table.get("spec_extra") {
+                            if let Some(arr) = spec_extra.as_array() {
+                                for item in arr {
+                                    if let Some(s) = item.as_str() {
+                                        spec_refs.push(s.to_string());
+                                    }
+                                }
+                            }
+                        }
+
+                        cases.push(TestCase {
+                            name: expanded_name,
+                            spec_refs,
+                        });
+                    }
+                } else {
+                    // Non-parameterized test
+                    cases.push(TestCase {
+                        name: base_name,
+                        spec_refs: base_spec_refs,
+                    });
+                }
             }
         }
 
