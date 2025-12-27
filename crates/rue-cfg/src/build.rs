@@ -33,6 +33,11 @@ struct LoopContext {
     header: BlockId,
     /// Block to jump to for break (loop exit)
     exit: BlockId,
+    /// The scope depth when entering the loop (before the loop body scope).
+    /// Used to know how many scopes to drop on break/continue.
+    /// For break/continue, we drop scopes from current down to (but not including)
+    /// this depth.
+    scope_depth: usize,
 }
 
 /// Information about a slot that became live in a scope.
@@ -859,32 +864,38 @@ impl<'a> CfgBuilder<'a> {
                 // Lower the final value
                 let result = self.lower_inst(*value);
 
-                // Pop scope and emit StorageDead (with Drop if needed) in reverse order
+                // Pop scope and emit StorageDead (with Drop if needed) in reverse order.
+                // BUT: if the value diverged (break/continue/return), the diverging
+                // instruction already emitted drops for all scopes via emit_drops_for_all_scopes,
+                // so we must NOT emit duplicate StorageDead here.
                 if !is_storage_live_wrapper {
                     if let Some(scope_slots) = self.scope_stack.pop() {
-                        for live_slot in scope_slots.into_iter().rev() {
-                            // Emit Drop for types that need cleanup (e.g., heap-allocated String)
-                            if self.type_needs_drop(live_slot.ty) {
-                                let slot_val = self.emit(
-                                    CfgInstData::Load {
+                        // Only emit scope cleanup if the value didn't diverge
+                        if !matches!(result.continuation, Continuation::Diverged) {
+                            for live_slot in scope_slots.into_iter().rev() {
+                                // Emit Drop for types that need cleanup (e.g., heap-allocated String)
+                                if self.type_needs_drop(live_slot.ty) {
+                                    let slot_val = self.emit(
+                                        CfgInstData::Load {
+                                            slot: live_slot.slot,
+                                        },
+                                        live_slot.ty,
+                                        live_slot.span,
+                                    );
+                                    self.emit(
+                                        CfgInstData::Drop { value: slot_val },
+                                        Type::Unit,
+                                        live_slot.span,
+                                    );
+                                }
+                                self.emit(
+                                    CfgInstData::StorageDead {
                                         slot: live_slot.slot,
                                     },
-                                    live_slot.ty,
-                                    live_slot.span,
-                                );
-                                self.emit(
-                                    CfgInstData::Drop { value: slot_val },
                                     Type::Unit,
                                     live_slot.span,
                                 );
                             }
-                            self.emit(
-                                CfgInstData::StorageDead {
-                                    slot: live_slot.slot,
-                                },
-                                Type::Unit,
-                                live_slot.span,
-                            );
                         }
                     }
                 }
@@ -1030,10 +1041,13 @@ impl<'a> CfgBuilder<'a> {
                     },
                 );
 
-                // Push loop context
+                // Push loop context with current scope depth.
+                // The scope depth is captured BEFORE the loop body is lowered,
+                // so break/continue will drop all slots in scopes created INSIDE the loop.
                 self.loop_stack.push(LoopContext {
                     header: header_block,
                     exit: exit_block,
+                    scope_depth: self.scope_stack.len(),
                 });
 
                 // Lower condition in header
@@ -1104,10 +1118,13 @@ impl<'a> CfgBuilder<'a> {
                     },
                 );
 
-                // Push loop context (body_block is the continue target)
+                // Push loop context (body_block is the continue target).
+                // The scope depth is captured BEFORE the loop body is lowered,
+                // so break/continue will drop all slots in scopes created INSIDE the loop.
                 self.loop_stack.push(LoopContext {
                     header: body_block,
                     exit: exit_block,
+                    scope_depth: self.scope_stack.len(),
                 });
 
                 // Lower body
@@ -1278,10 +1295,12 @@ impl<'a> CfgBuilder<'a> {
             }
 
             AirInstData::Break => {
-                // Emit drops for all live slots before jumping out
-                self.emit_drops_for_all_scopes(span);
+                // Emit drops for slots in scopes created inside the loop
+                let loop_ctx = self.loop_stack.last().expect("break outside loop");
+                let target_depth = loop_ctx.scope_depth;
+                let exit_block = loop_ctx.exit;
+                self.emit_drops_for_loop_exit(target_depth, span);
 
-                let exit_block = self.loop_stack.last().expect("break outside loop").exit;
                 self.cfg.set_terminator(
                     self.current_block,
                     Terminator::Goto {
@@ -1297,14 +1316,12 @@ impl<'a> CfgBuilder<'a> {
             }
 
             AirInstData::Continue => {
-                // Emit drops for all live slots before jumping out
-                self.emit_drops_for_all_scopes(span);
+                // Emit drops for slots in scopes created inside the loop
+                let loop_ctx = self.loop_stack.last().expect("continue outside loop");
+                let target_depth = loop_ctx.scope_depth;
+                let header_block = loop_ctx.header;
+                self.emit_drops_for_loop_exit(target_depth, span);
 
-                let header_block = self
-                    .loop_stack
-                    .last()
-                    .expect("continue outside loop")
-                    .header;
                 self.cfg.set_terminator(
                     self.current_block,
                     Terminator::Goto {
@@ -1637,7 +1654,7 @@ impl<'a> CfgBuilder<'a> {
         }
     }
 
-    /// Emit drops for all live slots in all scopes (for return/break).
+    /// Emit drops for all live slots in all scopes (for return).
     /// Drops are emitted in reverse order (LIFO) across all scopes.
     fn emit_drops_for_all_scopes(&mut self, span: rue_span::Span) {
         // Collect all live slots in reverse order across all scopes
@@ -1649,25 +1666,49 @@ impl<'a> CfgBuilder<'a> {
             .collect();
 
         for live_slot in all_slots {
-            // Emit Drop if the type needs it
-            if self.type_needs_drop(live_slot.ty) {
-                let slot_val = self.emit(
-                    CfgInstData::Load {
-                        slot: live_slot.slot,
-                    },
-                    live_slot.ty,
-                    span,
-                );
-                self.emit(CfgInstData::Drop { value: slot_val }, Type::Unit, span);
-            }
-            self.emit(
-                CfgInstData::StorageDead {
+            self.emit_drop_for_slot(&live_slot, span);
+        }
+    }
+
+    /// Emit drops for slots in scopes created inside the current loop (for break/continue).
+    /// Only drops slots from the current scope depth down to (but not including) `target_depth`.
+    /// This ensures that slots declared outside the loop are NOT dropped.
+    fn emit_drops_for_loop_exit(&mut self, target_depth: usize, span: rue_span::Span) {
+        // Collect slots from scopes created inside the loop (depth >= target_depth)
+        // in reverse order (LIFO)
+        let loop_slots: Vec<LiveSlot> = self
+            .scope_stack
+            .iter()
+            .skip(target_depth)
+            .rev()
+            .flat_map(|scope| scope.iter().rev().cloned())
+            .collect();
+
+        for live_slot in loop_slots {
+            self.emit_drop_for_slot(&live_slot, span);
+        }
+    }
+
+    /// Emit Drop and StorageDead for a single slot.
+    fn emit_drop_for_slot(&mut self, live_slot: &LiveSlot, span: rue_span::Span) {
+        // Emit Drop if the type needs it
+        if self.type_needs_drop(live_slot.ty) {
+            let slot_val = self.emit(
+                CfgInstData::Load {
                     slot: live_slot.slot,
                 },
-                Type::Unit,
+                live_slot.ty,
                 span,
             );
+            self.emit(CfgInstData::Drop { value: slot_val }, Type::Unit, span);
         }
+        self.emit(
+            CfgInstData::StorageDead {
+                slot: live_slot.slot,
+            },
+            Type::Unit,
+            span,
+        );
     }
 }
 
