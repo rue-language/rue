@@ -1,12 +1,12 @@
 ---
 id: 0015
 title: Test Suite Optimization
-status: accepted
+status: implemented
 tags: [process, testing, compiler]
 feature-flag: null
 created: 2025-12-26
 accepted: 2025-12-26
-implemented:
+implemented: 2025-12-27
 spec-sections: []
 superseded-by:
 ---
@@ -15,7 +15,7 @@ superseded-by:
 
 ## Status
 
-Accepted
+Implemented
 
 ## Summary
 
@@ -195,10 +195,10 @@ Add a new script `./quick-test.sh` that runs only unit tests for faster iteratio
   - Added 115+ integration unit tests covering major language features
   - Tests organized by category: types, arithmetic, comparison, logical, bitwise, control flow, functions, structs, enums, arrays, strings, intrinsics, CFG construction, error messages, warnings, and edge cases
 
-- [ ] **Phase 5: Workflow Documentation** - rue-9jdv.5
-  - Update CLAUDE.md with development workflow
-  - Add `./quick-test.sh` script
-  - Document when to use which test level
+- [x] **Phase 5: Workflow Documentation** - rue-9jdv.5
+  - Added Development Workflow section to CLAUDE.md
+  - Added `./quick-test.sh` script for fast unit test iteration
+  - Added "Choosing the Right Test Type" table documenting when to use each test level
 
 ## Consequences
 

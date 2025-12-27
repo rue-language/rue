@@ -102,8 +102,48 @@ graph LR
 
 ## Testing
 
+### Development Workflow
+
+The test suite has three layers optimized for different stages of development:
+
+| Test Type | Command | Speed | When to Use |
+|-----------|---------|-------|-------------|
+| Unit tests | `./quick-test.sh` | ~2-5s | During active development |
+| Full suite | `./test.sh` | ~30-60s | Before committing |
+| Targeted spec | `./buck2 run //crates/rue-spec:rue-spec -- "pattern"` | Varies | Testing specific features |
+
+**Recommended workflow:**
+
+```bash
+# During development - fast feedback loop
+./quick-test.sh                # Unit tests only
+
+# Before committing - full verification
+./test.sh                      # Unit + spec + UI + traceability
+
+# Debugging specific areas
+./buck2 run //crates/rue-spec:rue-spec -- "arithmetic"  # Specific spec tests
+./buck2 test //crates/rue-codegen:rue-codegen-test      # Specific crate
+```
+
+### Choosing the Right Test Type
+
+| If you're... | Use... | Why |
+|--------------|--------|-----|
+| Iterating on a fix | `./quick-test.sh` | Fast feedback, catches most issues |
+| Adding a language feature | Spec tests | Required for traceability |
+| Improving diagnostics | UI tests | Not spec-mandated behavior |
+| About to commit | `./test.sh` | Ensures nothing is broken |
+
+**Rule of thumb:**
+- **Unit tests** catch logic errors quickly during development
+- **Spec tests** verify language semantics and maintain spec traceability
+- **UI tests** verify compiler quality-of-life features (warnings, error messages)
+
 ### Unit Tests
 Add to relevant crate's source file with `#[cfg(test)]` modules. Ensure crate has `rust_test` target in its `BUCK` file.
+
+The `rue-compiler` crate includes integration unit tests that test the full pipeline without execution. Use `compile_to_air()` and `compile_to_cfg()` helpers to test compilation without spawning processes.
 
 ### UI Tests
 
