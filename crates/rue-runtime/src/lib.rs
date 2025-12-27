@@ -234,6 +234,32 @@ pub unsafe extern "C" fn memcmp(s1: *const u8, s2: *const u8, n: usize) -> i32 {
     0
 }
 
+/// Compare `n` bytes of memory at `s1` and `s2` for equality.
+///
+/// Returns 0 if equal, non-zero if different.
+///
+/// This is a simplified version of `memcmp` that only tests for equality,
+/// not ordering. Some compilers (including rustc/LLVM) may generate calls
+/// to `bcmp` for slice equality comparisons in no_std environments.
+///
+/// # Safety
+///
+/// - `s1` must be valid for reads of `n` bytes
+/// - `s2` must be valid for reads of `n` bytes
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn bcmp(s1: *const u8, s2: *const u8, n: usize) -> i32 {
+    let mut i = 0;
+    while i < n {
+        let a = *s1.add(i);
+        let b = *s2.add(i);
+        if a != b {
+            return 1;
+        }
+        i += 1;
+    }
+    0
+}
+
 /// Panic handler for `#![no_std]` environments.
 ///
 /// This handler is only active when the crate is compiled as a library (not
@@ -1165,6 +1191,75 @@ mod tests {
 
         assert!(core::str::from_utf8(div_msg).is_ok());
         assert!(core::str::from_utf8(overflow_msg).is_ok());
+    }
+
+    // =========================================================================
+    // Memory Intrinsic Tests
+    // =========================================================================
+
+    #[test]
+    fn test_bcmp_equal() {
+        let a = b"hello world";
+        let b = b"hello world";
+        let result = unsafe { super::bcmp(a.as_ptr(), b.as_ptr(), a.len()) };
+        assert_eq!(result, 0);
+    }
+
+    #[test]
+    fn test_bcmp_not_equal() {
+        let a = b"hello world";
+        let b = b"hello xorld";
+        let result = unsafe { super::bcmp(a.as_ptr(), b.as_ptr(), a.len()) };
+        assert_ne!(result, 0);
+    }
+
+    #[test]
+    fn test_bcmp_empty() {
+        let a = b"";
+        let b = b"";
+        let result = unsafe { super::bcmp(a.as_ptr(), b.as_ptr(), 0) };
+        assert_eq!(result, 0);
+    }
+
+    #[test]
+    fn test_bcmp_first_byte_differs() {
+        let a = b"abc";
+        let b = b"xbc";
+        let result = unsafe { super::bcmp(a.as_ptr(), b.as_ptr(), a.len()) };
+        assert_ne!(result, 0);
+    }
+
+    #[test]
+    fn test_bcmp_last_byte_differs() {
+        let a = b"abc";
+        let b = b"abx";
+        let result = unsafe { super::bcmp(a.as_ptr(), b.as_ptr(), a.len()) };
+        assert_ne!(result, 0);
+    }
+
+    #[test]
+    fn test_bcmp_partial_comparison() {
+        // Compare only first 3 bytes - they're the same
+        let a = b"abcdef";
+        let b = b"abcxyz";
+        let result = unsafe { super::bcmp(a.as_ptr(), b.as_ptr(), 3) };
+        assert_eq!(result, 0);
+    }
+
+    #[test]
+    fn test_bcmp_single_byte_equal() {
+        let a = [42u8];
+        let b = [42u8];
+        let result = unsafe { super::bcmp(a.as_ptr(), b.as_ptr(), 1) };
+        assert_eq!(result, 0);
+    }
+
+    #[test]
+    fn test_bcmp_single_byte_differs() {
+        let a = [42u8];
+        let b = [43u8];
+        let result = unsafe { super::bcmp(a.as_ptr(), b.as_ptr(), 1) };
+        assert_ne!(result, 0);
     }
 
     // =========================================================================
