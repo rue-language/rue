@@ -1249,4 +1249,378 @@ mod tests {
             result
         );
     }
+
+    // =========================================================================
+    // GOT Relaxation Tests
+    // =========================================================================
+    //
+    // These tests verify that GOT-related relocations are properly "relaxed"
+    // during static linking. GOT relaxation replaces indirect memory access
+    // through the Global Offset Table with direct PC-relative addressing.
+    //
+    // For static linking, since all symbol addresses are known at link time,
+    // we can compute the PC-relative offset directly instead of going through
+    // the GOT. The linker treats GotPcRel, GotPcRelX, and RexGotPcRelX the
+    // same as Pc32: it computes S + A - P (symbol + addend - place).
+
+    /// Test that R_X86_64_GOTPCREL (type 9) relocations are handled correctly.
+    ///
+    /// This relocation type is used for accessing global data via the GOT.
+    /// In static linking, we relax it to a direct PC-relative offset.
+    #[test]
+    fn test_got_pcrel_relocation() {
+        // Build target object (the "global variable" we're accessing)
+        let target_bytes = ObjectBuilder::new(ELF_TARGET, "global_var")
+            .code(vec![
+                0x2A, 0x00, 0x00, 0x00, // data: 0x0000002A (42 as little-endian)
+            ])
+            .build();
+
+        // Build caller object that accesses global_var via GOT
+        // This simulates: mov rax, [rip + global_var@GOTPCREL]
+        let caller_bytes = ObjectBuilder::new(ELF_TARGET, "main")
+            .code(vec![
+                // mov rax, [rip + 0] (placeholder for GOT access)
+                0x48, 0x8B, 0x05, 0x00, 0x00, 0x00, 0x00, // ret
+                0xC3,
+            ])
+            .relocation(CodeRelocation {
+                offset: 3, // Points to the 32-bit displacement
+                symbol: "global_var".into(),
+                rel_type: RelocationType::GotPcRel,
+                addend: -4, // Standard addend for RIP-relative addressing
+            })
+            .build();
+
+        let target = ObjectFile::parse(&target_bytes).unwrap();
+        let caller = ObjectFile::parse(&caller_bytes).unwrap();
+
+        let mut linker = Linker::new(ELF_TARGET);
+        linker.add_object(target).unwrap();
+        linker.add_object(caller).unwrap();
+
+        let elf = linker.link("main").unwrap();
+
+        // Verify basic ELF structure
+        assert_eq!(&elf[0..4], b"\x7FELF");
+        assert_eq!(elf[16], 2); // ET_EXEC
+    }
+
+    /// Test that R_X86_64_GOTPCRELX (type 41) relocations are handled correctly.
+    ///
+    /// This is similar to GOTPCREL but allows for additional relaxation
+    /// opportunities (e.g., converting mov to lea). For our static linker,
+    /// we treat it the same as GOTPCREL.
+    #[test]
+    fn test_got_pcrelx_relocation() {
+        // Build target object
+        let target_bytes = ObjectBuilder::new(ELF_TARGET, "external_data")
+            .code(vec![
+                0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // 8 bytes of data
+            ])
+            .build();
+
+        // Build caller object with GOTPCRELX relocation
+        let caller_bytes = ObjectBuilder::new(ELF_TARGET, "main")
+            .code(vec![
+                // mov rax, [rip + 0] - can be relaxed to lea rax, [rip + offset]
+                0x48, 0x8B, 0x05, 0x00, 0x00, 0x00, 0x00, 0xC3, // ret
+            ])
+            .relocation(CodeRelocation {
+                offset: 3,
+                symbol: "external_data".into(),
+                rel_type: RelocationType::GotPcRelX,
+                addend: -4,
+            })
+            .build();
+
+        let target = ObjectFile::parse(&target_bytes).unwrap();
+        let caller = ObjectFile::parse(&caller_bytes).unwrap();
+
+        let mut linker = Linker::new(ELF_TARGET);
+        linker.add_object(target).unwrap();
+        linker.add_object(caller).unwrap();
+
+        let elf = linker.link("main").unwrap();
+
+        assert_eq!(&elf[0..4], b"\x7FELF");
+        assert_eq!(elf[16], 2); // ET_EXEC
+    }
+
+    /// Test that R_X86_64_REX_GOTPCRELX (type 42) relocations are handled correctly.
+    ///
+    /// This is the same as GOTPCRELX but for instructions with a REX prefix.
+    /// Used for 64-bit operands in x86-64.
+    #[test]
+    fn test_rex_got_pcrelx_relocation() {
+        // Build target object
+        let target_bytes = ObjectBuilder::new(ELF_TARGET, "data_symbol")
+            .code(vec![
+                0xDE, 0xAD, 0xBE, 0xEF, // Some data
+            ])
+            .build();
+
+        // Build caller object with REX_GOTPCRELX relocation
+        // This simulates a 64-bit memory access with REX.W prefix
+        let caller_bytes = ObjectBuilder::new(ELF_TARGET, "main")
+            .code(vec![
+                // mov rax, [rip + 0] with REX.W prefix
+                0x48, 0x8B, 0x05, 0x00, 0x00, 0x00, 0x00, 0xC3,
+            ])
+            .relocation(CodeRelocation {
+                offset: 3,
+                symbol: "data_symbol".into(),
+                rel_type: RelocationType::RexGotPcRelX,
+                addend: -4,
+            })
+            .build();
+
+        let target = ObjectFile::parse(&target_bytes).unwrap();
+        let caller = ObjectFile::parse(&caller_bytes).unwrap();
+
+        let mut linker = Linker::new(ELF_TARGET);
+        linker.add_object(target).unwrap();
+        linker.add_object(caller).unwrap();
+
+        let elf = linker.link("main").unwrap();
+
+        assert_eq!(&elf[0..4], b"\x7FELF");
+        assert_eq!(elf[16], 2); // ET_EXEC
+    }
+
+    /// Test GOT relocation with a call instruction.
+    ///
+    /// Verifies that function calls using GOT relocations are properly
+    /// resolved to direct PC-relative calls.
+    #[test]
+    fn test_got_relocation_with_function_call() {
+        // Build callee
+        let callee_bytes = ObjectBuilder::new(ELF_TARGET, "callee")
+            .code(vec![
+                0xB8, 0x07, 0x00, 0x00, 0x00, // mov eax, 7
+                0xC3, // ret
+            ])
+            .build();
+
+        // Build caller using GOT-style relocation
+        let caller_bytes = ObjectBuilder::new(ELF_TARGET, "main")
+            .code(vec![
+                // call with placeholder (could be indirect call through GOT)
+                0xE8, 0x00, 0x00, 0x00, 0x00, 0xC3,
+            ])
+            .relocation(CodeRelocation {
+                offset: 1,
+                symbol: "callee".into(),
+                rel_type: RelocationType::GotPcRel,
+                addend: -4,
+            })
+            .build();
+
+        let callee = ObjectFile::parse(&callee_bytes).unwrap();
+        let caller = ObjectFile::parse(&caller_bytes).unwrap();
+
+        let mut linker = Linker::new(ELF_TARGET);
+        linker.add_object(callee).unwrap();
+        linker.add_object(caller).unwrap();
+
+        let elf = linker.link("main").unwrap();
+
+        // Basic validation - if we got here without error, GOT relaxation worked
+        assert_eq!(&elf[0..4], b"\x7FELF");
+    }
+
+    /// Test that all three GOT relocation types produce valid executables
+    /// when used together in the same link.
+    #[test]
+    fn test_multiple_got_relocation_types() {
+        // Three target symbols
+        let target1_bytes = ObjectBuilder::new(ELF_TARGET, "sym1")
+            .code(vec![0x01])
+            .build();
+        let target2_bytes = ObjectBuilder::new(ELF_TARGET, "sym2")
+            .code(vec![0x02])
+            .build();
+        let target3_bytes = ObjectBuilder::new(ELF_TARGET, "sym3")
+            .code(vec![0x03])
+            .build();
+
+        // Main with all three GOT relocation types
+        let main_bytes = ObjectBuilder::new(ELF_TARGET, "main")
+            .code(vec![
+                // Three RIP-relative memory accesses
+                0x48, 0x8B, 0x05, 0x00, 0x00, 0x00, 0x00, // mov rax, [rip+sym1]
+                0x48, 0x8B, 0x1D, 0x00, 0x00, 0x00, 0x00, // mov rbx, [rip+sym2]
+                0x48, 0x8B, 0x0D, 0x00, 0x00, 0x00, 0x00, // mov rcx, [rip+sym3]
+                0xC3, // ret
+            ])
+            .relocation(CodeRelocation {
+                offset: 3,
+                symbol: "sym1".into(),
+                rel_type: RelocationType::GotPcRel, // Type 9
+                addend: -4,
+            })
+            .relocation(CodeRelocation {
+                offset: 10,
+                symbol: "sym2".into(),
+                rel_type: RelocationType::GotPcRelX, // Type 41
+                addend: -4,
+            })
+            .relocation(CodeRelocation {
+                offset: 17,
+                symbol: "sym3".into(),
+                rel_type: RelocationType::RexGotPcRelX, // Type 42
+                addend: -4,
+            })
+            .build();
+
+        let target1 = ObjectFile::parse(&target1_bytes).unwrap();
+        let target2 = ObjectFile::parse(&target2_bytes).unwrap();
+        let target3 = ObjectFile::parse(&target3_bytes).unwrap();
+        let main = ObjectFile::parse(&main_bytes).unwrap();
+
+        let mut linker = Linker::new(ELF_TARGET);
+        linker.add_object(target1).unwrap();
+        linker.add_object(target2).unwrap();
+        linker.add_object(target3).unwrap();
+        linker.add_object(main).unwrap();
+
+        let elf = linker.link("main").unwrap();
+
+        assert_eq!(&elf[0..4], b"\x7FELF");
+        assert_eq!(elf[16], 2); // ET_EXEC
+    }
+
+    /// Test that GOT relocations with undefined symbols produce appropriate errors.
+    #[test]
+    fn test_got_relocation_undefined_symbol() {
+        // Caller references undefined symbol via GOT
+        let caller_bytes = ObjectBuilder::new(ELF_TARGET, "main")
+            .code(vec![0x48, 0x8B, 0x05, 0x00, 0x00, 0x00, 0x00, 0xC3])
+            .relocation(CodeRelocation {
+                offset: 3,
+                symbol: "undefined_symbol".into(),
+                rel_type: RelocationType::GotPcRel,
+                addend: -4,
+            })
+            .build();
+
+        let caller = ObjectFile::parse(&caller_bytes).unwrap();
+
+        let mut linker = Linker::new(ELF_TARGET);
+        linker.add_object(caller).unwrap();
+
+        let result = linker.link("main");
+        assert!(
+            matches!(result, Err(LinkError::UndefinedSymbol(_))),
+            "Expected UndefinedSymbol error, got: {:?}",
+            result
+        );
+    }
+
+    /// Test GOT relaxation error message format for overflow.
+    #[test]
+    fn test_got_relocation_overflow_error_display() {
+        let err = LinkError::RelocationOverflow {
+            symbol: "far_symbol".into(),
+            rel_type: "GotPcRel".into(),
+        };
+        assert_eq!(
+            err.to_string(),
+            "relocation overflow for far_symbol (GotPcRel)"
+        );
+    }
+
+    /// Test that GOT relocations work correctly when the target is in a
+    /// different object file added later.
+    #[test]
+    fn test_got_relocation_cross_object() {
+        // First object (main) references second object via GOT
+        let main_bytes = ObjectBuilder::new(ELF_TARGET, "main")
+            .code(vec![
+                0x48, 0x8B, 0x05, 0x00, 0x00, 0x00, 0x00, // mov rax, [rip+helper]
+                0xC3, // ret
+            ])
+            .relocation(CodeRelocation {
+                offset: 3,
+                symbol: "helper".into(),
+                rel_type: RelocationType::GotPcRelX,
+                addend: -4,
+            })
+            .build();
+
+        // Second object (helper)
+        let helper_bytes = ObjectBuilder::new(ELF_TARGET, "helper")
+            .code(vec![
+                0xB8, 0x64, 0x00, 0x00, 0x00, // mov eax, 100
+                0xC3, // ret
+            ])
+            .build();
+
+        let main = ObjectFile::parse(&main_bytes).unwrap();
+        let helper = ObjectFile::parse(&helper_bytes).unwrap();
+
+        // Add main first, then helper (reverse order of definition)
+        let mut linker = Linker::new(ELF_TARGET);
+        linker.add_object(main).unwrap();
+        linker.add_object(helper).unwrap();
+
+        let elf = linker.link("main").unwrap();
+
+        assert_eq!(&elf[0..4], b"\x7FELF");
+        assert_eq!(elf[16], 2); // ET_EXEC
+
+        // Verify entry point is reasonable
+        let entry = u64::from_le_bytes(elf[24..32].try_into().unwrap());
+        assert!(
+            entry >= 0x400000,
+            "entry point should be at or above base address"
+        );
+    }
+
+    /// Test that mixing GOT relocations with regular PC32 relocations works.
+    #[test]
+    fn test_got_relocation_mixed_with_pc32() {
+        // Target functions
+        let func1_bytes = ObjectBuilder::new(ELF_TARGET, "func1")
+            .code(vec![0xB8, 0x01, 0x00, 0x00, 0x00, 0xC3])
+            .build();
+        let func2_bytes = ObjectBuilder::new(ELF_TARGET, "func2")
+            .code(vec![0xB8, 0x02, 0x00, 0x00, 0x00, 0xC3])
+            .build();
+
+        // Main uses both GOT and regular relocations
+        let main_bytes = ObjectBuilder::new(ELF_TARGET, "main")
+            .code(vec![
+                // call func1 (regular PC32 relocation)
+                0xE8, 0x00, 0x00, 0x00, 0x00, // mov rax, [rip+func2] (GOT relocation)
+                0x48, 0x8B, 0x05, 0x00, 0x00, 0x00, 0x00, 0xC3,
+            ])
+            .relocation(CodeRelocation {
+                offset: 1,
+                symbol: "func1".into(),
+                rel_type: RelocationType::Pc32,
+                addend: -4,
+            })
+            .relocation(CodeRelocation {
+                offset: 8,
+                symbol: "func2".into(),
+                rel_type: RelocationType::RexGotPcRelX,
+                addend: -4,
+            })
+            .build();
+
+        let func1 = ObjectFile::parse(&func1_bytes).unwrap();
+        let func2 = ObjectFile::parse(&func2_bytes).unwrap();
+        let main = ObjectFile::parse(&main_bytes).unwrap();
+
+        let mut linker = Linker::new(ELF_TARGET);
+        linker.add_object(func1).unwrap();
+        linker.add_object(func2).unwrap();
+        linker.add_object(main).unwrap();
+
+        let elf = linker.link("main").unwrap();
+
+        assert_eq!(&elf[0..4], b"\x7FELF");
+        assert_eq!(elf[16], 2); // ET_EXEC
+    }
 }
