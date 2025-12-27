@@ -143,15 +143,19 @@ fn main() {
             let test_name = format!("{}::{}", section_id, case.name);
             let skip = case.skip;
             let is_preview = case.preview.is_some();
+            let preview_should_pass = case.preview_should_pass;
             let rue_binary = rue_binary.clone();
 
-            let trial = if is_preview {
-                // Preview tests use the wrapper that tracks but doesn't fail
+            // Preview tests that should pass use the normal wrapper (fail on error).
+            // Preview tests without preview_should_pass use the lenient wrapper (allow failure).
+            // Non-preview tests always use the normal wrapper.
+            let trial = if is_preview && !preview_should_pass {
+                // Preview tests that are allowed to fail
                 Trial::test(test_name, move |ctx| {
                     run_preview_case_wrapper(&case, &rue_binary, skip, ctx)
                 })
             } else {
-                // Stable tests fail normally
+                // Stable tests and preview tests that should pass fail normally
                 Trial::test(test_name, move |ctx| {
                     run_case_wrapper(&case, &rue_binary, skip, ctx)
                 })
@@ -167,11 +171,11 @@ fn main() {
     }
 
     // Run all tests
-    // Note: libtest2-mimic's Harness::main() calls std::process::exit(),
-    // so we can't run code after it. Preview test summary is printed via
-    // a custom drop handler or we accept the limitation.
     //
-    // Preview tests that fail are marked as "ignored" with a reason,
-    // so they won't cause the overall test run to fail.
+    // Preview tests without `preview_should_pass` are allowed to fail -
+    // failures are marked as "ignored" so they don't break the build.
+    //
+    // Preview tests with `preview_should_pass = true` fail normally,
+    // providing real test output for implemented portions of preview features.
     Harness::with_env().discover(tests).main();
 }

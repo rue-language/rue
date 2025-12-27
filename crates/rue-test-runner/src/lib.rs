@@ -105,9 +105,15 @@ pub struct Case {
     pub expected_stdout: Option<String>,
     /// Preview feature required to run this test (e.g., "mutable_strings").
     /// Tests with this field are compiled with `--preview <feature>` and
-    /// are allowed to fail without failing the overall test suite.
+    /// are allowed to fail without failing the overall test suite,
+    /// unless `preview_should_pass` is true.
     #[serde(default)]
     pub preview: Option<String>,
+    /// If true, this preview test should pass and will fail the suite if it doesn't.
+    /// Use this to mark preview tests that are expected to work after implementation.
+    /// This provides real test output for implemented portions of preview features.
+    #[serde(default)]
+    pub preview_should_pass: bool,
     /// Target architecture (e.g., "x86-64-linux", "aarch64-macos").
     /// When specified, the compiler is invoked with `--target <target>`.
     /// Required for MIR golden tests; optional for other test types.
@@ -208,6 +214,7 @@ pub fn expand_case(case: Case) -> Vec<Case> {
                 no_warnings: case.no_warnings,
                 spec: case.spec.clone(),
                 preview: case.preview.clone(),
+                preview_should_pass: case.preview_should_pass,
                 target: case.target.clone(),
                 opt_level: case.opt_level,
 
@@ -259,6 +266,11 @@ pub fn expand_case(case: Case) -> Vec<Case> {
             if let Some(value) = params.get("preview") {
                 if let Some(s) = value.as_str() {
                     expanded.preview = Some(s.to_string());
+                }
+            }
+            if let Some(value) = params.get("preview_should_pass") {
+                if let Some(b) = value.as_bool() {
+                    expanded.preview_should_pass = b;
                 }
             }
 
@@ -760,6 +772,7 @@ mod tests {
             spec: vec!["1.0:1".to_string()],
             expected_stdout: None,
             preview: None,
+            preview_should_pass: false,
             target: None,
             opt_level: None,
             params: vec![],
@@ -803,6 +816,7 @@ mod tests {
             spec: vec!["3.1:1".to_string()],
             expected_stdout: None,
             preview: None,
+            preview_should_pass: false,
             target: None,
             opt_level: None,
             params: vec![ParamSet { values: param1 }, ParamSet { values: param2 }],
@@ -854,6 +868,7 @@ mod tests {
             spec: vec!["3.1:1".to_string()],
             expected_stdout: None,
             preview: None,
+            preview_should_pass: false,
             target: None,
             opt_level: None,
             params: vec![ParamSet { values: params }],
@@ -897,6 +912,7 @@ mod tests {
             spec: vec![],
             expected_stdout: None,
             preview: None,
+            preview_should_pass: false,
             target: None,
             opt_level: None,
             params: vec![ParamSet { values: params }],
