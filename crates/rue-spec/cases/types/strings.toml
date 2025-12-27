@@ -467,7 +467,6 @@ exit_code = 1
 [[case]]
 name = "string_new_basic"
 spec = ["3.10:7"]
-preview = "mutable_strings"
 source = """
 fn main() -> i32 {
     let s = String::new();
@@ -479,7 +478,6 @@ exit_code = 0
 [[case]]
 name = "string_new_equality_with_empty"
 spec = ["3.10:7", "3.7:9"]
-preview = "mutable_strings"
 source = """
 fn main() -> i32 {
     let s = String::new();
@@ -491,7 +489,6 @@ exit_code = 1
 [[case]]
 name = "string_with_capacity_basic"
 spec = ["3.10:8"]
-preview = "mutable_strings"
 source = """
 fn main() -> i32 {
     let cap: u64 = 1024;
@@ -504,7 +501,6 @@ exit_code = 0
 [[case]]
 name = "string_with_capacity_zero"
 spec = ["3.10:8"]
-preview = "mutable_strings"
 source = """
 fn main() -> i32 {
     let cap: u64 = 0;
@@ -517,7 +513,6 @@ exit_code = 0
 [[case]]
 name = "string_with_capacity_equality_with_empty"
 spec = ["3.10:8", "3.7:9"]
-preview = "mutable_strings"
 source = """
 fn main() -> i32 {
     let cap: u64 = 64;
@@ -530,7 +525,6 @@ exit_code = 1
 [[case]]
 name = "string_new_is_empty"
 spec = ["3.10:7", "3.10:9"]
-preview = "mutable_strings"
 source = """
 fn main() -> i32 {
     let cap: u64 = 1024;

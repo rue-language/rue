@@ -461,6 +461,13 @@ fn link_internal(
         return link_system(state, options, object_files, "clang");
     }
 
+    // HACK: Use system linker on Linux until internal ELF linker bug is fixed.
+    // See: String methods crash on Linux (both x86-64 and ARM64) but work on macOS.
+    // TODO: Remove this once the internal linker is fixed.
+    if options.target.is_elf() {
+        return link_system(state, options, object_files, "clang");
+    }
+
     let mut linker = Linker::new(options.target);
 
     // Add all object files to the linker

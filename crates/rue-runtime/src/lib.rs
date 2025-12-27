@@ -929,53 +929,57 @@ define_for_all_platforms! {
 /// This approach avoids struct ABI differences where large structs (>16 bytes
 /// on ARM64) would be returned via pointer.
 ///
-/// # ABI
+/// # ABI (sret convention)
 ///
 /// ```text
-/// extern "C" fn String__new() -> u64  // ptr in rax/x0, len in rdx/x1, cap in rcx/x2
+/// extern "C" fn String__new(out: *mut StringResult)
 /// ```
 ///
-/// Uses assembly to ensure multi-register returns work correctly.
+/// Caller allocates space for the return value and passes pointer.
+/// Callee writes (ptr=0, len=0, cap=0) to that pointer.
+///
+/// This avoids multi-register return complexity across platforms.
+
+/// The StringResult struct used for sret (struct return) convention.
+/// Caller allocates this on stack, passes pointer to callee.
+#[repr(C)]
+pub struct StringResult {
+    pub ptr: *mut u8,
+    pub len: u64,
+    pub cap: u64,
+}
+
 #[cfg(all(target_arch = "x86_64", target_os = "linux"))]
 #[unsafe(no_mangle)]
-#[unsafe(naked)]
 #[allow(non_snake_case)]
-pub unsafe extern "C" fn String__new() {
-    // Returns: rax=ptr(0), rdx=len(0), rcx=cap(0)
-    core::arch::naked_asm!(
-        "xor eax, eax", // ptr = 0
-        "xor edx, edx", // len = 0
-        "xor ecx, ecx", // cap = 0
-        "ret",
-    );
+pub extern "C" fn String__new(out: *mut StringResult) {
+    unsafe {
+        (*out).ptr = core::ptr::null_mut();
+        (*out).len = 0;
+        (*out).cap = 0;
+    }
 }
 
 #[cfg(all(target_arch = "aarch64", target_os = "macos"))]
 #[unsafe(no_mangle)]
-#[unsafe(naked)]
 #[allow(non_snake_case)]
-pub unsafe extern "C" fn String__new() {
-    // Returns: x0=ptr(0), x1=len(0), x2=cap(0)
-    core::arch::naked_asm!(
-        "mov x0, xzr", // ptr = 0
-        "mov x1, xzr", // len = 0
-        "mov x2, xzr", // cap = 0
-        "ret",
-    );
+pub extern "C" fn String__new(out: *mut StringResult) {
+    unsafe {
+        (*out).ptr = core::ptr::null_mut();
+        (*out).len = 0;
+        (*out).cap = 0;
+    }
 }
 
 #[cfg(all(target_arch = "aarch64", target_os = "linux"))]
 #[unsafe(no_mangle)]
-#[unsafe(naked)]
 #[allow(non_snake_case)]
-pub unsafe extern "C" fn String__new() {
-    // Returns: x0=ptr(0), x1=len(0), x2=cap(0)
-    core::arch::naked_asm!(
-        "mov x0, xzr", // ptr = 0
-        "mov x1, xzr", // len = 0
-        "mov x2, xzr", // cap = 0
-        "ret",
-    );
+pub extern "C" fn String__new(out: *mut StringResult) {
+    unsafe {
+        (*out).ptr = core::ptr::null_mut();
+        (*out).len = 0;
+        (*out).cap = 0;
+    }
 }
 
 /// Create an empty String with pre-allocated capacity.
@@ -985,78 +989,63 @@ pub unsafe extern "C" fn String__new() {
 ///
 /// # Arguments
 ///
-/// * `cap` - Desired capacity in bytes (will be at least STRING_MIN_CAPACITY)
+/// * `out` - Pointer to StringResult where result will be written
+/// * `requested_cap` - Desired capacity in bytes (will be at least STRING_MIN_CAPACITY)
 ///
-/// # ABI
+/// # ABI (sret convention)
 ///
 /// ```text
-/// extern "C" fn String__with_capacity(cap: u64) -> (ptr, len, cap)
+/// extern "C" fn String__with_capacity(out: *mut StringResult, cap: u64)
 /// ```
-///
-/// On x86-64: cap in rdi, returns ptr in rax, len in rdx, cap in rcx
-/// On aarch64: cap in x0, returns ptr in x0, len in x1, cap in x2
 #[cfg(all(target_arch = "x86_64", target_os = "linux"))]
 #[unsafe(no_mangle)]
 #[allow(non_snake_case)]
-pub extern "C" fn String__with_capacity(requested_cap: u64) -> u64 {
+pub extern "C" fn String__with_capacity(out: *mut StringResult, requested_cap: u64) {
     let actual_cap = if requested_cap < STRING_MIN_CAPACITY {
         STRING_MIN_CAPACITY
     } else {
         requested_cap
     };
     let ptr = heap::alloc(actual_cap, 1);
-    // Returns ptr in rax; we need to also set rdx=0 (len) and rcx=actual_cap
-    // We do this via inline asm since the C ABI doesn't support multi-value returns
     unsafe {
-        core::arch::asm!(
-            "xor edx, edx",     // len = 0
-            in("rcx") actual_cap, // cap = actual_cap
-            options(nostack, nomem),
-        );
+        (*out).ptr = ptr;
+        (*out).len = 0;
+        (*out).cap = actual_cap;
     }
-    ptr as u64
 }
 
 #[cfg(all(target_arch = "aarch64", target_os = "macos"))]
 #[unsafe(no_mangle)]
 #[allow(non_snake_case)]
-pub extern "C" fn String__with_capacity(requested_cap: u64) -> u64 {
+pub extern "C" fn String__with_capacity(out: *mut StringResult, requested_cap: u64) {
     let actual_cap = if requested_cap < STRING_MIN_CAPACITY {
         STRING_MIN_CAPACITY
     } else {
         requested_cap
     };
     let ptr = heap::alloc(actual_cap, 1);
-    // Returns ptr in x0; we need to also set x1=0 (len) and x2=actual_cap
     unsafe {
-        core::arch::asm!(
-            "mov x1, xzr",      // len = 0
-            in("x2") actual_cap, // cap = actual_cap
-            options(nostack, nomem),
-        );
+        (*out).ptr = ptr;
+        (*out).len = 0;
+        (*out).cap = actual_cap;
     }
-    ptr as u64
 }
 
 #[cfg(all(target_arch = "aarch64", target_os = "linux"))]
 #[unsafe(no_mangle)]
 #[allow(non_snake_case)]
-pub extern "C" fn String__with_capacity(requested_cap: u64) -> u64 {
+pub extern "C" fn String__with_capacity(out: *mut StringResult, requested_cap: u64) {
     let actual_cap = if requested_cap < STRING_MIN_CAPACITY {
         STRING_MIN_CAPACITY
     } else {
         requested_cap
     };
     let ptr = heap::alloc(actual_cap, 1);
-    // Returns ptr in x0; we need to also set x1=0 (len) and x2=actual_cap
     unsafe {
-        core::arch::asm!(
-            "mov x1, xzr",      // len = 0
-            in("x2") actual_cap, // cap = actual_cap
-            options(nostack, nomem),
-        );
+        (*out).ptr = ptr;
+        (*out).len = 0;
+        (*out).cap = actual_cap;
     }
-    ptr as u64
 }
 
 // =============================================================================
@@ -1172,24 +1161,16 @@ pub extern "C" fn String__is_empty(_ptr: *const u8, len: u64, _cap: u64) -> u8 {
 // Clone creates a deep copy of a String. It uses `borrow self` semantics -
 // the original String is not consumed.
 //
-// ABI: String is passed as 3 separate arguments (ptr, len, cap)
-// - x86-64: ptr in rdi, len in rsi, cap in rdx; returns ptr in rax, len in rdx, cap in rcx
-// - aarch64: ptr in x0, len in x1, cap in x2; returns ptr in x0, len in x1, cap in x2
+// ABI (sret convention): out pointer first, then String fields (ptr, len, cap)
 
 /// Clone a String, creating a deep copy.
 ///
 /// # Arguments
 ///
+/// * `out` - Pointer to StringResult where result will be written
 /// * `ptr` - Pointer to the source string data
 /// * `len` - Length of the string in bytes
-/// * `cap` - Capacity (unused for cloning, but part of ABI)
-///
-/// # Returns
-///
-/// A new String (ptr, len, cap) where:
-/// - ptr points to freshly allocated memory containing a copy of the content
-/// - len is the same as the input len
-/// - cap is at least len (minimum STRING_MIN_CAPACITY)
+/// * `_cap` - Capacity (unused for cloning, but part of ABI)
 ///
 /// # Behavior
 ///
@@ -1198,82 +1179,61 @@ pub extern "C" fn String__is_empty(_ptr: *const u8, len: u64, _cap: u64) -> u8 {
 #[cfg(all(target_arch = "x86_64", target_os = "linux"))]
 #[unsafe(no_mangle)]
 #[allow(non_snake_case)]
-pub extern "C" fn String__clone(ptr: *const u8, len: u64, _cap: u64) -> u64 {
-    // Allocate new buffer with capacity >= len
+pub extern "C" fn String__clone(out: *mut StringResult, ptr: *const u8, len: u64, _cap: u64) {
     let new_cap = len.max(STRING_MIN_CAPACITY);
     let new_ptr = heap::alloc(new_cap, 1);
 
-    // Copy the string content
     if len > 0 && !ptr.is_null() {
         unsafe {
             core::ptr::copy_nonoverlapping(ptr, new_ptr, len as usize);
         }
     }
 
-    // Return ptr in rax, len in rdx, cap in rcx
     unsafe {
-        core::arch::asm!(
-            "",
-            in("rdx") len,
-            in("rcx") new_cap,
-            options(nostack, nomem),
-        );
+        (*out).ptr = new_ptr;
+        (*out).len = len;
+        (*out).cap = new_cap;
     }
-    new_ptr as u64
 }
 
 #[cfg(all(target_arch = "aarch64", target_os = "macos"))]
 #[unsafe(no_mangle)]
 #[allow(non_snake_case)]
-pub extern "C" fn String__clone(ptr: *const u8, len: u64, _cap: u64) -> u64 {
-    // Allocate new buffer with capacity >= len
+pub extern "C" fn String__clone(out: *mut StringResult, ptr: *const u8, len: u64, _cap: u64) {
     let new_cap = len.max(STRING_MIN_CAPACITY);
     let new_ptr = heap::alloc(new_cap, 1);
 
-    // Copy the string content
     if len > 0 && !ptr.is_null() {
         unsafe {
             core::ptr::copy_nonoverlapping(ptr, new_ptr, len as usize);
         }
     }
 
-    // Return ptr in x0, len in x1, cap in x2
     unsafe {
-        core::arch::asm!(
-            "",
-            in("x1") len,
-            in("x2") new_cap,
-            options(nostack, nomem),
-        );
+        (*out).ptr = new_ptr;
+        (*out).len = len;
+        (*out).cap = new_cap;
     }
-    new_ptr as u64
 }
 
 #[cfg(all(target_arch = "aarch64", target_os = "linux"))]
 #[unsafe(no_mangle)]
 #[allow(non_snake_case)]
-pub extern "C" fn String__clone(ptr: *const u8, len: u64, _cap: u64) -> u64 {
-    // Allocate new buffer with capacity >= len
+pub extern "C" fn String__clone(out: *mut StringResult, ptr: *const u8, len: u64, _cap: u64) {
     let new_cap = len.max(STRING_MIN_CAPACITY);
     let new_ptr = heap::alloc(new_cap, 1);
 
-    // Copy the string content
     if len > 0 && !ptr.is_null() {
         unsafe {
             core::ptr::copy_nonoverlapping(ptr, new_ptr, len as usize);
         }
     }
 
-    // Return ptr in x0, len in x1, cap in x2
     unsafe {
-        core::arch::asm!(
-            "",
-            in("x1") len,
-            in("x2") new_cap,
-            options(nostack, nomem),
-        );
+        (*out).ptr = new_ptr;
+        (*out).len = len;
+        (*out).cap = new_cap;
     }
-    new_ptr as u64
 }
 
 // =============================================================================
@@ -1281,12 +1241,10 @@ pub extern "C" fn String__clone(ptr: *const u8, len: u64, _cap: u64) -> u64 {
 // =============================================================================
 //
 // These methods take a String (ptr, len, cap) and additional arguments,
-// then return an updated String (ptr, len, cap) via multi-value return.
+// then return an updated String (ptr, len, cap) via sret convention.
 // They use `inout self` semantics - the String is modified in place.
 //
-// ABI: String is passed as 3 separate arguments (ptr, len, cap)
-// - x86-64: ptr in rdi, len in rsi, cap in rdx; returns ptr in rax, len in rdx, cap in rcx
-// - aarch64: ptr in x0, len in x1, cap in x2; returns ptr in x0, len in x1, cap in x2
+// ABI (sret convention): out pointer first, then String fields and other args
 //
 // Heap promotion: If cap == 0, the string is a literal pointing to rodata.
 // Any mutation first promotes to heap by allocating a new buffer and copying.
@@ -1295,37 +1253,27 @@ pub extern "C" fn String__clone(ptr: *const u8, len: u64, _cap: u64) -> u64 {
 ///
 /// # Arguments
 ///
+/// * `out` - Pointer to StringResult where result will be written
 /// * `ptr` - Pointer to the string data
 /// * `len` - Current length in bytes
 /// * `cap` - Current capacity (0 for literals)
 /// * `other_ptr` - Pointer to the other string's data
 /// * `other_len` - Length of the other string
-/// * `other_cap` - Capacity of the other string (unused, but part of ABI)
-///
-/// # Returns
-///
-/// Updated String (ptr, len, cap) with the other string's content appended.
-///
-/// # Behavior
-///
-/// 1. If cap == 0 (literal), promotes to heap first
-/// 2. If len + other_len > cap, grows the buffer
-/// 3. Copies other_ptr[0..other_len] to ptr[len..]
-/// 4. Returns updated (ptr, new_len, cap)
+/// * `_other_cap` - Capacity of the other string (unused, but part of ABI)
 #[cfg(all(target_arch = "x86_64", target_os = "linux"))]
 #[unsafe(no_mangle)]
 #[allow(non_snake_case)]
 pub extern "C" fn String__push_str(
+    out: *mut StringResult,
     ptr: *mut u8,
     len: u64,
     cap: u64,
     other_ptr: *const u8,
     other_len: u64,
     _other_cap: u64,
-) -> u64 {
+) {
     let (new_ptr, new_cap) = string_ensure_capacity(ptr, len, cap, other_len);
 
-    // Copy the other string's content
     if other_len > 0 && !other_ptr.is_null() {
         unsafe {
             core::ptr::copy_nonoverlapping(
@@ -1338,32 +1286,27 @@ pub extern "C" fn String__push_str(
 
     let new_len = len + other_len;
 
-    // Return ptr in rax, len in rdx, cap in rcx
     unsafe {
-        core::arch::asm!(
-            "",
-            in("rdx") new_len,
-            in("rcx") new_cap,
-            options(nostack, nomem),
-        );
+        (*out).ptr = new_ptr;
+        (*out).len = new_len;
+        (*out).cap = new_cap;
     }
-    new_ptr as u64
 }
 
 #[cfg(all(target_arch = "aarch64", target_os = "macos"))]
 #[unsafe(no_mangle)]
 #[allow(non_snake_case)]
 pub extern "C" fn String__push_str(
+    out: *mut StringResult,
     ptr: *mut u8,
     len: u64,
     cap: u64,
     other_ptr: *const u8,
     other_len: u64,
     _other_cap: u64,
-) -> u64 {
+) {
     let (new_ptr, new_cap) = string_ensure_capacity(ptr, len, cap, other_len);
 
-    // Copy the other string's content
     if other_len > 0 && !other_ptr.is_null() {
         unsafe {
             core::ptr::copy_nonoverlapping(
@@ -1376,32 +1319,27 @@ pub extern "C" fn String__push_str(
 
     let new_len = len + other_len;
 
-    // Return ptr in x0, len in x1, cap in x2
     unsafe {
-        core::arch::asm!(
-            "",
-            in("x1") new_len,
-            in("x2") new_cap,
-            options(nostack, nomem),
-        );
+        (*out).ptr = new_ptr;
+        (*out).len = new_len;
+        (*out).cap = new_cap;
     }
-    new_ptr as u64
 }
 
 #[cfg(all(target_arch = "aarch64", target_os = "linux"))]
 #[unsafe(no_mangle)]
 #[allow(non_snake_case)]
 pub extern "C" fn String__push_str(
+    out: *mut StringResult,
     ptr: *mut u8,
     len: u64,
     cap: u64,
     other_ptr: *const u8,
     other_len: u64,
     _other_cap: u64,
-) -> u64 {
+) {
     let (new_ptr, new_cap) = string_ensure_capacity(ptr, len, cap, other_len);
 
-    // Copy the other string's content
     if other_len > 0 && !other_ptr.is_null() {
         unsafe {
             core::ptr::copy_nonoverlapping(
@@ -1414,236 +1352,184 @@ pub extern "C" fn String__push_str(
 
     let new_len = len + other_len;
 
-    // Return ptr in x0, len in x1, cap in x2
     unsafe {
-        core::arch::asm!(
-            "",
-            in("x1") new_len,
-            in("x2") new_cap,
-            options(nostack, nomem),
-        );
+        (*out).ptr = new_ptr;
+        (*out).len = new_len;
+        (*out).cap = new_cap;
     }
-    new_ptr as u64
 }
 
 /// Append a single byte to this string.
 ///
 /// # Arguments
 ///
+/// * `out` - Pointer to StringResult where result will be written
 /// * `ptr` - Pointer to the string data
 /// * `len` - Current length in bytes
 /// * `cap` - Current capacity (0 for literals)
 /// * `byte` - The byte to append
-///
-/// # Returns
-///
-/// Updated String (ptr, len, cap) with the byte appended.
 #[cfg(all(target_arch = "x86_64", target_os = "linux"))]
 #[unsafe(no_mangle)]
 #[allow(non_snake_case)]
-pub extern "C" fn String__push(ptr: *mut u8, len: u64, cap: u64, byte: u8) -> u64 {
+pub extern "C" fn String__push(out: *mut StringResult, ptr: *mut u8, len: u64, cap: u64, byte: u8) {
     let (new_ptr, new_cap) = string_ensure_capacity(ptr, len, cap, 1);
 
-    // Write the byte
     unsafe {
         *new_ptr.add(len as usize) = byte;
     }
 
     let new_len = len + 1;
 
-    // Return ptr in rax, len in rdx, cap in rcx
     unsafe {
-        core::arch::asm!(
-            "",
-            in("rdx") new_len,
-            in("rcx") new_cap,
-            options(nostack, nomem),
-        );
+        (*out).ptr = new_ptr;
+        (*out).len = new_len;
+        (*out).cap = new_cap;
     }
-    new_ptr as u64
 }
 
 #[cfg(all(target_arch = "aarch64", target_os = "macos"))]
 #[unsafe(no_mangle)]
 #[allow(non_snake_case)]
-pub extern "C" fn String__push(ptr: *mut u8, len: u64, cap: u64, byte: u8) -> u64 {
+pub extern "C" fn String__push(out: *mut StringResult, ptr: *mut u8, len: u64, cap: u64, byte: u8) {
     let (new_ptr, new_cap) = string_ensure_capacity(ptr, len, cap, 1);
 
-    // Write the byte
     unsafe {
         *new_ptr.add(len as usize) = byte;
     }
 
     let new_len = len + 1;
 
-    // Return ptr in x0, len in x1, cap in x2
     unsafe {
-        core::arch::asm!(
-            "",
-            in("x1") new_len,
-            in("x2") new_cap,
-            options(nostack, nomem),
-        );
+        (*out).ptr = new_ptr;
+        (*out).len = new_len;
+        (*out).cap = new_cap;
     }
-    new_ptr as u64
 }
 
 #[cfg(all(target_arch = "aarch64", target_os = "linux"))]
 #[unsafe(no_mangle)]
 #[allow(non_snake_case)]
-pub extern "C" fn String__push(ptr: *mut u8, len: u64, cap: u64, byte: u8) -> u64 {
+pub extern "C" fn String__push(out: *mut StringResult, ptr: *mut u8, len: u64, cap: u64, byte: u8) {
     let (new_ptr, new_cap) = string_ensure_capacity(ptr, len, cap, 1);
 
-    // Write the byte
     unsafe {
         *new_ptr.add(len as usize) = byte;
     }
 
     let new_len = len + 1;
 
-    // Return ptr in x0, len in x1, cap in x2
     unsafe {
-        core::arch::asm!(
-            "",
-            in("x1") new_len,
-            in("x2") new_cap,
-            options(nostack, nomem),
-        );
+        (*out).ptr = new_ptr;
+        (*out).len = new_len;
+        (*out).cap = new_cap;
     }
-    new_ptr as u64
 }
 
 /// Clear the string content, keeping capacity.
 ///
 /// # Arguments
 ///
+/// * `out` - Pointer to StringResult where result will be written
 /// * `ptr` - Pointer to the string data
-/// * `len` - Current length in bytes (unused, but part of ABI)
+/// * `_len` - Current length in bytes (unused)
 /// * `cap` - Current capacity
-///
-/// # Returns
-///
-/// Updated String (ptr, 0, cap) with length set to 0.
-///
-/// # Note
-///
-/// For literals (cap == 0), this is a no-op since the string is already empty
-/// or we can't modify rodata. The returned string will have len=0, cap=0.
 #[cfg(all(target_arch = "x86_64", target_os = "linux"))]
 #[unsafe(no_mangle)]
 #[allow(non_snake_case)]
-pub extern "C" fn String__clear(ptr: *mut u8, _len: u64, cap: u64) -> u64 {
-    // Return ptr in rax, len=0 in rdx, cap in rcx
+pub extern "C" fn String__clear(out: *mut StringResult, ptr: *mut u8, _len: u64, cap: u64) {
     unsafe {
-        core::arch::asm!(
-            "xor edx, edx", // len = 0
-            in("rcx") cap,
-            options(nostack, nomem),
-        );
+        (*out).ptr = ptr;
+        (*out).len = 0;
+        (*out).cap = cap;
     }
-    ptr as u64
 }
 
 #[cfg(all(target_arch = "aarch64", target_os = "macos"))]
 #[unsafe(no_mangle)]
 #[allow(non_snake_case)]
-pub extern "C" fn String__clear(ptr: *mut u8, _len: u64, cap: u64) -> u64 {
-    // Return ptr in x0, len=0 in x1, cap in x2
+pub extern "C" fn String__clear(out: *mut StringResult, ptr: *mut u8, _len: u64, cap: u64) {
     unsafe {
-        core::arch::asm!(
-            "mov x1, xzr", // len = 0
-            in("x2") cap,
-            options(nostack, nomem),
-        );
+        (*out).ptr = ptr;
+        (*out).len = 0;
+        (*out).cap = cap;
     }
-    ptr as u64
 }
 
 #[cfg(all(target_arch = "aarch64", target_os = "linux"))]
 #[unsafe(no_mangle)]
 #[allow(non_snake_case)]
-pub extern "C" fn String__clear(ptr: *mut u8, _len: u64, cap: u64) -> u64 {
-    // Return ptr in x0, len=0 in x1, cap in x2
+pub extern "C" fn String__clear(out: *mut StringResult, ptr: *mut u8, _len: u64, cap: u64) {
     unsafe {
-        core::arch::asm!(
-            "mov x1, xzr", // len = 0
-            in("x2") cap,
-            options(nostack, nomem),
-        );
+        (*out).ptr = ptr;
+        (*out).len = 0;
+        (*out).cap = cap;
     }
-    ptr as u64
 }
 
 /// Reserve additional capacity in the string.
 ///
 /// # Arguments
 ///
+/// * `out` - Pointer to StringResult where result will be written
 /// * `ptr` - Pointer to the string data
 /// * `len` - Current length in bytes
 /// * `cap` - Current capacity (0 for literals)
 /// * `additional` - Number of additional bytes to reserve
-///
-/// # Returns
-///
-/// Updated String (ptr, len, cap) with capacity >= len + additional.
-///
-/// # Behavior
-///
-/// If cap == 0 (literal), promotes to heap with capacity >= len + additional.
-/// If cap < len + additional, grows the buffer.
-/// Otherwise, returns unchanged.
 #[cfg(all(target_arch = "x86_64", target_os = "linux"))]
 #[unsafe(no_mangle)]
 #[allow(non_snake_case)]
-pub extern "C" fn String__reserve(ptr: *mut u8, len: u64, cap: u64, additional: u64) -> u64 {
+pub extern "C" fn String__reserve(
+    out: *mut StringResult,
+    ptr: *mut u8,
+    len: u64,
+    cap: u64,
+    additional: u64,
+) {
     let (new_ptr, new_cap) = string_ensure_capacity(ptr, len, cap, additional);
 
-    // Return ptr in rax, len in rdx, cap in rcx
     unsafe {
-        core::arch::asm!(
-            "",
-            in("rdx") len,
-            in("rcx") new_cap,
-            options(nostack, nomem),
-        );
+        (*out).ptr = new_ptr;
+        (*out).len = len; // len stays the same for reserve
+        (*out).cap = new_cap;
     }
-    new_ptr as u64
 }
 
 #[cfg(all(target_arch = "aarch64", target_os = "macos"))]
 #[unsafe(no_mangle)]
 #[allow(non_snake_case)]
-pub extern "C" fn String__reserve(ptr: *mut u8, len: u64, cap: u64, additional: u64) -> u64 {
+pub extern "C" fn String__reserve(
+    out: *mut StringResult,
+    ptr: *mut u8,
+    len: u64,
+    cap: u64,
+    additional: u64,
+) {
     let (new_ptr, new_cap) = string_ensure_capacity(ptr, len, cap, additional);
 
-    // Return ptr in x0, len in x1, cap in x2
     unsafe {
-        core::arch::asm!(
-            "",
-            in("x1") len,
-            in("x2") new_cap,
-            options(nostack, nomem),
-        );
+        (*out).ptr = new_ptr;
+        (*out).len = len;
+        (*out).cap = new_cap;
     }
-    new_ptr as u64
 }
 
 #[cfg(all(target_arch = "aarch64", target_os = "linux"))]
 #[unsafe(no_mangle)]
 #[allow(non_snake_case)]
-pub extern "C" fn String__reserve(ptr: *mut u8, len: u64, cap: u64, additional: u64) -> u64 {
+pub extern "C" fn String__reserve(
+    out: *mut StringResult,
+    ptr: *mut u8,
+    len: u64,
+    cap: u64,
+    additional: u64,
+) {
     let (new_ptr, new_cap) = string_ensure_capacity(ptr, len, cap, additional);
 
-    // Return ptr in x0, len in x1, cap in x2
     unsafe {
-        core::arch::asm!(
-            "",
-            in("x1") len,
-            in("x2") new_cap,
-            options(nostack, nomem),
-        );
+        (*out).ptr = new_ptr;
+        (*out).len = len;
+        (*out).cap = new_cap;
     }
-    new_ptr as u64
 }
 
 /// Helper function to ensure a string has enough capacity for additional bytes.
@@ -2017,8 +1903,10 @@ mod tests {
 
     #[test]
     fn test_str_eq_same_content() {
-        let s1 = b"hello";
-        let s2 = b"hello";
+        // Use arrays on the stack to guarantee different pointers
+        // (byte literals may be deduplicated by the compiler)
+        let s1: [u8; 5] = *b"hello";
+        let s2: [u8; 5] = *b"hello";
         // Different pointers, same content
         assert_ne!(s1.as_ptr(), s2.as_ptr());
         let result = super::__rue_str_eq(s1.as_ptr(), 5, s2.as_ptr(), 5);

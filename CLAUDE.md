@@ -373,9 +373,6 @@ Use preview gating when:
 1. **Add to PreviewFeature enum** in `rue-error/src/lib.rs`:
    ```rust
    pub enum PreviewFeature {
-       MutableStrings,
-       HmInference,
-       Destructors,
        YourNewFeature,  // Add your feature here
    }
    ```

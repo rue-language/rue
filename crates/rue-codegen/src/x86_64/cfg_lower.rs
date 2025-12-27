@@ -1393,8 +1393,31 @@ impl<'a> CfgLower<'a> {
                 let result_vreg = self.mir.alloc_vreg();
                 self.value_map.insert(value, result_vreg);
 
+                // Check if this call returns a String (uses sret convention)
+                let is_sret_call = ty == Type::String;
+
+                // For sret calls, allocate 32 bytes on stack for the return value (24 bytes + padding for 16-byte alignment)
+                // We'll pass a pointer to this space as the first argument
+                // Use add with negative offset (no SubRI in MIR)
+                if is_sret_call {
+                    self.mir.push(X86Inst::AddRI {
+                        dst: Operand::Physical(Reg::Rsp),
+                        imm: -32,
+                    });
+                }
+
                 // Flatten struct arguments and handle by-ref arguments (inout and borrow)
                 let mut flattened_vregs: Vec<VReg> = Vec::new();
+
+                // For sret calls, the first argument is the output pointer (current rsp)
+                if is_sret_call {
+                    let sret_ptr_vreg = self.mir.alloc_vreg();
+                    self.mir.push(X86Inst::MovRR {
+                        dst: Operand::Virtual(sret_ptr_vreg),
+                        src: Operand::Physical(Reg::Rsp),
+                    });
+                    flattened_vregs.push(sret_ptr_vreg);
+                }
                 for arg in args {
                     let arg_value = arg.value;
                     let arg_type = self.cfg.get_inst(arg_value).ty;
@@ -1667,16 +1690,24 @@ impl<'a> CfgLower<'a> {
                         });
                     }
                 } else if ty == Type::String {
-                    // String is 3 slots: ptr (rax), len (rdx), cap (rcx)
+                    // String uses sret convention: result was written to [rsp]
+                    // Load ptr, len, cap from stack
                     let mut slot_vregs = Vec::new();
                     for slot_idx in 0..3 {
                         let slot_vreg = self.mir.alloc_vreg();
-                        self.mir.push(X86Inst::MovRR {
+                        let offset = (slot_idx * 8) as i32;
+                        self.mir.push(X86Inst::MovRM {
                             dst: Operand::Virtual(slot_vreg),
-                            src: Operand::Physical(RET_REGS[slot_idx]),
+                            base: Reg::Rsp,
+                            offset,
                         });
                         slot_vregs.push(slot_vreg);
                     }
+                    // Pop the sret space (32 bytes including alignment padding)
+                    self.mir.push(X86Inst::AddRI {
+                        dst: Operand::Physical(Reg::Rsp),
+                        imm: 32,
+                    });
                     self.struct_slot_vregs.insert(value, slot_vregs.clone());
                     self.mir.push(X86Inst::MovRR {
                         dst: Operand::Virtual(result_vreg),

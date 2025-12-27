@@ -1,12 +1,12 @@
 ---
 id: 0014
 title: Mutable Strings
-status: proposal
+status: implemented
 tags: [types, memory, strings]
 feature-flag: mutable-strings
 created: 2025-12-25
-accepted:
-implemented:
+accepted: 2025-12-25
+implemented: 2025-12-27
 spec-sections: ["3.10"]
 superseded-by:
 ---
@@ -15,7 +15,7 @@ superseded-by:
 
 ## Status
 
-Proposal
+Implemented
 
 ## Summary
 
@@ -275,7 +275,7 @@ The promotion happens transparently inside mutation methods.
 
 Epic: rue-0hef
 
-All functionality is gated behind `--preview mutable_strings`. Spec and tests come first.
+**Note**: As of 2025-12-27, mutable strings are now stable. All phases are complete.
 
 ### Phase 1: Specification and Feature Gate - rue-0hef.1 (COMPLETE)
 
@@ -322,35 +322,35 @@ Wire String type to use destructors:
 
 **Testable**: Valgrind-clean string allocation and deallocation.
 
-### Phase 5: Construction Methods
+### Phase 5: Construction Methods - rue-0hef.5 (COMPLETE)
 
 Add `impl String` with construction (gated):
 
-- `String::new() -> String` - empty string
-- `String::with_capacity(cap: u64) -> String` - pre-allocated
+- [x] `String::new() -> String` - empty string
+- [x] `String::with_capacity(cap: u64) -> String` - pre-allocated
 
 **Testable**: Create strings, verify cap is set correctly.
 
-### Phase 6: Query Methods
+### Phase 6: Query Methods - rue-0hef.6 (COMPLETE)
 
 Add query methods (gated):
 
-- `fn len(borrow self) -> u64`
-- `fn capacity(borrow self) -> u64`
-- `fn is_empty(borrow self) -> bool`
+- [x] `fn len(borrow self) -> u64`
+- [x] `fn capacity(borrow self) -> u64`
+- [x] `fn is_empty(borrow self) -> bool`
 
 **Testable**: Query methods return correct values.
 
-### Phase 7: Mutation Methods
+### Phase 7: Mutation Methods - rue-0hef.7 (COMPLETE)
 
 Add mutation methods with `inout self` (gated):
 
-- `fn push_str(inout self, other: String)`
-- `fn push(inout self, byte: u8)`
-- `fn clear(inout self)`
-- `fn reserve(inout self, additional: u64)`
-- Automatic rodata-to-heap promotion
-- Automatic grow-on-append
+- [x] `fn push_str(inout self, other: String)`
+- [x] `fn push(inout self, byte: u8)`
+- [x] `fn clear(inout self)`
+- [x] `fn reserve(inout self, additional: u64)`
+- [x] Automatic rodata-to-heap promotion
+- [x] Automatic grow-on-append
 
 **Testable**: Build strings through multiple appends.
 
