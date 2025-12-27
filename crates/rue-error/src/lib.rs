@@ -195,6 +195,112 @@ impl Diagnostic {
 }
 
 // ============================================================================
+// Generic Diagnostic Wrapper
+// ============================================================================
+
+/// A compilation diagnostic (error or warning) with optional source location.
+///
+/// This is a generic wrapper that holds a diagnostic kind along with optional
+/// source location and rich diagnostic information (labels, notes, helps).
+///
+/// Use the type aliases [`CompileError`] and [`CompileWarning`] for the
+/// specific error and warning types.
+///
+/// Diagnostics can include rich information using the builder methods:
+/// ```ignore
+/// CompileError::new(ErrorKind::TypeMismatch { ... }, span)
+///     .with_label("expected because of this", other_span)
+///     .with_note("types must match exactly")
+///     .with_help("consider adding a type conversion")
+/// ```
+#[derive(Debug, Clone)]
+#[must_use = "compiler diagnostics should not be ignored"]
+pub struct DiagnosticWrapper<K> {
+    /// The specific kind of diagnostic.
+    pub kind: K,
+    span: Option<Span>,
+    diagnostic: Diagnostic,
+}
+
+impl<K> DiagnosticWrapper<K> {
+    /// Create a new diagnostic with the given kind and span.
+    #[inline]
+    pub fn new(kind: K, span: Span) -> Self {
+        Self {
+            kind,
+            span: Some(span),
+            diagnostic: Diagnostic::new(),
+        }
+    }
+
+    /// Create a diagnostic without a source location.
+    ///
+    /// Use this for diagnostics that don't correspond to a specific source
+    /// location, such as "no main function found" or linker errors.
+    #[inline]
+    pub fn without_span(kind: K) -> Self {
+        Self {
+            kind,
+            span: None,
+            diagnostic: Diagnostic::new(),
+        }
+    }
+
+    /// Returns true if this diagnostic has source location information.
+    #[inline]
+    pub fn has_span(&self) -> bool {
+        self.span.is_some()
+    }
+
+    /// Get the span, if present.
+    #[inline]
+    pub fn span(&self) -> Option<Span> {
+        self.span
+    }
+
+    /// Get the diagnostic information.
+    #[inline]
+    pub fn diagnostic(&self) -> &Diagnostic {
+        &self.diagnostic
+    }
+
+    /// Add a secondary label pointing to related code.
+    ///
+    /// Labels appear as additional annotations in the source snippet.
+    #[inline]
+    pub fn with_label(mut self, message: impl Into<String>, span: Span) -> Self {
+        self.diagnostic.labels.push(Label::new(message, span));
+        self
+    }
+
+    /// Add an informational note.
+    ///
+    /// Notes appear as footer messages providing context.
+    #[inline]
+    pub fn with_note(mut self, message: impl Into<String>) -> Self {
+        self.diagnostic.notes.push(Note::new(message));
+        self
+    }
+
+    /// Add a help suggestion.
+    ///
+    /// Helps appear as footer messages with actionable advice.
+    #[inline]
+    pub fn with_help(mut self, message: impl Into<String>) -> Self {
+        self.diagnostic.helps.push(Help::new(message));
+        self
+    }
+}
+
+impl<K: fmt::Display> fmt::Display for DiagnosticWrapper<K> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.kind)
+    }
+}
+
+impl<K: fmt::Display + fmt::Debug> std::error::Error for DiagnosticWrapper<K> {}
+
+// ============================================================================
 // Compile Errors
 // ============================================================================
 
@@ -210,13 +316,7 @@ impl Diagnostic {
 ///     .with_note("types must match exactly")
 ///     .with_help("consider adding a type conversion")
 /// ```
-#[derive(Debug, Clone)]
-#[must_use = "compiler errors should not be ignored"]
-pub struct CompileError {
-    pub kind: ErrorKind,
-    span: Option<Span>,
-    diagnostic: Diagnostic,
-}
+pub type CompileError = DiagnosticWrapper<ErrorKind>;
 
 /// The kind of compilation error.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -423,29 +523,6 @@ pub enum ErrorKind {
 }
 
 impl CompileError {
-    /// Create a new error with the given kind and span.
-    #[inline]
-    pub fn new(kind: ErrorKind, span: Span) -> Self {
-        Self {
-            kind,
-            span: Some(span),
-            diagnostic: Diagnostic::new(),
-        }
-    }
-
-    /// Create an error without a source location.
-    ///
-    /// Use this for errors that don't correspond to a specific source location,
-    /// such as "no main function found" or linker errors.
-    #[inline]
-    pub fn without_span(kind: ErrorKind) -> Self {
-        Self {
-            kind,
-            span: None,
-            diagnostic: Diagnostic::new(),
-        }
-    }
-
     /// Create an error at a specific position (zero-length span).
     #[inline]
     pub fn at(kind: ErrorKind, pos: u32) -> Self {
@@ -455,60 +532,7 @@ impl CompileError {
             diagnostic: Diagnostic::new(),
         }
     }
-
-    /// Returns true if this error has source location information.
-    #[inline]
-    pub fn has_span(&self) -> bool {
-        self.span.is_some()
-    }
-
-    /// Get the span, if present.
-    #[inline]
-    pub fn span(&self) -> Option<Span> {
-        self.span
-    }
-
-    /// Get the diagnostic information.
-    #[inline]
-    pub fn diagnostic(&self) -> &Diagnostic {
-        &self.diagnostic
-    }
-
-    /// Add a secondary label pointing to related code.
-    ///
-    /// Labels appear as additional annotations in the source snippet.
-    #[inline]
-    pub fn with_label(mut self, message: impl Into<String>, span: Span) -> Self {
-        self.diagnostic.labels.push(Label::new(message, span));
-        self
-    }
-
-    /// Add an informational note.
-    ///
-    /// Notes appear as footer messages providing context.
-    #[inline]
-    pub fn with_note(mut self, message: impl Into<String>) -> Self {
-        self.diagnostic.notes.push(Note::new(message));
-        self
-    }
-
-    /// Add a help suggestion.
-    ///
-    /// Helps appear as footer messages with actionable advice.
-    #[inline]
-    pub fn with_help(mut self, message: impl Into<String>) -> Self {
-        self.diagnostic.helps.push(Help::new(message));
-        self
-    }
 }
-
-impl fmt::Display for CompileError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.kind)
-    }
-}
-
-impl std::error::Error for CompileError {}
 
 impl fmt::Display for ErrorKind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -881,86 +905,7 @@ pub enum WarningKind {
 /// CompileWarning::new(WarningKind::UnusedVariable("x".into()), span)
 ///     .with_help("if this is intentional, prefix it with an underscore: `_x`")
 /// ```
-#[derive(Debug, Clone)]
-#[must_use = "compiler warnings should not be ignored"]
-pub struct CompileWarning {
-    pub kind: WarningKind,
-    span: Option<Span>,
-    diagnostic: Diagnostic,
-}
-
-impl CompileWarning {
-    /// Create a new warning with the given kind and span.
-    #[inline]
-    pub fn new(kind: WarningKind, span: Span) -> Self {
-        Self {
-            kind,
-            span: Some(span),
-            diagnostic: Diagnostic::new(),
-        }
-    }
-
-    /// Create a warning without a source location.
-    #[inline]
-    pub fn without_span(kind: WarningKind) -> Self {
-        Self {
-            kind,
-            span: None,
-            diagnostic: Diagnostic::new(),
-        }
-    }
-
-    /// Returns true if this warning has source location information.
-    #[inline]
-    pub fn has_span(&self) -> bool {
-        self.span.is_some()
-    }
-
-    /// Get the span, if present.
-    #[inline]
-    pub fn span(&self) -> Option<Span> {
-        self.span
-    }
-
-    /// Get the diagnostic information.
-    #[inline]
-    pub fn diagnostic(&self) -> &Diagnostic {
-        &self.diagnostic
-    }
-
-    /// Add a secondary label pointing to related code.
-    ///
-    /// Labels appear as additional annotations in the source snippet.
-    #[inline]
-    pub fn with_label(mut self, message: impl Into<String>, span: Span) -> Self {
-        self.diagnostic.labels.push(Label::new(message, span));
-        self
-    }
-
-    /// Add an informational note.
-    ///
-    /// Notes appear as footer messages providing context.
-    #[inline]
-    pub fn with_note(mut self, message: impl Into<String>) -> Self {
-        self.diagnostic.notes.push(Note::new(message));
-        self
-    }
-
-    /// Add a help suggestion.
-    ///
-    /// Helps appear as footer messages with actionable advice.
-    #[inline]
-    pub fn with_help(mut self, message: impl Into<String>) -> Self {
-        self.diagnostic.helps.push(Help::new(message));
-        self
-    }
-}
-
-impl fmt::Display for CompileWarning {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.kind)
-    }
-}
+pub type CompileWarning = DiagnosticWrapper<WarningKind>;
 
 impl WarningKind {
     /// Returns the variable name if this is an UnusedVariable warning.
