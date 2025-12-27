@@ -1568,11 +1568,25 @@ where
         .map(|items| Ast { items })
 }
 
-/// Convert chumsky Rich error to CompileError
+/// Format a RichPattern for display in error messages.
+fn format_pattern(pattern: &chumsky::error::RichPattern<'_, TokenKind>) -> String {
+    use chumsky::error::RichPattern;
+    match pattern {
+        RichPattern::Token(tok) => tok.name().to_string(),
+        RichPattern::Label(label) => label.to_string(),
+        RichPattern::Identifier(ident) => format!("'{}'", ident),
+        RichPattern::Any => "any token".to_string(),
+        RichPattern::SomethingElse => "something else".to_string(),
+        RichPattern::EndOfInput => "end of input".to_string(),
+    }
+}
+
+/// Convert chumsky Rich error to CompileError, preserving rich context.
 fn convert_error(err: Rich<'_, TokenKind>) -> CompileError {
     let span = to_rue_span(*err.span());
 
-    match err.reason() {
+    // Build the base error from the reason
+    let mut error = match err.reason() {
         chumsky::error::RichReason::ExpectedFound { expected, found } => {
             let expected_str: Cow<'static, str> = if expected.is_empty() {
                 Cow::Borrowed("something")
@@ -1581,7 +1595,7 @@ fn convert_error(err: Rich<'_, TokenKind>) -> CompileError {
                     expected
                         .iter()
                         .take(3) // Limit to first 3 for readability
-                        .map(|e| format!("{:?}", e))
+                        .map(format_pattern)
                         .collect::<Vec<_>>()
                         .join(" or "),
                 )
@@ -1600,14 +1614,20 @@ fn convert_error(err: Rich<'_, TokenKind>) -> CompileError {
                 span,
             )
         }
-        _ => CompileError::new(
-            ErrorKind::UnexpectedToken {
-                expected: Cow::Borrowed("valid syntax"),
-                found: Cow::Borrowed("parse error"),
-            },
-            span,
-        ),
+        chumsky::error::RichReason::Custom(msg) => {
+            // Preserve the custom error message directly
+            CompileError::new(ErrorKind::ParseError(msg.clone()), span)
+        }
+    };
+
+    // Add labelled contexts as secondary labels
+    for (pattern, ctx_span) in err.contexts() {
+        let label_msg = format!("while parsing {}", format_pattern(pattern));
+        let label_span = to_rue_span(*ctx_span);
+        error = error.with_label(label_msg, label_span);
     }
+
+    error
 }
 
 /// Chumsky-based parser that converts tokens into an AST.
@@ -2327,5 +2347,120 @@ mod tests {
             },
             _ => panic!("expected Function"),
         }
+    }
+
+    // ==================== Error Conversion Tests ====================
+
+    #[test]
+    fn test_error_preserves_span() {
+        // Parse invalid syntax and verify error has span information
+        let result = parse("fn main() -> i32 { let = 42; }");
+        assert!(result.is_err());
+        let error = result.unwrap_err();
+        assert!(error.has_span());
+        assert!(error.span().is_some());
+    }
+
+    #[test]
+    fn test_error_expected_found() {
+        // Missing expression after let
+        let result = parse("fn main() -> i32 { let x = ; }");
+        assert!(result.is_err());
+        let error = result.unwrap_err();
+        // Error message should describe what was expected vs found
+        let msg = error.to_string();
+        assert!(
+            msg.contains("expected") || msg.contains("found"),
+            "error message: {}",
+            msg
+        );
+    }
+
+    #[test]
+    fn test_error_unexpected_eof() {
+        // Unterminated block
+        let result = parse("fn main() -> i32 {");
+        assert!(result.is_err());
+        let error = result.unwrap_err();
+        let msg = error.to_string();
+        // Should indicate end of file was reached unexpectedly
+        assert!(
+            msg.contains("end of file") || msg.contains("expected"),
+            "error message: {}",
+            msg
+        );
+    }
+
+    #[test]
+    fn test_format_pattern_token() {
+        use chumsky::error::RichPattern;
+        use chumsky::util::MaybeRef;
+
+        let pattern = RichPattern::Token(MaybeRef::Val(TokenKind::Plus));
+        let formatted = format_pattern(&pattern);
+        // TokenKind::name() returns quoted form like "'+'"
+        assert_eq!(formatted, "'+'");
+    }
+
+    #[test]
+    fn test_format_pattern_label() {
+        use chumsky::error::RichPattern;
+
+        let pattern: RichPattern<'_, TokenKind> = RichPattern::Label(Cow::Borrowed("expression"));
+        let formatted = format_pattern(&pattern);
+        assert_eq!(formatted, "expression");
+    }
+
+    #[test]
+    fn test_format_pattern_identifier() {
+        use chumsky::error::RichPattern;
+
+        let pattern: RichPattern<'_, TokenKind> = RichPattern::Identifier("while".to_string());
+        let formatted = format_pattern(&pattern);
+        assert_eq!(formatted, "'while'");
+    }
+
+    #[test]
+    fn test_format_pattern_any() {
+        use chumsky::error::RichPattern;
+
+        let pattern: RichPattern<'_, TokenKind> = RichPattern::Any;
+        let formatted = format_pattern(&pattern);
+        assert_eq!(formatted, "any token");
+    }
+
+    #[test]
+    fn test_format_pattern_end_of_input() {
+        use chumsky::error::RichPattern;
+
+        let pattern: RichPattern<'_, TokenKind> = RichPattern::EndOfInput;
+        let formatted = format_pattern(&pattern);
+        assert_eq!(formatted, "end of input");
+    }
+
+    #[test]
+    fn test_parse_error_no_empty_found_clause() {
+        // Test that error messages don't have empty "found" clauses
+        // This was a bug when Custom errors were mapped to UnexpectedToken with empty found
+        let result = parse("fn main() -> i32 { let x = ; }");
+        assert!(result.is_err());
+        let error = result.unwrap_err();
+        let msg = error.to_string();
+        // Should not end with "found " (empty found)
+        assert!(
+            !msg.ends_with("found "),
+            "error message should not have trailing empty 'found': {}",
+            msg
+        );
+    }
+
+    #[test]
+    fn test_parse_error_variant_display() {
+        // Directly test that ParseError displays correctly
+        let error = CompileError::new(
+            ErrorKind::ParseError("expected semicolon after expression".to_string()),
+            rue_span::Span::new(0, 10),
+        );
+        assert_eq!(error.to_string(), "expected semicolon after expression");
     }
 }

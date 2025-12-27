@@ -341,6 +341,10 @@ pub enum ErrorKind {
     UnexpectedEof {
         expected: Cow<'static, str>,
     },
+    /// A custom parse error with a specific message.
+    ///
+    /// Used for parser-generated errors that don't fit the "expected X, found Y" pattern.
+    ParseError(String),
 
     // Semantic errors
     NoMainFunction,
@@ -553,6 +557,7 @@ impl fmt::Display for ErrorKind {
             ErrorKind::UnexpectedEof { expected } => {
                 write!(f, "unexpected end of file, expected {}", expected)
             }
+            ErrorKind::ParseError(msg) => write!(f, "{}", msg),
             ErrorKind::NoMainFunction => write!(f, "no main function found"),
             ErrorKind::UndefinedVariable(name) => write!(f, "undefined variable '{}'", name),
             ErrorKind::UndefinedFunction(name) => write!(f, "undefined function '{}'", name),
@@ -1003,6 +1008,13 @@ mod tests {
             expected: Cow::Borrowed("'}'"),
         });
         assert_eq!(error.to_string(), "unexpected end of file, expected '}'");
+    }
+
+    #[test]
+    fn test_parse_error_message() {
+        let error =
+            CompileError::without_span(ErrorKind::ParseError("custom parse error".to_string()));
+        assert_eq!(error.to_string(), "custom parse error");
     }
 
     #[test]
