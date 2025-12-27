@@ -333,7 +333,10 @@ fn is_spec_marker(line: &str) -> bool {
 fn parse_spec_file(path: &Path, paragraphs: &mut BTreeMap<String, SpecParagraph>) {
     let content = match fs::read_to_string(path) {
         Ok(c) => c,
-        Err(_) => return,
+        Err(e) => {
+            eprintln!("Error reading spec file {}: {}", path.display(), e);
+            return;
+        }
     };
 
     let lines: Vec<&str> = content.lines().collect();
@@ -374,14 +377,19 @@ fn parse_spec_file(path: &Path, paragraphs: &mut BTreeMap<String, SpecParagraph>
 
 /// Recursively collect all files with the given extension from a directory.
 fn collect_files_by_ext(dir: &Path, ext: &str, files: &mut Vec<std::path::PathBuf>) {
-    if let Ok(entries) = fs::read_dir(dir) {
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.is_dir() {
-                collect_files_by_ext(&path, ext, files);
-            } else if path.extension().is_some_and(|e| e == ext) {
-                files.push(path);
+    match fs::read_dir(dir) {
+        Ok(entries) => {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    collect_files_by_ext(&path, ext, files);
+                } else if path.extension().is_some_and(|e| e == ext) {
+                    files.push(path);
+                }
             }
+        }
+        Err(e) => {
+            eprintln!("Error reading directory {}: {}", dir.display(), e);
         }
     }
 }
@@ -424,13 +432,19 @@ pub fn parse_test_files(cases_dir: &Path) -> Vec<TestFile> {
     for path in toml_files {
         let content = match fs::read_to_string(&path) {
             Ok(c) => c,
-            Err(_) => continue,
+            Err(e) => {
+                eprintln!("Error reading test file {}: {}", path.display(), e);
+                continue;
+            }
         };
 
         // Parse the TOML file
         let table: toml::Table = match toml::from_str(&content) {
             Ok(t) => t,
-            Err(_) => continue,
+            Err(e) => {
+                eprintln!("Error parsing test file {}: {}", path.display(), e);
+                continue;
+            }
         };
 
         // Get section ID
