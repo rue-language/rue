@@ -680,6 +680,7 @@ impl<'a> AstGen<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::inst::RirPrinter;
     use rue_lexer::Lexer;
     use rue_parser::Parser;
 
@@ -974,5 +975,478 @@ mod tests {
             }
             _ => panic!("expected FnDecl"),
         }
+    }
+
+    // Impl block tests
+    #[test]
+    fn test_gen_impl_block() {
+        let source = r#"
+            struct Point { x: i32, y: i32 }
+            impl Point {
+                fn get_x(self) -> i32 {
+                    self.x
+                }
+            }
+            fn main() -> i32 { 0 }
+        "#;
+        let (rir, interner) = gen_rir(source);
+
+        // Find the ImplDecl instruction
+        let impl_decl = rir
+            .iter()
+            .find(|(_, inst)| matches!(inst.data, InstData::ImplDecl { .. }));
+        assert!(impl_decl.is_some(), "Expected ImplDecl instruction");
+
+        let (_, inst) = impl_decl.unwrap();
+        match &inst.data {
+            InstData::ImplDecl { type_name, methods } => {
+                assert_eq!(interner.get(*type_name), "Point");
+                assert_eq!(methods.len(), 1);
+
+                // Check the method is a FnDecl with has_self=true
+                let method_inst = rir.get(methods[0]);
+                match &method_inst.data {
+                    InstData::FnDecl { name, has_self, .. } => {
+                        assert_eq!(interner.get(*name), "get_x");
+                        assert!(*has_self);
+                    }
+                    _ => panic!("expected FnDecl"),
+                }
+            }
+            _ => panic!("expected ImplDecl"),
+        }
+    }
+
+    #[test]
+    fn test_gen_impl_block_with_multiple_methods() {
+        let source = r#"
+            struct Point { x: i32, y: i32 }
+            impl Point {
+                fn get_x(self) -> i32 { self.x }
+                fn get_y(self) -> i32 { self.y }
+                fn origin() -> Point { Point { x: 0, y: 0 } }
+            }
+            fn main() -> i32 { 0 }
+        "#;
+        let (rir, interner) = gen_rir(source);
+
+        let impl_decl = rir
+            .iter()
+            .find(|(_, inst)| matches!(inst.data, InstData::ImplDecl { .. }));
+        assert!(impl_decl.is_some());
+
+        let (_, inst) = impl_decl.unwrap();
+        match &inst.data {
+            InstData::ImplDecl { methods, .. } => {
+                assert_eq!(methods.len(), 3);
+
+                // Check get_x and get_y have self, origin does not
+                for method_ref in methods {
+                    let method_inst = rir.get(*method_ref);
+                    match &method_inst.data {
+                        InstData::FnDecl { name, has_self, .. } => {
+                            let method_name = interner.get(*name);
+                            if method_name == "origin" {
+                                assert!(!has_self, "origin should not have self");
+                            } else {
+                                assert!(*has_self, "{} should have self", method_name);
+                            }
+                        }
+                        _ => panic!("expected FnDecl"),
+                    }
+                }
+            }
+            _ => panic!("expected ImplDecl"),
+        }
+    }
+
+    #[test]
+    fn test_gen_method_call() {
+        let source = r#"
+            struct Point { x: i32 }
+            impl Point {
+                fn get_x(self) -> i32 { self.x }
+            }
+            fn main() -> i32 {
+                let p = Point { x: 42 };
+                p.get_x()
+            }
+        "#;
+        let (rir, interner) = gen_rir(source);
+
+        // Find the MethodCall instruction
+        let method_call = rir
+            .iter()
+            .find(|(_, inst)| matches!(inst.data, InstData::MethodCall { .. }));
+        assert!(method_call.is_some(), "Expected MethodCall instruction");
+
+        let (_, inst) = method_call.unwrap();
+        match &inst.data {
+            InstData::MethodCall {
+                receiver: _,
+                method,
+                args,
+            } => {
+                assert_eq!(interner.get(*method), "get_x");
+                assert!(args.is_empty()); // No explicit args (self is implicit)
+            }
+            _ => panic!("expected MethodCall"),
+        }
+    }
+
+    #[test]
+    fn test_gen_assoc_fn_call() {
+        let source = r#"
+            struct Point { x: i32, y: i32 }
+            impl Point {
+                fn origin() -> Point { Point { x: 0, y: 0 } }
+            }
+            fn main() -> i32 {
+                let p = Point::origin();
+                0
+            }
+        "#;
+        let (rir, interner) = gen_rir(source);
+
+        // Find the AssocFnCall instruction
+        let assoc_fn_call = rir
+            .iter()
+            .find(|(_, inst)| matches!(inst.data, InstData::AssocFnCall { .. }));
+        assert!(assoc_fn_call.is_some(), "Expected AssocFnCall instruction");
+
+        let (_, inst) = assoc_fn_call.unwrap();
+        match &inst.data {
+            InstData::AssocFnCall {
+                type_name,
+                function,
+                args,
+            } => {
+                assert_eq!(interner.get(*type_name), "Point");
+                assert_eq!(interner.get(*function), "origin");
+                assert!(args.is_empty());
+            }
+            _ => panic!("expected AssocFnCall"),
+        }
+    }
+
+    // Pattern tests
+    #[test]
+    fn test_gen_match_wildcard_pattern() {
+        let source = r#"
+            fn main() -> i32 {
+                let x = 5;
+                match x {
+                    _ => 42,
+                }
+            }
+        "#;
+        let (rir, _interner) = gen_rir(source);
+
+        // Find the Match instruction
+        let match_inst = rir
+            .iter()
+            .find(|(_, inst)| matches!(inst.data, InstData::Match { .. }));
+        assert!(match_inst.is_some(), "Expected Match instruction");
+
+        let (_, inst) = match_inst.unwrap();
+        match &inst.data {
+            InstData::Match { arms, .. } => {
+                assert_eq!(arms.len(), 1);
+                assert!(matches!(arms[0].0, RirPattern::Wildcard(_)));
+            }
+            _ => panic!("expected Match"),
+        }
+    }
+
+    #[test]
+    fn test_gen_match_int_patterns() {
+        let source = r#"
+            fn main() -> i32 {
+                let x = 5;
+                match x {
+                    1 => 10,
+                    2 => 20,
+                    _ => 0,
+                }
+            }
+        "#;
+        let (rir, _interner) = gen_rir(source);
+
+        let match_inst = rir
+            .iter()
+            .find(|(_, inst)| matches!(inst.data, InstData::Match { .. }));
+        assert!(match_inst.is_some());
+
+        let (_, inst) = match_inst.unwrap();
+        match &inst.data {
+            InstData::Match { arms, .. } => {
+                assert_eq!(arms.len(), 3);
+                assert!(matches!(arms[0].0, RirPattern::Int(1, _)));
+                assert!(matches!(arms[1].0, RirPattern::Int(2, _)));
+                assert!(matches!(arms[2].0, RirPattern::Wildcard(_)));
+            }
+            _ => panic!("expected Match"),
+        }
+    }
+
+    #[test]
+    fn test_gen_match_negative_int_pattern() {
+        let source = r#"
+            fn main() -> i32 {
+                let x: i32 = -5;
+                match x {
+                    -5 => 1,
+                    -10 => 2,
+                    _ => 0,
+                }
+            }
+        "#;
+        let (rir, _interner) = gen_rir(source);
+
+        let match_inst = rir
+            .iter()
+            .find(|(_, inst)| matches!(inst.data, InstData::Match { .. }));
+        assert!(match_inst.is_some());
+
+        let (_, inst) = match_inst.unwrap();
+        match &inst.data {
+            InstData::Match { arms, .. } => {
+                assert_eq!(arms.len(), 3);
+                assert!(matches!(arms[0].0, RirPattern::Int(-5, _)));
+                assert!(matches!(arms[1].0, RirPattern::Int(-10, _)));
+                assert!(matches!(arms[2].0, RirPattern::Wildcard(_)));
+            }
+            _ => panic!("expected Match"),
+        }
+    }
+
+    #[test]
+    fn test_gen_match_bool_patterns() {
+        let source = r#"
+            fn main() -> i32 {
+                let b = true;
+                match b {
+                    true => 1,
+                    false => 0,
+                }
+            }
+        "#;
+        let (rir, _interner) = gen_rir(source);
+
+        let match_inst = rir
+            .iter()
+            .find(|(_, inst)| matches!(inst.data, InstData::Match { .. }));
+        assert!(match_inst.is_some());
+
+        let (_, inst) = match_inst.unwrap();
+        match &inst.data {
+            InstData::Match { arms, .. } => {
+                assert_eq!(arms.len(), 2);
+                assert!(matches!(arms[0].0, RirPattern::Bool(true, _)));
+                assert!(matches!(arms[1].0, RirPattern::Bool(false, _)));
+            }
+            _ => panic!("expected Match"),
+        }
+    }
+
+    #[test]
+    fn test_gen_match_enum_patterns() {
+        let source = r#"
+            enum Color { Red, Green, Blue }
+            fn main() -> i32 {
+                let c = Color::Red;
+                match c {
+                    Color::Red => 1,
+                    Color::Green => 2,
+                    Color::Blue => 3,
+                }
+            }
+        "#;
+        let (rir, interner) = gen_rir(source);
+
+        let match_inst = rir
+            .iter()
+            .find(|(_, inst)| matches!(inst.data, InstData::Match { .. }));
+        assert!(match_inst.is_some());
+
+        let (_, inst) = match_inst.unwrap();
+        match &inst.data {
+            InstData::Match { arms, .. } => {
+                assert_eq!(arms.len(), 3);
+
+                // Check first arm is Color::Red
+                match &arms[0].0 {
+                    RirPattern::Path {
+                        type_name, variant, ..
+                    } => {
+                        assert_eq!(interner.get(*type_name), "Color");
+                        assert_eq!(interner.get(*variant), "Red");
+                    }
+                    _ => panic!("expected Path pattern"),
+                }
+
+                // Check second arm is Color::Green
+                match &arms[1].0 {
+                    RirPattern::Path {
+                        type_name, variant, ..
+                    } => {
+                        assert_eq!(interner.get(*type_name), "Color");
+                        assert_eq!(interner.get(*variant), "Green");
+                    }
+                    _ => panic!("expected Path pattern"),
+                }
+
+                // Check third arm is Color::Blue
+                match &arms[2].0 {
+                    RirPattern::Path {
+                        type_name, variant, ..
+                    } => {
+                        assert_eq!(interner.get(*type_name), "Color");
+                        assert_eq!(interner.get(*variant), "Blue");
+                    }
+                    _ => panic!("expected Path pattern"),
+                }
+            }
+            _ => panic!("expected Match"),
+        }
+    }
+
+    #[test]
+    fn test_gen_self_expr() {
+        let source = r#"
+            struct Point { x: i32 }
+            impl Point {
+                fn get_x(self) -> i32 { self.x }
+            }
+            fn main() -> i32 { 0 }
+        "#;
+        let (rir, interner) = gen_rir(source);
+
+        // Find the VarRef instruction for "self"
+        let self_ref = rir.iter().find(|(_, inst)| match &inst.data {
+            InstData::VarRef { name } => interner.get(*name) == "self",
+            _ => false,
+        });
+        assert!(self_ref.is_some(), "Expected self VarRef instruction");
+    }
+
+    #[test]
+    fn test_gen_drop_fn() {
+        let source = r#"
+            struct Resource { value: i32 }
+            drop fn Resource(self) { () }
+            fn main() -> i32 { 0 }
+        "#;
+        let (rir, interner) = gen_rir(source);
+
+        // Find the DropFnDecl instruction
+        let drop_fn = rir
+            .iter()
+            .find(|(_, inst)| matches!(inst.data, InstData::DropFnDecl { .. }));
+        assert!(drop_fn.is_some(), "Expected DropFnDecl instruction");
+
+        let (_, inst) = drop_fn.unwrap();
+        match &inst.data {
+            InstData::DropFnDecl { type_name, body: _ } => {
+                assert_eq!(interner.get(*type_name), "Resource");
+            }
+            _ => panic!("expected DropFnDecl"),
+        }
+    }
+
+    #[test]
+    fn test_gen_enum_variant() {
+        let source = r#"
+            enum Color { Red, Green, Blue }
+            fn main() -> i32 {
+                let c = Color::Red;
+                0
+            }
+        "#;
+        let (rir, interner) = gen_rir(source);
+
+        // Find the EnumVariant instruction
+        let enum_variant = rir
+            .iter()
+            .find(|(_, inst)| matches!(inst.data, InstData::EnumVariant { .. }));
+        assert!(enum_variant.is_some(), "Expected EnumVariant instruction");
+
+        let (_, inst) = enum_variant.unwrap();
+        match &inst.data {
+            InstData::EnumVariant { type_name, variant } => {
+                assert_eq!(interner.get(*type_name), "Color");
+                assert_eq!(interner.get(*variant), "Red");
+            }
+            _ => panic!("expected EnumVariant"),
+        }
+    }
+
+    #[test]
+    fn test_gen_method_with_params() {
+        let source = r#"
+            struct Counter { value: i32 }
+            impl Counter {
+                fn add(self, amount: i32) -> i32 { self.value + amount }
+            }
+            fn main() -> i32 { 0 }
+        "#;
+        let (rir, interner) = gen_rir(source);
+
+        // Find the method FnDecl
+        let impl_decl = rir
+            .iter()
+            .find(|(_, inst)| matches!(inst.data, InstData::ImplDecl { .. }));
+        assert!(impl_decl.is_some());
+
+        let (_, inst) = impl_decl.unwrap();
+        match &inst.data {
+            InstData::ImplDecl { methods, .. } => {
+                let method_inst = rir.get(methods[0]);
+                match &method_inst.data {
+                    InstData::FnDecl {
+                        name,
+                        params,
+                        has_self,
+                        ..
+                    } => {
+                        assert_eq!(interner.get(*name), "add");
+                        assert!(*has_self);
+                        // params should contain 'amount', not 'self'
+                        assert_eq!(params.len(), 1);
+                        assert_eq!(interner.get(params[0].name), "amount");
+                    }
+                    _ => panic!("expected FnDecl"),
+                }
+            }
+            _ => panic!("expected ImplDecl"),
+        }
+    }
+
+    // RirPrinter integration test with actual generated RIR
+    #[test]
+    fn test_printer_integration() {
+        let source = r#"
+            struct Point { x: i32, y: i32 }
+            impl Point {
+                fn origin() -> Point { Point { x: 0, y: 0 } }
+            }
+            fn main() -> i32 {
+                let p = Point::origin();
+                p.x
+            }
+        "#;
+        let (rir, interner) = gen_rir(source);
+
+        let printer = RirPrinter::new(&rir, &interner);
+        let output = printer.to_string();
+
+        // Check key elements are present in the output
+        assert!(output.contains("struct Point"));
+        assert!(output.contains("impl Point"));
+        assert!(output.contains("fn origin"));
+        assert!(output.contains("fn main"));
+        assert!(output.contains("struct_init Point"));
+        assert!(output.contains("assoc_fn_call Point::origin"));
+        assert!(output.contains("field_get"));
     }
 }

@@ -935,6 +935,7 @@ impl fmt::Display for RirPrinter<'_, '_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rue_intern::Interner;
 
     #[test]
     fn test_inst_ref_size() {
@@ -952,5 +953,1394 @@ mod tests {
 
         let retrieved = rir.get(inst_ref);
         assert!(matches!(retrieved.data, InstData::IntConst(42)));
+    }
+
+    #[test]
+    fn test_rir_is_empty() {
+        let rir = Rir::new();
+        assert!(rir.is_empty());
+        assert_eq!(rir.len(), 0);
+    }
+
+    #[test]
+    fn test_rir_extra_data() {
+        let mut rir = Rir::new();
+        let data = [1, 2, 3, 4, 5];
+        let start = rir.add_extra(&data);
+        assert_eq!(start, 0);
+
+        let retrieved = rir.get_extra(start, 5);
+        assert_eq!(retrieved, &data);
+
+        // Add more extra data
+        let data2 = [10, 20];
+        let start2 = rir.add_extra(&data2);
+        assert_eq!(start2, 5);
+    }
+
+    #[test]
+    fn test_rir_iter() {
+        let mut rir = Rir::new();
+        rir.add_inst(Inst {
+            data: InstData::IntConst(1),
+            span: Span::new(0, 1),
+        });
+        rir.add_inst(Inst {
+            data: InstData::IntConst(2),
+            span: Span::new(2, 3),
+        });
+
+        let items: Vec<_> = rir.iter().collect();
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[0].0.as_u32(), 0);
+        assert_eq!(items[1].0.as_u32(), 1);
+    }
+
+    #[test]
+    fn test_inst_ref_display() {
+        let inst_ref = InstRef::from_raw(42);
+        assert_eq!(format!("{}", inst_ref), "%42");
+    }
+
+    // RirPattern tests
+    #[test]
+    fn test_rir_pattern_wildcard_span() {
+        let span = Span::new(10, 11);
+        let pattern = RirPattern::Wildcard(span);
+        assert_eq!(pattern.span(), span);
+    }
+
+    #[test]
+    fn test_rir_pattern_int_span() {
+        let span = Span::new(20, 22);
+        let pattern = RirPattern::Int(42, span);
+        assert_eq!(pattern.span(), span);
+
+        // Test negative int
+        let pattern_neg = RirPattern::Int(-100, span);
+        assert_eq!(pattern_neg.span(), span);
+    }
+
+    #[test]
+    fn test_rir_pattern_bool_span() {
+        let span = Span::new(30, 34);
+        let pattern = RirPattern::Bool(true, span);
+        assert_eq!(pattern.span(), span);
+
+        let pattern_false = RirPattern::Bool(false, span);
+        assert_eq!(pattern_false.span(), span);
+    }
+
+    #[test]
+    fn test_rir_pattern_path_span() {
+        let span = Span::new(40, 50);
+        let mut interner = Interner::new();
+        let type_name = interner.intern("Color");
+        let variant = interner.intern("Red");
+
+        let pattern = RirPattern::Path {
+            type_name,
+            variant,
+            span,
+        };
+        assert_eq!(pattern.span(), span);
+    }
+
+    // RirCallArg tests
+    #[test]
+    fn test_rir_call_arg_is_inout() {
+        let arg_normal = RirCallArg {
+            value: InstRef::from_raw(0),
+            mode: RirArgMode::Normal,
+        };
+        assert!(!arg_normal.is_inout());
+        assert!(!arg_normal.is_borrow());
+
+        let arg_inout = RirCallArg {
+            value: InstRef::from_raw(0),
+            mode: RirArgMode::Inout,
+        };
+        assert!(arg_inout.is_inout());
+        assert!(!arg_inout.is_borrow());
+
+        let arg_borrow = RirCallArg {
+            value: InstRef::from_raw(0),
+            mode: RirArgMode::Borrow,
+        };
+        assert!(!arg_borrow.is_inout());
+        assert!(arg_borrow.is_borrow());
+    }
+
+    // RirPrinter tests
+    fn create_printer_test_rir() -> (Rir, Interner) {
+        let mut rir = Rir::new();
+        let interner = Interner::new();
+        (rir, interner)
+    }
+
+    #[test]
+    fn test_printer_int_const() {
+        let (mut rir, interner) = create_printer_test_rir();
+        rir.add_inst(Inst {
+            data: InstData::IntConst(42),
+            span: Span::new(0, 2),
+        });
+
+        let printer = RirPrinter::new(&rir, &interner);
+        let output = printer.to_string();
+        assert!(output.contains("%0 = const 42"));
+    }
+
+    #[test]
+    fn test_printer_bool_const() {
+        let (mut rir, interner) = create_printer_test_rir();
+        rir.add_inst(Inst {
+            data: InstData::BoolConst(true),
+            span: Span::new(0, 4),
+        });
+        rir.add_inst(Inst {
+            data: InstData::BoolConst(false),
+            span: Span::new(0, 5),
+        });
+
+        let printer = RirPrinter::new(&rir, &interner);
+        let output = printer.to_string();
+        assert!(output.contains("%0 = const true"));
+        assert!(output.contains("%1 = const false"));
+    }
+
+    #[test]
+    fn test_printer_string_const() {
+        let (mut rir, mut interner) = create_printer_test_rir();
+        let hello = interner.intern("hello world");
+        rir.add_inst(Inst {
+            data: InstData::StringConst(hello),
+            span: Span::new(0, 13),
+        });
+
+        let printer = RirPrinter::new(&rir, &interner);
+        let output = printer.to_string();
+        assert!(output.contains("%0 = const \"hello world\""));
+    }
+
+    #[test]
+    fn test_printer_unit_const() {
+        let (mut rir, interner) = create_printer_test_rir();
+        rir.add_inst(Inst {
+            data: InstData::UnitConst,
+            span: Span::new(0, 2),
+        });
+
+        let printer = RirPrinter::new(&rir, &interner);
+        let output = printer.to_string();
+        assert!(output.contains("%0 = const ()"));
+    }
+
+    #[test]
+    fn test_printer_binary_ops() {
+        let (mut rir, interner) = create_printer_test_rir();
+        let lhs = rir.add_inst(Inst {
+            data: InstData::IntConst(1),
+            span: Span::new(0, 1),
+        });
+        let rhs = rir.add_inst(Inst {
+            data: InstData::IntConst(2),
+            span: Span::new(2, 3),
+        });
+
+        // Test all binary operations
+        let ops = vec![
+            (InstData::Add { lhs, rhs }, "add"),
+            (InstData::Sub { lhs, rhs }, "sub"),
+            (InstData::Mul { lhs, rhs }, "mul"),
+            (InstData::Div { lhs, rhs }, "div"),
+            (InstData::Mod { lhs, rhs }, "mod"),
+            (InstData::Eq { lhs, rhs }, "eq"),
+            (InstData::Ne { lhs, rhs }, "ne"),
+            (InstData::Lt { lhs, rhs }, "lt"),
+            (InstData::Gt { lhs, rhs }, "gt"),
+            (InstData::Le { lhs, rhs }, "le"),
+            (InstData::Ge { lhs, rhs }, "ge"),
+            (InstData::And { lhs, rhs }, "and"),
+            (InstData::Or { lhs, rhs }, "or"),
+            (InstData::BitAnd { lhs, rhs }, "bit_and"),
+            (InstData::BitOr { lhs, rhs }, "bit_or"),
+            (InstData::BitXor { lhs, rhs }, "bit_xor"),
+            (InstData::Shl { lhs, rhs }, "shl"),
+            (InstData::Shr { lhs, rhs }, "shr"),
+        ];
+
+        for (data, op_name) in ops {
+            let mut test_rir = Rir::new();
+            let lhs = test_rir.add_inst(Inst {
+                data: InstData::IntConst(1),
+                span: Span::new(0, 1),
+            });
+            let rhs = test_rir.add_inst(Inst {
+                data: InstData::IntConst(2),
+                span: Span::new(2, 3),
+            });
+            // Recreate the data with new refs
+            let data = match op_name {
+                "add" => InstData::Add { lhs, rhs },
+                "sub" => InstData::Sub { lhs, rhs },
+                "mul" => InstData::Mul { lhs, rhs },
+                "div" => InstData::Div { lhs, rhs },
+                "mod" => InstData::Mod { lhs, rhs },
+                "eq" => InstData::Eq { lhs, rhs },
+                "ne" => InstData::Ne { lhs, rhs },
+                "lt" => InstData::Lt { lhs, rhs },
+                "gt" => InstData::Gt { lhs, rhs },
+                "le" => InstData::Le { lhs, rhs },
+                "ge" => InstData::Ge { lhs, rhs },
+                "and" => InstData::And { lhs, rhs },
+                "or" => InstData::Or { lhs, rhs },
+                "bit_and" => InstData::BitAnd { lhs, rhs },
+                "bit_or" => InstData::BitOr { lhs, rhs },
+                "bit_xor" => InstData::BitXor { lhs, rhs },
+                "shl" => InstData::Shl { lhs, rhs },
+                "shr" => InstData::Shr { lhs, rhs },
+                _ => unreachable!(),
+            };
+            test_rir.add_inst(Inst {
+                data,
+                span: Span::new(0, 5),
+            });
+
+            let printer = RirPrinter::new(&test_rir, &interner);
+            let output = printer.to_string();
+            let expected = format!("%2 = {} %0, %1", op_name);
+            assert!(
+                output.contains(&expected),
+                "Expected '{}' in output:\n{}",
+                expected,
+                output
+            );
+        }
+    }
+
+    #[test]
+    fn test_printer_unary_ops() {
+        let (mut rir, interner) = create_printer_test_rir();
+        let operand = rir.add_inst(Inst {
+            data: InstData::IntConst(42),
+            span: Span::new(0, 2),
+        });
+
+        rir.add_inst(Inst {
+            data: InstData::Neg { operand },
+            span: Span::new(0, 3),
+        });
+        rir.add_inst(Inst {
+            data: InstData::Not { operand },
+            span: Span::new(0, 3),
+        });
+        rir.add_inst(Inst {
+            data: InstData::BitNot { operand },
+            span: Span::new(0, 3),
+        });
+
+        let printer = RirPrinter::new(&rir, &interner);
+        let output = printer.to_string();
+        assert!(output.contains("neg %0"));
+        assert!(output.contains("not %0"));
+        assert!(output.contains("bit_not %0"));
+    }
+
+    #[test]
+    fn test_printer_branch() {
+        let (mut rir, interner) = create_printer_test_rir();
+        let cond = rir.add_inst(Inst {
+            data: InstData::BoolConst(true),
+            span: Span::new(0, 4),
+        });
+        let then_block = rir.add_inst(Inst {
+            data: InstData::IntConst(1),
+            span: Span::new(0, 1),
+        });
+        let else_block = rir.add_inst(Inst {
+            data: InstData::IntConst(0),
+            span: Span::new(0, 1),
+        });
+
+        // With else block
+        rir.add_inst(Inst {
+            data: InstData::Branch {
+                cond,
+                then_block,
+                else_block: Some(else_block),
+            },
+            span: Span::new(0, 20),
+        });
+
+        let printer = RirPrinter::new(&rir, &interner);
+        let output = printer.to_string();
+        assert!(output.contains("branch %0, %1, %2"));
+    }
+
+    #[test]
+    fn test_printer_branch_no_else() {
+        let (mut rir, interner) = create_printer_test_rir();
+        let cond = rir.add_inst(Inst {
+            data: InstData::BoolConst(true),
+            span: Span::new(0, 4),
+        });
+        let then_block = rir.add_inst(Inst {
+            data: InstData::IntConst(1),
+            span: Span::new(0, 1),
+        });
+
+        rir.add_inst(Inst {
+            data: InstData::Branch {
+                cond,
+                then_block,
+                else_block: None,
+            },
+            span: Span::new(0, 15),
+        });
+
+        let printer = RirPrinter::new(&rir, &interner);
+        let output = printer.to_string();
+        // Should not have the third argument
+        assert!(output.contains("branch %0, %1\n"));
+    }
+
+    #[test]
+    fn test_printer_loop() {
+        let (mut rir, interner) = create_printer_test_rir();
+        let cond = rir.add_inst(Inst {
+            data: InstData::BoolConst(true),
+            span: Span::new(0, 4),
+        });
+        let body = rir.add_inst(Inst {
+            data: InstData::IntConst(0),
+            span: Span::new(0, 1),
+        });
+
+        rir.add_inst(Inst {
+            data: InstData::Loop { cond, body },
+            span: Span::new(0, 20),
+        });
+
+        let printer = RirPrinter::new(&rir, &interner);
+        let output = printer.to_string();
+        assert!(output.contains("loop %0, %1"));
+    }
+
+    #[test]
+    fn test_printer_infinite_loop() {
+        let (mut rir, interner) = create_printer_test_rir();
+        let body = rir.add_inst(Inst {
+            data: InstData::IntConst(0),
+            span: Span::new(0, 1),
+        });
+
+        rir.add_inst(Inst {
+            data: InstData::InfiniteLoop { body },
+            span: Span::new(0, 15),
+        });
+
+        let printer = RirPrinter::new(&rir, &interner);
+        let output = printer.to_string();
+        assert!(output.contains("infinite_loop %0"));
+    }
+
+    #[test]
+    fn test_printer_break_continue() {
+        let (mut rir, interner) = create_printer_test_rir();
+        rir.add_inst(Inst {
+            data: InstData::Break,
+            span: Span::new(0, 5),
+        });
+        rir.add_inst(Inst {
+            data: InstData::Continue,
+            span: Span::new(0, 8),
+        });
+
+        let printer = RirPrinter::new(&rir, &interner);
+        let output = printer.to_string();
+        assert!(output.contains("break\n"));
+        assert!(output.contains("continue\n"));
+    }
+
+    #[test]
+    fn test_printer_ret() {
+        let (mut rir, interner) = create_printer_test_rir();
+        let value = rir.add_inst(Inst {
+            data: InstData::IntConst(42),
+            span: Span::new(0, 2),
+        });
+
+        // Return with value
+        rir.add_inst(Inst {
+            data: InstData::Ret(Some(value)),
+            span: Span::new(0, 10),
+        });
+        // Return without value
+        rir.add_inst(Inst {
+            data: InstData::Ret(None),
+            span: Span::new(0, 6),
+        });
+
+        let printer = RirPrinter::new(&rir, &interner);
+        let output = printer.to_string();
+        assert!(output.contains("ret %0"));
+        assert!(output.contains("%2 = ret\n"));
+    }
+
+    #[test]
+    fn test_printer_fn_decl() {
+        let (mut rir, mut interner) = create_printer_test_rir();
+        let body = rir.add_inst(Inst {
+            data: InstData::IntConst(42),
+            span: Span::new(0, 2),
+        });
+
+        let name = interner.intern("main");
+        let return_type = interner.intern("i32");
+        let param_name = interner.intern("x");
+        let param_type = interner.intern("i32");
+
+        rir.add_inst(Inst {
+            data: InstData::FnDecl {
+                directives: vec![],
+                name,
+                params: vec![RirParam {
+                    name: param_name,
+                    ty: param_type,
+                    mode: RirParamMode::Normal,
+                }],
+                return_type,
+                body,
+                has_self: false,
+            },
+            span: Span::new(0, 30),
+        });
+
+        let printer = RirPrinter::new(&rir, &interner);
+        let output = printer.to_string();
+        assert!(output.contains("fn main(x: i32) -> i32"));
+    }
+
+    #[test]
+    fn test_printer_fn_decl_with_self() {
+        let (mut rir, mut interner) = create_printer_test_rir();
+        let body = rir.add_inst(Inst {
+            data: InstData::IntConst(0),
+            span: Span::new(0, 1),
+        });
+
+        let name = interner.intern("get_x");
+        let return_type = interner.intern("i32");
+
+        rir.add_inst(Inst {
+            data: InstData::FnDecl {
+                directives: vec![],
+                name,
+                params: vec![],
+                return_type,
+                body,
+                has_self: true,
+            },
+            span: Span::new(0, 30),
+        });
+
+        let printer = RirPrinter::new(&rir, &interner);
+        let output = printer.to_string();
+        assert!(output.contains("fn get_x(self, ) -> i32"));
+    }
+
+    #[test]
+    fn test_printer_fn_decl_param_modes() {
+        let (mut rir, mut interner) = create_printer_test_rir();
+        let body = rir.add_inst(Inst {
+            data: InstData::UnitConst,
+            span: Span::new(0, 2),
+        });
+
+        let name = interner.intern("modify");
+        let return_type = interner.intern("()");
+        let param1_name = interner.intern("a");
+        let param1_type = interner.intern("i32");
+        let param2_name = interner.intern("b");
+        let param2_type = interner.intern("i32");
+        let param3_name = interner.intern("c");
+        let param3_type = interner.intern("i32");
+
+        rir.add_inst(Inst {
+            data: InstData::FnDecl {
+                directives: vec![],
+                name,
+                params: vec![
+                    RirParam {
+                        name: param1_name,
+                        ty: param1_type,
+                        mode: RirParamMode::Normal,
+                    },
+                    RirParam {
+                        name: param2_name,
+                        ty: param2_type,
+                        mode: RirParamMode::Inout,
+                    },
+                    RirParam {
+                        name: param3_name,
+                        ty: param3_type,
+                        mode: RirParamMode::Borrow,
+                    },
+                ],
+                return_type,
+                body,
+                has_self: false,
+            },
+            span: Span::new(0, 50),
+        });
+
+        let printer = RirPrinter::new(&rir, &interner);
+        let output = printer.to_string();
+        assert!(output.contains("a: i32"));
+        assert!(output.contains("inout b: i32"));
+        assert!(output.contains("borrow c: i32"));
+    }
+
+    #[test]
+    fn test_printer_call() {
+        let (mut rir, mut interner) = create_printer_test_rir();
+        let arg = rir.add_inst(Inst {
+            data: InstData::IntConst(10),
+            span: Span::new(0, 2),
+        });
+
+        let name = interner.intern("foo");
+
+        rir.add_inst(Inst {
+            data: InstData::Call {
+                name,
+                args: vec![RirCallArg {
+                    value: arg,
+                    mode: RirArgMode::Normal,
+                }],
+            },
+            span: Span::new(0, 8),
+        });
+
+        let printer = RirPrinter::new(&rir, &interner);
+        let output = printer.to_string();
+        assert!(output.contains("call foo(%0)"));
+    }
+
+    #[test]
+    fn test_printer_call_with_arg_modes() {
+        let (mut rir, mut interner) = create_printer_test_rir();
+        let arg1 = rir.add_inst(Inst {
+            data: InstData::IntConst(1),
+            span: Span::new(0, 1),
+        });
+        let arg2 = rir.add_inst(Inst {
+            data: InstData::IntConst(2),
+            span: Span::new(0, 1),
+        });
+        let arg3 = rir.add_inst(Inst {
+            data: InstData::IntConst(3),
+            span: Span::new(0, 1),
+        });
+
+        let name = interner.intern("modify");
+
+        rir.add_inst(Inst {
+            data: InstData::Call {
+                name,
+                args: vec![
+                    RirCallArg {
+                        value: arg1,
+                        mode: RirArgMode::Normal,
+                    },
+                    RirCallArg {
+                        value: arg2,
+                        mode: RirArgMode::Inout,
+                    },
+                    RirCallArg {
+                        value: arg3,
+                        mode: RirArgMode::Borrow,
+                    },
+                ],
+            },
+            span: Span::new(0, 20),
+        });
+
+        let printer = RirPrinter::new(&rir, &interner);
+        let output = printer.to_string();
+        assert!(output.contains("call modify(%0, inout %1, borrow %2)"));
+    }
+
+    #[test]
+    fn test_printer_intrinsic() {
+        let (mut rir, mut interner) = create_printer_test_rir();
+        let arg = rir.add_inst(Inst {
+            data: InstData::IntConst(42),
+            span: Span::new(0, 2),
+        });
+
+        let name = interner.intern("dbg");
+
+        rir.add_inst(Inst {
+            data: InstData::Intrinsic {
+                name,
+                args: vec![arg],
+            },
+            span: Span::new(0, 10),
+        });
+
+        let printer = RirPrinter::new(&rir, &interner);
+        let output = printer.to_string();
+        assert!(output.contains("intrinsic @dbg(%0)"));
+    }
+
+    #[test]
+    fn test_printer_type_intrinsic() {
+        let (mut rir, mut interner) = create_printer_test_rir();
+        let name = interner.intern("size_of");
+        let type_arg = interner.intern("i32");
+
+        rir.add_inst(Inst {
+            data: InstData::TypeIntrinsic { name, type_arg },
+            span: Span::new(0, 15),
+        });
+
+        let printer = RirPrinter::new(&rir, &interner);
+        let output = printer.to_string();
+        assert!(output.contains("type_intrinsic @size_of(i32)"));
+    }
+
+    #[test]
+    fn test_printer_param_ref() {
+        let (mut rir, mut interner) = create_printer_test_rir();
+        let name = interner.intern("x");
+
+        rir.add_inst(Inst {
+            data: InstData::ParamRef { index: 0, name },
+            span: Span::new(0, 1),
+        });
+
+        let printer = RirPrinter::new(&rir, &interner);
+        let output = printer.to_string();
+        assert!(output.contains("param 0 (x)"));
+    }
+
+    #[test]
+    fn test_printer_block() {
+        let (mut rir, interner) = create_printer_test_rir();
+        rir.add_inst(Inst {
+            data: InstData::Block {
+                extra_start: 0,
+                len: 3,
+            },
+            span: Span::new(0, 20),
+        });
+
+        let printer = RirPrinter::new(&rir, &interner);
+        let output = printer.to_string();
+        assert!(output.contains("block(0, 3)"));
+    }
+
+    #[test]
+    fn test_printer_alloc() {
+        let (mut rir, mut interner) = create_printer_test_rir();
+        let init = rir.add_inst(Inst {
+            data: InstData::IntConst(42),
+            span: Span::new(0, 2),
+        });
+
+        let name = interner.intern("x");
+        let ty = interner.intern("i32");
+
+        // Normal alloc with type
+        rir.add_inst(Inst {
+            data: InstData::Alloc {
+                directives: vec![],
+                name: Some(name),
+                is_mut: false,
+                ty: Some(ty),
+                init,
+            },
+            span: Span::new(0, 15),
+        });
+
+        let printer = RirPrinter::new(&rir, &interner);
+        let output = printer.to_string();
+        assert!(output.contains("alloc x: i32= %0"));
+    }
+
+    #[test]
+    fn test_printer_alloc_mut() {
+        let (mut rir, mut interner) = create_printer_test_rir();
+        let init = rir.add_inst(Inst {
+            data: InstData::IntConst(42),
+            span: Span::new(0, 2),
+        });
+
+        let name = interner.intern("x");
+
+        rir.add_inst(Inst {
+            data: InstData::Alloc {
+                directives: vec![],
+                name: Some(name),
+                is_mut: true,
+                ty: None,
+                init,
+            },
+            span: Span::new(0, 15),
+        });
+
+        let printer = RirPrinter::new(&rir, &interner);
+        let output = printer.to_string();
+        assert!(output.contains("alloc mut x= %0"));
+    }
+
+    #[test]
+    fn test_printer_alloc_wildcard() {
+        let (mut rir, interner) = create_printer_test_rir();
+        let init = rir.add_inst(Inst {
+            data: InstData::IntConst(42),
+            span: Span::new(0, 2),
+        });
+
+        rir.add_inst(Inst {
+            data: InstData::Alloc {
+                directives: vec![],
+                name: None,
+                is_mut: false,
+                ty: None,
+                init,
+            },
+            span: Span::new(0, 10),
+        });
+
+        let printer = RirPrinter::new(&rir, &interner);
+        let output = printer.to_string();
+        assert!(output.contains("alloc _= %0"));
+    }
+
+    #[test]
+    fn test_printer_var_ref() {
+        let (mut rir, mut interner) = create_printer_test_rir();
+        let name = interner.intern("x");
+
+        rir.add_inst(Inst {
+            data: InstData::VarRef { name },
+            span: Span::new(0, 1),
+        });
+
+        let printer = RirPrinter::new(&rir, &interner);
+        let output = printer.to_string();
+        assert!(output.contains("var_ref x"));
+    }
+
+    #[test]
+    fn test_printer_assign() {
+        let (mut rir, mut interner) = create_printer_test_rir();
+        let value = rir.add_inst(Inst {
+            data: InstData::IntConst(10),
+            span: Span::new(0, 2),
+        });
+
+        let name = interner.intern("x");
+
+        rir.add_inst(Inst {
+            data: InstData::Assign { name, value },
+            span: Span::new(0, 6),
+        });
+
+        let printer = RirPrinter::new(&rir, &interner);
+        let output = printer.to_string();
+        assert!(output.contains("assign x = %0"));
+    }
+
+    #[test]
+    fn test_printer_struct_decl() {
+        let (mut rir, mut interner) = create_printer_test_rir();
+        let name = interner.intern("Point");
+        let x_name = interner.intern("x");
+        let y_name = interner.intern("y");
+        let i32_type = interner.intern("i32");
+
+        rir.add_inst(Inst {
+            data: InstData::StructDecl {
+                directives: vec![],
+                name,
+                fields: vec![(x_name, i32_type), (y_name, i32_type)],
+            },
+            span: Span::new(0, 30),
+        });
+
+        let printer = RirPrinter::new(&rir, &interner);
+        let output = printer.to_string();
+        assert!(output.contains("struct Point { x: i32, y: i32 }"));
+    }
+
+    #[test]
+    fn test_printer_struct_decl_with_directive() {
+        let (mut rir, mut interner) = create_printer_test_rir();
+        let name = interner.intern("Point");
+        let x_name = interner.intern("x");
+        let i32_type = interner.intern("i32");
+        let copy_name = interner.intern("copy");
+
+        rir.add_inst(Inst {
+            data: InstData::StructDecl {
+                directives: vec![RirDirective {
+                    name: copy_name,
+                    args: vec![],
+                    span: Span::new(0, 5),
+                }],
+                name,
+                fields: vec![(x_name, i32_type)],
+            },
+            span: Span::new(0, 30),
+        });
+
+        let printer = RirPrinter::new(&rir, &interner);
+        let output = printer.to_string();
+        assert!(output.contains("@copy struct Point { x: i32 }"));
+    }
+
+    #[test]
+    fn test_printer_struct_init() {
+        let (mut rir, mut interner) = create_printer_test_rir();
+        let x_val = rir.add_inst(Inst {
+            data: InstData::IntConst(10),
+            span: Span::new(0, 2),
+        });
+        let y_val = rir.add_inst(Inst {
+            data: InstData::IntConst(20),
+            span: Span::new(0, 2),
+        });
+
+        let type_name = interner.intern("Point");
+        let x_name = interner.intern("x");
+        let y_name = interner.intern("y");
+
+        rir.add_inst(Inst {
+            data: InstData::StructInit {
+                type_name,
+                fields: vec![(x_name, x_val), (y_name, y_val)],
+            },
+            span: Span::new(0, 25),
+        });
+
+        let printer = RirPrinter::new(&rir, &interner);
+        let output = printer.to_string();
+        assert!(output.contains("struct_init Point { x: %0, y: %1 }"));
+    }
+
+    #[test]
+    fn test_printer_field_get() {
+        let (mut rir, mut interner) = create_printer_test_rir();
+        let base = rir.add_inst(Inst {
+            data: InstData::IntConst(0), // placeholder for a struct value
+            span: Span::new(0, 1),
+        });
+
+        let field = interner.intern("x");
+
+        rir.add_inst(Inst {
+            data: InstData::FieldGet { base, field },
+            span: Span::new(0, 5),
+        });
+
+        let printer = RirPrinter::new(&rir, &interner);
+        let output = printer.to_string();
+        assert!(output.contains("field_get %0.x"));
+    }
+
+    #[test]
+    fn test_printer_field_set() {
+        let (mut rir, mut interner) = create_printer_test_rir();
+        let base = rir.add_inst(Inst {
+            data: InstData::IntConst(0), // placeholder
+            span: Span::new(0, 1),
+        });
+        let value = rir.add_inst(Inst {
+            data: InstData::IntConst(42),
+            span: Span::new(0, 2),
+        });
+
+        let field = interner.intern("x");
+
+        rir.add_inst(Inst {
+            data: InstData::FieldSet { base, field, value },
+            span: Span::new(0, 10),
+        });
+
+        let printer = RirPrinter::new(&rir, &interner);
+        let output = printer.to_string();
+        assert!(output.contains("field_set %0.x = %1"));
+    }
+
+    #[test]
+    fn test_printer_enum_decl() {
+        let (mut rir, mut interner) = create_printer_test_rir();
+        let name = interner.intern("Color");
+        let red = interner.intern("Red");
+        let green = interner.intern("Green");
+        let blue = interner.intern("Blue");
+
+        rir.add_inst(Inst {
+            data: InstData::EnumDecl {
+                name,
+                variants: vec![red, green, blue],
+            },
+            span: Span::new(0, 35),
+        });
+
+        let printer = RirPrinter::new(&rir, &interner);
+        let output = printer.to_string();
+        assert!(output.contains("enum Color { Red, Green, Blue }"));
+    }
+
+    #[test]
+    fn test_printer_enum_variant() {
+        let (mut rir, mut interner) = create_printer_test_rir();
+        let type_name = interner.intern("Color");
+        let variant = interner.intern("Red");
+
+        rir.add_inst(Inst {
+            data: InstData::EnumVariant { type_name, variant },
+            span: Span::new(0, 10),
+        });
+
+        let printer = RirPrinter::new(&rir, &interner);
+        let output = printer.to_string();
+        assert!(output.contains("enum_variant Color::Red"));
+    }
+
+    #[test]
+    fn test_printer_array_init() {
+        let (mut rir, interner) = create_printer_test_rir();
+        let elem1 = rir.add_inst(Inst {
+            data: InstData::IntConst(1),
+            span: Span::new(0, 1),
+        });
+        let elem2 = rir.add_inst(Inst {
+            data: InstData::IntConst(2),
+            span: Span::new(0, 1),
+        });
+        let elem3 = rir.add_inst(Inst {
+            data: InstData::IntConst(3),
+            span: Span::new(0, 1),
+        });
+
+        rir.add_inst(Inst {
+            data: InstData::ArrayInit {
+                elements: vec![elem1, elem2, elem3],
+            },
+            span: Span::new(0, 10),
+        });
+
+        let printer = RirPrinter::new(&rir, &interner);
+        let output = printer.to_string();
+        assert!(output.contains("array_init [%0, %1, %2]"));
+    }
+
+    #[test]
+    fn test_printer_index_get() {
+        let (mut rir, interner) = create_printer_test_rir();
+        let base = rir.add_inst(Inst {
+            data: InstData::IntConst(0), // placeholder for array
+            span: Span::new(0, 1),
+        });
+        let index = rir.add_inst(Inst {
+            data: InstData::IntConst(1),
+            span: Span::new(0, 1),
+        });
+
+        rir.add_inst(Inst {
+            data: InstData::IndexGet { base, index },
+            span: Span::new(0, 5),
+        });
+
+        let printer = RirPrinter::new(&rir, &interner);
+        let output = printer.to_string();
+        assert!(output.contains("index_get %0[%1]"));
+    }
+
+    #[test]
+    fn test_printer_index_set() {
+        let (mut rir, interner) = create_printer_test_rir();
+        let base = rir.add_inst(Inst {
+            data: InstData::IntConst(0), // placeholder for array
+            span: Span::new(0, 1),
+        });
+        let index = rir.add_inst(Inst {
+            data: InstData::IntConst(1),
+            span: Span::new(0, 1),
+        });
+        let value = rir.add_inst(Inst {
+            data: InstData::IntConst(42),
+            span: Span::new(0, 2),
+        });
+
+        rir.add_inst(Inst {
+            data: InstData::IndexSet { base, index, value },
+            span: Span::new(0, 10),
+        });
+
+        let printer = RirPrinter::new(&rir, &interner);
+        let output = printer.to_string();
+        assert!(output.contains("index_set %0[%1] = %2"));
+    }
+
+    // Impl block tests
+    #[test]
+    fn test_printer_impl_decl() {
+        let (mut rir, mut interner) = create_printer_test_rir();
+
+        // Create a method first
+        let method_body = rir.add_inst(Inst {
+            data: InstData::IntConst(0),
+            span: Span::new(0, 1),
+        });
+        let method_name = interner.intern("get_x");
+        let return_type = interner.intern("i32");
+
+        let method_ref = rir.add_inst(Inst {
+            data: InstData::FnDecl {
+                directives: vec![],
+                name: method_name,
+                params: vec![],
+                return_type,
+                body: method_body,
+                has_self: true,
+            },
+            span: Span::new(0, 30),
+        });
+
+        let type_name = interner.intern("Point");
+
+        rir.add_inst(Inst {
+            data: InstData::ImplDecl {
+                type_name,
+                methods: vec![method_ref],
+            },
+            span: Span::new(0, 50),
+        });
+
+        let printer = RirPrinter::new(&rir, &interner);
+        let output = printer.to_string();
+        assert!(output.contains("impl Point { %1 }"));
+    }
+
+    #[test]
+    fn test_printer_method_call() {
+        let (mut rir, mut interner) = create_printer_test_rir();
+        let receiver = rir.add_inst(Inst {
+            data: InstData::IntConst(0), // placeholder for struct value
+            span: Span::new(0, 1),
+        });
+        let arg = rir.add_inst(Inst {
+            data: InstData::IntConst(10),
+            span: Span::new(0, 2),
+        });
+
+        let method = interner.intern("add");
+
+        rir.add_inst(Inst {
+            data: InstData::MethodCall {
+                receiver,
+                method,
+                args: vec![RirCallArg {
+                    value: arg,
+                    mode: RirArgMode::Normal,
+                }],
+            },
+            span: Span::new(0, 15),
+        });
+
+        let printer = RirPrinter::new(&rir, &interner);
+        let output = printer.to_string();
+        assert!(output.contains("method_call %0.add(%1)"));
+    }
+
+    #[test]
+    fn test_printer_method_call_with_arg_modes() {
+        let (mut rir, mut interner) = create_printer_test_rir();
+        let receiver = rir.add_inst(Inst {
+            data: InstData::IntConst(0),
+            span: Span::new(0, 1),
+        });
+        let arg1 = rir.add_inst(Inst {
+            data: InstData::IntConst(1),
+            span: Span::new(0, 1),
+        });
+        let arg2 = rir.add_inst(Inst {
+            data: InstData::IntConst(2),
+            span: Span::new(0, 1),
+        });
+
+        let method = interner.intern("modify");
+
+        rir.add_inst(Inst {
+            data: InstData::MethodCall {
+                receiver,
+                method,
+                args: vec![
+                    RirCallArg {
+                        value: arg1,
+                        mode: RirArgMode::Inout,
+                    },
+                    RirCallArg {
+                        value: arg2,
+                        mode: RirArgMode::Borrow,
+                    },
+                ],
+            },
+            span: Span::new(0, 25),
+        });
+
+        let printer = RirPrinter::new(&rir, &interner);
+        let output = printer.to_string();
+        assert!(output.contains("method_call %0.modify(inout %1, borrow %2)"));
+    }
+
+    #[test]
+    fn test_printer_assoc_fn_call() {
+        let (mut rir, mut interner) = create_printer_test_rir();
+
+        let type_name = interner.intern("Point");
+        let function = interner.intern("origin");
+
+        rir.add_inst(Inst {
+            data: InstData::AssocFnCall {
+                type_name,
+                function,
+                args: vec![],
+            },
+            span: Span::new(0, 15),
+        });
+
+        let printer = RirPrinter::new(&rir, &interner);
+        let output = printer.to_string();
+        assert!(output.contains("assoc_fn_call Point::origin()"));
+    }
+
+    #[test]
+    fn test_printer_assoc_fn_call_with_args() {
+        let (mut rir, mut interner) = create_printer_test_rir();
+        let arg1 = rir.add_inst(Inst {
+            data: InstData::IntConst(10),
+            span: Span::new(0, 2),
+        });
+        let arg2 = rir.add_inst(Inst {
+            data: InstData::IntConst(20),
+            span: Span::new(0, 2),
+        });
+
+        let type_name = interner.intern("Point");
+        let function = interner.intern("new");
+
+        rir.add_inst(Inst {
+            data: InstData::AssocFnCall {
+                type_name,
+                function,
+                args: vec![
+                    RirCallArg {
+                        value: arg1,
+                        mode: RirArgMode::Normal,
+                    },
+                    RirCallArg {
+                        value: arg2,
+                        mode: RirArgMode::Normal,
+                    },
+                ],
+            },
+            span: Span::new(0, 20),
+        });
+
+        let printer = RirPrinter::new(&rir, &interner);
+        let output = printer.to_string();
+        assert!(output.contains("assoc_fn_call Point::new(%0, %1)"));
+    }
+
+    #[test]
+    fn test_printer_drop_fn_decl() {
+        let (mut rir, mut interner) = create_printer_test_rir();
+        let body = rir.add_inst(Inst {
+            data: InstData::UnitConst,
+            span: Span::new(0, 2),
+        });
+
+        let type_name = interner.intern("Resource");
+
+        rir.add_inst(Inst {
+            data: InstData::DropFnDecl { type_name, body },
+            span: Span::new(0, 30),
+        });
+
+        let printer = RirPrinter::new(&rir, &interner);
+        let output = printer.to_string();
+        assert!(output.contains("drop fn Resource(self)"));
+    }
+
+    // Match and pattern tests
+    #[test]
+    fn test_printer_match_wildcard() {
+        let (mut rir, interner) = create_printer_test_rir();
+        let scrutinee = rir.add_inst(Inst {
+            data: InstData::IntConst(42),
+            span: Span::new(0, 2),
+        });
+        let body = rir.add_inst(Inst {
+            data: InstData::IntConst(0),
+            span: Span::new(0, 1),
+        });
+
+        rir.add_inst(Inst {
+            data: InstData::Match {
+                scrutinee,
+                arms: vec![(RirPattern::Wildcard(Span::new(0, 1)), body)],
+            },
+            span: Span::new(0, 20),
+        });
+
+        let printer = RirPrinter::new(&rir, &interner);
+        let output = printer.to_string();
+        assert!(output.contains("match %0 { _ => %1 }"));
+    }
+
+    #[test]
+    fn test_printer_match_int_pattern() {
+        let (mut rir, interner) = create_printer_test_rir();
+        let scrutinee = rir.add_inst(Inst {
+            data: InstData::IntConst(42),
+            span: Span::new(0, 2),
+        });
+        let body1 = rir.add_inst(Inst {
+            data: InstData::IntConst(1),
+            span: Span::new(0, 1),
+        });
+        let body2 = rir.add_inst(Inst {
+            data: InstData::IntConst(2),
+            span: Span::new(0, 1),
+        });
+        let body_default = rir.add_inst(Inst {
+            data: InstData::IntConst(0),
+            span: Span::new(0, 1),
+        });
+
+        rir.add_inst(Inst {
+            data: InstData::Match {
+                scrutinee,
+                arms: vec![
+                    (RirPattern::Int(1, Span::new(0, 1)), body1),
+                    (RirPattern::Int(-5, Span::new(0, 2)), body2),
+                    (RirPattern::Wildcard(Span::new(0, 1)), body_default),
+                ],
+            },
+            span: Span::new(0, 30),
+        });
+
+        let printer = RirPrinter::new(&rir, &interner);
+        let output = printer.to_string();
+        assert!(output.contains("match %0 { 1 => %1, -5 => %2, _ => %3 }"));
+    }
+
+    #[test]
+    fn test_printer_match_bool_pattern() {
+        let (mut rir, interner) = create_printer_test_rir();
+        let scrutinee = rir.add_inst(Inst {
+            data: InstData::BoolConst(true),
+            span: Span::new(0, 4),
+        });
+        let body_true = rir.add_inst(Inst {
+            data: InstData::IntConst(1),
+            span: Span::new(0, 1),
+        });
+        let body_false = rir.add_inst(Inst {
+            data: InstData::IntConst(0),
+            span: Span::new(0, 1),
+        });
+
+        rir.add_inst(Inst {
+            data: InstData::Match {
+                scrutinee,
+                arms: vec![
+                    (RirPattern::Bool(true, Span::new(0, 4)), body_true),
+                    (RirPattern::Bool(false, Span::new(0, 5)), body_false),
+                ],
+            },
+            span: Span::new(0, 30),
+        });
+
+        let printer = RirPrinter::new(&rir, &interner);
+        let output = printer.to_string();
+        assert!(output.contains("match %0 { true => %1, false => %2 }"));
+    }
+
+    #[test]
+    fn test_printer_match_path_pattern() {
+        let (mut rir, mut interner) = create_printer_test_rir();
+        let scrutinee = rir.add_inst(Inst {
+            data: InstData::IntConst(0), // placeholder for enum value
+            span: Span::new(0, 1),
+        });
+        let body_red = rir.add_inst(Inst {
+            data: InstData::IntConst(1),
+            span: Span::new(0, 1),
+        });
+        let body_green = rir.add_inst(Inst {
+            data: InstData::IntConst(2),
+            span: Span::new(0, 1),
+        });
+        let body_default = rir.add_inst(Inst {
+            data: InstData::IntConst(0),
+            span: Span::new(0, 1),
+        });
+
+        let color = interner.intern("Color");
+        let red = interner.intern("Red");
+        let green = interner.intern("Green");
+
+        rir.add_inst(Inst {
+            data: InstData::Match {
+                scrutinee,
+                arms: vec![
+                    (
+                        RirPattern::Path {
+                            type_name: color,
+                            variant: red,
+                            span: Span::new(0, 10),
+                        },
+                        body_red,
+                    ),
+                    (
+                        RirPattern::Path {
+                            type_name: color,
+                            variant: green,
+                            span: Span::new(0, 12),
+                        },
+                        body_green,
+                    ),
+                    (RirPattern::Wildcard(Span::new(0, 1)), body_default),
+                ],
+            },
+            span: Span::new(0, 50),
+        });
+
+        let printer = RirPrinter::new(&rir, &interner);
+        let output = printer.to_string();
+        assert!(output.contains("match %0 { Color::Red => %1, Color::Green => %2, _ => %3 }"));
+    }
+
+    #[test]
+    fn test_printer_display_trait() {
+        let (mut rir, interner) = create_printer_test_rir();
+        rir.add_inst(Inst {
+            data: InstData::IntConst(42),
+            span: Span::new(0, 2),
+        });
+
+        let printer = RirPrinter::new(&rir, &interner);
+        // Test Display trait implementation
+        let output = format!("{}", printer);
+        assert!(output.contains("%0 = const 42"));
     }
 }
