@@ -9,7 +9,7 @@
 //! 1. Mark all side-effecting instructions as live (calls, stores, intrinsics, drops)
 //! 2. Mark all values used by terminators as live
 //! 3. Transitively mark all values used by live instructions
-//! 4. Replace unused non-side-effecting instructions with no-ops (const 0)
+//! 4. Remove dead instructions from basic blocks
 //! 5. Remove unreachable blocks
 //!
 //! ## What counts as a side effect
@@ -25,17 +25,16 @@
 use std::collections::HashSet;
 
 use crate::{BlockId, Cfg, CfgInstData, CfgValue, Terminator};
-use rue_air::Type;
 
 /// Run dead code elimination on the CFG.
 ///
-/// This marks live values and replaces dead ones with no-ops.
+/// This marks live values and removes dead instructions from blocks.
 /// It also removes unreachable blocks.
 pub fn run(cfg: &mut Cfg) {
     // Phase 1: Compute liveness
     let live = compute_live_values(cfg);
 
-    // Phase 2: Replace dead instructions with no-ops
+    // Phase 2: Remove dead instructions from blocks
     eliminate_dead_instructions(cfg, &live);
 
     // Phase 3: Remove unreachable blocks
@@ -212,20 +211,20 @@ fn instruction_uses(cfg: &Cfg, value: CfgValue) -> Vec<CfgValue> {
     }
 }
 
-/// Replace dead instructions with no-op constants.
+/// Remove dead instructions from basic blocks.
+///
+/// This filters the instruction list of each block to only include live
+/// instructions. Dead instructions are removed from the block's instruction
+/// list but remain in the CFG's value pool (as they may still be referenced
+/// by live instructions through their operands).
 fn eliminate_dead_instructions(cfg: &mut Cfg, live: &HashSet<CfgValue>) {
-    for i in 0..cfg.value_count() {
-        let value = CfgValue::from_raw(i as u32);
-        if !live.contains(&value) && !has_side_effects(cfg, value) {
-            // Replace with a no-op constant
-            // We preserve the type to maintain type consistency
-            let inst = cfg.get_inst_mut(value);
-            let nop_data = match inst.ty {
-                Type::Bool => CfgInstData::BoolConst(false),
-                _ => CfgInstData::Const(0),
-            };
-            inst.data = nop_data;
-        }
+    // Collect block IDs to avoid borrow issues
+    let block_ids: Vec<BlockId> = cfg.block_ids().collect();
+
+    for block_id in block_ids {
+        let block = cfg.get_block_mut(block_id);
+        // Retain only live instructions in this block
+        block.insts.retain(|value| live.contains(value));
     }
 }
 
@@ -290,6 +289,7 @@ fn compute_reachable_blocks(cfg: &Cfg) -> HashSet<BlockId> {
 mod tests {
     use super::*;
     use crate::{CfgInst, CfgInstData};
+    use rue_air::Type;
     use rue_span::Span;
 
     fn make_cfg() -> Cfg {
@@ -334,29 +334,34 @@ mod tests {
     }
 
     #[test]
-    fn test_dce_unused_value() {
+    fn test_dce_removes_unused_instructions() {
         let mut cfg = make_cfg();
+        let entry = cfg.entry;
 
         // Create: c1 = 10, c2 = 20, add = c1 + c2, c3 = 42, return c3
-        // add should be eliminated since it's unused
-        let c1 = add_const(&mut cfg, 10, Type::I32);
-        let c2 = add_const(&mut cfg, 20, Type::I32);
-        let _add = add_add(&mut cfg, c1, c2, Type::I32);
+        // c1, c2, and add should be removed since they're unused
+        let _c1 = add_const(&mut cfg, 10, Type::I32);
+        let _c2 = add_const(&mut cfg, 20, Type::I32);
+        let _add = add_add(&mut cfg, _c1, _c2, Type::I32);
         let c3 = add_const(&mut cfg, 42, Type::I32);
         finalize_cfg(&mut cfg, c3);
 
+        // Before DCE: block has 4 instructions
+        assert_eq!(cfg.get_block(entry).insts.len(), 4);
+
         run(&mut cfg);
 
-        // c1, c2, and add should be replaced with no-ops (const 0)
-        // c3 should remain (it's used by return)
-        match &cfg.get_inst(c1).data {
-            CfgInstData::Const(0) => {}
-            other => panic!("Expected Const(0), got {:?}", other),
-        }
-        match &cfg.get_inst(c2).data {
-            CfgInstData::Const(0) => {}
-            other => panic!("Expected Const(0), got {:?}", other),
-        }
+        // After DCE: block should have only 1 instruction (c3)
+        let block = cfg.get_block(entry);
+        assert_eq!(
+            block.insts.len(),
+            1,
+            "Expected 1 instruction, got {}",
+            block.insts.len()
+        );
+        assert_eq!(block.insts[0], c3, "Expected c3 to be the only instruction");
+
+        // Verify c3 still has the correct value
         match &cfg.get_inst(c3).data {
             CfgInstData::Const(42) => {}
             other => panic!("Expected Const(42), got {:?}", other),
@@ -364,11 +369,12 @@ mod tests {
     }
 
     #[test]
-    fn test_dce_used_value_preserved() {
+    fn test_dce_preserves_used_instructions() {
         let mut cfg = make_cfg();
+        let entry = cfg.entry;
 
         // Create: c1 = 10, c2 = 20, add = c1 + c2, return add
-        // All should be preserved
+        // All should be preserved since they're used
         let c1 = add_const(&mut cfg, 10, Type::I32);
         let c2 = add_const(&mut cfg, 20, Type::I32);
         let add = add_add(&mut cfg, c1, c2, Type::I32);
@@ -376,7 +382,16 @@ mod tests {
 
         run(&mut cfg);
 
-        // All values should be preserved
+        // All 3 instructions should still be in the block
+        let block = cfg.get_block(entry);
+        assert_eq!(
+            block.insts.len(),
+            3,
+            "Expected 3 instructions, got {}",
+            block.insts.len()
+        );
+
+        // Verify the instructions are preserved with correct data
         match &cfg.get_inst(c1).data {
             CfgInstData::Const(10) => {}
             other => panic!("Expected Const(10), got {:?}", other),
@@ -455,6 +470,15 @@ mod tests {
         finalize_cfg(&mut cfg, ret_val);
 
         run(&mut cfg);
+
+        // Block should still have 2 instructions (call and ret_val)
+        let block = cfg.get_block(entry);
+        assert_eq!(
+            block.insts.len(),
+            2,
+            "Expected 2 instructions, got {}",
+            block.insts.len()
+        );
 
         // Call should be preserved (side effect)
         match &cfg.get_inst(call).data {
