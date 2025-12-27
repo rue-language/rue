@@ -108,12 +108,21 @@ fn print_usage() {
     eprintln!("  --help               Show this help message");
 }
 
-fn parse_args() -> Option<Options> {
-    let args: Vec<String> = env::args().skip(1).collect();
+/// Result of parsing command-line arguments.
+enum ParseResult {
+    /// Successfully parsed options.
+    Options(Options),
+    /// Parsing failed with an error.
+    Error,
+    /// User requested help or version (already printed, should exit 0).
+    Exit,
+}
 
+/// Parse arguments from a slice of strings (for testing).
+fn parse_args_from(args: &[&str]) -> ParseResult {
     if args.is_empty() {
         print_usage();
-        return None;
+        return ParseResult::Error;
     }
 
     let mut emit_stages = Vec::new();
@@ -125,19 +134,19 @@ fn parse_args() -> Option<Options> {
     let mut args_iter = args.iter().peekable();
 
     while let Some(arg) = args_iter.next() {
-        match arg.as_str() {
+        match *arg {
             "--emit" => {
                 let Some(stage_str) = args_iter.next() else {
                     eprintln!("Error: --emit requires a value");
                     eprintln!("Valid stages: {}", EmitStage::all_names());
-                    return None;
+                    return ParseResult::Error;
                 };
                 match stage_str.parse::<EmitStage>() {
                     Ok(stage) => emit_stages.push(stage),
                     Err(e) => {
                         eprintln!("Error: {}", e);
                         eprintln!("Valid stages: {}", EmitStage::all_names());
-                        return None;
+                        return ParseResult::Error;
                     }
                 }
             }
@@ -145,13 +154,13 @@ fn parse_args() -> Option<Options> {
                 let Some(target_str) = args_iter.next() else {
                     eprintln!("Error: --target requires a value");
                     eprintln!("Valid targets: {}", Target::all_names());
-                    return None;
+                    return ParseResult::Error;
                 };
                 match target_str.parse::<Target>() {
                     Ok(t) => target = Some(t),
                     Err(e) => {
                         eprintln!("Error: {}", e);
-                        return None;
+                        return ParseResult::Error;
                     }
                 }
             }
@@ -159,19 +168,19 @@ fn parse_args() -> Option<Options> {
                 let Some(linker_str) = args_iter.next() else {
                     eprintln!("Error: --linker requires a value");
                     eprintln!("Use 'internal' or a system linker command like 'clang'");
-                    return None;
+                    return ParseResult::Error;
                 };
-                linker = Some(if linker_str == "internal" {
+                linker = Some(if *linker_str == "internal" {
                     LinkerMode::Internal
                 } else {
-                    LinkerMode::System(linker_str.clone())
+                    LinkerMode::System(linker_str.to_string())
                 });
             }
             "--preview" => {
                 let Some(feature_str) = args_iter.next() else {
                     eprintln!("Error: --preview requires a feature name");
                     eprintln!("Available features: {}", PreviewFeature::all_names());
-                    return None;
+                    return ParseResult::Error;
                 };
                 match feature_str.parse::<PreviewFeature>() {
                     Ok(feature) => {
@@ -180,17 +189,17 @@ fn parse_args() -> Option<Options> {
                     Err(e) => {
                         eprintln!("Error: {}", e);
                         eprintln!("Available features: {}", PreviewFeature::all_names());
-                        return None;
+                        return ParseResult::Error;
                     }
                 }
             }
             "--help" | "-h" => {
                 print_usage();
-                std::process::exit(0);
+                return ParseResult::Exit;
             }
             "--version" | "-V" => {
                 print_version();
-                std::process::exit(0);
+                return ParseResult::Exit;
             }
             _ if arg.starts_with("-O") => {
                 // Parse -O0, -O1, -O2, -O3
@@ -200,23 +209,23 @@ fn parse_args() -> Option<Options> {
                     Err(e) => {
                         eprintln!("Error: {}", e);
                         eprintln!("Valid levels: {}", OptLevel::all_names());
-                        return None;
+                        return ParseResult::Error;
                     }
                 }
             }
             _ if arg.starts_with('-') => {
                 eprintln!("Unknown option: {}", arg);
                 print_usage();
-                return None;
+                return ParseResult::Error;
             }
-            _ => positional.push(arg.clone()),
+            _ => positional.push(arg.to_string()),
         }
     }
 
     if positional.is_empty() {
         eprintln!("Error: No source file specified");
         print_usage();
-        return None;
+        return ParseResult::Error;
     }
 
     let source_path = positional[0].clone();
@@ -225,7 +234,7 @@ fn parse_args() -> Option<Options> {
         .cloned()
         .unwrap_or_else(|| "a.out".to_string());
 
-    Some(Options {
+    ParseResult::Options(Options {
         source_path,
         output_path,
         emit_stages,
@@ -234,6 +243,17 @@ fn parse_args() -> Option<Options> {
         opt_level: opt_level.unwrap_or_default(),
         preview_features,
     })
+}
+
+fn parse_args() -> Option<Options> {
+    let args: Vec<String> = env::args().skip(1).collect();
+    let args_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+
+    match parse_args_from(&args_refs) {
+        ParseResult::Options(opts) => Some(opts),
+        ParseResult::Error => None,
+        ParseResult::Exit => std::process::exit(0),
+    }
 }
 
 fn main() {
@@ -482,4 +502,390 @@ fn handle_emit(source: &str, options: &Options, formatter: &DiagnosticFormatter)
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Helper to extract Options from ParseResult, panicking if not Options.
+    fn unwrap_options(result: ParseResult) -> Options {
+        match result {
+            ParseResult::Options(opts) => opts,
+            ParseResult::Error => panic!("Expected Options, got Error"),
+            ParseResult::Exit => panic!("Expected Options, got Exit"),
+        }
+    }
+
+    /// Helper to check if result is an error.
+    fn is_error(result: &ParseResult) -> bool {
+        matches!(result, ParseResult::Error)
+    }
+
+    /// Helper to check if result is an exit.
+    fn is_exit(result: &ParseResult) -> bool {
+        matches!(result, ParseResult::Exit)
+    }
+
+    // ========== Basic parsing tests ==========
+
+    #[test]
+    fn parse_source_file_only() {
+        let opts = unwrap_options(parse_args_from(&["source.rue"]));
+        assert_eq!(opts.source_path, "source.rue");
+        assert_eq!(opts.output_path, "a.out");
+    }
+
+    #[test]
+    fn parse_source_and_output() {
+        let opts = unwrap_options(parse_args_from(&["source.rue", "output"]));
+        assert_eq!(opts.source_path, "source.rue");
+        assert_eq!(opts.output_path, "output");
+    }
+
+    #[test]
+    fn parse_no_args_returns_error() {
+        assert!(is_error(&parse_args_from(&[])));
+    }
+
+    // ========== --emit tests ==========
+
+    #[test]
+    fn parse_emit_tokens() {
+        let opts = unwrap_options(parse_args_from(&["--emit", "tokens", "source.rue"]));
+        assert_eq!(opts.emit_stages, vec![EmitStage::Tokens]);
+    }
+
+    #[test]
+    fn parse_emit_ast() {
+        let opts = unwrap_options(parse_args_from(&["--emit", "ast", "source.rue"]));
+        assert_eq!(opts.emit_stages, vec![EmitStage::Ast]);
+    }
+
+    #[test]
+    fn parse_emit_rir() {
+        let opts = unwrap_options(parse_args_from(&["--emit", "rir", "source.rue"]));
+        assert_eq!(opts.emit_stages, vec![EmitStage::Rir]);
+    }
+
+    #[test]
+    fn parse_emit_air() {
+        let opts = unwrap_options(parse_args_from(&["--emit", "air", "source.rue"]));
+        assert_eq!(opts.emit_stages, vec![EmitStage::Air]);
+    }
+
+    #[test]
+    fn parse_emit_cfg() {
+        let opts = unwrap_options(parse_args_from(&["--emit", "cfg", "source.rue"]));
+        assert_eq!(opts.emit_stages, vec![EmitStage::Cfg]);
+    }
+
+    #[test]
+    fn parse_emit_mir() {
+        let opts = unwrap_options(parse_args_from(&["--emit", "mir", "source.rue"]));
+        assert_eq!(opts.emit_stages, vec![EmitStage::Mir]);
+    }
+
+    #[test]
+    fn parse_emit_asm() {
+        let opts = unwrap_options(parse_args_from(&["--emit", "asm", "source.rue"]));
+        assert_eq!(opts.emit_stages, vec![EmitStage::Asm]);
+    }
+
+    #[test]
+    fn parse_multiple_emit_stages() {
+        let opts = unwrap_options(parse_args_from(&[
+            "--emit",
+            "tokens",
+            "--emit",
+            "ast",
+            "--emit",
+            "air",
+            "source.rue",
+        ]));
+        assert_eq!(
+            opts.emit_stages,
+            vec![EmitStage::Tokens, EmitStage::Ast, EmitStage::Air]
+        );
+    }
+
+    #[test]
+    fn parse_emit_missing_value() {
+        assert!(is_error(&parse_args_from(&["source.rue", "--emit"])));
+    }
+
+    #[test]
+    fn parse_emit_invalid_stage() {
+        assert!(is_error(&parse_args_from(&[
+            "--emit",
+            "invalid",
+            "source.rue"
+        ])));
+    }
+
+    // ========== --target tests ==========
+
+    #[test]
+    fn parse_target_x86_64_linux() {
+        let opts = unwrap_options(parse_args_from(&["--target", "x86_64-linux", "source.rue"]));
+        assert_eq!(opts.target, Target::X86_64Linux);
+    }
+
+    #[test]
+    fn parse_target_aarch64_macos() {
+        let opts = unwrap_options(parse_args_from(&[
+            "--target",
+            "aarch64-macos",
+            "source.rue",
+        ]));
+        assert_eq!(opts.target, Target::Aarch64Macos);
+    }
+
+    #[test]
+    fn parse_target_missing_value() {
+        assert!(is_error(&parse_args_from(&["source.rue", "--target"])));
+    }
+
+    #[test]
+    fn parse_target_invalid() {
+        assert!(is_error(&parse_args_from(&[
+            "--target",
+            "invalid",
+            "source.rue"
+        ])));
+    }
+
+    // ========== --linker tests ==========
+
+    #[test]
+    fn parse_linker_internal() {
+        let opts = unwrap_options(parse_args_from(&["--linker", "internal", "source.rue"]));
+        assert_eq!(opts.linker, LinkerMode::Internal);
+    }
+
+    #[test]
+    fn parse_linker_system_clang() {
+        let opts = unwrap_options(parse_args_from(&["--linker", "clang", "source.rue"]));
+        assert_eq!(opts.linker, LinkerMode::System("clang".to_string()));
+    }
+
+    #[test]
+    fn parse_linker_system_gcc() {
+        let opts = unwrap_options(parse_args_from(&["--linker", "gcc", "source.rue"]));
+        assert_eq!(opts.linker, LinkerMode::System("gcc".to_string()));
+    }
+
+    #[test]
+    fn parse_linker_missing_value() {
+        assert!(is_error(&parse_args_from(&["source.rue", "--linker"])));
+    }
+
+    // ========== Optimization level tests ==========
+
+    #[test]
+    fn parse_opt_level_0() {
+        let opts = unwrap_options(parse_args_from(&["-O0", "source.rue"]));
+        assert_eq!(opts.opt_level, OptLevel::O0);
+    }
+
+    #[test]
+    fn parse_opt_level_1() {
+        let opts = unwrap_options(parse_args_from(&["-O1", "source.rue"]));
+        assert_eq!(opts.opt_level, OptLevel::O1);
+    }
+
+    #[test]
+    fn parse_opt_level_2() {
+        let opts = unwrap_options(parse_args_from(&["-O2", "source.rue"]));
+        assert_eq!(opts.opt_level, OptLevel::O2);
+    }
+
+    #[test]
+    fn parse_opt_level_3() {
+        let opts = unwrap_options(parse_args_from(&["-O3", "source.rue"]));
+        assert_eq!(opts.opt_level, OptLevel::O3);
+    }
+
+    #[test]
+    fn parse_opt_level_invalid() {
+        assert!(is_error(&parse_args_from(&["-O9", "source.rue"])));
+    }
+
+    // ========== --preview tests ==========
+
+    #[test]
+    fn parse_preview_valid_feature() {
+        let opts = unwrap_options(parse_args_from(&[
+            "--preview",
+            "mutable_strings",
+            "source.rue",
+        ]));
+        assert!(
+            opts.preview_features
+                .contains(&PreviewFeature::MutableStrings)
+        );
+    }
+
+    #[test]
+    fn parse_preview_multiple_features() {
+        let opts = unwrap_options(parse_args_from(&[
+            "--preview",
+            "mutable_strings",
+            "--preview",
+            "test_infra",
+            "source.rue",
+        ]));
+        assert!(
+            opts.preview_features
+                .contains(&PreviewFeature::MutableStrings)
+        );
+        assert!(opts.preview_features.contains(&PreviewFeature::TestInfra));
+    }
+
+    #[test]
+    fn parse_preview_missing_value() {
+        assert!(is_error(&parse_args_from(&["source.rue", "--preview"])));
+    }
+
+    #[test]
+    fn parse_preview_invalid_feature() {
+        assert!(is_error(&parse_args_from(&[
+            "--preview",
+            "nonexistent",
+            "source.rue"
+        ])));
+    }
+
+    // ========== --help and --version tests ==========
+
+    #[test]
+    fn parse_help_long() {
+        assert!(is_exit(&parse_args_from(&["--help"])));
+    }
+
+    #[test]
+    fn parse_help_short() {
+        assert!(is_exit(&parse_args_from(&["-h"])));
+    }
+
+    #[test]
+    fn parse_version_long() {
+        assert!(is_exit(&parse_args_from(&["--version"])));
+    }
+
+    #[test]
+    fn parse_version_short() {
+        assert!(is_exit(&parse_args_from(&["-V"])));
+    }
+
+    // ========== Unknown option tests ==========
+
+    #[test]
+    fn parse_unknown_option() {
+        assert!(is_error(&parse_args_from(&["--unknown", "source.rue"])));
+    }
+
+    #[test]
+    fn parse_unknown_short_option() {
+        assert!(is_error(&parse_args_from(&["-x", "source.rue"])));
+    }
+
+    // ========== Combined options tests ==========
+
+    #[test]
+    fn parse_all_options_combined() {
+        let opts = unwrap_options(parse_args_from(&[
+            "--target",
+            "x86_64-linux",
+            "--linker",
+            "clang",
+            "-O2",
+            "--emit",
+            "air",
+            "source.rue",
+            "output",
+        ]));
+        assert_eq!(opts.source_path, "source.rue");
+        assert_eq!(opts.output_path, "output");
+        assert_eq!(opts.target, Target::X86_64Linux);
+        assert_eq!(opts.linker, LinkerMode::System("clang".to_string()));
+        assert_eq!(opts.opt_level, OptLevel::O2);
+        assert_eq!(opts.emit_stages, vec![EmitStage::Air]);
+    }
+
+    #[test]
+    fn parse_options_after_source() {
+        // Options can appear after the source file
+        let opts = unwrap_options(parse_args_from(&["source.rue", "-O1"]));
+        assert_eq!(opts.source_path, "source.rue");
+        assert_eq!(opts.opt_level, OptLevel::O1);
+    }
+
+    #[test]
+    fn parse_mixed_option_positions() {
+        let opts = unwrap_options(parse_args_from(&[
+            "-O1",
+            "source.rue",
+            "--target",
+            "x86_64-linux",
+            "output",
+        ]));
+        assert_eq!(opts.source_path, "source.rue");
+        assert_eq!(opts.output_path, "output");
+        assert_eq!(opts.opt_level, OptLevel::O1);
+        assert_eq!(opts.target, Target::X86_64Linux);
+    }
+
+    // ========== Default values tests ==========
+
+    #[test]
+    fn parse_defaults_output_path() {
+        let opts = unwrap_options(parse_args_from(&["source.rue"]));
+        assert_eq!(opts.output_path, "a.out");
+    }
+
+    #[test]
+    fn parse_defaults_opt_level() {
+        let opts = unwrap_options(parse_args_from(&["source.rue"]));
+        assert_eq!(opts.opt_level, OptLevel::O0);
+    }
+
+    #[test]
+    fn parse_defaults_linker() {
+        let opts = unwrap_options(parse_args_from(&["source.rue"]));
+        assert_eq!(opts.linker, LinkerMode::Internal);
+    }
+
+    #[test]
+    fn parse_defaults_emit_stages_empty() {
+        let opts = unwrap_options(parse_args_from(&["source.rue"]));
+        assert!(opts.emit_stages.is_empty());
+    }
+
+    // ========== EmitStage FromStr tests ==========
+
+    #[test]
+    fn emit_stage_from_str_all_valid() {
+        assert_eq!("tokens".parse::<EmitStage>().unwrap(), EmitStage::Tokens);
+        assert_eq!("ast".parse::<EmitStage>().unwrap(), EmitStage::Ast);
+        assert_eq!("rir".parse::<EmitStage>().unwrap(), EmitStage::Rir);
+        assert_eq!("air".parse::<EmitStage>().unwrap(), EmitStage::Air);
+        assert_eq!("cfg".parse::<EmitStage>().unwrap(), EmitStage::Cfg);
+        assert_eq!("mir".parse::<EmitStage>().unwrap(), EmitStage::Mir);
+        assert_eq!("asm".parse::<EmitStage>().unwrap(), EmitStage::Asm);
+    }
+
+    #[test]
+    fn emit_stage_from_str_invalid() {
+        let err = "invalid".parse::<EmitStage>().unwrap_err();
+        assert_eq!(err.to_string(), "unknown emit stage 'invalid'");
+    }
+
+    #[test]
+    fn emit_stage_all_names() {
+        assert_eq!(
+            EmitStage::all_names(),
+            "tokens, ast, rir, air, cfg, mir, asm"
+        );
+    }
 }

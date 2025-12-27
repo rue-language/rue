@@ -8,3 +8,13 @@ rust_binary(
     ],
     visibility = ["PUBLIC"],
 )
+
+rust_test(
+    name = "rue-test",
+    srcs = ["src/main.rs"],
+    deps = [
+        "//crates/rue-compiler:rue-compiler",
+        "//crates/rue-rir:rue-rir",
+        "//crates/rue-target:rue-target",
+    ],
+)
