@@ -649,9 +649,16 @@ define_for_all_platforms! {
 /// - Both pointers remain valid for the duration of the call
 define_for_all_platforms! {
     pub extern "C" fn __rue_str_eq(ptr1: *const u8, len1: u64, ptr2: *const u8, len2: u64) -> u8 {
-        // Fast path: different lengths means not equal
+        // Fast path 1: different lengths means not equal
         if len1 != len2 {
             return 0;
+        }
+
+        // Fast path 2: pointer equality - if both point to same memory with same length,
+        // they're equal. This is especially useful for comparing string literals to themselves
+        // since they point to the same rodata location.
+        if ptr1 == ptr2 {
+            return 1;
         }
 
         // Slow path: compare bytes one by one
@@ -2002,5 +2009,66 @@ mod tests {
         // Drop both
         super::__rue_drop_String(new_ptr, content.len() as u64, 100);
         super::__rue_drop_String(clone_ptr, content.len() as u64, 32);
+    }
+
+    // =========================================================================
+    // String Equality Tests
+    // =========================================================================
+
+    #[test]
+    fn test_str_eq_same_content() {
+        let s1 = b"hello";
+        let s2 = b"hello";
+        // Different pointers, same content
+        assert_ne!(s1.as_ptr(), s2.as_ptr());
+        let result = super::__rue_str_eq(s1.as_ptr(), 5, s2.as_ptr(), 5);
+        assert_eq!(result, 1);
+    }
+
+    #[test]
+    fn test_str_eq_different_content() {
+        let s1 = b"hello";
+        let s2 = b"world";
+        let result = super::__rue_str_eq(s1.as_ptr(), 5, s2.as_ptr(), 5);
+        assert_eq!(result, 0);
+    }
+
+    #[test]
+    fn test_str_eq_different_lengths() {
+        let s1 = b"hello";
+        let s2 = b"hi";
+        let result = super::__rue_str_eq(s1.as_ptr(), 5, s2.as_ptr(), 2);
+        assert_eq!(result, 0);
+    }
+
+    #[test]
+    fn test_str_eq_pointer_equality_fast_path() {
+        // Same pointer and length should use fast path and return true
+        let s = b"hello";
+        let result = super::__rue_str_eq(s.as_ptr(), 5, s.as_ptr(), 5);
+        assert_eq!(result, 1);
+    }
+
+    #[test]
+    fn test_str_eq_empty_strings() {
+        // Two empty strings with different (null) pointers
+        let result = super::__rue_str_eq(ptr::null(), 0, ptr::null(), 0);
+        assert_eq!(result, 1);
+    }
+
+    #[test]
+    fn test_str_eq_empty_vs_non_empty() {
+        let s = b"hello";
+        let result = super::__rue_str_eq(ptr::null(), 0, s.as_ptr(), 5);
+        assert_eq!(result, 0);
+    }
+
+    #[test]
+    fn test_str_eq_prefix() {
+        // "hello" vs "hell" - should be not equal
+        let s1 = b"hello";
+        let s2 = b"hell";
+        let result = super::__rue_str_eq(s1.as_ptr(), 5, s2.as_ptr(), 4);
+        assert_eq!(result, 0);
     }
 }

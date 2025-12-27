@@ -363,13 +363,13 @@ Add explicit cloning (gated):
 
 **Testable**: Clone a string, verify both are independent.
 
-### Phase 9: Equality Optimization
+### Phase 9: Equality Optimization - rue-0hef.9 (COMPLETE)
 
 Optimize string comparison:
 
-- If both strings have same ptr and len, return true immediately (pointer equality)
-- Otherwise fall back to byte-by-byte comparison
-- Update `__rue_str_eq` runtime function
+- [x] If both strings have same ptr and len, return true immediately (pointer equality)
+- [x] Otherwise fall back to byte-by-byte comparison
+- [x] Update `__rue_str_eq` runtime function
 
 **Testable**: Comparing a literal to itself uses fast path.
 
