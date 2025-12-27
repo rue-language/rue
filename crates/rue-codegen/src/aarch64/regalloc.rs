@@ -1111,4 +1111,284 @@ mod tests {
             }
         }
     }
+
+    // ========================================
+    // Spill slot conflict tests
+    // ========================================
+
+    #[test]
+    fn test_spill_inserts_load_store() {
+        // Force a spill and verify load/store instructions are inserted
+        let mut mir = Aarch64Mir::new();
+
+        // Create 11 vregs to force spilling (10 allocatable regs: X19-X28)
+        let vregs: Vec<VReg> = (0..11).map(|_| mir.alloc_vreg()).collect();
+
+        for (i, &vreg) in vregs.iter().enumerate() {
+            mir.push(Aarch64Inst::MovImm {
+                dst: Operand::Virtual(vreg),
+                imm: i as i64,
+            });
+        }
+
+        for &vreg in &vregs {
+            mir.push(Aarch64Inst::MovRR {
+                dst: Operand::Physical(Reg::X0),
+                src: Operand::Virtual(vreg),
+            });
+        }
+
+        let (mir, num_spills, _) = RegAlloc::new(mir, 0).allocate_with_spills().unwrap();
+
+        assert_eq!(num_spills, 1, "Should have exactly 1 spill");
+
+        // Verify there's at least one Str (store to stack) and Ldr (load from stack)
+        let has_store = mir
+            .instructions()
+            .iter()
+            .any(|inst| matches!(inst, Aarch64Inst::Str { base: Reg::Fp, .. }));
+        let has_load = mir
+            .instructions()
+            .iter()
+            .any(|inst| matches!(inst, Aarch64Inst::Ldr { base: Reg::Fp, .. }));
+
+        assert!(has_store, "Should have a store to stack");
+        assert!(has_load, "Should have a load from stack");
+    }
+
+    #[test]
+    fn test_multiple_spills_unique_offsets() {
+        // Force multiple spills and verify they get unique stack offsets
+        let mut mir = Aarch64Mir::new();
+
+        // Create 15 vregs to force 5 spills (10 allocatable regs)
+        let vregs: Vec<VReg> = (0..15).map(|_| mir.alloc_vreg()).collect();
+
+        for (i, &vreg) in vregs.iter().enumerate() {
+            mir.push(Aarch64Inst::MovImm {
+                dst: Operand::Virtual(vreg),
+                imm: i as i64,
+            });
+        }
+
+        for &vreg in &vregs {
+            mir.push(Aarch64Inst::MovRR {
+                dst: Operand::Physical(Reg::X0),
+                src: Operand::Virtual(vreg),
+            });
+        }
+
+        let (mir, num_spills, _) = RegAlloc::new(mir, 0).allocate_with_spills().unwrap();
+
+        assert_eq!(num_spills, 5);
+
+        // Collect all unique stack offsets used in loads/stores
+        let mut offsets = std::collections::HashSet::new();
+        for inst in mir.instructions() {
+            match inst {
+                Aarch64Inst::Str {
+                    base: Reg::Fp,
+                    offset,
+                    ..
+                } => {
+                    offsets.insert(*offset);
+                }
+                Aarch64Inst::Ldr {
+                    base: Reg::Fp,
+                    offset,
+                    ..
+                } => {
+                    offsets.insert(*offset);
+                }
+                _ => {}
+            }
+        }
+
+        // Each spilled vreg should use a unique offset
+        assert_eq!(
+            offsets.len(),
+            5,
+            "Each spill should use a unique stack offset"
+        );
+    }
+
+    #[test]
+    fn test_spill_with_existing_locals() {
+        // Test that spills are placed after existing local variables
+        let mut mir = Aarch64Mir::new();
+
+        // 11 vregs forces 1 spill
+        let vregs: Vec<VReg> = (0..11).map(|_| mir.alloc_vreg()).collect();
+
+        for vreg in &vregs {
+            mir.push(Aarch64Inst::MovImm {
+                dst: Operand::Virtual(*vreg),
+                imm: 42,
+            });
+        }
+        for vreg in &vregs {
+            mir.push(Aarch64Inst::MovRR {
+                dst: Operand::Physical(Reg::X0),
+                src: Operand::Virtual(*vreg),
+            });
+        }
+
+        // Pass 5 existing locals - spills should start at -48 (= -(5+1)*8)
+        let (mir, num_spills, _) = RegAlloc::new(mir, 5).allocate_with_spills().unwrap();
+
+        assert_eq!(num_spills, 1);
+
+        // Find the spill offset
+        let spill_offset = mir
+            .instructions()
+            .iter()
+            .find_map(|inst| match inst {
+                Aarch64Inst::Str {
+                    base: Reg::Fp,
+                    offset,
+                    ..
+                } => Some(*offset),
+                _ => None,
+            })
+            .expect("Should have a spill store");
+
+        // First spill with 5 existing locals should be at -48
+        assert_eq!(spill_offset, -48);
+    }
+
+    // ========================================
+    // Large stack frame tests
+    // ========================================
+
+    #[test]
+    fn test_many_vregs_large_frame() {
+        // Test a function with many virtual registers causing a large stack frame
+        let mut mir = Aarch64Mir::new();
+
+        // Create 25 vregs (10 registers + 15 spills)
+        let vregs: Vec<VReg> = (0..25).map(|_| mir.alloc_vreg()).collect();
+
+        for (i, &vreg) in vregs.iter().enumerate() {
+            mir.push(Aarch64Inst::MovImm {
+                dst: Operand::Virtual(vreg),
+                imm: i as i64,
+            });
+        }
+
+        for &vreg in &vregs {
+            mir.push(Aarch64Inst::MovRR {
+                dst: Operand::Physical(Reg::X0),
+                src: Operand::Virtual(vreg),
+            });
+        }
+
+        let (mir, num_spills, _) = RegAlloc::new(mir, 0).allocate_with_spills().unwrap();
+
+        assert_eq!(num_spills, 15);
+
+        // Verify all virtual registers were replaced with physical
+        for inst in mir.instructions() {
+            match inst {
+                Aarch64Inst::MovImm { dst, .. } => {
+                    assert!(dst.is_physical());
+                }
+                Aarch64Inst::MovRR { dst, src } => {
+                    assert!(dst.is_physical());
+                    assert!(src.is_physical());
+                }
+                Aarch64Inst::Ldr { dst, .. } => {
+                    assert!(dst.is_physical());
+                }
+                Aarch64Inst::Str { src, .. } => {
+                    assert!(src.is_physical());
+                }
+                _ => {}
+            }
+        }
+    }
+
+    #[test]
+    fn test_spill_with_many_locals() {
+        // Test spilling with many existing local variables
+        let mut mir = Aarch64Mir::new();
+
+        // 11 vregs forces 1 spill
+        let vregs: Vec<VReg> = (0..11).map(|_| mir.alloc_vreg()).collect();
+
+        for vreg in &vregs {
+            mir.push(Aarch64Inst::MovImm {
+                dst: Operand::Virtual(*vreg),
+                imm: 1,
+            });
+        }
+        for vreg in &vregs {
+            mir.push(Aarch64Inst::MovRR {
+                dst: Operand::Physical(Reg::X0),
+                src: Operand::Virtual(*vreg),
+            });
+        }
+
+        // 50 existing locals - spill at -408 (= -(50+1)*8)
+        let (mir, num_spills, _) = RegAlloc::new(mir, 50).allocate_with_spills().unwrap();
+
+        assert_eq!(num_spills, 1);
+
+        let spill_offset = mir
+            .instructions()
+            .iter()
+            .find_map(|inst| match inst {
+                Aarch64Inst::Str {
+                    base: Reg::Fp,
+                    offset,
+                    ..
+                } => Some(*offset),
+                _ => None,
+            })
+            .expect("Should have a spill store");
+
+        assert_eq!(spill_offset, -408);
+    }
+
+    #[test]
+    fn test_ternop_with_spilled_operands() {
+        // Test that ternary operations work correctly when operands are spilled
+        let mut mir = Aarch64Mir::new();
+
+        // Create enough vregs to force spilling
+        let vregs: Vec<VReg> = (0..13).map(|_| mir.alloc_vreg()).collect();
+
+        // Initialize all
+        for (i, &vreg) in vregs.iter().enumerate() {
+            mir.push(Aarch64Inst::MovImm {
+                dst: Operand::Virtual(vreg),
+                imm: i as i64,
+            });
+        }
+
+        // Add using potentially spilled operands
+        mir.push(Aarch64Inst::AddRR {
+            dst: Operand::Virtual(vregs[0]),
+            src1: Operand::Virtual(vregs[11]),
+            src2: Operand::Virtual(vregs[12]),
+        });
+
+        // Use all to keep them live
+        for &vreg in &vregs {
+            mir.push(Aarch64Inst::MovRR {
+                dst: Operand::Physical(Reg::X0),
+                src: Operand::Virtual(vreg),
+            });
+        }
+
+        let (mir, num_spills, _) = RegAlloc::new(mir, 0).allocate_with_spills().unwrap();
+
+        assert!(num_spills >= 3, "Should have some spills");
+
+        // Verify the AddRR was properly rewritten
+        let has_add = mir.instructions().iter().any(|inst| {
+            matches!(inst, Aarch64Inst::AddRR { dst, src1, src2 }
+                if dst.is_physical() && src1.is_physical() && src2.is_physical())
+        });
+        assert!(has_add, "AddRR should be rewritten with physical registers");
+    }
 }

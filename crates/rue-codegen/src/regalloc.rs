@@ -528,4 +528,219 @@ mod tests {
         assert_eq!(spill0, -24); // First spill
         assert_eq!(spill1, -32); // Second spill
     }
+
+    // ========================================
+    // Spill slot conflict tests
+    // ========================================
+
+    #[test]
+    fn test_multiple_overlapping_spills_get_unique_offsets() {
+        // With only 1 register and 5 overlapping live ranges,
+        // we need 4 spills with unique offsets.
+        let allocatable = vec![TestReg(0)];
+        let liveness = make_liveness(vec![
+            (0, 0, 10), // v0 - longest
+            (1, 1, 9),  // v1
+            (2, 2, 8),  // v2
+            (3, 3, 7),  // v3
+            (4, 4, 6),  // v4 - gets the register (shortest remaining)
+        ]);
+
+        let (allocation, num_spills, _) = linear_scan(5, &liveness, &allocatable, 0);
+
+        assert_eq!(num_spills, 4);
+
+        // Collect all spill offsets
+        let mut offsets = Vec::new();
+        for vreg_idx in 0..5 {
+            if let Some(Allocation::Spill(off)) = allocation[VReg::new(vreg_idx)] {
+                offsets.push(off);
+            }
+        }
+
+        // All spill offsets should be unique
+        let unique_offsets: std::collections::HashSet<_> = offsets.iter().copied().collect();
+        assert_eq!(
+            offsets.len(),
+            unique_offsets.len(),
+            "Spill offsets must be unique: {:?}",
+            offsets
+        );
+    }
+
+    #[test]
+    fn test_spill_slots_dont_overlap_with_locals() {
+        // With 10 existing locals (slots at -8 through -80), spills should start at -88
+        let allocatable = vec![TestReg(0)];
+        let liveness = make_liveness(vec![
+            (0, 0, 5), // v0 - will be spilled (longer)
+            (1, 1, 4), // v1 - gets the register (shorter)
+        ]);
+
+        let (allocation, num_spills, _) = linear_scan(2, &liveness, &allocatable, 10);
+
+        assert_eq!(num_spills, 1);
+
+        let spill_off = match allocation[VReg::new(0)] {
+            Some(Allocation::Spill(off)) => off,
+            _ => panic!("v0 should be spilled"),
+        };
+
+        // With 10 existing locals, first spill should be at -(10+1)*8 = -88
+        assert_eq!(spill_off, -88);
+    }
+
+    #[test]
+    fn test_many_simultaneous_spills() {
+        // Test a scenario where many vregs are live simultaneously, causing many spills
+        let allocatable = vec![TestReg(0), TestReg(1)]; // Only 2 registers
+
+        // 10 vregs all live for the entire range [0, 20]
+        let liveness = make_liveness((0..10).map(|i| (i, 0, 20)).collect());
+
+        let (allocation, num_spills, _) = linear_scan(10, &liveness, &allocatable, 0);
+
+        // With 10 vregs and 2 registers, we should have 8 spills
+        assert_eq!(num_spills, 8);
+
+        // Verify all spill offsets are unique
+        let spill_offsets: Vec<i32> = (0..10)
+            .filter_map(|i| match allocation[VReg::new(i)] {
+                Some(Allocation::Spill(off)) => Some(off),
+                _ => None,
+            })
+            .collect();
+
+        let unique: std::collections::HashSet<_> = spill_offsets.iter().copied().collect();
+        assert_eq!(
+            spill_offsets.len(),
+            unique.len(),
+            "All spill offsets must be unique"
+        );
+
+        // Verify spill offsets are sequential 8-byte aligned
+        // Offsets are negative, so sorted goes from most negative to least negative
+        let mut sorted = spill_offsets.clone();
+        sorted.sort();
+        for i in 1..sorted.len() {
+            assert_eq!(
+                sorted[i] - sorted[i - 1],
+                8,
+                "Spill offsets should be 8 bytes apart"
+            );
+        }
+    }
+
+    // ========================================
+    // Large stack frame tests
+    // ========================================
+
+    #[test]
+    fn test_large_stack_frame_many_locals() {
+        // Function with 100 locals - spills start after those
+        let allocatable = vec![TestReg(0)];
+        let liveness = make_liveness(vec![
+            (0, 0, 3), // v0 - spilled
+            (1, 1, 2), // v1 - gets register
+        ]);
+
+        let (allocation, num_spills, _) = linear_scan(2, &liveness, &allocatable, 100);
+
+        assert_eq!(num_spills, 1);
+
+        let spill_off = match allocation[VReg::new(0)] {
+            Some(Allocation::Spill(off)) => off,
+            _ => panic!("v0 should be spilled"),
+        };
+
+        // With 100 existing locals, first spill is at -(100+1)*8 = -808
+        assert_eq!(spill_off, -808);
+    }
+
+    #[test]
+    fn test_large_number_of_spills() {
+        // 50 vregs all live simultaneously with only 2 registers = 48 spills
+        let allocatable = vec![TestReg(0), TestReg(1)];
+        let liveness = make_liveness((0..50).map(|i| (i, 0, 100)).collect());
+
+        let (allocation, num_spills, _) = linear_scan(50, &liveness, &allocatable, 0);
+
+        assert_eq!(num_spills, 48);
+
+        // First spill should be at -8, last at -8 * 48 = -384
+        let spill_offsets: Vec<i32> = (0..50)
+            .filter_map(|i| match allocation[VReg::new(i)] {
+                Some(Allocation::Spill(off)) => Some(off),
+                _ => None,
+            })
+            .collect();
+
+        assert_eq!(spill_offsets.len(), 48);
+
+        let min_offset = *spill_offsets.iter().min().unwrap();
+        let max_offset = *spill_offsets.iter().max().unwrap();
+
+        // Most negative offset should be -(48)*8 = -384 (spill slots grow down)
+        assert_eq!(min_offset, -384);
+        // Least negative offset should be -8 (first spill)
+        assert_eq!(max_offset, -8);
+    }
+
+    #[test]
+    fn test_combined_locals_and_spills() {
+        // 20 locals + 30 vregs with 5 registers = 25 spills
+        // Spills should start at -(20+1)*8 = -168
+        let allocatable = vec![TestReg(0), TestReg(1), TestReg(2), TestReg(3), TestReg(4)];
+        let liveness = make_liveness((0..30).map(|i| (i, 0, 50)).collect());
+
+        let (allocation, num_spills, _) = linear_scan(30, &liveness, &allocatable, 20);
+
+        assert_eq!(num_spills, 25);
+
+        let spill_offsets: Vec<i32> = (0..30)
+            .filter_map(|i| match allocation[VReg::new(i)] {
+                Some(Allocation::Spill(off)) => Some(off),
+                _ => None,
+            })
+            .collect();
+
+        // First spill should be at -(20+1)*8 = -168 (after 20 locals)
+        let max_offset = *spill_offsets.iter().max().unwrap();
+        assert_eq!(max_offset, -168);
+
+        // Last spill should be at -(20+25)*8 = -360
+        let min_offset = *spill_offsets.iter().min().unwrap();
+        assert_eq!(min_offset, -360);
+    }
+
+    #[test]
+    fn test_register_reuse_across_non_overlapping_spills() {
+        // If a vreg is spilled but its spill slot is freed, a new spill
+        // can reuse that slot. However, in linear scan, spill slots are
+        // allocated once and not reclaimed (simpler implementation).
+        // This test verifies the current behavior.
+        let allocatable = vec![TestReg(0)];
+        let liveness = make_liveness(vec![
+            (0, 0, 2), // v0 - first
+            (1, 1, 3), // v1 - overlaps v0, one spilled
+            (2, 5, 7), // v2 - non-overlapping, separate spill
+            (3, 6, 8), // v3 - overlaps v2, one spilled
+        ]);
+
+        let (allocation, num_spills, _) = linear_scan(4, &liveness, &allocatable, 0);
+
+        // Two separate spilling events, each spills one vreg
+        assert_eq!(num_spills, 2);
+
+        // Verify both spills have different offsets (no reuse in current impl)
+        let spill_offsets: Vec<i32> = (0..4)
+            .filter_map(|i| match allocation[VReg::new(i)] {
+                Some(Allocation::Spill(off)) => Some(off),
+                _ => None,
+            })
+            .collect();
+
+        let unique: std::collections::HashSet<_> = spill_offsets.iter().copied().collect();
+        assert_eq!(spill_offsets.len(), unique.len());
+    }
 }
