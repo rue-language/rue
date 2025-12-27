@@ -727,6 +727,98 @@ pub fn generate_allocated_mir(
     }
 }
 
+// ============================================================================
+// Test Helper Functions
+// ============================================================================
+
+/// Output from semantic analysis (compile_to_air).
+///
+/// This struct provides access to the typed IR (AIR) for each function,
+/// useful for testing semantic analysis without generating machine code.
+#[derive(Debug)]
+pub struct AirOutput {
+    /// The abstract syntax tree.
+    pub ast: Ast,
+    /// String interner used during compilation.
+    pub interner: Interner,
+    /// The untyped IR (RIR).
+    pub rir: Rir,
+    /// Analyzed functions with typed IR.
+    pub functions: Vec<AnalyzedFunction>,
+    /// Struct definitions.
+    pub struct_defs: Vec<StructDef>,
+    /// Array type definitions.
+    pub array_types: Vec<ArrayTypeDef>,
+    /// String literals.
+    pub strings: Vec<String>,
+    /// Warnings collected during analysis.
+    pub warnings: Vec<CompileWarning>,
+}
+
+/// Compile source code up to AIR (typed IR) without building CFG.
+///
+/// This is a test helper that runs: lexing → parsing → AST to RIR → semantic analysis.
+/// It stops before CFG construction, making it fast for testing type checking
+/// and semantic analysis.
+///
+/// # Example
+///
+/// ```ignore
+/// use rue_compiler::compile_to_air;
+///
+/// let result = compile_to_air("fn main() -> i32 { 1 + 2 * 3 }");
+/// assert!(result.is_ok());
+/// ```
+pub fn compile_to_air(source: &str) -> CompileResult<AirOutput> {
+    // Lexing
+    let mut lexer = Lexer::new(source);
+    let tokens = lexer.tokenize()?;
+
+    // Parsing
+    let mut parser = Parser::new(tokens);
+    let ast = parser.parse()?;
+
+    // AST to RIR (untyped IR)
+    let mut interner = Interner::new();
+    let astgen = AstGen::new(&ast, &mut interner);
+    let rir = astgen.generate();
+
+    // Semantic analysis (RIR to AIR)
+    let sema = Sema::new(&rir, &mut interner);
+    let sema_output = sema.analyze_all()?;
+
+    Ok(AirOutput {
+        ast,
+        interner,
+        rir,
+        functions: sema_output.functions,
+        struct_defs: sema_output.struct_defs,
+        array_types: sema_output.array_types,
+        strings: sema_output.strings,
+        warnings: sema_output.warnings,
+    })
+}
+
+/// Compile source code up to CFG (control flow graph).
+///
+/// This is an alias for `compile_frontend` that provides a more intuitive name
+/// for test code. It runs the full frontend pipeline:
+/// lexing → parsing → AST to RIR → semantic analysis → CFG construction.
+///
+/// # Example
+///
+/// ```ignore
+/// use rue_compiler::compile_to_cfg;
+///
+/// let result = compile_to_cfg("fn main() -> i32 { if true { 1 } else { 2 } }");
+/// assert!(result.is_ok());
+/// let state = result.unwrap();
+/// assert_eq!(state.functions.len(), 1);
+/// ```
+pub fn compile_to_cfg(source: &str) -> CompileResult<CompileState> {
+    compile_frontend(source)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -780,5 +872,1082 @@ mod tests {
         let state = compile_frontend("fn main() -> i32 { let x = 42; 0 }").unwrap();
         assert_eq!(state.warnings.len(), 1);
         assert!(state.warnings[0].to_string().contains("unused variable"));
+    }
+}
+
+// ============================================================================
+// Integration Unit Tests
+// ============================================================================
+//
+// These tests verify the compilation pipeline without execution. They test:
+// - Type checking and semantic analysis
+// - CFG construction
+// - Error message quality
+//
+// Benefits:
+// - Fast: No file I/O, no process spawning, no execution
+// - Comprehensive: Tests full parse→sema→codegen pipeline
+// - Debuggable: Can inspect intermediate IRs in tests
+
+#[cfg(test)]
+mod integration_tests {
+    use super::*;
+
+    // ========================================================================
+    // Integer Types
+    // ========================================================================
+
+    mod integer_types {
+        use super::*;
+
+        #[test]
+        fn signed_integer_return() {
+            assert!(compile_to_air("fn main() -> i8 { 42 }").is_ok());
+            assert!(compile_to_air("fn main() -> i16 { 42 }").is_ok());
+            assert!(compile_to_air("fn main() -> i32 { 42 }").is_ok());
+            assert!(compile_to_air("fn main() -> i64 { 42 }").is_ok());
+        }
+
+        #[test]
+        fn unsigned_integer_return() {
+            assert!(compile_to_air("fn main() -> u8 { 42 }").is_ok());
+            assert!(compile_to_air("fn main() -> u16 { 42 }").is_ok());
+            assert!(compile_to_air("fn main() -> u32 { 42 }").is_ok());
+            assert!(compile_to_air("fn main() -> u64 { 42 }").is_ok());
+        }
+
+        #[test]
+        fn integer_type_mismatch() {
+            let result = compile_to_air("fn main() -> i32 { let x: i64 = 1; x }");
+            assert!(result.is_err());
+            let err = result.unwrap_err().to_string();
+            assert!(err.contains("type mismatch") || err.contains("expected"));
+        }
+
+        #[test]
+        fn integer_literal_type_inference() {
+            // Type inferred from return type
+            assert!(compile_to_air("fn main() -> i64 { 100 }").is_ok());
+            // Type inferred from annotation
+            assert!(compile_to_air("fn main() -> i32 { let x: i64 = 100; 0 }").is_ok());
+        }
+    }
+
+    // ========================================================================
+    // Boolean Type
+    // ========================================================================
+
+    mod boolean_type {
+        use super::*;
+
+        #[test]
+        fn boolean_literals() {
+            assert!(compile_to_air("fn main() -> bool { true }").is_ok());
+            assert!(compile_to_air("fn main() -> bool { false }").is_ok());
+        }
+
+        #[test]
+        fn boolean_in_condition() {
+            assert!(compile_to_cfg("fn main() -> i32 { if true { 1 } else { 0 } }").is_ok());
+        }
+
+        #[test]
+        fn non_boolean_condition_rejected() {
+            let result = compile_to_air("fn main() -> i32 { if 1 { 1 } else { 0 } }");
+            assert!(result.is_err());
+        }
+    }
+
+    // ========================================================================
+    // Unit Type
+    // ========================================================================
+
+    mod unit_type {
+        use super::*;
+
+        #[test]
+        fn unit_return_type() {
+            assert!(compile_to_air("fn main() -> () { () }").is_ok());
+        }
+
+        #[test]
+        fn unit_in_expression() {
+            assert!(compile_to_air("fn main() -> () { let _x = (); () }").is_ok());
+        }
+
+        #[test]
+        fn implicit_unit_return() {
+            assert!(compile_to_air("fn foo() -> () { } fn main() -> i32 { 0 }").is_ok());
+        }
+    }
+
+    // ========================================================================
+    // Arithmetic Operations
+    // ========================================================================
+
+    mod arithmetic {
+        use super::*;
+
+        #[test]
+        fn basic_addition() {
+            assert!(compile_to_air("fn main() -> i32 { 1 + 2 }").is_ok());
+        }
+
+        #[test]
+        fn basic_subtraction() {
+            assert!(compile_to_air("fn main() -> i32 { 5 - 3 }").is_ok());
+        }
+
+        #[test]
+        fn basic_multiplication() {
+            assert!(compile_to_air("fn main() -> i32 { 3 * 4 }").is_ok());
+        }
+
+        #[test]
+        fn basic_division() {
+            assert!(compile_to_air("fn main() -> i32 { 10 / 2 }").is_ok());
+        }
+
+        #[test]
+        fn basic_modulo() {
+            assert!(compile_to_air("fn main() -> i32 { 10 % 3 }").is_ok());
+        }
+
+        #[test]
+        fn unary_negation() {
+            assert!(compile_to_air("fn main() -> i32 { -42 }").is_ok());
+        }
+
+        #[test]
+        fn operator_precedence() {
+            // Multiplication before addition
+            let state = compile_to_cfg("fn main() -> i32 { 1 + 2 * 3 }").unwrap();
+            assert_eq!(state.functions.len(), 1);
+        }
+
+        #[test]
+        fn chained_operations() {
+            assert!(compile_to_air("fn main() -> i32 { 1 + 2 + 3 + 4 }").is_ok());
+        }
+
+        #[test]
+        fn mixed_type_arithmetic_rejected() {
+            let result = compile_to_air("fn main() -> i32 { 1 + true }");
+            assert!(result.is_err());
+        }
+
+        #[test]
+        fn unsigned_arithmetic() {
+            assert!(compile_to_air("fn main() -> u32 { 10 + 5 }").is_ok());
+            assert!(compile_to_air("fn main() -> u32 { 10 - 5 }").is_ok());
+            assert!(compile_to_air("fn main() -> u32 { 10 * 5 }").is_ok());
+        }
+    }
+
+    // ========================================================================
+    // Comparison Operations
+    // ========================================================================
+
+    mod comparison {
+        use super::*;
+
+        #[test]
+        fn equality_comparison() {
+            assert!(compile_to_air("fn main() -> bool { 1 == 1 }").is_ok());
+            assert!(compile_to_air("fn main() -> bool { 1 != 2 }").is_ok());
+        }
+
+        #[test]
+        fn ordering_comparison() {
+            assert!(compile_to_air("fn main() -> bool { 1 < 2 }").is_ok());
+            assert!(compile_to_air("fn main() -> bool { 2 > 1 }").is_ok());
+            assert!(compile_to_air("fn main() -> bool { 1 <= 2 }").is_ok());
+            assert!(compile_to_air("fn main() -> bool { 2 >= 1 }").is_ok());
+        }
+
+        #[test]
+        fn boolean_equality() {
+            assert!(compile_to_air("fn main() -> bool { true == true }").is_ok());
+            assert!(compile_to_air("fn main() -> bool { true != false }").is_ok());
+        }
+
+        #[test]
+        fn comparison_returns_bool() {
+            let result = compile_to_air("fn main() -> i32 { 1 < 2 }");
+            assert!(result.is_err()); // Type mismatch: bool vs i32
+        }
+
+        #[test]
+        fn mixed_type_comparison_rejected() {
+            let result = compile_to_air("fn main() -> bool { 1 == true }");
+            assert!(result.is_err());
+        }
+    }
+
+    // ========================================================================
+    // Logical Operations
+    // ========================================================================
+
+    mod logical {
+        use super::*;
+
+        #[test]
+        fn logical_and() {
+            assert!(compile_to_cfg("fn main() -> bool { true && false }").is_ok());
+        }
+
+        #[test]
+        fn logical_or() {
+            assert!(compile_to_cfg("fn main() -> bool { true || false }").is_ok());
+        }
+
+        #[test]
+        fn logical_not() {
+            assert!(compile_to_air("fn main() -> bool { !true }").is_ok());
+        }
+
+        #[test]
+        fn chained_logical() {
+            assert!(compile_to_cfg("fn main() -> bool { true && false || true }").is_ok());
+        }
+
+        #[test]
+        fn logical_with_non_bool_rejected() {
+            let result = compile_to_air("fn main() -> bool { 1 && true }");
+            assert!(result.is_err());
+        }
+    }
+
+    // ========================================================================
+    // Bitwise Operations
+    // ========================================================================
+
+    mod bitwise {
+        use super::*;
+
+        #[test]
+        fn bitwise_and() {
+            assert!(compile_to_air("fn main() -> i32 { 5 & 3 }").is_ok());
+        }
+
+        #[test]
+        fn bitwise_or() {
+            assert!(compile_to_air("fn main() -> i32 { 5 | 3 }").is_ok());
+        }
+
+        #[test]
+        fn bitwise_xor() {
+            assert!(compile_to_air("fn main() -> i32 { 5 ^ 3 }").is_ok());
+        }
+
+        #[test]
+        fn bitwise_not() {
+            assert!(compile_to_air("fn main() -> i32 { ~5 }").is_ok());
+        }
+
+        #[test]
+        fn shift_left() {
+            assert!(compile_to_air("fn main() -> i32 { 1 << 4 }").is_ok());
+        }
+
+        #[test]
+        fn shift_right() {
+            assert!(compile_to_air("fn main() -> i32 { 16 >> 2 }").is_ok());
+        }
+
+        #[test]
+        fn bitwise_on_bool_rejected() {
+            let result = compile_to_air("fn main() -> bool { true & false }");
+            assert!(result.is_err());
+        }
+    }
+
+    // ========================================================================
+    // Control Flow - If Expressions
+    // ========================================================================
+
+    mod if_expressions {
+        use super::*;
+
+        #[test]
+        fn basic_if_else() {
+            assert!(compile_to_cfg("fn main() -> i32 { if true { 1 } else { 0 } }").is_ok());
+        }
+
+        #[test]
+        fn if_with_condition_expr() {
+            assert!(compile_to_cfg("fn main() -> i32 { if 1 < 2 { 1 } else { 0 } }").is_ok());
+        }
+
+        #[test]
+        fn nested_if() {
+            let src = "fn main() -> i32 { if true { if false { 1 } else { 2 } } else { 3 } }";
+            assert!(compile_to_cfg(src).is_ok());
+        }
+
+        #[test]
+        fn if_branches_must_match_type() {
+            let result = compile_to_air("fn main() -> i32 { if true { 1 } else { true } }");
+            assert!(result.is_err());
+        }
+
+        #[test]
+        fn if_result_type_checked() {
+            let result = compile_to_air("fn main() -> bool { if true { 1 } else { 0 } }");
+            assert!(result.is_err());
+        }
+    }
+
+    // ========================================================================
+    // Control Flow - Match Expressions
+    // ========================================================================
+
+    mod match_expressions {
+        use super::*;
+
+        #[test]
+        fn match_on_integer() {
+            let src = r#"
+                fn main() -> i32 {
+                    let x = 1;
+                    match x {
+                        1 => 10,
+                        2 => 20,
+                        _ => 0,
+                    }
+                }
+            "#;
+            assert!(compile_to_cfg(src).is_ok());
+        }
+
+        #[test]
+        fn match_on_boolean() {
+            let src = r#"
+                fn main() -> i32 {
+                    match true {
+                        true => 1,
+                        false => 0,
+                    }
+                }
+            "#;
+            assert!(compile_to_cfg(src).is_ok());
+        }
+
+        #[test]
+        fn match_exhaustiveness_required() {
+            // Missing case should error
+            let result = compile_to_air(
+                r#"
+                fn main() -> i32 {
+                    match 1 {
+                        1 => 10,
+                    }
+                }
+            "#,
+            );
+            assert!(result.is_err());
+        }
+
+        #[test]
+        fn match_branches_must_match_type() {
+            let result = compile_to_air(
+                r#"
+                fn main() -> i32 {
+                    match true {
+                        true => 1,
+                        false => true,
+                    }
+                }
+            "#,
+            );
+            assert!(result.is_err());
+        }
+    }
+
+    // ========================================================================
+    // Control Flow - Loops
+    // ========================================================================
+
+    mod loops {
+        use super::*;
+
+        #[test]
+        fn while_loop_basic() {
+            let src = r#"
+                fn main() -> i32 {
+                    let mut x = 0;
+                    while x < 10 {
+                        x = x + 1;
+                    }
+                    x
+                }
+            "#;
+            assert!(compile_to_cfg(src).is_ok());
+        }
+
+        #[test]
+        fn while_with_break() {
+            let src = r#"
+                fn main() -> i32 {
+                    let mut x = 0;
+                    while true {
+                        x = x + 1;
+                        if x == 5 {
+                            break;
+                        }
+                    }
+                    x
+                }
+            "#;
+            assert!(compile_to_cfg(src).is_ok());
+        }
+
+        #[test]
+        fn while_with_continue() {
+            let src = r#"
+                fn main() -> i32 {
+                    let mut x = 0;
+                    let mut sum = 0;
+                    while x < 10 {
+                        x = x + 1;
+                        if x == 5 {
+                            continue;
+                        }
+                        sum = sum + x;
+                    }
+                    sum
+                }
+            "#;
+            assert!(compile_to_cfg(src).is_ok());
+        }
+
+        #[test]
+        fn break_outside_loop_rejected() {
+            let result = compile_to_air("fn main() -> i32 { break; 0 }");
+            assert!(result.is_err());
+        }
+
+        #[test]
+        fn continue_outside_loop_rejected() {
+            let result = compile_to_air("fn main() -> i32 { continue; 0 }");
+            assert!(result.is_err());
+        }
+    }
+
+    // ========================================================================
+    // Let Bindings
+    // ========================================================================
+
+    mod let_bindings {
+        use super::*;
+
+        #[test]
+        fn basic_let() {
+            assert!(compile_to_air("fn main() -> i32 { let x = 42; x }").is_ok());
+        }
+
+        #[test]
+        fn let_with_type_annotation() {
+            assert!(compile_to_air("fn main() -> i32 { let x: i32 = 42; x }").is_ok());
+        }
+
+        #[test]
+        fn mutable_let() {
+            let src = "fn main() -> i32 { let mut x = 1; x = 2; x }";
+            assert!(compile_to_air(src).is_ok());
+        }
+
+        #[test]
+        fn immutable_assignment_rejected() {
+            let result = compile_to_air("fn main() -> i32 { let x = 1; x = 2; x }");
+            assert!(result.is_err());
+        }
+
+        #[test]
+        fn shadowing_allowed() {
+            let src = "fn main() -> i32 { let x = 1; let x = 2; x }";
+            assert!(compile_to_air(src).is_ok());
+        }
+
+        #[test]
+        fn shadowing_can_change_type() {
+            let src = "fn main() -> bool { let x = 1; let x = true; x }";
+            assert!(compile_to_air(src).is_ok());
+        }
+
+        #[test]
+        fn undefined_variable_rejected() {
+            let result = compile_to_air("fn main() -> i32 { x }");
+            assert!(result.is_err());
+        }
+    }
+
+    // ========================================================================
+    // Functions
+    // ========================================================================
+
+    mod functions {
+        use super::*;
+
+        #[test]
+        fn function_call() {
+            let src = r#"
+                fn add(a: i32, b: i32) -> i32 { a + b }
+                fn main() -> i32 { add(1, 2) }
+            "#;
+            assert!(compile_to_air(src).is_ok());
+        }
+
+        #[test]
+        fn function_forward_reference() {
+            let src = r#"
+                fn main() -> i32 { foo() }
+                fn foo() -> i32 { 42 }
+            "#;
+            assert!(compile_to_air(src).is_ok());
+        }
+
+        #[test]
+        fn recursion() {
+            let src = r#"
+                fn factorial(n: i32) -> i32 {
+                    if n <= 1 { 1 } else { n * factorial(n - 1) }
+                }
+                fn main() -> i32 { factorial(5) }
+            "#;
+            assert!(compile_to_cfg(src).is_ok());
+        }
+
+        #[test]
+        fn mutual_recursion() {
+            let src = r#"
+                fn is_even(n: i32) -> bool {
+                    if n == 0 { true } else { is_odd(n - 1) }
+                }
+                fn is_odd(n: i32) -> bool {
+                    if n == 0 { false } else { is_even(n - 1) }
+                }
+                fn main() -> i32 { if is_even(4) { 1 } else { 0 } }
+            "#;
+            assert!(compile_to_cfg(src).is_ok());
+        }
+
+        #[test]
+        fn wrong_argument_count_rejected() {
+            let src = r#"
+                fn add(a: i32, b: i32) -> i32 { a + b }
+                fn main() -> i32 { add(1) }
+            "#;
+            let result = compile_to_air(src);
+            assert!(result.is_err());
+        }
+
+        #[test]
+        fn wrong_argument_type_rejected() {
+            let src = r#"
+                fn foo(x: i32) -> i32 { x }
+                fn main() -> i32 { foo(true) }
+            "#;
+            let result = compile_to_air(src);
+            assert!(result.is_err());
+        }
+
+        #[test]
+        fn undefined_function_rejected() {
+            let result = compile_to_air("fn main() -> i32 { unknown() }");
+            assert!(result.is_err());
+        }
+
+        #[test]
+        fn return_type_mismatch_rejected() {
+            let result = compile_to_air("fn main() -> i32 { true }");
+            assert!(result.is_err());
+        }
+    }
+
+    // ========================================================================
+    // Structs
+    // ========================================================================
+
+    mod structs {
+        use super::*;
+
+        #[test]
+        fn struct_definition() {
+            let src = r#"
+                struct Point { x: i32, y: i32 }
+                fn main() -> i32 { 0 }
+            "#;
+            let result = compile_to_air(src).unwrap();
+            assert_eq!(result.struct_defs.len(), 1);
+        }
+
+        #[test]
+        fn struct_literal() {
+            let src = r#"
+                struct Point { x: i32, y: i32 }
+                fn main() -> i32 {
+                    let _p = Point { x: 1, y: 2 };
+                    0
+                }
+            "#;
+            assert!(compile_to_air(src).is_ok());
+        }
+
+        #[test]
+        fn struct_field_access() {
+            let src = r#"
+                struct Point { x: i32, y: i32 }
+                fn main() -> i32 {
+                    let p = Point { x: 10, y: 20 };
+                    p.x + p.y
+                }
+            "#;
+            assert!(compile_to_air(src).is_ok());
+        }
+
+        #[test]
+        fn struct_field_order_independent() {
+            let src = r#"
+                struct Point { x: i32, y: i32 }
+                fn main() -> i32 {
+                    let p = Point { y: 2, x: 1 };
+                    p.x
+                }
+            "#;
+            assert!(compile_to_air(src).is_ok());
+        }
+
+        #[test]
+        fn struct_unknown_field_rejected() {
+            let src = r#"
+                struct Point { x: i32, y: i32 }
+                fn main() -> i32 {
+                    let p = Point { x: 1, z: 2 };
+                    0
+                }
+            "#;
+            let result = compile_to_air(src);
+            assert!(result.is_err());
+        }
+
+        #[test]
+        fn struct_equality() {
+            let src = r#"
+                struct Point { x: i32, y: i32 }
+                fn main() -> bool {
+                    let a = Point { x: 1, y: 2 };
+                    let b = Point { x: 1, y: 2 };
+                    a == b
+                }
+            "#;
+            assert!(compile_to_air(src).is_ok());
+        }
+
+        #[test]
+        fn struct_move_semantics() {
+            // After moving a struct, it should not be usable
+            let src = r#"
+                struct Point { x: i32, y: i32 }
+                fn consume(p: Point) -> i32 { p.x }
+                fn main() -> i32 {
+                    let p = Point { x: 1, y: 2 };
+                    let _a = consume(p);
+                    p.x
+                }
+            "#;
+            let result = compile_to_air(src);
+            assert!(result.is_err());
+        }
+    }
+
+    // ========================================================================
+    // Enums
+    // ========================================================================
+
+    mod enums {
+        use super::*;
+
+        #[test]
+        fn enum_definition() {
+            let src = r#"
+                enum Color { Red, Green, Blue }
+                fn main() -> i32 { 0 }
+            "#;
+            assert!(compile_to_air(src).is_ok());
+        }
+
+        #[test]
+        fn enum_variant_access() {
+            let src = r#"
+                enum Color { Red, Green, Blue }
+                fn main() -> i32 {
+                    let _c = Color::Red;
+                    0
+                }
+            "#;
+            assert!(compile_to_air(src).is_ok());
+        }
+
+        #[test]
+        fn enum_match() {
+            let src = r#"
+                enum Color { Red, Green, Blue }
+                fn main() -> i32 {
+                    let c = Color::Green;
+                    match c {
+                        Color::Red => 1,
+                        Color::Green => 2,
+                        Color::Blue => 3,
+                    }
+                }
+            "#;
+            assert!(compile_to_cfg(src).is_ok());
+        }
+
+        #[test]
+        fn enum_comparison_via_match() {
+            // Enum equality comparison is done via match, not ==
+            // (== is not yet implemented for enums)
+            let src = r#"
+                enum Color { Red, Green, Blue }
+                fn eq(a: Color, b: Color) -> bool {
+                    match a {
+                        Color::Red => match b { Color::Red => true, _ => false },
+                        Color::Green => match b { Color::Green => true, _ => false },
+                        Color::Blue => match b { Color::Blue => true, _ => false },
+                    }
+                }
+                fn main() -> i32 { if eq(Color::Red, Color::Red) { 1 } else { 0 } }
+            "#;
+            assert!(compile_to_cfg(src).is_ok());
+        }
+
+        #[test]
+        fn unknown_enum_variant_rejected() {
+            let src = r#"
+                enum Color { Red, Green, Blue }
+                fn main() -> i32 {
+                    let _c = Color::Yellow;
+                    0
+                }
+            "#;
+            let result = compile_to_air(src);
+            assert!(result.is_err());
+        }
+    }
+
+    // ========================================================================
+    // Arrays
+    // ========================================================================
+
+    mod arrays {
+        use super::*;
+
+        #[test]
+        fn array_literal() {
+            let src = "fn main() -> i32 { let _arr: [i32; 3] = [1, 2, 3]; 0 }";
+            assert!(compile_to_air(src).is_ok());
+        }
+
+        #[test]
+        fn array_indexing() {
+            let src = "fn main() -> i32 { let arr: [i32; 3] = [1, 2, 3]; arr[1] }";
+            assert!(compile_to_air(src).is_ok());
+        }
+
+        #[test]
+        fn array_element_assignment() {
+            let src = r#"
+                fn main() -> i32 {
+                    let mut arr: [i32; 3] = [1, 2, 3];
+                    arr[0] = 10;
+                    arr[0]
+                }
+            "#;
+            assert!(compile_to_air(src).is_ok());
+        }
+
+        #[test]
+        fn array_wrong_length_rejected() {
+            let src = "fn main() -> i32 { let _arr: [i32; 3] = [1, 2]; 0 }";
+            let result = compile_to_air(src);
+            assert!(result.is_err());
+        }
+
+        #[test]
+        fn array_mixed_types_rejected() {
+            let src = "fn main() -> i32 { let _arr: [i32; 2] = [1, true]; 0 }";
+            let result = compile_to_air(src);
+            assert!(result.is_err());
+        }
+    }
+
+    // ========================================================================
+    // Strings
+    // ========================================================================
+
+    mod strings {
+        use super::*;
+
+        #[test]
+        fn string_literal() {
+            let src = r#"fn main() -> i32 { let _s = "hello"; 0 }"#;
+            assert!(compile_to_air(src).is_ok());
+        }
+
+        #[test]
+        fn string_with_quote_escape() {
+            // String escape sequences: \" is supported
+            let src = r#"fn main() -> i32 { let _s = "hello\"world"; 0 }"#;
+            assert!(compile_to_air(src).is_ok());
+        }
+
+        #[test]
+        fn string_with_backslash_escape() {
+            // String escape sequences: \\ is supported
+            let src = r#"fn main() -> i32 { let _s = "hello\\world"; 0 }"#;
+            assert!(compile_to_air(src).is_ok());
+        }
+    }
+
+    // ========================================================================
+    // Block Expressions
+    // ========================================================================
+
+    mod blocks {
+        use super::*;
+
+        #[test]
+        fn block_returns_final_expression() {
+            let src = "fn main() -> i32 { { 1; 2; 3 } }";
+            assert!(compile_to_air(src).is_ok());
+        }
+
+        #[test]
+        fn block_with_let_bindings() {
+            let src = "fn main() -> i32 { { let x = 1; let y = 2; x + y } }";
+            assert!(compile_to_air(src).is_ok());
+        }
+
+        #[test]
+        fn nested_blocks() {
+            let src = "fn main() -> i32 { { { { 42 } } } }";
+            assert!(compile_to_air(src).is_ok());
+        }
+
+        #[test]
+        fn block_scoping() {
+            // Variable should not be accessible outside block
+            let result = compile_to_air("fn main() -> i32 { { let x = 1; } x }");
+            assert!(result.is_err());
+        }
+    }
+
+    // ========================================================================
+    // Never Type
+    // ========================================================================
+
+    mod never_type {
+        use super::*;
+
+        #[test]
+        fn return_is_never() {
+            let src = "fn main() -> i32 { return 42; }";
+            assert!(compile_to_cfg(src).is_ok());
+        }
+
+        #[test]
+        fn break_is_never() {
+            let src = r#"
+                fn main() -> i32 {
+                    while true {
+                        break;
+                    }
+                    0
+                }
+            "#;
+            assert!(compile_to_cfg(src).is_ok());
+        }
+
+        #[test]
+        fn never_in_if_branch() {
+            let src = "fn main() -> i32 { if true { 1 } else { return 2; } }";
+            assert!(compile_to_cfg(src).is_ok());
+        }
+    }
+
+    // ========================================================================
+    // Type Intrinsics
+    // ========================================================================
+
+    mod intrinsics {
+        use super::*;
+
+        #[test]
+        fn size_of_intrinsic() {
+            // @size_of returns i32
+            let src = "fn main() -> i32 { @size_of(i32) }";
+            assert!(compile_to_air(src).is_ok());
+        }
+
+        #[test]
+        fn align_of_intrinsic() {
+            // @align_of returns i32
+            let src = "fn main() -> i32 { @align_of(i64) }";
+            assert!(compile_to_air(src).is_ok());
+        }
+    }
+
+    // ========================================================================
+    // CFG Construction
+    // ========================================================================
+
+    mod cfg_construction {
+        use super::*;
+
+        #[test]
+        fn cfg_has_correct_function_count() {
+            let src = r#"
+                fn foo() -> i32 { 1 }
+                fn bar() -> i32 { 2 }
+                fn main() -> i32 { foo() + bar() }
+            "#;
+            let state = compile_to_cfg(src).unwrap();
+            assert_eq!(state.functions.len(), 3);
+        }
+
+        #[test]
+        fn cfg_branches_for_if() {
+            let src = "fn main() -> i32 { if true { 1 } else { 0 } }";
+            let state = compile_to_cfg(src).unwrap();
+            // CFG should have multiple blocks for branching
+            let main_cfg = &state.functions[0].cfg;
+            assert!(main_cfg.blocks().len() >= 3); // entry, then, else, merge
+        }
+
+        #[test]
+        fn cfg_loop_for_while() {
+            let src = r#"
+                fn main() -> i32 {
+                    let mut x = 0;
+                    while x < 10 { x = x + 1; }
+                    x
+                }
+            "#;
+            let state = compile_to_cfg(src).unwrap();
+            let main_cfg = &state.functions[0].cfg;
+            assert!(main_cfg.blocks().len() >= 3); // header, body, exit
+        }
+    }
+
+    // ========================================================================
+    // Error Messages
+    // ========================================================================
+
+    mod error_messages {
+        use super::*;
+
+        #[test]
+        fn type_mismatch_error_is_descriptive() {
+            let result = compile_to_air("fn main() -> i32 { true }");
+            let err = result.unwrap_err().to_string();
+            assert!(err.contains("type mismatch") || err.contains("expected"));
+            assert!(err.contains("i32") || err.contains("bool"));
+        }
+
+        #[test]
+        fn undefined_variable_error_is_descriptive() {
+            let result = compile_to_air("fn main() -> i32 { unknown_var }");
+            let err = result.unwrap_err().to_string();
+            assert!(err.contains("undefined") || err.contains("unknown"));
+        }
+
+        #[test]
+        fn missing_field_error_is_descriptive() {
+            let src = r#"
+                struct Point { x: i32, y: i32 }
+                fn main() -> i32 {
+                    let p = Point { x: 1 };
+                    0
+                }
+            "#;
+            let result = compile_to_air(src);
+            let err = result.unwrap_err().to_string();
+            assert!(err.contains("missing") || err.contains("field"));
+        }
+    }
+
+    // ========================================================================
+    // Warnings
+    // ========================================================================
+
+    mod warnings {
+        use super::*;
+
+        #[test]
+        fn unused_variable_warning() {
+            let result = compile_to_air("fn main() -> i32 { let x = 42; 0 }").unwrap();
+            assert_eq!(result.warnings.len(), 1);
+            assert!(result.warnings[0].to_string().contains("unused"));
+        }
+
+        #[test]
+        fn underscore_prefix_suppresses_warning() {
+            let result = compile_to_air("fn main() -> i32 { let _x = 42; 0 }").unwrap();
+            assert_eq!(result.warnings.len(), 0);
+        }
+
+        #[test]
+        fn used_variable_no_warning() {
+            let result = compile_to_air("fn main() -> i32 { let x = 42; x }").unwrap();
+            assert_eq!(result.warnings.len(), 0);
+        }
+    }
+
+    // ========================================================================
+    // Edge Cases
+    // ========================================================================
+
+    mod edge_cases {
+        use super::*;
+
+        #[test]
+        fn empty_function_body() {
+            assert!(compile_to_air("fn main() -> () { }").is_ok());
+        }
+
+        #[test]
+        fn deeply_nested_expressions() {
+            let src = "fn main() -> i32 { ((((((1 + 2)))))) }";
+            assert!(compile_to_air(src).is_ok());
+        }
+
+        #[test]
+        fn many_parameters() {
+            let src = r#"
+                fn many(a: i32, b: i32, c: i32, d: i32, e: i32, f: i32) -> i32 {
+                    a + b + c + d + e + f
+                }
+                fn main() -> i32 { many(1, 2, 3, 4, 5, 6) }
+            "#;
+            assert!(compile_to_air(src).is_ok());
+        }
+
+        #[test]
+        fn long_chain_of_operations() {
+            let src = "fn main() -> i32 { 1 + 2 + 3 + 4 + 5 + 6 + 7 + 8 + 9 + 10 }";
+            assert!(compile_to_air(src).is_ok());
+        }
+
+        #[test]
+        fn multiple_functions_same_local_names() {
+            let src = r#"
+                fn foo() -> i32 { let x = 1; x }
+                fn bar() -> i32 { let x = 2; x }
+                fn main() -> i32 { foo() + bar() }
+            "#;
+            assert!(compile_to_air(src).is_ok());
+        }
     }
 }

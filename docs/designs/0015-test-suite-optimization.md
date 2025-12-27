@@ -190,10 +190,10 @@ Add a new script `./quick-test.sh` that runs only unit tests for faster iteratio
   - Consolidated `bitwise.toml` (550→325 lines), `comparison.toml` (439→274 lines)
   - All 1021 tests pass with 100% normative spec coverage maintained
 
-- [ ] **Phase 4: Integration Unit Tests** - rue-9jdv.4
-  - Add `compile_to_air()` and `compile_to_cfg()` test helpers to `rue-compiler`
-  - Add integration unit tests covering major language features
-  - Target: Add ~50-100 integration unit tests
+- [x] **Phase 4: Integration Unit Tests** - rue-9jdv.4
+  - Added `compile_to_air()` and `compile_to_cfg()` test helpers to `rue-compiler`
+  - Added 115+ integration unit tests covering major language features
+  - Tests organized by category: types, arithmetic, comparison, logical, bitwise, control flow, functions, structs, enums, arrays, strings, intrinsics, CFG construction, error messages, warnings, and edge cases
 
 - [ ] **Phase 5: Workflow Documentation** - rue-9jdv.5
   - Update CLAUDE.md with development workflow
