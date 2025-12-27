@@ -31,6 +31,11 @@ pub enum LinkError {
         section_index: usize,
         section_count: usize,
     },
+    /// Relocation references invalid symbol index.
+    InvalidSymbolIndex {
+        symbol_index: usize,
+        symbol_count: usize,
+    },
 }
 
 impl std::fmt::Display for LinkError {
@@ -64,6 +69,16 @@ impl std::fmt::Display for LinkError {
                     f,
                     "symbol '{}' references invalid section index {} (object has {} sections)",
                     symbol, section_index, section_count
+                )
+            }
+            LinkError::InvalidSymbolIndex {
+                symbol_index,
+                symbol_count,
+            } => {
+                write!(
+                    f,
+                    "relocation references invalid symbol index {} (object has {} symbols)",
+                    symbol_index, symbol_count
                 )
             }
         }
@@ -306,6 +321,13 @@ impl Linker {
                     // These are typically R_*_NONE relocations that slipped through
                     if reloc.symbol_index == 0 {
                         continue;
+                    }
+                    // Validate symbol index before accessing
+                    if reloc.symbol_index >= obj.symbols.len() {
+                        return Err(LinkError::InvalidSymbolIndex {
+                            symbol_index: reloc.symbol_index,
+                            symbol_count: obj.symbols.len(),
+                        });
                     }
                     let sym = &obj.symbols[reloc.symbol_index];
 
@@ -1147,6 +1169,83 @@ mod tests {
         assert!(
             matches!(result, Err(LinkError::InvalidSectionIndex { .. })),
             "Expected InvalidSectionIndex error, got: {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn test_invalid_symbol_index_error_display() {
+        let err = LinkError::InvalidSymbolIndex {
+            symbol_index: 42,
+            symbol_count: 3,
+        };
+        assert_eq!(
+            err.to_string(),
+            "relocation references invalid symbol index 42 (object has 3 symbols)"
+        );
+    }
+
+    #[test]
+    fn test_invalid_symbol_index_in_relocation() {
+        use crate::elf::{Relocation, Section, SectionFlags, Symbol, SymbolBinding, SymbolType};
+
+        // Create an object file manually with a relocation referencing an invalid symbol index.
+        // This simulates a malformed object file.
+        let text_section = Section {
+            name: ".text".into(),
+            data: vec![
+                0xE8, 0x00, 0x00, 0x00, 0x00, // call <placeholder>
+                0xC3, // ret
+            ],
+            flags: SectionFlags::ALLOC | SectionFlags::EXEC,
+            relocations: vec![Relocation {
+                offset: 1,
+                symbol_index: 999, // Invalid - no such symbol exists!
+                rel_type: RelocationType::Pc32,
+                addend: -4,
+            }],
+            align: 16,
+        };
+
+        // The main symbol
+        let main_symbol = Symbol {
+            name: "main".into(),
+            section_index: Some(0), // Valid - references .text section
+            value: 0,
+            size: 6,
+            binding: SymbolBinding::Global,
+            sym_type: SymbolType::Func,
+        };
+
+        // Null symbol at index 0
+        let null_symbol = Symbol {
+            name: String::new(),
+            section_index: None,
+            value: 0,
+            size: 0,
+            binding: SymbolBinding::Local,
+            sym_type: SymbolType::None,
+        };
+
+        let obj = ObjectFile {
+            sections: vec![text_section],
+            symbols: vec![null_symbol, main_symbol], // Only 2 symbols, but relocation references index 999
+            section_map: HashMap::from([(".text".into(), 0)]),
+        };
+
+        let mut linker = Linker::new(ELF_TARGET);
+        linker.add_object(obj).unwrap();
+
+        let result = linker.link("main");
+        assert!(
+            matches!(
+                result,
+                Err(LinkError::InvalidSymbolIndex {
+                    symbol_index: 999,
+                    symbol_count: 2,
+                })
+            ),
+            "Expected InvalidSymbolIndex error, got: {:?}",
             result
         );
     }
