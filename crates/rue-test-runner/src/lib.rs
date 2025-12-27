@@ -976,4 +976,183 @@ mod tests {
         assert_eq!(toml_value_to_string(&toml::Value::Float(3.14)), "3.14");
         assert_eq!(toml_value_to_string(&toml::Value::Boolean(true)), "true");
     }
+
+    // Tests for normalize_golden
+    #[test]
+    fn test_normalize_golden_trims_trailing_whitespace() {
+        let input = "line1   \nline2  \nline3\t\t";
+        let expected = "line1\nline2\nline3";
+        assert_eq!(normalize_golden(input), expected);
+    }
+
+    #[test]
+    fn test_normalize_golden_trims_leading_and_trailing_empty_lines() {
+        let input = "\n\nline1\nline2\n\n";
+        let expected = "line1\nline2";
+        assert_eq!(normalize_golden(input), expected);
+    }
+
+    #[test]
+    fn test_normalize_golden_preserves_internal_indentation() {
+        // Leading whitespace on the first line is trimmed by the final .trim() call,
+        // but internal indentation (relative to the first line) is preserved.
+        let input = "line1\n    indented line\n  less indented";
+        let expected = "line1\n    indented line\n  less indented";
+        assert_eq!(normalize_golden(input), expected);
+    }
+
+    #[test]
+    fn test_normalize_golden_empty_string() {
+        assert_eq!(normalize_golden(""), "");
+    }
+
+    #[test]
+    fn test_normalize_golden_only_whitespace() {
+        assert_eq!(normalize_golden("   \n  \t  \n  "), "");
+    }
+
+    #[test]
+    fn test_normalize_golden_single_line() {
+        assert_eq!(normalize_golden("hello world  "), "hello world");
+    }
+
+    #[test]
+    fn test_normalize_golden_mixed_line_endings() {
+        // normalize_golden uses .lines() which handles \r\n, \n, and \r
+        let input = "line1\r\nline2\nline3";
+        let result = normalize_golden(input);
+        // Result should have normalized line endings
+        assert!(result.contains("line1"));
+        assert!(result.contains("line2"));
+        assert!(result.contains("line3"));
+    }
+
+    // Tests for normalize_error_output
+    #[test]
+    fn test_normalize_error_output_replaces_path() {
+        let source_path = Path::new("/tmp/test123/source.rue");
+        let input = "error[E001]: type mismatch at /tmp/test123/source.rue:5:10";
+        let result = normalize_error_output(input, source_path);
+        assert_eq!(result, "error[E001]: type mismatch at <source>:5:10");
+    }
+
+    #[test]
+    fn test_normalize_error_output_multiple_occurrences() {
+        let source_path = Path::new("/path/to/file.rue");
+        let input = "error at /path/to/file.rue:1\nnote: see /path/to/file.rue:2";
+        let result = normalize_error_output(input, source_path);
+        assert_eq!(result, "error at <source>:1\nnote: see <source>:2");
+    }
+
+    #[test]
+    fn test_normalize_error_output_no_path_present() {
+        let source_path = Path::new("/nonexistent/path.rue");
+        let input = "error: something went wrong";
+        let result = normalize_error_output(input, source_path);
+        assert_eq!(result, "error: something went wrong");
+    }
+
+    #[test]
+    fn test_normalize_error_output_also_normalizes_whitespace() {
+        let source_path = Path::new("/tmp/test.rue");
+        let input = "/tmp/test.rue:1  \n  /tmp/test.rue:2  ";
+        let result = normalize_error_output(input, source_path);
+        assert_eq!(result, "<source>:1\n  <source>:2");
+    }
+
+    // Tests for strip_emit_header
+    #[test]
+    fn test_strip_emit_header_simple() {
+        let input = "=== RIR ===\nfn main() {\n  ret 0\n}";
+        let result = strip_emit_header(input, "RIR");
+        assert_eq!(result, "fn main() {\n  ret 0\n}");
+    }
+
+    #[test]
+    fn test_strip_emit_header_with_target() {
+        let input = "=== MIR (x86-64-linux) ===\nmov rax, 0\nret";
+        let result = strip_emit_header(input, "MIR");
+        assert_eq!(result, "mov rax, 0\nret");
+    }
+
+    #[test]
+    fn test_strip_emit_header_with_macos_target() {
+        let input = "=== MIR (aarch64-macos) ===\nmov x0, #0\nret";
+        let result = strip_emit_header(input, "MIR");
+        assert_eq!(result, "mov x0, #0\nret");
+    }
+
+    #[test]
+    fn test_strip_emit_header_no_header_present() {
+        let input = "fn main() {\n  ret 0\n}";
+        let result = strip_emit_header(input, "RIR");
+        assert_eq!(result, "fn main() {\n  ret 0\n}");
+    }
+
+    #[test]
+    fn test_strip_emit_header_wrong_stage() {
+        let input = "=== AST ===\nsome ast content";
+        let result = strip_emit_header(input, "RIR");
+        // Should not strip AST header when looking for RIR
+        assert_eq!(result, "=== AST ===\nsome ast content");
+    }
+
+    #[test]
+    fn test_strip_emit_header_multiple_headers() {
+        let input = "=== Tokens ===\ntoken1\n=== AST ===\nast content";
+        let result = strip_emit_header(input, "Tokens");
+        assert_eq!(result, "token1\n=== AST ===\nast content");
+    }
+
+    #[test]
+    fn test_strip_emit_header_preserves_similar_text() {
+        // Ensure we don't strip lines that merely contain the stage name
+        let input = "=== RIR ===\nThis is RIR output\nRIR is great";
+        let result = strip_emit_header(input, "RIR");
+        assert_eq!(result, "This is RIR output\nRIR is great");
+    }
+
+    // Tests for check_golden
+    #[test]
+    fn test_check_golden_matching() {
+        let actual = "line1\nline2";
+        let expected = "line1\nline2";
+        assert!(check_golden(actual, expected, "Test").is_ok());
+    }
+
+    #[test]
+    fn test_check_golden_matching_with_whitespace_differences() {
+        let actual = "line1  \nline2\t";
+        let expected = "line1\nline2";
+        assert!(check_golden(actual, expected, "Test").is_ok());
+    }
+
+    #[test]
+    fn test_check_golden_mismatch() {
+        let actual = "line1\nline2";
+        let expected = "line1\nline3";
+        let result = check_golden(actual, expected, "Test");
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.contains("Test mismatch"));
+        assert!(err.contains("expected"));
+        assert!(err.contains("actual"));
+    }
+
+    #[test]
+    fn test_check_golden_empty_strings() {
+        assert!(check_golden("", "", "Test").is_ok());
+    }
+
+    #[test]
+    fn test_check_golden_whitespace_only() {
+        assert!(check_golden("  \n  ", "\t\n\t", "Test").is_ok());
+    }
+
+    #[test]
+    fn test_check_golden_leading_trailing_differences() {
+        let actual = "\n\nline1\n\n";
+        let expected = "line1";
+        assert!(check_golden(actual, expected, "Test").is_ok());
+    }
 }
