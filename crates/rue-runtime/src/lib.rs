@@ -1133,6 +1133,117 @@ pub extern "C" fn String__is_empty(_ptr: *const u8, len: u64, _cap: u64) -> u8 {
 }
 
 // =============================================================================
+// String Clone Method (Phase 8)
+// =============================================================================
+//
+// Clone creates a deep copy of a String. It uses `borrow self` semantics -
+// the original String is not consumed.
+//
+// ABI: String is passed as 3 separate arguments (ptr, len, cap)
+// - x86-64: ptr in rdi, len in rsi, cap in rdx; returns ptr in rax, len in rdx, cap in rcx
+// - aarch64: ptr in x0, len in x1, cap in x2; returns ptr in x0, len in x1, cap in x2
+
+/// Clone a String, creating a deep copy.
+///
+/// # Arguments
+///
+/// * `ptr` - Pointer to the source string data
+/// * `len` - Length of the string in bytes
+/// * `cap` - Capacity (unused for cloning, but part of ABI)
+///
+/// # Returns
+///
+/// A new String (ptr, len, cap) where:
+/// - ptr points to freshly allocated memory containing a copy of the content
+/// - len is the same as the input len
+/// - cap is at least len (minimum STRING_MIN_CAPACITY)
+///
+/// # Behavior
+///
+/// Always allocates a new heap buffer, even for literals (cap == 0).
+/// The clone is always heap-allocated so it can be mutated.
+#[cfg(all(target_arch = "x86_64", target_os = "linux"))]
+#[unsafe(no_mangle)]
+#[allow(non_snake_case)]
+pub extern "C" fn String__clone(ptr: *const u8, len: u64, _cap: u64) -> u64 {
+    // Allocate new buffer with capacity >= len
+    let new_cap = len.max(STRING_MIN_CAPACITY);
+    let new_ptr = heap::alloc(new_cap, 1);
+
+    // Copy the string content
+    if len > 0 && !ptr.is_null() {
+        unsafe {
+            core::ptr::copy_nonoverlapping(ptr, new_ptr, len as usize);
+        }
+    }
+
+    // Return ptr in rax, len in rdx, cap in rcx
+    unsafe {
+        core::arch::asm!(
+            "",
+            in("rdx") len,
+            in("rcx") new_cap,
+            options(nostack, nomem),
+        );
+    }
+    new_ptr as u64
+}
+
+#[cfg(all(target_arch = "aarch64", target_os = "macos"))]
+#[unsafe(no_mangle)]
+#[allow(non_snake_case)]
+pub extern "C" fn String__clone(ptr: *const u8, len: u64, _cap: u64) -> u64 {
+    // Allocate new buffer with capacity >= len
+    let new_cap = len.max(STRING_MIN_CAPACITY);
+    let new_ptr = heap::alloc(new_cap, 1);
+
+    // Copy the string content
+    if len > 0 && !ptr.is_null() {
+        unsafe {
+            core::ptr::copy_nonoverlapping(ptr, new_ptr, len as usize);
+        }
+    }
+
+    // Return ptr in x0, len in x1, cap in x2
+    unsafe {
+        core::arch::asm!(
+            "",
+            in("x1") len,
+            in("x2") new_cap,
+            options(nostack, nomem),
+        );
+    }
+    new_ptr as u64
+}
+
+#[cfg(all(target_arch = "aarch64", target_os = "linux"))]
+#[unsafe(no_mangle)]
+#[allow(non_snake_case)]
+pub extern "C" fn String__clone(ptr: *const u8, len: u64, _cap: u64) -> u64 {
+    // Allocate new buffer with capacity >= len
+    let new_cap = len.max(STRING_MIN_CAPACITY);
+    let new_ptr = heap::alloc(new_cap, 1);
+
+    // Copy the string content
+    if len > 0 && !ptr.is_null() {
+        unsafe {
+            core::ptr::copy_nonoverlapping(ptr, new_ptr, len as usize);
+        }
+    }
+
+    // Return ptr in x0, len in x1, cap in x2
+    unsafe {
+        core::arch::asm!(
+            "",
+            in("x1") len,
+            in("x2") new_cap,
+            options(nostack, nomem),
+        );
+    }
+    new_ptr as u64
+}
+
+// =============================================================================
 // String Mutation Methods (Phase 7: push_str, push, clear, reserve)
 // =============================================================================
 //

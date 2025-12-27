@@ -3584,8 +3584,10 @@ impl<'a> Sema<'a> {
                     // String query methods (len, capacity, is_empty) use borrow semantics.
                     // The receiver was marked as moved during analysis, but we need to
                     // "unmove" it since it's actually being borrowed, not consumed.
-                    let is_borrow_method =
-                        matches!(method_name_str.as_str(), "len" | "capacity" | "is_empty");
+                    let is_borrow_method = matches!(
+                        method_name_str.as_str(),
+                        "len" | "capacity" | "is_empty" | "clone"
+                    );
                     if is_borrow_method {
                         if let Some(var_symbol) = receiver_var {
                             ctx.moved_vars.remove(&var_symbol);
@@ -4745,6 +4747,36 @@ impl<'a> Sema<'a> {
                     span,
                 });
                 Ok(AnalysisResult::new(air_ref, Type::Bool))
+            }
+
+            "clone" => {
+                // fn clone(borrow self) -> String
+                // Creates a deep copy of the string
+                if !args.is_empty() {
+                    return Err(CompileError::new(
+                        ErrorKind::WrongArgumentCount {
+                            expected: 0,
+                            found: args.len(),
+                        },
+                        span,
+                    ));
+                }
+
+                // Generate a call to String__clone (runtime function)
+                // Takes the String (ptr, len, cap) and returns a new String (ptr, len, cap)
+                // where the new ptr points to freshly allocated memory with copied content.
+                let air_ref = air.add_inst(AirInst {
+                    data: AirInstData::Call {
+                        name: "String__clone".to_string(),
+                        args: vec![AirCallArg {
+                            value: receiver.air_ref,
+                            mode: AirArgMode::Normal,
+                        }],
+                    },
+                    ty: Type::String,
+                    span,
+                });
+                Ok(AnalysisResult::new(air_ref, Type::String))
             }
 
             _ => {

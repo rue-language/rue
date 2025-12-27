@@ -354,12 +354,12 @@ Add mutation methods with `inout self` (gated):
 
 **Testable**: Build strings through multiple appends.
 
-### Phase 8: Clone Method
+### Phase 8: Clone Method - rue-0hef.8 (COMPLETE)
 
 Add explicit cloning (gated):
 
-- `fn clone(borrow self) -> String`
-- Deep copy via `__rue_string_clone`
+- [x] `fn clone(borrow self) -> String`
+- [x] Deep copy via `String__clone` runtime function
 
 **Testable**: Clone a string, verify both are independent.
 
