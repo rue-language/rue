@@ -14,7 +14,7 @@ use std::collections::{HashMap, HashSet};
 use super::mir::{Aarch64Inst, Aarch64Mir, LabelId, Operand, Reg, VReg};
 
 // Re-export shared types from the regalloc module
-pub use crate::regalloc::LiveRange;
+pub use crate::regalloc::{InstructionLiveness, LiveRange, LivenessDebugInfo};
 
 /// Type alias for aarch64-specific liveness info.
 pub type LivenessInfo = crate::regalloc::LivenessInfo<Reg>;
@@ -184,6 +184,152 @@ pub fn analyze(mir: &Aarch64Mir) -> LivenessInfo {
         ranges,
         live_at,
         clobbers_at,
+    }
+}
+
+/// Compute detailed liveness debug information for Aarch64Mir.
+///
+/// This provides more detailed output than `analyze()`, including per-instruction
+/// live-in/live-out sets and def/use information. Used by `--emit liveness`.
+pub fn analyze_debug(mir: &Aarch64Mir) -> LivenessDebugInfo {
+    let instructions = mir.instructions();
+    let num_insts = instructions.len();
+
+    if num_insts == 0 {
+        return LivenessDebugInfo {
+            instructions: Vec::new(),
+            live_ranges: HashMap::new(),
+            vreg_count: mir.vreg_count(),
+        };
+    }
+
+    // Step 1: Build label -> instruction index map
+    let mut label_to_idx: HashMap<LabelId, usize> = HashMap::new();
+    for (idx, inst) in instructions.iter().enumerate() {
+        if let Aarch64Inst::Label { id } = inst {
+            label_to_idx.insert(*id, idx);
+        }
+    }
+
+    // Step 2: Build successor lists for each instruction
+    let mut successors: Vec<Vec<usize>> = vec![Vec::new(); num_insts];
+    for (idx, inst) in instructions.iter().enumerate() {
+        match inst {
+            Aarch64Inst::B { label } => {
+                if let Some(&target) = label_to_idx.get(label) {
+                    successors[idx].push(target);
+                }
+            }
+            Aarch64Inst::BCond { label, .. }
+            | Aarch64Inst::Bvs { label }
+            | Aarch64Inst::Bvc { label }
+            | Aarch64Inst::Cbz { label, .. }
+            | Aarch64Inst::Cbnz { label, .. } => {
+                if idx + 1 < num_insts {
+                    successors[idx].push(idx + 1);
+                }
+                if let Some(&target) = label_to_idx.get(label) {
+                    successors[idx].push(target);
+                }
+            }
+            Aarch64Inst::Ret => {}
+            Aarch64Inst::Bl { .. } => {
+                if idx + 1 < num_insts {
+                    successors[idx].push(idx + 1);
+                }
+            }
+            _ => {
+                if idx + 1 < num_insts {
+                    successors[idx].push(idx + 1);
+                }
+            }
+        }
+    }
+
+    // Step 3: Backward dataflow analysis
+    let mut live_in: Vec<HashSet<VReg>> = vec![HashSet::new(); num_insts];
+    let mut live_out: Vec<HashSet<VReg>> = vec![HashSet::new(); num_insts];
+
+    let inst_uses: Vec<Vec<VReg>> = instructions.iter().map(uses).collect();
+    let inst_defs: Vec<Vec<VReg>> = instructions.iter().map(defs).collect();
+
+    let mut changed = true;
+    while changed {
+        changed = false;
+
+        for idx in (0..num_insts).rev() {
+            let mut new_live_out = HashSet::new();
+            for &succ in &successors[idx] {
+                new_live_out.extend(&live_in[succ]);
+            }
+
+            let mut new_live_in: HashSet<VReg> = new_live_out.clone();
+            for vreg in &inst_defs[idx] {
+                new_live_in.remove(vreg);
+            }
+            for vreg in &inst_uses[idx] {
+                new_live_in.insert(*vreg);
+            }
+
+            if new_live_in != live_in[idx] || new_live_out != live_out[idx] {
+                changed = true;
+                live_in[idx] = new_live_in;
+                live_out[idx] = new_live_out;
+            }
+        }
+    }
+
+    // Step 4: Build live ranges from dataflow results
+    let mut first_live: HashMap<VReg, usize> = HashMap::new();
+    let mut last_live: HashMap<VReg, usize> = HashMap::new();
+
+    for idx in 0..num_insts {
+        for vreg in &inst_defs[idx] {
+            first_live.entry(*vreg).or_insert(idx);
+            last_live.insert(*vreg, idx);
+        }
+        for vreg in &inst_uses[idx] {
+            first_live.entry(*vreg).or_insert(idx);
+            last_live.insert(*vreg, idx);
+        }
+        for vreg in &live_in[idx] {
+            first_live.entry(*vreg).or_insert(idx);
+            if last_live.get(vreg).map_or(true, |&last| idx > last) {
+                last_live.insert(*vreg, idx);
+            }
+        }
+        for vreg in &live_out[idx] {
+            first_live.entry(*vreg).or_insert(idx);
+            if last_live.get(vreg).map_or(true, |&last| idx > last) {
+                last_live.insert(*vreg, idx);
+            }
+        }
+    }
+
+    // Build ranges
+    let mut live_ranges: HashMap<VReg, crate::regalloc::LiveRange> = HashMap::new();
+    for vreg_idx in 0..mir.vreg_count() {
+        let vreg = VReg::new(vreg_idx);
+        if let (Some(&start), Some(&end)) = (first_live.get(&vreg), last_live.get(&vreg)) {
+            live_ranges.insert(vreg, crate::regalloc::LiveRange::new(start, end));
+        }
+    }
+
+    // Build per-instruction liveness info
+    let instruction_liveness: Vec<InstructionLiveness> = (0..num_insts)
+        .map(|idx| InstructionLiveness {
+            index: idx,
+            live_in: live_in[idx].clone(),
+            live_out: live_out[idx].clone(),
+            defs: inst_defs[idx].clone(),
+            uses: inst_uses[idx].clone(),
+        })
+        .collect();
+
+    LivenessDebugInfo {
+        instructions: instruction_liveness,
+        live_ranges,
+        vreg_count: mir.vreg_count(),
     }
 }
 

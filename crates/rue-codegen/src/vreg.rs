@@ -13,7 +13,7 @@ use crate::index_map::Handle;
 /// Virtual registers are unlimited and allocated to physical registers
 /// during register allocation. They are target-independent; the mapping
 /// to physical registers happens in each backend's register allocator.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct VReg(u32);
 
 impl VReg {

@@ -745,6 +745,33 @@ pub fn generate_allocated_mir(
     }
 }
 
+/// Generate liveness debug information for a CFG.
+///
+/// This performs liveness analysis on the MIR (before register allocation)
+/// and returns detailed per-instruction liveness information.
+///
+/// Used by `--emit liveness` to visualize which values are live at each program point.
+pub fn generate_liveness_info(
+    cfg: &Cfg,
+    struct_defs: &[StructDef],
+    array_types: &[ArrayTypeDef],
+    strings: &[String],
+    target: Target,
+) -> rue_codegen::LivenessDebugInfo {
+    match target.arch() {
+        Arch::X86_64 => {
+            let mir =
+                rue_codegen::x86_64::CfgLower::new(cfg, struct_defs, array_types, strings).lower();
+            rue_codegen::x86_64::liveness::analyze_debug(&mir)
+        }
+        Arch::Aarch64 => {
+            let mir =
+                rue_codegen::aarch64::CfgLower::new(cfg, struct_defs, array_types, strings).lower();
+            rue_codegen::aarch64::liveness::analyze_debug(&mir)
+        }
+    }
+}
+
 /// Generate the actual emitted assembly text for a CFG.
 ///
 /// Unlike `format_assembly()` on Mir which shows MIR instructions,

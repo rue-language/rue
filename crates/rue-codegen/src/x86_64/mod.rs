@@ -13,7 +13,7 @@
 
 mod cfg_lower;
 mod emit;
-mod liveness;
+pub mod liveness;
 mod mir;
 mod regalloc;
 

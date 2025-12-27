@@ -6,7 +6,8 @@ use std::path::Path;
 use rue_compiler::{
     CompileOptions, DiagnosticFormatter, Lexer, LinkerMode, OptLevel, Parser, PreviewFeature,
     PreviewFeatures, SourceInfo, compile_frontend_from_ast_with_options, compile_with_options,
-    generate_allocated_mir, generate_emitted_asm, generate_mir, generate_stack_frame_info,
+    generate_allocated_mir, generate_emitted_asm, generate_liveness_info, generate_mir,
+    generate_stack_frame_info,
 };
 use rue_rir::RirPrinter;
 use rue_target::Target;
@@ -26,6 +27,8 @@ enum EmitStage {
     Cfg,
     /// Emit MIR (machine intermediate representation).
     Mir,
+    /// Emit liveness analysis information.
+    Liveness,
     /// Emit assembly text.
     Asm,
     /// Emit stack frame layout per function.
@@ -55,6 +58,7 @@ impl std::str::FromStr for EmitStage {
             "air" => Ok(EmitStage::Air),
             "cfg" => Ok(EmitStage::Cfg),
             "mir" => Ok(EmitStage::Mir),
+            "liveness" => Ok(EmitStage::Liveness),
             "asm" => Ok(EmitStage::Asm),
             "stackframe" => Ok(EmitStage::StackFrame),
             _ => Err(ParseEmitStageError(s.to_string())),
@@ -64,7 +68,7 @@ impl std::str::FromStr for EmitStage {
 
 impl EmitStage {
     fn all_names() -> &'static str {
-        "tokens, ast, rir, air, cfg, mir, asm, stackframe"
+        "tokens, ast, rir, air, cfg, mir, liveness, asm, stackframe"
     }
 }
 
@@ -356,6 +360,7 @@ fn handle_emit(source: &str, options: &Options, formatter: &DiagnosticFormatter)
             | EmitStage::Air
             | EmitStage::Cfg
             | EmitStage::Mir
+            | EmitStage::Liveness
             | EmitStage::Asm
             | EmitStage::StackFrame => 2,
         })
@@ -478,6 +483,23 @@ fn handle_emit(source: &str, options: &Options, formatter: &DiagnosticFormatter)
                         );
                         println!("function {}:", func.analyzed.name);
                         println!("{}", mir);
+                    }
+                }
+                println!();
+            }
+            EmitStage::Liveness => {
+                println!("=== Liveness Analysis ({}) ===", options.target);
+                if let Some(ref state) = frontend_state {
+                    for func in &state.functions {
+                        println!("function {}:", func.analyzed.name);
+                        let liveness_info = generate_liveness_info(
+                            &func.cfg,
+                            &state.struct_defs,
+                            &state.array_types,
+                            &state.strings,
+                            options.target,
+                        );
+                        println!("{}", liveness_info);
                     }
                 }
                 println!();
@@ -893,6 +915,10 @@ mod tests {
         assert_eq!("air".parse::<EmitStage>().unwrap(), EmitStage::Air);
         assert_eq!("cfg".parse::<EmitStage>().unwrap(), EmitStage::Cfg);
         assert_eq!("mir".parse::<EmitStage>().unwrap(), EmitStage::Mir);
+        assert_eq!(
+            "liveness".parse::<EmitStage>().unwrap(),
+            EmitStage::Liveness
+        );
         assert_eq!("asm".parse::<EmitStage>().unwrap(), EmitStage::Asm);
         assert_eq!(
             "stackframe".parse::<EmitStage>().unwrap(),
@@ -910,7 +936,7 @@ mod tests {
     fn emit_stage_all_names() {
         assert_eq!(
             EmitStage::all_names(),
-            "tokens, ast, rir, air, cfg, mir, asm, stackframe"
+            "tokens, ast, rir, air, cfg, mir, liveness, asm, stackframe"
         );
     }
 
@@ -918,5 +944,11 @@ mod tests {
     fn parse_emit_stackframe() {
         let opts = unwrap_options(parse_args_from(&["--emit", "stackframe", "source.rue"]));
         assert_eq!(opts.emit_stages, vec![EmitStage::StackFrame]);
+    }
+
+    #[test]
+    fn parse_emit_liveness() {
+        let opts = unwrap_options(parse_args_from(&["--emit", "liveness", "source.rue"]));
+        assert_eq!(opts.emit_stages, vec![EmitStage::Liveness]);
     }
 }

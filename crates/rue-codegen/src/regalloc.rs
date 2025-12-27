@@ -36,6 +36,118 @@ use crate::vreg::VReg;
 // Liveness Analysis Types
 // ============================================================================
 
+/// Debug information about liveness at a single instruction.
+///
+/// This provides detailed per-instruction information for debugging
+/// register allocation and understanding value lifetimes.
+#[derive(Debug, Clone)]
+pub struct InstructionLiveness {
+    /// Instruction index.
+    pub index: usize,
+    /// Virtual registers live before this instruction executes.
+    pub live_in: HashSet<VReg>,
+    /// Virtual registers live after this instruction executes.
+    pub live_out: HashSet<VReg>,
+    /// Virtual registers defined (written) by this instruction.
+    pub defs: Vec<VReg>,
+    /// Virtual registers used (read) by this instruction.
+    pub uses: Vec<VReg>,
+}
+
+/// Debug information about liveness for an entire function.
+///
+/// This provides detailed liveness information for debugging and
+/// visualization via `--emit liveness`.
+#[derive(Debug, Clone)]
+pub struct LivenessDebugInfo {
+    /// Per-instruction liveness information.
+    pub instructions: Vec<InstructionLiveness>,
+    /// Live ranges for each virtual register.
+    pub live_ranges: HashMap<VReg, LiveRange>,
+    /// Total number of virtual registers.
+    pub vreg_count: u32,
+}
+
+impl std::fmt::Display for LivenessDebugInfo {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        writeln!(f, "=== Liveness Analysis ===")?;
+        writeln!(f)?;
+
+        // Show per-instruction liveness
+        writeln!(f, "Per-Instruction Liveness:")?;
+        for inst in &self.instructions {
+            writeln!(f, "  Instruction {}:", inst.index)?;
+
+            // Format sets in sorted order for consistent output
+            let live_in: Vec<_> = {
+                let mut v: Vec<_> = inst.live_in.iter().collect();
+                v.sort();
+                v
+            };
+            let live_out: Vec<_> = {
+                let mut v: Vec<_> = inst.live_out.iter().collect();
+                v.sort();
+                v
+            };
+
+            writeln!(
+                f,
+                "    live-in:  {{{}}}",
+                live_in
+                    .iter()
+                    .map(|v| format!("{}", v))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )?;
+            writeln!(
+                f,
+                "    live-out: {{{}}}",
+                live_out
+                    .iter()
+                    .map(|v| format!("{}", v))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )?;
+
+            if !inst.defs.is_empty() {
+                writeln!(
+                    f,
+                    "    def: {}",
+                    inst.defs
+                        .iter()
+                        .map(|v| format!("{}", v))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )?;
+            }
+            if !inst.uses.is_empty() {
+                writeln!(
+                    f,
+                    "    use: {}",
+                    inst.uses
+                        .iter()
+                        .map(|v| format!("{}", v))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )?;
+            }
+        }
+
+        writeln!(f)?;
+        writeln!(f, "Live Ranges (instruction indices):")?;
+
+        // Sort by vreg index for consistent output
+        let mut ranges: Vec<_> = self.live_ranges.iter().collect();
+        ranges.sort_by_key(|(vreg, _)| vreg.index());
+
+        for (vreg, range) in ranges {
+            writeln!(f, "  {}: [{}, {})", vreg, range.start, range.end + 1)?;
+        }
+
+        Ok(())
+    }
+}
+
 /// Live range for a virtual register.
 ///
 /// Represents the instruction range where this vreg's value is needed.
