@@ -1109,8 +1109,15 @@ where
         })
 }
 
-/// Returns true if the expression is a control flow construct that can appear
-/// as a statement without a trailing semicolon (if, while, match, break, continue, return).
+/// Returns true if the expression is a control flow construct or block that can appear
+/// as a statement without a trailing semicolon.
+///
+/// This includes:
+/// - Control flow: if, while, match, loop, break, continue, return
+/// - Block expressions: { ... }
+///
+/// Block expressions are included because they are syntactically similar to control flow:
+/// they are compound statements that naturally terminate without a semicolon.
 fn is_control_flow_expr(e: &Expr) -> bool {
     matches!(
         e,
@@ -1121,6 +1128,7 @@ fn is_control_flow_expr(e: &Expr) -> bool {
             | Expr::Break(_)
             | Expr::Continue(_)
             | Expr::Return(_)
+            | Expr::Block(_)
     )
 }
 
@@ -2278,6 +2286,46 @@ mod tests {
                 assert!(!call.args[2].is_inout());
             }
             _ => panic!("expected Call"),
+        }
+    }
+
+    // ==================== Block Expression Statement Tests ====================
+
+    #[test]
+    fn test_block_statement_followed_by_identifier() {
+        // Block expression as a statement followed by an identifier expression
+        // This is the regression test for rue-wo1g
+        let ast = parse(
+            "fn main() -> i32 {
+                let a = 1;
+                {
+                    let b = 2;
+                }
+                a
+            }",
+        )
+        .unwrap();
+        match &ast.items[0] {
+            Item::Function(f) => match &f.body {
+                Expr::Block(block) => {
+                    // Should have 2 statements: let a = 1; and { let b = 2; }
+                    assert_eq!(block.statements.len(), 2);
+                    // First statement is a let
+                    assert!(matches!(&block.statements[0], Statement::Let(_)));
+                    // Second statement is an expression statement containing a block
+                    match &block.statements[1] {
+                        Statement::Expr(Expr::Block(_)) => {}
+                        _ => panic!("expected Expr(Block), got {:?}", block.statements[1]),
+                    }
+                    // Final expression should be 'a' (simple identifier)
+                    match block.expr.as_ref() {
+                        Expr::Ident(ident) => assert_eq!(ident.name, "a"),
+                        _ => panic!("expected Ident expression, got {:?}", block.expr),
+                    }
+                }
+                _ => panic!("expected Block"),
+            },
+            _ => panic!("expected Function"),
         }
     }
 }
