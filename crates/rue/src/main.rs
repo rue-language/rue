@@ -373,7 +373,11 @@ fn handle_emit(source: &str, options: &Options, formatter: &DiagnosticFormatter)
     // Stage 2: Full frontend (RIR, AIR, CFG) - reuses the already-parsed AST
     // Applies optimization based on the -O level
     let frontend_state = if max_stage >= 2 {
-        match compile_frontend_from_ast_with_options(ast.clone().unwrap(), options.opt_level) {
+        match compile_frontend_from_ast_with_options(
+            ast.clone().unwrap(),
+            options.opt_level,
+            &options.preview_features,
+        ) {
             Ok(state) => Some(state),
             Err(e) => {
                 eprintln!("{}", formatter.format_error(&e));

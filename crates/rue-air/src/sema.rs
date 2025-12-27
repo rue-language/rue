@@ -14,7 +14,10 @@ use crate::types::{
     ArrayTypeDef, ArrayTypeId, EnumDef, EnumId, StructDef, StructField, StructId, Type,
     parse_array_type_syntax,
 };
-use rue_error::{CompileError, CompileResult, CompileWarning, ErrorKind, OptionExt, WarningKind};
+use rue_error::{
+    CompileError, CompileResult, CompileWarning, ErrorKind, OptionExt, PreviewFeature,
+    PreviewFeatures, WarningKind,
+};
 use rue_intern::{Interner, Symbol};
 use rue_rir::{
     InstData, InstRef, Rir, RirArgMode, RirCallArg, RirDirective, RirParamMode, RirPattern,
@@ -269,6 +272,8 @@ pub struct Sema<'a> {
     /// Used for resolving method calls (receiver.method()) and associated
     /// function calls (Type::function())
     methods: HashMap<(Symbol, Symbol), MethodInfo>,
+    /// Enabled preview features
+    preview_features: PreviewFeatures,
 }
 
 /// Storage location for a String receiver in mutation methods.
@@ -284,7 +289,11 @@ enum StringReceiverStorage {
 
 impl<'a> Sema<'a> {
     /// Create a new semantic analyzer.
-    pub fn new(rir: &'a Rir, interner: &'a mut Interner) -> Self {
+    pub fn new(
+        rir: &'a Rir,
+        interner: &'a mut Interner,
+        preview_features: PreviewFeatures,
+    ) -> Self {
         Self {
             rir,
             interner,
@@ -299,6 +308,44 @@ impl<'a> Sema<'a> {
             strings: Vec::new(),
             warnings: Vec::new(),
             methods: HashMap::new(),
+            preview_features,
+        }
+    }
+
+    /// Check if a preview feature is enabled, returning an error if not.
+    ///
+    /// This is the gating mechanism for preview features. Call this method
+    /// when semantic analysis encounters a feature that requires a preview flag.
+    ///
+    /// # Parameters
+    /// - `feature`: The preview feature that is required
+    /// - `what`: A description of what requires the feature (e.g., "string concatenation")
+    /// - `span`: The source location where the feature is used
+    ///
+    /// # Returns
+    /// - `Ok(())` if the feature is enabled
+    /// - `Err(CompileError)` with a helpful message if not enabled
+    fn require_preview(
+        &self,
+        feature: PreviewFeature,
+        what: &str,
+        span: Span,
+    ) -> CompileResult<()> {
+        if self.preview_features.contains(&feature) {
+            Ok(())
+        } else {
+            Err(CompileError::new(
+                ErrorKind::PreviewFeatureRequired {
+                    feature,
+                    what: what.to_string(),
+                },
+                span,
+            )
+            .with_help(format!(
+                "use `--preview {}` to enable this feature ({})",
+                feature.name(),
+                feature.adr()
+            )))
         }
     }
 
@@ -3145,6 +3192,35 @@ impl<'a> Sema<'a> {
                         });
                         Ok(AnalysisResult::new(air_ref, target_ty))
                     }
+                    "test_preview_gate" => {
+                        // @test_preview_gate() - no-op intrinsic gated by test_infra preview feature.
+                        // Used to test that the preview feature gating mechanism works correctly.
+                        self.require_preview(
+                            PreviewFeature::TestInfra,
+                            "@test_preview_gate() intrinsic",
+                            inst.span,
+                        )?;
+
+                        // Takes no arguments
+                        if !args.is_empty() {
+                            return Err(CompileError::new(
+                                ErrorKind::IntrinsicWrongArgCount {
+                                    name: intrinsic_name,
+                                    expected: 0,
+                                    found: args.len(),
+                                },
+                                inst.span,
+                            ));
+                        }
+
+                        // No-op: just return a unit constant
+                        let air_ref = air.add_inst(AirInst {
+                            data: AirInstData::UnitConst,
+                            ty: Type::Unit,
+                            span: inst.span,
+                        });
+                        Ok(AnalysisResult::new(air_ref, Type::Unit))
+                    }
                     _ => Err(CompileError::new(
                         ErrorKind::UnknownIntrinsic(intrinsic_name),
                         inst.span,
@@ -4810,7 +4886,7 @@ mod tests {
         let astgen = AstGen::new(&ast, &mut interner);
         let rir = astgen.generate();
 
-        let sema = Sema::new(&rir, &mut interner);
+        let sema = Sema::new(&rir, &mut interner, PreviewFeatures::new());
         sema.analyze_all()
     }
 

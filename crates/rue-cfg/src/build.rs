@@ -1716,6 +1716,7 @@ impl<'a> CfgBuilder<'a> {
 mod tests {
     use super::*;
     use rue_air::Sema;
+    use rue_error::PreviewFeatures;
     use rue_intern::Interner;
     use rue_lexer::Lexer;
     use rue_parser::Parser;
@@ -1731,7 +1732,7 @@ mod tests {
         let astgen = AstGen::new(&ast, &mut interner);
         let rir = astgen.generate();
 
-        let mut sema = Sema::new(&rir, &mut interner);
+        let mut sema = Sema::new(&rir, &mut interner, PreviewFeatures::new());
         let output = sema.analyze_all().unwrap();
 
         let func = &output.functions[0];

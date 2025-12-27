@@ -1,0 +1,49 @@
+# Preview Feature Gating Tests
+#
+# These tests verify that the preview feature gating mechanism works correctly.
+# The test_infra feature is permanently unstable and exists specifically for
+# testing the gating infrastructure.
+
+[section]
+id = "runtime.preview_features"
+spec_chapter = "8.4"
+name = "Preview Features"
+
+# Test that using @test_preview_gate() without the preview flag fails
+[[case]]
+name = "test_preview_gate_requires_feature"
+spec = ["8.4:1"]
+source = """
+fn main() -> i32 {
+    @test_preview_gate();
+    0
+}
+"""
+compile_fail = true
+error_contains = "requires preview feature"
+
+# Test that using @test_preview_gate() with the preview flag succeeds
+[[case]]
+name = "test_preview_gate_with_feature"
+spec = ["8.4:1"]
+preview = "test_infra"
+source = """
+fn main() -> i32 {
+    @test_preview_gate();
+    0
+}
+"""
+exit_code = 0
+
+# Test that the error message includes the help text
+[[case]]
+name = "test_preview_gate_error_includes_help"
+spec = ["8.4:1"]
+source = """
+fn main() -> i32 {
+    @test_preview_gate();
+    0
+}
+"""
+compile_fail = true
+error_contains = "--preview test_infra"

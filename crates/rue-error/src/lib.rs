@@ -33,11 +33,14 @@ use std::fmt;
 /// - Require explicit opt-in via `--preview <feature>`
 /// - Allow incremental implementation to be merged to main
 ///
-/// See ADR-020 for the full design.
+/// See ADR-016 for the full design.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum PreviewFeature {
     /// Mutable strings with heap allocation and concatenation (ADR-019).
     MutableStrings,
+    /// Testing infrastructure feature - permanently unstable.
+    /// Used to verify the preview feature gating mechanism works.
+    TestInfra,
 }
 
 /// Error returned when parsing a preview feature name fails.
@@ -57,6 +60,7 @@ impl PreviewFeature {
     pub fn name(&self) -> &'static str {
         match self {
             PreviewFeature::MutableStrings => "mutable_strings",
+            PreviewFeature::TestInfra => "test_infra",
         }
     }
 
@@ -64,12 +68,13 @@ impl PreviewFeature {
     pub fn adr(&self) -> &'static str {
         match self {
             PreviewFeature::MutableStrings => "ADR-019",
+            PreviewFeature::TestInfra => "ADR-016",
         }
     }
 
     /// Get all available preview features.
     pub fn all() -> &'static [PreviewFeature] {
-        &[PreviewFeature::MutableStrings]
+        &[PreviewFeature::MutableStrings, PreviewFeature::TestInfra]
     }
 
     /// Get a comma-separated list of all feature names (for help text).
@@ -88,6 +93,7 @@ impl std::str::FromStr for PreviewFeature {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
             "mutable_strings" => Ok(PreviewFeature::MutableStrings),
+            "test_infra" => Ok(PreviewFeature::TestInfra),
             _ => Err(ParsePreviewFeatureError(s.to_string())),
         }
     }

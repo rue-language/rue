@@ -273,10 +273,10 @@ pub struct CompileOutput {
 /// This runs: lexing → parsing → AST to RIR → semantic analysis → CFG construction.
 /// Returns the compile state which can be inspected for debugging.
 ///
-/// Uses default optimization level (O0). For custom optimization, use
-/// [`compile_frontend_with_options`].
+/// Uses default optimization level (O0) and no preview features. For custom options,
+/// use [`compile_frontend_with_options`].
 pub fn compile_frontend(source: &str) -> CompileResult<CompileState> {
-    compile_frontend_with_options(source, OptLevel::default())
+    compile_frontend_with_options(source, OptLevel::default(), &PreviewFeatures::new())
 }
 
 /// Compile source code through all frontend phases with optimization.
@@ -286,6 +286,7 @@ pub fn compile_frontend(source: &str) -> CompileResult<CompileState> {
 pub fn compile_frontend_with_options(
     source: &str,
     opt_level: OptLevel,
+    preview_features: &PreviewFeatures,
 ) -> CompileResult<CompileState> {
     // Lexing
     let mut lexer = Lexer::new(source);
@@ -295,7 +296,7 @@ pub fn compile_frontend_with_options(
     let mut parser = Parser::new(tokens);
     let ast = parser.parse()?;
 
-    compile_frontend_from_ast_with_options(ast, opt_level)
+    compile_frontend_from_ast_with_options(ast, opt_level, preview_features)
 }
 
 /// Compile from an already-parsed AST through all remaining frontend phases.
@@ -304,10 +305,10 @@ pub fn compile_frontend_with_options(
 /// Use this when you already have a parsed AST (e.g., for `--emit` modes that
 /// need both AST output and later stage output without double-parsing).
 ///
-/// Uses default optimization level (O0). For custom optimization, use
-/// [`compile_frontend_from_ast_with_options`].
+/// Uses default optimization level (O0) and no preview features. For custom options,
+/// use [`compile_frontend_from_ast_with_options`].
 pub fn compile_frontend_from_ast(ast: Ast) -> CompileResult<CompileState> {
-    compile_frontend_from_ast_with_options(ast, OptLevel::default())
+    compile_frontend_from_ast_with_options(ast, OptLevel::default(), &PreviewFeatures::new())
 }
 
 /// Compile from an already-parsed AST through all remaining frontend phases with optimization.
@@ -318,6 +319,7 @@ pub fn compile_frontend_from_ast(ast: Ast) -> CompileResult<CompileState> {
 pub fn compile_frontend_from_ast_with_options(
     ast: Ast,
     opt_level: OptLevel,
+    preview_features: &PreviewFeatures,
 ) -> CompileResult<CompileState> {
     // AST to RIR (untyped IR)
     let mut interner = Interner::new();
@@ -325,7 +327,7 @@ pub fn compile_frontend_from_ast_with_options(
     let rir = astgen.generate();
 
     // Semantic analysis (RIR to AIR)
-    let sema = Sema::new(&rir, &mut interner);
+    let sema = Sema::new(&rir, &mut interner, preview_features.clone());
     let sema_output = sema.analyze_all()?;
 
     // Build CFGs from AIR (one per function), collecting warnings
@@ -381,7 +383,8 @@ pub fn compile_with_options(
     source: &str,
     options: &CompileOptions,
 ) -> CompileResult<CompileOutput> {
-    let state = compile_frontend_with_options(source, options.opt_level)?;
+    let state =
+        compile_frontend_with_options(source, options.opt_level, &options.preview_features)?;
 
     // Check for main function
     let _main_fn = state
@@ -784,7 +787,7 @@ pub fn compile_to_air(source: &str) -> CompileResult<AirOutput> {
     let rir = astgen.generate();
 
     // Semantic analysis (RIR to AIR)
-    let sema = Sema::new(&rir, &mut interner);
+    let sema = Sema::new(&rir, &mut interner, PreviewFeatures::new());
     let sema_output = sema.analyze_all()?;
 
     Ok(AirOutput {
