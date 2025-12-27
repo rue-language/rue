@@ -75,6 +75,13 @@ struct Options {
     preview_features: PreviewFeatures,
 }
 
+/// Version string for the rue compiler.
+const VERSION: &str = "0.1.0";
+
+fn print_version() {
+    println!("rue {}", VERSION);
+}
+
 fn print_usage() {
     eprintln!("Usage: rue [options] <source.rue> [output]");
     eprintln!();
@@ -97,6 +104,7 @@ fn print_usage() {
         "                       Features: {}",
         PreviewFeature::all_names()
     );
+    eprintln!("  --version            Show version information");
     eprintln!("  --help               Show this help message");
 }
 
@@ -178,6 +186,10 @@ fn parse_args() -> Option<Options> {
             }
             "--help" | "-h" => {
                 print_usage();
+                std::process::exit(0);
+            }
+            "--version" | "-V" => {
+                print_version();
                 std::process::exit(0);
             }
             _ if arg.starts_with("-O") => {
