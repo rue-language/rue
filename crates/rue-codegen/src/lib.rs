@@ -13,6 +13,8 @@
 //! instructions but uses virtual registers. Register allocation then maps
 //! virtual registers to physical registers before final emission.
 
+mod stack_frame;
+
 pub mod aarch64;
 pub mod cfg_lower;
 pub mod index_map;
@@ -265,6 +267,9 @@ pub use x86_64::generate;
 
 // Re-export shared types
 pub use index_map::{Handle, IndexMap};
+pub use stack_frame::{
+    ArgumentLocation, ReturnLocation, StackFrameInfo, StackSlot, generate_stack_frame_info,
+};
 pub use vreg::{LabelId, VReg};
 
 // Re-export commonly used x86_64 types for convenience

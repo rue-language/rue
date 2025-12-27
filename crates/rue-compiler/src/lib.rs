@@ -154,7 +154,9 @@ pub fn validate_runtime() -> Result<(), String> {
 // Re-export commonly used types
 pub use rue_air::{Air, AnalyzedFunction, ArrayTypeDef, Sema, SemaOutput, StructDef, Type};
 pub use rue_cfg::{Cfg, CfgBuilder, CfgOutput, OptLevel};
-pub use rue_codegen::{RelocationKind, X86Mir, aarch64::Aarch64Mir};
+pub use rue_codegen::{
+    RelocationKind, StackFrameInfo, X86Mir, aarch64::Aarch64Mir, generate_stack_frame_info,
+};
 pub use rue_error::{
     CompileError, CompileResult, CompileWarning, Diagnostic, ErrorKind, PreviewFeature,
     PreviewFeatures, WarningKind,

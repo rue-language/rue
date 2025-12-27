@@ -6,7 +6,7 @@ use std::path::Path;
 use rue_compiler::{
     CompileOptions, DiagnosticFormatter, Lexer, LinkerMode, OptLevel, Parser, PreviewFeature,
     PreviewFeatures, SourceInfo, compile_frontend_from_ast_with_options, compile_with_options,
-    generate_allocated_mir, generate_emitted_asm, generate_mir,
+    generate_allocated_mir, generate_emitted_asm, generate_mir, generate_stack_frame_info,
 };
 use rue_rir::RirPrinter;
 use rue_target::Target;
@@ -28,6 +28,8 @@ enum EmitStage {
     Mir,
     /// Emit assembly text.
     Asm,
+    /// Emit stack frame layout per function.
+    StackFrame,
 }
 
 /// Error returned when parsing an emit stage name fails.
@@ -54,6 +56,7 @@ impl std::str::FromStr for EmitStage {
             "cfg" => Ok(EmitStage::Cfg),
             "mir" => Ok(EmitStage::Mir),
             "asm" => Ok(EmitStage::Asm),
+            "stackframe" => Ok(EmitStage::StackFrame),
             _ => Err(ParseEmitStageError(s.to_string())),
         }
     }
@@ -61,7 +64,7 @@ impl std::str::FromStr for EmitStage {
 
 impl EmitStage {
     fn all_names() -> &'static str {
-        "tokens, ast, rir, air, cfg, mir, asm"
+        "tokens, ast, rir, air, cfg, mir, asm, stackframe"
     }
 }
 
@@ -349,7 +352,12 @@ fn handle_emit(source: &str, options: &Options, formatter: &DiagnosticFormatter)
         .map(|s| match s {
             EmitStage::Tokens => 0,
             EmitStage::Ast => 1,
-            EmitStage::Rir | EmitStage::Air | EmitStage::Cfg | EmitStage::Mir | EmitStage::Asm => 2,
+            EmitStage::Rir
+            | EmitStage::Air
+            | EmitStage::Cfg
+            | EmitStage::Mir
+            | EmitStage::Asm
+            | EmitStage::StackFrame => 2,
         })
         .max()
         .unwrap_or(0);
@@ -497,6 +505,27 @@ fn handle_emit(source: &str, options: &Options, formatter: &DiagnosticFormatter)
                     }
                 }
                 println!();
+            }
+            EmitStage::StackFrame => {
+                if let Some(ref state) = frontend_state {
+                    for func in &state.functions {
+                        let frame_info = match generate_stack_frame_info(
+                            &func.cfg,
+                            &func.analyzed.name,
+                            &state.struct_defs,
+                            &state.array_types,
+                            &state.strings,
+                            options.target,
+                        ) {
+                            Ok(info) => info,
+                            Err(e) => {
+                                eprintln!("{}", formatter.format_error(&e));
+                                return Err(());
+                            }
+                        };
+                        println!("{}", frame_info);
+                    }
+                }
             }
         }
     }
@@ -865,6 +894,10 @@ mod tests {
         assert_eq!("cfg".parse::<EmitStage>().unwrap(), EmitStage::Cfg);
         assert_eq!("mir".parse::<EmitStage>().unwrap(), EmitStage::Mir);
         assert_eq!("asm".parse::<EmitStage>().unwrap(), EmitStage::Asm);
+        assert_eq!(
+            "stackframe".parse::<EmitStage>().unwrap(),
+            EmitStage::StackFrame
+        );
     }
 
     #[test]
@@ -877,7 +910,13 @@ mod tests {
     fn emit_stage_all_names() {
         assert_eq!(
             EmitStage::all_names(),
-            "tokens, ast, rir, air, cfg, mir, asm"
+            "tokens, ast, rir, air, cfg, mir, asm, stackframe"
         );
+    }
+
+    #[test]
+    fn parse_emit_stackframe() {
+        let opts = unwrap_options(parse_args_from(&["--emit", "stackframe", "source.rue"]));
+        assert_eq!(opts.emit_stages, vec![EmitStage::StackFrame]);
     }
 }

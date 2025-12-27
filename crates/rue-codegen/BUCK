@@ -6,6 +6,7 @@ rust_library(
         "//crates/rue-cfg:rue-cfg",
         "//crates/rue-error:rue-error",
         "//crates/rue-span:rue-span",
+        "//crates/rue-target:rue-target",
     ],
     visibility = ["PUBLIC"],
 )
@@ -22,5 +23,6 @@ rust_test(
         "//crates/rue-parser:rue-parser",
         "//crates/rue-rir:rue-rir",
         "//crates/rue-span:rue-span",
+        "//crates/rue-target:rue-target",
     ],
 )
