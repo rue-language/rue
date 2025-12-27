@@ -76,6 +76,26 @@ impl Span {
         );
         byte_offset_to_line(source, self.start as usize)
     }
+
+    /// Compute the 1-based line and column numbers for this span's start position.
+    ///
+    /// Returns `(line, column)` where both are 1-indexed. The column is the
+    /// number of bytes from the start of the line, plus 1.
+    ///
+    /// # Panics
+    ///
+    /// In debug builds, panics if `self.start` exceeds `source.len()`.
+    /// In release builds, out-of-bounds offsets are clamped to `source.len()`.
+    #[inline]
+    pub fn line_col(&self, source: &str) -> (usize, usize) {
+        debug_assert!(
+            (self.start as usize) <= source.len(),
+            "span start {} exceeds source length {}",
+            self.start,
+            source.len()
+        );
+        byte_offset_to_line_col(source, self.start as usize)
+    }
 }
 
 /// Convert a byte offset to a 1-based line number.
@@ -92,6 +112,33 @@ pub fn byte_offset_to_line(source: &str, offset: usize) -> usize {
         .filter(|&b| b == b'\n')
         .count()
         + 1
+}
+
+/// Convert a byte offset to 1-based line and column numbers.
+///
+/// Returns `(line, column)` where both are 1-indexed.
+/// The column is the number of bytes from the start of the line, plus 1.
+/// If `offset` exceeds `source.len()`, it is clamped to `source.len()`.
+///
+/// **Performance note**: This function is O(n) in the source length.
+/// For repeated lookups on the same source, use [`LineIndex`] for O(log n) lookups.
+#[inline]
+pub fn byte_offset_to_line_col(source: &str, offset: usize) -> (usize, usize) {
+    let offset = offset.min(source.len());
+    let prefix = &source[..offset];
+
+    // Find the last newline before offset
+    match prefix.rfind('\n') {
+        Some(newline_pos) => {
+            let line = prefix.bytes().filter(|&b| b == b'\n').count() + 1;
+            let col = offset - newline_pos; // offset - newline_pos gives bytes after newline
+            (line, col)
+        }
+        None => {
+            // No newline before offset, so we're on line 1
+            (1, offset + 1)
+        }
+    }
 }
 
 /// Precomputed line offset index for efficient byte offset to line number conversion.
@@ -168,6 +215,43 @@ impl LineIndex {
     #[inline]
     pub fn span_line_number(&self, span: Span) -> usize {
         self.line_number(span.start)
+    }
+
+    /// Get the 1-based line and column numbers for a byte offset.
+    ///
+    /// Returns `(line, column)` where both are 1-indexed. The column is the
+    /// number of bytes from the start of the line, plus 1.
+    ///
+    /// Time complexity: O(log n) where n is the number of lines.
+    ///
+    /// # Panics
+    ///
+    /// In debug builds, panics if `offset` exceeds the source length.
+    /// In release builds, out-of-bounds offsets are clamped to the source length.
+    #[inline]
+    pub fn line_col(&self, offset: u32) -> (usize, usize) {
+        debug_assert!(
+            offset <= self.source_len,
+            "offset {} exceeds source length {}",
+            offset,
+            self.source_len
+        );
+        let offset = offset.min(self.source_len);
+
+        // Binary search for the line containing this offset.
+        let line_idx = self.line_starts.partition_point(|&start| start <= offset);
+        // line_idx is 1-indexed (partition_point returns first index where predicate is false)
+        let line_start = self.line_starts[line_idx - 1];
+        let col = (offset - line_start) as usize + 1;
+        (line_idx, col)
+    }
+
+    /// Get the 1-based line and column numbers for a span's start position.
+    ///
+    /// Returns `(line, column)` where both are 1-indexed.
+    #[inline]
+    pub fn span_line_col(&self, span: Span) -> (usize, usize) {
+        self.line_col(span.start)
     }
 
     /// Returns the number of lines in the source.
@@ -407,5 +491,144 @@ mod tests {
         assert_eq!(LineIndex::new("a\nb").line_count(), 2);
         assert_eq!(LineIndex::new("a\nb\n").line_count(), 3);
         assert_eq!(LineIndex::new("a\nb\nc").line_count(), 3);
+    }
+
+    // ========================================================================
+    // line_col tests
+    // ========================================================================
+
+    #[test]
+    fn test_byte_offset_to_line_col_basic() {
+        let source = "line1\nline2\nline3";
+        // "line1\nline2\nline3"
+        //  01234 5 6789A B CDEF0
+        // First line: offsets 0-4 are "line1", 5 is newline
+        assert_eq!(byte_offset_to_line_col(source, 0), (1, 1)); // 'l'
+        assert_eq!(byte_offset_to_line_col(source, 4), (1, 5)); // '1'
+        assert_eq!(byte_offset_to_line_col(source, 5), (1, 6)); // '\n' (still line 1)
+
+        // Second line: offsets 6-10 are "line2", 11 is newline
+        assert_eq!(byte_offset_to_line_col(source, 6), (2, 1)); // 'l'
+        assert_eq!(byte_offset_to_line_col(source, 10), (2, 5)); // '2'
+
+        // Third line: offsets 12-16 are "line3"
+        assert_eq!(byte_offset_to_line_col(source, 12), (3, 1)); // 'l'
+        assert_eq!(byte_offset_to_line_col(source, 16), (3, 5)); // '3'
+    }
+
+    #[test]
+    fn test_byte_offset_to_line_col_empty_source() {
+        let source = "";
+        assert_eq!(byte_offset_to_line_col(source, 0), (1, 1));
+    }
+
+    #[test]
+    fn test_byte_offset_to_line_col_single_line() {
+        let source = "hello";
+        assert_eq!(byte_offset_to_line_col(source, 0), (1, 1));
+        assert_eq!(byte_offset_to_line_col(source, 2), (1, 3));
+        assert_eq!(byte_offset_to_line_col(source, 4), (1, 5));
+        assert_eq!(byte_offset_to_line_col(source, 5), (1, 6)); // end of source
+    }
+
+    #[test]
+    fn test_byte_offset_to_line_col_at_newline() {
+        let source = "a\nb";
+        // offset 0: 'a' -> (1, 1)
+        // offset 1: '\n' -> (1, 2)
+        // offset 2: 'b' -> (2, 1)
+        assert_eq!(byte_offset_to_line_col(source, 0), (1, 1));
+        assert_eq!(byte_offset_to_line_col(source, 1), (1, 2));
+        assert_eq!(byte_offset_to_line_col(source, 2), (2, 1));
+    }
+
+    #[test]
+    fn test_span_line_col() {
+        let source = "let x = 1;\nlet y = 2;\nlet z = 3;";
+        // Line 1: "let x = 1;\n" (offsets 0-10, newline at 10)
+        // Line 2: "let y = 2;\n" (offsets 11-21, newline at 21)
+        // Line 3: "let z = 3;" (offsets 22-31)
+
+        let span1 = Span::new(0, 10);
+        assert_eq!(span1.line_col(source), (1, 1));
+
+        let span2 = Span::new(11, 21);
+        assert_eq!(span2.line_col(source), (2, 1));
+
+        let span3 = Span::new(22, 32);
+        assert_eq!(span3.line_col(source), (3, 1));
+
+        // Span starting in the middle of a line
+        let span_mid = Span::new(4, 10); // "x = 1;" on line 1
+        assert_eq!(span_mid.line_col(source), (1, 5)); // 'x' is at column 5
+    }
+
+    #[test]
+    fn test_line_index_line_col_basic() {
+        let source = "line1\nline2\nline3";
+        let index = LineIndex::new(source);
+
+        // First line
+        assert_eq!(index.line_col(0), (1, 1));
+        assert_eq!(index.line_col(4), (1, 5));
+
+        // Second line
+        assert_eq!(index.line_col(6), (2, 1));
+        assert_eq!(index.line_col(10), (2, 5));
+
+        // Third line
+        assert_eq!(index.line_col(12), (3, 1));
+        assert_eq!(index.line_col(16), (3, 5));
+    }
+
+    #[test]
+    fn test_line_index_line_col_matches_byte_offset() {
+        let source = "let x = 1;\nlet y = 2;\nlet z = 3;";
+        let index = LineIndex::new(source);
+
+        // Verify LineIndex matches byte_offset_to_line_col for all offsets
+        for offset in 0..=source.len() {
+            assert_eq!(
+                index.line_col(offset as u32),
+                byte_offset_to_line_col(source, offset),
+                "mismatch at offset {}",
+                offset
+            );
+        }
+    }
+
+    #[test]
+    fn test_line_index_span_line_col() {
+        let source = "let x = 1;\nlet y = 2;\nlet z = 3;";
+        let index = LineIndex::new(source);
+
+        let span1 = Span::new(0, 10);
+        assert_eq!(index.span_line_col(span1), (1, 1));
+
+        let span2 = Span::new(11, 21);
+        assert_eq!(index.span_line_col(span2), (2, 1));
+
+        let span3 = Span::new(22, 32);
+        assert_eq!(index.span_line_col(span3), (3, 1));
+
+        // Span starting in the middle of a line
+        let span_mid = Span::new(4, 10);
+        assert_eq!(index.span_line_col(span_mid), (1, 5));
+    }
+
+    #[test]
+    fn test_line_index_line_col_empty_source() {
+        let source = "";
+        let index = LineIndex::new(source);
+        assert_eq!(index.line_col(0), (1, 1));
+    }
+
+    #[test]
+    fn test_line_index_line_col_at_newline() {
+        let source = "a\nb";
+        let index = LineIndex::new(source);
+        assert_eq!(index.line_col(0), (1, 1)); // 'a'
+        assert_eq!(index.line_col(1), (1, 2)); // '\n'
+        assert_eq!(index.line_col(2), (2, 1)); // 'b'
     }
 }
