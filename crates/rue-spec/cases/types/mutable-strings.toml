@@ -57,7 +57,7 @@ fn takes_string(s: String) -> i32 {
 }
 
 fn main() -> i32 {
-    var s = "hello";
+    let mut s = "hello";
     takes_string(s)
 }
 """
@@ -72,7 +72,7 @@ source = """
 fn takes_string(s: String) -> i32 { 0 }
 
 fn main() -> i32 {
-    var s = "hello";
+    let mut s = "hello";
     takes_string(s);
     takes_string(s)
 }
@@ -206,7 +206,7 @@ description = "push_str() appends string content"
 preview = "mutable_strings"
 source = """
 fn main() -> i32 {
-    var s = String::new();
+    let mut s = String::new();
     s.push_str("hello");
     if s.len() == 5 { 0 } else { 1 }
 }
@@ -220,7 +220,7 @@ description = "Multiple push_str() calls accumulate"
 preview = "mutable_strings"
 source = """
 fn main() -> i32 {
-    var s = String::new();
+    let mut s = String::new();
     s.push_str("hello");
     s.push_str(" world");
     if s.len() == 11 { 0 } else { 1 }
@@ -235,7 +235,7 @@ description = "push() appends a single byte"
 preview = "mutable_strings"
 source = """
 fn main() -> i32 {
-    var s = String::new();
+    let mut s = String::new();
     s.push_str("hello");
     s.push(33);  // '!'
     if s.len() == 6 { 0 } else { 1 }
@@ -250,7 +250,7 @@ description = "clear() removes content but retains capacity"
 preview = "mutable_strings"
 source = """
 fn main() -> i32 {
-    var s = String::with_capacity(100);
+    let mut s = String::with_capacity(100);
     s.push_str("hello");
     let cap_before = s.capacity();
     s.clear();
@@ -266,7 +266,7 @@ description = "reserve() ensures additional capacity"
 preview = "mutable_strings"
 source = """
 fn main() -> i32 {
-    var s = String::new();
+    let mut s = String::new();
     s.push_str("hi");
     s.reserve(100);
     if s.capacity() >= 102 { 0 } else { 1 }
@@ -275,9 +275,9 @@ fn main() -> i32 {
 exit_code = 0
 
 [[case]]
-name = "string_mutation_requires_var"
+name = "string_mutation_requires_let mut"
 spec = ["3.10:19"]
-description = "Mutation methods require var binding"
+description = "Mutation methods require let mut binding"
 preview = "mutable_strings"
 source = """
 fn main() -> i32 {
@@ -300,7 +300,7 @@ description = "Literal is promoted to heap on mutation"
 preview = "mutable_strings"
 source = """
 fn main() -> i32 {
-    var s = "hello";
+    let mut s = "hello";
     s.push_str("!");
     if s.capacity() > 0 && s.len() == 6 { 0 } else { 1 }
 }
@@ -331,7 +331,7 @@ description = "String grows capacity when needed"
 preview = "mutable_strings"
 source = """
 fn main() -> i32 {
-    var s = String::new();
+    let mut s = String::new();
     s.push_str("hello");
     let cap1 = s.capacity();
     // Append enough to exceed initial capacity
@@ -368,8 +368,8 @@ description = "Cloned strings are independent"
 preview = "mutable_strings"
 source = """
 fn main() -> i32 {
-    var a = "hello";
-    var b = a.clone();
+    let mut a = "hello";
+    let mut b = a.clone();
     b.push_str("!");
     // a should still be "hello", b should be "hello!"
     if a.len() == 5 && b.len() == 6 { 0 } else { 1 }
@@ -406,7 +406,7 @@ description = "Heap-allocated strings are freed when dropped"
 preview = "mutable_strings"
 source = """
 fn make_string() -> i32 {
-    var s = "hello";
+    let mut s = "hello";
     s.push_str(" world");
     // s goes out of scope, destructor should free heap
     42
@@ -453,7 +453,7 @@ description = "Strings are byte sequences"
 preview = "mutable_strings"
 source = """
 fn main() -> i32 {
-    var s = String::new();
+    let mut s = String::new();
     // Push some bytes
     s.push(72);   // 'H'
     s.push(105);  // 'i'
@@ -473,7 +473,7 @@ description = "Build a complete message through appending"
 preview = "mutable_strings"
 source = """
 fn main() -> i32 {
-    var msg = String::new();
+    let mut msg = String::new();
     msg.push_str("Hello");
     msg.push_str(", ");
     msg.push_str("world");
@@ -491,7 +491,7 @@ description = "Mutated string can be compared"
 preview = "mutable_strings"
 source = """
 fn main() -> i32 {
-    var s = String::new();
+    let mut s = String::new();
     s.push_str("hello");
     if s == "hello" { 0 } else { 1 }
 }

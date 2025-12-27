@@ -1132,6 +1132,417 @@ pub extern "C" fn String__is_empty(_ptr: *const u8, len: u64, _cap: u64) -> u8 {
     if len == 0 { 1 } else { 0 }
 }
 
+// =============================================================================
+// String Mutation Methods (Phase 7: push_str, push, clear, reserve)
+// =============================================================================
+//
+// These methods take a String (ptr, len, cap) and additional arguments,
+// then return an updated String (ptr, len, cap) via multi-value return.
+// They use `inout self` semantics - the String is modified in place.
+//
+// ABI: String is passed as 3 separate arguments (ptr, len, cap)
+// - x86-64: ptr in rdi, len in rsi, cap in rdx; returns ptr in rax, len in rdx, cap in rcx
+// - aarch64: ptr in x0, len in x1, cap in x2; returns ptr in x0, len in x1, cap in x2
+//
+// Heap promotion: If cap == 0, the string is a literal pointing to rodata.
+// Any mutation first promotes to heap by allocating a new buffer and copying.
+
+/// Append another string's content to this string.
+///
+/// # Arguments
+///
+/// * `ptr` - Pointer to the string data
+/// * `len` - Current length in bytes
+/// * `cap` - Current capacity (0 for literals)
+/// * `other_ptr` - Pointer to the other string's data
+/// * `other_len` - Length of the other string
+/// * `other_cap` - Capacity of the other string (unused, but part of ABI)
+///
+/// # Returns
+///
+/// Updated String (ptr, len, cap) with the other string's content appended.
+///
+/// # Behavior
+///
+/// 1. If cap == 0 (literal), promotes to heap first
+/// 2. If len + other_len > cap, grows the buffer
+/// 3. Copies other_ptr[0..other_len] to ptr[len..]
+/// 4. Returns updated (ptr, new_len, cap)
+#[cfg(all(target_arch = "x86_64", target_os = "linux"))]
+#[unsafe(no_mangle)]
+#[allow(non_snake_case)]
+pub extern "C" fn String__push_str(
+    ptr: *mut u8,
+    len: u64,
+    cap: u64,
+    other_ptr: *const u8,
+    other_len: u64,
+    _other_cap: u64,
+) -> u64 {
+    let (new_ptr, new_cap) = string_ensure_capacity(ptr, len, cap, other_len);
+
+    // Copy the other string's content
+    if other_len > 0 && !other_ptr.is_null() {
+        unsafe {
+            core::ptr::copy_nonoverlapping(
+                other_ptr,
+                new_ptr.add(len as usize),
+                other_len as usize,
+            );
+        }
+    }
+
+    let new_len = len + other_len;
+
+    // Return ptr in rax, len in rdx, cap in rcx
+    unsafe {
+        core::arch::asm!(
+            "",
+            in("rdx") new_len,
+            in("rcx") new_cap,
+            options(nostack, nomem),
+        );
+    }
+    new_ptr as u64
+}
+
+#[cfg(all(target_arch = "aarch64", target_os = "macos"))]
+#[unsafe(no_mangle)]
+#[allow(non_snake_case)]
+pub extern "C" fn String__push_str(
+    ptr: *mut u8,
+    len: u64,
+    cap: u64,
+    other_ptr: *const u8,
+    other_len: u64,
+    _other_cap: u64,
+) -> u64 {
+    let (new_ptr, new_cap) = string_ensure_capacity(ptr, len, cap, other_len);
+
+    // Copy the other string's content
+    if other_len > 0 && !other_ptr.is_null() {
+        unsafe {
+            core::ptr::copy_nonoverlapping(
+                other_ptr,
+                new_ptr.add(len as usize),
+                other_len as usize,
+            );
+        }
+    }
+
+    let new_len = len + other_len;
+
+    // Return ptr in x0, len in x1, cap in x2
+    unsafe {
+        core::arch::asm!(
+            "",
+            in("x1") new_len,
+            in("x2") new_cap,
+            options(nostack, nomem),
+        );
+    }
+    new_ptr as u64
+}
+
+#[cfg(all(target_arch = "aarch64", target_os = "linux"))]
+#[unsafe(no_mangle)]
+#[allow(non_snake_case)]
+pub extern "C" fn String__push_str(
+    ptr: *mut u8,
+    len: u64,
+    cap: u64,
+    other_ptr: *const u8,
+    other_len: u64,
+    _other_cap: u64,
+) -> u64 {
+    let (new_ptr, new_cap) = string_ensure_capacity(ptr, len, cap, other_len);
+
+    // Copy the other string's content
+    if other_len > 0 && !other_ptr.is_null() {
+        unsafe {
+            core::ptr::copy_nonoverlapping(
+                other_ptr,
+                new_ptr.add(len as usize),
+                other_len as usize,
+            );
+        }
+    }
+
+    let new_len = len + other_len;
+
+    // Return ptr in x0, len in x1, cap in x2
+    unsafe {
+        core::arch::asm!(
+            "",
+            in("x1") new_len,
+            in("x2") new_cap,
+            options(nostack, nomem),
+        );
+    }
+    new_ptr as u64
+}
+
+/// Append a single byte to this string.
+///
+/// # Arguments
+///
+/// * `ptr` - Pointer to the string data
+/// * `len` - Current length in bytes
+/// * `cap` - Current capacity (0 for literals)
+/// * `byte` - The byte to append
+///
+/// # Returns
+///
+/// Updated String (ptr, len, cap) with the byte appended.
+#[cfg(all(target_arch = "x86_64", target_os = "linux"))]
+#[unsafe(no_mangle)]
+#[allow(non_snake_case)]
+pub extern "C" fn String__push(ptr: *mut u8, len: u64, cap: u64, byte: u8) -> u64 {
+    let (new_ptr, new_cap) = string_ensure_capacity(ptr, len, cap, 1);
+
+    // Write the byte
+    unsafe {
+        *new_ptr.add(len as usize) = byte;
+    }
+
+    let new_len = len + 1;
+
+    // Return ptr in rax, len in rdx, cap in rcx
+    unsafe {
+        core::arch::asm!(
+            "",
+            in("rdx") new_len,
+            in("rcx") new_cap,
+            options(nostack, nomem),
+        );
+    }
+    new_ptr as u64
+}
+
+#[cfg(all(target_arch = "aarch64", target_os = "macos"))]
+#[unsafe(no_mangle)]
+#[allow(non_snake_case)]
+pub extern "C" fn String__push(ptr: *mut u8, len: u64, cap: u64, byte: u8) -> u64 {
+    let (new_ptr, new_cap) = string_ensure_capacity(ptr, len, cap, 1);
+
+    // Write the byte
+    unsafe {
+        *new_ptr.add(len as usize) = byte;
+    }
+
+    let new_len = len + 1;
+
+    // Return ptr in x0, len in x1, cap in x2
+    unsafe {
+        core::arch::asm!(
+            "",
+            in("x1") new_len,
+            in("x2") new_cap,
+            options(nostack, nomem),
+        );
+    }
+    new_ptr as u64
+}
+
+#[cfg(all(target_arch = "aarch64", target_os = "linux"))]
+#[unsafe(no_mangle)]
+#[allow(non_snake_case)]
+pub extern "C" fn String__push(ptr: *mut u8, len: u64, cap: u64, byte: u8) -> u64 {
+    let (new_ptr, new_cap) = string_ensure_capacity(ptr, len, cap, 1);
+
+    // Write the byte
+    unsafe {
+        *new_ptr.add(len as usize) = byte;
+    }
+
+    let new_len = len + 1;
+
+    // Return ptr in x0, len in x1, cap in x2
+    unsafe {
+        core::arch::asm!(
+            "",
+            in("x1") new_len,
+            in("x2") new_cap,
+            options(nostack, nomem),
+        );
+    }
+    new_ptr as u64
+}
+
+/// Clear the string content, keeping capacity.
+///
+/// # Arguments
+///
+/// * `ptr` - Pointer to the string data
+/// * `len` - Current length in bytes (unused, but part of ABI)
+/// * `cap` - Current capacity
+///
+/// # Returns
+///
+/// Updated String (ptr, 0, cap) with length set to 0.
+///
+/// # Note
+///
+/// For literals (cap == 0), this is a no-op since the string is already empty
+/// or we can't modify rodata. The returned string will have len=0, cap=0.
+#[cfg(all(target_arch = "x86_64", target_os = "linux"))]
+#[unsafe(no_mangle)]
+#[allow(non_snake_case)]
+pub extern "C" fn String__clear(ptr: *mut u8, _len: u64, cap: u64) -> u64 {
+    // Return ptr in rax, len=0 in rdx, cap in rcx
+    unsafe {
+        core::arch::asm!(
+            "xor edx, edx", // len = 0
+            in("rcx") cap,
+            options(nostack, nomem),
+        );
+    }
+    ptr as u64
+}
+
+#[cfg(all(target_arch = "aarch64", target_os = "macos"))]
+#[unsafe(no_mangle)]
+#[allow(non_snake_case)]
+pub extern "C" fn String__clear(ptr: *mut u8, _len: u64, cap: u64) -> u64 {
+    // Return ptr in x0, len=0 in x1, cap in x2
+    unsafe {
+        core::arch::asm!(
+            "mov x1, xzr", // len = 0
+            in("x2") cap,
+            options(nostack, nomem),
+        );
+    }
+    ptr as u64
+}
+
+#[cfg(all(target_arch = "aarch64", target_os = "linux"))]
+#[unsafe(no_mangle)]
+#[allow(non_snake_case)]
+pub extern "C" fn String__clear(ptr: *mut u8, _len: u64, cap: u64) -> u64 {
+    // Return ptr in x0, len=0 in x1, cap in x2
+    unsafe {
+        core::arch::asm!(
+            "mov x1, xzr", // len = 0
+            in("x2") cap,
+            options(nostack, nomem),
+        );
+    }
+    ptr as u64
+}
+
+/// Reserve additional capacity in the string.
+///
+/// # Arguments
+///
+/// * `ptr` - Pointer to the string data
+/// * `len` - Current length in bytes
+/// * `cap` - Current capacity (0 for literals)
+/// * `additional` - Number of additional bytes to reserve
+///
+/// # Returns
+///
+/// Updated String (ptr, len, cap) with capacity >= len + additional.
+///
+/// # Behavior
+///
+/// If cap == 0 (literal), promotes to heap with capacity >= len + additional.
+/// If cap < len + additional, grows the buffer.
+/// Otherwise, returns unchanged.
+#[cfg(all(target_arch = "x86_64", target_os = "linux"))]
+#[unsafe(no_mangle)]
+#[allow(non_snake_case)]
+pub extern "C" fn String__reserve(ptr: *mut u8, len: u64, cap: u64, additional: u64) -> u64 {
+    let (new_ptr, new_cap) = string_ensure_capacity(ptr, len, cap, additional);
+
+    // Return ptr in rax, len in rdx, cap in rcx
+    unsafe {
+        core::arch::asm!(
+            "",
+            in("rdx") len,
+            in("rcx") new_cap,
+            options(nostack, nomem),
+        );
+    }
+    new_ptr as u64
+}
+
+#[cfg(all(target_arch = "aarch64", target_os = "macos"))]
+#[unsafe(no_mangle)]
+#[allow(non_snake_case)]
+pub extern "C" fn String__reserve(ptr: *mut u8, len: u64, cap: u64, additional: u64) -> u64 {
+    let (new_ptr, new_cap) = string_ensure_capacity(ptr, len, cap, additional);
+
+    // Return ptr in x0, len in x1, cap in x2
+    unsafe {
+        core::arch::asm!(
+            "",
+            in("x1") len,
+            in("x2") new_cap,
+            options(nostack, nomem),
+        );
+    }
+    new_ptr as u64
+}
+
+#[cfg(all(target_arch = "aarch64", target_os = "linux"))]
+#[unsafe(no_mangle)]
+#[allow(non_snake_case)]
+pub extern "C" fn String__reserve(ptr: *mut u8, len: u64, cap: u64, additional: u64) -> u64 {
+    let (new_ptr, new_cap) = string_ensure_capacity(ptr, len, cap, additional);
+
+    // Return ptr in x0, len in x1, cap in x2
+    unsafe {
+        core::arch::asm!(
+            "",
+            in("x1") len,
+            in("x2") new_cap,
+            options(nostack, nomem),
+        );
+    }
+    new_ptr as u64
+}
+
+/// Helper function to ensure a string has enough capacity for additional bytes.
+///
+/// Handles heap promotion (cap == 0) and growth.
+///
+/// # Arguments
+///
+/// * `ptr` - Current pointer
+/// * `len` - Current length
+/// * `cap` - Current capacity (0 for literals)
+/// * `additional` - Number of additional bytes needed
+///
+/// # Returns
+///
+/// (new_ptr, new_cap) with capacity >= len + additional.
+#[inline]
+fn string_ensure_capacity(ptr: *mut u8, len: u64, cap: u64, additional: u64) -> (*mut u8, u64) {
+    let required = len.saturating_add(additional);
+
+    if cap == 0 {
+        // Heap promotion: allocate new buffer and copy existing content
+        let new_cap = required.max(STRING_MIN_CAPACITY);
+        let new_ptr = heap::alloc(new_cap, 1);
+        if len > 0 && !ptr.is_null() {
+            unsafe {
+                core::ptr::copy_nonoverlapping(ptr as *const u8, new_ptr, len as usize);
+            }
+        }
+        (new_ptr, new_cap)
+    } else if required > cap {
+        // Need to grow: use the realloc function which implements growth strategy
+        let new_ptr = heap::realloc(ptr, cap, required, 1);
+        // Calculate actual new capacity (realloc uses 2x growth strategy)
+        let grown_cap = cap.saturating_mul(2);
+        let new_cap = required.max(grown_cap).max(STRING_MIN_CAPACITY);
+        (new_ptr, new_cap)
+    } else {
+        // Capacity is sufficient
+        (ptr, cap)
+    }
+}
+
 // Re-export platform functions for tests
 #[cfg(all(test, target_arch = "x86_64", target_os = "linux"))]
 pub use x86_64_linux::{exit, write, write_all, write_stderr};

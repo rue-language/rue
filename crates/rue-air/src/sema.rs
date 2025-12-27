@@ -271,6 +271,17 @@ pub struct Sema<'a> {
     methods: HashMap<(Symbol, Symbol), MethodInfo>,
 }
 
+/// Storage location for a String receiver in mutation methods.
+///
+/// This is used by `analyze_string_mutation_method` to store the updated
+/// String back to the original variable after calling the runtime function.
+enum StringReceiverStorage {
+    /// The receiver is a local variable with the given slot.
+    Local { slot: u32 },
+    /// The receiver is a parameter with the given ABI slot.
+    Param { abi_slot: u32 },
+}
+
 impl<'a> Sema<'a> {
     /// Create a new semantic analyzer.
     pub fn new(rir: &'a Rir, interner: &'a mut Interner) -> Self {
@@ -3547,12 +3558,26 @@ impl<'a> Sema<'a> {
                 // don't consume the String.
                 let receiver_var = self.extract_root_variable(*receiver);
 
+                // Get the method name as a string before analyzing receiver
+                let method_name_str = self.interner.get(*method).to_string();
+
+                // Check if this is a String mutation method that needs storage location
+                let is_string_mutation_method = matches!(
+                    method_name_str.as_str(),
+                    "push_str" | "push" | "clear" | "reserve"
+                );
+
+                // For String mutation methods, we need to get the storage location
+                // BEFORE analyzing the receiver (which may mark it as moved)
+                let receiver_storage = if is_string_mutation_method {
+                    self.get_string_receiver_storage(*receiver, ctx, inst.span)?
+                } else {
+                    None
+                };
+
                 // Analyze the receiver expression
                 let receiver_result = self.analyze_inst(air, *receiver, ctx)?;
                 let receiver_type = receiver_result.ty;
-
-                // Get the method name as a string for error messages
-                let method_name_str = self.interner.get(*method).to_string();
 
                 // Handle String methods specially
                 if receiver_type == Type::String {
@@ -3566,6 +3591,24 @@ impl<'a> Sema<'a> {
                             ctx.moved_vars.remove(&var_symbol);
                         }
                     }
+
+                    // String mutation methods need special handling
+                    if is_string_mutation_method {
+                        // Mutation methods use inout semantics - variable remains valid after
+                        if let Some(var_symbol) = receiver_var {
+                            ctx.moved_vars.remove(&var_symbol);
+                        }
+                        return self.analyze_string_mutation_method(
+                            air,
+                            ctx,
+                            &method_name_str,
+                            receiver_result,
+                            receiver_storage,
+                            args,
+                            inst.span,
+                        );
+                    }
+
                     return self.analyze_string_method(
                         air,
                         ctx,
@@ -4281,6 +4324,323 @@ impl<'a> Sema<'a> {
                 ))
             }
         }
+    }
+
+    /// Get the storage location for a String receiver in a mutation method call.
+    ///
+    /// For mutation methods like `push_str`, `push`, `clear`, `reserve`, we need
+    /// to know where to store the updated String after the runtime function returns.
+    ///
+    /// Returns `Some(storage)` if the receiver is a mutable local or inout parameter.
+    /// Returns an error if the receiver is:
+    /// - An immutable binding (`let` instead of `var`)
+    /// - A borrow parameter (can't mutate borrowed values)
+    /// - Not an lvalue (e.g., a function call result)
+    fn get_string_receiver_storage(
+        &self,
+        receiver_ref: InstRef,
+        ctx: &AnalysisContext,
+        span: Span,
+    ) -> CompileResult<Option<StringReceiverStorage>> {
+        let receiver_inst = self.rir.get(receiver_ref);
+
+        match &receiver_inst.data {
+            InstData::VarRef { name } => {
+                // Check if this is a parameter
+                if let Some(param_info) = ctx.params.get(name) {
+                    // Check parameter mode
+                    match param_info.mode {
+                        RirParamMode::Inout => {
+                            return Ok(Some(StringReceiverStorage::Param {
+                                abi_slot: param_info.abi_slot,
+                            }));
+                        }
+                        RirParamMode::Borrow => {
+                            let name_str = self.interner.get(*name);
+                            return Err(CompileError::new(
+                                ErrorKind::MutateBorrowedValue {
+                                    variable: name_str.to_string(),
+                                },
+                                span,
+                            ));
+                        }
+                        RirParamMode::Normal => {
+                            // Normal parameters can be mutated if declared as `var`
+                            // For now, we don't allow mutation of normal params
+                            let name_str = self.interner.get(*name);
+                            return Err(CompileError::new(
+                                ErrorKind::AssignToImmutable(name_str.to_string()),
+                                span,
+                            ));
+                        }
+                    }
+                }
+
+                // Check if it's a local variable
+                if let Some(local) = ctx.locals.get(name) {
+                    if !local.is_mut {
+                        let name_str = self.interner.get(*name);
+                        return Err(CompileError::new(
+                            ErrorKind::AssignToImmutable(name_str.to_string()),
+                            span,
+                        ));
+                    }
+                    return Ok(Some(StringReceiverStorage::Local { slot: local.slot }));
+                }
+
+                // Variable not found
+                let name_str = self.interner.get(*name);
+                Err(CompileError::new(
+                    ErrorKind::UndefinedVariable(name_str.to_string()),
+                    span,
+                ))
+            }
+
+            // For other receiver types (field access, function calls, etc.),
+            // we don't support mutation for now
+            _ => Err(CompileError::new(ErrorKind::InvalidAssignmentTarget, span)),
+        }
+    }
+
+    /// Analyze a String mutation method call (push_str, push, clear, reserve).
+    ///
+    /// These methods use `inout self` semantics - they modify the string in place.
+    /// The runtime function returns an updated String (ptr, len, cap) which we
+    /// store back to the original variable.
+    fn analyze_string_mutation_method(
+        &mut self,
+        air: &mut Air,
+        ctx: &mut AnalysisContext,
+        method_name: &str,
+        receiver: AnalysisResult,
+        receiver_storage: Option<StringReceiverStorage>,
+        args: &[RirCallArg],
+        span: Span,
+    ) -> CompileResult<AnalysisResult> {
+        // Storage is required for mutation methods
+        let storage = receiver_storage
+            .ok_or_else(|| CompileError::new(ErrorKind::InvalidAssignmentTarget, span))?;
+
+        match method_name {
+            "push_str" => {
+                // fn push_str(inout self, other: String)
+                if args.len() != 1 {
+                    return Err(CompileError::new(
+                        ErrorKind::WrongArgumentCount {
+                            expected: 1,
+                            found: args.len(),
+                        },
+                        span,
+                    ));
+                }
+
+                // Analyze the other string argument
+                let other_result = self.analyze_inst(air, args[0].value, ctx)?;
+
+                // Type check: other must be String
+                if other_result.ty != Type::String && !other_result.ty.is_error() {
+                    return Err(CompileError::new(
+                        ErrorKind::TypeMismatch {
+                            expected: "String".to_string(),
+                            found: other_result.ty.name().to_string(),
+                        },
+                        span,
+                    ));
+                }
+
+                // Call String__push_str(self, other) -> String
+                let call_ref = air.add_inst(AirInst {
+                    data: AirInstData::Call {
+                        name: "String__push_str".to_string(),
+                        args: vec![
+                            AirCallArg {
+                                value: receiver.air_ref,
+                                mode: AirArgMode::Normal,
+                            },
+                            AirCallArg {
+                                value: other_result.air_ref,
+                                mode: AirArgMode::Normal,
+                            },
+                        ],
+                    },
+                    ty: Type::String,
+                    span,
+                });
+
+                // Store the result back to the receiver
+                self.store_string_result(air, call_ref, storage, span)
+            }
+
+            "push" => {
+                // fn push(inout self, byte: u8)
+                if args.len() != 1 {
+                    return Err(CompileError::new(
+                        ErrorKind::WrongArgumentCount {
+                            expected: 1,
+                            found: args.len(),
+                        },
+                        span,
+                    ));
+                }
+
+                // Analyze the byte argument
+                let byte_result = self.analyze_inst(air, args[0].value, ctx)?;
+
+                // Type check: byte must be u8
+                if byte_result.ty != Type::U8 && !byte_result.ty.is_error() {
+                    return Err(CompileError::new(
+                        ErrorKind::TypeMismatch {
+                            expected: "u8".to_string(),
+                            found: byte_result.ty.name().to_string(),
+                        },
+                        span,
+                    ));
+                }
+
+                // Call String__push(self, byte) -> String
+                let call_ref = air.add_inst(AirInst {
+                    data: AirInstData::Call {
+                        name: "String__push".to_string(),
+                        args: vec![
+                            AirCallArg {
+                                value: receiver.air_ref,
+                                mode: AirArgMode::Normal,
+                            },
+                            AirCallArg {
+                                value: byte_result.air_ref,
+                                mode: AirArgMode::Normal,
+                            },
+                        ],
+                    },
+                    ty: Type::String,
+                    span,
+                });
+
+                // Store the result back to the receiver
+                self.store_string_result(air, call_ref, storage, span)
+            }
+
+            "clear" => {
+                // fn clear(inout self)
+                if !args.is_empty() {
+                    return Err(CompileError::new(
+                        ErrorKind::WrongArgumentCount {
+                            expected: 0,
+                            found: args.len(),
+                        },
+                        span,
+                    ));
+                }
+
+                // Call String__clear(self) -> String
+                let call_ref = air.add_inst(AirInst {
+                    data: AirInstData::Call {
+                        name: "String__clear".to_string(),
+                        args: vec![AirCallArg {
+                            value: receiver.air_ref,
+                            mode: AirArgMode::Normal,
+                        }],
+                    },
+                    ty: Type::String,
+                    span,
+                });
+
+                // Store the result back to the receiver
+                self.store_string_result(air, call_ref, storage, span)
+            }
+
+            "reserve" => {
+                // fn reserve(inout self, additional: u64)
+                if args.len() != 1 {
+                    return Err(CompileError::new(
+                        ErrorKind::WrongArgumentCount {
+                            expected: 1,
+                            found: args.len(),
+                        },
+                        span,
+                    ));
+                }
+
+                // Analyze the additional argument
+                let additional_result = self.analyze_inst(air, args[0].value, ctx)?;
+
+                // Type check: additional must be u64
+                if additional_result.ty != Type::U64 && !additional_result.ty.is_error() {
+                    return Err(CompileError::new(
+                        ErrorKind::TypeMismatch {
+                            expected: "u64".to_string(),
+                            found: additional_result.ty.name().to_string(),
+                        },
+                        span,
+                    ));
+                }
+
+                // Call String__reserve(self, additional) -> String
+                let call_ref = air.add_inst(AirInst {
+                    data: AirInstData::Call {
+                        name: "String__reserve".to_string(),
+                        args: vec![
+                            AirCallArg {
+                                value: receiver.air_ref,
+                                mode: AirArgMode::Normal,
+                            },
+                            AirCallArg {
+                                value: additional_result.air_ref,
+                                mode: AirArgMode::Normal,
+                            },
+                        ],
+                    },
+                    ty: Type::String,
+                    span,
+                });
+
+                // Store the result back to the receiver
+                self.store_string_result(air, call_ref, storage, span)
+            }
+
+            _ => {
+                // This should never happen - caller should only call this for mutation methods
+                Err(CompileError::new(
+                    ErrorKind::UndefinedMethod {
+                        type_name: "String".to_string(),
+                        method_name: method_name.to_string(),
+                    },
+                    span,
+                ))
+            }
+        }
+    }
+
+    /// Store the result of a String mutation method back to the receiver's storage.
+    ///
+    /// Returns a Unit-typed result since mutation methods don't return a value.
+    fn store_string_result(
+        &self,
+        air: &mut Air,
+        call_ref: AirRef,
+        storage: StringReceiverStorage,
+        span: Span,
+    ) -> CompileResult<AnalysisResult> {
+        let store_ref = match storage {
+            StringReceiverStorage::Local { slot } => air.add_inst(AirInst {
+                data: AirInstData::Store {
+                    slot,
+                    value: call_ref,
+                },
+                ty: Type::Unit,
+                span,
+            }),
+            StringReceiverStorage::Param { abi_slot } => air.add_inst(AirInst {
+                data: AirInstData::ParamStore {
+                    param_slot: abi_slot,
+                    value: call_ref,
+                },
+                ty: Type::Unit,
+                span,
+            }),
+        };
+
+        Ok(AnalysisResult::new(store_ref, Type::Unit))
     }
 
     /// Analyze a String method call (len, capacity, is_empty, etc.).
