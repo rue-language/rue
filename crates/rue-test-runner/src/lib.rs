@@ -400,6 +400,54 @@ pub fn check_golden(actual: &str, expected: &str, label: &str) -> TestResult {
     Ok(())
 }
 
+/// Map emit stage flag to the header name used in the compiler output.
+/// For example, "rir" -> "RIR", "tokens" -> "Tokens"
+fn stage_to_header_name(stage: &str) -> &'static str {
+    match stage {
+        "tokens" => "Tokens",
+        "ast" => "AST",
+        "rir" => "RIR",
+        "air" => "AIR",
+        "cfg" => "CFG",
+        "mir" => "MIR",
+        "asm" => "ASM",
+        _ => panic!("Unknown stage: {}", stage),
+    }
+}
+
+/// Run a golden test for a specific IR stage.
+///
+/// This helper runs `rue --emit <stage>` on the source file and compares
+/// the output against the expected golden output.
+fn run_golden_ir_test(
+    rue_binary: &Path,
+    source_path: &Path,
+    stage: &str,
+    expected: &str,
+    build_command: impl Fn(&Path) -> Command,
+) -> TestResult {
+    let output = build_command(rue_binary)
+        .arg("--emit")
+        .arg(stage)
+        .arg(source_path)
+        .output()
+        .map_err(|e| format!("Failed to run rue --emit {}: {}", stage, e))?;
+
+    if !output.status.success() {
+        return Err(format!(
+            "rue --emit {} failed:\n{}",
+            stage,
+            String::from_utf8_lossy(&output.stderr)
+        ));
+    }
+
+    let actual = String::from_utf8_lossy(&output.stdout);
+    // Strip the "=== STAGE ===" or "=== STAGE (target) ===" header for golden comparison
+    let header_name = stage_to_header_name(stage);
+    let actual = strip_emit_header(&actual, header_name);
+    check_golden(&actual, expected, header_name)
+}
+
 /// Run a single test case.
 pub fn run_test_case(case: &Case, rue_binary: &Path) -> TestResult {
     // Create a temporary directory for this test
@@ -439,108 +487,23 @@ pub fn run_test_case(case: &Case, rue_binary: &Path) -> TestResult {
     {
         // Run dump commands and check golden output
         if let Some(ref expected) = case.expected_tokens {
-            let output = build_command(rue_binary)
-                .arg("--emit")
-                .arg("tokens")
-                .arg(&source_path)
-                .output()
-                .map_err(|e| format!("Failed to run rue --emit tokens: {}", e))?;
-
-            if !output.status.success() {
-                return Err(format!(
-                    "rue --emit tokens failed:\n{}",
-                    String::from_utf8_lossy(&output.stderr)
-                ));
-            }
-
-            let actual = String::from_utf8_lossy(&output.stdout);
-            // Strip the "=== Tokens ===" header for golden comparison
-            let actual = strip_emit_header(&actual, "Tokens");
-            check_golden(&actual, expected, "Tokens")?;
+            run_golden_ir_test(rue_binary, &source_path, "tokens", expected, &build_command)?;
         }
 
         if let Some(ref expected) = case.expected_ast {
-            let output = build_command(rue_binary)
-                .arg("--emit")
-                .arg("ast")
-                .arg(&source_path)
-                .output()
-                .map_err(|e| format!("Failed to run rue --emit ast: {}", e))?;
-
-            if !output.status.success() {
-                return Err(format!(
-                    "rue --emit ast failed:\n{}",
-                    String::from_utf8_lossy(&output.stderr)
-                ));
-            }
-
-            let actual = String::from_utf8_lossy(&output.stdout);
-            // Strip the "=== AST ===" header for golden comparison
-            let actual = strip_emit_header(&actual, "AST");
-            check_golden(&actual, expected, "AST")?;
+            run_golden_ir_test(rue_binary, &source_path, "ast", expected, &build_command)?;
         }
 
         if let Some(ref expected) = case.expected_rir {
-            let output = build_command(rue_binary)
-                .arg("--emit")
-                .arg("rir")
-                .arg(&source_path)
-                .output()
-                .map_err(|e| format!("Failed to run rue --emit rir: {}", e))?;
-
-            if !output.status.success() {
-                return Err(format!(
-                    "rue --emit rir failed:\n{}",
-                    String::from_utf8_lossy(&output.stderr)
-                ));
-            }
-
-            let actual = String::from_utf8_lossy(&output.stdout);
-            // Strip the "=== RIR ===" header for golden comparison
-            let actual = strip_emit_header(&actual, "RIR");
-            check_golden(&actual, expected, "RIR")?;
+            run_golden_ir_test(rue_binary, &source_path, "rir", expected, &build_command)?;
         }
 
         if let Some(ref expected) = case.expected_air {
-            let output = build_command(rue_binary)
-                .arg("--emit")
-                .arg("air")
-                .arg(&source_path)
-                .output()
-                .map_err(|e| format!("Failed to run rue --emit air: {}", e))?;
-
-            if !output.status.success() {
-                return Err(format!(
-                    "rue --emit air failed:\n{}",
-                    String::from_utf8_lossy(&output.stderr)
-                ));
-            }
-
-            let actual = String::from_utf8_lossy(&output.stdout);
-            // Strip the "=== AIR ===" header for golden comparison
-            let actual = strip_emit_header(&actual, "AIR");
-            check_golden(&actual, expected, "AIR")?;
+            run_golden_ir_test(rue_binary, &source_path, "air", expected, &build_command)?;
         }
 
         if let Some(ref expected) = case.expected_cfg {
-            let output = build_command(rue_binary)
-                .arg("--emit")
-                .arg("cfg")
-                .arg(&source_path)
-                .output()
-                .map_err(|e| format!("Failed to run rue --emit cfg: {}", e))?;
-
-            if !output.status.success() {
-                return Err(format!(
-                    "rue --emit cfg failed:\n{}",
-                    String::from_utf8_lossy(&output.stderr)
-                ));
-            }
-
-            let actual = String::from_utf8_lossy(&output.stdout);
-            // Strip the "=== CFG ===" header for golden comparison
-            let actual = strip_emit_header(&actual, "CFG");
-            check_golden(&actual, expected, "CFG")?;
+            run_golden_ir_test(rue_binary, &source_path, "cfg", expected, &build_command)?;
         }
 
         if let Some(ref expected) = case.expected_mir {
@@ -551,25 +514,7 @@ pub fn run_test_case(case: &Case, rue_binary: &Path) -> TestResult {
                         .to_string(),
                 );
             }
-
-            let output = build_command(rue_binary)
-                .arg("--emit")
-                .arg("mir")
-                .arg(&source_path)
-                .output()
-                .map_err(|e| format!("Failed to run rue --emit mir: {}", e))?;
-
-            if !output.status.success() {
-                return Err(format!(
-                    "rue --emit mir failed:\n{}",
-                    String::from_utf8_lossy(&output.stderr)
-                ));
-            }
-
-            let actual = String::from_utf8_lossy(&output.stdout);
-            // Strip the "=== MIR (target) ===" header for golden comparison
-            let actual = strip_emit_header(&actual, "MIR");
-            check_golden(&actual, expected, "MIR")?;
+            run_golden_ir_test(rue_binary, &source_path, "mir", expected, &build_command)?;
         }
 
         return Ok(());
