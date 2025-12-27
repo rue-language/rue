@@ -222,6 +222,21 @@ impl Reg {
             Reg::Xzr => "wzr",
         }
     }
+
+    /// Returns a wrapper that displays this register as a 32-bit W register.
+    pub const fn as_w(self) -> Reg32 {
+        Reg32(self)
+    }
+}
+
+/// A wrapper for displaying a register with its 32-bit W name.
+#[derive(Clone, Copy)]
+pub struct Reg32(pub Reg);
+
+impl fmt::Display for Reg32 {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.0.name32())
+    }
 }
 
 impl fmt::Display for Reg {

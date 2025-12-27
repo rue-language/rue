@@ -223,7 +223,7 @@ fn emit_prologue(&mut self) {
   - Update `--emit asm` to use `to_asm()`
   - Verify byte output is identical (regression test)
 
-- [ ] **Phase 2: aarch64 refactor** - rue-4rzx (depends on Phase 1)
+- [x] **Phase 2: aarch64 refactor** - rue-4rzx (depends on Phase 1)
   - Apply same pattern to aarch64 emitter
   - Verify byte output is identical
 

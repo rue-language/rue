@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use rue_error::{CompileError, CompileResult, ErrorKind};
 
 use super::mir::{Aarch64Inst, Aarch64Mir, Cond, LabelId, Reg};
-use crate::EmittedRelocation;
+use crate::{EmittedCode, EmittedInst, EmittedRelocation};
 
 // ========== AArch64 Instruction Encoding Constants ==========
 //
@@ -183,19 +183,33 @@ enum FixupKind {
 }
 
 /// AArch64 instruction emitter.
+///
+/// The emitter converts MIR instructions to machine code, producing both
+/// raw bytes and human-readable assembly text for each instruction.
 pub struct Emitter<'a> {
     mir: &'a Aarch64Mir,
+    /// Raw machine code bytes being emitted.
     code: Vec<u8>,
+    /// Emitted instructions with asm text (for --emit asm).
+    /// Each entry corresponds to a logical instruction with its byte range.
+    instructions: Vec<EmittedInst>,
     relocations: Vec<EmittedRelocation>,
+    /// Maps label IDs to their byte offsets.
     labels: HashMap<LabelId, usize>,
+    /// Forward branches that need to be patched.
     fixups: Vec<Fixup>,
+    /// Total number of local slots including spills (for stack frame size).
     num_locals: u32,
+    /// Number of function parameters.
     num_params: u32,
+    /// Callee-saved registers that need to be preserved.
     callee_saved: Vec<Reg>,
     /// Whether a stack frame was emitted (prologue was executed).
     has_frame: bool,
     /// String constants (for StringConstPtr/StringConstLen)
     strings: &'a [String],
+    /// Byte offset where the current instruction started (for recording).
+    inst_start: usize,
 }
 
 impl<'a> Emitter<'a> {
@@ -210,6 +224,7 @@ impl<'a> Emitter<'a> {
         Self {
             mir,
             code: Vec::new(),
+            instructions: Vec::new(),
             relocations: Vec::new(),
             labels: HashMap::new(),
             fixups: Vec::new(),
@@ -218,7 +233,31 @@ impl<'a> Emitter<'a> {
             callee_saved: callee_saved.to_vec(),
             has_frame: false,
             strings,
+            inst_start: 0,
         }
+    }
+
+    // ==================== Instruction recording helpers ====================
+
+    /// Begin recording a new instruction. Call this before emitting bytes.
+    fn begin_inst(&mut self) {
+        self.inst_start = self.code.len();
+    }
+
+    /// End recording an instruction. Captures bytes emitted since begin_inst().
+    fn end_inst(&mut self, asm: impl Into<String>) {
+        let bytes = self.code[self.inst_start..].to_vec();
+        self.instructions.push(EmittedInst::new(bytes, asm));
+    }
+
+    /// Record a label (no bytes, just marks a position in the asm output).
+    fn record_label(&mut self, name: impl Into<String>) {
+        self.instructions.push(EmittedInst::label(name));
+    }
+
+    /// Record a comment (no bytes).
+    fn record_comment(&mut self, text: impl Into<String>) {
+        self.instructions.push(EmittedInst::comment(text));
     }
 
     /// Calculate the total stack space used by callee-saved registers.
@@ -230,8 +269,29 @@ impl<'a> Emitter<'a> {
         (pairs * 16) as i32
     }
 
+    // ==================== Main emit entry point ====================
+
     /// Emit machine code for all instructions.
+    ///
+    /// Returns (code bytes, relocations).
     pub fn emit(mut self) -> CompileResult<(Vec<u8>, Vec<EmittedRelocation>)> {
+        self.emit_internal()?;
+        Ok((self.code, self.relocations))
+    }
+
+    /// Emit machine code for all instructions, returning full EmittedCode.
+    ///
+    /// This is the preferred method when you need both bytes and assembly text.
+    pub fn emit_all(mut self) -> CompileResult<EmittedCode> {
+        self.emit_internal()?;
+        Ok(EmittedCode {
+            instructions: self.instructions,
+            relocations: self.relocations,
+        })
+    }
+
+    /// Internal implementation of emit.
+    fn emit_internal(&mut self) -> CompileResult<()> {
         // Verify no LdrIndexed/StrIndexed variants survived into emission
         // These should have been lowered by regalloc into Ldr/Str with physical registers
         for (i, inst) in self.mir.iter().enumerate() {
@@ -261,17 +321,22 @@ impl<'a> Emitter<'a> {
             self.emit_inst(inst);
         }
 
-        self.apply_fixups()?;
-        Ok((self.code, self.relocations))
+        self.apply_fixups()
     }
 
     /// Emit function prologue.
     fn emit_prologue(&mut self) {
+        self.record_comment("prologue");
+
         // stp x29, x30, [sp, #-16]!   ; Save FP and LR
+        self.begin_inst();
         self.emit_stp_pre(Reg::Fp, Reg::Lr, -16);
+        self.end_inst("stp x29, x30, [sp, #-16]!");
 
         // mov x29, sp                 ; Set up frame pointer
+        self.begin_inst();
         self.emit_mov_rr(Reg::Fp, Reg::Sp);
+        self.end_inst("mov x29, sp");
 
         // Save callee-saved registers in pairs.
         // Each STP/STR pre-index instruction decrements SP by 16 bytes.
@@ -279,13 +344,21 @@ impl<'a> Emitter<'a> {
         let mut i = 0;
         while i + 1 < callee_saved.len() {
             // STP with pre-index: [SP, #-16]! decrements SP by 16 and stores the pair
+            self.begin_inst();
             self.emit_stp_pre(callee_saved[i], callee_saved[i + 1], -16);
+            self.end_inst(format!(
+                "stp {}, {}, [sp, #-16]!",
+                callee_saved[i],
+                callee_saved[i + 1]
+            ));
             i += 2;
         }
         // Handle odd register
         if i < callee_saved.len() {
             // STR with pre-index: [SP, #-16]! decrements SP by 16 and stores the register
+            self.begin_inst();
             self.emit_str_pre(callee_saved[i], -16);
+            self.end_inst(format!("str {}, [sp, #-16]!", callee_saved[i]));
         }
 
         // Allocate space for locals and spilled params
@@ -293,7 +366,9 @@ impl<'a> Emitter<'a> {
         if total_slots > 0 {
             let stack_size = ((total_slots as i32 * 8 + 15) / 16) * 16;
             if stack_size > 0 {
+                self.begin_inst();
                 self.emit_sub_imm(Reg::Sp, Reg::Sp, stack_size as u32);
+                self.end_inst(format!("sub sp, sp, #{}", stack_size));
             }
         }
 
@@ -321,7 +396,9 @@ impl<'a> Emitter<'a> {
             let slot = self.num_locals + i as u32;
             // Skip past callee-saved registers in the offset calculation
             let offset = -callee_saved_size - ((slot as i32 + 1) * 8);
+            self.begin_inst();
             self.emit_str(param_regs[i], Reg::Fp, offset);
+            self.end_inst(format!("str {}, [x29, #{}]", param_regs[i], offset));
         }
     }
 
@@ -330,13 +407,17 @@ impl<'a> Emitter<'a> {
         match inst {
             Aarch64Inst::MovImm { dst, imm } => {
                 let rd = dst.as_physical();
+                self.begin_inst();
                 self.emit_mov_imm(rd, *imm);
+                self.end_inst(format!("mov {}, #{}", rd, *imm));
             }
 
             Aarch64Inst::MovRR { dst, src } => {
                 let rd = dst.as_physical();
                 let rs = src.as_physical();
+                self.begin_inst();
                 self.emit_mov_rr(rd, rs);
+                self.end_inst(format!("mov {}, {}", rd, rs));
             }
 
             Aarch64Inst::Ldr { dst, base, offset } => {
@@ -350,7 +431,9 @@ impl<'a> Emitter<'a> {
                 } else {
                     *offset
                 };
+                self.begin_inst();
                 self.emit_ldr(rd, *base, adjusted_offset);
+                self.end_inst(format!("ldr {}, [{}, #{}]", rd, base, adjusted_offset));
             }
 
             Aarch64Inst::Str { src, base, offset } => {
@@ -362,28 +445,36 @@ impl<'a> Emitter<'a> {
                 } else {
                     *offset
                 };
+                self.begin_inst();
                 self.emit_str(rs, *base, adjusted_offset);
+                self.end_inst(format!("str {}, [{}, #{}]", rs, base, adjusted_offset));
             }
 
             Aarch64Inst::AddRR { dst, src1, src2 } => {
                 let rd = dst.as_physical();
                 let rn = src1.as_physical();
                 let rm = src2.as_physical();
+                self.begin_inst();
                 self.emit_add_rr(rd, rn, rm, false);
+                self.end_inst(format!("add {}, {}, {}", rd, rn, rm));
             }
 
             Aarch64Inst::AddsRR { dst, src1, src2 } => {
                 let rd = dst.as_physical();
                 let rn = src1.as_physical();
                 let rm = src2.as_physical();
+                self.begin_inst();
                 self.emit_adds_rr32(rd, rn, rm);
+                self.end_inst(format!("adds {}, {}, {}", rd.as_w(), rn.as_w(), rm.as_w()));
             }
 
             Aarch64Inst::AddsRR64 { dst, src1, src2 } => {
                 let rd = dst.as_physical();
                 let rn = src1.as_physical();
                 let rm = src2.as_physical();
+                self.begin_inst();
                 self.emit_adds_rr64(rd, rn, rm);
+                self.end_inst(format!("adds {}, {}, {}", rd, rn, rm));
             }
 
             Aarch64Inst::AddImm { dst, src, imm } => {
@@ -397,11 +488,14 @@ impl<'a> Emitter<'a> {
                 } else {
                     *imm
                 };
+                self.begin_inst();
                 if adjusted_imm < 0 {
                     // Negative immediate: use SUB with the absolute value
                     self.emit_sub_imm(rd, rn, (-adjusted_imm) as u32);
+                    self.end_inst(format!("sub {}, {}, #{}", rd, rn, -adjusted_imm));
                 } else {
                     self.emit_add_imm(rd, rn, adjusted_imm as u32);
+                    self.end_inst(format!("add {}, {}, #{}", rd, rn, adjusted_imm));
                 }
             }
 
@@ -409,21 +503,27 @@ impl<'a> Emitter<'a> {
                 let rd = dst.as_physical();
                 let rn = src1.as_physical();
                 let rm = src2.as_physical();
+                self.begin_inst();
                 self.emit_sub_rr(rd, rn, rm, false);
+                self.end_inst(format!("sub {}, {}, {}", rd, rn, rm));
             }
 
             Aarch64Inst::SubsRR { dst, src1, src2 } => {
                 let rd = dst.as_physical();
                 let rn = src1.as_physical();
                 let rm = src2.as_physical();
+                self.begin_inst();
                 self.emit_subs_rr32(rd, rn, rm);
+                self.end_inst(format!("subs {}, {}, {}", rd.as_w(), rn.as_w(), rm.as_w()));
             }
 
             Aarch64Inst::SubsRR64 { dst, src1, src2 } => {
                 let rd = dst.as_physical();
                 let rn = src1.as_physical();
                 let rm = src2.as_physical();
+                self.begin_inst();
                 self.emit_subs_rr64(rd, rn, rm);
+                self.end_inst(format!("subs {}, {}, {}", rd, rn, rm));
             }
 
             Aarch64Inst::SubImm { dst, src, imm } => {
@@ -437,61 +537,79 @@ impl<'a> Emitter<'a> {
                 } else {
                     *imm as u32
                 };
+                self.begin_inst();
                 self.emit_sub_imm(rd, rn, adjusted_imm);
+                self.end_inst(format!("sub {}, {}, #{}", rd, rn, adjusted_imm));
             }
 
             Aarch64Inst::MulRR { dst, src1, src2 } => {
                 let rd = dst.as_physical();
                 let rn = src1.as_physical();
                 let rm = src2.as_physical();
+                self.begin_inst();
                 self.emit_mul(rd, rn, rm);
+                self.end_inst(format!("mul {}, {}, {}", rd, rn, rm));
             }
 
             Aarch64Inst::SmullRR { dst, src1, src2 } => {
                 let rd = dst.as_physical();
                 let rn = src1.as_physical();
                 let rm = src2.as_physical();
+                self.begin_inst();
                 self.emit_smull(rd, rn, rm);
+                self.end_inst(format!("smull {}, {}, {}", rd, rn.as_w(), rm.as_w()));
             }
 
             Aarch64Inst::UmullRR { dst, src1, src2 } => {
                 let rd = dst.as_physical();
                 let rn = src1.as_physical();
                 let rm = src2.as_physical();
+                self.begin_inst();
                 self.emit_umull(rd, rn, rm);
+                self.end_inst(format!("umull {}, {}, {}", rd, rn.as_w(), rm.as_w()));
             }
 
             Aarch64Inst::SmulhRR { dst, src1, src2 } => {
                 let rd = dst.as_physical();
                 let rn = src1.as_physical();
                 let rm = src2.as_physical();
+                self.begin_inst();
                 self.emit_smulh(rd, rn, rm);
+                self.end_inst(format!("smulh {}, {}, {}", rd, rn, rm));
             }
 
             Aarch64Inst::UmulhRR { dst, src1, src2 } => {
                 let rd = dst.as_physical();
                 let rn = src1.as_physical();
                 let rm = src2.as_physical();
+                self.begin_inst();
                 self.emit_umulh(rd, rn, rm);
+                self.end_inst(format!("umulh {}, {}, {}", rd, rn, rm));
             }
 
             Aarch64Inst::Lsr64Imm { dst, src, imm } => {
                 let rd = dst.as_physical();
                 let rn = src.as_physical();
+                self.begin_inst();
                 self.emit_lsr_imm(rd, rn, *imm);
+                self.end_inst(format!("lsr {}, {}, #{}", rd, rn, imm));
             }
 
             Aarch64Inst::Asr64Imm { dst, src, imm } => {
                 let rd = dst.as_physical();
                 let rn = src.as_physical();
+                self.begin_inst();
                 self.emit_asr_imm(rd, rn, *imm);
+                self.end_inst(format!("asr {}, {}, #{}", rd, rn, imm));
             }
 
             Aarch64Inst::SdivRR { dst, src1, src2 } => {
                 let rd = dst.as_physical();
                 let rn = src1.as_physical();
                 let rm = src2.as_physical();
+                self.begin_inst();
                 self.emit_sdiv(rd, rn, rm);
+                self.end_inst(format!("sdiv {}, {}, {}", rd.as_w(), rn.as_w(), rm.as_w()));
             }
 
             Aarch64Inst::Msub {
@@ -504,219 +622,296 @@ impl<'a> Emitter<'a> {
                 let rn = src1.as_physical();
                 let rm = src2.as_physical();
                 let ra = src3.as_physical();
+                self.begin_inst();
                 self.emit_msub(rd, rn, rm, ra);
+                self.end_inst(format!(
+                    "msub {}, {}, {}, {}",
+                    rd.as_w(),
+                    rn.as_w(),
+                    rm.as_w(),
+                    ra.as_w()
+                ));
             }
 
             Aarch64Inst::Neg { dst, src } => {
                 let rd = dst.as_physical();
                 let rm = src.as_physical();
                 // NEG is SUB from XZR
+                self.begin_inst();
                 self.emit_sub_rr(rd, Reg::Xzr, rm, false);
+                self.end_inst(format!("neg {}, {}", rd, rm));
             }
 
             Aarch64Inst::Negs { dst, src } => {
                 let rd = dst.as_physical();
                 let rm = src.as_physical();
                 // NEGS is SUBS from XZR (64-bit for i64/u64 overflow detection)
+                self.begin_inst();
                 self.emit_subs_rr64(rd, Reg::Xzr, rm);
+                self.end_inst(format!("negs {}, {}", rd, rm));
             }
 
             Aarch64Inst::Negs32 { dst, src } => {
                 let rd = dst.as_physical();
                 let rm = src.as_physical();
                 // NEGS is SUBS from WZR (32-bit for i32/u32 and sub-word overflow detection)
+                self.begin_inst();
                 self.emit_subs_rr32(rd, Reg::Xzr, rm);
+                self.end_inst(format!("negs {}, {}", rd.as_w(), rm.as_w()));
             }
 
             Aarch64Inst::AndRR { dst, src1, src2 } => {
                 let rd = dst.as_physical();
                 let rn = src1.as_physical();
                 let rm = src2.as_physical();
+                self.begin_inst();
                 self.emit_and_rr(rd, rn, rm);
+                self.end_inst(format!("and {}, {}, {}", rd, rn, rm));
             }
 
             Aarch64Inst::OrrRR { dst, src1, src2 } => {
                 let rd = dst.as_physical();
                 let rn = src1.as_physical();
                 let rm = src2.as_physical();
+                self.begin_inst();
                 self.emit_orr_rr(rd, rn, rm);
+                self.end_inst(format!("orr {}, {}, {}", rd, rn, rm));
             }
 
             Aarch64Inst::EorRR { dst, src1, src2 } => {
                 let rd = dst.as_physical();
                 let rn = src1.as_physical();
                 let rm = src2.as_physical();
+                self.begin_inst();
                 self.emit_eor_rr(rd, rn, rm);
+                self.end_inst(format!("eor {}, {}, {}", rd, rn, rm));
             }
 
             Aarch64Inst::EorImm { dst, src, imm } => {
                 let rd = dst.as_physical();
                 let rn = src.as_physical();
+                self.begin_inst();
                 self.emit_eor_imm(rd, rn, *imm);
+                self.end_inst(format!("eor {}, {}, #{}", rd, rn, imm));
             }
 
             Aarch64Inst::MvnRR { dst, src } => {
                 let rd = dst.as_physical();
                 let rm = src.as_physical();
+                self.begin_inst();
                 self.emit_mvn_rr(rd, rm);
+                self.end_inst(format!("mvn {}, {}", rd, rm));
             }
 
             Aarch64Inst::LslRR { dst, src1, src2 } => {
                 let rd = dst.as_physical();
                 let rn = src1.as_physical();
                 let rm = src2.as_physical();
+                self.begin_inst();
                 self.emit_lslv_rr(rd, rn, rm);
+                self.end_inst(format!("lsl {}, {}, {}", rd, rn, rm));
             }
 
             Aarch64Inst::Lsl32RR { dst, src1, src2 } => {
                 let rd = dst.as_physical();
                 let rn = src1.as_physical();
                 let rm = src2.as_physical();
+                self.begin_inst();
                 self.emit_lslv32_rr(rd, rn, rm);
+                self.end_inst(format!("lsl {}, {}, {}", rd.as_w(), rn.as_w(), rm.as_w()));
             }
 
             Aarch64Inst::LsrRR { dst, src1, src2 } => {
                 let rd = dst.as_physical();
                 let rn = src1.as_physical();
                 let rm = src2.as_physical();
+                self.begin_inst();
                 self.emit_lsrv_rr(rd, rn, rm);
+                self.end_inst(format!("lsr {}, {}, {}", rd, rn, rm));
             }
 
             Aarch64Inst::Lsr32RR { dst, src1, src2 } => {
                 let rd = dst.as_physical();
                 let rn = src1.as_physical();
                 let rm = src2.as_physical();
+                self.begin_inst();
                 self.emit_lsrv32_rr(rd, rn, rm);
+                self.end_inst(format!("lsr {}, {}, {}", rd.as_w(), rn.as_w(), rm.as_w()));
             }
 
             Aarch64Inst::AsrRR { dst, src1, src2 } => {
                 let rd = dst.as_physical();
                 let rn = src1.as_physical();
                 let rm = src2.as_physical();
+                self.begin_inst();
                 self.emit_asrv_rr(rd, rn, rm);
+                self.end_inst(format!("asr {}, {}, {}", rd, rn, rm));
             }
 
             Aarch64Inst::Asr32RR { dst, src1, src2 } => {
                 let rd = dst.as_physical();
                 let rn = src1.as_physical();
                 let rm = src2.as_physical();
+                self.begin_inst();
                 self.emit_asrv32_rr(rd, rn, rm);
+                self.end_inst(format!("asr {}, {}, {}", rd.as_w(), rn.as_w(), rm.as_w()));
             }
 
             Aarch64Inst::CmpRR { src1, src2 } => {
                 let rn = src1.as_physical();
                 let rm = src2.as_physical();
                 // CMP is SUBS with WZR destination (32-bit form for i32 and sub-word types)
+                self.begin_inst();
                 self.emit_subs_rr32(Reg::Xzr, rn, rm);
+                self.end_inst(format!("cmp {}, {}", rn.as_w(), rm.as_w()));
             }
 
             Aarch64Inst::Cmp64RR { src1, src2 } => {
                 let rn = src1.as_physical();
                 let rm = src2.as_physical();
                 // 64-bit CMP is SUBS with XZR destination (64-bit form)
+                self.begin_inst();
                 self.emit_sub64_rr(Reg::Xzr, rn, rm, true);
+                self.end_inst(format!("cmp {}, {}", rn, rm));
             }
 
             Aarch64Inst::CmpImm { src, imm } => {
                 let rn = src.as_physical();
+                self.begin_inst();
                 self.emit_cmp_imm(rn, *imm as u32);
+                self.end_inst(format!("cmp {}, #{}", rn, imm));
             }
 
             Aarch64Inst::Cbz { src, label } => {
                 let rt = src.as_physical();
+                self.begin_inst();
                 self.emit_cbz(rt, *label, false);
+                self.end_inst(format!("cbz {}, L{}", rt, label));
             }
 
             Aarch64Inst::Cbnz { src, label } => {
                 let rt = src.as_physical();
+                self.begin_inst();
                 self.emit_cbz(rt, *label, true);
+                self.end_inst(format!("cbnz {}, L{}", rt, label));
             }
 
             Aarch64Inst::Cset { dst, cond } => {
                 let rd = dst.as_physical();
+                self.begin_inst();
                 self.emit_cset(rd, *cond);
+                self.end_inst(format!("cset {}, {}", rd, cond));
             }
 
             Aarch64Inst::TstRR { src1, src2 } => {
                 let rn = src1.as_physical();
                 let rm = src2.as_physical();
                 // TST is ANDS with XZR destination
+                self.begin_inst();
                 self.emit_ands_rr(Reg::Xzr, rn, rm);
+                self.end_inst(format!("tst {}, {}", rn, rm));
             }
 
             Aarch64Inst::Sxtb { dst, src } => {
                 let rd = dst.as_physical();
                 let rn = src.as_physical();
+                self.begin_inst();
                 self.emit_sbfm(rd, rn, 0, 7);
+                self.end_inst(format!("sxtb {}, {}", rd, rn.as_w()));
             }
 
             Aarch64Inst::Sxth { dst, src } => {
                 let rd = dst.as_physical();
                 let rn = src.as_physical();
+                self.begin_inst();
                 self.emit_sbfm(rd, rn, 0, 15);
+                self.end_inst(format!("sxth {}, {}", rd, rn.as_w()));
             }
 
             Aarch64Inst::Sxtw { dst, src } => {
                 let rd = dst.as_physical();
                 let rn = src.as_physical();
+                self.begin_inst();
                 self.emit_sbfm(rd, rn, 0, 31);
+                self.end_inst(format!("sxtw {}, {}", rd, rn.as_w()));
             }
 
             Aarch64Inst::Uxtb { dst, src } => {
                 let rd = dst.as_physical();
                 let rn = src.as_physical();
+                self.begin_inst();
                 self.emit_ubfm(rd, rn, 0, 7);
+                self.end_inst(format!("uxtb {}, {}", rd.as_w(), rn.as_w()));
             }
 
             Aarch64Inst::Uxth { dst, src } => {
                 let rd = dst.as_physical();
                 let rn = src.as_physical();
+                self.begin_inst();
                 self.emit_ubfm(rd, rn, 0, 15);
+                self.end_inst(format!("uxth {}, {}", rd.as_w(), rn.as_w()));
             }
 
             Aarch64Inst::B { label } => {
+                self.begin_inst();
                 self.emit_b(*label);
+                self.end_inst(format!("b L{}", label));
             }
 
             Aarch64Inst::BCond { cond, label } => {
+                self.begin_inst();
                 self.emit_bcond(*cond, *label);
+                self.end_inst(format!("b.{} L{}", cond, label));
             }
 
             Aarch64Inst::Bvs { label } => {
                 // B.VS = branch if overflow set (cond = 0110)
+                self.begin_inst();
                 self.emit_bcond_raw(6, *label);
+                self.end_inst(format!("b.vs L{}", label));
             }
 
             Aarch64Inst::Bvc { label } => {
                 // B.VC = branch if overflow clear (cond = 0111)
+                self.begin_inst();
                 self.emit_bcond_raw(7, *label);
+                self.end_inst(format!("b.vc L{}", label));
             }
 
             Aarch64Inst::Label { id } => {
                 self.labels.insert(*id, self.code.len());
+                self.record_label(format!("L{}", id));
             }
 
             Aarch64Inst::Bl { symbol } => {
+                self.begin_inst();
                 self.emit_bl(symbol);
+                self.end_inst(format!("bl {}", symbol));
             }
 
             Aarch64Inst::Ret => {
                 if self.has_frame {
                     self.emit_epilogue();
                 }
+                self.begin_inst();
                 self.emit_ret();
+                self.end_inst("ret");
             }
 
             Aarch64Inst::StpPre { src1, src2, offset } => {
                 let rt1 = src1.as_physical();
                 let rt2 = src2.as_physical();
+                self.begin_inst();
                 self.emit_stp_pre(rt1, rt2, *offset);
+                self.end_inst(format!("stp {}, {}, [sp, #{}]!", rt1, rt2, offset));
             }
 
             Aarch64Inst::LdpPost { dst1, dst2, offset } => {
                 let rt1 = dst1.as_physical();
                 let rt2 = dst2.as_physical();
+                self.begin_inst();
                 self.emit_ldp_post(rt1, rt2, *offset);
+                self.end_inst(format!("ldp {}, {}, [sp], #{}", rt1, rt2, offset));
             }
 
             // These instructions should be caught by the verification at the start of emit()
@@ -732,25 +927,33 @@ impl<'a> Emitter<'a> {
             Aarch64Inst::LslImm { dst, src, imm } => {
                 let rd = dst.as_physical();
                 let rn = src.as_physical();
+                self.begin_inst();
                 self.emit_lsl_imm(rd, rn, *imm);
+                self.end_inst(format!("lsl {}, {}, #{}", rd, rn, imm));
             }
 
             Aarch64Inst::Lsl32Imm { dst, src, imm } => {
                 let rd = dst.as_physical();
                 let rn = src.as_physical();
+                self.begin_inst();
                 self.emit_lsl32_imm(rd, rn, *imm);
+                self.end_inst(format!("lsl {}, {}, #{}", rd.as_w(), rn.as_w(), imm));
             }
 
             Aarch64Inst::Lsr32Imm { dst, src, imm } => {
                 let rd = dst.as_physical();
                 let rn = src.as_physical();
+                self.begin_inst();
                 self.emit_lsr32_imm(rd, rn, *imm);
+                self.end_inst(format!("lsr {}, {}, #{}", rd.as_w(), rn.as_w(), imm));
             }
 
             Aarch64Inst::Asr32Imm { dst, src, imm } => {
                 let rd = dst.as_physical();
                 let rn = src.as_physical();
+                self.begin_inst();
                 self.emit_asr32_imm(rd, rn, *imm);
+                self.end_inst(format!("asr {}, {}, #{}", rd.as_w(), rn.as_w(), imm));
             }
 
             Aarch64Inst::StringConstPtr { dst, string_id } => {
@@ -761,6 +964,7 @@ impl<'a> Emitter<'a> {
 
                 // ADRP dst, <symbol>
                 // This loads the 4KB-aligned page address of the symbol
+                self.begin_inst();
                 let offset = self.code.len();
                 let adrp = OPCODE_ADRP | rd.encoding() as u32;
                 self.emit_u32(adrp);
@@ -769,9 +973,11 @@ impl<'a> Emitter<'a> {
                 let symbol = format!(".rodata.str{}", string_id);
                 self.relocations
                     .push(EmittedRelocation::aarch64_adrp(offset as u64, &symbol));
+                self.end_inst(format!("adrp {}, {}", rd, symbol));
 
                 // ADD dst, dst, <symbol>
                 // This adds the offset within the page
+                self.begin_inst();
                 let offset = self.code.len();
                 let add = OPCODE_ADD_IMM_X | (rd.encoding() as u32) << 5 | rd.encoding() as u32;
                 self.emit_u32(add);
@@ -779,6 +985,7 @@ impl<'a> Emitter<'a> {
                 // Record relocation for ADD using the helper
                 self.relocations
                     .push(EmittedRelocation::aarch64_add_lo12(offset as u64, &symbol));
+                self.end_inst(format!("add {}, {}, :lo12:{}", rd, rd, symbol));
             }
 
             Aarch64Inst::StringConstLen { dst, string_id } => {
@@ -795,20 +1002,26 @@ impl<'a> Emitter<'a> {
                 };
 
                 // Emit the length as an immediate
+                self.begin_inst();
                 self.emit_mov_imm(rd, len);
+                self.end_inst(format!("mov {}, #{}", rd, len));
             }
 
             Aarch64Inst::StringConstCap { dst, string_id: _ } => {
                 // String literals have capacity 0 (rodata, not heap)
                 // This distinguishes rodata strings from heap-allocated ones
                 let rd = dst.as_physical();
+                self.begin_inst();
                 self.emit_mov_imm(rd, 0);
+                self.end_inst(format!("mov {}, #0", rd));
             }
         }
     }
 
     /// Emit function epilogue (restore SP from FP, restore callee-saved, LDP FP/LR).
     fn emit_epilogue(&mut self) {
+        self.record_comment("epilogue");
+
         // Stack layout after prologue:
         //   FP -> [saved FP/LR]
         //   FP-16 -> [callee-saved pair 1]
@@ -826,7 +1039,9 @@ impl<'a> Emitter<'a> {
             let total_slots = self.num_locals + self.num_params.min(8);
             let stack_size = ((total_slots as i32 * 8 + 15) / 16) * 16;
             if stack_size > 0 {
+                self.begin_inst();
                 self.emit_add_imm(Reg::Sp, Reg::Sp, stack_size as u32);
+                self.end_inst(format!("add sp, sp, #{}", stack_size));
             }
         }
 
@@ -838,17 +1053,27 @@ impl<'a> Emitter<'a> {
         // Odd register first (was pushed last)
         if has_odd {
             let idx = callee_saved.len() - 1;
+            self.begin_inst();
             self.emit_ldr_post(callee_saved[idx], 16);
+            self.end_inst(format!("ldr {}, [sp], #16", callee_saved[idx]));
         }
 
         // Pairs in reverse
         for i in (0..num_pairs).rev() {
             let idx = i * 2;
+            self.begin_inst();
             self.emit_ldp_post(callee_saved[idx], callee_saved[idx + 1], 16);
+            self.end_inst(format!(
+                "ldp {}, {}, [sp], #16",
+                callee_saved[idx],
+                callee_saved[idx + 1]
+            ));
         }
 
         // ldp x29, x30, [sp], #16     ; Restore FP and LR
+        self.begin_inst();
         self.emit_ldp_post(Reg::Fp, Reg::Lr, 16);
+        self.end_inst("ldp x29, x30, [sp], #16");
     }
 
     /// Apply pending fixups for forward branches.
