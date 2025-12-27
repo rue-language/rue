@@ -9,208 +9,113 @@ description = "Comparison operators compare values and produce bool results."
 # =============================================================================
 
 [[case]]
-name = "comparison_eq_true"
+name = "comparison_{op}"
 spec = ["4.3:1"]
 source = """
 fn main() -> i32 {
-    if 5 == 5 { 1 } else { 0 }
+    if {expr} { 1 } else { 0 }
 }
 """
-exit_code = 1
-
-[[case]]
-name = "comparison_eq_false"
-spec = ["4.3:1"]
-source = """
-fn main() -> i32 {
-    if 5 == 6 { 1 } else { 0 }
-}
-"""
-exit_code = 0
-
-[[case]]
-name = "comparison_ne_true"
-spec = ["4.3:1"]
-source = """
-fn main() -> i32 {
-    if 5 != 6 { 1 } else { 0 }
-}
-"""
-exit_code = 1
+params = [
+  { op = "eq_true", expr = "5 == 5", exit_code = 1 },
+  { op = "eq_false", expr = "5 == 6", exit_code = 0 },
+  { op = "ne_true", expr = "5 != 6", exit_code = 1 },
+]
 
 # =============================================================================
 # Equality Works on Integers and Booleans
 # =============================================================================
 
 [[case]]
-name = "equality_on_integers"
+name = "equality_{type}"
 spec = ["4.3:2"]
 source = """
 fn main() -> i32 {
-    if 42 == 42 { 1 } else { 0 }
+    if {expr} { 1 } else { 0 }
 }
 """
-exit_code = 1
-
-[[case]]
-name = "equality_on_booleans"
-spec = ["4.3:2"]
-source = """
-fn main() -> i32 {
-    if true == true { 1 } else { 0 }
-}
-"""
-exit_code = 1
-
-[[case]]
-name = "inequality_on_booleans"
-spec = ["4.3:2"]
-source = """
-fn main() -> i32 {
-    if true != false { 1 } else { 0 }
-}
-"""
-exit_code = 1
+params = [
+  { type = "integers", expr = "42 == 42", exit_code = 1 },
+  { type = "booleans_eq", expr = "true == true", exit_code = 1 },
+  { type = "booleans_ne", expr = "true != false", exit_code = 1 },
+]
 
 # =============================================================================
 # Ordering Works Only on Integers
 # =============================================================================
 
 [[case]]
-name = "ordering_lt_integers"
+name = "ordering_{op}_integers"
 spec = ["4.3:4"]
 source = """
 fn main() -> i32 {
-    if 5 < 10 { 1 } else { 0 }
+    if {expr} { 1 } else { 0 }
 }
 """
-exit_code = 1
-
-[[case]]
-name = "ordering_gt_integers"
-spec = ["4.3:4"]
-source = """
-fn main() -> i32 {
-    if 10 > 5 { 1 } else { 0 }
-}
-"""
-exit_code = 1
-
-[[case]]
-name = "ordering_le_integers"
-spec = ["4.3:4"]
-source = """
-fn main() -> i32 {
-    if 5 <= 5 { 1 } else { 0 }
-}
-"""
-exit_code = 1
-
-[[case]]
-name = "ordering_ge_integers"
-spec = ["4.3:4"]
-source = """
-fn main() -> i32 {
-    if 5 >= 5 { 1 } else { 0 }
-}
-"""
-exit_code = 1
+params = [
+  { op = "lt", expr = "5 < 10", exit_code = 1 },
+  { op = "gt", expr = "10 > 5", exit_code = 1 },
+  { op = "le", expr = "5 <= 5", exit_code = 1 },
+  { op = "ge", expr = "5 >= 5", exit_code = 1 },
+]
 
 # =============================================================================
 # Ordering on Booleans is Compile Error
 # =============================================================================
 
 [[case]]
-name = "ordering_lt_on_bool"
+name = "ordering_{op}_on_bool"
 spec = ["4.3:5"]
 source = """
 fn main() -> i32 {
-    if true < false { 1 } else { 0 }
+    if true {op} false { 1 } else { 0 }
 }
 """
 compile_fail = true
-
-[[case]]
-name = "ordering_gt_on_bool"
-spec = ["4.3:5"]
-source = """
-fn main() -> i32 {
-    if true > false { 1 } else { 0 }
-}
-"""
-compile_fail = true
-
-[[case]]
-name = "ordering_le_on_bool"
-spec = ["4.3:5"]
-source = """
-fn main() -> i32 {
-    if true <= false { 1 } else { 0 }
-}
-"""
-compile_fail = true
-
-[[case]]
-name = "ordering_ge_on_bool"
-spec = ["4.3:5"]
-source = """
-fn main() -> i32 {
-    if true >= false { 1 } else { 0 }
-}
-"""
-compile_fail = true
+params = [
+  { op = "<" },
+  { op = ">" },
+  { op = "<=" },
+  { op = ">=" },
+]
 
 # =============================================================================
 # Comparison Precedence Lower Than Arithmetic
 # =============================================================================
 
 [[case]]
-name = "precedence_comparison_after_arithmetic"
+name = "precedence_comparison_{variant}"
 spec = ["4.3:8"]
 source = """
 fn main() -> i32 {
-    if 2 + 3 == 5 { 1 } else { 0 }
+    if {expr} { 1 } else { 0 }
 }
 """
 exit_code = 1
-
-[[case]]
-name = "precedence_lt_after_add"
-spec = ["4.3:8"]
-source = """
-fn main() -> i32 {
-    if 2 + 3 < 10 - 3 { 1 } else { 0 }
-}
-"""
-exit_code = 1
+params = [
+  { variant = "after_add", expr = "2 + 3 == 5" },
+  { variant = "both_sides", expr = "2 + 3 < 10 - 3" },
+]
 
 # =============================================================================
 # Both Operands Must Have Same Type
 # =============================================================================
 
 [[case]]
-name = "type_mismatch_i32_i64"
+name = "type_mismatch_{types}"
 spec = ["4.3:10"]
 source = """
 fn main() -> i32 {
-    let x: i32 = 10;
-    let y: i64 = 10;
+    let x: {from} = 10;
+    let y: {to} = 10;
     if x == y { 1 } else { 0 }
 }
 """
 compile_fail = true
-
-[[case]]
-name = "type_mismatch_i32_u32"
-spec = ["4.3:10"]
-source = """
-fn main() -> i32 {
-    let x: i32 = 10;
-    let y: u32 = 10;
-    if x == y { 1 } else { 0 }
-}
-"""
-compile_fail = true
+params = [
+  { types = "i32_i64", from = "i32", to = "i64" },
+  { types = "i32_u32", from = "i32", to = "u32" },
+]
 
 # =============================================================================
 # Type Inference from One Operand
@@ -227,56 +132,28 @@ fn main() -> i32 {
 """
 exit_code = 1
 
-# NOTE: This test is commented out because the compiler doesn't yet support
-# type inference from the right operand of a comparison.
-# TODO: Implement bidirectional type inference and uncomment the test.
-# [[case]]
-# name = "infer_type_from_right_operand"
-# spec = ["4.3:11"]
-# source = """
-# fn main() -> i32 {
-#     let x: i64 = 100;
-#     if 100 == x { 1 } else { 0 }
-# }
-# """
-# exit_code = 1
+# NOTE: Right-operand inference not yet implemented, see integers.toml for tests
 
 # =============================================================================
 # Chained Comparisons Are Rejected
 # =============================================================================
 
 [[case]]
-name = "chained_lt_comparison_error"
+name = "chained_{variant}_error"
 spec = ["4.3:12"]
 source = """
 fn main() -> i32 {
-    if 1 < 2 < 3 { 1 } else { 0 }
+    if {expr} { 1 } else { 0 }
 }
 """
 compile_fail = true
 error_contains = "comparison operators cannot be chained"
-
-[[case]]
-name = "chained_eq_comparison_error"
-spec = ["4.3:12"]
-source = """
-fn main() -> i32 {
-    if 1 == 1 == true { 1 } else { 0 }
-}
-"""
-compile_fail = true
-error_contains = "comparison operators cannot be chained"
-
-[[case]]
-name = "chained_mixed_comparison_error"
-spec = ["4.3:12"]
-source = """
-fn main() -> i32 {
-    if 1 < 2 == true { 1 } else { 0 }
-}
-"""
-compile_fail = true
-error_contains = "comparison operators cannot be chained"
+params = [
+  { variant = "lt", expr = "1 < 2 < 3" },
+  { variant = "eq", expr = "1 == 1 == true" },
+  { variant = "mixed", expr = "1 < 2 == true" },
+  { variant = "parenthesized", expr = "(1 < 2) < 3" },
+]
 
 [[case]]
 name = "separate_comparisons_with_and"
@@ -288,40 +165,22 @@ fn main() -> i32 {
 """
 exit_code = 1
 
-[[case]]
-name = "parenthesized_comparison_in_chain"
-spec = ["4.3:12"]
-source = """
-fn main() -> i32 {
-    if (1 < 2) < 3 { 1 } else { 0 }
-}
-"""
-compile_fail = true
-error_contains = "comparison operators cannot be chained"
-
 # =============================================================================
 # Unit Type Equality
 # =============================================================================
 
 [[case]]
-name = "unit_equality"
+name = "unit_{op}"
 spec = ["4.3:2", "4.3:3a"]
 source = """
 fn main() -> i32 {
-    if () == () { 1 } else { 0 }
+    if {expr} { 1 } else { 0 }
 }
 """
-exit_code = 1
-
-[[case]]
-name = "unit_inequality"
-spec = ["4.3:2", "4.3:3a"]
-source = """
-fn main() -> i32 {
-    if () != () { 1 } else { 0 }
-}
-"""
-exit_code = 0
+params = [
+  { op = "equality", expr = "() == ()", exit_code = 1 },
+  { op = "inequality", expr = "() != ()", exit_code = 0 },
+]
 
 [[case]]
 name = "unit_ordering_disallowed"
@@ -338,46 +197,22 @@ compile_fail = true
 # =============================================================================
 
 [[case]]
-name = "struct_equality_same_values"
+name = "struct_equality_{variant}"
 spec = ["4.3:2", "4.3:3b"]
 source = """
 struct Point { x: i32, y: i32 }
 
 fn main() -> i32 {
-    let p1 = Point { x: 1, y: 2 };
-    let p2 = Point { x: 1, y: 2 };
-    if p1 == p2 { 1 } else { 0 }
+    let p1 = Point { x: {x1}, y: {y1} };
+    let p2 = Point { x: {x2}, y: {y2} };
+    if p1 {op} p2 { 1 } else { 0 }
 }
 """
-exit_code = 1
-
-[[case]]
-name = "struct_equality_different_values"
-spec = ["4.3:2", "4.3:3b"]
-source = """
-struct Point { x: i32, y: i32 }
-
-fn main() -> i32 {
-    let p1 = Point { x: 1, y: 2 };
-    let p2 = Point { x: 1, y: 3 };
-    if p1 == p2 { 1 } else { 0 }
-}
-"""
-exit_code = 0
-
-[[case]]
-name = "struct_inequality"
-spec = ["4.3:2", "4.3:3b"]
-source = """
-struct Point { x: i32, y: i32 }
-
-fn main() -> i32 {
-    let p1 = Point { x: 1, y: 2 };
-    let p2 = Point { x: 1, y: 3 };
-    if p1 != p2 { 1 } else { 0 }
-}
-"""
-exit_code = 1
+params = [
+  { variant = "same_values", x1 = "1", y1 = "2", x2 = "1", y2 = "2", op = "==", exit_code = 1 },
+  { variant = "different_values", x1 = "1", y1 = "2", x2 = "1", y2 = "3", op = "==", exit_code = 0 },
+  { variant = "inequality", x1 = "1", y1 = "2", x2 = "1", y2 = "3", op = "!=", exit_code = 1 },
+]
 
 [[case]]
 name = "struct_equality_single_field"

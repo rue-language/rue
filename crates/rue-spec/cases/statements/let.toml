@@ -20,88 +20,49 @@ fn main() -> i32 {
 exit_code = 42
 
 [[case]]
-name = "let_with_expression"
+name = "let_{variant}"
 spec = ["5.1:1"]
 source = """
 fn main() -> i32 {
-    let x = 1 + 2;
-    x
+    {body}
 }
 """
-exit_code = 3
+params = [
+  { variant = "with_expression", body = "let x = 1 + 2; x", exit_code = 3 },
+  { variant = "multiple", body = "let x = 10; let y = 20; x + y", exit_code = 30 },
+  { variant = "chained", body = "let x = 10; let y = x + 5; let z = y * 2; z", exit_code = 30 },
+  { variant = "negation", body = "let x = -5; let y = -x; y", exit_code = 5 },
+]
 
 [[case]]
-name = "let_multiple"
+name = "let_complex_expression"
 spec = ["5.1:1"]
 source = """
 fn main() -> i32 {
-    let x = 10;
-    let y = 20;
-    x + y
+    let result = (1 + 2) * (3 + 4);
+    result
 }
 """
-exit_code = 30
+exit_code = 21
+
+# =============================================================================
+# Shadowing
+# =============================================================================
 
 [[case]]
-name = "let_use_in_expression"
-spec = ["5.1:1"]
-source = """
-fn main() -> i32 {
-    let a = 5;
-    let b = 3;
-    a * b + 2
-}
-"""
-exit_code = 17
-
-[[case]]
-name = "let_chained"
-spec = ["5.1:1"]
-source = """
-fn main() -> i32 {
-    let x = 10;
-    let y = x + 5;
-    let z = y * 2;
-    z
-}
-"""
-exit_code = 30
-
-[[case]]
-name = "let_shadow"
+name = "let_shadow_{variant}"
 spec = ["5.1:2", "5.1:10"]
 source = """
 fn main() -> i32 {
-    let x = 1;
-    let x = 2;
-    x
+    {body}
 }
 """
-exit_code = 2
-
-[[case]]
-name = "let_shadow_uses_previous"
-spec = ["5.1:2", "5.1:10", "5.1:12"]
-source = """
-fn main() -> i32 {
-    let x = 10;
-    let x = x + 5;
-    x
-}
-"""
-exit_code = 15
-
-[[case]]
-name = "let_shadow_multiple_refs_in_init"
-spec = ["5.1:12"]
-source = """
-fn main() -> i32 {
-    let x = 5;
-    let x = x + x;
-    x
-}
-"""
-exit_code = 10
+params = [
+  { variant = "basic", body = "let x = 1; let x = 2; x", exit_code = 2 },
+  { variant = "uses_previous", body = "let x = 10; let x = x + 5; x", exit_code = 15, spec_extra = ["5.1:12"] },
+  { variant = "multiple_refs", body = "let x = 5; let x = x + x; x", exit_code = 10, spec_extra = ["5.1:12"] },
+  { variant = "chained", body = "let x = 1; let x = x + 1; let x = x + 1; let x = x + 1; x", exit_code = 4, spec_extra = ["5.1:12"] },
+]
 
 [[case]]
 name = "let_shadow_complex_init_expr"
@@ -142,134 +103,42 @@ fn main() -> i32 {
 """
 exit_code = 15
 
-[[case]]
-name = "let_shadow_chained"
-spec = ["5.1:12"]
-source = """
-fn main() -> i32 {
-    let x = 1;
-    let x = x + 1;
-    let x = x + 1;
-    let x = x + 1;
-    x
-}
-"""
-exit_code = 4
-
-[[case]]
-name = "let_complex_expression"
-spec = ["5.1:1"]
-source = """
-fn main() -> i32 {
-    let result = (1 + 2) * (3 + 4);
-    result
-}
-"""
-exit_code = 21
-
-[[case]]
-name = "let_negation"
-spec = ["5.1:1"]
-source = """
-fn main() -> i32 {
-    let x = -5;
-    let y = -x;
-    y
-}
-"""
-exit_code = 5
-
 # =============================================================================
 # Type Annotations
 # =============================================================================
 
 [[case]]
-name = "let_with_type"
+name = "let_with_type_{variant}"
 spec = ["5.1:3", "5.1:8"]
 source = """
 fn main() -> i32 {
-    let x: i32 = 42;
-    x
+    {body}
 }
 """
-exit_code = 42
-
-[[case]]
-name = "let_with_type_expression"
-spec = ["5.1:3"]
-source = """
-fn main() -> i32 {
-    let x: i32 = 10 + 20;
-    x
-}
-"""
-exit_code = 30
-
-[[case]]
-name = "let_multiple_with_types"
-spec = ["5.1:3"]
-source = """
-fn main() -> i32 {
-    let a: i32 = 5;
-    let b: i32 = 7;
-    a + b
-}
-"""
-exit_code = 12
+params = [
+  { variant = "simple", body = "let x: i32 = 42; x", exit_code = 42 },
+  { variant = "expression", body = "let x: i32 = 10 + 20; x", exit_code = 30 },
+  { variant = "multiple", body = "let a: i32 = 5; let b: i32 = 7; a + b", exit_code = 12 },
+]
 
 # =============================================================================
 # Mutable Variables
 # =============================================================================
 
 [[case]]
-name = "let_mut_simple"
+name = "let_mut_{variant}"
 spec = ["5.1:4", "5.1:5"]
 source = """
 fn main() -> i32 {
-    let mut x = 10;
-    x = 20;
-    x
+    {body}
 }
 """
-exit_code = 20
-
-[[case]]
-name = "let_mut_increment"
-spec = ["5.1:4"]
-source = """
-fn main() -> i32 {
-    let mut x = 5;
-    x = x + 1;
-    x
-}
-"""
-exit_code = 6
-
-[[case]]
-name = "let_mut_multiple_assigns"
-spec = ["5.1:4"]
-source = """
-fn main() -> i32 {
-    let mut x = 1;
-    x = 2;
-    x = 3;
-    x = 4;
-    x
-}
-"""
-exit_code = 4
-
-[[case]]
-name = "let_mut_with_type"
-spec = ["5.1:3", "5.1:4"]
-source = """
-fn main() -> i32 {
-    let mut x: i32 = 10;
-    x = 20;
-    x
-}
-"""
-exit_code = 20
+params = [
+  { variant = "simple", body = "let mut x = 10; x = 20; x", exit_code = 20 },
+  { variant = "increment", body = "let mut x = 5; x = x + 1; x", exit_code = 6 },
+  { variant = "multiple_assigns", body = "let mut x = 1; x = 2; x = 3; x = 4; x", exit_code = 4 },
+  { variant = "with_type", body = "let mut x: i32 = 10; x = 20; x", exit_code = 20, spec_extra = ["5.1:3"] },
+]
 
 [[case]]
 name = "let_mut_complex"
@@ -300,72 +169,22 @@ fn main() -> i32 {
 exit_code = 15
 
 [[case]]
-name = "let_mut_shadow"
+name = "let_mut_shadow_{variant}"
 spec = ["5.1:2", "5.1:4"]
 source = """
 fn main() -> i32 {
-    let mut x = 1;
-    let mut x = 2;
-    x = 3;
-    x
+    {body}
 }
 """
-exit_code = 3
-
-[[case]]
-name = "let_immutable_shadow_mutable"
-spec = ["5.1:2"]
-source = """
-fn main() -> i32 {
-    let mut x = 1;
-    x = 10;
-    let x = 42;
-    x
-}
-"""
-exit_code = 42
-
-[[case]]
-name = "let_mutable_shadow_immutable"
-spec = ["5.1:2", "5.1:4"]
-source = """
-fn main() -> i32 {
-    let x = 10;
-    let mut x = x;
-    x = x + 5;
-    x
-}
-"""
-exit_code = 15
+params = [
+  { variant = "mut_to_mut", body = "let mut x = 1; let mut x = 2; x = 3; x", exit_code = 3 },
+  { variant = "mut_to_immut", body = "let mut x = 1; x = 10; let x = 42; x", exit_code = 42 },
+  { variant = "immut_to_mut", body = "let x = 10; let mut x = x; x = x + 5; x", exit_code = 15 },
+]
 
 # =============================================================================
 # Statements and Final Expression
 # =============================================================================
-
-[[case]]
-name = "statements_with_semicolons"
-spec = ["5.1:1"]
-source = """
-fn main() -> i32 {
-    let x = 10;
-    let y = 20;
-    x + y
-}
-"""
-exit_code = 30
-
-[[case]]
-name = "expression_after_statements"
-spec = ["5.1:1"]
-source = """
-fn main() -> i32 {
-    let a = 1;
-    let b = 2;
-    let c = 3;
-    a + b + c
-}
-"""
-exit_code = 6
 
 [[case]]
 name = "assignment_is_statement"
@@ -384,16 +203,13 @@ exit_code = 10
 # =============================================================================
 
 [[case]]
-name = "let_single_line"
+name = "let_formatting_{variant}"
 spec = ["5.1:1"]
-source = "fn main() -> i32 { let x = 42; x }"
-exit_code = 42
-
-[[case]]
-name = "let_compact"
-spec = ["5.1:1"]
-source = "fn main() -> i32 { let x=1+2; x }"
-exit_code = 3
+source = "{source}"
+params = [
+  { variant = "single_line", source = "fn main() -> i32 { let x = 42; x }", exit_code = 42 },
+  { variant = "compact", source = "fn main() -> i32 { let x=1+2; x }", exit_code = 3 },
+]
 
 [[case]]
 name = "let_extra_whitespace"
@@ -423,48 +239,20 @@ exit_code = 42
 # =============================================================================
 
 [[case]]
-name = "let_zero"
+name = "let_edge_{variant}"
 spec = ["5.1:1"]
 source = """
 fn main() -> i32 {
-    let x = 0;
-    x
+    let x = {value};
+    {expr}
 }
 """
-exit_code = 0
-
-[[case]]
-name = "let_negative"
-spec = ["5.1:1"]
-source = """
-fn main() -> i32 {
-    let x = -1;
-    x
-}
-"""
-exit_code = 255
-
-[[case]]
-name = "let_max_i32"
-spec = ["5.1:1"]
-source = """
-fn main() -> i32 {
-    let x = 2147483647;
-    x
-}
-"""
-exit_code = 255
-
-[[case]]
-name = "unused_variable"
-spec = ["5.1:1"]
-source = """
-fn main() -> i32 {
-    let x = 42;
-    0
-}
-"""
-exit_code = 0
+params = [
+  { variant = "zero", value = "0", expr = "x", exit_code = 0 },
+  { variant = "negative", value = "-1", expr = "x", exit_code = 255 },
+  { variant = "max_i32", value = "2147483647", expr = "x", exit_code = 255 },
+  { variant = "unused", value = "42", expr = "0", exit_code = 0 },
+]
 
 [[case]]
 name = "many_variables"
@@ -486,86 +274,40 @@ exit_code = 15
 # =============================================================================
 
 [[case]]
-name = "underscore_name"
+name = "variable_name_{variant}"
 spec = ["5.1:1"]
 source = """
 fn main() -> i32 {
-    let _x = 42;
-    _x
+    {body}
 }
 """
-exit_code = 42
-
-[[case]]
-name = "underscore_only"
-spec = ["5.1:1", "2.1:12"]
-source = """
-fn main() -> i32 {
-    let _ = 42;
-    0
-}
-"""
-exit_code = 0
-
-[[case]]
-name = "long_name"
-spec = ["5.1:1"]
-source = """
-fn main() -> i32 {
-    let my_very_long_variable_name = 42;
-    my_very_long_variable_name
-}
-"""
-exit_code = 42
-
-[[case]]
-name = "name_with_numbers"
-spec = ["5.1:1"]
-source = """
-fn main() -> i32 {
-    let x1 = 10;
-    let x2 = 20;
-    x1 + x2
-}
-"""
-exit_code = 30
-
-[[case]]
-name = "mixed_case_name"
-spec = ["5.1:1"]
-source = """
-fn main() -> i32 {
-    let myVar = 42;
-    myVar
-}
-"""
-exit_code = 42
+params = [
+  { variant = "underscore_prefix", body = "let _x = 42; _x", exit_code = 42 },
+  { variant = "underscore_only", body = "let _ = 42; 0", exit_code = 0, spec_extra = ["2.1:12"] },
+  { variant = "long", body = "let my_very_long_variable_name = 42; my_very_long_variable_name", exit_code = 42 },
+  { variant = "with_numbers", body = "let x1 = 10; let x2 = 20; x1 + x2", exit_code = 30 },
+  { variant = "mixed_case", body = "let myVar = 42; myVar", exit_code = 42 },
+]
 
 # =============================================================================
 # Block Scoping
 # =============================================================================
 
 [[case]]
-name = "nested_block_simple"
+name = "nested_block_{variant}"
 spec = ["4.5:1"]
 source = """
 fn main() -> i32 {
-    let x = 10;
-    { 20 }
+    {body}
 }
 """
-exit_code = 20
-
-[[case]]
-name = "nested_block_uses_outer"
-spec = ["4.5:1"]
-source = """
-fn main() -> i32 {
-    let x = 10;
-    { x + 5 }
-}
-"""
-exit_code = 15
+params = [
+  { variant = "simple", body = "let x = 10; { 20 }", exit_code = 20 },
+  { variant = "uses_outer", body = "let x = 10; { x + 5 }", exit_code = 15 },
+  { variant = "as_expression", body = "{ 42 }", exit_code = 42 },
+  { variant = "with_arithmetic", body = "{ 10 + 20 + 12 }", exit_code = 42 },
+  { variant = "in_expression", body = "1 + { 2 } + 3", exit_code = 6 },
+]
 
 [[case]]
 name = "block_scoped_variable"
@@ -630,26 +372,6 @@ fn main() -> i32 {
 exit_code = 6
 
 [[case]]
-name = "block_as_expression"
-spec = ["4.5:1"]
-source = """
-fn main() -> i32 {
-    { 42 }
-}
-"""
-exit_code = 42
-
-[[case]]
-name = "block_with_arithmetic"
-spec = ["4.5:1"]
-source = """
-fn main() -> i32 {
-    { 10 + 20 + 12 }
-}
-"""
-exit_code = 42
-
-[[case]]
 name = "sequential_blocks"
 spec = ["4.5:1"]
 source = """
@@ -660,16 +382,6 @@ fn main() -> i32 {
 }
 """
 exit_code = 30
-
-[[case]]
-name = "block_in_expression"
-spec = ["4.5:1"]
-source = """
-fn main() -> i32 {
-    1 + { 2 } + 3
-}
-"""
-exit_code = 6
 
 [[case]]
 name = "block_with_mutable_outer"

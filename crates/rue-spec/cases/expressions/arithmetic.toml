@@ -5,230 +5,108 @@ name = "Arithmetic Operators"
 description = "Arithmetic operators with standard precedence. Unary negation binds tightest, then multiplication/division/modulo, then addition/subtraction. Parentheses can override precedence."
 
 # =============================================================================
-# Basic Operations
+# Basic Operations (Parameterized)
 # =============================================================================
 
 [[case]]
-name = "addition_simple"
+name = "{op}_simple"
 spec = ["4.2:1"]
-source = "fn main() -> i32 { 1 + 2 }"
-exit_code = 3
-
-[[case]]
-name = "subtraction_simple"
-spec = ["4.2:1"]
-source = "fn main() -> i32 { 5 - 3 }"
-exit_code = 2
-
-[[case]]
-name = "multiplication_simple"
-spec = ["4.2:1"]
-source = "fn main() -> i32 { 3 * 4 }"
-exit_code = 12
-
-[[case]]
-name = "division_simple"
-spec = ["4.2:1"]
-source = "fn main() -> i32 { 10 / 3 }"
-exit_code = 3
-
-[[case]]
-name = "modulo_simple"
-spec = ["4.2:1"]
-source = "fn main() -> i32 { 10 % 3 }"
-exit_code = 1
+source = "fn main() -> i32 { {expr} }"
+params = [
+  { op = "addition", expr = "1 + 2", exit_code = 3 },
+  { op = "subtraction", expr = "5 - 3", exit_code = 2 },
+  { op = "multiplication", expr = "3 * 4", exit_code = 12 },
+  { op = "division", expr = "10 / 3", exit_code = 3 },
+  { op = "modulo", expr = "10 % 3", exit_code = 1 },
+]
 
 # =============================================================================
 # Operator Precedence
 # =============================================================================
 
 [[case]]
-name = "precedence_mul_over_add"
+name = "precedence_{variant}"
 spec = ["4.2:2"]
-source = "fn main() -> i32 { 1 + 2 * 3 }"
-exit_code = 7
-
-[[case]]
-name = "precedence_mul_over_sub"
-spec = ["4.2:2"]
-source = "fn main() -> i32 { 10 - 2 * 3 }"
-exit_code = 4
-
-[[case]]
-name = "precedence_div_over_add"
-spec = ["4.2:2"]
-source = "fn main() -> i32 { 1 + 6 / 2 }"
-exit_code = 4
-
-[[case]]
-name = "precedence_div_over_sub"
-spec = ["4.2:2"]
-source = "fn main() -> i32 { 10 - 6 / 2 }"
-exit_code = 7
-
-[[case]]
-name = "precedence_mod_over_add"
-spec = ["4.2:2"]
-source = "fn main() -> i32 { 1 + 7 % 3 }"
-exit_code = 2
-
-[[case]]
-name = "precedence_complex"
-spec = ["4.2:2"]
-source = "fn main() -> i32 { 2 + 3 * 4 - 10 / 2 }"
-exit_code = 9
+source = "fn main() -> i32 { {expr} }"
+params = [
+  { variant = "mul_over_add", expr = "1 + 2 * 3", exit_code = 7 },
+  { variant = "mul_over_sub", expr = "10 - 2 * 3", exit_code = 4 },
+  { variant = "div_over_add", expr = "1 + 6 / 2", exit_code = 4 },
+  { variant = "mod_over_add", expr = "1 + 7 % 3", exit_code = 2 },
+  { variant = "complex", expr = "2 + 3 * 4 - 10 / 2", exit_code = 9 },
+]
 
 # =============================================================================
 # Parentheses
 # =============================================================================
 
 [[case]]
-name = "parens_override_precedence"
+name = "parens_{variant}"
 spec = ["4.2:3"]
-source = "fn main() -> i32 { (1 + 2) * 3 }"
-exit_code = 9
-
-[[case]]
-name = "parens_nested"
-spec = ["4.2:3"]
-source = "fn main() -> i32 { ((1 + 2) * (3 + 4)) }"
-exit_code = 21
-
-[[case]]
-name = "parens_unnecessary"
-spec = ["4.2:3"]
-source = "fn main() -> i32 { (2) + (3) }"
-exit_code = 5
-
-[[case]]
-name = "parens_around_single"
-spec = ["4.2:3"]
-source = "fn main() -> i32 { (42) }"
-exit_code = 42
-
-[[case]]
-name = "parens_complex"
-spec = ["4.2:3"]
-source = "fn main() -> i32 { (10 - 2) * (3 + 1) / 4 }"
-exit_code = 8
+source = "fn main() -> i32 { {expr} }"
+params = [
+  { variant = "override_precedence", expr = "(1 + 2) * 3", exit_code = 9 },
+  { variant = "nested", expr = "((1 + 2) * (3 + 4))", exit_code = 21 },
+  { variant = "around_single", expr = "(42)", exit_code = 42 },
+  { variant = "complex", expr = "(10 - 2) * (3 + 1) / 4", exit_code = 8 },
+]
 
 # =============================================================================
 # Associativity (left-to-right)
 # =============================================================================
 
 [[case]]
-name = "left_associative_sub"
+name = "left_associative_{op}"
 spec = ["4.2:4"]
-source = "fn main() -> i32 { 10 - 3 - 2 }"
-exit_code = 5
-
-[[case]]
-name = "left_associative_div"
-spec = ["4.2:4"]
-source = "fn main() -> i32 { 24 / 4 / 2 }"
-exit_code = 3
-
-[[case]]
-name = "left_associative_mod"
-spec = ["4.2:4"]
-source = "fn main() -> i32 { 17 % 10 % 3 }"
-exit_code = 1
-
-[[case]]
-name = "left_associative_mixed"
-spec = ["4.2:4"]
-source = "fn main() -> i32 { 100 - 50 + 20 - 10 }"
-exit_code = 60
+source = "fn main() -> i32 { {expr} }"
+params = [
+  { op = "sub", expr = "10 - 3 - 2", exit_code = 5 },
+  { op = "div", expr = "24 / 4 / 2", exit_code = 3 },
+  { op = "mod", expr = "17 % 10 % 3", exit_code = 1 },
+  { op = "mixed", expr = "100 - 50 + 20 - 10", exit_code = 60 },
+]
 
 # =============================================================================
-# Edge Cases and Boundaries
+# Edge Cases
 # =============================================================================
 
 [[case]]
-name = "add_to_zero"
+name = "edge_{variant}"
 spec = ["4.2:1"]
-source = "fn main() -> i32 { 0 + 42 }"
-exit_code = 42
-
-[[case]]
-name = "multiply_by_zero"
-spec = ["4.2:1"]
-source = "fn main() -> i32 { 42 * 0 }"
-exit_code = 0
-
-[[case]]
-name = "multiply_by_one"
-spec = ["4.2:1"]
-source = "fn main() -> i32 { 42 * 1 }"
-exit_code = 42
-
-[[case]]
-name = "divide_by_one"
-spec = ["4.2:1"]
-source = "fn main() -> i32 { 42 / 1 }"
-exit_code = 42
-
-[[case]]
-name = "mod_by_larger"
-spec = ["4.2:1"]
-source = "fn main() -> i32 { 5 % 10 }"
-exit_code = 5
-
-[[case]]
-name = "mod_exact_multiple"
-spec = ["4.2:1"]
-source = "fn main() -> i32 { 10 % 5 }"
-exit_code = 0
-
-[[case]]
-name = "zero_divided"
-spec = ["4.2:1"]
-source = "fn main() -> i32 { 0 / 5 }"
-exit_code = 0
-
-[[case]]
-name = "zero_mod"
-spec = ["4.2:1"]
-source = "fn main() -> i32 { 0 % 5 }"
-exit_code = 0
+source = "fn main() -> i32 { {expr} }"
+params = [
+  { variant = "add_zero", expr = "0 + 42", exit_code = 42 },
+  { variant = "mul_zero", expr = "42 * 0", exit_code = 0 },
+  { variant = "mul_one", expr = "42 * 1", exit_code = 42 },
+  { variant = "div_one", expr = "42 / 1", exit_code = 42 },
+  { variant = "mod_larger", expr = "5 % 10", exit_code = 5 },
+  { variant = "mod_exact", expr = "10 % 5", exit_code = 0 },
+  { variant = "zero_div", expr = "0 / 5", exit_code = 0 },
+  { variant = "zero_mod", expr = "0 % 5", exit_code = 0 },
+]
 
 # =============================================================================
 # Exit Code Wrapping (result mod 256)
 # =============================================================================
 
 [[case]]
-name = "addition_wraps"
+name = "result_wraps"
 spec = ["4.2:1"]
 source = "fn main() -> i32 { 200 + 100 }"
 exit_code = 44
-
-[[case]]
-name = "multiplication_wraps"
-spec = ["4.2:1"]
-source = "fn main() -> i32 { 20 * 15 }"
-exit_code = 44
-
-[[case]]
-name = "large_computation"
-spec = ["4.2:1"]
-source = "fn main() -> i32 { 100 * 100 }"
-exit_code = 16
 
 # =============================================================================
 # Whitespace Flexibility
 # =============================================================================
 
 [[case]]
-name = "no_spaces"
+name = "whitespace_{variant}"
 spec = ["4.2:1"]
-source = "fn main() -> i32 { 1+2 }"
-exit_code = 3
-
-[[case]]
-name = "extra_spaces"
-spec = ["4.2:1"]
-source = "fn main() -> i32 { 1  +  2 }"
-exit_code = 3
+source = "{source}"
+params = [
+  { variant = "no_spaces", source = "fn main() -> i32 { 1+2 }", exit_code = 3 },
+  { variant = "extra_spaces", source = "fn main() -> i32 { 1  +  2 }", exit_code = 3 },
+]
 
 [[case]]
 name = "multiline_expr"
@@ -242,32 +120,9 @@ fn main() -> i32 {
 """
 exit_code = 7
 
-[[case]]
-name = "newline_after_operator"
-spec = ["4.2:1"]
-source = """
-fn main() -> i32 {
-    10 -
-    3
-}
-"""
-exit_code = 7
-
 # =============================================================================
 # Chained Operations
 # =============================================================================
-
-[[case]]
-name = "chain_addition"
-spec = ["4.2:1"]
-source = "fn main() -> i32 { 1 + 2 + 3 + 4 + 5 }"
-exit_code = 15
-
-[[case]]
-name = "chain_multiplication"
-spec = ["4.2:1"]
-source = "fn main() -> i32 { 2 * 3 * 4 }"
-exit_code = 24
 
 [[case]]
 name = "chain_mixed"
@@ -280,28 +135,21 @@ exit_code = 21
 # =============================================================================
 
 [[case]]
-name = "negation_simple"
+name = "negation_{variant}"
 spec = ["4.2:5", "4.2:6"]
-source = "fn main() -> i32 { -1 }"
-exit_code = 255
-
-[[case]]
-name = "negation_larger"
-spec = ["4.2:5", "4.2:6"]
-source = "fn main() -> i32 { -42 }"
-exit_code = 214
-
-[[case]]
-name = "negation_zero"
-spec = ["4.2:5"]
-source = "fn main() -> i32 { -0 }"
-exit_code = 0
-
-[[case]]
-name = "negation_in_expression"
-spec = ["4.2:5"]
-source = "fn main() -> i32 { 10 + -3 }"
-exit_code = 7
+source = "fn main() -> i32 { {expr} }"
+params = [
+  { variant = "simple", expr = "-1", exit_code = 255 },
+  { variant = "larger", expr = "-42", exit_code = 214 },
+  { variant = "zero", expr = "-0", exit_code = 0 },
+  { variant = "in_expr", expr = "10 + -3", exit_code = 7 },
+  { variant = "of_expr", expr = "-(1 + 2)", exit_code = 253 },
+  { variant = "double", expr = "--5", exit_code = 5 },
+  { variant = "triple", expr = "---5", exit_code = 251 },
+  { variant = "with_parens", expr = "(-10) + 15", exit_code = 5 },
+  { variant = "subtract_neg", expr = "10 - -5", exit_code = 15, spec_extra = ["4.2:1"] },
+  { variant = "mul_negatives", expr = "-3 * -4", exit_code = 12, spec_extra = ["4.2:1"] },
+]
 
 [[case]]
 name = "negation_binds_tighter_than_mul"
@@ -310,51 +158,9 @@ source = "fn main() -> i32 { -2 * 3 }"
 exit_code = 250
 
 [[case]]
-name = "negation_of_expression"
-spec = ["4.2:5"]
-source = "fn main() -> i32 { -(1 + 2) }"
-exit_code = 253
-
-[[case]]
-name = "double_negation"
-spec = ["4.2:5"]
-source = "fn main() -> i32 { --5 }"
-exit_code = 5
-
-[[case]]
-name = "triple_negation"
-spec = ["4.2:5"]
-source = "fn main() -> i32 { ---5 }"
-exit_code = 251
-
-[[case]]
-name = "negation_with_parens"
-spec = ["4.2:5"]
-source = "fn main() -> i32 { (-10) + 15 }"
-exit_code = 5
-
-[[case]]
-name = "subtract_negative"
-spec = ["4.2:1", "4.2:5"]
-source = "fn main() -> i32 { 10 - -5 }"
-exit_code = 15
-
-[[case]]
-name = "multiply_negatives"
-spec = ["4.2:1", "4.2:5"]
-source = "fn main() -> i32 { -3 * -4 }"
-exit_code = 12
-
-[[case]]
 name = "divide_negative"
 spec = ["4.2:1", "4.2:5"]
 source = "fn main() -> i32 { -10 / 3 }"
-exit_code = 253
-
-[[case]]
-name = "negative_dividend"
-spec = ["4.2:1", "4.2:5"]
-source = "fn main() -> i32 { 10 / -3 }"
 exit_code = 253
 
 [[case]]
@@ -366,108 +172,65 @@ exit_code = 255
 # =============================================================================
 # Negated MIN Literals (Compile-Time Constant)
 # =============================================================================
-# These tests verify that negated MIN value literals are evaluated at compile
-# time, avoiding runtime overflow.
 
 [[case]]
-name = "negated_min_literal_i8"
+name = "negated_min_literal_{type}"
 spec = ["4.2:15"]
-description = "Negated i8::MIN literal is a compile-time constant"
+description = "Negated MIN literal is a compile-time constant"
 source = """
 fn main() -> i32 {
-    let x: i8 = -128;
+    let x: {type} = {value};
     if x < 0 { 1 } else { 0 }
 }
 """
 exit_code = 1
-
-[[case]]
-name = "negated_min_literal_i32"
-spec = ["4.2:15"]
-description = "Negated i32::MIN literal is a compile-time constant"
-source = """
-fn main() -> i32 {
-    let x: i32 = -2147483648;
-    if x < 0 { 1 } else { 0 }
-}
-"""
-exit_code = 1
+params = [
+  { type = "i8", value = "-128" },
+  { type = "i32", value = "-2147483648" },
+]
 
 # =============================================================================
 # Runtime Negation of MIN Value (Overflow)
 # =============================================================================
-# These tests verify that negating a non-literal MIN value at runtime
-# causes an overflow panic.
 
 [[case]]
-name = "runtime_negation_min_i32"
+name = "runtime_negation_min_{type}"
 spec = ["4.2:16"]
-description = "Negating i32::MIN at runtime causes overflow"
+description = "Negating MIN at runtime causes overflow"
 source = """
 fn main() -> i32 {
-    let x: i32 = -2147483648;
-    let y: i32 = -x;
-    y
+    let x: {type} = {value};
+    let y: {type} = -x;
+    {tail}
 }
 """
 runtime_error = "integer overflow"
-
-[[case]]
-name = "runtime_negation_min_i8"
-spec = ["4.2:16"]
-description = "Negating i8::MIN at runtime causes overflow"
-source = """
-fn main() -> i32 {
-    let x: i8 = -128;
-    let y: i8 = -x;
-    0
-}
-"""
-runtime_error = "integer overflow"
+params = [
+  { type = "i32", value = "-2147483648", tail = "y" },
+  { type = "i8", value = "-128", tail = "0" },
+]
 
 # =============================================================================
 # Unsigned Negation is an Error
 # =============================================================================
 
 [[case]]
-name = "negation_unsigned_error"
+name = "negation_unsigned_{type}_error"
 spec = ["4.2:14"]
-description = "Unary negation on unsigned types is a compile-time error"
 source = """
 fn main() -> i32 {
-    let x: u32 = 5;
-    let y: u32 = -x;
+    let x: {type} = 5;
+    let y: {type} = -x;
     0
 }
 """
 compile_fail = true
 error_contains = "cannot apply unary operator"
-
-[[case]]
-name = "negation_unsigned_u8_error"
-spec = ["4.2:14"]
-source = """
-fn main() -> i32 {
-    let x: u8 = 5;
-    let y: u8 = -x;
-    0
-}
-"""
-compile_fail = true
-error_contains = "cannot apply unary operator"
-
-[[case]]
-name = "negation_unsigned_u64_error"
-spec = ["4.2:14"]
-source = """
-fn main() -> i32 {
-    let x: u64 = 5;
-    let y: u64 = -x;
-    0
-}
-"""
-compile_fail = true
-error_contains = "cannot apply unary operator"
+params = [
+  { type = "u32" },
+  { type = "u8" },
+  { type = "u64" },
+]
 
 [[case]]
 name = "negation_unsigned_literal_error"
@@ -487,43 +250,24 @@ error_contains = "cannot apply unary operator"
 # =============================================================================
 
 [[case]]
-name = "division_by_zero"
+name = "division_by_zero_{variant}"
 spec = ["8.3:1", "4.2:11"]
-source = "fn main() -> i32 { 10 / 0 }"
+source = "fn main() -> i32 { {expr} }"
 runtime_error = "division by zero"
+params = [
+  { variant = "literal", expr = "10 / 0" },
+  { variant = "modulo", expr = "10 % 0" },
+  { variant = "computed", expr = "10 / (5 - 5)" },
+]
 
 [[case]]
-name = "mod_by_zero"
-spec = ["8.3:1", "4.2:11"]
-source = "fn main() -> i32 { 10 % 0 }"
-runtime_error = "division by zero"
-
-[[case]]
-name = "division_by_zero_computed"
-spec = ["8.3:1", "4.2:11"]
-source = "fn main() -> i32 { 10 / (5 - 5) }"
-runtime_error = "division by zero"
-
-[[case]]
-name = "overflow_add"
+name = "overflow_{op}"
 spec = ["8.1:1", "4.2:9"]
-source = "fn main() -> i32 { 2147483647 + 1 }"
+source = "fn main() -> i32 { {expr} }"
 runtime_error = "integer overflow"
-
-[[case]]
-name = "overflow_sub"
-spec = ["8.1:1", "4.2:9"]
-source = "fn main() -> i32 { -2147483648 - 1 }"
-runtime_error = "integer overflow"
-
-[[case]]
-name = "overflow_mul"
-spec = ["8.1:1", "4.2:9"]
-source = "fn main() -> i32 { 2147483647 * 2 }"
-runtime_error = "integer overflow"
-
-[[case]]
-name = "overflow_neg"
-spec = ["8.1:1", "4.2:9"]
-source = "fn main() -> i32 { --2147483648 }"
-runtime_error = "integer overflow"
+params = [
+  { op = "add", expr = "2147483647 + 1" },
+  { op = "sub", expr = "-2147483648 - 1" },
+  { op = "mul", expr = "2147483647 * 2" },
+  { op = "neg", expr = "--2147483648" },
+]

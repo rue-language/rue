@@ -15,29 +15,14 @@ source = "fn main() -> i32 { 0 }"
 exit_code = 0
 
 [[case]]
-name = "main_returns_value"
+name = "main_basic_{variant}"
 spec = ["6.1:1"]
-source = "fn main() -> i32 { 123 }"
-exit_code = 123
-
-[[case]]
-name = "main_multiline"
-spec = ["6.1:1"]
-source = """
-fn main() -> i32 {
-    42
-}
-"""
-exit_code = 42
-
-[[case]]
-name = "main_with_comment"
-spec = ["6.1:1"]
-source = """
-// Entry point
-fn main() -> i32 { 42 }
-"""
-exit_code = 42
+source = "{source}"
+params = [
+  { variant = "returns_value", source = "fn main() -> i32 { 123 }", exit_code = 123 },
+  { variant = "multiline", source = "fn main() -> i32 {\n    42\n}", exit_code = 42 },
+  { variant = "with_comment", source = "// Entry point\nfn main() -> i32 { 42 }", exit_code = 42 },
+]
 
 [[case]]
 name = "type_annotation_i32"
@@ -50,53 +35,28 @@ exit_code = 99
 # =============================================================================
 
 [[case]]
-name = "function_one_param"
+name = "function_{params}_params"
 spec = ["6.1:3"]
-source = """
-fn identity(x: i32) -> i32 { x }
-fn main() -> i32 { identity(42) }
-"""
-exit_code = 42
+source = "{source}"
+params = [
+  { params = "one", source = "fn identity(x: i32) -> i32 { x }\nfn main() -> i32 { identity(42) }", exit_code = 42 },
+  { params = "two", source = "fn add(x: i32, y: i32) -> i32 { x + y }\nfn main() -> i32 { add(40, 2) }", exit_code = 42 },
+  { params = "three", source = "fn sum3(a: i32, b: i32, c: i32) -> i32 { a + b + c }\nfn main() -> i32 { sum3(10, 20, 12) }", exit_code = 42 },
+]
 
 [[case]]
-name = "function_two_params"
-spec = ["6.1:3"]
-source = """
-fn add(x: i32, y: i32) -> i32 { x + y }
-fn main() -> i32 { add(40, 2) }
-"""
-exit_code = 42
-
-[[case]]
-name = "function_three_params"
-spec = ["6.1:3"]
-source = """
-fn sum3(a: i32, b: i32, c: i32) -> i32 { a + b + c }
-fn main() -> i32 { sum3(10, 20, 12) }
-"""
-exit_code = 42
-
-[[case]]
-name = "function_bool_param"
+name = "function_bool_param_{variant}"
 spec = ["6.1:3"]
 source = """
 fn choose(cond: bool, x: i32, y: i32) -> i32 {
     if cond { x } else { y }
 }
-fn main() -> i32 { choose(true, 42, 0) }
+fn main() -> i32 { choose({cond}, {a}, {b}) }
 """
-exit_code = 42
-
-[[case]]
-name = "function_bool_param_false"
-spec = ["6.1:3"]
-source = """
-fn choose(cond: bool, x: i32, y: i32) -> i32 {
-    if cond { x } else { y }
-}
-fn main() -> i32 { choose(false, 0, 42) }
-"""
-exit_code = 42
+params = [
+  { variant = "true", cond = "true", a = "42", b = "0", exit_code = 42 },
+  { variant = "false", cond = "false", a = "0", b = "42", exit_code = 42 },
+]
 
 [[case]]
 name = "function_returns_bool"
@@ -114,23 +74,13 @@ exit_code = 42
 # =============================================================================
 
 [[case]]
-name = "multiple_functions"
+name = "multiple_functions_{variant}"
 spec = ["6.1:4", "6.1:12"]
-source = """
-fn double(x: i32) -> i32 { x + x }
-fn main() -> i32 { double(21) }
-"""
-exit_code = 42
-
-[[case]]
-name = "function_calls_function"
-spec = ["6.1:4", "6.1:12"]
-source = """
-fn double(x: i32) -> i32 { x + x }
-fn quadruple(x: i32) -> i32 { double(double(x)) }
-fn main() -> i32 { quadruple(10) }
-"""
-exit_code = 40
+source = "{source}"
+params = [
+  { variant = "helper", source = "fn double(x: i32) -> i32 { x + x }\nfn main() -> i32 { double(21) }", exit_code = 42 },
+  { variant = "nested_calls", source = "fn double(x: i32) -> i32 { x + x }\nfn quadruple(x: i32) -> i32 { double(double(x)) }\nfn main() -> i32 { quadruple(10) }", exit_code = 40 },
+]
 
 [[case]]
 name = "multiple_helper_functions"
@@ -174,94 +124,30 @@ exit_code = 5
 # =============================================================================
 
 [[case]]
-name = "recursive_factorial"
+name = "recursive_{variant}"
 spec = ["6.1:5", "6.1:10"]
-source = """
-fn factorial(n: i32) -> i32 {
-    if n <= 1 { 1 }
-    else { n * factorial(n - 1) }
-}
-fn main() -> i32 { factorial(5) }
-"""
-exit_code = 120
-
-[[case]]
-name = "recursive_fibonacci"
-spec = ["6.1:5"]
-source = """
-fn fib(n: i32) -> i32 {
-    if n <= 1 { n }
-    else { fib(n - 1) + fib(n - 2) }
-}
-fn main() -> i32 { fib(10) }
-"""
-exit_code = 55
-
-[[case]]
-name = "recursive_countdown"
-spec = ["6.1:5"]
-source = """
-fn countdown(n: i32) -> i32 {
-    if n == 0 { 42 }
-    else { countdown(n - 1) }
-}
-fn main() -> i32 { countdown(100) }
-"""
-exit_code = 42
+source = "{source}"
+params = [
+  { variant = "factorial", source = "fn factorial(n: i32) -> i32 {\n    if n <= 1 { 1 }\n    else { n * factorial(n - 1) }\n}\nfn main() -> i32 { factorial(5) }", exit_code = 120 },
+  { variant = "fibonacci", source = "fn fib(n: i32) -> i32 {\n    if n <= 1 { n }\n    else { fib(n - 1) + fib(n - 2) }\n}\nfn main() -> i32 { fib(10) }", exit_code = 55 },
+  { variant = "countdown", source = "fn countdown(n: i32) -> i32 {\n    if n == 0 { 42 }\n    else { countdown(n - 1) }\n}\nfn main() -> i32 { countdown(100) }", exit_code = 42 },
+]
 
 # =============================================================================
 # Call expressions
 # =============================================================================
 
 [[case]]
-name = "call_with_expression_args"
+name = "call_{variant}"
 spec = ["4.10:1"]
-source = """
-fn add(x: i32, y: i32) -> i32 { x + y }
-fn main() -> i32 { add(20 + 10, 6 * 2) }
-"""
-exit_code = 42
-
-[[case]]
-name = "nested_call_expressions"
-spec = ["4.10:1"]
-source = """
-fn add(x: i32, y: i32) -> i32 { x + y }
-fn main() -> i32 { add(add(10, 20), add(5, 7)) }
-"""
-exit_code = 42
-
-[[case]]
-name = "call_in_arithmetic"
-spec = ["4.10:1"]
-source = """
-fn square(x: i32) -> i32 { x * x }
-fn main() -> i32 { square(5) + square(4) + 1 }
-"""
-exit_code = 42
-
-[[case]]
-name = "call_in_condition"
-spec = ["4.10:1"]
-source = """
-fn is_even(x: i32) -> bool { x % 2 == 0 }
-fn main() -> i32 {
-    if is_even(4) { 42 } else { 0 }
-}
-"""
-exit_code = 42
-
-[[case]]
-name = "call_in_let_binding"
-spec = ["4.10:1"]
-source = """
-fn compute(x: i32) -> i32 { x * 2 + 1 }
-fn main() -> i32 {
-    let result = compute(20);
-    result + 1
-}
-"""
-exit_code = 42
+source = "{source}"
+params = [
+  { variant = "expression_args", source = "fn add(x: i32, y: i32) -> i32 { x + y }\nfn main() -> i32 { add(20 + 10, 6 * 2) }", exit_code = 42 },
+  { variant = "nested", source = "fn add(x: i32, y: i32) -> i32 { x + y }\nfn main() -> i32 { add(add(10, 20), add(5, 7)) }", exit_code = 42 },
+  { variant = "in_arithmetic", source = "fn square(x: i32) -> i32 { x * x }\nfn main() -> i32 { square(5) + square(4) + 1 }", exit_code = 42 },
+  { variant = "in_condition", source = "fn is_even(x: i32) -> bool { x % 2 == 0 }\nfn main() -> i32 {\n    if is_even(4) { 42 } else { 0 }\n}", exit_code = 42 },
+  { variant = "in_let", source = "fn compute(x: i32) -> i32 { x * 2 + 1 }\nfn main() -> i32 {\n    let result = compute(20);\n    result + 1\n}", exit_code = 42 },
+]
 
 # =============================================================================
 # Parameters and local variables interaction
@@ -310,22 +196,13 @@ exit_code = 50
 # =============================================================================
 
 [[case]]
-name = "zero_return"
+name = "edge_{variant}"
 spec = ["6.1:2"]
-source = """
-fn zero() -> i32 { 0 }
-fn main() -> i32 { zero() }
-"""
-exit_code = 0
-
-[[case]]
-name = "negative_return"
-spec = ["6.1:2"]
-source = """
-fn neg() -> i32 { -1 }
-fn main() -> i32 { neg() + 43 }
-"""
-exit_code = 42
+source = "{source}"
+params = [
+  { variant = "zero_return", source = "fn zero() -> i32 { 0 }\nfn main() -> i32 { zero() }", exit_code = 0 },
+  { variant = "negative_return", source = "fn neg() -> i32 { -1 }\nfn main() -> i32 { neg() + 43 }", exit_code = 42 },
+]
 
 [[case]]
 name = "pass_negative_arg"
@@ -339,52 +216,16 @@ fn main() -> i32 { abs(-42) }
 exit_code = 42
 
 [[case]]
-name = "function_with_six_params"
+name = "function_with_{num}_params"
 spec = ["6.1:3"]
-description = "Test with six parameters (all fit in registers on System V AMD64)"
-source = """
-fn sum6(a: i32, b: i32, c: i32, d: i32, e: i32, f: i32) -> i32 {
-    a + b + c + d + e + f
-}
-fn main() -> i32 { sum6(1, 2, 3, 4, 5, 27) }
-"""
-exit_code = 42
-
-[[case]]
-name = "function_with_seven_params"
-spec = ["6.1:3"]
-description = "Test with seven parameters (7th goes on stack per System V AMD64)"
-source = """
-fn sum7(a: i32, b: i32, c: i32, d: i32, e: i32, f: i32, g: i32) -> i32 {
-    a + b + c + d + e + f + g
-}
-fn main() -> i32 { sum7(1, 2, 3, 4, 5, 6, 21) }
-"""
-exit_code = 42
-
-[[case]]
-name = "function_with_eight_params"
-spec = ["6.1:3"]
-description = "Test with eight parameters (7th and 8th go on stack)"
-source = """
-fn sum8(a: i32, b: i32, c: i32, d: i32, e: i32, f: i32, g: i32, h: i32) -> i32 {
-    a + b + c + d + e + f + g + h
-}
-fn main() -> i32 { sum8(1, 2, 3, 4, 5, 6, 7, 14) }
-"""
-exit_code = 42
-
-[[case]]
-name = "function_with_ten_params"
-spec = ["6.1:3"]
-description = "Test with ten parameters (last four go on stack)"
-source = """
-fn sum10(a: i32, b: i32, c: i32, d: i32, e: i32, f: i32, g: i32, h: i32, i: i32, j: i32) -> i32 {
-    a + b + c + d + e + f + g + h + i + j
-}
-fn main() -> i32 { sum10(1, 2, 3, 4, 5, 6, 7, 8, 9, -3) }
-"""
-exit_code = 42
+description = "Test with varying number of parameters"
+source = "{source}"
+params = [
+  { num = "six", source = "fn sum6(a: i32, b: i32, c: i32, d: i32, e: i32, f: i32) -> i32 {\n    a + b + c + d + e + f\n}\nfn main() -> i32 { sum6(1, 2, 3, 4, 5, 27) }", exit_code = 42 },
+  { num = "seven", source = "fn sum7(a: i32, b: i32, c: i32, d: i32, e: i32, f: i32, g: i32) -> i32 {\n    a + b + c + d + e + f + g\n}\nfn main() -> i32 { sum7(1, 2, 3, 4, 5, 6, 21) }", exit_code = 42 },
+  { num = "eight", source = "fn sum8(a: i32, b: i32, c: i32, d: i32, e: i32, f: i32, g: i32, h: i32) -> i32 {\n    a + b + c + d + e + f + g + h\n}\nfn main() -> i32 { sum8(1, 2, 3, 4, 5, 6, 7, 14) }", exit_code = 42 },
+  { num = "ten", source = "fn sum10(a: i32, b: i32, c: i32, d: i32, e: i32, f: i32, g: i32, h: i32, i: i32, j: i32) -> i32 {\n    a + b + c + d + e + f + g + h + i + j\n}\nfn main() -> i32 { sum10(1, 2, 3, 4, 5, 6, 7, 8, 9, -3) }", exit_code = 42 },
+]
 
 [[case]]
 name = "stack_params_with_expressions"
@@ -416,69 +257,26 @@ exit_code = 42
 # =============================================================================
 
 [[case]]
-name = "implicit_unit_return"
+name = "unit_return_{variant}"
 spec = ["6.1:6"]
-description = "Function without return type annotation implicitly returns ()"
-source = """
-fn do_nothing() { }
-fn main() -> i32 { do_nothing(); 0 }
-"""
+source = "{source}"
+params = [
+  { variant = "implicit", source = "fn do_nothing() { }\nfn main() -> i32 { do_nothing(); 0 }" },
+  { variant = "with_statements", source = "fn setup() {\n    let x = 1;\n    let y = 2;\n}\nfn main() -> i32 { setup(); 0 }" },
+  { variant = "explicit", source = "fn explicit() -> () { }\nfn main() -> i32 { explicit(); 0 }" },
+  { variant = "call_in_expr", source = "fn side_effect() { let x = 1; }\nfn main() -> i32 {\n    side_effect();\n    side_effect();\n    42\n}", exit_code = 42 },
+]
 exit_code = 0
 
 [[case]]
-name = "implicit_unit_with_statements"
-spec = ["6.1:6"]
-description = "Unit-returning function with statements"
-source = """
-fn setup() {
-    let x = 1;
-    let y = 2;
-}
-fn main() -> i32 { setup(); 0 }
-"""
-exit_code = 0
-
-[[case]]
-name = "explicit_unit_return"
-spec = ["6.1:6"]
-description = "Explicit -> () return type"
-source = """
-fn explicit() -> () { }
-fn main() -> i32 { explicit(); 0 }
-"""
-exit_code = 0
-
-[[case]]
-name = "unit_main"
+name = "unit_main_{variant}"
 spec = ["6.1:6", "6.1:7", "6.1:8"]
-description = "Main function can return unit (exits with 0)"
-source = "fn main() { }"
+source = "{source}"
 exit_code = 0
-
-[[case]]
-name = "unit_main_with_statements"
-spec = ["6.1:6"]
-description = "Main returning unit with statements"
-source = """
-fn main() {
-    let x = 42;
-}
-"""
-exit_code = 0
-
-[[case]]
-name = "call_unit_function_in_expression"
-spec = ["6.1:6"]
-description = "Can call unit-returning function and ignore result"
-source = """
-fn side_effect() { let x = 1; }
-fn main() -> i32 {
-    side_effect();
-    side_effect();
-    42
-}
-"""
-exit_code = 42
+params = [
+  { variant = "empty", source = "fn main() { }" },
+  { variant = "with_statements", source = "fn main() {\n    let x = 42;\n}" },
+]
 
 # =============================================================================
 # Struct parameters
@@ -499,49 +297,23 @@ fn main() -> i32 {
 exit_code = 42
 
 [[case]]
-name = "struct_param_nested_field_access"
+name = "struct_param_nested_{variant}"
 spec = ["6.1:3"]
-description = "Accessing nested fields of a struct parameter computes correct slot offsets"
+description = "Struct parameter with nested field access"
 source = """
 struct Inner { a: i32, b: i32 }
 struct Outer { inner: Inner, other: i32 }
-fn get_inner_sum(o: Outer) -> i32 { o.inner.a + o.inner.b }
+fn {fn_name}(o: Outer) -> i32 { {body} }
 fn main() -> i32 {
-    let o = Outer { inner: Inner { a: 10, b: 20 }, other: 100 };
-    get_inner_sum(o)
+    let o = Outer { inner: Inner { a: {a}, b: {b} }, other: {other} };
+    {fn_name}(o)
 }
 """
-exit_code = 30
-
-[[case]]
-name = "struct_param_nested_all_slots"
-spec = ["6.1:3"]
-description = "Accessing all slots of a nested struct parameter uses correct slot counts"
-source = """
-struct Inner { a: i32, b: i32 }
-struct Outer { inner: Inner, other: i32 }
-fn sum_all(o: Outer) -> i32 { o.inner.a + o.inner.b + o.other }
-fn main() -> i32 {
-    let o = Outer { inner: Inner { a: 1, b: 2 }, other: 42 };
-    sum_all(o)
-}
-"""
-exit_code = 45
-
-[[case]]
-name = "struct_param_nested_later_field"
-spec = ["6.1:3"]
-description = "Accessing field after nested struct uses correct slot offset"
-source = """
-struct Inner { a: i32, b: i32 }
-struct Outer { inner: Inner, other: i32 }
-fn get_other(o: Outer) -> i32 { o.other }
-fn main() -> i32 {
-    let o = Outer { inner: Inner { a: 10, b: 20 }, other: 42 };
-    get_other(o)
-}
-"""
-exit_code = 42
+params = [
+  { variant = "sum", fn_name = "get_inner_sum", body = "o.inner.a + o.inner.b", a = "10", b = "20", other = "100", exit_code = 30 },
+  { variant = "all_slots", fn_name = "sum_all", body = "o.inner.a + o.inner.b + o.other", a = "1", b = "2", other = "42", exit_code = 45 },
+  { variant = "later_field", fn_name = "get_other", body = "o.other", a = "10", b = "20", other = "42", exit_code = 42 },
+]
 
 [[case]]
 name = "struct_return_nested"
@@ -577,40 +349,29 @@ fn main() -> i32 {
 exit_code = 42
 
 # =============================================================================
-# Inout parameters
+# Inout parameters (primitives)
 # =============================================================================
 
 [[case]]
-name = "inout_param_increment"
+name = "inout_param_{variant}"
 spec = ["6.1:14", "6.1:15", "6.1:16", "6.1:18"]
-description = "Basic inout parameter that modifies a variable"
+description = "Basic inout parameter operations"
 source = """
-fn increment(inout x: i32) {
-    x = x + 1;
+fn {fn_name}(inout x: i32{extra_params}) {
+    {body}
 }
 fn main() -> i32 {
-    let mut n = 41;
-    increment(inout n);
+    let mut n = {init};
+    {calls};
     n
 }
 """
-exit_code = 42
-
-[[case]]
-name = "inout_param_double"
-spec = ["6.1:14", "6.1:18"]
-description = "Inout parameter that doubles a value"
-source = """
-fn double(inout x: i32) {
-    x = x * 2;
-}
-fn main() -> i32 {
-    let mut n = 21;
-    double(inout n);
-    n
-}
-"""
-exit_code = 42
+params = [
+  { variant = "increment", fn_name = "increment", extra_params = "", body = "x = x + 1;", init = "41", calls = "increment(inout n)", exit_code = 42 },
+  { variant = "double", fn_name = "double", extra_params = "", body = "x = x * 2;", init = "21", calls = "double(inout n)", exit_code = 42 },
+  { variant = "multiple_calls", fn_name = "increment", extra_params = "", body = "x = x + 1;", init = "39", calls = "increment(inout n); increment(inout n); increment(inout n)", exit_code = 42 },
+  { variant = "with_regular", fn_name = "add_to", extra_params = ", amount: i32", body = "x = x + amount;", init = "32", calls = "add_to(inout n, 10)", exit_code = 42, spec_extra = ["6.1:15"] },
+]
 
 [[case]]
 name = "inout_param_swap"
@@ -627,40 +388,6 @@ fn main() -> i32 {
     let mut y = 42;
     swap(inout x, inout y);
     x
-}
-"""
-exit_code = 42
-
-[[case]]
-name = "inout_param_with_regular_param"
-spec = ["6.1:14", "6.1:15"]
-description = "Mixing inout and regular parameters"
-source = """
-fn add_to(inout x: i32, amount: i32) {
-    x = x + amount;
-}
-fn main() -> i32 {
-    let mut n = 32;
-    add_to(inout n, 10);
-    n
-}
-"""
-exit_code = 42
-
-[[case]]
-name = "inout_param_multiple_calls"
-spec = ["6.1:14", "6.1:18"]
-description = "Multiple calls with inout accumulate changes"
-source = """
-fn increment(inout x: i32) {
-    x = x + 1;
-}
-fn main() -> i32 {
-    let mut n = 39;
-    increment(inout n);
-    increment(inout n);
-    increment(inout n);
-    n
 }
 """
 exit_code = 42
@@ -684,77 +411,6 @@ fn main() -> i32 {
 exit_code = 42
 
 [[case]]
-name = "inout_requires_lvalue"
-spec = ["6.1:17"]
-description = "Inout argument must be an lvalue (not a literal)"
-source = """
-fn increment(inout x: i32) {
-    x = x + 1;
-}
-fn main() -> i32 {
-    increment(inout 42);
-    0
-}
-"""
-compile_fail = true
-error_contains = "lvalue"
-
-[[case]]
-name = "inout_exclusive_access"
-spec = ["6.1:20"]
-description = "Cannot pass same variable to multiple inout parameters"
-source = """
-fn swap(inout a: i32, inout b: i32) {
-    let tmp = a;
-    a = b;
-    b = tmp;
-}
-fn main() -> i32 {
-    let mut x = 1;
-    swap(inout x, inout x);
-    0
-}
-"""
-compile_fail = true
-error_contains = "same variable"
-
-[[case]]
-name = "inout_exclusive_access_different_vars"
-spec = ["6.1:20"]
-description = "Different variables can be passed to multiple inout parameters"
-source = """
-fn swap(inout a: i32, inout b: i32) {
-    let tmp = a;
-    a = b;
-    b = tmp;
-}
-fn main() -> i32 {
-    let mut x = 1;
-    let mut y = 2;
-    swap(inout x, inout y);
-    x + y * 10
-}
-"""
-exit_code = 12
-
-[[case]]
-name = "inout_allows_mutation_vs_borrow"
-spec = ["6.1:14", "6.1:18"]
-description = "Inout allows mutation while borrow does not (contrast test)"
-source = """
-struct Counter { value: i32 }
-fn increment_inout(inout c: Counter) {
-    c.value = c.value + 1;
-}
-fn main() -> i32 {
-    let mut c = Counter { value: 41 };
-    increment_inout(inout c);
-    c.value
-}
-"""
-exit_code = 42
-
-[[case]]
 name = "inout_value_valid_after_call"
 spec = ["6.1:18"]
 description = "Variable is still valid after inout call (no ownership transfer)"
@@ -772,78 +428,82 @@ fn main() -> i32 {
 exit_code = 42
 
 # =============================================================================
+# Inout parameter errors
+# =============================================================================
+
+[[case]]
+name = "inout_requires_lvalue"
+spec = ["6.1:17"]
+description = "Inout argument must be an lvalue (not a literal)"
+source = """
+fn increment(inout x: i32) {
+    x = x + 1;
+}
+fn main() -> i32 {
+    increment(inout 42);
+    0
+}
+"""
+compile_fail = true
+error_contains = "lvalue"
+
+[[case]]
+name = "inout_exclusive_access_{variant}"
+spec = ["6.1:20"]
+description = "Inout exclusive access checking"
+source = """
+fn swap(inout a: i32, inout b: i32) {
+    let tmp = a;
+    a = b;
+    b = tmp;
+}
+fn main() -> i32 {
+    let mut x = 1;
+    {second_decl}
+    swap(inout x, inout {second});
+    {result}
+}
+"""
+params = [
+  { variant = "same_var_error", second_decl = "", second = "x", result = "0", compile_fail = true, error_contains = "same variable" },
+  { variant = "different_vars_ok", second_decl = "let mut y = 2;", second = "y", result = "x + y * 10", exit_code = 12, compile_fail = false },
+]
+
+# =============================================================================
 # Borrow parameters
 # =============================================================================
 
 [[case]]
-name = "borrow_param_read_only"
-spec = ["6.1:22", "6.1:23", "6.1:26"]
-description = "Basic borrow parameter that reads a value without ownership transfer"
-source = """
-struct Point { x: i32, y: i32 }
-fn sum(borrow p: Point) -> i32 {
-    p.x + p.y
-}
-fn main() -> i32 {
-    let p = Point { x: 10, y: 32 };
-    sum(borrow p)
-}
-"""
-exit_code = 42
-
-[[case]]
-name = "borrow_param_multiple_uses"
+name = "borrow_param_{variant}"
 spec = ["6.1:22", "6.1:26"]
-description = "Borrowed value can be used multiple times after call (not moved)"
+description = "Basic borrow parameter operations"
 source = """
 struct Point { x: i32, y: i32 }
-fn get_x(borrow p: Point) -> i32 {
-    p.x
-}
-fn get_y(borrow p: Point) -> i32 {
-    p.y
+fn {fn_name}(borrow p: Point) -> i32 {
+    {body}
 }
 fn main() -> i32 {
-    let p = Point { x: 21, y: 21 };
-    get_x(borrow p) + get_y(borrow p)
+    let p = Point { x: {x}, y: {y} };
+    {expr}
 }
 """
-exit_code = 42
+params = [
+  { variant = "read_only", fn_name = "sum", body = "p.x + p.y", x = "10", y = "32", expr = "sum(borrow p)", exit_code = 42, spec_extra = ["6.1:23"] },
+  { variant = "multiple_uses", fn_name = "get_x", body = "p.x", x = "21", y = "21", expr = "get_x(borrow p) + get_x(borrow p)", exit_code = 42 },
+]
 
 [[case]]
-name = "borrow_cannot_mutate_field"
+name = "borrow_cannot_mutate_{kind}"
 spec = ["6.1:24"]
-description = "Cannot mutate fields of a borrowed value"
-source = """
-struct Point { x: i32, y: i32 }
-fn try_mutate(borrow p: Point) -> i32 {
-    p.x = 10;
-    p.x
-}
-fn main() -> i32 {
-    let p = Point { x: 1, y: 2 };
-    try_mutate(borrow p)
-}
-"""
+description = "Cannot mutate borrowed values"
+source = "{source}"
 compile_fail = true
 error_contains = "cannot mutate borrowed"
-
-[[case]]
-name = "borrow_cannot_mutate_array"
-spec = ["6.1:24"]
-description = "Cannot mutate elements of a borrowed array"
-source = """
-fn try_mutate(borrow arr: [i32; 3]) -> i32 {
-    arr[0] = 99;
-    arr[0]
-}
-fn main() -> i32 {
-    let a = [1, 2, 3];
-    try_mutate(borrow a)
-}
-"""
-compile_fail = true
-error_contains = "cannot mutate borrowed"
+params = [
+  { kind = "field", source = "struct Point { x: i32, y: i32 }\nfn try_mutate(borrow p: Point) -> i32 {\n    p.x = 10;\n    p.x\n}\nfn main() -> i32 {\n    let p = Point { x: 1, y: 2 };\n    try_mutate(borrow p)\n}" },
+  { kind = "array", source = "fn try_mutate(borrow arr: [i32; 3]) -> i32 {\n    arr[0] = 99;\n    arr[0]\n}\nfn main() -> i32 {\n    let a = [1, 2, 3];\n    try_mutate(borrow a)\n}" },
+  { kind = "param", source = "struct Data { value: i32 }\nfn try_reassign(borrow d: Data) -> i32 {\n    d = Data { value: 99 };\n    d.value\n}\nfn main() -> i32 {\n    let d = Data { value: 42 };\n    try_reassign(borrow d)\n}" },
+]
 
 [[case]]
 name = "borrow_cannot_move_out"
@@ -930,51 +590,15 @@ fn main() -> i32 {
 exit_code = 42
 
 [[case]]
-name = "borrow_integer_param"
-spec = ["6.1:22", "6.1:23"]
-description = "Borrow works with primitive integer types"
-source = """
-fn double(borrow x: i32) -> i32 {
-    x + x
-}
-fn main() -> i32 {
-    let n = 21;
-    double(borrow n)
-}
-"""
-exit_code = 42
-
-[[case]]
-name = "borrow_array_read"
+name = "borrow_{type}_read"
 spec = ["6.1:22", "6.1:26"]
-description = "Can read elements from a borrowed array"
-source = """
-fn first(borrow arr: [i32; 3]) -> i32 {
-    arr[0]
-}
-fn main() -> i32 {
-    let a = [42, 2, 3];
-    first(borrow a)
-}
-"""
-exit_code = 42
-
-[[case]]
-name = "borrow_nested_struct"
-spec = ["6.1:22", "6.1:26"]
-description = "Can read nested fields from a borrowed struct"
-source = """
-struct Inner { value: i32 }
-struct Outer { inner: Inner }
-fn get_inner_value(borrow o: Outer) -> i32 {
-    o.inner.value
-}
-fn main() -> i32 {
-    let o = Outer { inner: Inner { value: 42 } };
-    get_inner_value(borrow o)
-}
-"""
-exit_code = 42
+description = "Borrow works with various types"
+source = "{source}"
+params = [
+  { type = "integer", source = "fn double(borrow x: i32) -> i32 {\n    x + x\n}\nfn main() -> i32 {\n    let n = 21;\n    double(borrow n)\n}", exit_code = 42, spec_extra = ["6.1:23"] },
+  { type = "array", source = "fn first(borrow arr: [i32; 3]) -> i32 {\n    arr[0]\n}\nfn main() -> i32 {\n    let a = [42, 2, 3];\n    first(borrow a)\n}", exit_code = 42 },
+  { type = "nested_struct", source = "struct Inner { value: i32 }\nstruct Outer { inner: Inner }\nfn get_inner_value(borrow o: Outer) -> i32 {\n    o.inner.value\n}\nfn main() -> i32 {\n    let o = Outer { inner: Inner { value: 42 } };\n    get_inner_value(borrow o)\n}", exit_code = 42 },
+]
 
 [[case]]
 name = "borrow_call_site_missing_keyword"
@@ -993,88 +617,34 @@ fn main() -> i32 {
 compile_fail = true
 error_contains = "borrow"
 
-[[case]]
-name = "borrow_cannot_assign_to_param"
-spec = ["6.1:24"]
-description = "Cannot assign to the borrowed parameter itself"
-source = """
-struct Data { value: i32 }
-fn try_reassign(borrow d: Data) -> i32 {
-    d = Data { value: 99 };
-    d.value
-}
-fn main() -> i32 {
-    let d = Data { value: 42 };
-    try_reassign(borrow d)
-}
-"""
-compile_fail = true
-error_contains = "cannot mutate borrowed"
-
 # =============================================================================
 # Inout parameters with structs
 # =============================================================================
 
 [[case]]
-name = "inout_struct_field_set"
-spec = ["6.1:14", "6.1:15", "6.1:16", "6.1:18"]
-description = "Inout struct parameter allows modifying a field"
-preview = "affine_types"
-source = """
-struct Point { x: i32, y: i32 }
-
-fn increment_x(inout p: Point) {
-    p.x = p.x + 1;
-}
-
-fn main() -> i32 {
-    let mut pt = Point { x: 41, y: 0 };
-    increment_x(inout pt);
-    pt.x
-}
-"""
-exit_code = 42
-
-[[case]]
-name = "inout_struct_field_get"
+name = "inout_struct_{variant}"
 spec = ["6.1:14", "6.1:18"]
-description = "Inout struct parameter allows reading fields"
+description = "Inout struct parameter operations"
 preview = "affine_types"
 source = """
-struct Point { x: i32, y: i32 }
+struct {struct_def}
 
-fn get_sum(inout p: Point) -> i32 {
-    p.x + p.y
+fn {fn_name}(inout {param}: {type}{extra_params}) {return_type} {
+    {body}
 }
 
 fn main() -> i32 {
-    let mut pt = Point { x: 20, y: 22 };
-    get_sum(inout pt)
+    let mut {var} = {init};
+    {calls}
 }
 """
-exit_code = 42
-
-[[case]]
-name = "inout_struct_multiple_fields"
-spec = ["6.1:14", "6.1:18"]
-description = "Inout struct parameter allows modifying multiple fields"
-preview = "affine_types"
-source = """
-struct Point { x: i32, y: i32 }
-
-fn swap_xy(inout p: Point) {
-    let tmp = p.x;
-    p.x = p.y;
-    p.y = tmp;
-}
-
-fn main() -> i32 {
-    let mut pt = Point { x: 10, y: 42 };
-    swap_xy(inout pt);
-    pt.x
-}
-"""
-exit_code = 42
+params = [
+  { variant = "field_set", struct_def = "Point { x: i32, y: i32 }", fn_name = "increment_x", param = "p", type = "Point", extra_params = "", return_type = "", body = "p.x = p.x + 1;", var = "pt", init = "Point { x: 41, y: 0 }", calls = "increment_x(inout pt);\n    pt.x", exit_code = 42, spec_extra = ["6.1:15", "6.1:16"] },
+  { variant = "field_get", struct_def = "Point { x: i32, y: i32 }", fn_name = "get_sum", param = "p", type = "Point", extra_params = "", return_type = "-> i32", body = "p.x + p.y", var = "pt", init = "Point { x: 20, y: 22 }", calls = "get_sum(inout pt)", exit_code = 42 },
+  { variant = "multiple_fields", struct_def = "Point { x: i32, y: i32 }", fn_name = "swap_xy", param = "p", type = "Point", extra_params = "", return_type = "", body = "let tmp = p.x;\n    p.x = p.y;\n    p.y = tmp;", var = "pt", init = "Point { x: 10, y: 42 }", calls = "swap_xy(inout pt);\n    pt.x", exit_code = 42 },
+  { variant = "with_regular", struct_def = "Counter { value: i32 }", fn_name = "add_to", param = "c", type = "Counter", extra_params = ", amount: i32", return_type = "", body = "c.value = c.value + amount;", var = "counter", init = "Counter { value: 32 }", calls = "add_to(inout counter, 10);\n    counter.value", exit_code = 42, spec_extra = ["6.1:15"] },
+  { variant = "multiple_calls", struct_def = "Counter { value: i32 }", fn_name = "increment", param = "c", type = "Counter", extra_params = "", return_type = "", body = "c.value = c.value + 1;", var = "counter", init = "Counter { value: 39 }", calls = "increment(inout counter);\n    increment(inout counter);\n    increment(inout counter);\n    counter.value", exit_code = 42 },
+]
 
 [[case]]
 name = "inout_struct_return_and_modify"
@@ -1097,48 +667,6 @@ fn main() -> i32 {
 }
 """
 exit_code = 81
-
-[[case]]
-name = "inout_struct_multiple_calls"
-spec = ["6.1:14", "6.1:18"]
-description = "Multiple calls with inout struct accumulate changes"
-preview = "affine_types"
-source = """
-struct Counter { value: i32 }
-
-fn increment(inout c: Counter) {
-    c.value = c.value + 1;
-}
-
-fn main() -> i32 {
-    let mut counter = Counter { value: 39 };
-    increment(inout counter);
-    increment(inout counter);
-    increment(inout counter);
-    counter.value
-}
-"""
-exit_code = 42
-
-[[case]]
-name = "inout_struct_with_regular_param"
-spec = ["6.1:14", "6.1:15"]
-description = "Mixing inout struct and regular parameters"
-preview = "affine_types"
-source = """
-struct Counter { value: i32 }
-
-fn add_to(inout c: Counter, amount: i32) {
-    c.value = c.value + amount;
-}
-
-fn main() -> i32 {
-    let mut counter = Counter { value: 32 };
-    add_to(inout counter, 10);
-    counter.value
-}
-"""
-exit_code = 42
 
 [[case]]
 name = "inout_nested_struct"
@@ -1190,161 +718,46 @@ exit_code = 42
 # =============================================================================
 
 [[case]]
-name = "assign_to_non_inout_param"
+name = "assign_to_non_inout_{kind}"
 spec = ["6.1:32"]
-description = "Cannot assign to a non-inout parameter"
+description = "Cannot assign to non-inout parameters"
 preview = "affine_types"
-source = """
-fn bad(x: i32) {
-    x = 5;
-}
-fn main() -> i32 {
-    bad(10);
-    0
-}
-"""
+source = "{source}"
 compile_fail = true
 error_contains = "immutable"
-
-[[case]]
-name = "assign_to_non_inout_struct_param_field"
-spec = ["6.1:32"]
-description = "Cannot assign to a field of a non-inout struct parameter"
-preview = "affine_types"
-source = """
-struct Point { x: i32, y: i32 }
-
-fn bad(p: Point) {
-    p.x = 10;
-}
-fn main() -> i32 {
-    let pt = Point { x: 1, y: 2 };
-    bad(pt);
-    0
-}
-"""
-compile_fail = true
-error_contains = "immutable"
-
-[[case]]
-name = "assign_to_non_inout_nested_struct_param_field"
-spec = ["6.1:32"]
-description = "Cannot assign to a nested field of a non-inout struct parameter"
-preview = "affine_types"
-source = """
-struct Inner { value: i32 }
-struct Outer { inner: Inner }
-
-fn bad(o: Outer) {
-    o.inner.value = 10;
-}
-fn main() -> i32 {
-    let data = Outer { inner: Inner { value: 1 } };
-    bad(data);
-    0
-}
-"""
-compile_fail = true
-error_contains = "immutable"
+params = [
+  { kind = "param", source = "fn bad(x: i32) {\n    x = 5;\n}\nfn main() -> i32 {\n    bad(10);\n    0\n}" },
+  { kind = "struct_field", source = "struct Point { x: i32, y: i32 }\n\nfn bad(p: Point) {\n    p.x = 10;\n}\nfn main() -> i32 {\n    let pt = Point { x: 1, y: 2 };\n    bad(pt);\n    0\n}" },
+  { kind = "nested_field", source = "struct Inner { value: i32 }\nstruct Outer { inner: Inner }\n\nfn bad(o: Outer) {\n    o.inner.value = 10;\n}\nfn main() -> i32 {\n    let data = Outer { inner: Inner { value: 1 } };\n    bad(data);\n    0\n}" },
+]
 
 # =============================================================================
 # Inout parameters with arrays
 # =============================================================================
 
 [[case]]
-name = "inout_array_element_get"
+name = "inout_array_{variant}"
 spec = ["6.1:14", "6.1:18"]
-description = "Inout array parameter allows reading elements"
+description = "Inout array parameter operations"
 preview = "affine_types"
 source = """
-fn get_first(inout arr: [i32; 3]) -> i32 {
-    arr[0]
+fn {fn_name}(inout arr: [i32; 3]{extra_params}) {return_type} {
+    {body}
 }
 
 fn main() -> i32 {
-    let mut a = [42, 0, 0];
-    get_first(inout a)
+    let mut a = {init};
+    {calls}
 }
 """
-exit_code = 42
-
-[[case]]
-name = "inout_array_element_set"
-spec = ["6.1:14", "6.1:18"]
-description = "Inout array parameter allows modifying elements"
-preview = "affine_types"
-source = """
-fn increment_first(inout arr: [i32; 3]) {
-    arr[0] = arr[0] + 1;
-}
-
-fn main() -> i32 {
-    let mut a = [41, 0, 0];
-    increment_first(inout a);
-    a[0]
-}
-"""
-exit_code = 42
-
-[[case]]
-name = "inout_array_multiple_elements"
-spec = ["6.1:14", "6.1:18"]
-description = "Inout array parameter allows modifying multiple elements"
-preview = "affine_types"
-source = """
-fn swap_first_two(inout arr: [i32; 3]) {
-    let tmp = arr[0];
-    arr[0] = arr[1];
-    arr[1] = tmp;
-}
-
-fn main() -> i32 {
-    let mut a = [10, 42, 0];
-    swap_first_two(inout a);
-    a[0]
-}
-"""
-exit_code = 42
-
-[[case]]
-name = "inout_array_return_and_modify"
-spec = ["6.1:14", "6.1:18"]
-description = "Inout array parameter with return value"
-preview = "affine_types"
-source = """
-fn increment_return_old(inout arr: [i32; 3]) -> i32 {
-    let old = arr[0];
-    arr[0] = arr[0] + 1;
-    old
-}
-
-fn main() -> i32 {
-    let mut a = [40, 0, 0];
-    let old = increment_return_old(inout a);
-    old + a[0]
-}
-"""
-exit_code = 81
-
-[[case]]
-name = "inout_array_multiple_calls"
-spec = ["6.1:14", "6.1:18"]
-description = "Multiple calls with inout array accumulate changes"
-preview = "affine_types"
-source = """
-fn increment_first(inout arr: [i32; 3]) {
-    arr[0] = arr[0] + 1;
-}
-
-fn main() -> i32 {
-    let mut a = [39, 0, 0];
-    increment_first(inout a);
-    increment_first(inout a);
-    increment_first(inout a);
-    a[0]
-}
-"""
-exit_code = 42
+params = [
+  { variant = "element_get", fn_name = "get_first", extra_params = "", return_type = "-> i32", body = "arr[0]", init = "[42, 0, 0]", calls = "get_first(inout a)", exit_code = 42 },
+  { variant = "element_set", fn_name = "increment_first", extra_params = "", return_type = "", body = "arr[0] = arr[0] + 1;", init = "[41, 0, 0]", calls = "increment_first(inout a);\n    a[0]", exit_code = 42 },
+  { variant = "swap_elements", fn_name = "swap_first_two", extra_params = "", return_type = "", body = "let tmp = arr[0];\n    arr[0] = arr[1];\n    arr[1] = tmp;", init = "[10, 42, 0]", calls = "swap_first_two(inout a);\n    a[0]", exit_code = 42 },
+  { variant = "return_and_modify", fn_name = "increment_return_old", extra_params = "", return_type = "-> i32", body = "let old = arr[0];\n    arr[0] = arr[0] + 1;\n    old", init = "[40, 0, 0]", calls = "let old = increment_return_old(inout a);\n    old + a[0]", exit_code = 81 },
+  { variant = "multiple_calls", fn_name = "increment_first", extra_params = "", return_type = "", body = "arr[0] = arr[0] + 1;", init = "[39, 0, 0]", calls = "increment_first(inout a);\n    increment_first(inout a);\n    increment_first(inout a);\n    a[0]", exit_code = 42 },
+  { variant = "sum", fn_name = "sum_array", extra_params = "", return_type = "-> i32", body = "arr[0] + arr[1] + arr[2]", init = "[10, 20, 12]", calls = "sum_array(inout a)", exit_code = 42 },
+]
 
 [[case]]
 name = "inout_array_with_index_variable"
@@ -1382,23 +795,6 @@ fn main() -> i32 {
     let mut a = [40, 0, 0];
     double_increment(inout a);
     a[0]
-}
-"""
-exit_code = 42
-
-[[case]]
-name = "inout_array_sum"
-spec = ["6.1:14", "6.1:18"]
-description = "Reading all elements of an inout array"
-preview = "affine_types"
-source = """
-fn sum_array(inout arr: [i32; 3]) -> i32 {
-    arr[0] + arr[1] + arr[2]
-}
-
-fn main() -> i32 {
-    let mut a = [10, 20, 12];
-    sum_array(inout a)
 }
 """
 exit_code = 42
