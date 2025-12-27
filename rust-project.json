@@ -1,0 +1,449 @@
+{
+  "sysroot_src": null,
+  "crates": [
+    {
+      "display_name": "rue",
+      "root_module": "crates/rue/src/main.rs",
+      "edition": "2024",
+      "deps": [
+        {
+          "crate": 4,
+          "name": "rue_compiler"
+        },
+        {
+          "crate": 10,
+          "name": "rue_rir"
+        },
+        {
+          "crate": 14,
+          "name": "rue_target"
+        }
+      ],
+      "is_workspace_member": true,
+      "source": {
+        "include_dirs": [
+          "crates/rue/src"
+        ],
+        "exclude_dirs": []
+      },
+      "cfg": [],
+      "env": {},
+      "is_proc_macro": false
+    },
+    {
+      "display_name": "rue-air",
+      "root_module": "crates/rue-air/src/lib.rs",
+      "edition": "2024",
+      "deps": [
+        {
+          "crate": 5,
+          "name": "rue_error"
+        },
+        {
+          "crate": 6,
+          "name": "rue_intern"
+        },
+        {
+          "crate": 7,
+          "name": "rue_lexer"
+        },
+        {
+          "crate": 9,
+          "name": "rue_parser"
+        },
+        {
+          "crate": 10,
+          "name": "rue_rir"
+        },
+        {
+          "crate": 12,
+          "name": "rue_span"
+        }
+      ],
+      "is_workspace_member": true,
+      "source": {
+        "include_dirs": [
+          "crates/rue-air/src"
+        ],
+        "exclude_dirs": []
+      },
+      "cfg": [],
+      "env": {},
+      "is_proc_macro": false
+    },
+    {
+      "display_name": "rue-cfg",
+      "root_module": "crates/rue-cfg/src/lib.rs",
+      "edition": "2024",
+      "deps": [
+        {
+          "crate": 1,
+          "name": "rue_air"
+        },
+        {
+          "crate": 5,
+          "name": "rue_error"
+        },
+        {
+          "crate": 12,
+          "name": "rue_span"
+        }
+      ],
+      "is_workspace_member": true,
+      "source": {
+        "include_dirs": [
+          "crates/rue-cfg/src"
+        ],
+        "exclude_dirs": []
+      },
+      "cfg": [],
+      "env": {},
+      "is_proc_macro": false
+    },
+    {
+      "display_name": "rue-codegen",
+      "root_module": "crates/rue-codegen/src/lib.rs",
+      "edition": "2024",
+      "deps": [
+        {
+          "crate": 1,
+          "name": "rue_air"
+        },
+        {
+          "crate": 2,
+          "name": "rue_cfg"
+        },
+        {
+          "crate": 5,
+          "name": "rue_error"
+        },
+        {
+          "crate": 12,
+          "name": "rue_span"
+        }
+      ],
+      "is_workspace_member": true,
+      "source": {
+        "include_dirs": [
+          "crates/rue-codegen/src"
+        ],
+        "exclude_dirs": []
+      },
+      "cfg": [],
+      "env": {},
+      "is_proc_macro": false
+    },
+    {
+      "display_name": "rue-compiler",
+      "root_module": "crates/rue-compiler/src/lib.rs",
+      "edition": "2024",
+      "deps": [
+        {
+          "crate": 1,
+          "name": "rue_air"
+        },
+        {
+          "crate": 2,
+          "name": "rue_cfg"
+        },
+        {
+          "crate": 3,
+          "name": "rue_codegen"
+        },
+        {
+          "crate": 5,
+          "name": "rue_error"
+        },
+        {
+          "crate": 6,
+          "name": "rue_intern"
+        },
+        {
+          "crate": 7,
+          "name": "rue_lexer"
+        },
+        {
+          "crate": 8,
+          "name": "rue_linker"
+        },
+        {
+          "crate": 9,
+          "name": "rue_parser"
+        },
+        {
+          "crate": 10,
+          "name": "rue_rir"
+        },
+        {
+          "crate": 12,
+          "name": "rue_span"
+        },
+        {
+          "crate": 14,
+          "name": "rue_target"
+        }
+      ],
+      "is_workspace_member": true,
+      "source": {
+        "include_dirs": [
+          "crates/rue-compiler/src"
+        ],
+        "exclude_dirs": []
+      },
+      "cfg": [],
+      "env": {},
+      "is_proc_macro": false
+    },
+    {
+      "display_name": "rue-error",
+      "root_module": "crates/rue-error/src/lib.rs",
+      "edition": "2024",
+      "deps": [
+        {
+          "crate": 12,
+          "name": "rue_span"
+        }
+      ],
+      "is_workspace_member": true,
+      "source": {
+        "include_dirs": [
+          "crates/rue-error/src"
+        ],
+        "exclude_dirs": []
+      },
+      "cfg": [],
+      "env": {},
+      "is_proc_macro": false
+    },
+    {
+      "display_name": "rue-intern",
+      "root_module": "crates/rue-intern/src/lib.rs",
+      "edition": "2024",
+      "deps": [],
+      "is_workspace_member": true,
+      "source": {
+        "include_dirs": [
+          "crates/rue-intern/src"
+        ],
+        "exclude_dirs": []
+      },
+      "cfg": [],
+      "env": {},
+      "is_proc_macro": false
+    },
+    {
+      "display_name": "rue-lexer",
+      "root_module": "crates/rue-lexer/src/lib.rs",
+      "edition": "2024",
+      "deps": [
+        {
+          "crate": 5,
+          "name": "rue_error"
+        },
+        {
+          "crate": 12,
+          "name": "rue_span"
+        }
+      ],
+      "is_workspace_member": true,
+      "source": {
+        "include_dirs": [
+          "crates/rue-lexer/src"
+        ],
+        "exclude_dirs": []
+      },
+      "cfg": [],
+      "env": {},
+      "is_proc_macro": false
+    },
+    {
+      "display_name": "rue-linker",
+      "root_module": "crates/rue-linker/src/lib.rs",
+      "edition": "2024",
+      "deps": [
+        {
+          "crate": 14,
+          "name": "rue_target"
+        }
+      ],
+      "is_workspace_member": true,
+      "source": {
+        "include_dirs": [
+          "crates/rue-linker/src"
+        ],
+        "exclude_dirs": []
+      },
+      "cfg": [],
+      "env": {},
+      "is_proc_macro": false
+    },
+    {
+      "display_name": "rue-parser",
+      "root_module": "crates/rue-parser/src/lib.rs",
+      "edition": "2024",
+      "deps": [
+        {
+          "crate": 5,
+          "name": "rue_error"
+        },
+        {
+          "crate": 7,
+          "name": "rue_lexer"
+        },
+        {
+          "crate": 12,
+          "name": "rue_span"
+        }
+      ],
+      "is_workspace_member": true,
+      "source": {
+        "include_dirs": [
+          "crates/rue-parser/src"
+        ],
+        "exclude_dirs": []
+      },
+      "cfg": [],
+      "env": {},
+      "is_proc_macro": false
+    },
+    {
+      "display_name": "rue-rir",
+      "root_module": "crates/rue-rir/src/lib.rs",
+      "edition": "2024",
+      "deps": [
+        {
+          "crate": 6,
+          "name": "rue_intern"
+        },
+        {
+          "crate": 7,
+          "name": "rue_lexer"
+        },
+        {
+          "crate": 9,
+          "name": "rue_parser"
+        },
+        {
+          "crate": 12,
+          "name": "rue_span"
+        }
+      ],
+      "is_workspace_member": true,
+      "source": {
+        "include_dirs": [
+          "crates/rue-rir/src"
+        ],
+        "exclude_dirs": []
+      },
+      "cfg": [],
+      "env": {},
+      "is_proc_macro": false
+    },
+    {
+      "display_name": "rue-runtime",
+      "root_module": "crates/rue-runtime/src/lib.rs",
+      "edition": "2024",
+      "deps": [],
+      "is_workspace_member": true,
+      "source": {
+        "include_dirs": [
+          "crates/rue-runtime/src"
+        ],
+        "exclude_dirs": []
+      },
+      "cfg": [],
+      "env": {},
+      "is_proc_macro": false
+    },
+    {
+      "display_name": "rue-span",
+      "root_module": "crates/rue-span/src/lib.rs",
+      "edition": "2024",
+      "deps": [],
+      "is_workspace_member": true,
+      "source": {
+        "include_dirs": [
+          "crates/rue-span/src"
+        ],
+        "exclude_dirs": []
+      },
+      "cfg": [],
+      "env": {},
+      "is_proc_macro": false
+    },
+    {
+      "display_name": "rue-spec",
+      "root_module": "crates/rue-spec/src/main.rs",
+      "edition": "2024",
+      "deps": [
+        {
+          "crate": 15,
+          "name": "rue_test_runner"
+        }
+      ],
+      "is_workspace_member": true,
+      "source": {
+        "include_dirs": [
+          "crates/rue-spec/src"
+        ],
+        "exclude_dirs": []
+      },
+      "cfg": [],
+      "env": {},
+      "is_proc_macro": false
+    },
+    {
+      "display_name": "rue-target",
+      "root_module": "crates/rue-target/src/lib.rs",
+      "edition": "2024",
+      "deps": [],
+      "is_workspace_member": true,
+      "source": {
+        "include_dirs": [
+          "crates/rue-target/src"
+        ],
+        "exclude_dirs": []
+      },
+      "cfg": [],
+      "env": {},
+      "is_proc_macro": false
+    },
+    {
+      "display_name": "rue-test-runner",
+      "root_module": "crates/rue-test-runner/src/lib.rs",
+      "edition": "2024",
+      "deps": [],
+      "is_workspace_member": true,
+      "source": {
+        "include_dirs": [
+          "crates/rue-test-runner/src"
+        ],
+        "exclude_dirs": []
+      },
+      "cfg": [],
+      "env": {},
+      "is_proc_macro": false
+    },
+    {
+      "display_name": "rue-ui-tests",
+      "root_module": "crates/rue-ui-tests/src/main.rs",
+      "edition": "2024",
+      "deps": [
+        {
+          "crate": 15,
+          "name": "rue_test_runner"
+        }
+      ],
+      "is_workspace_member": true,
+      "source": {
+        "include_dirs": [
+          "crates/rue-ui-tests/src"
+        ],
+        "exclude_dirs": []
+      },
+      "cfg": [],
+      "env": {},
+      "is_proc_macro": false
+    }
+  ]
+}
