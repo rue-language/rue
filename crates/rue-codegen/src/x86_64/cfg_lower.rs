@@ -244,6 +244,42 @@ impl<'a> CfgLower<'a> {
         None
     }
 
+    /// Ensure the inout parameter pointer vreg exists for the given param slot.
+    /// If the pointer has already been loaded (via a Param instruction), returns the cached vreg.
+    /// Otherwise, loads the pointer from the parameter slot and caches it.
+    ///
+    /// This is needed because ParamIndexSet/ParamStore/etc. may reference an inout param
+    /// that was never accessed via a Param instruction (e.g., write-only parameter).
+    fn ensure_inout_param_ptr(&mut self, param_slot: u32) -> VReg {
+        if let Some(ptr_vreg) = self.inout_param_ptrs.get(&param_slot).copied() {
+            return ptr_vreg;
+        }
+
+        // Load the pointer from the param slot
+        let ptr_vreg = self.mir.alloc_vreg();
+
+        if (param_slot as usize) < ARG_REGS.len() {
+            let slot = self.num_locals + param_slot;
+            let offset = self.local_offset(slot);
+            self.mir.push(X86Inst::MovRM {
+                dst: Operand::Virtual(ptr_vreg),
+                base: Reg::Rbp,
+                offset,
+            });
+        } else {
+            let stack_offset = 16 + ((param_slot as i32) - 6) * 8;
+            self.mir.push(X86Inst::MovRM {
+                dst: Operand::Virtual(ptr_vreg),
+                base: Reg::Rbp,
+                offset: stack_offset,
+            });
+        }
+
+        // Cache it for future use
+        self.inout_param_ptrs.insert(param_slot, ptr_vreg);
+        ptr_vreg
+    }
+
     /// Emit a bounds check for array indexing.
     ///
     /// Generates code to check that `index_vreg < length` and calls `__rue_bounds_check`
@@ -1335,19 +1371,13 @@ impl<'a> CfgLower<'a> {
                     // Check if this slot corresponds to an inout parameter
                     if let Some(param_index) = self.slot_to_inout_param_index(*slot) {
                         // For inout params, store through the pointer
-                        if let Some(ptr_vreg) = self.inout_param_ptrs.get(&param_index).copied() {
-                            self.mir.push(X86Inst::MovMRIndexed {
-                                base: ptr_vreg,
-                                offset: 0,
-                                src: Operand::Virtual(val_vreg),
-                            });
-                        } else {
-                            // Fallback: shouldn't happen if Param was lowered first
-                            panic!(
-                                "inout param pointer not found for param index {}",
-                                param_index
-                            );
-                        }
+                        // Use ensure_inout_param_ptr in case the param was never accessed via Param instruction
+                        let ptr_vreg = self.ensure_inout_param_ptr(param_index);
+                        self.mir.push(X86Inst::MovMRIndexed {
+                            base: ptr_vreg,
+                            offset: 0,
+                            src: Operand::Virtual(val_vreg),
+                        });
                     } else {
                         // Normal local variable: store to stack slot
                         let offset = self.local_offset(*slot);
@@ -1372,18 +1402,13 @@ impl<'a> CfgLower<'a> {
                 // For struct params, param_slot is the first slot (same as param_index for first param).
                 // We use is_param_inout(param_slot) to check if this slot is inout.
                 if self.cfg.is_param_inout(*param_slot) {
-                    if let Some(ptr_vreg) = self.inout_param_ptrs.get(param_slot).copied() {
-                        self.mir.push(X86Inst::MovMRIndexed {
-                            base: ptr_vreg,
-                            offset: 0,
-                            src: Operand::Virtual(val_vreg),
-                        });
-                    } else {
-                        panic!(
-                            "ParamStore: inout param pointer not found for param slot {}",
-                            param_slot
-                        );
-                    }
+                    // Use ensure_inout_param_ptr in case the param was never accessed via Param instruction
+                    let ptr_vreg = self.ensure_inout_param_ptr(*param_slot);
+                    self.mir.push(X86Inst::MovMRIndexed {
+                        base: ptr_vreg,
+                        offset: 0,
+                        src: Operand::Virtual(val_vreg),
+                    });
                 } else {
                     panic!("ParamStore used on non-inout param slot {}", param_slot);
                 }
@@ -1443,19 +1468,12 @@ impl<'a> CfgLower<'a> {
                                 // Check if this param is itself a by-ref param (forwarding case)
                                 if self.cfg.is_param_inout(*index) {
                                     // For by-ref param, just pass the pointer we received
-                                    if let Some(ptr_vreg) =
-                                        self.inout_param_ptrs.get(index).copied()
-                                    {
-                                        self.mir.push(X86Inst::MovRR {
-                                            dst: Operand::Virtual(addr_vreg),
-                                            src: Operand::Virtual(ptr_vreg),
-                                        });
-                                    } else {
-                                        panic!(
-                                            "by-ref param pointer not found for forwarding param {}",
-                                            index
-                                        );
-                                    }
+                                    // Use ensure_inout_param_ptr in case the param was never accessed via Param instruction
+                                    let ptr_vreg = self.ensure_inout_param_ptr(*index);
+                                    self.mir.push(X86Inst::MovRR {
+                                        dst: Operand::Virtual(addr_vreg),
+                                        src: Operand::Virtual(ptr_vreg),
+                                    });
                                 } else {
                                     // Normal param: emit lea to get its address
                                     let param_slot = self.num_locals + *index;
@@ -1911,20 +1929,14 @@ impl<'a> CfgLower<'a> {
                             // Check if this is an inout parameter
                             if self.cfg.is_param_inout(index) {
                                 // For inout params, use the pointer we stored earlier
-                                if let Some(ptr_vreg) = self.inout_param_ptrs.get(&index).copied() {
-                                    // Load from pointer - field offset (negative because stack grows down)
-                                    self.mir.push(X86Inst::MovRMIndexed {
-                                        dst: Operand::Virtual(vreg),
-                                        base: ptr_vreg,
-                                        offset: -((total_offset as i32) * 8),
-                                    });
-                                } else {
-                                    panic!(
-                                        "FieldGet: inout param pointer not found for param index {} - \
-                                         Param instruction must be lowered before FieldGet",
-                                        index
-                                    );
-                                }
+                                // Use ensure_inout_param_ptr in case the param was never accessed via Param instruction
+                                let ptr_vreg = self.ensure_inout_param_ptr(index);
+                                // Load from pointer - field offset (negative because stack grows down)
+                                self.mir.push(X86Inst::MovRMIndexed {
+                                    dst: Operand::Virtual(vreg),
+                                    base: ptr_vreg,
+                                    offset: -((total_offset as i32) * 8),
+                                });
                             } else {
                                 // Non-inout param: struct is copied to our stack
                                 let param_slot = self.num_locals + index + total_offset;
@@ -1988,20 +2000,14 @@ impl<'a> CfgLower<'a> {
                 // Check if this is an inout parameter
                 if self.cfg.is_param_inout(*param_slot) {
                     // For inout params, store through the pointer
-                    if let Some(ptr_vreg) = self.inout_param_ptrs.get(param_slot).copied() {
-                        // Negative offset because stack grows down
-                        self.mir.push(X86Inst::MovMRIndexed {
-                            base: ptr_vreg,
-                            offset: -((total_offset as i32) * 8),
-                            src: Operand::Virtual(val_vreg),
-                        });
-                    } else {
-                        panic!(
-                            "ParamFieldSet: inout param pointer not found for param slot {} - \
-                             Param instruction must be lowered before ParamFieldSet",
-                            param_slot
-                        );
-                    }
+                    // Use ensure_inout_param_ptr in case the param was never accessed via Param instruction
+                    let ptr_vreg = self.ensure_inout_param_ptr(*param_slot);
+                    // Negative offset because stack grows down
+                    self.mir.push(X86Inst::MovMRIndexed {
+                        base: ptr_vreg,
+                        offset: -((total_offset as i32) * 8),
+                        src: Operand::Virtual(val_vreg),
+                    });
                 } else {
                     // Non-inout param: struct is on our stack
                     let param_stack_slot = self.num_locals + *param_slot + total_offset;
@@ -2141,29 +2147,28 @@ impl<'a> CfgLower<'a> {
                         // Check if this is an inout parameter
                         if self.cfg.is_param_inout(*param_index) {
                             // For inout params, use the stored pointer
-                            if let Some(ptr_vreg) = self.inout_param_ptrs.get(param_index).copied()
-                            {
-                                self.mir.push(X86Inst::MovRR {
+                            // Use ensure_inout_param_ptr in case the param was never accessed via Param instruction
+                            let ptr_vreg = self.ensure_inout_param_ptr(*param_index);
+                            self.mir.push(X86Inst::MovRR {
+                                dst: Operand::Virtual(addr_vreg),
+                                src: Operand::Virtual(ptr_vreg),
+                            });
+
+                            // Subtract total offset
+                            if let Some(total) = total_offset_vreg {
+                                self.mir.push(X86Inst::SubRR64 {
                                     dst: Operand::Virtual(addr_vreg),
-                                    src: Operand::Virtual(ptr_vreg),
+                                    src: Operand::Virtual(total),
                                 });
-
-                                // Subtract total offset
-                                if let Some(total) = total_offset_vreg {
-                                    self.mir.push(X86Inst::SubRR64 {
-                                        dst: Operand::Virtual(addr_vreg),
-                                        src: Operand::Virtual(total),
-                                    });
-                                }
-
-                                // Load from computed address
-                                self.mir.push(X86Inst::MovRMIndexed {
-                                    dst: Operand::Virtual(vreg),
-                                    base: addr_vreg,
-                                    offset: 0,
-                                });
-                                return;
                             }
+
+                            // Load from computed address
+                            self.mir.push(X86Inst::MovRMIndexed {
+                                dst: Operand::Virtual(vreg),
+                                base: addr_vreg,
+                                offset: 0,
+                            });
+                            return;
                         }
                     }
 
@@ -2294,31 +2299,25 @@ impl<'a> CfgLower<'a> {
                 });
 
                 // For inout params, store through the pointer
-                if let Some(ptr_vreg) = self.inout_param_ptrs.get(param_slot).copied() {
-                    // Calculate address: ptr - (index * 8)
-                    // (Arrays are stored with element 0 at the highest address)
-                    let addr_vreg = self.mir.alloc_vreg();
-                    self.mir.push(X86Inst::MovRR {
-                        dst: Operand::Virtual(addr_vreg),
-                        src: Operand::Virtual(ptr_vreg),
-                    });
-                    self.mir.push(X86Inst::SubRR64 {
-                        dst: Operand::Virtual(addr_vreg),
-                        src: Operand::Virtual(scaled_index),
-                    });
+                // Use ensure_inout_param_ptr in case the param was never accessed via Param instruction
+                let ptr_vreg = self.ensure_inout_param_ptr(*param_slot);
+                // Calculate address: ptr - (index * 8)
+                // (Arrays are stored with element 0 at the highest address)
+                let addr_vreg = self.mir.alloc_vreg();
+                self.mir.push(X86Inst::MovRR {
+                    dst: Operand::Virtual(addr_vreg),
+                    src: Operand::Virtual(ptr_vreg),
+                });
+                self.mir.push(X86Inst::SubRR64 {
+                    dst: Operand::Virtual(addr_vreg),
+                    src: Operand::Virtual(scaled_index),
+                });
 
-                    self.mir.push(X86Inst::MovMRIndexed {
-                        base: addr_vreg,
-                        offset: 0,
-                        src: Operand::Virtual(val_vreg),
-                    });
-                } else {
-                    panic!(
-                        "ParamIndexSet: inout param pointer not found for param slot {} - \
-                         Param instruction must be lowered before ParamIndexSet",
-                        param_slot
-                    );
-                }
+                self.mir.push(X86Inst::MovMRIndexed {
+                    base: addr_vreg,
+                    offset: 0,
+                    src: Operand::Virtual(val_vreg),
+                });
             }
 
             CfgInstData::EnumVariant { variant_index, .. } => {

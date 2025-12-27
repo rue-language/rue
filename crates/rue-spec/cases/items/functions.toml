@@ -757,7 +757,6 @@ params = [
 name = "inout_array_with_index_variable"
 spec = ["6.1:14", "6.1:18"]
 description = "Inout array with variable index"
-skip = true  # TODO: Fix codegen bug - ParamIndexSet panic when inout array has additional params
 source = """
 fn set_element(inout arr: [i32; 3], idx: u64, val: i32) {
     arr[idx] = val;
