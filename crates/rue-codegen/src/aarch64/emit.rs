@@ -261,7 +261,7 @@ impl<'a> Emitter<'a> {
             self.emit_inst(inst);
         }
 
-        self.apply_fixups();
+        self.apply_fixups()?;
         Ok((self.code, self.relocations))
     }
 
@@ -852,38 +852,43 @@ impl<'a> Emitter<'a> {
     }
 
     /// Apply pending fixups for forward branches.
-    fn apply_fixups(&mut self) {
+    fn apply_fixups(&mut self) -> CompileResult<()> {
         for fixup in &self.fixups {
-            if let Some(&target) = self.labels.get(&fixup.label) {
-                let offset = (target as i64 - fixup.offset as i64) / 4;
-                match fixup.kind {
-                    FixupKind::Branch => {
-                        // B instruction: imm26
-                        let inst = u32::from_le_bytes(
-                            self.code[fixup.offset..fixup.offset + 4]
-                                .try_into()
-                                .unwrap(),
-                        );
-                        let new_inst =
-                            (inst & BRANCH_OPCODE_MASK) | ((offset as u32) & BRANCH_OFFSET_MASK);
+            let target = self.labels.get(&fixup.label).ok_or_else(|| {
+                CompileError::without_span(ErrorKind::InternalCodegenError(format!(
+                    "undefined label: {}",
+                    fixup.label
+                )))
+            })?;
+            let offset = (*target as i64 - fixup.offset as i64) / 4;
+            match fixup.kind {
+                FixupKind::Branch => {
+                    // B instruction: imm26
+                    let inst = u32::from_le_bytes(
                         self.code[fixup.offset..fixup.offset + 4]
-                            .copy_from_slice(&new_inst.to_le_bytes());
-                    }
-                    FixupKind::CondBranch => {
-                        // Conditional branch: imm19
-                        let inst = u32::from_le_bytes(
-                            self.code[fixup.offset..fixup.offset + 4]
-                                .try_into()
-                                .unwrap(),
-                        );
-                        let new_inst = (inst & COND_BRANCH_OPCODE_MASK)
-                            | (((offset as u32) & COND_BRANCH_OFFSET_MASK) << 5);
+                            .try_into()
+                            .unwrap(),
+                    );
+                    let new_inst =
+                        (inst & BRANCH_OPCODE_MASK) | ((offset as u32) & BRANCH_OFFSET_MASK);
+                    self.code[fixup.offset..fixup.offset + 4]
+                        .copy_from_slice(&new_inst.to_le_bytes());
+                }
+                FixupKind::CondBranch => {
+                    // Conditional branch: imm19
+                    let inst = u32::from_le_bytes(
                         self.code[fixup.offset..fixup.offset + 4]
-                            .copy_from_slice(&new_inst.to_le_bytes());
-                    }
+                            .try_into()
+                            .unwrap(),
+                    );
+                    let new_inst = (inst & COND_BRANCH_OPCODE_MASK)
+                        | (((offset as u32) & COND_BRANCH_OFFSET_MASK) << 5);
+                    self.code[fixup.offset..fixup.offset + 4]
+                        .copy_from_slice(&new_inst.to_le_bytes());
                 }
             }
         }
+        Ok(())
     }
 
     // ========== Instruction encoding helpers ==========

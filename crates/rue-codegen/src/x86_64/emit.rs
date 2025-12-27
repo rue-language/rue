@@ -201,7 +201,7 @@ impl<'a> Emitter<'a> {
         for inst in self.mir.iter() {
             self.emit_inst(inst);
         }
-        self.apply_fixups();
+        self.apply_fixups()?;
         Ok((self.code, self.relocations))
     }
 
@@ -298,12 +298,14 @@ impl<'a> Emitter<'a> {
     }
 
     /// Apply all fixups for forward jumps.
-    fn apply_fixups(&mut self) {
+    fn apply_fixups(&mut self) -> CompileResult<()> {
         for fixup in &self.fixups {
-            let target_offset = self
-                .labels
-                .get(&fixup.label)
-                .unwrap_or_else(|| panic!("undefined label: {}", fixup.label));
+            let target_offset = self.labels.get(&fixup.label).ok_or_else(|| {
+                CompileError::without_span(ErrorKind::InternalCodegenError(format!(
+                    "undefined label: {}",
+                    fixup.label
+                )))
+            })?;
 
             match fixup.kind {
                 FixupKind::Rel8 => {
@@ -313,13 +315,15 @@ impl<'a> Emitter<'a> {
                     let relative = *target_offset as i64 - jump_end as i64;
 
                     // rel8 encoding only supports -128 to +127 byte offsets
-                    assert!(
-                        relative >= -128 && relative <= 127,
-                        "jump offset {} exceeds rel8 range (-128..127) for label '{}'; \
-                         consider implementing rel32 fallback",
-                        relative,
-                        fixup.label
-                    );
+                    if relative < -128 || relative > 127 {
+                        return Err(CompileError::without_span(ErrorKind::InternalCodegenError(
+                            format!(
+                                "jump offset {} exceeds rel8 range (-128..127) for label '{}'; \
+                                 consider implementing rel32 fallback",
+                                relative, fixup.label
+                            ),
+                        )));
+                    }
 
                     self.code[fixup.offset] = relative as u8;
                 }
@@ -330,18 +334,21 @@ impl<'a> Emitter<'a> {
                     let relative = *target_offset as i64 - jump_end as i64;
 
                     // rel32 encoding supports i32 range
-                    assert!(
-                        relative >= i32::MIN as i64 && relative <= i32::MAX as i64,
-                        "jump offset {} exceeds rel32 range for label '{}'",
-                        relative,
-                        fixup.label
-                    );
+                    if relative < i32::MIN as i64 || relative > i32::MAX as i64 {
+                        return Err(CompileError::without_span(ErrorKind::InternalCodegenError(
+                            format!(
+                                "jump offset {} exceeds rel32 range for label '{}'",
+                                relative, fixup.label
+                            ),
+                        )));
+                    }
 
                     let bytes = (relative as i32).to_le_bytes();
                     self.code[fixup.offset..fixup.offset + 4].copy_from_slice(&bytes);
                 }
             }
         }
+        Ok(())
     }
 
     /// Emit a single instruction.
