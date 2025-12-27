@@ -61,6 +61,10 @@
 //! - `rue-linker` links the runtime archive into the final ELF executable
 
 #![no_std]
+// Doc comments before macro invocations are intentional - they document the functions
+// that the macro generates. Rust can't attach them automatically, but they serve as
+// documentation for readers of this source file.
+#![allow(unused_doc_comments)]
 
 // Platform-specific implementations
 #[cfg(all(target_arch = "x86_64", target_os = "linux"))]
@@ -164,7 +168,8 @@ macro_rules! define_for_all_platforms {
 pub unsafe extern "C" fn memcpy(dst: *mut u8, src: *const u8, n: usize) -> *mut u8 {
     let mut i = 0;
     while i < n {
-        *dst.add(i) = *src.add(i);
+        // SAFETY: Caller guarantees dst and src are valid for n bytes and don't overlap
+        unsafe { *dst.add(i) = *src.add(i) };
         i += 1;
     }
     dst
@@ -182,7 +187,8 @@ pub unsafe extern "C" fn memmove(dst: *mut u8, src: *const u8, n: usize) -> *mut
         // Copy forwards
         let mut i = 0;
         while i < n {
-            *dst.add(i) = *src.add(i);
+            // SAFETY: Caller guarantees dst and src are valid for n bytes
+            unsafe { *dst.add(i) = *src.add(i) };
             i += 1;
         }
     } else {
@@ -190,7 +196,8 @@ pub unsafe extern "C" fn memmove(dst: *mut u8, src: *const u8, n: usize) -> *mut
         let mut i = n;
         while i > 0 {
             i -= 1;
-            *dst.add(i) = *src.add(i);
+            // SAFETY: Caller guarantees dst and src are valid for n bytes
+            unsafe { *dst.add(i) = *src.add(i) };
         }
     }
     dst
@@ -206,7 +213,8 @@ pub unsafe extern "C" fn memset(dst: *mut u8, c: i32, n: usize) -> *mut u8 {
     let byte = c as u8;
     let mut i = 0;
     while i < n {
-        *dst.add(i) = byte;
+        // SAFETY: Caller guarantees dst is valid for n bytes
+        unsafe { *dst.add(i) = byte };
         i += 1;
     }
     dst
@@ -224,8 +232,9 @@ pub unsafe extern "C" fn memset(dst: *mut u8, c: i32, n: usize) -> *mut u8 {
 pub unsafe extern "C" fn memcmp(s1: *const u8, s2: *const u8, n: usize) -> i32 {
     let mut i = 0;
     while i < n {
-        let a = *s1.add(i);
-        let b = *s2.add(i);
+        // SAFETY: Caller guarantees s1 and s2 are valid for n bytes
+        let a = unsafe { *s1.add(i) };
+        let b = unsafe { *s2.add(i) };
         if a != b {
             return (a as i32) - (b as i32);
         }
@@ -250,8 +259,9 @@ pub unsafe extern "C" fn memcmp(s1: *const u8, s2: *const u8, n: usize) -> i32 {
 pub unsafe extern "C" fn bcmp(s1: *const u8, s2: *const u8, n: usize) -> i32 {
     let mut i = 0;
     while i < n {
-        let a = *s1.add(i);
-        let b = *s2.add(i);
+        // SAFETY: Caller guarantees s1 and s2 are valid for n bytes
+        let a = unsafe { *s1.add(i) };
+        let b = unsafe { *s2.add(i) };
         if a != b {
             return 1;
         }

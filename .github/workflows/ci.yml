@@ -56,5 +56,9 @@ jobs:
             buck2-${{ matrix.name }}-
 
       # Uses hermetic Rust toolchain downloaded by Buck2
+      # First verify everything builds (catches issues tests might miss)
+      - name: Build all targets
+        run: ./buck2 build //crates/...
+
       - name: Run tests
         run: ./test.sh

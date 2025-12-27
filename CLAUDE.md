@@ -84,12 +84,14 @@ graph LR
 | `rue-lexer` | Tokenization |
 | `rue-parser` | AST construction |
 | `rue-rir` | Untyped IR (post-parse, pre-typing) |
+| `rue-cfg` | Control flow graph construction and optimization |
 | `rue-air` | Typed IR (after semantic analysis) |
 | `rue-codegen` | x86-64 machine code generation |
 | `rue-linker` | ELF object file creation and linking |
-| `rue-error` | Error types |
+| `rue-error` | Error types and diagnostics |
 | `rue-span` | Source location tracking |
 | `rue-intern` | String interning |
+| `rue-target` | Target platform configuration |
 | `rue-spec` | Specification test runner |
 | `rue-runtime` | Runtime support |
 

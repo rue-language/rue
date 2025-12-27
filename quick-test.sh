@@ -16,9 +16,12 @@ echo "Running unit tests (quick mode)..."
 ./buck2 test \
     //crates/rue-span:rue-span-test \
     //crates/rue-intern:rue-intern-test \
+    //crates/rue-error:rue-error-test \
+    //crates/rue-target:rue-target-test \
     //crates/rue-lexer:rue-lexer-test \
     //crates/rue-parser:rue-parser-test \
     //crates/rue-rir:rue-rir-test \
+    //crates/rue-cfg:rue-cfg-test \
     //crates/rue-air:rue-air-test \
     //crates/rue-codegen:rue-codegen-test \
     //crates/rue-linker:rue-linker-test \
