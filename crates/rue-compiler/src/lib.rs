@@ -743,6 +743,36 @@ pub fn generate_allocated_mir(
     }
 }
 
+/// Generate the actual emitted assembly text for a CFG.
+///
+/// Unlike `format_assembly()` on Mir which shows MIR instructions,
+/// this returns the actual assembly that will be emitted, including
+/// prologue/epilogue code that the emitter adds.
+///
+/// This is useful for debugging and for --emit asm output that accurately
+/// reflects what's in the binary.
+pub fn generate_emitted_asm(
+    cfg: &Cfg,
+    struct_defs: &[StructDef],
+    array_types: &[ArrayTypeDef],
+    strings: &[String],
+    target: Target,
+) -> CompileResult<String> {
+    match target.arch() {
+        Arch::X86_64 => {
+            let (_machine_code, asm) =
+                rue_codegen::x86_64::generate_with_asm(cfg, struct_defs, array_types, strings)?;
+            Ok(asm)
+        }
+        Arch::Aarch64 => {
+            // For now, fall back to MIR formatting for aarch64
+            // TODO: Implement emit_all for aarch64 in Phase 2
+            let mir = generate_allocated_mir(cfg, struct_defs, array_types, strings, target)?;
+            Ok(mir.format_assembly())
+        }
+    }
+}
+
 // ============================================================================
 // Test Helper Functions
 // ============================================================================

@@ -6,7 +6,7 @@ use std::path::Path;
 use rue_compiler::{
     CompileOptions, DiagnosticFormatter, Lexer, LinkerMode, OptLevel, Parser, PreviewFeature,
     PreviewFeatures, SourceInfo, compile_frontend_from_ast_with_options, compile_with_options,
-    generate_allocated_mir, generate_mir,
+    generate_allocated_mir, generate_emitted_asm, generate_mir,
 };
 use rue_rir::RirPrinter;
 use rue_target::Target;
@@ -480,20 +480,20 @@ fn handle_emit(source: &str, options: &Options, formatter: &DiagnosticFormatter)
                     for func in &state.functions {
                         println!(".globl {}", func.analyzed.name);
                         println!("{}:", func.analyzed.name);
-                        let mir = match generate_allocated_mir(
+                        let asm = match generate_emitted_asm(
                             &func.cfg,
                             &state.struct_defs,
                             &state.array_types,
                             &state.strings,
                             options.target,
                         ) {
-                            Ok(mir) => mir,
+                            Ok(asm) => asm,
                             Err(e) => {
                                 eprintln!("{}", formatter.format_error(&e));
                                 return Err(());
                             }
                         };
-                        print!("{}", mir.format_assembly());
+                        print!("{}", asm);
                     }
                 }
                 println!();

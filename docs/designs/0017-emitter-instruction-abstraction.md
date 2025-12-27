@@ -217,8 +217,8 @@ fn emit_prologue(&mut self) {
 
 ## Implementation Phases
 
-- [ ] **Phase 1: Core types and x86-64 refactor** - rue-hf6s
-  - Add `EmittedInst` and `EmittedFunction` types
+- [x] **Phase 1: Core types and x86-64 refactor** - rue-hf6s (completed)
+  - Add `EmittedInst` and `EmittedCode` types
   - Refactor x86-64 emitter to use new pattern
   - Update `--emit asm` to use `to_asm()`
   - Verify byte output is identical (regression test)

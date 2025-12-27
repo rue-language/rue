@@ -27,7 +27,7 @@ use rue_cfg::Cfg;
 use rue_error::CompileResult;
 
 // Re-export from parent
-pub use super::{EmittedRelocation, MachineCode};
+pub use super::{EmittedCode, EmittedRelocation, MachineCode};
 
 /// Generate machine code from CFG.
 ///
@@ -71,4 +71,47 @@ pub fn generate(
         relocations,
         strings: strings.to_vec(),
     })
+}
+
+/// Generate machine code with assembly text from CFG.
+///
+/// This returns both machine code bytes and human-readable assembly text
+/// showing the actual emitted instructions (including prologue/epilogue).
+pub fn generate_with_asm(
+    cfg: &Cfg,
+    struct_defs: &[StructDef],
+    array_types: &[ArrayTypeDef],
+    strings: &[String],
+) -> CompileResult<(MachineCode, String)> {
+    let num_locals = cfg.num_locals();
+    let num_params = cfg.num_params();
+
+    // Lower CFG to X86Mir with virtual registers
+    let mir = CfgLower::new(cfg, struct_defs, array_types, strings).lower();
+
+    // Allocate physical registers (may add spill slots)
+    let existing_slots = num_locals + num_params;
+    let (mir, num_spills, used_callee_saved) =
+        RegAlloc::new(mir, existing_slots).allocate_with_spills()?;
+
+    // Emit machine code bytes with assembly text
+    let total_locals = num_locals + num_spills;
+    let emitted = Emitter::new(
+        &mir,
+        total_locals,
+        num_locals,
+        num_params,
+        &used_callee_saved,
+        strings,
+    )
+    .emit_all()?;
+
+    let asm = emitted.to_asm();
+    let machine_code = MachineCode {
+        code: emitted.to_bytes(),
+        relocations: emitted.relocations,
+        strings: strings.to_vec(),
+    };
+
+    Ok((machine_code, asm))
 }

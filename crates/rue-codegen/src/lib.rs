@@ -152,6 +152,114 @@ pub struct MachineCode {
     pub strings: Vec<String>,
 }
 
+/// A single emitted machine instruction.
+///
+/// This captures both the machine code bytes and the human-readable assembly text
+/// for an instruction. The emitter produces a sequence of these, which can then
+/// be serialized to either raw bytes or assembly text.
+#[derive(Debug, Clone)]
+pub struct EmittedInst {
+    /// The machine code bytes for this instruction.
+    /// Empty for labels and comments.
+    pub bytes: Vec<u8>,
+    /// Human-readable assembly text (e.g., "mov rax, rbx").
+    /// For labels, this is just the label text (e.g., "loop:").
+    /// For comments, this starts with "; ".
+    pub asm: String,
+}
+
+impl EmittedInst {
+    /// Create a new instruction with bytes and assembly text.
+    pub fn new(bytes: impl Into<Vec<u8>>, asm: impl Into<String>) -> Self {
+        Self {
+            bytes: bytes.into(),
+            asm: asm.into(),
+        }
+    }
+
+    /// Create a label (no bytes, just marks a position).
+    pub fn label(name: impl Into<String>) -> Self {
+        Self {
+            bytes: vec![],
+            asm: format!("{}:", name.into()),
+        }
+    }
+
+    /// Create a comment (no bytes).
+    pub fn comment(text: impl Into<String>) -> Self {
+        Self {
+            bytes: vec![],
+            asm: format!("; {}", text.into()),
+        }
+    }
+}
+
+/// Result of emitting a function's machine code.
+///
+/// This holds all emitted instructions along with metadata needed for
+/// linking (relocations, labels for fixups).
+#[derive(Debug)]
+pub struct EmittedCode {
+    /// All emitted instructions in order.
+    pub instructions: Vec<EmittedInst>,
+    /// Relocations that need to be resolved by the linker.
+    pub relocations: Vec<EmittedRelocation>,
+}
+
+impl EmittedCode {
+    /// Create a new empty EmittedCode.
+    pub fn new() -> Self {
+        Self {
+            instructions: Vec::new(),
+            relocations: Vec::new(),
+        }
+    }
+
+    /// Get the raw machine code bytes.
+    pub fn to_bytes(&self) -> Vec<u8> {
+        self.instructions
+            .iter()
+            .flat_map(|inst| inst.bytes.iter().copied())
+            .collect()
+    }
+
+    /// Get the assembly text representation with byte offsets.
+    pub fn to_asm(&self) -> String {
+        let mut result = String::new();
+        let mut offset = 0usize;
+
+        for inst in &self.instructions {
+            if inst.bytes.is_empty() {
+                // Label or comment - no offset prefix
+                result.push_str(&inst.asm);
+            } else {
+                // Instruction with bytes - show offset
+                result.push_str(&format!("{:4x}:   {}", offset, inst.asm));
+            }
+            result.push('\n');
+            offset += inst.bytes.len();
+        }
+
+        result
+    }
+
+    /// Get the total size in bytes.
+    pub fn len(&self) -> usize {
+        self.instructions.iter().map(|i| i.bytes.len()).sum()
+    }
+
+    /// Check if empty.
+    pub fn is_empty(&self) -> bool {
+        self.instructions.is_empty()
+    }
+}
+
+impl Default for EmittedCode {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 // Re-export the generate function for x86_64 (default)
 pub use x86_64::generate;
 
