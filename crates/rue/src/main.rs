@@ -715,31 +715,23 @@ mod tests {
 
     #[test]
     fn parse_preview_valid_feature() {
-        let opts = unwrap_options(parse_args_from(&[
-            "--preview",
-            "mutable_strings",
-            "source.rue",
-        ]));
-        assert!(
-            opts.preview_features
-                .contains(&PreviewFeature::MutableStrings)
-        );
+        let opts = unwrap_options(parse_args_from(&["--preview", "test_infra", "source.rue"]));
+        assert!(opts.preview_features.contains(&PreviewFeature::TestInfra));
     }
 
     #[test]
-    fn parse_preview_multiple_features() {
+    fn parse_preview_multiple_flags() {
+        // Test that --preview can be specified multiple times
+        // (currently only one feature exists, but the flag can still be repeated)
         let opts = unwrap_options(parse_args_from(&[
             "--preview",
-            "mutable_strings",
+            "test_infra",
             "--preview",
             "test_infra",
             "source.rue",
         ]));
-        assert!(
-            opts.preview_features
-                .contains(&PreviewFeature::MutableStrings)
-        );
         assert!(opts.preview_features.contains(&PreviewFeature::TestInfra));
+        assert_eq!(opts.preview_features.len(), 1);
     }
 
     #[test]
