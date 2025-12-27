@@ -66,13 +66,17 @@ impl Target {
         }
     }
 
-    /// Returns the ELF e_machine value for this target.
+    /// Returns the ELF e_machine value for this target, if it uses ELF format.
     ///
     /// This is used when generating ELF object files and executables.
-    pub fn elf_machine(&self) -> u16 {
+    /// Returns `None` for targets that don't use ELF (e.g., macOS uses Mach-O).
+    pub fn elf_machine(&self) -> Option<u16> {
+        if !self.is_elf() {
+            return None;
+        }
         match self.arch() {
-            Arch::X86_64 => 0x3E,  // EM_X86_64
-            Arch::Aarch64 => 0xB7, // EM_AARCH64
+            Arch::X86_64 => Some(0x3E),  // EM_X86_64
+            Arch::Aarch64 => Some(0xB7), // EM_AARCH64
         }
     }
 
@@ -291,8 +295,10 @@ mod tests {
 
     #[test]
     fn test_elf_machine() {
-        assert_eq!(Target::X86_64Linux.elf_machine(), 0x3E);
-        assert_eq!(Target::Aarch64Linux.elf_machine(), 0xB7);
+        assert_eq!(Target::X86_64Linux.elf_machine(), Some(0x3E));
+        assert_eq!(Target::Aarch64Linux.elf_machine(), Some(0xB7));
+        // Mach-O targets return None since they don't use ELF format
+        assert_eq!(Target::Aarch64Macos.elf_machine(), None);
     }
 
     #[test]

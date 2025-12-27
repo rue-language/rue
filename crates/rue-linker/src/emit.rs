@@ -382,7 +382,8 @@ impl ObjectBuilder {
             0, 0, 0, 0, 0, 0, 0, 0, // Padding
         ]);
         elf.extend_from_slice(&1_u16.to_le_bytes()); // e_type: ET_REL
-        elf.extend_from_slice(&self.target.elf_machine().to_le_bytes()); // e_machine
+        // Safety: build_elf() is only called for ELF targets (checked in build())
+        elf.extend_from_slice(&self.target.elf_machine().unwrap().to_le_bytes()); // e_machine
         elf.extend_from_slice(&1_u32.to_le_bytes()); // e_version
         elf.extend_from_slice(&0_u64.to_le_bytes()); // e_entry (none for relocatable)
         elf.extend_from_slice(&0_u64.to_le_bytes()); // e_phoff (no program headers)

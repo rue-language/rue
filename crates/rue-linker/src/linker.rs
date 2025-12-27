@@ -704,7 +704,15 @@ impl Linker {
             0, 0, 0, 0, 0, 0, 0, 0, // Padding
         ]);
         elf.extend_from_slice(&2_u16.to_le_bytes()); // e_type: ET_EXEC
-        elf.extend_from_slice(&self.target.elf_machine().to_le_bytes()); // e_machine
+        // The linker currently only produces ELF executables. For Mach-O targets,
+        // we use the system linker via a separate code path.
+        elf.extend_from_slice(
+            &self
+                .target
+                .elf_machine()
+                .expect("linker only produces ELF executables")
+                .to_le_bytes(),
+        ); // e_machine
         elf.extend_from_slice(&1_u32.to_le_bytes()); // e_version
         elf.extend_from_slice(&entry_addr.to_le_bytes()); // e_entry
         elf.extend_from_slice(&ELF_HEADER_SIZE.to_le_bytes()); // e_phoff
