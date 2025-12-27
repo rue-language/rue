@@ -461,7 +461,7 @@ fn main() -> i32 {
 exit_code = 1
 
 # =============================================================================
-# Mutable String Construction (preview feature)
+# Mutable String Construction
 # =============================================================================
 
 [[case]]

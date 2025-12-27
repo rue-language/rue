@@ -268,7 +268,37 @@ air (return_type: i32) {
     %1 : i32 = ret %0
 }
 """
+
+# Preview feature test (allowed to fail)
+[[case]]
+name = "some_preview_feature"
+spec = ["X.Y:Z"]
+preview = "test_infra"           # Requires --preview test_infra
+source = "..."
+exit_code = 0
+
+# Preview feature test (must pass)
+[[case]]
+name = "some_preview_feature_basic"
+spec = ["X.Y:Z"]
+preview = "test_infra"
+preview_should_pass = true       # Fails CI if this test fails
+source = "..."
+exit_code = 0
 ```
+
+#### Preview Feature Tests
+
+Tests for preview features use two fields:
+- `preview = "feature_name"` - Marks the test as requiring a preview feature. The test runs with `--preview feature_name` and is allowed to fail (shows as "ignored" in output).
+- `preview_should_pass = true` - When combined with `preview`, makes the test required to pass. Use this for portions of preview features that are already implemented.
+
+**Workflow for preview features:**
+1. Initially, add tests with just `preview = "feature_name"` (allowed to fail)
+2. As you implement parts of the feature, add `preview_should_pass = true` to tests that should now pass
+3. When stabilizing the feature, remove both `preview` and `preview_should_pass` fields
+
+**IMPORTANT:** The `preview` field must match a valid `PreviewFeature` variant name (currently only `test_infra`). If you use a non-existent preview feature name, the test will be silently skipped!
 
 #### Spec Paragraph References
 
