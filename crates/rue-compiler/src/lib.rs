@@ -423,8 +423,12 @@ fn compile_x86_64(state: &CompileState, options: &CompileOptions) -> CompileResu
             let rel_type = match reloc.kind {
                 RelocationKind::X86Pc32 => RelocationType::Pc32,
                 RelocationKind::X86Plt32 => RelocationType::Plt32,
-                // These shouldn't appear for x86_64, but handle gracefully
-                _ => RelocationType::Pc32,
+                // AArch64 relocations should never appear in x86-64 codegen
+                RelocationKind::Aarch64AdrpPage21
+                | RelocationKind::Aarch64AddLo12
+                | RelocationKind::Aarch64Call26 => {
+                    unreachable!("x86-64 codegen emitted AArch64 relocation {:?}", reloc.kind)
+                }
             };
 
             obj_builder = obj_builder.relocation(CodeRelocation {
@@ -583,8 +587,10 @@ fn compile_aarch64(state: &CompileState, options: &CompileOptions) -> CompileRes
                 RelocationKind::Aarch64AdrpPage21 => RelocationType::AdrpPage21,
                 RelocationKind::Aarch64AddLo12 => RelocationType::AddLo12,
                 RelocationKind::Aarch64Call26 => RelocationType::Call26,
-                // These shouldn't appear for AArch64, but handle gracefully
-                _ => RelocationType::Call26,
+                // x86-64 relocations should never appear in AArch64 codegen
+                RelocationKind::X86Pc32 | RelocationKind::X86Plt32 => {
+                    unreachable!("AArch64 codegen emitted x86-64 relocation {:?}", reloc.kind)
+                }
             };
 
             obj_builder = obj_builder.relocation(CodeRelocation {
