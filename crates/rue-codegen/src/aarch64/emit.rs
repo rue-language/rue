@@ -261,6 +261,8 @@ pub struct Emitter<'a> {
     strings: &'a [String],
     /// Byte offset where the current instruction started (for recording).
     inst_start: usize,
+    /// Whether to generate assembly text (only needed for --emit asm).
+    emit_asm: bool,
 }
 
 impl<'a> Emitter<'a> {
@@ -285,6 +287,7 @@ impl<'a> Emitter<'a> {
             has_frame: false,
             strings,
             inst_start: 0,
+            emit_asm: false,
         }
     }
 
@@ -296,19 +299,27 @@ impl<'a> Emitter<'a> {
     }
 
     /// End recording an instruction. Captures bytes emitted since begin_inst().
+    ///
+    /// When `emit_asm` is false, this is a no-op (the bytes are already in `code`).
     fn end_inst(&mut self, asm: impl Into<String>) {
-        let bytes = self.code[self.inst_start..].to_vec();
-        self.instructions.push(EmittedInst::new(bytes, asm));
+        if self.emit_asm {
+            let bytes = self.code[self.inst_start..].to_vec();
+            self.instructions.push(EmittedInst::new(bytes, asm));
+        }
     }
 
     /// Record a label (no bytes, just marks a position in the asm output).
     fn record_label(&mut self, name: impl Into<String>) {
-        self.instructions.push(EmittedInst::label(name));
+        if self.emit_asm {
+            self.instructions.push(EmittedInst::label(name));
+        }
     }
 
     /// Record a comment (no bytes).
     fn record_comment(&mut self, text: impl Into<String>) {
-        self.instructions.push(EmittedInst::comment(text));
+        if self.emit_asm {
+            self.instructions.push(EmittedInst::comment(text));
+        }
     }
 
     // ==================== Offset adjustment helpers ====================
@@ -341,8 +352,9 @@ impl<'a> Emitter<'a> {
 
     /// Emit machine code for all instructions.
     ///
-    /// Returns (code bytes, relocations).
+    /// Returns (code bytes, relocations). This does not generate assembly text.
     pub fn emit(mut self) -> CompileResult<(Vec<u8>, Vec<EmittedRelocation>)> {
+        // emit_asm is already false by default
         self.emit_internal()?;
         Ok((self.code, self.relocations))
     }
@@ -351,6 +363,7 @@ impl<'a> Emitter<'a> {
     ///
     /// This is the preferred method when you need both bytes and assembly text.
     pub fn emit_all(mut self) -> CompileResult<EmittedCode> {
+        self.emit_asm = true;
         self.emit_internal()?;
         Ok(EmittedCode {
             instructions: self.instructions,
@@ -2677,5 +2690,39 @@ mod tests {
         assert_eq!(Reg::Lr.encoding(), 30);
         assert_eq!(Reg::Sp.encoding(), 31);
         assert_eq!(Reg::Xzr.encoding(), 31);
+    }
+
+    // --- emit_asm flag tests ---
+
+    #[test]
+    fn test_emit_does_not_generate_asm_text() {
+        // emit() should not populate instructions (assembly text)
+        let mut mir = Aarch64Mir::new();
+        mir.push(Aarch64Inst::MovImm {
+            dst: Operand::Physical(Reg::X0),
+            imm: 42,
+        });
+        let (code, _relocations) = Emitter::new(&mir, 0, 0, &[], &[]).emit().unwrap();
+        // Code should be generated
+        assert!(!code.is_empty());
+    }
+
+    #[test]
+    fn test_emit_all_generates_asm_text() {
+        // emit_all() should populate instructions with assembly text
+        let mut mir = Aarch64Mir::new();
+        mir.push(Aarch64Inst::MovImm {
+            dst: Operand::Physical(Reg::X0),
+            imm: 42,
+        });
+        let emitted = Emitter::new(&mir, 0, 0, &[], &[]).emit_all().unwrap();
+        // Instructions should be populated with asm text
+        assert!(!emitted.instructions.is_empty());
+        // Should contain the mov instruction
+        let has_mov = emitted
+            .instructions
+            .iter()
+            .any(|inst| inst.asm.contains("mov"));
+        assert!(has_mov, "Expected assembly text to contain 'mov'");
     }
 }
