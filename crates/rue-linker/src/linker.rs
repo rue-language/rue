@@ -106,6 +106,7 @@ pub struct Linker {
 
 impl Linker {
     /// Create a new linker for the given target.
+    #[must_use]
     pub fn new(target: Target) -> Self {
         Linker {
             target,
@@ -277,6 +278,7 @@ impl Linker {
     }
 
     /// Link all objects and produce an executable.
+    #[must_use = "linking returns a Result that must be checked"]
     pub fn link(self, entry_point: &str) -> Result<Vec<u8>, LinkError> {
         // Layout constants - use a single program header for simplicity
         const ELF_HEADER_SIZE: u64 = 64;

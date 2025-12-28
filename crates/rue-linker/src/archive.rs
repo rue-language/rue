@@ -63,6 +63,7 @@ impl Archive {
     ///   - File content (padded to even boundary)
     ///
     /// Special entries like symbol tables (`/`, `//`, `__.SYMDEF`) are skipped.
+    #[must_use = "parsing returns a Result that must be checked"]
     pub fn parse(data: &[u8]) -> Result<Self, ArchiveError> {
         // Check magic
         if data.len() < AR_MAGIC.len() {
@@ -157,11 +158,13 @@ impl Archive {
     }
 
     /// Returns true if the archive contains no object files.
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.objects.is_empty()
     }
 
     /// Returns the number of object files in the archive.
+    #[must_use]
     pub fn len(&self) -> usize {
         self.objects.len()
     }

@@ -111,6 +111,7 @@ pub struct CodeRelocation {
 
 impl ObjectBuilder {
     /// Create a new object builder for the given target.
+    #[must_use]
     pub fn new(target: Target, name: impl Into<String>) -> Self {
         ObjectBuilder {
             target,
@@ -122,18 +123,21 @@ impl ObjectBuilder {
     }
 
     /// Set the machine code.
+    #[must_use]
     pub fn code(mut self, code: Vec<u8>) -> Self {
         self.code = code;
         self
     }
 
     /// Add a relocation.
+    #[must_use]
     pub fn relocation(mut self, reloc: CodeRelocation) -> Self {
         self.relocations.push(reloc);
         self
     }
 
     /// Set string constants.
+    #[must_use]
     pub fn strings(mut self, strings: Vec<String>) -> Self {
         self.strings = strings;
         self
@@ -142,6 +146,7 @@ impl ObjectBuilder {
     /// Build a relocatable object file for the target.
     ///
     /// Generates ELF64 for Linux targets and Mach-O for macOS targets.
+    #[must_use]
     pub fn build(self) -> Vec<u8> {
         if self.target.is_macho() {
             self.build_macho()

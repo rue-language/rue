@@ -97,11 +97,13 @@ impl SectionFlags {
     pub const EXEC: SectionFlags = SectionFlags(0x4);
 
     /// Create empty flags.
+    #[must_use]
     pub const fn empty() -> Self {
         SectionFlags(0)
     }
 
     /// Check if flags contain a specific flag.
+    #[must_use]
     pub const fn contains(self, other: SectionFlags) -> bool {
         (self.0 & other.0) == other.0
     }
@@ -293,6 +295,7 @@ impl std::error::Error for ParseError {}
 
 impl ObjectFile {
     /// Parse an ELF64 relocatable object file.
+    #[must_use = "parsing returns a Result that must be checked"]
     pub fn parse(data: &[u8]) -> Result<Self, ParseError> {
         // Check minimum size for ELF header
         if data.len() < 64 {
@@ -641,11 +644,13 @@ impl ObjectFile {
     }
 
     /// Find a symbol by name.
+    #[must_use]
     pub fn find_symbol(&self, name: &str) -> Option<&Symbol> {
         self.symbols.iter().find(|s| s.name == name)
     }
 
     /// Get all global/defined symbols.
+    #[must_use]
     pub fn defined_symbols(&self) -> impl Iterator<Item = &Symbol> {
         self.symbols.iter().filter(|s| {
             s.section_index.is_some()
