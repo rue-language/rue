@@ -1,12 +1,12 @@
 ---
 id: 0005
 title: Preview Features
-status: accepted
+status: implemented
 tags: [process]
 feature-flag: preview-features
 created: 2025-01-01
 accepted: 2025-01-01
-implemented:
+implemented: 2025-12-27
 spec-sections: []
 superseded-by:
 ---
@@ -18,7 +18,7 @@ superseded-by:
 
 ## Status
 
-Accepted
+Implemented
 
 ## Summary
 
@@ -169,9 +169,9 @@ The feature is now part of stable Rue.
 
 ## Implementation Phases
 
-- [ ] **Phase 1: Infrastructure** - Add PreviewFeature enum, CompileOptions, CLI flag, error kind
-- [ ] **Phase 2: Test runner** - Add preview field to test schema, update runner to handle preview tests
-- [ ] **Phase 3: First feature** - Gate a new feature with the system
+- [x] **Phase 1: Infrastructure** - Add PreviewFeature enum, CompileOptions, CLI flag, error kind
+- [x] **Phase 2: Test runner** - Add preview field to test schema, update runner to handle preview tests
+- [x] **Phase 3: First feature** - Gate a new feature with the system (test_infra, see ADR-0016)
 
 ## Consequences
 

@@ -1,12 +1,12 @@
 ---
 id: 0016
 title: Preview Feature Infrastructure
-status: proposal
+status: implemented
 tags: [infrastructure, process]
 feature-flag: preview-features
 created: 2025-12-27
-accepted:
-implemented:
+accepted: 2025-12-27
+implemented: 2025-12-27
 spec-sections: []
 superseded-by:
 ---
@@ -15,7 +15,7 @@ superseded-by:
 
 ## Status
 
-Proposal
+Implemented
 
 ## Summary
 
@@ -178,10 +178,10 @@ pub fn compile_to_air_with_preview(
 
 ## Implementation Phases
 
-- [ ] **Phase 1: Pipeline threading** - rue-0slf.1
-- [ ] **Phase 2: Gating method** - rue-0slf.2
-- [ ] **Phase 3: test_infra feature** - rue-0slf.3
-- [ ] **Phase 4: Cleanup** - rue-0slf.4
+- [x] **Phase 1: Pipeline threading** - rue-0slf.1
+- [x] **Phase 2: Gating method** - rue-0slf.2
+- [x] **Phase 3: test_infra feature** - rue-0slf.3
+- [x] **Phase 4: Cleanup** - rue-0slf.4
 
 ## Consequences
 
