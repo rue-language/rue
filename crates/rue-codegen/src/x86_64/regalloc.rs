@@ -6,9 +6,10 @@
 //!
 //! The algorithm:
 //! 1. Compute live ranges for all virtual registers
-//! 2. Sort vregs by live range start (linear scan order)
-//! 3. For each vreg, try to assign a register not used by interfering vregs
-//! 4. If no register is available, spill the longest-range vreg to stack
+//! 2. Perform register coalescing to eliminate redundant moves
+//! 3. Sort vregs by live range start (linear scan order)
+//! 4. For each vreg, try to assign a register not used by interfering vregs
+//! 5. If no register is available, spill the longest-range vreg to stack
 
 use rue_error::{CompileError, CompileResult, ErrorKind};
 
@@ -16,7 +17,10 @@ use super::liveness::{self, LivenessInfo};
 use super::mir::{Operand, Reg, VReg, X86Inst, X86Mir};
 use crate::alloc_dst;
 use crate::index_map::IndexMap;
-use crate::regalloc::{Allocation, RegAllocDebugInfo, linear_scan, linear_scan_with_debug};
+use crate::regalloc::{
+    Allocation, CoalesceCandidate, CoalesceResult, RegAllocDebugInfo, coalesce, linear_scan,
+    linear_scan_with_debug,
+};
 
 /// Available registers for allocation.
 ///
@@ -46,6 +50,8 @@ pub struct RegAlloc {
     allocation: IndexMap<VReg, Option<Allocation<Reg>>>,
     /// Liveness information.
     liveness: LivenessInfo,
+    /// Result of register coalescing.
+    coalesce_result: CoalesceResult,
     /// Number of spill slots used.
     num_spills: u32,
     /// Callee-saved registers that were used and need to be saved/restored.
@@ -61,7 +67,32 @@ impl RegAlloc {
     /// on the stack (we spill after those).
     pub fn new(mir: X86Mir, existing_locals: u32) -> Self {
         let vreg_count = mir.vreg_count() as usize;
-        let liveness = liveness::analyze(&mir);
+        let mut liveness = liveness::analyze(&mir);
+
+        // Collect coalescing candidates: MovRR where both src and dst are virtual
+        let candidates: Vec<CoalesceCandidate> = mir
+            .instructions()
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, inst)| {
+                if let X86Inst::MovRR {
+                    dst: Operand::Virtual(dst),
+                    src: Operand::Virtual(src),
+                } = inst
+                {
+                    Some(CoalesceCandidate {
+                        inst_idx: idx,
+                        dst: *dst,
+                        src: *src,
+                    })
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        // Perform register coalescing
+        let coalesce_result = coalesce(&candidates, &mut liveness);
 
         let mut allocation = IndexMap::with_capacity(vreg_count);
         allocation.resize(vreg_count, None);
@@ -70,6 +101,7 @@ impl RegAlloc {
             mir,
             allocation,
             liveness,
+            coalesce_result,
             num_spills: 0,
             used_callee_saved: Vec::new(),
             existing_locals,
@@ -160,7 +192,11 @@ impl RegAlloc {
         // Restore symbols to new MIR
         new_mir.set_symbols(symbols);
 
-        for inst in old_instructions {
+        for (idx, inst) in old_instructions.into_iter().enumerate() {
+            // Skip eliminated moves (from register coalescing)
+            if self.coalesce_result.is_eliminated(idx) {
+                continue;
+            }
             self.rewrite_inst(&mut new_mir, inst)?;
         }
 
@@ -741,15 +777,23 @@ impl RegAlloc {
     }
 
     /// Get the allocation for an operand (returns None for physical registers).
+    ///
+    /// For coalesced vregs, this looks up the allocation of the representative vreg.
     fn get_allocation(&self, operand: Operand) -> Option<Allocation<Reg>> {
         match operand {
-            Operand::Virtual(vreg) => self.allocation[vreg],
+            Operand::Virtual(vreg) => {
+                // Use the representative vreg for coalesced registers
+                let rep = self.coalesce_result.representative(vreg);
+                self.allocation[rep]
+            }
             Operand::Physical(_) => None,
         }
     }
 
     /// Load an operand into a physical register, inserting a load if spilled.
     /// Returns the operand to use (either the allocated register or the scratch register).
+    ///
+    /// For coalesced vregs, this loads the allocation of the representative vreg.
     fn load_operand(
         &self,
         mir: &mut X86Mir,
@@ -757,21 +801,25 @@ impl RegAlloc {
         scratch: Reg,
     ) -> CompileResult<Operand> {
         match operand {
-            Operand::Virtual(vreg) => match self.allocation[vreg] {
-                Some(Allocation::Register(reg)) => Ok(Operand::Physical(reg)),
-                Some(Allocation::Spill(offset)) => {
-                    mir.push(X86Inst::MovRM {
-                        dst: Operand::Physical(scratch),
-                        base: Reg::Rbp,
-                        offset,
-                    });
-                    Ok(Operand::Physical(scratch))
+            Operand::Virtual(vreg) => {
+                // Use the representative vreg for coalesced registers
+                let rep = self.coalesce_result.representative(vreg);
+                match self.allocation[rep] {
+                    Some(Allocation::Register(reg)) => Ok(Operand::Physical(reg)),
+                    Some(Allocation::Spill(offset)) => {
+                        mir.push(X86Inst::MovRM {
+                            dst: Operand::Physical(scratch),
+                            base: Reg::Rbp,
+                            offset,
+                        });
+                        Ok(Operand::Physical(scratch))
+                    }
+                    None => Err(CompileError::without_span(ErrorKind::LinkError(format!(
+                        "internal codegen error: virtual register {} was not allocated",
+                        rep.index()
+                    )))),
                 }
-                None => Err(CompileError::without_span(ErrorKind::LinkError(format!(
-                    "internal codegen error: virtual register {} was not allocated",
-                    vreg.index()
-                )))),
-            },
+            }
             Operand::Physical(reg) => Ok(Operand::Physical(reg)),
         }
     }

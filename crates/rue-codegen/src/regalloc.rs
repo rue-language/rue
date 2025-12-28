@@ -12,13 +12,24 @@
 //! Each backend implements its own `analyze()` function that populates these types
 //! based on its specific instruction set and control flow.
 //!
+//! ## Register Coalescing
+//!
+//! Before allocation, the allocator performs register coalescing to eliminate
+//! redundant move instructions. When a move `mov vDst, vSrc` is found where:
+//! 1. Both operands are virtual registers
+//! 2. Their live ranges don't interfere (except at the move point)
+//!
+//! The two vregs are merged into one, and the move can be eliminated.
+//! This reduces register pressure and improves code quality.
+//!
 //! ## Register Allocation Algorithm
 //!
 //! The allocator uses linear scan register allocation:
 //! 1. Compute live ranges for all virtual registers (via liveness analysis)
-//! 2. Sort vregs by live range start
-//! 3. For each vreg, try to assign a register not used by interfering vregs
-//! 4. If no register is available, spill the longest-range vreg to stack
+//! 2. Perform register coalescing to merge non-interfering moves
+//! 3. Sort vregs by live range start
+//! 4. For each vreg, try to assign a register not used by interfering vregs
+//! 5. If no register is available, spill the longest-range vreg to stack
 //!
 //! ## Spilling
 //!
@@ -27,7 +38,7 @@
 //! the longest remaining live range, as this frees up a register for the
 //! longest time.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 
 use crate::index_map::IndexMap;
@@ -261,6 +272,183 @@ impl<Reg: Copy + Eq + std::hash::Hash> Default for LivenessInfo<Reg> {
     fn default() -> Self {
         Self::new()
     }
+}
+
+// ============================================================================
+// Register Coalescing
+// ============================================================================
+
+/// A move candidate for register coalescing.
+///
+/// This represents a move instruction `mov dst, src` where both operands
+/// are virtual registers and could potentially be coalesced.
+#[derive(Debug, Clone, Copy)]
+pub struct CoalesceCandidate {
+    /// Instruction index of the move.
+    pub inst_idx: usize,
+    /// Destination virtual register.
+    pub dst: VReg,
+    /// Source virtual register.
+    pub src: VReg,
+}
+
+/// Result of register coalescing.
+///
+/// After coalescing, some vregs are merged together. This struct tracks:
+/// 1. Which vregs were coalesced (mapping from original to representative)
+/// 2. Which move instructions can be eliminated
+#[derive(Debug, Clone)]
+pub struct CoalesceResult {
+    /// Maps each coalesced vreg to its representative.
+    /// If a vreg is not in this map, it's its own representative.
+    coalesce_map: HashMap<VReg, VReg>,
+    /// Instruction indices of moves that were coalesced and can be eliminated.
+    pub eliminated_moves: HashSet<usize>,
+}
+
+impl CoalesceResult {
+    /// Create an empty coalesce result (no coalescing performed).
+    pub fn empty() -> Self {
+        Self {
+            coalesce_map: HashMap::new(),
+            eliminated_moves: HashSet::new(),
+        }
+    }
+
+    /// Get the representative vreg for a given vreg.
+    ///
+    /// If the vreg was coalesced, returns its representative.
+    /// Otherwise, returns the vreg itself.
+    pub fn representative(&self, vreg: VReg) -> VReg {
+        self.coalesce_map.get(&vreg).copied().unwrap_or(vreg)
+    }
+
+    /// Check if a vreg was coalesced with another.
+    #[allow(dead_code)]
+    pub fn is_coalesced(&self, vreg: VReg) -> bool {
+        self.coalesce_map.contains_key(&vreg)
+    }
+
+    /// Check if a move instruction at the given index was eliminated.
+    pub fn is_eliminated(&self, inst_idx: usize) -> bool {
+        self.eliminated_moves.contains(&inst_idx)
+    }
+
+    /// Get the number of moves that were eliminated.
+    pub fn num_eliminated(&self) -> usize {
+        self.eliminated_moves.len()
+    }
+}
+
+/// Perform register coalescing on the given move candidates.
+///
+/// This function identifies moves where the source and destination vregs
+/// can be merged (their live ranges don't interfere), and returns a
+/// CoalesceResult with the merged mappings.
+///
+/// # Algorithm
+///
+/// For each move `mov dst, src`:
+/// 1. Check if dst and src live ranges interfere
+/// 2. If they don't interfere (considering the move point), coalesce them
+/// 3. Update the live ranges to reflect the merge
+///
+/// The key insight is that at the move instruction:
+/// - src is used (read) - it must be live-in
+/// - dst is defined (written) - it starts being live
+///
+/// For coalescing to be safe, we need:
+/// - src's live range ends at or before the move (its last use is the move)
+/// - dst's live range starts at the move (its first def is the move)
+/// - OR more generally: their ranges don't overlap except at the move point
+pub fn coalesce<Reg: Copy + Eq + std::hash::Hash>(
+    candidates: &[CoalesceCandidate],
+    liveness: &mut LivenessInfo<Reg>,
+) -> CoalesceResult {
+    let mut result = CoalesceResult::empty();
+
+    // Union-find structure for tracking coalesced vregs
+    let mut parent: HashMap<VReg, VReg> = HashMap::new();
+
+    // Find the representative of a vreg in the union-find
+    fn find(parent: &mut HashMap<VReg, VReg>, vreg: VReg) -> VReg {
+        if let Some(&p) = parent.get(&vreg) {
+            if p != vreg {
+                let root = find(parent, p);
+                parent.insert(vreg, root);
+                return root;
+            }
+        }
+        vreg
+    }
+
+    // Process each candidate
+    for candidate in candidates {
+        let dst = find(&mut parent, candidate.dst);
+        let src = find(&mut parent, candidate.src);
+
+        // Already in the same equivalence class
+        if dst == src {
+            result.eliminated_moves.insert(candidate.inst_idx);
+            continue;
+        }
+
+        // Get the live ranges
+        let dst_range = liveness.range(dst).copied();
+        let src_range = liveness.range(src).copied();
+
+        // Both must have ranges
+        let (dst_range, src_range) = match (dst_range, src_range) {
+            (Some(d), Some(s)) => (d, s),
+            _ => continue,
+        };
+
+        // Check for interference.
+        // The move instruction is at candidate.inst_idx.
+        // At the move point:
+        // - src is used (last use could be here)
+        // - dst is defined (first def could be here)
+        //
+        // For safe coalescing, we need the ranges to not overlap,
+        // except that they can both include the move point.
+        //
+        // Specifically: if src ends at or before the move, and dst starts at or after the move,
+        // they can share a register.
+        let move_point = candidate.inst_idx;
+
+        // Check if ranges interfere outside the move point
+        // src_range.end should be <= move_point (src's last use is the move or earlier)
+        // dst_range.start should be >= move_point (dst's first def is the move or later)
+        let can_coalesce = src_range.end <= move_point && dst_range.start >= move_point;
+
+        if can_coalesce {
+            // Merge the ranges: the combined range spans both
+            let merged_range = LiveRange::new(
+                src_range.start.min(dst_range.start),
+                src_range.end.max(dst_range.end),
+            );
+
+            // Use src as the representative (arbitrary choice, but keeps the original value)
+            parent.insert(dst, src);
+            result.coalesce_map.insert(dst, src);
+
+            // Update liveness: assign merged range to src, remove dst
+            liveness.ranges[src] = Some(merged_range);
+            liveness.ranges[dst] = None;
+
+            // Update live_at sets: replace dst with src
+            for live_set in &mut liveness.live_at {
+                if live_set.remove(&dst) {
+                    live_set.insert(src);
+                }
+            }
+
+            // Mark the move for elimination
+            result.eliminated_moves.insert(candidate.inst_idx);
+        }
+    }
+
+    result
 }
 
 // ============================================================================
@@ -1021,5 +1209,204 @@ mod tests {
 
         let unique: std::collections::HashSet<_> = spill_offsets.iter().copied().collect();
         assert_eq!(spill_offsets.len(), unique.len());
+    }
+
+    // ========================================
+    // Register coalescing tests
+    // ========================================
+
+    #[test]
+    fn test_coalesce_simple_move() {
+        // v0 = 1       ; inst 0
+        // v1 = v0      ; inst 1 (move)
+        // use v1       ; inst 2
+        //
+        // v0: [0, 1] - defined at 0, last used at 1
+        // v1: [1, 2] - defined at 1, last used at 2
+        //
+        // After coalescing: v0 and v1 share a register, move is eliminated
+        let mut liveness = make_liveness(vec![
+            (0, 0, 1), // v0: defined at 0, used at 1 (the move)
+            (1, 1, 2), // v1: defined at 1 (the move), used at 2
+        ]);
+
+        let candidates = vec![CoalesceCandidate {
+            inst_idx: 1,
+            dst: VReg::new(1),
+            src: VReg::new(0),
+        }];
+
+        let result = coalesce(&candidates, &mut liveness);
+
+        // The move should be eliminated
+        assert!(result.is_eliminated(1));
+        assert_eq!(result.num_eliminated(), 1);
+
+        // v1 should be coalesced with v0
+        assert_eq!(result.representative(VReg::new(1)), VReg::new(0));
+
+        // v0 should be its own representative
+        assert_eq!(result.representative(VReg::new(0)), VReg::new(0));
+
+        // The merged range should cover both original ranges
+        let merged = liveness.range(VReg::new(0)).unwrap();
+        assert_eq!(merged.start, 0);
+        assert_eq!(merged.end, 2);
+
+        // v1's range should be removed
+        assert!(liveness.range(VReg::new(1)).is_none());
+    }
+
+    #[test]
+    fn test_coalesce_interfering_not_coalesced() {
+        // v0 = 1       ; inst 0
+        // use v0       ; inst 1
+        // v1 = v0      ; inst 2 (move)
+        // use v0       ; inst 3 (v0 still live after the move!)
+        // use v1       ; inst 4
+        //
+        // v0: [0, 3] - still used after the move
+        // v1: [2, 4]
+        //
+        // These interfere (v0 is still live when v1 is defined), cannot coalesce
+        let mut liveness = make_liveness(vec![
+            (0, 0, 3), // v0: live 0-3
+            (1, 2, 4), // v1: live 2-4
+        ]);
+
+        let candidates = vec![CoalesceCandidate {
+            inst_idx: 2,
+            dst: VReg::new(1),
+            src: VReg::new(0),
+        }];
+
+        let result = coalesce(&candidates, &mut liveness);
+
+        // The move should NOT be eliminated (they interfere)
+        assert!(!result.is_eliminated(2));
+        assert_eq!(result.num_eliminated(), 0);
+
+        // Neither should be coalesced
+        assert_eq!(result.representative(VReg::new(0)), VReg::new(0));
+        assert_eq!(result.representative(VReg::new(1)), VReg::new(1));
+    }
+
+    #[test]
+    fn test_coalesce_chain() {
+        // v0 = 1       ; inst 0
+        // v1 = v0      ; inst 1 (move)
+        // v2 = v1      ; inst 2 (move)
+        // use v2       ; inst 3
+        //
+        // All three can be coalesced into one
+        let mut liveness = make_liveness(vec![
+            (0, 0, 1), // v0: 0-1
+            (1, 1, 2), // v1: 1-2
+            (2, 2, 3), // v2: 2-3
+        ]);
+
+        let candidates = vec![
+            CoalesceCandidate {
+                inst_idx: 1,
+                dst: VReg::new(1),
+                src: VReg::new(0),
+            },
+            CoalesceCandidate {
+                inst_idx: 2,
+                dst: VReg::new(2),
+                src: VReg::new(1),
+            },
+        ];
+
+        let result = coalesce(&candidates, &mut liveness);
+
+        // Both moves should be eliminated
+        assert!(result.is_eliminated(1));
+        assert!(result.is_eliminated(2));
+        assert_eq!(result.num_eliminated(), 2);
+
+        // All should map to v0
+        assert_eq!(result.representative(VReg::new(0)), VReg::new(0));
+        assert_eq!(result.representative(VReg::new(1)), VReg::new(0));
+        assert_eq!(result.representative(VReg::new(2)), VReg::new(0));
+    }
+
+    #[test]
+    fn test_coalesce_already_same_class() {
+        // If two vregs are already coalesced, the move is still eliminated
+        let mut liveness = make_liveness(vec![(0, 0, 1), (1, 1, 2), (2, 2, 3)]);
+
+        // Two moves that form a cycle (after coalescing v0-v1, v2 wants to coalesce with v1)
+        let candidates = vec![
+            CoalesceCandidate {
+                inst_idx: 1,
+                dst: VReg::new(1),
+                src: VReg::new(0),
+            },
+            CoalesceCandidate {
+                inst_idx: 2,
+                dst: VReg::new(2),
+                src: VReg::new(1),
+            },
+        ];
+
+        let result = coalesce(&candidates, &mut liveness);
+
+        // Both moves eliminated
+        assert_eq!(result.num_eliminated(), 2);
+    }
+
+    #[test]
+    fn test_coalesce_no_candidates() {
+        let mut liveness: LivenessInfo<TestReg> = make_liveness(vec![(0, 0, 5)]);
+
+        let candidates: Vec<CoalesceCandidate> = vec![];
+        let result = coalesce(&candidates, &mut liveness);
+
+        assert_eq!(result.num_eliminated(), 0);
+        assert_eq!(result.representative(VReg::new(0)), VReg::new(0));
+    }
+
+    #[test]
+    fn test_coalesce_reduces_register_pressure() {
+        // Without coalescing:
+        //   v0 = 1       ; inst 0
+        //   v1 = v0      ; inst 1 (move)
+        //   use v1       ; inst 2
+        // v0 and v1 both need registers (2 registers needed)
+        //
+        // With coalescing:
+        // v0 and v1 share a register (1 register needed)
+        // The move is eliminated
+
+        let allocatable = vec![TestReg(0)]; // Only 1 register!
+
+        // Without coalescing, this would need 2 registers and cause a spill
+        // But since v0's range ends at the move and v1's starts there, they can share
+
+        // v0: 0-1, v1: 1-2 - they meet at the move point
+        let mut liveness = make_liveness(vec![(0, 0, 1), (1, 1, 2)]);
+
+        let candidates = vec![CoalesceCandidate {
+            inst_idx: 1,
+            dst: VReg::new(1),
+            src: VReg::new(0),
+        }];
+
+        let _result = coalesce(&candidates, &mut liveness);
+
+        // Now allocate - should need only 1 register, no spills
+        let (allocation, num_spills, _) = linear_scan(2, &liveness, &allocatable, 0);
+
+        assert_eq!(
+            num_spills, 0,
+            "Coalescing should eliminate the need for a second register"
+        );
+
+        // v0 should get the register (v1's range was merged into v0)
+        assert!(matches!(
+            allocation[VReg::new(0)],
+            Some(Allocation::Register(_))
+        ));
     }
 }
