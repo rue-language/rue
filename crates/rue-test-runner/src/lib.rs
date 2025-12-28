@@ -4,6 +4,12 @@
 //! including test case parsing, execution, and output comparison.
 
 use serde::Deserialize;
+
+/// Exit code used by the Rue runtime for runtime errors (division by zero, overflow, etc.).
+///
+/// This matches the convention used by Rust's test harness and the Rue runtime.
+/// When a Rue program encounters a runtime error, it exits with this code.
+pub const RUNTIME_ERROR_EXIT_CODE: i32 = 101;
 use std::collections::HashMap;
 use std::fs;
 use std::io::Write;
@@ -81,7 +87,7 @@ pub struct Case {
     /// Expected runtime error message (program compiles but fails at runtime)
     #[serde(default)]
     pub runtime_error: Option<String>,
-    /// Expected exit code for runtime errors (defaults to 101)
+    /// Expected exit code for runtime errors (defaults to [`RUNTIME_ERROR_EXIT_CODE`])
     #[serde(default)]
     pub runtime_exit_code: Option<i32>,
     /// Skip this test
@@ -636,8 +642,7 @@ pub fn run_test_case(case: &Case, rue_binary: &Path) -> TestResult {
 
     // Handle runtime error tests
     if let Some(ref expected_error) = case.runtime_error {
-        // Default exit code for runtime errors is 101
-        let expected_exit = case.runtime_exit_code.unwrap_or(101);
+        let expected_exit = case.runtime_exit_code.unwrap_or(RUNTIME_ERROR_EXIT_CODE);
 
         // Check exit code
         if actual_exit_code != expected_exit {
