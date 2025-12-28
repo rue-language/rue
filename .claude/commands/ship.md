@@ -78,15 +78,9 @@ The pushed change is `@-` because `jj commit` creates a new empty working copy.
 
 ### 7. Provide PR URL
 
-Construct the PR URL from the remote. For GitHub:
-```
-https://github.com/<owner>/<repo>/compare/<branch>?expand=1
-```
+The `jj git push` output includes a URL for creating a PR. Extract and provide this URL to the user.
 
-Or use `gh` if available:
-```bash
-gh pr create --web
-```
+**Do NOT use `gh pr create`** - just give the user the URL from the push output so they can create the PR themselves.
 
 ## Output
 
