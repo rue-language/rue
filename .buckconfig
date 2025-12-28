@@ -18,5 +18,8 @@ target_platform_detector_spec = target:root//...->prelude//platforms:default tar
 [rust]
 edition = 2024
 
+[build]
+execution_platforms = prelude//platforms:default
+
 [buck2]
 materializations = deferred

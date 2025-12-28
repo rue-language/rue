@@ -120,6 +120,10 @@
         {
           "crate": 12,
           "name": "rue_span"
+        },
+        {
+          "crate": 14,
+          "name": "rue_target"
         }
       ],
       "is_workspace_member": true,
