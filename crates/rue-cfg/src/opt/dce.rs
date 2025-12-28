@@ -180,17 +180,37 @@ fn instruction_uses(cfg: &Cfg, value: CfgValue) -> Vec<CfgValue> {
         CfgInstData::ParamStore { value, .. } => vec![*value],
 
         // Function calls
-        CfgInstData::Call { args, .. } => args.iter().map(|a| a.value).collect(),
-        CfgInstData::Intrinsic { args, .. } => args.clone(),
+        CfgInstData::Call {
+            args_start,
+            args_len,
+            ..
+        } => cfg
+            .get_call_args(*args_start, *args_len)
+            .iter()
+            .map(|a| a.value)
+            .collect(),
+        CfgInstData::Intrinsic {
+            args_start,
+            args_len,
+            ..
+        } => cfg.get_extra(*args_start, *args_len).to_vec(),
 
         // Struct operations
-        CfgInstData::StructInit { fields, .. } => fields.clone(),
+        CfgInstData::StructInit {
+            fields_start,
+            fields_len,
+            ..
+        } => cfg.get_extra(*fields_start, *fields_len).to_vec(),
         CfgInstData::FieldGet { base, .. } => vec![*base],
         CfgInstData::FieldSet { value, .. } => vec![*value],
         CfgInstData::ParamFieldSet { value, .. } => vec![*value],
 
         // Array operations
-        CfgInstData::ArrayInit { elements, .. } => elements.clone(),
+        CfgInstData::ArrayInit {
+            elements_start,
+            elements_len,
+            ..
+        } => cfg.get_extra(*elements_start, *elements_len).to_vec(),
         CfgInstData::IndexGet { base, index, .. } => vec![*base, *index],
         CfgInstData::IndexSet { index, value, .. } => vec![*index, *value],
         CfgInstData::ParamIndexSet { index, value, .. } => vec![*index, *value],
@@ -455,12 +475,14 @@ mod tests {
         // Create a call (side effect) that's not used by return
         let interner = Interner::new();
         let side_effect_sym = interner.intern("side_effect");
+        let (args_start, args_len) = cfg.push_call_args(std::iter::empty());
         let call = cfg.add_inst_to_block(
             entry,
             CfgInst {
                 data: CfgInstData::Call {
                     name: side_effect_sym,
-                    args: vec![],
+                    args_start,
+                    args_len,
                 },
                 ty: Type::Unit,
                 span: Span::new(0, 0),

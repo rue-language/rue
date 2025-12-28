@@ -641,10 +641,13 @@ impl<'a> CfgBuilder<'a> {
                         mode: Self::convert_arg_mode(arg.mode),
                     });
                 }
+                // Store args in extra array
+                let (args_start, args_len) = self.cfg.push_call_args(arg_vals);
                 let value = self.emit(
                     CfgInstData::Call {
                         name: *name,
-                        args: arg_vals,
+                        args_start,
+                        args_len,
                     },
                     ty,
                     span,
@@ -666,10 +669,13 @@ impl<'a> CfgBuilder<'a> {
                 }
                 // Intern the intrinsic name since AIR still uses String
                 let name_sym = self.interner.intern(name);
+                // Store args in extra array
+                let (args_start, args_len) = self.cfg.push_extra(arg_vals);
                 let value = self.emit(
                     CfgInstData::Intrinsic {
                         name: name_sym,
-                        args: arg_vals,
+                        args_start,
+                        args_len,
                     },
                     ty,
                     span,
@@ -702,10 +708,13 @@ impl<'a> CfgBuilder<'a> {
                     .map(|opt: Option<CfgValue>| opt.expect("all fields should be lowered"))
                     .collect();
 
+                // Store fields in extra array
+                let (fields_start, fields_len) = self.cfg.push_extra(field_vals);
                 let value = self.emit(
                     CfgInstData::StructInit {
                         struct_id: *struct_id,
-                        fields: field_vals,
+                        fields_start,
+                        fields_len,
                     },
                     ty,
                     span,
@@ -1381,10 +1390,13 @@ impl<'a> CfgBuilder<'a> {
                     };
                     element_vals.push(val);
                 }
+                // Store elements in extra array
+                let (elements_start, elements_len) = self.cfg.push_extra(element_vals);
                 let value = self.emit(
                     CfgInstData::ArrayInit {
                         array_type_id: *array_type_id,
-                        elements: element_vals,
+                        elements_start,
+                        elements_len,
                     },
                     ty,
                     span,

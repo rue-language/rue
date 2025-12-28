@@ -109,7 +109,12 @@ pub fn collect_array_scalar_vregs(
 ) -> Vec<VReg> {
     let inst = cfg.get_inst(value);
     match &inst.data {
-        CfgInstData::ArrayInit { elements, .. } => {
+        CfgInstData::ArrayInit {
+            elements_start,
+            elements_len,
+            ..
+        } => {
+            let elements = cfg.get_extra(*elements_start, *elements_len);
             let mut result = Vec::new();
             for elem in elements {
                 let elem_inst = cfg.get_inst(*elem);
@@ -173,7 +178,12 @@ pub fn collect_struct_scalar_vregs(
 ) -> Vec<VReg> {
     let inst = cfg.get_inst(value);
     match &inst.data {
-        CfgInstData::StructInit { fields, .. } => {
+        CfgInstData::StructInit {
+            fields_start,
+            fields_len,
+            ..
+        } => {
+            let fields = cfg.get_extra(*fields_start, *fields_len);
             let mut result = Vec::new();
             for field in fields {
                 let field_inst = cfg.get_inst(*field);

@@ -138,31 +138,19 @@ pub fn format_cfg_inst_data(data: &rue_cfg::CfgInstData) -> String {
         CfgInstData::ParamStore { param_slot, value } => {
             format!("param_store %{} = {}", param_slot, value)
         }
-        CfgInstData::Call { name, args } => {
-            let args_str = args
-                .iter()
-                .map(|a| format!("{}", a.value))
-                .collect::<Vec<_>>()
-                .join(", ");
+        CfgInstData::Call { name, .. } => {
+            // Note: Can't show args without Cfg access; just show name
             // Display symbol as @{id} since we don't have interner access
-            format!("call @{}({})", name.as_u32(), args_str)
+            format!("call @{}(...)", name.as_u32())
         }
-        CfgInstData::Intrinsic { name, args } => {
-            let args_str = args
-                .iter()
-                .map(|a| format!("{}", a))
-                .collect::<Vec<_>>()
-                .join(", ");
+        CfgInstData::Intrinsic { name, .. } => {
+            // Note: Can't show args without Cfg access; just show name
             // Display symbol as @{id} since we don't have interner access
-            format!("intrinsic @{}({})", name.as_u32(), args_str)
+            format!("intrinsic @{}(...)", name.as_u32())
         }
-        CfgInstData::StructInit { struct_id, fields } => {
-            let fields_str = fields
-                .iter()
-                .map(|f| format!("{}", f))
-                .collect::<Vec<_>>()
-                .join(", ");
-            format!("struct_init #{} {{{}}}", struct_id.0, fields_str)
+        CfgInstData::StructInit { struct_id, .. } => {
+            // Note: Can't show fields without Cfg access; just show struct_id
+            format!("struct_init #{} {{...}}", struct_id.0)
         }
         CfgInstData::FieldGet {
             base,
@@ -188,16 +176,9 @@ pub fn format_cfg_inst_data(data: &rue_cfg::CfgInstData) -> String {
             "param_field_set %{}+{}.#{}.{} = {}",
             param_slot, inner_offset, struct_id.0, field_index, value
         ),
-        CfgInstData::ArrayInit {
-            array_type_id,
-            elements,
-        } => {
-            let elems_str = elements
-                .iter()
-                .map(|e| format!("{}", e))
-                .collect::<Vec<_>>()
-                .join(", ");
-            format!("array_init @{} [{}]", array_type_id.0, elems_str)
+        CfgInstData::ArrayInit { array_type_id, .. } => {
+            // Note: Can't show elements without Cfg access; just show array_type_id
+            format!("array_init @{} [...]", array_type_id.0)
         }
         CfgInstData::IndexGet {
             base,

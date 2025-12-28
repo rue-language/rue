@@ -178,23 +178,37 @@ pub enum CfgInstData {
     },
 
     // Function calls
+    /// Function call. Arguments are stored in the Cfg's call_args array.
+    /// Use `Cfg::get_call_args(args_start, args_len)` to retrieve them.
     Call {
         /// Function name (interned symbol)
         name: Symbol,
-        args: Vec<CfgCallArg>,
+        /// Start index into Cfg's call_args array
+        args_start: u32,
+        /// Number of arguments
+        args_len: u32,
     },
 
-    /// Intrinsic call (e.g., @dbg)
+    /// Intrinsic call (e.g., @dbg). Arguments are stored in the Cfg's extra array.
+    /// Use `Cfg::get_extra(args_start, args_len)` to retrieve them.
     Intrinsic {
         /// Intrinsic name (interned symbol)
         name: Symbol,
-        args: Vec<CfgValue>,
+        /// Start index into Cfg's extra array
+        args_start: u32,
+        /// Number of arguments
+        args_len: u32,
     },
 
     // Struct operations
+    /// Struct initialization. Field values are stored in the Cfg's extra array.
+    /// Use `Cfg::get_extra(fields_start, fields_len)` to retrieve them.
     StructInit {
         struct_id: StructId,
-        fields: Vec<CfgValue>,
+        /// Start index into Cfg's extra array
+        fields_start: u32,
+        /// Number of fields
+        fields_len: u32,
     },
     FieldGet {
         base: CfgValue,
@@ -219,9 +233,14 @@ pub enum CfgInstData {
     },
 
     // Array operations
+    /// Array initialization. Element values are stored in the Cfg's extra array.
+    /// Use `Cfg::get_extra(elements_start, elements_len)` to retrieve them.
     ArrayInit {
         array_type_id: ArrayTypeId,
-        elements: Vec<CfgValue>,
+        /// Start index into Cfg's extra array
+        elements_start: u32,
+        /// Number of elements
+        elements_len: u32,
     },
     IndexGet {
         base: CfgValue,
@@ -368,6 +387,12 @@ pub struct Cfg {
     return_type: Type,
     /// All instructions (values) - blocks reference these by CfgValue
     values: Vec<CfgInst>,
+    /// Extra storage for variable-length CfgValue data (struct fields, array elements, intrinsic args).
+    /// Instructions store (start, len) indices into this array.
+    extra: Vec<CfgValue>,
+    /// Extra storage for call arguments (CfgCallArg).
+    /// Call instructions store (start, len) indices into this array.
+    call_args: Vec<CfgCallArg>,
     /// Number of local variable slots
     num_locals: u32,
     /// Number of parameter slots
@@ -392,6 +417,8 @@ impl Cfg {
             entry: BlockId(0),
             return_type,
             values: Vec::new(),
+            extra: Vec::new(),
+            call_args: Vec::new(),
             num_locals,
             num_params,
             fn_name,
@@ -480,6 +507,38 @@ impl Cfg {
     #[inline]
     pub fn value_count(&self) -> usize {
         self.values.len()
+    }
+
+    /// Add values to the extra array and return (start, len).
+    ///
+    /// Used for StructInit fields, ArrayInit elements, and Intrinsic args.
+    pub fn push_extra(&mut self, values: impl IntoIterator<Item = CfgValue>) -> (u32, u32) {
+        let start = self.extra.len() as u32;
+        self.extra.extend(values);
+        let len = self.extra.len() as u32 - start;
+        (start, len)
+    }
+
+    /// Get a slice from the extra array.
+    #[inline]
+    pub fn get_extra(&self, start: u32, len: u32) -> &[CfgValue] {
+        &self.extra[start as usize..(start + len) as usize]
+    }
+
+    /// Add call arguments to the call_args array and return (start, len).
+    ///
+    /// Used for Call instruction arguments.
+    pub fn push_call_args(&mut self, args: impl IntoIterator<Item = CfgCallArg>) -> (u32, u32) {
+        let start = self.call_args.len() as u32;
+        self.call_args.extend(args);
+        let len = self.call_args.len() as u32 - start;
+        (start, len)
+    }
+
+    /// Get a slice from the call_args array.
+    #[inline]
+    pub fn get_call_args(&self, start: u32, len: u32) -> &[CfgCallArg] {
+        &self.call_args[start as usize..(start + len) as usize]
     }
 
     /// Add an instruction to a block.
@@ -718,9 +777,14 @@ impl Cfg {
             CfgInstData::ParamStore { param_slot, value } => {
                 write!(f, "param_store %{} = {}", param_slot, value)
             }
-            CfgInstData::Call { name, args } => {
+            CfgInstData::Call {
+                name,
+                args_start,
+                args_len,
+            } => {
                 // Display symbol as @{id} since we don't have interner access here
                 write!(f, "call @{}(", name.as_u32())?;
+                let args = self.get_call_args(*args_start, *args_len);
                 for (i, arg) in args.iter().enumerate() {
                     if i > 0 {
                         write!(f, ", ")?;
@@ -733,9 +797,14 @@ impl Cfg {
                 }
                 write!(f, ")")
             }
-            CfgInstData::Intrinsic { name, args } => {
+            CfgInstData::Intrinsic {
+                name,
+                args_start,
+                args_len,
+            } => {
                 // Display symbol as @{id} since we don't have interner access here
                 write!(f, "intrinsic @{}(", name.as_u32())?;
+                let args = self.get_extra(*args_start, *args_len);
                 for (i, arg) in args.iter().enumerate() {
                     if i > 0 {
                         write!(f, ", ")?;
@@ -744,8 +813,13 @@ impl Cfg {
                 }
                 write!(f, ")")
             }
-            CfgInstData::StructInit { struct_id, fields } => {
+            CfgInstData::StructInit {
+                struct_id,
+                fields_start,
+                fields_len,
+            } => {
                 write!(f, "struct_init #{} {{", struct_id.0)?;
+                let fields = self.get_extra(*fields_start, *fields_len);
                 for (i, field) in fields.iter().enumerate() {
                     if i > 0 {
                         write!(f, ", ")?;
@@ -788,9 +862,11 @@ impl Cfg {
             }
             CfgInstData::ArrayInit {
                 array_type_id,
-                elements,
+                elements_start,
+                elements_len,
             } => {
                 write!(f, "array_init @{} [", array_type_id.0)?;
+                let elements = self.get_extra(*elements_start, *elements_len);
                 for (i, elem) in elements.iter().enumerate() {
                     if i > 0 {
                         write!(f, ", ")?;

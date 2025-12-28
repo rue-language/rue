@@ -361,7 +361,12 @@ impl<'a> CfgLower<'a> {
         };
 
         match &inst.data.clone() {
-            CfgInstData::StructInit { fields, .. } => {
+            CfgInstData::StructInit {
+                fields_start,
+                fields_len,
+                ..
+            } => {
+                let fields = self.cfg.get_extra(*fields_start, *fields_len);
                 Some(fields.iter().map(|f| self.get_vreg(*f)).collect())
             }
             CfgInstData::Load { slot } => {
@@ -601,7 +606,12 @@ impl<'a> CfgLower<'a> {
                     Some("Unsigned shift right (SHR) zero-extends".to_string())
                 }
             }
-            CfgInstData::Call { args, .. } => {
+            CfgInstData::Call {
+                args_start,
+                args_len,
+                ..
+            } => {
+                let args = self.cfg.get_call_args(*args_start, *args_len);
                 let inout_count = args.iter().filter(|a| a.is_inout()).count();
                 let borrow_count = args.iter().filter(|a| a.is_borrow()).count();
                 if inout_count > 0 || borrow_count > 0 {
@@ -1572,7 +1582,11 @@ impl<'a> CfgLower<'a> {
                 }
             }
 
-            CfgInstData::Call { name, args } => {
+            CfgInstData::Call {
+                name,
+                args_start,
+                args_len,
+            } => {
                 let result_vreg = self.mir.alloc_vreg();
                 self.value_map.insert(value, result_vreg);
 
@@ -1601,7 +1615,8 @@ impl<'a> CfgLower<'a> {
                     });
                     flattened_vregs.push(sret_ptr_vreg);
                 }
-                for arg in args {
+                let args = self.cfg.get_call_args(*args_start, *args_len).to_vec();
+                for arg in &args {
                     let arg_value = arg.value;
                     let arg_type = self.cfg.get_inst(arg_value).ty;
 
@@ -1897,9 +1912,14 @@ impl<'a> CfgLower<'a> {
                 }
             }
 
-            CfgInstData::Intrinsic { name, args } => {
+            CfgInstData::Intrinsic {
+                name,
+                args_start,
+                args_len,
+            } => {
                 let name_str = self.interner.get(*name);
                 if name_str == "dbg" {
+                    let args = self.cfg.get_extra(*args_start, *args_len);
                     let arg_val = args[0];
                     let arg_type = self.cfg.get_inst(arg_val).ty;
 
@@ -2020,7 +2040,8 @@ impl<'a> CfgLower<'a> {
 
             CfgInstData::StructInit {
                 struct_id: _,
-                fields,
+                fields_start,
+                fields_len,
             } => {
                 let vreg = self.mir.alloc_vreg();
                 self.value_map.insert(value, vreg);
@@ -2029,7 +2050,8 @@ impl<'a> CfgLower<'a> {
                 // For scalar fields, this is a single vreg.
                 // For nested struct fields, recursively collect all slot vregs.
                 let mut slot_vregs = Vec::new();
-                for field in fields {
+                let fields = self.cfg.get_extra(*fields_start, *fields_len).to_vec();
+                for field in &fields {
                     let field_inst = self.cfg.get_inst(*field);
                     if let Type::Struct(_) = field_inst.ty {
                         // Nested struct - get all its slot vregs
@@ -2181,7 +2203,8 @@ impl<'a> CfgLower<'a> {
 
             CfgInstData::ArrayInit {
                 array_type_id: _,
-                elements,
+                elements_start,
+                elements_len,
             } => {
                 // Array is stored in local slots; we just create vregs for elements.
                 // The actual storage is handled by the Alloc that precedes this.
@@ -2190,6 +2213,7 @@ impl<'a> CfgLower<'a> {
                 self.value_map.insert(value, vreg);
 
                 // Store element vregs for later IndexGet access
+                let elements = self.cfg.get_extra(*elements_start, *elements_len);
                 let element_vregs: Vec<VReg> = elements.iter().map(|e| self.get_vreg(*e)).collect();
                 self.struct_slot_vregs.insert(value, element_vregs);
 
