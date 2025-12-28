@@ -3,6 +3,7 @@ buck-out/
 
 # Third-party: Cargo registry cache (redundant with vendored sources)
 third-party/.cargo/registry/
+third-party/.cargo/.global-cache/
 
 # Editor
 .idea/
