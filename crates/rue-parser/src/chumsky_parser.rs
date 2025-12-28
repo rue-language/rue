@@ -1100,6 +1100,19 @@ enum BlockItem {
     Expr(Expr),
 }
 
+/// What token follows an expression in a block (used to determine its role)
+#[derive(Debug, Clone, Copy)]
+enum ExprFollower {
+    /// Semicolon follows - expression is a statement
+    Semi,
+    /// Right brace follows (not consumed) - expression is the final/return value
+    RBrace,
+    /// Some other token follows - only valid for control flow expressions
+    Other,
+    /// End of input - only valid for control flow expressions
+    End,
+}
+
 /// Parser for a let binding pattern: either an identifier or _ (wildcard/discard)
 fn let_pattern_parser<'src, I>()
 -> impl Parser<'src, I, LetPattern, extra::Err<Rich<'src, TokenKind>>> + Clone
@@ -1343,68 +1356,47 @@ where
     // Always requires a trailing semicolon.
     let assign_stmt = assign_statement_parser(expr.clone()).map(BlockItem::Statement);
 
-    // Expression followed by semicolon: `expr;`
-    // This makes any expression into a statement (its value is discarded).
-    let expr_with_semi = expr
-        .clone()
-        .then_ignore(just(TokenKind::Semi))
-        .map(|e| BlockItem::Statement(Statement::Expr(e)));
-
-    // Control flow expression in the MIDDLE of a block (not at the end).
+    // Expression-based item: parse expression ONCE, then decide based on what follows.
+    // This avoids O(2^n) complexity from repeatedly re-parsing expressions with backtracking.
     //
-    // These expressions don't need semicolons: if, while, match, loop,
-    // break, continue, return.
-    //
-    // How it works:
-    // 1. Parse an expression
-    // 2. Lookahead: verify next token is NOT `}` and NOT `;`
-    //    (If it were `}`, this would be the final expr; if `;`, use expr_with_semi)
-    // 3. Validate via try_map: only control flow expressions are valid here
-    //
-    // The `rewind()` is crucial: it checks the next token WITHOUT consuming it,
-    // so whatever follows (like the next statement) remains available.
-    let control_flow_stmt = expr
-        .clone()
-        .then_ignore(none_of([TokenKind::RBrace, TokenKind::Semi]).rewind())
-        .try_map(|e, span| {
-            if is_control_flow_expr(&e) {
-                // Valid: control flow doesn't need semicolon mid-block
+    // After parsing an expression, we check the next token:
+    // - `;` → expression statement (value discarded)
+    // - `}` → final expression (block's return value)
+    // - other → mid-block control flow (only valid for if/while/match/loop/break/continue/return)
+    let expr_item = expr
+        .then(
+            choice((
+                just(TokenKind::Semi).to(ExprFollower::Semi),
+                just(TokenKind::RBrace).rewind().to(ExprFollower::RBrace),
+                any().rewind().to(ExprFollower::Other),
+            ))
+            .or(end().to(ExprFollower::End)),
+        )
+        .try_map(|(e, follower), span| match follower {
+            ExprFollower::Semi => {
+                // Expression followed by semicolon: `expr;`
                 Ok(BlockItem::Statement(Statement::Expr(e)))
-            } else {
-                // Invalid: non-control-flow expression without semicolon mid-block
-                // Reject this parse so chumsky can try other alternatives or report error
-                Err(Rich::custom(span, "expected semicolon after expression"))
+            }
+            ExprFollower::RBrace => {
+                // Final expression: `{ ... expr }`
+                Ok(BlockItem::Expr(e))
+            }
+            ExprFollower::Other | ExprFollower::End => {
+                // Mid-block control flow (no semicolon, not at end)
+                // Only control flow expressions are valid here
+                if is_control_flow_expr(&e) {
+                    Ok(BlockItem::Statement(Statement::Expr(e)))
+                } else {
+                    Err(Rich::custom(span, "expected semicolon after expression"))
+                }
             }
         });
-
-    // Final expression: the last item in a block, providing the block's value.
-    //
-    // How it works:
-    // 1. Parse an expression
-    // 2. Lookahead: verify next token IS `}`
-    //    (The `rewind()` ensures we don't consume the `}`, which the block parser needs)
-    //
-    // Examples:
-    // - `{ 42 }` - `42` is the final expression, block evaluates to 42
-    // - `{ x; y }` - `y` is the final expression
-    // - `{ if c { a } else { b } }` - the entire `if` is the final expression
-    let final_expr = expr
-        .then_ignore(just(TokenKind::RBrace).rewind())
-        .map(BlockItem::Expr);
 
     // Try parsers in order. Earlier parsers take precedence.
     // This order ensures:
     // - Keywords (`let`) are matched before being parsed as identifiers
     // - Assignments (`x = 5;`) are matched before `x` is parsed as an expression
-    // - Semicolon-terminated expressions are matched before semicolon-free variants
-    // - Mid-block control flow is matched before final expressions
-    choice((
-        let_stmt,
-        assign_stmt,
-        expr_with_semi,
-        control_flow_stmt,
-        final_expr,
-    ))
+    choice((let_stmt, assign_stmt, expr_item))
 }
 
 /// Process block items into statements and final expression

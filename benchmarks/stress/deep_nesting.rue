@@ -1,9 +1,8 @@
 // Stress test: Nested blocks and expressions.
 // Tests the compiler's handling of scope nesting and expression depth.
-// NOTE: Kept to 10 levels as deeper nesting causes exponential compile time.
 
 fn nested_blocks() -> i32 {
-    // 10 levels of nested blocks
+    // 20 levels of nested blocks
     {
         let a = 1;
         {
@@ -24,8 +23,38 @@ fn nested_blocks() -> i32 {
                                         let i = h + 1;
                                         {
                                             let j = i + 1;
-                                            // j = 10
-                                            j
+                                            {
+                                                let k = j + 1;
+                                                {
+                                                    let l = k + 1;
+                                                    {
+                                                        let m = l + 1;
+                                                        {
+                                                            let n = m + 1;
+                                                            {
+                                                                let o = n + 1;
+                                                                {
+                                                                    let p = o + 1;
+                                                                    {
+                                                                        let q = p + 1;
+                                                                        {
+                                                                            let r = q + 1;
+                                                                            {
+                                                                                let s = r + 1;
+                                                                                {
+                                                                                    let t = s + 1;
+                                                                                    // t = 20
+                                                                                    t
+                                                                                }
+                                                                            }
+                                                                        }
+                                                                    }
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
                                         }
                                     }
                                 }
@@ -86,10 +115,10 @@ fn deeply_nested_expr() -> i32 {
 }
 
 fn main() -> i32 {
-    let a = nested_blocks();       // 10
+    let a = nested_blocks();       // 20
     let b = nested_if(25);         // 30
     let c = nested_while();        // 125 (5*5*5)
     let d = deeply_nested_expr();  // 66
 
-    (a + b + c + d) % 256          // (10 + 30 + 125 + 66) % 256 = 231
+    (a + b + c + d) % 256          // (20 + 30 + 125 + 66) % 256 = 241
 }
