@@ -10,6 +10,42 @@
             {{ page.content | safe }}
         </div>
 
+        <!-- Summary Stats -->
+        <section id="summary-stats" class="mb-12">
+            <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+                <div class="bg-surface border border-themed rounded-lg p-4">
+                    <div class="text-sm text-muted mb-1">Compilation Time</div>
+                    <div class="flex items-baseline gap-2">
+                        <span id="stat-time" class="text-2xl font-semibold">--</span>
+                        <span id="stat-time-delta" class="text-sm"></span>
+                    </div>
+                    <div class="text-xs text-muted mt-1">
+                        <span id="stat-time-avg">Avg: --</span> | <span id="stat-time-best">Best: --</span>
+                    </div>
+                </div>
+                <div class="bg-surface border border-themed rounded-lg p-4">
+                    <div class="text-sm text-muted mb-1">Peak Memory</div>
+                    <div class="flex items-baseline gap-2">
+                        <span id="stat-memory" class="text-2xl font-semibold">--</span>
+                        <span id="stat-memory-delta" class="text-sm"></span>
+                    </div>
+                    <div class="text-xs text-muted mt-1">
+                        <span id="stat-memory-avg">Avg: --</span>
+                    </div>
+                </div>
+                <div class="bg-surface border border-themed rounded-lg p-4">
+                    <div class="text-sm text-muted mb-1">Binary Size</div>
+                    <div class="flex items-baseline gap-2">
+                        <span id="stat-binary" class="text-2xl font-semibold">--</span>
+                        <span id="stat-binary-delta" class="text-sm"></span>
+                    </div>
+                    <div class="text-xs text-muted mt-1">
+                        <span id="stat-commit">Commit: --</span>
+                    </div>
+                </div>
+            </div>
+        </section>
+
         <!-- Timeline Chart -->
         <section class="mb-12">
             <h2 class="text-xl font-semibold mb-4">Compilation Time Trend</h2>
@@ -43,15 +79,40 @@
             </div>
         </section>
 
+        <!-- Memory Usage Chart -->
+        <section class="mb-12">
+            <h2 class="text-xl font-semibold mb-4">Peak Memory Usage</h2>
+            <p class="text-muted mb-4">
+                Peak memory consumption during compilation. Lower is better.
+            </p>
+            <div class="benchmark-chart-container bg-surface border border-themed rounded-lg p-4">
+                {% set memory = load_data(path="static/benchmarks/memory.svg", format="plain") %}
+                {{ memory | safe }}
+            </div>
+        </section>
+
+        <!-- Binary Size Chart -->
+        <section class="mb-12">
+            <h2 class="text-xl font-semibold mb-4">Output Binary Size</h2>
+            <p class="text-muted mb-4">
+                Size of compiled binary. Smaller binaries are generally preferable.
+            </p>
+            <div class="benchmark-chart-container bg-surface border border-themed rounded-lg p-4">
+                {% set binary_size = load_data(path="static/benchmarks/binary_size.svg", format="plain") %}
+                {{ binary_size | safe }}
+            </div>
+        </section>
+
         <script>
         (function() {
             const select = document.getElementById('benchmark-select');
             const container = document.getElementById('breakdown-chart-container');
 
-            // Load metadata to populate dropdown
+            // Load metadata to populate dropdown and summary stats
             fetch('/benchmarks/metadata.json')
                 .then(r => r.json())
                 .then(data => {
+                    // Populate benchmark dropdown
                     if (data.benchmarks && data.benchmarks.length > 0) {
                         data.benchmarks.forEach(name => {
                             const option = document.createElement('option');
@@ -60,6 +121,54 @@
                             option.textContent = name;
                             select.appendChild(option);
                         });
+                    }
+
+                    // Populate summary stats
+                    if (data.summary) {
+                        const s = data.summary;
+
+                        // Time stats
+                        document.getElementById('stat-time').textContent =
+                            s.latest_time_ms ? `${s.latest_time_ms.toFixed(1)}ms` : '--';
+                        document.getElementById('stat-time-avg').textContent =
+                            s.avg_time_ms ? `Avg: ${s.avg_time_ms.toFixed(1)}ms` : 'Avg: --';
+                        document.getElementById('stat-time-best').textContent =
+                            s.best_time_ms ? `Best: ${s.best_time_ms.toFixed(1)}ms` : 'Best: --';
+
+                        // Time delta with color
+                        const timeDelta = document.getElementById('stat-time-delta');
+                        if (s.time_delta_str) {
+                            timeDelta.textContent = s.time_delta_str;
+                            timeDelta.className = s.time_delta_pct > 0 ? 'text-sm text-red-500' : 'text-sm text-green-500';
+                        }
+
+                        // Memory stats
+                        document.getElementById('stat-memory').textContent =
+                            s.latest_memory_mb ? `${s.latest_memory_mb.toFixed(1)}MB` : '--';
+                        document.getElementById('stat-memory-avg').textContent =
+                            s.avg_memory_mb ? `Avg: ${s.avg_memory_mb.toFixed(1)}MB` : 'Avg: --';
+
+                        // Memory delta with color
+                        const memDelta = document.getElementById('stat-memory-delta');
+                        if (s.memory_delta_str) {
+                            memDelta.textContent = s.memory_delta_str;
+                            memDelta.className = s.memory_delta_pct > 0 ? 'text-sm text-red-500' : 'text-sm text-green-500';
+                        }
+
+                        // Binary stats
+                        document.getElementById('stat-binary').textContent =
+                            s.latest_binary_kb ? `${s.latest_binary_kb.toFixed(1)}KB` : '--';
+
+                        // Binary delta with color
+                        const binDelta = document.getElementById('stat-binary-delta');
+                        if (s.binary_delta_str) {
+                            binDelta.textContent = s.binary_delta_str;
+                            binDelta.className = s.binary_delta_pct > 0 ? 'text-sm text-red-500' : 'text-sm text-green-500';
+                        }
+
+                        // Commit info
+                        document.getElementById('stat-commit').textContent =
+                            s.latest_commit ? `Commit: ${s.latest_commit}` : 'Commit: --';
                     }
                 })
                 .catch(() => {

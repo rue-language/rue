@@ -23,6 +23,10 @@ TIMELINE_WIDTH = 800
 TIMELINE_HEIGHT = 300
 BREAKDOWN_WIDTH = 800
 BREAKDOWN_HEIGHT = 350
+MEMORY_WIDTH = 800
+MEMORY_HEIGHT = 250
+BINARY_WIDTH = 800
+BINARY_HEIGHT = 250
 
 # Colors for passes (consistent with website theme)
 PASS_COLORS = {
@@ -79,6 +83,44 @@ def get_total_time(run: dict) -> float:
                 return total.get("mean", 0)
             return total
     return 0
+
+
+def get_peak_memory(run: dict) -> float:
+    """Get peak memory usage (in MB) from a run."""
+    for bench in run.get("benchmarks", []):
+        if "peak_memory_bytes" in bench:
+            return bench["peak_memory_bytes"] / (1024 * 1024)  # Convert to MB
+    return 0
+
+
+def get_binary_size(run: dict) -> float:
+    """Get binary size (in KB) from a run."""
+    for bench in run.get("benchmarks", []):
+        if "binary_size_bytes" in bench:
+            return bench["binary_size_bytes"] / 1024  # Convert to KB
+    return 0
+
+
+def format_bytes(size_bytes: float) -> str:
+    """Format bytes into human-readable form."""
+    if size_bytes >= 1024 * 1024:
+        return f"{size_bytes / (1024 * 1024):.1f}MB"
+    elif size_bytes >= 1024:
+        return f"{size_bytes / 1024:.1f}KB"
+    else:
+        return f"{size_bytes:.0f}B"
+
+
+def calculate_delta(current: float, previous: float) -> tuple[float, str]:
+    """Calculate delta and format as string with arrow indicator."""
+    if previous == 0:
+        return 0, ""
+    delta = current - previous
+    pct = (delta / previous) * 100
+    if abs(pct) < 0.1:
+        return pct, "→ 0%"
+    arrow = "↑" if pct > 0 else "↓"
+    return pct, f"{arrow} {abs(pct):.1f}%"
 
 
 def escape_xml(s: str) -> str:
@@ -332,6 +374,260 @@ def generate_breakdown_chart(runs: list[dict], benchmark_name: Optional[str] = N
     return "\n".join(svg_parts)
 
 
+def generate_memory_chart(runs: list[dict]) -> str:
+    """Generate time-series SVG chart of peak memory usage."""
+    if not runs:
+        return generate_empty_chart(MEMORY_WIDTH, MEMORY_HEIGHT, "No benchmark data available yet")
+
+    # Extract data points
+    points = []
+    for run in runs[-20:]:  # Show last 20 commits
+        memory = get_peak_memory(run)
+        commit = short_commit(run.get("commit", ""))
+        points.append({"commit": commit, "memory": memory})
+
+    if not points or all(p["memory"] == 0 for p in points):
+        return generate_empty_chart(MEMORY_WIDTH, MEMORY_HEIGHT, "No memory data in benchmarks")
+
+    # Chart layout
+    margin = {"top": 40, "right": 30, "bottom": 60, "left": 70}
+    chart_width = MEMORY_WIDTH - margin["left"] - margin["right"]
+    chart_height = MEMORY_HEIGHT - margin["top"] - margin["bottom"]
+
+    # Scale calculations
+    max_memory = max(p["memory"] for p in points) * 1.1  # 10% padding
+    if max_memory == 0:
+        max_memory = 1  # Avoid division by zero
+
+    def scale_x(i: int) -> float:
+        if len(points) == 1:
+            return margin["left"] + chart_width / 2
+        return margin["left"] + (i / (len(points) - 1)) * chart_width
+
+    def scale_y(v: float) -> float:
+        return margin["top"] + chart_height - (v / max_memory) * chart_height
+
+    # Build SVG
+    svg_parts = [
+        f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {MEMORY_WIDTH} {MEMORY_HEIGHT}" class="benchmark-chart">',
+        '''  <style>
+    .chart-bg { fill: var(--chart-bg, #ffffff); }
+    .chart-text { fill: var(--chart-text, #6b7280); font-family: system-ui, sans-serif; }
+    .chart-title { fill: var(--chart-title, #1a1a1a); font-family: system-ui, sans-serif; font-weight: 600; }
+    .chart-line { stroke: var(--chart-memory, #10b981); fill: none; stroke-width: 2; }
+    .chart-point { fill: var(--chart-memory, #10b981); }
+    .chart-grid { stroke: var(--chart-grid, #e5e7eb); stroke-width: 1; }
+    .chart-axis { stroke: var(--chart-axis, #9ca3af); stroke-width: 1; }
+    @media (prefers-color-scheme: dark) {
+      .chart-bg { fill: #1a1a1a; }
+      .chart-text { fill: #9ca3af; }
+      .chart-title { fill: #f0f0f0; }
+      .chart-grid { stroke: #2e2e2e; }
+      .chart-axis { stroke: #4b5563; }
+    }
+  </style>''',
+        f'  <rect class="chart-bg" width="{MEMORY_WIDTH}" height="{MEMORY_HEIGHT}" rx="8"/>',
+        f'  <text class="chart-title" x="{MEMORY_WIDTH/2}" y="25" text-anchor="middle" font-size="16">Peak Memory Usage Over Recent Commits</text>',
+    ]
+
+    # Y-axis grid lines and labels
+    num_grid_lines = 4
+    for i in range(num_grid_lines + 1):
+        y = margin["top"] + (i / num_grid_lines) * chart_height
+        value = max_memory * (1 - i / num_grid_lines)
+        svg_parts.append(
+            f'  <line class="chart-grid" x1="{margin["left"]}" y1="{y}" x2="{MEMORY_WIDTH - margin["right"]}" y2="{y}"/>'
+        )
+        svg_parts.append(
+            f'  <text class="chart-text" x="{margin["left"] - 10}" y="{y + 4}" text-anchor="end" font-size="11">{value:.1f}MB</text>'
+        )
+
+    # Axes
+    svg_parts.append(
+        f'  <line class="chart-axis" x1="{margin["left"]}" y1="{margin["top"]}" x2="{margin["left"]}" y2="{MEMORY_HEIGHT - margin["bottom"]}"/>'
+    )
+    svg_parts.append(
+        f'  <line class="chart-axis" x1="{margin["left"]}" y1="{MEMORY_HEIGHT - margin["bottom"]}" x2="{MEMORY_WIDTH - margin["right"]}" y2="{MEMORY_HEIGHT - margin["bottom"]}"/>'
+    )
+
+    # Draw line connecting points
+    valid_points = [(i, p) for i, p in enumerate(points) if p["memory"] > 0]
+    if len(valid_points) > 1:
+        path_d = "M " + " L ".join(
+            f"{scale_x(i)},{scale_y(p['memory'])}"
+            for i, p in valid_points
+        )
+        svg_parts.append(f'  <path class="chart-line" d="{path_d}"/>')
+
+    # Draw points and x-axis labels
+    for i, p in enumerate(points):
+        x = scale_x(i)
+        if p["memory"] > 0:
+            y = scale_y(p["memory"])
+            svg_parts.append(f'  <circle class="chart-point" cx="{x}" cy="{y}" r="4"/>')
+
+        # X-axis label (rotated for readability)
+        label_y = MEMORY_HEIGHT - margin["bottom"] + 15
+        svg_parts.append(
+            f'  <text class="chart-text" x="{x}" y="{label_y}" text-anchor="end" font-size="10" transform="rotate(-45 {x} {label_y})">{escape_xml(p["commit"])}</text>'
+        )
+
+    svg_parts.append("</svg>")
+    return "\n".join(svg_parts)
+
+
+def generate_binary_size_chart(runs: list[dict]) -> str:
+    """Generate time-series SVG chart of binary size."""
+    if not runs:
+        return generate_empty_chart(BINARY_WIDTH, BINARY_HEIGHT, "No benchmark data available yet")
+
+    # Extract data points
+    points = []
+    for run in runs[-20:]:  # Show last 20 commits
+        size = get_binary_size(run)
+        commit = short_commit(run.get("commit", ""))
+        points.append({"commit": commit, "size": size})
+
+    if not points or all(p["size"] == 0 for p in points):
+        return generate_empty_chart(BINARY_WIDTH, BINARY_HEIGHT, "No binary size data in benchmarks")
+
+    # Chart layout
+    margin = {"top": 40, "right": 30, "bottom": 60, "left": 70}
+    chart_width = BINARY_WIDTH - margin["left"] - margin["right"]
+    chart_height = BINARY_HEIGHT - margin["top"] - margin["bottom"]
+
+    # Scale calculations
+    max_size = max(p["size"] for p in points) * 1.1  # 10% padding
+    if max_size == 0:
+        max_size = 1  # Avoid division by zero
+
+    def scale_x(i: int) -> float:
+        if len(points) == 1:
+            return margin["left"] + chart_width / 2
+        return margin["left"] + (i / (len(points) - 1)) * chart_width
+
+    def scale_y(v: float) -> float:
+        return margin["top"] + chart_height - (v / max_size) * chart_height
+
+    # Build SVG
+    svg_parts = [
+        f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {BINARY_WIDTH} {BINARY_HEIGHT}" class="benchmark-chart">',
+        '''  <style>
+    .chart-bg { fill: var(--chart-bg, #ffffff); }
+    .chart-text { fill: var(--chart-text, #6b7280); font-family: system-ui, sans-serif; }
+    .chart-title { fill: var(--chart-title, #1a1a1a); font-family: system-ui, sans-serif; font-weight: 600; }
+    .chart-line { stroke: var(--chart-binary, #f59e0b); fill: none; stroke-width: 2; }
+    .chart-point { fill: var(--chart-binary, #f59e0b); }
+    .chart-grid { stroke: var(--chart-grid, #e5e7eb); stroke-width: 1; }
+    .chart-axis { stroke: var(--chart-axis, #9ca3af); stroke-width: 1; }
+    @media (prefers-color-scheme: dark) {
+      .chart-bg { fill: #1a1a1a; }
+      .chart-text { fill: #9ca3af; }
+      .chart-title { fill: #f0f0f0; }
+      .chart-grid { stroke: #2e2e2e; }
+      .chart-axis { stroke: #4b5563; }
+    }
+  </style>''',
+        f'  <rect class="chart-bg" width="{BINARY_WIDTH}" height="{BINARY_HEIGHT}" rx="8"/>',
+        f'  <text class="chart-title" x="{BINARY_WIDTH/2}" y="25" text-anchor="middle" font-size="16">Binary Size Over Recent Commits</text>',
+    ]
+
+    # Y-axis grid lines and labels
+    num_grid_lines = 4
+    for i in range(num_grid_lines + 1):
+        y = margin["top"] + (i / num_grid_lines) * chart_height
+        value = max_size * (1 - i / num_grid_lines)
+        svg_parts.append(
+            f'  <line class="chart-grid" x1="{margin["left"]}" y1="{y}" x2="{BINARY_WIDTH - margin["right"]}" y2="{y}"/>'
+        )
+        svg_parts.append(
+            f'  <text class="chart-text" x="{margin["left"] - 10}" y="{y + 4}" text-anchor="end" font-size="11">{value:.1f}KB</text>'
+        )
+
+    # Axes
+    svg_parts.append(
+        f'  <line class="chart-axis" x1="{margin["left"]}" y1="{margin["top"]}" x2="{margin["left"]}" y2="{BINARY_HEIGHT - margin["bottom"]}"/>'
+    )
+    svg_parts.append(
+        f'  <line class="chart-axis" x1="{margin["left"]}" y1="{BINARY_HEIGHT - margin["bottom"]}" x2="{BINARY_WIDTH - margin["right"]}" y2="{BINARY_HEIGHT - margin["bottom"]}"/>'
+    )
+
+    # Draw line connecting points
+    valid_points = [(i, p) for i, p in enumerate(points) if p["size"] > 0]
+    if len(valid_points) > 1:
+        path_d = "M " + " L ".join(
+            f"{scale_x(i)},{scale_y(p['size'])}"
+            for i, p in valid_points
+        )
+        svg_parts.append(f'  <path class="chart-line" d="{path_d}"/>')
+
+    # Draw points and x-axis labels
+    for i, p in enumerate(points):
+        x = scale_x(i)
+        if p["size"] > 0:
+            y = scale_y(p["size"])
+            svg_parts.append(f'  <circle class="chart-point" cx="{x}" cy="{y}" r="4"/>')
+
+        # X-axis label (rotated for readability)
+        label_y = BINARY_HEIGHT - margin["bottom"] + 15
+        svg_parts.append(
+            f'  <text class="chart-text" x="{x}" y="{label_y}" text-anchor="end" font-size="10" transform="rotate(-45 {x} {label_y})">{escape_xml(p["commit"])}</text>'
+        )
+
+    svg_parts.append("</svg>")
+    return "\n".join(svg_parts)
+
+
+def generate_summary_data(runs: list[dict]) -> dict:
+    """Generate summary statistics for the performance dashboard."""
+    if not runs:
+        return {}
+
+    latest = runs[-1] if runs else None
+    previous = runs[-2] if len(runs) >= 2 else None
+
+    # Get latest values
+    latest_time = get_total_time(latest) if latest else 0
+    latest_memory = get_peak_memory(latest) if latest else 0
+    latest_binary = get_binary_size(latest) if latest else 0
+    latest_commit = short_commit(latest.get("commit", "")) if latest else ""
+
+    # Calculate deltas
+    prev_time = get_total_time(previous) if previous else 0
+    prev_memory = get_peak_memory(previous) if previous else 0
+    prev_binary = get_binary_size(previous) if previous else 0
+
+    time_delta_pct, time_delta_str = calculate_delta(latest_time, prev_time)
+    memory_delta_pct, memory_delta_str = calculate_delta(latest_memory, prev_memory)
+    binary_delta_pct, binary_delta_str = calculate_delta(latest_binary, prev_binary)
+
+    # Calculate 7-run average (or whatever we have)
+    recent_runs = runs[-7:] if len(runs) >= 7 else runs
+    avg_time = sum(get_total_time(r) for r in recent_runs) / len(recent_runs) if recent_runs else 0
+    avg_memory = sum(get_peak_memory(r) for r in recent_runs) / len(recent_runs) if recent_runs else 0
+
+    # Find best ever
+    all_times = [get_total_time(r) for r in runs if get_total_time(r) > 0]
+    best_time = min(all_times) if all_times else 0
+
+    return {
+        "latest_commit": latest_commit,
+        "latest_time_ms": round(latest_time, 2),
+        "latest_memory_mb": round(latest_memory, 2),
+        "latest_binary_kb": round(latest_binary, 2),
+        "time_delta_pct": round(time_delta_pct, 2),
+        "time_delta_str": time_delta_str,
+        "memory_delta_pct": round(memory_delta_pct, 2),
+        "memory_delta_str": memory_delta_str,
+        "binary_delta_pct": round(binary_delta_pct, 2),
+        "binary_delta_str": binary_delta_str,
+        "avg_time_ms": round(avg_time, 2),
+        "avg_memory_mb": round(avg_memory, 2),
+        "best_time_ms": round(best_time, 2),
+        "run_count": len(runs),
+    }
+
+
 def main():
     if len(sys.argv) != 3:
         print(f"Usage: {sys.argv[0]} <history.json> <output-dir>", file=sys.stderr)
@@ -363,6 +659,20 @@ def main():
         f.write(breakdown_svg)
     print(f"Generated {breakdown_path}")
 
+    # Generate memory usage chart
+    memory_svg = generate_memory_chart(runs)
+    memory_path = output_dir / "memory.svg"
+    with open(memory_path, "w") as f:
+        f.write(memory_svg)
+    print(f"Generated {memory_path}")
+
+    # Generate binary size chart
+    binary_svg = generate_binary_size_chart(runs)
+    binary_path = output_dir / "binary_size.svg"
+    with open(binary_path, "w") as f:
+        f.write(binary_svg)
+    print(f"Generated {binary_path}")
+
     # Generate per-benchmark breakdown charts
     benchmark_names = get_benchmark_names(runs)
     print(f"Found {len(benchmark_names)} benchmarks: {', '.join(benchmark_names)}")
@@ -376,11 +686,15 @@ def main():
             f.write(bench_svg)
         print(f"Generated {bench_path}")
 
-    # Write metadata JSON for the website to consume
+    # Generate summary statistics
+    summary = generate_summary_data(runs)
+
+    # Write metadata JSON for the website to consume (includes summary)
     metadata = {
         "benchmarks": benchmark_names,
         "run_count": len(runs),
         "latest_commit": short_commit(runs[-1].get("commit", "")) if runs else None,
+        "summary": summary,
     }
     metadata_path = output_dir / "metadata.json"
     with open(metadata_path, "w") as f:

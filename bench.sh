@@ -168,14 +168,36 @@ for i in "${!benchmark_names[@]}"; do
     # Run multiple iterations and collect timing data
     iteration_results=()
     iteration_pass_data=()
+    iteration_memory=()
+    binary_size=0
+
     for ((iter=1; iter<=ITERATIONS; iter++)); do
         output_binary="$TEMP_DIR/bench_output_$$"
 
-        # Run compilation with benchmark JSON output
-        if ! timing_json=$("$RUE_BIN" --benchmark-json "$full_path" "$output_binary" 2>&1); then
-            log_warn "  Iteration $iter failed, skipping"
-            continue
+        # Run compilation with benchmark JSON output and memory tracking
+        # Use /usr/bin/time to capture peak memory usage
+        time_output="$TEMP_DIR/time_output_$$"
+        if [[ "$os" == "darwin" ]]; then
+            # macOS: -l gives max resident set size in bytes
+            if ! timing_json=$(/usr/bin/time -l "$RUE_BIN" --benchmark-json "$full_path" "$output_binary" 2>"$time_output"); then
+                log_warn "  Iteration $iter failed, skipping"
+                rm -f "$time_output"
+                continue
+            fi
+            # Extract max RSS from time output (in bytes on macOS)
+            peak_mem_bytes=$(grep "maximum resident set size" "$time_output" 2>/dev/null | awk '{print $1}')
+        else
+            # Linux: -v gives max resident set size in KB
+            if ! timing_json=$(/usr/bin/time -v "$RUE_BIN" --benchmark-json "$full_path" "$output_binary" 2>"$time_output"); then
+                log_warn "  Iteration $iter failed, skipping"
+                rm -f "$time_output"
+                continue
+            fi
+            # Extract max RSS from time output (in KB on Linux, convert to bytes)
+            peak_mem_kb=$(grep "Maximum resident set size" "$time_output" 2>/dev/null | awk '{print $NF}')
+            peak_mem_bytes=$((peak_mem_kb * 1024))
         fi
+        rm -f "$time_output"
 
         # Extract total_ms from the JSON
         total_ms=$(echo "$timing_json" | grep -o '"total_ms":[0-9.]*' | head -1 | cut -d: -f2)
@@ -183,6 +205,19 @@ for i in "${!benchmark_names[@]}"; do
             iteration_results+=("$total_ms")
             # Store full JSON for pass data extraction
             iteration_pass_data+=("$timing_json")
+            # Store memory usage
+            if [[ -n "$peak_mem_bytes" && "$peak_mem_bytes" -gt 0 ]]; then
+                iteration_memory+=("$peak_mem_bytes")
+            fi
+        fi
+
+        # Capture binary size from the last successful iteration
+        if [[ -f "$output_binary" ]]; then
+            if [[ "$os" == "darwin" ]]; then
+                binary_size=$(stat -f%z "$output_binary" 2>/dev/null || echo 0)
+            else
+                binary_size=$(stat -c%s "$output_binary" 2>/dev/null || echo 0)
+            fi
         fi
 
         rm -f "$output_binary"
@@ -211,7 +246,33 @@ for i in "${!benchmark_names[@]}"; do
     variance=$(echo "scale=6; $sum_sq / $count" | bc -l)
     stddev=$(echo "scale=3; sqrt($variance)" | bc -l)
 
-    log_info "  $name: mean=${mean}ms, std=${stddev}ms (n=$count)"
+    # Calculate mean and stddev for memory usage
+    mem_mean=0
+    mem_stddev=0
+    if [[ ${#iteration_memory[@]} -gt 0 ]]; then
+        mem_sum=0
+        for val in "${iteration_memory[@]}"; do
+            mem_sum=$(echo "$mem_sum + $val" | bc -l)
+        done
+        mem_count=${#iteration_memory[@]}
+        mem_mean=$(echo "scale=0; $mem_sum / $mem_count" | bc -l)
+
+        # Calculate memory stddev
+        mem_sum_sq=0
+        for val in "${iteration_memory[@]}"; do
+            diff=$(echo "$val - $mem_mean" | bc -l)
+            sq=$(echo "$diff * $diff" | bc -l)
+            mem_sum_sq=$(echo "$mem_sum_sq + $sq" | bc -l)
+        done
+        mem_variance=$(echo "scale=0; $mem_sum_sq / $mem_count" | bc -l)
+        mem_stddev=$(echo "scale=0; sqrt($mem_variance)" | bc -l)
+    fi
+
+    # Convert memory to MB for display
+    mem_mean_mb=$(echo "scale=2; $mem_mean / 1048576" | bc -l)
+    binary_size_kb=$(echo "scale=2; $binary_size / 1024" | bc -l)
+
+    log_info "  $name: time=${mean}ms (±${stddev}), mem=${mem_mean_mb}MB, binary=${binary_size_kb}KB (n=$count)"
 
     # Extract and aggregate per-pass timing data
     # Use Python to parse JSON and compute per-pass means
@@ -241,8 +302,8 @@ for name, durations in pass_data.items():
 print(json.dumps(result))
 " "${iteration_pass_data[@]}" 2>/dev/null || echo "{}")
 
-    # Store result with pass data
-    all_results+=("{\"name\":\"$name\",\"iterations\":$count,\"mean_ms\":$mean,\"std_ms\":$stddev,\"passes\":$pass_json}")
+    # Store result with pass data and new metrics
+    all_results+=("{\"name\":\"$name\",\"iterations\":$count,\"mean_ms\":$mean,\"std_ms\":$stddev,\"peak_memory_bytes\":$mem_mean,\"memory_std_bytes\":$mem_stddev,\"binary_size_bytes\":$binary_size,\"passes\":$pass_json}")
 done
 
 # Get metadata
