@@ -586,16 +586,72 @@ fn print_timing_output(
     time_passes: bool,
     benchmark_json: bool,
     target: &Target,
+    source_metrics: Option<timing::SourceMetrics>,
 ) {
     if let Some(timing) = timing_data {
         if benchmark_json {
             // JSON output goes to stdout for easy capture
-            // Include metadata for historical analysis
-            println!("{}", timing.to_json(&target.to_string(), VERSION));
+            // Include metadata and source metrics for historical analysis
+            println!(
+                "{}",
+                timing.to_json_with_metrics(
+                    &target.to_string(),
+                    VERSION,
+                    source_metrics,
+                    get_peak_memory_bytes(),
+                )
+            );
         } else if time_passes {
             // Human-readable output goes to stderr
             eprintln!("{}", timing.report());
         }
+    }
+}
+
+/// Get peak memory usage in bytes (platform-specific).
+///
+/// Returns None if memory usage cannot be determined.
+fn get_peak_memory_bytes() -> Option<u64> {
+    #[cfg(target_os = "linux")]
+    {
+        // On Linux, read from /proc/self/status
+        if let Ok(status) = fs::read_to_string("/proc/self/status") {
+            for line in status.lines() {
+                if line.starts_with("VmHWM:") {
+                    // VmHWM is "high water mark" - peak resident set size
+                    // Format: "VmHWM:     12345 kB"
+                    let parts: Vec<&str> = line.split_whitespace().collect();
+                    if parts.len() >= 2 {
+                        if let Ok(kb) = parts[1].parse::<u64>() {
+                            return Some(kb * 1024);
+                        }
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        // On macOS, use rusage
+        use std::mem::MaybeUninit;
+        let mut rusage = MaybeUninit::uninit();
+        // SAFETY: rusage is properly aligned and getrusage is a standard POSIX call
+        let result = unsafe { libc::getrusage(libc::RUSAGE_SELF, rusage.as_mut_ptr()) };
+        if result == 0 {
+            // SAFETY: getrusage succeeded, so rusage is initialized
+            let rusage = unsafe { rusage.assume_init() };
+            // ru_maxrss is in bytes on macOS (unlike Linux where it's in KB)
+            Some(rusage.ru_maxrss as u64)
+        } else {
+            None
+        }
+    }
+
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    {
+        None
     }
 }
 
@@ -624,6 +680,23 @@ fn main() {
     let source_info = SourceInfo::new(&source, &options.source_path);
     let formatter = DiagnosticFormatter::new(&source_info);
 
+    // Compute source metrics if benchmark JSON is requested
+    let source_metrics = if options.benchmark_json {
+        // We need token count, so do a quick lex
+        let lexer = Lexer::new(&source);
+        let token_count = match lexer.tokenize() {
+            Ok((tokens, _interner)) => tokens.len(),
+            Err(_) => 0, // If lexing fails, we'll get the error during compilation anyway
+        };
+        Some(timing::SourceMetrics {
+            bytes: source.len(),
+            lines: source.lines().count(),
+            tokens: token_count,
+        })
+    } else {
+        None
+    };
+
     // Handle emit modes
     if !options.emit_stages.is_empty() {
         if let Err(()) = handle_emit(&source, &options, &formatter) {
@@ -634,6 +707,7 @@ fn main() {
             options.time_passes,
             options.benchmark_json,
             &options.target,
+            source_metrics,
         );
         return;
     }
@@ -700,6 +774,7 @@ fn main() {
                 options.time_passes,
                 options.benchmark_json,
                 &options.target,
+                source_metrics,
             );
         }
         Err(errors) => {

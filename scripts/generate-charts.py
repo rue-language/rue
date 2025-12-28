@@ -261,6 +261,159 @@ def get_benchmark_names(runs: list[dict]) -> list[str]:
     return sorted(names)
 
 
+# Colors for different benchmark programs
+BENCHMARK_COLORS = [
+    "#4f6ddb",  # blue
+    "#10b981",  # emerald
+    "#f59e0b",  # amber
+    "#ef4444",  # red
+    "#8b5cf6",  # violet
+    "#06b6d4",  # cyan
+    "#ec4899",  # pink
+]
+
+
+def get_benchmark_time(run: dict, benchmark_name: str) -> float:
+    """Get timing for a specific benchmark from a run."""
+    for bench in run.get("benchmarks", []):
+        if bench.get("name") == benchmark_name:
+            if "mean_ms" in bench:
+                return bench["mean_ms"]
+            if "total_ms" in bench:
+                total = bench["total_ms"]
+                if isinstance(total, dict):
+                    return total.get("mean", 0)
+                return total
+    return 0
+
+
+def generate_multi_timeline_chart(runs: list[dict], benchmark_names: list[str]) -> str:
+    """Generate time-series SVG chart showing each benchmark program as a separate line."""
+    if not runs or not benchmark_names:
+        return generate_empty_chart(TIMELINE_WIDTH, TIMELINE_HEIGHT + 50, "No benchmark data available yet")
+
+    # Extract data points for each benchmark
+    commits = [short_commit(run.get("commit", "")) for run in runs[-20:]]
+    benchmark_data = {}
+
+    for name in benchmark_names:
+        points = []
+        for run in runs[-20:]:
+            time = get_benchmark_time(run, name)
+            points.append(time)
+        benchmark_data[name] = points
+
+    # Check if we have any data
+    all_times = [t for pts in benchmark_data.values() for t in pts]
+    if not all_times or all(t == 0 for t in all_times):
+        return generate_empty_chart(TIMELINE_WIDTH, TIMELINE_HEIGHT + 50, "No timing data in benchmarks")
+
+    # Chart layout (taller to accommodate legend)
+    height = TIMELINE_HEIGHT + 80
+    margin = {"top": 40, "right": 30, "bottom": 60, "left": 70}
+    chart_width = TIMELINE_WIDTH - margin["left"] - margin["right"]
+    chart_height = TIMELINE_HEIGHT - margin["top"] - margin["bottom"]
+
+    # Scale calculations
+    max_time = max(all_times) * 1.1  # 10% padding
+    if max_time == 0:
+        max_time = 1
+
+    def scale_x(i: int) -> float:
+        if len(commits) == 1:
+            return margin["left"] + chart_width / 2
+        return margin["left"] + (i / (len(commits) - 1)) * chart_width
+
+    def scale_y(v: float) -> float:
+        return margin["top"] + chart_height - (v / max_time) * chart_height
+
+    # Build SVG
+    svg_parts = [
+        f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {TIMELINE_WIDTH} {height}" class="benchmark-chart">',
+        '''  <style>
+    .chart-bg { fill: var(--chart-bg, #ffffff); }
+    .chart-text { fill: var(--chart-text, #6b7280); font-family: system-ui, sans-serif; }
+    .chart-title { fill: var(--chart-title, #1a1a1a); font-family: system-ui, sans-serif; font-weight: 600; }
+    .chart-grid { stroke: var(--chart-grid, #e5e7eb); stroke-width: 1; }
+    .chart-axis { stroke: var(--chart-axis, #9ca3af); stroke-width: 1; }
+    @media (prefers-color-scheme: dark) {
+      .chart-bg { fill: #1a1a1a; }
+      .chart-text { fill: #9ca3af; }
+      .chart-title { fill: #f0f0f0; }
+      .chart-grid { stroke: #2e2e2e; }
+      .chart-axis { stroke: #4b5563; }
+    }
+  </style>''',
+        f'  <rect class="chart-bg" width="{TIMELINE_WIDTH}" height="{height}" rx="8"/>',
+        f'  <text class="chart-title" x="{TIMELINE_WIDTH/2}" y="25" text-anchor="middle" font-size="16">Compilation Time by Program</text>',
+    ]
+
+    # Y-axis grid lines and labels
+    num_grid_lines = 5
+    for i in range(num_grid_lines + 1):
+        y = margin["top"] + (i / num_grid_lines) * chart_height
+        value = max_time * (1 - i / num_grid_lines)
+        svg_parts.append(
+            f'  <line class="chart-grid" x1="{margin["left"]}" y1="{y}" x2="{TIMELINE_WIDTH - margin["right"]}" y2="{y}"/>'
+        )
+        svg_parts.append(
+            f'  <text class="chart-text" x="{margin["left"] - 10}" y="{y + 4}" text-anchor="end" font-size="11">{value:.1f}ms</text>'
+        )
+
+    # Axes
+    svg_parts.append(
+        f'  <line class="chart-axis" x1="{margin["left"]}" y1="{margin["top"]}" x2="{margin["left"]}" y2="{TIMELINE_HEIGHT - margin["bottom"]}"/>'
+    )
+    svg_parts.append(
+        f'  <line class="chart-axis" x1="{margin["left"]}" y1="{TIMELINE_HEIGHT - margin["bottom"]}" x2="{TIMELINE_WIDTH - margin["right"]}" y2="{TIMELINE_HEIGHT - margin["bottom"]}"/>'
+    )
+
+    # Draw lines and points for each benchmark
+    for idx, name in enumerate(benchmark_names):
+        color = BENCHMARK_COLORS[idx % len(BENCHMARK_COLORS)]
+        points = benchmark_data[name]
+
+        # Draw connecting line
+        if len(points) > 1:
+            line_points = []
+            for i, time in enumerate(points):
+                if time > 0:
+                    line_points.append(f"{scale_x(i)},{scale_y(time)}")
+            if line_points:
+                path_d = "M " + " L ".join(line_points)
+                svg_parts.append(f'  <path d="{path_d}" fill="none" stroke="{color}" stroke-width="2"/>')
+
+        # Draw points
+        for i, time in enumerate(points):
+            if time > 0:
+                x = scale_x(i)
+                y = scale_y(time)
+                svg_parts.append(f'  <circle cx="{x}" cy="{y}" r="3" fill="{color}"/>')
+
+    # X-axis labels (commits)
+    for i, commit in enumerate(commits):
+        x = scale_x(i)
+        label_y = TIMELINE_HEIGHT - margin["bottom"] + 15
+        svg_parts.append(
+            f'  <text class="chart-text" x="{x}" y="{label_y}" text-anchor="end" font-size="10" transform="rotate(-45 {x} {label_y})">{escape_xml(commit)}</text>'
+        )
+
+    # Legend at bottom
+    legend_y = TIMELINE_HEIGHT + 10
+    legend_x_start = margin["left"]
+    for idx, name in enumerate(benchmark_names):
+        color = BENCHMARK_COLORS[idx % len(BENCHMARK_COLORS)]
+        x = legend_x_start + (idx % 3) * 200
+        y = legend_y + (idx // 3) * 20
+        svg_parts.append(f'  <rect x="{x}" y="{y}" width="12" height="12" fill="{color}" rx="2"/>')
+        svg_parts.append(
+            f'  <text class="chart-text" x="{x + 18}" y="{y + 10}" font-size="11">{escape_xml(name)}</text>'
+        )
+
+    svg_parts.append("</svg>")
+    return "\n".join(svg_parts)
+
+
 def get_pass_times_for_benchmark(run: dict, benchmark_name: str) -> dict[str, float]:
     """Extract pass timing for a specific benchmark from a run."""
     for bench in run.get("benchmarks", []):
@@ -645,12 +798,24 @@ def main():
     # Ensure output directory exists
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    # Generate timeline chart
+    # Get benchmark names first (needed for multi-timeline)
+    benchmark_names = get_benchmark_names(runs)
+    print(f"Found {len(benchmark_names)} benchmarks: {', '.join(benchmark_names)}")
+
+    # Generate aggregate timeline chart
     timeline_svg = generate_timeline_chart(runs)
     timeline_path = output_dir / "timeline.svg"
     with open(timeline_path, "w") as f:
         f.write(timeline_svg)
     print(f"Generated {timeline_path}")
+
+    # Generate per-program timeline chart (multi-line)
+    if benchmark_names:
+        multi_timeline_svg = generate_multi_timeline_chart(runs, benchmark_names)
+        multi_timeline_path = output_dir / "timeline_by_program.svg"
+        with open(multi_timeline_path, "w") as f:
+            f.write(multi_timeline_svg)
+        print(f"Generated {multi_timeline_path}")
 
     # Generate aggregate breakdown chart (for backwards compatibility)
     breakdown_svg = generate_breakdown_chart(runs)
@@ -674,9 +839,6 @@ def main():
     print(f"Generated {binary_path}")
 
     # Generate per-benchmark breakdown charts
-    benchmark_names = get_benchmark_names(runs)
-    print(f"Found {len(benchmark_names)} benchmarks: {', '.join(benchmark_names)}")
-
     for bench_name in benchmark_names:
         bench_svg = generate_breakdown_chart(runs, bench_name)
         # Use sanitized filename
@@ -689,12 +851,36 @@ def main():
     # Generate summary statistics
     summary = generate_summary_data(runs)
 
-    # Write metadata JSON for the website to consume (includes summary)
+    # Include latest run's metrics for display
+    latest_benchmarks = []
+    if runs:
+        latest_run = runs[-1]
+        for bench in latest_run.get("benchmarks", []):
+            bench_info = {
+                "name": bench.get("name", ""),
+                "mean_ms": bench.get("mean_ms", 0),
+            }
+            if "source_metrics" in bench:
+                sm = bench["source_metrics"]
+                bench_info["source_metrics"] = sm
+                # Calculate throughput metrics
+                if bench_info["mean_ms"] > 0:
+                    seconds = bench_info["mean_ms"] / 1000
+                    bench_info["lines_per_sec"] = int(sm.get("lines", 0) / seconds)
+                    bench_info["tokens_per_sec"] = int(sm.get("tokens", 0) / seconds)
+            if "peak_memory_bytes" in bench:
+                bench_info["peak_memory_mb"] = round(bench["peak_memory_bytes"] / (1024 * 1024), 2)
+            if "binary_size_bytes" in bench:
+                bench_info["binary_size_kb"] = round(bench["binary_size_bytes"] / 1024, 2)
+            latest_benchmarks.append(bench_info)
+
+    # Write metadata JSON for the website to consume (includes summary and detailed metrics)
     metadata = {
         "benchmarks": benchmark_names,
         "run_count": len(runs),
         "latest_commit": short_commit(runs[-1].get("commit", "")) if runs else None,
         "summary": summary,
+        "latest_benchmarks": latest_benchmarks,
     }
     metadata_path = output_dir / "metadata.json"
     with open(metadata_path, "w") as f:

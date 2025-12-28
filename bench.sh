@@ -170,7 +170,6 @@ for i in "${!benchmark_names[@]}"; do
     iteration_pass_data=()
     iteration_memory=()
     binary_size=0
-
     for ((iter=1; iter<=ITERATIONS; iter++)); do
         output_binary="$TEMP_DIR/bench_output_$$"
 
@@ -218,6 +217,11 @@ for i in "${!benchmark_names[@]}"; do
             else
                 binary_size=$(stat -c%s "$output_binary" 2>/dev/null || echo 0)
             fi
+        fi
+
+        # Capture binary size from first successful iteration
+        if [[ $binary_size -eq 0 && -f "$output_binary" ]]; then
+            binary_size=$(stat -f%z "$output_binary" 2>/dev/null || stat -c%s "$output_binary" 2>/dev/null || echo 0)
         fi
 
         rm -f "$output_binary"
@@ -274,36 +278,60 @@ for i in "${!benchmark_names[@]}"; do
 
     log_info "  $name: time=${mean}ms (±${stddev}), mem=${mem_mean_mb}MB, binary=${binary_size_kb}KB (n=$count)"
 
-    # Extract and aggregate per-pass timing data
+    # Extract and aggregate per-pass timing data, source metrics, and memory
     # Use Python to parse JSON and compute per-pass means
-    pass_json=$(python3 -c "
+    extra_json=$(python3 -c "
 import json
 import sys
 
 pass_data = {}
+source_metrics = None
+peak_memory_samples = []
+
 for json_str in sys.argv[1:]:
     try:
         data = json.loads(json_str)
         for p in data.get('passes', []):
-            name = p['name']
+            pname = p['name']
             duration = p['duration_ms']
-            if name not in pass_data:
-                pass_data[name] = []
-            pass_data[name].append(duration)
+            if pname not in pass_data:
+                pass_data[pname] = []
+            pass_data[pname].append(duration)
+        # Get source_metrics from first run (they're constant)
+        if source_metrics is None and 'source_metrics' in data:
+            source_metrics = data['source_metrics']
+        # Collect peak memory samples
+        if 'peak_memory_bytes' in data and data['peak_memory_bytes']:
+            peak_memory_samples.append(data['peak_memory_bytes'])
     except:
         pass
 
-# Calculate means
-result = {}
-for name, durations in pass_data.items():
+# Calculate means for passes
+passes = {}
+for pname, durations in pass_data.items():
     mean = sum(durations) / len(durations) if durations else 0
-    result[name] = {'mean_ms': round(mean, 3)}
+    passes[pname] = {'mean_ms': round(mean, 3)}
+
+result = {'passes': passes}
+if source_metrics:
+    result['source_metrics'] = source_metrics
+if peak_memory_samples:
+    result['peak_memory_bytes'] = int(sum(peak_memory_samples) / len(peak_memory_samples))
 
 print(json.dumps(result))
-" "${iteration_pass_data[@]}" 2>/dev/null || echo "{}")
+" "${iteration_pass_data[@]}" 2>/dev/null || echo "{\"passes\":{}}")
 
-    # Store result with pass data and new metrics
-    all_results+=("{\"name\":\"$name\",\"iterations\":$count,\"mean_ms\":$mean,\"std_ms\":$stddev,\"peak_memory_bytes\":$mem_mean,\"memory_std_bytes\":$mem_stddev,\"binary_size_bytes\":$binary_size,\"passes\":$pass_json}")
+    # Extract components from the JSON
+    passes_json=$(echo "$extra_json" | python3 -c "import sys, json; d=json.load(sys.stdin); print(json.dumps(d.get('passes', {})))")
+    source_metrics_json=$(echo "$extra_json" | python3 -c "import sys, json; d=json.load(sys.stdin); sm=d.get('source_metrics'); print(json.dumps(sm) if sm else 'null')")
+
+    # Store result with all data (including memory and binary size from iteration tracking)
+    result_parts=("\"name\":\"$name\"" "\"iterations\":$count" "\"mean_ms\":$mean" "\"std_ms\":$stddev" "\"passes\":$passes_json")
+    [[ "$source_metrics_json" != "null" ]] && result_parts+=("\"source_metrics\":$source_metrics_json")
+    [[ "$mem_mean" -gt 0 ]] && result_parts+=("\"peak_memory_bytes\":$mem_mean")
+    [[ "$binary_size" -gt 0 ]] && result_parts+=("\"binary_size_bytes\":$binary_size")
+
+    all_results+=("{$(IFS=,; echo "${result_parts[*]}")}")
 done
 
 # Get metadata

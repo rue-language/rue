@@ -46,7 +46,7 @@
             </div>
         </section>
 
-        <!-- Timeline Chart -->
+        <!-- Timeline Chart (Aggregate) -->
         <section class="mb-12">
             <h2 class="text-xl font-semibold mb-4">Compilation Time Trend</h2>
             <p class="text-muted mb-4">
@@ -55,6 +55,18 @@
             <div class="benchmark-chart-container bg-surface border border-themed rounded-lg p-4">
                 {% set timeline = load_data(path="static/benchmarks/timeline.svg", format="plain") %}
                 {{ timeline | safe }}
+            </div>
+        </section>
+
+        <!-- Timeline Chart (Per-Program) -->
+        <section class="mb-12">
+            <h2 class="text-xl font-semibold mb-4">Compilation Time by Program</h2>
+            <p class="text-muted mb-4">
+                Each benchmark program shown as a separate line to identify which programs regress.
+            </p>
+            <div class="benchmark-chart-container bg-surface border border-themed rounded-lg p-4">
+                {% set timeline_by_program = load_data(path="static/benchmarks/timeline_by_program.svg", format="plain") %}
+                {{ timeline_by_program | safe }}
             </div>
         </section>
 
@@ -103,12 +115,24 @@
             </div>
         </section>
 
+        <!-- Metrics Table -->
+        <section class="mb-12">
+            <h2 class="text-xl font-semibold mb-4">Detailed Metrics</h2>
+            <p class="text-muted mb-4">
+                Source metrics, throughput, memory usage, and binary size for the latest benchmark run.
+            </p>
+            <div id="metrics-table-container" class="overflow-x-auto">
+                <p class="text-muted text-center py-8">Loading metrics...</p>
+            </div>
+        </section>
+
         <script>
         (function() {
             const select = document.getElementById('benchmark-select');
-            const container = document.getElementById('breakdown-chart-container');
+            const breakdownContainer = document.getElementById('breakdown-chart-container');
+            const metricsContainer = document.getElementById('metrics-table-container');
 
-            // Load metadata to populate dropdown and summary stats
+            // Load metadata to populate dropdown, summary stats, and metrics table
             fetch('/benchmarks/metadata.json')
                 .then(r => r.json())
                 .then(data => {
@@ -170,13 +194,48 @@
                         document.getElementById('stat-commit').textContent =
                             s.latest_commit ? `Commit: ${s.latest_commit}` : 'Commit: --';
                     }
+
+                    // Build metrics table
+                    if (data.latest_benchmarks && data.latest_benchmarks.length > 0) {
+                        let html = '<table class="w-full text-sm">';
+                        html += '<thead class="bg-surface border-b border-themed">';
+                        html += '<tr>';
+                        html += '<th class="text-left p-2">Program</th>';
+                        html += '<th class="text-right p-2">Time (ms)</th>';
+                        html += '<th class="text-right p-2">Lines</th>';
+                        html += '<th class="text-right p-2">Tokens</th>';
+                        html += '<th class="text-right p-2">Lines/sec</th>';
+                        html += '<th class="text-right p-2">Tokens/sec</th>';
+                        html += '<th class="text-right p-2">Memory (MB)</th>';
+                        html += '<th class="text-right p-2">Binary (KB)</th>';
+                        html += '</tr></thead><tbody>';
+
+                        data.latest_benchmarks.forEach(b => {
+                            html += '<tr class="border-b border-themed">';
+                            html += `<td class="p-2 font-medium">${b.name}</td>`;
+                            html += `<td class="p-2 text-right">${b.mean_ms?.toFixed(2) || '-'}</td>`;
+                            html += `<td class="p-2 text-right">${b.source_metrics?.lines?.toLocaleString() || '-'}</td>`;
+                            html += `<td class="p-2 text-right">${b.source_metrics?.tokens?.toLocaleString() || '-'}</td>`;
+                            html += `<td class="p-2 text-right">${b.lines_per_sec?.toLocaleString() || '-'}</td>`;
+                            html += `<td class="p-2 text-right">${b.tokens_per_sec?.toLocaleString() || '-'}</td>`;
+                            html += `<td class="p-2 text-right">${b.peak_memory_mb?.toFixed(1) || '-'}</td>`;
+                            html += `<td class="p-2 text-right">${b.binary_size_kb?.toFixed(1) || '-'}</td>`;
+                            html += '</tr>';
+                        });
+
+                        html += '</tbody></table>';
+                        metricsContainer.innerHTML = html;
+                    } else {
+                        metricsContainer.innerHTML = '<p class="text-muted text-center py-8">No detailed metrics available</p>';
+                    }
                 })
                 .catch(() => {
-                    // No metadata available, hide selector
+                    // No metadata available, hide selector and show error
                     select.parentElement.style.display = 'none';
+                    metricsContainer.innerHTML = '<p class="text-muted text-center py-8">Metrics data not available</p>';
                 });
 
-            // Handle selection changes
+            // Handle selection changes for breakdown chart
             select.addEventListener('change', function() {
                 const value = this.value;
                 const svgPath = value
@@ -186,10 +245,10 @@
                 fetch(svgPath)
                     .then(r => r.text())
                     .then(svg => {
-                        container.innerHTML = svg;
+                        breakdownContainer.innerHTML = svg;
                     })
                     .catch(() => {
-                        container.innerHTML = '<p class="text-muted text-center py-8">Failed to load chart</p>';
+                        breakdownContainer.innerHTML = '<p class="text-muted text-center py-8">Failed to load chart</p>';
                     });
             });
         })();

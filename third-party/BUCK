@@ -954,6 +954,12 @@ cargo.rust_library(
     visibility = [],
 )
 
+alias(
+    name = "libc",
+    actual = ":libc-0.2.178",
+    visibility = ["PUBLIC"],
+)
+
 cargo.rust_library(
     name = "libc-0.2.178",
     srcs = [

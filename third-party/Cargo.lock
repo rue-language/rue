@@ -500,6 +500,7 @@ dependencies = [
  "annotate-snippets",
  "anyhow",
  "chumsky",
+ "libc",
  "libtest2-mimic",
  "logos",
  "once_cell",

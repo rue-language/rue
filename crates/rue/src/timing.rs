@@ -83,6 +83,23 @@ pub struct BenchmarkTiming {
     pub passes: Vec<PassTiming>,
     /// Total compilation time in milliseconds.
     pub total_ms: f64,
+    /// Source code metrics (lines, bytes, tokens).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_metrics: Option<SourceMetrics>,
+    /// Peak memory usage in bytes (if available).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub peak_memory_bytes: Option<u64>,
+}
+
+/// Source code metrics for throughput calculations.
+#[derive(Debug, Clone, Serialize)]
+pub struct SourceMetrics {
+    /// Number of bytes in the source file.
+    pub bytes: usize,
+    /// Number of lines in the source file.
+    pub lines: usize,
+    /// Number of tokens produced by the lexer.
+    pub tokens: usize,
 }
 
 /// Metadata about a benchmark run for historical analysis.
@@ -196,6 +213,23 @@ impl TimingData {
     /// * `target` - The target platform string (e.g., "x86_64-linux")
     /// * `version` - The compiler version string
     pub fn to_benchmark_timing(&self, target: &str, version: &str) -> BenchmarkTiming {
+        self.to_benchmark_timing_with_metrics(target, version, None, None)
+    }
+
+    /// Generate structured timing data with optional source metrics and memory usage.
+    ///
+    /// # Arguments
+    /// * `target` - The target platform string (e.g., "x86_64-linux")
+    /// * `version` - The compiler version string
+    /// * `source_metrics` - Optional source code metrics (bytes, lines, tokens)
+    /// * `peak_memory_bytes` - Optional peak memory usage in bytes
+    pub fn to_benchmark_timing_with_metrics(
+        &self,
+        target: &str,
+        version: &str,
+        source_metrics: Option<SourceMetrics>,
+        peak_memory_bytes: Option<u64>,
+    ) -> BenchmarkTiming {
         let inner = self.inner.lock().unwrap();
 
         let total: Duration = inner.passes.values().sum();
@@ -231,6 +265,8 @@ impl TimingData {
             metadata,
             passes,
             total_ms,
+            source_metrics,
+            peak_memory_bytes,
         }
     }
 
@@ -259,6 +295,29 @@ impl TimingData {
     /// * `version` - The compiler version string
     pub fn to_json(&self, target: &str, version: &str) -> String {
         let timing = self.to_benchmark_timing(target, version);
+        serde_json::to_string(&timing).unwrap_or_else(|_| "{}".to_string())
+    }
+
+    /// Generate JSON output with additional source metrics.
+    ///
+    /// # Arguments
+    /// * `target` - The target platform string
+    /// * `version` - The compiler version string
+    /// * `source_metrics` - Source code metrics (bytes, lines, tokens)
+    /// * `peak_memory_bytes` - Optional peak memory usage
+    pub fn to_json_with_metrics(
+        &self,
+        target: &str,
+        version: &str,
+        source_metrics: Option<SourceMetrics>,
+        peak_memory_bytes: Option<u64>,
+    ) -> String {
+        let timing = self.to_benchmark_timing_with_metrics(
+            target,
+            version,
+            source_metrics,
+            peak_memory_bytes,
+        );
         serde_json::to_string(&timing).unwrap_or_else(|_| "{}".to_string())
     }
 
