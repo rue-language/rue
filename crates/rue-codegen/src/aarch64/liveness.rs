@@ -12,6 +12,7 @@
 use std::collections::{HashMap, HashSet};
 
 use super::mir::{Aarch64Inst, Aarch64Mir, LabelId, Operand, Reg, VReg};
+use crate::index_map::IndexMap;
 
 // Re-export shared types from the regalloc module
 pub use crate::regalloc::{InstructionLiveness, LiveRange, LivenessDebugInfo};
@@ -29,10 +30,11 @@ pub type LivenessInfo = crate::regalloc::LivenessInfo<Reg>;
 pub fn analyze(mir: &Aarch64Mir) -> LivenessInfo {
     let instructions = mir.instructions();
     let num_insts = instructions.len();
+    let vreg_count = mir.vreg_count();
 
     if num_insts == 0 {
         return LivenessInfo {
-            ranges: HashMap::new(),
+            ranges: IndexMap::new(),
             live_at: Vec::new(),
             clobbers_at: Vec::new(),
         };
@@ -161,12 +163,14 @@ pub fn analyze(mir: &Aarch64Mir) -> LivenessInfo {
         }
     }
 
-    // Build ranges
-    let mut ranges: HashMap<VReg, LiveRange> = HashMap::new();
-    for vreg_idx in 0..mir.vreg_count() {
+    // Build ranges using dense Vec storage
+    let mut ranges: IndexMap<VReg, Option<LiveRange>> =
+        IndexMap::with_capacity(vreg_count as usize);
+    ranges.resize(vreg_count as usize, None);
+    for vreg_idx in 0..vreg_count {
         let vreg = VReg::new(vreg_idx);
         if let (Some(&start), Some(&end)) = (first_live.get(&vreg), last_live.get(&vreg)) {
-            ranges.insert(vreg, LiveRange::new(start, end));
+            ranges[vreg] = Some(LiveRange::new(start, end));
         }
     }
 
@@ -194,12 +198,13 @@ pub fn analyze(mir: &Aarch64Mir) -> LivenessInfo {
 pub fn analyze_debug(mir: &Aarch64Mir) -> LivenessDebugInfo {
     let instructions = mir.instructions();
     let num_insts = instructions.len();
+    let vreg_count = mir.vreg_count();
 
     if num_insts == 0 {
         return LivenessDebugInfo {
             instructions: Vec::new(),
-            live_ranges: HashMap::new(),
-            vreg_count: mir.vreg_count(),
+            live_ranges: IndexMap::new(),
+            vreg_count,
         };
     }
 
@@ -306,12 +311,14 @@ pub fn analyze_debug(mir: &Aarch64Mir) -> LivenessDebugInfo {
         }
     }
 
-    // Build ranges
-    let mut live_ranges: HashMap<VReg, crate::regalloc::LiveRange> = HashMap::new();
-    for vreg_idx in 0..mir.vreg_count() {
+    // Build ranges using dense Vec storage
+    let mut live_ranges: IndexMap<VReg, Option<crate::regalloc::LiveRange>> =
+        IndexMap::with_capacity(vreg_count as usize);
+    live_ranges.resize(vreg_count as usize, None);
+    for vreg_idx in 0..vreg_count {
         let vreg = VReg::new(vreg_idx);
         if let (Some(&start), Some(&end)) = (first_live.get(&vreg), last_live.get(&vreg)) {
-            live_ranges.insert(vreg, crate::regalloc::LiveRange::new(start, end));
+            live_ranges[vreg] = Some(crate::regalloc::LiveRange::new(start, end));
         }
     }
 
@@ -616,8 +623,8 @@ mod tests {
 
         let info = analyze(&mir);
 
-        assert_eq!(info.ranges.get(&v0), Some(&LiveRange::new(0, 1)));
-        assert_eq!(info.ranges.get(&v1), Some(&LiveRange::new(1, 1)));
+        assert_eq!(info.range(v0), Some(&LiveRange::new(0, 1)));
+        assert_eq!(info.range(v1), Some(&LiveRange::new(1, 1)));
     }
 
     #[test]
@@ -719,7 +726,7 @@ mod tests {
         let info = analyze(&mir);
 
         // v0 should be live from definition (0) through use in CBZ (1) and MOV (2)
-        let v0_range = info.ranges.get(&v0).expect("v0 should have a range");
+        let v0_range = info.range(v0).expect("v0 should have a range");
         assert_eq!(v0_range.start, 0);
         assert!(
             v0_range.end >= 2,
@@ -727,7 +734,7 @@ mod tests {
         );
 
         // v1 should be live from first definition through final use
-        let v1_range = info.ranges.get(&v1).expect("v1 should have a range");
+        let v1_range = info.range(v1).expect("v1 should have a range");
         assert!(v1_range.end >= 7, "v1 should be live until the MOV to X0");
     }
 
@@ -766,7 +773,7 @@ mod tests {
         let info = analyze(&mir);
 
         // v0 should be live from 0 through at least instruction 3 (use in MOV)
-        let v0_range = info.ranges.get(&v0).expect("v0 should have a range");
+        let v0_range = info.range(v0).expect("v0 should have a range");
         assert_eq!(v0_range.start, 0);
         assert!(v0_range.end >= 3);
     }
@@ -819,7 +826,7 @@ mod tests {
         let info = analyze(&mir);
 
         // v0 should be live throughout the loop (from def to last use in CBNZ)
-        let v0_range = info.ranges.get(&v0).expect("v0 should have a range");
+        let v0_range = info.range(v0).expect("v0 should have a range");
         assert_eq!(v0_range.start, 0);
         assert!(v0_range.end >= 4, "v0 should be live through CBNZ");
     }

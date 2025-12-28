@@ -27,7 +27,7 @@
 //! the longest remaining live range, as this frees up a register for the
 //! longest time.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::fmt;
 
 use crate::index_map::IndexMap;
@@ -63,8 +63,8 @@ pub struct InstructionLiveness {
 pub struct LivenessDebugInfo {
     /// Per-instruction liveness information.
     pub instructions: Vec<InstructionLiveness>,
-    /// Live ranges for each virtual register.
-    pub live_ranges: HashMap<VReg, LiveRange>,
+    /// Live ranges for each virtual register (indexed by vreg index).
+    pub live_ranges: IndexMap<VReg, Option<LiveRange>>,
     /// Total number of virtual registers.
     pub vreg_count: u32,
 }
@@ -137,12 +137,11 @@ impl std::fmt::Display for LivenessDebugInfo {
         writeln!(f)?;
         writeln!(f, "Live Ranges (instruction indices):")?;
 
-        // Sort by vreg index for consistent output
-        let mut ranges: Vec<_> = self.live_ranges.iter().collect();
-        ranges.sort_by_key(|(vreg, _)| vreg.index());
-
-        for (vreg, range) in ranges {
-            writeln!(f, "  {}: [{}, {})", vreg, range.start, range.end + 1)?;
+        // Iterate in vreg index order (already sorted since IndexMap is Vec-backed)
+        for (vreg, range_opt) in self.live_ranges.iter_enumerated() {
+            if let Some(range) = range_opt {
+                writeln!(f, "  {}: [{}, {})", vreg, range.start, range.end + 1)?;
+            }
         }
 
         Ok(())
@@ -183,8 +182,9 @@ impl LiveRange {
 /// by the register allocator. Each backend's `analyze()` function populates
 /// an instance of this type.
 pub struct LivenessInfo<Reg: Copy + Eq + std::hash::Hash> {
-    /// Live range for each virtual register.
-    pub ranges: HashMap<VReg, LiveRange>,
+    /// Live range for each virtual register (indexed by vreg index).
+    /// Uses dense Vec storage since VReg indices are contiguous.
+    pub ranges: IndexMap<VReg, Option<LiveRange>>,
     /// For each instruction, which vregs are live after it executes.
     /// This is useful for determining which registers are in use at any point.
     pub live_at: Vec<HashSet<VReg>>,
@@ -197,7 +197,18 @@ impl<Reg: Copy + Eq + std::hash::Hash> LivenessInfo<Reg> {
     /// Create a new empty liveness info.
     pub fn new() -> Self {
         Self {
-            ranges: HashMap::new(),
+            ranges: IndexMap::new(),
+            live_at: Vec::new(),
+            clobbers_at: Vec::new(),
+        }
+    }
+
+    /// Create liveness info with capacity for the given number of vregs.
+    pub fn with_vreg_capacity(vreg_count: u32) -> Self {
+        let mut ranges = IndexMap::with_capacity(vreg_count as usize);
+        ranges.resize(vreg_count as usize, None);
+        Self {
+            ranges,
             live_at: Vec::new(),
             clobbers_at: Vec::new(),
         }
@@ -210,7 +221,7 @@ impl<Reg: Copy + Eq + std::hash::Hash> LivenessInfo<Reg> {
 
     /// Get the live range for a vreg.
     pub fn range(&self, vreg: VReg) -> Option<&LiveRange> {
-        self.ranges.get(&vreg)
+        self.ranges.get(vreg).and_then(|opt| opt.as_ref())
     }
 
     /// Check if two vregs interfere (have overlapping live ranges).
@@ -218,7 +229,7 @@ impl<Reg: Copy + Eq + std::hash::Hash> LivenessInfo<Reg> {
     /// Two vregs interfere if they are both live at the same program point,
     /// meaning they cannot share the same physical register.
     pub fn interferes(&self, a: VReg, b: VReg) -> bool {
-        match (self.ranges.get(&a), self.ranges.get(&b)) {
+        match (self.range(a), self.range(b)) {
             (Some(ra), Some(rb)) => ra.overlaps(rb),
             _ => false,
         }
@@ -235,7 +246,7 @@ impl<Reg: Copy + Eq + std::hash::Hash> LivenessInfo<Reg> {
     /// This is used to prevent allocating a vreg to a register that would be clobbered
     /// before the vreg's last use.
     pub fn is_clobbered_during(&self, vreg: VReg, reg: Reg) -> bool {
-        if let Some(range) = self.ranges.get(&vreg) {
+        if let Some(range) = self.range(vreg) {
             for idx in range.start..=range.end {
                 if idx < self.clobbers_at.len() && self.clobbers_at[idx].contains(&reg) {
                     return true;
@@ -675,13 +686,16 @@ mod tests {
     struct TestReg(u32);
 
     fn make_liveness(ranges: Vec<(u32, usize, usize)>) -> LivenessInfo<TestReg> {
-        let mut info = LivenessInfo::new();
+        // Find max vreg index and max instruction index
+        let max_vreg = ranges.iter().map(|(v, _, _)| *v).max().unwrap_or(0);
+        let max_inst = ranges.iter().map(|(_, _, e)| *e).max().unwrap_or(0);
+
+        let mut info = LivenessInfo::with_vreg_capacity(max_vreg + 1);
         for (vreg_idx, start, end) in ranges {
-            info.ranges
-                .insert(VReg::new(vreg_idx), LiveRange::new(start, end));
+            info.ranges[VReg::new(vreg_idx)] = Some(LiveRange::new(start, end));
         }
+
         // Initialize live_at and clobbers_at based on max instruction index
-        let max_inst = info.ranges.values().map(|r| r.end).max().unwrap_or(0);
         info.live_at = vec![HashSet::new(); max_inst + 1];
         info.clobbers_at = vec![Vec::new(); max_inst + 1];
         info
