@@ -121,6 +121,21 @@ pub fn collect_array_scalar_vregs(
                         *elem,
                         get_vreg,
                     ));
+                } else if matches!(elem_inst.ty, Type::Struct(_)) {
+                    // Recursively collect from struct element
+                    result.extend(collect_struct_scalar_vregs(
+                        cfg,
+                        struct_slot_vregs,
+                        *elem,
+                        get_vreg,
+                    ));
+                } else if elem_inst.ty == Type::String {
+                    // String element - has 3 slots (ptr, len, cap)
+                    if let Some(vregs) = struct_slot_vregs.get(elem).cloned() {
+                        result.extend(vregs);
+                    } else {
+                        result.push(get_vreg(*elem));
+                    }
                 } else {
                     // Scalar element - get its vreg
                     result.push(get_vreg(*elem));
@@ -178,6 +193,15 @@ pub fn collect_struct_scalar_vregs(
                         *field,
                         get_vreg,
                     ));
+                } else if field_inst.ty == Type::String {
+                    // String field - has 3 slots (ptr, len, cap)
+                    // Look up the field's slot vregs from the cache
+                    if let Some(vregs) = struct_slot_vregs.get(field).cloned() {
+                        result.extend(vregs);
+                    } else {
+                        // Fallback: just get the main vreg (should not happen for properly lowered String)
+                        result.push(get_vreg(*field));
+                    }
                 } else {
                     // Scalar field - get its vreg
                     result.push(get_vreg(*field));

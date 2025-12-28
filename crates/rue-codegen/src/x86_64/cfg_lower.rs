@@ -2520,28 +2520,69 @@ impl<'a> CfgLower<'a> {
                 // Handle String specially - it's a fat pointer (ptr, len, cap)
                 if dropped_ty == Type::String {
                     // String requires all 3 slots as arguments to __rue_drop_String
-                    if let Some(field_vregs) = self.struct_slot_vregs.get(dropped_value).cloned() {
-                        debug_assert_eq!(
-                            field_vregs.len(),
-                            3,
-                            "String should have 3 slots (ptr, len, cap)"
-                        );
-                        // Move all 3 components into argument registers (rdi, rsi, rdx)
-                        self.mir.push(X86Inst::MovRR {
-                            dst: Operand::Physical(ARG_REGS[0]),
-                            src: Operand::Virtual(field_vregs[0]), // ptr
-                        });
-                        self.mir.push(X86Inst::MovRR {
-                            dst: Operand::Physical(ARG_REGS[1]),
-                            src: Operand::Virtual(field_vregs[1]), // len
-                        });
-                        self.mir.push(X86Inst::MovRR {
-                            dst: Operand::Physical(ARG_REGS[2]),
-                            src: Operand::Virtual(field_vregs[2]), // cap
-                        });
-                    } else {
-                        unreachable!("String value should have field vregs for fat pointer");
-                    }
+                    // First, try to get the vregs from cache
+                    let field_vregs =
+                        if let Some(vregs) = self.struct_slot_vregs.get(dropped_value).cloned() {
+                            vregs
+                        } else {
+                            // Not in cache - check if it's a Param instruction
+                            let dropped_inst = &self.cfg.get_inst(*dropped_value).data;
+                            if let CfgInstData::Param { index } = dropped_inst {
+                                // Load all 3 String fields from param slots
+                                let mut vregs = Vec::with_capacity(3);
+                                for field_idx in 0..3u32 {
+                                    let field_vreg = self.mir.alloc_vreg();
+                                    let param_slot = self.num_locals + index + field_idx;
+                                    let offset = self.local_offset(param_slot);
+                                    self.mir.push(X86Inst::MovRM {
+                                        dst: Operand::Virtual(field_vreg),
+                                        base: Reg::Rbp,
+                                        offset,
+                                    });
+                                    vregs.push(field_vreg);
+                                }
+                                vregs
+                            } else if let CfgInstData::Load { slot } = dropped_inst {
+                                // Load from local variable slots
+                                let mut vregs = Vec::with_capacity(3);
+                                for field_idx in 0..3u32 {
+                                    let field_vreg = self.mir.alloc_vreg();
+                                    let field_slot = slot + field_idx;
+                                    let offset = self.local_offset(field_slot);
+                                    self.mir.push(X86Inst::MovRM {
+                                        dst: Operand::Virtual(field_vreg),
+                                        base: Reg::Rbp,
+                                        offset,
+                                    });
+                                    vregs.push(field_vreg);
+                                }
+                                vregs
+                            } else {
+                                unreachable!(
+                                    "String value should have field vregs or be a Param/Load: {:?}",
+                                    dropped_inst
+                                );
+                            }
+                        };
+
+                    debug_assert_eq!(
+                        field_vregs.len(),
+                        3,
+                        "String should have 3 slots (ptr, len, cap)"
+                    );
+                    // Move all 3 components into argument registers (rdi, rsi, rdx)
+                    self.mir.push(X86Inst::MovRR {
+                        dst: Operand::Physical(ARG_REGS[0]),
+                        src: Operand::Virtual(field_vregs[0]), // ptr
+                    });
+                    self.mir.push(X86Inst::MovRR {
+                        dst: Operand::Physical(ARG_REGS[1]),
+                        src: Operand::Virtual(field_vregs[1]), // len
+                    });
+                    self.mir.push(X86Inst::MovRR {
+                        dst: Operand::Physical(ARG_REGS[2]),
+                        src: Operand::Virtual(field_vregs[2]), // cap
+                    });
 
                     self.mir.push(X86Inst::CallRel {
                         symbol: "__rue_drop_String".to_string(),
@@ -2549,54 +2590,58 @@ impl<'a> CfgLower<'a> {
                     return;
                 }
 
-                // Load the value to drop into the first argument register (RDI)
-                let val_vreg = self.get_vreg(*dropped_value);
-                self.mir.push(X86Inst::MovRR {
-                    dst: Operand::Physical(ARG_REGS[0]),
-                    src: Operand::Virtual(val_vreg),
-                });
-
-                // For structs, check if there's a user-defined destructor to call first
+                // Handle struct drops - need to pass all flattened field values
                 if let Type::Struct(struct_id) = dropped_ty {
                     let struct_def = &self.struct_defs[struct_id.0 as usize];
+
+                    // Collect all scalar vregs for this struct (flattened)
+                    let field_vregs = self.collect_struct_scalar_vregs(*dropped_value);
+
+                    // For now, we only support structs that fit in registers
+                    // This covers the common case. Stack spilling can be added later.
+                    debug_assert!(
+                        field_vregs.len() <= ARG_REGS.len(),
+                        "struct drop with {} fields exceeds {} argument registers",
+                        field_vregs.len(),
+                        ARG_REGS.len()
+                    );
+
+                    // For user-defined destructor, we need to call it first with all fields
                     if let Some(ref destructor_name) = struct_def.destructor {
-                        // Call user-defined destructor first
+                        // Pass all fields to the user destructor
+                        for (i, vreg) in field_vregs.iter().enumerate() {
+                            self.mir.push(X86Inst::MovRR {
+                                dst: Operand::Physical(ARG_REGS[i]),
+                                src: Operand::Virtual(*vreg),
+                            });
+                        }
                         self.mir.push(X86Inst::CallRel {
                             symbol: destructor_name.clone(),
                         });
-                        // Reload self into RDI since the call may have clobbered it
+                    }
+
+                    // Now call the drop glue function to drop fields
+                    // Pass all fields again (call may have clobbered registers)
+                    for (i, vreg) in field_vregs.iter().enumerate() {
                         self.mir.push(X86Inst::MovRR {
-                            dst: Operand::Physical(ARG_REGS[0]),
-                            src: Operand::Virtual(val_vreg),
+                            dst: Operand::Physical(ARG_REGS[i]),
+                            src: Operand::Virtual(*vreg),
                         });
                     }
+
+                    let drop_fn_name = format!("__rue_drop_{}", struct_def.name);
+                    self.mir.push(X86Inst::CallRel {
+                        symbol: drop_fn_name,
+                    });
+                    return;
                 }
 
-                // Get the destructor function name based on type.
-                // The naming convention is __rue_drop_<TypeName>.
-                let drop_fn_name = match dropped_ty {
-                    Type::Struct(struct_id) => {
-                        // For structs, use the struct name
-                        let struct_def = &self.struct_defs[struct_id.0 as usize];
-                        format!("__rue_drop_{}", struct_def.name)
-                    }
-                    Type::String => unreachable!("String should be handled above"),
-                    // Other types that might need drop in the future can be added here
-                    _ => {
-                        // For now, any other type reaching here is unexpected
-                        debug_assert!(
-                            false,
-                            "Drop instruction reached codegen for unexpected type: {:?}",
-                            dropped_ty
-                        );
-                        return;
-                    }
-                };
-
-                // Call the runtime drop function (handles field drops)
-                self.mir.push(X86Inst::CallRel {
-                    symbol: drop_fn_name,
-                });
+                // For other types that might need drop in the future
+                debug_assert!(
+                    false,
+                    "Drop instruction reached codegen for unexpected type: {:?}",
+                    dropped_ty
+                );
             }
 
             CfgInstData::StorageLive { slot: _ } => {

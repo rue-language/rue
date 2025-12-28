@@ -236,8 +236,6 @@ exit_code = 0
 name = "struct_with_destructor_field"
 spec = ["3.9:12"]
 description = "Struct has destructor if any field has destructor"
-skip = true
-skip_reason = "Synthesized destructors for user structs not yet implemented - compiler generates call but runtime function missing"
 source = """
 struct Container {
     name: String,
@@ -257,8 +255,6 @@ exit_code = 42
 name = "field_drop_order"
 spec = ["3.9:13"]
 description = "Fields dropped in declaration order"
-skip = true
-skip_reason = "Synthesized destructors for user structs not yet implemented - compiler generates call but runtime function missing"
 source = """
 struct TwoStrings {
     first: String,

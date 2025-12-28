@@ -26,6 +26,7 @@
 //! Use `--log-level info` or `--time-passes` to see timing information.
 
 mod diagnostic;
+mod drop_glue;
 
 use tracing::{info, info_span};
 
@@ -366,13 +367,24 @@ pub fn compile_frontend_from_ast_with_options(
         output
     };
 
+    // Synthesize drop glue functions for structs that need them
+    let drop_glue_functions =
+        drop_glue::synthesize_drop_glue(&sema_output.struct_defs, &sema_output.array_types);
+
+    // Combine user functions with synthesized drop glue functions
+    let all_functions: Vec<_> = sema_output
+        .functions
+        .into_iter()
+        .chain(drop_glue_functions)
+        .collect();
+
     // Build CFGs from AIR (one per function), collecting warnings
     let (functions, warnings) = {
         let _span = info_span!("cfg_construction").entered();
-        let mut functions = Vec::with_capacity(sema_output.functions.len());
+        let mut functions = Vec::with_capacity(all_functions.len());
         let mut warnings = sema_output.warnings;
 
-        for func in sema_output.functions {
+        for func in all_functions {
             let cfg_output = CfgBuilder::build(
                 &func.air,
                 func.num_locals,
