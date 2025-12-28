@@ -761,6 +761,9 @@ impl Mir {
                         X86Inst::Label { id } => {
                             output.push_str(&format!("{}:\n", id));
                         }
+                        X86Inst::CallRel { symbol_id } => {
+                            output.push_str(&format!("    call {}\n", mir.get_symbol(*symbol_id)));
+                        }
                         _ => {
                             output.push_str(&format!("    {}\n", inst));
                         }
@@ -773,6 +776,9 @@ impl Mir {
                     match inst {
                         Aarch64Inst::Label { id } => {
                             output.push_str(&format!("{}:\n", id));
+                        }
+                        Aarch64Inst::Bl { symbol_id } => {
+                            output.push_str(&format!("    bl {}\n", mir.get_symbol(*symbol_id)));
                         }
                         _ => {
                             output.push_str(&format!("    {}\n", inst));

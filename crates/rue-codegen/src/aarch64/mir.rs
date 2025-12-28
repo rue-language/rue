@@ -699,7 +699,9 @@ pub enum Aarch64Inst {
     Label { id: LabelId },
 
     /// `bl symbol` - Branch with link (call).
-    Bl { symbol: String },
+    ///
+    /// The `symbol_id` is an index into the symbol table stored in `Aarch64Mir`.
+    Bl { symbol_id: u32 },
 
     /// `ret` - Return (branch to LR).
     Ret,
@@ -909,7 +911,7 @@ impl fmt::Display for Aarch64Inst {
             Aarch64Inst::Bvs { label } => write!(f, "b.vs {}", label),
             Aarch64Inst::Bvc { label } => write!(f, "b.vc {}", label),
             Aarch64Inst::Label { id } => write!(f, "{}:", id),
-            Aarch64Inst::Bl { symbol } => write!(f, "bl {}", symbol),
+            Aarch64Inst::Bl { symbol_id } => write!(f, "bl sym{}", symbol_id),
             Aarch64Inst::Ret => write!(f, "ret"),
             Aarch64Inst::StpPre { src1, src2, offset } => {
                 write!(f, "stp {}, {}, [sp, #{}]!", src1, src2, offset)
@@ -942,6 +944,11 @@ pub struct Aarch64Mir {
     /// Inline labels (for overflow checks, bounds checks, etc.) use IDs from
     /// the lower half of the `u32` space. See module docs for namespace details.
     next_label: u32,
+    /// Symbol table for call targets.
+    ///
+    /// Stores symbol names indexed by `symbol_id` in `Bl` instructions.
+    /// This avoids heap-allocating a String for every call instruction.
+    symbols: Vec<String>,
 }
 
 impl Aarch64Mir {
@@ -951,7 +958,52 @@ impl Aarch64Mir {
             instructions: Vec::new(),
             next_vreg: 0,
             next_label: 0,
+            symbols: Vec::new(),
         }
+    }
+
+    /// Intern a symbol name and return its ID.
+    ///
+    /// If the symbol already exists, returns its existing ID.
+    /// Otherwise, adds it to the table and returns the new ID.
+    pub fn intern_symbol(&mut self, symbol: &str) -> u32 {
+        // Check if symbol already exists
+        if let Some(idx) = self.symbols.iter().position(|s| s == symbol) {
+            return idx as u32;
+        }
+        // Add new symbol
+        let idx = self.symbols.len() as u32;
+        self.symbols.push(symbol.to_string());
+        idx
+    }
+
+    /// Get a symbol name by its ID.
+    ///
+    /// # Panics
+    /// Panics if the symbol_id is out of bounds.
+    #[inline]
+    pub fn get_symbol(&self, symbol_id: u32) -> &str {
+        &self.symbols[symbol_id as usize]
+    }
+
+    /// Get the symbol table.
+    #[inline]
+    pub fn symbols(&self) -> &[String] {
+        &self.symbols
+    }
+
+    /// Take ownership of the symbol table.
+    ///
+    /// Used during register allocation to transfer symbols to the new MIR.
+    pub fn take_symbols(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.symbols)
+    }
+
+    /// Set the symbol table.
+    ///
+    /// Used during register allocation to restore symbols from the old MIR.
+    pub fn set_symbols(&mut self, symbols: Vec<String>) {
+        self.symbols = symbols;
     }
 
     /// Allocate a new virtual register.
@@ -1029,7 +1081,12 @@ impl Aarch64Mir {
 impl fmt::Display for Aarch64Mir {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         for inst in &self.instructions {
-            writeln!(f, "    {}", inst)?;
+            // Special handling for Bl to show actual symbol name
+            if let Aarch64Inst::Bl { symbol_id } = inst {
+                writeln!(f, "    bl {}", self.get_symbol(*symbol_id))?;
+            } else {
+                writeln!(f, "    {}", inst)?;
+            }
         }
         Ok(())
     }

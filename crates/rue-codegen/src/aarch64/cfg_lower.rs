@@ -96,6 +96,13 @@ impl<'a> CfgLower<'a> {
         }
     }
 
+    /// Intern a symbol name and return its ID.
+    ///
+    /// Convenience method that delegates to the MIR's symbol table.
+    fn intern_symbol(&mut self, symbol: &str) -> u32 {
+        self.mir.intern_symbol(symbol)
+    }
+
     /// Get the length of an array type.
     fn array_length(&self, array_type_id: ArrayTypeId) -> u64 {
         debug_assert!(
@@ -302,9 +309,8 @@ impl<'a> CfgLower<'a> {
         });
 
         // Call the bounds check error handler (never returns)
-        self.mir.push(Aarch64Inst::Bl {
-            symbol: "__rue_bounds_check".to_string(),
-        });
+        let symbol_id = self.intern_symbol("__rue_bounds_check");
+        self.mir.push(Aarch64Inst::Bl { symbol_id });
 
         // Continue with valid access
         self.mir.push(Aarch64Inst::Label { id: ok_label });
@@ -843,9 +849,8 @@ impl<'a> CfgLower<'a> {
                     src: Operand::Virtual(rhs_vreg),
                     label: ok_label,
                 });
-                self.mir.push(Aarch64Inst::Bl {
-                    symbol: "__rue_div_by_zero".to_string(),
-                });
+                let symbol_id = self.intern_symbol("__rue_div_by_zero");
+                self.mir.push(Aarch64Inst::Bl { symbol_id });
                 self.mir.push(Aarch64Inst::Label { id: ok_label });
 
                 self.mir.push(Aarch64Inst::SdivRR {
@@ -868,9 +873,8 @@ impl<'a> CfgLower<'a> {
                     src: Operand::Virtual(rhs_vreg),
                     label: ok_label,
                 });
-                self.mir.push(Aarch64Inst::Bl {
-                    symbol: "__rue_div_by_zero".to_string(),
-                });
+                let symbol_id = self.intern_symbol("__rue_div_by_zero");
+                self.mir.push(Aarch64Inst::Bl { symbol_id });
                 self.mir.push(Aarch64Inst::Label { id: ok_label });
 
                 // Compute quotient first
@@ -1698,9 +1702,9 @@ impl<'a> CfgLower<'a> {
                 }
 
                 // Call the function - the linker will add the underscore prefix for macOS
-                self.mir.push(Aarch64Inst::Bl {
-                    symbol: self.interner.get(*name).to_string(),
-                });
+                let symbol_name = self.interner.get(*name);
+                let symbol_id = self.intern_symbol(symbol_name);
+                self.mir.push(Aarch64Inst::Bl { symbol_id });
 
                 // Clean up stack space after call
                 if stack_space > 0 {
@@ -1790,9 +1794,8 @@ impl<'a> CfgLower<'a> {
                             });
 
                             // Call __rue_dbg_str
-                            self.mir.push(Aarch64Inst::Bl {
-                                symbol: "__rue_dbg_str".to_string(),
-                            });
+                            let symbol_id = self.intern_symbol("__rue_dbg_str");
+                            self.mir.push(Aarch64Inst::Bl { symbol_id });
                         } else {
                             unreachable!("String fat pointer not found in struct_slot_vregs");
                         }
@@ -1871,9 +1874,8 @@ impl<'a> CfgLower<'a> {
                             _ => unreachable!(),
                         }
 
-                        self.mir.push(Aarch64Inst::Bl {
-                            symbol: runtime_fn.to_string(),
-                        });
+                        let symbol_id = self.intern_symbol(runtime_fn);
+                        self.mir.push(Aarch64Inst::Bl { symbol_id });
 
                         let result_vreg = self.mir.alloc_vreg();
                         self.value_map.insert(value, result_vreg);
@@ -2426,9 +2428,8 @@ impl<'a> CfgLower<'a> {
                         src: Operand::Virtual(field_vregs[2]), // cap
                     });
 
-                    self.mir.push(Aarch64Inst::Bl {
-                        symbol: "__rue_drop_String".to_string(),
-                    });
+                    let symbol_id = self.intern_symbol("__rue_drop_String");
+                    self.mir.push(Aarch64Inst::Bl { symbol_id });
                     return;
                 }
 
@@ -2457,9 +2458,8 @@ impl<'a> CfgLower<'a> {
                                 src: Operand::Virtual(*vreg),
                             });
                         }
-                        self.mir.push(Aarch64Inst::Bl {
-                            symbol: destructor_name.clone(),
-                        });
+                        let symbol_id = self.intern_symbol(destructor_name);
+                        self.mir.push(Aarch64Inst::Bl { symbol_id });
                     }
 
                     // Now call the drop glue function to drop fields
@@ -2472,9 +2472,8 @@ impl<'a> CfgLower<'a> {
                     }
 
                     let drop_fn_name = format!("__rue_drop_{}", struct_def.name);
-                    self.mir.push(Aarch64Inst::Bl {
-                        symbol: drop_fn_name,
-                    });
+                    let symbol_id = self.intern_symbol(&drop_fn_name);
+                    self.mir.push(Aarch64Inst::Bl { symbol_id });
                     return;
                 }
 
@@ -2618,9 +2617,8 @@ impl<'a> CfgLower<'a> {
         }
 
         // Overflow occurred - call panic handler
-        self.mir.push(Aarch64Inst::Bl {
-            symbol: "__rue_overflow".to_string(),
-        });
+        let symbol_id = self.intern_symbol("__rue_overflow");
+        self.mir.push(Aarch64Inst::Bl { symbol_id });
         self.mir.push(Aarch64Inst::Label { id: ok_label });
     }
 
@@ -2653,9 +2651,8 @@ impl<'a> CfgLower<'a> {
             _ => return,
         }
 
-        self.mir.push(Aarch64Inst::Bl {
-            symbol: "__rue_overflow".to_string(),
-        });
+        let symbol_id = self.intern_symbol("__rue_overflow");
+        self.mir.push(Aarch64Inst::Bl { symbol_id });
         self.mir.push(Aarch64Inst::Label { id: ok_label });
     }
 
@@ -2794,9 +2791,8 @@ impl<'a> CfgLower<'a> {
             _ => return,
         }
 
-        self.mir.push(Aarch64Inst::Bl {
-            symbol: "__rue_overflow".to_string(),
-        });
+        let symbol_id = self.intern_symbol("__rue_overflow");
+        self.mir.push(Aarch64Inst::Bl { symbol_id });
         self.mir.push(Aarch64Inst::Label { id: ok_label });
     }
 
@@ -2836,9 +2832,8 @@ impl<'a> CfgLower<'a> {
             _ => return,
         }
 
-        self.mir.push(Aarch64Inst::Bl {
-            symbol: "__rue_overflow".to_string(),
-        });
+        let symbol_id = self.intern_symbol("__rue_overflow");
+        self.mir.push(Aarch64Inst::Bl { symbol_id });
         self.mir.push(Aarch64Inst::Label { id: ok_label });
     }
 
@@ -2896,9 +2891,8 @@ impl<'a> CfgLower<'a> {
                     });
 
                     // Below min - panic
-                    self.mir.push(Aarch64Inst::Bl {
-                        symbol: "__rue_intcast_overflow".to_string(),
-                    });
+                    let symbol_id = self.intern_symbol("__rue_intcast_overflow");
+                    self.mir.push(Aarch64Inst::Bl { symbol_id });
                     self.mir.push(Aarch64Inst::Label { id: ok_label });
 
                     let ok_label2 = self.mir.alloc_label();
@@ -2919,9 +2913,8 @@ impl<'a> CfgLower<'a> {
                     });
 
                     // Above max - panic
-                    self.mir.push(Aarch64Inst::Bl {
-                        symbol: "__rue_intcast_overflow".to_string(),
-                    });
+                    let symbol_id = self.intern_symbol("__rue_intcast_overflow");
+                    self.mir.push(Aarch64Inst::Bl { symbol_id });
                     self.mir.push(Aarch64Inst::Label { id: ok_label2 });
                 }
             } else {
@@ -2969,9 +2962,8 @@ impl<'a> CfgLower<'a> {
                 });
 
                 // Negative - panic
-                self.mir.push(Aarch64Inst::Bl {
-                    symbol: "__rue_intcast_overflow".to_string(),
-                });
+                let symbol_id = self.intern_symbol("__rue_intcast_overflow");
+                self.mir.push(Aarch64Inst::Bl { symbol_id });
                 self.mir.push(Aarch64Inst::Label { id: ok_label });
 
                 // Also check upper bound if narrowing
@@ -2993,9 +2985,8 @@ impl<'a> CfgLower<'a> {
                     });
 
                     // Above max - panic
-                    self.mir.push(Aarch64Inst::Bl {
-                        symbol: "__rue_intcast_overflow".to_string(),
-                    });
+                    let symbol_id = self.intern_symbol("__rue_intcast_overflow");
+                    self.mir.push(Aarch64Inst::Bl { symbol_id });
                     self.mir.push(Aarch64Inst::Label { id: ok_label2 });
                 }
             }
@@ -3020,9 +3011,8 @@ impl<'a> CfgLower<'a> {
                 });
 
                 // Above max - panic
-                self.mir.push(Aarch64Inst::Bl {
-                    symbol: "__rue_intcast_overflow".to_string(),
-                });
+                let symbol_id = self.intern_symbol("__rue_intcast_overflow");
+                self.mir.push(Aarch64Inst::Bl { symbol_id });
                 self.mir.push(Aarch64Inst::Label { id: ok_label });
             } else {
                 // Unsigned to unsigned: narrowing check
@@ -3042,9 +3032,8 @@ impl<'a> CfgLower<'a> {
                     });
 
                     // Above max - panic
-                    self.mir.push(Aarch64Inst::Bl {
-                        symbol: "__rue_intcast_overflow".to_string(),
-                    });
+                    let symbol_id = self.intern_symbol("__rue_intcast_overflow");
+                    self.mir.push(Aarch64Inst::Bl { symbol_id });
                     self.mir.push(Aarch64Inst::Label { id: ok_label });
                 }
             }
@@ -3127,9 +3116,8 @@ impl<'a> CfgLower<'a> {
             });
 
             // Call __rue_str_eq
-            self.mir.push(Aarch64Inst::Bl {
-                symbol: "__rue_str_eq".to_string(),
-            });
+            let symbol_id = self.intern_symbol("__rue_str_eq");
+            self.mir.push(Aarch64Inst::Bl { symbol_id });
 
             // Result is in X0 (0 or 1)
             self.mir.push(Aarch64Inst::MovRR {
@@ -3318,9 +3306,8 @@ impl<'a> CfgLower<'a> {
         });
 
         // Call __rue_str_eq
-        self.mir.push(Aarch64Inst::Bl {
-            symbol: "__rue_str_eq".to_string(),
-        });
+        let symbol_id = self.intern_symbol("__rue_str_eq");
+        self.mir.push(Aarch64Inst::Bl { symbol_id });
 
         // Result is in X0 (0 or 1)
         self.mir.push(Aarch64Inst::MovRR {
@@ -3476,9 +3463,8 @@ impl<'a> CfgLower<'a> {
                         dst: Operand::Physical(Reg::X0),
                         src: Operand::Virtual(val_vreg),
                     });
-                    self.mir.push(Aarch64Inst::Bl {
-                        symbol: "__rue_exit".to_string(),
-                    });
+                    let symbol_id = self.intern_symbol("__rue_exit");
+                    self.mir.push(Aarch64Inst::Bl { symbol_id });
                 } else if let Type::Struct(struct_id) = return_type {
                     // Return struct in registers
                     let slot_count = self.type_slot_count(Type::Struct(struct_id));

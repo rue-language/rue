@@ -853,7 +853,8 @@ impl<'a> Emitter<'a> {
                 self.labels.insert(*id, self.code.len());
                 self.record_label(format!("{}", id));
             }
-            X86Inst::CallRel { symbol } => {
+            X86Inst::CallRel { symbol_id } => {
+                let symbol = self.mir.get_symbol(*symbol_id);
                 self.begin_inst();
                 self.emit_call_rel(symbol);
                 self.end_inst(format!("call {}", symbol));
@@ -2343,9 +2344,8 @@ mod tests {
         use crate::RelocationKind;
 
         let mut mir = X86Mir::new();
-        mir.push(X86Inst::CallRel {
-            symbol: "__rue_exit".into(),
-        });
+        let symbol_id = mir.intern_symbol("__rue_exit");
+        mir.push(X86Inst::CallRel { symbol_id });
 
         let (code, relocs) = Emitter::new(&mir, 0, 0, 0, &[], &[]).emit().unwrap();
 

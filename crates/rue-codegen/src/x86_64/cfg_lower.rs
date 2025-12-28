@@ -107,6 +107,13 @@ impl<'a> CfgLower<'a> {
         }
     }
 
+    /// Intern a symbol name and return its ID.
+    ///
+    /// Convenience method that delegates to the MIR's symbol table.
+    fn intern_symbol(&mut self, symbol: &str) -> u32 {
+        self.mir.intern_symbol(symbol)
+    }
+
     /// Get the length of an array type.
     fn array_length(&self, array_type_id: ArrayTypeId) -> u64 {
         debug_assert!(
@@ -308,9 +315,8 @@ impl<'a> CfgLower<'a> {
         self.mir.push(X86Inst::Jb { label: ok_label });
 
         // Call the bounds check error handler (never returns)
-        self.mir.push(X86Inst::CallRel {
-            symbol: "__rue_bounds_check".to_string(),
-        });
+        let symbol_id = self.intern_symbol("__rue_bounds_check");
+        self.mir.push(X86Inst::CallRel { symbol_id });
 
         // Continue with valid access
         self.mir.push(X86Inst::Label { id: ok_label });
@@ -917,9 +923,8 @@ impl<'a> CfgLower<'a> {
                     src2: Operand::Virtual(rhs_vreg),
                 });
                 self.mir.push(X86Inst::Jnz { label: ok_label });
-                self.mir.push(X86Inst::CallRel {
-                    symbol: "__rue_div_by_zero".to_string(),
-                });
+                let symbol_id = self.intern_symbol("__rue_div_by_zero");
+                self.mir.push(X86Inst::CallRel { symbol_id });
                 self.mir.push(X86Inst::Label { id: ok_label });
 
                 self.mir.push(X86Inst::MovRR {
@@ -949,9 +954,8 @@ impl<'a> CfgLower<'a> {
                     src2: Operand::Virtual(rhs_vreg),
                 });
                 self.mir.push(X86Inst::Jnz { label: ok_label });
-                self.mir.push(X86Inst::CallRel {
-                    symbol: "__rue_div_by_zero".to_string(),
-                });
+                let symbol_id = self.intern_symbol("__rue_div_by_zero");
+                self.mir.push(X86Inst::CallRel { symbol_id });
                 self.mir.push(X86Inst::Label { id: ok_label });
 
                 self.mir.push(X86Inst::MovRR {
@@ -1831,9 +1835,9 @@ impl<'a> CfgLower<'a> {
                     });
                 }
 
-                self.mir.push(X86Inst::CallRel {
-                    symbol: self.interner.get(*name).to_string(),
-                });
+                let symbol_name = self.interner.get(*name);
+                let symbol_id = self.intern_symbol(symbol_name);
+                self.mir.push(X86Inst::CallRel { symbol_id });
 
                 // Clean up stack arguments
                 if num_stack_args > 0 {
@@ -1926,9 +1930,8 @@ impl<'a> CfgLower<'a> {
                             });
 
                             // Call __rue_dbg_str
-                            self.mir.push(X86Inst::CallRel {
-                                symbol: "__rue_dbg_str".to_string(),
-                            });
+                            let symbol_id = self.intern_symbol("__rue_dbg_str");
+                            self.mir.push(X86Inst::CallRel { symbol_id });
                         } else {
                             unreachable!("string value should have field vregs for fat pointer");
                         }
@@ -2008,9 +2011,8 @@ impl<'a> CfgLower<'a> {
                             _ => unreachable!(),
                         }
 
-                        self.mir.push(X86Inst::CallRel {
-                            symbol: runtime_fn.to_string(),
-                        });
+                        let symbol_id = self.intern_symbol(runtime_fn);
+                        self.mir.push(X86Inst::CallRel { symbol_id });
 
                         let result_vreg = self.mir.alloc_vreg();
                         self.value_map.insert(value, result_vreg);
@@ -2590,9 +2592,8 @@ impl<'a> CfgLower<'a> {
                         src: Operand::Virtual(field_vregs[2]), // cap
                     });
 
-                    self.mir.push(X86Inst::CallRel {
-                        symbol: "__rue_drop_String".to_string(),
-                    });
+                    let symbol_id = self.intern_symbol("__rue_drop_String");
+                    self.mir.push(X86Inst::CallRel { symbol_id });
                     return;
                 }
 
@@ -2621,9 +2622,8 @@ impl<'a> CfgLower<'a> {
                                 src: Operand::Virtual(*vreg),
                             });
                         }
-                        self.mir.push(X86Inst::CallRel {
-                            symbol: destructor_name.clone(),
-                        });
+                        let symbol_id = self.intern_symbol(destructor_name);
+                        self.mir.push(X86Inst::CallRel { symbol_id });
                     }
 
                     // Now call the drop glue function to drop fields
@@ -2636,9 +2636,8 @@ impl<'a> CfgLower<'a> {
                     }
 
                     let drop_fn_name = format!("__rue_drop_{}", struct_def.name);
-                    self.mir.push(X86Inst::CallRel {
-                        symbol: drop_fn_name,
-                    });
+                    let symbol_id = self.intern_symbol(&drop_fn_name);
+                    self.mir.push(X86Inst::CallRel { symbol_id });
                     return;
                 }
 
@@ -2755,9 +2754,8 @@ impl<'a> CfgLower<'a> {
         }
 
         // Overflow occurred - call panic handler
-        self.mir.push(X86Inst::CallRel {
-            symbol: "__rue_overflow".to_string(),
-        });
+        let symbol_id = self.intern_symbol("__rue_overflow");
+        self.mir.push(X86Inst::CallRel { symbol_id });
         self.mir.push(X86Inst::Label { id: ok_label });
     }
 
@@ -2819,9 +2817,8 @@ impl<'a> CfgLower<'a> {
                     self.mir.push(X86Inst::Jge { label: ok_label });
 
                     // Below min - panic
-                    self.mir.push(X86Inst::CallRel {
-                        symbol: "__rue_intcast_overflow".to_string(),
-                    });
+                    let symbol_id = self.intern_symbol("__rue_intcast_overflow");
+                    self.mir.push(X86Inst::CallRel { symbol_id });
                     self.mir.push(X86Inst::Label { id: ok_label });
 
                     let ok_label2 = self.new_label();
@@ -2845,9 +2842,8 @@ impl<'a> CfgLower<'a> {
                     self.mir.push(X86Inst::Jle { label: ok_label2 });
 
                     // Above max - panic
-                    self.mir.push(X86Inst::CallRel {
-                        symbol: "__rue_intcast_overflow".to_string(),
-                    });
+                    let symbol_id = self.intern_symbol("__rue_intcast_overflow");
+                    self.mir.push(X86Inst::CallRel { symbol_id });
                     self.mir.push(X86Inst::Label { id: ok_label2 });
                 }
             } else {
@@ -2867,9 +2863,8 @@ impl<'a> CfgLower<'a> {
                 self.mir.push(X86Inst::Jge { label: ok_label });
 
                 // Negative - panic
-                self.mir.push(X86Inst::CallRel {
-                    symbol: "__rue_intcast_overflow".to_string(),
-                });
+                let symbol_id = self.intern_symbol("__rue_intcast_overflow");
+                self.mir.push(X86Inst::CallRel { symbol_id });
                 self.mir.push(X86Inst::Label { id: ok_label });
 
                 // Also check upper bound if narrowing
@@ -2896,9 +2891,8 @@ impl<'a> CfgLower<'a> {
                     }
 
                     // Above max - panic
-                    self.mir.push(X86Inst::CallRel {
-                        symbol: "__rue_intcast_overflow".to_string(),
-                    });
+                    let symbol_id = self.intern_symbol("__rue_intcast_overflow");
+                    self.mir.push(X86Inst::CallRel { symbol_id });
                     self.mir.push(X86Inst::Label { id: ok_label2 });
                 }
             }
@@ -2927,9 +2921,8 @@ impl<'a> CfgLower<'a> {
                 self.mir.push(X86Inst::Jbe { label: ok_label });
 
                 // Above max - panic
-                self.mir.push(X86Inst::CallRel {
-                    symbol: "__rue_intcast_overflow".to_string(),
-                });
+                let symbol_id = self.intern_symbol("__rue_intcast_overflow");
+                self.mir.push(X86Inst::CallRel { symbol_id });
                 self.mir.push(X86Inst::Label { id: ok_label });
             } else {
                 // Unsigned to unsigned: narrowing check
@@ -2953,9 +2946,8 @@ impl<'a> CfgLower<'a> {
                     self.mir.push(X86Inst::Jbe { label: ok_label });
 
                     // Above max - panic
-                    self.mir.push(X86Inst::CallRel {
-                        symbol: "__rue_intcast_overflow".to_string(),
-                    });
+                    let symbol_id = self.intern_symbol("__rue_intcast_overflow");
+                    self.mir.push(X86Inst::CallRel { symbol_id });
                     self.mir.push(X86Inst::Label { id: ok_label });
                 }
             }
@@ -3169,9 +3161,8 @@ impl<'a> CfgLower<'a> {
         });
 
         // Call __rue_str_eq
-        self.mir.push(X86Inst::CallRel {
-            symbol: "__rue_str_eq".to_string(),
-        });
+        let symbol_id = self.intern_symbol("__rue_str_eq");
+        self.mir.push(X86Inst::CallRel { symbol_id });
 
         // Result is in RAX (0 or 1)
         self.mir.push(X86Inst::MovRR {
@@ -3335,9 +3326,8 @@ impl<'a> CfgLower<'a> {
                     // restoring the frame would break stack alignment for the call
                     // (after pop rbp, rsp is 8 mod 16; call pushes 8 more, making
                     // it 0 mod 16 at callee entry, violating SysV ABI).
-                    self.mir.push(X86Inst::CallRel {
-                        symbol: "__rue_exit".to_string(),
-                    });
+                    let symbol_id = self.intern_symbol("__rue_exit");
+                    self.mir.push(X86Inst::CallRel { symbol_id });
                 } else if let Type::Struct(struct_id) = return_type {
                     // Return struct in registers
                     let slot_count = self.type_slot_count(Type::Struct(struct_id));

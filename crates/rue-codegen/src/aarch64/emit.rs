@@ -881,7 +881,8 @@ impl<'a> Emitter<'a> {
                 self.record_label(format!("L{}", id));
             }
 
-            Aarch64Inst::Bl { symbol } => {
+            Aarch64Inst::Bl { symbol_id } => {
+                let symbol = self.mir.get_symbol(*symbol_id);
                 self.begin_inst();
                 self.emit_bl(symbol);
                 self.end_inst(format!("bl {}", symbol));
@@ -2537,9 +2538,8 @@ mod tests {
         use crate::RelocationKind;
 
         let mut mir = Aarch64Mir::new();
-        mir.push(Aarch64Inst::Bl {
-            symbol: "test_func".to_string(),
-        });
+        let symbol_id = mir.intern_symbol("test_func");
+        mir.push(Aarch64Inst::Bl { symbol_id });
 
         let (code, relocs) = Emitter::new(&mir, 0, 0, &[], &[]).emit().unwrap();
 

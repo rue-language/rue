@@ -369,7 +369,9 @@ pub enum X86Inst {
     ///
     /// The symbol will be resolved by the linker. This emits a `call rel32`
     /// instruction with a relocation for the target address.
-    CallRel { symbol: String },
+    ///
+    /// The `symbol_id` is an index into the symbol table stored in `X86Mir`.
+    CallRel { symbol_id: u32 },
 
     /// `syscall` - Invoke system call.
     Syscall,
@@ -531,7 +533,7 @@ impl fmt::Display for X86Inst {
             X86Inst::Jle { label } => write!(f, "jle {}", label),
             X86Inst::Jmp { label } => write!(f, "jmp {}", label),
             X86Inst::Label { id } => write!(f, "{}:", id),
-            X86Inst::CallRel { symbol } => write!(f, "call {}", symbol),
+            X86Inst::CallRel { symbol_id } => write!(f, "call sym{}", symbol_id),
             X86Inst::Syscall => write!(f, "syscall"),
             X86Inst::Ret => write!(f, "ret"),
             X86Inst::Pop { dst } => write!(f, "pop {}", dst),
@@ -597,6 +599,11 @@ pub struct X86Mir {
     next_vreg: u32,
     /// The next label index.
     next_label: u32,
+    /// Symbol table for call targets.
+    ///
+    /// Stores symbol names indexed by `symbol_id` in `CallRel` instructions.
+    /// This avoids heap-allocating a String for every call instruction.
+    symbols: Vec<String>,
 }
 
 impl X86Mir {
@@ -606,7 +613,52 @@ impl X86Mir {
             instructions: Vec::new(),
             next_vreg: 0,
             next_label: 0,
+            symbols: Vec::new(),
         }
+    }
+
+    /// Intern a symbol name and return its ID.
+    ///
+    /// If the symbol already exists, returns its existing ID.
+    /// Otherwise, adds it to the table and returns the new ID.
+    pub fn intern_symbol(&mut self, symbol: &str) -> u32 {
+        // Check if symbol already exists
+        if let Some(idx) = self.symbols.iter().position(|s| s == symbol) {
+            return idx as u32;
+        }
+        // Add new symbol
+        let idx = self.symbols.len() as u32;
+        self.symbols.push(symbol.to_string());
+        idx
+    }
+
+    /// Get a symbol name by its ID.
+    ///
+    /// # Panics
+    /// Panics if the symbol_id is out of bounds.
+    #[inline]
+    pub fn get_symbol(&self, symbol_id: u32) -> &str {
+        &self.symbols[symbol_id as usize]
+    }
+
+    /// Get the symbol table.
+    #[inline]
+    pub fn symbols(&self) -> &[String] {
+        &self.symbols
+    }
+
+    /// Take ownership of the symbol table.
+    ///
+    /// Used during register allocation to transfer symbols to the new MIR.
+    pub fn take_symbols(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.symbols)
+    }
+
+    /// Set the symbol table.
+    ///
+    /// Used during register allocation to restore symbols from the old MIR.
+    pub fn set_symbols(&mut self, symbols: Vec<String>) {
+        self.symbols = symbols;
     }
 
     /// Allocate a new virtual register.
@@ -666,7 +718,12 @@ impl X86Mir {
 impl fmt::Display for X86Mir {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         for inst in &self.instructions {
-            writeln!(f, "    {}", inst)?;
+            // Special handling for CallRel to show actual symbol name
+            if let X86Inst::CallRel { symbol_id } = inst {
+                writeln!(f, "    call {}", self.get_symbol(*symbol_id))?;
+            } else {
+                writeln!(f, "    {}", inst)?;
+            }
         }
         Ok(())
     }
