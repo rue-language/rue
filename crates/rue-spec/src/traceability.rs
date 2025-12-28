@@ -1,7 +1,58 @@
-//! Traceability report generator for Rue specification.
+//! Traceability report generator for the Rue language specification.
 //!
-//! Generates a report showing which spec paragraphs are covered by tests
-//! and which remain uncovered.
+//! This module provides tools to analyze the relationship between the Rue language
+//! specification (in `docs/spec/src/`) and the test suite (in `crates/rue-spec/cases/`).
+//! It ensures that all normative specification requirements have corresponding tests.
+//!
+//! # Overview
+//!
+//! The traceability system works by:
+//! 1. Parsing specification paragraphs from markdown files (marked with Zola shortcodes)
+//! 2. Parsing test cases from TOML files (with `spec = [...]` references)
+//! 3. Generating a coverage report showing which paragraphs are tested
+//!
+//! # Specification Format
+//!
+//! Specification paragraphs are marked using Zola shortcodes:
+//!
+//! ```markdown
+//! {{ rule(id="3.1:5", cat="normative") }}
+//! The `i32` type represents a 32-bit signed integer.
+//! ```
+//!
+//! # Test Case Format
+//!
+//! Test cases reference specification paragraphs using the `spec` field:
+//!
+//! ```toml
+//! [[case]]
+//! name = "i32_literal"
+//! spec = ["3.1:5"]
+//! source = "fn main() -> i32 { 42 }"
+//! exit_code = 42
+//! ```
+//!
+//! # Usage
+//!
+//! The main entry point is [`generate_report`], which produces a [`TraceabilityReport`]:
+//!
+//! ```ignore
+//! use std::path::Path;
+//! use rue_spec::traceability::generate_report;
+//!
+//! let report = generate_report(
+//!     Path::new("docs/spec/src"),
+//!     Path::new("crates/rue-spec/cases"),
+//! );
+//!
+//! // Print a summary to stdout
+//! report.print_summary();
+//!
+//! // Check if all normative paragraphs are covered
+//! if report.normative_uncovered_count() > 0 {
+//!     eprintln!("Missing test coverage!");
+//! }
+//! ```
 
 use rue_test_runner::collect_files_by_ext;
 use std::collections::BTreeMap;
@@ -21,37 +72,76 @@ fn truncate_with_ellipsis(s: &str, max_chars: usize) -> String {
     }
 }
 
-/// A paragraph from the specification.
+/// A paragraph from the Rue language specification.
+///
+/// Each paragraph in the specification is identified by a unique ID in the format
+/// `chapter.section:paragraph` (e.g., "3.1:5" for chapter 3, section 1, paragraph 5).
+/// Paragraphs are categorized to distinguish normative requirements from informative
+/// content.
+///
+/// # Categories
+///
+/// - `normative` - General normative rules that require test coverage
+/// - `legality-rule` - Compile-time requirements (normative)
+/// - `dynamic-semantics` - Runtime behavior (normative)
+/// - `syntax` - Grammar rules (normative)
+/// - `undefined-behavior` - UB conditions (normative)
+/// - `example` - Code examples (informative)
+/// - `informative` - Explanatory text (informative, default)
 #[derive(Debug, Clone)]
 pub struct SpecParagraph {
-    /// Paragraph ID (e.g., "3.1:5")
+    /// Paragraph ID in the format `chapter.section:paragraph` (e.g., "3.1:5").
     pub id: String,
-    /// Category (e.g., "legality-rule", "dynamic-semantics")
+    /// Category of the paragraph (e.g., "legality-rule", "dynamic-semantics").
+    /// Normative categories require test coverage.
     pub category: String,
-    /// The text content of the paragraph
+    /// The text content of the paragraph (first non-empty line after the marker).
     pub text: String,
-    /// Source file where this paragraph is defined
+    /// Source file path where this paragraph is defined.
     pub source_file: String,
 }
 
-/// A test case that references spec paragraphs.
+/// A reference from a test case to specification paragraphs.
+///
+/// This struct tracks which tests cover which specification paragraphs,
+/// enabling traceability between the test suite and the language specification.
 #[derive(Debug, Clone)]
 pub struct TestReference {
-    /// Full test name (e.g., "lexical.comments::line_comment_after_code")
+    /// Full test name in the format `section::case_name`
+    /// (e.g., "lexical.comments::line_comment_after_code").
     pub test_name: String,
-    /// Source file where this test is defined
+    /// Path to the TOML file where this test is defined.
     pub source_file: String,
 }
 
-/// Traceability report data.
+/// A complete traceability report linking specification paragraphs to tests.
+///
+/// This report provides:
+/// - A list of all specification paragraphs (both normative and informative)
+/// - Coverage information showing which tests reference each paragraph
+/// - Detection of orphan references (tests that reference non-existent paragraphs)
+///
+/// The report distinguishes between normative paragraphs (which require test coverage)
+/// and informative paragraphs (which do not). Use [`TraceabilityReport::normative_coverage_percentage`]
+/// to check the coverage of normative paragraphs specifically.
+///
+/// # Example
+///
+/// ```ignore
+/// let report = generate_report(&spec_dir, &cases_dir);
+/// if report.normative_uncovered_count() > 0 {
+///     report.print_summary();
+/// }
+/// ```
 #[derive(Debug)]
 pub struct TraceabilityReport {
-    /// All spec paragraphs, keyed by paragraph ID
+    /// All specification paragraphs, keyed by paragraph ID (e.g., "3.1:5").
     pub paragraphs: BTreeMap<String, SpecParagraph>,
-    /// Tests covering each paragraph ID
+    /// Tests covering each paragraph ID. Empty vectors indicate uncovered paragraphs.
     pub coverage: BTreeMap<String, Vec<TestReference>>,
-    /// Test references that don't match any paragraph
-    pub orphan_references: Vec<(String, String)>, // (test_name, invalid_ref)
+    /// Test references that don't match any existing paragraph.
+    /// Each entry is a tuple of (test_name, invalid_reference_id).
+    pub orphan_references: Vec<(String, String)>,
 }
 
 impl TraceabilityReport {
@@ -64,7 +154,11 @@ impl TraceabilityReport {
         )
     }
 
-    /// Count of normative paragraphs (require test coverage).
+    /// Returns the total count of normative paragraphs in the specification.
+    ///
+    /// Normative paragraphs are those that define required behavior and must have
+    /// test coverage. This includes categories: `normative`, `legality-rule`,
+    /// `dynamic-semantics`, `syntax`, and `undefined-behavior`.
     pub fn normative_count(&self) -> usize {
         self.paragraphs
             .values()
@@ -72,7 +166,7 @@ impl TraceabilityReport {
             .count()
     }
 
-    /// Count of covered normative paragraphs (have at least one test).
+    /// Returns the count of normative paragraphs that have at least one test.
     pub fn normative_covered_count(&self) -> usize {
         self.paragraphs
             .values()
@@ -87,12 +181,17 @@ impl TraceabilityReport {
             .count()
     }
 
-    /// Count of uncovered normative paragraphs.
+    /// Returns the count of normative paragraphs that have no tests.
+    ///
+    /// This is the primary metric for determining if the test suite is complete.
+    /// A value greater than zero indicates missing test coverage.
     pub fn normative_uncovered_count(&self) -> usize {
         self.normative_count() - self.normative_covered_count()
     }
 
-    /// Get uncovered normative paragraph IDs.
+    /// Returns the IDs of normative paragraphs that have no tests.
+    ///
+    /// Use this to identify which specification requirements still need test coverage.
     pub fn uncovered_normative_paragraphs(&self) -> Vec<&String> {
         self.paragraphs
             .iter()
@@ -108,7 +207,9 @@ impl TraceabilityReport {
             .collect()
     }
 
-    /// Coverage percentage for normative paragraphs.
+    /// Returns the coverage percentage for normative paragraphs (0.0 to 100.0).
+    ///
+    /// Returns 100.0 if there are no normative paragraphs.
     pub fn normative_coverage_percentage(&self) -> f64 {
         let total = self.normative_count();
         if total == 0 {
@@ -118,7 +219,7 @@ impl TraceabilityReport {
         }
     }
 
-    /// Count of covered paragraphs (have at least one test).
+    /// Returns the count of all paragraphs (normative and informative) that have at least one test.
     pub fn covered_count(&self) -> usize {
         self.coverage
             .iter()
@@ -126,12 +227,12 @@ impl TraceabilityReport {
             .count()
     }
 
-    /// Count of uncovered paragraphs.
+    /// Returns the count of all paragraphs (normative and informative) that have no tests.
     pub fn uncovered_count(&self) -> usize {
         self.paragraphs.len() - self.covered_count()
     }
 
-    /// Get uncovered paragraph IDs.
+    /// Returns the IDs of all paragraphs (normative and informative) that have no tests.
     pub fn uncovered_paragraphs(&self) -> Vec<&String> {
         self.paragraphs
             .keys()
@@ -144,7 +245,10 @@ impl TraceabilityReport {
             .collect()
     }
 
-    /// Coverage percentage.
+    /// Returns the overall coverage percentage for all paragraphs (0.0 to 100.0).
+    ///
+    /// This includes both normative and informative paragraphs. For the metric
+    /// that matters for test suite completeness, use [`Self::normative_coverage_percentage`].
     pub fn coverage_percentage(&self) -> f64 {
         if self.paragraphs.is_empty() {
             100.0
@@ -153,7 +257,13 @@ impl TraceabilityReport {
         }
     }
 
-    /// Print a summary report.
+    /// Prints a summary report to stdout.
+    ///
+    /// The summary includes:
+    /// - Overall normative and total coverage percentages
+    /// - Coverage breakdown by paragraph category
+    /// - List of uncovered normative paragraphs (if any)
+    /// - List of orphan references (if any)
     pub fn print_summary(&self) {
         println!("=== Rue Specification Traceability Report ===\n");
 
@@ -245,7 +355,15 @@ impl TraceabilityReport {
         }
     }
 
-    /// Print detailed report showing all paragraphs and their tests.
+    /// Prints a detailed traceability matrix to stdout.
+    ///
+    /// The detailed report shows every paragraph grouped by chapter, with:
+    /// - Coverage status (✓ for covered, ⚠ for uncovered)
+    /// - Paragraph ID and category
+    /// - Truncated paragraph text
+    /// - List of tests covering each paragraph
+    ///
+    /// Ends with the same summary as [`Self::print_summary`].
     pub fn print_detailed(&self) {
         println!("=== Rue Specification Traceability Matrix ===\n");
 
@@ -376,7 +494,18 @@ fn parse_spec_file(path: &Path, paragraphs: &mut BTreeMap<String, SpecParagraph>
     }
 }
 
-/// Parse all spec paragraphs from the spec directory.
+/// Parses all specification paragraphs from markdown files in a directory.
+///
+/// Recursively searches for `.md` files and extracts paragraphs marked with the
+/// Zola shortcode format: `{{ rule(id="X.Y:Z", cat="category") }}`.
+///
+/// # Arguments
+///
+/// * `spec_dir` - Path to the specification source directory (e.g., `docs/spec/src`)
+///
+/// # Returns
+///
+/// A map of paragraph IDs to [`SpecParagraph`] structs, sorted by ID.
 pub fn parse_spec_paragraphs(spec_dir: &Path) -> BTreeMap<String, SpecParagraph> {
     let mut paragraphs = BTreeMap::new();
 
@@ -390,21 +519,48 @@ pub fn parse_spec_paragraphs(spec_dir: &Path) -> BTreeMap<String, SpecParagraph>
     paragraphs
 }
 
-/// Information about a test file.
+/// A parsed test specification file.
+///
+/// Each TOML file in the test cases directory represents a section of tests.
+/// This struct holds the parsed metadata and test cases from one such file.
 pub struct TestFile {
+    /// The section identifier from the TOML file (e.g., "expressions.arithmetic").
     pub section_id: String,
+    /// All test cases defined in this file.
     pub cases: Vec<TestCase>,
+    /// Path to the source TOML file.
     pub source_file: String,
 }
 
-/// Information about a test case.
+/// A single test case with its specification references.
+///
+/// For parameterized tests, this represents one expanded instance with
+/// any `spec_extra` references merged into the base `spec` references.
 pub struct TestCase {
+    /// The test case name (expanded with parameter values for parameterized tests).
     pub name: String,
+    /// Specification paragraph IDs that this test covers (e.g., ["3.1:5", "3.1:6"]).
     pub spec_refs: Vec<String>,
 }
 
-/// Parse test files and extract spec references.
-/// Handles parameterized tests by expanding them and merging spec_extra.
+/// Parses test files and extracts specification references.
+///
+/// Recursively searches for `.toml` files in the cases directory and parses
+/// each one to extract test cases and their spec references.
+///
+/// # Parameterized Tests
+///
+/// For parameterized tests (those with a `params` array), this function expands
+/// each parameter set into a separate [`TestCase`], substituting placeholders
+/// in the test name and merging any `spec_extra` references with the base `spec` array.
+///
+/// # Arguments
+///
+/// * `cases_dir` - Path to the test cases directory (e.g., `crates/rue-spec/cases`)
+///
+/// # Returns
+///
+/// A list of [`TestFile`] structs, one per TOML file found.
 pub fn parse_test_files(cases_dir: &Path) -> Vec<TestFile> {
     let mut test_files = Vec::new();
 
@@ -516,7 +672,30 @@ pub fn parse_test_files(cases_dir: &Path) -> Vec<TestFile> {
     test_files
 }
 
-/// Generate a traceability report.
+/// Generates a complete traceability report linking specification to tests.
+///
+/// This is the main entry point for the traceability system. It:
+/// 1. Parses all specification paragraphs from markdown files
+/// 2. Parses all test cases from TOML files
+/// 3. Builds a coverage map showing which tests cover which paragraphs
+/// 4. Detects orphan references (tests referencing non-existent paragraphs)
+///
+/// # Arguments
+///
+/// * `spec_dir` - Path to the specification source directory (e.g., `docs/spec/src`)
+/// * `cases_dir` - Path to the test cases directory (e.g., `crates/rue-spec/cases`)
+///
+/// # Returns
+///
+/// A [`TraceabilityReport`] that can be used to print summaries, check coverage,
+/// or programmatically analyze the relationship between spec and tests.
+///
+/// # Example
+///
+/// ```ignore
+/// let report = generate_report(Path::new("docs/spec/src"), Path::new("crates/rue-spec/cases"));
+/// report.print_summary();
+/// ```
 pub fn generate_report(spec_dir: &Path, cases_dir: &Path) -> TraceabilityReport {
     // Parse spec paragraphs
     let paragraphs = parse_spec_paragraphs(spec_dir);

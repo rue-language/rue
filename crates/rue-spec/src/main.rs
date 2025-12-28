@@ -1,3 +1,39 @@
+//! Specification test runner for the Rue programming language.
+//!
+//! This binary runs the specification test suite and generates traceability reports.
+//! It serves two purposes:
+//!
+//! 1. **Test Runner**: Execute specification tests from TOML files in `crates/rue-spec/cases/`
+//! 2. **Traceability**: Verify that all normative specification paragraphs have test coverage
+//!
+//! # Usage
+//!
+//! ## Running Tests
+//!
+//! ```bash
+//! # Run all specification tests
+//! ./buck2 run //crates/rue-spec:rue-spec
+//!
+//! # Filter tests by pattern
+//! ./buck2 run //crates/rue-spec:rue-spec -- "arithmetic"
+//! ```
+//!
+//! ## Traceability Reports
+//!
+//! ```bash
+//! # Generate a coverage summary
+//! ./buck2 run //crates/rue-spec:rue-spec -- --traceability
+//!
+//! # Generate a detailed traceability matrix
+//! ./buck2 run //crates/rue-spec:rue-spec -- --traceability --detailed
+//! ```
+//!
+//! # Environment Variables
+//!
+//! - `RUE_SPEC_DIR` - Path to specification markdown files (default: `docs/spec/src`)
+//! - `RUE_SPEC_CASES` - Path to test case TOML files (default: `crates/rue-spec/cases`)
+//! - `RUE_BINARY` - Path to the rue compiler binary
+
 use libtest2_mimic::{Harness, RunContext, RunError, Trial};
 use rue_test_runner::{Case, find_dir, find_rue_binary, load_test_files, run_test_case};
 use std::path::Path;
