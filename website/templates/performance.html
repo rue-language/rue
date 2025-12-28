@@ -24,15 +24,67 @@
 
         <!-- Breakdown Chart -->
         <section class="mb-12">
-            <h2 class="text-xl font-semibold mb-4">Time by Compiler Pass</h2>
+            <div class="flex items-center justify-between mb-4">
+                <h2 class="text-xl font-semibold">Time by Compiler Pass</h2>
+                <div class="flex items-center gap-2">
+                    <label for="benchmark-select" class="text-sm text-muted">Program:</label>
+                    <select id="benchmark-select" class="bg-surface border border-themed rounded px-3 py-1 text-sm">
+                        <option value="">All (aggregate)</option>
+                        <!-- Options populated by JavaScript from metadata.json -->
+                    </select>
+                </div>
+            </div>
             <p class="text-muted mb-4">
                 Breakdown of where compilation time is spent in the most recent benchmark run.
             </p>
-            <div class="benchmark-chart-container bg-surface border border-themed rounded-lg p-4">
+            <div id="breakdown-chart-container" class="benchmark-chart-container bg-surface border border-themed rounded-lg p-4">
                 {% set breakdown = load_data(path="static/benchmarks/breakdown.svg", format="plain") %}
                 {{ breakdown | safe }}
             </div>
         </section>
+
+        <script>
+        (function() {
+            const select = document.getElementById('benchmark-select');
+            const container = document.getElementById('breakdown-chart-container');
+
+            // Load metadata to populate dropdown
+            fetch('/benchmarks/metadata.json')
+                .then(r => r.json())
+                .then(data => {
+                    if (data.benchmarks && data.benchmarks.length > 0) {
+                        data.benchmarks.forEach(name => {
+                            const option = document.createElement('option');
+                            const safeName = name.replace(/ /g, '_').replace(/\//g, '_');
+                            option.value = safeName;
+                            option.textContent = name;
+                            select.appendChild(option);
+                        });
+                    }
+                })
+                .catch(() => {
+                    // No metadata available, hide selector
+                    select.parentElement.style.display = 'none';
+                });
+
+            // Handle selection changes
+            select.addEventListener('change', function() {
+                const value = this.value;
+                const svgPath = value
+                    ? `/benchmarks/breakdown_${value}.svg`
+                    : '/benchmarks/breakdown.svg';
+
+                fetch(svgPath)
+                    .then(r => r.text())
+                    .then(svg => {
+                        container.innerHTML = svg;
+                    })
+                    .catch(() => {
+                        container.innerHTML = '<p class="text-muted text-center py-8">Failed to load chart</p>';
+                    });
+            });
+        })();
+        </script>
 
         <!-- Methodology -->
         <section class="prose">

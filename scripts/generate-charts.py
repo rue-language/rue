@@ -209,8 +209,34 @@ def generate_timeline_chart(runs: list[dict]) -> str:
     return "\n".join(svg_parts)
 
 
-def generate_breakdown_chart(runs: list[dict]) -> str:
-    """Generate stacked bar chart showing time per compiler pass."""
+def get_benchmark_names(runs: list[dict]) -> list[str]:
+    """Get list of all benchmark names from runs."""
+    names = set()
+    for run in runs:
+        for bench in run.get("benchmarks", []):
+            if "name" in bench:
+                names.add(bench["name"])
+    return sorted(names)
+
+
+def get_pass_times_for_benchmark(run: dict, benchmark_name: str) -> dict[str, float]:
+    """Extract pass timing for a specific benchmark from a run."""
+    for bench in run.get("benchmarks", []):
+        if bench.get("name") == benchmark_name and "passes" in bench:
+            passes = bench["passes"]
+            return {
+                name: passes.get(name, {}).get("mean_ms", 0)
+                for name in PASS_ORDER
+            }
+    return {}
+
+
+def generate_breakdown_chart(runs: list[dict], benchmark_name: Optional[str] = None) -> str:
+    """Generate stacked bar chart showing time per compiler pass.
+
+    If benchmark_name is provided, shows data for that specific benchmark.
+    Otherwise, shows aggregate data across all benchmarks.
+    """
     if not runs:
         return generate_empty_chart(BREAKDOWN_WIDTH, BREAKDOWN_HEIGHT, "No benchmark data available yet")
 
@@ -218,7 +244,10 @@ def generate_breakdown_chart(runs: list[dict]) -> str:
     pass_times: Optional[dict[str, float]] = None
     commit = ""
     for run in reversed(runs):
-        pt = get_pass_times(run)
+        if benchmark_name:
+            pt = get_pass_times_for_benchmark(run, benchmark_name)
+        else:
+            pt = get_pass_times(run)
         if pt and any(v > 0 for v in pt.values()):
             pass_times = pt
             commit = short_commit(run.get("commit", ""))
@@ -254,7 +283,7 @@ def generate_breakdown_chart(runs: list[dict]) -> str:
     }
   </style>''',
         f'  <rect class="chart-bg" width="{BREAKDOWN_WIDTH}" height="{BREAKDOWN_HEIGHT}" rx="8"/>',
-        f'  <text class="chart-title" x="{BREAKDOWN_WIDTH/2}" y="25" text-anchor="middle" font-size="16">Compilation Time by Pass</text>',
+        f'  <text class="chart-title" x="{BREAKDOWN_WIDTH/2}" y="25" text-anchor="middle" font-size="16">Compilation Time by Pass{" - " + escape_xml(benchmark_name) if benchmark_name else ""}</text>',
         f'  <text class="chart-text" x="{BREAKDOWN_WIDTH/2}" y="42" text-anchor="middle" font-size="11">(commit: {escape_xml(commit)})</text>',
     ]
 
@@ -320,21 +349,43 @@ def main():
     # Ensure output directory exists
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    # Generate charts
+    # Generate timeline chart
     timeline_svg = generate_timeline_chart(runs)
-    breakdown_svg = generate_breakdown_chart(runs)
-
-    # Write output files
     timeline_path = output_dir / "timeline.svg"
-    breakdown_path = output_dir / "breakdown.svg"
-
     with open(timeline_path, "w") as f:
         f.write(timeline_svg)
     print(f"Generated {timeline_path}")
 
+    # Generate aggregate breakdown chart (for backwards compatibility)
+    breakdown_svg = generate_breakdown_chart(runs)
+    breakdown_path = output_dir / "breakdown.svg"
     with open(breakdown_path, "w") as f:
         f.write(breakdown_svg)
     print(f"Generated {breakdown_path}")
+
+    # Generate per-benchmark breakdown charts
+    benchmark_names = get_benchmark_names(runs)
+    print(f"Found {len(benchmark_names)} benchmarks: {', '.join(benchmark_names)}")
+
+    for bench_name in benchmark_names:
+        bench_svg = generate_breakdown_chart(runs, bench_name)
+        # Use sanitized filename
+        safe_name = bench_name.replace(" ", "_").replace("/", "_")
+        bench_path = output_dir / f"breakdown_{safe_name}.svg"
+        with open(bench_path, "w") as f:
+            f.write(bench_svg)
+        print(f"Generated {bench_path}")
+
+    # Write metadata JSON for the website to consume
+    metadata = {
+        "benchmarks": benchmark_names,
+        "run_count": len(runs),
+        "latest_commit": short_commit(runs[-1].get("commit", "")) if runs else None,
+    }
+    metadata_path = output_dir / "metadata.json"
+    with open(metadata_path, "w") as f:
+        json.dump(metadata, f, indent=2)
+    print(f"Generated {metadata_path}")
 
 
 if __name__ == "__main__":

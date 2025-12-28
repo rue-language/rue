@@ -167,6 +167,7 @@ for i in "${!benchmark_names[@]}"; do
 
     # Run multiple iterations and collect timing data
     iteration_results=()
+    iteration_pass_data=()
     for ((iter=1; iter<=ITERATIONS; iter++)); do
         output_binary="$TEMP_DIR/bench_output_$$"
 
@@ -180,6 +181,8 @@ for i in "${!benchmark_names[@]}"; do
         total_ms=$(echo "$timing_json" | grep -o '"total_ms":[0-9.]*' | head -1 | cut -d: -f2)
         if [[ -n "$total_ms" ]]; then
             iteration_results+=("$total_ms")
+            # Store full JSON for pass data extraction
+            iteration_pass_data+=("$timing_json")
         fi
 
         rm -f "$output_binary"
@@ -190,7 +193,7 @@ for i in "${!benchmark_names[@]}"; do
         continue
     fi
 
-    # Calculate mean and stddev
+    # Calculate mean and stddev for total time
     sum=0
     for val in "${iteration_results[@]}"; do
         sum=$(echo "$sum + $val" | bc -l)
@@ -210,8 +213,36 @@ for i in "${!benchmark_names[@]}"; do
 
     log_info "  $name: mean=${mean}ms, std=${stddev}ms (n=$count)"
 
-    # Store result for later
-    all_results+=("{\"name\":\"$name\",\"iterations\":$count,\"mean_ms\":$mean,\"std_ms\":$stddev}")
+    # Extract and aggregate per-pass timing data
+    # Use Python to parse JSON and compute per-pass means
+    pass_json=$(python3 -c "
+import json
+import sys
+
+pass_data = {}
+for json_str in sys.argv[1:]:
+    try:
+        data = json.loads(json_str)
+        for p in data.get('passes', []):
+            name = p['name']
+            duration = p['duration_ms']
+            if name not in pass_data:
+                pass_data[name] = []
+            pass_data[name].append(duration)
+    except:
+        pass
+
+# Calculate means
+result = {}
+for name, durations in pass_data.items():
+    mean = sum(durations) / len(durations) if durations else 0
+    result[name] = {'mean_ms': round(mean, 3)}
+
+print(json.dumps(result))
+" "${iteration_pass_data[@]}" 2>/dev/null || echo "{}")
+
+    # Store result with pass data
+    all_results+=("{\"name\":\"$name\",\"iterations\":$count,\"mean_ms\":$mean,\"std_ms\":$stddev,\"passes\":$pass_json}")
 done
 
 # Get metadata
