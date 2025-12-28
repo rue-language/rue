@@ -6,13 +6,20 @@ on:
     paths:
       - 'website/**'
       - 'docs/spec/**'
+      - 'scripts/generate-charts.py'
       - '.github/workflows/deploy-website.yml'
   pull_request:
     branches: [trunk]
     paths:
       - 'website/**'
       - 'docs/spec/**'
+      - 'scripts/generate-charts.py'
       - '.github/workflows/deploy-website.yml'
+  # Trigger when benchmarks complete (updates perf branch with new data)
+  workflow_run:
+    workflows: ["Benchmarks"]
+    types: [completed]
+    branches: [trunk]
   workflow_dispatch:
 
 permissions:
@@ -33,6 +40,20 @@ jobs:
 
       - name: Setup dotslash
         uses: facebook/install-dotslash@latest
+
+      - name: Fetch benchmark data from perf branch
+        run: |
+          # Try to fetch benchmark history from the perf branch
+          # This may fail if the perf branch doesn't exist yet (new repos)
+          if git fetch origin perf --depth=1 2>/dev/null; then
+            mkdir -p website/static/benchmarks
+            git show origin/perf:benchmarks/history.json > website/static/benchmarks/history.json 2>/dev/null || echo '{"version": 1, "runs": []}' > website/static/benchmarks/history.json
+            echo "Fetched benchmark history from perf branch"
+          else
+            echo "Perf branch not found, using empty benchmark history"
+            mkdir -p website/static/benchmarks
+            echo '{"version": 1, "runs": []}' > website/static/benchmarks/history.json
+          fi
 
       - name: Build website
         run: website/build.sh
