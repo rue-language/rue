@@ -40,10 +40,10 @@ const SYS_MUNMAP: i64 = 11;
 const SYS_EXIT: i64 = 60;
 
 /// Standard error file descriptor.
-const STDERR: i64 = 2;
+const STDERR: u64 = 2;
 
 /// Standard output file descriptor.
-const STDOUT: i64 = 1;
+const STDOUT: u64 = 1;
 
 /// Write bytes to a file descriptor.
 ///
@@ -73,7 +73,7 @@ const STDOUT: i64 = 1;
 ///
 /// This function may write fewer bytes than requested. Callers should check
 /// the return value and use [`write_all`] if complete writes are required.
-pub fn write(fd: i64, buf: *const u8, len: usize) -> i64 {
+pub fn write(fd: u64, buf: *const u8, len: usize) -> i64 {
     let result: i64;
     // SAFETY: We're making a syscall with the provided arguments.
     // The caller is responsible for ensuring buf/len are valid.
@@ -117,7 +117,7 @@ pub fn write(fd: i64, buf: *const u8, len: usize) -> i64 {
 ///
 /// This function is safe because it only accepts a slice, which guarantees
 /// valid memory.
-pub fn write_all(fd: i64, mut buf: &[u8]) -> Result<(), i64> {
+pub fn write_all(fd: u64, mut buf: &[u8]) -> Result<(), i64> {
     while !buf.is_empty() {
         let result = write(fd, buf.as_ptr(), buf.len());
         if result < 0 {
