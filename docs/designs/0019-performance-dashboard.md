@@ -170,21 +170,22 @@ website/
 
 **Epic:** rue-a5ah
 
-- [ ] **Phase 1: Benchmark corpus** - rue-a5ah.1
+- [x] **Phase 1: Benchmark corpus** - rue-a5ah.1
   - Create `benchmarks/` directory structure
   - Write initial stress test programs (many_functions, deep_nesting, etc.)
   - Create `manifest.toml` format
 
-- [ ] **Phase 2: Data collection** - rue-a5ah.2
+- [x] **Phase 2: Data collection** - rue-a5ah.2
   - Implement `--benchmark-json` flag in the CLI
   - Extend `TimingData` to output JSON format
   - Support multiple iterations with mean/std calculation
 
-- [ ] **Phase 3: Runner & storage** - rue-a5ah.3
+- [x] **Phase 3: Runner & storage** - rue-a5ah.3
   - Create `./bench.sh` script
   - Create `scripts/append-benchmark.py` to manage history
   - Set up `perf` branch structure
   - Document benchmark workflow
+  - Add release/debug build modes via Buck2 modifiers
 
 - [ ] **Phase 4: CI integration** - rue-a5ah.4
   - GitHub Actions workflow to run benchmarks on trunk commits

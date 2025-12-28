@@ -1,0 +1,28 @@
+# Build configuration constraints
+#
+# These constraints control build-time options like optimization level.
+# Use with --modifier or in platform definitions.
+#
+# Example usage:
+#   buck2 build //crates/rue:rue --modifier //constraints:release
+#   buck2 build //crates/rue:rue --modifier //constraints:debug
+
+# Optimization level constraint setting
+constraint_setting(
+    name = "opt-level",
+    visibility = ["PUBLIC"],
+)
+
+# Debug build: no optimization, faster compile times
+constraint_value(
+    name = "debug",
+    constraint_setting = ":opt-level",
+    visibility = ["PUBLIC"],
+)
+
+# Release build: full optimization (-C opt-level=3)
+constraint_value(
+    name = "release",
+    constraint_setting = ":opt-level",
+    visibility = ["PUBLIC"],
+)

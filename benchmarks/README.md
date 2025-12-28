@@ -28,14 +28,42 @@ benchmarks/
 
 ## Running Benchmarks
 
-Benchmarks are run via the `--benchmark-json` flag (once implemented):
+### Using the Benchmark Runner (Recommended)
+
+The `bench.sh` script handles the complete benchmark workflow:
 
 ```bash
-# Run all benchmarks
-./buck2 run //crates/rue:rue -- --benchmark-json results.json benchmarks/
+# Run all benchmarks with defaults (5 iterations, append to history)
+./bench.sh
 
-# Run with timing report
+# Custom number of iterations for more accuracy
+./bench.sh --iterations 10
+
+# Save to a specific file without updating history
+./bench.sh --no-history --output results.json
+
+# Show help
+./bench.sh --help
+```
+
+The benchmark runner:
+1. Builds the compiler in release mode
+2. Parses `manifest.toml` to find benchmarks
+3. Runs each benchmark multiple times
+4. Calculates mean and standard deviation
+5. Outputs JSON results
+6. Appends to `website/static/benchmarks/history.json` (unless `--no-history`)
+
+### Running Individual Benchmarks
+
+For manual testing or debugging:
+
+```bash
+# Run a single benchmark with timing output
 ./buck2 run //crates/rue:rue -- --time-passes benchmarks/stress/many_functions.rue /tmp/out
+
+# Get JSON timing output
+./buck2 run //crates/rue:rue -- --benchmark-json benchmarks/stress/many_functions.rue /tmp/out
 ```
 
 ## Adding Benchmarks
@@ -48,3 +76,10 @@ Each benchmark should:
 - Be large enough to produce measurable timing (aim for >1ms compilation)
 - Focus on a specific compiler phase or feature
 - Return a deterministic exit code for verification
+
+## Benchmark History
+
+Results are stored in `website/static/benchmarks/history.json` for the performance
+dashboard. The history is limited to 100 most recent runs.
+
+For more details on the performance tracking workflow, see `docs/perf-branch.md`.

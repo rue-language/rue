@@ -45,12 +45,21 @@ http_archive(
     visibility = [],
 )
 
+# Optimization flags based on build mode
+# DEFAULT matches when no opt-level constraint is set (debug by default)
+_OPT_FLAGS = select({
+    "DEFAULT": [],
+    "root//constraints:debug": [],
+    "root//constraints:release": ["-Copt-level=3", "-Clto=thin"],
+})
+
 # Hermetic toolchain for Linux x86_64
 hermetic_rust_toolchain(
     name = "hermetic-linux-x86_64",
     distribution = ":rust-linux-x86_64",
     target_triple = "x86_64-unknown-linux-gnu",
     default_edition = "2024",
+    rustc_flags = _OPT_FLAGS,
     visibility = ["PUBLIC"],
 )
 
@@ -60,6 +69,7 @@ hermetic_rust_toolchain(
     distribution = ":rust-linux-aarch64",
     target_triple = "aarch64-unknown-linux-gnu",
     default_edition = "2024",
+    rustc_flags = _OPT_FLAGS,
     visibility = ["PUBLIC"],
 )
 
@@ -69,6 +79,7 @@ hermetic_rust_toolchain(
     distribution = ":rust-macos-aarch64",
     target_triple = "aarch64-apple-darwin",
     default_edition = "2024",
+    rustc_flags = _OPT_FLAGS,
     visibility = ["PUBLIC"],
 )
 
@@ -78,6 +89,7 @@ hermetic_rust_toolchain(
     distribution = ":rust-macos-x86_64",
     target_triple = "x86_64-apple-darwin",
     default_edition = "2024",
+    rustc_flags = _OPT_FLAGS,
     visibility = ["PUBLIC"],
 )
 
