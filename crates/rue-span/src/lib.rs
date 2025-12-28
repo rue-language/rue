@@ -281,30 +281,6 @@ impl From<std::ops::Range<u32>> for Span {
     }
 }
 
-/// A value with an associated span.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct Spanned<T> {
-    pub value: T,
-    pub span: Span,
-}
-
-impl<T> Spanned<T> {
-    /// Create a new spanned value.
-    #[inline]
-    pub const fn new(value: T, span: Span) -> Self {
-        Self { value, span }
-    }
-
-    /// Map the inner value while preserving the span.
-    #[inline]
-    pub fn map<U, F: FnOnce(T) -> U>(self, f: F) -> Spanned<U> {
-        Spanned {
-            value: f(self.value),
-            span: self.span,
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
