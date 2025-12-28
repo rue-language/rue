@@ -630,9 +630,13 @@ impl<'a> CfgBuilder<'a> {
                 }
             }
 
-            AirInstData::Call { name, args } => {
+            AirInstData::Call {
+                name,
+                args_start,
+                args_len,
+            } => {
                 let mut arg_vals = Vec::new();
-                for arg in args {
+                for arg in self.air.get_call_args(*args_start, *args_len) {
                     let Some(value) = self.lower_value(arg.value) else {
                         return Self::diverged();
                     };
@@ -656,10 +660,14 @@ impl<'a> CfgBuilder<'a> {
                 }
             }
 
-            AirInstData::Intrinsic { name, args } => {
+            AirInstData::Intrinsic {
+                name,
+                args_start,
+                args_len,
+            } => {
                 let mut arg_vals = Vec::new();
-                for arg in args {
-                    let Some(val) = self.lower_value(*arg) else {
+                for arg in self.air.get_air_refs(*args_start, *args_len) {
+                    let Some(val) = self.lower_value(arg) else {
                         return Self::diverged();
                     };
                     arg_vals.push(val);
@@ -683,13 +691,20 @@ impl<'a> CfgBuilder<'a> {
 
             AirInstData::StructInit {
                 struct_id,
-                fields,
-                source_order,
+                fields_start,
+                fields_len,
+                source_order_start,
             } => {
                 // Evaluate field initializers in SOURCE ORDER (spec 4.0:8)
                 // The source_order tells us which declaration-order index to evaluate at each step
+                let (fields, source_order) =
+                    self.air
+                        .get_struct_init(*fields_start, *fields_len, *source_order_start);
+                let fields: Vec<AirRef> = fields.collect();
+                let source_order: Vec<usize> = source_order.collect();
+
                 let mut lowered_fields: Vec<Option<CfgValue>> = vec![None; fields.len()];
-                for &decl_idx in source_order {
+                for decl_idx in source_order {
                     let Some(lowered) = self.lower_value(fields[decl_idx]) else {
                         return Self::diverged();
                     };
@@ -793,7 +808,15 @@ impl<'a> CfgBuilder<'a> {
                 }
             }
 
-            AirInstData::Block { statements, value } => {
+            AirInstData::Block {
+                stmts_start,
+                stmts_len,
+                value,
+            } => {
+                // Collect statements into a Vec for iteration (needed for checking remaining)
+                let statements: Vec<AirRef> =
+                    self.air.get_air_refs(*stmts_start, *stmts_len).collect();
+
                 // Check if this is a "wrapper block" that only contains StorageLive statements.
                 // These are synthetic blocks created to pair StorageLive with Alloc, and they
                 // should NOT create a new scope for drop elaboration.
@@ -1170,11 +1193,19 @@ impl<'a> CfgBuilder<'a> {
                 }
             }
 
-            AirInstData::Match { scrutinee, arms } => {
+            AirInstData::Match {
+                scrutinee,
+                arms_start,
+                arms_len,
+            } => {
                 // Lower the scrutinee
                 let Some(scrutinee_val) = self.lower_value(*scrutinee) else {
                     return Self::diverged();
                 };
+
+                // Collect arms into a Vec for iteration
+                let arms: Vec<(AirPattern, AirRef)> =
+                    self.air.get_match_arms(*arms_start, *arms_len).collect();
 
                 // Create blocks for each arm and a join block
                 let arm_blocks: Vec<_> = arms.iter().map(|_| self.cfg.new_block()).collect();
@@ -1372,11 +1403,12 @@ impl<'a> CfgBuilder<'a> {
 
             AirInstData::ArrayInit {
                 array_type_id,
-                elements,
+                elems_start,
+                elems_len,
             } => {
                 let mut element_vals = Vec::new();
-                for elem in elements {
-                    let Some(val) = self.lower_value(*elem) else {
+                for elem in self.air.get_air_refs(*elems_start, *elems_len) {
+                    let Some(val) = self.lower_value(elem) else {
                         return Self::diverged();
                     };
                     element_vals.push(val);

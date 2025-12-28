@@ -32,6 +32,29 @@ pub enum AirArgMode {
     Borrow,
 }
 
+impl AirArgMode {
+    /// Convert to u32 for storage in extra array.
+    #[inline]
+    pub fn as_u32(self) -> u32 {
+        match self {
+            AirArgMode::Normal => 0,
+            AirArgMode::Inout => 1,
+            AirArgMode::Borrow => 2,
+        }
+    }
+
+    /// Convert from u32 stored in extra array.
+    #[inline]
+    pub fn from_u32(v: u32) -> Self {
+        match v {
+            0 => AirArgMode::Normal,
+            1 => AirArgMode::Inout,
+            2 => AirArgMode::Borrow,
+            _ => panic!("invalid AirArgMode value: {}", v),
+        }
+    }
+}
+
 /// An argument in a function call (AIR level).
 #[derive(Debug, Clone)]
 pub struct AirCallArg {
@@ -82,6 +105,98 @@ pub enum AirPattern {
     },
 }
 
+/// Pattern type tags for extra array encoding.
+const PATTERN_WILDCARD: u32 = 0;
+const PATTERN_INT: u32 = 1;
+const PATTERN_BOOL: u32 = 2;
+const PATTERN_ENUM_VARIANT: u32 = 3;
+
+impl AirPattern {
+    /// Encode this pattern to the extra array, returning the number of u32s written.
+    /// Format:
+    /// - Wildcard: [tag, body_ref] = 2 words
+    /// - Int: [tag, body_ref, lo, hi] = 4 words (i64 as two u32s)
+    /// - Bool: [tag, body_ref, value] = 3 words
+    /// - EnumVariant: [tag, body_ref, enum_id, variant_index] = 4 words
+    pub fn encode(&self, body: AirRef, out: &mut Vec<u32>) {
+        match self {
+            AirPattern::Wildcard => {
+                out.push(PATTERN_WILDCARD);
+                out.push(body.as_u32());
+            }
+            AirPattern::Int(n) => {
+                out.push(PATTERN_INT);
+                out.push(body.as_u32());
+                // Encode i64 as two u32s (low, high)
+                out.push(*n as u32);
+                out.push((*n >> 32) as u32);
+            }
+            AirPattern::Bool(b) => {
+                out.push(PATTERN_BOOL);
+                out.push(body.as_u32());
+                out.push(if *b { 1 } else { 0 });
+            }
+            AirPattern::EnumVariant {
+                enum_id,
+                variant_index,
+            } => {
+                out.push(PATTERN_ENUM_VARIANT);
+                out.push(body.as_u32());
+                out.push(enum_id.0);
+                out.push(*variant_index);
+            }
+        }
+    }
+}
+
+/// Iterator for reading match arms from the extra array.
+pub struct MatchArmIterator<'a> {
+    data: &'a [u32],
+    remaining: usize,
+}
+
+impl Iterator for MatchArmIterator<'_> {
+    type Item = (AirPattern, AirRef);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.remaining == 0 {
+            return None;
+        }
+        self.remaining -= 1;
+
+        let tag = self.data[0];
+        let body = AirRef::from_raw(self.data[1]);
+
+        let (pattern, advance) = match tag {
+            PATTERN_WILDCARD => (AirPattern::Wildcard, 2),
+            PATTERN_INT => {
+                let lo = self.data[2] as i64;
+                let hi = (self.data[3] as i64) << 32;
+                (AirPattern::Int(lo | hi), 4)
+            }
+            PATTERN_BOOL => {
+                let b = self.data[2] != 0;
+                (AirPattern::Bool(b), 3)
+            }
+            PATTERN_ENUM_VARIANT => {
+                let enum_id = crate::types::EnumId(self.data[2]);
+                let variant_index = self.data[3];
+                (
+                    AirPattern::EnumVariant {
+                        enum_id,
+                        variant_index,
+                    },
+                    4,
+                )
+            }
+            _ => panic!("invalid pattern tag: {}", tag),
+        };
+
+        self.data = &self.data[advance..];
+        Some((pattern, body))
+    }
+}
+
 /// A reference to an instruction in the AIR.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct AirRef(u32);
@@ -102,6 +217,8 @@ impl AirRef {
 #[derive(Debug, Default)]
 pub struct Air {
     instructions: Vec<AirInst>,
+    /// Extra data for variable-length instruction payloads (args, elements, etc.)
+    extra: Vec<u32>,
     /// The return type of this function
     return_type: Type,
 }
@@ -111,6 +228,7 @@ impl Air {
     pub fn new(return_type: Type) -> Self {
         Self {
             instructions: Vec::new(),
+            extra: Vec::new(),
             return_type,
         }
     }
@@ -152,6 +270,89 @@ impl Air {
             .iter()
             .enumerate()
             .map(|(i, inst)| (AirRef::from_raw(i as u32), inst))
+    }
+
+    /// Add extra data and return the start index.
+    pub fn add_extra(&mut self, data: &[u32]) -> u32 {
+        // Debug assertions for u32 overflow
+        debug_assert!(
+            self.extra.len() <= u32::MAX as usize,
+            "AIR extra data overflow: {} entries exceeds u32::MAX",
+            self.extra.len()
+        );
+        debug_assert!(
+            self.extra.len().saturating_add(data.len()) <= u32::MAX as usize,
+            "AIR extra data would overflow: {} + {} exceeds u32::MAX",
+            self.extra.len(),
+            data.len()
+        );
+
+        let start = self.extra.len() as u32;
+        self.extra.extend_from_slice(data);
+        start
+    }
+
+    /// Get extra data slice by start index and length.
+    #[inline]
+    pub fn get_extra(&self, start: u32, len: u32) -> &[u32] {
+        let start = start as usize;
+        let end = start + len as usize;
+        &self.extra[start..end]
+    }
+
+    // Helper methods for reading structured data from extra array
+
+    /// Get AirRefs from extra array (for blocks, array elements, intrinsic args, etc.).
+    #[inline]
+    pub fn get_air_refs(&self, start: u32, len: u32) -> impl Iterator<Item = AirRef> + '_ {
+        self.get_extra(start, len)
+            .iter()
+            .map(|&v| AirRef::from_raw(v))
+    }
+
+    /// Get call arguments from extra array.
+    /// Each call arg is encoded as 2 u32s: (air_ref, mode).
+    #[inline]
+    pub fn get_call_args(&self, start: u32, len: u32) -> impl Iterator<Item = AirCallArg> + '_ {
+        let data = self.get_extra(start, len * 2);
+        data.chunks_exact(2).map(|chunk| AirCallArg {
+            value: AirRef::from_raw(chunk[0]),
+            mode: AirArgMode::from_u32(chunk[1]),
+        })
+    }
+
+    /// Get match arms from extra array.
+    /// Each match arm is encoded based on pattern type plus the body AirRef.
+    #[inline]
+    pub fn get_match_arms(
+        &self,
+        start: u32,
+        len: u32,
+    ) -> impl Iterator<Item = (AirPattern, AirRef)> + '_ {
+        MatchArmIterator {
+            data: &self.extra[start as usize..],
+            remaining: len as usize,
+        }
+    }
+
+    /// Get struct init data from extra array.
+    /// Returns (field_refs_iterator, source_order_iterator).
+    #[inline]
+    pub fn get_struct_init(
+        &self,
+        fields_start: u32,
+        fields_len: u32,
+        source_order_start: u32,
+    ) -> (
+        impl Iterator<Item = AirRef> + '_,
+        impl Iterator<Item = usize> + '_,
+    ) {
+        let fields = self.get_air_refs(fields_start, fields_len);
+        let source_order = self
+            .get_extra(source_order_start, fields_len)
+            .iter()
+            .map(|&v| v as usize);
+        (fields, source_order)
     }
 }
 
@@ -248,8 +449,10 @@ pub enum AirInstData {
     Match {
         /// The value being matched (scrutinee)
         scrutinee: AirRef,
-        /// Match arms: [(pattern, body), ...]
-        arms: Vec<(AirPattern, AirRef)>,
+        /// Start index into extra array for match arms
+        arms_start: u32,
+        /// Number of match arms
+        arms_len: u32,
     },
 
     /// Break: exits the innermost loop
@@ -297,16 +500,20 @@ pub enum AirInstData {
     Call {
         /// Function name (interned symbol)
         name: Symbol,
-        /// Arguments with inout flags
-        args: Vec<AirCallArg>,
+        /// Start index into extra array for arguments
+        args_start: u32,
+        /// Number of arguments
+        args_len: u32,
     },
 
     /// Intrinsic call (e.g., @dbg)
     Intrinsic {
         /// Intrinsic name (without @)
         name: String,
-        /// Argument AIR refs
-        args: Vec<AirRef>,
+        /// Start index into extra array for arguments
+        args_start: u32,
+        /// Number of arguments
+        args_len: u32,
     },
 
     /// Reference to a function parameter
@@ -319,8 +526,10 @@ pub enum AirInstData {
     /// Used to group side-effect statements with their result value,
     /// enabling demand-driven lowering for short-circuit evaluation.
     Block {
-        /// Side-effect statements to execute in order
-        statements: Vec<AirRef>,
+        /// Start index into extra array for statement refs
+        stmts_start: u32,
+        /// Number of statements
+        stmts_len: u32,
         /// The block's resulting value
         value: AirRef,
     },
@@ -330,12 +539,13 @@ pub enum AirInstData {
     StructInit {
         /// The struct type being created
         struct_id: StructId,
-        /// Field values in declaration order (for storage layout)
-        fields: Vec<AirRef>,
-        /// Evaluation order: indices into `fields` in source order
-        /// e.g., for `Point { y: 10, x: 20 }` with declaration order [x, y],
-        /// source_order would be [1, 0] meaning evaluate fields[1] (y) first, then fields[0] (x)
-        source_order: Vec<usize>,
+        /// Start index into extra array for field refs (in declaration order)
+        fields_start: u32,
+        /// Number of fields
+        fields_len: u32,
+        /// Start index into extra array for source order indices
+        /// Each entry is an index into fields, specifying evaluation order
+        source_order_start: u32,
     },
 
     /// Load a field from a struct value
@@ -379,8 +589,10 @@ pub enum AirInstData {
     ArrayInit {
         /// The array type
         array_type_id: ArrayTypeId,
-        /// Element values
-        elements: Vec<AirRef>,
+        /// Start index into extra array for element refs
+        elems_start: u32,
+        /// Number of elements
+        elems_len: u32,
     },
 
     /// Load an element from an array
@@ -516,9 +728,14 @@ impl fmt::Display for Air {
                 }
                 AirInstData::Loop { cond, body } => writeln!(f, "loop {}, {}", cond, body)?,
                 AirInstData::InfiniteLoop { body } => writeln!(f, "infinite_loop {}", body)?,
-                AirInstData::Match { scrutinee, arms } => {
+                AirInstData::Match {
+                    scrutinee,
+                    arms_start,
+                    arms_len,
+                } => {
                     write!(f, "match {} {{ ", scrutinee)?;
-                    for (i, (pat, body)) in arms.iter().enumerate() {
+                    for (i, (pat, body)) in self.get_match_arms(*arms_start, *arms_len).enumerate()
+                    {
                         if i > 0 {
                             write!(f, ", ")?;
                         }
@@ -550,9 +767,13 @@ impl fmt::Display for Air {
                         writeln!(f, "ret")?
                     }
                 }
-                AirInstData::Call { name, args } => {
+                AirInstData::Call {
+                    name,
+                    args_start,
+                    args_len,
+                } => {
                     write!(f, "call @{}(", name.as_u32())?;
-                    for (i, arg) in args.iter().enumerate() {
+                    for (i, arg) in self.get_call_args(*args_start, *args_len).enumerate() {
                         if i > 0 {
                             write!(f, ", ")?;
                         }
@@ -560,9 +781,13 @@ impl fmt::Display for Air {
                     }
                     writeln!(f, ")")?;
                 }
-                AirInstData::Intrinsic { name, args } => {
+                AirInstData::Intrinsic {
+                    name,
+                    args_start,
+                    args_len,
+                } => {
                     write!(f, "intrinsic @{}(", name)?;
-                    for (i, arg) in args.iter().enumerate() {
+                    for (i, arg) in self.get_air_refs(*args_start, *args_len).enumerate() {
                         if i > 0 {
                             write!(f, ", ")?;
                         }
@@ -571,9 +796,13 @@ impl fmt::Display for Air {
                     writeln!(f, ")")?;
                 }
                 AirInstData::Param { index } => writeln!(f, "param {}", index)?,
-                AirInstData::Block { statements, value } => {
+                AirInstData::Block {
+                    stmts_start,
+                    stmts_len,
+                    value,
+                } => {
                     write!(f, "block [")?;
-                    for (i, s) in statements.iter().enumerate() {
+                    for (i, s) in self.get_air_refs(*stmts_start, *stmts_len).enumerate() {
                         if i > 0 {
                             write!(f, ", ")?;
                         }
@@ -583,18 +812,21 @@ impl fmt::Display for Air {
                 }
                 AirInstData::StructInit {
                     struct_id,
-                    fields,
-                    source_order,
+                    fields_start,
+                    fields_len,
+                    source_order_start,
                 } => {
                     write!(f, "struct_init #{} {{", struct_id.0)?;
-                    for (i, field) in fields.iter().enumerate() {
+                    let (fields, source_order) =
+                        self.get_struct_init(*fields_start, *fields_len, *source_order_start);
+                    for (i, field) in fields.enumerate() {
                         if i > 0 {
                             write!(f, ", ")?;
                         }
                         write!(f, "{}", field)?;
                     }
                     write!(f, "}} eval_order=[")?;
-                    for (i, &idx) in source_order.iter().enumerate() {
+                    for (i, idx) in source_order.enumerate() {
                         if i > 0 {
                             write!(f, ", ")?;
                         }
@@ -636,10 +868,11 @@ impl fmt::Display for Air {
                 }
                 AirInstData::ArrayInit {
                     array_type_id,
-                    elements,
+                    elems_start,
+                    elems_len,
                 } => {
                     write!(f, "array_init @{} [", array_type_id.0)?;
-                    for (i, elem) in elements.iter().enumerate() {
+                    for (i, elem) in self.get_air_refs(*elems_start, *elems_len).enumerate() {
                         if i > 0 {
                             write!(f, ", ")?;
                         }

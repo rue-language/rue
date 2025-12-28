@@ -217,9 +217,14 @@ fn create_drop_glue_function(
     let return_value = if drop_statements.is_empty() {
         unit_const
     } else {
+        // Encode statements into extra array
+        let stmt_u32s: Vec<u32> = drop_statements.iter().map(|r| r.as_u32()).collect();
+        let stmts_start = air.add_extra(&stmt_u32s);
+        let stmts_len = drop_statements.len() as u32;
         air.add_inst(AirInst {
             data: AirInstData::Block {
-                statements: drop_statements,
+                stmts_start,
+                stmts_len,
                 value: unit_const,
             },
             ty: Type::Unit,

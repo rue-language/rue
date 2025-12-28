@@ -2140,10 +2140,20 @@ impl<'a> Sema<'a> {
                 }
 
                 let final_type = result_type.unwrap_or(Type::Unit);
+
+                // Encode match arms into extra array
+                let arms_len = air_arms.len() as u32;
+                let mut extra_data = Vec::new();
+                for (pattern, body) in &air_arms {
+                    pattern.encode(*body, &mut extra_data);
+                }
+                let arms_start = air.add_extra(&extra_data);
+
                 let air_ref = air.add_inst(AirInst {
                     data: AirInstData::Match {
                         scrutinee: scrutinee_result.air_ref,
-                        arms: air_arms,
+                        arms_start,
+                        arms_len,
                     },
                     ty: final_type,
                     span: inst.span,
@@ -2213,9 +2223,11 @@ impl<'a> Sema<'a> {
                 });
 
                 // Return a block containing both StorageLive and Alloc
+                let stmts_start = air.add_extra(&[storage_live_ref.as_u32()]);
                 let block_ref = air.add_inst(AirInst {
                     data: AirInstData::Block {
-                        statements: vec![storage_live_ref],
+                        stmts_start,
+                        stmts_len: 1,
                         value: alloc_ref,
                     },
                     ty: Type::Unit,
@@ -2564,9 +2576,14 @@ impl<'a> Sema<'a> {
                 } else {
                     // Block type comes from HM inference
                     let ty = last.ty;
+                    // Encode statements into extra array
+                    let stmt_u32s: Vec<u32> = statements.iter().map(|r| r.as_u32()).collect();
+                    let stmts_start = air.add_extra(&stmt_u32s);
+                    let stmts_len = statements.len() as u32;
                     let air_ref = air.add_inst(AirInst {
                         data: AirInstData::Block {
-                            statements,
+                            stmts_start,
+                            stmts_len,
                             value: last.air_ref,
                         },
                         ty,
@@ -2630,10 +2647,20 @@ impl<'a> Sema<'a> {
                 // Analyze arguments (move checking happens in analyze_inst for VarRef)
                 let air_args = self.analyze_call_args(air, args, ctx)?;
 
+                // Encode call args into extra array: each arg is (air_ref, mode)
+                let args_len = air_args.len() as u32;
+                let mut extra_data = Vec::with_capacity(air_args.len() * 2);
+                for arg in &air_args {
+                    extra_data.push(arg.value.as_u32());
+                    extra_data.push(arg.mode.as_u32());
+                }
+                let args_start = air.add_extra(&extra_data);
+
                 let air_ref = air.add_inst(AirInst {
                     data: AirInstData::Call {
                         name: *name,
-                        args: air_args,
+                        args_start,
+                        args_len,
                     },
                     ty: return_type,
                     span: inst.span,
@@ -2763,11 +2790,19 @@ impl<'a> Sema<'a> {
                     .map(|opt| opt.expect("all fields should be initialized"))
                     .collect();
 
+                // Encode into extra array: first field refs, then source order
+                let fields_len = field_refs.len() as u32;
+                let field_u32s: Vec<u32> = field_refs.iter().map(|r| r.as_u32()).collect();
+                let fields_start = air.add_extra(&field_u32s);
+                let source_order_u32s: Vec<u32> = source_order.iter().map(|&i| i as u32).collect();
+                let source_order_start = air.add_extra(&source_order_u32s);
+
                 let air_ref = air.add_inst(AirInst {
                     data: AirInstData::StructInit {
                         struct_id,
-                        fields: field_refs,
-                        source_order,
+                        fields_start,
+                        fields_len,
+                        source_order_start,
                     },
                     ty: struct_type,
                     span: inst.span,
@@ -3110,10 +3145,13 @@ impl<'a> Sema<'a> {
                             ));
                         }
 
+                        // Encode args into extra array
+                        let args_start = air.add_extra(&[arg_result.air_ref.as_u32()]);
                         let air_ref = air.add_inst(AirInst {
                             data: AirInstData::Intrinsic {
                                 name: intrinsic_name,
-                                args: vec![arg_result.air_ref],
+                                args_start,
+                                args_len: 1,
                             },
                             ty: Type::Unit,
                             span: inst.span,
@@ -3295,11 +3333,17 @@ impl<'a> Sema<'a> {
                     element_refs.push(elem_result.air_ref);
                 }
 
+                // Encode elements into extra array
+                let elems_len = element_refs.len() as u32;
+                let elem_u32s: Vec<u32> = element_refs.iter().map(|r| r.as_u32()).collect();
+                let elems_start = air.add_extra(&elem_u32s);
+
                 let array_type = Type::Array(array_type_id);
                 let air_ref = air.add_inst(AirInst {
                     data: AirInstData::ArrayInit {
                         array_type_id,
-                        elements: element_refs,
+                        elems_start,
+                        elems_len,
                     },
                     ty: array_type,
                     span: inst.span,
@@ -3763,10 +3807,20 @@ impl<'a> Sema<'a> {
                 let call_name = format!("{}.{}", struct_name_str, method_name_str);
                 let call_name_sym = self.interner.intern(&call_name);
 
+                // Encode call args into extra array
+                let args_len = air_args.len() as u32;
+                let mut extra_data = Vec::with_capacity(air_args.len() * 2);
+                for arg in &air_args {
+                    extra_data.push(arg.value.as_u32());
+                    extra_data.push(arg.mode.as_u32());
+                }
+                let args_start = air.add_extra(&extra_data);
+
                 let air_ref = air.add_inst(AirInst {
                     data: AirInstData::Call {
                         name: call_name_sym,
-                        args: air_args,
+                        args_start,
+                        args_len,
                     },
                     ty: return_type,
                     span: inst.span,
@@ -3849,10 +3903,20 @@ impl<'a> Sema<'a> {
                 let call_name = format!("{}::{}", type_name_str, function_name_str);
                 let call_name_sym = self.interner.intern(&call_name);
 
+                // Encode call args into extra array
+                let args_len = air_args.len() as u32;
+                let mut extra_data = Vec::with_capacity(air_args.len() * 2);
+                for arg in &air_args {
+                    extra_data.push(arg.value.as_u32());
+                    extra_data.push(arg.mode.as_u32());
+                }
+                let args_start = air.add_extra(&extra_data);
+
                 let air_ref = air.add_inst(AirInst {
                     data: AirInstData::Call {
                         name: call_name_sym,
-                        args: air_args,
+                        args_start,
+                        args_len,
                     },
                     ty: return_type,
                     span: inst.span,
@@ -4338,10 +4402,13 @@ impl<'a> Sema<'a> {
                 // Generate a call to String__new (runtime function)
                 // We use double underscore because :: is not valid in C symbol names
                 let call_name = self.interner.intern("String__new");
+                // No args to encode
+                let args_start = air.add_extra(&[]);
                 let air_ref = air.add_inst(AirInst {
                     data: AirInstData::Call {
                         name: call_name,
-                        args: vec![],
+                        args_start,
+                        args_len: 0,
                     },
                     ty: Type::String,
                     span,
@@ -4377,13 +4444,14 @@ impl<'a> Sema<'a> {
 
                 // Generate a call to String__with_capacity (runtime function)
                 let call_name = self.interner.intern("String__with_capacity");
+                // Encode args into extra array
+                let args_start =
+                    air.add_extra(&[cap_result.air_ref.as_u32(), AirArgMode::Normal.as_u32()]);
                 let air_ref = air.add_inst(AirInst {
                     data: AirInstData::Call {
                         name: call_name,
-                        args: vec![AirCallArg {
-                            value: cap_result.air_ref,
-                            mode: AirArgMode::Normal,
-                        }],
+                        args_start,
+                        args_len: 1,
                     },
                     ty: Type::String,
                     span,
@@ -4528,19 +4596,17 @@ impl<'a> Sema<'a> {
 
                 // Call String__push_str(self, other) -> String
                 let call_name = self.interner.intern("String__push_str");
+                let args_start = air.add_extra(&[
+                    receiver.air_ref.as_u32(),
+                    AirArgMode::Normal.as_u32(),
+                    other_result.air_ref.as_u32(),
+                    AirArgMode::Normal.as_u32(),
+                ]);
                 let call_ref = air.add_inst(AirInst {
                     data: AirInstData::Call {
                         name: call_name,
-                        args: vec![
-                            AirCallArg {
-                                value: receiver.air_ref,
-                                mode: AirArgMode::Normal,
-                            },
-                            AirCallArg {
-                                value: other_result.air_ref,
-                                mode: AirArgMode::Normal,
-                            },
-                        ],
+                        args_start,
+                        args_len: 2,
                     },
                     ty: Type::String,
                     span,
@@ -4578,19 +4644,17 @@ impl<'a> Sema<'a> {
 
                 // Call String__push(self, byte) -> String
                 let call_name = self.interner.intern("String__push");
+                let args_start = air.add_extra(&[
+                    receiver.air_ref.as_u32(),
+                    AirArgMode::Normal.as_u32(),
+                    byte_result.air_ref.as_u32(),
+                    AirArgMode::Normal.as_u32(),
+                ]);
                 let call_ref = air.add_inst(AirInst {
                     data: AirInstData::Call {
                         name: call_name,
-                        args: vec![
-                            AirCallArg {
-                                value: receiver.air_ref,
-                                mode: AirArgMode::Normal,
-                            },
-                            AirCallArg {
-                                value: byte_result.air_ref,
-                                mode: AirArgMode::Normal,
-                            },
-                        ],
+                        args_start,
+                        args_len: 2,
                     },
                     ty: Type::String,
                     span,
@@ -4614,13 +4678,13 @@ impl<'a> Sema<'a> {
 
                 // Call String__clear(self) -> String
                 let call_name = self.interner.intern("String__clear");
+                let args_start =
+                    air.add_extra(&[receiver.air_ref.as_u32(), AirArgMode::Normal.as_u32()]);
                 let call_ref = air.add_inst(AirInst {
                     data: AirInstData::Call {
                         name: call_name,
-                        args: vec![AirCallArg {
-                            value: receiver.air_ref,
-                            mode: AirArgMode::Normal,
-                        }],
+                        args_start,
+                        args_len: 1,
                     },
                     ty: Type::String,
                     span,
@@ -4658,19 +4722,17 @@ impl<'a> Sema<'a> {
 
                 // Call String__reserve(self, additional) -> String
                 let call_name = self.interner.intern("String__reserve");
+                let args_start = air.add_extra(&[
+                    receiver.air_ref.as_u32(),
+                    AirArgMode::Normal.as_u32(),
+                    additional_result.air_ref.as_u32(),
+                    AirArgMode::Normal.as_u32(),
+                ]);
                 let call_ref = air.add_inst(AirInst {
                     data: AirInstData::Call {
                         name: call_name,
-                        args: vec![
-                            AirCallArg {
-                                value: receiver.air_ref,
-                                mode: AirArgMode::Normal,
-                            },
-                            AirCallArg {
-                                value: additional_result.air_ref,
-                                mode: AirArgMode::Normal,
-                            },
-                        ],
+                        args_start,
+                        args_len: 2,
                     },
                     ty: Type::String,
                     span,
@@ -4758,13 +4820,13 @@ impl<'a> Sema<'a> {
                 // Using Normal mode instead of Borrow because String's 3 fields should be
                 // passed directly, not by reference.
                 let call_name = self.interner.intern("String__len");
+                let args_start =
+                    air.add_extra(&[receiver.air_ref.as_u32(), AirArgMode::Normal.as_u32()]);
                 let air_ref = air.add_inst(AirInst {
                     data: AirInstData::Call {
                         name: call_name,
-                        args: vec![AirCallArg {
-                            value: receiver.air_ref,
-                            mode: AirArgMode::Normal,
-                        }],
+                        args_start,
+                        args_len: 1,
                     },
                     ty: Type::U64,
                     span,
@@ -4788,13 +4850,13 @@ impl<'a> Sema<'a> {
                 // Generate a call to String__capacity (runtime function)
                 // Same pattern as len() - pass by value, don't consume.
                 let call_name = self.interner.intern("String__capacity");
+                let args_start =
+                    air.add_extra(&[receiver.air_ref.as_u32(), AirArgMode::Normal.as_u32()]);
                 let air_ref = air.add_inst(AirInst {
                     data: AirInstData::Call {
                         name: call_name,
-                        args: vec![AirCallArg {
-                            value: receiver.air_ref,
-                            mode: AirArgMode::Normal,
-                        }],
+                        args_start,
+                        args_len: 1,
                     },
                     ty: Type::U64,
                     span,
@@ -4818,13 +4880,13 @@ impl<'a> Sema<'a> {
                 // Generate a call to String__is_empty (runtime function)
                 // Same pattern as len() - pass by value, don't consume.
                 let call_name = self.interner.intern("String__is_empty");
+                let args_start =
+                    air.add_extra(&[receiver.air_ref.as_u32(), AirArgMode::Normal.as_u32()]);
                 let air_ref = air.add_inst(AirInst {
                     data: AirInstData::Call {
                         name: call_name,
-                        args: vec![AirCallArg {
-                            value: receiver.air_ref,
-                            mode: AirArgMode::Normal,
-                        }],
+                        args_start,
+                        args_len: 1,
                     },
                     ty: Type::Bool,
                     span,
@@ -4849,13 +4911,13 @@ impl<'a> Sema<'a> {
                 // Takes the String (ptr, len, cap) and returns a new String (ptr, len, cap)
                 // where the new ptr points to freshly allocated memory with copied content.
                 let call_name = self.interner.intern("String__clone");
+                let args_start =
+                    air.add_extra(&[receiver.air_ref.as_u32(), AirArgMode::Normal.as_u32()]);
                 let air_ref = air.add_inst(AirInst {
                     data: AirInstData::Call {
                         name: call_name,
-                        args: vec![AirCallArg {
-                            value: receiver.air_ref,
-                            mode: AirArgMode::Normal,
-                        }],
+                        args_start,
+                        args_len: 1,
                     },
                     ty: Type::String,
                     span,
