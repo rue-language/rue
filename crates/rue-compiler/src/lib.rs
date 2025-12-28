@@ -393,6 +393,7 @@ pub fn compile_frontend_from_ast_with_options(
                 &sema_output.struct_defs,
                 &sema_output.array_types,
                 func.param_modes.clone(),
+                &interner,
             );
             warnings.extend(cfg_output.warnings);
 

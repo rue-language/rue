@@ -305,6 +305,7 @@ mod tests {
     use super::*;
     use rue_air::{Air, AirInst, AirInstData, Type};
     use rue_cfg::CfgBuilder;
+    use rue_intern::Interner;
     use rue_span::Span;
 
     #[test]
@@ -324,7 +325,8 @@ mod tests {
         });
 
         // Build CFG from AIR (no struct/array types in this simple test)
-        let cfg_output = CfgBuilder::build(&air, 0, 0, "main", &[], &[], vec![]);
+        let interner = Interner::new();
+        let cfg_output = CfgBuilder::build(&air, 0, 0, "main", &[], &[], vec![], &interner);
 
         // Test the generate function
         let machine_code = generate(&cfg_output.cfg, &[], &[], &[]).unwrap();

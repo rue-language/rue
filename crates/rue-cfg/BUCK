@@ -4,6 +4,7 @@ rust_library(
     deps = [
         "//crates/rue-air:rue-air",
         "//crates/rue-error:rue-error",
+        "//crates/rue-intern:rue-intern",
         "//crates/rue-span:rue-span",
     ],
     visibility = ["PUBLIC"],

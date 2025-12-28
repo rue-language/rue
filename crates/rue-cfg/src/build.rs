@@ -5,6 +5,7 @@
 
 use rue_air::{Air, AirArgMode, AirInstData, AirPattern, AirRef, ArrayTypeDef, StructDef, Type};
 use rue_error::{CompileWarning, WarningKind};
+use rue_intern::Interner;
 
 use crate::CfgOutput;
 use crate::inst::{
@@ -60,6 +61,8 @@ pub struct CfgBuilder<'a> {
     struct_defs: &'a [StructDef],
     /// Array type definitions for type queries
     array_types: &'a [ArrayTypeDef],
+    /// Interner for resolving symbols to strings
+    interner: &'a Interner,
     /// Current block we're building
     current_block: BlockId,
     /// Stack of loop contexts for nested loops
@@ -78,7 +81,8 @@ impl<'a> CfgBuilder<'a> {
     /// Build a CFG from AIR, returning the CFG and any warnings.
     ///
     /// The `struct_defs` and `array_types` parameters provide type definitions
-    /// needed for queries like `type_needs_drop`.
+    /// needed for queries like `type_needs_drop`. The `interner` is used to
+    /// resolve Symbol values to strings for the CFG.
     pub fn build(
         air: &'a Air,
         num_locals: u32,
@@ -87,6 +91,7 @@ impl<'a> CfgBuilder<'a> {
         struct_defs: &'a [StructDef],
         array_types: &'a [ArrayTypeDef],
         param_modes: Vec<bool>,
+        interner: &'a Interner,
     ) -> CfgOutput {
         let mut builder = CfgBuilder {
             air,
@@ -99,6 +104,7 @@ impl<'a> CfgBuilder<'a> {
             ),
             struct_defs,
             array_types,
+            interner,
             current_block: BlockId(0),
             loop_stack: Vec::new(),
             value_cache: vec![None; air.len()],
@@ -635,9 +641,11 @@ impl<'a> CfgBuilder<'a> {
                         mode: Self::convert_arg_mode(arg.mode),
                     });
                 }
+                // Convert Symbol to String for CFG (CFG will adopt Symbol in rue-iom9)
+                let name_str = self.interner.get(*name).to_string();
                 let value = self.emit(
                     CfgInstData::Call {
-                        name: name.clone(),
+                        name: name_str,
                         args: arg_vals,
                     },
                     ty,
@@ -1744,6 +1752,7 @@ mod tests {
             &output.struct_defs,
             &output.array_types,
             func.param_modes.clone(),
+            &interner,
         )
         .cfg
     }

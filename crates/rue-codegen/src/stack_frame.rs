@@ -555,6 +555,7 @@ mod tests {
     use super::*;
     use rue_air::{Air, AirInst, AirInstData, Type};
     use rue_cfg::CfgBuilder;
+    use rue_intern::Interner;
     use rue_span::Span;
 
     fn create_simple_cfg() -> (rue_cfg::Cfg, Vec<StructDef>, Vec<ArrayTypeDef>) {
@@ -572,7 +573,8 @@ mod tests {
             span: Span::new(0, 2),
         });
 
-        let cfg_output = CfgBuilder::build(&air, 0, 0, "test", &[], &[], vec![]);
+        let interner = Interner::new();
+        let cfg_output = CfgBuilder::build(&air, 0, 0, "test", &[], &[], vec![], &interner);
         (cfg_output.cfg, vec![], vec![])
     }
 

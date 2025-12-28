@@ -3598,6 +3598,7 @@ mod tests {
             struct_defs,
             array_types,
             func.param_modes.clone(),
+            &interner,
         );
 
         CfgLower::new(&cfg_output.cfg, struct_defs, array_types, strings).lower()

@@ -5,6 +5,7 @@
 use std::fmt;
 
 use crate::types::{ArrayTypeId, StructId, Type};
+use rue_intern::Symbol;
 use rue_span::Span;
 
 /// Parameter passing mode in AIR.
@@ -294,8 +295,8 @@ pub enum AirInstData {
 
     /// Function call
     Call {
-        /// Function name
-        name: String,
+        /// Function name (interned symbol)
+        name: Symbol,
         /// Arguments with inout flags
         args: Vec<AirCallArg>,
     },
@@ -550,7 +551,7 @@ impl fmt::Display for Air {
                     }
                 }
                 AirInstData::Call { name, args } => {
-                    write!(f, "call {}(", name)?;
+                    write!(f, "call @{}(", name.as_u32())?;
                     for (i, arg) in args.iter().enumerate() {
                         if i > 0 {
                             write!(f, ", ")?;

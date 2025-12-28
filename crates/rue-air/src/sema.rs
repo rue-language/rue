@@ -2632,7 +2632,7 @@ impl<'a> Sema<'a> {
 
                 let air_ref = air.add_inst(AirInst {
                     data: AirInstData::Call {
-                        name: fn_name_str,
+                        name: *name,
                         args: air_args,
                     },
                     ty: return_type,
@@ -3759,12 +3759,13 @@ impl<'a> Sema<'a> {
                 }];
                 air_args.extend(self.analyze_call_args(air, args, ctx)?);
 
-                // Generate a method call name: Type.method
+                // Generate a method call name: Type.method (intern for AIR)
                 let call_name = format!("{}.{}", struct_name_str, method_name_str);
+                let call_name_sym = self.interner.intern(&call_name);
 
                 let air_ref = air.add_inst(AirInst {
                     data: AirInstData::Call {
-                        name: call_name,
+                        name: call_name_sym,
                         args: air_args,
                     },
                     ty: return_type,
@@ -3844,12 +3845,13 @@ impl<'a> Sema<'a> {
                 // Analyze arguments
                 let air_args = self.analyze_call_args(air, args, ctx)?;
 
-                // Generate a function call name: Type::function
+                // Generate a function call name: Type::function (intern for AIR)
                 let call_name = format!("{}::{}", type_name_str, function_name_str);
+                let call_name_sym = self.interner.intern(&call_name);
 
                 let air_ref = air.add_inst(AirInst {
                     data: AirInstData::Call {
-                        name: call_name,
+                        name: call_name_sym,
                         args: air_args,
                     },
                     ty: return_type,
@@ -4335,9 +4337,10 @@ impl<'a> Sema<'a> {
 
                 // Generate a call to String__new (runtime function)
                 // We use double underscore because :: is not valid in C symbol names
+                let call_name = self.interner.intern("String__new");
                 let air_ref = air.add_inst(AirInst {
                     data: AirInstData::Call {
-                        name: "String__new".to_string(),
+                        name: call_name,
                         args: vec![],
                     },
                     ty: Type::String,
@@ -4373,9 +4376,10 @@ impl<'a> Sema<'a> {
                 }
 
                 // Generate a call to String__with_capacity (runtime function)
+                let call_name = self.interner.intern("String__with_capacity");
                 let air_ref = air.add_inst(AirInst {
                     data: AirInstData::Call {
-                        name: "String__with_capacity".to_string(),
+                        name: call_name,
                         args: vec![AirCallArg {
                             value: cap_result.air_ref,
                             mode: AirArgMode::Normal,
@@ -4523,9 +4527,10 @@ impl<'a> Sema<'a> {
                 }
 
                 // Call String__push_str(self, other) -> String
+                let call_name = self.interner.intern("String__push_str");
                 let call_ref = air.add_inst(AirInst {
                     data: AirInstData::Call {
-                        name: "String__push_str".to_string(),
+                        name: call_name,
                         args: vec![
                             AirCallArg {
                                 value: receiver.air_ref,
@@ -4572,9 +4577,10 @@ impl<'a> Sema<'a> {
                 }
 
                 // Call String__push(self, byte) -> String
+                let call_name = self.interner.intern("String__push");
                 let call_ref = air.add_inst(AirInst {
                     data: AirInstData::Call {
-                        name: "String__push".to_string(),
+                        name: call_name,
                         args: vec![
                             AirCallArg {
                                 value: receiver.air_ref,
@@ -4607,9 +4613,10 @@ impl<'a> Sema<'a> {
                 }
 
                 // Call String__clear(self) -> String
+                let call_name = self.interner.intern("String__clear");
                 let call_ref = air.add_inst(AirInst {
                     data: AirInstData::Call {
-                        name: "String__clear".to_string(),
+                        name: call_name,
                         args: vec![AirCallArg {
                             value: receiver.air_ref,
                             mode: AirArgMode::Normal,
@@ -4650,9 +4657,10 @@ impl<'a> Sema<'a> {
                 }
 
                 // Call String__reserve(self, additional) -> String
+                let call_name = self.interner.intern("String__reserve");
                 let call_ref = air.add_inst(AirInst {
                     data: AirInstData::Call {
-                        name: "String__reserve".to_string(),
+                        name: call_name,
                         args: vec![
                             AirCallArg {
                                 value: receiver.air_ref,
@@ -4749,9 +4757,10 @@ impl<'a> Sema<'a> {
                 // The caller still owns the String after this call.
                 // Using Normal mode instead of Borrow because String's 3 fields should be
                 // passed directly, not by reference.
+                let call_name = self.interner.intern("String__len");
                 let air_ref = air.add_inst(AirInst {
                     data: AirInstData::Call {
-                        name: "String__len".to_string(),
+                        name: call_name,
                         args: vec![AirCallArg {
                             value: receiver.air_ref,
                             mode: AirArgMode::Normal,
@@ -4778,9 +4787,10 @@ impl<'a> Sema<'a> {
 
                 // Generate a call to String__capacity (runtime function)
                 // Same pattern as len() - pass by value, don't consume.
+                let call_name = self.interner.intern("String__capacity");
                 let air_ref = air.add_inst(AirInst {
                     data: AirInstData::Call {
-                        name: "String__capacity".to_string(),
+                        name: call_name,
                         args: vec![AirCallArg {
                             value: receiver.air_ref,
                             mode: AirArgMode::Normal,
@@ -4807,9 +4817,10 @@ impl<'a> Sema<'a> {
 
                 // Generate a call to String__is_empty (runtime function)
                 // Same pattern as len() - pass by value, don't consume.
+                let call_name = self.interner.intern("String__is_empty");
                 let air_ref = air.add_inst(AirInst {
                     data: AirInstData::Call {
-                        name: "String__is_empty".to_string(),
+                        name: call_name,
                         args: vec![AirCallArg {
                             value: receiver.air_ref,
                             mode: AirArgMode::Normal,
@@ -4837,9 +4848,10 @@ impl<'a> Sema<'a> {
                 // Generate a call to String__clone (runtime function)
                 // Takes the String (ptr, len, cap) and returns a new String (ptr, len, cap)
                 // where the new ptr points to freshly allocated memory with copied content.
+                let call_name = self.interner.intern("String__clone");
                 let air_ref = air.add_inst(AirInst {
                     data: AirInstData::Call {
-                        name: "String__clone".to_string(),
+                        name: call_name,
                         args: vec![AirCallArg {
                             value: receiver.air_ref,
                             mode: AirArgMode::Normal,
