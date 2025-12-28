@@ -2747,6 +2747,7 @@ cargo.rust_library(
         "OUT_DIR": "$(location :serde-1.0.228-build-script-run[out_dir])",
     },
     features = [
+        "alloc",
         "default",
         "derive",
         "serde_derive",
@@ -2806,6 +2807,7 @@ cargo.rust_binary(
         "CARGO_PKG_VERSION_PRE": "",
     },
     features = [
+        "alloc",
         "default",
         "derive",
         "serde_derive",
@@ -2828,6 +2830,7 @@ buildscript_run(
         "CARGO_PKG_VERSION_PRE": "",
     },
     features = [
+        "alloc",
         "default",
         "derive",
         "serde_derive",
@@ -2877,6 +2880,7 @@ cargo.rust_library(
         "OUT_DIR": "$(location :serde_core-1.0.228-build-script-run[out_dir])",
     },
     features = [
+        "alloc",
         "result",
         "std",
     ],
@@ -2925,6 +2929,7 @@ cargo.rust_binary(
         "CARGO_PKG_VERSION_PRE": "",
     },
     features = [
+        "alloc",
         "result",
         "std",
     ],
@@ -2945,6 +2950,7 @@ buildscript_run(
         "CARGO_PKG_VERSION_PRE": "",
     },
     features = [
+        "alloc",
         "result",
         "std",
     ],
@@ -3288,6 +3294,43 @@ cargo.rust_library(
         ":cfg-if-1.0.4",
         ":libc-0.2.178",
         ":psm-0.1.28",
+    ],
+)
+
+alias(
+    name = "string-interner",
+    actual = ":string-interner-0.19.0",
+    visibility = ["PUBLIC"],
+)
+
+cargo.rust_library(
+    name = "string-interner-0.19.0",
+    srcs = [
+        "vendor/string-interner-0.19.0/src/backend/bucket/fixed_str.rs",
+        "vendor/string-interner-0.19.0/src/backend/bucket/interned_str.rs",
+        "vendor/string-interner-0.19.0/src/backend/bucket/mod.rs",
+        "vendor/string-interner-0.19.0/src/backend/buffer.rs",
+        "vendor/string-interner-0.19.0/src/backend/mod.rs",
+        "vendor/string-interner-0.19.0/src/backend/string.rs",
+        "vendor/string-interner-0.19.0/src/interner.rs",
+        "vendor/string-interner-0.19.0/src/lib.rs",
+        "vendor/string-interner-0.19.0/src/serde_impl.rs",
+        "vendor/string-interner-0.19.0/src/symbol.rs",
+    ],
+    crate = "string_interner",
+    crate_root = "vendor/string-interner-0.19.0/src/lib.rs",
+    edition = "2021",
+    features = [
+        "backends",
+        "default",
+        "inline-more",
+        "serde",
+        "std",
+    ],
+    visibility = [],
+    deps = [
+        ":hashbrown-0.15.5",
+        ":serde-1.0.228",
     ],
 )
 

@@ -14,7 +14,7 @@ spec = ["2.1:1"]
 source = "fn main() -> i32 { 42 }"
 expected_tokens = """
    0..2    FN
-   3..7    IDENT(sym:12)
+   3..7    IDENT(sym:47)
    7..8    LPAREN
    8..9    RPAREN
   10..12   ARROW
@@ -31,7 +31,7 @@ spec = ["2.1:1"]
 source = "fn main() -> i32 { 1 + 2 }"
 expected_tokens = """
    0..2    FN
-   3..7    IDENT(sym:12)
+   3..7    IDENT(sym:47)
    7..8    LPAREN
    8..9    RPAREN
   10..12   ARROW
@@ -53,7 +53,7 @@ name = "simple_return_ast"
 spec = ["2.1:1"]
 source = "fn main() -> i32 { 42 }"
 expected_ast = """
-Function sym:12 -> sym:2
+Function sym:47 -> sym:7
   Block
     Int(42)
 """
@@ -63,7 +63,7 @@ name = "binary_expr_ast"
 spec = ["2.1:1"]
 source = "fn main() -> i32 { 1 + 2 }"
 expected_ast = """
-Function sym:12 -> sym:2
+Function sym:47 -> sym:7
   Block
     Binary Add
       Int(1)
@@ -75,11 +75,11 @@ name = "let_binding_ast"
 spec = ["2.1:1"]
 source = "fn main() -> i32 { let x = 42; x }"
 expected_ast = """
-Function sym:12 -> sym:2
+Function sym:47 -> sym:7
   Block
-    Let sym:13
+    Let sym:52
       Int(42)
-    Ident(sym:13)
+    Ident(sym:52)
 """
 
 [[case]]
@@ -87,7 +87,7 @@ name = "if_else_ast"
 spec = ["2.1:1"]
 source = "fn main() -> i32 { if true { 1 } else { 2 } }"
 expected_ast = """
-Function sym:12 -> sym:2
+Function sym:47 -> sym:7
   Block
     If
       Cond:

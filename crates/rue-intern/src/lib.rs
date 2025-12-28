@@ -3,7 +3,7 @@
 //! This crate provides efficient string interning, storing each unique string
 //! once and returning lightweight handles for fast comparison and lookup.
 //!
-//! Design inspired by Zig's string interning approach for fast compilation.
+//! Built on the [`string_interner`] crate with a thread-safe wrapper.
 //!
 //! # Thread Safety
 //!
@@ -11,28 +11,32 @@
 //! All methods take `&self` (not `&mut self`), enabling concurrent access.
 //! This allows parallel compilation phases to share the interner.
 
-use std::collections::HashMap;
 use std::sync::RwLock;
-use std::sync::atomic::{AtomicU32, Ordering};
+use string_interner::backend::BufferBackend;
+use string_interner::symbol::SymbolU32;
+use string_interner::{StringInterner, Symbol as SymbolTrait};
 
 /// A handle to an interned string.
 ///
 /// This is a lightweight (4 bytes) handle that can be cheaply copied and compared.
 /// The actual string data is stored in the [`Interner`].
+///
+/// Note: This is a newtype wrapper around string_interner's SymbolU32 to maintain
+/// our public API and allow for future customization.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct Symbol(u32);
+pub struct Symbol(SymbolU32);
 
 impl Symbol {
-    /// Create a symbol from a raw index. Only for internal use.
+    /// Create a symbol from a raw index.
     #[inline]
-    const fn from_raw(index: u32) -> Self {
-        Self(index)
+    fn from_usize(index: usize) -> Option<Self> {
+        SymbolU32::try_from_usize(index).map(Symbol)
     }
 
     /// Get the raw index of this symbol.
     #[inline]
-    pub const fn as_u32(self) -> u32 {
-        self.0
+    pub fn as_u32(self) -> u32 {
+        self.0.to_usize() as u32
     }
 }
 
@@ -88,21 +92,17 @@ impl WellKnown {
     }
 }
 
-/// Internal state of the interner, protected by an RwLock.
-#[derive(Debug)]
-struct InternerInner {
-    /// Concatenated string data
-    data: String,
-    /// Start offset of each interned string (end is next start or data.len())
-    offsets: Vec<u32>,
-    /// Map from string content to symbol for deduplication
-    map: HashMap<Box<str>, Symbol>,
-}
+/// The underlying string interner type.
+///
+/// We use BufferBackend which has the best memory efficiency:
+/// - Minimal memory footprint (all strings in one buffer)
+/// - Fewest allocations
+/// - Trade-off: slower symbol resolution (but we rarely resolve)
+type InnerInterner = StringInterner<BufferBackend<SymbolU32>>;
 
 /// String interner that stores unique strings and returns [`Symbol`] handles.
 ///
 /// All strings are stored contiguously in a single buffer for cache efficiency.
-/// A separate vector tracks the start offset of each string.
 ///
 /// # Thread Safety
 ///
@@ -111,10 +111,8 @@ struct InternerInner {
 /// internal synchronization using `RwLock`.
 #[derive(Debug)]
 pub struct Interner {
-    /// Internal state protected by RwLock for thread safety
-    inner: RwLock<InternerInner>,
-    /// Next symbol ID, atomic for lock-free reads during interning
-    next_id: AtomicU32,
+    /// Internal interner protected by RwLock for thread safety
+    inner: RwLock<InnerInterner>,
     /// Well-known symbols for built-in types
     well_known: WellKnown,
 }
@@ -128,82 +126,27 @@ impl Default for Interner {
 impl Interner {
     /// Create a new interner with well-known symbols pre-interned.
     pub fn new() -> Self {
-        let inner = RwLock::new(InternerInner {
-            data: String::new(),
-            offsets: Vec::new(),
-            map: HashMap::new(),
-        });
-        let next_id = AtomicU32::new(0);
+        let inner = RwLock::new(InnerInterner::new());
 
-        // Create interner without well_known first
+        // Create a placeholder symbol for initialization
+        let placeholder = Symbol::from_usize(0).unwrap();
+
+        // Create interner without well_known first (placeholder values)
         let interner = Self {
             inner,
-            next_id,
-            // Placeholder - will be replaced
             well_known: WellKnown {
-                i8: Symbol::from_raw(0),
-                i16: Symbol::from_raw(0),
-                i32: Symbol::from_raw(0),
-                i64: Symbol::from_raw(0),
-                u8: Symbol::from_raw(0),
-                u16: Symbol::from_raw(0),
-                u32: Symbol::from_raw(0),
-                u64: Symbol::from_raw(0),
-                bool: Symbol::from_raw(0),
-                unit: Symbol::from_raw(0),
-                never: Symbol::from_raw(0),
-                string: Symbol::from_raw(0),
-            },
-        };
-
-        // Now intern the well-known symbols
-        let well_known = WellKnown::new(&interner);
-
-        // We need to update the well_known field. Since Interner is not yet shared,
-        // this is safe. We use unsafe to modify the field after initialization.
-        // This is sound because:
-        // 1. The interner is not yet accessible from other threads
-        // 2. WellKnown is Copy, so we're just copying data
-        //
-        // A cleaner approach would be to use Option<WellKnown> or OnceCell, but
-        // this adds overhead to every well_known() call. Since initialization is
-        // the only time we modify this, and it happens before any sharing, we
-        // use unsafe for zero-overhead access.
-        let interner = Self {
-            inner: interner.inner,
-            next_id: interner.next_id,
-            well_known,
-        };
-
-        interner
-    }
-
-    /// Create an interner with pre-allocated capacity.
-    pub fn with_capacity(strings: usize, bytes: usize) -> Self {
-        let inner = RwLock::new(InternerInner {
-            data: String::with_capacity(bytes),
-            offsets: Vec::with_capacity(strings),
-            map: HashMap::with_capacity(strings),
-        });
-        let next_id = AtomicU32::new(0);
-
-        // Create interner without well_known first
-        let interner = Self {
-            inner,
-            next_id,
-            well_known: WellKnown {
-                i8: Symbol::from_raw(0),
-                i16: Symbol::from_raw(0),
-                i32: Symbol::from_raw(0),
-                i64: Symbol::from_raw(0),
-                u8: Symbol::from_raw(0),
-                u16: Symbol::from_raw(0),
-                u32: Symbol::from_raw(0),
-                u64: Symbol::from_raw(0),
-                bool: Symbol::from_raw(0),
-                unit: Symbol::from_raw(0),
-                never: Symbol::from_raw(0),
-                string: Symbol::from_raw(0),
+                i8: placeholder,
+                i16: placeholder,
+                i32: placeholder,
+                i64: placeholder,
+                u8: placeholder,
+                u16: placeholder,
+                u32: placeholder,
+                u64: placeholder,
+                bool: placeholder,
+                unit: placeholder,
+                never: placeholder,
+                string: placeholder,
             },
         };
 
@@ -212,7 +155,40 @@ impl Interner {
 
         Self {
             inner: interner.inner,
-            next_id: interner.next_id,
+            well_known,
+        }
+    }
+
+    /// Create an interner with pre-allocated capacity.
+    pub fn with_capacity(strings: usize, _bytes: usize) -> Self {
+        // Note: string_interner's with_capacity only takes string count, not byte count
+        let inner = RwLock::new(InnerInterner::with_capacity(strings));
+
+        // Create a placeholder symbol for initialization
+        let placeholder = Symbol::from_usize(0).unwrap();
+
+        let interner = Self {
+            inner,
+            well_known: WellKnown {
+                i8: placeholder,
+                i16: placeholder,
+                i32: placeholder,
+                i64: placeholder,
+                u8: placeholder,
+                u16: placeholder,
+                u32: placeholder,
+                u64: placeholder,
+                bool: placeholder,
+                unit: placeholder,
+                never: placeholder,
+                string: placeholder,
+            },
+        };
+
+        let well_known = WellKnown::new(&interner);
+
+        Self {
+            inner: interner.inner,
             well_known,
         }
     }
@@ -237,8 +213,8 @@ impl Interner {
         // Fast path: check if already interned (read lock)
         {
             let inner = self.inner.read().unwrap();
-            if let Some(&sym) = inner.map.get(s) {
-                return sym;
+            if let Some(sym) = inner.get(s) {
+                return Symbol(sym);
             }
         }
 
@@ -246,31 +222,11 @@ impl Interner {
         let mut inner = self.inner.write().unwrap();
 
         // Double-check after acquiring write lock (another thread may have interned)
-        if let Some(&sym) = inner.map.get(s) {
-            return sym;
+        if let Some(sym) = inner.get(s) {
+            return Symbol(sym);
         }
 
-        // Debug assertions for u32 overflow - these are critical for catching
-        // pathological inputs during development without affecting release perf
-        debug_assert!(
-            inner.data.len() <= u32::MAX as usize,
-            "interner data buffer overflow: {} bytes exceeds u32::MAX",
-            inner.data.len()
-        );
-        debug_assert!(
-            inner.offsets.len() < u32::MAX as usize,
-            "interner symbol count overflow: {} symbols exceeds u32::MAX - 1",
-            inner.offsets.len()
-        );
-
-        let start = inner.data.len() as u32;
-        let sym = Symbol::from_raw(self.next_id.fetch_add(1, Ordering::Relaxed));
-
-        inner.data.push_str(s);
-        inner.offsets.push(start);
-        inner.map.insert(s.into(), sym);
-
-        sym
+        Symbol(inner.get_or_intern(s))
     }
 
     /// Get the string for a symbol.
@@ -280,29 +236,19 @@ impl Interner {
     #[inline]
     pub fn get(&self, sym: Symbol) -> &str {
         let inner = self.inner.read().unwrap();
-        let idx = sym.0 as usize;
-        let start = inner.offsets[idx] as usize;
-        let end = inner
-            .offsets
-            .get(idx + 1)
-            .map(|&o| o as usize)
-            .unwrap_or(inner.data.len());
-
         // SAFETY: We're returning a reference to data inside the RwLock.
         // This is safe because:
-        // 1. The data buffer is append-only (we never modify existing strings)
-        // 2. The offsets are append-only (we never change existing offsets)
-        // 3. While we hold the read guard, no writes can occur
-        // 4. After we release the guard, the returned &str is still valid because
-        //    the underlying data is never deallocated or moved (String is stable)
+        // 1. The string_interner backend uses stable storage (BufferBackend)
+        // 2. While we hold the read guard, no writes can occur
+        // 3. The underlying buffer is never deallocated or moved
         //
         // We use unsafe here to avoid the lifetime restriction of the RwLock guard.
-        // The String's buffer is never reallocated after interning (we don't shrink),
-        // and new data is only appended, so existing slices remain valid.
         unsafe {
-            let data_ptr = inner.data.as_ptr();
-            let slice = std::slice::from_raw_parts(data_ptr.add(start), end - start);
-            std::str::from_utf8_unchecked(slice)
+            let s = inner
+                .resolve(sym.0)
+                .expect("invalid symbol: not from this interner");
+            // Extend the lifetime beyond the guard
+            &*(s as *const str)
         }
     }
 
@@ -310,20 +256,8 @@ impl Interner {
     #[inline]
     pub fn try_get(&self, sym: Symbol) -> Option<&str> {
         let inner = self.inner.read().unwrap();
-        let idx = sym.0 as usize;
-        let start = *inner.offsets.get(idx)? as usize;
-        let end = inner
-            .offsets
-            .get(idx + 1)
-            .map(|&o| o as usize)
-            .unwrap_or(inner.data.len());
-
-        // SAFETY: Same reasoning as get() - data is append-only
-        unsafe {
-            let data_ptr = inner.data.as_ptr();
-            let slice = std::slice::from_raw_parts(data_ptr.add(start), end - start);
-            Some(std::str::from_utf8_unchecked(slice))
-        }
+        // SAFETY: Same reasoning as get() - data is stable in BufferBackend
+        unsafe { inner.resolve(sym.0).map(|s| &*(s as *const str)) }
     }
 
     /// Look up a string's symbol without interning it.
@@ -331,28 +265,31 @@ impl Interner {
     #[inline]
     pub fn get_symbol(&self, s: &str) -> Option<Symbol> {
         let inner = self.inner.read().unwrap();
-        inner.map.get(s).copied()
+        inner.get(s).map(Symbol)
     }
 
     /// Returns the number of interned strings.
     #[inline]
     pub fn len(&self) -> usize {
         let inner = self.inner.read().unwrap();
-        inner.offsets.len()
+        inner.len()
     }
 
     /// Returns true if no strings have been interned.
     #[inline]
     pub fn is_empty(&self) -> bool {
         let inner = self.inner.read().unwrap();
-        inner.offsets.is_empty()
+        inner.is_empty()
     }
 
     /// Returns the total bytes used for string storage.
+    ///
+    /// Note: This is an approximation since string_interner doesn't expose
+    /// the exact byte count. We iterate over all strings to calculate it.
     #[inline]
     pub fn bytes_used(&self) -> usize {
         let inner = self.inner.read().unwrap();
-        inner.data.len()
+        inner.iter().map(|(_, s)| s.len()).sum()
     }
 }
 
@@ -407,7 +344,7 @@ mod tests {
     fn test_try_get_returns_none_for_invalid_symbol() {
         let interner = Interner::new();
         // Create an invalid symbol with an index beyond the interner's capacity
-        let invalid_sym = Symbol::from_raw(9999);
+        let invalid_sym = Symbol::from_usize(9999).unwrap();
         assert!(interner.try_get(invalid_sym).is_none());
     }
 
@@ -422,7 +359,7 @@ mod tests {
     #[should_panic]
     fn test_get_panics_for_invalid_symbol() {
         let interner = Interner::new();
-        let invalid_sym = Symbol::from_raw(9999);
+        let invalid_sym = Symbol::from_usize(9999).unwrap();
         let _ = interner.get(invalid_sym); // Should panic
     }
 

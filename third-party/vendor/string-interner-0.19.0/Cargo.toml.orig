@@ -1,0 +1,64 @@
+[package]
+name = "string-interner"
+version = "0.19.0"
+authors = ["Robbepop"]
+license = "MIT/Apache-2.0"
+readme = "README.md"
+repository = "https://github.com/robbepop/string-interner"
+documentation = "https://docs.rs/string-interner"
+keywords = ["interner", "intern", "string", "str", "symbol"]
+description = """Efficient string interner with minimal memory footprint
+and fast access to the underlying strings.
+"""
+categories = ["data-structures"]
+edition = "2021"
+
+[dependencies]
+hashbrown = { version = "0.15.1", default-features = false, features = ["default-hasher", "raw-entry"] }
+serde = { version = "1.0", default-features = false, features = ["alloc"], optional = true }
+
+[dev-dependencies]
+serde_json = "1.0"
+criterion = "0.5.1"
+fxhash = "0.2"
+
+[[bench]]
+name = "bench"
+harness = false
+
+[features]
+default = ["std", "serde", "inline-more", "backends"]
+std = ["serde?/std"]
+
+# Enable this if you need `Serde` serialization and deserialization support.
+#
+# Enabled by default.
+serde = ["dep:serde"]
+
+# Use this to mark more public functions of the StringInterner (and hashbrown)
+# as inline. This significantly increases compile times of the crate but improves
+# upon runtime execution.
+#
+# Enabled by default.
+inline-more = ["hashbrown/inline-more"]
+
+# Enables the backends provided out of the box by this crate.
+# Disable this if you want to only use your own backend and thus don't have
+# the need for those present backends. Reduces compilation time of this crate.
+#
+# Enabled by default.
+backends = []
+
+# Enables testing of memory heap allocations.
+#
+# These tests are disabled by default since they are slow
+# compared to the other unit tests and also are required
+# to run single threaded using `--test-threads 1` as `rustc`
+# argument:
+#
+# cargo test --feature test-allocations -- --test-threads 1
+test-allocations = []
+
+[badges]
+travis-ci = { repository = "Robbepop/string-interner" }
+appveyor = { repository = "Robbepop/string-interner", branch = "master", service = "github" }

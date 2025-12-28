@@ -1,0 +1,171 @@
+name: Rust - Continuous Integration
+
+on:
+  push:
+    branches: [ master ]
+  pull_request:
+    branches: [ master ]
+
+jobs:
+  build:
+    name: Build
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown, thumbv7em-none-eabi
+      - name: Set up Rust cache
+        uses: Swatinem/rust-cache@v2
+      - name: Checkout Submodules
+        run: git submodule update --init --recursive
+      - name: Build
+        run: cargo build
+      - name: Build (All Features)
+        run: cargo build --all-features
+      - name: Build (no_std)
+        run: cargo build --no-default-features --target thumbv7em-none-eabi
+      - name: Build (Wasm)
+        run: cargo build --no-default-features --target wasm32-unknown-unknown
+
+  test:
+    name: Test
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Set up Rust cache
+        uses: Swatinem/rust-cache@v2
+      - name: Checkout Submodules
+        run: git submodule update --init --recursive
+      - name: Test (Release)
+        env:
+          RUSTFLAGS: "-C debug-assertions"
+        run: cargo test --release
+
+  test-memory:
+    name: Test Memory Consumption
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Set up Rust cache
+        uses: Swatinem/rust-cache@v2
+      - name: Test (Memory Consumption)
+        run: cargo test --release --features test-allocations -- --test-threads 1 test_memory_consumption
+
+  fmt:
+    name: Formatting
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rustfmt
+      - name: Check Formatting
+        run: cargo fmt --all -- --check
+
+  doc:
+    name: Documentation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rust-docs, rust-src
+      - name: Set up Rust cache
+        uses: Swatinem/rust-cache@v2
+      - name: Check Docs
+        env:
+          RUSTDOCFLAGS: '-D warnings'
+        run: cargo doc --workspace --no-deps --document-private-items
+
+  clippy:
+    name: Clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: clippy
+      - name: Set up Rust cache
+        uses: Swatinem/rust-cache@v2
+      - name: Check Clippy
+        run: cargo clippy -- -D warnings
+
+  outdated:
+    name: Outdated Dependencies
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Set up Rust cache
+        uses: Swatinem/rust-cache@v2
+      - name: Install `cargo-outdated`
+        run: cargo install cargo-outdated
+      - name: Check Dependencies
+        run: cargo outdated --root-deps-only --workspace --exit-code 1
+
+  audit:
+    name: Audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Set up Rust cache
+        uses: Swatinem/rust-cache@v2
+      - name: Install `cargo-audit`
+        run: cargo install cargo-audit
+      - name: Audit Dependencies
+        run: cargo audit --deny warnings
+
+  miri:
+    name: Miri
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: miri
+      - name: Set up Rust cache
+        uses: Swatinem/rust-cache@v2
+      - name: Test with Miri
+        run: cargo miri test
+
+  coverage:
+    name: Coverage
+    runs-on: ubuntu-latest
+    container:
+      image: xd009642/tarpaulin:develop-nightly
+      options: --security-opt seccomp=unconfined
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332
+        with:
+          submodules: true
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@nightly
+      - name: Set up Rust cache
+        uses: Swatinem/rust-cache@v2
+      - name: Generate code coverage
+        run: |
+          cargo tarpaulin --verbose --all-features --workspace --timeout 120 --out xml -- --test-threads 1
+      - name: Upload to codecov.io
+        uses: codecov/codecov-action@v5.3.1
+        with:
+          token: ${{secrets.CODECOV_TOKEN}}
+          fail_ci_if_error: true
+      - name: Archive code coverage results
+        uses: actions/upload-artifact@v4
+        with:
+          name: code-coverage-report
+          path: cobertura.xml
