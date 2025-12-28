@@ -302,24 +302,24 @@ pub fn compile_frontend_with_options(
     let _span = info_span!("frontend", source_bytes = source.len()).entered();
 
     // Lexing
-    let tokens = {
+    let (tokens, interner) = {
         let _span = info_span!("lexer").entered();
-        let mut lexer = Lexer::new(source);
-        let tokens = lexer.tokenize()?;
+        let lexer = Lexer::new(source);
+        let (tokens, interner) = lexer.tokenize()?;
         info!(token_count = tokens.len(), "lexing complete");
-        tokens
+        (tokens, interner)
     };
 
     // Parsing
-    let ast = {
+    let (ast, interner) = {
         let _span = info_span!("parser").entered();
-        let parser = Parser::new(tokens);
-        let ast = parser.parse()?;
+        let parser = Parser::new(tokens, interner);
+        let (ast, interner) = parser.parse()?;
         info!(item_count = ast.items.len(), "parsing complete");
-        ast
+        (ast, interner)
     };
 
-    compile_frontend_from_ast_with_options(ast, opt_level, preview_features)
+    compile_frontend_from_ast_with_options(ast, interner, opt_level, preview_features)
 }
 
 /// Compile from an already-parsed AST through all remaining frontend phases.
@@ -330,8 +330,13 @@ pub fn compile_frontend_with_options(
 ///
 /// Uses default optimization level (O0) and no preview features. For custom options,
 /// use [`compile_frontend_from_ast_with_options`].
-pub fn compile_frontend_from_ast(ast: Ast) -> CompileResult<CompileState> {
-    compile_frontend_from_ast_with_options(ast, OptLevel::default(), &PreviewFeatures::new())
+pub fn compile_frontend_from_ast(ast: Ast, interner: Interner) -> CompileResult<CompileState> {
+    compile_frontend_from_ast_with_options(
+        ast,
+        interner,
+        OptLevel::default(),
+        &PreviewFeatures::new(),
+    )
 }
 
 /// Compile from an already-parsed AST through all remaining frontend phases with optimization.
@@ -341,13 +346,13 @@ pub fn compile_frontend_from_ast(ast: Ast) -> CompileResult<CompileState> {
 /// need both AST output and later stage output without double-parsing).
 pub fn compile_frontend_from_ast_with_options(
     ast: Ast,
+    interner: Interner,
     opt_level: OptLevel,
     preview_features: &PreviewFeatures,
 ) -> CompileResult<CompileState> {
     // AST to RIR (untyped IR)
     let (rir, interner) = {
         let _span = info_span!("astgen").entered();
-        let interner = Interner::new();
         let astgen = AstGen::new(&ast, &interner);
         let rir = astgen.generate();
         info!(instruction_count = rir.len(), "AST generation complete");
@@ -1005,15 +1010,14 @@ pub struct AirOutput {
 /// ```
 pub fn compile_to_air(source: &str) -> CompileResult<AirOutput> {
     // Lexing
-    let mut lexer = Lexer::new(source);
-    let tokens = lexer.tokenize()?;
+    let lexer = Lexer::new(source);
+    let (tokens, interner) = lexer.tokenize()?;
 
     // Parsing
-    let parser = Parser::new(tokens);
-    let ast = parser.parse()?;
+    let parser = Parser::new(tokens, interner);
+    let (ast, interner) = parser.parse()?;
 
     // AST to RIR (untyped IR)
-    let interner = Interner::new();
     let astgen = AstGen::new(&ast, &interner);
     let rir = astgen.generate();
 

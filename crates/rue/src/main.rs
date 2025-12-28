@@ -735,39 +735,39 @@ fn handle_emit(source: &str, options: &Options, formatter: &DiagnosticFormatter)
         .unwrap_or(0);
 
     // Stage 0: Tokenize (needed for tokens output or any later stage)
-    let tokens = if max_stage >= 0 {
-        let mut lexer = Lexer::new(source);
+    let (tokens, interner) = if max_stage >= 0 {
+        let lexer = Lexer::new(source);
         match lexer.tokenize() {
-            Ok(tokens) => Some(tokens),
+            Ok((tokens, interner)) => (Some(tokens), Some(interner)),
             Err(e) => {
                 eprintln!("{}", formatter.format_error(&e));
                 return Err(());
             }
         }
     } else {
-        None
+        (None, None)
     };
 
     // Stage 1: Parse (needed for AST output or any later stage)
     // Only clone tokens if we're also emitting them; otherwise move them into the parser
     let needs_tokens = options.emit_stages.contains(&EmitStage::Tokens);
-    let (tokens, ast) = if max_stage >= 1 {
+    let (tokens, ast, interner) = if max_stage >= 1 {
         let (kept_tokens, parser_tokens) = if needs_tokens {
             let t = tokens.unwrap();
             (Some(t.clone()), t)
         } else {
             (None, tokens.unwrap())
         };
-        let parser = Parser::new(parser_tokens);
+        let parser = Parser::new(parser_tokens, interner.unwrap());
         match parser.parse() {
-            Ok(ast) => (kept_tokens, Some(ast)),
+            Ok((ast, interner)) => (kept_tokens, Some(ast), Some(interner)),
             Err(e) => {
                 eprintln!("{}", formatter.format_error(&e));
                 return Err(());
             }
         }
     } else {
-        (tokens, None)
+        (tokens, None, interner)
     };
 
     // Stage 2: Full frontend (RIR, AIR, CFG) - reuses the already-parsed AST
@@ -775,6 +775,7 @@ fn handle_emit(source: &str, options: &Options, formatter: &DiagnosticFormatter)
     let frontend_state = if max_stage >= 2 {
         match compile_frontend_from_ast_with_options(
             ast.clone().unwrap(),
+            interner.unwrap(),
             options.opt_level,
             &options.preview_features,
         ) {

@@ -5,6 +5,7 @@
 
 use logos::Logos;
 use rue_error::{CompileError, CompileResult, ErrorKind};
+use rue_intern::{Interner, Symbol};
 use rue_span::Span;
 
 /// Error type for lexing failures.
@@ -20,7 +21,9 @@ pub enum LexError {
 /// Process a string literal starting from an opening quote.
 /// This manually scans for the string content and closing quote,
 /// enabling detection of unterminated strings.
-fn process_string_from_quote(lex: &mut logos::Lexer<LogosTokenKind>) -> Result<String, LexError> {
+fn process_string_from_quote(
+    lex: &mut logos::Lexer<'_, LogosTokenKind>,
+) -> Result<Symbol, LexError> {
     // At this point we've matched just the opening quote "
     // We need to scan remainder for string content and closing quote
     let remainder = lex.remainder();
@@ -78,12 +81,16 @@ fn process_string_from_quote(lex: &mut logos::Lexer<LogosTokenKind>) -> Result<S
 
     // Advance past the string content and closing quote
     lex.bump(consumed);
-    Ok(result)
+
+    // Intern the string
+    let symbol = lex.extras.intern(&result);
+    Ok(symbol)
 }
 
 /// Token kinds in the Rue language, using logos derive macro.
 #[derive(Logos, Debug, Clone, PartialEq, Eq)]
 #[logos(error = LexError)]
+#[logos(extras = Interner)]
 #[logos(skip r"[ \t\n\r\f]+")]
 #[logos(skip r"//[^\n]*")]
 pub enum LogosTokenKind {
@@ -160,11 +167,11 @@ pub enum LogosTokenKind {
     // String literals - match opening quote and process content manually
     // This allows detection of unterminated strings
     #[token("\"", process_string_from_quote)]
-    String(String),
+    String(Symbol),
 
     // Identifiers (lower priority than keywords)
-    #[regex(r"[a-zA-Z_][a-zA-Z0-9_]*", |lex| lex.slice().to_string(), priority = 1)]
-    Ident(String),
+    #[regex(r"[a-zA-Z_][a-zA-Z0-9_]*", |lex| lex.extras.intern(lex.slice()), priority = 1)]
+    Ident(Symbol),
 
     // Multi-character operators (logos automatically prefers longer matches)
     #[token("==")]
@@ -323,46 +330,66 @@ impl From<LogosTokenKind> for TokenKind {
 /// Logos-based lexer that converts source text into tokens.
 pub struct LogosLexer<'a> {
     source: &'a str,
+    interner: Interner,
 }
 
 impl<'a> LogosLexer<'a> {
-    /// Create a new lexer for the given source text.
+    /// Create a new lexer for the given source text with a fresh interner.
     pub fn new(source: &'a str) -> Self {
-        Self { source }
+        Self {
+            source,
+            interner: Interner::new(),
+        }
     }
 
-    /// Tokenize the entire source, returning all tokens.
-    pub fn tokenize(&mut self) -> CompileResult<Vec<Token>> {
+    /// Create a new lexer with an existing interner.
+    pub fn with_interner(source: &'a str, interner: Interner) -> Self {
+        Self { source, interner }
+    }
+
+    /// Tokenize the entire source, returning all tokens and the interner.
+    pub fn tokenize(self) -> CompileResult<(Vec<Token>, Interner)> {
         // Estimate capacity: source length / 4 is a rough heuristic for token density
         let mut tokens = Vec::with_capacity(self.source.len() / 4);
 
-        for (result, span) in LogosTokenKind::lexer(self.source).spanned() {
-            match result {
-                Ok(logos_kind) => {
-                    tokens.push(Token {
-                        kind: logos_kind.into(),
-                        span: Span::new(span.start as u32, span.end as u32),
-                    });
-                }
-                Err(lex_error) => {
-                    let rue_span = Span::new(span.start as u32, span.end as u32);
-                    let slice = &self.source[span.clone()];
-                    let error_char = slice.chars().next().unwrap_or('?');
-                    let kind = match lex_error {
-                        LexError::InvalidInteger => ErrorKind::InvalidInteger,
-                        LexError::UnexpectedCharacter => ErrorKind::UnexpectedCharacter(error_char),
-                        LexError::InvalidStringEscape => {
-                            // Find the escape character after backslash
-                            let escape_char = slice
-                                .find('\\')
-                                .and_then(|pos| slice[pos + 1..].chars().next())
-                                .unwrap_or('?');
-                            ErrorKind::InvalidStringEscape(escape_char)
+        let mut lexer = LogosTokenKind::lexer_with_extras(self.source, self.interner);
+
+        loop {
+            let span_start = lexer.span().end;
+            match lexer.next() {
+                Some(result) => {
+                    let span = lexer.span();
+                    match result {
+                        Ok(logos_kind) => {
+                            tokens.push(Token {
+                                kind: logos_kind.into(),
+                                span: Span::new(span.start as u32, span.end as u32),
+                            });
                         }
-                        LexError::UnterminatedString => ErrorKind::UnterminatedString,
-                    };
-                    return Err(CompileError::new(kind, rue_span));
+                        Err(lex_error) => {
+                            let rue_span = Span::new(span.start as u32, span.end as u32);
+                            let slice = lexer.slice();
+                            let error_char = slice.chars().next().unwrap_or('?');
+                            let kind = match lex_error {
+                                LexError::InvalidInteger => ErrorKind::InvalidInteger,
+                                LexError::UnexpectedCharacter => {
+                                    ErrorKind::UnexpectedCharacter(error_char)
+                                }
+                                LexError::InvalidStringEscape => {
+                                    // Find the escape character after backslash
+                                    let escape_char = slice
+                                        .find('\\')
+                                        .and_then(|pos| slice[pos + 1..].chars().next())
+                                        .unwrap_or('?');
+                                    ErrorKind::InvalidStringEscape(escape_char)
+                                }
+                                LexError::UnterminatedString => ErrorKind::UnterminatedString,
+                            };
+                            return Err(CompileError::new(kind, rue_span));
+                        }
+                    }
                 }
+                None => break,
             }
         }
 
@@ -373,7 +400,10 @@ impl<'a> LogosLexer<'a> {
             span: Span::point(eof_pos),
         });
 
-        Ok(tokens)
+        // Extract the interner from the logos lexer
+        let interner = lexer.extras;
+
+        Ok((tokens, interner))
     }
 }
 
@@ -381,13 +411,29 @@ impl<'a> LogosLexer<'a> {
 mod tests {
     use super::*;
 
+    /// Helper to get the string for a symbol from the interner.
+    fn get_ident_str<'a>(kind: &TokenKind, interner: &'a Interner) -> Option<&'a str> {
+        match kind {
+            TokenKind::Ident(sym) => Some(interner.get(*sym)),
+            _ => None,
+        }
+    }
+
+    /// Helper to get the string for a string literal symbol.
+    fn get_string_str<'a>(kind: &TokenKind, interner: &'a Interner) -> Option<&'a str> {
+        match kind {
+            TokenKind::String(sym) => Some(interner.get(*sym)),
+            _ => None,
+        }
+    }
+
     #[test]
     fn test_logos_basic_tokens() {
-        let mut lexer = LogosLexer::new("fn main() -> i32 { 42 }");
-        let tokens = lexer.tokenize().unwrap();
+        let lexer = LogosLexer::new("fn main() -> i32 { 42 }");
+        let (tokens, interner) = lexer.tokenize().unwrap();
 
         assert!(matches!(tokens[0].kind, TokenKind::Fn));
-        assert!(matches!(tokens[1].kind, TokenKind::Ident(ref s) if s == "main"));
+        assert_eq!(get_ident_str(&tokens[1].kind, &interner), Some("main"));
         assert!(matches!(tokens[2].kind, TokenKind::LParen));
         assert!(matches!(tokens[3].kind, TokenKind::RParen));
         assert!(matches!(tokens[4].kind, TokenKind::Arrow));
@@ -400,7 +446,7 @@ mod tests {
 
     #[test]
     fn test_logos_unexpected_character() {
-        let mut lexer = LogosLexer::new("fn main() { $ }");
+        let lexer = LogosLexer::new("fn main() { $ }");
         let result = lexer.tokenize();
         assert!(result.is_err());
         let err = result.unwrap_err();
@@ -409,16 +455,16 @@ mod tests {
 
     #[test]
     fn test_logos_at_token() {
-        let mut lexer = LogosLexer::new("@dbg");
-        let tokens = lexer.tokenize().unwrap();
+        let lexer = LogosLexer::new("@dbg");
+        let (tokens, interner) = lexer.tokenize().unwrap();
         assert!(matches!(tokens[0].kind, TokenKind::At));
-        assert!(matches!(tokens[1].kind, TokenKind::Ident(ref s) if s == "dbg"));
+        assert_eq!(get_ident_str(&tokens[1].kind, &interner), Some("dbg"));
     }
 
     #[test]
     fn test_logos_spans() {
-        let mut lexer = LogosLexer::new("fn main");
-        let tokens = lexer.tokenize().unwrap();
+        let lexer = LogosLexer::new("fn main");
+        let (tokens, _interner) = lexer.tokenize().unwrap();
 
         assert_eq!(tokens[0].span, Span::new(0, 2)); // "fn"
         assert_eq!(tokens[1].span, Span::new(3, 7)); // "main"
@@ -426,8 +472,8 @@ mod tests {
 
     #[test]
     fn test_logos_arithmetic_operators() {
-        let mut lexer = LogosLexer::new("1 + 2 - 3 * 4 / 5 % 6");
-        let tokens = lexer.tokenize().unwrap();
+        let lexer = LogosLexer::new("1 + 2 - 3 * 4 / 5 % 6");
+        let (tokens, _interner) = lexer.tokenize().unwrap();
 
         assert!(matches!(tokens[0].kind, TokenKind::Int(1)));
         assert!(matches!(tokens[1].kind, TokenKind::Plus));
@@ -445,29 +491,29 @@ mod tests {
     #[test]
     fn test_logos_minus_vs_arrow() {
         // Minus alone
-        let mut lexer = LogosLexer::new("a - b");
-        let tokens = lexer.tokenize().unwrap();
+        let lexer = LogosLexer::new("a - b");
+        let (tokens, _) = lexer.tokenize().unwrap();
         assert!(matches!(tokens[1].kind, TokenKind::Minus));
 
         // Arrow
-        let mut lexer = LogosLexer::new("-> i32");
-        let tokens = lexer.tokenize().unwrap();
+        let lexer = LogosLexer::new("-> i32");
+        let (tokens, _) = lexer.tokenize().unwrap();
         assert!(matches!(tokens[0].kind, TokenKind::Arrow));
 
         // Minus followed by non-arrow
-        let mut lexer = LogosLexer::new("-1");
-        let tokens = lexer.tokenize().unwrap();
+        let lexer = LogosLexer::new("-1");
+        let (tokens, _) = lexer.tokenize().unwrap();
         assert!(matches!(tokens[0].kind, TokenKind::Minus));
         assert!(matches!(tokens[1].kind, TokenKind::Int(1)));
     }
 
     #[test]
     fn test_logos_let_binding() {
-        let mut lexer = LogosLexer::new("let x = 42;");
-        let tokens = lexer.tokenize().unwrap();
+        let lexer = LogosLexer::new("let x = 42;");
+        let (tokens, interner) = lexer.tokenize().unwrap();
 
         assert!(matches!(tokens[0].kind, TokenKind::Let));
-        assert!(matches!(tokens[1].kind, TokenKind::Ident(ref s) if s == "x"));
+        assert_eq!(get_ident_str(&tokens[1].kind, &interner), Some("x"));
         assert!(matches!(tokens[2].kind, TokenKind::Eq));
         assert!(matches!(tokens[3].kind, TokenKind::Int(42)));
         assert!(matches!(tokens[4].kind, TokenKind::Semi));
@@ -475,8 +521,8 @@ mod tests {
 
     #[test]
     fn test_logos_logical_operators() {
-        let mut lexer = LogosLexer::new("!true && false || true");
-        let tokens = lexer.tokenize().unwrap();
+        let lexer = LogosLexer::new("!true && false || true");
+        let (tokens, _) = lexer.tokenize().unwrap();
 
         assert!(matches!(tokens[0].kind, TokenKind::Bang));
         assert!(matches!(tokens[1].kind, TokenKind::True));
@@ -488,8 +534,8 @@ mod tests {
 
     #[test]
     fn test_logos_comparison_operators() {
-        let mut lexer = LogosLexer::new("a == b != c < d > e <= f >= g");
-        let tokens = lexer.tokenize().unwrap();
+        let lexer = LogosLexer::new("a == b != c < d > e <= f >= g");
+        let (tokens, _) = lexer.tokenize().unwrap();
 
         assert!(matches!(tokens[1].kind, TokenKind::EqEq));
         assert!(matches!(tokens[3].kind, TokenKind::BangEq));
@@ -501,19 +547,19 @@ mod tests {
 
     #[test]
     fn test_logos_line_comments() {
-        let mut lexer = LogosLexer::new("fn // comment\nmain");
-        let tokens = lexer.tokenize().unwrap();
+        let lexer = LogosLexer::new("fn // comment\nmain");
+        let (tokens, interner) = lexer.tokenize().unwrap();
 
         assert!(matches!(tokens[0].kind, TokenKind::Fn));
-        assert!(matches!(tokens[1].kind, TokenKind::Ident(ref s) if s == "main"));
+        assert_eq!(get_ident_str(&tokens[1].kind, &interner), Some("main"));
         assert!(matches!(tokens[2].kind, TokenKind::Eof));
     }
 
     #[test]
     fn test_logos_keywords_vs_identifiers() {
         // Keywords should be recognized
-        let mut lexer = LogosLexer::new("fn let mut if else while break continue true false");
-        let tokens = lexer.tokenize().unwrap();
+        let lexer = LogosLexer::new("fn let mut if else while break continue true false");
+        let (tokens, _) = lexer.tokenize().unwrap();
 
         assert!(matches!(tokens[0].kind, TokenKind::Fn));
         assert!(matches!(tokens[1].kind, TokenKind::Let));
@@ -527,97 +573,97 @@ mod tests {
         assert!(matches!(tokens[9].kind, TokenKind::False));
 
         // Identifiers that start with keywords should be identifiers
-        let mut lexer = LogosLexer::new("fns lets mutable iff elseif whileloop");
-        let tokens = lexer.tokenize().unwrap();
+        let lexer = LogosLexer::new("fns lets mutable iff elseif whileloop");
+        let (tokens, interner) = lexer.tokenize().unwrap();
 
-        assert!(matches!(tokens[0].kind, TokenKind::Ident(ref s) if s == "fns"));
-        assert!(matches!(tokens[1].kind, TokenKind::Ident(ref s) if s == "lets"));
-        assert!(matches!(tokens[2].kind, TokenKind::Ident(ref s) if s == "mutable"));
-        assert!(matches!(tokens[3].kind, TokenKind::Ident(ref s) if s == "iff"));
-        assert!(matches!(tokens[4].kind, TokenKind::Ident(ref s) if s == "elseif"));
-        assert!(matches!(tokens[5].kind, TokenKind::Ident(ref s) if s == "whileloop"));
+        assert_eq!(get_ident_str(&tokens[0].kind, &interner), Some("fns"));
+        assert_eq!(get_ident_str(&tokens[1].kind, &interner), Some("lets"));
+        assert_eq!(get_ident_str(&tokens[2].kind, &interner), Some("mutable"));
+        assert_eq!(get_ident_str(&tokens[3].kind, &interner), Some("iff"));
+        assert_eq!(get_ident_str(&tokens[4].kind, &interner), Some("elseif"));
+        assert_eq!(get_ident_str(&tokens[5].kind, &interner), Some("whileloop"));
     }
 
     #[test]
     fn test_logos_bitwise_operators() {
-        let mut lexer = LogosLexer::new("a & b | c ^ d ~ e << f >> g");
-        let tokens = lexer.tokenize().unwrap();
+        let lexer = LogosLexer::new("a & b | c ^ d ~ e << f >> g");
+        let (tokens, interner) = lexer.tokenize().unwrap();
 
-        assert!(matches!(tokens[0].kind, TokenKind::Ident(ref s) if s == "a"));
+        assert_eq!(get_ident_str(&tokens[0].kind, &interner), Some("a"));
         assert!(matches!(tokens[1].kind, TokenKind::Amp));
-        assert!(matches!(tokens[2].kind, TokenKind::Ident(ref s) if s == "b"));
+        assert_eq!(get_ident_str(&tokens[2].kind, &interner), Some("b"));
         assert!(matches!(tokens[3].kind, TokenKind::Pipe));
-        assert!(matches!(tokens[4].kind, TokenKind::Ident(ref s) if s == "c"));
+        assert_eq!(get_ident_str(&tokens[4].kind, &interner), Some("c"));
         assert!(matches!(tokens[5].kind, TokenKind::Caret));
-        assert!(matches!(tokens[6].kind, TokenKind::Ident(ref s) if s == "d"));
+        assert_eq!(get_ident_str(&tokens[6].kind, &interner), Some("d"));
         assert!(matches!(tokens[7].kind, TokenKind::Tilde));
-        assert!(matches!(tokens[8].kind, TokenKind::Ident(ref s) if s == "e"));
+        assert_eq!(get_ident_str(&tokens[8].kind, &interner), Some("e"));
         assert!(matches!(tokens[9].kind, TokenKind::LtLt));
-        assert!(matches!(tokens[10].kind, TokenKind::Ident(ref s) if s == "f"));
+        assert_eq!(get_ident_str(&tokens[10].kind, &interner), Some("f"));
         assert!(matches!(tokens[11].kind, TokenKind::GtGt));
-        assert!(matches!(tokens[12].kind, TokenKind::Ident(ref s) if s == "g"));
+        assert_eq!(get_ident_str(&tokens[12].kind, &interner), Some("g"));
     }
 
     #[test]
     fn test_logos_bitwise_vs_logical() {
         // Single & should be bitwise AND
-        let mut lexer = LogosLexer::new("a & b");
-        let tokens = lexer.tokenize().unwrap();
+        let lexer = LogosLexer::new("a & b");
+        let (tokens, _) = lexer.tokenize().unwrap();
         assert!(matches!(tokens[1].kind, TokenKind::Amp));
 
         // Double && should be logical AND
-        let mut lexer = LogosLexer::new("a && b");
-        let tokens = lexer.tokenize().unwrap();
+        let lexer = LogosLexer::new("a && b");
+        let (tokens, _) = lexer.tokenize().unwrap();
         assert!(matches!(tokens[1].kind, TokenKind::AmpAmp));
 
         // Single | should be bitwise OR
-        let mut lexer = LogosLexer::new("a | b");
-        let tokens = lexer.tokenize().unwrap();
+        let lexer = LogosLexer::new("a | b");
+        let (tokens, _) = lexer.tokenize().unwrap();
         assert!(matches!(tokens[1].kind, TokenKind::Pipe));
 
         // Double || should be logical OR
-        let mut lexer = LogosLexer::new("a || b");
-        let tokens = lexer.tokenize().unwrap();
+        let lexer = LogosLexer::new("a || b");
+        let (tokens, _) = lexer.tokenize().unwrap();
         assert!(matches!(tokens[1].kind, TokenKind::PipePipe));
     }
 
     #[test]
     fn test_logos_shift_vs_comparison() {
         // << should be left shift
-        let mut lexer = LogosLexer::new("a << b");
-        let tokens = lexer.tokenize().unwrap();
+        let lexer = LogosLexer::new("a << b");
+        let (tokens, _) = lexer.tokenize().unwrap();
         assert!(matches!(tokens[1].kind, TokenKind::LtLt));
 
         // >> should be right shift
-        let mut lexer = LogosLexer::new("a >> b");
-        let tokens = lexer.tokenize().unwrap();
+        let lexer = LogosLexer::new("a >> b");
+        let (tokens, _) = lexer.tokenize().unwrap();
         assert!(matches!(tokens[1].kind, TokenKind::GtGt));
 
         // < should be less than
-        let mut lexer = LogosLexer::new("a < b");
-        let tokens = lexer.tokenize().unwrap();
+        let lexer = LogosLexer::new("a < b");
+        let (tokens, _) = lexer.tokenize().unwrap();
         assert!(matches!(tokens[1].kind, TokenKind::Lt));
 
         // > should be greater than
-        let mut lexer = LogosLexer::new("a > b");
-        let tokens = lexer.tokenize().unwrap();
+        let lexer = LogosLexer::new("a > b");
+        let (tokens, _) = lexer.tokenize().unwrap();
         assert!(matches!(tokens[1].kind, TokenKind::Gt));
 
         // <= should be less than or equal
-        let mut lexer = LogosLexer::new("a <= b");
-        let tokens = lexer.tokenize().unwrap();
+        let lexer = LogosLexer::new("a <= b");
+        let (tokens, _) = lexer.tokenize().unwrap();
         assert!(matches!(tokens[1].kind, TokenKind::LtEq));
 
         // >= should be greater than or equal
-        let mut lexer = LogosLexer::new("a >= b");
-        let tokens = lexer.tokenize().unwrap();
+        let lexer = LogosLexer::new("a >= b");
+        let (tokens, _) = lexer.tokenize().unwrap();
         assert!(matches!(tokens[1].kind, TokenKind::GtEq));
     }
 
     #[test]
     fn test_logos_integer_overflow() {
         // A number too large for u64 should produce InvalidInteger error
-        let mut lexer = LogosLexer::new("99999999999999999999999");
+        let lexer = LogosLexer::new("99999999999999999999999");
         let result = lexer.tokenize();
         assert!(result.is_err());
         let err = result.unwrap_err();
@@ -627,8 +673,8 @@ mod tests {
     #[test]
     fn test_logos_type_keywords() {
         // Type names should be recognized as keywords, not identifiers
-        let mut lexer = LogosLexer::new("i8 i16 i32 i64 u8 u16 u32 u64 bool");
-        let tokens = lexer.tokenize().unwrap();
+        let lexer = LogosLexer::new("i8 i16 i32 i64 u8 u16 u32 u64 bool");
+        let (tokens, _) = lexer.tokenize().unwrap();
 
         assert!(matches!(tokens[0].kind, TokenKind::I8));
         assert!(matches!(tokens[1].kind, TokenKind::I16));
@@ -641,33 +687,33 @@ mod tests {
         assert!(matches!(tokens[8].kind, TokenKind::Bool));
 
         // Identifiers that start with type names should be identifiers
-        let mut lexer = LogosLexer::new("i32x i64ptr boolish u8_data");
-        let tokens = lexer.tokenize().unwrap();
+        let lexer = LogosLexer::new("i32x i64ptr boolish u8_data");
+        let (tokens, interner) = lexer.tokenize().unwrap();
 
-        assert!(matches!(tokens[0].kind, TokenKind::Ident(ref s) if s == "i32x"));
-        assert!(matches!(tokens[1].kind, TokenKind::Ident(ref s) if s == "i64ptr"));
-        assert!(matches!(tokens[2].kind, TokenKind::Ident(ref s) if s == "boolish"));
-        assert!(matches!(tokens[3].kind, TokenKind::Ident(ref s) if s == "u8_data"));
+        assert_eq!(get_ident_str(&tokens[0].kind, &interner), Some("i32x"));
+        assert_eq!(get_ident_str(&tokens[1].kind, &interner), Some("i64ptr"));
+        assert_eq!(get_ident_str(&tokens[2].kind, &interner), Some("boolish"));
+        assert_eq!(get_ident_str(&tokens[3].kind, &interner), Some("u8_data"));
     }
 
     #[test]
     fn test_logos_unterminated_string() {
         // String without closing quote at end of input
-        let mut lexer = LogosLexer::new(r#""hello"#);
+        let lexer = LogosLexer::new(r#""hello"#);
         let result = lexer.tokenize();
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(matches!(err.kind, ErrorKind::UnterminatedString));
 
         // String without closing quote followed by newline
-        let mut lexer = LogosLexer::new("\"hello\nworld");
+        let lexer = LogosLexer::new("\"hello\nworld");
         let result = lexer.tokenize();
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(matches!(err.kind, ErrorKind::UnterminatedString));
 
         // Just an opening quote
-        let mut lexer = LogosLexer::new("\"");
+        let lexer = LogosLexer::new("\"");
         let result = lexer.tokenize();
         assert!(result.is_err());
         let err = result.unwrap_err();
@@ -677,23 +723,62 @@ mod tests {
     #[test]
     fn test_logos_valid_strings() {
         // Valid complete string
-        let mut lexer = LogosLexer::new(r#""hello""#);
-        let tokens = lexer.tokenize().unwrap();
-        assert!(matches!(tokens[0].kind, TokenKind::String(ref s) if s == "hello"));
+        let lexer = LogosLexer::new(r#""hello""#);
+        let (tokens, interner) = lexer.tokenize().unwrap();
+        assert_eq!(get_string_str(&tokens[0].kind, &interner), Some("hello"));
 
         // Empty string
-        let mut lexer = LogosLexer::new(r#""""#);
-        let tokens = lexer.tokenize().unwrap();
-        assert!(matches!(tokens[0].kind, TokenKind::String(ref s) if s.is_empty()));
+        let lexer = LogosLexer::new(r#""""#);
+        let (tokens, interner) = lexer.tokenize().unwrap();
+        assert_eq!(get_string_str(&tokens[0].kind, &interner), Some(""));
 
         // String with escaped quote
-        let mut lexer = LogosLexer::new(r#""hello\"world""#);
-        let tokens = lexer.tokenize().unwrap();
-        assert!(matches!(tokens[0].kind, TokenKind::String(ref s) if s == "hello\"world"));
+        let lexer = LogosLexer::new(r#""hello\"world""#);
+        let (tokens, interner) = lexer.tokenize().unwrap();
+        assert_eq!(
+            get_string_str(&tokens[0].kind, &interner),
+            Some("hello\"world")
+        );
 
         // String with escaped backslash
-        let mut lexer = LogosLexer::new(r#""hello\\world""#);
-        let tokens = lexer.tokenize().unwrap();
-        assert!(matches!(tokens[0].kind, TokenKind::String(ref s) if s == "hello\\world"));
+        let lexer = LogosLexer::new(r#""hello\\world""#);
+        let (tokens, interner) = lexer.tokenize().unwrap();
+        assert_eq!(
+            get_string_str(&tokens[0].kind, &interner),
+            Some("hello\\world")
+        );
+    }
+
+    #[test]
+    fn test_interning_deduplicates() {
+        // Same identifier appearing multiple times should have same Symbol
+        let lexer = LogosLexer::new("x x x");
+        let (tokens, _interner) = lexer.tokenize().unwrap();
+
+        let sym0 = match &tokens[0].kind {
+            TokenKind::Ident(s) => *s,
+            _ => panic!("expected Ident"),
+        };
+        let sym1 = match &tokens[1].kind {
+            TokenKind::Ident(s) => *s,
+            _ => panic!("expected Ident"),
+        };
+        let sym2 = match &tokens[2].kind {
+            TokenKind::Ident(s) => *s,
+            _ => panic!("expected Ident"),
+        };
+
+        assert_eq!(sym0, sym1);
+        assert_eq!(sym1, sym2);
+    }
+
+    #[test]
+    fn test_token_kind_is_copy() {
+        // This test ensures TokenKind is Copy by using it in a context that requires Copy
+        let lexer = LogosLexer::new("x");
+        let (tokens, _) = lexer.tokenize().unwrap();
+        let kind = tokens[0].kind; // This would fail if TokenKind weren't Copy
+        let _kind2 = kind; // Use both without moving
+        let _kind3 = kind;
     }
 }

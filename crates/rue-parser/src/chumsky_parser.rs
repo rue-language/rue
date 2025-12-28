@@ -17,9 +17,58 @@ use chumsky::input::{Input as ChumskyInput, Stream, ValueInput};
 use chumsky::pratt::{infix, left, prefix};
 use chumsky::prelude::*;
 use rue_error::{CompileError, CompileResult, ErrorKind};
+use rue_intern::{Interner, Symbol};
 use rue_lexer::TokenKind;
 use rue_span::Span;
 use std::borrow::Cow;
+
+use std::cell::RefCell;
+
+/// Pre-interned symbols for primitive type names.
+/// These are interned once when the parser is created and reused for all parsing.
+#[derive(Clone, Copy)]
+pub struct PrimitiveTypeSymbols {
+    pub i8: Symbol,
+    pub i16: Symbol,
+    pub i32: Symbol,
+    pub i64: Symbol,
+    pub u8: Symbol,
+    pub u16: Symbol,
+    pub u32: Symbol,
+    pub u64: Symbol,
+    pub bool: Symbol,
+}
+
+impl PrimitiveTypeSymbols {
+    /// Create a new set of primitive type symbols by interning them.
+    pub fn new(interner: &mut Interner) -> Self {
+        Self {
+            i8: interner.intern("i8"),
+            i16: interner.intern("i16"),
+            i32: interner.intern("i32"),
+            i64: interner.intern("i64"),
+            u8: interner.intern("u8"),
+            u16: interner.intern("u16"),
+            u32: interner.intern("u32"),
+            u64: interner.intern("u64"),
+            bool: interner.intern("bool"),
+        }
+    }
+}
+
+// Thread-local storage for the primitive type symbols during parsing.
+// This is set before parsing and read during parsing.
+thread_local! {
+    static PRIMITIVE_SYMS: RefCell<Option<PrimitiveTypeSymbols>> = const { RefCell::new(None) };
+}
+
+/// Get the primitive type symbols. Panics if not set.
+fn get_primitive_syms() -> PrimitiveTypeSymbols {
+    PRIMITIVE_SYMS.with(|syms| {
+        syms.borrow()
+            .expect("Primitive type symbols not initialized - call parse() instead of using parsers directly")
+    })
+}
 
 /// Convert a `usize` offset to `u32`, asserting it fits in debug builds.
 ///
@@ -67,17 +116,75 @@ fn primitive_type_parser<'src, I>()
 where
     I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
 {
-    select! {
-        TokenKind::I8 = e => TypeExpr::Named(Ident { name: "i8".to_string(), span: to_rue_span(e.span()) }),
-        TokenKind::I16 = e => TypeExpr::Named(Ident { name: "i16".to_string(), span: to_rue_span(e.span()) }),
-        TokenKind::I32 = e => TypeExpr::Named(Ident { name: "i32".to_string(), span: to_rue_span(e.span()) }),
-        TokenKind::I64 = e => TypeExpr::Named(Ident { name: "i64".to_string(), span: to_rue_span(e.span()) }),
-        TokenKind::U8 = e => TypeExpr::Named(Ident { name: "u8".to_string(), span: to_rue_span(e.span()) }),
-        TokenKind::U16 = e => TypeExpr::Named(Ident { name: "u16".to_string(), span: to_rue_span(e.span()) }),
-        TokenKind::U32 = e => TypeExpr::Named(Ident { name: "u32".to_string(), span: to_rue_span(e.span()) }),
-        TokenKind::U64 = e => TypeExpr::Named(Ident { name: "u64".to_string(), span: to_rue_span(e.span()) }),
-        TokenKind::Bool = e => TypeExpr::Named(Ident { name: "bool".to_string(), span: to_rue_span(e.span()) }),
-    }
+    let syms = get_primitive_syms();
+
+    // Create individual parsers for each primitive type
+    let i8_parser = just(TokenKind::I8).map_with(move |_, e| {
+        TypeExpr::Named(Ident {
+            name: syms.i8,
+            span: to_rue_span(e.span()),
+        })
+    });
+    let i16_parser = just(TokenKind::I16).map_with(move |_, e| {
+        TypeExpr::Named(Ident {
+            name: syms.i16,
+            span: to_rue_span(e.span()),
+        })
+    });
+    let i32_parser = just(TokenKind::I32).map_with(move |_, e| {
+        TypeExpr::Named(Ident {
+            name: syms.i32,
+            span: to_rue_span(e.span()),
+        })
+    });
+    let i64_parser = just(TokenKind::I64).map_with(move |_, e| {
+        TypeExpr::Named(Ident {
+            name: syms.i64,
+            span: to_rue_span(e.span()),
+        })
+    });
+    let u8_parser = just(TokenKind::U8).map_with(move |_, e| {
+        TypeExpr::Named(Ident {
+            name: syms.u8,
+            span: to_rue_span(e.span()),
+        })
+    });
+    let u16_parser = just(TokenKind::U16).map_with(move |_, e| {
+        TypeExpr::Named(Ident {
+            name: syms.u16,
+            span: to_rue_span(e.span()),
+        })
+    });
+    let u32_parser = just(TokenKind::U32).map_with(move |_, e| {
+        TypeExpr::Named(Ident {
+            name: syms.u32,
+            span: to_rue_span(e.span()),
+        })
+    });
+    let u64_parser = just(TokenKind::U64).map_with(move |_, e| {
+        TypeExpr::Named(Ident {
+            name: syms.u64,
+            span: to_rue_span(e.span()),
+        })
+    });
+    let bool_parser = just(TokenKind::Bool).map_with(move |_, e| {
+        TypeExpr::Named(Ident {
+            name: syms.bool,
+            span: to_rue_span(e.span()),
+        })
+    });
+
+    choice((
+        i8_parser,
+        i16_parser,
+        i32_parser,
+        i64_parser,
+        u8_parser,
+        u16_parser,
+        u32_parser,
+        u64_parser,
+        bool_parser,
+    ))
 }
 
 /// Parser for type expressions: primitive types (i32, bool, etc.), () for unit, ! for never, or [T; N] for arrays
@@ -86,7 +193,7 @@ fn type_parser<'src, I>()
 where
     I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
 {
-    recursive(|ty| {
+    recursive(move |ty| {
         // Unit type: ()
         let unit_type = just(TokenKind::LParen)
             .then(just(TokenKind::RParen))
@@ -1664,11 +1771,12 @@ fn convert_error(err: Rich<'_, TokenKind>) -> CompileError {
 pub struct ChumskyParser {
     tokens: Vec<(TokenKind, SimpleSpan)>,
     source_len: usize,
+    interner: Interner,
 }
 
 impl ChumskyParser {
-    /// Create a new parser from tokens produced by the lexer.
-    pub fn new(tokens: Vec<rue_lexer::Token>) -> Self {
+    /// Create a new parser from tokens and an interner produced by the lexer.
+    pub fn new(tokens: Vec<rue_lexer::Token>, interner: Interner) -> Self {
         let source_len = tokens.last().map(|t| t.span.end as usize).unwrap_or(0);
 
         let spanned_tokens: Vec<(TokenKind, SimpleSpan)> = tokens
@@ -1684,11 +1792,16 @@ impl ChumskyParser {
         Self {
             tokens: spanned_tokens,
             source_len,
+            interner,
         }
     }
 
-    /// Parse the tokens into an AST.
-    pub fn parse(&self) -> CompileResult<Ast> {
+    /// Parse the tokens into an AST, returning the AST and the interner.
+    pub fn parse(mut self) -> CompileResult<(Ast, Interner)> {
+        // Pre-intern primitive type symbols and store in thread-local
+        let syms = PrimitiveTypeSymbols::new(&mut self.interner);
+        PRIMITIVE_SYMS.with(|s| *s.borrow_mut() = Some(syms));
+
         // Create a stream from the token iterator
         let token_iter = self.tokens.iter().cloned();
         let stream = Stream::from_iter(token_iter);
@@ -1697,10 +1810,15 @@ impl ChumskyParser {
         let eoi: SimpleSpan = (self.source_len..self.source_len).into();
         let mapped = stream.map(eoi, |(tok, span)| (tok, span));
 
-        ast_parser()
+        let result = ast_parser()
             .parse(mapped)
             .into_result()
-            .map_err(|errs| convert_error(errs.into_iter().next().unwrap()))
+            .map_err(|errs| convert_error(errs.into_iter().next().unwrap()));
+
+        // Clear thread-local after parsing
+        PRIMITIVE_SYMS.with(|s| *s.borrow_mut() = None);
+
+        result.map(|ast| (ast, self.interner))
     }
 }
 
@@ -1709,37 +1827,69 @@ mod tests {
     use super::*;
     use rue_lexer::Lexer;
 
-    fn parse(source: &str) -> CompileResult<Ast> {
-        let mut lexer = Lexer::new(source);
-        let tokens = lexer.tokenize()?;
-        let parser = ChumskyParser::new(tokens);
-        parser.parse()
+    /// Result type for parsing that includes both the AST and interner.
+    /// Provides convenient access to both the parsed AST and symbol resolution.
+    #[derive(Debug)]
+    struct ParseResult {
+        ast: Ast,
+        interner: Interner,
     }
 
-    fn parse_expr(source: &str) -> CompileResult<Expr> {
-        let ast = parse(&format!("fn main() -> i32 {{ {} }}", source))?;
-        match ast.items.into_iter().next().unwrap() {
+    impl ParseResult {
+        /// Get the string for a symbol.
+        fn get(&self, sym: Symbol) -> &str {
+            self.interner.get(sym)
+        }
+    }
+
+    /// Result type for expression parsing that includes both the expr and interner.
+    #[derive(Debug)]
+    struct ExprResult {
+        expr: Expr,
+        interner: Interner,
+    }
+
+    impl ExprResult {
+        /// Get the string for a symbol.
+        fn get(&self, sym: Symbol) -> &str {
+            self.interner.get(sym)
+        }
+    }
+
+    fn parse(source: &str) -> CompileResult<ParseResult> {
+        let lexer = Lexer::new(source);
+        let (tokens, interner) = lexer.tokenize()?;
+        let parser = ChumskyParser::new(tokens, interner);
+        let (ast, interner) = parser.parse()?;
+        Ok(ParseResult { ast, interner })
+    }
+
+    fn parse_expr(source: &str) -> CompileResult<ExprResult> {
+        let result = parse(&format!("fn main() -> i32 {{ {} }}", source))?;
+        let interner = result.interner;
+        let expr = match result.ast.items.into_iter().next().unwrap() {
             Item::Function(f) => match f.body {
-                Expr::Block(block) => Ok(*block.expr),
-                other => Ok(other),
+                Expr::Block(block) => *block.expr,
+                other => other,
             },
             Item::Struct(_) => panic!("parse_expr helper should only be used with functions"),
             Item::Enum(_) => panic!("parse_expr helper should only be used with functions"),
             Item::Impl(_) => panic!("parse_expr helper should only be used with functions"),
             Item::DropFn(_) => panic!("parse_expr helper should only be used with functions"),
-        }
+        };
+        Ok(ExprResult { expr, interner })
     }
 
     #[test]
     fn test_chumsky_parse_main() {
-        let ast = parse("fn main() -> i32 { 42 }").unwrap();
+        let result = parse("fn main() -> i32 { 42 }").unwrap();
 
-        assert_eq!(ast.items.len(), 1);
-        match &ast.items[0] {
+        assert_eq!(result.ast.items.len(), 1);
+        match &result.ast.items[0] {
             Item::Function(f) => {
-                assert_eq!(f.name.name, "main");
+                assert_eq!(result.get(f.name.name), "main");
                 match f.return_type.as_ref().unwrap() {
-                    TypeExpr::Named(ident) => assert_eq!(ident.name, "i32"),
+                    TypeExpr::Named(ident) => assert_eq!(result.get(ident.name), "i32"),
                     _ => panic!("expected Named type"),
                 }
                 match &f.body {
@@ -1759,8 +1909,8 @@ mod tests {
 
     #[test]
     fn test_chumsky_parse_addition() {
-        let expr = parse_expr("1 + 2").unwrap();
-        match expr {
+        let result = parse_expr("1 + 2").unwrap();
+        match result.expr {
             Expr::Binary(bin) => {
                 assert!(matches!(bin.op, BinaryOp::Add));
                 match (*bin.left, *bin.right) {
@@ -1778,8 +1928,8 @@ mod tests {
     #[test]
     fn test_chumsky_parse_precedence() {
         // 1 + 2 * 3 should parse as 1 + (2 * 3)
-        let expr = parse_expr("1 + 2 * 3").unwrap();
-        match expr {
+        let result = parse_expr("1 + 2 * 3").unwrap();
+        match result.expr {
             Expr::Binary(bin) => {
                 assert!(matches!(bin.op, BinaryOp::Add));
                 match *bin.left {
@@ -1799,8 +1949,8 @@ mod tests {
 
     #[test]
     fn test_chumsky_parse_let_binding() {
-        let ast = parse("fn main() -> i32 { let x = 42; x }").unwrap();
-        match &ast.items[0] {
+        let result = parse("fn main() -> i32 { let x = 42; x }").unwrap();
+        match &result.ast.items[0] {
             Item::Function(f) => match &f.body {
                 Expr::Block(block) => {
                     assert_eq!(block.statements.len(), 1);
@@ -1808,7 +1958,9 @@ mod tests {
                         Statement::Let(let_stmt) => {
                             assert!(!let_stmt.is_mut);
                             match &let_stmt.pattern {
-                                LetPattern::Ident(ident) => assert_eq!(ident.name, "x"),
+                                LetPattern::Ident(ident) => {
+                                    assert_eq!(result.get(ident.name), "x")
+                                }
                                 LetPattern::Wildcard(_) => panic!("expected Ident, got Wildcard"),
                             }
                         }
@@ -1827,46 +1979,47 @@ mod tests {
     #[test]
     fn test_while_simple() {
         // Simplest while case
-        let ast = parse("fn main() -> i32 { while true { } 0 }").unwrap();
-        assert_eq!(ast.items.len(), 1);
+        let result = parse("fn main() -> i32 { while true { } 0 }").unwrap();
+        assert_eq!(result.ast.items.len(), 1);
     }
 
     #[test]
     fn test_while_with_statement() {
         // While with assignment
-        let ast = parse("fn main() -> i32 { while true { x = 1; } 0 }").unwrap();
-        assert_eq!(ast.items.len(), 1);
+        let result = parse("fn main() -> i32 { while true { x = 1; } 0 }").unwrap();
+        assert_eq!(result.ast.items.len(), 1);
     }
 
     #[test]
     fn test_function_calls() {
-        let ast = parse("fn add(a: i32, b: i32) -> i32 { a + b } fn main() -> i32 { add(1, 2) }")
-            .unwrap();
-        assert_eq!(ast.items.len(), 2);
+        let result =
+            parse("fn add(a: i32, b: i32) -> i32 { a + b } fn main() -> i32 { add(1, 2) }")
+                .unwrap();
+        assert_eq!(result.ast.items.len(), 2);
     }
 
     #[test]
     fn test_if_else() {
-        let ast = parse("fn main() -> i32 { if true { 1 } else { 0 } }").unwrap();
-        assert_eq!(ast.items.len(), 1);
+        let result = parse("fn main() -> i32 { if true { 1 } else { 0 } }").unwrap();
+        assert_eq!(result.ast.items.len(), 1);
     }
 
     #[test]
     fn test_nested_control_flow() {
-        let ast =
+        let result =
             parse("fn main() -> i32 { let mut x = 0; while x < 10 { x = x + 1; } x }").unwrap();
-        assert_eq!(ast.items.len(), 1);
+        assert_eq!(result.ast.items.len(), 1);
     }
 
     // ==================== Impl Block and Method Parsing Tests ====================
 
     #[test]
     fn test_impl_block_empty() {
-        let ast = parse("struct Point { x: i32, y: i32 } impl Point {}").unwrap();
-        assert_eq!(ast.items.len(), 2);
-        match &ast.items[1] {
+        let result = parse("struct Point { x: i32, y: i32 } impl Point {}").unwrap();
+        assert_eq!(result.ast.items.len(), 2);
+        match &result.ast.items[1] {
             Item::Impl(impl_block) => {
-                assert_eq!(impl_block.type_name.name, "Point");
+                assert_eq!(result.get(impl_block.type_name.name), "Point");
                 assert!(impl_block.methods.is_empty());
             }
             _ => panic!("expected Impl"),
@@ -1875,15 +2028,16 @@ mod tests {
 
     #[test]
     fn test_impl_block_single_method() {
-        let ast = parse("struct Point { x: i32 } impl Point { fn get_x(self) -> i32 { self.x } }")
-            .unwrap();
-        assert_eq!(ast.items.len(), 2);
-        match &ast.items[1] {
+        let result =
+            parse("struct Point { x: i32 } impl Point { fn get_x(self) -> i32 { self.x } }")
+                .unwrap();
+        assert_eq!(result.ast.items.len(), 2);
+        match &result.ast.items[1] {
             Item::Impl(impl_block) => {
-                assert_eq!(impl_block.type_name.name, "Point");
+                assert_eq!(result.get(impl_block.type_name.name), "Point");
                 assert_eq!(impl_block.methods.len(), 1);
                 let method = &impl_block.methods[0];
-                assert_eq!(method.name.name, "get_x");
+                assert_eq!(result.get(method.name.name), "get_x");
                 assert!(method.receiver.is_some()); // has self
                 assert!(method.params.is_empty()); // no additional params
             }
@@ -1893,18 +2047,18 @@ mod tests {
 
     #[test]
     fn test_impl_block_method_with_params() {
-        let ast = parse(
+        let result = parse(
             "struct Point { x: i32 } impl Point { fn add(self, n: i32) -> i32 { self.x + n } }",
         )
         .unwrap();
-        assert_eq!(ast.items.len(), 2);
-        match &ast.items[1] {
+        assert_eq!(result.ast.items.len(), 2);
+        match &result.ast.items[1] {
             Item::Impl(impl_block) => {
                 let method = &impl_block.methods[0];
-                assert_eq!(method.name.name, "add");
+                assert_eq!(result.get(method.name.name), "add");
                 assert!(method.receiver.is_some());
                 assert_eq!(method.params.len(), 1);
-                assert_eq!(method.params[0].name.name, "n");
+                assert_eq!(result.get(method.params[0].name.name), "n");
             }
             _ => panic!("expected Impl"),
         }
@@ -1913,15 +2067,15 @@ mod tests {
     #[test]
     fn test_impl_block_associated_function() {
         // Associated function (no self)
-        let ast = parse(
+        let result = parse(
             "struct Point { x: i32, y: i32 } impl Point { fn new(x: i32, y: i32) -> Point { Point { x: x, y: y } } }",
         )
         .unwrap();
-        assert_eq!(ast.items.len(), 2);
-        match &ast.items[1] {
+        assert_eq!(result.ast.items.len(), 2);
+        match &result.ast.items[1] {
             Item::Impl(impl_block) => {
                 let method = &impl_block.methods[0];
-                assert_eq!(method.name.name, "new");
+                assert_eq!(result.get(method.name.name), "new");
                 assert!(method.receiver.is_none()); // no self
                 assert_eq!(method.params.len(), 2);
             }
@@ -1931,7 +2085,7 @@ mod tests {
 
     #[test]
     fn test_impl_block_multiple_methods() {
-        let ast = parse(
+        let result = parse(
             "struct Counter { value: i32 }
              impl Counter {
                  fn new() -> Counter { Counter { value: 0 } }
@@ -1940,19 +2094,19 @@ mod tests {
              }",
         )
         .unwrap();
-        assert_eq!(ast.items.len(), 2);
-        match &ast.items[1] {
+        assert_eq!(result.ast.items.len(), 2);
+        match &result.ast.items[1] {
             Item::Impl(impl_block) => {
                 assert_eq!(impl_block.methods.len(), 3);
                 // First is associated function (no self)
                 assert!(impl_block.methods[0].receiver.is_none());
-                assert_eq!(impl_block.methods[0].name.name, "new");
+                assert_eq!(result.get(impl_block.methods[0].name.name), "new");
                 // Second is method (has self)
                 assert!(impl_block.methods[1].receiver.is_some());
-                assert_eq!(impl_block.methods[1].name.name, "get");
+                assert_eq!(result.get(impl_block.methods[1].name.name), "get");
                 // Third is method (has self)
                 assert!(impl_block.methods[2].receiver.is_some());
-                assert_eq!(impl_block.methods[2].name.name, "increment");
+                assert_eq!(result.get(impl_block.methods[2].name.name), "increment");
             }
             _ => panic!("expected Impl"),
         }
@@ -1960,12 +2114,13 @@ mod tests {
 
     #[test]
     fn test_impl_method_with_directive() {
-        let ast = parse("struct Foo {} impl Foo { @inline fn bar(self) -> i32 { 42 } }").unwrap();
-        match &ast.items[1] {
+        let result =
+            parse("struct Foo {} impl Foo { @inline fn bar(self) -> i32 { 42 } }").unwrap();
+        match &result.ast.items[1] {
             Item::Impl(impl_block) => {
                 let method = &impl_block.methods[0];
                 assert_eq!(method.directives.len(), 1);
-                assert_eq!(method.directives[0].name.name, "inline");
+                assert_eq!(result.get(method.directives[0].name.name), "inline");
             }
             _ => panic!("expected Impl"),
         }
@@ -1975,26 +2130,26 @@ mod tests {
 
     #[test]
     fn test_method_call_simple() {
-        let expr = parse_expr("x.foo()").unwrap();
-        match expr {
+        let result = parse_expr("x.foo()").unwrap();
+        match &result.expr {
             Expr::MethodCall(call) => {
-                assert_eq!(call.method.name, "foo");
+                assert_eq!(result.get(call.method.name), "foo");
                 assert!(call.args.is_empty());
-                match *call.receiver {
-                    Expr::Ident(ident) => assert_eq!(ident.name, "x"),
+                match call.receiver.as_ref() {
+                    Expr::Ident(ident) => assert_eq!(result.get(ident.name), "x"),
                     _ => panic!("expected Ident receiver"),
                 }
             }
-            _ => panic!("expected MethodCall, got {:?}", expr),
+            _ => panic!("expected MethodCall, got {:?}", result.expr),
         }
     }
 
     #[test]
     fn test_method_call_with_args() {
-        let expr = parse_expr("point.add(5, 10)").unwrap();
-        match expr {
+        let result = parse_expr("point.add(5, 10)").unwrap();
+        match &result.expr {
             Expr::MethodCall(call) => {
-                assert_eq!(call.method.name, "add");
+                assert_eq!(result.get(call.method.name), "add");
                 assert_eq!(call.args.len(), 2);
             }
             _ => panic!("expected MethodCall"),
@@ -2003,13 +2158,13 @@ mod tests {
 
     #[test]
     fn test_method_call_chained() {
-        let expr = parse_expr("x.foo().bar()").unwrap();
-        match expr {
+        let result = parse_expr("x.foo().bar()").unwrap();
+        match &result.expr {
             Expr::MethodCall(outer) => {
-                assert_eq!(outer.method.name, "bar");
-                match *outer.receiver {
+                assert_eq!(result.get(outer.method.name), "bar");
+                match outer.receiver.as_ref() {
                     Expr::MethodCall(inner) => {
-                        assert_eq!(inner.method.name, "foo");
+                        assert_eq!(result.get(inner.method.name), "foo");
                     }
                     _ => panic!("expected inner MethodCall"),
                 }
@@ -2020,13 +2175,13 @@ mod tests {
 
     #[test]
     fn test_method_call_on_field_access() {
-        let expr = parse_expr("obj.field.method()").unwrap();
-        match expr {
+        let result = parse_expr("obj.field.method()").unwrap();
+        match &result.expr {
             Expr::MethodCall(call) => {
-                assert_eq!(call.method.name, "method");
-                match *call.receiver {
+                assert_eq!(result.get(call.method.name), "method");
+                match call.receiver.as_ref() {
                     Expr::Field(field) => {
-                        assert_eq!(field.field.name, "field");
+                        assert_eq!(result.get(field.field.name), "field");
                     }
                     _ => panic!("expected Field receiver"),
                 }
@@ -2038,26 +2193,28 @@ mod tests {
     #[test]
     fn test_field_access_not_method_call() {
         // .field (not followed by parens) should parse as FieldExpr, not MethodCall
-        let expr = parse_expr("x.field").unwrap();
-        match expr {
+        let result = parse_expr("x.field").unwrap();
+        match &result.expr {
             Expr::Field(field) => {
-                assert_eq!(field.field.name, "field");
+                assert_eq!(result.get(field.field.name), "field");
             }
-            _ => panic!("expected Field, got {:?}", expr),
+            _ => panic!("expected Field, got {:?}", result.expr),
         }
     }
 
     #[test]
     fn test_method_call_on_struct_literal() {
-        let ast =
+        let result =
             parse("struct Point { x: i32 } fn main() -> i32 { Point { x: 1 }.get() }").unwrap();
-        match &ast.items[1] {
+        match &result.ast.items[1] {
             Item::Function(f) => match &f.body {
                 Expr::Block(block) => match block.expr.as_ref() {
                     Expr::MethodCall(call) => {
-                        assert_eq!(call.method.name, "get");
+                        assert_eq!(result.get(call.method.name), "get");
                         match call.receiver.as_ref() {
-                            Expr::StructLit(lit) => assert_eq!(lit.name.name, "Point"),
+                            Expr::StructLit(lit) => {
+                                assert_eq!(result.get(lit.name.name), "Point")
+                            }
                             _ => panic!("expected StructLit receiver"),
                         }
                     }
@@ -2071,11 +2228,11 @@ mod tests {
 
     #[test]
     fn test_method_call_on_paren_expr() {
-        let expr = parse_expr("(x).method()").unwrap();
-        match expr {
+        let result = parse_expr("(x).method()").unwrap();
+        match &result.expr {
             Expr::MethodCall(call) => {
-                assert_eq!(call.method.name, "method");
-                match *call.receiver {
+                assert_eq!(result.get(call.method.name), "method");
+                match call.receiver.as_ref() {
                     Expr::Paren(_) => {}
                     _ => panic!("expected Paren receiver"),
                 }
@@ -2087,14 +2244,14 @@ mod tests {
     #[test]
     fn test_method_call_mixed_with_index() {
         // Complex chain: array[0].method().field
-        let expr = parse_expr("arr[0].get().value").unwrap();
-        match expr {
+        let result = parse_expr("arr[0].get().value").unwrap();
+        match &result.expr {
             Expr::Field(field) => {
-                assert_eq!(field.field.name, "value");
-                match *field.base {
+                assert_eq!(result.get(field.field.name), "value");
+                match field.base.as_ref() {
                     Expr::MethodCall(call) => {
-                        assert_eq!(call.method.name, "get");
-                        match *call.receiver {
+                        assert_eq!(result.get(call.method.name), "get");
+                        match call.receiver.as_ref() {
                             Expr::Index(_) => {}
                             _ => panic!("expected Index receiver"),
                         }
@@ -2109,14 +2266,14 @@ mod tests {
     #[test]
     fn test_associated_function_call() {
         // Type::function(args) syntax
-        let expr = parse_expr("Point::new(1, 2)").unwrap();
-        match expr {
+        let result = parse_expr("Point::new(1, 2)").unwrap();
+        match &result.expr {
             Expr::AssocFnCall(call) => {
-                assert_eq!(call.type_name.name, "Point");
-                assert_eq!(call.function.name, "new");
+                assert_eq!(result.get(call.type_name.name), "Point");
+                assert_eq!(result.get(call.function.name), "new");
                 assert_eq!(call.args.len(), 2);
             }
-            _ => panic!("expected AssocFnCall, got {:?}", expr),
+            _ => panic!("expected AssocFnCall, got {:?}", result.expr),
         }
     }
 
@@ -2125,12 +2282,12 @@ mod tests {
     #[test]
     fn test_borrow_param_simple() {
         // Function with a borrow parameter
-        let ast = parse("fn read(borrow x: i32) -> i32 { x }").unwrap();
-        match &ast.items[0] {
+        let result = parse("fn read(borrow x: i32) -> i32 { x }").unwrap();
+        match &result.ast.items[0] {
             Item::Function(f) => {
                 assert_eq!(f.params.len(), 1);
                 assert_eq!(f.params[0].mode, ParamMode::Borrow);
-                assert_eq!(f.params[0].name.name, "x");
+                assert_eq!(result.get(f.params[0].name.name), "x");
             }
             _ => panic!("expected Function"),
         }
@@ -2139,14 +2296,15 @@ mod tests {
     #[test]
     fn test_borrow_param_with_struct_type() {
         // Borrow parameter with a user-defined type
-        let ast = parse("struct Point { x: i32 } fn read(borrow p: Point) -> i32 { p.x }").unwrap();
-        match &ast.items[1] {
+        let result =
+            parse("struct Point { x: i32 } fn read(borrow p: Point) -> i32 { p.x }").unwrap();
+        match &result.ast.items[1] {
             Item::Function(f) => {
                 assert_eq!(f.params.len(), 1);
                 assert_eq!(f.params[0].mode, ParamMode::Borrow);
-                assert_eq!(f.params[0].name.name, "p");
+                assert_eq!(result.get(f.params[0].name.name), "p");
                 match &f.params[0].ty {
-                    TypeExpr::Named(ident) => assert_eq!(ident.name, "Point"),
+                    TypeExpr::Named(ident) => assert_eq!(result.get(ident.name), "Point"),
                     _ => panic!("expected Named type"),
                 }
             }
@@ -2157,14 +2315,14 @@ mod tests {
     #[test]
     fn test_borrow_param_mixed_with_normal() {
         // Mixed borrow and normal parameters
-        let ast = parse("fn add(borrow a: i32, b: i32) -> i32 { a + b }").unwrap();
-        match &ast.items[0] {
+        let result = parse("fn add(borrow a: i32, b: i32) -> i32 { a + b }").unwrap();
+        match &result.ast.items[0] {
             Item::Function(f) => {
                 assert_eq!(f.params.len(), 2);
                 assert_eq!(f.params[0].mode, ParamMode::Borrow);
-                assert_eq!(f.params[0].name.name, "a");
+                assert_eq!(result.get(f.params[0].name.name), "a");
                 assert_eq!(f.params[1].mode, ParamMode::Normal);
-                assert_eq!(f.params[1].name.name, "b");
+                assert_eq!(result.get(f.params[1].name.name), "b");
             }
             _ => panic!("expected Function"),
         }
@@ -2173,14 +2331,14 @@ mod tests {
     #[test]
     fn test_borrow_param_mixed_with_inout() {
         // Borrow and inout parameters in the same function
-        let ast = parse("fn modify(borrow a: i32, inout b: i32) { b = a; }").unwrap();
-        match &ast.items[0] {
+        let result = parse("fn modify(borrow a: i32, inout b: i32) { b = a; }").unwrap();
+        match &result.ast.items[0] {
             Item::Function(f) => {
                 assert_eq!(f.params.len(), 2);
                 assert_eq!(f.params[0].mode, ParamMode::Borrow);
-                assert_eq!(f.params[0].name.name, "a");
+                assert_eq!(result.get(f.params[0].name.name), "a");
                 assert_eq!(f.params[1].mode, ParamMode::Inout);
-                assert_eq!(f.params[1].name.name, "b");
+                assert_eq!(result.get(f.params[1].name.name), "b");
             }
             _ => panic!("expected Function"),
         }
@@ -2189,8 +2347,8 @@ mod tests {
     #[test]
     fn test_borrow_param_with_array_type() {
         // Borrow parameter with array type
-        let ast = parse("fn first(borrow arr: [i32; 3]) -> i32 { arr[0] }").unwrap();
-        match &ast.items[0] {
+        let result = parse("fn first(borrow arr: [i32; 3]) -> i32 { arr[0] }").unwrap();
+        match &result.ast.items[0] {
             Item::Function(f) => {
                 assert_eq!(f.params.len(), 1);
                 assert_eq!(f.params[0].mode, ParamMode::Borrow);
@@ -2206,8 +2364,8 @@ mod tests {
     #[test]
     fn test_borrow_param_multiple() {
         // Multiple borrow parameters
-        let ast = parse("fn sum(borrow a: i32, borrow b: i32) -> i32 { a + b }").unwrap();
-        match &ast.items[0] {
+        let result = parse("fn sum(borrow a: i32, borrow b: i32) -> i32 { a + b }").unwrap();
+        match &result.ast.items[0] {
             Item::Function(f) => {
                 assert_eq!(f.params.len(), 2);
                 assert_eq!(f.params[0].mode, ParamMode::Borrow);
@@ -2222,26 +2380,26 @@ mod tests {
     #[test]
     fn test_borrow_arg_simple() {
         // Function call with a borrow argument
-        let expr = parse_expr("read(borrow x)").unwrap();
-        match expr {
+        let result = parse_expr("read(borrow x)").unwrap();
+        match &result.expr {
             Expr::Call(call) => {
-                assert_eq!(call.name.name, "read");
+                assert_eq!(result.get(call.name.name), "read");
                 assert_eq!(call.args.len(), 1);
                 assert_eq!(call.args[0].mode, ArgMode::Borrow);
                 match &call.args[0].expr {
-                    Expr::Ident(ident) => assert_eq!(ident.name, "x"),
+                    Expr::Ident(ident) => assert_eq!(result.get(ident.name), "x"),
                     _ => panic!("expected Ident argument"),
                 }
             }
-            _ => panic!("expected Call, got {:?}", expr),
+            _ => panic!("expected Call, got {:?}", result.expr),
         }
     }
 
     #[test]
     fn test_borrow_arg_mixed_with_normal() {
         // Mixed borrow and normal arguments
-        let expr = parse_expr("foo(borrow a, b)").unwrap();
-        match expr {
+        let result = parse_expr("foo(borrow a, b)").unwrap();
+        match &result.expr {
             Expr::Call(call) => {
                 assert_eq!(call.args.len(), 2);
                 assert_eq!(call.args[0].mode, ArgMode::Borrow);
@@ -2254,8 +2412,8 @@ mod tests {
     #[test]
     fn test_borrow_arg_mixed_with_inout() {
         // Borrow and inout arguments in the same call
-        let expr = parse_expr("modify(borrow a, inout b)").unwrap();
-        match expr {
+        let result = parse_expr("modify(borrow a, inout b)").unwrap();
+        match &result.expr {
             Expr::Call(call) => {
                 assert_eq!(call.args.len(), 2);
                 assert_eq!(call.args[0].mode, ArgMode::Borrow);
@@ -2268,8 +2426,8 @@ mod tests {
     #[test]
     fn test_borrow_arg_multiple() {
         // Multiple borrow arguments
-        let expr = parse_expr("sum(borrow x, borrow y)").unwrap();
-        match expr {
+        let result = parse_expr("sum(borrow x, borrow y)").unwrap();
+        match &result.expr {
             Expr::Call(call) => {
                 assert_eq!(call.args.len(), 2);
                 assert_eq!(call.args[0].mode, ArgMode::Borrow);
@@ -2282,13 +2440,13 @@ mod tests {
     #[test]
     fn test_borrow_arg_with_field_access() {
         // Borrow argument with field access expression
-        let expr = parse_expr("read(borrow point.x)").unwrap();
-        match expr {
+        let result = parse_expr("read(borrow point.x)").unwrap();
+        match &result.expr {
             Expr::Call(call) => {
                 assert_eq!(call.args.len(), 1);
                 assert_eq!(call.args[0].mode, ArgMode::Borrow);
                 match &call.args[0].expr {
-                    Expr::Field(field) => assert_eq!(field.field.name, "x"),
+                    Expr::Field(field) => assert_eq!(result.get(field.field.name), "x"),
                     _ => panic!("expected Field expression"),
                 }
             }
@@ -2299,8 +2457,8 @@ mod tests {
     #[test]
     fn test_borrow_arg_in_method_call() {
         // Borrow argument in method call
-        let expr = parse_expr("obj.method(borrow x)").unwrap();
-        match expr {
+        let result = parse_expr("obj.method(borrow x)").unwrap();
+        match &result.expr {
             Expr::MethodCall(call) => {
                 assert_eq!(call.args.len(), 1);
                 assert_eq!(call.args[0].mode, ArgMode::Borrow);
@@ -2312,8 +2470,8 @@ mod tests {
     #[test]
     fn test_borrow_arg_in_associated_function() {
         // Borrow argument in associated function call
-        let expr = parse_expr("Foo::bar(borrow x)").unwrap();
-        match expr {
+        let result = parse_expr("Foo::bar(borrow x)").unwrap();
+        match &result.expr {
             Expr::AssocFnCall(call) => {
                 assert_eq!(call.args.len(), 1);
                 assert_eq!(call.args[0].mode, ArgMode::Borrow);
@@ -2325,8 +2483,8 @@ mod tests {
     #[test]
     fn test_borrow_helper_methods() {
         // Test CallArg helper methods
-        let expr = parse_expr("foo(borrow x, inout y, z)").unwrap();
-        match expr {
+        let result = parse_expr("foo(borrow x, inout y, z)").unwrap();
+        match &result.expr {
             Expr::Call(call) => {
                 assert!(call.args[0].is_borrow());
                 assert!(!call.args[0].is_inout());
@@ -2345,7 +2503,7 @@ mod tests {
     fn test_block_statement_followed_by_identifier() {
         // Block expression as a statement followed by an identifier expression
         // This is the regression test for rue-wo1g
-        let ast = parse(
+        let result = parse(
             "fn main() -> i32 {
                 let a = 1;
                 {
@@ -2355,7 +2513,7 @@ mod tests {
             }",
         )
         .unwrap();
-        match &ast.items[0] {
+        match &result.ast.items[0] {
             Item::Function(f) => match &f.body {
                 Expr::Block(block) => {
                     // Should have 2 statements: let a = 1; and { let b = 2; }
@@ -2369,7 +2527,7 @@ mod tests {
                     }
                     // Final expression should be 'a' (simple identifier)
                     match block.expr.as_ref() {
-                        Expr::Ident(ident) => assert_eq!(ident.name, "a"),
+                        Expr::Ident(ident) => assert_eq!(result.get(ident.name), "a"),
                         _ => panic!("expected Ident expression, got {:?}", block.expr),
                     }
                 }

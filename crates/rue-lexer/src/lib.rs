@@ -6,10 +6,16 @@
 mod logos_lexer;
 
 pub use logos_lexer::LogosLexer as Lexer;
+pub use rue_intern::{Interner, Symbol};
 use rue_span::Span;
 
 /// Token kinds in the Rue language.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// This enum is `Copy` since all variants contain only small, copyable data:
+/// - Most variants are unit (no data)
+/// - `Int` contains a `u64` (8 bytes)
+/// - `Ident` and `String` contain a `Symbol` (4 bytes, an interned string handle)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TokenKind {
     // Keywords
     Fn,
@@ -49,10 +55,10 @@ pub enum TokenKind {
 
     // Literals
     Int(u64),
-    String(String),
+    String(Symbol),
 
     // Identifiers
-    Ident(String),
+    Ident(Symbol),
 
     // Operators
     Plus,     // +
@@ -225,8 +231,8 @@ impl std::fmt::Display for TokenKind {
             TokenKind::Bool => write!(f, "TYPE(bool)"),
             TokenKind::Underscore => write!(f, "UNDERSCORE"),
             TokenKind::Int(v) => write!(f, "INT({})", v),
-            TokenKind::String(s) => write!(f, "STRING({:?})", s),
-            TokenKind::Ident(s) => write!(f, "IDENT({})", s),
+            TokenKind::String(s) => write!(f, "STRING(sym:{})", s.as_u32()),
+            TokenKind::Ident(s) => write!(f, "IDENT(sym:{})", s.as_u32()),
             TokenKind::Plus => write!(f, "PLUS"),
             TokenKind::Minus => write!(f, "MINUS"),
             TokenKind::Star => write!(f, "STAR"),

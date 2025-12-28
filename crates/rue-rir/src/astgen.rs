@@ -70,35 +70,34 @@ impl<'a> AstGen<'a> {
         }
     }
 
-    /// Convert a TypeExpr to its string representation for interning.
-    /// This converts the structured type representation back to a string symbol.
-    fn type_expr_to_string(&self, ty: &TypeExpr) -> String {
+    /// Convert a TypeExpr to its symbol representation.
+    /// For named types, returns the existing symbol. For compound types, interns a new string.
+    fn intern_type(&mut self, ty: &TypeExpr) -> rue_intern::Symbol {
         match ty {
-            TypeExpr::Named(ident) => ident.name.clone(),
-            TypeExpr::Unit(_) => "()".to_string(),
-            TypeExpr::Never(_) => "!".to_string(),
+            TypeExpr::Named(ident) => ident.name, // Already a Symbol
+            TypeExpr::Unit(_) => self.interner.intern("()"),
+            TypeExpr::Never(_) => self.interner.intern("!"),
             TypeExpr::Array {
                 element, length, ..
             } => {
-                format!("[{}; {}]", self.type_expr_to_string(element), length)
+                // For arrays, we need to construct a string representation
+                // Get the element symbol first, then look it up
+                let elem_sym = self.intern_type(element);
+                let elem_name = self.interner.get(elem_sym);
+                let s = format!("[{}; {}]", elem_name, length);
+                self.interner.intern(&s)
             }
         }
     }
 
-    /// Intern a TypeExpr as a symbol.
-    fn intern_type(&mut self, ty: &TypeExpr) -> rue_intern::Symbol {
-        let s = self.type_expr_to_string(ty);
-        self.interner.intern(&s)
-    }
-
     fn gen_struct(&mut self, struct_decl: &StructDecl) -> InstRef {
         let directives = self.convert_directives(&struct_decl.directives);
-        let name = self.interner.intern(&struct_decl.name.name);
+        let name = struct_decl.name.name; // Already a Symbol
         let fields: Vec<_> = struct_decl
             .fields
             .iter()
             .map(|f| {
-                let field_name = self.interner.intern(&f.name.name);
+                let field_name = f.name.name; // Already a Symbol
                 let field_type = self.intern_type(&f.ty);
                 (field_name, field_type)
             })
@@ -115,11 +114,11 @@ impl<'a> AstGen<'a> {
     }
 
     fn gen_enum(&mut self, enum_decl: &EnumDecl) -> InstRef {
-        let name = self.interner.intern(&enum_decl.name.name);
+        let name = enum_decl.name.name; // Already a Symbol
         let variants: Vec<_> = enum_decl
             .variants
             .iter()
-            .map(|v| self.interner.intern(&v.name.name))
+            .map(|v| v.name.name) // Already a Symbol
             .collect();
 
         self.rir.add_inst(Inst {
@@ -129,7 +128,7 @@ impl<'a> AstGen<'a> {
     }
 
     fn gen_impl_block(&mut self, impl_block: &ImplBlock) -> InstRef {
-        let type_name = self.interner.intern(&impl_block.type_name.name);
+        let type_name = impl_block.type_name.name; // Already a Symbol
 
         // Generate each method in the impl block
         let methods: Vec<_> = impl_block
@@ -145,7 +144,7 @@ impl<'a> AstGen<'a> {
     }
 
     fn gen_drop_fn(&mut self, drop_fn: &DropFn) -> InstRef {
-        let type_name = self.interner.intern(&drop_fn.type_name.name);
+        let type_name = drop_fn.type_name.name; // Already a Symbol
 
         // Generate the body expression
         let body = self.gen_expr(&drop_fn.body);
@@ -160,19 +159,19 @@ impl<'a> AstGen<'a> {
         // Convert directives
         let directives = self.convert_directives(&method.directives);
 
-        // Intern the method name and return type
-        let name = self.interner.intern(&method.name.name);
+        // Get the method name (already a Symbol) and return type
+        let name = method.name.name; // Already a Symbol
         let return_type = match &method.return_type {
             Some(ty) => self.intern_type(ty),
             None => self.interner.intern("()"), // Default to unit type
         };
 
-        // Intern parameters (excluding self, which is handled specially by sema)
+        // Convert parameters (excluding self, which is handled specially by sema)
         let params: Vec<_> = method
             .params
             .iter()
             .map(|p| RirParam {
-                name: self.interner.intern(&p.name.name),
+                name: p.name.name, // Already a Symbol
                 ty: self.intern_type(&p.ty),
                 mode: self.convert_param_mode(p.mode),
             })
@@ -204,12 +203,12 @@ impl<'a> AstGen<'a> {
         directives
             .iter()
             .map(|d| RirDirective {
-                name: self.interner.intern(&d.name.name),
+                name: d.name.name, // Already a Symbol
                 args: d
                     .args
                     .iter()
                     .map(|arg| match arg {
-                        DirectiveArg::Ident(ident) => self.interner.intern(&ident.name),
+                        DirectiveArg::Ident(ident) => ident.name, // Already a Symbol
                     })
                     .collect(),
                 span: d.span,
@@ -247,19 +246,19 @@ impl<'a> AstGen<'a> {
         // Convert directives
         let directives = self.convert_directives(&func.directives);
 
-        // Intern the function name and return type
-        let name = self.interner.intern(&func.name.name);
+        // Get the function name (already a Symbol) and return type
+        let name = func.name.name; // Already a Symbol
         let return_type = match &func.return_type {
             Some(ty) => self.intern_type(ty),
             None => self.interner.intern("()"), // Default to unit type
         };
 
-        // Intern parameters
+        // Convert parameters
         let params: Vec<_> = func
             .params
             .iter()
             .map(|p| RirParam {
-                name: self.interner.intern(&p.name.name),
+                name: p.name.name, // Already a Symbol
                 ty: self.intern_type(&p.ty),
                 mode: self.convert_param_mode(p.mode),
             })
@@ -294,9 +293,8 @@ impl<'a> AstGen<'a> {
                 span: lit.span,
             }),
             Expr::String(lit) => {
-                let symbol = self.interner.intern(&lit.value);
                 self.rir.add_inst(Inst {
-                    data: InstData::StringConst(symbol),
+                    data: InstData::StringConst(lit.value), // Already a Symbol
                     span: lit.span,
                 })
             }
@@ -305,9 +303,8 @@ impl<'a> AstGen<'a> {
                 span: lit.span,
             }),
             Expr::Ident(ident) => {
-                let name = self.interner.intern(&ident.name);
                 self.rir.add_inst(Inst {
-                    data: InstData::VarRef { name },
+                    data: InstData::VarRef { name: ident.name }, // Already a Symbol
                     span: ident.span,
                 })
             }
@@ -403,11 +400,13 @@ impl<'a> AstGen<'a> {
                 })
             }
             Expr::Call(call) => {
-                let name = self.interner.intern(&call.name.name);
                 let args: Vec<_> = call.args.iter().map(|a| self.convert_call_arg(a)).collect();
 
                 self.rir.add_inst(Inst {
-                    data: InstData::Call { name, args },
+                    data: InstData::Call {
+                        name: call.name.name, // Already a Symbol
+                        args,
+                    },
                     span: call.span,
                 })
             }
@@ -427,36 +426,39 @@ impl<'a> AstGen<'a> {
                 })
             }
             Expr::StructLit(struct_lit) => {
-                let type_name = self.interner.intern(&struct_lit.name.name);
                 let fields: Vec<_> = struct_lit
                     .fields
                     .iter()
                     .map(|f| {
-                        let field_name = self.interner.intern(&f.name.name);
                         let field_value = self.gen_expr(&f.value);
-                        (field_name, field_value)
+                        (f.name.name, field_value) // name is already a Symbol
                     })
                     .collect();
 
                 self.rir.add_inst(Inst {
-                    data: InstData::StructInit { type_name, fields },
+                    data: InstData::StructInit {
+                        type_name: struct_lit.name.name, // Already a Symbol
+                        fields,
+                    },
                     span: struct_lit.span,
                 })
             }
             Expr::Field(field_expr) => {
                 let base = self.gen_expr(&field_expr.base);
-                let field = self.interner.intern(&field_expr.field.name);
 
                 self.rir.add_inst(Inst {
-                    data: InstData::FieldGet { base, field },
+                    data: InstData::FieldGet {
+                        base,
+                        field: field_expr.field.name, // Already a Symbol
+                    },
                     span: field_expr.span,
                 })
             }
             Expr::IntrinsicCall(intrinsic) => {
-                let name = self.interner.intern(&intrinsic.name.name);
-                let intrinsic_name = &intrinsic.name.name;
+                let name = intrinsic.name.name; // Already a Symbol
+                let intrinsic_name_str = self.interner.get(name);
 
-                let is_type_intrinsic = TYPE_INTRINSICS.contains(&intrinsic_name.as_str());
+                let is_type_intrinsic = TYPE_INTRINSICS.contains(&intrinsic_name_str);
 
                 if is_type_intrinsic && intrinsic.args.len() == 1 {
                     // Handle explicit type argument
@@ -471,9 +473,11 @@ impl<'a> AstGen<'a> {
                     // Handle identifier expression that should be interpreted as a type
                     // (e.g., @size_of(Point) where Point is parsed as Ident expression)
                     if let IntrinsicArg::Expr(Expr::Ident(ident)) = &intrinsic.args[0] {
-                        let type_arg = self.interner.intern(&ident.name);
                         return self.rir.add_inst(Inst {
-                            data: InstData::TypeIntrinsic { name, type_arg },
+                            data: InstData::TypeIntrinsic {
+                                name,
+                                type_arg: ident.name, // Already a Symbol
+                            },
                             span: intrinsic.span,
                         });
                     }
@@ -516,17 +520,16 @@ impl<'a> AstGen<'a> {
                 })
             }
             Expr::Path(path_expr) => {
-                let type_name = self.interner.intern(&path_expr.type_name.name);
-                let variant = self.interner.intern(&path_expr.variant.name);
-
                 self.rir.add_inst(Inst {
-                    data: InstData::EnumVariant { type_name, variant },
+                    data: InstData::EnumVariant {
+                        type_name: path_expr.type_name.name, // Already a Symbol
+                        variant: path_expr.variant.name,     // Already a Symbol
+                    },
                     span: path_expr.span,
                 })
             }
             Expr::MethodCall(method_call) => {
                 let receiver = self.gen_expr(&method_call.receiver);
-                let method = self.interner.intern(&method_call.method.name);
                 let args: Vec<_> = method_call
                     .args
                     .iter()
@@ -536,15 +539,13 @@ impl<'a> AstGen<'a> {
                 self.rir.add_inst(Inst {
                     data: InstData::MethodCall {
                         receiver,
-                        method,
+                        method: method_call.method.name, // Already a Symbol
                         args,
                     },
                     span: method_call.span,
                 })
             }
             Expr::AssocFnCall(assoc_fn_call) => {
-                let type_name = self.interner.intern(&assoc_fn_call.type_name.name);
-                let function = self.interner.intern(&assoc_fn_call.function.name);
                 let args: Vec<_> = assoc_fn_call
                     .args
                     .iter()
@@ -553,8 +554,8 @@ impl<'a> AstGen<'a> {
 
                 self.rir.add_inst(Inst {
                     data: InstData::AssocFnCall {
-                        type_name,
-                        function,
+                        type_name: assoc_fn_call.type_name.name, // Already a Symbol
+                        function: assoc_fn_call.function.name,   // Already a Symbol
                         args,
                     },
                     span: assoc_fn_call.span,
@@ -578,11 +579,9 @@ impl<'a> AstGen<'a> {
             Pattern::NegInt(lit) => RirPattern::Int(-(lit.value as i64), lit.span),
             Pattern::Bool(lit) => RirPattern::Bool(lit.value, lit.span),
             Pattern::Path(path) => {
-                let type_name = self.interner.intern(&path.type_name.name);
-                let variant = self.interner.intern(&path.variant.name);
                 RirPattern::Path {
-                    type_name,
-                    variant,
+                    type_name: path.type_name.name, // Already a Symbol
+                    variant: path.variant.name,     // Already a Symbol
                     span: path.span,
                 }
             }
@@ -624,7 +623,7 @@ impl<'a> AstGen<'a> {
             Statement::Let(let_stmt) => {
                 let directives = self.convert_directives(&let_stmt.directives);
                 let name = match &let_stmt.pattern {
-                    LetPattern::Ident(ident) => Some(self.interner.intern(&ident.name)),
+                    LetPattern::Ident(ident) => Some(ident.name), // Already a Symbol
                     LetPattern::Wildcard(_) => None,
                 };
                 let ty = let_stmt.ty.as_ref().map(|t| self.intern_type(t));
@@ -644,17 +643,22 @@ impl<'a> AstGen<'a> {
                 let value = self.gen_expr(&assign.value);
                 match &assign.target {
                     AssignTarget::Var(ident) => {
-                        let name = self.interner.intern(&ident.name);
                         self.rir.add_inst(Inst {
-                            data: InstData::Assign { name, value },
+                            data: InstData::Assign {
+                                name: ident.name, // Already a Symbol
+                                value,
+                            },
                             span: assign.span,
                         })
                     }
                     AssignTarget::Field(field_expr) => {
                         let base = self.gen_expr(&field_expr.base);
-                        let field = self.interner.intern(&field_expr.field.name);
                         self.rir.add_inst(Inst {
-                            data: InstData::FieldSet { base, field, value },
+                            data: InstData::FieldSet {
+                                base,
+                                field: field_expr.field.name, // Already a Symbol
+                                value,
+                            },
                             span: assign.span,
                         })
                     }
@@ -685,12 +689,11 @@ mod tests {
     use rue_parser::Parser;
 
     fn gen_rir(source: &str) -> (Rir, Interner) {
-        let mut lexer = Lexer::new(source);
-        let tokens = lexer.tokenize().unwrap();
-        let parser = Parser::new(tokens);
-        let ast = parser.parse().unwrap();
+        let lexer = Lexer::new(source);
+        let (tokens, interner) = lexer.tokenize().unwrap();
+        let parser = Parser::new(tokens, interner);
+        let (ast, interner) = parser.parse().unwrap();
 
-        let interner = Interner::new();
         let astgen = AstGen::new(&ast, &interner);
         let rir = astgen.generate();
         (rir, interner)

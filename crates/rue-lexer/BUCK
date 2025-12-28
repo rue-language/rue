@@ -3,6 +3,7 @@ rust_library(
     srcs = glob(["src/**/*.rs"]),
     deps = [
         "//crates/rue-error:rue-error",
+        "//crates/rue-intern:rue-intern",
         "//crates/rue-span:rue-span",
         "//third-party:logos",
     ],
@@ -14,6 +15,7 @@ rust_test(
     srcs = glob(["src/**/*.rs"]),
     deps = [
         "//crates/rue-error:rue-error",
+        "//crates/rue-intern:rue-intern",
         "//crates/rue-span:rue-span",
         "//third-party:logos",
     ],

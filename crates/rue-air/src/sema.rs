@@ -4873,12 +4873,11 @@ mod tests {
     use rue_rir::AstGen;
 
     fn compile_to_air(source: &str) -> CompileResult<SemaOutput> {
-        let mut lexer = Lexer::new(source);
-        let tokens = lexer.tokenize()?;
-        let mut parser = Parser::new(tokens);
-        let ast = parser.parse()?;
+        let lexer = Lexer::new(source);
+        let (tokens, interner) = lexer.tokenize()?;
+        let parser = Parser::new(tokens, interner);
+        let (ast, mut interner) = parser.parse()?;
 
-        let mut interner = Interner::new();
         let astgen = AstGen::new(&ast, &mut interner);
         let rir = astgen.generate();
 

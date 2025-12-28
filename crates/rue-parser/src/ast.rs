@@ -6,6 +6,7 @@
 
 use std::fmt;
 
+use rue_intern::Symbol;
 use rue_span::Span;
 
 /// A complete source file (list of items).
@@ -189,9 +190,9 @@ pub struct Param {
 }
 
 /// An identifier.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Ident {
-    pub name: String,
+    pub name: Symbol,
     pub span: Span,
 }
 
@@ -227,7 +228,7 @@ impl TypeExpr {
 impl fmt::Display for TypeExpr {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            TypeExpr::Named(ident) => write!(f, "{}", ident.name),
+            TypeExpr::Named(ident) => write!(f, "sym:{}", ident.name.as_u32()),
             TypeExpr::Unit(_) => write!(f, "()"),
             TypeExpr::Never(_) => write!(f, "!"),
             TypeExpr::Array {
@@ -308,9 +309,9 @@ pub struct IntLit {
 }
 
 /// A string literal.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct StringLit {
-    pub value: String,
+    pub value: Symbol,
     pub span: Span,
 }
 
@@ -788,29 +789,29 @@ fn indent(f: &mut fmt::Formatter<'_>, level: usize) -> fmt::Result {
 fn fmt_struct(f: &mut fmt::Formatter<'_>, s: &StructDecl, level: usize) -> fmt::Result {
     indent(f, level)?;
     for directive in &s.directives {
-        write!(f, "@{} ", directive.name.name)?;
+        write!(f, "@sym:{} ", directive.name.name.as_u32())?;
     }
-    writeln!(f, "Struct {}", s.name.name)?;
+    writeln!(f, "Struct sym:{}", s.name.name.as_u32())?;
     for field in &s.fields {
         indent(f, level + 1)?;
-        writeln!(f, "Field {} : {}", field.name.name, field.ty)?;
+        writeln!(f, "Field sym:{} : {}", field.name.name.as_u32(), field.ty)?;
     }
     Ok(())
 }
 
 fn fmt_enum(f: &mut fmt::Formatter<'_>, e: &EnumDecl, level: usize) -> fmt::Result {
     indent(f, level)?;
-    writeln!(f, "Enum {}", e.name.name)?;
+    writeln!(f, "Enum sym:{}", e.name.name.as_u32())?;
     for variant in &e.variants {
         indent(f, level + 1)?;
-        writeln!(f, "Variant {}", variant.name.name)?;
+        writeln!(f, "Variant sym:{}", variant.name.name.as_u32())?;
     }
     Ok(())
 }
 
 fn fmt_impl_block(f: &mut fmt::Formatter<'_>, impl_block: &ImplBlock, level: usize) -> fmt::Result {
     indent(f, level)?;
-    writeln!(f, "Impl {}", impl_block.type_name.name)?;
+    writeln!(f, "Impl sym:{}", impl_block.type_name.name.as_u32())?;
     for method in &impl_block.methods {
         fmt_method(f, method, level + 1)?;
     }
@@ -819,14 +820,14 @@ fn fmt_impl_block(f: &mut fmt::Formatter<'_>, impl_block: &ImplBlock, level: usi
 
 fn fmt_drop_fn(f: &mut fmt::Formatter<'_>, drop_fn: &DropFn, level: usize) -> fmt::Result {
     indent(f, level)?;
-    writeln!(f, "DropFn {}(self)", drop_fn.type_name.name)?;
+    writeln!(f, "DropFn sym:{}(self)", drop_fn.type_name.name.as_u32())?;
     fmt_expr(f, &drop_fn.body, level + 1)?;
     Ok(())
 }
 
 fn fmt_method(f: &mut fmt::Formatter<'_>, method: &Method, level: usize) -> fmt::Result {
     indent(f, level)?;
-    write!(f, "Method {}", method.name.name)?;
+    write!(f, "Method sym:{}", method.name.name.as_u32())?;
     write!(f, "(")?;
     if method.receiver.is_some() {
         write!(f, "self")?;
@@ -855,7 +856,7 @@ fn fmt_param(f: &mut fmt::Formatter<'_>, param: &Param) -> fmt::Result {
         ParamMode::Borrow => write!(f, "borrow ")?,
         ParamMode::Normal => {}
     }
-    write!(f, "{}: {}", param.name.name, param.ty)
+    write!(f, "sym:{}: {}", param.name.name.as_u32(), param.ty)
 }
 
 fn fmt_call_arg(f: &mut fmt::Formatter<'_>, arg: &CallArg, level: usize) -> fmt::Result {
@@ -876,7 +877,7 @@ fn fmt_call_arg(f: &mut fmt::Formatter<'_>, arg: &CallArg, level: usize) -> fmt:
 
 fn fmt_function(f: &mut fmt::Formatter<'_>, func: &Function, level: usize) -> fmt::Result {
     indent(f, level)?;
-    write!(f, "Function {}", func.name.name)?;
+    write!(f, "Function sym:{}", func.name.name.as_u32())?;
     if !func.params.is_empty() {
         write!(f, "(")?;
         for (i, param) in func.params.iter().enumerate() {
@@ -899,10 +900,10 @@ fn fmt_expr(f: &mut fmt::Formatter<'_>, expr: &Expr, level: usize) -> fmt::Resul
     indent(f, level)?;
     match expr {
         Expr::Int(lit) => writeln!(f, "Int({})", lit.value),
-        Expr::String(lit) => writeln!(f, "String({:?})", lit.value),
+        Expr::String(lit) => writeln!(f, "String(sym:{})", lit.value.as_u32()),
         Expr::Bool(lit) => writeln!(f, "Bool({})", lit.value),
         Expr::Unit(_) => writeln!(f, "Unit"),
-        Expr::Ident(ident) => writeln!(f, "Ident({})", ident.name),
+        Expr::Ident(ident) => writeln!(f, "Ident(sym:{})", ident.name.as_u32()),
         Expr::Binary(bin) => {
             writeln!(f, "Binary {:?}", bin.op)?;
             fmt_expr(f, &bin.left, level + 1)?;
@@ -964,14 +965,14 @@ fn fmt_expr(f: &mut fmt::Formatter<'_>, expr: &Expr, level: usize) -> fmt::Resul
             fmt_block_expr(f, &loop_expr.body, level + 1)
         }
         Expr::Call(call) => {
-            writeln!(f, "Call {}", call.name.name)?;
+            writeln!(f, "Call sym:{}", call.name.name.as_u32())?;
             for arg in &call.args {
                 fmt_call_arg(f, arg, level + 1)?;
             }
             Ok(())
         }
         Expr::IntrinsicCall(intrinsic) => {
-            writeln!(f, "Intrinsic @{}", intrinsic.name.name)?;
+            writeln!(f, "Intrinsic @sym:{}", intrinsic.name.name.as_u32())?;
             for arg in &intrinsic.args {
                 match arg {
                     IntrinsicArg::Expr(expr) => fmt_expr(f, expr, level + 1)?,
@@ -994,20 +995,20 @@ fn fmt_expr(f: &mut fmt::Formatter<'_>, expr: &Expr, level: usize) -> fmt::Resul
             }
         }
         Expr::StructLit(lit) => {
-            writeln!(f, "StructLit {}", lit.name.name)?;
+            writeln!(f, "StructLit sym:{}", lit.name.name.as_u32())?;
             for field in &lit.fields {
                 indent(f, level + 1)?;
-                writeln!(f, "{} =", field.name.name)?;
+                writeln!(f, "sym:{} =", field.name.name.as_u32())?;
                 fmt_expr(f, &field.value, level + 2)?;
             }
             Ok(())
         }
         Expr::Field(field) => {
-            writeln!(f, "Field .{}", field.field.name)?;
+            writeln!(f, "Field .sym:{}", field.field.name.as_u32())?;
             fmt_expr(f, &field.base, level + 1)
         }
         Expr::MethodCall(method_call) => {
-            writeln!(f, "MethodCall .{}", method_call.method.name)?;
+            writeln!(f, "MethodCall .sym:{}", method_call.method.name.as_u32())?;
             indent(f, level + 1)?;
             writeln!(f, "Receiver:")?;
             fmt_expr(f, &method_call.receiver, level + 2)?;
@@ -1036,14 +1037,18 @@ fn fmt_expr(f: &mut fmt::Formatter<'_>, expr: &Expr, level: usize) -> fmt::Resul
             writeln!(f, "Index:")?;
             fmt_expr(f, &index.index, level + 2)
         }
-        Expr::Path(path) => {
-            writeln!(f, "Path {}::{}", path.type_name.name, path.variant.name)
-        }
+        Expr::Path(path) => writeln!(
+            f,
+            "Path sym:{}::sym:{}",
+            path.type_name.name.as_u32(),
+            path.variant.name.as_u32()
+        ),
         Expr::AssocFnCall(assoc_fn_call) => {
             writeln!(
                 f,
-                "AssocFnCall {}::{}",
-                assoc_fn_call.type_name.name, assoc_fn_call.function.name
+                "AssocFnCall sym:{}::sym:{}",
+                assoc_fn_call.type_name.name.as_u32(),
+                assoc_fn_call.function.name.as_u32()
             )?;
             for arg in &assoc_fn_call.args {
                 fmt_call_arg(f, arg, level + 1)?;
@@ -1072,7 +1077,7 @@ fn fmt_stmt(f: &mut fmt::Formatter<'_>, stmt: &Statement, level: usize) -> fmt::
                 write!(f, " mut")?;
             }
             match &let_stmt.pattern {
-                LetPattern::Ident(ident) => write!(f, " {}", ident.name)?,
+                LetPattern::Ident(ident) => write!(f, " sym:{}", ident.name.as_u32())?,
                 LetPattern::Wildcard(_) => write!(f, " _")?,
             }
             if let Some(ref ty) = let_stmt.ty {
@@ -1083,9 +1088,9 @@ fn fmt_stmt(f: &mut fmt::Formatter<'_>, stmt: &Statement, level: usize) -> fmt::
         }
         Statement::Assign(assign) => {
             match &assign.target {
-                AssignTarget::Var(ident) => writeln!(f, "Assign {}", ident.name)?,
+                AssignTarget::Var(ident) => writeln!(f, "Assign sym:{}", ident.name.as_u32())?,
                 AssignTarget::Field(field) => {
-                    writeln!(f, "Assign field .{}", field.field.name)?;
+                    writeln!(f, "Assign field .sym:{}", field.field.name.as_u32())?;
                     fmt_expr(f, &field.base, level + 1)?;
                 }
                 AssignTarget::Index(index) => {
