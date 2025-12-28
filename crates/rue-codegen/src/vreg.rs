@@ -6,6 +6,18 @@
 
 use std::fmt;
 
+/// Base ID for block labels in the partitioned label ID space.
+///
+/// During codegen, we need labels for two purposes:
+/// - **Inline labels** (IDs `0` to `BLOCK_LABEL_BASE - 1`): Generated during
+///   instruction lowering for overflow checks, bounds checks, etc.
+/// - **Block labels** (IDs `BLOCK_LABEL_BASE` to `u32::MAX`): Each CFG basic
+///   block gets a label computed as `BLOCK_LABEL_BASE + block_id`.
+///
+/// This partitioning gives each namespace ~2 billion IDs, which is more than
+/// sufficient for any realistic function.
+pub const BLOCK_LABEL_BASE: u32 = u32::MAX / 2;
+
 use crate::index_map::Handle;
 
 /// A virtual register.

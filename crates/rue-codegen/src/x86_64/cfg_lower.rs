@@ -16,8 +16,10 @@
 //!
 //! To prevent collisions, we partition the `u32` label ID space:
 //!
-//! - **Inline labels**: IDs `0` to `u32::MAX / 2 - 1` (allocated via [`CfgLower::new_label`])
-//! - **Block labels**: IDs `u32::MAX / 2` to `u32::MAX` (computed via [`CfgLower::block_label`])
+//! - **Inline labels**: IDs `0` to `BLOCK_LABEL_BASE - 1` (allocated via [`CfgLower::new_label`])
+//! - **Block labels**: IDs `BLOCK_LABEL_BASE` to `u32::MAX` (computed via [`CfgLower::block_label`])
+//!
+//! See [`crate::vreg::BLOCK_LABEL_BASE`] for the constant definition.
 //!
 //! This gives each namespace ~2 billion IDs, which is more than sufficient for
 //! any realistic function. The separation is handled automatically by the
@@ -33,6 +35,7 @@ use rue_cfg::{
 use super::mir::{LabelId, Operand, Reg, VReg, X86Inst, X86Mir};
 use crate::cfg_lower::{FieldChainBase, IndexChainBase, IndexLevel};
 use crate::types;
+use crate::vreg::BLOCK_LABEL_BASE;
 
 /// Argument passing registers per System V AMD64 ABI.
 const ARG_REGS: [Reg; 6] = [Reg::Rdi, Reg::Rsi, Reg::Rdx, Reg::Rcx, Reg::R8, Reg::R9];
@@ -324,13 +327,13 @@ impl<'a> CfgLower<'a> {
     /// Get the label for a CFG basic block.
     ///
     /// Block labels use IDs in the upper half of the `u32` space (starting at
-    /// `u32::MAX / 2`) to avoid collisions with inline labels allocated by
+    /// [`BLOCK_LABEL_BASE`]) to avoid collisions with inline labels allocated by
     /// [`Self::new_label`]. The mapping is deterministic: `block_id` maps to
-    /// `u32::MAX / 2 + block_id`.
+    /// `BLOCK_LABEL_BASE + block_id`.
     ///
     /// See the module documentation for details on label namespace separation.
     fn block_label(&self, block_id: BlockId) -> LabelId {
-        LabelId::new(u32::MAX / 2 + block_id.as_u32())
+        LabelId::new(BLOCK_LABEL_BASE + block_id.as_u32())
     }
 
     /// Get or compute field vregs for a struct value.

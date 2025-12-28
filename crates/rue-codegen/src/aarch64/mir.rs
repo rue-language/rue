@@ -18,8 +18,10 @@
 //!
 //! To prevent collisions, we partition the `u32` label ID space:
 //!
-//! - **Inline labels**: IDs `0` to `u32::MAX / 2 - 1` (allocated via [`Aarch64Mir::alloc_label`])
-//! - **Block labels**: IDs `u32::MAX / 2` to `u32::MAX` (computed via [`Aarch64Mir::block_label`])
+//! - **Inline labels**: IDs `0` to `BLOCK_LABEL_BASE - 1` (allocated via [`Aarch64Mir::alloc_label`])
+//! - **Block labels**: IDs `BLOCK_LABEL_BASE` to `u32::MAX` (computed via [`Aarch64Mir::block_label`])
+//!
+//! See [`crate::vreg::BLOCK_LABEL_BASE`] for the constant definition.
 //!
 //! This gives each namespace ~2 billion IDs, which is more than sufficient for
 //! any realistic function. The separation is handled automatically by the
@@ -27,7 +29,7 @@
 
 use std::fmt;
 
-pub use crate::vreg::{LabelId, VReg};
+pub use crate::vreg::{BLOCK_LABEL_BASE, LabelId, VReg};
 
 /// A physical AArch64 register.
 ///
@@ -975,13 +977,13 @@ impl Aarch64Mir {
     /// Get the label for a CFG basic block.
     ///
     /// Block labels use IDs in the upper half of the `u32` space (starting at
-    /// `u32::MAX / 2`) to avoid collisions with inline labels allocated by
+    /// [`BLOCK_LABEL_BASE`]) to avoid collisions with inline labels allocated by
     /// [`Self::alloc_label`]. The mapping is deterministic: `block_id` maps to
-    /// `u32::MAX / 2 + block_id`.
+    /// `BLOCK_LABEL_BASE + block_id`.
     ///
     /// See the module documentation for details on label namespace separation.
     pub fn block_label(block_id: u32) -> LabelId {
-        LabelId::new(u32::MAX / 2 + block_id)
+        LabelId::new(BLOCK_LABEL_BASE + block_id)
     }
 
     /// Get the number of virtual registers allocated.
