@@ -1472,6 +1472,18 @@
           }
         }
       ]
+    },
+    {
+      "version": 1,
+      "timestamp": "2025-12-28T14:01:27Z",
+      "commit": "3da80114",
+      "build_mode": "release",
+      "host": {
+        "os": "darwin",
+        "arch": "arm64"
+      },
+      "iterations": 5,
+      "benchmarks": []
     }
   ]
 }
