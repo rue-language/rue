@@ -10,6 +10,7 @@ use crate::inference::{
     ParamVarInfo, Unifier, UnifyResult,
 };
 use crate::inst::{Air, AirArgMode, AirCallArg, AirInst, AirInstData, AirPattern, AirRef};
+use crate::type_context::{FunctionSignature, MethodSignature, TypeContext};
 use crate::types::{
     ArrayTypeDef, ArrayTypeId, EnumDef, EnumId, StructDef, StructField, StructId, Type,
     parse_array_type_syntax,
@@ -305,6 +306,66 @@ impl<'a> Sema<'a> {
             warnings: Vec::new(),
             methods: HashMap::new(),
             preview_features,
+        }
+    }
+
+    /// Build a `TypeContext` from the collected type information.
+    ///
+    /// This should be called after the collection phase (after calling
+    /// `collect_struct_definitions`, `collect_enum_definitions`,
+    /// `collect_function_signatures`, and `collect_method_definitions`).
+    ///
+    /// The returned `TypeContext` is immutable and can be shared across
+    /// threads for parallel function analysis.
+    ///
+    /// # Panics
+    ///
+    /// This method clones the type information, so it should only be called
+    /// once per analysis to avoid unnecessary allocations.
+    pub fn build_type_context(&self) -> TypeContext {
+        // Build function signatures
+        let func_sigs: HashMap<Symbol, FunctionSignature> = self
+            .functions
+            .iter()
+            .map(|(name, info)| {
+                (
+                    *name,
+                    FunctionSignature {
+                        param_types: info.param_types.clone(),
+                        param_modes: info.param_modes.clone(),
+                        return_type: info.return_type,
+                    },
+                )
+            })
+            .collect();
+
+        // Build method signatures
+        let method_sigs: HashMap<(Symbol, Symbol), MethodSignature> = self
+            .methods
+            .iter()
+            .map(|((type_name, method_name), info)| {
+                let struct_id = *self.structs.get(type_name).expect("method type must exist");
+                (
+                    (*type_name, *method_name),
+                    MethodSignature {
+                        struct_id,
+                        struct_type: info.struct_type,
+                        has_self: info.has_self,
+                        param_names: info.param_names.clone(),
+                        param_types: info.param_types.clone(),
+                        return_type: info.return_type,
+                    },
+                )
+            })
+            .collect();
+
+        TypeContext {
+            func_sigs,
+            method_sigs,
+            struct_by_name: self.structs.clone(),
+            struct_defs: self.struct_defs.clone(),
+            enum_by_name: self.enums.clone(),
+            enum_defs: self.enum_defs.clone(),
         }
     }
 
