@@ -100,18 +100,7 @@ use std::collections::HashMap;
 use rue_error::{CompileError, CompileResult, ErrorKind};
 
 use super::mir::{LabelId, Reg, X86Inst, X86Mir};
-use crate::{EmittedCode, EmittedInst, EmittedRelocation};
-
-/// Format an offset for assembly output (e.g., -8 -> "-8", 16 -> "+16", 0 -> "").
-fn format_offset(offset: i32) -> String {
-    if offset == 0 {
-        String::new()
-    } else if offset > 0 {
-        format!("+{}", offset)
-    } else {
-        format!("{}", offset)
-    }
-}
+use crate::{EmittedCode, EmittedInst, EmittedRelocation, format_offset};
 
 /// Kind of jump fixup (rel8 or rel32).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -215,6 +204,31 @@ impl<'a> Emitter<'a> {
     /// Record a comment (no bytes).
     fn record_comment(&mut self, text: impl Into<String>) {
         self.instructions.push(EmittedInst::comment(text));
+    }
+
+    // ==================== Offset adjustment helpers ====================
+
+    /// Calculate the total stack space used by callee-saved registers.
+    ///
+    /// On x86-64, each register is pushed individually (8 bytes each).
+    fn callee_saved_size(&self) -> i32 {
+        self.callee_saved.len() as i32 * 8
+    }
+
+    /// Adjust an RBP-relative offset to account for callee-saved registers.
+    ///
+    /// CfgLower generates offsets assuming `[rbp - 8]` is the first local slot,
+    /// but callee-saved registers are pushed after RBP is set up. This method
+    /// adjusts negative RBP-relative offsets to skip past the callee-saved area.
+    ///
+    /// Positive offsets (stack arguments) are left unchanged since they're above
+    /// the saved RBP and return address.
+    fn adjust_fp_offset(&self, base: Reg, offset: i32) -> i32 {
+        if base == Reg::Rbp && offset < 0 {
+            offset - self.callee_saved_size()
+        } else {
+            offset
+        }
     }
 
     // ==================== Main emit entry point ====================
@@ -354,8 +368,7 @@ impl<'a> Emitter<'a> {
         // System V AMD64 ABI: first 6 args in rdi, rsi, rdx, rcx, r8, r9
         const ARG_REGS: [Reg; 6] = [Reg::Rdi, Reg::Rsi, Reg::Rdx, Reg::Rcx, Reg::R8, Reg::R9];
 
-        // Offset adjustment for callee-saved registers
-        let callee_saved_size = callee_saved.len() as i32 * 8;
+        let callee_saved_size = self.callee_saved_size();
 
         for i in 0..self.num_params.min(6) {
             // Use num_locals_original (not num_locals which includes spills)
@@ -451,11 +464,11 @@ impl<'a> Emitter<'a> {
                     self.record_comment("epilogue - restore callee-saved");
                     // Instead of mov rsp, rbp (which skips callee-saved),
                     // first point rsp at the callee-saved area, pop them, then pop rbp
-                    let callee_saved_size = (self.callee_saved.len() * 8) as i32;
+                    let size = self.callee_saved_size();
                     // lea rsp, [rbp - callee_saved_size]
                     self.begin_inst();
-                    self.emit_lea_rsp_rbp_offset(-callee_saved_size);
-                    self.end_inst(format!("lea rsp, [rbp{}]", -callee_saved_size));
+                    self.emit_lea_rsp_rbp_offset(-size);
+                    self.end_inst(format!("lea rsp, [rbp{}]", -size));
                     // Pop callee-saved in reverse order (last pushed = first popped)
                     let callee_saved: Vec<_> = self.callee_saved.iter().rev().copied().collect();
                     for reg in callee_saved {
@@ -471,15 +484,7 @@ impl<'a> Emitter<'a> {
                 }
             }
             X86Inst::MovRM { dst, base, offset } => {
-                // Adjust offset for rbp-relative accesses to account for callee-saved registers.
-                // Lower.rs generates offsets assuming [rbp-8] is the first slot, but callee-saved
-                // registers are pushed after rbp, so we need to skip past them.
-                let adjusted_offset = if *base == Reg::Rbp && *offset < 0 {
-                    let callee_saved_size = self.callee_saved.len() as i32 * 8;
-                    *offset - callee_saved_size
-                } else {
-                    *offset
-                };
+                let adjusted_offset = self.adjust_fp_offset(*base, *offset);
                 self.begin_inst();
                 self.emit_mov_rm(dst.as_physical(), *base, adjusted_offset);
                 self.end_inst(format!(
@@ -490,13 +495,7 @@ impl<'a> Emitter<'a> {
                 ));
             }
             X86Inst::MovMR { base, offset, src } => {
-                // Adjust offset for rbp-relative accesses (same as MovRM above).
-                let adjusted_offset = if *base == Reg::Rbp && *offset < 0 {
-                    let callee_saved_size = self.callee_saved.len() as i32 * 8;
-                    *offset - callee_saved_size
-                } else {
-                    *offset
-                };
+                let adjusted_offset = self.adjust_fp_offset(*base, *offset);
                 self.begin_inst();
                 self.emit_mov_mr(*base, adjusted_offset, src.as_physical());
                 self.end_inst(format!(
@@ -862,10 +861,10 @@ impl<'a> Emitter<'a> {
                 if !self.callee_saved.is_empty() && self.num_locals == 0 && self.num_params == 0 {
                     self.record_comment("epilogue - restore callee-saved");
                     // Point RSP at the callee-saved area (skip any alignment padding)
-                    let callee_saved_size = (self.callee_saved.len() * 8) as i32;
+                    let size = self.callee_saved_size();
                     self.begin_inst();
-                    self.emit_lea_rsp_rbp_offset(-callee_saved_size);
-                    self.end_inst(format!("lea rsp, [rbp{}]", -callee_saved_size));
+                    self.emit_lea_rsp_rbp_offset(-size);
+                    self.end_inst(format!("lea rsp, [rbp{}]", -size));
                     // Pop callee-saved in reverse order
                     let callee_saved: Vec<_> = self.callee_saved.iter().rev().copied().collect();
                     for reg in callee_saved {
@@ -902,15 +901,7 @@ impl<'a> Emitter<'a> {
                 scale: _,
                 disp,
             } => {
-                // Adjust displacement for rbp-relative accesses to account for callee-saved registers.
-                // Lower.rs generates offsets assuming [rbp-8] is the first slot, but callee-saved
-                // registers are pushed after rbp, so we need to skip past them.
-                let adjusted_disp = if *base == Reg::Rbp && *disp < 0 {
-                    let callee_saved_size = self.callee_saved.len() as i32 * 8;
-                    *disp - callee_saved_size
-                } else {
-                    *disp
-                };
+                let adjusted_disp = self.adjust_fp_offset(*base, *disp);
                 // Simplified: LEA dst, [base + disp] without index
                 self.begin_inst();
                 self.emit_lea_simple(dst.as_physical(), *base, adjusted_disp);

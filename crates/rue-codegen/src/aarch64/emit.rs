@@ -260,13 +260,30 @@ impl<'a> Emitter<'a> {
         self.instructions.push(EmittedInst::comment(text));
     }
 
+    // ==================== Offset adjustment helpers ====================
+
     /// Calculate the total stack space used by callee-saved registers.
-    /// On AArch64, registers are saved in pairs (16 bytes per pair).
+    ///
+    /// On AArch64, registers are saved in pairs (16 bytes per pair), rounded up.
     fn callee_saved_stack_size(&self) -> i32 {
-        // Registers are saved in pairs, rounded up
         let num_regs = self.callee_saved.len();
         let pairs = (num_regs + 1) / 2;
         (pairs * 16) as i32
+    }
+
+    /// Adjust an FP-relative offset to account for callee-saved registers.
+    ///
+    /// CfgLower generates offsets assuming `[fp - 8]` is the first local slot,
+    /// but callee-saved registers are stored after FP is set up. This method
+    /// adjusts negative FP-relative offsets to skip past the callee-saved area.
+    ///
+    /// Positive offsets (stack arguments) are left unchanged.
+    fn adjust_fp_offset(&self, base: Reg, offset: i32) -> i32 {
+        if base == Reg::Fp && offset < 0 {
+            offset - self.callee_saved_stack_size()
+        } else {
+            offset
+        }
     }
 
     // ==================== Main emit entry point ====================
@@ -422,15 +439,7 @@ impl<'a> Emitter<'a> {
 
             Aarch64Inst::Ldr { dst, base, offset } => {
                 let rd = dst.as_physical();
-                // Adjust offset for FP-relative accesses to account for callee-saved registers.
-                // Lower.rs generates offsets assuming [fp-8] is the first slot, but callee-saved
-                // registers are stored after fp is set, so we need to skip past them.
-                let adjusted_offset = if *base == Reg::Fp && *offset < 0 {
-                    let callee_saved_size = self.callee_saved_stack_size();
-                    *offset - callee_saved_size
-                } else {
-                    *offset
-                };
+                let adjusted_offset = self.adjust_fp_offset(*base, *offset);
                 self.begin_inst();
                 self.emit_ldr(rd, *base, adjusted_offset);
                 self.end_inst(format!("ldr {}, [{}, #{}]", rd, base, adjusted_offset));
@@ -438,13 +447,7 @@ impl<'a> Emitter<'a> {
 
             Aarch64Inst::Str { src, base, offset } => {
                 let rs = src.as_physical();
-                // Adjust offset for FP-relative accesses (same as Ldr above).
-                let adjusted_offset = if *base == Reg::Fp && *offset < 0 {
-                    let callee_saved_size = self.callee_saved_stack_size();
-                    *offset - callee_saved_size
-                } else {
-                    *offset
-                };
+                let adjusted_offset = self.adjust_fp_offset(*base, *offset);
                 self.begin_inst();
                 self.emit_str(rs, *base, adjusted_offset);
                 self.end_inst(format!("str {}, [{}, #{}]", rs, base, adjusted_offset));
@@ -482,12 +485,7 @@ impl<'a> Emitter<'a> {
                 let rn = src.as_physical();
                 // Adjust offset for FP-relative address calculations (same as Ldr/Str).
                 // This is used when computing addresses of locals for inout arguments.
-                let adjusted_imm = if rn == Reg::Fp && *imm < 0 {
-                    let callee_saved_size = self.callee_saved_stack_size();
-                    *imm - callee_saved_size
-                } else {
-                    *imm
-                };
+                let adjusted_imm = self.adjust_fp_offset(rn, *imm);
                 self.begin_inst();
                 if adjusted_imm < 0 {
                     // Negative immediate: use SUB with the absolute value

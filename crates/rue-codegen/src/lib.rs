@@ -262,6 +262,24 @@ impl Default for EmittedCode {
     }
 }
 
+/// Format an offset for assembly output.
+///
+/// This produces consistent assembly syntax for memory operand offsets:
+/// - `0` → `""` (empty string, no offset shown)
+/// - Positive values → `"+N"` (e.g., `+16`)
+/// - Negative values → `"-N"` (e.g., `-8`)
+///
+/// Used by both x86-64 and aarch64 emitters for generating readable assembly.
+pub fn format_offset(offset: i32) -> String {
+    if offset == 0 {
+        String::new()
+    } else if offset > 0 {
+        format!("+{}", offset)
+    } else {
+        format!("{}", offset)
+    }
+}
+
 // Re-export the generate function for x86_64 (default)
 pub use x86_64::generate;
 

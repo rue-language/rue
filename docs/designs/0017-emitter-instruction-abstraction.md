@@ -1,11 +1,11 @@
 ---
 id: 0017
 title: Emitter Instruction Abstraction
-status: proposal
+status: implemented
 tags: [codegen, refactoring]
 created: 2025-12-27
-accepted:
-implemented:
+accepted: 2025-12-27
+implemented: 2025-12-27
 spec-sections: []
 ---
 
@@ -13,7 +13,7 @@ spec-sections: []
 
 ## Status
 
-Proposal
+Implemented
 
 ## Summary
 
@@ -227,10 +227,11 @@ fn emit_prologue(&mut self) {
   - Apply same pattern to aarch64 emitter
   - Verify byte output is identical
 
-- [ ] **Phase 3: Cleanup and optimization** - rue-h8r0 (depends on Phase 2)
-  - Extract common helpers (REX building, ModR/M encoding)
-  - Add offset adjustment helper for FP-relative accesses
-  - Consider shared trait for cross-platform patterns
+- [x] **Phase 3: Cleanup and optimization** - rue-h8r0 (completed)
+  - Add shared `format_offset` helper to lib.rs
+  - Add `callee_saved_size()` and `adjust_fp_offset()` helpers to x86_64 emitter
+  - Add `adjust_fp_offset()` helper to aarch64 emitter
+  - Refactor offset adjustment code to use new helpers
 
 ## Consequences
 
