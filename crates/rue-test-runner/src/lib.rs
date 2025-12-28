@@ -303,18 +303,25 @@ pub fn expand_test_file(mut test_file: TestFile) -> TestFile {
     test_file
 }
 
-/// Recursively collect all TOML files from a directory.
-pub fn collect_toml_files(dir: &Path, files: &mut Vec<PathBuf>) {
+/// Recursively collect all files with the given extension from a directory.
+pub fn collect_files_by_ext(dir: &Path, ext: &str, files: &mut Vec<PathBuf>) {
     if let Ok(entries) = fs::read_dir(dir) {
         for entry in entries.flatten() {
             let path = entry.path();
             if path.is_dir() {
-                collect_toml_files(&path, files);
-            } else if path.extension().is_some_and(|ext| ext == "toml") {
+                collect_files_by_ext(&path, ext, files);
+            } else if path.extension().is_some_and(|e| e == ext) {
                 files.push(path);
             }
         }
     }
+}
+
+/// Recursively collect all TOML files from a directory.
+///
+/// This is a convenience wrapper around [`collect_files_by_ext`].
+pub fn collect_toml_files(dir: &Path, files: &mut Vec<PathBuf>) {
+    collect_files_by_ext(dir, "toml", files);
 }
 
 /// Load all test files from a directory (including subdirectories).

@@ -3,6 +3,7 @@
 //! Generates a report showing which spec paragraphs are covered by tests
 //! and which remain uncovered.
 
+use rue_test_runner::collect_files_by_ext;
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::Path;
@@ -371,25 +372,6 @@ fn parse_spec_file(path: &Path, paragraphs: &mut BTreeMap<String, SpecParagraph>
                     source_file: source_file.clone(),
                 },
             );
-        }
-    }
-}
-
-/// Recursively collect all files with the given extension from a directory.
-fn collect_files_by_ext(dir: &Path, ext: &str, files: &mut Vec<std::path::PathBuf>) {
-    match fs::read_dir(dir) {
-        Ok(entries) => {
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if path.is_dir() {
-                    collect_files_by_ext(&path, ext, files);
-                } else if path.extension().is_some_and(|e| e == ext) {
-                    files.push(path);
-                }
-            }
-        }
-        Err(e) => {
-            eprintln!("Error reading directory {}: {}", dir.display(), e);
         }
     }
 }
