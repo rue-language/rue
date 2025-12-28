@@ -6,6 +6,20 @@ use std::collections::HashMap;
 
 use rue_target::Target;
 
+use crate::constants::{
+    ARM64_RELOC_BRANCH26, ARM64_RELOC_PAGE21, ARM64_RELOC_PAGEOFF12, CPU_SUBTYPE_ARM64_ALL,
+    CPU_TYPE_ARM64, ELF_MAGIC, ELF64_EHDR_SIZE, ELF64_SHDR_SIZE, ELF64_SYM_SIZE, ELFCLASS64,
+    ELFDATA2LSB, ET_REL, EV_CURRENT, LC_BUILD_VERSION, LC_SEGMENT_64, LC_SYMTAB,
+    MACHO64_BUILD_VERSION_CMD_SIZE, MACHO64_HEADER_SIZE, MACHO64_NLIST_SIZE, MACHO64_RELOC_SIZE,
+    MACHO64_SECTION_SIZE, MACHO64_SEGMENT_CMD_SIZE, MACHO64_SYMTAB_CMD_SIZE, MH_MAGIC_64,
+    MH_OBJECT, N_EXT, N_SECT, N_UNDF, PLATFORM_MACOS, R_AARCH64_ABS64, R_AARCH64_ADD_ABS_LO12_NC,
+    R_AARCH64_ADR_PREL_PG_HI21, R_AARCH64_CALL26, R_AARCH64_JUMP26, R_X86_64_32, R_X86_64_32S,
+    R_X86_64_64, R_X86_64_GOTPCREL, R_X86_64_GOTPCRELX, R_X86_64_PC32, R_X86_64_PLT32,
+    R_X86_64_REX_GOTPCRELX, S_ATTR_PURE_INSTRUCTIONS, S_ATTR_SOME_INSTRUCTIONS, SHF_ALLOC,
+    SHF_EXECINSTR, SHF_INFO_LINK, SHT_PROGBITS, SHT_RELA, SHT_STRTAB, SHT_SYMTAB, STB_GLOBAL,
+    STB_LOCAL, STT_FUNC, STT_NOTYPE, STT_SECTION, elf_st_info,
+};
+
 /// ELF section layout with explicit indices.
 ///
 /// The section header table layout is:
@@ -240,12 +254,12 @@ impl ObjectBuilder {
 
         let mut symtab = Vec::new();
 
-        // Symbol 0: null symbol (24 bytes)
-        symtab.extend_from_slice(&[0u8; 24]);
+        // Symbol 0: null symbol
+        symtab.extend_from_slice(&[0u8; ELF64_SYM_SIZE]);
 
         // Symbol 1: .text section symbol
         symtab.extend_from_slice(&0_u32.to_le_bytes()); // st_name (empty)
-        symtab.push(0x03); // st_info: STB_LOCAL, STT_SECTION
+        symtab.push(elf_st_info(STB_LOCAL, STT_SECTION)); // st_info
         symtab.push(0); // st_other
         symtab.extend_from_slice(&ElfSectionLayout::TEXT.to_le_bytes()); // st_shndx: .text section
         symtab.extend_from_slice(&0_u64.to_le_bytes()); // st_value
@@ -257,7 +271,7 @@ impl ObjectBuilder {
         // Symbol 2: .rodata section symbol (if has_rodata)
         if has_rodata {
             symtab.extend_from_slice(&0_u32.to_le_bytes()); // st_name (empty)
-            symtab.push(0x03); // st_info: STB_LOCAL, STT_SECTION
+            symtab.push(elf_st_info(STB_LOCAL, STT_SECTION)); // st_info
             symtab.push(0); // st_other
             symtab.extend_from_slice(&layout.rodata().to_le_bytes()); // st_shndx: .rodata section
             symtab.extend_from_slice(&0_u64.to_le_bytes()); // st_value
@@ -269,7 +283,7 @@ impl ObjectBuilder {
         let first_string_sym = next_sym_idx;
         for (i, offset) in string_offsets.iter().enumerate() {
             symtab.extend_from_slice(&(string_symbol_offsets[i] as u32).to_le_bytes()); // st_name
-            symtab.push(0x00); // st_info: STB_LOCAL, STT_NOTYPE
+            symtab.push(elf_st_info(STB_LOCAL, STT_NOTYPE)); // st_info
             symtab.push(0); // st_other
             symtab.extend_from_slice(&layout.rodata_or_null().to_le_bytes()); // st_shndx: .rodata
             symtab.extend_from_slice(&(*offset as u64).to_le_bytes()); // st_value: offset in .rodata
@@ -283,7 +297,7 @@ impl ObjectBuilder {
         // Function symbol (global)
         let func_sym_idx = next_sym_idx;
         symtab.extend_from_slice(&(strtab_name as u32).to_le_bytes()); // st_name
-        symtab.push(0x12); // st_info: STB_GLOBAL, STT_FUNC
+        symtab.push(elf_st_info(STB_GLOBAL, STT_FUNC)); // st_info
         symtab.push(0); // st_other
         symtab.extend_from_slice(&ElfSectionLayout::TEXT.to_le_bytes()); // st_shndx: .text
         symtab.extend_from_slice(&0_u64.to_le_bytes()); // st_value
@@ -295,9 +309,9 @@ impl ObjectBuilder {
         let first_extern_sym = next_sym_idx;
         for (i, _sym) in extern_symbols.iter().enumerate() {
             symtab.extend_from_slice(&(extern_symbol_offsets[i] as u32).to_le_bytes()); // st_name
-            symtab.push(0x10); // st_info: STB_GLOBAL, STT_NOTYPE
+            symtab.push(elf_st_info(STB_GLOBAL, STT_NOTYPE)); // st_info
             symtab.push(0); // st_other
-            symtab.extend_from_slice(&0_u16.to_le_bytes()); // st_shndx: SHN_UNDEF
+            symtab.extend_from_slice(&crate::constants::SHN_UNDEF.to_le_bytes()); // st_shndx: SHN_UNDEF
             symtab.extend_from_slice(&0_u64.to_le_bytes()); // st_value
             symtab.extend_from_slice(&0_u64.to_le_bytes()); // st_size
         }
@@ -321,19 +335,19 @@ impl ObjectBuilder {
             };
 
             let r_type: u32 = match reloc.rel_type {
-                RelocationType::Abs64 => 1,
-                RelocationType::Pc32 => 2,
-                RelocationType::Plt32 => 4,
-                RelocationType::GotPcRel => 9, // R_X86_64_GOTPCREL
-                RelocationType::Abs32 => 10,
-                RelocationType::Abs32S => 11,
-                RelocationType::GotPcRelX => 41, // R_X86_64_GOTPCRELX
-                RelocationType::RexGotPcRelX => 42, // R_X86_64_REX_GOTPCRELX
-                RelocationType::Jump26 => 282,   // R_AARCH64_JUMP26
-                RelocationType::Call26 => 283,   // R_AARCH64_CALL26
-                RelocationType::Aarch64Abs64 => 257, // R_AARCH64_ABS64
-                RelocationType::AdrpPage21 => 275, // R_AARCH64_ADR_PREL_PG_HI21
-                RelocationType::AddLo12 => 277,  // R_AARCH64_ADD_ABS_LO12_NC
+                RelocationType::Abs64 => R_X86_64_64,
+                RelocationType::Pc32 => R_X86_64_PC32,
+                RelocationType::Plt32 => R_X86_64_PLT32,
+                RelocationType::GotPcRel => R_X86_64_GOTPCREL,
+                RelocationType::Abs32 => R_X86_64_32,
+                RelocationType::Abs32S => R_X86_64_32S,
+                RelocationType::GotPcRelX => R_X86_64_GOTPCRELX,
+                RelocationType::RexGotPcRelX => R_X86_64_REX_GOTPCRELX,
+                RelocationType::Jump26 => R_AARCH64_JUMP26,
+                RelocationType::Call26 => R_AARCH64_CALL26,
+                RelocationType::Aarch64Abs64 => R_AARCH64_ABS64,
+                RelocationType::AdrpPage21 => R_AARCH64_ADR_PREL_PG_HI21,
+                RelocationType::AddLo12 => R_AARCH64_ADD_ABS_LO12_NC,
                 RelocationType::Unknown(t) => t,
             };
             let r_info = ((sym_idx as u64) << 32) | (r_type as u64);
@@ -344,11 +358,9 @@ impl ObjectBuilder {
         }
 
         // Calculate section layout (see ElfSectionLayout for section ordering)
-        const ELF_HEADER_SIZE: usize = 64;
-        const SECTION_HEADER_SIZE: usize = 64;
 
         // Sections start right after ELF header
-        let text_offset = ELF_HEADER_SIZE;
+        let text_offset = ELF64_EHDR_SIZE;
         let text_size = self.code.len();
 
         // .rodata follows .text (if present)
@@ -378,26 +390,24 @@ impl ObjectBuilder {
         let sh_offset = align_up(rela_offset + rela_size, 8);
 
         // === ELF Header ===
-        elf.extend_from_slice(&[
-            0x7F, b'E', b'L', b'F', // Magic
-            2,    // 64-bit
-            1,    // Little endian
-            1,    // ELF version
-            0,    // System V ABI
-            0, 0, 0, 0, 0, 0, 0, 0, // Padding
-        ]);
-        elf.extend_from_slice(&1_u16.to_le_bytes()); // e_type: ET_REL
+        elf.extend_from_slice(&ELF_MAGIC);
+        elf.push(ELFCLASS64);
+        elf.push(ELFDATA2LSB);
+        elf.push(EV_CURRENT);
+        elf.push(crate::constants::ELFOSABI_NONE);
+        elf.extend_from_slice(&[0u8; 8]); // Padding
+        elf.extend_from_slice(&ET_REL.to_le_bytes()); // e_type: ET_REL
         // Safety: build_elf() is only called for ELF targets (checked in build())
         elf.extend_from_slice(&self.target.elf_machine().unwrap().to_le_bytes()); // e_machine
-        elf.extend_from_slice(&1_u32.to_le_bytes()); // e_version
+        elf.extend_from_slice(&(EV_CURRENT as u32).to_le_bytes()); // e_version
         elf.extend_from_slice(&0_u64.to_le_bytes()); // e_entry (none for relocatable)
         elf.extend_from_slice(&0_u64.to_le_bytes()); // e_phoff (no program headers)
         elf.extend_from_slice(&(sh_offset as u64).to_le_bytes()); // e_shoff
         elf.extend_from_slice(&0_u32.to_le_bytes()); // e_flags
-        elf.extend_from_slice(&(ELF_HEADER_SIZE as u16).to_le_bytes()); // e_ehsize
+        elf.extend_from_slice(&(ELF64_EHDR_SIZE as u16).to_le_bytes()); // e_ehsize
         elf.extend_from_slice(&0_u16.to_le_bytes()); // e_phentsize
         elf.extend_from_slice(&0_u16.to_le_bytes()); // e_phnum
-        elf.extend_from_slice(&(SECTION_HEADER_SIZE as u16).to_le_bytes()); // e_shentsize
+        elf.extend_from_slice(&(ELF64_SHDR_SIZE as u16).to_le_bytes()); // e_shentsize
         elf.extend_from_slice(&layout.count().to_le_bytes()); // e_shnum
         elf.extend_from_slice(&layout.shstrtab().to_le_bytes()); // e_shstrndx
 
@@ -440,12 +450,12 @@ impl ObjectBuilder {
 
         // Section 0: null (ElfSectionLayout::NULL)
         let _ = ElfSectionLayout::NULL; // Assert this is section 0
-        elf.extend_from_slice(&[0u8; 64]);
+        elf.extend_from_slice(&[0u8; ELF64_SHDR_SIZE]);
 
         // Section 1: .text
         elf.extend_from_slice(&(shstrtab_text as u32).to_le_bytes()); // sh_name
-        elf.extend_from_slice(&1_u32.to_le_bytes()); // sh_type: SHT_PROGBITS
-        elf.extend_from_slice(&0x6_u64.to_le_bytes()); // sh_flags: SHF_ALLOC | SHF_EXECINSTR
+        elf.extend_from_slice(&SHT_PROGBITS.to_le_bytes()); // sh_type: SHT_PROGBITS
+        elf.extend_from_slice(&(SHF_ALLOC | SHF_EXECINSTR).to_le_bytes()); // sh_flags
         elf.extend_from_slice(&0_u64.to_le_bytes()); // sh_addr
         elf.extend_from_slice(&(text_offset as u64).to_le_bytes()); // sh_offset
         elf.extend_from_slice(&(text_size as u64).to_le_bytes()); // sh_size
@@ -457,8 +467,8 @@ impl ObjectBuilder {
         // Section 2: .rodata (if present)
         if has_rodata {
             elf.extend_from_slice(&(shstrtab_rodata as u32).to_le_bytes()); // sh_name
-            elf.extend_from_slice(&1_u32.to_le_bytes()); // sh_type: SHT_PROGBITS
-            elf.extend_from_slice(&0x2_u64.to_le_bytes()); // sh_flags: SHF_ALLOC
+            elf.extend_from_slice(&SHT_PROGBITS.to_le_bytes()); // sh_type: SHT_PROGBITS
+            elf.extend_from_slice(&SHF_ALLOC.to_le_bytes()); // sh_flags: SHF_ALLOC
             elf.extend_from_slice(&0_u64.to_le_bytes()); // sh_addr
             elf.extend_from_slice(&(rodata_offset as u64).to_le_bytes()); // sh_offset
             elf.extend_from_slice(&(rodata_size as u64).to_le_bytes()); // sh_size
@@ -470,7 +480,7 @@ impl ObjectBuilder {
 
         // Section: .symtab
         elf.extend_from_slice(&(shstrtab_symtab as u32).to_le_bytes()); // sh_name
-        elf.extend_from_slice(&2_u32.to_le_bytes()); // sh_type: SHT_SYMTAB
+        elf.extend_from_slice(&SHT_SYMTAB.to_le_bytes()); // sh_type: SHT_SYMTAB
         elf.extend_from_slice(&0_u64.to_le_bytes()); // sh_flags
         elf.extend_from_slice(&0_u64.to_le_bytes()); // sh_addr
         elf.extend_from_slice(&(symtab_offset as u64).to_le_bytes()); // sh_offset
@@ -478,11 +488,11 @@ impl ObjectBuilder {
         elf.extend_from_slice(&(layout.strtab() as u32).to_le_bytes()); // sh_link: .strtab
         elf.extend_from_slice(&(first_global_sym as u32).to_le_bytes()); // sh_info: first non-local symbol
         elf.extend_from_slice(&8_u64.to_le_bytes()); // sh_addralign
-        elf.extend_from_slice(&24_u64.to_le_bytes()); // sh_entsize
+        elf.extend_from_slice(&(ELF64_SYM_SIZE as u64).to_le_bytes()); // sh_entsize
 
         // Section: .strtab
         elf.extend_from_slice(&(shstrtab_strtab as u32).to_le_bytes()); // sh_name
-        elf.extend_from_slice(&3_u32.to_le_bytes()); // sh_type: SHT_STRTAB
+        elf.extend_from_slice(&SHT_STRTAB.to_le_bytes()); // sh_type: SHT_STRTAB
         elf.extend_from_slice(&0_u64.to_le_bytes()); // sh_flags
         elf.extend_from_slice(&0_u64.to_le_bytes()); // sh_addr
         elf.extend_from_slice(&(strtab_offset as u64).to_le_bytes()); // sh_offset
@@ -494,7 +504,7 @@ impl ObjectBuilder {
 
         // Section: .shstrtab
         elf.extend_from_slice(&(shstrtab_shstrtab as u32).to_le_bytes()); // sh_name
-        elf.extend_from_slice(&3_u32.to_le_bytes()); // sh_type: SHT_STRTAB
+        elf.extend_from_slice(&SHT_STRTAB.to_le_bytes()); // sh_type: SHT_STRTAB
         elf.extend_from_slice(&0_u64.to_le_bytes()); // sh_flags
         elf.extend_from_slice(&0_u64.to_le_bytes()); // sh_addr
         elf.extend_from_slice(&(shstrtab_offset as u64).to_le_bytes()); // sh_offset
@@ -506,8 +516,8 @@ impl ObjectBuilder {
 
         // Section: .rela.text
         elf.extend_from_slice(&(shstrtab_rela as u32).to_le_bytes()); // sh_name
-        elf.extend_from_slice(&4_u32.to_le_bytes()); // sh_type: SHT_RELA
-        elf.extend_from_slice(&0x40_u64.to_le_bytes()); // sh_flags: SHF_INFO_LINK
+        elf.extend_from_slice(&SHT_RELA.to_le_bytes()); // sh_type: SHT_RELA
+        elf.extend_from_slice(&SHF_INFO_LINK.to_le_bytes()); // sh_flags: SHF_INFO_LINK
         elf.extend_from_slice(&0_u64.to_le_bytes()); // sh_addr
         elf.extend_from_slice(&(rela_offset as u64).to_le_bytes()); // sh_offset
         elf.extend_from_slice(&(rela_size as u64).to_le_bytes()); // sh_size
@@ -532,41 +542,14 @@ impl ObjectBuilder {
     fn build_macho(self) -> Vec<u8> {
         let mut macho = Vec::new();
 
-        // Mach-O constants
-        const MH_MAGIC_64: u32 = 0xFEEDFACF;
-        const MH_OBJECT: u32 = 0x1;
-        const CPU_TYPE_ARM64: u32 = 0x0100000C; // CPU_TYPE_ARM | CPU_ARCH_ABI64
-        const CPU_SUBTYPE_ARM64_ALL: u32 = 0;
-        const LC_SEGMENT_64: u32 = 0x19;
-        const LC_SYMTAB: u32 = 0x2;
-        const LC_BUILD_VERSION: u32 = 0x32;
-        const S_ATTR_PURE_INSTRUCTIONS: u32 = 0x80000000;
-        const S_ATTR_SOME_INSTRUCTIONS: u32 = 0x00000400;
-
-        // Platform constants for LC_BUILD_VERSION
-        const PLATFORM_MACOS: u32 = 1;
-
-        // ARM64 relocation types
-        const ARM64_RELOC_BRANCH26: u32 = 2;
-        const ARM64_RELOC_PAGE21: u32 = 3;
-        const ARM64_RELOC_PAGEOFF12: u32 = 4;
-
-        // Calculate sizes and offsets
-        const HEADER_SIZE: usize = 32;
-        const SEGMENT_CMD_SIZE: usize = 72;
-        const SECTION_SIZE: usize = 80;
-        const SYMTAB_CMD_SIZE: usize = 24;
-        const BUILD_VERSION_CMD_SIZE: usize = 24; // Without tool entries
-        const NLIST_SIZE: usize = 16;
-        const RELOC_SIZE: usize = 8;
-
         // Determine number of sections (1 for __text, +1 if we have strings for __rodata)
         let has_rodata = !self.strings.is_empty();
         let num_sections = if has_rodata { 2 } else { 1 };
-        let segment_cmd_total = SEGMENT_CMD_SIZE + (SECTION_SIZE * num_sections);
+        let segment_cmd_total = MACHO64_SEGMENT_CMD_SIZE + (MACHO64_SECTION_SIZE * num_sections);
         // Three load commands: LC_SEGMENT_64, LC_BUILD_VERSION, LC_SYMTAB
-        let load_commands_size = segment_cmd_total + BUILD_VERSION_CMD_SIZE + SYMTAB_CMD_SIZE;
-        let header_and_commands = HEADER_SIZE + load_commands_size;
+        let load_commands_size =
+            segment_cmd_total + MACHO64_BUILD_VERSION_CMD_SIZE + MACHO64_SYMTAB_CMD_SIZE;
+        let header_and_commands = MACHO64_HEADER_SIZE + load_commands_size;
 
         // Build rodata content (string constants)
         let mut rodata = Vec::new();
@@ -647,7 +630,10 @@ impl ObjectBuilder {
         }
 
         // Symbol table follows text relocations
-        let symtab_offset = align_up(text_reloc_offset + (num_text_relocs * RELOC_SIZE), 4);
+        let symtab_offset = align_up(
+            text_reloc_offset + (num_text_relocs * MACHO64_RELOC_SIZE),
+            4,
+        );
 
         // In Mach-O, local symbols come first, then external symbols
         // Local symbols: string constants (non-external)
@@ -657,7 +643,7 @@ impl ObjectBuilder {
         let num_syms = num_local_syms + num_extern_syms;
 
         // String table follows symbol table
-        let strtab_offset = symtab_offset + (num_syms * NLIST_SIZE);
+        let strtab_offset = symtab_offset + (num_syms * MACHO64_NLIST_SIZE);
         let strtab_size = strtab.len();
 
         // === Mach-O Header ===
@@ -743,7 +729,7 @@ impl ObjectBuilder {
         // === LC_BUILD_VERSION ===
         // This tells the linker which macOS version this was built for
         macho.extend_from_slice(&LC_BUILD_VERSION.to_le_bytes()); // cmd
-        macho.extend_from_slice(&(BUILD_VERSION_CMD_SIZE as u32).to_le_bytes()); // cmdsize
+        macho.extend_from_slice(&(MACHO64_BUILD_VERSION_CMD_SIZE as u32).to_le_bytes()); // cmdsize
         macho.extend_from_slice(&PLATFORM_MACOS.to_le_bytes()); // platform
         // minos: macOS 11.0.0 (Big Sur) - encoded as major.minor.patch in nibbles
         // 11.0.0 = 0x000B0000
@@ -753,7 +739,7 @@ impl ObjectBuilder {
 
         // === LC_SYMTAB ===
         macho.extend_from_slice(&LC_SYMTAB.to_le_bytes()); // cmd
-        macho.extend_from_slice(&(SYMTAB_CMD_SIZE as u32).to_le_bytes()); // cmdsize
+        macho.extend_from_slice(&(MACHO64_SYMTAB_CMD_SIZE as u32).to_le_bytes()); // cmdsize
         macho.extend_from_slice(&(symtab_offset as u32).to_le_bytes()); // symoff
         macho.extend_from_slice(&(num_syms as u32).to_le_bytes()); // nsyms
         macho.extend_from_slice(&(strtab_offset as u32).to_le_bytes()); // stroff
@@ -845,11 +831,6 @@ impl ObjectBuilder {
         // n_sect: 1 byte (1-indexed section number)
         // n_desc: 2 bytes
         // n_value: 8 bytes
-
-        // Symbol constants
-        const N_EXT: u8 = 0x01; // External symbol
-        const N_SECT: u8 = 0x0E; // Defined in section
-        const N_UNDF: u8 = 0x00; // Undefined symbol
 
         // Mach-O requires local symbols first, then external symbols
 

@@ -5,6 +5,10 @@ use std::collections::HashMap;
 use rue_target::Target;
 
 use crate::archive::Archive;
+use crate::constants::{
+    ELF_MAGIC, ELF64_EHDR_SIZE, ELF64_PHDR_SIZE, ELFCLASS64, ELFDATA2LSB, ET_EXEC, EV_CURRENT,
+    PF_R, PF_W, PF_X, PT_LOAD,
+};
 use crate::elf::{ObjectFile, RelocationType, Symbol, SymbolBinding};
 
 /// Linker errors.
@@ -281,10 +285,9 @@ impl Linker {
     #[must_use = "linking returns a Result that must be checked"]
     pub fn link(self, entry_point: &str) -> Result<Vec<u8>, LinkError> {
         // Layout constants - use a single program header for simplicity
-        const ELF_HEADER_SIZE: u64 = 64;
-        const PROGRAM_HEADER_SIZE: u64 = 56;
         const NUM_PROGRAM_HEADERS: u64 = 1;
-        const HEADER_SIZE: u64 = ELF_HEADER_SIZE + PROGRAM_HEADER_SIZE * NUM_PROGRAM_HEADERS;
+        const HEADER_SIZE: u64 =
+            (ELF64_EHDR_SIZE as u64) + (ELF64_PHDR_SIZE as u64) * NUM_PROGRAM_HEADERS;
 
         // Code starts right after headers. For ELF loading to work,
         // (vaddr % page_size) must equal (file_offset % page_size).
@@ -696,16 +699,14 @@ impl Linker {
 
         let mut elf = Vec::with_capacity((HEADER_SIZE as usize) + total_size);
 
-        // ===== ELF Header (64 bytes) =====
-        elf.extend_from_slice(&[
-            0x7F, b'E', b'L', b'F', // Magic
-            2,    // 64-bit
-            1,    // Little endian
-            1,    // ELF version
-            0,    // System V ABI
-            0, 0, 0, 0, 0, 0, 0, 0, // Padding
-        ]);
-        elf.extend_from_slice(&2_u16.to_le_bytes()); // e_type: ET_EXEC
+        // ===== ELF Header =====
+        elf.extend_from_slice(&ELF_MAGIC);
+        elf.push(ELFCLASS64);
+        elf.push(ELFDATA2LSB);
+        elf.push(EV_CURRENT);
+        elf.push(crate::constants::ELFOSABI_NONE);
+        elf.extend_from_slice(&[0u8; 8]); // Padding
+        elf.extend_from_slice(&ET_EXEC.to_le_bytes()); // e_type: ET_EXEC
         // The linker currently only produces ELF executables. For Mach-O targets,
         // we use the system linker via a separate code path.
         elf.extend_from_slice(
@@ -715,21 +716,21 @@ impl Linker {
                 .expect("linker only produces ELF executables")
                 .to_le_bytes(),
         ); // e_machine
-        elf.extend_from_slice(&1_u32.to_le_bytes()); // e_version
+        elf.extend_from_slice(&(EV_CURRENT as u32).to_le_bytes()); // e_version
         elf.extend_from_slice(&entry_addr.to_le_bytes()); // e_entry
-        elf.extend_from_slice(&ELF_HEADER_SIZE.to_le_bytes()); // e_phoff
+        elf.extend_from_slice(&(ELF64_EHDR_SIZE as u64).to_le_bytes()); // e_phoff
         elf.extend_from_slice(&0_u64.to_le_bytes()); // e_shoff (no sections)
         elf.extend_from_slice(&0_u32.to_le_bytes()); // e_flags
-        elf.extend_from_slice(&(ELF_HEADER_SIZE as u16).to_le_bytes()); // e_ehsize
-        elf.extend_from_slice(&(PROGRAM_HEADER_SIZE as u16).to_le_bytes()); // e_phentsize
+        elf.extend_from_slice(&(ELF64_EHDR_SIZE as u16).to_le_bytes()); // e_ehsize
+        elf.extend_from_slice(&(ELF64_PHDR_SIZE as u16).to_le_bytes()); // e_phentsize
         elf.extend_from_slice(&(NUM_PROGRAM_HEADERS as u16).to_le_bytes()); // e_phnum
         elf.extend_from_slice(&0_u16.to_le_bytes()); // e_shentsize
         elf.extend_from_slice(&0_u16.to_le_bytes()); // e_shnum
         elf.extend_from_slice(&0_u16.to_le_bytes()); // e_shstrndx
 
         // ===== Single Program Header (PT_LOAD, R+W+X) =====
-        elf.extend_from_slice(&1_u32.to_le_bytes()); // p_type: PT_LOAD
-        elf.extend_from_slice(&0x7_u32.to_le_bytes()); // p_flags: PF_R | PF_W | PF_X
+        elf.extend_from_slice(&PT_LOAD.to_le_bytes()); // p_type: PT_LOAD
+        elf.extend_from_slice(&(PF_R | PF_W | PF_X).to_le_bytes()); // p_flags: PF_R | PF_W | PF_X
         elf.extend_from_slice(&file_offset.to_le_bytes()); // p_offset
         elf.extend_from_slice(&code_vaddr.to_le_bytes()); // p_vaddr
         elf.extend_from_slice(&code_vaddr.to_le_bytes()); // p_paddr
@@ -761,6 +762,10 @@ fn align_up(value: u64, align: u64) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::constants::{
+        E_MACHINE_OFFSET, E_TYPE_OFFSET, EI_CLASS, EI_DATA, EI_VERSION,
+        ELF64_EHDR_SIZE as TEST_EHDR_SIZE, ELF64_PHDR_SIZE as TEST_PHDR_SIZE, EM_X86_64,
+    };
     use crate::elf::ObjectFile;
     use crate::emit::{CodeRelocation, ObjectBuilder};
 
@@ -826,9 +831,9 @@ mod tests {
         let elf = linker.link("main").unwrap();
 
         // Check ELF magic
-        assert_eq!(&elf[0..4], b"\x7FELF");
+        assert_eq!(&elf[0..4], &ELF_MAGIC);
         // Check it's an executable
-        assert_eq!(elf[16], 2); // ET_EXEC
+        assert_eq!(elf[E_TYPE_OFFSET], ET_EXEC as u8);
     }
 
     #[test]
@@ -880,8 +885,8 @@ mod tests {
         let elf = linker.link("main").unwrap();
 
         // Check it's a valid executable
-        assert_eq!(&elf[0..4], b"\x7FELF");
-        assert_eq!(elf[16], 2); // ET_EXEC
+        assert_eq!(&elf[0..4], &ELF_MAGIC);
+        assert_eq!(elf[E_TYPE_OFFSET], ET_EXEC as u8);
     }
 
     #[test]
@@ -943,12 +948,15 @@ mod tests {
         let elf = linker.link("main").unwrap();
 
         // Check ELF header fields
-        assert_eq!(&elf[0..4], b"\x7FELF"); // Magic
-        assert_eq!(elf[4], 2); // 64-bit
-        assert_eq!(elf[5], 1); // Little endian
-        assert_eq!(elf[6], 1); // ELF version
-        assert_eq!(elf[16], 2); // ET_EXEC
-        assert_eq!(u16::from_le_bytes([elf[18], elf[19]]), 0x3E); // x86-64
+        assert_eq!(&elf[0..4], &ELF_MAGIC); // Magic
+        assert_eq!(elf[EI_CLASS], ELFCLASS64); // 64-bit
+        assert_eq!(elf[EI_DATA], ELFDATA2LSB); // Little endian
+        assert_eq!(elf[EI_VERSION], EV_CURRENT); // ELF version
+        assert_eq!(elf[E_TYPE_OFFSET], ET_EXEC as u8); // ET_EXEC
+        assert_eq!(
+            u16::from_le_bytes([elf[E_MACHINE_OFFSET], elf[E_MACHINE_OFFSET + 1]]),
+            EM_X86_64
+        ); // x86-64
 
         // Check entry point is set (bytes 24-31)
         let entry = u64::from_le_bytes(elf[24..32].try_into().unwrap());
@@ -971,16 +979,16 @@ mod tests {
 
         let elf = linker.link("main").unwrap();
 
-        // Program header starts at offset 64 (after ELF header)
-        let ph_offset = 64;
+        // Program header starts after ELF header
+        let ph_offset = TEST_EHDR_SIZE;
 
-        // p_type = PT_LOAD (1)
+        // p_type = PT_LOAD
         let p_type = u32::from_le_bytes(elf[ph_offset..ph_offset + 4].try_into().unwrap());
-        assert_eq!(p_type, 1);
+        assert_eq!(p_type, PT_LOAD);
 
-        // p_flags = PF_R | PF_W | PF_X (7)
+        // p_flags = PF_R | PF_W | PF_X
         let p_flags = u32::from_le_bytes(elf[ph_offset + 4..ph_offset + 8].try_into().unwrap());
-        assert_eq!(p_flags, 7);
+        assert_eq!(p_flags, PF_R | PF_W | PF_X);
     }
 
     #[test]
@@ -1060,16 +1068,20 @@ mod tests {
         let elf = linker.link("main").expect("link");
 
         // Verify the resulting ELF
-        assert_eq!(&elf[0..4], b"\x7FELF", "should have ELF magic");
-        assert_eq!(elf[16], 2, "should be ET_EXEC");
+        assert_eq!(&elf[0..4], &ELF_MAGIC, "should have ELF magic");
+        assert_eq!(elf[E_TYPE_OFFSET], ET_EXEC as u8, "should be ET_EXEC");
 
         // Verify entry point is reasonable
         let entry = u64::from_le_bytes(elf[24..32].try_into().unwrap());
         assert!(entry >= 0x400000, "entry should be at/above base addr");
         assert!(entry < 0x500000, "entry should be reasonable");
 
-        // Verify we have actual code after headers (offset 120 = 64 + 56)
-        assert!(elf.len() > 120, "should have content after headers");
+        // Verify we have actual code after headers
+        let header_and_phdr_size = TEST_EHDR_SIZE + TEST_PHDR_SIZE;
+        assert!(
+            elf.len() > header_and_phdr_size,
+            "should have content after headers"
+        );
     }
 
     /// Test that unknown relocation types are rejected
@@ -1312,8 +1324,8 @@ mod tests {
         let elf = linker.link("main").unwrap();
 
         // Verify basic ELF structure
-        assert_eq!(&elf[0..4], b"\x7FELF");
-        assert_eq!(elf[16], 2); // ET_EXEC
+        assert_eq!(&elf[0..4], &ELF_MAGIC);
+        assert_eq!(elf[E_TYPE_OFFSET], ET_EXEC as u8);
     }
 
     /// Test that R_X86_64_GOTPCRELX (type 41) relocations are handled correctly.
@@ -1353,8 +1365,8 @@ mod tests {
 
         let elf = linker.link("main").unwrap();
 
-        assert_eq!(&elf[0..4], b"\x7FELF");
-        assert_eq!(elf[16], 2); // ET_EXEC
+        assert_eq!(&elf[0..4], &ELF_MAGIC);
+        assert_eq!(elf[E_TYPE_OFFSET], ET_EXEC as u8);
     }
 
     /// Test that R_X86_64_REX_GOTPCRELX (type 42) relocations are handled correctly.
@@ -1394,8 +1406,8 @@ mod tests {
 
         let elf = linker.link("main").unwrap();
 
-        assert_eq!(&elf[0..4], b"\x7FELF");
-        assert_eq!(elf[16], 2); // ET_EXEC
+        assert_eq!(&elf[0..4], &ELF_MAGIC);
+        assert_eq!(elf[E_TYPE_OFFSET], ET_EXEC as u8);
     }
 
     /// Test GOT relocation with a call instruction.
@@ -1436,7 +1448,7 @@ mod tests {
         let elf = linker.link("main").unwrap();
 
         // Basic validation - if we got here without error, GOT relaxation worked
-        assert_eq!(&elf[0..4], b"\x7FELF");
+        assert_eq!(&elf[0..4], &ELF_MAGIC);
     }
 
     /// Test that all three GOT relocation types produce valid executables
@@ -1496,8 +1508,8 @@ mod tests {
 
         let elf = linker.link("main").unwrap();
 
-        assert_eq!(&elf[0..4], b"\x7FELF");
-        assert_eq!(elf[16], 2); // ET_EXEC
+        assert_eq!(&elf[0..4], &ELF_MAGIC);
+        assert_eq!(elf[E_TYPE_OFFSET], ET_EXEC as u8);
     }
 
     /// Test that GOT relocations with undefined symbols produce appropriate errors.
@@ -1576,8 +1588,8 @@ mod tests {
 
         let elf = linker.link("main").unwrap();
 
-        assert_eq!(&elf[0..4], b"\x7FELF");
-        assert_eq!(elf[16], 2); // ET_EXEC
+        assert_eq!(&elf[0..4], &ELF_MAGIC);
+        assert_eq!(elf[E_TYPE_OFFSET], ET_EXEC as u8);
 
         // Verify entry point is reasonable
         let entry = u64::from_le_bytes(elf[24..32].try_into().unwrap());
@@ -1630,7 +1642,7 @@ mod tests {
 
         let elf = linker.link("main").unwrap();
 
-        assert_eq!(&elf[0..4], b"\x7FELF");
-        assert_eq!(elf[16], 2); // ET_EXEC
+        assert_eq!(&elf[0..4], &ELF_MAGIC);
+        assert_eq!(elf[E_TYPE_OFFSET], ET_EXEC as u8);
     }
 }

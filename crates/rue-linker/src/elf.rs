@@ -7,6 +7,17 @@
 
 use std::collections::HashMap;
 
+use crate::constants::{
+    E_MACHINE_OFFSET, E_SHENTSIZE_OFFSET, E_SHNUM_OFFSET, E_SHOFF_OFFSET, E_SHSTRNDX_OFFSET,
+    E_TYPE_OFFSET, ELF_MAGIC, ELF64_EHDR_SIZE, ELF64_RELA_SIZE, ELF64_SHDR_SIZE, ELF64_SYM_SIZE,
+    ELFCLASS64, ELFDATA2LSB, EM_AARCH64, EM_X86_64, ET_REL, R_AARCH64_ABS64,
+    R_AARCH64_ADD_ABS_LO12_NC, R_AARCH64_ADR_PREL_PG_HI21, R_AARCH64_CALL26, R_AARCH64_JUMP26,
+    R_X86_64_32, R_X86_64_32S, R_X86_64_64, R_X86_64_GOTPCREL, R_X86_64_GOTPCRELX, R_X86_64_PC32,
+    R_X86_64_PLT32, R_X86_64_REX_GOTPCRELX, SHN_LORESERVE, SHN_UNDEF, SHT_NULL, SHT_RELA,
+    SHT_STRTAB, SHT_SYMTAB, STB_GLOBAL, STB_LOCAL, STB_WEAK, STT_FILE, STT_FUNC, STT_NOTYPE,
+    STT_OBJECT, STT_SECTION,
+};
+
 /// Helper to read a u16 from a byte slice at a given offset.
 /// Panics if offset + 2 > slice.len(), so caller must ensure bounds.
 #[inline]
@@ -219,22 +230,22 @@ impl RelocationType {
     fn from_elf(r_type: u32, machine: ElfMachine) -> Self {
         match machine {
             ElfMachine::X86_64 => match r_type {
-                1 => RelocationType::Abs64,
-                2 => RelocationType::Pc32,
-                4 => RelocationType::Plt32,
-                9 => RelocationType::GotPcRel, // R_X86_64_GOTPCREL
-                10 => RelocationType::Abs32,
-                11 => RelocationType::Abs32S,
-                41 => RelocationType::GotPcRelX, // R_X86_64_GOTPCRELX
-                42 => RelocationType::RexGotPcRelX, // R_X86_64_REX_GOTPCRELX
+                R_X86_64_64 => RelocationType::Abs64,
+                R_X86_64_PC32 => RelocationType::Pc32,
+                R_X86_64_PLT32 => RelocationType::Plt32,
+                R_X86_64_GOTPCREL => RelocationType::GotPcRel,
+                R_X86_64_32 => RelocationType::Abs32,
+                R_X86_64_32S => RelocationType::Abs32S,
+                R_X86_64_GOTPCRELX => RelocationType::GotPcRelX,
+                R_X86_64_REX_GOTPCRELX => RelocationType::RexGotPcRelX,
                 _ => RelocationType::Unknown(r_type),
             },
             ElfMachine::Aarch64 => match r_type {
-                257 => RelocationType::Aarch64Abs64, // R_AARCH64_ABS64
-                275 => RelocationType::AdrpPage21,   // R_AARCH64_ADR_PREL_PG_HI21
-                277 => RelocationType::AddLo12,      // R_AARCH64_ADD_ABS_LO12_NC
-                282 => RelocationType::Jump26,       // R_AARCH64_JUMP26
-                283 => RelocationType::Call26,       // R_AARCH64_CALL26
+                R_AARCH64_ABS64 => RelocationType::Aarch64Abs64,
+                R_AARCH64_ADR_PREL_PG_HI21 => RelocationType::AdrpPage21,
+                R_AARCH64_ADD_ABS_LO12_NC => RelocationType::AddLo12,
+                R_AARCH64_JUMP26 => RelocationType::Jump26,
+                R_AARCH64_CALL26 => RelocationType::Call26,
                 _ => RelocationType::Unknown(r_type),
             },
         }
@@ -298,47 +309,47 @@ impl ObjectFile {
     #[must_use = "parsing returns a Result that must be checked"]
     pub fn parse(data: &[u8]) -> Result<Self, ParseError> {
         // Check minimum size for ELF header
-        if data.len() < 64 {
+        if data.len() < ELF64_EHDR_SIZE {
             return Err(ParseError::TooShort);
         }
 
         // Check ELF magic
-        if &data[0..4] != b"\x7FELF" {
+        if data[0..4] != ELF_MAGIC {
             return Err(ParseError::InvalidMagic);
         }
 
         // Check 64-bit
-        if data[4] != 2 {
+        if data[4] != ELFCLASS64 {
             return Err(ParseError::Not64Bit);
         }
 
         // Check little-endian
-        if data[5] != 1 {
+        if data[5] != ELFDATA2LSB {
             return Err(ParseError::NotLittleEndian);
         }
 
-        // Check relocatable file (e_type == ET_REL == 1)
-        let e_type = u16::from_le_bytes([data[16], data[17]]);
-        if e_type != 1 {
+        // Check relocatable file (e_type == ET_REL)
+        let e_type = u16::from_le_bytes([data[E_TYPE_OFFSET], data[E_TYPE_OFFSET + 1]]);
+        if e_type != ET_REL {
             return Err(ParseError::NotRelocatable);
         }
 
         // Check machine type (x86-64 or aarch64)
-        let e_machine = u16::from_le_bytes([data[18], data[19]]);
+        let e_machine = u16::from_le_bytes([data[E_MACHINE_OFFSET], data[E_MACHINE_OFFSET + 1]]);
         let machine = match e_machine {
-            0x3E => ElfMachine::X86_64,  // EM_X86_64
-            0xB7 => ElfMachine::Aarch64, // EM_AARCH64
+            EM_X86_64 => ElfMachine::X86_64,
+            EM_AARCH64 => ElfMachine::Aarch64,
             _ => return Err(ParseError::UnsupportedMachine(e_machine)),
         };
 
-        // Parse header fields - safe because we checked data.len() >= 64 above
-        let e_shoff = read_u64(data, 40) as usize;
-        let e_shentsize = read_u16(data, 58) as usize;
-        let e_shnum = read_u16(data, 60) as usize;
-        let e_shstrndx = read_u16(data, 62) as usize;
+        // Parse header fields - safe because we checked data.len() >= ELF64_EHDR_SIZE above
+        let e_shoff = read_u64(data, E_SHOFF_OFFSET) as usize;
+        let e_shentsize = read_u16(data, E_SHENTSIZE_OFFSET) as usize;
+        let e_shnum = read_u16(data, E_SHNUM_OFFSET) as usize;
+        let e_shstrndx = read_u16(data, E_SHSTRNDX_OFFSET) as usize;
 
         // ELF64 section headers are 64 bytes
-        if e_shentsize < 64 && e_shnum > 0 {
+        if e_shentsize < ELF64_SHDR_SIZE && e_shnum > 0 {
             return Err(ParseError::InvalidSection(
                 "section header size too small".into(),
             ));
@@ -387,8 +398,7 @@ impl ObjectFile {
             let align = read_u64(sh, 48);
             let entsize = read_u64(sh, 56);
 
-            // SHT_SYMTAB = 2
-            if sh_type == 2 {
+            if sh_type == SHT_SYMTAB {
                 symtab_idx = Some(i);
                 strtab_idx = Some(link as usize);
             }
@@ -436,8 +446,11 @@ impl ObjectFile {
             let name = read_string(shstrtab_data, raw.name_offset as usize)?;
 
             // Skip null section, symtab, strtab, rela sections (we'll handle them separately)
-            // SHT_NULL=0, SHT_SYMTAB=2, SHT_STRTAB=3, SHT_RELA=4
-            if raw.sh_type == 0 || raw.sh_type == 2 || raw.sh_type == 3 || raw.sh_type == 4 {
+            if raw.sh_type == SHT_NULL
+                || raw.sh_type == SHT_SYMTAB
+                || raw.sh_type == SHT_STRTAB
+                || raw.sh_type == SHT_RELA
+            {
                 sections.push(Section {
                     name: name.clone(),
                     data: Vec::new(),
@@ -465,13 +478,13 @@ impl ObjectFile {
             };
 
             let mut flags = SectionFlags::empty();
-            if raw.flags & 0x1 != 0 {
+            if raw.flags & crate::constants::SHF_WRITE != 0 {
                 flags |= SectionFlags::WRITE;
             }
-            if raw.flags & 0x2 != 0 {
+            if raw.flags & crate::constants::SHF_ALLOC != 0 {
                 flags |= SectionFlags::ALLOC;
             }
-            if raw.flags & 0x4 != 0 {
+            if raw.flags & crate::constants::SHF_EXECINSTR != 0 {
                 flags |= SectionFlags::EXEC;
             }
 
@@ -521,12 +534,12 @@ impl ObjectFile {
             let sym_count = symtab.size / symtab.entsize;
             for i in 0..sym_count {
                 let sym_offset = (i * symtab.entsize) as usize;
-                if sym_offset + 24 > symtab_data.len() {
+                if sym_offset + ELF64_SYM_SIZE > symtab_data.len() {
                     return Err(ParseError::InvalidSymbol(
                         "symbol entry out of bounds".into(),
                     ));
                 }
-                let sym = &symtab_data[sym_offset..sym_offset + 24];
+                let sym = &symtab_data[sym_offset..sym_offset + ELF64_SYM_SIZE];
 
                 // Bounds guaranteed by check above (sym_offset + 24 <= symtab_data.len())
                 let st_name = read_u32(sym, 0);
@@ -539,23 +552,22 @@ impl ObjectFile {
                 let name = read_string(strtab_data, st_name as usize)?;
 
                 let binding = match st_info >> 4 {
-                    0 => SymbolBinding::Local,
-                    1 => SymbolBinding::Global,
-                    2 => SymbolBinding::Weak,
+                    STB_LOCAL => SymbolBinding::Local,
+                    STB_GLOBAL => SymbolBinding::Global,
+                    STB_WEAK => SymbolBinding::Weak,
                     _ => SymbolBinding::Local,
                 };
 
                 let sym_type = match st_info & 0xf {
-                    0 => SymbolType::None,
-                    1 => SymbolType::Object,
-                    2 => SymbolType::Func,
-                    3 => SymbolType::Section,
-                    4 => SymbolType::File,
+                    STT_NOTYPE => SymbolType::None,
+                    STT_OBJECT => SymbolType::Object,
+                    STT_FUNC => SymbolType::Func,
+                    STT_SECTION => SymbolType::Section,
+                    STT_FILE => SymbolType::File,
                     _ => SymbolType::None,
                 };
 
-                // SHN_UNDEF = 0, SHN_ABS = 0xfff1
-                let section_index = if st_shndx == 0 || st_shndx >= 0xff00 {
+                let section_index = if st_shndx == SHN_UNDEF || st_shndx >= SHN_LORESERVE {
                     None
                 } else {
                     let idx = st_shndx as usize;
@@ -582,8 +594,7 @@ impl ObjectFile {
 
         // Parse relocations
         for raw in raw_sections.iter() {
-            // SHT_RELA = 4
-            if raw.sh_type != 4 {
+            if raw.sh_type != SHT_RELA {
                 continue;
             }
 
@@ -609,10 +620,10 @@ impl ObjectFile {
 
             for j in 0..rela_count {
                 let rela_offset = (j * raw.entsize) as usize;
-                if rela_offset + 24 > rela_data.len() {
+                if rela_offset + ELF64_RELA_SIZE > rela_data.len() {
                     return Err(ParseError::RelocationOutOfBounds);
                 }
-                let rela = &rela_data[rela_offset..rela_offset + 24];
+                let rela = &rela_data[rela_offset..rela_offset + ELF64_RELA_SIZE];
 
                 // Bounds guaranteed by check above (rela_offset + 24 <= rela_data.len())
                 let r_offset = read_u64(rela, 0);
@@ -662,6 +673,7 @@ impl ObjectFile {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::constants::{EI_CLASS, EI_DATA, EI_VERSION, ELF64_SHDR_SIZE as TEST_SHDR_SIZE};
 
     #[test]
     fn test_parse_error_display() {
@@ -723,7 +735,7 @@ mod tests {
 
     #[test]
     fn test_invalid_magic() {
-        let mut data = [0u8; 64];
+        let mut data = [0u8; ELF64_EHDR_SIZE];
         data[0..4].copy_from_slice(b"NOTF");
         assert!(matches!(
             ObjectFile::parse(&data),
@@ -733,9 +745,9 @@ mod tests {
 
     #[test]
     fn test_not_64bit() {
-        let mut data = [0u8; 64];
-        data[0..4].copy_from_slice(b"\x7FELF");
-        data[4] = 1; // 32-bit
+        let mut data = [0u8; ELF64_EHDR_SIZE];
+        data[0..4].copy_from_slice(&ELF_MAGIC);
+        data[EI_CLASS] = 1; // 32-bit
         assert!(matches!(
             ObjectFile::parse(&data),
             Err(ParseError::Not64Bit)
@@ -744,10 +756,10 @@ mod tests {
 
     #[test]
     fn test_not_little_endian() {
-        let mut data = [0u8; 64];
-        data[0..4].copy_from_slice(b"\x7FELF");
-        data[4] = 2; // 64-bit
-        data[5] = 2; // Big endian
+        let mut data = [0u8; ELF64_EHDR_SIZE];
+        data[0..4].copy_from_slice(&ELF_MAGIC);
+        data[EI_CLASS] = ELFCLASS64;
+        data[EI_DATA] = 2; // Big endian
         assert!(matches!(
             ObjectFile::parse(&data),
             Err(ParseError::NotLittleEndian)
@@ -756,11 +768,12 @@ mod tests {
 
     #[test]
     fn test_not_relocatable() {
-        let mut data = [0u8; 64];
-        data[0..4].copy_from_slice(b"\x7FELF");
-        data[4] = 2; // 64-bit
-        data[5] = 1; // Little endian
-        data[16..18].copy_from_slice(&2_u16.to_le_bytes()); // ET_EXEC instead of ET_REL
+        let mut data = [0u8; ELF64_EHDR_SIZE];
+        data[0..4].copy_from_slice(&ELF_MAGIC);
+        data[EI_CLASS] = ELFCLASS64;
+        data[EI_DATA] = ELFDATA2LSB;
+        data[E_TYPE_OFFSET..E_TYPE_OFFSET + 2]
+            .copy_from_slice(&crate::constants::ET_EXEC.to_le_bytes()); // ET_EXEC instead of ET_REL
         assert!(matches!(
             ObjectFile::parse(&data),
             Err(ParseError::NotRelocatable)
@@ -769,12 +782,13 @@ mod tests {
 
     #[test]
     fn test_unsupported_machine() {
-        let mut data = [0u8; 64];
-        data[0..4].copy_from_slice(b"\x7FELF");
-        data[4] = 2; // 64-bit
-        data[5] = 1; // Little endian
-        data[16..18].copy_from_slice(&1_u16.to_le_bytes()); // ET_REL
-        data[18..20].copy_from_slice(&0x03_u16.to_le_bytes()); // EM_386 (unsupported)
+        let mut data = [0u8; ELF64_EHDR_SIZE];
+        data[0..4].copy_from_slice(&ELF_MAGIC);
+        data[EI_CLASS] = ELFCLASS64;
+        data[EI_DATA] = ELFDATA2LSB;
+        data[E_TYPE_OFFSET..E_TYPE_OFFSET + 2].copy_from_slice(&ET_REL.to_le_bytes());
+        data[E_MACHINE_OFFSET..E_MACHINE_OFFSET + 2]
+            .copy_from_slice(&crate::constants::EM_386.to_le_bytes()); // EM_386 (unsupported)
         assert!(matches!(
             ObjectFile::parse(&data),
             Err(ParseError::UnsupportedMachine(0x03))
@@ -783,14 +797,14 @@ mod tests {
 
     #[test]
     fn test_section_header_size_too_small() {
-        let mut data = [0u8; 64];
-        data[0..4].copy_from_slice(b"\x7FELF");
-        data[4] = 2; // 64-bit
-        data[5] = 1; // Little endian
-        data[16..18].copy_from_slice(&1_u16.to_le_bytes()); // ET_REL
-        data[18..20].copy_from_slice(&0x3E_u16.to_le_bytes()); // EM_X86_64
-        data[58..60].copy_from_slice(&32_u16.to_le_bytes()); // e_shentsize = 32 (too small)
-        data[60..62].copy_from_slice(&1_u16.to_le_bytes()); // e_shnum = 1
+        let mut data = [0u8; ELF64_EHDR_SIZE];
+        data[0..4].copy_from_slice(&ELF_MAGIC);
+        data[EI_CLASS] = ELFCLASS64;
+        data[EI_DATA] = ELFDATA2LSB;
+        data[E_TYPE_OFFSET..E_TYPE_OFFSET + 2].copy_from_slice(&ET_REL.to_le_bytes());
+        data[E_MACHINE_OFFSET..E_MACHINE_OFFSET + 2].copy_from_slice(&EM_X86_64.to_le_bytes());
+        data[E_SHENTSIZE_OFFSET..E_SHENTSIZE_OFFSET + 2].copy_from_slice(&32_u16.to_le_bytes()); // e_shentsize = 32 (too small)
+        data[E_SHNUM_OFFSET..E_SHNUM_OFFSET + 2].copy_from_slice(&1_u16.to_le_bytes()); // e_shnum = 1
         assert!(matches!(
             ObjectFile::parse(&data),
             Err(ParseError::InvalidSection(_))
@@ -799,15 +813,16 @@ mod tests {
 
     #[test]
     fn test_invalid_shstrndx() {
-        let mut data = [0u8; 64];
-        data[0..4].copy_from_slice(b"\x7FELF");
-        data[4] = 2; // 64-bit
-        data[5] = 1; // Little endian
-        data[16..18].copy_from_slice(&1_u16.to_le_bytes()); // ET_REL
-        data[18..20].copy_from_slice(&0x3E_u16.to_le_bytes()); // EM_X86_64
-        data[58..60].copy_from_slice(&64_u16.to_le_bytes()); // e_shentsize = 64
-        data[60..62].copy_from_slice(&0_u16.to_le_bytes()); // e_shnum = 0
-        data[62..64].copy_from_slice(&5_u16.to_le_bytes()); // e_shstrndx = 5 (invalid)
+        let mut data = [0u8; ELF64_EHDR_SIZE];
+        data[0..4].copy_from_slice(&ELF_MAGIC);
+        data[EI_CLASS] = ELFCLASS64;
+        data[EI_DATA] = ELFDATA2LSB;
+        data[E_TYPE_OFFSET..E_TYPE_OFFSET + 2].copy_from_slice(&ET_REL.to_le_bytes());
+        data[E_MACHINE_OFFSET..E_MACHINE_OFFSET + 2].copy_from_slice(&EM_X86_64.to_le_bytes());
+        data[E_SHENTSIZE_OFFSET..E_SHENTSIZE_OFFSET + 2]
+            .copy_from_slice(&(TEST_SHDR_SIZE as u16).to_le_bytes()); // e_shentsize = 64
+        data[E_SHNUM_OFFSET..E_SHNUM_OFFSET + 2].copy_from_slice(&0_u16.to_le_bytes()); // e_shnum = 0
+        data[E_SHSTRNDX_OFFSET..E_SHSTRNDX_OFFSET + 2].copy_from_slice(&5_u16.to_le_bytes()); // e_shstrndx = 5 (invalid)
         assert!(matches!(
             ObjectFile::parse(&data),
             Err(ParseError::InvalidShstrndx)
@@ -817,21 +832,23 @@ mod tests {
     #[test]
     fn test_section_out_of_bounds() {
         // Create a minimal valid ELF header with one section that points out of bounds
-        let mut data = vec![0u8; 64 + 64]; // header + one section header
-        data[0..4].copy_from_slice(b"\x7FELF");
-        data[4] = 2; // 64-bit
-        data[5] = 1; // Little endian
-        data[16..18].copy_from_slice(&1_u16.to_le_bytes()); // ET_REL
-        data[18..20].copy_from_slice(&0x3E_u16.to_le_bytes()); // EM_X86_64
-        data[40..48].copy_from_slice(&64_u64.to_le_bytes()); // e_shoff = 64
-        data[58..60].copy_from_slice(&64_u16.to_le_bytes()); // e_shentsize = 64
-        data[60..62].copy_from_slice(&1_u16.to_le_bytes()); // e_shnum = 1
-        data[62..64].copy_from_slice(&0_u16.to_le_bytes()); // e_shstrndx = 0
+        let mut data = vec![0u8; ELF64_EHDR_SIZE + TEST_SHDR_SIZE]; // header + one section header
+        data[0..4].copy_from_slice(&ELF_MAGIC);
+        data[EI_CLASS] = ELFCLASS64;
+        data[EI_DATA] = ELFDATA2LSB;
+        data[E_TYPE_OFFSET..E_TYPE_OFFSET + 2].copy_from_slice(&ET_REL.to_le_bytes());
+        data[E_MACHINE_OFFSET..E_MACHINE_OFFSET + 2].copy_from_slice(&EM_X86_64.to_le_bytes());
+        data[E_SHOFF_OFFSET..E_SHOFF_OFFSET + 8]
+            .copy_from_slice(&(ELF64_EHDR_SIZE as u64).to_le_bytes()); // e_shoff = 64
+        data[E_SHENTSIZE_OFFSET..E_SHENTSIZE_OFFSET + 2]
+            .copy_from_slice(&(TEST_SHDR_SIZE as u16).to_le_bytes()); // e_shentsize = 64
+        data[E_SHNUM_OFFSET..E_SHNUM_OFFSET + 2].copy_from_slice(&1_u16.to_le_bytes()); // e_shnum = 1
+        data[E_SHSTRNDX_OFFSET..E_SHSTRNDX_OFFSET + 2].copy_from_slice(&0_u16.to_le_bytes()); // e_shstrndx = 0
 
         // Section header at offset 64
         // sh_type = SHT_STRTAB (3) to make it a string table
-        let sh_offset = 64;
-        data[sh_offset + 4..sh_offset + 8].copy_from_slice(&3_u32.to_le_bytes()); // sh_type = SHT_STRTAB
+        let sh_offset = ELF64_EHDR_SIZE;
+        data[sh_offset + 4..sh_offset + 8].copy_from_slice(&SHT_STRTAB.to_le_bytes()); // sh_type = SHT_STRTAB
         // sh_offset pointing way out of bounds
         data[sh_offset + 24..sh_offset + 32].copy_from_slice(&1000_u64.to_le_bytes());
         data[sh_offset + 32..sh_offset + 40].copy_from_slice(&100_u64.to_le_bytes()); // size
@@ -862,11 +879,26 @@ mod tests {
     #[test]
     fn test_relocation_type_from_elf_x86_64() {
         use ElfMachine::X86_64;
-        assert_eq!(RelocationType::from_elf(1, X86_64), RelocationType::Abs64);
-        assert_eq!(RelocationType::from_elf(2, X86_64), RelocationType::Pc32);
-        assert_eq!(RelocationType::from_elf(4, X86_64), RelocationType::Plt32);
-        assert_eq!(RelocationType::from_elf(10, X86_64), RelocationType::Abs32);
-        assert_eq!(RelocationType::from_elf(11, X86_64), RelocationType::Abs32S);
+        assert_eq!(
+            RelocationType::from_elf(R_X86_64_64, X86_64),
+            RelocationType::Abs64
+        );
+        assert_eq!(
+            RelocationType::from_elf(R_X86_64_PC32, X86_64),
+            RelocationType::Pc32
+        );
+        assert_eq!(
+            RelocationType::from_elf(R_X86_64_PLT32, X86_64),
+            RelocationType::Plt32
+        );
+        assert_eq!(
+            RelocationType::from_elf(R_X86_64_32, X86_64),
+            RelocationType::Abs32
+        );
+        assert_eq!(
+            RelocationType::from_elf(R_X86_64_32S, X86_64),
+            RelocationType::Abs32S
+        );
         assert_eq!(
             RelocationType::from_elf(99, X86_64),
             RelocationType::Unknown(99)
@@ -877,23 +909,23 @@ mod tests {
     fn test_relocation_type_from_elf_aarch64() {
         use ElfMachine::Aarch64;
         assert_eq!(
-            RelocationType::from_elf(257, Aarch64),
+            RelocationType::from_elf(R_AARCH64_ABS64, Aarch64),
             RelocationType::Aarch64Abs64
         );
         assert_eq!(
-            RelocationType::from_elf(275, Aarch64),
+            RelocationType::from_elf(R_AARCH64_ADR_PREL_PG_HI21, Aarch64),
             RelocationType::AdrpPage21
         );
         assert_eq!(
-            RelocationType::from_elf(277, Aarch64),
+            RelocationType::from_elf(R_AARCH64_ADD_ABS_LO12_NC, Aarch64),
             RelocationType::AddLo12
         );
         assert_eq!(
-            RelocationType::from_elf(282, Aarch64),
+            RelocationType::from_elf(R_AARCH64_JUMP26, Aarch64),
             RelocationType::Jump26
         );
         assert_eq!(
-            RelocationType::from_elf(283, Aarch64),
+            RelocationType::from_elf(R_AARCH64_CALL26, Aarch64),
             RelocationType::Call26
         );
         assert_eq!(
@@ -924,15 +956,16 @@ mod tests {
     #[test]
     fn test_empty_object_file() {
         // Create a minimal valid ELF with no sections
-        let mut data = vec![0u8; 64];
-        data[0..4].copy_from_slice(b"\x7FELF");
-        data[4] = 2; // 64-bit
-        data[5] = 1; // Little endian
-        data[16..18].copy_from_slice(&1_u16.to_le_bytes()); // ET_REL
-        data[18..20].copy_from_slice(&0x3E_u16.to_le_bytes()); // EM_X86_64
-        data[58..60].copy_from_slice(&64_u16.to_le_bytes()); // e_shentsize = 64
-        data[60..62].copy_from_slice(&0_u16.to_le_bytes()); // e_shnum = 0
-        data[62..64].copy_from_slice(&0_u16.to_le_bytes()); // e_shstrndx = 0
+        let mut data = vec![0u8; ELF64_EHDR_SIZE];
+        data[0..4].copy_from_slice(&ELF_MAGIC);
+        data[EI_CLASS] = ELFCLASS64;
+        data[EI_DATA] = ELFDATA2LSB;
+        data[E_TYPE_OFFSET..E_TYPE_OFFSET + 2].copy_from_slice(&ET_REL.to_le_bytes());
+        data[E_MACHINE_OFFSET..E_MACHINE_OFFSET + 2].copy_from_slice(&EM_X86_64.to_le_bytes());
+        data[E_SHENTSIZE_OFFSET..E_SHENTSIZE_OFFSET + 2]
+            .copy_from_slice(&(TEST_SHDR_SIZE as u16).to_le_bytes()); // e_shentsize = 64
+        data[E_SHNUM_OFFSET..E_SHNUM_OFFSET + 2].copy_from_slice(&0_u16.to_le_bytes()); // e_shnum = 0
+        data[E_SHSTRNDX_OFFSET..E_SHSTRNDX_OFFSET + 2].copy_from_slice(&0_u16.to_le_bytes()); // e_shstrndx = 0
 
         // This should fail because shstrndx=0 but there are no sections
         assert!(matches!(
@@ -958,12 +991,10 @@ mod tests {
         //   - .strtab strings
         //   - .symtab entries
 
-        const ELF_HDR_SIZE: usize = 64;
-        const SHENT_SIZE: usize = 64;
         const NUM_SECTIONS: usize = 4;
-        const SHDR_START: usize = ELF_HDR_SIZE;
-        const SHDR_SIZE: usize = SHENT_SIZE * NUM_SECTIONS;
-        const DATA_START: usize = SHDR_START + SHDR_SIZE;
+        const SHDR_START: usize = ELF64_EHDR_SIZE;
+        const SHDR_TOTAL_SIZE: usize = TEST_SHDR_SIZE * NUM_SECTIONS;
+        const DATA_START: usize = SHDR_START + SHDR_TOTAL_SIZE;
 
         // Section name string table: "\0.shstrtab\0.strtab\0.symtab\0"
         let shstrtab_data = b"\0.shstrtab\0.strtab\0.symtab\0";
@@ -977,12 +1008,11 @@ mod tests {
 
         // Symbol table: one symbol entry (24 bytes) with section index = 99 (way out of bounds)
         let symtab_offset = strtab_offset + strtab_size;
-        const SYM_ENTRY_SIZE: usize = 24;
-        let mut sym_entry = [0u8; SYM_ENTRY_SIZE];
+        let mut sym_entry = [0u8; ELF64_SYM_SIZE];
         // st_name = 1 (offset to "test_symbol" in strtab)
         sym_entry[0..4].copy_from_slice(&1_u32.to_le_bytes());
-        // st_info = 0x10 (STB_GLOBAL << 4 | STT_NOTYPE)
-        sym_entry[4] = 0x10;
+        // st_info = STB_GLOBAL << 4 | STT_NOTYPE
+        sym_entry[4] = crate::constants::elf_st_info(STB_GLOBAL, STT_NOTYPE);
         // st_other = 0
         sym_entry[5] = 0;
         // st_shndx = 99 (out of bounds - we only have 4 sections)
@@ -992,20 +1022,23 @@ mod tests {
         // st_size = 0
         sym_entry[16..24].copy_from_slice(&0_u64.to_le_bytes());
 
-        let total_size = symtab_offset + SYM_ENTRY_SIZE;
+        let total_size = symtab_offset + ELF64_SYM_SIZE;
         let mut data = vec![0u8; total_size];
 
         // ELF header
-        data[0..4].copy_from_slice(b"\x7FELF");
-        data[4] = 2; // 64-bit
-        data[5] = 1; // Little endian
-        data[6] = 1; // EV_CURRENT
-        data[16..18].copy_from_slice(&1_u16.to_le_bytes()); // ET_REL
-        data[18..20].copy_from_slice(&0x3E_u16.to_le_bytes()); // EM_X86_64
-        data[40..48].copy_from_slice(&(SHDR_START as u64).to_le_bytes()); // e_shoff
-        data[58..60].copy_from_slice(&(SHENT_SIZE as u16).to_le_bytes()); // e_shentsize
-        data[60..62].copy_from_slice(&(NUM_SECTIONS as u16).to_le_bytes()); // e_shnum
-        data[62..64].copy_from_slice(&1_u16.to_le_bytes()); // e_shstrndx = 1
+        data[0..4].copy_from_slice(&ELF_MAGIC);
+        data[EI_CLASS] = ELFCLASS64;
+        data[EI_DATA] = ELFDATA2LSB;
+        data[EI_VERSION] = crate::constants::EV_CURRENT;
+        data[E_TYPE_OFFSET..E_TYPE_OFFSET + 2].copy_from_slice(&ET_REL.to_le_bytes());
+        data[E_MACHINE_OFFSET..E_MACHINE_OFFSET + 2].copy_from_slice(&EM_X86_64.to_le_bytes());
+        data[E_SHOFF_OFFSET..E_SHOFF_OFFSET + 8]
+            .copy_from_slice(&(SHDR_START as u64).to_le_bytes()); // e_shoff
+        data[E_SHENTSIZE_OFFSET..E_SHENTSIZE_OFFSET + 2]
+            .copy_from_slice(&(TEST_SHDR_SIZE as u16).to_le_bytes()); // e_shentsize
+        data[E_SHNUM_OFFSET..E_SHNUM_OFFSET + 2]
+            .copy_from_slice(&(NUM_SECTIONS as u16).to_le_bytes()); // e_shnum
+        data[E_SHSTRNDX_OFFSET..E_SHSTRNDX_OFFSET + 2].copy_from_slice(&1_u16.to_le_bytes()); // e_shstrndx = 1
 
         // Section header helper
         fn write_shdr(
@@ -1018,7 +1051,7 @@ mod tests {
             sh_link: u32,
             sh_entsize: u64,
         ) {
-            let base = SHDR_START + index * SHENT_SIZE;
+            let base = SHDR_START + index * TEST_SHDR_SIZE;
             data[base..base + 4].copy_from_slice(&sh_name.to_le_bytes());
             data[base + 4..base + 8].copy_from_slice(&sh_type.to_le_bytes());
             data[base + 24..base + 32].copy_from_slice(&sh_offset.to_le_bytes());
@@ -1028,14 +1061,14 @@ mod tests {
         }
 
         // [0] NULL section
-        write_shdr(&mut data, 0, 0, 0, 0, 0, 0, 0);
+        write_shdr(&mut data, 0, 0, SHT_NULL, 0, 0, 0, 0);
 
         // [1] .shstrtab (name at offset 1 in shstrtab)
         write_shdr(
             &mut data,
             1,
             1, // ".shstrtab" starts at offset 1
-            3, // SHT_STRTAB
+            SHT_STRTAB,
             shstrtab_offset as u64,
             shstrtab_size as u64,
             0,
@@ -1047,7 +1080,7 @@ mod tests {
             &mut data,
             2,
             11, // ".strtab" starts at offset 11
-            3,  // SHT_STRTAB
+            SHT_STRTAB,
             strtab_offset as u64,
             strtab_size as u64,
             0,
@@ -1059,17 +1092,17 @@ mod tests {
             &mut data,
             3,
             19, // ".symtab" starts at offset 19
-            2,  // SHT_SYMTAB
+            SHT_SYMTAB,
             symtab_offset as u64,
-            SYM_ENTRY_SIZE as u64,
+            ELF64_SYM_SIZE as u64,
             2, // sh_link = strtab section
-            SYM_ENTRY_SIZE as u64,
+            ELF64_SYM_SIZE as u64,
         );
 
         // Write section data
         data[shstrtab_offset..shstrtab_offset + shstrtab_size].copy_from_slice(shstrtab_data);
         data[strtab_offset..strtab_offset + strtab_size].copy_from_slice(strtab_data);
-        data[symtab_offset..symtab_offset + SYM_ENTRY_SIZE].copy_from_slice(&sym_entry);
+        data[symtab_offset..symtab_offset + ELF64_SYM_SIZE].copy_from_slice(&sym_entry);
 
         // Parse should fail with InvalidSymbol due to section index out of bounds
         let result = ObjectFile::parse(&data);

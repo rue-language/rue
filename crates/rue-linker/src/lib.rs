@@ -11,6 +11,7 @@
 //! It's intentionally minimal - just enough to link Rue code with its runtime.
 
 mod archive;
+pub mod constants;
 mod elf;
 mod emit;
 mod linker;
