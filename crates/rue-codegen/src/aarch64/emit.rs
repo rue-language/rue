@@ -3,11 +3,9 @@
 //! This phase converts Aarch64Mir instructions (with physical registers) to
 //! machine code bytes.
 
-use std::collections::HashMap;
-
 use rue_error::{CompileError, CompileResult, ErrorKind};
 
-use super::mir::{Aarch64Inst, Aarch64Mir, Cond, LabelId, Reg};
+use super::mir::{Aarch64Inst, Aarch64Mir, BLOCK_LABEL_BASE, Cond, LabelId, Reg};
 use crate::{EmittedCode, EmittedInst, EmittedRelocation};
 
 // ========== AArch64 Instruction Encoding Constants ==========
@@ -182,6 +180,59 @@ enum FixupKind {
     CondBranch,
 }
 
+/// Maps label IDs to their byte offsets using dense vectors.
+///
+/// Labels are split into two namespaces:
+/// - Inline labels (IDs 0 to `BLOCK_LABEL_BASE - 1`): For overflow checks, bounds checks, etc.
+/// - Block labels (IDs `BLOCK_LABEL_BASE` to `u32::MAX`): For CFG basic blocks.
+///
+/// Using separate vectors eliminates HashMap overhead while avoiding a sparse 2-billion entry array.
+#[derive(Default)]
+struct LabelOffsets {
+    /// Offsets for inline labels (label_id < BLOCK_LABEL_BASE).
+    inline: Vec<Option<usize>>,
+    /// Offsets for block labels (label_id >= BLOCK_LABEL_BASE), indexed by (label_id - BLOCK_LABEL_BASE).
+    block: Vec<Option<usize>>,
+}
+
+impl LabelOffsets {
+    /// Create a new empty label offset map.
+    fn new() -> Self {
+        Self::default()
+    }
+
+    /// Insert a label offset.
+    fn insert(&mut self, label: LabelId, offset: usize) {
+        let id = label.index();
+        if id < BLOCK_LABEL_BASE {
+            // Inline label
+            let idx = id as usize;
+            if idx >= self.inline.len() {
+                self.inline.resize(idx + 1, None);
+            }
+            self.inline[idx] = Some(offset);
+        } else {
+            // Block label
+            let idx = (id - BLOCK_LABEL_BASE) as usize;
+            if idx >= self.block.len() {
+                self.block.resize(idx + 1, None);
+            }
+            self.block[idx] = Some(offset);
+        }
+    }
+
+    /// Get a label offset.
+    fn get(&self, label: &LabelId) -> Option<usize> {
+        let id = label.index();
+        if id < BLOCK_LABEL_BASE {
+            self.inline.get(id as usize).copied().flatten()
+        } else {
+            let idx = (id - BLOCK_LABEL_BASE) as usize;
+            self.block.get(idx).copied().flatten()
+        }
+    }
+}
+
 /// AArch64 instruction emitter.
 ///
 /// The emitter converts MIR instructions to machine code, producing both
@@ -195,7 +246,7 @@ pub struct Emitter<'a> {
     instructions: Vec<EmittedInst>,
     relocations: Vec<EmittedRelocation>,
     /// Maps label IDs to their byte offsets.
-    labels: HashMap<LabelId, usize>,
+    labels: LabelOffsets,
     /// Forward branches that need to be patched.
     fixups: Vec<Fixup>,
     /// Total number of local slots including spills (for stack frame size).
@@ -226,7 +277,7 @@ impl<'a> Emitter<'a> {
             code: Vec::new(),
             instructions: Vec::new(),
             relocations: Vec::new(),
-            labels: HashMap::new(),
+            labels: LabelOffsets::new(),
             fixups: Vec::new(),
             num_locals,
             num_params,
@@ -1083,7 +1134,7 @@ impl<'a> Emitter<'a> {
                     fixup.label
                 )))
             })?;
-            let offset = (*target as i64 - fixup.offset as i64) / 4;
+            let offset = (target as i64 - fixup.offset as i64) / 4;
             match fixup.kind {
                 FixupKind::Branch => {
                     // B instruction: imm26

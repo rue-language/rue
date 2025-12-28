@@ -95,11 +95,10 @@
 //! - Caller-saved: RAX, RCX, RDX, RSI, RDI, R8-R11, XMM0-XMM15
 //! - Callee-saved: RBX, RBP, R12-R15
 
-use std::collections::HashMap;
-
 use rue_error::{CompileError, CompileResult, ErrorKind};
 
 use super::mir::{LabelId, Reg, X86Inst, X86Mir};
+use crate::vreg::BLOCK_LABEL_BASE;
 use crate::{EmittedCode, EmittedInst, EmittedRelocation, format_offset};
 
 /// Kind of jump fixup (rel8 or rel32).
@@ -121,6 +120,59 @@ struct Fixup {
     kind: FixupKind,
 }
 
+/// Maps label IDs to their byte offsets using dense vectors.
+///
+/// Labels are split into two namespaces:
+/// - Inline labels (IDs 0 to `BLOCK_LABEL_BASE - 1`): For overflow checks, bounds checks, etc.
+/// - Block labels (IDs `BLOCK_LABEL_BASE` to `u32::MAX`): For CFG basic blocks.
+///
+/// Using separate vectors eliminates HashMap overhead while avoiding a sparse 2-billion entry array.
+#[derive(Default)]
+struct LabelOffsets {
+    /// Offsets for inline labels (label_id < BLOCK_LABEL_BASE).
+    inline: Vec<Option<usize>>,
+    /// Offsets for block labels (label_id >= BLOCK_LABEL_BASE), indexed by (label_id - BLOCK_LABEL_BASE).
+    block: Vec<Option<usize>>,
+}
+
+impl LabelOffsets {
+    /// Create a new empty label offset map.
+    fn new() -> Self {
+        Self::default()
+    }
+
+    /// Insert a label offset.
+    fn insert(&mut self, label: LabelId, offset: usize) {
+        let id = label.index();
+        if id < BLOCK_LABEL_BASE {
+            // Inline label
+            let idx = id as usize;
+            if idx >= self.inline.len() {
+                self.inline.resize(idx + 1, None);
+            }
+            self.inline[idx] = Some(offset);
+        } else {
+            // Block label
+            let idx = (id - BLOCK_LABEL_BASE) as usize;
+            if idx >= self.block.len() {
+                self.block.resize(idx + 1, None);
+            }
+            self.block[idx] = Some(offset);
+        }
+    }
+
+    /// Get a label offset.
+    fn get(&self, label: &LabelId) -> Option<usize> {
+        let id = label.index();
+        if id < BLOCK_LABEL_BASE {
+            self.inline.get(id as usize).copied().flatten()
+        } else {
+            let idx = (id - BLOCK_LABEL_BASE) as usize;
+            self.block.get(idx).copied().flatten()
+        }
+    }
+}
+
 /// X86-64 instruction emitter.
 ///
 /// The emitter converts MIR instructions to machine code, producing both
@@ -134,7 +186,7 @@ pub struct Emitter<'a> {
     instructions: Vec<EmittedInst>,
     relocations: Vec<EmittedRelocation>,
     /// Maps label IDs to their byte offsets.
-    labels: HashMap<LabelId, usize>,
+    labels: LabelOffsets,
     /// Forward jumps that need to be patched.
     fixups: Vec<Fixup>,
     /// Total number of local slots including spills (for stack frame size).
@@ -174,7 +226,7 @@ impl<'a> Emitter<'a> {
             code: Vec::new(),
             instructions: Vec::new(),
             relocations: Vec::new(),
-            labels: HashMap::new(),
+            labels: LabelOffsets::new(),
             fixups: Vec::new(),
             num_locals,
             num_locals_original,
@@ -438,7 +490,7 @@ impl<'a> Emitter<'a> {
                     // Calculate relative offset from the end of the jump instruction
                     // The fixup offset points to the rel8, which is the last byte of the instruction
                     let jump_end = fixup.offset + 1; // rel8 is 1 byte
-                    let relative = *target_offset as i64 - jump_end as i64;
+                    let relative = target_offset as i64 - jump_end as i64;
 
                     // rel8 encoding only supports -128 to +127 byte offsets
                     if relative < -128 || relative > 127 {
@@ -457,7 +509,7 @@ impl<'a> Emitter<'a> {
                     // Calculate relative offset from the end of the jump instruction
                     // The fixup offset points to the first byte of the 4-byte rel32
                     let jump_end = fixup.offset + 4; // rel32 is 4 bytes
-                    let relative = *target_offset as i64 - jump_end as i64;
+                    let relative = target_offset as i64 - jump_end as i64;
 
                     // rel32 encoding supports i32 range
                     if relative < i32::MIN as i64 || relative > i32::MAX as i64 {
