@@ -1,12 +1,12 @@
 ---
 id: 0018
 title: Tracing Infrastructure
-status: proposal
+status: implemented
 tags: [infrastructure, tooling]
 feature-flag: n/a
 created: 2025-12-27
-accepted:
-implemented:
+accepted: 2025-12-27
+implemented: 2025-12-27
 spec-sections: []
 superseded-by:
 ---
@@ -15,7 +15,7 @@ superseded-by:
 
 ## Status
 
-Proposal
+Implemented
 
 ## Summary
 
@@ -135,7 +135,7 @@ pub fn compile_frontend_with_options(...) -> CompileResult<...> {
   - Add spans to backend functions
   - Include context: file size, token/instruction counts
 
-- [ ] **Phase 5: Documentation** - rue-irz1.5
+- [x] **Phase 5: Documentation** - rue-irz1.5
   - Add logging guidelines to CLAUDE.md
   - Document the "wide events" philosophy
   - Provide good/bad examples
