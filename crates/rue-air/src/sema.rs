@@ -15,8 +15,9 @@ use crate::types::{
     parse_array_type_syntax,
 };
 use rue_error::{
-    CompileError, CompileErrors, CompileResult, CompileWarning, ErrorKind, MultiErrorResult,
-    OptionExt, PreviewFeature, PreviewFeatures, WarningKind,
+    CompileError, CompileErrors, CompileResult, CompileWarning, CopyStructNonCopyFieldError,
+    ErrorKind, IntrinsicTypeMismatchError, MissingFieldsError, MultiErrorResult, OptionExt,
+    PreviewFeature, PreviewFeatures, WarningKind,
 };
 use rue_intern::{Interner, Symbol};
 use rue_rir::{
@@ -974,11 +975,13 @@ impl<'a> Sema<'a> {
                     if !self.is_type_copy(field.ty) {
                         let field_type_name = self.format_type_name(field.ty);
                         return Err(CompileError::new(
-                            ErrorKind::CopyStructNonCopyField {
-                                struct_name,
-                                field_name: field.name.clone(),
-                                field_type: field_type_name,
-                            },
+                            ErrorKind::CopyStructNonCopyField(Box::new(
+                                CopyStructNonCopyFieldError {
+                                    struct_name,
+                                    field_name: field.name.clone(),
+                                    field_type: field_type_name,
+                                },
+                            )),
                             inst.span,
                         ));
                     }
@@ -2835,10 +2838,10 @@ impl<'a> Sema<'a> {
                         .map(|f| f.name.clone())
                         .collect();
                     return Err(CompileError::new(
-                        ErrorKind::MissingFields {
+                        ErrorKind::MissingFields(Box::new(MissingFieldsError {
                             struct_name: struct_def.name.clone(),
                             missing_fields,
-                        },
+                        })),
                         inst.span,
                     ));
                 }
@@ -3211,11 +3214,13 @@ impl<'a> Sema<'a> {
                             || arg_type == Type::String;
                         if !is_supported {
                             return Err(CompileError::new(
-                                ErrorKind::IntrinsicTypeMismatch {
-                                    name: intrinsic_name,
-                                    expected: "integer, bool, or string".to_string(),
-                                    found: arg_type.name().to_string(),
-                                },
+                                ErrorKind::IntrinsicTypeMismatch(Box::new(
+                                    IntrinsicTypeMismatchError {
+                                        name: intrinsic_name,
+                                        expected: "integer, bool, or string".to_string(),
+                                        found: arg_type.name().to_string(),
+                                    },
+                                )),
                                 inst.span,
                             ));
                         }
@@ -3253,11 +3258,13 @@ impl<'a> Sema<'a> {
                         // Argument must be an integer type
                         if !from_ty.is_integer() {
                             return Err(CompileError::new(
-                                ErrorKind::IntrinsicTypeMismatch {
-                                    name: intrinsic_name,
-                                    expected: "integer".to_string(),
-                                    found: from_ty.name().to_string(),
-                                },
+                                ErrorKind::IntrinsicTypeMismatch(Box::new(
+                                    IntrinsicTypeMismatchError {
+                                        name: intrinsic_name,
+                                        expected: "integer".to_string(),
+                                        found: from_ty.name().to_string(),
+                                    },
+                                )),
                                 inst.span,
                             ));
                         }
@@ -3274,11 +3281,13 @@ impl<'a> Sema<'a> {
                             }
                             Some(ty) => {
                                 return Err(CompileError::new(
-                                    ErrorKind::IntrinsicTypeMismatch {
-                                        name: intrinsic_name,
-                                        expected: "integer".to_string(),
-                                        found: ty.name().to_string(),
-                                    },
+                                    ErrorKind::IntrinsicTypeMismatch(Box::new(
+                                        IntrinsicTypeMismatchError {
+                                            name: intrinsic_name,
+                                            expected: "integer".to_string(),
+                                            found: ty.name().to_string(),
+                                        },
+                                    )),
                                     inst.span,
                                 ));
                             }

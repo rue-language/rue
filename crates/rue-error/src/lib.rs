@@ -23,6 +23,45 @@ use std::collections::HashSet;
 use std::fmt;
 
 // ============================================================================
+// Boxed Error Payloads
+// ============================================================================
+//
+// Large error variants are boxed to reduce the size of ErrorKind.
+// This keeps Result<T, CompileError> smaller on the stack.
+// Errors are cold paths, so the extra indirection is acceptable.
+
+/// Payload for `ErrorKind::MissingFields`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MissingFieldsError {
+    pub struct_name: String,
+    pub missing_fields: Vec<String>,
+}
+
+/// Payload for `ErrorKind::CopyStructNonCopyField`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CopyStructNonCopyFieldError {
+    pub struct_name: String,
+    pub field_name: String,
+    pub field_type: String,
+}
+
+/// Payload for `ErrorKind::IntrinsicTypeMismatch`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IntrinsicTypeMismatchError {
+    pub name: String,
+    pub expected: String,
+    pub found: String,
+}
+
+/// Payload for `ErrorKind::FieldWrongOrder`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FieldWrongOrderError {
+    pub struct_name: String,
+    pub expected_field: String,
+    pub found_field: String,
+}
+
+// ============================================================================
 // Preview Features
 // ============================================================================
 
@@ -369,10 +408,7 @@ pub enum ErrorKind {
     },
 
     // Struct errors
-    MissingFields {
-        struct_name: String,
-        missing_fields: Vec<String>,
-    },
+    MissingFields(Box<MissingFieldsError>),
     UnknownField {
         struct_name: String,
         field_name: String,
@@ -382,11 +418,7 @@ pub enum ErrorKind {
         field_name: String,
     },
     /// @copy struct contains a field with non-Copy type
-    CopyStructNonCopyField {
-        struct_name: String,
-        field_name: String,
-        field_type: String,
-    },
+    CopyStructNonCopyField(Box<CopyStructNonCopyFieldError>),
     /// Duplicate method definition in impl blocks for the same type
     DuplicateMethod {
         type_name: String,
@@ -438,11 +470,7 @@ pub enum ErrorKind {
         variant_name: String,
     },
     UnknownEnumType(String),
-    FieldWrongOrder {
-        struct_name: String,
-        expected_field: String,
-        found_field: String,
-    },
+    FieldWrongOrder(Box<FieldWrongOrderError>),
     FieldAccessOnNonStruct {
         found: String,
     },
@@ -488,11 +516,7 @@ pub enum ErrorKind {
         expected: usize,
         found: usize,
     },
-    IntrinsicTypeMismatch {
-        name: String,
-        expected: String,
-        found: String,
-    },
+    IntrinsicTypeMismatch(Box<IntrinsicTypeMismatchError>),
 
     // Literal errors
     LiteralOutOfRange {
@@ -583,23 +607,25 @@ impl fmt::Display for ErrorKind {
                     write!(f, "expected {} arguments, found {}", expected, found)
                 }
             }
-            ErrorKind::MissingFields {
-                struct_name,
-                missing_fields,
-            } => {
-                if missing_fields.len() == 1 {
+            ErrorKind::MissingFields(err) => {
+                if err.missing_fields.len() == 1 {
                     write!(
                         f,
                         "missing field '{}' in struct '{}'",
-                        missing_fields[0], struct_name
+                        err.missing_fields[0], err.struct_name
                     )
                 } else {
-                    let fields = missing_fields
+                    let fields = err
+                        .missing_fields
                         .iter()
                         .map(|f| format!("'{}'", f))
                         .collect::<Vec<_>>()
                         .join(", ");
-                    write!(f, "missing fields {} in struct '{}'", fields, struct_name)
+                    write!(
+                        f,
+                        "missing fields {} in struct '{}'",
+                        fields, err.struct_name
+                    )
                 }
             }
             ErrorKind::UnknownField {
@@ -622,15 +648,11 @@ impl fmt::Display for ErrorKind {
                     field_name, struct_name
                 )
             }
-            ErrorKind::CopyStructNonCopyField {
-                struct_name,
-                field_name,
-                field_type,
-            } => {
+            ErrorKind::CopyStructNonCopyField(err) => {
                 write!(
                     f,
                     "@copy struct '{}' has field '{}' with non-Copy type '{}'",
-                    struct_name, field_name, field_type
+                    err.struct_name, err.field_name, err.field_type
                 )
             }
             ErrorKind::DuplicateMethod {
@@ -715,15 +737,11 @@ impl fmt::Display for ErrorKind {
             ErrorKind::UnknownEnumType(name) => {
                 write!(f, "unknown enum type '{}'", name)
             }
-            ErrorKind::FieldWrongOrder {
-                struct_name,
-                expected_field,
-                found_field,
-            } => {
+            ErrorKind::FieldWrongOrder(err) => {
                 write!(
                     f,
                     "struct '{}' fields must be initialized in declaration order: expected '{}', found '{}'",
-                    struct_name, expected_field, found_field
+                    err.struct_name, err.expected_field, err.found_field
                 )
             }
             ErrorKind::FieldAccessOnNonStruct { found } => {
@@ -801,15 +819,11 @@ impl fmt::Display for ErrorKind {
                     )
                 }
             }
-            ErrorKind::IntrinsicTypeMismatch {
-                name,
-                expected,
-                found,
-            } => {
+            ErrorKind::IntrinsicTypeMismatch(err) => {
                 write!(
                     f,
                     "intrinsic '@{}' expects {}, found {}",
-                    name, expected, found
+                    err.name, err.expected, err.found
                 )
             }
             ErrorKind::LiteralOutOfRange { value, ty } => {
