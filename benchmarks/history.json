@@ -344,6 +344,194 @@
           "std_ms": 33.944371
         }
       ]
+    },
+    {
+      "version": 1,
+      "timestamp": "2025-12-28T06:01:40Z",
+      "commit": "",
+      "build_mode": "release",
+      "host": {
+        "os": "darwin",
+        "arch": "arm64"
+      },
+      "iterations": 5,
+      "benchmarks": [
+        {
+          "name": "many_functions",
+          "iterations": 5,
+          "mean_ms": 787.952,
+          "std_ms": 1112.338641,
+          "passes": {
+            "lexer": {
+              "mean_ms": 0.411
+            },
+            "parser": {
+              "mean_ms": 11.933
+            },
+            "astgen": {
+              "mean_ms": 0.068
+            },
+            "sema": {
+              "mean_ms": 4.563
+            },
+            "cfg_construction": {
+              "mean_ms": 0.169
+            },
+            "frontend": {
+              "mean_ms": 17.249
+            },
+            "codegen": {
+              "mean_ms": 8.064
+            },
+            "linker": {
+              "mean_ms": 480.04
+            },
+            "compile": {
+              "mean_ms": 265.455
+            }
+          }
+        },
+        {
+          "name": "deep_nesting",
+          "iterations": 5,
+          "mean_ms": 12749.517,
+          "std_ms": 232.118551,
+          "passes": {
+            "lexer": {
+              "mean_ms": 0.095
+            },
+            "parser": {
+              "mean_ms": 4192.895
+            },
+            "astgen": {
+              "mean_ms": 0.035
+            },
+            "sema": {
+              "mean_ms": 0.526
+            },
+            "cfg_construction": {
+              "mean_ms": 0.1
+            },
+            "frontend": {
+              "mean_ms": 4193.741
+            },
+            "codegen": {
+              "mean_ms": 2.03
+            },
+            "linker": {
+              "mean_ms": 109.506
+            },
+            "compile": {
+              "mean_ms": 4250.589
+            }
+          }
+        },
+        {
+          "name": "large_structs",
+          "iterations": 5,
+          "mean_ms": 238.494,
+          "std_ms": 25.503504,
+          "passes": {
+            "lexer": {
+              "mean_ms": 0.544
+            },
+            "parser": {
+              "mean_ms": 11.411
+            },
+            "astgen": {
+              "mean_ms": 0.091
+            },
+            "sema": {
+              "mean_ms": 4.084
+            },
+            "cfg_construction": {
+              "mean_ms": 0.21
+            },
+            "frontend": {
+              "mean_ms": 16.415
+            },
+            "codegen": {
+              "mean_ms": 17.198
+            },
+            "linker": {
+              "mean_ms": 103.185
+            },
+            "compile": {
+              "mean_ms": 85.357
+            }
+          }
+        },
+        {
+          "name": "arithmetic_heavy",
+          "iterations": 5,
+          "mean_ms": 197.431,
+          "std_ms": 16.2576,
+          "passes": {
+            "lexer": {
+              "mean_ms": 0.17
+            },
+            "parser": {
+              "mean_ms": 6.23
+            },
+            "astgen": {
+              "mean_ms": 0.056
+            },
+            "sema": {
+              "mean_ms": 3.203
+            },
+            "cfg_construction": {
+              "mean_ms": 0.101
+            },
+            "frontend": {
+              "mean_ms": 9.827
+            },
+            "codegen": {
+              "mean_ms": 16.323
+            },
+            "linker": {
+              "mean_ms": 90.175
+            },
+            "compile": {
+              "mean_ms": 71.345
+            }
+          }
+        },
+        {
+          "name": "control_flow",
+          "iterations": 5,
+          "mean_ms": 305.61,
+          "std_ms": 4.674646,
+          "passes": {
+            "lexer": {
+              "mean_ms": 0.183
+            },
+            "parser": {
+              "mean_ms": 55.73
+            },
+            "astgen": {
+              "mean_ms": 0.054
+            },
+            "sema": {
+              "mean_ms": 1.078
+            },
+            "cfg_construction": {
+              "mean_ms": 0.112
+            },
+            "frontend": {
+              "mean_ms": 57.24
+            },
+            "codegen": {
+              "mean_ms": 6.586
+            },
+            "linker": {
+              "mean_ms": 80.474
+            },
+            "compile": {
+              "mean_ms": 104.153
+            }
+          }
+        }
+      ]
     }
   ]
 }
