@@ -247,7 +247,7 @@ impl AnalysisResult {
 /// Semantic analyzer that converts RIR to AIR.
 pub struct Sema<'a> {
     rir: &'a Rir,
-    interner: &'a mut Interner,
+    interner: &'a Interner,
     /// Function table: maps function name symbols to their info
     functions: HashMap<Symbol, FunctionInfo>,
     /// Struct table: maps struct name symbols to their StructId
@@ -289,11 +289,7 @@ enum StringReceiverStorage {
 
 impl<'a> Sema<'a> {
     /// Create a new semantic analyzer.
-    pub fn new(
-        rir: &'a Rir,
-        interner: &'a mut Interner,
-        preview_features: PreviewFeatures,
-    ) -> Self {
+    pub fn new(rir: &'a Rir, interner: &'a Interner, preview_features: PreviewFeatures) -> Self {
         Self {
             rir,
             interner,

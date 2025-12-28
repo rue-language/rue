@@ -345,10 +345,10 @@ pub fn compile_frontend_from_ast_with_options(
     preview_features: &PreviewFeatures,
 ) -> CompileResult<CompileState> {
     // AST to RIR (untyped IR)
-    let (rir, mut interner) = {
+    let (rir, interner) = {
         let _span = info_span!("astgen").entered();
-        let mut interner = Interner::new();
-        let astgen = AstGen::new(&ast, &mut interner);
+        let interner = Interner::new();
+        let astgen = AstGen::new(&ast, &interner);
         let rir = astgen.generate();
         info!(instruction_count = rir.len(), "AST generation complete");
         (rir, interner)
@@ -357,7 +357,7 @@ pub fn compile_frontend_from_ast_with_options(
     // Semantic analysis (RIR to AIR)
     let sema_output = {
         let _span = info_span!("sema").entered();
-        let sema = Sema::new(&rir, &mut interner, preview_features.clone());
+        let sema = Sema::new(&rir, &interner, preview_features.clone());
         let output = sema.analyze_all()?;
         info!(
             function_count = output.functions.len(),
@@ -1009,16 +1009,16 @@ pub fn compile_to_air(source: &str) -> CompileResult<AirOutput> {
     let tokens = lexer.tokenize()?;
 
     // Parsing
-    let mut parser = Parser::new(tokens);
+    let parser = Parser::new(tokens);
     let ast = parser.parse()?;
 
     // AST to RIR (untyped IR)
-    let mut interner = Interner::new();
-    let astgen = AstGen::new(&ast, &mut interner);
+    let interner = Interner::new();
+    let astgen = AstGen::new(&ast, &interner);
     let rir = astgen.generate();
 
     // Semantic analysis (RIR to AIR)
-    let sema = Sema::new(&rir, &mut interner, PreviewFeatures::new());
+    let sema = Sema::new(&rir, &interner, PreviewFeatures::new());
     let sema_output = sema.analyze_all()?;
 
     Ok(AirOutput {

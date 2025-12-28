@@ -24,15 +24,15 @@ use crate::inst::{
 pub struct AstGen<'a> {
     /// The AST being processed
     ast: &'a Ast,
-    /// String interner for symbols
-    interner: &'a mut Interner,
+    /// String interner for symbols (thread-safe, takes shared reference)
+    interner: &'a Interner,
     /// Output RIR
     rir: Rir,
 }
 
 impl<'a> AstGen<'a> {
     /// Create a new AstGen for the given AST.
-    pub fn new(ast: &'a Ast, interner: &'a mut Interner) -> Self {
+    pub fn new(ast: &'a Ast, interner: &'a Interner) -> Self {
         Self {
             ast,
             interner,
@@ -687,11 +687,11 @@ mod tests {
     fn gen_rir(source: &str) -> (Rir, Interner) {
         let mut lexer = Lexer::new(source);
         let tokens = lexer.tokenize().unwrap();
-        let mut parser = Parser::new(tokens);
+        let parser = Parser::new(tokens);
         let ast = parser.parse().unwrap();
 
-        let mut interner = Interner::new();
-        let astgen = AstGen::new(&ast, &mut interner);
+        let interner = Interner::new();
+        let astgen = AstGen::new(&ast, &interner);
         let rir = astgen.generate();
         (rir, interner)
     }
