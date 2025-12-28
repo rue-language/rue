@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 300" class="benchmark-chart">
+  <style>
+    .chart-bg { fill: var(--chart-bg, #ffffff); }
+    .chart-text { fill: var(--chart-text, #6b7280); font-family: system-ui, sans-serif; }
+    @media (prefers-color-scheme: dark) {
+      .chart-bg { fill: #1a1a1a; }
+      .chart-text { fill: #9ca3af; }
+    }
+  </style>
+  <rect class="chart-bg" width="800" height="300" rx="8"/>
+  <text class="chart-text" x="400.0" y="150.0" text-anchor="middle" font-size="14">No benchmark data available yet</text>
+</svg>

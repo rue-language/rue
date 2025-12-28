@@ -1,0 +1,65 @@
+{% extends "base.html" %}
+
+{% block title %}{{ page.title }} | {{ config.title }}{% endblock %}
+
+{% block content %}
+<article class="py-12">
+    <div class="max-w-4xl mx-auto px-6">
+        <div class="prose mb-8">
+            <h1>{{ page.title }}</h1>
+            {{ page.content | safe }}
+        </div>
+
+        <!-- Timeline Chart -->
+        <section class="mb-12">
+            <h2 class="text-xl font-semibold mb-4">Compilation Time Trend</h2>
+            <p class="text-muted mb-4">
+                Total compilation time across the last 20 commits. Lower is better.
+            </p>
+            <div class="benchmark-chart-container bg-surface border border-themed rounded-lg p-4">
+                {% set timeline = load_data(path="static/benchmarks/timeline.svg", format="plain") %}
+                {{ timeline | safe }}
+            </div>
+        </section>
+
+        <!-- Breakdown Chart -->
+        <section class="mb-12">
+            <h2 class="text-xl font-semibold mb-4">Time by Compiler Pass</h2>
+            <p class="text-muted mb-4">
+                Breakdown of where compilation time is spent in the most recent benchmark run.
+            </p>
+            <div class="benchmark-chart-container bg-surface border border-themed rounded-lg p-4">
+                {% set breakdown = load_data(path="static/benchmarks/breakdown.svg", format="plain") %}
+                {{ breakdown | safe }}
+            </div>
+        </section>
+
+        <!-- Methodology -->
+        <section class="prose">
+            <h2>Methodology</h2>
+            <p>
+                These benchmarks are run automatically on every commit to the main branch.
+                Each benchmark is executed multiple times to reduce noise, and both mean
+                and standard deviation are recorded.
+            </p>
+            <h3>Benchmark Suite</h3>
+            <p>
+                The benchmark corpus includes hand-crafted stress tests that exercise
+                different parts of the compiler:
+            </p>
+            <ul>
+                <li><strong>many_functions</strong> - 100+ functions to stress function handling</li>
+                <li><strong>deep_nesting</strong> - Deeply nested blocks and expressions</li>
+                <li><strong>large_structs</strong> - Many struct types with multiple fields</li>
+                <li><strong>arithmetic_heavy</strong> - Lots of arithmetic expressions</li>
+                <li><strong>control_flow</strong> - Complex if/while/match patterns</li>
+            </ul>
+            <h3>Environment</h3>
+            <p>
+                Benchmarks run on GitHub Actions runners. While there is some variability
+                between runs, running multiple iterations helps smooth out noise.
+            </p>
+        </section>
+    </div>
+</article>
+{% endblock %}

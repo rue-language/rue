@@ -24,6 +24,12 @@ else
     find website/content/spec -name "*.md" -exec sed -i 's|@/\([0-9]\)|@/spec/\1|g' {} \;
 fi
 
+# Generate benchmark charts
+echo "Generating benchmark charts..."
+python3 "$ROOT/scripts/generate-charts.py" \
+    "$ROOT/website/static/benchmarks/history.json" \
+    "$ROOT/website/static/benchmarks/"
+
 # Build Tailwind CSS
 echo "Building Tailwind CSS..."
 cd website

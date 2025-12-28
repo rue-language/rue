@@ -731,3 +731,36 @@ code {
     content: "[*]";
   }
 }
+
+/* ========================================
+   Performance Dashboard Charts
+   ======================================== */
+
+.benchmark-chart-container {
+  overflow-x: auto;
+}
+
+.benchmark-chart-container svg {
+  width: 100%;
+  height: auto;
+  min-width: 600px;
+}
+
+/* Override SVG chart colors for our theme system */
+.benchmark-chart {
+  --chart-bg: var(--color-surface);
+  --chart-text: var(--color-muted);
+  --chart-title: var(--color-fg);
+  --chart-accent: var(--color-accent);
+  --chart-grid: var(--color-border);
+  --chart-axis: var(--color-muted);
+}
+
+.dark .benchmark-chart {
+  --chart-bg: var(--color-surface-dark);
+  --chart-text: var(--color-muted-dark);
+  --chart-title: var(--color-fg-dark);
+  --chart-accent: var(--color-accent-dark);
+  --chart-grid: var(--color-border-dark);
+  --chart-axis: var(--color-muted-dark);
+}

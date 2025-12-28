@@ -1,12 +1,12 @@
 ---
 id: 0019
 title: Compiler Performance Dashboard
-status: proposal
+status: implemented
 tags: [tooling, website, performance]
 feature-flag: null
 created: 2025-12-27
-accepted:
-implemented:
+accepted: 2025-12-27
+implemented: 2025-12-27
 spec-sections: []
 superseded-by:
 ---
@@ -15,7 +15,7 @@ superseded-by:
 
 ## Status
 
-Proposal
+Implemented
 
 ## Summary
 
@@ -192,7 +192,7 @@ website/
   - Push results to `perf` branch
   - Configure consistent benchmark environment
 
-- [ ] **Phase 5: Website visualization** - rue-a5ah.5
+- [x] **Phase 5: Website visualization** - rue-a5ah.5
   - Create SVG chart generator (Rust or Python)
   - Create `/performance/` page template
   - Integrate chart generation into website build
