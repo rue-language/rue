@@ -187,7 +187,7 @@ website/
   - Document benchmark workflow
   - Add release/debug build modes via Buck2 modifiers
 
-- [ ] **Phase 4: CI integration** - rue-a5ah.4
+- [x] **Phase 4: CI integration** - rue-a5ah.4
   - GitHub Actions workflow to run benchmarks on trunk commits
   - Push results to `perf` branch
   - Configure consistent benchmark environment

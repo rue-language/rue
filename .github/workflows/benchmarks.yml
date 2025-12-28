@@ -1,0 +1,121 @@
+name: Benchmarks
+
+on:
+  push:
+    branches: [trunk]
+  workflow_dispatch:
+    inputs:
+      iterations:
+        description: 'Number of benchmark iterations'
+        default: '5'
+        type: string
+
+# Only run one benchmark at a time to ensure consistent results
+concurrency:
+  group: benchmarks
+  cancel-in-progress: false
+
+permissions:
+  contents: write  # Needed to push to perf branch
+
+jobs:
+  benchmark:
+    # Run on a consistent runner for reproducible results
+    # macOS provides the most consistent performance on GitHub Actions
+    runs-on: macos-latest
+    steps:
+      - name: Checkout trunk
+        uses: actions/checkout@v4
+        with:
+          ref: trunk
+          fetch-depth: 0  # Full history for commit info
+
+      - name: Install dotslash
+        uses: facebook/install-dotslash@latest
+
+      # Cache Buck2 outputs including downloaded Rust toolchain
+      - name: Cache Buck2 outputs
+        uses: actions/cache@v4
+        with:
+          path: |
+            buck-out/v2/gen
+            ~/.cache/buck2
+          key: buck2-macos-release-${{ hashFiles('**/BUCK', 'toolchains/rust/defs.bzl') }}
+          restore-keys: |
+            buck2-macos-release-
+
+      - name: Get commit info
+        id: commit
+        run: |
+          echo "sha=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
+          echo "full_sha=$(git rev-parse HEAD)" >> $GITHUB_OUTPUT
+
+      - name: Run benchmarks
+        id: bench
+        run: |
+          iterations="${{ github.event.inputs.iterations || '5' }}"
+          echo "Running benchmarks with $iterations iterations..."
+          ./bench.sh --iterations "$iterations" --output /tmp/results.json --no-history
+
+          # Extract summary for PR comment
+          echo "benchmark_results<<EOF" >> $GITHUB_OUTPUT
+          cat /tmp/results.json >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+      - name: Checkout perf branch
+        uses: actions/checkout@v4
+        with:
+          ref: perf
+          path: perf-branch
+          fetch-depth: 1
+        continue-on-error: true
+
+      - name: Initialize perf branch if needed
+        run: |
+          if [ ! -d "perf-branch" ]; then
+            mkdir -p perf-branch
+            cd perf-branch
+            git init
+            git checkout -b perf
+            mkdir -p benchmarks
+            echo '{"version": 1, "runs": []}' > benchmarks/history.json
+            echo "# Performance History" > README.md
+            echo "" >> README.md
+            echo "This branch stores benchmark history for the Rue compiler." >> README.md
+            echo "See [Performance Dashboard](https://rue-lang.dev/performance/) for visualization." >> README.md
+          fi
+
+      - name: Append to history
+        run: |
+          python3 scripts/append-benchmark.py /tmp/results.json perf-branch/benchmarks/history.json
+
+      - name: Commit and push to perf branch
+        run: |
+          cd perf-branch
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add benchmarks/history.json
+
+          # Only commit if there are changes
+          if git diff --staged --quiet; then
+            echo "No changes to commit"
+          else
+            git commit -m "Benchmark results for ${{ steps.commit.outputs.sha }}"
+
+            # Push to perf branch (create if doesn't exist)
+            git push https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git HEAD:perf
+          fi
+
+      - name: Summary
+        run: |
+          echo "## Benchmark Results" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Commit: \`${{ steps.commit.outputs.sha }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Results" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`json" >> $GITHUB_STEP_SUMMARY
+          cat /tmp/results.json >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY

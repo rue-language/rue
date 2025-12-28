@@ -216,7 +216,8 @@ done
 
 # Get metadata
 timestamp=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
-commit=$(jj log -r @ --no-graph -T 'commit_id' 2>/dev/null | head -c 12 || echo "unknown")
+# Get commit hash - try jj first (for local dev), fall back to git (for CI)
+commit=$(jj log -r @ --no-graph -T 'commit_id' 2>/dev/null | head -c 12 || git rev-parse --short HEAD 2>/dev/null || echo "unknown")
 os=$(uname -s | tr '[:upper:]' '[:lower:]')
 arch=$(uname -m)
 host="${arch}-${os}"
