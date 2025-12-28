@@ -27,10 +27,22 @@ use string_interner::{StringInterner, Symbol as SymbolTrait};
 pub struct Symbol(SymbolU32);
 
 impl Symbol {
-    /// Create a symbol from a raw index.
+    /// Create a symbol from a usize index. Only for internal use.
     #[inline]
     fn from_usize(index: usize) -> Option<Self> {
         SymbolU32::try_from_usize(index).map(Symbol)
+    }
+
+    /// Create a symbol from a raw index.
+    ///
+    /// # Panics
+    /// Panics if the index is invalid (>= u32::MAX - 1).
+    ///
+    /// This is intended for use by the RIR extra data deserialization, where
+    /// we know the indices are valid because they were serialized from valid symbols.
+    #[inline]
+    pub fn from_raw(index: u32) -> Self {
+        Self::from_usize(index as usize).expect("invalid symbol index")
     }
 
     /// Get the raw index of this symbol.

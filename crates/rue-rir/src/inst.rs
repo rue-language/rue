@@ -128,6 +128,53 @@ impl RirPattern {
     }
 }
 
+/// Extra data marker types for type-safe storage in the extra array.
+/// These types represent data stored in the extra array.
+
+/// Stored representation of RirCallArg in the extra array.
+/// Layout: [value: u32, mode: u32] = 2 u32s per arg
+const CALL_ARG_SIZE: u32 = 2;
+
+/// Stored representation of RirParam in the extra array.
+/// Layout: [name: u32, ty: u32, mode: u32] = 3 u32s per param
+const PARAM_SIZE: u32 = 3;
+
+/// Stored representation of match arm in the extra array.
+/// Layout: pattern data + [body: u32]
+/// Pattern data varies by kind (see PatternKind enum).
+
+/// Pattern kinds encoded in extra array
+#[repr(u32)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PatternKind {
+    /// Wildcard pattern: [kind, span_start, span_len]
+    Wildcard = 0,
+    /// Int pattern: [kind, span_start, span_len, value_lo, value_hi]
+    Int = 1,
+    /// Bool pattern: [kind, span_start, span_len, value]
+    Bool = 2,
+    /// Path pattern: [kind, span_start, span_len, type_name, variant]
+    Path = 3,
+}
+
+/// Size of each pattern kind in the extra array (including body InstRef)
+const PATTERN_WILDCARD_SIZE: u32 = 4; // kind, span_start, span_len, body
+const PATTERN_INT_SIZE: u32 = 6; // kind, span_start, span_len, value_lo, value_hi, body
+const PATTERN_BOOL_SIZE: u32 = 5; // kind, span_start, span_len, value, body
+const PATTERN_PATH_SIZE: u32 = 6; // kind, span_start, span_len, type_name, variant, body
+
+/// Stored representation of struct field initializer.
+/// Layout: [field_name: u32, value: u32] = 2 u32s per field
+const FIELD_INIT_SIZE: u32 = 2;
+
+/// Stored representation of struct field declaration.
+/// Layout: [field_name: u32, field_type: u32] = 2 u32s per field
+const FIELD_DECL_SIZE: u32 = 2;
+
+/// Stored representation of directive in the extra array.
+/// Layout: [name: u32, span_start: u32, span_len: u32, args_len: u32, args...]
+/// Variable size due to args.
+
 /// The complete RIR for a source file.
 #[derive(Debug, Default)]
 pub struct Rir {
@@ -215,6 +262,287 @@ impl Rir {
         let start = start as usize;
         let end = start + len as usize;
         &self.extra[start..end]
+    }
+
+    // ===== Helper methods for storing/retrieving typed data in the extra array =====
+
+    /// Store a slice of InstRefs and return (start, len).
+    pub fn add_inst_refs(&mut self, refs: &[InstRef]) -> (u32, u32) {
+        let data: Vec<u32> = refs.iter().map(|r| r.as_u32()).collect();
+        let start = self.add_extra(&data);
+        (start, refs.len() as u32)
+    }
+
+    /// Retrieve InstRefs from the extra array.
+    pub fn get_inst_refs(&self, start: u32, len: u32) -> Vec<InstRef> {
+        self.get_extra(start, len)
+            .iter()
+            .map(|&v| InstRef::from_raw(v))
+            .collect()
+    }
+
+    /// Store a slice of Symbols and return (start, len).
+    pub fn add_symbols(&mut self, symbols: &[Symbol]) -> (u32, u32) {
+        let data: Vec<u32> = symbols.iter().map(|s| s.as_u32()).collect();
+        let start = self.add_extra(&data);
+        (start, symbols.len() as u32)
+    }
+
+    /// Retrieve Symbols from the extra array.
+    pub fn get_symbols(&self, start: u32, len: u32) -> Vec<Symbol> {
+        self.get_extra(start, len)
+            .iter()
+            .map(|&v| Symbol::from_raw(v))
+            .collect()
+    }
+
+    /// Store RirCallArgs and return (start, len).
+    /// Layout: [value: u32, mode: u32] per arg
+    pub fn add_call_args(&mut self, args: &[RirCallArg]) -> (u32, u32) {
+        let mut data = Vec::with_capacity(args.len() * CALL_ARG_SIZE as usize);
+        for arg in args {
+            data.push(arg.value.as_u32());
+            data.push(arg.mode as u32);
+        }
+        let start = self.add_extra(&data);
+        (start, args.len() as u32)
+    }
+
+    /// Retrieve RirCallArgs from the extra array.
+    pub fn get_call_args(&self, start: u32, len: u32) -> Vec<RirCallArg> {
+        let data = self.get_extra(start, len * CALL_ARG_SIZE);
+        let mut args = Vec::with_capacity(len as usize);
+        for chunk in data.chunks(CALL_ARG_SIZE as usize) {
+            let value = InstRef::from_raw(chunk[0]);
+            let mode = match chunk[1] {
+                0 => RirArgMode::Normal,
+                1 => RirArgMode::Inout,
+                2 => RirArgMode::Borrow,
+                _ => RirArgMode::Normal, // Fallback, shouldn't happen
+            };
+            args.push(RirCallArg { value, mode });
+        }
+        args
+    }
+
+    /// Store RirParams and return (start, len).
+    /// Layout: [name: u32, ty: u32, mode: u32] per param
+    pub fn add_params(&mut self, params: &[RirParam]) -> (u32, u32) {
+        let mut data = Vec::with_capacity(params.len() * PARAM_SIZE as usize);
+        for param in params {
+            data.push(param.name.as_u32());
+            data.push(param.ty.as_u32());
+            data.push(param.mode as u32);
+        }
+        let start = self.add_extra(&data);
+        (start, params.len() as u32)
+    }
+
+    /// Retrieve RirParams from the extra array.
+    pub fn get_params(&self, start: u32, len: u32) -> Vec<RirParam> {
+        let data = self.get_extra(start, len * PARAM_SIZE);
+        let mut params = Vec::with_capacity(len as usize);
+        for chunk in data.chunks(PARAM_SIZE as usize) {
+            let name = Symbol::from_raw(chunk[0]);
+            let ty = Symbol::from_raw(chunk[1]);
+            let mode = match chunk[2] {
+                0 => RirParamMode::Normal,
+                1 => RirParamMode::Inout,
+                2 => RirParamMode::Borrow,
+                _ => RirParamMode::Normal, // Fallback
+            };
+            params.push(RirParam { name, ty, mode });
+        }
+        params
+    }
+
+    /// Store match arms (pattern + body pairs) and return (start, arm_count).
+    /// Each arm is stored with variable size depending on pattern kind.
+    pub fn add_match_arms(&mut self, arms: &[(RirPattern, InstRef)]) -> (u32, u32) {
+        let start = self.extra.len() as u32;
+        for (pattern, body) in arms {
+            match pattern {
+                RirPattern::Wildcard(span) => {
+                    self.extra.push(PatternKind::Wildcard as u32);
+                    self.extra.push(span.start());
+                    self.extra.push(span.len());
+                    self.extra.push(body.as_u32());
+                }
+                RirPattern::Int(value, span) => {
+                    self.extra.push(PatternKind::Int as u32);
+                    self.extra.push(span.start());
+                    self.extra.push(span.len());
+                    // Store i64 as two u32s (little-endian)
+                    self.extra.push(*value as u32);
+                    self.extra.push((*value >> 32) as u32);
+                    self.extra.push(body.as_u32());
+                }
+                RirPattern::Bool(value, span) => {
+                    self.extra.push(PatternKind::Bool as u32);
+                    self.extra.push(span.start());
+                    self.extra.push(span.len());
+                    self.extra.push(if *value { 1 } else { 0 });
+                    self.extra.push(body.as_u32());
+                }
+                RirPattern::Path {
+                    type_name,
+                    variant,
+                    span,
+                } => {
+                    self.extra.push(PatternKind::Path as u32);
+                    self.extra.push(span.start());
+                    self.extra.push(span.len());
+                    self.extra.push(type_name.as_u32());
+                    self.extra.push(variant.as_u32());
+                    self.extra.push(body.as_u32());
+                }
+            }
+        }
+        (start, arms.len() as u32)
+    }
+
+    /// Retrieve match arms from the extra array.
+    pub fn get_match_arms(&self, start: u32, arm_count: u32) -> Vec<(RirPattern, InstRef)> {
+        let mut arms = Vec::with_capacity(arm_count as usize);
+        let mut pos = start as usize;
+
+        for _ in 0..arm_count {
+            let kind = self.extra[pos];
+            match kind {
+                k if k == PatternKind::Wildcard as u32 => {
+                    let span_start = self.extra[pos + 1];
+                    let span_len = self.extra[pos + 2];
+                    let span = Span::new(span_start, span_start + span_len);
+                    let body = InstRef::from_raw(self.extra[pos + 3]);
+                    arms.push((RirPattern::Wildcard(span), body));
+                    pos += PATTERN_WILDCARD_SIZE as usize;
+                }
+                k if k == PatternKind::Int as u32 => {
+                    let span_start = self.extra[pos + 1];
+                    let span_len = self.extra[pos + 2];
+                    let span = Span::new(span_start, span_start + span_len);
+                    let value_lo = self.extra[pos + 3] as i64;
+                    let value_hi = self.extra[pos + 4] as i64;
+                    let value = value_lo | (value_hi << 32);
+                    let body = InstRef::from_raw(self.extra[pos + 5]);
+                    arms.push((RirPattern::Int(value, span), body));
+                    pos += PATTERN_INT_SIZE as usize;
+                }
+                k if k == PatternKind::Bool as u32 => {
+                    let span_start = self.extra[pos + 1];
+                    let span_len = self.extra[pos + 2];
+                    let span = Span::new(span_start, span_start + span_len);
+                    let value = self.extra[pos + 3] != 0;
+                    let body = InstRef::from_raw(self.extra[pos + 4]);
+                    arms.push((RirPattern::Bool(value, span), body));
+                    pos += PATTERN_BOOL_SIZE as usize;
+                }
+                k if k == PatternKind::Path as u32 => {
+                    let span_start = self.extra[pos + 1];
+                    let span_len = self.extra[pos + 2];
+                    let span = Span::new(span_start, span_start + span_len);
+                    let type_name = Symbol::from_raw(self.extra[pos + 3]);
+                    let variant = Symbol::from_raw(self.extra[pos + 4]);
+                    let body = InstRef::from_raw(self.extra[pos + 5]);
+                    arms.push((
+                        RirPattern::Path {
+                            type_name,
+                            variant,
+                            span,
+                        },
+                        body,
+                    ));
+                    pos += PATTERN_PATH_SIZE as usize;
+                }
+                _ => panic!("Unknown pattern kind: {}", kind),
+            }
+        }
+        arms
+    }
+
+    /// Store field initializers (name, value) and return (start, len).
+    /// Layout: [name: u32, value: u32] per field
+    pub fn add_field_inits(&mut self, fields: &[(Symbol, InstRef)]) -> (u32, u32) {
+        let mut data = Vec::with_capacity(fields.len() * FIELD_INIT_SIZE as usize);
+        for (name, value) in fields {
+            data.push(name.as_u32());
+            data.push(value.as_u32());
+        }
+        let start = self.add_extra(&data);
+        (start, fields.len() as u32)
+    }
+
+    /// Retrieve field initializers from the extra array.
+    pub fn get_field_inits(&self, start: u32, len: u32) -> Vec<(Symbol, InstRef)> {
+        let data = self.get_extra(start, len * FIELD_INIT_SIZE);
+        let mut fields = Vec::with_capacity(len as usize);
+        for chunk in data.chunks(FIELD_INIT_SIZE as usize) {
+            let name = Symbol::from_raw(chunk[0]);
+            let value = InstRef::from_raw(chunk[1]);
+            fields.push((name, value));
+        }
+        fields
+    }
+
+    /// Store field declarations (name, type) and return (start, len).
+    /// Layout: [name: u32, type: u32] per field
+    pub fn add_field_decls(&mut self, fields: &[(Symbol, Symbol)]) -> (u32, u32) {
+        let mut data = Vec::with_capacity(fields.len() * FIELD_DECL_SIZE as usize);
+        for (name, ty) in fields {
+            data.push(name.as_u32());
+            data.push(ty.as_u32());
+        }
+        let start = self.add_extra(&data);
+        (start, fields.len() as u32)
+    }
+
+    /// Retrieve field declarations from the extra array.
+    pub fn get_field_decls(&self, start: u32, len: u32) -> Vec<(Symbol, Symbol)> {
+        let data = self.get_extra(start, len * FIELD_DECL_SIZE);
+        let mut fields = Vec::with_capacity(len as usize);
+        for chunk in data.chunks(FIELD_DECL_SIZE as usize) {
+            let name = Symbol::from_raw(chunk[0]);
+            let ty = Symbol::from_raw(chunk[1]);
+            fields.push((name, ty));
+        }
+        fields
+    }
+
+    /// Store directives and return (start, directive_count).
+    /// Layout: [name: u32, span_start: u32, span_len: u32, args_len: u32, args...] per directive
+    pub fn add_directives(&mut self, directives: &[RirDirective]) -> (u32, u32) {
+        let start = self.extra.len() as u32;
+        for directive in directives {
+            self.extra.push(directive.name.as_u32());
+            self.extra.push(directive.span.start());
+            self.extra.push(directive.span.len());
+            self.extra.push(directive.args.len() as u32);
+            for arg in &directive.args {
+                self.extra.push(arg.as_u32());
+            }
+        }
+        (start, directives.len() as u32)
+    }
+
+    /// Retrieve directives from the extra array.
+    pub fn get_directives(&self, start: u32, directive_count: u32) -> Vec<RirDirective> {
+        let mut directives = Vec::with_capacity(directive_count as usize);
+        let mut pos = start as usize;
+
+        for _ in 0..directive_count {
+            let name = Symbol::from_raw(self.extra[pos]);
+            let span = Span::new(self.extra[pos + 1], self.extra[pos + 2]);
+            let args_len = self.extra[pos + 3] as usize;
+            pos += 4;
+
+            let args: Vec<Symbol> = (0..args_len)
+                .map(|i| Symbol::from_raw(self.extra[pos + i]))
+                .collect();
+            pos += args_len;
+
+            directives.push(RirDirective { name, args, span });
+        }
+        directives
     }
 }
 
@@ -307,11 +635,14 @@ pub enum InstData {
     InfiniteLoop { body: InstRef },
 
     /// Match expression: match scrutinee { pattern => expr, ... }
+    /// Arms are stored in the extra array using add_match_arms/get_match_arms.
     Match {
         /// The value being matched
         scrutinee: InstRef,
-        /// Match arms: [(pattern, body), ...]
-        arms: Vec<(RirPattern, InstRef)>,
+        /// Index into extra data where arms start
+        arms_start: u32,
+        /// Number of match arms
+        arms_len: u32,
     },
 
     /// Break: exits the innermost loop
@@ -322,12 +653,17 @@ pub enum InstData {
 
     /// Function definition
     /// Contains: name symbol, parameters, return type symbol, body instruction ref
+    /// Directives and params are stored in the extra array.
     FnDecl {
-        /// Directives applied to this function
-        directives: Vec<RirDirective>,
+        /// Index into extra data where directives start
+        directives_start: u32,
+        /// Number of directives
+        directives_len: u32,
         name: Symbol,
-        /// Parameters with names, types, and modes
-        params: Vec<RirParam>,
+        /// Index into extra data where params start
+        params_start: u32,
+        /// Number of parameters
+        params_len: u32,
         return_type: Symbol,
         body: InstRef,
         /// Whether this function/method takes `self` as a receiver.
@@ -337,19 +673,25 @@ pub enum InstData {
     },
 
     /// Function call
+    /// Args are stored in the extra array using add_call_args/get_call_args.
     Call {
         /// Function name
         name: Symbol,
-        /// Arguments with optional inout flags
-        args: Vec<RirCallArg>,
+        /// Index into extra data where args start
+        args_start: u32,
+        /// Number of arguments
+        args_len: u32,
     },
 
     /// Intrinsic call with expression arguments (e.g., @dbg)
+    /// Args are stored in the extra array using add_inst_refs/get_inst_refs.
     Intrinsic {
         /// Intrinsic name (without @)
         name: Symbol,
-        /// Argument instruction refs
-        args: Vec<InstRef>,
+        /// Index into extra data where args start
+        args_start: u32,
+        /// Number of arguments
+        args_len: u32,
     },
 
     /// Intrinsic call with a type argument (e.g., @size_of, @align_of)
@@ -383,9 +725,12 @@ pub enum InstData {
     // Variable operations
     /// Local variable declaration: allocates storage and initializes
     /// If name is None, this is a wildcard pattern that discards the value
+    /// Directives are stored in the extra array using add_directives/get_directives.
     Alloc {
-        /// Directives applied to this let binding
-        directives: Vec<RirDirective>,
+        /// Index into extra data where directives start
+        directives_start: u32,
+        /// Number of directives
+        directives_len: u32,
         /// Variable name (None for wildcard `_` pattern that discards the value)
         name: Option<Symbol>,
         /// Whether the variable is mutable
@@ -412,21 +757,29 @@ pub enum InstData {
 
     // Struct operations
     /// Struct type declaration
+    /// Directives and fields are stored in the extra array.
     StructDecl {
-        /// Directives applied to the struct (e.g., @copy)
-        directives: Vec<RirDirective>,
+        /// Index into extra data where directives start
+        directives_start: u32,
+        /// Number of directives
+        directives_len: u32,
         /// Struct name
         name: Symbol,
-        /// Fields: [(field_name, field_type), ...]
-        fields: Vec<(Symbol, Symbol)>,
+        /// Index into extra data where fields start
+        fields_start: u32,
+        /// Number of fields
+        fields_len: u32,
     },
 
     /// Struct literal: creates a new struct instance
+    /// Fields are stored in the extra array using add_field_inits/get_field_inits.
     StructInit {
         /// Struct type name
         type_name: Symbol,
-        /// Field initializers: [(field_name, value_inst), ...]
-        fields: Vec<(Symbol, InstRef)>,
+        /// Index into extra data where fields start
+        fields_start: u32,
+        /// Number of fields
+        fields_len: u32,
     },
 
     /// Field access: reads a field from a struct
@@ -449,11 +802,14 @@ pub enum InstData {
 
     // Enum operations
     /// Enum type declaration
+    /// Variants are stored in the extra array using add_symbols/get_symbols.
     EnumDecl {
         /// Enum name
         name: Symbol,
-        /// Variant names (no data for now)
-        variants: Vec<Symbol>,
+        /// Index into extra data where variants start
+        variants_start: u32,
+        /// Number of variants
+        variants_len: u32,
     },
 
     /// Enum variant: creates a value of an enum type
@@ -466,9 +822,12 @@ pub enum InstData {
 
     // Array operations
     /// Array literal: creates a new array from element values
+    /// Elements are stored in the extra array using add_inst_refs/get_inst_refs.
     ArrayInit {
-        /// Element values
-        elements: Vec<InstRef>,
+        /// Index into extra data where elements start
+        elems_start: u32,
+        /// Number of elements
+        elems_len: u32,
     },
 
     /// Array index read: reads an element from an array
@@ -491,31 +850,40 @@ pub enum InstData {
 
     // Method operations
     /// Impl block declaration
+    /// Methods are stored in the extra array using add_inst_refs/get_inst_refs.
     ImplDecl {
         /// Type name this impl block is for
         type_name: Symbol,
-        /// Methods defined in this impl block (references to FnDecl instructions)
-        methods: Vec<InstRef>,
+        /// Index into extra data where method refs start
+        methods_start: u32,
+        /// Number of methods
+        methods_len: u32,
     },
 
     /// Method call: receiver.method(args)
+    /// Args are stored in the extra array using add_call_args/get_call_args.
     MethodCall {
         /// Receiver expression (the struct value)
         receiver: InstRef,
         /// Method name
         method: Symbol,
-        /// Arguments with optional inout flags
-        args: Vec<RirCallArg>,
+        /// Index into extra data where args start
+        args_start: u32,
+        /// Number of arguments
+        args_len: u32,
     },
 
     /// Associated function call: Type::function(args)
+    /// Args are stored in the extra array using add_call_args/get_call_args.
     AssocFnCall {
         /// Type name (e.g., Point)
         type_name: Symbol,
         /// Function name (e.g., origin)
         function: Symbol,
-        /// Arguments with optional inout flags
-        args: Vec<RirCallArg>,
+        /// Index into extra data where args start
+        args_start: u32,
+        /// Number of arguments
+        args_len: u32,
     },
 
     /// User-defined destructor declaration: drop fn TypeName(self) { ... }
@@ -635,7 +1003,12 @@ impl<'a, 'b> RirPrinter<'a, 'b> {
                 }
                 InstData::Loop { cond, body } => writeln!(out, "loop {}, {}", cond, body).unwrap(),
                 InstData::InfiniteLoop { body } => writeln!(out, "infinite_loop {}", body).unwrap(),
-                InstData::Match { scrutinee, arms } => {
+                InstData::Match {
+                    scrutinee,
+                    arms_start,
+                    arms_len,
+                } => {
+                    let arms = self.rir.get_match_arms(*arms_start, *arms_len);
                     let arms_str: Vec<String> = arms
                         .iter()
                         .map(|(pat, body)| format!("{} => {}", self.format_pattern(pat), body))
@@ -647,9 +1020,11 @@ impl<'a, 'b> RirPrinter<'a, 'b> {
 
                 // Functions
                 InstData::FnDecl {
-                    directives: _,
+                    directives_start: _,
+                    directives_len: _,
                     name,
-                    params,
+                    params_start,
+                    params_len,
                     return_type,
                     body,
                     has_self,
@@ -657,6 +1032,7 @@ impl<'a, 'b> RirPrinter<'a, 'b> {
                     let name_str = self.interner.get(*name);
                     let ret_str = self.interner.get(*return_type);
                     let self_str = if *has_self { "self, " } else { "" };
+                    let params = self.rir.get_params(*params_start, *params_len);
                     let params_str: Vec<String> = params
                         .iter()
                         .map(|p| {
@@ -692,12 +1068,22 @@ impl<'a, 'b> RirPrinter<'a, 'b> {
                         writeln!(out, "ret").unwrap();
                     }
                 }
-                InstData::Call { name, args } => {
+                InstData::Call {
+                    name,
+                    args_start,
+                    args_len,
+                } => {
                     let name_str = self.interner.get(*name);
-                    writeln!(out, "call {}({})", name_str, Self::format_call_args(args)).unwrap();
+                    let args = self.rir.get_call_args(*args_start, *args_len);
+                    writeln!(out, "call {}({})", name_str, Self::format_call_args(&args)).unwrap();
                 }
-                InstData::Intrinsic { name, args } => {
+                InstData::Intrinsic {
+                    name,
+                    args_start,
+                    args_len,
+                } => {
                     let name_str = self.interner.get(*name);
+                    let args = self.rir.get_inst_refs(*args_start, *args_len);
                     let args_str: Vec<String> = args.iter().map(|a| format!("{}", a)).collect();
                     writeln!(out, "intrinsic @{}({})", name_str, args_str.join(", ")).unwrap();
                 }
@@ -715,7 +1101,8 @@ impl<'a, 'b> RirPrinter<'a, 'b> {
 
                 // Variables
                 InstData::Alloc {
-                    directives: _,
+                    directives_start: _,
+                    directives_len: _,
                     name,
                     is_mut,
                     ty,
@@ -739,11 +1126,14 @@ impl<'a, 'b> RirPrinter<'a, 'b> {
 
                 // Structs
                 InstData::StructDecl {
-                    directives,
+                    directives_start,
+                    directives_len,
                     name,
-                    fields,
+                    fields_start,
+                    fields_len,
                 } => {
                     let name_str = self.interner.get(*name);
+                    let fields = self.rir.get_field_decls(*fields_start, *fields_len);
                     let fields_str: Vec<String> = fields
                         .iter()
                         .map(|(fname, ftype)| {
@@ -754,6 +1144,7 @@ impl<'a, 'b> RirPrinter<'a, 'b> {
                             )
                         })
                         .collect();
+                    let directives = self.rir.get_directives(*directives_start, *directives_len);
                     let directives_str = if directives.is_empty() {
                         String::new()
                     } else {
@@ -772,8 +1163,13 @@ impl<'a, 'b> RirPrinter<'a, 'b> {
                     )
                     .unwrap();
                 }
-                InstData::StructInit { type_name, fields } => {
+                InstData::StructInit {
+                    type_name,
+                    fields_start,
+                    fields_len,
+                } => {
                     let type_str = self.interner.get(*type_name);
+                    let fields = self.rir.get_field_inits(*fields_start, *fields_len);
                     let fields_str: Vec<String> = fields
                         .iter()
                         .map(|(fname, value)| format!("{}: {}", self.interner.get(*fname), value))
@@ -801,8 +1197,13 @@ impl<'a, 'b> RirPrinter<'a, 'b> {
                 }
 
                 // Enums
-                InstData::EnumDecl { name, variants } => {
+                InstData::EnumDecl {
+                    name,
+                    variants_start,
+                    variants_len,
+                } => {
                     let name_str = self.interner.get(*name);
+                    let variants = self.rir.get_symbols(*variants_start, *variants_len);
                     let variants_str: Vec<String> = variants
                         .iter()
                         .map(|v| self.interner.get(*v).to_string())
@@ -820,7 +1221,11 @@ impl<'a, 'b> RirPrinter<'a, 'b> {
                 }
 
                 // Arrays
-                InstData::ArrayInit { elements } => {
+                InstData::ArrayInit {
+                    elems_start,
+                    elems_len,
+                } => {
+                    let elements = self.rir.get_inst_refs(*elems_start, *elems_len);
                     let elems_str: Vec<String> =
                         elements.iter().map(|e| format!("{}", e)).collect();
                     writeln!(out, "array_init [{}]", elems_str.join(", ")).unwrap();
@@ -833,8 +1238,13 @@ impl<'a, 'b> RirPrinter<'a, 'b> {
                 }
 
                 // Methods
-                InstData::ImplDecl { type_name, methods } => {
+                InstData::ImplDecl {
+                    type_name,
+                    methods_start,
+                    methods_len,
+                } => {
                     let type_str = self.interner.get(*type_name);
+                    let methods = self.rir.get_inst_refs(*methods_start, *methods_len);
                     let methods_str: Vec<String> =
                         methods.iter().map(|m| format!("{}", m)).collect();
                     writeln!(out, "impl {} {{ {} }}", type_str, methods_str.join(", ")).unwrap();
@@ -842,28 +1252,32 @@ impl<'a, 'b> RirPrinter<'a, 'b> {
                 InstData::MethodCall {
                     receiver,
                     method,
-                    args,
+                    args_start,
+                    args_len,
                 } => {
+                    let args = self.rir.get_call_args(*args_start, *args_len);
                     writeln!(
                         out,
                         "method_call {}.{}({})",
                         receiver,
                         self.interner.get(*method),
-                        Self::format_call_args(args)
+                        Self::format_call_args(&args)
                     )
                     .unwrap();
                 }
                 InstData::AssocFnCall {
                     type_name,
                     function,
-                    args,
+                    args_start,
+                    args_len,
                 } => {
+                    let args = self.rir.get_call_args(*args_start, *args_len);
                     writeln!(
                         out,
                         "assoc_fn_call {}::{}({})",
                         self.interner.get(*type_name),
                         self.interner.get(*function),
-                        Self::format_call_args(args)
+                        Self::format_call_args(&args)
                     )
                     .unwrap();
                 }
@@ -1355,15 +1769,20 @@ mod tests {
         let param_name = interner.intern("x");
         let param_type = interner.intern("i32");
 
+        let (directives_start, directives_len) = rir.add_directives(&[]);
+        let (params_start, params_len) = rir.add_params(&[RirParam {
+            name: param_name,
+            ty: param_type,
+            mode: RirParamMode::Normal,
+        }]);
+
         rir.add_inst(Inst {
             data: InstData::FnDecl {
-                directives: vec![],
+                directives_start,
+                directives_len,
                 name,
-                params: vec![RirParam {
-                    name: param_name,
-                    ty: param_type,
-                    mode: RirParamMode::Normal,
-                }],
+                params_start,
+                params_len,
                 return_type,
                 body,
                 has_self: false,
@@ -1387,11 +1806,16 @@ mod tests {
         let name = interner.intern("get_x");
         let return_type = interner.intern("i32");
 
+        let (directives_start, directives_len) = rir.add_directives(&[]);
+        let (params_start, params_len) = rir.add_params(&[]);
+
         rir.add_inst(Inst {
             data: InstData::FnDecl {
-                directives: vec![],
+                directives_start,
+                directives_len,
                 name,
-                params: vec![],
+                params_start,
+                params_len,
                 return_type,
                 body,
                 has_self: true,
@@ -1421,27 +1845,32 @@ mod tests {
         let param3_name = interner.intern("c");
         let param3_type = interner.intern("i32");
 
+        let (directives_start, directives_len) = rir.add_directives(&[]);
+        let (params_start, params_len) = rir.add_params(&[
+            RirParam {
+                name: param1_name,
+                ty: param1_type,
+                mode: RirParamMode::Normal,
+            },
+            RirParam {
+                name: param2_name,
+                ty: param2_type,
+                mode: RirParamMode::Inout,
+            },
+            RirParam {
+                name: param3_name,
+                ty: param3_type,
+                mode: RirParamMode::Borrow,
+            },
+        ]);
+
         rir.add_inst(Inst {
             data: InstData::FnDecl {
-                directives: vec![],
+                directives_start,
+                directives_len,
                 name,
-                params: vec![
-                    RirParam {
-                        name: param1_name,
-                        ty: param1_type,
-                        mode: RirParamMode::Normal,
-                    },
-                    RirParam {
-                        name: param2_name,
-                        ty: param2_type,
-                        mode: RirParamMode::Inout,
-                    },
-                    RirParam {
-                        name: param3_name,
-                        ty: param3_type,
-                        mode: RirParamMode::Borrow,
-                    },
-                ],
+                params_start,
+                params_len,
                 return_type,
                 body,
                 has_self: false,
@@ -1466,13 +1895,16 @@ mod tests {
 
         let name = interner.intern("foo");
 
+        let (args_start, args_len) = rir.add_call_args(&[RirCallArg {
+            value: arg,
+            mode: RirArgMode::Normal,
+        }]);
+
         rir.add_inst(Inst {
             data: InstData::Call {
                 name,
-                args: vec![RirCallArg {
-                    value: arg,
-                    mode: RirArgMode::Normal,
-                }],
+                args_start,
+                args_len,
             },
             span: Span::new(0, 8),
         });
@@ -1500,23 +1932,26 @@ mod tests {
 
         let name = interner.intern("modify");
 
+        let (args_start, args_len) = rir.add_call_args(&[
+            RirCallArg {
+                value: arg1,
+                mode: RirArgMode::Normal,
+            },
+            RirCallArg {
+                value: arg2,
+                mode: RirArgMode::Inout,
+            },
+            RirCallArg {
+                value: arg3,
+                mode: RirArgMode::Borrow,
+            },
+        ]);
+
         rir.add_inst(Inst {
             data: InstData::Call {
                 name,
-                args: vec![
-                    RirCallArg {
-                        value: arg1,
-                        mode: RirArgMode::Normal,
-                    },
-                    RirCallArg {
-                        value: arg2,
-                        mode: RirArgMode::Inout,
-                    },
-                    RirCallArg {
-                        value: arg3,
-                        mode: RirArgMode::Borrow,
-                    },
-                ],
+                args_start,
+                args_len,
             },
             span: Span::new(0, 20),
         });
@@ -1536,10 +1971,16 @@ mod tests {
 
         let name = interner.intern("dbg");
 
+        let (args_start, args_len) = rir.add_call_args(&[RirCallArg {
+            value: arg,
+            mode: RirArgMode::Normal,
+        }]);
+
         rir.add_inst(Inst {
             data: InstData::Intrinsic {
                 name,
-                args: vec![arg],
+                args_start,
+                args_len,
             },
             span: Span::new(0, 10),
         });
@@ -1607,10 +2048,13 @@ mod tests {
         let name = interner.intern("x");
         let ty = interner.intern("i32");
 
+        let (directives_start, directives_len) = rir.add_directives(&[]);
+
         // Normal alloc with type
         rir.add_inst(Inst {
             data: InstData::Alloc {
-                directives: vec![],
+                directives_start,
+                directives_len,
                 name: Some(name),
                 is_mut: false,
                 ty: Some(ty),
@@ -1634,9 +2078,12 @@ mod tests {
 
         let name = interner.intern("x");
 
+        let (directives_start, directives_len) = rir.add_directives(&[]);
+
         rir.add_inst(Inst {
             data: InstData::Alloc {
-                directives: vec![],
+                directives_start,
+                directives_len,
                 name: Some(name),
                 is_mut: true,
                 ty: None,
@@ -1658,9 +2105,12 @@ mod tests {
             span: Span::new(0, 2),
         });
 
+        let (directives_start, directives_len) = rir.add_directives(&[]);
+
         rir.add_inst(Inst {
             data: InstData::Alloc {
-                directives: vec![],
+                directives_start,
+                directives_len,
                 name: None,
                 is_mut: false,
                 ty: None,
@@ -1717,11 +2167,17 @@ mod tests {
         let y_name = interner.intern("y");
         let i32_type = interner.intern("i32");
 
+        let (directives_start, directives_len) = rir.add_directives(&[]);
+        let (fields_start, fields_len) =
+            rir.add_field_decls(&[(x_name, i32_type), (y_name, i32_type)]);
+
         rir.add_inst(Inst {
             data: InstData::StructDecl {
-                directives: vec![],
+                directives_start,
+                directives_len,
                 name,
-                fields: vec![(x_name, i32_type), (y_name, i32_type)],
+                fields_start,
+                fields_len,
             },
             span: Span::new(0, 30),
         });
@@ -1739,15 +2195,20 @@ mod tests {
         let i32_type = interner.intern("i32");
         let copy_name = interner.intern("copy");
 
+        let (directives_start, directives_len) = rir.add_directives(&[RirDirective {
+            name: copy_name,
+            args: vec![],
+            span: Span::new(0, 5),
+        }]);
+        let (fields_start, fields_len) = rir.add_field_decls(&[(x_name, i32_type)]);
+
         rir.add_inst(Inst {
             data: InstData::StructDecl {
-                directives: vec![RirDirective {
-                    name: copy_name,
-                    args: vec![],
-                    span: Span::new(0, 5),
-                }],
+                directives_start,
+                directives_len,
                 name,
-                fields: vec![(x_name, i32_type)],
+                fields_start,
+                fields_len,
             },
             span: Span::new(0, 30),
         });
@@ -1773,10 +2234,13 @@ mod tests {
         let x_name = interner.intern("x");
         let y_name = interner.intern("y");
 
+        let (fields_start, fields_len) = rir.add_field_inits(&[(x_name, x_val), (y_name, y_val)]);
+
         rir.add_inst(Inst {
             data: InstData::StructInit {
                 type_name,
-                fields: vec![(x_name, x_val), (y_name, y_val)],
+                fields_start,
+                fields_len,
             },
             span: Span::new(0, 25),
         });
@@ -1838,10 +2302,13 @@ mod tests {
         let green = interner.intern("Green");
         let blue = interner.intern("Blue");
 
+        let (variants_start, variants_len) = rir.add_symbols(&[red, green, blue]);
+
         rir.add_inst(Inst {
             data: InstData::EnumDecl {
                 name,
-                variants: vec![red, green, blue],
+                variants_start,
+                variants_len,
             },
             span: Span::new(0, 35),
         });
@@ -1883,9 +2350,12 @@ mod tests {
             span: Span::new(0, 1),
         });
 
+        let (elems_start, elems_len) = rir.add_inst_refs(&[elem1, elem2, elem3]);
+
         rir.add_inst(Inst {
             data: InstData::ArrayInit {
-                elements: vec![elem1, elem2, elem3],
+                elems_start,
+                elems_len,
             },
             span: Span::new(0, 10),
         });
@@ -1956,11 +2426,16 @@ mod tests {
         let method_name = interner.intern("get_x");
         let return_type = interner.intern("i32");
 
+        let (directives_start, directives_len) = rir.add_directives(&[]);
+        let (params_start, params_len) = rir.add_params(&[]);
+
         let method_ref = rir.add_inst(Inst {
             data: InstData::FnDecl {
-                directives: vec![],
+                directives_start,
+                directives_len,
                 name: method_name,
-                params: vec![],
+                params_start,
+                params_len,
                 return_type,
                 body: method_body,
                 has_self: true,
@@ -1970,10 +2445,13 @@ mod tests {
 
         let type_name = interner.intern("Point");
 
+        let (methods_start, methods_len) = rir.add_inst_refs(&[method_ref]);
+
         rir.add_inst(Inst {
             data: InstData::ImplDecl {
                 type_name,
-                methods: vec![method_ref],
+                methods_start,
+                methods_len,
             },
             span: Span::new(0, 50),
         });
@@ -1997,14 +2475,17 @@ mod tests {
 
         let method = interner.intern("add");
 
+        let (args_start, args_len) = rir.add_call_args(&[RirCallArg {
+            value: arg,
+            mode: RirArgMode::Normal,
+        }]);
+
         rir.add_inst(Inst {
             data: InstData::MethodCall {
                 receiver,
                 method,
-                args: vec![RirCallArg {
-                    value: arg,
-                    mode: RirArgMode::Normal,
-                }],
+                args_start,
+                args_len,
             },
             span: Span::new(0, 15),
         });
@@ -2032,20 +2513,23 @@ mod tests {
 
         let method = interner.intern("modify");
 
+        let (args_start, args_len) = rir.add_call_args(&[
+            RirCallArg {
+                value: arg1,
+                mode: RirArgMode::Inout,
+            },
+            RirCallArg {
+                value: arg2,
+                mode: RirArgMode::Borrow,
+            },
+        ]);
+
         rir.add_inst(Inst {
             data: InstData::MethodCall {
                 receiver,
                 method,
-                args: vec![
-                    RirCallArg {
-                        value: arg1,
-                        mode: RirArgMode::Inout,
-                    },
-                    RirCallArg {
-                        value: arg2,
-                        mode: RirArgMode::Borrow,
-                    },
-                ],
+                args_start,
+                args_len,
             },
             span: Span::new(0, 25),
         });
@@ -2062,11 +2546,14 @@ mod tests {
         let type_name = interner.intern("Point");
         let function = interner.intern("origin");
 
+        let (args_start, args_len) = rir.add_call_args(&[]);
+
         rir.add_inst(Inst {
             data: InstData::AssocFnCall {
                 type_name,
                 function,
-                args: vec![],
+                args_start,
+                args_len,
             },
             span: Span::new(0, 15),
         });
@@ -2091,20 +2578,23 @@ mod tests {
         let type_name = interner.intern("Point");
         let function = interner.intern("new");
 
+        let (args_start, args_len) = rir.add_call_args(&[
+            RirCallArg {
+                value: arg1,
+                mode: RirArgMode::Normal,
+            },
+            RirCallArg {
+                value: arg2,
+                mode: RirArgMode::Normal,
+            },
+        ]);
+
         rir.add_inst(Inst {
             data: InstData::AssocFnCall {
                 type_name,
                 function,
-                args: vec![
-                    RirCallArg {
-                        value: arg1,
-                        mode: RirArgMode::Normal,
-                    },
-                    RirCallArg {
-                        value: arg2,
-                        mode: RirArgMode::Normal,
-                    },
-                ],
+                args_start,
+                args_len,
             },
             span: Span::new(0, 20),
         });
@@ -2147,10 +2637,14 @@ mod tests {
             span: Span::new(0, 1),
         });
 
+        let (arms_start, arms_len) =
+            rir.add_match_arms(&[(RirPattern::Wildcard(Span::new(0, 1)), body)]);
+
         rir.add_inst(Inst {
             data: InstData::Match {
                 scrutinee,
-                arms: vec![(RirPattern::Wildcard(Span::new(0, 1)), body)],
+                arms_start,
+                arms_len,
             },
             span: Span::new(0, 20),
         });
@@ -2180,14 +2674,17 @@ mod tests {
             span: Span::new(0, 1),
         });
 
+        let (arms_start, arms_len) = rir.add_match_arms(&[
+            (RirPattern::Int(1, Span::new(0, 1)), body1),
+            (RirPattern::Int(-5, Span::new(0, 2)), body2),
+            (RirPattern::Wildcard(Span::new(0, 1)), body_default),
+        ]);
+
         rir.add_inst(Inst {
             data: InstData::Match {
                 scrutinee,
-                arms: vec![
-                    (RirPattern::Int(1, Span::new(0, 1)), body1),
-                    (RirPattern::Int(-5, Span::new(0, 2)), body2),
-                    (RirPattern::Wildcard(Span::new(0, 1)), body_default),
-                ],
+                arms_start,
+                arms_len,
             },
             span: Span::new(0, 30),
         });
@@ -2213,13 +2710,16 @@ mod tests {
             span: Span::new(0, 1),
         });
 
+        let (arms_start, arms_len) = rir.add_match_arms(&[
+            (RirPattern::Bool(true, Span::new(0, 4)), body_true),
+            (RirPattern::Bool(false, Span::new(0, 5)), body_false),
+        ]);
+
         rir.add_inst(Inst {
             data: InstData::Match {
                 scrutinee,
-                arms: vec![
-                    (RirPattern::Bool(true, Span::new(0, 4)), body_true),
-                    (RirPattern::Bool(false, Span::new(0, 5)), body_false),
-                ],
+                arms_start,
+                arms_len,
             },
             span: Span::new(0, 30),
         });
@@ -2253,28 +2753,31 @@ mod tests {
         let red = interner.intern("Red");
         let green = interner.intern("Green");
 
+        let (arms_start, arms_len) = rir.add_match_arms(&[
+            (
+                RirPattern::Path {
+                    type_name: color,
+                    variant: red,
+                    span: Span::new(0, 10),
+                },
+                body_red,
+            ),
+            (
+                RirPattern::Path {
+                    type_name: color,
+                    variant: green,
+                    span: Span::new(0, 12),
+                },
+                body_green,
+            ),
+            (RirPattern::Wildcard(Span::new(0, 1)), body_default),
+        ]);
+
         rir.add_inst(Inst {
             data: InstData::Match {
                 scrutinee,
-                arms: vec![
-                    (
-                        RirPattern::Path {
-                            type_name: color,
-                            variant: red,
-                            span: Span::new(0, 10),
-                        },
-                        body_red,
-                    ),
-                    (
-                        RirPattern::Path {
-                            type_name: color,
-                            variant: green,
-                            span: Span::new(0, 12),
-                        },
-                        body_green,
-                    ),
-                    (RirPattern::Wildcard(Span::new(0, 1)), body_default),
-                ],
+                arms_start,
+                arms_len,
             },
             span: Span::new(0, 50),
         });

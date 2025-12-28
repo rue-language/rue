@@ -644,9 +644,15 @@ impl<'a> Sema<'a> {
         // Collect method refs from impl blocks so we can skip them in the first pass
         let mut method_refs: HashSet<InstRef> = HashSet::new();
         for (_, inst) in self.rir.iter() {
-            if let InstData::ImplDecl { methods, .. } = &inst.data {
+            if let InstData::ImplDecl {
+                methods_start,
+                methods_len,
+                ..
+            } = &inst.data
+            {
+                let methods = self.rir.get_inst_refs(*methods_start, *methods_len);
                 for method_ref in methods {
-                    method_refs.insert(*method_ref);
+                    method_refs.insert(method_ref);
                 }
             }
         }
@@ -654,9 +660,11 @@ impl<'a> Sema<'a> {
         // Analyze regular functions (not methods in impl blocks)
         for (inst_ref, inst) in self.rir.iter() {
             if let InstData::FnDecl {
-                directives: _,
+                directives_start: _,
+                directives_len: _,
                 name,
-                params,
+                params_start,
+                params_len,
                 return_type,
                 body,
                 has_self: _,
@@ -668,10 +676,16 @@ impl<'a> Sema<'a> {
                 }
 
                 let fn_name = self.interner.get(*name).to_string();
+                let params = self.rir.get_params(*params_start, *params_len);
 
                 // Try to analyze this function - on error, record it and continue
-                match self.analyze_single_function(&fn_name, *return_type, params, *body, inst.span)
-                {
+                match self.analyze_single_function(
+                    &fn_name,
+                    *return_type,
+                    &params,
+                    *body,
+                    inst.span,
+                ) {
                     Ok(analyzed) => functions.push(analyzed),
                     Err(e) => errors.push(e),
                 }
@@ -680,16 +694,23 @@ impl<'a> Sema<'a> {
 
         // Fourth pass: analyze method bodies from impl blocks
         for (_, inst) in self.rir.iter() {
-            if let InstData::ImplDecl { type_name, methods } = &inst.data {
+            if let InstData::ImplDecl {
+                type_name,
+                methods_start,
+                methods_len,
+            } = &inst.data
+            {
                 let type_name_str = self.interner.get(*type_name).to_string();
                 let struct_id = *self.structs.get(type_name).unwrap();
                 let struct_type = Type::Struct(struct_id);
 
+                let methods = self.rir.get_inst_refs(*methods_start, *methods_len);
                 for method_ref in methods {
-                    let method_inst = self.rir.get(*method_ref);
+                    let method_inst = self.rir.get(method_ref);
                     if let InstData::FnDecl {
                         name: method_name,
-                        params,
+                        params_start,
+                        params_len,
                         return_type,
                         body,
                         has_self,
@@ -697,6 +718,7 @@ impl<'a> Sema<'a> {
                     } = &method_inst.data
                     {
                         let method_name_str = self.interner.get(*method_name).to_string();
+                        let params = self.rir.get_params(*params_start, *params_len);
 
                         // Generate method name with struct prefix: "Type.method" or "Type::function"
                         let full_name = if *has_self {
@@ -709,7 +731,7 @@ impl<'a> Sema<'a> {
                         match self.analyze_method_function(
                             &full_name,
                             *return_type,
-                            params,
+                            &params,
                             *body,
                             method_inst.span,
                             struct_type,
@@ -867,18 +889,22 @@ impl<'a> Sema<'a> {
     fn collect_struct_definitions(&mut self) -> CompileResult<()> {
         for (_, inst) in self.rir.iter() {
             if let InstData::StructDecl {
-                directives,
+                directives_start,
+                directives_len,
                 name,
-                fields,
+                fields_start,
+                fields_len,
             } = &inst.data
             {
                 let struct_id = StructId(self.struct_defs.len() as u32);
                 let struct_name = self.interner.get(*name).to_string();
-                let is_copy = self.has_copy_directive(directives);
+                let directives = self.rir.get_directives(*directives_start, *directives_len);
+                let is_copy = self.has_copy_directive(&directives);
 
+                let fields = self.rir.get_field_decls(*fields_start, *fields_len);
                 // Check for duplicate field names
                 let mut seen_fields: HashSet<Symbol> = HashSet::new();
-                for (field_name, _) in fields {
+                for (field_name, _) in &fields {
                     if !seen_fields.insert(*field_name) {
                         let field_name_str = self.interner.get(*field_name).to_string();
                         return Err(CompileError::new(
@@ -893,7 +919,7 @@ impl<'a> Sema<'a> {
 
                 // Resolve field types (can only be primitive types for now, or other structs)
                 let mut resolved_fields = Vec::new();
-                for (field_name, field_type) in fields {
+                for (field_name, field_type) in &fields {
                     let field_ty = self.resolve_type(*field_type, inst.span)?;
                     resolved_fields.push(StructField {
                         name: self.interner.get(*field_name).to_string(),
@@ -916,13 +942,19 @@ impl<'a> Sema<'a> {
     /// Collect all enum definitions from the RIR.
     fn collect_enum_definitions(&mut self) -> CompileResult<()> {
         for (_, inst) in self.rir.iter() {
-            if let InstData::EnumDecl { name, variants } = &inst.data {
+            if let InstData::EnumDecl {
+                name,
+                variants_start,
+                variants_len,
+            } = &inst.data
+            {
                 let enum_id = EnumId(self.enum_defs.len() as u32);
                 let enum_name = self.interner.get(*name).to_string();
+                let variants = self.rir.get_symbols(*variants_start, *variants_len);
 
                 // Check for duplicate variant names
                 let mut seen_variants: HashSet<Symbol> = HashSet::new();
-                for variant_name in variants {
+                for variant_name in &variants {
                     if !seen_variants.insert(*variant_name) {
                         let variant_name_str = self.interner.get(*variant_name).to_string();
                         return Err(CompileError::new(
@@ -1018,12 +1050,14 @@ impl<'a> Sema<'a> {
     fn validate_copy_structs(&self) -> CompileResult<()> {
         for (_, inst) in self.rir.iter() {
             if let InstData::StructDecl {
-                directives,
+                directives_start,
+                directives_len,
                 name,
-                fields: _,
+                ..
             } = &inst.data
             {
-                let is_copy = self.has_copy_directive(directives);
+                let directives = self.rir.get_directives(*directives_start, *directives_len);
+                let is_copy = self.has_copy_directive(&directives);
                 if !is_copy {
                     continue;
                 }
@@ -1097,12 +1131,14 @@ impl<'a> Sema<'a> {
         for (_, inst) in self.rir.iter() {
             if let InstData::FnDecl {
                 name,
-                params,
+                params_start,
+                params_len,
                 return_type,
                 ..
             } = &inst.data
             {
                 let ret_type = self.resolve_type(*return_type, inst.span)?;
+                let params = self.rir.get_params(*params_start, *params_len);
                 let param_types: Vec<Type> = params
                     .iter()
                     .map(|p| self.resolve_type(p.ty, inst.span))
@@ -1128,7 +1164,12 @@ impl<'a> Sema<'a> {
     /// that maps (struct_name, method_name) to MethodInfo.
     fn collect_method_definitions(&mut self) -> CompileResult<()> {
         for (_, inst) in self.rir.iter() {
-            if let InstData::ImplDecl { type_name, methods } = &inst.data {
+            if let InstData::ImplDecl {
+                type_name,
+                methods_start,
+                methods_len,
+            } = &inst.data
+            {
                 // Check that the type exists
                 let struct_id = match self.structs.get(type_name) {
                     Some(id) => *id,
@@ -1143,11 +1184,13 @@ impl<'a> Sema<'a> {
                 let struct_type = Type::Struct(struct_id);
 
                 // Process each method in the impl block
+                let methods = self.rir.get_inst_refs(*methods_start, *methods_len);
                 for method_ref in methods {
-                    let method_inst = self.rir.get(*method_ref);
+                    let method_inst = self.rir.get(method_ref);
                     if let InstData::FnDecl {
                         name: method_name,
-                        params,
+                        params_start,
+                        params_len,
                         return_type,
                         body,
                         has_self,
@@ -1169,6 +1212,7 @@ impl<'a> Sema<'a> {
                         }
 
                         // Resolve parameter types
+                        let params = self.rir.get_params(*params_start, *params_len);
                         let param_names: Vec<Symbol> = params.iter().map(|p| p.name).collect();
                         let param_types: Vec<Type> = params
                             .iter()
@@ -2025,7 +2069,11 @@ impl<'a> Sema<'a> {
                 Ok(AnalysisResult::new(air_ref, Type::Never))
             }
 
-            InstData::Match { scrutinee, arms } => {
+            InstData::Match {
+                scrutinee,
+                arms_start,
+                arms_len,
+            } => {
                 // Analyze the scrutinee to determine its type
                 let scrutinee_result = self.analyze_inst(air, *scrutinee, ctx)?;
                 let scrutinee_type = scrutinee_result.ty;
@@ -2041,6 +2089,7 @@ impl<'a> Sema<'a> {
                     ));
                 }
 
+                let arms = self.rir.get_match_arms(*arms_start, *arms_len);
                 // Check for empty match
                 if arms.is_empty() {
                     return Err(CompileError::new(ErrorKind::EmptyMatch, inst.span));
@@ -2301,7 +2350,8 @@ impl<'a> Sema<'a> {
             }
 
             InstData::Alloc {
-                directives,
+                directives_start,
+                directives_len,
                 name,
                 is_mut,
                 ty: _,
@@ -2324,7 +2374,8 @@ impl<'a> Sema<'a> {
                 };
 
                 // Check if @allow(unused_variable) directive is present
-                let allow_unused = self.has_allow_directive(directives, "unused_variable");
+                let directives = self.rir.get_directives(*directives_start, *directives_len);
+                let allow_unused = self.has_allow_directive(&directives, "unused_variable");
 
                 // Allocate slots - structs and arrays need multiple slots
                 // Use abi_slot_count which recursively computes total slots for nested types
@@ -2732,7 +2783,11 @@ impl<'a> Sema<'a> {
                 }
             }
 
-            InstData::Call { name, args } => {
+            InstData::Call {
+                name,
+                args_start,
+                args_len,
+            } => {
                 // Look up the function
                 let fn_name_str = self.interner.get(*name).to_string();
                 let fn_info = self.functions.get(name).ok_or_compile_error(
@@ -2740,6 +2795,7 @@ impl<'a> Sema<'a> {
                     inst.span,
                 )?;
 
+                let args = self.rir.get_call_args(*args_start, *args_len);
                 // Check argument count
                 if args.len() != fn_info.param_types.len() {
                     let expected = fn_info.param_types.len();
@@ -2751,7 +2807,7 @@ impl<'a> Sema<'a> {
                 }
 
                 // Check for exclusive access violation: same variable passed to multiple inout params
-                self.check_exclusive_access(args, inst.span)?;
+                self.check_exclusive_access(&args, inst.span)?;
 
                 // Clone the data we need before mutable borrow
                 let param_types = fn_info.param_types.clone();
@@ -2784,7 +2840,7 @@ impl<'a> Sema<'a> {
                 }
 
                 // Analyze arguments (move checking happens in analyze_inst for VarRef)
-                let air_args = self.analyze_call_args(air, args, ctx)?;
+                let air_args = self.analyze_call_args(air, &args, ctx)?;
 
                 // Encode call args into extra array: each arg is (air_ref, mode)
                 let args_len = air_args.len() as u32;
@@ -2840,8 +2896,10 @@ impl<'a> Sema<'a> {
 
             InstData::StructInit {
                 type_name,
-                fields: field_inits,
+                fields_start,
+                fields_len,
             } => {
+                let field_inits = self.rir.get_field_inits(*fields_start, *fields_len);
                 // Look up the struct type
                 let type_name_str = self.interner.get(*type_name);
                 let struct_id = *self.structs.get(type_name).ok_or_compile_error(
@@ -3248,7 +3306,12 @@ impl<'a> Sema<'a> {
                 Ok(AnalysisResult::new(air_ref, Type::Unit))
             }
 
-            InstData::Intrinsic { name, args } => {
+            InstData::Intrinsic {
+                name,
+                args_start,
+                args_len,
+            } => {
+                let args = self.rir.get_call_args(*args_start, *args_len);
                 let intrinsic_name = self.interner.get(*name).to_string();
 
                 match intrinsic_name.as_str() {
@@ -3266,7 +3329,7 @@ impl<'a> Sema<'a> {
                         }
 
                         // Synthesize the argument type in a single traversal
-                        let arg_result = self.analyze_inst(air, args[0], ctx)?;
+                        let arg_result = self.analyze_inst(air, args[0].value, ctx)?;
                         let arg_type = arg_result.ty;
 
                         // Check that argument is a supported type (integer, bool, or string)
@@ -3313,7 +3376,7 @@ impl<'a> Sema<'a> {
                         }
 
                         // Analyze the argument
-                        let arg_result = self.analyze_inst(air, args[0], ctx)?;
+                        let arg_result = self.analyze_inst(air, args[0].value, ctx)?;
                         let from_ty = arg_result.ty;
 
                         // Argument must be an integer type
@@ -3439,7 +3502,11 @@ impl<'a> Sema<'a> {
                 Ok(AnalysisResult::new(air_ref, Type::I32))
             }
 
-            InstData::ArrayInit { elements } => {
+            InstData::ArrayInit {
+                elems_start,
+                elems_len,
+            } => {
+                let elements = self.rir.get_inst_refs(*elems_start, *elems_len);
                 // Get the array type from HM inference
                 let array_type_id = match ctx.resolved_types.get(&inst_ref).copied() {
                     Some(Type::Array(id)) => id,
@@ -3811,8 +3878,10 @@ impl<'a> Sema<'a> {
             InstData::MethodCall {
                 receiver,
                 method,
-                args,
+                args_start,
+                args_len,
             } => {
+                let args = self.rir.get_call_args(*args_start, *args_len);
                 // For String borrow methods, we need to extract the root variable before
                 // analyzing the receiver so we can "unmove" it afterwards. String query
                 // methods (len, capacity, is_empty) use `borrow self` semantics - they
@@ -3867,7 +3936,7 @@ impl<'a> Sema<'a> {
                             &method_name_str,
                             receiver_result,
                             receiver_storage,
-                            args,
+                            &args,
                             inst.span,
                         );
                     }
@@ -3877,7 +3946,7 @@ impl<'a> Sema<'a> {
                         ctx,
                         &method_name_str,
                         receiver_result,
-                        args,
+                        &args,
                         inst.span,
                     );
                 }
@@ -3936,7 +4005,7 @@ impl<'a> Sema<'a> {
                 }
 
                 // Check for exclusive access violation in method args
-                self.check_exclusive_access(args, inst.span)?;
+                self.check_exclusive_access(&args, inst.span)?;
 
                 // Clone data needed before mutable borrow
                 let return_type = method_info.return_type;
@@ -3946,7 +4015,7 @@ impl<'a> Sema<'a> {
                     value: receiver_result.air_ref,
                     mode: AirArgMode::Normal, // receiver is not inout
                 }];
-                air_args.extend(self.analyze_call_args(air, args, ctx)?);
+                air_args.extend(self.analyze_call_args(air, &args, ctx)?);
 
                 // Generate a method call name: Type.method (intern for AIR)
                 let call_name = format!("{}.{}", struct_name_str, method_name_str);
@@ -3977,8 +4046,10 @@ impl<'a> Sema<'a> {
             InstData::AssocFnCall {
                 type_name,
                 function,
-                args,
+                args_start,
+                args_len,
             } => {
+                let args = self.rir.get_call_args(*args_start, *args_len);
                 // Get the type and function names for error messages
                 let type_name_str = self.interner.get(*type_name).to_string();
                 let function_name_str = self.interner.get(*function).to_string();
@@ -3992,7 +4063,7 @@ impl<'a> Sema<'a> {
                         air,
                         ctx,
                         &function_name_str,
-                        args,
+                        &args,
                         inst.span,
                     );
                 }
@@ -4036,13 +4107,13 @@ impl<'a> Sema<'a> {
                 }
 
                 // Check for exclusive access violation in assoc fn args
-                self.check_exclusive_access(args, inst.span)?;
+                self.check_exclusive_access(&args, inst.span)?;
 
                 // Clone data needed before mutable borrow
                 let return_type = method_info.return_type;
 
                 // Analyze arguments
-                let air_args = self.analyze_call_args(air, args, ctx)?;
+                let air_args = self.analyze_call_args(air, &args, ctx)?;
 
                 // Generate a function call name: Type::function (intern for AIR)
                 let call_name = format!("{}::{}", type_name_str, function_name_str);

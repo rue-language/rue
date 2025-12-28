@@ -363,7 +363,8 @@ impl<'a> ConstraintGenerator<'a> {
 
             // Local variable allocation
             InstData::Alloc {
-                directives: _,
+                directives_start: _,
+                directives_len: _,
                 name,
                 is_mut,
                 ty: type_annotation,
@@ -442,7 +443,12 @@ impl<'a> ConstraintGenerator<'a> {
             }
 
             // Function call
-            InstData::Call { name, args } => {
+            InstData::Call {
+                name,
+                args_start,
+                args_len,
+            } => {
+                let args = self.rir.get_call_args(*args_start, *args_len);
                 if let Some(func) = self.functions.get(name) {
                     // Check argument count matches parameter count.
                     // Semantic analysis will emit a proper error; we just need to avoid
@@ -476,8 +482,13 @@ impl<'a> ConstraintGenerator<'a> {
             }
 
             // Intrinsic call
-            InstData::Intrinsic { name, args } => {
+            InstData::Intrinsic {
+                name,
+                args_start,
+                args_len,
+            } => {
                 let intrinsic_name = self.interner.get(*name);
+                let args = self.rir.get_inst_refs(*args_start, *args_len);
 
                 if intrinsic_name == "intCast" {
                     // @intCast: target type is inferred from context
@@ -617,8 +628,13 @@ impl<'a> ConstraintGenerator<'a> {
             InstData::Break | InstData::Continue => InferType::Concrete(Type::Never),
 
             // Match expression
-            InstData::Match { scrutinee, arms } => {
+            InstData::Match {
+                scrutinee,
+                arms_start,
+                arms_len,
+            } => {
                 let scrutinee_info = self.generate(*scrutinee, ctx);
+                let arms = self.rir.get_match_arms(*arms_start, *arms_len);
 
                 // Collect arm types, handling Never coercion
                 let mut arm_types: Vec<ExprInfo> = Vec::new();
@@ -662,8 +678,13 @@ impl<'a> ConstraintGenerator<'a> {
             }
 
             // Struct initialization
-            InstData::StructInit { type_name, fields } => {
+            InstData::StructInit {
+                type_name,
+                fields_start,
+                fields_len,
+            } => {
                 if let Some(&struct_ty) = self.structs.get(type_name) {
+                    let fields = self.rir.get_field_inits(*fields_start, *fields_len);
                     // Generate constraints for each field
                     for (_, value_ref) in fields.iter() {
                         self.generate(*value_ref, ctx);
@@ -709,7 +730,11 @@ impl<'a> ConstraintGenerator<'a> {
             }
 
             // Array initialization
-            InstData::ArrayInit { elements } => {
+            InstData::ArrayInit {
+                elems_start,
+                elems_len,
+            } => {
+                let elements = self.rir.get_inst_refs(*elems_start, *elems_len);
                 if elements.is_empty() {
                     // Empty array - need type annotation to know element type
                     // Use a fresh type variable for the element type
@@ -790,10 +815,12 @@ impl<'a> ConstraintGenerator<'a> {
             InstData::MethodCall {
                 receiver,
                 method,
-                args,
+                args_start,
+                args_len,
             } => {
                 // Generate type for receiver
                 let receiver_info = self.generate(*receiver, ctx);
+                let args = self.rir.get_call_args(*args_start, *args_len);
 
                 // Get struct name from receiver type if it's a struct
                 // If we can't determine the struct type, we still generate constraints
@@ -852,8 +879,10 @@ impl<'a> ConstraintGenerator<'a> {
             InstData::AssocFnCall {
                 type_name,
                 function,
-                args,
+                args_start,
+                args_len,
             } => {
+                let args = self.rir.get_call_args(*args_start, *args_len);
                 let method_key = (*type_name, *function);
                 if let Some(method_sig) = self.methods.get(&method_key) {
                     // Generate constraints for arguments
@@ -1569,13 +1598,15 @@ mod tests {
             data: InstData::IntConst(42),
             span: Span::new(4, 6),
         });
+        let (args_start, args_len) = rir.add_call_args(&[rue_rir::RirCallArg {
+            value: arg,
+            mode: rue_rir::RirArgMode::Normal,
+        }]);
         let call = rir.add_inst(rue_rir::Inst {
             data: InstData::Call {
                 name: func_name,
-                args: vec![rue_rir::RirCallArg {
-                    value: arg,
-                    mode: rue_rir::RirArgMode::Normal,
-                }],
+                args_start,
+                args_len,
             },
             span: Span::new(0, 7),
         });
@@ -1607,13 +1638,15 @@ mod tests {
             data: InstData::IntConst(42),
             span: Span::new(8, 10),
         });
+        let (args_start, args_len) = rir.add_call_args(&[rue_rir::RirCallArg {
+            value: arg,
+            mode: rue_rir::RirArgMode::Normal,
+        }]);
         let call = rir.add_inst(rue_rir::Inst {
             data: InstData::Call {
                 name: unknown_func,
-                args: vec![rue_rir::RirCallArg {
-                    value: arg,
-                    mode: rue_rir::RirArgMode::Normal,
-                }],
+                args_start,
+                args_len,
             },
             span: Span::new(0, 11),
         });
@@ -1666,10 +1699,13 @@ mod tests {
         });
         let pattern3 = rue_rir::RirPattern::Wildcard(Span::new(30, 31));
 
+        let arms = vec![(pattern1, body1), (pattern2, body2), (pattern3, body3)];
+        let (arms_start, arms_len) = rir.add_match_arms(&arms);
         let match_inst = rir.add_inst(rue_rir::Inst {
             data: InstData::Match {
                 scrutinee,
-                arms: vec![(pattern1, body1), (pattern2, body2), (pattern3, body3)],
+                arms_start,
+                arms_len,
             },
             span: Span::new(0, 40),
         });

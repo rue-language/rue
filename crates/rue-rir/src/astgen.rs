@@ -92,6 +92,7 @@ impl<'a> AstGen<'a> {
 
     fn gen_struct(&mut self, struct_decl: &StructDecl) -> InstRef {
         let directives = self.convert_directives(&struct_decl.directives);
+        let (directives_start, directives_len) = self.rir.add_directives(&directives);
         let name = struct_decl.name.name; // Already a Symbol
         let fields: Vec<_> = struct_decl
             .fields
@@ -102,12 +103,15 @@ impl<'a> AstGen<'a> {
                 (field_name, field_type)
             })
             .collect();
+        let (fields_start, fields_len) = self.rir.add_field_decls(&fields);
 
         self.rir.add_inst(Inst {
             data: InstData::StructDecl {
-                directives,
+                directives_start,
+                directives_len,
                 name,
-                fields,
+                fields_start,
+                fields_len,
             },
             span: struct_decl.span,
         })
@@ -120,9 +124,14 @@ impl<'a> AstGen<'a> {
             .iter()
             .map(|v| v.name.name) // Already a Symbol
             .collect();
+        let (variants_start, variants_len) = self.rir.add_symbols(&variants);
 
         self.rir.add_inst(Inst {
-            data: InstData::EnumDecl { name, variants },
+            data: InstData::EnumDecl {
+                name,
+                variants_start,
+                variants_len,
+            },
             span: enum_decl.span,
         })
     }
@@ -136,9 +145,14 @@ impl<'a> AstGen<'a> {
             .iter()
             .map(|m| self.gen_method(m))
             .collect();
+        let (methods_start, methods_len) = self.rir.add_inst_refs(&methods);
 
         self.rir.add_inst(Inst {
-            data: InstData::ImplDecl { type_name, methods },
+            data: InstData::ImplDecl {
+                type_name,
+                methods_start,
+                methods_len,
+            },
             span: impl_block.span,
         })
     }
@@ -158,6 +172,7 @@ impl<'a> AstGen<'a> {
     fn gen_method(&mut self, method: &Method) -> InstRef {
         // Convert directives
         let directives = self.convert_directives(&method.directives);
+        let (directives_start, directives_len) = self.rir.add_directives(&directives);
 
         // Get the method name (already a Symbol) and return type
         let name = method.name.name; // Already a Symbol
@@ -176,6 +191,7 @@ impl<'a> AstGen<'a> {
                 mode: self.convert_param_mode(p.mode),
             })
             .collect();
+        let (params_start, params_len) = self.rir.add_params(&params);
 
         // Generate body expression
         let body = self.gen_expr(&method.body);
@@ -187,9 +203,11 @@ impl<'a> AstGen<'a> {
         // Sema uses has_self to add the implicit self parameter for methods.
         self.rir.add_inst(Inst {
             data: InstData::FnDecl {
-                directives,
+                directives_start,
+                directives_len,
                 name,
-                params,
+                params_start,
+                params_len,
                 return_type,
                 body,
                 has_self,
@@ -245,6 +263,7 @@ impl<'a> AstGen<'a> {
     fn gen_function(&mut self, func: &Function) -> InstRef {
         // Convert directives
         let directives = self.convert_directives(&func.directives);
+        let (directives_start, directives_len) = self.rir.add_directives(&directives);
 
         // Get the function name (already a Symbol) and return type
         let name = func.name.name; // Already a Symbol
@@ -263,6 +282,7 @@ impl<'a> AstGen<'a> {
                 mode: self.convert_param_mode(p.mode),
             })
             .collect();
+        let (params_start, params_len) = self.rir.add_params(&params);
 
         // Generate body expression
         let body = self.gen_expr(&func.body);
@@ -271,9 +291,11 @@ impl<'a> AstGen<'a> {
         // Regular functions don't have a self receiver
         self.rir.add_inst(Inst {
             data: InstData::FnDecl {
-                directives,
+                directives_start,
+                directives_len,
                 name,
-                params,
+                params_start,
+                params_len,
                 return_type,
                 body,
                 has_self: false,
@@ -393,19 +415,26 @@ impl<'a> AstGen<'a> {
                         (pattern, body)
                     })
                     .collect();
+                let (arms_start, arms_len) = self.rir.add_match_arms(&arms);
 
                 self.rir.add_inst(Inst {
-                    data: InstData::Match { scrutinee, arms },
+                    data: InstData::Match {
+                        scrutinee,
+                        arms_start,
+                        arms_len,
+                    },
                     span: match_expr.span,
                 })
             }
             Expr::Call(call) => {
                 let args: Vec<_> = call.args.iter().map(|a| self.convert_call_arg(a)).collect();
+                let (args_start, args_len) = self.rir.add_call_args(&args);
 
                 self.rir.add_inst(Inst {
                     data: InstData::Call {
                         name: call.name.name, // Already a Symbol
-                        args,
+                        args_start,
+                        args_len,
                     },
                     span: call.span,
                 })
@@ -434,11 +463,13 @@ impl<'a> AstGen<'a> {
                         (f.name.name, field_value) // name is already a Symbol
                     })
                     .collect();
+                let (fields_start, fields_len) = self.rir.add_field_inits(&fields);
 
                 self.rir.add_inst(Inst {
                     data: InstData::StructInit {
                         type_name: struct_lit.name.name, // Already a Symbol
-                        fields,
+                        fields_start,
+                        fields_len,
                     },
                     span: struct_lit.span,
                 })
@@ -492,9 +523,14 @@ impl<'a> AstGen<'a> {
                         IntrinsicArg::Type(_) => None, // This shouldn't happen for expr intrinsics
                     })
                     .collect();
+                let (args_start, args_len) = self.rir.add_inst_refs(&args);
 
                 self.rir.add_inst(Inst {
-                    data: InstData::Intrinsic { name, args },
+                    data: InstData::Intrinsic {
+                        name,
+                        args_start,
+                        args_len,
+                    },
                     span: intrinsic.span,
                 })
             }
@@ -504,9 +540,13 @@ impl<'a> AstGen<'a> {
                     .iter()
                     .map(|e| self.gen_expr(e))
                     .collect();
+                let (elems_start, elems_len) = self.rir.add_inst_refs(&elements);
 
                 self.rir.add_inst(Inst {
-                    data: InstData::ArrayInit { elements },
+                    data: InstData::ArrayInit {
+                        elems_start,
+                        elems_len,
+                    },
                     span: array_lit.span,
                 })
             }
@@ -535,12 +575,14 @@ impl<'a> AstGen<'a> {
                     .iter()
                     .map(|a| self.convert_call_arg(a))
                     .collect();
+                let (args_start, args_len) = self.rir.add_call_args(&args);
 
                 self.rir.add_inst(Inst {
                     data: InstData::MethodCall {
                         receiver,
                         method: method_call.method.name, // Already a Symbol
-                        args,
+                        args_start,
+                        args_len,
                     },
                     span: method_call.span,
                 })
@@ -551,12 +593,14 @@ impl<'a> AstGen<'a> {
                     .iter()
                     .map(|a| self.convert_call_arg(a))
                     .collect();
+                let (args_start, args_len) = self.rir.add_call_args(&args);
 
                 self.rir.add_inst(Inst {
                     data: InstData::AssocFnCall {
                         type_name: assoc_fn_call.type_name.name, // Already a Symbol
                         function: assoc_fn_call.function.name,   // Already a Symbol
-                        args,
+                        args_start,
+                        args_len,
                     },
                     span: assoc_fn_call.span,
                 })
@@ -622,6 +666,7 @@ impl<'a> AstGen<'a> {
         match stmt {
             Statement::Let(let_stmt) => {
                 let directives = self.convert_directives(&let_stmt.directives);
+                let (directives_start, directives_len) = self.rir.add_directives(&directives);
                 let name = match &let_stmt.pattern {
                     LetPattern::Ident(ident) => Some(ident.name), // Already a Symbol
                     LetPattern::Wildcard(_) => None,
@@ -630,7 +675,8 @@ impl<'a> AstGen<'a> {
                 let init = self.gen_expr(&let_stmt.init);
                 self.rir.add_inst(Inst {
                     data: InstData::Alloc {
-                        directives,
+                        directives_start,
+                        directives_len,
                         name,
                         is_mut: let_stmt.is_mut,
                         ty,
@@ -710,14 +756,16 @@ mod tests {
         let (_, fn_inst) = rir.iter().last().unwrap();
         match &fn_inst.data {
             InstData::FnDecl {
-                directives: _,
                 name,
-                params,
+                params_start,
+                params_len,
                 return_type,
                 body,
                 has_self,
+                ..
             } => {
                 assert_eq!(interner.get(*name), "main");
+                let params = rir.get_params(*params_start, *params_len);
                 assert!(params.is_empty());
                 assert_eq!(interner.get(*return_type), "i32");
                 assert!(!has_self); // Regular functions don't have self
@@ -864,11 +912,11 @@ mod tests {
         let (_, inst) = alloc_inst.unwrap();
         match &inst.data {
             InstData::Alloc {
-                directives: _,
                 name,
                 is_mut,
                 ty,
                 init,
+                ..
             } => {
                 assert_eq!(interner.get(name.unwrap()), "x");
                 assert!(!is_mut);
@@ -1002,8 +1050,13 @@ mod tests {
 
         let (_, inst) = impl_decl.unwrap();
         match &inst.data {
-            InstData::ImplDecl { type_name, methods } => {
+            InstData::ImplDecl {
+                type_name,
+                methods_start,
+                methods_len,
+            } => {
                 assert_eq!(interner.get(*type_name), "Point");
+                let methods = rir.get_inst_refs(*methods_start, *methods_len);
                 assert_eq!(methods.len(), 1);
 
                 // Check the method is a FnDecl with has_self=true
@@ -1040,12 +1093,17 @@ mod tests {
 
         let (_, inst) = impl_decl.unwrap();
         match &inst.data {
-            InstData::ImplDecl { methods, .. } => {
+            InstData::ImplDecl {
+                methods_start,
+                methods_len,
+                ..
+            } => {
+                let methods = rir.get_inst_refs(*methods_start, *methods_len);
                 assert_eq!(methods.len(), 3);
 
                 // Check get_x and get_y have self, origin does not
                 for method_ref in methods {
-                    let method_inst = rir.get(*method_ref);
+                    let method_inst = rir.get(method_ref);
                     match &method_inst.data {
                         InstData::FnDecl { name, has_self, .. } => {
                             let method_name = interner.get(*name);
@@ -1088,9 +1146,11 @@ mod tests {
             InstData::MethodCall {
                 receiver: _,
                 method,
-                args,
+                args_start,
+                args_len,
             } => {
                 assert_eq!(interner.get(*method), "get_x");
+                let args = rir.get_call_args(*args_start, *args_len);
                 assert!(args.is_empty()); // No explicit args (self is implicit)
             }
             _ => panic!("expected MethodCall"),
@@ -1122,10 +1182,12 @@ mod tests {
             InstData::AssocFnCall {
                 type_name,
                 function,
-                args,
+                args_start,
+                args_len,
             } => {
                 assert_eq!(interner.get(*type_name), "Point");
                 assert_eq!(interner.get(*function), "origin");
+                let args = rir.get_call_args(*args_start, *args_len);
                 assert!(args.is_empty());
             }
             _ => panic!("expected AssocFnCall"),
@@ -1153,7 +1215,12 @@ mod tests {
 
         let (_, inst) = match_inst.unwrap();
         match &inst.data {
-            InstData::Match { arms, .. } => {
+            InstData::Match {
+                arms_start,
+                arms_len,
+                ..
+            } => {
+                let arms = rir.get_match_arms(*arms_start, *arms_len);
                 assert_eq!(arms.len(), 1);
                 assert!(matches!(arms[0].0, RirPattern::Wildcard(_)));
             }
@@ -1182,7 +1249,12 @@ mod tests {
 
         let (_, inst) = match_inst.unwrap();
         match &inst.data {
-            InstData::Match { arms, .. } => {
+            InstData::Match {
+                arms_start,
+                arms_len,
+                ..
+            } => {
+                let arms = rir.get_match_arms(*arms_start, *arms_len);
                 assert_eq!(arms.len(), 3);
                 assert!(matches!(arms[0].0, RirPattern::Int(1, _)));
                 assert!(matches!(arms[1].0, RirPattern::Int(2, _)));
@@ -1213,7 +1285,12 @@ mod tests {
 
         let (_, inst) = match_inst.unwrap();
         match &inst.data {
-            InstData::Match { arms, .. } => {
+            InstData::Match {
+                arms_start,
+                arms_len,
+                ..
+            } => {
+                let arms = rir.get_match_arms(*arms_start, *arms_len);
                 assert_eq!(arms.len(), 3);
                 assert!(matches!(arms[0].0, RirPattern::Int(-5, _)));
                 assert!(matches!(arms[1].0, RirPattern::Int(-10, _)));
@@ -1243,7 +1320,12 @@ mod tests {
 
         let (_, inst) = match_inst.unwrap();
         match &inst.data {
-            InstData::Match { arms, .. } => {
+            InstData::Match {
+                arms_start,
+                arms_len,
+                ..
+            } => {
+                let arms = rir.get_match_arms(*arms_start, *arms_len);
                 assert_eq!(arms.len(), 2);
                 assert!(matches!(arms[0].0, RirPattern::Bool(true, _)));
                 assert!(matches!(arms[1].0, RirPattern::Bool(false, _)));
@@ -1274,7 +1356,12 @@ mod tests {
 
         let (_, inst) = match_inst.unwrap();
         match &inst.data {
-            InstData::Match { arms, .. } => {
+            InstData::Match {
+                arms_start,
+                arms_len,
+                ..
+            } => {
+                let arms = rir.get_match_arms(*arms_start, *arms_len);
                 assert_eq!(arms.len(), 3);
 
                 // Check first arm is Color::Red
@@ -1403,18 +1490,25 @@ mod tests {
 
         let (_, inst) = impl_decl.unwrap();
         match &inst.data {
-            InstData::ImplDecl { methods, .. } => {
+            InstData::ImplDecl {
+                methods_start,
+                methods_len,
+                ..
+            } => {
+                let methods = rir.get_inst_refs(*methods_start, *methods_len);
                 let method_inst = rir.get(methods[0]);
                 match &method_inst.data {
                     InstData::FnDecl {
                         name,
-                        params,
+                        params_start,
+                        params_len,
                         has_self,
                         ..
                     } => {
                         assert_eq!(interner.get(*name), "add");
                         assert!(*has_self);
                         // params should contain 'amount', not 'self'
+                        let params = rir.get_params(*params_start, *params_len);
                         assert_eq!(params.len(), 1);
                         assert_eq!(interner.get(params[0].name), "amount");
                     }

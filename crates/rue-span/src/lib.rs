@@ -100,6 +100,12 @@ impl Span {
         }
     }
 
+    /// Get the start byte offset.
+    #[inline]
+    pub const fn start(&self) -> u32 {
+        self.start
+    }
+
     /// The length of this span in bytes.
     #[inline]
     pub const fn len(&self) -> u32 {
