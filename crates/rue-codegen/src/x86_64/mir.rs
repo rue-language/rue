@@ -87,6 +87,21 @@ impl Reg {
             Reg::R15 => "r15",
         }
     }
+
+    /// Whether this register is callee-saved per the System V AMD64 ABI.
+    ///
+    /// Callee-saved registers must be preserved by the callee; if a function
+    /// uses one of these, it must save and restore the original value.
+    ///
+    /// Callee-saved: RBX, RBP, R12-R15
+    /// Caller-saved: RAX, RCX, RDX, RSI, RDI, R8-R11
+    #[inline]
+    pub const fn is_callee_saved(self) -> bool {
+        matches!(
+            self,
+            Reg::Rbx | Reg::Rbp | Reg::R12 | Reg::R13 | Reg::R14 | Reg::R15
+        )
+    }
 }
 
 impl fmt::Display for Reg {

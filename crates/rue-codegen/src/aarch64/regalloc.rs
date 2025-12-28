@@ -13,19 +13,30 @@ use crate::regalloc::{Allocation, RegAllocDebugInfo, linear_scan, linear_scan_wi
 
 /// Available registers for allocation.
 ///
-/// We use callee-saved registers (X19-X28) for general allocation.
-/// This ensures values survive across function calls.
+/// We use both caller-saved and callee-saved registers to maximize register
+/// availability and minimize spilling. The allocator uses clobber information
+/// from liveness analysis to avoid allocating a vreg to a register that would
+/// be clobbered during its live range (e.g., by function calls).
+///
+/// Caller-saved registers are listed first since they don't require
+/// save/restore in the prologue/epilogue. If a function has no calls,
+/// using only caller-saved registers avoids all callee-save overhead.
 ///
 /// We avoid:
 /// - X0-X7: Argument/return registers
 /// - X8: Indirect result location
-/// - X9-X15: Caller-saved temporaries (but X9 used as scratch)
+/// - X9-X12: Used as scratch registers for spill code
 /// - X16-X17: IP0, IP1 (linker scratch)
 /// - X18: Platform register (reserved on macOS)
 /// - X29 (FP): Frame pointer
 /// - X30 (LR): Link register
 /// - SP: Stack pointer
 const ALLOCATABLE_REGS: &[Reg] = &[
+    // Caller-saved (use first - no save/restore needed if used)
+    Reg::X13,
+    Reg::X14,
+    Reg::X15,
+    // Callee-saved (need save/restore in prologue/epilogue if used)
     Reg::X19,
     Reg::X20,
     Reg::X21,
@@ -109,7 +120,7 @@ impl RegAlloc {
 
     /// Assign physical registers to all virtual registers using linear scan.
     fn assign_registers(&mut self) {
-        let (allocation, num_spills, used_callee_saved) = linear_scan(
+        let (allocation, num_spills, used_regs) = linear_scan(
             self.mir.vreg_count(),
             &self.liveness,
             ALLOCATABLE_REGS,
@@ -117,12 +128,16 @@ impl RegAlloc {
         );
         self.allocation = allocation;
         self.num_spills = num_spills;
-        self.used_callee_saved = used_callee_saved;
+        // Filter to only keep callee-saved registers that need to be preserved
+        self.used_callee_saved = used_regs
+            .into_iter()
+            .filter(|r| r.is_callee_saved())
+            .collect();
     }
 
     /// Assign physical registers and also collect debug information.
     fn assign_registers_with_debug(&mut self) -> RegAllocDebugInfo<Reg> {
-        let (allocation, num_spills, used_callee_saved, debug_info) = linear_scan_with_debug(
+        let (allocation, num_spills, used_regs, debug_info) = linear_scan_with_debug(
             self.mir.vreg_count(),
             &self.liveness,
             ALLOCATABLE_REGS,
@@ -130,7 +145,11 @@ impl RegAlloc {
         );
         self.allocation = allocation;
         self.num_spills = num_spills;
-        self.used_callee_saved = used_callee_saved;
+        // Filter to only keep callee-saved registers that need to be preserved
+        self.used_callee_saved = used_regs
+            .into_iter()
+            .filter(|r| r.is_callee_saved())
+            .collect();
         debug_info
     }
 
@@ -972,9 +991,10 @@ mod tests {
 
         let mir = RegAlloc::new(mir, 0).allocate().unwrap();
 
+        // v0 should be allocated to the first allocatable register
         match &mir.instructions()[0] {
             Aarch64Inst::MovImm { dst, imm } => {
-                assert_eq!(dst, &Operand::Physical(Reg::X19));
+                assert_eq!(dst, &Operand::Physical(ALLOCATABLE_REGS[0]));
                 assert_eq!(*imm, 42);
             }
             _ => panic!("expected MovImm"),
@@ -1007,8 +1027,9 @@ mod tests {
         // This verifies the fix for the scratch register conflict bug.
         let mut mir = Aarch64Mir::new();
 
-        // Create 11 vregs to force spilling (we only have 10 allocatable regs: X19-X28)
-        let vregs: Vec<VReg> = (0..11).map(|_| mir.alloc_vreg()).collect();
+        // Create enough vregs to force at least 1 spill
+        let num_regs = ALLOCATABLE_REGS.len() + 1;
+        let vregs: Vec<VReg> = (0..num_regs).map(|_| mir.alloc_vreg()).collect();
 
         // Define all vregs
         for (i, &vreg) in vregs.iter().enumerate() {
@@ -1021,7 +1042,7 @@ mod tests {
         // Use Msub with the last vreg as destination (likely to be spilled)
         // msub dst, src1, src2, src3 computes: dst = src3 - (src1 * src2)
         mir.push(Aarch64Inst::Msub {
-            dst: Operand::Virtual(vregs[10]),
+            dst: Operand::Virtual(vregs[num_regs - 1]),
             src1: Operand::Virtual(vregs[0]),
             src2: Operand::Virtual(vregs[1]),
             src3: Operand::Virtual(vregs[2]),
@@ -1094,8 +1115,9 @@ mod tests {
         // Test that spilling works correctly when we run out of registers
         let mut mir = Aarch64Mir::new();
 
-        // Create more vregs than available registers (10 allocatable)
-        let vregs: Vec<VReg> = (0..15).map(|_| mir.alloc_vreg()).collect();
+        // Create more vregs than available registers to force at least 5 spills
+        let num_vregs = ALLOCATABLE_REGS.len() + 5;
+        let vregs: Vec<VReg> = (0..num_vregs).map(|_| mir.alloc_vreg()).collect();
 
         // Define all vregs
         for (i, &vreg) in vregs.iter().enumerate() {
@@ -1115,7 +1137,7 @@ mod tests {
 
         let (mir, num_spills, _) = RegAlloc::new(mir, 0).allocate_with_spills().unwrap();
 
-        // With 15 vregs and 10 allocatable registers, we should have spills
+        // We should have at least 5 spills
         assert!(
             num_spills >= 5,
             "Should have at least 5 spills, got {}",
@@ -1152,8 +1174,9 @@ mod tests {
         // Force a spill and verify load/store instructions are inserted
         let mut mir = Aarch64Mir::new();
 
-        // Create 11 vregs to force spilling (10 allocatable regs: X19-X28)
-        let vregs: Vec<VReg> = (0..11).map(|_| mir.alloc_vreg()).collect();
+        // Create enough vregs to force exactly 1 spill
+        let num_regs = ALLOCATABLE_REGS.len() + 1;
+        let vregs: Vec<VReg> = (0..num_regs).map(|_| mir.alloc_vreg()).collect();
 
         for (i, &vreg) in vregs.iter().enumerate() {
             mir.push(Aarch64Inst::MovImm {
@@ -1192,8 +1215,9 @@ mod tests {
         // Force multiple spills and verify they get unique stack offsets
         let mut mir = Aarch64Mir::new();
 
-        // Create 15 vregs to force 5 spills (10 allocatable regs)
-        let vregs: Vec<VReg> = (0..15).map(|_| mir.alloc_vreg()).collect();
+        // Create vregs to force 5 spills
+        let num_regs = ALLOCATABLE_REGS.len() + 5;
+        let vregs: Vec<VReg> = (0..num_regs).map(|_| mir.alloc_vreg()).collect();
 
         for (i, &vreg) in vregs.iter().enumerate() {
             mir.push(Aarch64Inst::MovImm {
@@ -1248,8 +1272,9 @@ mod tests {
         // Test that spills are placed after existing local variables
         let mut mir = Aarch64Mir::new();
 
-        // 11 vregs forces 1 spill
-        let vregs: Vec<VReg> = (0..11).map(|_| mir.alloc_vreg()).collect();
+        // Create vregs to force 1 spill
+        let num_regs = ALLOCATABLE_REGS.len() + 1;
+        let vregs: Vec<VReg> = (0..num_regs).map(|_| mir.alloc_vreg()).collect();
 
         for vreg in &vregs {
             mir.push(Aarch64Inst::MovImm {
@@ -1296,8 +1321,10 @@ mod tests {
         // Test a function with many virtual registers causing a large stack frame
         let mut mir = Aarch64Mir::new();
 
-        // Create 25 vregs (10 registers + 15 spills)
-        let vregs: Vec<VReg> = (0..25).map(|_| mir.alloc_vreg()).collect();
+        // Create vregs to force 15 spills
+        let num_spills_expected = 15;
+        let num_vregs = ALLOCATABLE_REGS.len() + num_spills_expected;
+        let vregs: Vec<VReg> = (0..num_vregs).map(|_| mir.alloc_vreg()).collect();
 
         for (i, &vreg) in vregs.iter().enumerate() {
             mir.push(Aarch64Inst::MovImm {
@@ -1315,7 +1342,7 @@ mod tests {
 
         let (mir, num_spills, _) = RegAlloc::new(mir, 0).allocate_with_spills().unwrap();
 
-        assert_eq!(num_spills, 15);
+        assert_eq!(num_spills, num_spills_expected as u32);
 
         // Verify all virtual registers were replaced with physical
         for inst in mir.instructions() {
@@ -1343,8 +1370,9 @@ mod tests {
         // Test spilling with many existing local variables
         let mut mir = Aarch64Mir::new();
 
-        // 11 vregs forces 1 spill
-        let vregs: Vec<VReg> = (0..11).map(|_| mir.alloc_vreg()).collect();
+        // Create vregs to force 1 spill
+        let num_regs = ALLOCATABLE_REGS.len() + 1;
+        let vregs: Vec<VReg> = (0..num_regs).map(|_| mir.alloc_vreg()).collect();
 
         for vreg in &vregs {
             mir.push(Aarch64Inst::MovImm {
@@ -1385,8 +1413,9 @@ mod tests {
         // Test that ternary operations work correctly when operands are spilled
         let mut mir = Aarch64Mir::new();
 
-        // Create enough vregs to force spilling
-        let vregs: Vec<VReg> = (0..13).map(|_| mir.alloc_vreg()).collect();
+        // Create enough vregs to force at least 3 spills
+        let num_regs = ALLOCATABLE_REGS.len() + 3;
+        let vregs: Vec<VReg> = (0..num_regs).map(|_| mir.alloc_vreg()).collect();
 
         // Initialize all
         for (i, &vreg) in vregs.iter().enumerate() {
@@ -1399,8 +1428,8 @@ mod tests {
         // Add using potentially spilled operands
         mir.push(Aarch64Inst::AddRR {
             dst: Operand::Virtual(vregs[0]),
-            src1: Operand::Virtual(vregs[11]),
-            src2: Operand::Virtual(vregs[12]),
+            src1: Operand::Virtual(vregs[num_regs - 2]),
+            src2: Operand::Virtual(vregs[num_regs - 1]),
         });
 
         // Use all to keep them live

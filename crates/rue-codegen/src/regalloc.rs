@@ -548,10 +548,10 @@ fn linear_scan_impl<Reg: Copy + Eq + std::hash::Hash>(
         // Find registers currently in use
         let used_regs: HashSet<Reg> = active.iter().map(|&(_, reg, _)| reg).collect();
 
-        // Try to find a free register
+        // Try to find a free register that isn't clobbered during this vreg's live range
         let mut allocated_reg = None;
         for &reg in allocatable_regs {
-            if !used_regs.contains(&reg) {
+            if !used_regs.contains(&reg) && !liveness.is_clobbered_during(vreg, reg) {
                 allocated_reg = Some(reg);
                 break;
             }
