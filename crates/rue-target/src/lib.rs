@@ -368,4 +368,20 @@ mod tests {
     fn test_default_returns_host() {
         assert_eq!(Target::default(), Target::host());
     }
+
+    #[test]
+    fn test_display_from_str_round_trip() {
+        // Verify that Display and FromStr are inverses for all targets
+        for target in Target::all() {
+            let displayed = target.to_string();
+            let parsed: Target = displayed
+                .parse()
+                .expect("Display output should be parseable");
+            assert_eq!(
+                *target, parsed,
+                "Round-trip failed for {}: displayed as '{}', parsed back as {:?}",
+                target, displayed, parsed
+            );
+        }
+    }
 }
