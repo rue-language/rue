@@ -33,7 +33,7 @@ use std::fmt;
 /// - Require explicit opt-in via `--preview <feature>`
 /// - Allow incremental implementation to be merged to main
 ///
-/// See ADR-005 for the full design.
+/// See ADR-0005 for the full design.
 ///
 /// When all preview features are stabilized, this enum may be empty.
 /// New preview features are added here as development begins.
@@ -70,7 +70,7 @@ impl PreviewFeature {
     #[allow(unreachable_code)]
     pub fn adr(&self) -> &'static str {
         match *self {
-            PreviewFeature::TestInfra => "ADR-005",
+            PreviewFeature::TestInfra => "ADR-0005",
         }
     }
 
@@ -1275,7 +1275,7 @@ mod tests {
         let feature: PreviewFeature = "test_infra".parse().unwrap();
         assert_eq!(feature, PreviewFeature::TestInfra);
         assert_eq!(feature.name(), "test_infra");
-        assert_eq!(feature.adr(), "ADR-005");
+        assert_eq!(feature.adr(), "ADR-0005");
     }
 
     #[test]
