@@ -908,10 +908,9 @@ pub fn generate_emitted_asm(
             Ok(asm)
         }
         Arch::Aarch64 => {
-            // For now, fall back to MIR formatting for aarch64
-            // TODO: Implement emit_all for aarch64 in Phase 2
-            let mir = generate_allocated_mir(cfg, struct_defs, array_types, strings, target)?;
-            Ok(mir.format_assembly())
+            let (_machine_code, asm) =
+                rue_codegen::aarch64::generate_with_asm(cfg, struct_defs, array_types, strings)?;
+            Ok(asm)
         }
     }
 }
