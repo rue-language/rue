@@ -7,6 +7,7 @@ mod logos_lexer;
 
 pub use logos_lexer::LogosLexer as Lexer;
 pub use rue_intern::{Interner, Symbol};
+pub use rue_span::FileId;
 use rue_span::Span;
 
 /// Token kinds in the Rue language.

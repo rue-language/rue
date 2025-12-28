@@ -3,12 +3,40 @@
 //! This crate provides the fundamental types for tracking source locations
 //! throughout the compilation pipeline.
 
+/// A file identifier used to track which source file a span belongs to.
+///
+/// File IDs are indices into a file table maintained by the compiler.
+/// `FileId(0)` is reserved as the default/unknown file.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Hash)]
+pub struct FileId(pub u32);
+
+impl FileId {
+    /// The default file ID, used for single-file compilation or when
+    /// the file is unknown.
+    pub const DEFAULT: FileId = FileId(0);
+
+    /// Create a new file ID from an index.
+    #[inline]
+    pub const fn new(id: u32) -> Self {
+        Self(id)
+    }
+
+    /// Get the raw index value.
+    #[inline]
+    pub const fn index(self) -> u32 {
+        self.0
+    }
+}
+
 /// A span representing a range in the source code.
 ///
-/// Spans use byte offsets into the source string. They are designed to be
-/// small (8 bytes) and cheap to copy.
+/// Spans use byte offsets into the source string and include a file identifier
+/// for multi-file compilation. They are designed to be small (12 bytes) and
+/// cheap to copy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Hash)]
 pub struct Span {
+    /// The file this span belongs to
+    pub file_id: FileId,
     /// Start byte offset (inclusive)
     pub start: u32,
     /// End byte offset (exclusive)
@@ -17,24 +45,56 @@ pub struct Span {
 
 impl Span {
     /// Create a new span from start and end byte offsets.
+    ///
+    /// Uses the default file ID. For multi-file compilation, use `with_file`.
     #[inline]
     pub const fn new(start: u32, end: u32) -> Self {
-        Self { start, end }
+        Self {
+            file_id: FileId::DEFAULT,
+            start,
+            end,
+        }
+    }
+
+    /// Create a new span with a specific file ID.
+    #[inline]
+    pub const fn with_file(file_id: FileId, start: u32, end: u32) -> Self {
+        Self {
+            file_id,
+            start,
+            end,
+        }
     }
 
     /// Create an empty span at a single position.
+    ///
+    /// Uses the default file ID. For multi-file compilation, use `point_in_file`.
     #[inline]
     pub const fn point(pos: u32) -> Self {
         Self {
+            file_id: FileId::DEFAULT,
+            start: pos,
+            end: pos,
+        }
+    }
+
+    /// Create an empty span at a single position in a specific file.
+    #[inline]
+    pub const fn point_in_file(file_id: FileId, pos: u32) -> Self {
+        Self {
+            file_id,
             start: pos,
             end: pos,
         }
     }
 
     /// Create a span covering two spans (from start of first to end of second).
+    ///
+    /// Uses the file ID from span `a`. Both spans should be from the same file.
     #[inline]
     pub const fn cover(a: Span, b: Span) -> Self {
         Self {
+            file_id: a.file_id,
             start: if a.start < b.start { a.start } else { b.start },
             end: if a.end > b.end { a.end } else { b.end },
         }
@@ -309,6 +369,7 @@ impl From<std::ops::Range<usize>> for Span {
     #[inline]
     fn from(range: std::ops::Range<usize>) -> Self {
         Self {
+            file_id: FileId::DEFAULT,
             start: range.start as u32,
             end: range.end as u32,
         }
@@ -319,6 +380,7 @@ impl From<std::ops::Range<u32>> for Span {
     #[inline]
     fn from(range: std::ops::Range<u32>) -> Self {
         Self {
+            file_id: FileId::DEFAULT,
             start: range.start,
             end: range.end,
         }
@@ -331,8 +393,43 @@ mod tests {
 
     #[test]
     fn test_span_size() {
-        // Ensure Span stays small
-        assert_eq!(std::mem::size_of::<Span>(), 8);
+        // Ensure Span stays small (12 bytes with file_id)
+        assert_eq!(std::mem::size_of::<Span>(), 12);
+    }
+
+    #[test]
+    fn test_file_id() {
+        assert_eq!(FileId::DEFAULT.index(), 0);
+        assert_eq!(FileId::new(42).index(), 42);
+    }
+
+    #[test]
+    fn test_span_with_file() {
+        let file = FileId::new(5);
+        let span = Span::with_file(file, 10, 20);
+        assert_eq!(span.file_id, file);
+        assert_eq!(span.start, 10);
+        assert_eq!(span.end, 20);
+    }
+
+    #[test]
+    fn test_span_point_in_file() {
+        let file = FileId::new(3);
+        let span = Span::point_in_file(file, 15);
+        assert_eq!(span.file_id, file);
+        assert_eq!(span.start, 15);
+        assert_eq!(span.end, 15);
+    }
+
+    #[test]
+    fn test_span_cover_preserves_file_id() {
+        let file = FileId::new(7);
+        let a = Span::with_file(file, 5, 10);
+        let b = Span::with_file(file, 15, 20);
+        let covered = Span::cover(a, b);
+        assert_eq!(covered.file_id, file);
+        assert_eq!(covered.start, 5);
+        assert_eq!(covered.end, 20);
     }
 
     #[test]

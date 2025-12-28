@@ -6,7 +6,7 @@
 use logos::Logos;
 use rue_error::{CompileError, CompileResult, ErrorKind};
 use rue_intern::{Interner, Symbol};
-use rue_span::Span;
+use rue_span::{FileId, Span};
 
 /// Error type for lexing failures.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -331,20 +331,46 @@ impl From<LogosTokenKind> for TokenKind {
 pub struct LogosLexer<'a> {
     source: &'a str,
     interner: Interner,
+    file_id: FileId,
 }
 
 impl<'a> LogosLexer<'a> {
     /// Create a new lexer for the given source text with a fresh interner.
+    ///
+    /// Uses the default file ID. For multi-file compilation, use `with_file_id`.
     pub fn new(source: &'a str) -> Self {
         Self {
             source,
             interner: Interner::new(),
+            file_id: FileId::DEFAULT,
         }
     }
 
     /// Create a new lexer with an existing interner.
     pub fn with_interner(source: &'a str, interner: Interner) -> Self {
-        Self { source, interner }
+        Self {
+            source,
+            interner,
+            file_id: FileId::DEFAULT,
+        }
+    }
+
+    /// Create a new lexer with a specific file ID.
+    pub fn with_file_id(source: &'a str, file_id: FileId) -> Self {
+        Self {
+            source,
+            interner: Interner::new(),
+            file_id,
+        }
+    }
+
+    /// Create a new lexer with both an existing interner and a specific file ID.
+    pub fn with_interner_and_file_id(source: &'a str, interner: Interner, file_id: FileId) -> Self {
+        Self {
+            source,
+            interner,
+            file_id,
+        }
     }
 
     /// Tokenize the entire source, returning all tokens and the interner.
@@ -355,7 +381,6 @@ impl<'a> LogosLexer<'a> {
         let mut lexer = LogosTokenKind::lexer_with_extras(self.source, self.interner);
 
         loop {
-            let span_start = lexer.span().end;
             match lexer.next() {
                 Some(result) => {
                     let span = lexer.span();
@@ -363,11 +388,16 @@ impl<'a> LogosLexer<'a> {
                         Ok(logos_kind) => {
                             tokens.push(Token {
                                 kind: logos_kind.into(),
-                                span: Span::new(span.start as u32, span.end as u32),
+                                span: Span::with_file(
+                                    self.file_id,
+                                    span.start as u32,
+                                    span.end as u32,
+                                ),
                             });
                         }
                         Err(lex_error) => {
-                            let rue_span = Span::new(span.start as u32, span.end as u32);
+                            let rue_span =
+                                Span::with_file(self.file_id, span.start as u32, span.end as u32);
                             let slice = lexer.slice();
                             let error_char = slice.chars().next().unwrap_or('?');
                             let kind = match lex_error {
@@ -397,7 +427,7 @@ impl<'a> LogosLexer<'a> {
         let eof_pos = self.source.len() as u32;
         tokens.push(Token {
             kind: TokenKind::Eof,
-            span: Span::point(eof_pos),
+            span: Span::point_in_file(self.file_id, eof_pos),
         });
 
         // Extract the interner from the logos lexer
