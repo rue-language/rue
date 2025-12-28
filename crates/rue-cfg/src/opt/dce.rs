@@ -22,9 +22,53 @@
 //! - Drop instructions (run destructors)
 //! - StorageLive, StorageDead (affect stack allocation)
 
-use std::collections::HashSet;
-
 use crate::{BlockId, Cfg, CfgInstData, CfgValue, Terminator};
+
+/// A simple bitset for tracking indices.
+///
+/// This is more efficient than `HashSet<u32>` for dense, small sets because:
+/// - No hashing overhead for insert/contains
+/// - Better cache locality (bit-packed storage)
+/// - Constant-time operations
+struct BitSet {
+    bits: Vec<u64>,
+}
+
+impl BitSet {
+    /// Create a new bitset with capacity for at least `capacity` elements.
+    fn with_capacity(capacity: usize) -> Self {
+        let num_words = (capacity + 63) / 64;
+        Self {
+            bits: vec![0; num_words],
+        }
+    }
+
+    /// Insert an index into the set. Returns true if it was newly inserted.
+    #[inline]
+    fn insert(&mut self, index: u32) -> bool {
+        let word_index = (index / 64) as usize;
+        let bit_index = index % 64;
+        let mask = 1u64 << bit_index;
+
+        if word_index >= self.bits.len() {
+            // Grow if needed (shouldn't happen with proper capacity)
+            self.bits.resize(word_index + 1, 0);
+        }
+
+        let was_set = self.bits[word_index] & mask != 0;
+        self.bits[word_index] |= mask;
+        !was_set
+    }
+
+    /// Check if an index is in the set.
+    #[inline]
+    fn contains(&self, index: u32) -> bool {
+        let word_index = (index / 64) as usize;
+        let bit_index = index % 64;
+
+        word_index < self.bits.len() && (self.bits[word_index] & (1u64 << bit_index)) != 0
+    }
+}
 
 /// Run dead code elimination on the CFG.
 ///
@@ -47,15 +91,15 @@ pub fn run(cfg: &mut Cfg) {
 /// - It has side effects, or
 /// - It's used by a terminator, or
 /// - It's used by another live value
-fn compute_live_values(cfg: &Cfg) -> HashSet<CfgValue> {
-    let mut live = HashSet::new();
+fn compute_live_values(cfg: &Cfg) -> BitSet {
+    let mut live = BitSet::with_capacity(cfg.value_count());
     let mut worklist = Vec::new();
 
     // Pass 1: Mark all side-effecting instructions as live
     for i in 0..cfg.value_count() {
         let value = CfgValue::from_raw(i as u32);
         if has_side_effects(cfg, value) {
-            if live.insert(value) {
+            if live.insert(value.as_u32()) {
                 worklist.push(value);
             }
         }
@@ -64,13 +108,13 @@ fn compute_live_values(cfg: &Cfg) -> HashSet<CfgValue> {
     // Pass 2: Mark all values used by terminators as live
     for block in cfg.blocks() {
         for value in terminator_uses(&block.terminator) {
-            if live.insert(value) {
+            if live.insert(value.as_u32()) {
                 worklist.push(value);
             }
         }
         // Block parameters are also live if the block is reachable
         for (param_val, _) in &block.params {
-            if live.insert(*param_val) {
+            if live.insert(param_val.as_u32()) {
                 worklist.push(*param_val);
             }
         }
@@ -79,7 +123,7 @@ fn compute_live_values(cfg: &Cfg) -> HashSet<CfgValue> {
     // Pass 3: Transitively mark all values used by live instructions
     while let Some(value) = worklist.pop() {
         for used_value in instruction_uses(cfg, value) {
-            if live.insert(used_value) {
+            if live.insert(used_value.as_u32()) {
                 worklist.push(used_value);
             }
         }
@@ -235,14 +279,14 @@ fn instruction_uses(cfg: &Cfg, value: CfgValue) -> Vec<CfgValue> {
 /// instructions. Dead instructions are removed from the block's instruction
 /// list but remain in the CFG's value pool (as they may still be referenced
 /// by live instructions through their operands).
-fn eliminate_dead_instructions(cfg: &mut Cfg, live: &HashSet<CfgValue>) {
+fn eliminate_dead_instructions(cfg: &mut Cfg, live: &BitSet) {
     // Collect block IDs to avoid borrow issues
     let block_ids: Vec<BlockId> = cfg.block_ids().collect();
 
     for block_id in block_ids {
         let block = cfg.get_block_mut(block_id);
         // Retain only live instructions in this block
-        block.insts.retain(|value| live.contains(value));
+        block.insts.retain(|value| live.contains(value.as_u32()));
     }
 }
 
@@ -259,7 +303,7 @@ fn eliminate_unreachable_blocks(cfg: &mut Cfg) {
     // Instead, we mark unreachable blocks with Unreachable terminator
     // and empty their instruction lists.
     for block_id in block_ids {
-        if block_id != cfg.entry && !reachable.contains(&block_id) {
+        if block_id != cfg.entry && !reachable.contains(block_id.as_u32()) {
             let block = cfg.get_block_mut(block_id);
             block.insts.clear();
             block.terminator = Terminator::Unreachable;
@@ -268,12 +312,12 @@ fn eliminate_unreachable_blocks(cfg: &mut Cfg) {
 }
 
 /// Compute the set of blocks reachable from the entry block.
-fn compute_reachable_blocks(cfg: &Cfg) -> HashSet<BlockId> {
-    let mut reachable = HashSet::new();
+fn compute_reachable_blocks(cfg: &Cfg) -> BitSet {
+    let mut reachable = BitSet::with_capacity(cfg.block_count());
     let mut worklist = vec![cfg.entry];
 
     while let Some(block_id) = worklist.pop() {
-        if !reachable.insert(block_id) {
+        if !reachable.insert(block_id.as_u32()) {
             continue;
         }
 
