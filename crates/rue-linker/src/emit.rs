@@ -591,30 +591,12 @@ impl ObjectBuilder {
             align_up(text_offset + text_size, 4)
         };
 
-        // Separate relocations by type
-        let mut text_relocs: Vec<&CodeRelocation> = Vec::new();
-        let mut rodata_relocs: Vec<&CodeRelocation> = Vec::new();
-
-        for reloc in &self.relocations {
-            // Check if this is a string relocation
-            // String relocations use .rodata.strN format (possibly with @PAGE/@PAGEOFF suffix)
-            if reloc.symbol.starts_with(".rodata.str") {
-                // String relocations go in text section (they're PC-relative loads)
-                text_relocs.push(reloc);
-            } else {
-                text_relocs.push(reloc);
-            }
-        }
-
+        // Collect text section relocations
+        // Note: All relocations (including string constant refs) are in the text section
+        // because they're PC-relative loads from code. The rodata section contains only
+        // raw string data with no relocations.
+        let text_relocs: Vec<&CodeRelocation> = self.relocations.iter().collect();
         let num_text_relocs = text_relocs.len();
-        let num_rodata_relocs = rodata_relocs.len();
-
-        // Rodata relocations follow text relocations (if present)
-        let rodata_reloc_offset = if has_rodata && num_rodata_relocs > 0 {
-            align_up(text_reloc_offset + (num_text_relocs * RELOC_SIZE), 4)
-        } else {
-            0
-        };
 
         // On macOS, all external C symbols get a leading underscore prefix.
         // This applies to ALL symbols, regardless of their original name.
@@ -659,13 +641,8 @@ impl ObjectBuilder {
             }
         }
 
-        // Symbol table follows all relocations
-        let last_reloc_end = if has_rodata && num_rodata_relocs > 0 {
-            rodata_reloc_offset + (num_rodata_relocs * RELOC_SIZE)
-        } else {
-            text_reloc_offset + (num_text_relocs * RELOC_SIZE)
-        };
-        let symtab_offset = align_up(last_reloc_end, 4);
+        // Symbol table follows text relocations
+        let symtab_offset = align_up(text_reloc_offset + (num_text_relocs * RELOC_SIZE), 4);
 
         // In Mach-O, local symbols come first, then external symbols
         // Local symbols: string constants (non-external)
@@ -750,13 +727,8 @@ impl ObjectBuilder {
             macho.extend_from_slice(&(rodata_size as u64).to_le_bytes()); // size
             macho.extend_from_slice(&(rodata_offset as u32).to_le_bytes()); // offset
             macho.extend_from_slice(&3_u32.to_le_bytes()); // align (2^3 = 8 byte alignment)
-            if num_rodata_relocs > 0 {
-                macho.extend_from_slice(&(rodata_reloc_offset as u32).to_le_bytes()); // reloff
-                macho.extend_from_slice(&(num_rodata_relocs as u32).to_le_bytes()); // nreloc
-            } else {
-                macho.extend_from_slice(&0_u32.to_le_bytes()); // reloff
-                macho.extend_from_slice(&0_u32.to_le_bytes()); // nreloc
-            }
+            macho.extend_from_slice(&0_u32.to_le_bytes()); // reloff (rodata has no relocations)
+            macho.extend_from_slice(&0_u32.to_le_bytes()); // nreloc
             macho.extend_from_slice(&0_u32.to_le_bytes()); // flags (regular data)
             macho.extend_from_slice(&0_u32.to_le_bytes()); // reserved1
             macho.extend_from_slice(&0_u32.to_le_bytes()); // reserved2
@@ -854,15 +826,6 @@ impl ObjectBuilder {
                 | ((is_extern as u32) << 27)  // r_extern (bit 27)
                 | (r_type << 28); // r_type (bits 28-31)
             macho.extend_from_slice(&info.to_le_bytes());
-        }
-
-        // === Rodata Relocations (if any) ===
-        if has_rodata && num_rodata_relocs > 0 {
-            while macho.len() < rodata_reloc_offset {
-                macho.push(0);
-            }
-            // Rodata relocations would go here if needed
-            // For now, string constants are just raw bytes with no relocations in rodata itself
         }
 
         // === Symbol Table ===
