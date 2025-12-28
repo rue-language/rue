@@ -545,137 +545,107 @@ impl<'a, 'b> RirPrinter<'a, 'b> {
         Self { rir, interner }
     }
 
+    /// Format a call argument with its mode prefix.
+    fn format_call_arg(arg: &RirCallArg) -> String {
+        match arg.mode {
+            RirArgMode::Inout => format!("inout {}", arg.value),
+            RirArgMode::Borrow => format!("borrow {}", arg.value),
+            RirArgMode::Normal => format!("{}", arg.value),
+        }
+    }
+
+    /// Format a list of call arguments.
+    fn format_call_args(args: &[RirCallArg]) -> String {
+        args.iter()
+            .map(Self::format_call_arg)
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+
+    /// Format a pattern for printing.
+    fn format_pattern(&self, pat: &RirPattern) -> String {
+        match pat {
+            RirPattern::Wildcard(_) => "_".to_string(),
+            RirPattern::Int(n, _) => n.to_string(),
+            RirPattern::Bool(b, _) => b.to_string(),
+            RirPattern::Path {
+                type_name, variant, ..
+            } => {
+                format!(
+                    "{}::{}",
+                    self.interner.get(*type_name),
+                    self.interner.get(*variant)
+                )
+            }
+        }
+    }
+
     /// Format the RIR as a string.
     pub fn to_string(&self) -> String {
+        use std::fmt::Write;
+
         let mut out = String::new();
         for (inst_ref, inst) in self.rir.iter() {
-            out.push_str(&format!("{} = ", inst_ref));
+            write!(out, "{} = ", inst_ref).unwrap();
             match &inst.data {
-                InstData::IntConst(v) => {
-                    out.push_str(&format!("const {}\n", v));
-                }
-                InstData::BoolConst(v) => {
-                    out.push_str(&format!("const {}\n", v));
-                }
+                // Constants
+                InstData::IntConst(v) => writeln!(out, "const {}", v).unwrap(),
+                InstData::BoolConst(v) => writeln!(out, "const {}", v).unwrap(),
                 InstData::StringConst(s) => {
-                    out.push_str(&format!("const {:?}\n", self.interner.get(*s)));
+                    writeln!(out, "const {:?}", self.interner.get(*s)).unwrap()
                 }
-                InstData::UnitConst => {
-                    out.push_str("const ()\n");
-                }
-                InstData::Add { lhs, rhs } => {
-                    out.push_str(&format!("add {}, {}\n", lhs, rhs));
-                }
-                InstData::Sub { lhs, rhs } => {
-                    out.push_str(&format!("sub {}, {}\n", lhs, rhs));
-                }
-                InstData::Mul { lhs, rhs } => {
-                    out.push_str(&format!("mul {}, {}\n", lhs, rhs));
-                }
-                InstData::Div { lhs, rhs } => {
-                    out.push_str(&format!("div {}, {}\n", lhs, rhs));
-                }
-                InstData::Mod { lhs, rhs } => {
-                    out.push_str(&format!("mod {}, {}\n", lhs, rhs));
-                }
-                InstData::Eq { lhs, rhs } => {
-                    out.push_str(&format!("eq {}, {}\n", lhs, rhs));
-                }
-                InstData::Ne { lhs, rhs } => {
-                    out.push_str(&format!("ne {}, {}\n", lhs, rhs));
-                }
-                InstData::Lt { lhs, rhs } => {
-                    out.push_str(&format!("lt {}, {}\n", lhs, rhs));
-                }
-                InstData::Gt { lhs, rhs } => {
-                    out.push_str(&format!("gt {}, {}\n", lhs, rhs));
-                }
-                InstData::Le { lhs, rhs } => {
-                    out.push_str(&format!("le {}, {}\n", lhs, rhs));
-                }
-                InstData::Ge { lhs, rhs } => {
-                    out.push_str(&format!("ge {}, {}\n", lhs, rhs));
-                }
-                InstData::And { lhs, rhs } => {
-                    out.push_str(&format!("and {}, {}\n", lhs, rhs));
-                }
-                InstData::Or { lhs, rhs } => {
-                    out.push_str(&format!("or {}, {}\n", lhs, rhs));
-                }
-                InstData::BitAnd { lhs, rhs } => {
-                    out.push_str(&format!("bit_and {}, {}\n", lhs, rhs));
-                }
-                InstData::BitOr { lhs, rhs } => {
-                    out.push_str(&format!("bit_or {}, {}\n", lhs, rhs));
-                }
-                InstData::BitXor { lhs, rhs } => {
-                    out.push_str(&format!("bit_xor {}, {}\n", lhs, rhs));
-                }
-                InstData::Shl { lhs, rhs } => {
-                    out.push_str(&format!("shl {}, {}\n", lhs, rhs));
-                }
-                InstData::Shr { lhs, rhs } => {
-                    out.push_str(&format!("shr {}, {}\n", lhs, rhs));
-                }
-                InstData::Neg { operand } => {
-                    out.push_str(&format!("neg {}\n", operand));
-                }
-                InstData::Not { operand } => {
-                    out.push_str(&format!("not {}\n", operand));
-                }
-                InstData::BitNot { operand } => {
-                    out.push_str(&format!("bit_not {}\n", operand));
-                }
+                InstData::UnitConst => writeln!(out, "const ()").unwrap(),
+
+                // Binary operations
+                InstData::Add { lhs, rhs } => writeln!(out, "add {}, {}", lhs, rhs).unwrap(),
+                InstData::Sub { lhs, rhs } => writeln!(out, "sub {}, {}", lhs, rhs).unwrap(),
+                InstData::Mul { lhs, rhs } => writeln!(out, "mul {}, {}", lhs, rhs).unwrap(),
+                InstData::Div { lhs, rhs } => writeln!(out, "div {}, {}", lhs, rhs).unwrap(),
+                InstData::Mod { lhs, rhs } => writeln!(out, "mod {}, {}", lhs, rhs).unwrap(),
+                InstData::Eq { lhs, rhs } => writeln!(out, "eq {}, {}", lhs, rhs).unwrap(),
+                InstData::Ne { lhs, rhs } => writeln!(out, "ne {}, {}", lhs, rhs).unwrap(),
+                InstData::Lt { lhs, rhs } => writeln!(out, "lt {}, {}", lhs, rhs).unwrap(),
+                InstData::Gt { lhs, rhs } => writeln!(out, "gt {}, {}", lhs, rhs).unwrap(),
+                InstData::Le { lhs, rhs } => writeln!(out, "le {}, {}", lhs, rhs).unwrap(),
+                InstData::Ge { lhs, rhs } => writeln!(out, "ge {}, {}", lhs, rhs).unwrap(),
+                InstData::And { lhs, rhs } => writeln!(out, "and {}, {}", lhs, rhs).unwrap(),
+                InstData::Or { lhs, rhs } => writeln!(out, "or {}, {}", lhs, rhs).unwrap(),
+                InstData::BitAnd { lhs, rhs } => writeln!(out, "bit_and {}, {}", lhs, rhs).unwrap(),
+                InstData::BitOr { lhs, rhs } => writeln!(out, "bit_or {}, {}", lhs, rhs).unwrap(),
+                InstData::BitXor { lhs, rhs } => writeln!(out, "bit_xor {}, {}", lhs, rhs).unwrap(),
+                InstData::Shl { lhs, rhs } => writeln!(out, "shl {}, {}", lhs, rhs).unwrap(),
+                InstData::Shr { lhs, rhs } => writeln!(out, "shr {}, {}", lhs, rhs).unwrap(),
+
+                // Unary operations
+                InstData::Neg { operand } => writeln!(out, "neg {}", operand).unwrap(),
+                InstData::Not { operand } => writeln!(out, "not {}", operand).unwrap(),
+                InstData::BitNot { operand } => writeln!(out, "bit_not {}", operand).unwrap(),
+
+                // Control flow
                 InstData::Branch {
                     cond,
                     then_block,
                     else_block,
                 } => {
                     if let Some(else_b) = else_block {
-                        out.push_str(&format!("branch {}, {}, {}\n", cond, then_block, else_b));
+                        writeln!(out, "branch {}, {}, {}", cond, then_block, else_b).unwrap();
                     } else {
-                        out.push_str(&format!("branch {}, {}\n", cond, then_block));
+                        writeln!(out, "branch {}, {}", cond, then_block).unwrap();
                     }
                 }
-                InstData::Loop { cond, body } => {
-                    out.push_str(&format!("loop {}, {}\n", cond, body));
-                }
-                InstData::InfiniteLoop { body } => {
-                    out.push_str(&format!("infinite_loop {}\n", body));
-                }
+                InstData::Loop { cond, body } => writeln!(out, "loop {}, {}", cond, body).unwrap(),
+                InstData::InfiniteLoop { body } => writeln!(out, "infinite_loop {}", body).unwrap(),
                 InstData::Match { scrutinee, arms } => {
                     let arms_str: Vec<String> = arms
                         .iter()
-                        .map(|(pat, body)| {
-                            let pat_str = match pat {
-                                RirPattern::Wildcard(_) => "_".to_string(),
-                                RirPattern::Int(n, _) => n.to_string(),
-                                RirPattern::Bool(b, _) => b.to_string(),
-                                RirPattern::Path {
-                                    type_name, variant, ..
-                                } => {
-                                    format!(
-                                        "{}::{}",
-                                        self.interner.get(*type_name),
-                                        self.interner.get(*variant)
-                                    )
-                                }
-                            };
-                            format!("{} => {}", pat_str, body)
-                        })
+                        .map(|(pat, body)| format!("{} => {}", self.format_pattern(pat), body))
                         .collect();
-                    out.push_str(&format!(
-                        "match {} {{ {} }}\n",
-                        scrutinee,
-                        arms_str.join(", ")
-                    ));
+                    writeln!(out, "match {} {{ {} }}", scrutinee, arms_str.join(", ")).unwrap();
                 }
-                InstData::Break => {
-                    out.push_str("break\n");
-                }
-                InstData::Continue => {
-                    out.push_str("continue\n");
-                }
+                InstData::Break => writeln!(out, "break").unwrap(),
+                InstData::Continue => writeln!(out, "continue").unwrap(),
+
+                // Functions
                 InstData::FnDecl {
                     directives: _,
                     name,
@@ -703,56 +673,47 @@ impl<'a, 'b> RirPrinter<'a, 'b> {
                             )
                         })
                         .collect();
-                    out.push_str(&format!(
-                        "fn {}({}{}) -> {} {{\n",
+                    writeln!(
+                        out,
+                        "fn {}({}{}) -> {} {{",
                         name_str,
                         self_str,
                         params_str.join(", "),
                         ret_str
-                    ));
-                    out.push_str(&format!("    {}\n", body));
-                    out.push_str("}\n");
+                    )
+                    .unwrap();
+                    writeln!(out, "    {}", body).unwrap();
+                    writeln!(out, "}}").unwrap();
                 }
                 InstData::Ret(inner) => {
                     if let Some(inner) = inner {
-                        out.push_str(&format!("ret {}\n", inner));
+                        writeln!(out, "ret {}", inner).unwrap();
                     } else {
-                        out.push_str("ret\n");
+                        writeln!(out, "ret").unwrap();
                     }
                 }
                 InstData::Call { name, args } => {
                     let name_str = self.interner.get(*name);
-                    let args_str: Vec<String> = args
-                        .iter()
-                        .map(|a| match a.mode {
-                            RirArgMode::Inout => format!("inout {}", a.value),
-                            RirArgMode::Borrow => format!("borrow {}", a.value),
-                            RirArgMode::Normal => format!("{}", a.value),
-                        })
-                        .collect();
-                    out.push_str(&format!("call {}({})\n", name_str, args_str.join(", ")));
+                    writeln!(out, "call {}({})", name_str, Self::format_call_args(args)).unwrap();
                 }
                 InstData::Intrinsic { name, args } => {
                     let name_str = self.interner.get(*name);
                     let args_str: Vec<String> = args.iter().map(|a| format!("{}", a)).collect();
-                    out.push_str(&format!(
-                        "intrinsic @{}({})\n",
-                        name_str,
-                        args_str.join(", ")
-                    ));
+                    writeln!(out, "intrinsic @{}({})", name_str, args_str.join(", ")).unwrap();
                 }
                 InstData::TypeIntrinsic { name, type_arg } => {
                     let name_str = self.interner.get(*name);
                     let type_str = self.interner.get(*type_arg);
-                    out.push_str(&format!("type_intrinsic @{}({})\n", name_str, type_str));
+                    writeln!(out, "type_intrinsic @{}({})", name_str, type_str).unwrap();
                 }
                 InstData::ParamRef { index, name } => {
-                    let name_str = self.interner.get(*name);
-                    out.push_str(&format!("param {} ({})\n", index, name_str));
+                    writeln!(out, "param {} ({})", index, self.interner.get(*name)).unwrap();
                 }
                 InstData::Block { extra_start, len } => {
-                    out.push_str(&format!("block({}, {})\n", extra_start, len));
+                    writeln!(out, "block({}, {})", extra_start, len).unwrap();
                 }
+
+                // Variables
                 InstData::Alloc {
                     directives: _,
                     name,
@@ -767,19 +728,16 @@ impl<'a, 'b> RirPrinter<'a, 'b> {
                     let ty_str = ty
                         .map(|t| format!(": {}", self.interner.get(t)))
                         .unwrap_or_default();
-                    out.push_str(&format!(
-                        "alloc {}{}{}= {}\n",
-                        mut_str, name_str, ty_str, init
-                    ));
+                    writeln!(out, "alloc {}{}{}= {}", mut_str, name_str, ty_str, init).unwrap();
                 }
                 InstData::VarRef { name } => {
-                    let name_str = self.interner.get(*name);
-                    out.push_str(&format!("var_ref {}\n", name_str));
+                    writeln!(out, "var_ref {}", self.interner.get(*name)).unwrap();
                 }
                 InstData::Assign { name, value } => {
-                    let name_str = self.interner.get(*name);
-                    out.push_str(&format!("assign {} = {}\n", name_str, value));
+                    writeln!(out, "assign {} = {}", self.interner.get(*name), value).unwrap();
                 }
+
+                // Structs
                 InstData::StructDecl {
                     directives,
                     name,
@@ -796,7 +754,6 @@ impl<'a, 'b> RirPrinter<'a, 'b> {
                             )
                         })
                         .collect();
-                    // Format directives
                     let directives_str = if directives.is_empty() {
                         String::new()
                     } else {
@@ -806,12 +763,14 @@ impl<'a, 'b> RirPrinter<'a, 'b> {
                             .collect();
                         format!("{} ", dir_names.join(" "))
                     };
-                    out.push_str(&format!(
-                        "{}struct {} {{ {} }}\n",
+                    writeln!(
+                        out,
+                        "{}struct {} {{ {} }}",
                         directives_str,
                         name_str,
                         fields_str.join(", ")
-                    ));
+                    )
+                    .unwrap();
                 }
                 InstData::StructInit { type_name, fields } => {
                     let type_str = self.interner.get(*type_name);
@@ -819,106 +778,101 @@ impl<'a, 'b> RirPrinter<'a, 'b> {
                         .iter()
                         .map(|(fname, value)| format!("{}: {}", self.interner.get(*fname), value))
                         .collect();
-                    out.push_str(&format!(
-                        "struct_init {} {{ {} }}\n",
+                    writeln!(
+                        out,
+                        "struct_init {} {{ {} }}",
                         type_str,
                         fields_str.join(", ")
-                    ));
+                    )
+                    .unwrap();
                 }
                 InstData::FieldGet { base, field } => {
-                    let field_str = self.interner.get(*field);
-                    out.push_str(&format!("field_get {}.{}\n", base, field_str));
+                    writeln!(out, "field_get {}.{}", base, self.interner.get(*field)).unwrap();
                 }
                 InstData::FieldSet { base, field, value } => {
-                    let field_str = self.interner.get(*field);
-                    out.push_str(&format!("field_set {}.{} = {}\n", base, field_str, value));
+                    writeln!(
+                        out,
+                        "field_set {}.{} = {}",
+                        base,
+                        self.interner.get(*field),
+                        value
+                    )
+                    .unwrap();
                 }
+
+                // Enums
                 InstData::EnumDecl { name, variants } => {
                     let name_str = self.interner.get(*name);
                     let variants_str: Vec<String> = variants
                         .iter()
                         .map(|v| self.interner.get(*v).to_string())
                         .collect();
-                    out.push_str(&format!(
-                        "enum {} {{ {} }}\n",
-                        name_str,
-                        variants_str.join(", ")
-                    ));
+                    writeln!(out, "enum {} {{ {} }}", name_str, variants_str.join(", ")).unwrap();
                 }
                 InstData::EnumVariant { type_name, variant } => {
-                    let type_str = self.interner.get(*type_name);
-                    let variant_str = self.interner.get(*variant);
-                    out.push_str(&format!("enum_variant {}::{}\n", type_str, variant_str));
+                    writeln!(
+                        out,
+                        "enum_variant {}::{}",
+                        self.interner.get(*type_name),
+                        self.interner.get(*variant)
+                    )
+                    .unwrap();
                 }
+
+                // Arrays
                 InstData::ArrayInit { elements } => {
                     let elems_str: Vec<String> =
                         elements.iter().map(|e| format!("{}", e)).collect();
-                    out.push_str(&format!("array_init [{}]\n", elems_str.join(", ")));
+                    writeln!(out, "array_init [{}]", elems_str.join(", ")).unwrap();
                 }
                 InstData::IndexGet { base, index } => {
-                    out.push_str(&format!("index_get {}[{}]\n", base, index));
+                    writeln!(out, "index_get {}[{}]", base, index).unwrap();
                 }
                 InstData::IndexSet { base, index, value } => {
-                    out.push_str(&format!("index_set {}[{}] = {}\n", base, index, value));
+                    writeln!(out, "index_set {}[{}] = {}", base, index, value).unwrap();
                 }
+
+                // Methods
                 InstData::ImplDecl { type_name, methods } => {
                     let type_str = self.interner.get(*type_name);
                     let methods_str: Vec<String> =
                         methods.iter().map(|m| format!("{}", m)).collect();
-                    out.push_str(&format!(
-                        "impl {} {{ {} }}\n",
-                        type_str,
-                        methods_str.join(", ")
-                    ));
+                    writeln!(out, "impl {} {{ {} }}", type_str, methods_str.join(", ")).unwrap();
                 }
                 InstData::MethodCall {
                     receiver,
                     method,
                     args,
                 } => {
-                    let method_str = self.interner.get(*method);
-                    let args_str: Vec<String> = args
-                        .iter()
-                        .map(|a| match a.mode {
-                            RirArgMode::Inout => format!("inout {}", a.value),
-                            RirArgMode::Borrow => format!("borrow {}", a.value),
-                            RirArgMode::Normal => format!("{}", a.value),
-                        })
-                        .collect();
-                    out.push_str(&format!(
-                        "method_call {}.{}({})\n",
+                    writeln!(
+                        out,
+                        "method_call {}.{}({})",
                         receiver,
-                        method_str,
-                        args_str.join(", ")
-                    ));
+                        self.interner.get(*method),
+                        Self::format_call_args(args)
+                    )
+                    .unwrap();
                 }
                 InstData::AssocFnCall {
                     type_name,
                     function,
                     args,
                 } => {
-                    let type_str = self.interner.get(*type_name);
-                    let func_str = self.interner.get(*function);
-                    let args_str: Vec<String> = args
-                        .iter()
-                        .map(|a| match a.mode {
-                            RirArgMode::Inout => format!("inout {}", a.value),
-                            RirArgMode::Borrow => format!("borrow {}", a.value),
-                            RirArgMode::Normal => format!("{}", a.value),
-                        })
-                        .collect();
-                    out.push_str(&format!(
-                        "assoc_fn_call {}::{}({})\n",
-                        type_str,
-                        func_str,
-                        args_str.join(", ")
-                    ));
+                    writeln!(
+                        out,
+                        "assoc_fn_call {}::{}({})",
+                        self.interner.get(*type_name),
+                        self.interner.get(*function),
+                        Self::format_call_args(args)
+                    )
+                    .unwrap();
                 }
+
+                // Drop
                 InstData::DropFnDecl { type_name, body } => {
-                    let type_str = self.interner.get(*type_name);
-                    out.push_str(&format!("drop fn {}(self) {{\n", type_str));
-                    out.push_str(&format!("    {}\n", body));
-                    out.push_str("}\n");
+                    writeln!(out, "drop fn {}(self) {{", self.interner.get(*type_name)).unwrap();
+                    writeln!(out, "    {}", body).unwrap();
+                    writeln!(out, "}}").unwrap();
                 }
             }
         }
