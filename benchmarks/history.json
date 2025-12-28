@@ -86,6 +86,49 @@
           "std_ms": 101.82385
         }
       ]
+    },
+    {
+      "version": 1,
+      "timestamp": "2025-12-28T05:06:47Z",
+      "commit": "",
+      "build_mode": "release",
+      "host": {
+        "os": "darwin",
+        "arch": "arm64"
+      },
+      "iterations": 5,
+      "benchmarks": [
+        {
+          "name": "many_functions",
+          "iterations": 5,
+          "mean_ms": 863.221,
+          "std_ms": 1272.530221
+        },
+        {
+          "name": "deep_nesting",
+          "iterations": 5,
+          "mean_ms": 13854.718,
+          "std_ms": 1563.87785
+        },
+        {
+          "name": "large_structs",
+          "iterations": 5,
+          "mean_ms": 246.929,
+          "std_ms": 34.155702
+        },
+        {
+          "name": "arithmetic_heavy",
+          "iterations": 5,
+          "mean_ms": 190.313,
+          "std_ms": 7.654538
+        },
+        {
+          "name": "control_flow",
+          "iterations": 5,
+          "mean_ms": 312.436,
+          "std_ms": 1.781324
+        }
+      ]
     }
   ]
 }
