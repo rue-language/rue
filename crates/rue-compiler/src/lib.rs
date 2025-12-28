@@ -167,8 +167,8 @@ pub use rue_codegen::{
     aarch64::Aarch64Mir, generate_stack_frame_info,
 };
 pub use rue_error::{
-    CompileError, CompileResult, CompileWarning, Diagnostic, ErrorKind, PreviewFeature,
-    PreviewFeatures, WarningKind,
+    CompileError, CompileErrors, CompileResult, CompileWarning, Diagnostic, ErrorKind,
+    MultiErrorResult, PreviewFeature, PreviewFeatures, WarningKind,
 };
 pub use rue_intern::{Interner, Symbol};
 pub use rue_lexer::{Lexer, Token, TokenKind};
@@ -284,9 +284,12 @@ pub struct CompileOutput {
 /// This runs: lexing → parsing → AST to RIR → semantic analysis → CFG construction.
 /// Returns the compile state which can be inspected for debugging.
 ///
+/// This function collects errors from multiple functions instead of stopping at the
+/// first error, allowing users to see all issues at once.
+///
 /// Uses default optimization level (O0) and no preview features. For custom options,
 /// use [`compile_frontend_with_options`].
-pub fn compile_frontend(source: &str) -> CompileResult<CompileState> {
+pub fn compile_frontend(source: &str) -> MultiErrorResult<CompileState> {
     compile_frontend_with_options(source, OptLevel::default(), &PreviewFeatures::new())
 }
 
@@ -294,27 +297,30 @@ pub fn compile_frontend(source: &str) -> CompileResult<CompileState> {
 ///
 /// This runs: lexing → parsing → AST to RIR → semantic analysis → CFG construction → optimization.
 /// Returns the compile state which can be inspected for debugging.
+///
+/// This function collects errors from multiple functions instead of stopping at the
+/// first error, allowing users to see all issues at once.
 pub fn compile_frontend_with_options(
     source: &str,
     opt_level: OptLevel,
     preview_features: &PreviewFeatures,
-) -> CompileResult<CompileState> {
+) -> MultiErrorResult<CompileState> {
     let _span = info_span!("frontend", source_bytes = source.len()).entered();
 
-    // Lexing
+    // Lexing - errors here are fatal (can't continue without tokens)
     let (tokens, interner) = {
         let _span = info_span!("lexer").entered();
         let lexer = Lexer::new(source);
-        let (tokens, interner) = lexer.tokenize()?;
+        let (tokens, interner) = lexer.tokenize().map_err(CompileErrors::from)?;
         info!(token_count = tokens.len(), "lexing complete");
         (tokens, interner)
     };
 
-    // Parsing
+    // Parsing - errors here are fatal (can't continue without AST)
     let (ast, interner) = {
         let _span = info_span!("parser").entered();
         let parser = Parser::new(tokens, interner);
-        let (ast, interner) = parser.parse()?;
+        let (ast, interner) = parser.parse().map_err(CompileErrors::from)?;
         info!(item_count = ast.items.len(), "parsing complete");
         (ast, interner)
     };
@@ -330,7 +336,7 @@ pub fn compile_frontend_with_options(
 ///
 /// Uses default optimization level (O0) and no preview features. For custom options,
 /// use [`compile_frontend_from_ast_with_options`].
-pub fn compile_frontend_from_ast(ast: Ast, interner: Interner) -> CompileResult<CompileState> {
+pub fn compile_frontend_from_ast(ast: Ast, interner: Interner) -> MultiErrorResult<CompileState> {
     compile_frontend_from_ast_with_options(
         ast,
         interner,
@@ -344,12 +350,15 @@ pub fn compile_frontend_from_ast(ast: Ast, interner: Interner) -> CompileResult<
 /// This runs: AST to RIR → semantic analysis → CFG construction → optimization.
 /// Use this when you already have a parsed AST (e.g., for `--emit` modes that
 /// need both AST output and later stage output without double-parsing).
+///
+/// This function collects errors from multiple functions instead of stopping at the
+/// first error, allowing users to see all issues at once.
 pub fn compile_frontend_from_ast_with_options(
     ast: Ast,
     interner: Interner,
     opt_level: OptLevel,
     preview_features: &PreviewFeatures,
-) -> CompileResult<CompileState> {
+) -> MultiErrorResult<CompileState> {
     // AST to RIR (untyped IR)
     let (rir, interner) = {
         let _span = info_span!("astgen").entered();
@@ -359,7 +368,7 @@ pub fn compile_frontend_from_ast_with_options(
         (rir, interner)
     };
 
-    // Semantic analysis (RIR to AIR)
+    // Semantic analysis (RIR to AIR) - this now collects multiple errors
     let sema_output = {
         let _span = info_span!("sema").entered();
         let sema = Sema::new(&rir, &interner, preview_features.clone());
@@ -434,17 +443,23 @@ pub fn compile_frontend_from_ast_with_options(
 ///
 /// This is the main entry point for compilation.
 /// Returns the ELF binary along with any warnings generated during compilation.
-pub fn compile(source: &str) -> CompileResult<CompileOutput> {
+///
+/// This function collects errors from multiple functions instead of stopping at the
+/// first error, allowing users to see all issues at once.
+pub fn compile(source: &str) -> MultiErrorResult<CompileOutput> {
     compile_with_options(source, &CompileOptions::default())
 }
 
 /// Compile source code to an ELF binary with the given options.
 ///
 /// This allows specifying the target architecture, optimization level, and other compilation options.
+///
+/// This function collects errors from multiple functions instead of stopping at the
+/// first error, allowing users to see all issues at once.
 pub fn compile_with_options(
     source: &str,
     options: &CompileOptions,
-) -> CompileResult<CompileOutput> {
+) -> MultiErrorResult<CompileOutput> {
     let _span = info_span!(
         "compile",
         target = %options.target,
@@ -460,7 +475,9 @@ pub fn compile_with_options(
         .functions
         .iter()
         .find(|f| f.analyzed.name == "main")
-        .ok_or_else(|| CompileError::without_span(ErrorKind::NoMainFunction))?;
+        .ok_or_else(|| {
+            CompileErrors::from(CompileError::without_span(ErrorKind::NoMainFunction))
+        })?;
 
     // Dispatch to the appropriate backend based on target architecture
     match options.target.arch() {
@@ -470,7 +487,10 @@ pub fn compile_with_options(
 }
 
 /// Compile for x86-64 target.
-fn compile_x86_64(state: &CompileState, options: &CompileOptions) -> CompileResult<CompileOutput> {
+fn compile_x86_64(
+    state: &CompileState,
+    options: &CompileOptions,
+) -> MultiErrorResult<CompileOutput> {
     // Generate machine code for all functions
     let object_files = {
         let _span = info_span!("codegen", arch = "x86_64").entered();
@@ -484,7 +504,8 @@ fn compile_x86_64(state: &CompileState, options: &CompileOptions) -> CompileResu
                 &state.array_types,
                 &state.strings,
                 &state.interner,
-            )?;
+            )
+            .map_err(CompileErrors::from)?;
             total_code_bytes += machine_code.code.len();
 
             // Build object file for this function
@@ -539,7 +560,7 @@ fn link_internal(
     state: &CompileState,
     options: &CompileOptions,
     object_files: &[Vec<u8>],
-) -> CompileResult<CompileOutput> {
+) -> MultiErrorResult<CompileOutput> {
     let _span = info_span!("linker", mode = "internal").entered();
 
     // For macOS targets, the internal linker doesn't support Mach-O,
@@ -559,8 +580,13 @@ fn link_internal(
 
     // Add all object files to the linker
     for obj_bytes in object_files {
-        let obj = ObjectFile::parse(obj_bytes).map_err(link_error)?;
-        linker.add_object(obj).map_err(link_error)?;
+        let obj = ObjectFile::parse(obj_bytes)
+            .map_err(link_error)
+            .map_err(CompileErrors::from)?;
+        linker
+            .add_object(obj)
+            .map_err(link_error)
+            .map_err(CompileErrors::from)?;
     }
 
     // Mark _start as required so it gets pulled from the archive.
@@ -569,12 +595,20 @@ fn link_internal(
     linker.require_symbol("_start");
 
     // Add the runtime library
-    let runtime = Archive::parse(RUNTIME_BYTES).map_err(link_error)?;
-    linker.add_archive(runtime).map_err(link_error)?;
+    let runtime = Archive::parse(RUNTIME_BYTES)
+        .map_err(link_error)
+        .map_err(CompileErrors::from)?;
+    linker
+        .add_archive(runtime)
+        .map_err(link_error)
+        .map_err(CompileErrors::from)?;
 
     // Link to executable
     // Use _start from the runtime as the entry point (it will call main)
-    let elf = linker.link("_start").map_err(link_error)?;
+    let elf = linker
+        .link("_start")
+        .map_err(link_error)
+        .map_err(CompileErrors::from)?;
     info!(
         object_count = object_files.len(),
         output_bytes = elf.len(),
@@ -595,13 +629,17 @@ fn link_system(
     options: &CompileOptions,
     object_files: &[Vec<u8>],
     linker_cmd: &str,
-) -> CompileResult<CompileOutput> {
+) -> MultiErrorResult<CompileOutput> {
     let _span = info_span!("linker", mode = "system", command = linker_cmd).entered();
 
     // Set up temporary directory with object files and runtime
-    let mut temp_dir = TempLinkDir::new()?;
-    temp_dir.write_object_files(object_files)?;
-    temp_dir.write_runtime(RUNTIME_BYTES)?;
+    let mut temp_dir = TempLinkDir::new().map_err(CompileErrors::from)?;
+    temp_dir
+        .write_object_files(object_files)
+        .map_err(CompileErrors::from)?;
+    temp_dir
+        .write_runtime(RUNTIME_BYTES)
+        .map_err(CompileErrors::from)?;
 
     // Build the linker command
     let mut cmd = Command::new(linker_cmd);
@@ -636,23 +674,22 @@ fn link_system(
 
     // Run the linker
     let output = cmd.output().map_err(|e| {
-        CompileError::without_span(ErrorKind::LinkError(format!(
+        CompileErrors::from(CompileError::without_span(ErrorKind::LinkError(format!(
             "failed to execute linker '{}': {}",
             linker_cmd, e
-        )))
+        ))))
     })?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         // temp_dir is dropped here, cleaning up automatically
-        return Err(CompileError::without_span(ErrorKind::LinkError(format!(
-            "linker '{}' failed: {}",
-            linker_cmd, stderr
-        ))));
+        return Err(CompileErrors::from(CompileError::without_span(
+            ErrorKind::LinkError(format!("linker '{}' failed: {}", linker_cmd, stderr)),
+        )));
     }
 
     // Read the resulting executable
-    let elf = temp_dir.read_output()?;
+    let elf = temp_dir.read_output().map_err(CompileErrors::from)?;
     info!(
         object_count = object_files.len(),
         output_bytes = elf.len(),
@@ -667,7 +704,10 @@ fn link_system(
 }
 
 /// Compile for AArch64 target.
-fn compile_aarch64(state: &CompileState, options: &CompileOptions) -> CompileResult<CompileOutput> {
+fn compile_aarch64(
+    state: &CompileState,
+    options: &CompileOptions,
+) -> MultiErrorResult<CompileOutput> {
     // Generate machine code for all functions using the aarch64 backend
     let object_files = {
         let _span = info_span!("codegen", arch = "aarch64").entered();
@@ -681,7 +721,8 @@ fn compile_aarch64(state: &CompileState, options: &CompileOptions) -> CompileRes
                 &state.array_types,
                 &state.strings,
                 &state.interner,
-            )?;
+            )
+            .map_err(CompileErrors::from)?;
             total_code_bytes += machine_code.code.len();
 
             let mut obj_builder = ObjectBuilder::new(options.target, &func.analyzed.name)
@@ -1075,14 +1116,14 @@ pub struct AirOutput {
 /// let result = compile_to_air("fn main() -> i32 { 1 + 2 * 3 }");
 /// assert!(result.is_ok());
 /// ```
-pub fn compile_to_air(source: &str) -> CompileResult<AirOutput> {
+pub fn compile_to_air(source: &str) -> MultiErrorResult<AirOutput> {
     // Lexing
     let lexer = Lexer::new(source);
-    let (tokens, interner) = lexer.tokenize()?;
+    let (tokens, interner) = lexer.tokenize().map_err(CompileErrors::from)?;
 
     // Parsing
     let parser = Parser::new(tokens, interner);
-    let (ast, interner) = parser.parse()?;
+    let (ast, interner) = parser.parse().map_err(CompileErrors::from)?;
 
     // AST to RIR (untyped IR)
     let astgen = AstGen::new(&ast, &interner);
@@ -1120,7 +1161,7 @@ pub fn compile_to_air(source: &str) -> CompileResult<AirOutput> {
 /// let state = result.unwrap();
 /// assert_eq!(state.functions.len(), 1);
 /// ```
-pub fn compile_to_cfg(source: &str) -> CompileResult<CompileState> {
+pub fn compile_to_cfg(source: &str) -> MultiErrorResult<CompileState> {
     compile_frontend(source)
 }
 
@@ -1177,6 +1218,84 @@ mod tests {
         let state = compile_frontend("fn main() -> i32 { let x = 42; 0 }").unwrap();
         assert_eq!(state.warnings.len(), 1);
         assert!(state.warnings[0].to_string().contains("unused variable"));
+    }
+
+    #[test]
+    fn test_multiple_errors_collected() {
+        // Test that errors from multiple functions are collected together
+        // Use examples that both result in type mismatch errors
+        let source = r#"
+            fn foo() -> i32 { true }
+            fn bar() -> i32 { false }
+            fn main() -> i32 { 0 }
+        "#;
+        let result = compile_frontend(source);
+        let errors = match result {
+            Ok(_) => panic!("expected error, got success"),
+            Err(e) => e,
+        };
+
+        // Should have at least 2 errors (one from foo, one from bar)
+        assert!(
+            errors.len() >= 2,
+            "expected at least 2 errors, got {}",
+            errors.len()
+        );
+
+        // All errors should be type mismatches (returning bool where i32 expected)
+        for error in errors.iter() {
+            assert!(
+                error.to_string().contains("type mismatch"),
+                "expected type mismatch error, got: {}",
+                error
+            );
+        }
+    }
+
+    #[test]
+    fn test_multiple_errors_display() {
+        // Use examples that both result in type mismatch errors
+        let source = r#"
+            fn foo() -> i32 { true }
+            fn bar() -> i32 { false }
+            fn main() -> i32 { 0 }
+        "#;
+        let errors = match compile_frontend(source) {
+            Ok(_) => panic!("expected error, got success"),
+            Err(e) => e,
+        };
+
+        // Display should show both errors
+        let display = errors.to_string();
+        assert!(
+            display.contains("type mismatch"),
+            "display should contain error message"
+        );
+        if errors.len() > 1 {
+            assert!(
+                display.contains("more error"),
+                "display should indicate more errors"
+            );
+        }
+    }
+
+    #[test]
+    fn test_single_error_still_works() {
+        // Single error should still be collected and returned properly
+        let source = "fn main() -> i32 { true }";
+        let errors = match compile_frontend(source) {
+            Ok(_) => panic!("expected error, got success"),
+            Err(e) => e,
+        };
+
+        assert_eq!(errors.len(), 1);
+        assert!(
+            errors
+                .first()
+                .unwrap()
+                .to_string()
+                .contains("type mismatch")
+        );
     }
 }
 

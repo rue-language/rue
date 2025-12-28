@@ -15,8 +15,8 @@ use crate::types::{
     parse_array_type_syntax,
 };
 use rue_error::{
-    CompileError, CompileResult, CompileWarning, ErrorKind, OptionExt, PreviewFeature,
-    PreviewFeatures, WarningKind,
+    CompileError, CompileErrors, CompileResult, CompileWarning, ErrorKind, MultiErrorResult,
+    OptionExt, PreviewFeature, PreviewFeatures, WarningKind,
 };
 use rue_intern::{Interner, Symbol};
 use rue_rir::{
@@ -547,24 +547,37 @@ impl<'a> Sema<'a> {
     ///
     /// Consumes the Sema and returns a [`SemaOutput`] containing all analyzed
     /// functions, struct definitions, enum definitions, and any warnings generated during analysis.
-    pub fn analyze_all(mut self) -> CompileResult<SemaOutput> {
+    ///
+    /// This function collects errors from multiple functions instead of stopping at the
+    /// first error, allowing users to see all issues at once. Errors within type/struct
+    /// definitions still cause early termination since they affect all subsequent analysis.
+    pub fn analyze_all(mut self) -> MultiErrorResult<SemaOutput> {
         // First pass: collect type definitions (enums then structs)
         // Enums must be collected first so struct fields can reference enum types
-        self.collect_enum_definitions()?;
-        self.collect_struct_definitions()?;
+        // These are critical and must succeed before we can analyze functions
+        self.collect_enum_definitions()
+            .map_err(CompileErrors::from)?;
+        self.collect_struct_definitions()
+            .map_err(CompileErrors::from)?;
 
         // Validate @copy struct fields are all Copy types
-        self.validate_copy_structs()?;
+        self.validate_copy_structs().map_err(CompileErrors::from)?;
 
         // Collect user-defined destructors
-        self.collect_destructor_definitions()?;
+        self.collect_destructor_definitions()
+            .map_err(CompileErrors::from)?;
 
         // Second pass: collect function and method signatures
-        self.collect_function_signatures()?;
-        self.collect_method_definitions()?;
+        // These are also critical since they affect type checking of calls
+        self.collect_function_signatures()
+            .map_err(CompileErrors::from)?;
+        self.collect_method_definitions()
+            .map_err(CompileErrors::from)?;
 
-        // Third pass: analyze regular function bodies (not methods)
+        // Now analyze function bodies - these can be analyzed independently
+        // so we collect errors from all of them instead of stopping at the first
         let mut functions = Vec::new();
+        let mut errors = CompileErrors::new();
 
         // Collect method refs from impl blocks so we can skip them in the first pass
         let mut method_refs: HashSet<InstRef> = HashSet::new();
@@ -593,27 +606,13 @@ impl<'a> Sema<'a> {
                 }
 
                 let fn_name = self.interner.get(*name).to_string();
-                let ret_type = self.resolve_type(*return_type, inst.span)?;
 
-                // Resolve parameter types and modes
-                let param_info: Vec<(Symbol, Type, RirParamMode)> = params
-                    .iter()
-                    .map(|p| {
-                        let ty = self.resolve_type(p.ty, inst.span)?;
-                        Ok((p.name, ty, p.mode))
-                    })
-                    .collect::<CompileResult<Vec<_>>>()?;
-
-                let (air, num_locals, num_param_slots, param_modes) =
-                    self.analyze_function(ret_type, &param_info, *body)?;
-
-                functions.push(AnalyzedFunction {
-                    name: fn_name,
-                    air,
-                    num_locals,
-                    num_param_slots,
-                    param_modes,
-                });
+                // Try to analyze this function - on error, record it and continue
+                match self.analyze_single_function(&fn_name, *return_type, params, *body, inst.span)
+                {
+                    Ok(analyzed) => functions.push(analyzed),
+                    Err(e) => errors.push(e),
+                }
             }
         }
 
@@ -636,26 +635,6 @@ impl<'a> Sema<'a> {
                     } = &method_inst.data
                     {
                         let method_name_str = self.interner.get(*method_name).to_string();
-                        let ret_type = self.resolve_type(*return_type, method_inst.span)?;
-
-                        // Build parameter list, adding self as first parameter for methods
-                        // Note: self is passed by value (Normal mode) for now
-                        let mut param_info: Vec<(Symbol, Type, RirParamMode)> = Vec::new();
-
-                        if *has_self {
-                            // Add self parameter (Normal mode - passed by value)
-                            let self_sym = self.interner.intern("self");
-                            param_info.push((self_sym, struct_type, RirParamMode::Normal));
-                        }
-
-                        // Add regular parameters with their modes
-                        for p in params.iter() {
-                            let ty = self.resolve_type(p.ty, method_inst.span)?;
-                            param_info.push((p.name, ty, p.mode));
-                        }
-
-                        let (air, num_locals, num_param_slots, param_modes) =
-                            self.analyze_function(ret_type, &param_info, *body)?;
 
                         // Generate method name with struct prefix: "Type.method" or "Type::function"
                         let full_name = if *has_self {
@@ -664,13 +643,19 @@ impl<'a> Sema<'a> {
                             format!("{}::{}", type_name_str, method_name_str)
                         };
 
-                        functions.push(AnalyzedFunction {
-                            name: full_name,
-                            air,
-                            num_locals,
-                            num_param_slots,
-                            param_modes,
-                        });
+                        // Try to analyze this method - on error, record it and continue
+                        match self.analyze_method_function(
+                            &full_name,
+                            *return_type,
+                            params,
+                            *body,
+                            method_inst.span,
+                            struct_type,
+                            *has_self,
+                        ) {
+                            Ok(analyzed) => functions.push(analyzed),
+                            Err(e) => errors.push(e),
+                        }
                     }
                 }
             }
@@ -683,35 +668,125 @@ impl<'a> Sema<'a> {
                 let struct_id = *self.structs.get(type_name).unwrap();
                 let struct_type = Type::Struct(struct_id);
 
-                // Destructors take self parameter and return unit
-                // self is passed by value (Normal mode) - the destructor consumes it
-                let self_sym = self.interner.intern("self");
-                let param_info: Vec<(Symbol, Type, RirParamMode)> =
-                    vec![(self_sym, struct_type, RirParamMode::Normal)];
-
-                let (air, num_locals, num_param_slots, param_modes) =
-                    self.analyze_function(Type::Unit, &param_info, *body)?;
-
                 // Generate destructor name: "TypeName.__drop"
                 let full_name = format!("{}.__drop", type_name_str);
 
-                functions.push(AnalyzedFunction {
-                    name: full_name,
-                    air,
-                    num_locals,
-                    num_param_slots,
-                    param_modes,
-                });
+                // Try to analyze destructor - on error, record it and continue
+                match self.analyze_destructor_function(&full_name, *body, inst.span, struct_type) {
+                    Ok(analyzed) => functions.push(analyzed),
+                    Err(e) => errors.push(e),
+                }
             }
         }
 
-        Ok(SemaOutput {
+        // Return errors if any were collected
+        errors.into_result_with(SemaOutput {
             functions,
             struct_defs: self.struct_defs,
             enum_defs: self.enum_defs,
             array_types: self.array_type_defs,
             strings: self.strings,
             warnings: self.warnings,
+        })
+    }
+
+    /// Analyze a single regular function.
+    ///
+    /// This helper factors out the function analysis logic to make error
+    /// collection cleaner in analyze_all.
+    fn analyze_single_function(
+        &mut self,
+        fn_name: &str,
+        return_type: Symbol,
+        params: &[rue_rir::RirParam],
+        body: InstRef,
+        span: Span,
+    ) -> CompileResult<AnalyzedFunction> {
+        let ret_type = self.resolve_type(return_type, span)?;
+
+        // Resolve parameter types and modes
+        let param_info: Vec<(Symbol, Type, RirParamMode)> = params
+            .iter()
+            .map(|p| {
+                let ty = self.resolve_type(p.ty, span)?;
+                Ok((p.name, ty, p.mode))
+            })
+            .collect::<CompileResult<Vec<_>>>()?;
+
+        let (air, num_locals, num_param_slots, param_modes) =
+            self.analyze_function(ret_type, &param_info, body)?;
+
+        Ok(AnalyzedFunction {
+            name: fn_name.to_string(),
+            air,
+            num_locals,
+            num_param_slots,
+            param_modes,
+        })
+    }
+
+    /// Analyze a method function from an impl block.
+    fn analyze_method_function(
+        &mut self,
+        full_name: &str,
+        return_type: Symbol,
+        params: &[rue_rir::RirParam],
+        body: InstRef,
+        span: Span,
+        struct_type: Type,
+        has_self: bool,
+    ) -> CompileResult<AnalyzedFunction> {
+        let ret_type = self.resolve_type(return_type, span)?;
+
+        // Build parameter list, adding self as first parameter for methods
+        let mut param_info: Vec<(Symbol, Type, RirParamMode)> = Vec::new();
+
+        if has_self {
+            // Add self parameter (Normal mode - passed by value)
+            let self_sym = self.interner.intern("self");
+            param_info.push((self_sym, struct_type, RirParamMode::Normal));
+        }
+
+        // Add regular parameters with their modes
+        for p in params.iter() {
+            let ty = self.resolve_type(p.ty, span)?;
+            param_info.push((p.name, ty, p.mode));
+        }
+
+        let (air, num_locals, num_param_slots, param_modes) =
+            self.analyze_function(ret_type, &param_info, body)?;
+
+        Ok(AnalyzedFunction {
+            name: full_name.to_string(),
+            air,
+            num_locals,
+            num_param_slots,
+            param_modes,
+        })
+    }
+
+    /// Analyze a destructor function.
+    fn analyze_destructor_function(
+        &mut self,
+        full_name: &str,
+        body: InstRef,
+        _span: Span,
+        struct_type: Type,
+    ) -> CompileResult<AnalyzedFunction> {
+        // Destructors take self parameter and return unit
+        let self_sym = self.interner.intern("self");
+        let param_info: Vec<(Symbol, Type, RirParamMode)> =
+            vec![(self_sym, struct_type, RirParamMode::Normal)];
+
+        let (air, num_locals, num_param_slots, param_modes) =
+            self.analyze_function(Type::Unit, &param_info, body)?;
+
+        Ok(AnalyzedFunction {
+            name: full_name.to_string(),
+            air,
+            num_locals,
+            num_param_slots,
+            param_modes,
         })
     }
 
@@ -4946,11 +5021,11 @@ mod tests {
     use rue_parser::Parser;
     use rue_rir::AstGen;
 
-    fn compile_to_air(source: &str) -> CompileResult<SemaOutput> {
+    fn compile_to_air(source: &str) -> MultiErrorResult<SemaOutput> {
         let lexer = Lexer::new(source);
-        let (tokens, interner) = lexer.tokenize()?;
+        let (tokens, interner) = lexer.tokenize().map_err(CompileErrors::from_error)?;
         let parser = Parser::new(tokens, interner);
-        let (ast, mut interner) = parser.parse()?;
+        let (ast, mut interner) = parser.parse().map_err(CompileErrors::from_error)?;
 
         let astgen = AstGen::new(&ast, &mut interner);
         let rir = astgen.generate();
@@ -5081,16 +5156,24 @@ mod tests {
     fn test_undefined_variable() {
         let result = compile_to_air("fn main() -> i32 { x }");
         assert!(result.is_err());
-        let err = result.unwrap_err();
-        assert!(matches!(err.kind, ErrorKind::UndefinedVariable(_)));
+        let errors = result.unwrap_err();
+        assert_eq!(errors.len(), 1);
+        assert!(matches!(
+            errors.iter().next().unwrap().kind,
+            ErrorKind::UndefinedVariable(_)
+        ));
     }
 
     #[test]
     fn test_assign_to_immutable() {
         let result = compile_to_air("fn main() -> i32 { let x = 10; x = 20; x }");
         assert!(result.is_err());
-        let err = result.unwrap_err();
-        assert!(matches!(err.kind, ErrorKind::AssignToImmutable(_)));
+        let errors = result.unwrap_err();
+        assert_eq!(errors.len(), 1);
+        assert!(matches!(
+            errors.iter().next().unwrap().kind,
+            ErrorKind::AssignToImmutable(_)
+        ));
     }
 
     #[test]

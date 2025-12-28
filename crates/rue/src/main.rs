@@ -702,8 +702,8 @@ fn main() {
                 &options.target,
             );
         }
-        Err(e) => {
-            eprintln!("{}", formatter.format_error(&e));
+        Err(errors) => {
+            eprintln!("{}", formatter.format_errors(&errors));
             std::process::exit(1);
         }
     }
@@ -780,8 +780,8 @@ fn handle_emit(source: &str, options: &Options, formatter: &DiagnosticFormatter)
             &options.preview_features,
         ) {
             Ok(state) => Some(state),
-            Err(e) => {
-                eprintln!("{}", formatter.format_error(&e));
+            Err(errors) => {
+                eprintln!("{}", formatter.format_errors(&errors));
                 return Err(());
             }
         }

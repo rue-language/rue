@@ -24,7 +24,7 @@ use std::collections::HashMap;
 
 use annotate_snippets::{Level, Renderer, Snippet};
 
-use crate::{CompileError, CompileWarning, Diagnostic, Span};
+use crate::{CompileError, CompileErrors, CompileWarning, Diagnostic, Span};
 
 /// Source code information for diagnostic rendering.
 ///
@@ -71,6 +71,34 @@ impl<'a> DiagnosticFormatter<'a> {
             error.span(),
             error.diagnostic(),
         )
+    }
+
+    /// Format multiple compilation errors into a string.
+    ///
+    /// Each error is formatted on its own line(s). A summary line is added at
+    /// the end if there are multiple errors showing the total count.
+    pub fn format_errors(&self, errors: &CompileErrors) -> String {
+        if errors.is_empty() {
+            return String::new();
+        }
+
+        let mut output = String::new();
+        for error in errors.iter() {
+            if !output.is_empty() {
+                output.push('\n');
+            }
+            output.push_str(&self.format_error(error));
+        }
+
+        // Add summary line if multiple errors
+        if errors.len() > 1 {
+            output.push_str(&format!(
+                "\nerror: aborting due to {} previous errors\n",
+                errors.len()
+            ));
+        }
+
+        output
     }
 
     /// Format all warnings, adding line numbers when multiple variables share the same name.
@@ -306,5 +334,67 @@ mod tests {
 
         let output = formatter.format_error(&error);
         assert!(output.contains("then branch"));
+    }
+
+    #[test]
+    fn test_format_errors_empty() {
+        let source = "fn main() -> i32 { 42 }";
+        let source_info = SourceInfo::new(source, "test.rue");
+        let formatter = DiagnosticFormatter::new(&source_info);
+
+        let errors = CompileErrors::new();
+        let output = formatter.format_errors(&errors);
+        assert!(output.is_empty());
+    }
+
+    #[test]
+    fn test_format_errors_single() {
+        let source = "fn main() -> i32 { 1 + true }";
+        let source_info = SourceInfo::new(source, "test.rue");
+        let formatter = DiagnosticFormatter::new(&source_info);
+
+        let mut errors = CompileErrors::new();
+        errors.push(CompileError::new(
+            ErrorKind::TypeMismatch {
+                expected: "i32".to_string(),
+                found: "bool".to_string(),
+            },
+            Span::new(23, 27),
+        ));
+
+        let output = formatter.format_errors(&errors);
+        assert!(output.contains("type mismatch"));
+        // Single error should not have summary line
+        assert!(!output.contains("aborting"));
+    }
+
+    #[test]
+    fn test_format_errors_multiple() {
+        let source = "fn main() -> i32 {\n    let x = 1 + true;\n    let y = false - 1;\n    0\n}";
+        let source_info = SourceInfo::new(source, "test.rue");
+        let formatter = DiagnosticFormatter::new(&source_info);
+
+        let mut errors = CompileErrors::new();
+        errors.push(CompileError::new(
+            ErrorKind::TypeMismatch {
+                expected: "i32".to_string(),
+                found: "bool".to_string(),
+            },
+            Span::new(32, 36),
+        ));
+        errors.push(CompileError::new(
+            ErrorKind::TypeMismatch {
+                expected: "bool".to_string(),
+                found: "i32".to_string(),
+            },
+            Span::new(58, 59),
+        ));
+
+        let output = formatter.format_errors(&errors);
+        // Should contain both errors
+        assert!(output.contains("expected i32, found bool"));
+        assert!(output.contains("expected bool, found i32"));
+        // Should have summary line
+        assert!(output.contains("aborting due to 2 previous errors"));
     }
 }

@@ -872,6 +872,164 @@ impl fmt::Display for ErrorKind {
 pub type CompileResult<T> = Result<T, CompileError>;
 
 // ============================================================================
+// Multiple Error Collection
+// ============================================================================
+
+/// A collection of compilation errors.
+///
+/// This type supports collecting multiple errors during compilation to provide
+/// users with more comprehensive diagnostics. Instead of stopping at the first
+/// error, the compiler can continue and report multiple issues at once.
+///
+/// # Usage
+///
+/// Use `CompileErrors` when a compilation phase can detect multiple independent
+/// errors. For example, semantic analysis can report multiple type errors in
+/// different functions.
+///
+/// ```ignore
+/// let mut errors = CompileErrors::new();
+/// errors.push(CompileError::new(ErrorKind::TypeMismatch { ... }, span1));
+/// errors.push(CompileError::new(ErrorKind::UndefinedVariable("x".into()), span2));
+///
+/// if !errors.is_empty() {
+///     return Err(errors);
+/// }
+/// ```
+///
+/// # Error Semantics
+///
+/// - An empty `CompileErrors` represents no errors (not a failure)
+/// - A non-empty `CompileErrors` represents one or more compilation failures
+/// - When converted to a single `CompileError`, the first error is used
+#[derive(Debug, Clone)]
+pub struct CompileErrors {
+    errors: Vec<CompileError>,
+}
+
+impl CompileErrors {
+    /// Create a new empty error collection.
+    pub fn new() -> Self {
+        Self { errors: Vec::new() }
+    }
+
+    /// Create an error collection from a single error.
+    pub fn from_error(error: CompileError) -> Self {
+        Self {
+            errors: vec![error],
+        }
+    }
+
+    /// Add an error to the collection.
+    pub fn push(&mut self, error: CompileError) {
+        self.errors.push(error);
+    }
+
+    /// Extend this collection with errors from another collection.
+    pub fn extend(&mut self, other: CompileErrors) {
+        self.errors.extend(other.errors);
+    }
+
+    /// Returns true if there are no errors.
+    pub fn is_empty(&self) -> bool {
+        self.errors.is_empty()
+    }
+
+    /// Returns the number of errors.
+    pub fn len(&self) -> usize {
+        self.errors.len()
+    }
+
+    /// Get the first error, if any.
+    pub fn first(&self) -> Option<&CompileError> {
+        self.errors.first()
+    }
+
+    /// Iterate over all errors.
+    pub fn iter(&self) -> impl Iterator<Item = &CompileError> {
+        self.errors.iter()
+    }
+
+    /// Convert into an iterator over errors.
+    pub fn into_iter(self) -> impl Iterator<Item = CompileError> {
+        self.errors.into_iter()
+    }
+
+    /// Get all errors as a slice.
+    pub fn as_slice(&self) -> &[CompileError] {
+        &self.errors
+    }
+
+    /// Check if the collection contains errors and return as a result.
+    ///
+    /// Returns `Ok(())` if empty, or `Err(self)` if there are errors.
+    pub fn into_result(self) -> Result<(), CompileErrors> {
+        if self.is_empty() { Ok(()) } else { Err(self) }
+    }
+
+    /// Fail with these errors if non-empty, otherwise return the value.
+    ///
+    /// This is useful for combining error checking with a result:
+    /// ```ignore
+    /// let output = SemaOutput { ... };
+    /// errors.into_result_with(output)
+    /// ```
+    pub fn into_result_with<T>(self, value: T) -> Result<T, CompileErrors> {
+        if self.is_empty() {
+            Ok(value)
+        } else {
+            Err(self)
+        }
+    }
+}
+
+impl Default for CompileErrors {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl From<CompileError> for CompileErrors {
+    fn from(error: CompileError) -> Self {
+        Self::from_error(error)
+    }
+}
+
+impl From<CompileErrors> for CompileError {
+    /// Convert a collection to a single error.
+    ///
+    /// Uses the first error in the collection. Panics if the collection is empty.
+    fn from(errors: CompileErrors) -> Self {
+        errors
+            .errors
+            .into_iter()
+            .next()
+            .expect("cannot convert empty CompileErrors to CompileError")
+    }
+}
+
+impl fmt::Display for CompileErrors {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.errors.len() {
+            0 => write!(f, "no errors"),
+            1 => write!(f, "{}", self.errors[0]),
+            n => write!(
+                f,
+                "{} (and {} more error{})",
+                self.errors[0],
+                n - 1,
+                if n == 2 { "" } else { "s" }
+            ),
+        }
+    }
+}
+
+impl std::error::Error for CompileErrors {}
+
+/// Result type for operations that can produce multiple errors.
+pub type MultiErrorResult<T> = Result<T, CompileErrors>;
+
+// ============================================================================
 // Error Helper Traits
 // ============================================================================
 
@@ -1333,5 +1491,140 @@ mod tests {
         assert!(result.is_err());
         let error = result.unwrap_err();
         assert_eq!(error.to_string(), "undefined variable 'foo'");
+    }
+
+    // ========================================================================
+    // CompileErrors tests
+    // ========================================================================
+
+    #[test]
+    fn test_compile_errors_new_is_empty() {
+        let errors = CompileErrors::new();
+        assert!(errors.is_empty());
+        assert_eq!(errors.len(), 0);
+    }
+
+    #[test]
+    fn test_compile_errors_from_error() {
+        let error = CompileError::without_span(ErrorKind::InvalidInteger);
+        let errors = CompileErrors::from_error(error);
+        assert!(!errors.is_empty());
+        assert_eq!(errors.len(), 1);
+    }
+
+    #[test]
+    fn test_compile_errors_push() {
+        let mut errors = CompileErrors::new();
+        errors.push(CompileError::without_span(ErrorKind::InvalidInteger));
+        errors.push(CompileError::without_span(ErrorKind::NoMainFunction));
+        assert_eq!(errors.len(), 2);
+    }
+
+    #[test]
+    fn test_compile_errors_extend() {
+        let mut errors1 = CompileErrors::new();
+        errors1.push(CompileError::without_span(ErrorKind::InvalidInteger));
+
+        let mut errors2 = CompileErrors::new();
+        errors2.push(CompileError::without_span(ErrorKind::NoMainFunction));
+        errors2.push(CompileError::without_span(ErrorKind::BreakOutsideLoop));
+
+        errors1.extend(errors2);
+        assert_eq!(errors1.len(), 3);
+    }
+
+    #[test]
+    fn test_compile_errors_first() {
+        let mut errors = CompileErrors::new();
+        assert!(errors.first().is_none());
+
+        errors.push(CompileError::without_span(ErrorKind::InvalidInteger));
+        errors.push(CompileError::without_span(ErrorKind::NoMainFunction));
+
+        let first = errors.first().unwrap();
+        assert!(matches!(first.kind, ErrorKind::InvalidInteger));
+    }
+
+    #[test]
+    fn test_compile_errors_iter() {
+        let mut errors = CompileErrors::new();
+        errors.push(CompileError::without_span(ErrorKind::InvalidInteger));
+        errors.push(CompileError::without_span(ErrorKind::NoMainFunction));
+
+        let kinds: Vec<_> = errors.iter().map(|e| &e.kind).collect();
+        assert_eq!(kinds.len(), 2);
+    }
+
+    #[test]
+    fn test_compile_errors_into_result_empty() {
+        let errors = CompileErrors::new();
+        assert!(errors.into_result().is_ok());
+    }
+
+    #[test]
+    fn test_compile_errors_into_result_non_empty() {
+        let mut errors = CompileErrors::new();
+        errors.push(CompileError::without_span(ErrorKind::InvalidInteger));
+        assert!(errors.into_result().is_err());
+    }
+
+    #[test]
+    fn test_compile_errors_into_result_with() {
+        let errors = CompileErrors::new();
+        let result = errors.into_result_with(42);
+        assert_eq!(result.unwrap(), 42);
+
+        let mut errors = CompileErrors::new();
+        errors.push(CompileError::without_span(ErrorKind::InvalidInteger));
+        let result = errors.into_result_with(42);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_compile_errors_from_single_error() {
+        let error = CompileError::without_span(ErrorKind::InvalidInteger);
+        let errors: CompileErrors = error.into();
+        assert_eq!(errors.len(), 1);
+    }
+
+    #[test]
+    fn test_compile_errors_to_single_error() {
+        let mut errors = CompileErrors::new();
+        errors.push(CompileError::without_span(ErrorKind::InvalidInteger));
+        errors.push(CompileError::without_span(ErrorKind::NoMainFunction));
+
+        let error: CompileError = errors.into();
+        // Should get the first error
+        assert!(matches!(error.kind, ErrorKind::InvalidInteger));
+    }
+
+    #[test]
+    fn test_compile_errors_display_empty() {
+        let errors = CompileErrors::new();
+        assert_eq!(errors.to_string(), "no errors");
+    }
+
+    #[test]
+    fn test_compile_errors_display_single() {
+        let errors =
+            CompileErrors::from_error(CompileError::without_span(ErrorKind::InvalidInteger));
+        assert_eq!(errors.to_string(), "invalid integer literal");
+    }
+
+    #[test]
+    fn test_compile_errors_display_multiple() {
+        let mut errors = CompileErrors::new();
+        errors.push(CompileError::without_span(ErrorKind::InvalidInteger));
+        errors.push(CompileError::without_span(ErrorKind::NoMainFunction));
+        assert_eq!(
+            errors.to_string(),
+            "invalid integer literal (and 1 more error)"
+        );
+
+        errors.push(CompileError::without_span(ErrorKind::BreakOutsideLoop));
+        assert_eq!(
+            errors.to_string(),
+            "invalid integer literal (and 2 more errors)"
+        );
     }
 }
