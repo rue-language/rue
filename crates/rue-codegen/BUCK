@@ -5,6 +5,7 @@ rust_library(
         "//crates/rue-air:rue-air",
         "//crates/rue-cfg:rue-cfg",
         "//crates/rue-error:rue-error",
+        "//crates/rue-intern:rue-intern",
         "//crates/rue-span:rue-span",
         "//crates/rue-target:rue-target",
     ],

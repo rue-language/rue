@@ -846,6 +846,7 @@ fn handle_emit(source: &str, options: &Options, formatter: &DiagnosticFormatter)
                             &state.struct_defs,
                             &state.array_types,
                             &state.strings,
+                            &state.interner,
                             options.target,
                         );
                         print!("{}", lowering_info);
@@ -862,6 +863,7 @@ fn handle_emit(source: &str, options: &Options, formatter: &DiagnosticFormatter)
                             &state.struct_defs,
                             &state.array_types,
                             &state.strings,
+                            &state.interner,
                             options.target,
                         );
                         println!("function {}:", func.analyzed.name);
@@ -880,6 +882,7 @@ fn handle_emit(source: &str, options: &Options, formatter: &DiagnosticFormatter)
                             &state.struct_defs,
                             &state.array_types,
                             &state.strings,
+                            &state.interner,
                             options.target,
                         );
                         println!("{}", liveness_info);
@@ -897,6 +900,7 @@ fn handle_emit(source: &str, options: &Options, formatter: &DiagnosticFormatter)
                             &state.struct_defs,
                             &state.array_types,
                             &state.strings,
+                            &state.interner,
                             options.target,
                         ) {
                             Ok(info) => info,
@@ -921,6 +925,7 @@ fn handle_emit(source: &str, options: &Options, formatter: &DiagnosticFormatter)
                             &state.struct_defs,
                             &state.array_types,
                             &state.strings,
+                            &state.interner,
                             options.target,
                         ) {
                             Ok(asm) => asm,
@@ -943,6 +948,7 @@ fn handle_emit(source: &str, options: &Options, formatter: &DiagnosticFormatter)
                             &state.struct_defs,
                             &state.array_types,
                             &state.strings,
+                            &state.interner,
                             options.target,
                         ) {
                             Ok(info) => info,

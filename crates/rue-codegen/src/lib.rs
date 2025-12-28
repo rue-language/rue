@@ -329,7 +329,7 @@ mod tests {
         let cfg_output = CfgBuilder::build(&air, 0, 0, "main", &[], &[], vec![], &interner);
 
         // Test the generate function
-        let machine_code = generate(&cfg_output.cfg, &[], &[], &[]).unwrap();
+        let machine_code = generate(&cfg_output.cfg, &[], &[], &[], &interner).unwrap();
 
         // Should generate working code
         assert!(!machine_code.code.is_empty());

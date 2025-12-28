@@ -288,6 +288,7 @@ mod tests {
     use super::*;
     use crate::{CfgInst, CfgInstData};
     use rue_air::Type;
+    use rue_intern::Interner;
     use rue_span::Span;
 
     fn make_cfg() -> Cfg {
@@ -452,11 +453,13 @@ mod tests {
         let entry = cfg.entry;
 
         // Create a call (side effect) that's not used by return
+        let interner = Interner::new();
+        let side_effect_sym = interner.intern("side_effect");
         let call = cfg.add_inst_to_block(
             entry,
             CfgInst {
                 data: CfgInstData::Call {
-                    name: "side_effect".to_string(),
+                    name: side_effect_sym,
                     args: vec![],
                 },
                 ty: Type::Unit,
@@ -480,7 +483,7 @@ mod tests {
 
         // Call should be preserved (side effect)
         match &cfg.get_inst(call).data {
-            CfgInstData::Call { name, .. } if name == "side_effect" => {}
+            CfgInstData::Call { name, .. } if *name == side_effect_sym => {}
             other => panic!("Expected Call, got {:?}", other),
         }
     }

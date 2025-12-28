@@ -6,6 +6,7 @@
 use std::fmt;
 
 use rue_air::{ArrayTypeId, EnumId, StructId, Type};
+use rue_intern::Symbol;
 use rue_span::Span;
 
 /// A basic block identifier.
@@ -178,13 +179,15 @@ pub enum CfgInstData {
 
     // Function calls
     Call {
-        name: String,
+        /// Function name (interned symbol)
+        name: Symbol,
         args: Vec<CfgCallArg>,
     },
 
     /// Intrinsic call (e.g., @dbg)
     Intrinsic {
-        name: String,
+        /// Intrinsic name (interned symbol)
+        name: Symbol,
         args: Vec<CfgValue>,
     },
 
@@ -716,7 +719,8 @@ impl Cfg {
                 write!(f, "param_store %{} = {}", param_slot, value)
             }
             CfgInstData::Call { name, args } => {
-                write!(f, "call {}(", name)?;
+                // Display symbol as @{id} since we don't have interner access here
+                write!(f, "call @{}(", name.as_u32())?;
                 for (i, arg) in args.iter().enumerate() {
                     if i > 0 {
                         write!(f, ", ")?;
@@ -730,7 +734,8 @@ impl Cfg {
                 write!(f, ")")
             }
             CfgInstData::Intrinsic { name, args } => {
-                write!(f, "intrinsic @{}(", name)?;
+                // Display symbol as @{id} since we don't have interner access here
+                write!(f, "intrinsic @{}(", name.as_u32())?;
                 for (i, arg) in args.iter().enumerate() {
                     if i > 0 {
                         write!(f, ", ")?;

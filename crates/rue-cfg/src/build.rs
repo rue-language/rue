@@ -641,11 +641,9 @@ impl<'a> CfgBuilder<'a> {
                         mode: Self::convert_arg_mode(arg.mode),
                     });
                 }
-                // Convert Symbol to String for CFG (CFG will adopt Symbol in rue-iom9)
-                let name_str = self.interner.get(*name).to_string();
                 let value = self.emit(
                     CfgInstData::Call {
-                        name: name_str,
+                        name: *name,
                         args: arg_vals,
                     },
                     ty,
@@ -666,9 +664,11 @@ impl<'a> CfgBuilder<'a> {
                     };
                     arg_vals.push(val);
                 }
+                // Intern the intrinsic name since AIR still uses String
+                let name_sym = self.interner.intern(name);
                 let value = self.emit(
                     CfgInstData::Intrinsic {
-                        name: name.clone(),
+                        name: name_sym,
                         args: arg_vals,
                     },
                     ty,

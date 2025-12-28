@@ -7,6 +7,7 @@
 use rue_air::{ArrayTypeDef, StructDef};
 use rue_cfg::Cfg;
 use rue_error::CompileResult;
+use rue_intern::Interner;
 use rue_target::{Arch, Target};
 
 /// A slot on the stack (local variable or spill slot).
@@ -256,6 +257,7 @@ pub fn generate_stack_frame_info(
     struct_defs: &[StructDef],
     array_types: &[ArrayTypeDef],
     strings: &[String],
+    interner: &Interner,
     target: Target,
 ) -> CompileResult<StackFrameInfo> {
     match target.arch() {
@@ -265,6 +267,7 @@ pub fn generate_stack_frame_info(
             struct_defs,
             array_types,
             strings,
+            interner,
             target,
         ),
         Arch::Aarch64 => generate_aarch64_stack_frame(
@@ -273,6 +276,7 @@ pub fn generate_stack_frame_info(
             struct_defs,
             array_types,
             strings,
+            interner,
             target,
         ),
     }
@@ -285,6 +289,7 @@ fn generate_x86_64_stack_frame(
     struct_defs: &[StructDef],
     array_types: &[ArrayTypeDef],
     strings: &[String],
+    interner: &Interner,
     target: Target,
 ) -> CompileResult<StackFrameInfo> {
     use crate::x86_64::{CfgLower, RegAlloc};
@@ -293,7 +298,7 @@ fn generate_x86_64_stack_frame(
     let num_params = cfg.num_params();
 
     // Lower CFG to X86Mir with virtual registers
-    let mir = CfgLower::new(cfg, struct_defs, array_types, strings).lower();
+    let mir = CfgLower::new(cfg, struct_defs, array_types, strings, interner).lower();
 
     // Allocate physical registers (may add spill slots)
     let existing_slots = num_locals + num_params;
@@ -408,6 +413,7 @@ fn generate_aarch64_stack_frame(
     struct_defs: &[StructDef],
     array_types: &[ArrayTypeDef],
     strings: &[String],
+    interner: &Interner,
     target: Target,
 ) -> CompileResult<StackFrameInfo> {
     use crate::aarch64::{CfgLower, RegAlloc};
@@ -416,7 +422,7 @@ fn generate_aarch64_stack_frame(
     let num_params = cfg.num_params();
 
     // Lower CFG to Aarch64Mir with virtual registers
-    let mir = CfgLower::new(cfg, struct_defs, array_types, strings).lower();
+    let mir = CfgLower::new(cfg, struct_defs, array_types, strings, interner).lower();
 
     // Allocate physical registers (may add spill slots)
     let existing_slots = num_locals + num_params;
@@ -558,7 +564,7 @@ mod tests {
     use rue_intern::Interner;
     use rue_span::Span;
 
-    fn create_simple_cfg() -> (rue_cfg::Cfg, Vec<StructDef>, Vec<ArrayTypeDef>) {
+    fn create_simple_cfg() -> (rue_cfg::Cfg, Vec<StructDef>, Vec<ArrayTypeDef>, Interner) {
         let mut air = Air::new(Type::I32);
 
         let const_ref = air.add_inst(AirInst {
@@ -575,16 +581,24 @@ mod tests {
 
         let interner = Interner::new();
         let cfg_output = CfgBuilder::build(&air, 0, 0, "test", &[], &[], vec![], &interner);
-        (cfg_output.cfg, vec![], vec![])
+        (cfg_output.cfg, vec![], vec![], interner)
     }
 
     #[test]
     fn test_generate_stack_frame_info_x86_64() {
-        let (cfg, struct_defs, array_types) = create_simple_cfg();
+        let (cfg, struct_defs, array_types, interner) = create_simple_cfg();
         let target = Target::X86_64Linux;
 
-        let info = generate_stack_frame_info(&cfg, "test", &struct_defs, &array_types, &[], target)
-            .unwrap();
+        let info = generate_stack_frame_info(
+            &cfg,
+            "test",
+            &struct_defs,
+            &array_types,
+            &[],
+            &interner,
+            target,
+        )
+        .unwrap();
 
         assert_eq!(info.function_name, "test");
         assert_eq!(info.alignment, 16);

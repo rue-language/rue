@@ -144,7 +144,8 @@ pub fn format_cfg_inst_data(data: &rue_cfg::CfgInstData) -> String {
                 .map(|a| format!("{}", a.value))
                 .collect::<Vec<_>>()
                 .join(", ");
-            format!("call {}({})", name, args_str)
+            // Display symbol as @{id} since we don't have interner access
+            format!("call @{}({})", name.as_u32(), args_str)
         }
         CfgInstData::Intrinsic { name, args } => {
             let args_str = args
@@ -152,7 +153,8 @@ pub fn format_cfg_inst_data(data: &rue_cfg::CfgInstData) -> String {
                 .map(|a| format!("{}", a))
                 .collect::<Vec<_>>()
                 .join(", ");
-            format!("intrinsic @{}({})", name, args_str)
+            // Display symbol as @{id} since we don't have interner access
+            format!("intrinsic @{}({})", name.as_u32(), args_str)
         }
         CfgInstData::StructInit { struct_id, fields } => {
             let fields_str = fields

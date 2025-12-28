@@ -483,6 +483,7 @@ fn compile_x86_64(state: &CompileState, options: &CompileOptions) -> CompileResu
                 &state.struct_defs,
                 &state.array_types,
                 &state.strings,
+                &state.interner,
             )?;
             total_code_bytes += machine_code.code.len();
 
@@ -679,6 +680,7 @@ fn compile_aarch64(state: &CompileState, options: &CompileOptions) -> CompileRes
                 &state.struct_defs,
                 &state.array_types,
                 &state.strings,
+                &state.interner,
             )?;
             total_code_bytes += machine_code.code.len();
 
@@ -791,17 +793,30 @@ pub fn generate_mir(
     struct_defs: &[StructDef],
     array_types: &[ArrayTypeDef],
     strings: &[String],
+    interner: &Interner,
     target: Target,
 ) -> Mir {
     match target.arch() {
         Arch::X86_64 => {
-            let mir =
-                rue_codegen::x86_64::CfgLower::new(cfg, struct_defs, array_types, strings).lower();
+            let mir = rue_codegen::x86_64::CfgLower::new(
+                cfg,
+                struct_defs,
+                array_types,
+                strings,
+                interner,
+            )
+            .lower();
             Mir::X86_64(mir)
         }
         Arch::Aarch64 => {
-            let mir =
-                rue_codegen::aarch64::CfgLower::new(cfg, struct_defs, array_types, strings).lower();
+            let mir = rue_codegen::aarch64::CfgLower::new(
+                cfg,
+                struct_defs,
+                array_types,
+                strings,
+                interner,
+            )
+            .lower();
             Mir::Aarch64(mir)
         }
     }
@@ -816,6 +831,7 @@ pub fn generate_allocated_mir(
     struct_defs: &[StructDef],
     array_types: &[ArrayTypeDef],
     strings: &[String],
+    interner: &Interner,
     target: Target,
 ) -> CompileResult<Mir> {
     let num_locals = cfg.num_locals();
@@ -825,8 +841,14 @@ pub fn generate_allocated_mir(
     match target.arch() {
         Arch::X86_64 => {
             // Lower CFG to X86Mir with virtual registers
-            let mir =
-                rue_codegen::x86_64::CfgLower::new(cfg, struct_defs, array_types, strings).lower();
+            let mir = rue_codegen::x86_64::CfgLower::new(
+                cfg,
+                struct_defs,
+                array_types,
+                strings,
+                interner,
+            )
+            .lower();
 
             // Allocate physical registers
             let (mir, _num_spills, _used_callee_saved) =
@@ -836,8 +858,14 @@ pub fn generate_allocated_mir(
         }
         Arch::Aarch64 => {
             // Lower CFG to Aarch64Mir with virtual registers
-            let mir =
-                rue_codegen::aarch64::CfgLower::new(cfg, struct_defs, array_types, strings).lower();
+            let mir = rue_codegen::aarch64::CfgLower::new(
+                cfg,
+                struct_defs,
+                array_types,
+                strings,
+                interner,
+            )
+            .lower();
 
             // Allocate physical registers
             let (mir, _num_spills, _used_callee_saved) =
@@ -859,17 +887,30 @@ pub fn generate_liveness_info(
     struct_defs: &[StructDef],
     array_types: &[ArrayTypeDef],
     strings: &[String],
+    interner: &Interner,
     target: Target,
 ) -> rue_codegen::LivenessDebugInfo {
     match target.arch() {
         Arch::X86_64 => {
-            let mir =
-                rue_codegen::x86_64::CfgLower::new(cfg, struct_defs, array_types, strings).lower();
+            let mir = rue_codegen::x86_64::CfgLower::new(
+                cfg,
+                struct_defs,
+                array_types,
+                strings,
+                interner,
+            )
+            .lower();
             rue_codegen::x86_64::liveness::analyze_debug(&mir)
         }
         Arch::Aarch64 => {
-            let mir =
-                rue_codegen::aarch64::CfgLower::new(cfg, struct_defs, array_types, strings).lower();
+            let mir = rue_codegen::aarch64::CfgLower::new(
+                cfg,
+                struct_defs,
+                array_types,
+                strings,
+                interner,
+            )
+            .lower();
             rue_codegen::aarch64::liveness::analyze_debug(&mir)
         }
     }
@@ -886,19 +927,30 @@ pub fn generate_lowering_info(
     struct_defs: &[StructDef],
     array_types: &[ArrayTypeDef],
     strings: &[String],
+    interner: &Interner,
     target: Target,
 ) -> rue_codegen::LoweringDebugInfo {
     match target.arch() {
         Arch::X86_64 => {
-            let (_mir, debug_info) =
-                rue_codegen::x86_64::CfgLower::new(cfg, struct_defs, array_types, strings)
-                    .lower_with_debug();
+            let (_mir, debug_info) = rue_codegen::x86_64::CfgLower::new(
+                cfg,
+                struct_defs,
+                array_types,
+                strings,
+                interner,
+            )
+            .lower_with_debug();
             debug_info
         }
         Arch::Aarch64 => {
-            let (_mir, debug_info) =
-                rue_codegen::aarch64::CfgLower::new(cfg, struct_defs, array_types, strings)
-                    .lower_with_debug();
+            let (_mir, debug_info) = rue_codegen::aarch64::CfgLower::new(
+                cfg,
+                struct_defs,
+                array_types,
+                strings,
+                interner,
+            )
+            .lower_with_debug();
             debug_info
         }
     }
@@ -917,17 +969,28 @@ pub fn generate_emitted_asm(
     struct_defs: &[StructDef],
     array_types: &[ArrayTypeDef],
     strings: &[String],
+    interner: &Interner,
     target: Target,
 ) -> CompileResult<String> {
     match target.arch() {
         Arch::X86_64 => {
-            let (_machine_code, asm) =
-                rue_codegen::x86_64::generate_with_asm(cfg, struct_defs, array_types, strings)?;
+            let (_machine_code, asm) = rue_codegen::x86_64::generate_with_asm(
+                cfg,
+                struct_defs,
+                array_types,
+                strings,
+                interner,
+            )?;
             Ok(asm)
         }
         Arch::Aarch64 => {
-            let (_machine_code, asm) =
-                rue_codegen::aarch64::generate_with_asm(cfg, struct_defs, array_types, strings)?;
+            let (_machine_code, asm) = rue_codegen::aarch64::generate_with_asm(
+                cfg,
+                struct_defs,
+                array_types,
+                strings,
+                interner,
+            )?;
             Ok(asm)
         }
     }
@@ -943,6 +1006,7 @@ pub fn generate_regalloc_info(
     struct_defs: &[StructDef],
     array_types: &[ArrayTypeDef],
     strings: &[String],
+    interner: &Interner,
     target: Target,
 ) -> CompileResult<String> {
     match target.arch() {
@@ -952,6 +1016,7 @@ pub fn generate_regalloc_info(
                 struct_defs,
                 array_types,
                 strings,
+                interner,
             )?;
             Ok(debug_info.to_string())
         }
@@ -961,6 +1026,7 @@ pub fn generate_regalloc_info(
                 struct_defs,
                 array_types,
                 strings,
+                interner,
             )?;
             Ok(debug_info.to_string())
         }

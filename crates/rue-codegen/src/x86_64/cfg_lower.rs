@@ -31,6 +31,7 @@ use rue_air::{ArrayTypeDef, ArrayTypeId};
 use rue_cfg::{
     BasicBlock, BlockId, Cfg, CfgInstData, CfgValue, StructDef, StructId, Terminator, Type,
 };
+use rue_intern::Interner;
 
 use super::mir::{LabelId, Operand, Reg, VReg, X86Inst, X86Mir};
 use crate::cfg_lower::{FieldChainBase, IndexChainBase, IndexLevel};
@@ -51,6 +52,8 @@ pub struct CfgLower<'a> {
     array_types: &'a [ArrayTypeDef],
     /// String table from semantic analysis (indexed by StringId).
     strings: &'a [String],
+    /// Interner for resolving Symbol to string
+    interner: &'a Interner,
     mir: X86Mir,
     /// Maps CFG values to vregs
     value_map: HashMap<CfgValue, VReg>,
@@ -82,6 +85,7 @@ impl<'a> CfgLower<'a> {
         struct_defs: &'a [StructDef],
         array_types: &'a [ArrayTypeDef],
         strings: &'a [String],
+        interner: &'a Interner,
     ) -> Self {
         let num_locals = cfg.num_locals();
         let num_params = cfg.num_params();
@@ -90,6 +94,7 @@ impl<'a> CfgLower<'a> {
             struct_defs,
             array_types,
             strings,
+            interner,
             mir: X86Mir::new(),
             value_map: HashMap::new(),
             block_param_vregs: HashMap::new(),
@@ -1827,7 +1832,7 @@ impl<'a> CfgLower<'a> {
                 }
 
                 self.mir.push(X86Inst::CallRel {
-                    symbol: name.clone(),
+                    symbol: self.interner.get(*name).to_string(),
                 });
 
                 // Clean up stack arguments
@@ -1893,7 +1898,8 @@ impl<'a> CfgLower<'a> {
             }
 
             CfgInstData::Intrinsic { name, args } => {
-                if name == "dbg" {
+                let name_str = self.interner.get(*name);
+                if name_str == "dbg" {
                     let arg_val = args[0];
                     let arg_type = self.cfg.get_inst(arg_val).ty;
 
@@ -3463,7 +3469,14 @@ mod tests {
             &interner,
         );
 
-        CfgLower::new(&cfg_output.cfg, struct_defs, array_types, strings).lower()
+        CfgLower::new(
+            &cfg_output.cfg,
+            struct_defs,
+            array_types,
+            strings,
+            &interner,
+        )
+        .lower()
     }
 
     #[test]
