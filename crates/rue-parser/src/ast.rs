@@ -9,7 +9,7 @@ use std::fmt;
 use rue_span::Span;
 
 /// A complete source file (list of items).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Ast {
     pub items: Vec<Item>,
 }
@@ -18,7 +18,7 @@ pub struct Ast {
 ///
 /// Directives use the `@name(args)` syntax and appear before items or statements.
 /// For example: `@allow(unused_variable)`
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Directive {
     /// The directive name (without the @)
     pub name: Ident,
@@ -29,14 +29,14 @@ pub struct Directive {
 }
 
 /// An argument to a directive.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DirectiveArg {
     /// An identifier argument (e.g., `unused_variable` in `@allow(unused_variable)`)
     Ident(Ident),
 }
 
 /// A top-level item in a source file.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Item {
     Function(Function),
     Struct(StructDecl),
@@ -46,7 +46,7 @@ pub enum Item {
 }
 
 /// A struct declaration.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StructDecl {
     /// Directives applied to this struct (e.g., @copy)
     pub directives: Vec<Directive>,
@@ -59,7 +59,7 @@ pub struct StructDecl {
 }
 
 /// A field declaration in a struct.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FieldDecl {
     /// Field name
     pub name: Ident,
@@ -70,7 +70,7 @@ pub struct FieldDecl {
 }
 
 /// An enum declaration.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EnumDecl {
     /// Enum name
     pub name: Ident,
@@ -81,7 +81,7 @@ pub struct EnumDecl {
 }
 
 /// A variant in an enum declaration.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EnumVariant {
     /// Variant name
     pub name: Ident,
@@ -90,7 +90,7 @@ pub struct EnumVariant {
 }
 
 /// An impl block containing methods for a type.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ImplBlock {
     /// The type this impl block is for
     pub type_name: Ident,
@@ -103,7 +103,7 @@ pub struct ImplBlock {
 /// A user-defined destructor declaration.
 ///
 /// Syntax: `drop fn TypeName(self) { body }`
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DropFn {
     /// The struct type this destructor is for
     pub type_name: Ident,
@@ -116,7 +116,7 @@ pub struct DropFn {
 }
 
 /// A method definition in an impl block.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Method {
     /// Directives applied to this method
     pub directives: Vec<Directive>,
@@ -135,14 +135,14 @@ pub struct Method {
 }
 
 /// A self parameter in a method.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SelfParam {
     /// Span covering the `self` keyword
     pub span: Span,
 }
 
 /// A function definition.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Function {
     /// Directives applied to this function
     pub directives: Vec<Directive>,
@@ -176,7 +176,7 @@ impl Default for ParamMode {
 }
 
 /// A function parameter.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Param {
     /// Parameter passing mode (normal or inout)
     pub mode: ParamMode,
@@ -189,14 +189,14 @@ pub struct Param {
 }
 
 /// An identifier.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Ident {
     pub name: String,
     pub span: Span,
 }
 
 /// A type expression in the AST.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TypeExpr {
     /// A simple named type (e.g., i32, bool, MyStruct)
     Named(Ident),
@@ -238,13 +238,13 @@ impl fmt::Display for TypeExpr {
 }
 
 /// A unit literal expression - represents `()` or implicit unit.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UnitLit {
     pub span: Span,
 }
 
 /// An expression.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Expr {
     /// Integer literal
     Int(IntLit),
@@ -301,28 +301,28 @@ pub enum Expr {
 }
 
 /// An integer literal.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IntLit {
     pub value: u64,
     pub span: Span,
 }
 
 /// A string literal.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StringLit {
     pub value: String,
     pub span: Span,
 }
 
 /// A boolean literal.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BoolLit {
     pub value: bool,
     pub span: Span,
 }
 
 /// A binary expression.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BinaryExpr {
     pub left: Box<Expr>,
     pub op: BinaryOp,
@@ -358,7 +358,7 @@ pub enum BinaryOp {
 }
 
 /// A unary expression.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UnaryExpr {
     pub op: UnaryOp,
     pub operand: Box<Expr>,
@@ -374,14 +374,14 @@ pub enum UnaryOp {
 }
 
 /// A parenthesized expression.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ParenExpr {
     pub inner: Box<Expr>,
     pub span: Span,
 }
 
 /// A block expression containing statements and a final expression.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BlockExpr {
     /// Statements in the block
     pub statements: Vec<Statement>,
@@ -391,7 +391,7 @@ pub struct BlockExpr {
 }
 
 /// An if expression.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IfExpr {
     /// Condition (must be bool)
     pub cond: Box<Expr>,
@@ -403,7 +403,7 @@ pub struct IfExpr {
 }
 
 /// A match expression.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MatchExpr {
     /// The value being matched (scrutinee)
     pub scrutinee: Box<Expr>,
@@ -413,7 +413,7 @@ pub struct MatchExpr {
 }
 
 /// A single arm in a match expression.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MatchArm {
     /// The pattern to match
     pub pattern: Pattern,
@@ -423,7 +423,7 @@ pub struct MatchArm {
 }
 
 /// A pattern in a match arm.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Pattern {
     /// Wildcard pattern `_` - matches anything
     Wildcard(Span),
@@ -438,7 +438,7 @@ pub enum Pattern {
 }
 
 /// A negative integer literal pattern.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NegIntLit {
     /// The absolute value of the negative integer
     pub value: u64,
@@ -447,7 +447,7 @@ pub struct NegIntLit {
 }
 
 /// A path pattern (e.g., `Color::Red` for enum variant matching).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PathPattern {
     /// The type name (e.g., `Color`)
     pub type_name: Ident,
@@ -482,7 +482,7 @@ pub enum ArgMode {
 }
 
 /// An argument in a function call.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CallArg {
     /// The passing mode for this argument
     pub mode: ArgMode,
@@ -506,7 +506,7 @@ impl CallArg {
 }
 
 /// A function call expression.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CallExpr {
     /// Function name
     pub name: Ident,
@@ -516,7 +516,7 @@ pub struct CallExpr {
 }
 
 /// An argument to an intrinsic call (can be an expression or a type).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum IntrinsicArg {
     /// An expression argument (e.g., `@dbg(42)`)
     Expr(Expr),
@@ -525,7 +525,7 @@ pub enum IntrinsicArg {
 }
 
 /// An intrinsic call expression (e.g., `@dbg(42)` or `@size_of(i32)`).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IntrinsicCallExpr {
     /// Intrinsic name (without the @)
     pub name: Ident,
@@ -535,7 +535,7 @@ pub struct IntrinsicCallExpr {
 }
 
 /// A struct literal expression (e.g., `Point { x: 1, y: 2 }`).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StructLitExpr {
     /// Struct type name
     pub name: Ident,
@@ -545,7 +545,7 @@ pub struct StructLitExpr {
 }
 
 /// A field initializer in a struct literal.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FieldInit {
     /// Field name
     pub name: Ident,
@@ -555,7 +555,7 @@ pub struct FieldInit {
 }
 
 /// A field access expression (e.g., `point.x`).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FieldExpr {
     /// Base expression (the struct value)
     pub base: Box<Expr>,
@@ -565,7 +565,7 @@ pub struct FieldExpr {
 }
 
 /// A method call expression (e.g., `point.distance()`).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MethodCallExpr {
     /// Base expression (the receiver)
     pub receiver: Box<Expr>,
@@ -577,7 +577,7 @@ pub struct MethodCallExpr {
 }
 
 /// An array literal expression (e.g., `[1, 2, 3]`).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ArrayLitExpr {
     /// Array elements
     pub elements: Vec<Expr>,
@@ -585,7 +585,7 @@ pub struct ArrayLitExpr {
 }
 
 /// An array index expression (e.g., `arr[0]`).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IndexExpr {
     /// The array being indexed
     pub base: Box<Expr>,
@@ -595,7 +595,7 @@ pub struct IndexExpr {
 }
 
 /// A path expression (e.g., `Color::Red` for enum variant).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PathExpr {
     /// The type name (e.g., `Color`)
     pub type_name: Ident,
@@ -605,7 +605,7 @@ pub struct PathExpr {
 }
 
 /// An associated function call expression (e.g., `Point::origin()`).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AssocFnCallExpr {
     /// The type name (e.g., `Point`)
     pub type_name: Ident,
@@ -617,7 +617,7 @@ pub struct AssocFnCallExpr {
 }
 
 /// A statement (does not produce a value).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Statement {
     /// Let binding: `let x = expr;` or `let mut x = expr;`
     Let(LetStatement),
@@ -628,7 +628,7 @@ pub enum Statement {
 }
 
 /// A pattern in a let binding.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LetPattern {
     /// Named binding (e.g., `x`, `_unused`)
     Ident(Ident),
@@ -647,7 +647,7 @@ impl LetPattern {
 }
 
 /// A let binding statement.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LetStatement {
     /// Directives applied to this let binding
     pub directives: Vec<Directive>,
@@ -663,7 +663,7 @@ pub struct LetStatement {
 }
 
 /// An assignment statement.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AssignStatement {
     /// Assignment target (variable or field)
     pub target: AssignTarget,
@@ -673,7 +673,7 @@ pub struct AssignStatement {
 }
 
 /// An assignment target.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AssignTarget {
     /// Variable assignment (e.g., `x = 5`)
     Var(Ident),
@@ -684,7 +684,7 @@ pub enum AssignTarget {
 }
 
 /// A while loop expression.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WhileExpr {
     /// Condition (must be bool)
     pub cond: Box<Expr>,
@@ -694,7 +694,7 @@ pub struct WhileExpr {
 }
 
 /// An infinite loop expression.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LoopExpr {
     /// Loop body
     pub body: BlockExpr,
@@ -702,19 +702,19 @@ pub struct LoopExpr {
 }
 
 /// A break expression (exits the innermost loop).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BreakExpr {
     pub span: Span,
 }
 
 /// A continue expression (skips to the next iteration of the innermost loop).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ContinueExpr {
     pub span: Span,
 }
 
 /// A return expression (returns a value from the current function).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReturnExpr {
     /// The value to return (None for `return;` in unit-returning functions)
     pub value: Option<Box<Expr>>,
@@ -722,7 +722,7 @@ pub struct ReturnExpr {
 }
 
 /// A self expression (the `self` keyword in method bodies).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SelfExpr {
     pub span: Span,
 }
