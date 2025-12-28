@@ -6,8 +6,8 @@ use std::path::Path;
 use rue_compiler::{
     CompileOptions, DiagnosticFormatter, Lexer, LinkerMode, OptLevel, Parser, PreviewFeature,
     PreviewFeatures, SourceInfo, compile_frontend_from_ast_with_options, compile_with_options,
-    generate_allocated_mir, generate_emitted_asm, generate_liveness_info, generate_mir,
-    generate_regalloc_info, generate_stack_frame_info,
+    generate_allocated_mir, generate_emitted_asm, generate_liveness_info, generate_lowering_info,
+    generate_mir, generate_regalloc_info, generate_stack_frame_info,
 };
 use rue_rir::RirPrinter;
 use rue_target::Target;
@@ -25,6 +25,8 @@ enum EmitStage {
     Air,
     /// Emit CFG (control flow graph).
     Cfg,
+    /// Emit lowering (CFG to MIR instruction selection).
+    Lowering,
     /// Emit MIR (machine intermediate representation).
     Mir,
     /// Emit liveness analysis information.
@@ -59,6 +61,7 @@ impl std::str::FromStr for EmitStage {
             "rir" => Ok(EmitStage::Rir),
             "air" => Ok(EmitStage::Air),
             "cfg" => Ok(EmitStage::Cfg),
+            "lowering" => Ok(EmitStage::Lowering),
             "mir" => Ok(EmitStage::Mir),
             "liveness" => Ok(EmitStage::Liveness),
             "regalloc" => Ok(EmitStage::RegAlloc),
@@ -71,7 +74,7 @@ impl std::str::FromStr for EmitStage {
 
 impl EmitStage {
     fn all_names() -> &'static str {
-        "tokens, ast, rir, air, cfg, mir, liveness, regalloc, asm, stackframe"
+        "tokens, ast, rir, air, cfg, lowering, mir, liveness, regalloc, asm, stackframe"
     }
 }
 
@@ -362,6 +365,7 @@ fn handle_emit(source: &str, options: &Options, formatter: &DiagnosticFormatter)
             EmitStage::Rir
             | EmitStage::Air
             | EmitStage::Cfg
+            | EmitStage::Lowering
             | EmitStage::Mir
             | EmitStage::Liveness
             | EmitStage::RegAlloc
@@ -470,6 +474,21 @@ fn handle_emit(source: &str, options: &Options, formatter: &DiagnosticFormatter)
                 if let Some(ref state) = frontend_state {
                     for func in &state.functions {
                         println!("{}", func.cfg);
+                    }
+                }
+                println!();
+            }
+            EmitStage::Lowering => {
+                if let Some(ref state) = frontend_state {
+                    for func in &state.functions {
+                        let lowering_info = generate_lowering_info(
+                            &func.cfg,
+                            &state.struct_defs,
+                            &state.array_types,
+                            &state.strings,
+                            options.target,
+                        );
+                        print!("{}", lowering_info);
                     }
                 }
                 println!();
@@ -941,6 +960,10 @@ mod tests {
         assert_eq!("rir".parse::<EmitStage>().unwrap(), EmitStage::Rir);
         assert_eq!("air".parse::<EmitStage>().unwrap(), EmitStage::Air);
         assert_eq!("cfg".parse::<EmitStage>().unwrap(), EmitStage::Cfg);
+        assert_eq!(
+            "lowering".parse::<EmitStage>().unwrap(),
+            EmitStage::Lowering
+        );
         assert_eq!("mir".parse::<EmitStage>().unwrap(), EmitStage::Mir);
         assert_eq!(
             "liveness".parse::<EmitStage>().unwrap(),
@@ -967,8 +990,14 @@ mod tests {
     fn emit_stage_all_names() {
         assert_eq!(
             EmitStage::all_names(),
-            "tokens, ast, rir, air, cfg, mir, liveness, regalloc, asm, stackframe"
+            "tokens, ast, rir, air, cfg, lowering, mir, liveness, regalloc, asm, stackframe"
         );
+    }
+
+    #[test]
+    fn parse_emit_lowering() {
+        let opts = unwrap_options(parse_args_from(&["--emit", "lowering", "source.rue"]));
+        assert_eq!(opts.emit_stages, vec![EmitStage::Lowering]);
     }
 
     #[test]

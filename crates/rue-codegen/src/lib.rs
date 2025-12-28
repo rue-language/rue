@@ -284,6 +284,10 @@ pub fn format_offset(offset: i32) -> String {
 pub use x86_64::generate;
 
 // Re-export shared types
+pub use cfg_lower::{
+    BlockLoweringInfo, LoweringDebugInfo, LoweringDecision, TerminatorLoweringDecision,
+    format_cfg_inst_data, format_terminator,
+};
 pub use index_map::{Handle, IndexMap};
 pub use regalloc::{
     Allocation, InstructionLiveness, LivenessDebugInfo, RegAllocDebugInfo, linear_scan_with_debug,

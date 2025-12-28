@@ -990,6 +990,12 @@ impl Aarch64Mir {
         self.next_vreg
     }
 
+    /// Get the number of instructions.
+    #[inline]
+    pub fn inst_count(&self) -> usize {
+        self.instructions.len()
+    }
+
     /// Add an instruction.
     pub fn push(&mut self, inst: Aarch64Inst) {
         self.instructions.push(inst);

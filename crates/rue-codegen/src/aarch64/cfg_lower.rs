@@ -435,6 +435,188 @@ impl<'a> CfgLower<'a> {
         self.mir
     }
 
+    /// Lower CFG to Aarch64Mir with debug information about instruction selection.
+    ///
+    /// This is like `lower()` but also captures detailed information about
+    /// how each CFG instruction maps to MIR instructions.
+    pub fn lower_with_debug(mut self) -> (Aarch64Mir, crate::LoweringDebugInfo) {
+        use crate::cfg_lower::{format_cfg_inst_data, format_terminator};
+        use crate::{
+            BlockLoweringInfo, LoweringDebugInfo, LoweringDecision, TerminatorLoweringDecision,
+        };
+
+        let mut debug_info = LoweringDebugInfo {
+            fn_name: self.fn_name.to_string(),
+            target_arch: "aarch64".to_string(),
+            blocks: Vec::new(),
+        };
+
+        // Pre-allocate vregs for block parameters (same as lower())
+        for block in self.cfg.blocks() {
+            for (param_idx, (param_val, ty)) in block.params.iter().enumerate() {
+                let vreg = self.mir.alloc_vreg();
+                self.block_param_vregs
+                    .insert((block.id, param_idx as u32), vreg);
+                self.value_map.insert(*param_val, vreg);
+
+                if let Type::Struct(struct_id) = ty {
+                    let slot_count = self.type_slot_count(Type::Struct(*struct_id));
+                    let mut slot_vregs = vec![vreg];
+                    for _ in 1..slot_count {
+                        slot_vregs.push(self.mir.alloc_vreg());
+                    }
+                    self.struct_slot_vregs.insert(*param_val, slot_vregs);
+                }
+            }
+        }
+
+        // Lower each block with debug tracking
+        for block in self.cfg.blocks() {
+            let mut block_info = BlockLoweringInfo {
+                block_id: block.id,
+                instructions: Vec::new(),
+                terminator: None,
+            };
+
+            // Emit block label (except for entry block)
+            if block.id != self.cfg.entry {
+                self.mir.push(Aarch64Inst::Label {
+                    id: self.block_label(block.id),
+                });
+            }
+
+            // Lower each instruction with tracking
+            for &value in &block.insts {
+                // Skip if already lowered
+                if self.value_map.contains_key(&value) {
+                    continue;
+                }
+
+                let inst = self.cfg.get_inst(value);
+                let inst_before = self.mir.inst_count();
+
+                // Lower the instruction
+                self.lower_value(value);
+
+                let inst_after = self.mir.inst_count();
+
+                // Capture the generated instructions
+                let mir_insts: Vec<String> = self.mir.instructions()[inst_before..inst_after]
+                    .iter()
+                    .map(|i| format!("{}", i))
+                    .collect();
+
+                // Generate rationale for interesting cases
+                let rationale = self.get_lowering_rationale(&inst.data, inst.ty);
+
+                if !mir_insts.is_empty() {
+                    block_info.instructions.push(LoweringDecision {
+                        cfg_value: value,
+                        cfg_inst_desc: format_cfg_inst_data(&inst.data),
+                        cfg_type: inst.ty.name().to_string(),
+                        mir_insts,
+                        rationale,
+                    });
+                }
+            }
+
+            // Lower terminator with tracking
+            let term_before = self.mir.inst_count();
+            self.lower_terminator(block);
+            let term_after = self.mir.inst_count();
+
+            let term_mir_insts: Vec<String> = self.mir.instructions()[term_before..term_after]
+                .iter()
+                .map(|i| format!("{}", i))
+                .collect();
+
+            let term_rationale = self.get_terminator_rationale(&block.terminator);
+
+            block_info.terminator = Some(TerminatorLoweringDecision {
+                terminator_desc: format_terminator(&block.terminator),
+                mir_insts: term_mir_insts,
+                rationale: term_rationale,
+            });
+
+            debug_info.blocks.push(block_info);
+        }
+
+        (self.mir, debug_info)
+    }
+
+    /// Generate rationale for instruction lowering decisions.
+    fn get_lowering_rationale(&self, data: &CfgInstData, ty: Type) -> Option<String> {
+        match data {
+            CfgInstData::Add(_, _) | CfgInstData::Sub(_, _) | CfgInstData::Mul(_, _) => {
+                Some("With overflow check".to_string())
+            }
+            CfgInstData::Div(_, _) | CfgInstData::Mod(_, _) => {
+                if matches!(ty, Type::I8 | Type::I16 | Type::I32 | Type::I64) {
+                    Some("Signed division".to_string())
+                } else {
+                    Some("Unsigned division".to_string())
+                }
+            }
+            CfgInstData::Shr(_, _) => {
+                if matches!(ty, Type::I8 | Type::I16 | Type::I32 | Type::I64) {
+                    Some("Signed shift right (ASR) preserves sign bit".to_string())
+                } else {
+                    Some("Unsigned shift right (LSR) zero-extends".to_string())
+                }
+            }
+            CfgInstData::Call { args, .. } => {
+                let inout_count = args.iter().filter(|a| a.is_inout()).count();
+                let borrow_count = args.iter().filter(|a| a.is_borrow()).count();
+                if inout_count > 0 || borrow_count > 0 {
+                    Some(format!(
+                        "AAPCS64 with {} inout, {} borrow params (passed as pointers)",
+                        inout_count, borrow_count
+                    ))
+                } else if args.len() > 8 {
+                    Some("AAPCS64 with stack-passed arguments".to_string())
+                } else {
+                    None
+                }
+            }
+            CfgInstData::Param { index } => {
+                if self.cfg.is_param_inout(*index) {
+                    Some("Inout param: load pointer then dereference".to_string())
+                } else if (*index as usize) < ARG_REGS.len() {
+                    Some(format!(
+                        "From register {} (AAPCS64)",
+                        ARG_REGS[*index as usize]
+                    ))
+                } else {
+                    Some("From stack (AAPCS64, args > 8)".to_string())
+                }
+            }
+            CfgInstData::IndexGet { .. } | CfgInstData::IndexSet { .. } => {
+                Some("Includes bounds check".to_string())
+            }
+            _ => None,
+        }
+    }
+
+    /// Generate rationale for terminator lowering decisions.
+    fn get_terminator_rationale(&self, terminator: &Terminator) -> Option<String> {
+        match terminator {
+            Terminator::Branch { .. } => Some("Compare and branch".to_string()),
+            Terminator::Return { value } => {
+                if self.fn_name == "main" {
+                    Some("Main function: return value becomes exit code".to_string())
+                } else if value.is_some() {
+                    Some("Return value in X0 (AAPCS64)".to_string())
+                } else {
+                    None
+                }
+            }
+            Terminator::Switch { cases, .. } => {
+                Some(format!("Linear scan through {} cases", cases.len()))
+            }
+            _ => None,
+        }
+    }
+
     /// Lower a single basic block.
     fn lower_block(&mut self, block: &BasicBlock) {
         // Emit block label (except for entry block)

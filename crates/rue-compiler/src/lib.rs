@@ -155,8 +155,8 @@ pub fn validate_runtime() -> Result<(), String> {
 pub use rue_air::{Air, AnalyzedFunction, ArrayTypeDef, Sema, SemaOutput, StructDef, Type};
 pub use rue_cfg::{Cfg, CfgBuilder, CfgOutput, OptLevel};
 pub use rue_codegen::{
-    RegAllocDebugInfo, RelocationKind, StackFrameInfo, X86Mir, aarch64::Aarch64Mir,
-    generate_stack_frame_info,
+    LoweringDebugInfo, RegAllocDebugInfo, RelocationKind, StackFrameInfo, X86Mir,
+    aarch64::Aarch64Mir, generate_stack_frame_info,
 };
 pub use rue_error::{
     CompileError, CompileResult, CompileWarning, Diagnostic, ErrorKind, PreviewFeature,
@@ -769,6 +769,35 @@ pub fn generate_liveness_info(
             let mir =
                 rue_codegen::aarch64::CfgLower::new(cfg, struct_defs, array_types, strings).lower();
             rue_codegen::aarch64::liveness::analyze_debug(&mir)
+        }
+    }
+}
+
+/// Generate lowering debug information for a CFG.
+///
+/// This performs CFG-to-MIR lowering (instruction selection) and returns
+/// detailed information about how each CFG instruction maps to MIR instructions.
+///
+/// Used by `--emit lowering` to visualize the instruction selection process.
+pub fn generate_lowering_info(
+    cfg: &Cfg,
+    struct_defs: &[StructDef],
+    array_types: &[ArrayTypeDef],
+    strings: &[String],
+    target: Target,
+) -> rue_codegen::LoweringDebugInfo {
+    match target.arch() {
+        Arch::X86_64 => {
+            let (_mir, debug_info) =
+                rue_codegen::x86_64::CfgLower::new(cfg, struct_defs, array_types, strings)
+                    .lower_with_debug();
+            debug_info
+        }
+        Arch::Aarch64 => {
+            let (_mir, debug_info) =
+                rue_codegen::aarch64::CfgLower::new(cfg, struct_defs, array_types, strings)
+                    .lower_with_debug();
+            debug_info
         }
     }
 }
