@@ -185,21 +185,50 @@ fn main() -> i32 {
 exit_code = 3
 
 # =============================================================================
-# Types with Destructors (Phase 2+)
+# Types with Destructors (String)
 # =============================================================================
 
-# These tests are placeholders for future phases when we have types with
-# actual destructors (e.g., mutable strings). For now they just verify
-# the spec paragraphs exist and will be covered.
+# These tests verify destructor behavior using String, which has a destructor
+# that frees heap-allocated buffers when capacity > 0.
 
 [[case]]
 name = "type_with_destructor"
-spec = ["3.9:11"]
-description = "A type has a destructor if dropping requires cleanup"
-skip = true
+spec = ["3.9:11", "3.10:29"]
+description = "A type has a destructor if dropping requires cleanup (String drops heap buffer)"
 source = """
-// Placeholder: will test with mutable String when available
-fn main() -> i32 { 0 }
+fn main() -> i32 {
+    let mut s = String::new();
+    s.push_str("hello");
+    // s has heap allocation
+    0
+}  // String destructor frees heap buffer
+"""
+exit_code = 0
+
+[[case]]
+name = "type_with_destructor_literal_promoted"
+spec = ["3.9:11", "3.10:29", "3.10:21"]
+description = "String promoted from literal has destructor that frees heap"
+source = """
+fn main() -> i32 {
+    let mut s = "hello";
+    s.push_str("!");  // promotes to heap
+    // s now has capacity > 0
+    0
+}  // destructor frees the heap buffer
+"""
+exit_code = 0
+
+[[case]]
+name = "type_with_destructor_literal_no_heap"
+spec = ["3.9:11", "3.10:29"]
+description = "String literal (cap=0) has no cleanup action"
+source = """
+fn main() -> i32 {
+    let s = "hello";
+    // s is a literal with cap=0, no heap allocation
+    0
+}  // no heap to free
 """
 exit_code = 0
 
@@ -208,20 +237,42 @@ name = "struct_with_destructor_field"
 spec = ["3.9:12"]
 description = "Struct has destructor if any field has destructor"
 skip = true
+skip_reason = "Synthesized destructors for user structs not yet implemented - compiler generates call but runtime function missing"
 source = """
-// Placeholder: will test with struct containing String when available
-fn main() -> i32 { 0 }
+struct Container {
+    name: String,
+    value: i32,
+}
+
+fn main() -> i32 {
+    let mut s = String::new();
+    s.push_str("test");
+    let c = Container { name: s, value: 42 };
+    c.value
+}  // Container dropped: name field (String) is dropped, freeing heap
 """
-exit_code = 0
+exit_code = 42
 
 [[case]]
 name = "field_drop_order"
 spec = ["3.9:13"]
 description = "Fields dropped in declaration order"
 skip = true
+skip_reason = "Synthesized destructors for user structs not yet implemented - compiler generates call but runtime function missing"
 source = """
-// Placeholder: will test with observable drop order when available
-fn main() -> i32 { 0 }
+struct TwoStrings {
+    first: String,
+    second: String,
+}
+
+fn main() -> i32 {
+    let mut a = String::new();
+    a.push_str("first");
+    let mut b = String::new();
+    b.push_str("second");
+    let ts = TwoStrings { first: a, second: b };
+    0
+}  // TwoStrings dropped: first field dropped, then second field dropped
 """
 exit_code = 0
 
@@ -422,13 +473,14 @@ cfg foo (return_type: i32) {
 
 [[case]]
 name = "codegen_nontrivial_drop_call"
-spec = ["3.9:18"]
+spec = ["3.9:18", "3.10:29"]
 description = "Non-trivially droppable types generate destructor calls"
-skip = true
 source = """
-// Placeholder: will test with mutable String when available
-// Expected behavior: drop instruction generates call to __rue_drop_String
-fn main() -> i32 { 0 }
+fn main() -> i32 {
+    let mut s = String::new();
+    s.push_str("hello");
+    0
+}
 """
 exit_code = 0
 
@@ -524,14 +576,21 @@ exit_code = 42
 [[case]]
 name = "user_defined_destructor_runs_at_scope_exit"
 spec = ["3.9:25"]
-skip = true
 description = "User-defined destructor runs when value goes out of scope"
 source = """
-// This test will need observable side effects (e.g., intrinsics) to verify
-// For now it's skipped - will enable when we can observe destructor calls
-fn main() -> i32 { 0 }
+struct Counter { value: i32 }
+
+drop fn Counter(self) {
+    @dbg(self.value);
+}
+
+fn main() -> i32 {
+    let c = Counter { value: 99 };
+    0
+}  // Counter destructor runs, prints 99
 """
 exit_code = 0
+stdout = "99\n"
 
 [[case]]
 name = "duplicate_destructor_error"
@@ -561,26 +620,3 @@ fn main() -> i32 { 0 }
 compile_fail = true
 error_contains = "unknown type"
 
-[[case]]
-name = "destructor_for_primitive_error"
-spec = ["3.9:24"]
-description = "Destructor for primitive type produces an error"
-skip = true
-source = """
-// Primitive types are keywords, can't be used as the type name in drop fn
-// This would be a parse error. Skipping since parser rejects this already.
-fn main() -> i32 { 0 }
-"""
-compile_fail = true
-
-[[case]]
-name = "destructor_must_be_at_top_level"
-spec = ["3.9:22"]
-skip = true
-description = "Destructor declared inside impl block is an error"
-source = """
-// drop fn inside impl block would be a parse error
-// This test is skipped because the parser naturally rejects it
-fn main() -> i32 { 0 }
-"""
-compile_fail = true
