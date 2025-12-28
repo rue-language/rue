@@ -148,6 +148,8 @@ pub struct Emitter<'a> {
     callee_saved: Vec<Reg>,
     /// String table (indexed by string_id in StringConstPtr/StringConstLen).
     strings: &'a [String],
+    /// Whether a stack frame was emitted (prologue was executed).
+    has_frame: bool,
     /// Byte offset where the current instruction started (for recording).
     inst_start: usize,
 }
@@ -179,6 +181,7 @@ impl<'a> Emitter<'a> {
             num_params,
             callee_saved: callee_saved.to_vec(),
             strings,
+            has_frame: false,
             inst_start: 0,
         }
     }
@@ -273,6 +276,7 @@ impl<'a> Emitter<'a> {
 
         // Emit function prologue if we have local variables, parameters, or callee-saved regs
         if self.num_locals > 0 || self.num_params > 0 || !self.callee_saved.is_empty() {
+            self.has_frame = true;
             self.emit_prologue();
         }
 
@@ -385,6 +389,40 @@ impl<'a> Emitter<'a> {
         }
     }
 
+    /// Emit function epilogue (restore callee-saved registers and frame pointer).
+    ///
+    /// This reverses the prologue:
+    /// ```asm
+    /// lea rsp, [rbp - callee_saved_size]  ; Deallocate locals, point at callee-saved area
+    /// pop r13                              ; Restore callee-saved in reverse order
+    /// pop r12
+    /// pop rbp                              ; Restore caller's frame pointer
+    /// ```
+    fn emit_epilogue(&mut self) {
+        self.record_comment("epilogue");
+
+        // Point RSP at the callee-saved area (skip locals and alignment padding)
+        let size = self.callee_saved_size();
+        if !self.callee_saved.is_empty() || self.num_locals > 0 || self.num_params > 0 {
+            self.begin_inst();
+            self.emit_lea_rsp_rbp_offset(-size);
+            self.end_inst(format!("lea rsp, [rbp{}]", format_offset(-size)));
+        }
+
+        // Pop callee-saved registers in reverse order
+        let callee_saved: Vec<_> = self.callee_saved.iter().rev().copied().collect();
+        for reg in callee_saved {
+            self.begin_inst();
+            self.emit_pop(reg);
+            self.end_inst(format!("pop {}", reg));
+        }
+
+        // Pop rbp to restore caller's frame pointer
+        self.begin_inst();
+        self.emit_pop(Reg::Rbp);
+        self.end_inst("pop rbp");
+    }
+
     /// Apply all fixups for forward jumps.
     fn apply_fixups(&mut self) -> CompileResult<()> {
         for fixup in &self.fixups {
@@ -453,35 +491,9 @@ impl<'a> Emitter<'a> {
                 self.end_inst(format!("mov {}, {}", dst.as_physical(), *imm));
             }
             X86Inst::MovRR { dst, src } => {
-                // Detect epilogue pattern: mov rsp, rbp
-                // With our prologue (push rbp; mov rbp,rsp; push callee_saved...),
-                // callee-saved registers are BELOW rbp on the stack.
-                // We need to restore them before moving rsp to rbp.
-                if dst.as_physical() == Reg::Rsp
-                    && src.as_physical() == Reg::Rbp
-                    && !self.callee_saved.is_empty()
-                {
-                    self.record_comment("epilogue - restore callee-saved");
-                    // Instead of mov rsp, rbp (which skips callee-saved),
-                    // first point rsp at the callee-saved area, pop them, then pop rbp
-                    let size = self.callee_saved_size();
-                    // lea rsp, [rbp - callee_saved_size]
-                    self.begin_inst();
-                    self.emit_lea_rsp_rbp_offset(-size);
-                    self.end_inst(format!("lea rsp, [rbp{}]", -size));
-                    // Pop callee-saved in reverse order (last pushed = first popped)
-                    let callee_saved: Vec<_> = self.callee_saved.iter().rev().copied().collect();
-                    for reg in callee_saved {
-                        self.begin_inst();
-                        self.emit_pop(reg);
-                        self.end_inst(format!("pop {}", reg));
-                    }
-                    // Now rsp points at saved rbp, ready for pop rbp
-                } else {
-                    self.begin_inst();
-                    self.emit_mov_rr(dst.as_physical(), src.as_physical());
-                    self.end_inst(format!("mov {}, {}", dst.as_physical(), src.as_physical()));
-                }
+                self.begin_inst();
+                self.emit_mov_rr(dst.as_physical(), src.as_physical());
+                self.end_inst(format!("mov {}, {}", dst.as_physical(), src.as_physical()));
             }
             X86Inst::MovRM { dst, base, offset } => {
                 let adjusted_offset = self.adjust_fp_offset(*base, *offset);
@@ -852,39 +864,14 @@ impl<'a> Emitter<'a> {
                 self.end_inst("syscall");
             }
             X86Inst::Ret => {
-                // If we have callee-saved registers but no standard epilogue from lowerer,
-                // we still need to emit the epilogue to restore them.
-                // With our prologue order (push rbp; mov rbp,rsp; push callee_saved...; sub rsp,N),
-                // we need to: lea rsp,[rbp-callee_size]; pop callee-saved; pop rbp; ret
-                // We detect "no frame from MIR" by checking if we have callee_saved but
-                // num_locals and num_params are both 0 (meaning lowerer didn't emit epilogue).
-                if !self.callee_saved.is_empty() && self.num_locals == 0 && self.num_params == 0 {
-                    self.record_comment("epilogue - restore callee-saved");
-                    // Point RSP at the callee-saved area (skip any alignment padding)
-                    let size = self.callee_saved_size();
-                    self.begin_inst();
-                    self.emit_lea_rsp_rbp_offset(-size);
-                    self.end_inst(format!("lea rsp, [rbp{}]", -size));
-                    // Pop callee-saved in reverse order
-                    let callee_saved: Vec<_> = self.callee_saved.iter().rev().copied().collect();
-                    for reg in callee_saved {
-                        self.begin_inst();
-                        self.emit_pop(reg);
-                        self.end_inst(format!("pop {}", reg));
-                    }
-                    // Then pop rbp
-                    self.begin_inst();
-                    self.emit_pop(Reg::Rbp);
-                    self.end_inst("pop rbp");
+                if self.has_frame {
+                    self.emit_epilogue();
                 }
                 self.begin_inst();
                 self.emit_ret();
                 self.end_inst("ret");
             }
             X86Inst::Pop { dst } => {
-                // With our new prologue order (push rbp; mov rbp,rsp; push callee_saved...),
-                // callee-saved registers are restored in the MovRR handler when it sees
-                // the epilogue pattern (mov rsp, rbp). So we just emit a simple pop here.
                 self.begin_inst();
                 self.emit_pop(dst.as_physical());
                 self.end_inst(format!("pop {}", dst.as_physical()));

@@ -58,8 +58,6 @@ pub struct CfgLower<'a> {
     /// Inline labels (for overflow checks, bounds checks, etc.) use IDs from
     /// the lower half of the `u32` space. See module docs for namespace details.
     next_label: u32,
-    /// Whether this function has a stack frame
-    has_frame: bool,
     /// Number of local variable slots
     num_locals: u32,
     /// Number of parameter slots
@@ -93,7 +91,6 @@ impl<'a> CfgLower<'a> {
             value_map: HashMap::new(),
             block_param_vregs: HashMap::new(),
             next_label: 0,
-            has_frame: num_locals > 0 || num_params > 0,
             num_locals,
             num_params,
             fn_name: cfg.fn_name(),
@@ -309,17 +306,6 @@ impl<'a> CfgLower<'a> {
 
         // Continue with valid access
         self.mir.push(X86Inst::Label { id: ok_label });
-    }
-
-    /// Emit function epilogue.
-    fn emit_epilogue(&mut self) {
-        self.mir.push(X86Inst::MovRR {
-            dst: Operand::Physical(Reg::Rsp),
-            src: Operand::Physical(Reg::Rbp),
-        });
-        self.mir.push(X86Inst::Pop {
-            dst: Operand::Physical(Reg::Rbp),
-        });
     }
 
     /// Allocate a new inline label ID.
@@ -3277,9 +3263,6 @@ impl<'a> CfgLower<'a> {
             Terminator::Return { value } => {
                 // Handle `return;` without expression (unit-returning functions)
                 let Some(value) = value else {
-                    if self.has_frame {
-                        self.emit_epilogue();
-                    }
                     self.mir.push(X86Inst::Ret);
                     return;
                 };
@@ -3355,9 +3338,6 @@ impl<'a> CfgLower<'a> {
                         }
                     }
 
-                    if self.has_frame {
-                        self.emit_epilogue();
-                    }
                     self.mir.push(X86Inst::Ret);
                 } else {
                     let val_vreg = self.get_vreg(*value);
@@ -3365,9 +3345,6 @@ impl<'a> CfgLower<'a> {
                         dst: Operand::Physical(Reg::Rax),
                         src: Operand::Virtual(val_vreg),
                     });
-                    if self.has_frame {
-                        self.emit_epilogue();
-                    }
                     self.mir.push(X86Inst::Ret);
                 }
             }
