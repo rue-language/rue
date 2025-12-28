@@ -763,21 +763,9 @@ impl Expr {
 
 // Display implementations for AST pretty-printing
 
-/// Helper for indented printing.
-struct AstPrinter<'a> {
-    ast: &'a Ast,
-}
-
 impl fmt::Display for Ast {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let printer = AstPrinter { ast: self };
-        printer.fmt(f)
-    }
-}
-
-impl<'a> fmt::Display for AstPrinter<'a> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        for item in &self.ast.items {
+        for item in &self.items {
             match item {
                 Item::Function(func) => fmt_function(f, func, 0)?,
                 Item::Struct(s) => fmt_struct(f, s, 0)?,
