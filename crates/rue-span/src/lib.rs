@@ -52,6 +52,50 @@ impl Span {
         self.start == self.end
     }
 
+    /// Returns `true` if `other` is entirely contained within this span.
+    ///
+    /// A span `a` contains span `b` if `a.start <= b.start` and `b.end <= a.end`.
+    /// An empty span at a boundary is considered contained.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use rue_span::Span;
+    ///
+    /// let outer = Span::new(5, 20);
+    /// let inner = Span::new(10, 15);
+    /// let overlapping = Span::new(15, 25);
+    ///
+    /// assert!(outer.contains(inner));
+    /// assert!(!outer.contains(overlapping));
+    /// assert!(outer.contains(Span::point(10)));
+    /// ```
+    #[inline]
+    pub const fn contains(&self, other: Span) -> bool {
+        self.start <= other.start && other.end <= self.end
+    }
+
+    /// Returns `true` if this span contains the given byte position.
+    ///
+    /// The position is contained if `self.start <= pos < self.end`.
+    /// Note: the end position is exclusive, so `pos == self.end` returns `false`.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use rue_span::Span;
+    ///
+    /// let span = Span::new(5, 10);
+    /// assert!(!span.contains_pos(4));  // before span
+    /// assert!(span.contains_pos(5));   // at start (inclusive)
+    /// assert!(span.contains_pos(7));   // in middle
+    /// assert!(!span.contains_pos(10)); // at end (exclusive)
+    /// ```
+    #[inline]
+    pub const fn contains_pos(&self, pos: u32) -> bool {
+        self.start <= pos && pos < self.end
+    }
+
     /// Convert to a Range<usize> for slicing.
     #[inline]
     pub const fn as_range(&self) -> std::ops::Range<usize> {
@@ -606,5 +650,80 @@ mod tests {
         assert_eq!(index.line_col(0), (1, 1)); // 'a'
         assert_eq!(index.line_col(1), (1, 2)); // '\n'
         assert_eq!(index.line_col(2), (2, 1)); // 'b'
+    }
+
+    // ========================================================================
+    // Span::contains tests
+    // ========================================================================
+
+    #[test]
+    fn test_span_contains_span() {
+        let outer = Span::new(5, 20);
+
+        // Inner span fully contained
+        assert!(outer.contains(Span::new(5, 20))); // exact match
+        assert!(outer.contains(Span::new(5, 10))); // at start
+        assert!(outer.contains(Span::new(15, 20))); // at end
+        assert!(outer.contains(Span::new(10, 15))); // in middle
+
+        // Not contained
+        assert!(!outer.contains(Span::new(0, 5))); // before (touching)
+        assert!(!outer.contains(Span::new(0, 10))); // overlaps start
+        assert!(!outer.contains(Span::new(15, 25))); // overlaps end
+        assert!(!outer.contains(Span::new(20, 25))); // after (touching)
+        assert!(!outer.contains(Span::new(0, 25))); // encompasses outer
+    }
+
+    #[test]
+    fn test_span_contains_point() {
+        let outer = Span::new(5, 20);
+
+        // Point spans (empty spans)
+        assert!(outer.contains(Span::point(5))); // at start
+        assert!(outer.contains(Span::point(10))); // in middle
+        assert!(outer.contains(Span::point(20))); // at end (point is contained)
+
+        // Point spans outside
+        assert!(!outer.contains(Span::point(4))); // before
+        assert!(!outer.contains(Span::point(21))); // after
+    }
+
+    #[test]
+    fn test_span_contains_empty_span() {
+        let empty = Span::point(10);
+
+        // Empty span only contains itself
+        assert!(empty.contains(Span::point(10)));
+        assert!(!empty.contains(Span::point(9)));
+        assert!(!empty.contains(Span::new(10, 11)));
+    }
+
+    #[test]
+    fn test_span_contains_pos() {
+        let span = Span::new(5, 10);
+
+        // Before span
+        assert!(!span.contains_pos(0));
+        assert!(!span.contains_pos(4));
+
+        // At boundaries and inside
+        assert!(span.contains_pos(5)); // start (inclusive)
+        assert!(span.contains_pos(7)); // middle
+        assert!(span.contains_pos(9)); // just before end
+        assert!(!span.contains_pos(10)); // end (exclusive)
+
+        // After span
+        assert!(!span.contains_pos(11));
+        assert!(!span.contains_pos(100));
+    }
+
+    #[test]
+    fn test_span_contains_pos_empty_span() {
+        let empty = Span::point(10);
+
+        // Empty span contains no positions (start == end)
+        assert!(!empty.contains_pos(9));
+        assert!(!empty.contains_pos(10));
+        assert!(!empty.contains_pos(11));
     }
 }
