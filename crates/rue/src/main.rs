@@ -1,6 +1,8 @@
 use std::env;
 use std::fs;
+#[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
+#[cfg(unix)]
 use std::path::Path;
 
 use tracing::Level;
@@ -619,24 +621,27 @@ fn main() {
                 std::process::exit(1);
             }
 
-            // Make executable
-            let path = Path::new(&options.output_path);
-            match fs::metadata(path) {
-                Ok(metadata) => {
-                    let mut perms = metadata.permissions();
-                    perms.set_mode(0o755);
-                    if let Err(e) = fs::set_permissions(path, perms) {
+            // Make executable (Unix only)
+            #[cfg(unix)]
+            {
+                let path = Path::new(&options.output_path);
+                match fs::metadata(path) {
+                    Ok(metadata) => {
+                        let mut perms = metadata.permissions();
+                        perms.set_mode(0o755);
+                        if let Err(e) = fs::set_permissions(path, perms) {
+                            eprintln!(
+                                "Warning: could not set executable permissions on {}: {}",
+                                options.output_path, e
+                            );
+                        }
+                    }
+                    Err(e) => {
                         eprintln!(
-                            "Warning: could not set executable permissions on {}: {}",
+                            "Warning: could not read file metadata for {}: {}",
                             options.output_path, e
                         );
                     }
-                }
-                Err(e) => {
-                    eprintln!(
-                        "Warning: could not read file metadata for {}: {}",
-                        options.output_path, e
-                    );
                 }
             }
 
