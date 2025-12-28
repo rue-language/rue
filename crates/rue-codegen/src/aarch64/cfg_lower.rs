@@ -2554,7 +2554,8 @@ impl<'a> CfgLower<'a> {
                     dst: Operand::Virtual(sext_vreg),
                     src: Operand::Virtual(result_vreg),
                 });
-                self.mir.push(Aarch64Inst::CmpRR {
+                // Use 64-bit compare since sext_vreg is a 64-bit value
+                self.mir.push(Aarch64Inst::Cmp64RR {
                     src1: Operand::Virtual(result_vreg),
                     src2: Operand::Virtual(sext_vreg),
                 });
@@ -2570,7 +2571,8 @@ impl<'a> CfgLower<'a> {
                     dst: Operand::Virtual(sext_vreg),
                     src: Operand::Virtual(result_vreg),
                 });
-                self.mir.push(Aarch64Inst::CmpRR {
+                // Use 64-bit compare since sext_vreg is a 64-bit value
+                self.mir.push(Aarch64Inst::Cmp64RR {
                     src1: Operand::Virtual(result_vreg),
                     src2: Operand::Virtual(sext_vreg),
                 });
