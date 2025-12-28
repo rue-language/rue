@@ -9,7 +9,7 @@ use super::liveness::{self, LivenessInfo};
 use super::mir::{Aarch64Inst, Aarch64Mir, Operand, Reg, VReg};
 use crate::alloc_dst;
 use crate::index_map::IndexMap;
-use crate::regalloc::{Allocation, linear_scan};
+use crate::regalloc::{Allocation, RegAllocDebugInfo, linear_scan, linear_scan_with_debug};
 
 /// Available registers for allocation.
 ///
@@ -90,6 +90,23 @@ impl RegAlloc {
         Ok((self.mir, num_spills, used_callee_saved))
     }
 
+    /// Perform register allocation and return debug information.
+    ///
+    /// This is used by `--emit regalloc` to show allocation decisions.
+    pub fn allocate_with_debug(
+        mut self,
+    ) -> CompileResult<(Aarch64Mir, u32, Vec<Reg>, RegAllocDebugInfo<Reg>)> {
+        // Phase 1: Assign physical registers with debug info
+        let debug_info = self.assign_registers_with_debug();
+
+        // Phase 2: Rewrite instructions to use physical registers and insert spill code
+        self.rewrite_instructions()?;
+
+        let num_spills = self.num_spills;
+        let used_callee_saved = self.used_callee_saved;
+        Ok((self.mir, num_spills, used_callee_saved, debug_info))
+    }
+
     /// Assign physical registers to all virtual registers using linear scan.
     fn assign_registers(&mut self) {
         let (allocation, num_spills, used_callee_saved) = linear_scan(
@@ -101,6 +118,20 @@ impl RegAlloc {
         self.allocation = allocation;
         self.num_spills = num_spills;
         self.used_callee_saved = used_callee_saved;
+    }
+
+    /// Assign physical registers and also collect debug information.
+    fn assign_registers_with_debug(&mut self) -> RegAllocDebugInfo<Reg> {
+        let (allocation, num_spills, used_callee_saved, debug_info) = linear_scan_with_debug(
+            self.mir.vreg_count(),
+            &self.liveness,
+            ALLOCATABLE_REGS,
+            self.existing_locals,
+        );
+        self.allocation = allocation;
+        self.num_spills = num_spills;
+        self.used_callee_saved = used_callee_saved;
+        debug_info
     }
 
     fn rewrite_instructions(&mut self) -> CompileResult<()> {

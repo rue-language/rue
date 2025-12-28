@@ -155,7 +155,8 @@ pub fn validate_runtime() -> Result<(), String> {
 pub use rue_air::{Air, AnalyzedFunction, ArrayTypeDef, Sema, SemaOutput, StructDef, Type};
 pub use rue_cfg::{Cfg, CfgBuilder, CfgOutput, OptLevel};
 pub use rue_codegen::{
-    RelocationKind, StackFrameInfo, X86Mir, aarch64::Aarch64Mir, generate_stack_frame_info,
+    RegAllocDebugInfo, RelocationKind, StackFrameInfo, X86Mir, aarch64::Aarch64Mir,
+    generate_stack_frame_info,
 };
 pub use rue_error::{
     CompileError, CompileResult, CompileWarning, Diagnostic, ErrorKind, PreviewFeature,
@@ -798,6 +799,40 @@ pub fn generate_emitted_asm(
             // TODO: Implement emit_all for aarch64 in Phase 2
             let mir = generate_allocated_mir(cfg, struct_defs, array_types, strings, target)?;
             Ok(mir.format_assembly())
+        }
+    }
+}
+
+/// Generate register allocation debug information for a CFG.
+///
+/// This returns information about the register allocation process,
+/// including live ranges, interference edges, and allocation decisions.
+/// The output is formatted as a human-readable string.
+pub fn generate_regalloc_info(
+    cfg: &Cfg,
+    struct_defs: &[StructDef],
+    array_types: &[ArrayTypeDef],
+    strings: &[String],
+    target: Target,
+) -> CompileResult<String> {
+    match target.arch() {
+        Arch::X86_64 => {
+            let debug_info = rue_codegen::x86_64::generate_regalloc_info(
+                cfg,
+                struct_defs,
+                array_types,
+                strings,
+            )?;
+            Ok(debug_info.to_string())
+        }
+        Arch::Aarch64 => {
+            let debug_info = rue_codegen::aarch64::generate_regalloc_info(
+                cfg,
+                struct_defs,
+                array_types,
+                strings,
+            )?;
+            Ok(debug_info.to_string())
         }
     }
 }

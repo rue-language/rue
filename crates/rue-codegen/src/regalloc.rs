@@ -28,6 +28,7 @@
 //! longest time.
 
 use std::collections::{HashMap, HashSet};
+use std::fmt;
 
 use crate::index_map::IndexMap;
 use crate::vreg::VReg;
@@ -353,6 +354,85 @@ pub enum Allocation<Reg: Copy> {
     Spill(i32),
 }
 
+// ============================================================================
+// Register Allocation Debug Info
+// ============================================================================
+
+/// Debug information from register allocation.
+///
+/// This captures the decisions made by the register allocator for display
+/// via `--emit regalloc`. It includes live ranges, interference edges,
+/// final allocations, and spill information.
+#[derive(Debug, Clone)]
+pub struct RegAllocDebugInfo<Reg: Copy + Eq + std::hash::Hash> {
+    /// Live range for each virtual register: (vreg_index, start, end).
+    pub live_ranges: Vec<(u32, usize, usize)>,
+    /// Interference edges: pairs of vregs that are both live at the same point.
+    pub interference: Vec<(u32, u32)>,
+    /// Final allocation for each vreg: (vreg_index, allocation).
+    pub allocations: Vec<(u32, Allocation<Reg>)>,
+    /// Virtual registers that were spilled.
+    pub spills: Vec<u32>,
+    /// Callee-saved registers that were used.
+    pub callee_saved_used: Vec<Reg>,
+}
+
+impl<Reg: Copy + Eq + std::hash::Hash + fmt::Display> fmt::Display for RegAllocDebugInfo<Reg> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        writeln!(f, "Live Ranges:")?;
+        for (vreg, start, end) in &self.live_ranges {
+            writeln!(f, "  v{}: [{}, {})", vreg, start, end)?;
+        }
+        writeln!(f)?;
+
+        writeln!(f, "Interference Graph:")?;
+        if self.interference.is_empty() {
+            writeln!(f, "  (no interference)")?;
+        } else {
+            for (v1, v2) in &self.interference {
+                writeln!(f, "  v{} -- v{}", v1, v2)?;
+            }
+        }
+        writeln!(f)?;
+
+        writeln!(f, "Allocation:")?;
+        for (vreg, alloc) in &self.allocations {
+            match alloc {
+                Allocation::Register(reg) => writeln!(f, "  v{} -> {}", vreg, reg)?,
+                Allocation::Spill(offset) => writeln!(f, "  v{} -> [stack{}]", vreg, offset)?,
+            }
+        }
+        writeln!(f)?;
+
+        writeln!(f, "Spills:")?;
+        if self.spills.is_empty() {
+            writeln!(f, "  none")?;
+        } else {
+            for vreg in &self.spills {
+                write!(f, "  v{}", vreg)?;
+            }
+            writeln!(f)?;
+        }
+        writeln!(f)?;
+
+        writeln!(f, "Callee-saved registers used:")?;
+        if self.callee_saved_used.is_empty() {
+            writeln!(f, "  none")?;
+        } else {
+            write!(f, " ")?;
+            for (i, reg) in self.callee_saved_used.iter().enumerate() {
+                if i > 0 {
+                    write!(f, ", ")?;
+                }
+                write!(f, " {}", reg)?;
+            }
+            writeln!(f)?;
+        }
+
+        Ok(())
+    }
+}
+
 /// Perform linear scan register allocation.
 ///
 /// This function implements the core linear scan algorithm that is shared
@@ -466,6 +546,145 @@ pub fn linear_scan<Reg: Copy + Eq + std::hash::Hash>(
     }
 
     (allocation, num_spills, used_callee_saved)
+}
+
+/// Perform linear scan register allocation and return debug information.
+///
+/// This is the same as [`linear_scan`] but also collects debug information
+/// about the allocation process for display via `--emit regalloc`.
+pub fn linear_scan_with_debug<Reg: Copy + Eq + std::hash::Hash>(
+    vreg_count: u32,
+    liveness: &LivenessInfo<Reg>,
+    allocatable_regs: &[Reg],
+    existing_locals: u32,
+) -> (
+    IndexMap<VReg, Option<Allocation<Reg>>>,
+    u32,
+    Vec<Reg>,
+    RegAllocDebugInfo<Reg>,
+) {
+    let vreg_count_usize = vreg_count as usize;
+
+    // Initialize allocation map
+    let mut allocation: IndexMap<VReg, Option<Allocation<Reg>>> =
+        IndexMap::with_capacity(vreg_count_usize);
+    allocation.resize(vreg_count_usize, None);
+
+    // Spill slots start after existing locals
+    // Each local is 8 bytes, slot 0 is at [fp-8], etc.
+    let mut next_spill_offset = -((existing_locals as i32 + 1) * 8);
+    let mut num_spills = 0u32;
+    let mut used_callee_saved: Vec<Reg> = Vec::new();
+
+    // Debug info collections
+    let mut debug_live_ranges: Vec<(u32, usize, usize)> = Vec::new();
+    let mut debug_interference: Vec<(u32, u32)> = Vec::new();
+    let mut debug_spills: Vec<u32> = Vec::new();
+
+    // Collect vregs with live ranges and sort by start
+    let mut vregs_by_start: Vec<(VReg, LiveRange)> = Vec::with_capacity(vreg_count_usize);
+    for vreg_idx in 0..vreg_count {
+        let vreg = VReg::new(vreg_idx);
+        if let Some(&range) = liveness.range(vreg) {
+            vregs_by_start.push((vreg, range));
+            debug_live_ranges.push((vreg_idx, range.start, range.end));
+        }
+    }
+    vregs_by_start.sort_by_key(|(_, range)| range.start);
+
+    // Build interference graph: vregs that overlap
+    for i in 0..vregs_by_start.len() {
+        for j in (i + 1)..vregs_by_start.len() {
+            let (vreg1, range1) = &vregs_by_start[i];
+            let (vreg2, range2) = &vregs_by_start[j];
+            if range1.overlaps(range2) {
+                debug_interference.push((vreg1.index(), vreg2.index()));
+            }
+        }
+    }
+
+    // Track which registers are currently in use and when they become free
+    // Tuple: (vreg, physical reg, live range end)
+    let mut active: Vec<(VReg, Reg, usize)> = Vec::with_capacity(allocatable_regs.len());
+
+    for (vreg, range) in vregs_by_start {
+        // Expire old intervals - remove registers whose vregs are no longer live
+        active.retain(|&(_, _, end)| end >= range.start);
+
+        // Find registers currently in use
+        let used_regs: HashSet<Reg> = active.iter().map(|&(_, reg, _)| reg).collect();
+
+        // Try to find a free register
+        let mut allocated_reg = None;
+        for &reg in allocatable_regs {
+            if !used_regs.contains(&reg) {
+                allocated_reg = Some(reg);
+                break;
+            }
+        }
+
+        if let Some(reg) = allocated_reg {
+            // Assign this register
+            allocation[vreg] = Some(Allocation::Register(reg));
+            active.push((vreg, reg, range.end));
+            // Track callee-saved register usage
+            if !used_callee_saved.contains(&reg) {
+                used_callee_saved.push(reg);
+            }
+        } else {
+            // No free register - need to spill
+            // Strategy: spill the vreg with the longest remaining live range
+            // (including the current one)
+
+            // Find the vreg with the longest remaining range
+            let mut longest_idx = None;
+            let mut longest_end = range.end;
+            for (i, &(_, _, end)) in active.iter().enumerate() {
+                if end > longest_end {
+                    longest_end = end;
+                    longest_idx = Some(i);
+                }
+            }
+
+            if let Some(idx) = longest_idx {
+                // Spill the existing vreg with longest range
+                let (spilled_vreg, freed_reg, _) = active.remove(idx);
+                let spill_offset = next_spill_offset;
+                next_spill_offset -= 8;
+                num_spills += 1;
+                allocation[spilled_vreg] = Some(Allocation::Spill(spill_offset));
+                debug_spills.push(spilled_vreg.index());
+
+                // Give the freed register to the current vreg
+                allocation[vreg] = Some(Allocation::Register(freed_reg));
+                active.push((vreg, freed_reg, range.end));
+            } else {
+                // Current vreg has the longest range, spill it
+                let spill_offset = next_spill_offset;
+                next_spill_offset -= 8;
+                num_spills += 1;
+                allocation[vreg] = Some(Allocation::Spill(spill_offset));
+                debug_spills.push(vreg.index());
+            }
+        }
+    }
+
+    // Build final allocation list
+    let debug_allocations: Vec<(u32, Allocation<Reg>)> = allocation
+        .iter()
+        .enumerate()
+        .filter_map(|(idx, alloc)| alloc.map(|a| (idx as u32, a)))
+        .collect();
+
+    let debug_info = RegAllocDebugInfo {
+        live_ranges: debug_live_ranges,
+        interference: debug_interference,
+        allocations: debug_allocations,
+        spills: debug_spills,
+        callee_saved_used: used_callee_saved.clone(),
+    };
+
+    (allocation, num_spills, used_callee_saved, debug_info)
 }
 
 #[cfg(test)]

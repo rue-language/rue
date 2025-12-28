@@ -7,7 +7,7 @@ use rue_compiler::{
     CompileOptions, DiagnosticFormatter, Lexer, LinkerMode, OptLevel, Parser, PreviewFeature,
     PreviewFeatures, SourceInfo, compile_frontend_from_ast_with_options, compile_with_options,
     generate_allocated_mir, generate_emitted_asm, generate_liveness_info, generate_mir,
-    generate_stack_frame_info,
+    generate_regalloc_info, generate_stack_frame_info,
 };
 use rue_rir::RirPrinter;
 use rue_target::Target;
@@ -29,6 +29,8 @@ enum EmitStage {
     Mir,
     /// Emit liveness analysis information.
     Liveness,
+    /// Emit register allocation debug info.
+    RegAlloc,
     /// Emit assembly text.
     Asm,
     /// Emit stack frame layout per function.
@@ -59,6 +61,7 @@ impl std::str::FromStr for EmitStage {
             "cfg" => Ok(EmitStage::Cfg),
             "mir" => Ok(EmitStage::Mir),
             "liveness" => Ok(EmitStage::Liveness),
+            "regalloc" => Ok(EmitStage::RegAlloc),
             "asm" => Ok(EmitStage::Asm),
             "stackframe" => Ok(EmitStage::StackFrame),
             _ => Err(ParseEmitStageError(s.to_string())),
@@ -68,7 +71,7 @@ impl std::str::FromStr for EmitStage {
 
 impl EmitStage {
     fn all_names() -> &'static str {
-        "tokens, ast, rir, air, cfg, mir, liveness, asm, stackframe"
+        "tokens, ast, rir, air, cfg, mir, liveness, regalloc, asm, stackframe"
     }
 }
 
@@ -361,6 +364,7 @@ fn handle_emit(source: &str, options: &Options, formatter: &DiagnosticFormatter)
             | EmitStage::Cfg
             | EmitStage::Mir
             | EmitStage::Liveness
+            | EmitStage::RegAlloc
             | EmitStage::Asm
             | EmitStage::StackFrame => 2,
         })
@@ -500,6 +504,29 @@ fn handle_emit(source: &str, options: &Options, formatter: &DiagnosticFormatter)
                             options.target,
                         );
                         println!("{}", liveness_info);
+                    }
+                }
+                println!();
+            }
+            EmitStage::RegAlloc => {
+                println!("=== Register Allocation ({}) ===", options.target);
+                if let Some(ref state) = frontend_state {
+                    for func in &state.functions {
+                        println!("function {}:", func.analyzed.name);
+                        let regalloc_info = match generate_regalloc_info(
+                            &func.cfg,
+                            &state.struct_defs,
+                            &state.array_types,
+                            &state.strings,
+                            options.target,
+                        ) {
+                            Ok(info) => info,
+                            Err(e) => {
+                                eprintln!("{}", formatter.format_error(&e));
+                                return Err(());
+                            }
+                        };
+                        print!("{}", regalloc_info);
                     }
                 }
                 println!();
@@ -919,6 +946,10 @@ mod tests {
             "liveness".parse::<EmitStage>().unwrap(),
             EmitStage::Liveness
         );
+        assert_eq!(
+            "regalloc".parse::<EmitStage>().unwrap(),
+            EmitStage::RegAlloc
+        );
         assert_eq!("asm".parse::<EmitStage>().unwrap(), EmitStage::Asm);
         assert_eq!(
             "stackframe".parse::<EmitStage>().unwrap(),
@@ -936,8 +967,14 @@ mod tests {
     fn emit_stage_all_names() {
         assert_eq!(
             EmitStage::all_names(),
-            "tokens, ast, rir, air, cfg, mir, liveness, asm, stackframe"
+            "tokens, ast, rir, air, cfg, mir, liveness, regalloc, asm, stackframe"
         );
+    }
+
+    #[test]
+    fn parse_emit_regalloc() {
+        let opts = unwrap_options(parse_args_from(&["--emit", "regalloc", "source.rue"]));
+        assert_eq!(opts.emit_stages, vec![EmitStage::RegAlloc]);
     }
 
     #[test]
