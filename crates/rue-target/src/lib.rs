@@ -191,6 +191,16 @@ impl fmt::Display for ParseTargetError {
 
 impl std::error::Error for ParseTargetError {}
 
+impl Default for Target {
+    /// Returns the host target as the default.
+    ///
+    /// This allows code to write `Target::default()` instead of `Target::host()`,
+    /// which is useful for struct initialization with `..Default::default()`.
+    fn default() -> Self {
+        Self::host()
+    }
+}
+
 impl FromStr for Target {
     type Err = ParseTargetError;
 
@@ -352,5 +362,10 @@ mod tests {
         assert_eq!(Target::X86_64Linux.page_size(), 0x1000);
         assert_eq!(Target::Aarch64Linux.page_size(), 0x1000);
         assert_eq!(Target::Aarch64Macos.page_size(), 0x4000);
+    }
+
+    #[test]
+    fn test_default_returns_host() {
+        assert_eq!(Target::default(), Target::host());
     }
 }
