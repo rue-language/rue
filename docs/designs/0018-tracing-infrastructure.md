@@ -119,7 +119,7 @@ pub fn compile_frontend_with_options(...) -> CompileResult<...> {
   - Run `reindeer buckify`
   - Update crate BUCK files
 
-- [ ] **Phase 2: CLI and subscriber** - rue-irz1.2
+- [x] **Phase 2: CLI and subscriber** - rue-irz1.2
   - Initialize tracing-subscriber in main.rs
   - Add `--log-level` flag (off/error/warn/info/debug/trace)
   - Add `--log-format` flag (text/json)

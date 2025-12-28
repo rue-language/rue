@@ -3,6 +3,11 @@ use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 
+use tracing::Level;
+use tracing_subscriber::fmt::format::FmtSpan;
+use tracing_subscriber::prelude::*;
+use tracing_subscriber::{EnvFilter, fmt};
+
 use rue_compiler::{
     CompileOptions, DiagnosticFormatter, Lexer, LinkerMode, OptLevel, Parser, PreviewFeature,
     PreviewFeatures, SourceInfo, compile_frontend_from_ast_with_options, compile_with_options,
@@ -78,6 +83,110 @@ impl EmitStage {
     }
 }
 
+/// Log level for tracing output.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+enum LogLevel {
+    /// No logging output (default).
+    #[default]
+    Off,
+    /// Only errors.
+    Error,
+    /// Errors and warnings.
+    Warn,
+    /// Errors, warnings, and info.
+    Info,
+    /// Errors, warnings, info, and debug.
+    Debug,
+    /// All logging including trace.
+    Trace,
+}
+
+/// Error returned when parsing a log level fails.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ParseLogLevelError(String);
+
+impl std::fmt::Display for ParseLogLevelError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "unknown log level '{}'", self.0)
+    }
+}
+
+impl std::error::Error for ParseLogLevelError {}
+
+impl std::str::FromStr for LogLevel {
+    type Err = ParseLogLevelError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "off" => Ok(LogLevel::Off),
+            "error" => Ok(LogLevel::Error),
+            "warn" => Ok(LogLevel::Warn),
+            "info" => Ok(LogLevel::Info),
+            "debug" => Ok(LogLevel::Debug),
+            "trace" => Ok(LogLevel::Trace),
+            _ => Err(ParseLogLevelError(s.to_string())),
+        }
+    }
+}
+
+impl LogLevel {
+    fn all_names() -> &'static str {
+        "off, error, warn, info, debug, trace"
+    }
+
+    /// Convert to tracing Level, returns None for Off.
+    fn to_tracing_level(self) -> Option<Level> {
+        match self {
+            LogLevel::Off => None,
+            LogLevel::Error => Some(Level::ERROR),
+            LogLevel::Warn => Some(Level::WARN),
+            LogLevel::Info => Some(Level::INFO),
+            LogLevel::Debug => Some(Level::DEBUG),
+            LogLevel::Trace => Some(Level::TRACE),
+        }
+    }
+}
+
+/// Log format for tracing output.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+enum LogFormat {
+    /// Human-readable text format (default).
+    #[default]
+    Text,
+    /// Machine-readable JSON format.
+    Json,
+}
+
+/// Error returned when parsing a log format fails.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ParseLogFormatError(String);
+
+impl std::fmt::Display for ParseLogFormatError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "unknown log format '{}'", self.0)
+    }
+}
+
+impl std::error::Error for ParseLogFormatError {}
+
+impl std::str::FromStr for LogFormat {
+    type Err = ParseLogFormatError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "text" => Ok(LogFormat::Text),
+            "json" => Ok(LogFormat::Json),
+            _ => Err(ParseLogFormatError(s.to_string())),
+        }
+    }
+}
+
+impl LogFormat {
+    fn all_names() -> &'static str {
+        "text, json"
+    }
+}
+
 struct Options {
     source_path: String,
     output_path: String,
@@ -86,6 +195,8 @@ struct Options {
     linker: LinkerMode,
     opt_level: OptLevel,
     preview_features: PreviewFeatures,
+    log_level: LogLevel,
+    log_format: LogFormat,
 }
 
 /// Version string for the rue compiler.
@@ -117,6 +228,11 @@ fn print_usage() {
         "                       Features: {}",
         PreviewFeature::all_names()
     );
+    eprintln!("  --log-level <level>  Set logging level (default: off)");
+    eprintln!("                       Levels: {}", LogLevel::all_names());
+    eprintln!("                       Can also use RUST_LOG environment variable");
+    eprintln!("  --log-format <fmt>   Set logging format (default: text)");
+    eprintln!("                       Formats: {}", LogFormat::all_names());
     eprintln!("  --version            Show version information");
     eprintln!("  --help               Show this help message");
 }
@@ -143,6 +259,8 @@ fn parse_args_from(args: &[&str]) -> ParseResult {
     let mut linker: Option<LinkerMode> = None;
     let mut opt_level: Option<OptLevel> = None;
     let mut preview_features = PreviewFeatures::new();
+    let mut log_level: Option<LogLevel> = None;
+    let mut log_format: Option<LogFormat> = None;
     let mut positional = Vec::new();
     let mut args_iter = args.iter().peekable();
 
@@ -206,6 +324,36 @@ fn parse_args_from(args: &[&str]) -> ParseResult {
                     }
                 }
             }
+            "--log-level" => {
+                let Some(level_str) = args_iter.next() else {
+                    eprintln!("Error: --log-level requires a value");
+                    eprintln!("Valid levels: {}", LogLevel::all_names());
+                    return ParseResult::Error;
+                };
+                match level_str.parse::<LogLevel>() {
+                    Ok(level) => log_level = Some(level),
+                    Err(e) => {
+                        eprintln!("Error: {}", e);
+                        eprintln!("Valid levels: {}", LogLevel::all_names());
+                        return ParseResult::Error;
+                    }
+                }
+            }
+            "--log-format" => {
+                let Some(format_str) = args_iter.next() else {
+                    eprintln!("Error: --log-format requires a value");
+                    eprintln!("Valid formats: {}", LogFormat::all_names());
+                    return ParseResult::Error;
+                };
+                match format_str.parse::<LogFormat>() {
+                    Ok(format) => log_format = Some(format),
+                    Err(e) => {
+                        eprintln!("Error: {}", e);
+                        eprintln!("Valid formats: {}", LogFormat::all_names());
+                        return ParseResult::Error;
+                    }
+                }
+            }
             "--help" | "-h" => {
                 print_usage();
                 return ParseResult::Exit;
@@ -255,6 +403,8 @@ fn parse_args_from(args: &[&str]) -> ParseResult {
         linker: linker.unwrap_or_default(),
         opt_level: opt_level.unwrap_or_default(),
         preview_features,
+        log_level: log_level.unwrap_or_default(),
+        log_format: log_format.unwrap_or_default(),
     })
 }
 
@@ -269,11 +419,79 @@ fn parse_args() -> Option<Options> {
     }
 }
 
+/// Initialize the tracing subscriber based on CLI options and RUST_LOG.
+///
+/// Priority: RUST_LOG environment variable takes precedence over --log-level flag.
+/// If neither is set and log_level is Off, no subscriber is installed.
+fn init_tracing(log_level: LogLevel, log_format: LogFormat) {
+    // Check if RUST_LOG is set - it takes priority
+    let rust_log = env::var("RUST_LOG").ok();
+
+    // Determine if we should enable logging
+    let effective_level = if rust_log.is_some() {
+        // RUST_LOG is set, we'll use it for filtering
+        Some(Level::TRACE) // Allow all, let EnvFilter handle it
+    } else {
+        log_level.to_tracing_level()
+    };
+
+    // If logging is effectively off, don't install a subscriber
+    if effective_level.is_none() {
+        return;
+    }
+
+    // Build the filter
+    let filter = if let Some(rust_log) = rust_log {
+        // Use RUST_LOG value
+        EnvFilter::try_new(rust_log).unwrap_or_else(|e| {
+            eprintln!("Warning: invalid RUST_LOG value, using default: {}", e);
+            EnvFilter::new(format!(
+                "{}",
+                log_level.to_tracing_level().unwrap_or(Level::INFO)
+            ))
+        })
+    } else {
+        // Use --log-level value
+        EnvFilter::new(format!(
+            "{}",
+            log_level.to_tracing_level().unwrap_or(Level::INFO)
+        ))
+    };
+
+    // Build and install the subscriber based on format
+    match log_format {
+        LogFormat::Text => {
+            let subscriber = tracing_subscriber::registry().with(filter).with(
+                fmt::layer()
+                    .with_target(true)
+                    .with_span_events(FmtSpan::CLOSE)
+                    .with_writer(std::io::stderr),
+            );
+            tracing::subscriber::set_global_default(subscriber)
+                .expect("failed to set tracing subscriber");
+        }
+        LogFormat::Json => {
+            let subscriber = tracing_subscriber::registry().with(filter).with(
+                fmt::layer()
+                    .json()
+                    .with_target(true)
+                    .with_span_events(FmtSpan::CLOSE)
+                    .with_writer(std::io::stderr),
+            );
+            tracing::subscriber::set_global_default(subscriber)
+                .expect("failed to set tracing subscriber");
+        }
+    }
+}
+
 fn main() {
     let options = match parse_args() {
         Some(opts) => opts,
         None => std::process::exit(1),
     };
+
+    // Initialize tracing based on CLI options
+    init_tracing(options.log_level, options.log_format);
 
     // Read source
     let source = fs::read_to_string(&options.source_path).unwrap_or_else(|e| {
@@ -845,6 +1063,86 @@ mod tests {
         ])));
     }
 
+    // ========== --log-level tests ==========
+
+    #[test]
+    fn parse_log_level_off() {
+        let opts = unwrap_options(parse_args_from(&["--log-level", "off", "source.rue"]));
+        assert_eq!(opts.log_level, LogLevel::Off);
+    }
+
+    #[test]
+    fn parse_log_level_error() {
+        let opts = unwrap_options(parse_args_from(&["--log-level", "error", "source.rue"]));
+        assert_eq!(opts.log_level, LogLevel::Error);
+    }
+
+    #[test]
+    fn parse_log_level_warn() {
+        let opts = unwrap_options(parse_args_from(&["--log-level", "warn", "source.rue"]));
+        assert_eq!(opts.log_level, LogLevel::Warn);
+    }
+
+    #[test]
+    fn parse_log_level_info() {
+        let opts = unwrap_options(parse_args_from(&["--log-level", "info", "source.rue"]));
+        assert_eq!(opts.log_level, LogLevel::Info);
+    }
+
+    #[test]
+    fn parse_log_level_debug() {
+        let opts = unwrap_options(parse_args_from(&["--log-level", "debug", "source.rue"]));
+        assert_eq!(opts.log_level, LogLevel::Debug);
+    }
+
+    #[test]
+    fn parse_log_level_trace() {
+        let opts = unwrap_options(parse_args_from(&["--log-level", "trace", "source.rue"]));
+        assert_eq!(opts.log_level, LogLevel::Trace);
+    }
+
+    #[test]
+    fn parse_log_level_missing_value() {
+        assert!(is_error(&parse_args_from(&["source.rue", "--log-level"])));
+    }
+
+    #[test]
+    fn parse_log_level_invalid() {
+        assert!(is_error(&parse_args_from(&[
+            "--log-level",
+            "invalid",
+            "source.rue"
+        ])));
+    }
+
+    // ========== --log-format tests ==========
+
+    #[test]
+    fn parse_log_format_text() {
+        let opts = unwrap_options(parse_args_from(&["--log-format", "text", "source.rue"]));
+        assert_eq!(opts.log_format, LogFormat::Text);
+    }
+
+    #[test]
+    fn parse_log_format_json() {
+        let opts = unwrap_options(parse_args_from(&["--log-format", "json", "source.rue"]));
+        assert_eq!(opts.log_format, LogFormat::Json);
+    }
+
+    #[test]
+    fn parse_log_format_missing_value() {
+        assert!(is_error(&parse_args_from(&["source.rue", "--log-format"])));
+    }
+
+    #[test]
+    fn parse_log_format_invalid() {
+        assert!(is_error(&parse_args_from(&[
+            "--log-format",
+            "invalid",
+            "source.rue"
+        ])));
+    }
+
     // ========== --help and --version tests ==========
 
     #[test]
@@ -951,6 +1249,18 @@ mod tests {
         assert!(opts.emit_stages.is_empty());
     }
 
+    #[test]
+    fn parse_defaults_log_level() {
+        let opts = unwrap_options(parse_args_from(&["source.rue"]));
+        assert_eq!(opts.log_level, LogLevel::Off);
+    }
+
+    #[test]
+    fn parse_defaults_log_format() {
+        let opts = unwrap_options(parse_args_from(&["source.rue"]));
+        assert_eq!(opts.log_format, LogFormat::Text);
+    }
+
     // ========== EmitStage FromStr tests ==========
 
     #[test]
@@ -1016,5 +1326,60 @@ mod tests {
     fn parse_emit_liveness() {
         let opts = unwrap_options(parse_args_from(&["--emit", "liveness", "source.rue"]));
         assert_eq!(opts.emit_stages, vec![EmitStage::Liveness]);
+    }
+
+    // ========== LogLevel FromStr tests ==========
+
+    #[test]
+    fn log_level_from_str_all_valid() {
+        assert_eq!("off".parse::<LogLevel>().unwrap(), LogLevel::Off);
+        assert_eq!("error".parse::<LogLevel>().unwrap(), LogLevel::Error);
+        assert_eq!("warn".parse::<LogLevel>().unwrap(), LogLevel::Warn);
+        assert_eq!("info".parse::<LogLevel>().unwrap(), LogLevel::Info);
+        assert_eq!("debug".parse::<LogLevel>().unwrap(), LogLevel::Debug);
+        assert_eq!("trace".parse::<LogLevel>().unwrap(), LogLevel::Trace);
+    }
+
+    #[test]
+    fn log_level_from_str_invalid() {
+        let err = "invalid".parse::<LogLevel>().unwrap_err();
+        assert_eq!(err.to_string(), "unknown log level 'invalid'");
+    }
+
+    #[test]
+    fn log_level_all_names() {
+        assert_eq!(
+            LogLevel::all_names(),
+            "off, error, warn, info, debug, trace"
+        );
+    }
+
+    #[test]
+    fn log_level_to_tracing_level() {
+        assert!(LogLevel::Off.to_tracing_level().is_none());
+        assert_eq!(LogLevel::Error.to_tracing_level(), Some(Level::ERROR));
+        assert_eq!(LogLevel::Warn.to_tracing_level(), Some(Level::WARN));
+        assert_eq!(LogLevel::Info.to_tracing_level(), Some(Level::INFO));
+        assert_eq!(LogLevel::Debug.to_tracing_level(), Some(Level::DEBUG));
+        assert_eq!(LogLevel::Trace.to_tracing_level(), Some(Level::TRACE));
+    }
+
+    // ========== LogFormat FromStr tests ==========
+
+    #[test]
+    fn log_format_from_str_all_valid() {
+        assert_eq!("text".parse::<LogFormat>().unwrap(), LogFormat::Text);
+        assert_eq!("json".parse::<LogFormat>().unwrap(), LogFormat::Json);
+    }
+
+    #[test]
+    fn log_format_from_str_invalid() {
+        let err = "invalid".parse::<LogFormat>().unwrap_err();
+        assert_eq!(err.to_string(), "unknown log format 'invalid'");
+    }
+
+    #[test]
+    fn log_format_all_names() {
+        assert_eq!(LogFormat::all_names(), "text, json");
     }
 }
