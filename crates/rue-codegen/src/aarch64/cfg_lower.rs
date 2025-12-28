@@ -827,34 +827,6 @@ impl<'a> CfgLower<'a> {
                 self.emit_comparison(value, *lhs, *rhs, cond);
             }
 
-            CfgInstData::And(lhs, rhs) => {
-                let vreg = self.mir.alloc_vreg();
-                self.value_map.insert(value, vreg);
-
-                let lhs_vreg = self.get_vreg(*lhs);
-                let rhs_vreg = self.get_vreg(*rhs);
-
-                self.mir.push(Aarch64Inst::AndRR {
-                    dst: Operand::Virtual(vreg),
-                    src1: Operand::Virtual(lhs_vreg),
-                    src2: Operand::Virtual(rhs_vreg),
-                });
-            }
-
-            CfgInstData::Or(lhs, rhs) => {
-                let vreg = self.mir.alloc_vreg();
-                self.value_map.insert(value, vreg);
-
-                let lhs_vreg = self.get_vreg(*lhs);
-                let rhs_vreg = self.get_vreg(*rhs);
-
-                self.mir.push(Aarch64Inst::OrrRR {
-                    dst: Operand::Virtual(vreg),
-                    src1: Operand::Virtual(lhs_vreg),
-                    src2: Operand::Virtual(rhs_vreg),
-                });
-            }
-
             CfgInstData::BitNot(operand) => {
                 let vreg = self.mir.alloc_vreg();
                 self.value_map.insert(value, vreg);

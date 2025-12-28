@@ -164,8 +164,6 @@ fn instruction_uses(cfg: &Cfg, value: CfgValue) -> Vec<CfgValue> {
         | CfgInstData::Gt(lhs, rhs)
         | CfgInstData::Le(lhs, rhs)
         | CfgInstData::Ge(lhs, rhs)
-        | CfgInstData::And(lhs, rhs)
-        | CfgInstData::Or(lhs, rhs)
         | CfgInstData::BitAnd(lhs, rhs)
         | CfgInstData::BitOr(lhs, rhs)
         | CfgInstData::BitXor(lhs, rhs)

@@ -1136,40 +1136,6 @@ impl<'a> CfgLower<'a> {
                 });
             }
 
-            CfgInstData::And(lhs, rhs) => {
-                let vreg = self.mir.alloc_vreg();
-                self.value_map.insert(value, vreg);
-
-                let lhs_vreg = self.get_vreg(*lhs);
-                let rhs_vreg = self.get_vreg(*rhs);
-
-                self.mir.push(X86Inst::MovRR {
-                    dst: Operand::Virtual(vreg),
-                    src: Operand::Virtual(lhs_vreg),
-                });
-                self.mir.push(X86Inst::AndRR {
-                    dst: Operand::Virtual(vreg),
-                    src: Operand::Virtual(rhs_vreg),
-                });
-            }
-
-            CfgInstData::Or(lhs, rhs) => {
-                let vreg = self.mir.alloc_vreg();
-                self.value_map.insert(value, vreg);
-
-                let lhs_vreg = self.get_vreg(*lhs);
-                let rhs_vreg = self.get_vreg(*rhs);
-
-                self.mir.push(X86Inst::MovRR {
-                    dst: Operand::Virtual(vreg),
-                    src: Operand::Virtual(lhs_vreg),
-                });
-                self.mir.push(X86Inst::OrRR {
-                    dst: Operand::Virtual(vreg),
-                    src: Operand::Virtual(rhs_vreg),
-                });
-            }
-
             CfgInstData::Alloc { slot, init } => {
                 let init_type = self.cfg.get_inst(*init).ty;
                 if matches!(init_type, Type::Array(_)) {

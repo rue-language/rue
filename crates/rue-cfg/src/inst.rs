@@ -143,10 +143,6 @@ pub enum CfgInstData {
     Le(CfgValue, CfgValue),
     Ge(CfgValue, CfgValue),
 
-    // Logical operations (return bool)
-    And(CfgValue, CfgValue),
-    Or(CfgValue, CfgValue),
-
     // Bitwise operations
     BitAnd(CfgValue, CfgValue),
     BitOr(CfgValue, CfgValue),
@@ -705,8 +701,6 @@ impl Cfg {
             CfgInstData::Gt(lhs, rhs) => write!(f, "gt {}, {}", lhs, rhs),
             CfgInstData::Le(lhs, rhs) => write!(f, "le {}, {}", lhs, rhs),
             CfgInstData::Ge(lhs, rhs) => write!(f, "ge {}, {}", lhs, rhs),
-            CfgInstData::And(lhs, rhs) => write!(f, "and {}, {}", lhs, rhs),
-            CfgInstData::Or(lhs, rhs) => write!(f, "or {}, {}", lhs, rhs),
             CfgInstData::BitAnd(lhs, rhs) => write!(f, "bit_and {}, {}", lhs, rhs),
             CfgInstData::BitOr(lhs, rhs) => write!(f, "bit_or {}, {}", lhs, rhs),
             CfgInstData::BitXor(lhs, rhs) => write!(f, "bit_xor {}, {}", lhs, rhs),

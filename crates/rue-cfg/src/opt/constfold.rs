@@ -81,10 +81,6 @@ fn fold_instruction(cfg: &mut Cfg, value: CfgValue) {
             fold_comparison_signed(cfg, *lhs, *rhs, lhs_ty, |a, b| a >= b, |a, b| a >= b)
         }
 
-        // Logical (bool -> bool)
-        CfgInstData::And(lhs, rhs) => fold_logical(cfg, *lhs, *rhs, |a, b| a && b),
-        CfgInstData::Or(lhs, rhs) => fold_logical(cfg, *lhs, *rhs, |a, b| a || b),
-
         // Bitwise
         CfgInstData::BitAnd(lhs, rhs) => fold_binary_arith(cfg, *lhs, *rhs, ty, |a, b| Some(a & b)),
         CfgInstData::BitOr(lhs, rhs) => fold_binary_arith(cfg, *lhs, *rhs, ty, |a, b| Some(a | b)),
@@ -162,17 +158,6 @@ where
         unsigned_op(lhs_val, rhs_val)
     };
 
-    Some(CfgInstData::BoolConst(result))
-}
-
-/// Try to fold a logical operation on two constant boolean operands.
-fn fold_logical<F>(cfg: &Cfg, lhs: CfgValue, rhs: CfgValue, op: F) -> Option<CfgInstData>
-where
-    F: FnOnce(bool, bool) -> bool,
-{
-    let lhs_val = get_const_bool(cfg, lhs)?;
-    let rhs_val = get_const_bool(cfg, rhs)?;
-    let result = op(lhs_val, rhs_val);
     Some(CfgInstData::BoolConst(result))
 }
 
@@ -501,31 +486,6 @@ mod tests {
         match &cfg.get_inst(add).data {
             CfgInstData::Add(_, _) => {}
             other => panic!("Expected Add to remain unfold, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn test_fold_logical_and() {
-        let mut cfg = make_cfg();
-        let c1 = add_bool_const(&mut cfg, true);
-        let c2 = add_bool_const(&mut cfg, false);
-        let entry = cfg.entry;
-        let and_val = cfg.add_inst_to_block(
-            entry,
-            CfgInst {
-                data: CfgInstData::And(c1, c2),
-                ty: Type::Bool,
-                span: Span::new(0, 0),
-            },
-        );
-        finalize_cfg(&mut cfg, and_val);
-
-        run(&mut cfg);
-
-        // true && false = false
-        match &cfg.get_inst(and_val).data {
-            CfgInstData::BoolConst(false) => {}
-            other => panic!("Expected BoolConst(false), got {:?}", other),
         }
     }
 
