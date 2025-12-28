@@ -726,6 +726,10 @@ pub fn find_dir(env_var: &str, possible_paths: &[&str], fallback: &str) -> PathB
 }
 
 /// Find the rue binary in common locations.
+///
+/// When multiple Buck2 build outputs exist (each in a UUID-named directory),
+/// this function selects the most recently modified binary to avoid using
+/// stale binaries from previous builds.
 pub fn find_rue_binary() -> PathBuf {
     std::env::var("RUE_BINARY")
         .map(PathBuf::from)
@@ -735,11 +739,26 @@ pub fn find_rue_binary() -> PathBuf {
             let buck_root = Path::new("buck-out/v2/gen/root");
             if buck_root.exists() {
                 if let Ok(entries) = std::fs::read_dir(buck_root) {
-                    for entry in entries.flatten() {
-                        let rue_path = entry.path().join("crates/rue/__rue__/rue");
-                        if rue_path.exists() {
-                            return rue_path;
-                        }
+                    // Collect all valid rue binaries with their modification times
+                    let mut candidates: Vec<(PathBuf, std::time::SystemTime)> = entries
+                        .flatten()
+                        .filter_map(|entry| {
+                            let rue_path = entry.path().join("crates/rue/__rue__/rue");
+                            if rue_path.exists() {
+                                // Get modification time; skip if we can't read it
+                                rue_path.metadata().ok().and_then(|meta| {
+                                    meta.modified().ok().map(|mtime| (rue_path, mtime))
+                                })
+                            } else {
+                                None
+                            }
+                        })
+                        .collect();
+
+                    // Sort by modification time (newest first) and return the most recent
+                    candidates.sort_by(|a, b| b.1.cmp(&a.1));
+                    if let Some((path, _)) = candidates.into_iter().next() {
+                        return path;
                     }
                 }
             }
