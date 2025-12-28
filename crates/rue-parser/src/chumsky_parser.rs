@@ -1043,15 +1043,39 @@ where
                 AssignTarget::Var(base_ident)
             } else {
                 // Chain of field/index accesses: x.a[0].b...
-                // Build up the expression from left to right
+                // Build up the expression from left to right, consuming suffixes by value
                 let mut base_expr = Expr::Ident(base_ident);
-                for suffix in suffixes.iter().take(suffixes.len().saturating_sub(1)) {
+                let mut suffixes = suffixes.into_iter().peekable();
+                while let Some(suffix) = suffixes.next() {
+                    let is_last = suffixes.peek().is_none();
+                    if is_last {
+                        // The last suffix determines the target type
+                        return match suffix {
+                            AssignSuffix::Field(field) => {
+                                let span = Span::new(base_expr.span().start, field.span.end);
+                                AssignTarget::Field(FieldExpr {
+                                    base: Box::new(base_expr),
+                                    field,
+                                    span,
+                                })
+                            }
+                            AssignSuffix::Index(index) => {
+                                let span = Span::new(base_expr.span().start, index.span().end);
+                                AssignTarget::Index(IndexExpr {
+                                    base: Box::new(base_expr),
+                                    index: Box::new(index),
+                                    span,
+                                })
+                            }
+                        };
+                    }
+                    // Build intermediate expressions
                     match suffix {
                         AssignSuffix::Field(field) => {
                             let span = Span::new(base_expr.span().start, field.span.end);
                             base_expr = Expr::Field(FieldExpr {
                                 base: Box::new(base_expr),
-                                field: field.clone(),
+                                field,
                                 span,
                             });
                         }
@@ -1059,31 +1083,14 @@ where
                             let span = Span::new(base_expr.span().start, index.span().end);
                             base_expr = Expr::Index(IndexExpr {
                                 base: Box::new(base_expr),
-                                index: Box::new(index.clone()),
+                                index: Box::new(index),
                                 span,
                             });
                         }
                     }
                 }
-                // The last suffix determines the target type
-                match suffixes.last().unwrap() {
-                    AssignSuffix::Field(field) => {
-                        let span = Span::new(base_expr.span().start, field.span.end);
-                        AssignTarget::Field(FieldExpr {
-                            base: Box::new(base_expr),
-                            field: field.clone(),
-                            span,
-                        })
-                    }
-                    AssignSuffix::Index(index) => {
-                        let span = Span::new(base_expr.span().start, index.span().end);
-                        AssignTarget::Index(IndexExpr {
-                            base: Box::new(base_expr),
-                            index: Box::new(index.clone()),
-                            span,
-                        })
-                    }
-                }
+                // This is unreachable since we already checked suffixes.is_empty()
+                unreachable!()
             }
         })
 }
