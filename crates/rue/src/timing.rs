@@ -1,4 +1,4 @@
-//! Timing infrastructure for `--time-passes`.
+//! Timing infrastructure for `--time-passes` and `--benchmark-json`.
 //!
 //! This module provides a tracing layer that collects timing information from
 //! compiler passes. It uses the tracing span lifecycle to measure how long each
@@ -15,7 +15,8 @@
 //!    to hook into span enter/exit events and accumulate timing data.
 //!
 //! 3. **Reporting**: After compilation, `TimingData::report()` formats the collected
-//!    timing as a human-readable table.
+//!    timing as a human-readable table. For machine-readable output, use
+//!    `TimingData::to_json()`.
 //!
 //! # Example
 //!
@@ -33,11 +34,16 @@
 //!
 //! // Print the timing report
 //! eprintln!("{}", timing_data.report());
+//!
+//! // Or get JSON for benchmarking
+//! println!("{}", timing_data.to_json());
 //! ```
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+
+use serde::Serialize;
 
 use tracing::Subscriber;
 use tracing::span::{Attributes, Id};
@@ -62,6 +68,43 @@ struct TimingDataInner {
 
     /// Order in which passes were first seen, for deterministic output.
     pass_order: Vec<String>,
+}
+
+/// JSON output structure for benchmark timing data.
+///
+/// This structure is designed for machine-readable output that can be
+/// consumed by the benchmark runner and visualization tools. It includes
+/// metadata for historical analysis and comparison across runs.
+#[derive(Debug, Clone, Serialize)]
+pub struct BenchmarkTiming {
+    /// Metadata about this benchmark run.
+    pub metadata: BenchmarkMetadata,
+    /// Individual pass timings in milliseconds.
+    pub passes: Vec<PassTiming>,
+    /// Total compilation time in milliseconds.
+    pub total_ms: f64,
+}
+
+/// Metadata about a benchmark run for historical analysis.
+#[derive(Debug, Clone, Serialize)]
+pub struct BenchmarkMetadata {
+    /// ISO 8601 timestamp of when the benchmark was run.
+    pub timestamp: String,
+    /// Compiler version.
+    pub version: String,
+    /// Target platform (e.g., "x86_64-linux", "aarch64-macos").
+    pub target: String,
+}
+
+/// Timing data for a single compiler pass.
+#[derive(Debug, Clone, Serialize)]
+pub struct PassTiming {
+    /// Name of the pass (e.g., "lexer", "parser").
+    pub name: String,
+    /// Time spent in this pass in milliseconds.
+    pub duration_ms: f64,
+    /// Percentage of total compilation time.
+    pub percent: f64,
 }
 
 impl TimingData {
@@ -142,6 +185,90 @@ impl TimingData {
 
         output
     }
+
+    /// Generate structured timing data for JSON serialization.
+    ///
+    /// Returns a `BenchmarkTiming` struct that can be serialized to JSON
+    /// for machine-readable output. This is used by `--benchmark-json` for
+    /// the performance dashboard.
+    ///
+    /// # Arguments
+    /// * `target` - The target platform string (e.g., "x86_64-linux")
+    /// * `version` - The compiler version string
+    pub fn to_benchmark_timing(&self, target: &str, version: &str) -> BenchmarkTiming {
+        let inner = self.inner.lock().unwrap();
+
+        let total: Duration = inner.passes.values().sum();
+        let total_ms = total.as_secs_f64() * 1000.0;
+
+        let passes = inner
+            .pass_order
+            .iter()
+            .filter_map(|pass| {
+                inner.passes.get(pass).map(|&duration| {
+                    let duration_ms = duration.as_secs_f64() * 1000.0;
+                    let percent = if total_ms > 0.0 {
+                        (duration_ms / total_ms) * 100.0
+                    } else {
+                        0.0
+                    };
+                    PassTiming {
+                        name: pass.clone(),
+                        duration_ms,
+                        percent,
+                    }
+                })
+            })
+            .collect();
+
+        let metadata = BenchmarkMetadata {
+            timestamp: iso8601_now(),
+            version: version.to_string(),
+            target: target.to_string(),
+        };
+
+        BenchmarkTiming {
+            metadata,
+            passes,
+            total_ms,
+        }
+    }
+
+    /// Generate JSON output for benchmark timing.
+    ///
+    /// Returns a JSON string suitable for machine parsing. The format includes
+    /// metadata for historical analysis:
+    /// ```json
+    /// {
+    ///   "metadata": {
+    ///     "timestamp": "2025-12-27T21:30:00Z",
+    ///     "version": "0.1.0",
+    ///     "target": "aarch64-macos"
+    ///   },
+    ///   "passes": [
+    ///     {"name": "lexer", "duration_ms": 0.5, "percent": 10.0},
+    ///     {"name": "parser", "duration_ms": 2.3, "percent": 46.0},
+    ///     ...
+    ///   ],
+    ///   "total_ms": 5.0
+    /// }
+    /// ```
+    ///
+    /// # Arguments
+    /// * `target` - The target platform string (e.g., "x86_64-linux")
+    /// * `version` - The compiler version string
+    pub fn to_json(&self, target: &str, version: &str) -> String {
+        let timing = self.to_benchmark_timing(target, version);
+        serde_json::to_string(&timing).unwrap_or_else(|_| "{}".to_string())
+    }
+
+    /// Generate pretty-printed JSON output for benchmark timing.
+    ///
+    /// Same as `to_json()` but with indentation for human readability.
+    pub fn to_json_pretty(&self, target: &str, version: &str) -> String {
+        let timing = self.to_benchmark_timing(target, version);
+        serde_json::to_string_pretty(&timing).unwrap_or_else(|_| "{}".to_string())
+    }
 }
 
 impl Default for TimingData {
@@ -157,6 +284,79 @@ fn capitalize(s: &str) -> String {
         None => String::new(),
         Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
     }
+}
+
+/// Generate an ISO 8601 timestamp for the current time.
+///
+/// Format: "2025-12-27T21:30:00Z"
+fn iso8601_now() -> String {
+    let now = SystemTime::now();
+    let duration = now.duration_since(UNIX_EPOCH).unwrap_or(Duration::ZERO);
+    let secs = duration.as_secs();
+
+    // Convert to date/time components (simplified, assumes UTC)
+    // This is a basic implementation without external dependencies
+    const SECS_PER_MIN: u64 = 60;
+    const SECS_PER_HOUR: u64 = 3600;
+    const SECS_PER_DAY: u64 = 86400;
+
+    let days = secs / SECS_PER_DAY;
+    let remaining = secs % SECS_PER_DAY;
+    let hours = remaining / SECS_PER_HOUR;
+    let remaining = remaining % SECS_PER_HOUR;
+    let minutes = remaining / SECS_PER_MIN;
+    let seconds = remaining % SECS_PER_MIN;
+
+    // Calculate year, month, day from days since epoch (1970-01-01)
+    let (year, month, day) = days_to_ymd(days);
+
+    format!(
+        "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z",
+        year, month, day, hours, minutes, seconds
+    )
+}
+
+/// Convert days since Unix epoch to (year, month, day).
+fn days_to_ymd(days: u64) -> (u64, u64, u64) {
+    // Simplified algorithm for date calculation
+    let mut remaining_days = days as i64;
+    let mut year: i64 = 1970;
+
+    // Find the year
+    loop {
+        let days_in_year = if is_leap_year(year) { 366 } else { 365 };
+        if remaining_days < days_in_year {
+            break;
+        }
+        remaining_days -= days_in_year;
+        year += 1;
+    }
+
+    // Find the month and day
+    let leap = is_leap_year(year);
+    let days_in_months: [i64; 12] = if leap {
+        [31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
+    } else {
+        [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
+    };
+
+    let mut month = 1;
+    for &days_in_month in &days_in_months {
+        if remaining_days < days_in_month {
+            break;
+        }
+        remaining_days -= days_in_month;
+        month += 1;
+    }
+
+    let day = remaining_days + 1; // Days are 1-indexed
+
+    (year as u64, month, day as u64)
+}
+
+/// Check if a year is a leap year.
+fn is_leap_year(year: i64) -> bool {
+    (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0)
 }
 
 /// A tracing layer that collects timing information from spans.
@@ -293,5 +493,142 @@ mod tests {
         assert_eq!(capitalize("PARSER"), "PARSER");
         assert_eq!(capitalize(""), "");
         assert_eq!(capitalize("a"), "A");
+    }
+
+    #[test]
+    fn test_to_benchmark_timing_empty() {
+        let data = TimingData::new();
+        let timing = data.to_benchmark_timing("x86_64-linux", "0.1.0");
+        assert!(timing.passes.is_empty());
+        assert_eq!(timing.total_ms, 0.0);
+    }
+
+    #[test]
+    fn test_to_benchmark_timing_with_data() {
+        let data = TimingData::new();
+        data.record("lexer", Duration::from_millis(100));
+        data.record("parser", Duration::from_millis(200));
+
+        let timing = data.to_benchmark_timing("x86_64-linux", "0.1.0");
+        assert_eq!(timing.passes.len(), 2);
+        assert_eq!(timing.passes[0].name, "lexer");
+        assert_eq!(timing.passes[1].name, "parser");
+        // Total should be ~300ms
+        assert!((timing.total_ms - 300.0).abs() < 1.0);
+    }
+
+    #[test]
+    fn test_to_benchmark_timing_percentages() {
+        let data = TimingData::new();
+        data.record("lexer", Duration::from_millis(100));
+        data.record("parser", Duration::from_millis(300));
+
+        let timing = data.to_benchmark_timing("x86_64-linux", "0.1.0");
+        // lexer should be 25%, parser should be 75%
+        assert!((timing.passes[0].percent - 25.0).abs() < 0.1);
+        assert!((timing.passes[1].percent - 75.0).abs() < 0.1);
+    }
+
+    #[test]
+    fn test_to_benchmark_timing_metadata() {
+        let data = TimingData::new();
+        data.record("lexer", Duration::from_millis(100));
+
+        let timing = data.to_benchmark_timing("aarch64-macos", "0.2.0");
+        assert_eq!(timing.metadata.target, "aarch64-macos");
+        assert_eq!(timing.metadata.version, "0.2.0");
+        // Timestamp should be an ISO 8601 format
+        assert!(timing.metadata.timestamp.contains('T'));
+        assert!(timing.metadata.timestamp.ends_with('Z'));
+    }
+
+    #[test]
+    fn test_to_json_structure() {
+        let data = TimingData::new();
+        data.record("lexer", Duration::from_millis(100));
+
+        let json = data.to_json("x86_64-linux", "0.1.0");
+        assert!(json.contains("\"passes\""));
+        assert!(json.contains("\"name\""));
+        assert!(json.contains("\"lexer\""));
+        assert!(json.contains("\"duration_ms\""));
+        assert!(json.contains("\"percent\""));
+        assert!(json.contains("\"total_ms\""));
+        // Should also contain metadata
+        assert!(json.contains("\"metadata\""));
+        assert!(json.contains("\"timestamp\""));
+        assert!(json.contains("\"version\""));
+        assert!(json.contains("\"target\""));
+    }
+
+    #[test]
+    fn test_to_json_pretty() {
+        let data = TimingData::new();
+        data.record("lexer", Duration::from_millis(100));
+
+        let json = data.to_json_pretty("x86_64-linux", "0.1.0");
+        // Pretty JSON should have newlines
+        assert!(json.contains('\n'));
+        // And should still contain the data
+        assert!(json.contains("lexer"));
+    }
+
+    #[test]
+    fn test_to_json_empty() {
+        let data = TimingData::new();
+        let json = data.to_json("x86_64-linux", "0.1.0");
+        // Should produce valid JSON even with empty data
+        assert!(json.contains("\"passes\":[]"));
+        assert!(json.contains("\"total_ms\":0"));
+    }
+
+    #[test]
+    fn test_benchmark_timing_order_preserved() {
+        let data = TimingData::new();
+        data.record("aaa", Duration::from_millis(100));
+        data.record("zzz", Duration::from_millis(100));
+        data.record("mmm", Duration::from_millis(100));
+
+        let timing = data.to_benchmark_timing("x86_64-linux", "0.1.0");
+        assert_eq!(timing.passes[0].name, "aaa");
+        assert_eq!(timing.passes[1].name, "zzz");
+        assert_eq!(timing.passes[2].name, "mmm");
+    }
+
+    #[test]
+    fn test_iso8601_now() {
+        let timestamp = iso8601_now();
+        // Should be in ISO 8601 format: YYYY-MM-DDTHH:MM:SSZ
+        assert!(timestamp.contains('T'));
+        assert!(timestamp.ends_with('Z'));
+        assert_eq!(timestamp.len(), 20); // "2025-12-27T21:30:00Z"
+    }
+
+    #[test]
+    fn test_days_to_ymd_epoch() {
+        // Day 0 should be 1970-01-01
+        let (year, month, day) = days_to_ymd(0);
+        assert_eq!(year, 1970);
+        assert_eq!(month, 1);
+        assert_eq!(day, 1);
+    }
+
+    #[test]
+    fn test_days_to_ymd_known_date() {
+        // Test a known date: 2000-01-01 is 10957 days since epoch
+        // (calculated as: 30 years, with 7 leap years: 1972,76,80,84,88,92,96)
+        // 30 * 365 + 7 = 10957
+        let (year, month, day) = days_to_ymd(10957);
+        assert_eq!(year, 2000);
+        assert_eq!(month, 1);
+        assert_eq!(day, 1);
+    }
+
+    #[test]
+    fn test_is_leap_year() {
+        assert!(!is_leap_year(1900)); // divisible by 100 but not 400
+        assert!(is_leap_year(2000)); // divisible by 400
+        assert!(is_leap_year(2024)); // divisible by 4, not by 100
+        assert!(!is_leap_year(2025)); // not divisible by 4
     }
 }

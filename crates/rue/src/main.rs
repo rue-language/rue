@@ -202,6 +202,7 @@ struct Options {
     log_level: LogLevel,
     log_format: LogFormat,
     time_passes: bool,
+    benchmark_json: bool,
 }
 
 /// Version string for the rue compiler.
@@ -239,6 +240,7 @@ fn print_usage() {
     eprintln!("  --log-format <fmt>   Set logging format (default: text)");
     eprintln!("                       Formats: {}", LogFormat::all_names());
     eprintln!("  --time-passes        Show timing for each compilation pass");
+    eprintln!("  --benchmark-json     Output timing as JSON (for benchmarking)");
     eprintln!("  --version            Show version information");
     eprintln!("  --help               Show this help message");
 }
@@ -268,6 +270,7 @@ fn parse_args_from(args: &[&str]) -> ParseResult {
     let mut log_level: Option<LogLevel> = None;
     let mut log_format: Option<LogFormat> = None;
     let mut time_passes = false;
+    let mut benchmark_json = false;
     let mut positional = Vec::new();
     let mut args_iter = args.iter().peekable();
 
@@ -364,6 +367,9 @@ fn parse_args_from(args: &[&str]) -> ParseResult {
             "--time-passes" => {
                 time_passes = true;
             }
+            "--benchmark-json" => {
+                benchmark_json = true;
+            }
             "--help" | "-h" => {
                 print_usage();
                 return ParseResult::Exit;
@@ -416,6 +422,7 @@ fn parse_args_from(args: &[&str]) -> ParseResult {
         log_level: log_level.unwrap_or_default(),
         log_format: log_format.unwrap_or_default(),
         time_passes,
+        benchmark_json,
     })
 }
 
@@ -434,14 +441,15 @@ fn parse_args() -> Option<Options> {
 ///
 /// Priority: RUST_LOG environment variable takes precedence over --log-level flag.
 /// If neither is set and log_level is Off, no subscriber is installed (unless
-/// `time_passes` is true, in which case a timing-only subscriber is installed).
+/// `time_passes` or `benchmark_json` is true, in which case a timing-only subscriber is installed).
 ///
-/// Returns `Some(TimingData)` if `time_passes` is true, which can be used to
+/// Returns `Some(TimingData)` if `time_passes` or `benchmark_json` is true, which can be used to
 /// retrieve the timing report after compilation completes.
 fn init_tracing(
     log_level: LogLevel,
     log_format: LogFormat,
     time_passes: bool,
+    benchmark_json: bool,
 ) -> Option<timing::TimingData> {
     use tracing_subscriber::layer::SubscriberExt;
 
@@ -458,13 +466,16 @@ fn init_tracing(
 
     let logging_enabled = effective_level.is_some();
 
+    // Need timing data if either --time-passes or --benchmark-json is specified
+    let needs_timing = time_passes || benchmark_json;
+
     // If neither logging nor timing is enabled, don't install a subscriber
-    if !logging_enabled && !time_passes {
+    if !logging_enabled && !needs_timing {
         return None;
     }
 
-    // Create timing data if --time-passes was specified
-    let timing_data = if time_passes {
+    // Create timing data if timing is needed
+    let timing_data = if needs_timing {
         Some(timing::TimingData::new())
     } else {
         None
@@ -495,7 +506,7 @@ fn init_tracing(
 
     // Build and install the subscriber
     // We need to handle all combinations of timing + logging
-    match (time_passes, logging_enabled, log_format) {
+    match (needs_timing, logging_enabled, log_format) {
         // Timing only (no logging)
         (true, false, _) => {
             let timing_layer = timing::TimingLayer::new(timing_data.clone().unwrap());
@@ -569,6 +580,25 @@ fn init_tracing(
     timing_data
 }
 
+/// Print timing output based on CLI flags.
+fn print_timing_output(
+    timing_data: &Option<timing::TimingData>,
+    time_passes: bool,
+    benchmark_json: bool,
+    target: &Target,
+) {
+    if let Some(timing) = timing_data {
+        if benchmark_json {
+            // JSON output goes to stdout for easy capture
+            // Include metadata for historical analysis
+            println!("{}", timing.to_json(&target.to_string(), VERSION));
+        } else if time_passes {
+            // Human-readable output goes to stderr
+            eprintln!("{}", timing.report());
+        }
+    }
+}
+
 fn main() {
     let options = match parse_args() {
         Some(opts) => opts,
@@ -576,8 +606,13 @@ fn main() {
     };
 
     // Initialize tracing based on CLI options
-    // Returns timing data if --time-passes was specified
-    let timing_data = init_tracing(options.log_level, options.log_format, options.time_passes);
+    // Returns timing data if --time-passes or --benchmark-json was specified
+    let timing_data = init_tracing(
+        options.log_level,
+        options.log_format,
+        options.time_passes,
+        options.benchmark_json,
+    );
 
     // Read source
     let source = fs::read_to_string(&options.source_path).unwrap_or_else(|e| {
@@ -594,10 +629,12 @@ fn main() {
         if let Err(()) = handle_emit(&source, &options, &formatter) {
             std::process::exit(1);
         }
-        // Print timing report if --time-passes was specified
-        if let Some(ref timing) = timing_data {
-            eprintln!("{}", timing.report());
-        }
+        print_timing_output(
+            &timing_data,
+            options.time_passes,
+            options.benchmark_json,
+            &options.target,
+        );
         return;
     }
 
@@ -645,19 +682,25 @@ fn main() {
                 }
             }
 
-            let linker_str = match &options.linker {
-                LinkerMode::Internal => "internal".to_string(),
-                LinkerMode::System(cmd) => cmd.clone(),
-            };
-            println!(
-                "Compiled {} -> {} (target: {}, linker: {})",
-                options.source_path, options.output_path, options.target, linker_str
-            );
-
-            // Print timing report if --time-passes was specified
-            if let Some(ref timing) = timing_data {
-                eprintln!("{}", timing.report());
+            // Don't print normal compilation message when using --benchmark-json
+            // as it would interfere with JSON parsing
+            if !options.benchmark_json {
+                let linker_str = match &options.linker {
+                    LinkerMode::Internal => "internal".to_string(),
+                    LinkerMode::System(cmd) => cmd.clone(),
+                };
+                println!(
+                    "Compiled {} -> {} (target: {}, linker: {})",
+                    options.source_path, options.output_path, options.target, linker_str
+                );
             }
+
+            print_timing_output(
+                &timing_data,
+                options.time_passes,
+                options.benchmark_json,
+                &options.target,
+            );
         }
         Err(e) => {
             eprintln!("{}", formatter.format_error(&e));
@@ -1385,6 +1428,46 @@ mod tests {
         assert!(opts.time_passes);
         assert_eq!(opts.opt_level, OptLevel::O2);
         assert_eq!(opts.target, Target::X86_64Linux);
+    }
+
+    // ========== --benchmark-json tests ==========
+
+    #[test]
+    fn parse_benchmark_json() {
+        let opts = unwrap_options(parse_args_from(&["--benchmark-json", "source.rue"]));
+        assert!(opts.benchmark_json);
+    }
+
+    #[test]
+    fn parse_benchmark_json_with_other_options() {
+        let opts = unwrap_options(parse_args_from(&[
+            "--benchmark-json",
+            "-O2",
+            "--target",
+            "x86_64-linux",
+            "source.rue",
+        ]));
+        assert!(opts.benchmark_json);
+        assert_eq!(opts.opt_level, OptLevel::O2);
+        assert_eq!(opts.target, Target::X86_64Linux);
+    }
+
+    #[test]
+    fn parse_defaults_benchmark_json() {
+        let opts = unwrap_options(parse_args_from(&["source.rue"]));
+        assert!(!opts.benchmark_json);
+    }
+
+    #[test]
+    fn parse_both_time_passes_and_benchmark_json() {
+        // When both are specified, benchmark_json takes precedence (JSON output)
+        let opts = unwrap_options(parse_args_from(&[
+            "--time-passes",
+            "--benchmark-json",
+            "source.rue",
+        ]));
+        assert!(opts.time_passes);
+        assert!(opts.benchmark_json);
     }
 
     // ========== EmitStage FromStr tests ==========
