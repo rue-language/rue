@@ -21,9 +21,30 @@ use rue_lexer::TokenKind;
 use rue_span::Span;
 use std::borrow::Cow;
 
-/// Convert chumsky SimpleSpan to rue_span::Span
+/// Convert a `usize` offset to `u32`, asserting it fits in debug builds.
+///
+/// # Panics
+///
+/// In debug builds, panics if `offset` exceeds `u32::MAX`.
+/// This would only happen for source files larger than 4GB.
+#[inline]
+fn offset_to_u32(offset: usize) -> u32 {
+    debug_assert!(
+        offset <= u32::MAX as usize,
+        "offset {} exceeds u32::MAX (source file too large)",
+        offset
+    );
+    offset as u32
+}
+
+/// Convert chumsky SimpleSpan to rue_span::Span.
+///
+/// # Panics
+///
+/// In debug builds, panics if `span.start` or `span.end` exceeds `u32::MAX`.
+/// This would only happen for source files larger than 4GB.
 fn to_rue_span(span: SimpleSpan) -> Span {
-    Span::new(span.start as u32, span.end as u32)
+    Span::new(offset_to_u32(span.start), offset_to_u32(span.end))
 }
 
 /// Parser that produces Ident from identifier tokens
@@ -298,7 +319,7 @@ fn make_binary(left: Expr, op: BinaryOp, right: Expr) -> Expr {
 
 /// Helper to create unary expression
 fn make_unary(op: UnaryOp, operand: Expr, op_span: SimpleSpan) -> Expr {
-    let span = Span::new(op_span.start as u32, operand.span().end);
+    let span = Span::new(offset_to_u32(op_span.start), operand.span().end);
     Expr::Unary(UnaryExpr {
         op,
         operand: Box::new(operand),
@@ -805,7 +826,9 @@ where
             call_args_parser(expr.clone())
                 .delimited_by(just(TokenKind::LParen), just(TokenKind::RParen)),
         )
-        .map_with(|(method, args), e| Suffix::MethodCall(method, args, e.span().end as u32));
+        .map_with(|(method, args), e| {
+            Suffix::MethodCall(method, args, offset_to_u32(e.span().end))
+        });
 
     // Field access: .ident (but NOT followed by ()
     let field_suffix = just(TokenKind::Dot)
@@ -815,7 +838,7 @@ where
 
     let index_suffix = expr
         .delimited_by(just(TokenKind::LBracket), just(TokenKind::RBracket))
-        .map_with(|index, e| Suffix::Index(index, e.span().end as u32));
+        .map_with(|index, e| Suffix::Index(index, offset_to_u32(e.span().end)));
 
     // Field access, method call, and indexing suffix: .field, .method(), or [expr]
     // Method call must come before field access to catch .method(args) before .field
@@ -2469,5 +2492,31 @@ mod tests {
             rue_span::Span::new(0, 10),
         );
         assert_eq!(error.to_string(), "expected semicolon after expression");
+    }
+
+    #[test]
+    fn test_offset_to_u32_normal() {
+        // Normal values should convert without issue
+        assert_eq!(offset_to_u32(0), 0);
+        assert_eq!(offset_to_u32(42), 42);
+        assert_eq!(offset_to_u32(1000000), 1000000);
+        assert_eq!(offset_to_u32(u32::MAX as usize), u32::MAX);
+    }
+
+    #[test]
+    #[should_panic(expected = "offset 4294967296 exceeds u32::MAX")]
+    #[cfg(debug_assertions)]
+    fn test_offset_to_u32_overflow_panics_in_debug() {
+        // Value just over u32::MAX should panic in debug builds
+        let _ = offset_to_u32((u32::MAX as usize) + 1);
+    }
+
+    #[test]
+    fn test_to_rue_span_normal() {
+        // Normal spans should convert without issue
+        let simple = SimpleSpan::new(10, 20);
+        let rue = to_rue_span(simple);
+        assert_eq!(rue.start, 10);
+        assert_eq!(rue.end, 20);
     }
 }
