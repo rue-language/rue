@@ -1,0 +1,3 @@
+# thiserror build script generates private.rs and probes for nightly features
+buildscript.run = true
+cargo_env = true

@@ -21,6 +21,7 @@ use rue_span::Span;
 use std::borrow::Cow;
 use std::collections::HashSet;
 use std::fmt;
+use thiserror::Error;
 
 // ============================================================================
 // Boxed Error Payloads
@@ -368,83 +369,156 @@ impl<K: fmt::Display + fmt::Debug> std::error::Error for DiagnosticWrapper<K> {}
 /// ```
 pub type CompileError = DiagnosticWrapper<ErrorKind>;
 
+// Helper functions for complex error formatting in thiserror attributes
+
+fn format_argument_count(expected: usize, found: usize) -> String {
+    if expected == 1 {
+        format!("expected {} argument, found {}", expected, found)
+    } else {
+        format!("expected {} arguments, found {}", expected, found)
+    }
+}
+
+fn format_missing_fields(err: &MissingFieldsError) -> String {
+    if err.missing_fields.len() == 1 {
+        format!(
+            "missing field '{}' in struct '{}'",
+            err.missing_fields[0], err.struct_name
+        )
+    } else {
+        let fields = err
+            .missing_fields
+            .iter()
+            .map(|f| format!("'{}'", f))
+            .collect::<Vec<_>>()
+            .join(", ");
+        format!("missing fields {} in struct '{}'", fields, err.struct_name)
+    }
+}
+
+fn format_intrinsic_arg_count(name: &str, expected: usize, found: usize) -> String {
+    if expected == 1 {
+        format!(
+            "intrinsic '@{}' expects {} argument, found {}",
+            name, expected, found
+        )
+    } else {
+        format!(
+            "intrinsic '@{}' expects {} arguments, found {}",
+            name, expected, found
+        )
+    }
+}
+
+fn format_array_length_mismatch(expected: u64, found: u64) -> String {
+    if expected == 1 {
+        format!(
+            "expected array of {} element, found {} elements",
+            expected, found
+        )
+    } else {
+        format!(
+            "expected array of {} elements, found {} elements",
+            expected, found
+        )
+    }
+}
+
 /// The kind of compilation error.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum ErrorKind {
     // Lexer errors
+    #[error("unexpected character: {0}")]
     UnexpectedCharacter(char),
+    #[error("invalid integer literal")]
     InvalidInteger,
+    #[error("invalid escape sequence: \\{0}")]
     InvalidStringEscape(char),
+    #[error("unterminated string literal")]
     UnterminatedString,
 
     // Parser errors
+    #[error("expected {expected}, found {found}")]
     UnexpectedToken {
         expected: Cow<'static, str>,
         found: Cow<'static, str>,
     },
-    UnexpectedEof {
-        expected: Cow<'static, str>,
-    },
+    #[error("unexpected end of file, expected {expected}")]
+    UnexpectedEof { expected: Cow<'static, str> },
     /// A custom parse error with a specific message.
     ///
     /// Used for parser-generated errors that don't fit the "expected X, found Y" pattern.
+    #[error("{0}")]
     ParseError(String),
 
     // Semantic errors
+    #[error("no main function found")]
     NoMainFunction,
+    #[error("undefined variable '{0}'")]
     UndefinedVariable(String),
+    #[error("undefined function '{0}'")]
     UndefinedFunction(String),
+    #[error("cannot assign to immutable variable '{0}'")]
     AssignToImmutable(String),
+    #[error("unknown type '{0}'")]
     UnknownType(String),
     /// Use of a value after it has been moved.
+    #[error("use of moved value '{0}'")]
     UseAfterMove(String),
-    TypeMismatch {
-        expected: String,
-        found: String,
-    },
-    WrongArgumentCount {
-        expected: usize,
-        found: usize,
-    },
+    #[error("type mismatch: expected {expected}, found {found}")]
+    TypeMismatch { expected: String, found: String },
+    #[error("{}", format_argument_count(*.expected, *.found))]
+    WrongArgumentCount { expected: usize, found: usize },
 
     // Struct errors
+    #[error("{}", format_missing_fields(.0))]
     MissingFields(Box<MissingFieldsError>),
+    #[error("unknown field '{field_name}' in struct '{struct_name}'")]
     UnknownField {
         struct_name: String,
         field_name: String,
     },
+    #[error("duplicate field '{field_name}' in struct '{struct_name}'")]
     DuplicateField {
         struct_name: String,
         field_name: String,
     },
     /// @copy struct contains a field with non-Copy type
+    #[error("@copy struct '{struct_name}' has field '{field_name}' with non-Copy type '{field_type}'", struct_name = .0.struct_name, field_name = .0.field_name, field_type = .0.field_type)]
     CopyStructNonCopyField(Box<CopyStructNonCopyFieldError>),
     /// Duplicate method definition in impl blocks for the same type
+    #[error("duplicate method '{method_name}' for type '{type_name}'")]
     DuplicateMethod {
         type_name: String,
         method_name: String,
     },
     /// Method not found on a type
+    #[error("no method named '{method_name}' found for type '{type_name}'")]
     UndefinedMethod {
         type_name: String,
         method_name: String,
     },
     /// Associated function not found on a type
+    #[error("no associated function named '{function_name}' found for type '{type_name}'")]
     UndefinedAssocFn {
         type_name: String,
         function_name: String,
     },
     /// Method call on non-struct type
-    MethodCallOnNonStruct {
-        found: String,
-        method_name: String,
-    },
+    #[error("no method named '{method_name}' on type '{found}'")]
+    MethodCallOnNonStruct { found: String, method_name: String },
     /// Calling a method (with self) as an associated function
+    #[error(
+        "'{type_name}::{method_name}' is a method, not an associated function; use receiver.{method_name}() syntax"
+    )]
     MethodCalledAsAssocFn {
         type_name: String,
         method_name: String,
     },
     /// Calling an associated function (without self) as a method
+    #[error(
+        "'{function_name}' is an associated function, not a method; use {type_name}::{function_name}() syntax"
+    )]
     AssocFnCalledAsMethod {
         type_name: String,
         function_name: String,
@@ -452,112 +526,123 @@ pub enum ErrorKind {
 
     // Destructor errors
     /// Duplicate destructor for the same type
-    DuplicateDestructor {
-        type_name: String,
-    },
+    #[error("duplicate destructor for type '{type_name}'")]
+    DuplicateDestructor { type_name: String },
     /// Destructor for unknown type
-    DestructorUnknownType {
-        type_name: String,
-    },
+    #[error("unknown type '{type_name}' in destructor")]
+    DestructorUnknownType { type_name: String },
 
     // Enum errors
+    #[error("duplicate variant '{variant_name}' in enum '{enum_name}'")]
     DuplicateVariant {
         enum_name: String,
         variant_name: String,
     },
+    #[error("unknown variant '{variant_name}' in enum '{enum_name}'")]
     UnknownVariant {
         enum_name: String,
         variant_name: String,
     },
+    #[error("unknown enum type '{0}'")]
     UnknownEnumType(String),
+    #[error("struct '{struct_name}' fields must be initialized in declaration order: expected '{expected_field}', found '{found_field}'", struct_name = .0.struct_name, expected_field = .0.expected_field, found_field = .0.found_field)]
     FieldWrongOrder(Box<FieldWrongOrderError>),
-    FieldAccessOnNonStruct {
-        found: String,
-    },
+    #[error("field access on non-struct type '{found}'")]
+    FieldAccessOnNonStruct { found: String },
+    #[error("invalid assignment target")]
     InvalidAssignmentTarget,
     /// Inout argument is not an lvalue (variable, field, or array element)
+    #[error("inout argument must be an lvalue (variable, field, or array element)")]
     InoutNonLvalue,
     /// Same variable passed to multiple inout parameters in a single call
-    InoutExclusiveAccess {
-        variable: String,
-    },
+    #[error("cannot pass same variable '{variable}' to multiple inout parameters")]
+    InoutExclusiveAccess { variable: String },
     /// Borrow argument is not an lvalue (variable, field, or array element)
+    #[error("borrow argument must be a variable, field, or array element")]
     BorrowNonLvalue,
     /// Cannot mutate a borrowed value
-    MutateBorrowedValue {
-        variable: String,
-    },
+    #[error("cannot mutate borrowed value '{variable}'")]
+    MutateBorrowedValue { variable: String },
     /// Cannot move out of a borrowed value
-    MoveOutOfBorrow {
-        variable: String,
-    },
+    #[error("cannot move out of borrowed value '{variable}'")]
+    MoveOutOfBorrow { variable: String },
     /// Same variable passed to both borrow and inout parameters (law of exclusivity)
-    BorrowInoutConflict {
-        variable: String,
-    },
+    #[error("cannot borrow '{variable}' while it is mutably borrowed (inout)")]
+    BorrowInoutConflict { variable: String },
     /// Argument to inout parameter is missing `inout` keyword at call site
+    #[error("argument to inout parameter must use 'inout' keyword")]
     InoutKeywordMissing,
     /// Argument to borrow parameter is missing `borrow` keyword at call site
+    #[error("argument to borrow parameter must use 'borrow' keyword")]
     BorrowKeywordMissing,
 
     // Control flow errors
+    #[error("'break' outside of loop")]
     BreakOutsideLoop,
+    #[error("'continue' outside of loop")]
     ContinueOutsideLoop,
 
     // Match errors
+    #[error("match is not exhaustive")]
     NonExhaustiveMatch,
+    #[error("match expression has no arms")]
     EmptyMatch,
+    #[error("cannot match on type '{0}', expected integer, bool, or enum")]
     InvalidMatchType(String),
 
     // Intrinsic errors
+    #[error("unknown intrinsic '@{0}'")]
     UnknownIntrinsic(String),
+    #[error("{}", format_intrinsic_arg_count(name, *.expected, *.found))]
     IntrinsicWrongArgCount {
         name: String,
         expected: usize,
         found: usize,
     },
+    #[error("intrinsic '@{name}' expects {expected}, found {found}", name = .0.name, expected = .0.expected, found = .0.found)]
     IntrinsicTypeMismatch(Box<IntrinsicTypeMismatchError>),
 
     // Literal errors
-    LiteralOutOfRange {
-        value: u64,
-        ty: String,
-    },
+    #[error("literal value {value} is out of range for type '{ty}'")]
+    LiteralOutOfRange { value: u64, ty: String },
 
     // Operator errors
+    #[error("cannot apply unary operator `-` to type '{0}'")]
     CannotNegateUnsigned(String),
+    #[error("comparison operators cannot be chained")]
     ChainedComparison,
 
     // Array errors
-    IndexOnNonArray {
-        found: String,
-    },
-    ArrayLengthMismatch {
-        expected: u64,
-        found: u64,
-    },
-    IndexOutOfBounds {
-        index: i64,
-        length: u64,
-    },
+    #[error("cannot index into non-array type '{found}'")]
+    IndexOnNonArray { found: String },
+    #[error("{}", format_array_length_mismatch(*.expected, *.found))]
+    ArrayLengthMismatch { expected: u64, found: u64 },
+    #[error("index out of bounds: the length is {length} but the index is {index}")]
+    IndexOutOfBounds { index: i64, length: u64 },
+    #[error("type annotation required for empty array")]
     TypeAnnotationRequired,
 
     // Linker errors
+    #[error("link error: {0}")]
     LinkError(String),
 
     // Target errors
+    #[error("unsupported target: {0}")]
     UnsupportedTarget(String),
 
     // Preview feature errors
+    #[error("{what} requires preview feature `{}`", .feature.name())]
     PreviewFeatureRequired {
         feature: PreviewFeature,
         what: String,
     },
 
     // Internal compiler errors (bugs in the compiler itself)
+    #[error("internal compiler error: {0}")]
     InternalError(String),
 
     // Codegen internal errors (compiler bugs)
+    #[error("internal codegen error: {0}")]
     InternalCodegenError(String),
 }
 
@@ -569,315 +654,6 @@ impl CompileError {
             kind,
             span: Some(Span::point(pos)),
             diagnostic: Diagnostic::new(),
-        }
-    }
-}
-
-impl fmt::Display for ErrorKind {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            ErrorKind::UnexpectedCharacter(c) => write!(f, "unexpected character: {}", c),
-            ErrorKind::InvalidInteger => write!(f, "invalid integer literal"),
-            ErrorKind::InvalidStringEscape(c) => write!(f, "invalid escape sequence: \\{}", c),
-            ErrorKind::UnterminatedString => write!(f, "unterminated string literal"),
-            ErrorKind::UnexpectedToken { expected, found } => {
-                write!(f, "expected {}, found {}", expected, found)
-            }
-            ErrorKind::UnexpectedEof { expected } => {
-                write!(f, "unexpected end of file, expected {}", expected)
-            }
-            ErrorKind::ParseError(msg) => write!(f, "{}", msg),
-            ErrorKind::NoMainFunction => write!(f, "no main function found"),
-            ErrorKind::UndefinedVariable(name) => write!(f, "undefined variable '{}'", name),
-            ErrorKind::UndefinedFunction(name) => write!(f, "undefined function '{}'", name),
-            ErrorKind::AssignToImmutable(name) => {
-                write!(f, "cannot assign to immutable variable '{}'", name)
-            }
-            ErrorKind::UnknownType(name) => write!(f, "unknown type '{}'", name),
-            ErrorKind::UseAfterMove(name) => {
-                write!(f, "use of moved value '{}'", name)
-            }
-            ErrorKind::TypeMismatch { expected, found } => {
-                write!(f, "type mismatch: expected {}, found {}", expected, found)
-            }
-            ErrorKind::WrongArgumentCount { expected, found } => {
-                if *expected == 1 {
-                    write!(f, "expected {} argument, found {}", expected, found)
-                } else {
-                    write!(f, "expected {} arguments, found {}", expected, found)
-                }
-            }
-            ErrorKind::MissingFields(err) => {
-                if err.missing_fields.len() == 1 {
-                    write!(
-                        f,
-                        "missing field '{}' in struct '{}'",
-                        err.missing_fields[0], err.struct_name
-                    )
-                } else {
-                    let fields = err
-                        .missing_fields
-                        .iter()
-                        .map(|f| format!("'{}'", f))
-                        .collect::<Vec<_>>()
-                        .join(", ");
-                    write!(
-                        f,
-                        "missing fields {} in struct '{}'",
-                        fields, err.struct_name
-                    )
-                }
-            }
-            ErrorKind::UnknownField {
-                struct_name,
-                field_name,
-            } => {
-                write!(
-                    f,
-                    "unknown field '{}' in struct '{}'",
-                    field_name, struct_name
-                )
-            }
-            ErrorKind::DuplicateField {
-                struct_name,
-                field_name,
-            } => {
-                write!(
-                    f,
-                    "duplicate field '{}' in struct '{}'",
-                    field_name, struct_name
-                )
-            }
-            ErrorKind::CopyStructNonCopyField(err) => {
-                write!(
-                    f,
-                    "@copy struct '{}' has field '{}' with non-Copy type '{}'",
-                    err.struct_name, err.field_name, err.field_type
-                )
-            }
-            ErrorKind::DuplicateMethod {
-                type_name,
-                method_name,
-            } => {
-                write!(
-                    f,
-                    "duplicate method '{}' for type '{}'",
-                    method_name, type_name
-                )
-            }
-            ErrorKind::UndefinedMethod {
-                type_name,
-                method_name,
-            } => {
-                write!(
-                    f,
-                    "no method named '{}' found for type '{}'",
-                    method_name, type_name
-                )
-            }
-            ErrorKind::UndefinedAssocFn {
-                type_name,
-                function_name,
-            } => {
-                write!(
-                    f,
-                    "no associated function named '{}' found for type '{}'",
-                    function_name, type_name
-                )
-            }
-            ErrorKind::MethodCallOnNonStruct { found, method_name } => {
-                write!(f, "no method named '{}' on type '{}'", method_name, found)
-            }
-            ErrorKind::MethodCalledAsAssocFn {
-                type_name,
-                method_name,
-            } => {
-                write!(
-                    f,
-                    "'{}::{}' is a method, not an associated function; use receiver.{}() syntax",
-                    type_name, method_name, method_name
-                )
-            }
-            ErrorKind::AssocFnCalledAsMethod {
-                type_name,
-                function_name,
-            } => {
-                write!(
-                    f,
-                    "'{}' is an associated function, not a method; use {}::{}() syntax",
-                    function_name, type_name, function_name
-                )
-            }
-            ErrorKind::DuplicateDestructor { type_name } => {
-                write!(f, "duplicate destructor for type '{}'", type_name)
-            }
-            ErrorKind::DestructorUnknownType { type_name } => {
-                write!(f, "unknown type '{}' in destructor", type_name)
-            }
-            ErrorKind::DuplicateVariant {
-                enum_name,
-                variant_name,
-            } => {
-                write!(
-                    f,
-                    "duplicate variant '{}' in enum '{}'",
-                    variant_name, enum_name
-                )
-            }
-            ErrorKind::UnknownVariant {
-                enum_name,
-                variant_name,
-            } => {
-                write!(
-                    f,
-                    "unknown variant '{}' in enum '{}'",
-                    variant_name, enum_name
-                )
-            }
-            ErrorKind::UnknownEnumType(name) => {
-                write!(f, "unknown enum type '{}'", name)
-            }
-            ErrorKind::FieldWrongOrder(err) => {
-                write!(
-                    f,
-                    "struct '{}' fields must be initialized in declaration order: expected '{}', found '{}'",
-                    err.struct_name, err.expected_field, err.found_field
-                )
-            }
-            ErrorKind::FieldAccessOnNonStruct { found } => {
-                write!(f, "field access on non-struct type '{}'", found)
-            }
-            ErrorKind::InvalidAssignmentTarget => {
-                write!(f, "invalid assignment target")
-            }
-            ErrorKind::InoutNonLvalue => {
-                write!(
-                    f,
-                    "inout argument must be an lvalue (variable, field, or array element)"
-                )
-            }
-            ErrorKind::InoutExclusiveAccess { variable } => {
-                write!(
-                    f,
-                    "cannot pass same variable '{}' to multiple inout parameters",
-                    variable
-                )
-            }
-            ErrorKind::BorrowNonLvalue => {
-                write!(
-                    f,
-                    "borrow argument must be a variable, field, or array element"
-                )
-            }
-            ErrorKind::MutateBorrowedValue { variable } => {
-                write!(f, "cannot mutate borrowed value '{}'", variable)
-            }
-            ErrorKind::MoveOutOfBorrow { variable } => {
-                write!(f, "cannot move out of borrowed value '{}'", variable)
-            }
-            ErrorKind::BorrowInoutConflict { variable } => {
-                write!(
-                    f,
-                    "cannot borrow '{}' while it is mutably borrowed (inout)",
-                    variable
-                )
-            }
-            ErrorKind::InoutKeywordMissing => {
-                write!(f, "argument to inout parameter must use 'inout' keyword")
-            }
-            ErrorKind::BorrowKeywordMissing => {
-                write!(f, "argument to borrow parameter must use 'borrow' keyword")
-            }
-            ErrorKind::BreakOutsideLoop => write!(f, "'break' outside of loop"),
-            ErrorKind::ContinueOutsideLoop => write!(f, "'continue' outside of loop"),
-            ErrorKind::NonExhaustiveMatch => write!(f, "match is not exhaustive"),
-            ErrorKind::EmptyMatch => write!(f, "match expression has no arms"),
-            ErrorKind::InvalidMatchType(ty) => {
-                write!(
-                    f,
-                    "cannot match on type '{}', expected integer, bool, or enum",
-                    ty
-                )
-            }
-            ErrorKind::UnknownIntrinsic(name) => write!(f, "unknown intrinsic '@{}'", name),
-            ErrorKind::IntrinsicWrongArgCount {
-                name,
-                expected,
-                found,
-            } => {
-                if *expected == 1 {
-                    write!(
-                        f,
-                        "intrinsic '@{}' expects {} argument, found {}",
-                        name, expected, found
-                    )
-                } else {
-                    write!(
-                        f,
-                        "intrinsic '@{}' expects {} arguments, found {}",
-                        name, expected, found
-                    )
-                }
-            }
-            ErrorKind::IntrinsicTypeMismatch(err) => {
-                write!(
-                    f,
-                    "intrinsic '@{}' expects {}, found {}",
-                    err.name, err.expected, err.found
-                )
-            }
-            ErrorKind::LiteralOutOfRange { value, ty } => {
-                write!(
-                    f,
-                    "literal value {} is out of range for type '{}'",
-                    value, ty
-                )
-            }
-            ErrorKind::CannotNegateUnsigned(ty) => {
-                write!(f, "cannot apply unary operator `-` to type '{}'", ty)
-            }
-            ErrorKind::ChainedComparison => {
-                write!(f, "comparison operators cannot be chained")
-            }
-            ErrorKind::IndexOnNonArray { found } => {
-                write!(f, "cannot index into non-array type '{}'", found)
-            }
-            ErrorKind::ArrayLengthMismatch { expected, found } => {
-                if *expected == 1 {
-                    write!(
-                        f,
-                        "expected array of {} element, found {} elements",
-                        expected, found
-                    )
-                } else {
-                    write!(
-                        f,
-                        "expected array of {} elements, found {} elements",
-                        expected, found
-                    )
-                }
-            }
-            ErrorKind::IndexOutOfBounds { index, length } => {
-                write!(
-                    f,
-                    "index out of bounds: the length is {} but the index is {}",
-                    length, index
-                )
-            }
-            ErrorKind::TypeAnnotationRequired => {
-                write!(f, "type annotation required for empty array")
-            }
-            ErrorKind::LinkError(msg) => write!(f, "link error: {}", msg),
-            ErrorKind::UnsupportedTarget(msg) => write!(f, "unsupported target: {}", msg),
-            ErrorKind::PreviewFeatureRequired { feature, what } => {
-                write!(f, "{} requires preview feature `{}`", what, feature.name())
-            }
-            ErrorKind::InternalError(msg) => {
-                write!(f, "internal compiler error: {}", msg)
-            }
-            ErrorKind::InternalCodegenError(msg) => {
-                write!(f, "internal codegen error: {}", msg)
-            }
         }
     }
 }
@@ -1072,15 +848,19 @@ impl<T> OptionExt<T> for Option<T> {
 }
 
 /// The kind of compilation warning.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum WarningKind {
     /// A variable was declared but never used.
+    #[error("unused variable '{0}'")]
     UnusedVariable(String),
     /// A function was declared but never called.
+    #[error("unused function '{0}'")]
     UnusedFunction(String),
     /// Code that will never be executed.
+    #[error("unreachable code")]
     UnreachableCode,
     /// A pattern that will never be matched because a previous pattern already covers it.
+    #[error("unreachable pattern '{0}'")]
     UnreachablePattern(String),
 }
 
@@ -1118,17 +898,6 @@ impl WarningKind {
                 format!("unused function '{}' (line {})", name, line)
             }
             _ => self.to_string(),
-        }
-    }
-}
-
-impl fmt::Display for WarningKind {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            WarningKind::UnusedVariable(name) => write!(f, "unused variable '{}'", name),
-            WarningKind::UnusedFunction(name) => write!(f, "unused function '{}'", name),
-            WarningKind::UnreachableCode => write!(f, "unreachable code"),
-            WarningKind::UnreachablePattern(pat) => write!(f, "unreachable pattern '{}'", pat),
         }
     }
 }
