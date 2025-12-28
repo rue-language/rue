@@ -1,0 +1,29 @@
+# Benchmark Manifest
+#
+# This file describes the benchmark suite for the Rue compiler.
+# Each benchmark is a Rue program designed to stress specific compiler phases.
+
+[[benchmark]]
+name = "many_functions"
+path = "stress/many_functions.rue"
+description = "100 functions to stress function handling and symbol resolution"
+
+[[benchmark]]
+name = "deep_nesting"
+path = "stress/deep_nesting.rue"
+description = "10 levels of nested blocks to stress scope handling"
+
+[[benchmark]]
+name = "large_structs"
+path = "stress/large_structs.rue"
+description = "50 struct types with field access to stress type handling"
+
+[[benchmark]]
+name = "arithmetic_heavy"
+path = "stress/arithmetic_heavy.rue"
+description = "Many arithmetic expressions to stress expression parsing and codegen"
+
+[[benchmark]]
+name = "control_flow"
+path = "stress/control_flow.rue"
+description = "Complex if/while/match patterns to stress CFG construction"

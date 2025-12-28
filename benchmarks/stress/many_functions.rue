@@ -1,0 +1,220 @@
+// Stress test: 100 functions to exercise function handling in the compiler.
+// Each function performs a simple computation to ensure they're not optimized away.
+
+fn f001(x: i32) -> i32 { x + 1 }
+fn f002(x: i32) -> i32 { x + 2 }
+fn f003(x: i32) -> i32 { x + 3 }
+fn f004(x: i32) -> i32 { x + 4 }
+fn f005(x: i32) -> i32 { x + 5 }
+fn f006(x: i32) -> i32 { x + 6 }
+fn f007(x: i32) -> i32 { x + 7 }
+fn f008(x: i32) -> i32 { x + 8 }
+fn f009(x: i32) -> i32 { x + 9 }
+fn f010(x: i32) -> i32 { x + 10 }
+
+fn f011(x: i32) -> i32 { x + 11 }
+fn f012(x: i32) -> i32 { x + 12 }
+fn f013(x: i32) -> i32 { x + 13 }
+fn f014(x: i32) -> i32 { x + 14 }
+fn f015(x: i32) -> i32 { x + 15 }
+fn f016(x: i32) -> i32 { x + 16 }
+fn f017(x: i32) -> i32 { x + 17 }
+fn f018(x: i32) -> i32 { x + 18 }
+fn f019(x: i32) -> i32 { x + 19 }
+fn f020(x: i32) -> i32 { x + 20 }
+
+fn f021(x: i32) -> i32 { x + 21 }
+fn f022(x: i32) -> i32 { x + 22 }
+fn f023(x: i32) -> i32 { x + 23 }
+fn f024(x: i32) -> i32 { x + 24 }
+fn f025(x: i32) -> i32 { x + 25 }
+fn f026(x: i32) -> i32 { x + 26 }
+fn f027(x: i32) -> i32 { x + 27 }
+fn f028(x: i32) -> i32 { x + 28 }
+fn f029(x: i32) -> i32 { x + 29 }
+fn f030(x: i32) -> i32 { x + 30 }
+
+fn f031(x: i32) -> i32 { x + 31 }
+fn f032(x: i32) -> i32 { x + 32 }
+fn f033(x: i32) -> i32 { x + 33 }
+fn f034(x: i32) -> i32 { x + 34 }
+fn f035(x: i32) -> i32 { x + 35 }
+fn f036(x: i32) -> i32 { x + 36 }
+fn f037(x: i32) -> i32 { x + 37 }
+fn f038(x: i32) -> i32 { x + 38 }
+fn f039(x: i32) -> i32 { x + 39 }
+fn f040(x: i32) -> i32 { x + 40 }
+
+fn f041(x: i32) -> i32 { x + 41 }
+fn f042(x: i32) -> i32 { x + 42 }
+fn f043(x: i32) -> i32 { x + 43 }
+fn f044(x: i32) -> i32 { x + 44 }
+fn f045(x: i32) -> i32 { x + 45 }
+fn f046(x: i32) -> i32 { x + 46 }
+fn f047(x: i32) -> i32 { x + 47 }
+fn f048(x: i32) -> i32 { x + 48 }
+fn f049(x: i32) -> i32 { x + 49 }
+fn f050(x: i32) -> i32 { x + 50 }
+
+fn f051(x: i32) -> i32 { x + 51 }
+fn f052(x: i32) -> i32 { x + 52 }
+fn f053(x: i32) -> i32 { x + 53 }
+fn f054(x: i32) -> i32 { x + 54 }
+fn f055(x: i32) -> i32 { x + 55 }
+fn f056(x: i32) -> i32 { x + 56 }
+fn f057(x: i32) -> i32 { x + 57 }
+fn f058(x: i32) -> i32 { x + 58 }
+fn f059(x: i32) -> i32 { x + 59 }
+fn f060(x: i32) -> i32 { x + 60 }
+
+fn f061(x: i32) -> i32 { x + 61 }
+fn f062(x: i32) -> i32 { x + 62 }
+fn f063(x: i32) -> i32 { x + 63 }
+fn f064(x: i32) -> i32 { x + 64 }
+fn f065(x: i32) -> i32 { x + 65 }
+fn f066(x: i32) -> i32 { x + 66 }
+fn f067(x: i32) -> i32 { x + 67 }
+fn f068(x: i32) -> i32 { x + 68 }
+fn f069(x: i32) -> i32 { x + 69 }
+fn f070(x: i32) -> i32 { x + 70 }
+
+fn f071(x: i32) -> i32 { x + 71 }
+fn f072(x: i32) -> i32 { x + 72 }
+fn f073(x: i32) -> i32 { x + 73 }
+fn f074(x: i32) -> i32 { x + 74 }
+fn f075(x: i32) -> i32 { x + 75 }
+fn f076(x: i32) -> i32 { x + 76 }
+fn f077(x: i32) -> i32 { x + 77 }
+fn f078(x: i32) -> i32 { x + 78 }
+fn f079(x: i32) -> i32 { x + 79 }
+fn f080(x: i32) -> i32 { x + 80 }
+
+fn f081(x: i32) -> i32 { x + 81 }
+fn f082(x: i32) -> i32 { x + 82 }
+fn f083(x: i32) -> i32 { x + 83 }
+fn f084(x: i32) -> i32 { x + 84 }
+fn f085(x: i32) -> i32 { x + 85 }
+fn f086(x: i32) -> i32 { x + 86 }
+fn f087(x: i32) -> i32 { x + 87 }
+fn f088(x: i32) -> i32 { x + 88 }
+fn f089(x: i32) -> i32 { x + 89 }
+fn f090(x: i32) -> i32 { x + 90 }
+
+fn f091(x: i32) -> i32 { x + 91 }
+fn f092(x: i32) -> i32 { x + 92 }
+fn f093(x: i32) -> i32 { x + 93 }
+fn f094(x: i32) -> i32 { x + 94 }
+fn f095(x: i32) -> i32 { x + 95 }
+fn f096(x: i32) -> i32 { x + 96 }
+fn f097(x: i32) -> i32 { x + 97 }
+fn f098(x: i32) -> i32 { x + 98 }
+fn f099(x: i32) -> i32 { x + 99 }
+fn f100(x: i32) -> i32 { x + 100 }
+
+fn main() -> i32 {
+    // Call all functions to ensure they're compiled
+    let mut sum = 0;
+    sum = f001(sum);
+    sum = f002(sum);
+    sum = f003(sum);
+    sum = f004(sum);
+    sum = f005(sum);
+    sum = f006(sum);
+    sum = f007(sum);
+    sum = f008(sum);
+    sum = f009(sum);
+    sum = f010(sum);
+    sum = f011(sum);
+    sum = f012(sum);
+    sum = f013(sum);
+    sum = f014(sum);
+    sum = f015(sum);
+    sum = f016(sum);
+    sum = f017(sum);
+    sum = f018(sum);
+    sum = f019(sum);
+    sum = f020(sum);
+    sum = f021(sum);
+    sum = f022(sum);
+    sum = f023(sum);
+    sum = f024(sum);
+    sum = f025(sum);
+    sum = f026(sum);
+    sum = f027(sum);
+    sum = f028(sum);
+    sum = f029(sum);
+    sum = f030(sum);
+    sum = f031(sum);
+    sum = f032(sum);
+    sum = f033(sum);
+    sum = f034(sum);
+    sum = f035(sum);
+    sum = f036(sum);
+    sum = f037(sum);
+    sum = f038(sum);
+    sum = f039(sum);
+    sum = f040(sum);
+    sum = f041(sum);
+    sum = f042(sum);
+    sum = f043(sum);
+    sum = f044(sum);
+    sum = f045(sum);
+    sum = f046(sum);
+    sum = f047(sum);
+    sum = f048(sum);
+    sum = f049(sum);
+    sum = f050(sum);
+    sum = f051(sum);
+    sum = f052(sum);
+    sum = f053(sum);
+    sum = f054(sum);
+    sum = f055(sum);
+    sum = f056(sum);
+    sum = f057(sum);
+    sum = f058(sum);
+    sum = f059(sum);
+    sum = f060(sum);
+    sum = f061(sum);
+    sum = f062(sum);
+    sum = f063(sum);
+    sum = f064(sum);
+    sum = f065(sum);
+    sum = f066(sum);
+    sum = f067(sum);
+    sum = f068(sum);
+    sum = f069(sum);
+    sum = f070(sum);
+    sum = f071(sum);
+    sum = f072(sum);
+    sum = f073(sum);
+    sum = f074(sum);
+    sum = f075(sum);
+    sum = f076(sum);
+    sum = f077(sum);
+    sum = f078(sum);
+    sum = f079(sum);
+    sum = f080(sum);
+    sum = f081(sum);
+    sum = f082(sum);
+    sum = f083(sum);
+    sum = f084(sum);
+    sum = f085(sum);
+    sum = f086(sum);
+    sum = f087(sum);
+    sum = f088(sum);
+    sum = f089(sum);
+    sum = f090(sum);
+    sum = f091(sum);
+    sum = f092(sum);
+    sum = f093(sum);
+    sum = f094(sum);
+    sum = f095(sum);
+    sum = f096(sum);
+    sum = f097(sum);
+    sum = f098(sum);
+    sum = f099(sum);
+    sum = f100(sum);
+    // sum = 1+2+3+...+100 = 5050
+    // Return sum mod 256 for exit code
+    sum % 256
+}

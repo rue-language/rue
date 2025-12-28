@@ -1,0 +1,129 @@
+// Stress test: Many struct types with multiple fields.
+// Tests the compiler's handling of type definitions and field access.
+
+struct S01 { a: i32, b: i32, c: i32, d: i32 }
+struct S02 { a: i32, b: i32, c: i32, d: i32 }
+struct S03 { a: i32, b: i32, c: i32, d: i32 }
+struct S04 { a: i32, b: i32, c: i32, d: i32 }
+struct S05 { a: i32, b: i32, c: i32, d: i32 }
+struct S06 { a: i32, b: i32, c: i32, d: i32 }
+struct S07 { a: i32, b: i32, c: i32, d: i32 }
+struct S08 { a: i32, b: i32, c: i32, d: i32 }
+struct S09 { a: i32, b: i32, c: i32, d: i32 }
+struct S10 { a: i32, b: i32, c: i32, d: i32 }
+
+struct S11 { a: i32, b: i32, c: i32, d: i32 }
+struct S12 { a: i32, b: i32, c: i32, d: i32 }
+struct S13 { a: i32, b: i32, c: i32, d: i32 }
+struct S14 { a: i32, b: i32, c: i32, d: i32 }
+struct S15 { a: i32, b: i32, c: i32, d: i32 }
+struct S16 { a: i32, b: i32, c: i32, d: i32 }
+struct S17 { a: i32, b: i32, c: i32, d: i32 }
+struct S18 { a: i32, b: i32, c: i32, d: i32 }
+struct S19 { a: i32, b: i32, c: i32, d: i32 }
+struct S20 { a: i32, b: i32, c: i32, d: i32 }
+
+struct S21 { a: i32, b: i32, c: i32, d: i32 }
+struct S22 { a: i32, b: i32, c: i32, d: i32 }
+struct S23 { a: i32, b: i32, c: i32, d: i32 }
+struct S24 { a: i32, b: i32, c: i32, d: i32 }
+struct S25 { a: i32, b: i32, c: i32, d: i32 }
+struct S26 { a: i32, b: i32, c: i32, d: i32 }
+struct S27 { a: i32, b: i32, c: i32, d: i32 }
+struct S28 { a: i32, b: i32, c: i32, d: i32 }
+struct S29 { a: i32, b: i32, c: i32, d: i32 }
+struct S30 { a: i32, b: i32, c: i32, d: i32 }
+
+struct S31 { a: i32, b: i32, c: i32, d: i32 }
+struct S32 { a: i32, b: i32, c: i32, d: i32 }
+struct S33 { a: i32, b: i32, c: i32, d: i32 }
+struct S34 { a: i32, b: i32, c: i32, d: i32 }
+struct S35 { a: i32, b: i32, c: i32, d: i32 }
+struct S36 { a: i32, b: i32, c: i32, d: i32 }
+struct S37 { a: i32, b: i32, c: i32, d: i32 }
+struct S38 { a: i32, b: i32, c: i32, d: i32 }
+struct S39 { a: i32, b: i32, c: i32, d: i32 }
+struct S40 { a: i32, b: i32, c: i32, d: i32 }
+
+struct S41 { a: i32, b: i32, c: i32, d: i32 }
+struct S42 { a: i32, b: i32, c: i32, d: i32 }
+struct S43 { a: i32, b: i32, c: i32, d: i32 }
+struct S44 { a: i32, b: i32, c: i32, d: i32 }
+struct S45 { a: i32, b: i32, c: i32, d: i32 }
+struct S46 { a: i32, b: i32, c: i32, d: i32 }
+struct S47 { a: i32, b: i32, c: i32, d: i32 }
+struct S48 { a: i32, b: i32, c: i32, d: i32 }
+struct S49 { a: i32, b: i32, c: i32, d: i32 }
+struct S50 { a: i32, b: i32, c: i32, d: i32 }
+
+fn use_s01() -> i32 { let s = S01 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s02() -> i32 { let s = S02 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s03() -> i32 { let s = S03 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s04() -> i32 { let s = S04 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s05() -> i32 { let s = S05 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s06() -> i32 { let s = S06 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s07() -> i32 { let s = S07 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s08() -> i32 { let s = S08 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s09() -> i32 { let s = S09 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s10() -> i32 { let s = S10 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+
+fn use_s11() -> i32 { let s = S11 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s12() -> i32 { let s = S12 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s13() -> i32 { let s = S13 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s14() -> i32 { let s = S14 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s15() -> i32 { let s = S15 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s16() -> i32 { let s = S16 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s17() -> i32 { let s = S17 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s18() -> i32 { let s = S18 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s19() -> i32 { let s = S19 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s20() -> i32 { let s = S20 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+
+fn use_s21() -> i32 { let s = S21 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s22() -> i32 { let s = S22 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s23() -> i32 { let s = S23 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s24() -> i32 { let s = S24 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s25() -> i32 { let s = S25 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s26() -> i32 { let s = S26 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s27() -> i32 { let s = S27 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s28() -> i32 { let s = S28 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s29() -> i32 { let s = S29 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s30() -> i32 { let s = S30 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+
+fn use_s31() -> i32 { let s = S31 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s32() -> i32 { let s = S32 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s33() -> i32 { let s = S33 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s34() -> i32 { let s = S34 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s35() -> i32 { let s = S35 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s36() -> i32 { let s = S36 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s37() -> i32 { let s = S37 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s38() -> i32 { let s = S38 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s39() -> i32 { let s = S39 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s40() -> i32 { let s = S40 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+
+fn use_s41() -> i32 { let s = S41 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s42() -> i32 { let s = S42 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s43() -> i32 { let s = S43 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s44() -> i32 { let s = S44 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s45() -> i32 { let s = S45 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s46() -> i32 { let s = S46 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s47() -> i32 { let s = S47 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s48() -> i32 { let s = S48 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s49() -> i32 { let s = S49 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s50() -> i32 { let s = S50 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+
+fn main() -> i32 {
+    // Use all struct types to ensure they're compiled
+    let sum = use_s01() + use_s02() + use_s03() + use_s04() + use_s05()
+            + use_s06() + use_s07() + use_s08() + use_s09() + use_s10()
+            + use_s11() + use_s12() + use_s13() + use_s14() + use_s15()
+            + use_s16() + use_s17() + use_s18() + use_s19() + use_s20()
+            + use_s21() + use_s22() + use_s23() + use_s24() + use_s25()
+            + use_s26() + use_s27() + use_s28() + use_s29() + use_s30()
+            + use_s31() + use_s32() + use_s33() + use_s34() + use_s35()
+            + use_s36() + use_s37() + use_s38() + use_s39() + use_s40()
+            + use_s41() + use_s42() + use_s43() + use_s44() + use_s45()
+            + use_s46() + use_s47() + use_s48() + use_s49() + use_s50();
+    // Each use_sXX returns 10, so sum = 50 * 10 = 500
+    // Return sum mod 256 for exit code
+    sum % 256
+}
