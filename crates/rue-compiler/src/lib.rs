@@ -19,8 +19,15 @@
 //! let error_output = formatter.format_error(&error);
 //! eprintln!("{}", error_output);
 //! ```
+//!
+//! # Tracing
+//!
+//! This crate is instrumented with `tracing` spans for performance analysis.
+//! Use `--log-level info` or `--time-passes` to see timing information.
 
 mod diagnostic;
+
+use tracing::{info, info_span};
 
 pub use diagnostic::{DiagnosticFormatter, SourceInfo};
 
@@ -291,13 +298,25 @@ pub fn compile_frontend_with_options(
     opt_level: OptLevel,
     preview_features: &PreviewFeatures,
 ) -> CompileResult<CompileState> {
+    let _span = info_span!("frontend", source_bytes = source.len()).entered();
+
     // Lexing
-    let mut lexer = Lexer::new(source);
-    let tokens = lexer.tokenize()?;
+    let tokens = {
+        let _span = info_span!("lexer").entered();
+        let mut lexer = Lexer::new(source);
+        let tokens = lexer.tokenize()?;
+        info!(token_count = tokens.len(), "lexing complete");
+        tokens
+    };
 
     // Parsing
-    let mut parser = Parser::new(tokens);
-    let ast = parser.parse()?;
+    let ast = {
+        let _span = info_span!("parser").entered();
+        let parser = Parser::new(tokens);
+        let ast = parser.parse()?;
+        info!(item_count = ast.items.len(), "parsing complete");
+        ast
+    };
 
     compile_frontend_from_ast_with_options(ast, opt_level, preview_features)
 }
@@ -325,39 +344,61 @@ pub fn compile_frontend_from_ast_with_options(
     preview_features: &PreviewFeatures,
 ) -> CompileResult<CompileState> {
     // AST to RIR (untyped IR)
-    let mut interner = Interner::new();
-    let astgen = AstGen::new(&ast, &mut interner);
-    let rir = astgen.generate();
+    let (rir, mut interner) = {
+        let _span = info_span!("astgen").entered();
+        let mut interner = Interner::new();
+        let astgen = AstGen::new(&ast, &mut interner);
+        let rir = astgen.generate();
+        info!(instruction_count = rir.len(), "AST generation complete");
+        (rir, interner)
+    };
 
     // Semantic analysis (RIR to AIR)
-    let sema = Sema::new(&rir, &mut interner, preview_features.clone());
-    let sema_output = sema.analyze_all()?;
+    let sema_output = {
+        let _span = info_span!("sema").entered();
+        let sema = Sema::new(&rir, &mut interner, preview_features.clone());
+        let output = sema.analyze_all()?;
+        info!(
+            function_count = output.functions.len(),
+            struct_count = output.struct_defs.len(),
+            "semantic analysis complete"
+        );
+        output
+    };
 
     // Build CFGs from AIR (one per function), collecting warnings
-    let mut functions = Vec::with_capacity(sema_output.functions.len());
-    let mut warnings = sema_output.warnings;
+    let (functions, warnings) = {
+        let _span = info_span!("cfg_construction").entered();
+        let mut functions = Vec::with_capacity(sema_output.functions.len());
+        let mut warnings = sema_output.warnings;
 
-    for func in sema_output.functions {
-        let cfg_output = CfgBuilder::build(
-            &func.air,
-            func.num_locals,
-            func.num_param_slots,
-            &func.name,
-            &sema_output.struct_defs,
-            &sema_output.array_types,
-            func.param_modes.clone(),
+        for func in sema_output.functions {
+            let cfg_output = CfgBuilder::build(
+                &func.air,
+                func.num_locals,
+                func.num_param_slots,
+                &func.name,
+                &sema_output.struct_defs,
+                &sema_output.array_types,
+                func.param_modes.clone(),
+            );
+            warnings.extend(cfg_output.warnings);
+
+            // Apply optimizations to the CFG
+            let mut cfg = cfg_output.cfg;
+            rue_cfg::opt::optimize(&mut cfg, opt_level);
+
+            functions.push(FunctionWithCfg {
+                analyzed: func,
+                cfg,
+            });
+        }
+        info!(
+            function_count = functions.len(),
+            "CFG construction complete"
         );
-        warnings.extend(cfg_output.warnings);
-
-        // Apply optimizations to the CFG
-        let mut cfg = cfg_output.cfg;
-        rue_cfg::opt::optimize(&mut cfg, opt_level);
-
-        functions.push(FunctionWithCfg {
-            analyzed: func,
-            cfg,
-        });
-    }
+        (functions, warnings)
+    };
 
     Ok(CompileState {
         ast,
@@ -386,6 +427,13 @@ pub fn compile_with_options(
     source: &str,
     options: &CompileOptions,
 ) -> CompileResult<CompileOutput> {
+    let _span = info_span!(
+        "compile",
+        target = %options.target,
+        source_bytes = source.len()
+    )
+    .entered();
+
     let state =
         compile_frontend_with_options(source, options.opt_level, &options.preview_features)?;
 
@@ -406,44 +454,55 @@ pub fn compile_with_options(
 /// Compile for x86-64 target.
 fn compile_x86_64(state: &CompileState, options: &CompileOptions) -> CompileResult<CompileOutput> {
     // Generate machine code for all functions
-    let mut object_files: Vec<Vec<u8>> = Vec::new();
+    let object_files = {
+        let _span = info_span!("codegen", arch = "x86_64").entered();
+        let mut object_files: Vec<Vec<u8>> = Vec::new();
+        let mut total_code_bytes = 0usize;
 
-    for func in &state.functions {
-        let machine_code = rue_codegen::x86_64::generate(
-            &func.cfg,
-            &state.struct_defs,
-            &state.array_types,
-            &state.strings,
-        )?;
+        for func in &state.functions {
+            let machine_code = rue_codegen::x86_64::generate(
+                &func.cfg,
+                &state.struct_defs,
+                &state.array_types,
+                &state.strings,
+            )?;
+            total_code_bytes += machine_code.code.len();
 
-        // Build object file for this function
-        let mut obj_builder = ObjectBuilder::new(options.target, &func.analyzed.name)
-            .code(machine_code.code)
-            .strings(machine_code.strings);
+            // Build object file for this function
+            let mut obj_builder = ObjectBuilder::new(options.target, &func.analyzed.name)
+                .code(machine_code.code)
+                .strings(machine_code.strings);
 
-        // Add relocations from codegen (convert RelocationKind to RelocationType).
-        for reloc in machine_code.relocations {
-            let rel_type = match reloc.kind {
-                RelocationKind::X86Pc32 => RelocationType::Pc32,
-                RelocationKind::X86Plt32 => RelocationType::Plt32,
-                // AArch64 relocations should never appear in x86-64 codegen
-                RelocationKind::Aarch64AdrpPage21
-                | RelocationKind::Aarch64AddLo12
-                | RelocationKind::Aarch64Call26 => {
-                    unreachable!("x86-64 codegen emitted AArch64 relocation {:?}", reloc.kind)
-                }
-            };
+            // Add relocations from codegen (convert RelocationKind to RelocationType).
+            for reloc in machine_code.relocations {
+                let rel_type = match reloc.kind {
+                    RelocationKind::X86Pc32 => RelocationType::Pc32,
+                    RelocationKind::X86Plt32 => RelocationType::Plt32,
+                    // AArch64 relocations should never appear in x86-64 codegen
+                    RelocationKind::Aarch64AdrpPage21
+                    | RelocationKind::Aarch64AddLo12
+                    | RelocationKind::Aarch64Call26 => {
+                        unreachable!("x86-64 codegen emitted AArch64 relocation {:?}", reloc.kind)
+                    }
+                };
 
-            obj_builder = obj_builder.relocation(CodeRelocation {
-                offset: reloc.offset,
-                symbol: reloc.symbol,
-                rel_type,
-                addend: reloc.addend,
-            });
+                obj_builder = obj_builder.relocation(CodeRelocation {
+                    offset: reloc.offset,
+                    symbol: reloc.symbol,
+                    rel_type,
+                    addend: reloc.addend,
+                });
+            }
+
+            object_files.push(obj_builder.build());
         }
-
-        object_files.push(obj_builder.build());
-    }
+        info!(
+            function_count = state.functions.len(),
+            code_bytes = total_code_bytes,
+            "codegen complete"
+        );
+        object_files
+    };
 
     // Link to executable
     match &options.linker {
@@ -462,6 +521,8 @@ fn link_internal(
     options: &CompileOptions,
     object_files: &[Vec<u8>],
 ) -> CompileResult<CompileOutput> {
+    let _span = info_span!("linker", mode = "internal").entered();
+
     // For macOS targets, the internal linker doesn't support Mach-O,
     // so we delegate to the system linker (clang).
     if options.target.is_macho() {
@@ -495,6 +556,11 @@ fn link_internal(
     // Link to executable
     // Use _start from the runtime as the entry point (it will call main)
     let elf = linker.link("_start").map_err(link_error)?;
+    info!(
+        object_count = object_files.len(),
+        output_bytes = elf.len(),
+        "linking complete"
+    );
 
     Ok(CompileOutput {
         elf,
@@ -511,6 +577,8 @@ fn link_system(
     object_files: &[Vec<u8>],
     linker_cmd: &str,
 ) -> CompileResult<CompileOutput> {
+    let _span = info_span!("linker", mode = "system", command = linker_cmd).entered();
+
     // Set up temporary directory with object files and runtime
     let mut temp_dir = TempLinkDir::new()?;
     temp_dir.write_object_files(object_files)?;
@@ -566,6 +634,11 @@ fn link_system(
 
     // Read the resulting executable
     let elf = temp_dir.read_output()?;
+    info!(
+        object_count = object_files.len(),
+        output_bytes = elf.len(),
+        "linking complete"
+    );
 
     // temp_dir is dropped here, cleaning up automatically
     Ok(CompileOutput {
@@ -577,42 +650,53 @@ fn link_system(
 /// Compile for AArch64 target.
 fn compile_aarch64(state: &CompileState, options: &CompileOptions) -> CompileResult<CompileOutput> {
     // Generate machine code for all functions using the aarch64 backend
-    let mut object_files: Vec<Vec<u8>> = Vec::new();
+    let object_files = {
+        let _span = info_span!("codegen", arch = "aarch64").entered();
+        let mut object_files: Vec<Vec<u8>> = Vec::new();
+        let mut total_code_bytes = 0usize;
 
-    for func in &state.functions {
-        let machine_code = rue_codegen::aarch64::generate(
-            &func.cfg,
-            &state.struct_defs,
-            &state.array_types,
-            &state.strings,
-        )?;
+        for func in &state.functions {
+            let machine_code = rue_codegen::aarch64::generate(
+                &func.cfg,
+                &state.struct_defs,
+                &state.array_types,
+                &state.strings,
+            )?;
+            total_code_bytes += machine_code.code.len();
 
-        let mut obj_builder = ObjectBuilder::new(options.target, &func.analyzed.name)
-            .code(machine_code.code)
-            .strings(machine_code.strings);
+            let mut obj_builder = ObjectBuilder::new(options.target, &func.analyzed.name)
+                .code(machine_code.code)
+                .strings(machine_code.strings);
 
-        // Add relocations from codegen (convert RelocationKind to RelocationType).
-        for reloc in machine_code.relocations {
-            let rel_type = match reloc.kind {
-                RelocationKind::Aarch64AdrpPage21 => RelocationType::AdrpPage21,
-                RelocationKind::Aarch64AddLo12 => RelocationType::AddLo12,
-                RelocationKind::Aarch64Call26 => RelocationType::Call26,
-                // x86-64 relocations should never appear in AArch64 codegen
-                RelocationKind::X86Pc32 | RelocationKind::X86Plt32 => {
-                    unreachable!("AArch64 codegen emitted x86-64 relocation {:?}", reloc.kind)
-                }
-            };
+            // Add relocations from codegen (convert RelocationKind to RelocationType).
+            for reloc in machine_code.relocations {
+                let rel_type = match reloc.kind {
+                    RelocationKind::Aarch64AdrpPage21 => RelocationType::AdrpPage21,
+                    RelocationKind::Aarch64AddLo12 => RelocationType::AddLo12,
+                    RelocationKind::Aarch64Call26 => RelocationType::Call26,
+                    // x86-64 relocations should never appear in AArch64 codegen
+                    RelocationKind::X86Pc32 | RelocationKind::X86Plt32 => {
+                        unreachable!("AArch64 codegen emitted x86-64 relocation {:?}", reloc.kind)
+                    }
+                };
 
-            obj_builder = obj_builder.relocation(CodeRelocation {
-                offset: reloc.offset,
-                symbol: reloc.symbol,
-                rel_type,
-                addend: reloc.addend,
-            });
+                obj_builder = obj_builder.relocation(CodeRelocation {
+                    offset: reloc.offset,
+                    symbol: reloc.symbol,
+                    rel_type,
+                    addend: reloc.addend,
+                });
+            }
+
+            object_files.push(obj_builder.build());
         }
-
-        object_files.push(obj_builder.build());
-    }
+        info!(
+            function_count = state.functions.len(),
+            code_bytes = total_code_bytes,
+            "codegen complete"
+        );
+        object_files
+    };
 
     // Link to executable (linker selection is handled at the top level, not here)
     match &options.linker {

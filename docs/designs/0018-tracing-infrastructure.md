@@ -130,7 +130,7 @@ pub fn compile_frontend_with_options(...) -> CompileResult<...> {
   - Collect timing from spans and format output
   - Closes rue-uxgx
 
-- [ ] **Phase 4: Instrument compiler** - rue-irz1.4
+- [x] **Phase 4: Instrument compiler** - rue-irz1.4
   - Add spans to `compile_frontend_with_options()`
   - Add spans to backend functions
   - Include context: file size, token/instruction counts
