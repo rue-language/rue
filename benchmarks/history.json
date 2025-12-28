@@ -1592,6 +1592,18 @@
       },
       "iterations": 5,
       "benchmarks": []
+    },
+    {
+      "version": 1,
+      "timestamp": "2025-12-28T15:19:18Z",
+      "commit": "ab2888dd",
+      "build_mode": "release",
+      "host": {
+        "os": "darwin",
+        "arch": "arm64"
+      },
+      "iterations": 5,
+      "benchmarks": []
     }
   ]
 }
