@@ -1015,6 +1015,12 @@ impl Aarch64Mir {
         &mut self.instructions
     }
 
+    /// Get mutable access to the instruction vector (for peephole optimization).
+    #[inline]
+    pub fn instructions_vec_mut(&mut self) -> &mut Vec<Aarch64Inst> {
+        &mut self.instructions
+    }
+
     /// Iterate over instructions.
     pub fn iter(&self) -> impl Iterator<Item = &Aarch64Inst> {
         self.instructions.iter()

@@ -15,6 +15,7 @@ mod cfg_lower;
 mod emit;
 pub mod liveness;
 mod mir;
+mod peephole;
 mod regalloc;
 
 pub use cfg_lower::CfgLower;
@@ -52,8 +53,11 @@ pub fn generate(
     // Allocate physical registers (may add spill slots)
     // Spill slots go after both locals AND parameters to avoid conflicts
     let existing_slots = num_locals + num_params;
-    let (mir, num_spills, used_callee_saved) =
+    let (mut mir, num_spills, used_callee_saved) =
         RegAlloc::new(mir, existing_slots).allocate_with_spills()?;
+
+    // Apply peephole optimizations after register allocation
+    peephole::optimize(mir.instructions_vec_mut());
 
     // Emit machine code bytes (with prologue for stack frame setup)
     // Total local slots = local variables + spill slots (params handled separately)
@@ -96,8 +100,11 @@ pub fn generate_with_asm(
 
     // Allocate physical registers (may add spill slots)
     let existing_slots = num_locals + num_params;
-    let (mir, num_spills, used_callee_saved) =
+    let (mut mir, num_spills, used_callee_saved) =
         RegAlloc::new(mir, existing_slots).allocate_with_spills()?;
+
+    // Apply peephole optimizations after register allocation
+    peephole::optimize(mir.instructions_vec_mut());
 
     // Emit machine code bytes with assembly text
     let total_locals = num_locals + num_spills;

@@ -652,6 +652,12 @@ impl X86Mir {
         &mut self.instructions
     }
 
+    /// Get mutable access to the instruction vector (for peephole optimization).
+    #[inline]
+    pub fn instructions_vec_mut(&mut self) -> &mut Vec<X86Inst> {
+        &mut self.instructions
+    }
+
     /// Iterate over instructions.
     pub fn iter(&self) -> impl Iterator<Item = &X86Inst> {
         self.instructions.iter()
