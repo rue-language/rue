@@ -5,6 +5,8 @@ rust_binary(
         "//crates/rue-compiler:rue-compiler",
         "//crates/rue-rir:rue-rir",
         "//crates/rue-target:rue-target",
+        "//third-party:tracing",
+        "//third-party:tracing-subscriber",
     ],
     visibility = ["PUBLIC"],
 )
@@ -16,5 +18,7 @@ rust_test(
         "//crates/rue-compiler:rue-compiler",
         "//crates/rue-rir:rue-rir",
         "//crates/rue-target:rue-target",
+        "//third-party:tracing",
+        "//third-party:tracing-subscriber",
     ],
 )

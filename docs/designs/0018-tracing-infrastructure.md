@@ -114,7 +114,7 @@ pub fn compile_frontend_with_options(...) -> CompileResult<...> {
 
 ## Implementation Phases
 
-- [ ] **Phase 1: Add dependencies** - rue-irz1.1
+- [x] **Phase 1: Add dependencies** - rue-irz1.1
   - Update `third-party/Cargo.toml` with tracing, tracing-subscriber
   - Run `reindeer buckify`
   - Update crate BUCK files
