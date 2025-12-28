@@ -1,45 +1,19 @@
 use libtest2_mimic::{Harness, RunContext, RunError, Trial};
-use rue_test_runner::{Case, find_rue_binary, load_test_files, run_test_case};
-use std::path::{Path, PathBuf};
+use rue_test_runner::{Case, find_dir, find_rue_binary, load_test_files, run_test_case};
+use std::path::Path;
 
 mod traceability;
 
-/// Find the spec directory.
-fn find_spec_dir() -> PathBuf {
-    std::env::var("RUE_SPEC_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| {
-            let possible_paths = ["docs/spec/src", "../docs/spec/src", "../../docs/spec/src"];
-            for path in possible_paths {
-                let p = Path::new(path);
-                if p.exists() {
-                    return p.to_path_buf();
-                }
-            }
-            Path::new("docs/spec/src").to_path_buf()
-        })
-}
+/// Possible paths for the spec directory.
+const SPEC_DIR_PATHS: &[&str] = &["docs/spec/src", "../docs/spec/src", "../../docs/spec/src"];
 
-/// Find the cases directory.
-fn find_cases_dir() -> PathBuf {
-    std::env::var("RUE_SPEC_CASES")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| {
-            let possible_paths = ["crates/rue-spec/cases", "cases", "../rue-spec/cases"];
-            for path in possible_paths {
-                let p = Path::new(path);
-                if p.exists() {
-                    return p.to_path_buf();
-                }
-            }
-            Path::new("cases").to_path_buf()
-        })
-}
+/// Possible paths for the cases directory.
+const CASES_DIR_PATHS: &[&str] = &["crates/rue-spec/cases", "cases", "../rue-spec/cases"];
 
 /// Run the traceability report.
 fn run_traceability(detailed: bool) {
-    let spec_dir = find_spec_dir();
-    let cases_dir = find_cases_dir();
+    let spec_dir = find_dir("RUE_SPEC_DIR", SPEC_DIR_PATHS, "docs/spec/src");
+    let cases_dir = find_dir("RUE_SPEC_CASES", CASES_DIR_PATHS, "cases");
 
     if !spec_dir.exists() {
         eprintln!("Error: Spec directory not found: {}", spec_dir.display());
@@ -126,7 +100,7 @@ fn main() {
     let rue_binary = find_rue_binary();
 
     // Find the cases directory
-    let cases_dir = find_cases_dir();
+    let cases_dir = find_dir("RUE_SPEC_CASES", CASES_DIR_PATHS, "cases");
 
     // Load all test files
     let specs = load_test_files(&cases_dir);

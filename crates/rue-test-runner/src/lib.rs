@@ -687,6 +687,32 @@ pub fn run_test_case(case: &Case, rue_binary: &Path) -> TestResult {
     Ok(())
 }
 
+/// Find a directory by checking an environment variable, then a list of possible paths.
+///
+/// This function provides a consistent way to locate directories across different
+/// working directory contexts (project root, crate directory, etc.).
+///
+/// # Arguments
+/// * `env_var` - Environment variable to check first (e.g., "RUE_SPEC_DIR")
+/// * `possible_paths` - List of relative paths to try if env var is not set
+/// * `fallback` - Default path to return if no existing path is found
+///
+/// # Returns
+/// The first existing path found, or the fallback if none exist.
+pub fn find_dir(env_var: &str, possible_paths: &[&str], fallback: &str) -> PathBuf {
+    std::env::var(env_var)
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| {
+            for path in possible_paths {
+                let p = Path::new(path);
+                if p.exists() {
+                    return p.to_path_buf();
+                }
+            }
+            Path::new(fallback).to_path_buf()
+        })
+}
+
 /// Find the rue binary in common locations.
 pub fn find_rue_binary() -> PathBuf {
     std::env::var("RUE_BINARY")

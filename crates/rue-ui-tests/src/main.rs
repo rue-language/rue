@@ -4,28 +4,15 @@
 //! such as warnings, diagnostics quality, and compiler flags.
 
 use libtest2_mimic::{Harness, RunContext, RunError, Trial};
-use rue_test_runner::{Case, find_rue_binary, load_test_files, run_test_case};
-use std::path::{Path, PathBuf};
+use rue_test_runner::{Case, find_dir, find_rue_binary, load_test_files, run_test_case};
+use std::path::Path;
 
-/// Find the cases directory for UI tests.
-fn find_cases_dir() -> PathBuf {
-    std::env::var("RUE_UI_CASES")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| {
-            let possible_paths = [
-                "crates/rue-ui-tests/cases",
-                "cases",
-                "../rue-ui-tests/cases",
-            ];
-            for path in possible_paths {
-                let p = Path::new(path);
-                if p.exists() {
-                    return p.to_path_buf();
-                }
-            }
-            Path::new("cases").to_path_buf()
-        })
-}
+/// Possible paths for the cases directory.
+const CASES_DIR_PATHS: &[&str] = &[
+    "crates/rue-ui-tests/cases",
+    "cases",
+    "../rue-ui-tests/cases",
+];
 
 /// Wrapper to convert TestResult to libtest2_mimic's RunError type.
 fn run_case_wrapper(
@@ -45,7 +32,7 @@ fn main() {
     let rue_binary = find_rue_binary();
 
     // Find the cases directory
-    let cases_dir = find_cases_dir();
+    let cases_dir = find_dir("RUE_UI_CASES", CASES_DIR_PATHS, "cases");
 
     // Load all test files
     let test_files = load_test_files(&cases_dir);
