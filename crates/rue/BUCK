@@ -1,6 +1,9 @@
 rust_binary(
     name = "rue",
-    srcs = ["src/main.rs"],
+    srcs = [
+        "src/main.rs",
+        "src/timing.rs",
+    ],
     deps = [
         "//crates/rue-compiler:rue-compiler",
         "//crates/rue-rir:rue-rir",
@@ -13,7 +16,10 @@ rust_binary(
 
 rust_test(
     name = "rue-test",
-    srcs = ["src/main.rs"],
+    srcs = [
+        "src/main.rs",
+        "src/timing.rs",
+    ],
     deps = [
         "//crates/rue-compiler:rue-compiler",
         "//crates/rue-rir:rue-rir",

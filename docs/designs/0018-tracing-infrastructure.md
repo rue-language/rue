@@ -125,7 +125,7 @@ pub fn compile_frontend_with_options(...) -> CompileResult<...> {
   - Add `--log-format` flag (text/json)
   - Support `RUST_LOG` environment variable
 
-- [ ] **Phase 3: --time-passes** - rue-irz1.3
+- [x] **Phase 3: --time-passes** - rue-irz1.3
   - Implement `--time-passes` using tracing spans
   - Collect timing from spans and format output
   - Closes rue-uxgx

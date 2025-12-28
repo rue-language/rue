@@ -8,6 +8,8 @@ use tracing_subscriber::fmt::format::FmtSpan;
 use tracing_subscriber::prelude::*;
 use tracing_subscriber::{EnvFilter, fmt};
 
+mod timing;
+
 use rue_compiler::{
     CompileOptions, DiagnosticFormatter, Lexer, LinkerMode, OptLevel, Parser, PreviewFeature,
     PreviewFeatures, SourceInfo, compile_frontend_from_ast_with_options, compile_with_options,
@@ -197,6 +199,7 @@ struct Options {
     preview_features: PreviewFeatures,
     log_level: LogLevel,
     log_format: LogFormat,
+    time_passes: bool,
 }
 
 /// Version string for the rue compiler.
@@ -233,6 +236,7 @@ fn print_usage() {
     eprintln!("                       Can also use RUST_LOG environment variable");
     eprintln!("  --log-format <fmt>   Set logging format (default: text)");
     eprintln!("                       Formats: {}", LogFormat::all_names());
+    eprintln!("  --time-passes        Show timing for each compilation pass");
     eprintln!("  --version            Show version information");
     eprintln!("  --help               Show this help message");
 }
@@ -261,6 +265,7 @@ fn parse_args_from(args: &[&str]) -> ParseResult {
     let mut preview_features = PreviewFeatures::new();
     let mut log_level: Option<LogLevel> = None;
     let mut log_format: Option<LogFormat> = None;
+    let mut time_passes = false;
     let mut positional = Vec::new();
     let mut args_iter = args.iter().peekable();
 
@@ -354,6 +359,9 @@ fn parse_args_from(args: &[&str]) -> ParseResult {
                     }
                 }
             }
+            "--time-passes" => {
+                time_passes = true;
+            }
             "--help" | "-h" => {
                 print_usage();
                 return ParseResult::Exit;
@@ -405,6 +413,7 @@ fn parse_args_from(args: &[&str]) -> ParseResult {
         preview_features,
         log_level: log_level.unwrap_or_default(),
         log_format: log_format.unwrap_or_default(),
+        time_passes,
     })
 }
 
@@ -422,8 +431,18 @@ fn parse_args() -> Option<Options> {
 /// Initialize the tracing subscriber based on CLI options and RUST_LOG.
 ///
 /// Priority: RUST_LOG environment variable takes precedence over --log-level flag.
-/// If neither is set and log_level is Off, no subscriber is installed.
-fn init_tracing(log_level: LogLevel, log_format: LogFormat) {
+/// If neither is set and log_level is Off, no subscriber is installed (unless
+/// `time_passes` is true, in which case a timing-only subscriber is installed).
+///
+/// Returns `Some(TimingData)` if `time_passes` is true, which can be used to
+/// retrieve the timing report after compilation completes.
+fn init_tracing(
+    log_level: LogLevel,
+    log_format: LogFormat,
+    time_passes: bool,
+) -> Option<timing::TimingData> {
+    use tracing_subscriber::layer::SubscriberExt;
+
     // Check if RUST_LOG is set - it takes priority
     let rust_log = env::var("RUST_LOG").ok();
 
@@ -435,33 +454,90 @@ fn init_tracing(log_level: LogLevel, log_format: LogFormat) {
         log_level.to_tracing_level()
     };
 
-    // If logging is effectively off, don't install a subscriber
-    if effective_level.is_none() {
-        return;
+    let logging_enabled = effective_level.is_some();
+
+    // If neither logging nor timing is enabled, don't install a subscriber
+    if !logging_enabled && !time_passes {
+        return None;
     }
 
-    // Build the filter
-    let filter = if let Some(rust_log) = rust_log {
-        // Use RUST_LOG value
-        EnvFilter::try_new(rust_log).unwrap_or_else(|e| {
-            eprintln!("Warning: invalid RUST_LOG value, using default: {}", e);
+    // Create timing data if --time-passes was specified
+    let timing_data = if time_passes {
+        Some(timing::TimingData::new())
+    } else {
+        None
+    };
+
+    // Build the filter (only used if logging is enabled)
+    let filter = if logging_enabled {
+        let f = if let Some(rust_log) = rust_log {
+            // Use RUST_LOG value
+            EnvFilter::try_new(rust_log).unwrap_or_else(|e| {
+                eprintln!("Warning: invalid RUST_LOG value, using default: {}", e);
+                EnvFilter::new(format!(
+                    "{}",
+                    log_level.to_tracing_level().unwrap_or(Level::INFO)
+                ))
+            })
+        } else {
+            // Use --log-level value
             EnvFilter::new(format!(
                 "{}",
                 log_level.to_tracing_level().unwrap_or(Level::INFO)
             ))
-        })
+        };
+        Some(f)
     } else {
-        // Use --log-level value
-        EnvFilter::new(format!(
-            "{}",
-            log_level.to_tracing_level().unwrap_or(Level::INFO)
-        ))
+        None
     };
 
-    // Build and install the subscriber based on format
-    match log_format {
-        LogFormat::Text => {
-            let subscriber = tracing_subscriber::registry().with(filter).with(
+    // Build and install the subscriber
+    // We need to handle all combinations of timing + logging
+    match (time_passes, logging_enabled, log_format) {
+        // Timing only (no logging)
+        (true, false, _) => {
+            let timing_layer = timing::TimingLayer::new(timing_data.clone().unwrap());
+            let subscriber = tracing_subscriber::registry().with(timing_layer);
+            tracing::subscriber::set_global_default(subscriber)
+                .expect("failed to set tracing subscriber");
+        }
+
+        // Timing + text logging
+        (true, true, LogFormat::Text) => {
+            let timing_layer = timing::TimingLayer::new(timing_data.clone().unwrap());
+            let subscriber = tracing_subscriber::registry()
+                .with(filter.unwrap())
+                .with(timing_layer)
+                .with(
+                    fmt::layer()
+                        .with_target(true)
+                        .with_span_events(FmtSpan::CLOSE)
+                        .with_writer(std::io::stderr),
+                );
+            tracing::subscriber::set_global_default(subscriber)
+                .expect("failed to set tracing subscriber");
+        }
+
+        // Timing + JSON logging
+        (true, true, LogFormat::Json) => {
+            let timing_layer = timing::TimingLayer::new(timing_data.clone().unwrap());
+            let subscriber = tracing_subscriber::registry()
+                .with(filter.unwrap())
+                .with(timing_layer)
+                .with(
+                    fmt::layer()
+                        .json()
+                        .with_target(true)
+                        .with_span_events(FmtSpan::CLOSE)
+                        .with_writer(std::io::stderr),
+                );
+            tracing::subscriber::set_global_default(subscriber)
+                .expect("failed to set tracing subscriber");
+        }
+
+        // Text logging only (no timing)
+        (false, true, LogFormat::Text) => {
+            let subscriber = tracing_subscriber::registry().with(filter.unwrap()).with(
                 fmt::layer()
                     .with_target(true)
                     .with_span_events(FmtSpan::CLOSE)
@@ -470,8 +546,10 @@ fn init_tracing(log_level: LogLevel, log_format: LogFormat) {
             tracing::subscriber::set_global_default(subscriber)
                 .expect("failed to set tracing subscriber");
         }
-        LogFormat::Json => {
-            let subscriber = tracing_subscriber::registry().with(filter).with(
+
+        // JSON logging only (no timing)
+        (false, true, LogFormat::Json) => {
+            let subscriber = tracing_subscriber::registry().with(filter.unwrap()).with(
                 fmt::layer()
                     .json()
                     .with_target(true)
@@ -481,7 +559,12 @@ fn init_tracing(log_level: LogLevel, log_format: LogFormat) {
             tracing::subscriber::set_global_default(subscriber)
                 .expect("failed to set tracing subscriber");
         }
+
+        // Neither timing nor logging - already handled above
+        (false, false, _) => unreachable!(),
     }
+
+    timing_data
 }
 
 fn main() {
@@ -491,7 +574,8 @@ fn main() {
     };
 
     // Initialize tracing based on CLI options
-    init_tracing(options.log_level, options.log_format);
+    // Returns timing data if --time-passes was specified
+    let timing_data = init_tracing(options.log_level, options.log_format, options.time_passes);
 
     // Read source
     let source = fs::read_to_string(&options.source_path).unwrap_or_else(|e| {
@@ -507,6 +591,10 @@ fn main() {
     if !options.emit_stages.is_empty() {
         if let Err(()) = handle_emit(&source, &options, &formatter) {
             std::process::exit(1);
+        }
+        // Print timing report if --time-passes was specified
+        if let Some(ref timing) = timing_data {
+            eprintln!("{}", timing.report());
         }
         return;
     }
@@ -560,6 +648,11 @@ fn main() {
                 "Compiled {} -> {} (target: {}, linker: {})",
                 options.source_path, options.output_path, options.target, linker_str
             );
+
+            // Print timing report if --time-passes was specified
+            if let Some(ref timing) = timing_data {
+                eprintln!("{}", timing.report());
+            }
         }
         Err(e) => {
             eprintln!("{}", formatter.format_error(&e));
@@ -1259,6 +1352,34 @@ mod tests {
     fn parse_defaults_log_format() {
         let opts = unwrap_options(parse_args_from(&["source.rue"]));
         assert_eq!(opts.log_format, LogFormat::Text);
+    }
+
+    #[test]
+    fn parse_defaults_time_passes() {
+        let opts = unwrap_options(parse_args_from(&["source.rue"]));
+        assert!(!opts.time_passes);
+    }
+
+    // ========== --time-passes tests ==========
+
+    #[test]
+    fn parse_time_passes() {
+        let opts = unwrap_options(parse_args_from(&["--time-passes", "source.rue"]));
+        assert!(opts.time_passes);
+    }
+
+    #[test]
+    fn parse_time_passes_with_other_options() {
+        let opts = unwrap_options(parse_args_from(&[
+            "--time-passes",
+            "-O2",
+            "--target",
+            "x86_64-linux",
+            "source.rue",
+        ]));
+        assert!(opts.time_passes);
+        assert_eq!(opts.opt_level, OptLevel::O2);
+        assert_eq!(opts.target, Target::X86_64Linux);
     }
 
     // ========== EmitStage FromStr tests ==========
