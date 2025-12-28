@@ -248,7 +248,17 @@ done
 # Get metadata
 timestamp=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 # Get commit hash - try jj first (for local dev), fall back to git (for CI)
-commit=$(jj log -r @ --no-graph -T 'commit_id' 2>/dev/null | head -c 12 || git rev-parse --short HEAD 2>/dev/null || echo "unknown")
+# Note: We check if the result is non-empty because piped commands may succeed but return empty
+commit=""
+if command -v jj &>/dev/null; then
+    commit=$(jj log -r @ --no-graph -T 'commit_id' 2>/dev/null | head -c 12)
+fi
+if [[ -z "$commit" ]] && command -v git &>/dev/null; then
+    commit=$(git rev-parse --short HEAD 2>/dev/null)
+fi
+if [[ -z "$commit" ]]; then
+    commit="unknown"
+fi
 os=$(uname -s | tr '[:upper:]' '[:lower:]')
 arch=$(uname -m)
 host="${arch}-${os}"
