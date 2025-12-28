@@ -458,93 +458,8 @@ pub fn linear_scan<Reg: Copy + Eq + std::hash::Hash>(
     allocatable_regs: &[Reg],
     existing_locals: u32,
 ) -> (IndexMap<VReg, Option<Allocation<Reg>>>, u32, Vec<Reg>) {
-    let vreg_count_usize = vreg_count as usize;
-
-    // Initialize allocation map
-    let mut allocation: IndexMap<VReg, Option<Allocation<Reg>>> =
-        IndexMap::with_capacity(vreg_count_usize);
-    allocation.resize(vreg_count_usize, None);
-
-    // Spill slots start after existing locals
-    // Each local is 8 bytes, slot 0 is at [fp-8], etc.
-    let mut next_spill_offset = -((existing_locals as i32 + 1) * 8);
-    let mut num_spills = 0u32;
-    let mut used_callee_saved: Vec<Reg> = Vec::new();
-
-    // Collect vregs with live ranges and sort by start
-    let mut vregs_by_start: Vec<(VReg, LiveRange)> = Vec::with_capacity(vreg_count_usize);
-    for vreg_idx in 0..vreg_count {
-        let vreg = VReg::new(vreg_idx);
-        if let Some(&range) = liveness.range(vreg) {
-            vregs_by_start.push((vreg, range));
-        }
-    }
-    vregs_by_start.sort_by_key(|(_, range)| range.start);
-
-    // Track which registers are currently in use and when they become free
-    // Tuple: (vreg, physical reg, live range end)
-    let mut active: Vec<(VReg, Reg, usize)> = Vec::with_capacity(allocatable_regs.len());
-
-    for (vreg, range) in vregs_by_start {
-        // Expire old intervals - remove registers whose vregs are no longer live
-        active.retain(|&(_, _, end)| end >= range.start);
-
-        // Find registers currently in use
-        let used_regs: HashSet<Reg> = active.iter().map(|&(_, reg, _)| reg).collect();
-
-        // Try to find a free register
-        let mut allocated_reg = None;
-        for &reg in allocatable_regs {
-            if !used_regs.contains(&reg) {
-                allocated_reg = Some(reg);
-                break;
-            }
-        }
-
-        if let Some(reg) = allocated_reg {
-            // Assign this register
-            allocation[vreg] = Some(Allocation::Register(reg));
-            active.push((vreg, reg, range.end));
-            // Track callee-saved register usage
-            if !used_callee_saved.contains(&reg) {
-                used_callee_saved.push(reg);
-            }
-        } else {
-            // No free register - need to spill
-            // Strategy: spill the vreg with the longest remaining live range
-            // (including the current one)
-
-            // Find the vreg with the longest remaining range
-            let mut longest_idx = None;
-            let mut longest_end = range.end;
-            for (i, &(_, _, end)) in active.iter().enumerate() {
-                if end > longest_end {
-                    longest_end = end;
-                    longest_idx = Some(i);
-                }
-            }
-
-            if let Some(idx) = longest_idx {
-                // Spill the existing vreg with longest range
-                let (spilled_vreg, freed_reg, _) = active.remove(idx);
-                let spill_offset = next_spill_offset;
-                next_spill_offset -= 8;
-                num_spills += 1;
-                allocation[spilled_vreg] = Some(Allocation::Spill(spill_offset));
-
-                // Give the freed register to the current vreg
-                allocation[vreg] = Some(Allocation::Register(freed_reg));
-                active.push((vreg, freed_reg, range.end));
-            } else {
-                // Current vreg has the longest range, spill it
-                let spill_offset = next_spill_offset;
-                next_spill_offset -= 8;
-                num_spills += 1;
-                allocation[vreg] = Some(Allocation::Spill(spill_offset));
-            }
-        }
-    }
-
+    let (allocation, num_spills, used_callee_saved, _debug_info) =
+        linear_scan_impl(vreg_count, liveness, allocatable_regs, existing_locals);
     (allocation, num_spills, used_callee_saved)
 }
 
@@ -553,6 +468,25 @@ pub fn linear_scan<Reg: Copy + Eq + std::hash::Hash>(
 /// This is the same as [`linear_scan`] but also collects debug information
 /// about the allocation process for display via `--emit regalloc`.
 pub fn linear_scan_with_debug<Reg: Copy + Eq + std::hash::Hash>(
+    vreg_count: u32,
+    liveness: &LivenessInfo<Reg>,
+    allocatable_regs: &[Reg],
+    existing_locals: u32,
+) -> (
+    IndexMap<VReg, Option<Allocation<Reg>>>,
+    u32,
+    Vec<Reg>,
+    RegAllocDebugInfo<Reg>,
+) {
+    linear_scan_impl(vreg_count, liveness, allocatable_regs, existing_locals)
+}
+
+/// Internal implementation of linear scan register allocation.
+///
+/// This is the shared implementation used by both [`linear_scan`] and
+/// [`linear_scan_with_debug`]. It always collects debug information,
+/// which is discarded by [`linear_scan`].
+fn linear_scan_impl<Reg: Copy + Eq + std::hash::Hash>(
     vreg_count: u32,
     liveness: &LivenessInfo<Reg>,
     allocatable_regs: &[Reg],
