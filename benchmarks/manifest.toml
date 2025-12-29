@@ -2,28 +2,39 @@
 #
 # This file describes the benchmark suite for the Rue compiler.
 # Each benchmark is a Rue program designed to stress specific compiler phases.
+# Each benchmark should take approximately 1-2 seconds to compile for useful graphs.
 
 [[benchmark]]
 name = "many_functions"
 path = "stress/many_functions.rue"
-description = "100 functions to stress function handling and symbol resolution"
+description = "1000 functions to stress function handling and symbol resolution"
 
 [[benchmark]]
 name = "deep_nesting"
 path = "stress/deep_nesting.rue"
-description = "10 levels of nested blocks to stress scope handling"
+description = "150 functions with deep block/if/while nesting (up to 40 levels)"
 
 [[benchmark]]
 name = "large_structs"
 path = "stress/large_structs.rue"
-description = "50 struct types with field access to stress type handling"
+description = "700 struct types with 4-8 fields each to stress type handling"
 
 [[benchmark]]
 name = "arithmetic_heavy"
 path = "stress/arithmetic_heavy.rue"
-description = "Many arithmetic expressions to stress expression parsing and codegen"
+description = "250 functions with long arithmetic chains (100+ terms) to stress parsing/codegen"
 
 [[benchmark]]
 name = "control_flow"
 path = "stress/control_flow.rue"
-description = "Complex if/while/match patterns to stress CFG construction"
+description = "390 functions with complex if/while/match patterns to stress CFG construction"
+
+[[benchmark]]
+name = "array_heavy"
+path = "stress/array_heavy.rue"
+description = "200 functions with array declarations, indexing, and modifications"
+
+[[benchmark]]
+name = "register_pressure"
+path = "stress/register_pressure.rue"
+description = "210 functions with many simultaneous live variables to stress register allocation"

@@ -96,6 +96,10 @@ if [[ ! -f "$MANIFEST" ]]; then
     exit 1
 fi
 
+# Detect OS early (needed for platform-specific commands in the loop)
+os=$(uname -s | tr '[:upper:]' '[:lower:]')
+arch=$(uname -m)
+
 # Build the compiler
 log_info "Building rue compiler ($BUILD_MODE mode)..."
 ./buck2 build //crates/rue:rue --modifier //constraints:$BUILD_MODE 2>&1 | tail -3
@@ -348,8 +352,6 @@ fi
 if [[ -z "$commit" ]]; then
     commit="unknown"
 fi
-os=$(uname -s | tr '[:upper:]' '[:lower:]')
-arch=$(uname -m)
 host="${arch}-${os}"
 
 # Build final JSON

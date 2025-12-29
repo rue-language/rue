@@ -1,129 +1,2187 @@
-// Stress test: Many struct types with multiple fields.
+// Stress test: 700 struct types with multiple fields.
 // Tests the compiler's handling of type definitions and field access.
 
-struct S01 { a: i32, b: i32, c: i32, d: i32 }
-struct S02 { a: i32, b: i32, c: i32, d: i32 }
-struct S03 { a: i32, b: i32, c: i32, d: i32 }
-struct S04 { a: i32, b: i32, c: i32, d: i32 }
-struct S05 { a: i32, b: i32, c: i32, d: i32 }
-struct S06 { a: i32, b: i32, c: i32, d: i32 }
-struct S07 { a: i32, b: i32, c: i32, d: i32 }
-struct S08 { a: i32, b: i32, c: i32, d: i32 }
-struct S09 { a: i32, b: i32, c: i32, d: i32 }
-struct S10 { a: i32, b: i32, c: i32, d: i32 }
+struct S001 { a: i32, b: i32, c: i32, d: i32 }
+struct S002 { a: i32, b: i32, c: i32, d: i32 }
+struct S003 { a: i32, b: i32, c: i32, d: i32 }
+struct S004 { a: i32, b: i32, c: i32, d: i32 }
+struct S005 { a: i32, b: i32, c: i32, d: i32, e: i32, f: i32 }
+struct S006 { a: i32, b: i32, c: i32, d: i32 }
+struct S007 { a: i32, b: i32, c: i32, d: i32 }
+struct S008 { a: i32, b: i32, c: i32, d: i32 }
+struct S009 { a: i32, b: i32, c: i32, d: i32 }
+struct S010 { a: i32, b: i32, c: i32, d: i32, e: i32, f: i32, g: i32, h: i32 }
+struct S011 { a: i32, b: i32, c: i32, d: i32 }
+struct S012 { a: i32, b: i32, c: i32, d: i32 }
+struct S013 { a: i32, b: i32, c: i32, d: i32 }
+struct S014 { a: i32, b: i32, c: i32, d: i32 }
+struct S015 { a: i32, b: i32, c: i32, d: i32, e: i32, f: i32 }
+struct S016 { a: i32, b: i32, c: i32, d: i32 }
+struct S017 { a: i32, b: i32, c: i32, d: i32 }
+struct S018 { a: i32, b: i32, c: i32, d: i32 }
+struct S019 { a: i32, b: i32, c: i32, d: i32 }
+struct S020 { a: i32, b: i32, c: i32, d: i32, e: i32, f: i32, g: i32, h: i32 }
 
-struct S11 { a: i32, b: i32, c: i32, d: i32 }
-struct S12 { a: i32, b: i32, c: i32, d: i32 }
-struct S13 { a: i32, b: i32, c: i32, d: i32 }
-struct S14 { a: i32, b: i32, c: i32, d: i32 }
-struct S15 { a: i32, b: i32, c: i32, d: i32 }
-struct S16 { a: i32, b: i32, c: i32, d: i32 }
-struct S17 { a: i32, b: i32, c: i32, d: i32 }
-struct S18 { a: i32, b: i32, c: i32, d: i32 }
-struct S19 { a: i32, b: i32, c: i32, d: i32 }
-struct S20 { a: i32, b: i32, c: i32, d: i32 }
+struct S021 { a: i32, b: i32, c: i32, d: i32 }
+struct S022 { a: i32, b: i32, c: i32, d: i32 }
+struct S023 { a: i32, b: i32, c: i32, d: i32 }
+struct S024 { a: i32, b: i32, c: i32, d: i32 }
+struct S025 { a: i32, b: i32, c: i32, d: i32, e: i32, f: i32 }
+struct S026 { a: i32, b: i32, c: i32, d: i32 }
+struct S027 { a: i32, b: i32, c: i32, d: i32 }
+struct S028 { a: i32, b: i32, c: i32, d: i32 }
+struct S029 { a: i32, b: i32, c: i32, d: i32 }
+struct S030 { a: i32, b: i32, c: i32, d: i32, e: i32, f: i32, g: i32, h: i32 }
+struct S031 { a: i32, b: i32, c: i32, d: i32 }
+struct S032 { a: i32, b: i32, c: i32, d: i32 }
+struct S033 { a: i32, b: i32, c: i32, d: i32 }
+struct S034 { a: i32, b: i32, c: i32, d: i32 }
+struct S035 { a: i32, b: i32, c: i32, d: i32, e: i32, f: i32 }
+struct S036 { a: i32, b: i32, c: i32, d: i32 }
+struct S037 { a: i32, b: i32, c: i32, d: i32 }
+struct S038 { a: i32, b: i32, c: i32, d: i32 }
+struct S039 { a: i32, b: i32, c: i32, d: i32 }
+struct S040 { a: i32, b: i32, c: i32, d: i32, e: i32, f: i32, g: i32, h: i32 }
 
-struct S21 { a: i32, b: i32, c: i32, d: i32 }
-struct S22 { a: i32, b: i32, c: i32, d: i32 }
-struct S23 { a: i32, b: i32, c: i32, d: i32 }
-struct S24 { a: i32, b: i32, c: i32, d: i32 }
-struct S25 { a: i32, b: i32, c: i32, d: i32 }
-struct S26 { a: i32, b: i32, c: i32, d: i32 }
-struct S27 { a: i32, b: i32, c: i32, d: i32 }
-struct S28 { a: i32, b: i32, c: i32, d: i32 }
-struct S29 { a: i32, b: i32, c: i32, d: i32 }
-struct S30 { a: i32, b: i32, c: i32, d: i32 }
+struct S041 { a: i32, b: i32, c: i32, d: i32 }
+struct S042 { a: i32, b: i32, c: i32, d: i32 }
+struct S043 { a: i32, b: i32, c: i32, d: i32 }
+struct S044 { a: i32, b: i32, c: i32, d: i32 }
+struct S045 { a: i32, b: i32, c: i32, d: i32, e: i32, f: i32 }
+struct S046 { a: i32, b: i32, c: i32, d: i32 }
+struct S047 { a: i32, b: i32, c: i32, d: i32 }
+struct S048 { a: i32, b: i32, c: i32, d: i32 }
+struct S049 { a: i32, b: i32, c: i32, d: i32 }
+struct S050 { a: i32, b: i32, c: i32, d: i32, e: i32, f: i32, g: i32, h: i32 }
+struct S051 { a: i32, b: i32, c: i32, d: i32 }
+struct S052 { a: i32, b: i32, c: i32, d: i32 }
+struct S053 { a: i32, b: i32, c: i32, d: i32 }
+struct S054 { a: i32, b: i32, c: i32, d: i32 }
+struct S055 { a: i32, b: i32, c: i32, d: i32, e: i32, f: i32 }
+struct S056 { a: i32, b: i32, c: i32, d: i32 }
+struct S057 { a: i32, b: i32, c: i32, d: i32 }
+struct S058 { a: i32, b: i32, c: i32, d: i32 }
+struct S059 { a: i32, b: i32, c: i32, d: i32 }
+struct S060 { a: i32, b: i32, c: i32, d: i32, e: i32, f: i32, g: i32, h: i32 }
 
-struct S31 { a: i32, b: i32, c: i32, d: i32 }
-struct S32 { a: i32, b: i32, c: i32, d: i32 }
-struct S33 { a: i32, b: i32, c: i32, d: i32 }
-struct S34 { a: i32, b: i32, c: i32, d: i32 }
-struct S35 { a: i32, b: i32, c: i32, d: i32 }
-struct S36 { a: i32, b: i32, c: i32, d: i32 }
-struct S37 { a: i32, b: i32, c: i32, d: i32 }
-struct S38 { a: i32, b: i32, c: i32, d: i32 }
-struct S39 { a: i32, b: i32, c: i32, d: i32 }
-struct S40 { a: i32, b: i32, c: i32, d: i32 }
+struct S061 { a: i32, b: i32, c: i32, d: i32 }
+struct S062 { a: i32, b: i32, c: i32, d: i32 }
+struct S063 { a: i32, b: i32, c: i32, d: i32 }
+struct S064 { a: i32, b: i32, c: i32, d: i32 }
+struct S065 { a: i32, b: i32, c: i32, d: i32, e: i32, f: i32 }
+struct S066 { a: i32, b: i32, c: i32, d: i32 }
+struct S067 { a: i32, b: i32, c: i32, d: i32 }
+struct S068 { a: i32, b: i32, c: i32, d: i32 }
+struct S069 { a: i32, b: i32, c: i32, d: i32 }
+struct S070 { a: i32, b: i32, c: i32, d: i32, e: i32, f: i32, g: i32, h: i32 }
+struct S071 { a: i32, b: i32, c: i32, d: i32 }
+struct S072 { a: i32, b: i32, c: i32, d: i32 }
+struct S073 { a: i32, b: i32, c: i32, d: i32 }
+struct S074 { a: i32, b: i32, c: i32, d: i32 }
+struct S075 { a: i32, b: i32, c: i32, d: i32, e: i32, f: i32 }
+struct S076 { a: i32, b: i32, c: i32, d: i32 }
+struct S077 { a: i32, b: i32, c: i32, d: i32 }
+struct S078 { a: i32, b: i32, c: i32, d: i32 }
+struct S079 { a: i32, b: i32, c: i32, d: i32 }
+struct S080 { a: i32, b: i32, c: i32, d: i32, e: i32, f: i32, g: i32, h: i32 }
 
-struct S41 { a: i32, b: i32, c: i32, d: i32 }
-struct S42 { a: i32, b: i32, c: i32, d: i32 }
-struct S43 { a: i32, b: i32, c: i32, d: i32 }
-struct S44 { a: i32, b: i32, c: i32, d: i32 }
-struct S45 { a: i32, b: i32, c: i32, d: i32 }
-struct S46 { a: i32, b: i32, c: i32, d: i32 }
-struct S47 { a: i32, b: i32, c: i32, d: i32 }
-struct S48 { a: i32, b: i32, c: i32, d: i32 }
-struct S49 { a: i32, b: i32, c: i32, d: i32 }
-struct S50 { a: i32, b: i32, c: i32, d: i32 }
+struct S081 { a: i32, b: i32, c: i32, d: i32 }
+struct S082 { a: i32, b: i32, c: i32, d: i32 }
+struct S083 { a: i32, b: i32, c: i32, d: i32 }
+struct S084 { a: i32, b: i32, c: i32, d: i32 }
+struct S085 { a: i32, b: i32, c: i32, d: i32, e: i32, f: i32 }
+struct S086 { a: i32, b: i32, c: i32, d: i32 }
+struct S087 { a: i32, b: i32, c: i32, d: i32 }
+struct S088 { a: i32, b: i32, c: i32, d: i32 }
+struct S089 { a: i32, b: i32, c: i32, d: i32 }
+struct S090 { a: i32, b: i32, c: i32, d: i32, e: i32, f: i32, g: i32, h: i32 }
+struct S091 { a: i32, b: i32, c: i32, d: i32 }
+struct S092 { a: i32, b: i32, c: i32, d: i32 }
+struct S093 { a: i32, b: i32, c: i32, d: i32 }
+struct S094 { a: i32, b: i32, c: i32, d: i32 }
+struct S095 { a: i32, b: i32, c: i32, d: i32, e: i32, f: i32 }
+struct S096 { a: i32, b: i32, c: i32, d: i32 }
+struct S097 { a: i32, b: i32, c: i32, d: i32 }
+struct S098 { a: i32, b: i32, c: i32, d: i32 }
+struct S099 { a: i32, b: i32, c: i32, d: i32 }
+struct S100 { a: i32, b: i32, c: i32, d: i32, e: i32, f: i32, g: i32, h: i32 }
 
-fn use_s01() -> i32 { let s = S01 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
-fn use_s02() -> i32 { let s = S02 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
-fn use_s03() -> i32 { let s = S03 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
-fn use_s04() -> i32 { let s = S04 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
-fn use_s05() -> i32 { let s = S05 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
-fn use_s06() -> i32 { let s = S06 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
-fn use_s07() -> i32 { let s = S07 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
-fn use_s08() -> i32 { let s = S08 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
-fn use_s09() -> i32 { let s = S09 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
-fn use_s10() -> i32 { let s = S10 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+struct S101 { a: i32, b: i32, c: i32, d: i32 }
+struct S102 { a: i32, b: i32, c: i32, d: i32 }
+struct S103 { a: i32, b: i32, c: i32, d: i32 }
+struct S104 { a: i32, b: i32, c: i32, d: i32 }
+struct S105 { a: i32, b: i32, c: i32, d: i32, e: i32, f: i32 }
+struct S106 { a: i32, b: i32, c: i32, d: i32 }
+struct S107 { a: i32, b: i32, c: i32, d: i32 }
+struct S108 { a: i32, b: i32, c: i32, d: i32 }
+struct S109 { a: i32, b: i32, c: i32, d: i32 }
+struct S110 { a: i32, b: i32, c: i32, d: i32, e: i32, f: i32, g: i32, h: i32 }
+struct S111 { a: i32, b: i32, c: i32, d: i32 }
+struct S112 { a: i32, b: i32, c: i32, d: i32 }
+struct S113 { a: i32, b: i32, c: i32, d: i32 }
+struct S114 { a: i32, b: i32, c: i32, d: i32 }
+struct S115 { a: i32, b: i32, c: i32, d: i32, e: i32, f: i32 }
+struct S116 { a: i32, b: i32, c: i32, d: i32 }
+struct S117 { a: i32, b: i32, c: i32, d: i32 }
+struct S118 { a: i32, b: i32, c: i32, d: i32 }
+struct S119 { a: i32, b: i32, c: i32, d: i32 }
+struct S120 { a: i32, b: i32, c: i32, d: i32, e: i32, f: i32, g: i32, h: i32 }
 
-fn use_s11() -> i32 { let s = S11 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
-fn use_s12() -> i32 { let s = S12 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
-fn use_s13() -> i32 { let s = S13 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
-fn use_s14() -> i32 { let s = S14 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
-fn use_s15() -> i32 { let s = S15 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
-fn use_s16() -> i32 { let s = S16 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
-fn use_s17() -> i32 { let s = S17 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
-fn use_s18() -> i32 { let s = S18 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
-fn use_s19() -> i32 { let s = S19 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
-fn use_s20() -> i32 { let s = S20 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+struct S121 { a: i32, b: i32, c: i32, d: i32 }
+struct S122 { a: i32, b: i32, c: i32, d: i32 }
+struct S123 { a: i32, b: i32, c: i32, d: i32 }
+struct S124 { a: i32, b: i32, c: i32, d: i32 }
+struct S125 { a: i32, b: i32, c: i32, d: i32, e: i32, f: i32 }
+struct S126 { a: i32, b: i32, c: i32, d: i32 }
+struct S127 { a: i32, b: i32, c: i32, d: i32 }
+struct S128 { a: i32, b: i32, c: i32, d: i32 }
+struct S129 { a: i32, b: i32, c: i32, d: i32 }
+struct S130 { a: i32, b: i32, c: i32, d: i32, e: i32, f: i32, g: i32, h: i32 }
+struct S131 { a: i32, b: i32, c: i32, d: i32 }
+struct S132 { a: i32, b: i32, c: i32, d: i32 }
+struct S133 { a: i32, b: i32, c: i32, d: i32 }
+struct S134 { a: i32, b: i32, c: i32, d: i32 }
+struct S135 { a: i32, b: i32, c: i32, d: i32, e: i32, f: i32 }
+struct S136 { a: i32, b: i32, c: i32, d: i32 }
+struct S137 { a: i32, b: i32, c: i32, d: i32 }
+struct S138 { a: i32, b: i32, c: i32, d: i32 }
+struct S139 { a: i32, b: i32, c: i32, d: i32 }
+struct S140 { a: i32, b: i32, c: i32, d: i32, e: i32, f: i32, g: i32, h: i32 }
 
-fn use_s21() -> i32 { let s = S21 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
-fn use_s22() -> i32 { let s = S22 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
-fn use_s23() -> i32 { let s = S23 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
-fn use_s24() -> i32 { let s = S24 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
-fn use_s25() -> i32 { let s = S25 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
-fn use_s26() -> i32 { let s = S26 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
-fn use_s27() -> i32 { let s = S27 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
-fn use_s28() -> i32 { let s = S28 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
-fn use_s29() -> i32 { let s = S29 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
-fn use_s30() -> i32 { let s = S30 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+struct S141 { a: i32, b: i32, c: i32, d: i32 }
+struct S142 { a: i32, b: i32, c: i32, d: i32 }
+struct S143 { a: i32, b: i32, c: i32, d: i32 }
+struct S144 { a: i32, b: i32, c: i32, d: i32 }
+struct S145 { a: i32, b: i32, c: i32, d: i32, e: i32, f: i32 }
+struct S146 { a: i32, b: i32, c: i32, d: i32 }
+struct S147 { a: i32, b: i32, c: i32, d: i32 }
+struct S148 { a: i32, b: i32, c: i32, d: i32 }
+struct S149 { a: i32, b: i32, c: i32, d: i32 }
+struct S150 { a: i32, b: i32, c: i32, d: i32, e: i32, f: i32, g: i32, h: i32 }
+struct S151 { a: i32, b: i32, c: i32, d: i32 }
+struct S152 { a: i32, b: i32, c: i32, d: i32 }
+struct S153 { a: i32, b: i32, c: i32, d: i32 }
+struct S154 { a: i32, b: i32, c: i32, d: i32 }
+struct S155 { a: i32, b: i32, c: i32, d: i32, e: i32, f: i32 }
+struct S156 { a: i32, b: i32, c: i32, d: i32 }
+struct S157 { a: i32, b: i32, c: i32, d: i32 }
+struct S158 { a: i32, b: i32, c: i32, d: i32 }
+struct S159 { a: i32, b: i32, c: i32, d: i32 }
+struct S160 { a: i32, b: i32, c: i32, d: i32, e: i32, f: i32, g: i32, h: i32 }
 
-fn use_s31() -> i32 { let s = S31 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
-fn use_s32() -> i32 { let s = S32 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
-fn use_s33() -> i32 { let s = S33 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
-fn use_s34() -> i32 { let s = S34 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
-fn use_s35() -> i32 { let s = S35 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
-fn use_s36() -> i32 { let s = S36 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
-fn use_s37() -> i32 { let s = S37 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
-fn use_s38() -> i32 { let s = S38 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
-fn use_s39() -> i32 { let s = S39 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
-fn use_s40() -> i32 { let s = S40 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+struct S161 { a: i32, b: i32, c: i32, d: i32 }
+struct S162 { a: i32, b: i32, c: i32, d: i32 }
+struct S163 { a: i32, b: i32, c: i32, d: i32 }
+struct S164 { a: i32, b: i32, c: i32, d: i32 }
+struct S165 { a: i32, b: i32, c: i32, d: i32, e: i32, f: i32 }
+struct S166 { a: i32, b: i32, c: i32, d: i32 }
+struct S167 { a: i32, b: i32, c: i32, d: i32 }
+struct S168 { a: i32, b: i32, c: i32, d: i32 }
+struct S169 { a: i32, b: i32, c: i32, d: i32 }
+struct S170 { a: i32, b: i32, c: i32, d: i32, e: i32, f: i32, g: i32, h: i32 }
+struct S171 { a: i32, b: i32, c: i32, d: i32 }
+struct S172 { a: i32, b: i32, c: i32, d: i32 }
+struct S173 { a: i32, b: i32, c: i32, d: i32 }
+struct S174 { a: i32, b: i32, c: i32, d: i32 }
+struct S175 { a: i32, b: i32, c: i32, d: i32, e: i32, f: i32 }
+struct S176 { a: i32, b: i32, c: i32, d: i32 }
+struct S177 { a: i32, b: i32, c: i32, d: i32 }
+struct S178 { a: i32, b: i32, c: i32, d: i32 }
+struct S179 { a: i32, b: i32, c: i32, d: i32 }
+struct S180 { a: i32, b: i32, c: i32, d: i32, e: i32, f: i32, g: i32, h: i32 }
 
-fn use_s41() -> i32 { let s = S41 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
-fn use_s42() -> i32 { let s = S42 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
-fn use_s43() -> i32 { let s = S43 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
-fn use_s44() -> i32 { let s = S44 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
-fn use_s45() -> i32 { let s = S45 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
-fn use_s46() -> i32 { let s = S46 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
-fn use_s47() -> i32 { let s = S47 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
-fn use_s48() -> i32 { let s = S48 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
-fn use_s49() -> i32 { let s = S49 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
-fn use_s50() -> i32 { let s = S50 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+struct S181 { a: i32, b: i32, c: i32, d: i32 }
+struct S182 { a: i32, b: i32, c: i32, d: i32 }
+struct S183 { a: i32, b: i32, c: i32, d: i32 }
+struct S184 { a: i32, b: i32, c: i32, d: i32 }
+struct S185 { a: i32, b: i32, c: i32, d: i32, e: i32, f: i32 }
+struct S186 { a: i32, b: i32, c: i32, d: i32 }
+struct S187 { a: i32, b: i32, c: i32, d: i32 }
+struct S188 { a: i32, b: i32, c: i32, d: i32 }
+struct S189 { a: i32, b: i32, c: i32, d: i32 }
+struct S190 { a: i32, b: i32, c: i32, d: i32, e: i32, f: i32, g: i32, h: i32 }
+struct S191 { a: i32, b: i32, c: i32, d: i32 }
+struct S192 { a: i32, b: i32, c: i32, d: i32 }
+struct S193 { a: i32, b: i32, c: i32, d: i32 }
+struct S194 { a: i32, b: i32, c: i32, d: i32 }
+struct S195 { a: i32, b: i32, c: i32, d: i32, e: i32, f: i32 }
+struct S196 { a: i32, b: i32, c: i32, d: i32 }
+struct S197 { a: i32, b: i32, c: i32, d: i32 }
+struct S198 { a: i32, b: i32, c: i32, d: i32 }
+struct S199 { a: i32, b: i32, c: i32, d: i32 }
+struct S200 { a: i32, b: i32, c: i32, d: i32, e: i32, f: i32, g: i32, h: i32 }
+
+struct S201 { a: i32, b: i32, c: i32, d: i32 }
+struct S202 { a: i32, b: i32, c: i32, d: i32 }
+struct S203 { a: i32, b: i32, c: i32, d: i32 }
+struct S204 { a: i32, b: i32, c: i32, d: i32 }
+struct S205 { a: i32, b: i32, c: i32, d: i32, e: i32, f: i32 }
+struct S206 { a: i32, b: i32, c: i32, d: i32 }
+struct S207 { a: i32, b: i32, c: i32, d: i32 }
+struct S208 { a: i32, b: i32, c: i32, d: i32 }
+struct S209 { a: i32, b: i32, c: i32, d: i32 }
+struct S210 { a: i32, b: i32, c: i32, d: i32, e: i32, f: i32, g: i32, h: i32 }
+struct S211 { a: i32, b: i32, c: i32, d: i32 }
+struct S212 { a: i32, b: i32, c: i32, d: i32 }
+struct S213 { a: i32, b: i32, c: i32, d: i32 }
+struct S214 { a: i32, b: i32, c: i32, d: i32 }
+struct S215 { a: i32, b: i32, c: i32, d: i32, e: i32, f: i32 }
+struct S216 { a: i32, b: i32, c: i32, d: i32 }
+struct S217 { a: i32, b: i32, c: i32, d: i32 }
+struct S218 { a: i32, b: i32, c: i32, d: i32 }
+struct S219 { a: i32, b: i32, c: i32, d: i32 }
+struct S220 { a: i32, b: i32, c: i32, d: i32, e: i32, f: i32, g: i32, h: i32 }
+
+struct S221 { a: i32, b: i32, c: i32, d: i32 }
+struct S222 { a: i32, b: i32, c: i32, d: i32 }
+struct S223 { a: i32, b: i32, c: i32, d: i32 }
+struct S224 { a: i32, b: i32, c: i32, d: i32 }
+struct S225 { a: i32, b: i32, c: i32, d: i32, e: i32, f: i32 }
+struct S226 { a: i32, b: i32, c: i32, d: i32 }
+struct S227 { a: i32, b: i32, c: i32, d: i32 }
+struct S228 { a: i32, b: i32, c: i32, d: i32 }
+struct S229 { a: i32, b: i32, c: i32, d: i32 }
+struct S230 { a: i32, b: i32, c: i32, d: i32, e: i32, f: i32, g: i32, h: i32 }
+struct S231 { a: i32, b: i32, c: i32, d: i32 }
+struct S232 { a: i32, b: i32, c: i32, d: i32 }
+struct S233 { a: i32, b: i32, c: i32, d: i32 }
+struct S234 { a: i32, b: i32, c: i32, d: i32 }
+struct S235 { a: i32, b: i32, c: i32, d: i32, e: i32, f: i32 }
+struct S236 { a: i32, b: i32, c: i32, d: i32 }
+struct S237 { a: i32, b: i32, c: i32, d: i32 }
+struct S238 { a: i32, b: i32, c: i32, d: i32 }
+struct S239 { a: i32, b: i32, c: i32, d: i32 }
+struct S240 { a: i32, b: i32, c: i32, d: i32, e: i32, f: i32, g: i32, h: i32 }
+
+struct S241 { a: i32, b: i32, c: i32, d: i32 }
+struct S242 { a: i32, b: i32, c: i32, d: i32 }
+struct S243 { a: i32, b: i32, c: i32, d: i32 }
+struct S244 { a: i32, b: i32, c: i32, d: i32 }
+struct S245 { a: i32, b: i32, c: i32, d: i32, e: i32, f: i32 }
+struct S246 { a: i32, b: i32, c: i32, d: i32 }
+struct S247 { a: i32, b: i32, c: i32, d: i32 }
+struct S248 { a: i32, b: i32, c: i32, d: i32 }
+struct S249 { a: i32, b: i32, c: i32, d: i32 }
+struct S250 { a: i32, b: i32, c: i32, d: i32, e: i32, f: i32, g: i32, h: i32 }
+struct S251 { a: i32, b: i32, c: i32, d: i32 }
+struct S252 { a: i32, b: i32, c: i32, d: i32 }
+struct S253 { a: i32, b: i32, c: i32, d: i32 }
+struct S254 { a: i32, b: i32, c: i32, d: i32 }
+struct S255 { a: i32, b: i32, c: i32, d: i32, e: i32, f: i32 }
+struct S256 { a: i32, b: i32, c: i32, d: i32 }
+struct S257 { a: i32, b: i32, c: i32, d: i32 }
+struct S258 { a: i32, b: i32, c: i32, d: i32 }
+struct S259 { a: i32, b: i32, c: i32, d: i32 }
+struct S260 { a: i32, b: i32, c: i32, d: i32, e: i32, f: i32, g: i32, h: i32 }
+
+struct S261 { a: i32, b: i32, c: i32, d: i32 }
+struct S262 { a: i32, b: i32, c: i32, d: i32 }
+struct S263 { a: i32, b: i32, c: i32, d: i32 }
+struct S264 { a: i32, b: i32, c: i32, d: i32 }
+struct S265 { a: i32, b: i32, c: i32, d: i32, e: i32, f: i32 }
+struct S266 { a: i32, b: i32, c: i32, d: i32 }
+struct S267 { a: i32, b: i32, c: i32, d: i32 }
+struct S268 { a: i32, b: i32, c: i32, d: i32 }
+struct S269 { a: i32, b: i32, c: i32, d: i32 }
+struct S270 { a: i32, b: i32, c: i32, d: i32, e: i32, f: i32, g: i32, h: i32 }
+struct S271 { a: i32, b: i32, c: i32, d: i32 }
+struct S272 { a: i32, b: i32, c: i32, d: i32 }
+struct S273 { a: i32, b: i32, c: i32, d: i32 }
+struct S274 { a: i32, b: i32, c: i32, d: i32 }
+struct S275 { a: i32, b: i32, c: i32, d: i32, e: i32, f: i32 }
+struct S276 { a: i32, b: i32, c: i32, d: i32 }
+struct S277 { a: i32, b: i32, c: i32, d: i32 }
+struct S278 { a: i32, b: i32, c: i32, d: i32 }
+struct S279 { a: i32, b: i32, c: i32, d: i32 }
+struct S280 { a: i32, b: i32, c: i32, d: i32, e: i32, f: i32, g: i32, h: i32 }
+
+struct S281 { a: i32, b: i32, c: i32, d: i32 }
+struct S282 { a: i32, b: i32, c: i32, d: i32 }
+struct S283 { a: i32, b: i32, c: i32, d: i32 }
+struct S284 { a: i32, b: i32, c: i32, d: i32 }
+struct S285 { a: i32, b: i32, c: i32, d: i32, e: i32, f: i32 }
+struct S286 { a: i32, b: i32, c: i32, d: i32 }
+struct S287 { a: i32, b: i32, c: i32, d: i32 }
+struct S288 { a: i32, b: i32, c: i32, d: i32 }
+struct S289 { a: i32, b: i32, c: i32, d: i32 }
+struct S290 { a: i32, b: i32, c: i32, d: i32, e: i32, f: i32, g: i32, h: i32 }
+struct S291 { a: i32, b: i32, c: i32, d: i32 }
+struct S292 { a: i32, b: i32, c: i32, d: i32 }
+struct S293 { a: i32, b: i32, c: i32, d: i32 }
+struct S294 { a: i32, b: i32, c: i32, d: i32 }
+struct S295 { a: i32, b: i32, c: i32, d: i32, e: i32, f: i32 }
+struct S296 { a: i32, b: i32, c: i32, d: i32 }
+struct S297 { a: i32, b: i32, c: i32, d: i32 }
+struct S298 { a: i32, b: i32, c: i32, d: i32 }
+struct S299 { a: i32, b: i32, c: i32, d: i32 }
+struct S300 { a: i32, b: i32, c: i32, d: i32, e: i32, f: i32, g: i32, h: i32 }
+
+struct S301 { a: i32, b: i32, c: i32, d: i32 }
+struct S302 { a: i32, b: i32, c: i32, d: i32 }
+struct S303 { a: i32, b: i32, c: i32, d: i32 }
+struct S304 { a: i32, b: i32, c: i32, d: i32 }
+struct S305 { a: i32, b: i32, c: i32, d: i32, e: i32, f: i32 }
+struct S306 { a: i32, b: i32, c: i32, d: i32 }
+struct S307 { a: i32, b: i32, c: i32, d: i32 }
+struct S308 { a: i32, b: i32, c: i32, d: i32 }
+struct S309 { a: i32, b: i32, c: i32, d: i32 }
+struct S310 { a: i32, b: i32, c: i32, d: i32, e: i32, f: i32, g: i32, h: i32 }
+struct S311 { a: i32, b: i32, c: i32, d: i32 }
+struct S312 { a: i32, b: i32, c: i32, d: i32 }
+struct S313 { a: i32, b: i32, c: i32, d: i32 }
+struct S314 { a: i32, b: i32, c: i32, d: i32 }
+struct S315 { a: i32, b: i32, c: i32, d: i32, e: i32, f: i32 }
+struct S316 { a: i32, b: i32, c: i32, d: i32 }
+struct S317 { a: i32, b: i32, c: i32, d: i32 }
+struct S318 { a: i32, b: i32, c: i32, d: i32 }
+struct S319 { a: i32, b: i32, c: i32, d: i32 }
+struct S320 { a: i32, b: i32, c: i32, d: i32, e: i32, f: i32, g: i32, h: i32 }
+
+struct S321 { a: i32, b: i32, c: i32, d: i32 }
+struct S322 { a: i32, b: i32, c: i32, d: i32 }
+struct S323 { a: i32, b: i32, c: i32, d: i32 }
+struct S324 { a: i32, b: i32, c: i32, d: i32 }
+struct S325 { a: i32, b: i32, c: i32, d: i32, e: i32, f: i32 }
+struct S326 { a: i32, b: i32, c: i32, d: i32 }
+struct S327 { a: i32, b: i32, c: i32, d: i32 }
+struct S328 { a: i32, b: i32, c: i32, d: i32 }
+struct S329 { a: i32, b: i32, c: i32, d: i32 }
+struct S330 { a: i32, b: i32, c: i32, d: i32, e: i32, f: i32, g: i32, h: i32 }
+struct S331 { a: i32, b: i32, c: i32, d: i32 }
+struct S332 { a: i32, b: i32, c: i32, d: i32 }
+struct S333 { a: i32, b: i32, c: i32, d: i32 }
+struct S334 { a: i32, b: i32, c: i32, d: i32 }
+struct S335 { a: i32, b: i32, c: i32, d: i32, e: i32, f: i32 }
+struct S336 { a: i32, b: i32, c: i32, d: i32 }
+struct S337 { a: i32, b: i32, c: i32, d: i32 }
+struct S338 { a: i32, b: i32, c: i32, d: i32 }
+struct S339 { a: i32, b: i32, c: i32, d: i32 }
+struct S340 { a: i32, b: i32, c: i32, d: i32, e: i32, f: i32, g: i32, h: i32 }
+
+struct S341 { a: i32, b: i32, c: i32, d: i32 }
+struct S342 { a: i32, b: i32, c: i32, d: i32 }
+struct S343 { a: i32, b: i32, c: i32, d: i32 }
+struct S344 { a: i32, b: i32, c: i32, d: i32 }
+struct S345 { a: i32, b: i32, c: i32, d: i32, e: i32, f: i32 }
+struct S346 { a: i32, b: i32, c: i32, d: i32 }
+struct S347 { a: i32, b: i32, c: i32, d: i32 }
+struct S348 { a: i32, b: i32, c: i32, d: i32 }
+struct S349 { a: i32, b: i32, c: i32, d: i32 }
+struct S350 { a: i32, b: i32, c: i32, d: i32, e: i32, f: i32, g: i32, h: i32 }
+struct S351 { a: i32, b: i32, c: i32, d: i32 }
+struct S352 { a: i32, b: i32, c: i32, d: i32 }
+struct S353 { a: i32, b: i32, c: i32, d: i32 }
+struct S354 { a: i32, b: i32, c: i32, d: i32 }
+struct S355 { a: i32, b: i32, c: i32, d: i32, e: i32, f: i32 }
+struct S356 { a: i32, b: i32, c: i32, d: i32 }
+struct S357 { a: i32, b: i32, c: i32, d: i32 }
+struct S358 { a: i32, b: i32, c: i32, d: i32 }
+struct S359 { a: i32, b: i32, c: i32, d: i32 }
+struct S360 { a: i32, b: i32, c: i32, d: i32, e: i32, f: i32, g: i32, h: i32 }
+
+struct S361 { a: i32, b: i32, c: i32, d: i32 }
+struct S362 { a: i32, b: i32, c: i32, d: i32 }
+struct S363 { a: i32, b: i32, c: i32, d: i32 }
+struct S364 { a: i32, b: i32, c: i32, d: i32 }
+struct S365 { a: i32, b: i32, c: i32, d: i32, e: i32, f: i32 }
+struct S366 { a: i32, b: i32, c: i32, d: i32 }
+struct S367 { a: i32, b: i32, c: i32, d: i32 }
+struct S368 { a: i32, b: i32, c: i32, d: i32 }
+struct S369 { a: i32, b: i32, c: i32, d: i32 }
+struct S370 { a: i32, b: i32, c: i32, d: i32, e: i32, f: i32, g: i32, h: i32 }
+struct S371 { a: i32, b: i32, c: i32, d: i32 }
+struct S372 { a: i32, b: i32, c: i32, d: i32 }
+struct S373 { a: i32, b: i32, c: i32, d: i32 }
+struct S374 { a: i32, b: i32, c: i32, d: i32 }
+struct S375 { a: i32, b: i32, c: i32, d: i32, e: i32, f: i32 }
+struct S376 { a: i32, b: i32, c: i32, d: i32 }
+struct S377 { a: i32, b: i32, c: i32, d: i32 }
+struct S378 { a: i32, b: i32, c: i32, d: i32 }
+struct S379 { a: i32, b: i32, c: i32, d: i32 }
+struct S380 { a: i32, b: i32, c: i32, d: i32, e: i32, f: i32, g: i32, h: i32 }
+
+struct S381 { a: i32, b: i32, c: i32, d: i32 }
+struct S382 { a: i32, b: i32, c: i32, d: i32 }
+struct S383 { a: i32, b: i32, c: i32, d: i32 }
+struct S384 { a: i32, b: i32, c: i32, d: i32 }
+struct S385 { a: i32, b: i32, c: i32, d: i32, e: i32, f: i32 }
+struct S386 { a: i32, b: i32, c: i32, d: i32 }
+struct S387 { a: i32, b: i32, c: i32, d: i32 }
+struct S388 { a: i32, b: i32, c: i32, d: i32 }
+struct S389 { a: i32, b: i32, c: i32, d: i32 }
+struct S390 { a: i32, b: i32, c: i32, d: i32, e: i32, f: i32, g: i32, h: i32 }
+struct S391 { a: i32, b: i32, c: i32, d: i32 }
+struct S392 { a: i32, b: i32, c: i32, d: i32 }
+struct S393 { a: i32, b: i32, c: i32, d: i32 }
+struct S394 { a: i32, b: i32, c: i32, d: i32 }
+struct S395 { a: i32, b: i32, c: i32, d: i32, e: i32, f: i32 }
+struct S396 { a: i32, b: i32, c: i32, d: i32 }
+struct S397 { a: i32, b: i32, c: i32, d: i32 }
+struct S398 { a: i32, b: i32, c: i32, d: i32 }
+struct S399 { a: i32, b: i32, c: i32, d: i32 }
+struct S400 { a: i32, b: i32, c: i32, d: i32, e: i32, f: i32, g: i32, h: i32 }
+
+struct S401 { a: i32, b: i32, c: i32, d: i32 }
+struct S402 { a: i32, b: i32, c: i32, d: i32 }
+struct S403 { a: i32, b: i32, c: i32, d: i32 }
+struct S404 { a: i32, b: i32, c: i32, d: i32 }
+struct S405 { a: i32, b: i32, c: i32, d: i32, e: i32, f: i32 }
+struct S406 { a: i32, b: i32, c: i32, d: i32 }
+struct S407 { a: i32, b: i32, c: i32, d: i32 }
+struct S408 { a: i32, b: i32, c: i32, d: i32 }
+struct S409 { a: i32, b: i32, c: i32, d: i32 }
+struct S410 { a: i32, b: i32, c: i32, d: i32, e: i32, f: i32, g: i32, h: i32 }
+struct S411 { a: i32, b: i32, c: i32, d: i32 }
+struct S412 { a: i32, b: i32, c: i32, d: i32 }
+struct S413 { a: i32, b: i32, c: i32, d: i32 }
+struct S414 { a: i32, b: i32, c: i32, d: i32 }
+struct S415 { a: i32, b: i32, c: i32, d: i32, e: i32, f: i32 }
+struct S416 { a: i32, b: i32, c: i32, d: i32 }
+struct S417 { a: i32, b: i32, c: i32, d: i32 }
+struct S418 { a: i32, b: i32, c: i32, d: i32 }
+struct S419 { a: i32, b: i32, c: i32, d: i32 }
+struct S420 { a: i32, b: i32, c: i32, d: i32, e: i32, f: i32, g: i32, h: i32 }
+
+struct S421 { a: i32, b: i32, c: i32, d: i32 }
+struct S422 { a: i32, b: i32, c: i32, d: i32 }
+struct S423 { a: i32, b: i32, c: i32, d: i32 }
+struct S424 { a: i32, b: i32, c: i32, d: i32 }
+struct S425 { a: i32, b: i32, c: i32, d: i32, e: i32, f: i32 }
+struct S426 { a: i32, b: i32, c: i32, d: i32 }
+struct S427 { a: i32, b: i32, c: i32, d: i32 }
+struct S428 { a: i32, b: i32, c: i32, d: i32 }
+struct S429 { a: i32, b: i32, c: i32, d: i32 }
+struct S430 { a: i32, b: i32, c: i32, d: i32, e: i32, f: i32, g: i32, h: i32 }
+struct S431 { a: i32, b: i32, c: i32, d: i32 }
+struct S432 { a: i32, b: i32, c: i32, d: i32 }
+struct S433 { a: i32, b: i32, c: i32, d: i32 }
+struct S434 { a: i32, b: i32, c: i32, d: i32 }
+struct S435 { a: i32, b: i32, c: i32, d: i32, e: i32, f: i32 }
+struct S436 { a: i32, b: i32, c: i32, d: i32 }
+struct S437 { a: i32, b: i32, c: i32, d: i32 }
+struct S438 { a: i32, b: i32, c: i32, d: i32 }
+struct S439 { a: i32, b: i32, c: i32, d: i32 }
+struct S440 { a: i32, b: i32, c: i32, d: i32, e: i32, f: i32, g: i32, h: i32 }
+
+struct S441 { a: i32, b: i32, c: i32, d: i32 }
+struct S442 { a: i32, b: i32, c: i32, d: i32 }
+struct S443 { a: i32, b: i32, c: i32, d: i32 }
+struct S444 { a: i32, b: i32, c: i32, d: i32 }
+struct S445 { a: i32, b: i32, c: i32, d: i32, e: i32, f: i32 }
+struct S446 { a: i32, b: i32, c: i32, d: i32 }
+struct S447 { a: i32, b: i32, c: i32, d: i32 }
+struct S448 { a: i32, b: i32, c: i32, d: i32 }
+struct S449 { a: i32, b: i32, c: i32, d: i32 }
+struct S450 { a: i32, b: i32, c: i32, d: i32, e: i32, f: i32, g: i32, h: i32 }
+struct S451 { a: i32, b: i32, c: i32, d: i32 }
+struct S452 { a: i32, b: i32, c: i32, d: i32 }
+struct S453 { a: i32, b: i32, c: i32, d: i32 }
+struct S454 { a: i32, b: i32, c: i32, d: i32 }
+struct S455 { a: i32, b: i32, c: i32, d: i32, e: i32, f: i32 }
+struct S456 { a: i32, b: i32, c: i32, d: i32 }
+struct S457 { a: i32, b: i32, c: i32, d: i32 }
+struct S458 { a: i32, b: i32, c: i32, d: i32 }
+struct S459 { a: i32, b: i32, c: i32, d: i32 }
+struct S460 { a: i32, b: i32, c: i32, d: i32, e: i32, f: i32, g: i32, h: i32 }
+
+struct S461 { a: i32, b: i32, c: i32, d: i32 }
+struct S462 { a: i32, b: i32, c: i32, d: i32 }
+struct S463 { a: i32, b: i32, c: i32, d: i32 }
+struct S464 { a: i32, b: i32, c: i32, d: i32 }
+struct S465 { a: i32, b: i32, c: i32, d: i32, e: i32, f: i32 }
+struct S466 { a: i32, b: i32, c: i32, d: i32 }
+struct S467 { a: i32, b: i32, c: i32, d: i32 }
+struct S468 { a: i32, b: i32, c: i32, d: i32 }
+struct S469 { a: i32, b: i32, c: i32, d: i32 }
+struct S470 { a: i32, b: i32, c: i32, d: i32, e: i32, f: i32, g: i32, h: i32 }
+struct S471 { a: i32, b: i32, c: i32, d: i32 }
+struct S472 { a: i32, b: i32, c: i32, d: i32 }
+struct S473 { a: i32, b: i32, c: i32, d: i32 }
+struct S474 { a: i32, b: i32, c: i32, d: i32 }
+struct S475 { a: i32, b: i32, c: i32, d: i32, e: i32, f: i32 }
+struct S476 { a: i32, b: i32, c: i32, d: i32 }
+struct S477 { a: i32, b: i32, c: i32, d: i32 }
+struct S478 { a: i32, b: i32, c: i32, d: i32 }
+struct S479 { a: i32, b: i32, c: i32, d: i32 }
+struct S480 { a: i32, b: i32, c: i32, d: i32, e: i32, f: i32, g: i32, h: i32 }
+
+struct S481 { a: i32, b: i32, c: i32, d: i32 }
+struct S482 { a: i32, b: i32, c: i32, d: i32 }
+struct S483 { a: i32, b: i32, c: i32, d: i32 }
+struct S484 { a: i32, b: i32, c: i32, d: i32 }
+struct S485 { a: i32, b: i32, c: i32, d: i32, e: i32, f: i32 }
+struct S486 { a: i32, b: i32, c: i32, d: i32 }
+struct S487 { a: i32, b: i32, c: i32, d: i32 }
+struct S488 { a: i32, b: i32, c: i32, d: i32 }
+struct S489 { a: i32, b: i32, c: i32, d: i32 }
+struct S490 { a: i32, b: i32, c: i32, d: i32, e: i32, f: i32, g: i32, h: i32 }
+struct S491 { a: i32, b: i32, c: i32, d: i32 }
+struct S492 { a: i32, b: i32, c: i32, d: i32 }
+struct S493 { a: i32, b: i32, c: i32, d: i32 }
+struct S494 { a: i32, b: i32, c: i32, d: i32 }
+struct S495 { a: i32, b: i32, c: i32, d: i32, e: i32, f: i32 }
+struct S496 { a: i32, b: i32, c: i32, d: i32 }
+struct S497 { a: i32, b: i32, c: i32, d: i32 }
+struct S498 { a: i32, b: i32, c: i32, d: i32 }
+struct S499 { a: i32, b: i32, c: i32, d: i32 }
+struct S500 { a: i32, b: i32, c: i32, d: i32, e: i32, f: i32, g: i32, h: i32 }
+
+struct S501 { a: i32, b: i32, c: i32, d: i32 }
+struct S502 { a: i32, b: i32, c: i32, d: i32 }
+struct S503 { a: i32, b: i32, c: i32, d: i32 }
+struct S504 { a: i32, b: i32, c: i32, d: i32 }
+struct S505 { a: i32, b: i32, c: i32, d: i32, e: i32, f: i32 }
+struct S506 { a: i32, b: i32, c: i32, d: i32 }
+struct S507 { a: i32, b: i32, c: i32, d: i32 }
+struct S508 { a: i32, b: i32, c: i32, d: i32 }
+struct S509 { a: i32, b: i32, c: i32, d: i32 }
+struct S510 { a: i32, b: i32, c: i32, d: i32, e: i32, f: i32, g: i32, h: i32 }
+struct S511 { a: i32, b: i32, c: i32, d: i32 }
+struct S512 { a: i32, b: i32, c: i32, d: i32 }
+struct S513 { a: i32, b: i32, c: i32, d: i32 }
+struct S514 { a: i32, b: i32, c: i32, d: i32 }
+struct S515 { a: i32, b: i32, c: i32, d: i32, e: i32, f: i32 }
+struct S516 { a: i32, b: i32, c: i32, d: i32 }
+struct S517 { a: i32, b: i32, c: i32, d: i32 }
+struct S518 { a: i32, b: i32, c: i32, d: i32 }
+struct S519 { a: i32, b: i32, c: i32, d: i32 }
+struct S520 { a: i32, b: i32, c: i32, d: i32, e: i32, f: i32, g: i32, h: i32 }
+
+struct S521 { a: i32, b: i32, c: i32, d: i32 }
+struct S522 { a: i32, b: i32, c: i32, d: i32 }
+struct S523 { a: i32, b: i32, c: i32, d: i32 }
+struct S524 { a: i32, b: i32, c: i32, d: i32 }
+struct S525 { a: i32, b: i32, c: i32, d: i32, e: i32, f: i32 }
+struct S526 { a: i32, b: i32, c: i32, d: i32 }
+struct S527 { a: i32, b: i32, c: i32, d: i32 }
+struct S528 { a: i32, b: i32, c: i32, d: i32 }
+struct S529 { a: i32, b: i32, c: i32, d: i32 }
+struct S530 { a: i32, b: i32, c: i32, d: i32, e: i32, f: i32, g: i32, h: i32 }
+struct S531 { a: i32, b: i32, c: i32, d: i32 }
+struct S532 { a: i32, b: i32, c: i32, d: i32 }
+struct S533 { a: i32, b: i32, c: i32, d: i32 }
+struct S534 { a: i32, b: i32, c: i32, d: i32 }
+struct S535 { a: i32, b: i32, c: i32, d: i32, e: i32, f: i32 }
+struct S536 { a: i32, b: i32, c: i32, d: i32 }
+struct S537 { a: i32, b: i32, c: i32, d: i32 }
+struct S538 { a: i32, b: i32, c: i32, d: i32 }
+struct S539 { a: i32, b: i32, c: i32, d: i32 }
+struct S540 { a: i32, b: i32, c: i32, d: i32, e: i32, f: i32, g: i32, h: i32 }
+
+struct S541 { a: i32, b: i32, c: i32, d: i32 }
+struct S542 { a: i32, b: i32, c: i32, d: i32 }
+struct S543 { a: i32, b: i32, c: i32, d: i32 }
+struct S544 { a: i32, b: i32, c: i32, d: i32 }
+struct S545 { a: i32, b: i32, c: i32, d: i32, e: i32, f: i32 }
+struct S546 { a: i32, b: i32, c: i32, d: i32 }
+struct S547 { a: i32, b: i32, c: i32, d: i32 }
+struct S548 { a: i32, b: i32, c: i32, d: i32 }
+struct S549 { a: i32, b: i32, c: i32, d: i32 }
+struct S550 { a: i32, b: i32, c: i32, d: i32, e: i32, f: i32, g: i32, h: i32 }
+struct S551 { a: i32, b: i32, c: i32, d: i32 }
+struct S552 { a: i32, b: i32, c: i32, d: i32 }
+struct S553 { a: i32, b: i32, c: i32, d: i32 }
+struct S554 { a: i32, b: i32, c: i32, d: i32 }
+struct S555 { a: i32, b: i32, c: i32, d: i32, e: i32, f: i32 }
+struct S556 { a: i32, b: i32, c: i32, d: i32 }
+struct S557 { a: i32, b: i32, c: i32, d: i32 }
+struct S558 { a: i32, b: i32, c: i32, d: i32 }
+struct S559 { a: i32, b: i32, c: i32, d: i32 }
+struct S560 { a: i32, b: i32, c: i32, d: i32, e: i32, f: i32, g: i32, h: i32 }
+
+struct S561 { a: i32, b: i32, c: i32, d: i32 }
+struct S562 { a: i32, b: i32, c: i32, d: i32 }
+struct S563 { a: i32, b: i32, c: i32, d: i32 }
+struct S564 { a: i32, b: i32, c: i32, d: i32 }
+struct S565 { a: i32, b: i32, c: i32, d: i32, e: i32, f: i32 }
+struct S566 { a: i32, b: i32, c: i32, d: i32 }
+struct S567 { a: i32, b: i32, c: i32, d: i32 }
+struct S568 { a: i32, b: i32, c: i32, d: i32 }
+struct S569 { a: i32, b: i32, c: i32, d: i32 }
+struct S570 { a: i32, b: i32, c: i32, d: i32, e: i32, f: i32, g: i32, h: i32 }
+struct S571 { a: i32, b: i32, c: i32, d: i32 }
+struct S572 { a: i32, b: i32, c: i32, d: i32 }
+struct S573 { a: i32, b: i32, c: i32, d: i32 }
+struct S574 { a: i32, b: i32, c: i32, d: i32 }
+struct S575 { a: i32, b: i32, c: i32, d: i32, e: i32, f: i32 }
+struct S576 { a: i32, b: i32, c: i32, d: i32 }
+struct S577 { a: i32, b: i32, c: i32, d: i32 }
+struct S578 { a: i32, b: i32, c: i32, d: i32 }
+struct S579 { a: i32, b: i32, c: i32, d: i32 }
+struct S580 { a: i32, b: i32, c: i32, d: i32, e: i32, f: i32, g: i32, h: i32 }
+
+struct S581 { a: i32, b: i32, c: i32, d: i32 }
+struct S582 { a: i32, b: i32, c: i32, d: i32 }
+struct S583 { a: i32, b: i32, c: i32, d: i32 }
+struct S584 { a: i32, b: i32, c: i32, d: i32 }
+struct S585 { a: i32, b: i32, c: i32, d: i32, e: i32, f: i32 }
+struct S586 { a: i32, b: i32, c: i32, d: i32 }
+struct S587 { a: i32, b: i32, c: i32, d: i32 }
+struct S588 { a: i32, b: i32, c: i32, d: i32 }
+struct S589 { a: i32, b: i32, c: i32, d: i32 }
+struct S590 { a: i32, b: i32, c: i32, d: i32, e: i32, f: i32, g: i32, h: i32 }
+struct S591 { a: i32, b: i32, c: i32, d: i32 }
+struct S592 { a: i32, b: i32, c: i32, d: i32 }
+struct S593 { a: i32, b: i32, c: i32, d: i32 }
+struct S594 { a: i32, b: i32, c: i32, d: i32 }
+struct S595 { a: i32, b: i32, c: i32, d: i32, e: i32, f: i32 }
+struct S596 { a: i32, b: i32, c: i32, d: i32 }
+struct S597 { a: i32, b: i32, c: i32, d: i32 }
+struct S598 { a: i32, b: i32, c: i32, d: i32 }
+struct S599 { a: i32, b: i32, c: i32, d: i32 }
+struct S600 { a: i32, b: i32, c: i32, d: i32, e: i32, f: i32, g: i32, h: i32 }
+
+struct S601 { a: i32, b: i32, c: i32, d: i32 }
+struct S602 { a: i32, b: i32, c: i32, d: i32 }
+struct S603 { a: i32, b: i32, c: i32, d: i32 }
+struct S604 { a: i32, b: i32, c: i32, d: i32 }
+struct S605 { a: i32, b: i32, c: i32, d: i32, e: i32, f: i32 }
+struct S606 { a: i32, b: i32, c: i32, d: i32 }
+struct S607 { a: i32, b: i32, c: i32, d: i32 }
+struct S608 { a: i32, b: i32, c: i32, d: i32 }
+struct S609 { a: i32, b: i32, c: i32, d: i32 }
+struct S610 { a: i32, b: i32, c: i32, d: i32, e: i32, f: i32, g: i32, h: i32 }
+struct S611 { a: i32, b: i32, c: i32, d: i32 }
+struct S612 { a: i32, b: i32, c: i32, d: i32 }
+struct S613 { a: i32, b: i32, c: i32, d: i32 }
+struct S614 { a: i32, b: i32, c: i32, d: i32 }
+struct S615 { a: i32, b: i32, c: i32, d: i32, e: i32, f: i32 }
+struct S616 { a: i32, b: i32, c: i32, d: i32 }
+struct S617 { a: i32, b: i32, c: i32, d: i32 }
+struct S618 { a: i32, b: i32, c: i32, d: i32 }
+struct S619 { a: i32, b: i32, c: i32, d: i32 }
+struct S620 { a: i32, b: i32, c: i32, d: i32, e: i32, f: i32, g: i32, h: i32 }
+
+struct S621 { a: i32, b: i32, c: i32, d: i32 }
+struct S622 { a: i32, b: i32, c: i32, d: i32 }
+struct S623 { a: i32, b: i32, c: i32, d: i32 }
+struct S624 { a: i32, b: i32, c: i32, d: i32 }
+struct S625 { a: i32, b: i32, c: i32, d: i32, e: i32, f: i32 }
+struct S626 { a: i32, b: i32, c: i32, d: i32 }
+struct S627 { a: i32, b: i32, c: i32, d: i32 }
+struct S628 { a: i32, b: i32, c: i32, d: i32 }
+struct S629 { a: i32, b: i32, c: i32, d: i32 }
+struct S630 { a: i32, b: i32, c: i32, d: i32, e: i32, f: i32, g: i32, h: i32 }
+struct S631 { a: i32, b: i32, c: i32, d: i32 }
+struct S632 { a: i32, b: i32, c: i32, d: i32 }
+struct S633 { a: i32, b: i32, c: i32, d: i32 }
+struct S634 { a: i32, b: i32, c: i32, d: i32 }
+struct S635 { a: i32, b: i32, c: i32, d: i32, e: i32, f: i32 }
+struct S636 { a: i32, b: i32, c: i32, d: i32 }
+struct S637 { a: i32, b: i32, c: i32, d: i32 }
+struct S638 { a: i32, b: i32, c: i32, d: i32 }
+struct S639 { a: i32, b: i32, c: i32, d: i32 }
+struct S640 { a: i32, b: i32, c: i32, d: i32, e: i32, f: i32, g: i32, h: i32 }
+
+struct S641 { a: i32, b: i32, c: i32, d: i32 }
+struct S642 { a: i32, b: i32, c: i32, d: i32 }
+struct S643 { a: i32, b: i32, c: i32, d: i32 }
+struct S644 { a: i32, b: i32, c: i32, d: i32 }
+struct S645 { a: i32, b: i32, c: i32, d: i32, e: i32, f: i32 }
+struct S646 { a: i32, b: i32, c: i32, d: i32 }
+struct S647 { a: i32, b: i32, c: i32, d: i32 }
+struct S648 { a: i32, b: i32, c: i32, d: i32 }
+struct S649 { a: i32, b: i32, c: i32, d: i32 }
+struct S650 { a: i32, b: i32, c: i32, d: i32, e: i32, f: i32, g: i32, h: i32 }
+struct S651 { a: i32, b: i32, c: i32, d: i32 }
+struct S652 { a: i32, b: i32, c: i32, d: i32 }
+struct S653 { a: i32, b: i32, c: i32, d: i32 }
+struct S654 { a: i32, b: i32, c: i32, d: i32 }
+struct S655 { a: i32, b: i32, c: i32, d: i32, e: i32, f: i32 }
+struct S656 { a: i32, b: i32, c: i32, d: i32 }
+struct S657 { a: i32, b: i32, c: i32, d: i32 }
+struct S658 { a: i32, b: i32, c: i32, d: i32 }
+struct S659 { a: i32, b: i32, c: i32, d: i32 }
+struct S660 { a: i32, b: i32, c: i32, d: i32, e: i32, f: i32, g: i32, h: i32 }
+
+struct S661 { a: i32, b: i32, c: i32, d: i32 }
+struct S662 { a: i32, b: i32, c: i32, d: i32 }
+struct S663 { a: i32, b: i32, c: i32, d: i32 }
+struct S664 { a: i32, b: i32, c: i32, d: i32 }
+struct S665 { a: i32, b: i32, c: i32, d: i32, e: i32, f: i32 }
+struct S666 { a: i32, b: i32, c: i32, d: i32 }
+struct S667 { a: i32, b: i32, c: i32, d: i32 }
+struct S668 { a: i32, b: i32, c: i32, d: i32 }
+struct S669 { a: i32, b: i32, c: i32, d: i32 }
+struct S670 { a: i32, b: i32, c: i32, d: i32, e: i32, f: i32, g: i32, h: i32 }
+struct S671 { a: i32, b: i32, c: i32, d: i32 }
+struct S672 { a: i32, b: i32, c: i32, d: i32 }
+struct S673 { a: i32, b: i32, c: i32, d: i32 }
+struct S674 { a: i32, b: i32, c: i32, d: i32 }
+struct S675 { a: i32, b: i32, c: i32, d: i32, e: i32, f: i32 }
+struct S676 { a: i32, b: i32, c: i32, d: i32 }
+struct S677 { a: i32, b: i32, c: i32, d: i32 }
+struct S678 { a: i32, b: i32, c: i32, d: i32 }
+struct S679 { a: i32, b: i32, c: i32, d: i32 }
+struct S680 { a: i32, b: i32, c: i32, d: i32, e: i32, f: i32, g: i32, h: i32 }
+
+struct S681 { a: i32, b: i32, c: i32, d: i32 }
+struct S682 { a: i32, b: i32, c: i32, d: i32 }
+struct S683 { a: i32, b: i32, c: i32, d: i32 }
+struct S684 { a: i32, b: i32, c: i32, d: i32 }
+struct S685 { a: i32, b: i32, c: i32, d: i32, e: i32, f: i32 }
+struct S686 { a: i32, b: i32, c: i32, d: i32 }
+struct S687 { a: i32, b: i32, c: i32, d: i32 }
+struct S688 { a: i32, b: i32, c: i32, d: i32 }
+struct S689 { a: i32, b: i32, c: i32, d: i32 }
+struct S690 { a: i32, b: i32, c: i32, d: i32, e: i32, f: i32, g: i32, h: i32 }
+struct S691 { a: i32, b: i32, c: i32, d: i32 }
+struct S692 { a: i32, b: i32, c: i32, d: i32 }
+struct S693 { a: i32, b: i32, c: i32, d: i32 }
+struct S694 { a: i32, b: i32, c: i32, d: i32 }
+struct S695 { a: i32, b: i32, c: i32, d: i32, e: i32, f: i32 }
+struct S696 { a: i32, b: i32, c: i32, d: i32 }
+struct S697 { a: i32, b: i32, c: i32, d: i32 }
+struct S698 { a: i32, b: i32, c: i32, d: i32 }
+struct S699 { a: i32, b: i32, c: i32, d: i32 }
+struct S700 { a: i32, b: i32, c: i32, d: i32, e: i32, f: i32, g: i32, h: i32 }
+
+
+fn use_s001() -> i32 { let s = S001 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s002() -> i32 { let s = S002 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s003() -> i32 { let s = S003 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s004() -> i32 { let s = S004 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s005() -> i32 { let s = S005 { a: 1, b: 2, c: 3, d: 4, e: 5, f: 6 }; s.a + s.b + s.c + s.d + s.e + s.f }
+fn use_s006() -> i32 { let s = S006 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s007() -> i32 { let s = S007 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s008() -> i32 { let s = S008 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s009() -> i32 { let s = S009 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s010() -> i32 { let s = S010 { a: 1, b: 2, c: 3, d: 4, e: 5, f: 6, g: 7, h: 8 }; s.a + s.b + s.c + s.d + s.e + s.f + s.g + s.h }
+fn use_s011() -> i32 { let s = S011 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s012() -> i32 { let s = S012 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s013() -> i32 { let s = S013 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s014() -> i32 { let s = S014 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s015() -> i32 { let s = S015 { a: 1, b: 2, c: 3, d: 4, e: 5, f: 6 }; s.a + s.b + s.c + s.d + s.e + s.f }
+fn use_s016() -> i32 { let s = S016 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s017() -> i32 { let s = S017 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s018() -> i32 { let s = S018 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s019() -> i32 { let s = S019 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s020() -> i32 { let s = S020 { a: 1, b: 2, c: 3, d: 4, e: 5, f: 6, g: 7, h: 8 }; s.a + s.b + s.c + s.d + s.e + s.f + s.g + s.h }
+
+fn use_s021() -> i32 { let s = S021 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s022() -> i32 { let s = S022 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s023() -> i32 { let s = S023 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s024() -> i32 { let s = S024 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s025() -> i32 { let s = S025 { a: 1, b: 2, c: 3, d: 4, e: 5, f: 6 }; s.a + s.b + s.c + s.d + s.e + s.f }
+fn use_s026() -> i32 { let s = S026 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s027() -> i32 { let s = S027 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s028() -> i32 { let s = S028 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s029() -> i32 { let s = S029 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s030() -> i32 { let s = S030 { a: 1, b: 2, c: 3, d: 4, e: 5, f: 6, g: 7, h: 8 }; s.a + s.b + s.c + s.d + s.e + s.f + s.g + s.h }
+fn use_s031() -> i32 { let s = S031 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s032() -> i32 { let s = S032 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s033() -> i32 { let s = S033 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s034() -> i32 { let s = S034 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s035() -> i32 { let s = S035 { a: 1, b: 2, c: 3, d: 4, e: 5, f: 6 }; s.a + s.b + s.c + s.d + s.e + s.f }
+fn use_s036() -> i32 { let s = S036 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s037() -> i32 { let s = S037 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s038() -> i32 { let s = S038 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s039() -> i32 { let s = S039 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s040() -> i32 { let s = S040 { a: 1, b: 2, c: 3, d: 4, e: 5, f: 6, g: 7, h: 8 }; s.a + s.b + s.c + s.d + s.e + s.f + s.g + s.h }
+
+fn use_s041() -> i32 { let s = S041 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s042() -> i32 { let s = S042 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s043() -> i32 { let s = S043 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s044() -> i32 { let s = S044 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s045() -> i32 { let s = S045 { a: 1, b: 2, c: 3, d: 4, e: 5, f: 6 }; s.a + s.b + s.c + s.d + s.e + s.f }
+fn use_s046() -> i32 { let s = S046 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s047() -> i32 { let s = S047 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s048() -> i32 { let s = S048 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s049() -> i32 { let s = S049 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s050() -> i32 { let s = S050 { a: 1, b: 2, c: 3, d: 4, e: 5, f: 6, g: 7, h: 8 }; s.a + s.b + s.c + s.d + s.e + s.f + s.g + s.h }
+fn use_s051() -> i32 { let s = S051 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s052() -> i32 { let s = S052 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s053() -> i32 { let s = S053 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s054() -> i32 { let s = S054 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s055() -> i32 { let s = S055 { a: 1, b: 2, c: 3, d: 4, e: 5, f: 6 }; s.a + s.b + s.c + s.d + s.e + s.f }
+fn use_s056() -> i32 { let s = S056 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s057() -> i32 { let s = S057 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s058() -> i32 { let s = S058 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s059() -> i32 { let s = S059 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s060() -> i32 { let s = S060 { a: 1, b: 2, c: 3, d: 4, e: 5, f: 6, g: 7, h: 8 }; s.a + s.b + s.c + s.d + s.e + s.f + s.g + s.h }
+
+fn use_s061() -> i32 { let s = S061 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s062() -> i32 { let s = S062 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s063() -> i32 { let s = S063 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s064() -> i32 { let s = S064 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s065() -> i32 { let s = S065 { a: 1, b: 2, c: 3, d: 4, e: 5, f: 6 }; s.a + s.b + s.c + s.d + s.e + s.f }
+fn use_s066() -> i32 { let s = S066 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s067() -> i32 { let s = S067 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s068() -> i32 { let s = S068 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s069() -> i32 { let s = S069 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s070() -> i32 { let s = S070 { a: 1, b: 2, c: 3, d: 4, e: 5, f: 6, g: 7, h: 8 }; s.a + s.b + s.c + s.d + s.e + s.f + s.g + s.h }
+fn use_s071() -> i32 { let s = S071 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s072() -> i32 { let s = S072 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s073() -> i32 { let s = S073 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s074() -> i32 { let s = S074 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s075() -> i32 { let s = S075 { a: 1, b: 2, c: 3, d: 4, e: 5, f: 6 }; s.a + s.b + s.c + s.d + s.e + s.f }
+fn use_s076() -> i32 { let s = S076 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s077() -> i32 { let s = S077 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s078() -> i32 { let s = S078 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s079() -> i32 { let s = S079 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s080() -> i32 { let s = S080 { a: 1, b: 2, c: 3, d: 4, e: 5, f: 6, g: 7, h: 8 }; s.a + s.b + s.c + s.d + s.e + s.f + s.g + s.h }
+
+fn use_s081() -> i32 { let s = S081 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s082() -> i32 { let s = S082 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s083() -> i32 { let s = S083 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s084() -> i32 { let s = S084 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s085() -> i32 { let s = S085 { a: 1, b: 2, c: 3, d: 4, e: 5, f: 6 }; s.a + s.b + s.c + s.d + s.e + s.f }
+fn use_s086() -> i32 { let s = S086 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s087() -> i32 { let s = S087 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s088() -> i32 { let s = S088 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s089() -> i32 { let s = S089 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s090() -> i32 { let s = S090 { a: 1, b: 2, c: 3, d: 4, e: 5, f: 6, g: 7, h: 8 }; s.a + s.b + s.c + s.d + s.e + s.f + s.g + s.h }
+fn use_s091() -> i32 { let s = S091 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s092() -> i32 { let s = S092 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s093() -> i32 { let s = S093 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s094() -> i32 { let s = S094 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s095() -> i32 { let s = S095 { a: 1, b: 2, c: 3, d: 4, e: 5, f: 6 }; s.a + s.b + s.c + s.d + s.e + s.f }
+fn use_s096() -> i32 { let s = S096 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s097() -> i32 { let s = S097 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s098() -> i32 { let s = S098 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s099() -> i32 { let s = S099 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s100() -> i32 { let s = S100 { a: 1, b: 2, c: 3, d: 4, e: 5, f: 6, g: 7, h: 8 }; s.a + s.b + s.c + s.d + s.e + s.f + s.g + s.h }
+
+fn use_s101() -> i32 { let s = S101 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s102() -> i32 { let s = S102 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s103() -> i32 { let s = S103 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s104() -> i32 { let s = S104 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s105() -> i32 { let s = S105 { a: 1, b: 2, c: 3, d: 4, e: 5, f: 6 }; s.a + s.b + s.c + s.d + s.e + s.f }
+fn use_s106() -> i32 { let s = S106 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s107() -> i32 { let s = S107 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s108() -> i32 { let s = S108 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s109() -> i32 { let s = S109 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s110() -> i32 { let s = S110 { a: 1, b: 2, c: 3, d: 4, e: 5, f: 6, g: 7, h: 8 }; s.a + s.b + s.c + s.d + s.e + s.f + s.g + s.h }
+fn use_s111() -> i32 { let s = S111 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s112() -> i32 { let s = S112 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s113() -> i32 { let s = S113 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s114() -> i32 { let s = S114 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s115() -> i32 { let s = S115 { a: 1, b: 2, c: 3, d: 4, e: 5, f: 6 }; s.a + s.b + s.c + s.d + s.e + s.f }
+fn use_s116() -> i32 { let s = S116 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s117() -> i32 { let s = S117 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s118() -> i32 { let s = S118 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s119() -> i32 { let s = S119 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s120() -> i32 { let s = S120 { a: 1, b: 2, c: 3, d: 4, e: 5, f: 6, g: 7, h: 8 }; s.a + s.b + s.c + s.d + s.e + s.f + s.g + s.h }
+
+fn use_s121() -> i32 { let s = S121 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s122() -> i32 { let s = S122 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s123() -> i32 { let s = S123 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s124() -> i32 { let s = S124 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s125() -> i32 { let s = S125 { a: 1, b: 2, c: 3, d: 4, e: 5, f: 6 }; s.a + s.b + s.c + s.d + s.e + s.f }
+fn use_s126() -> i32 { let s = S126 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s127() -> i32 { let s = S127 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s128() -> i32 { let s = S128 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s129() -> i32 { let s = S129 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s130() -> i32 { let s = S130 { a: 1, b: 2, c: 3, d: 4, e: 5, f: 6, g: 7, h: 8 }; s.a + s.b + s.c + s.d + s.e + s.f + s.g + s.h }
+fn use_s131() -> i32 { let s = S131 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s132() -> i32 { let s = S132 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s133() -> i32 { let s = S133 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s134() -> i32 { let s = S134 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s135() -> i32 { let s = S135 { a: 1, b: 2, c: 3, d: 4, e: 5, f: 6 }; s.a + s.b + s.c + s.d + s.e + s.f }
+fn use_s136() -> i32 { let s = S136 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s137() -> i32 { let s = S137 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s138() -> i32 { let s = S138 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s139() -> i32 { let s = S139 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s140() -> i32 { let s = S140 { a: 1, b: 2, c: 3, d: 4, e: 5, f: 6, g: 7, h: 8 }; s.a + s.b + s.c + s.d + s.e + s.f + s.g + s.h }
+
+fn use_s141() -> i32 { let s = S141 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s142() -> i32 { let s = S142 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s143() -> i32 { let s = S143 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s144() -> i32 { let s = S144 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s145() -> i32 { let s = S145 { a: 1, b: 2, c: 3, d: 4, e: 5, f: 6 }; s.a + s.b + s.c + s.d + s.e + s.f }
+fn use_s146() -> i32 { let s = S146 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s147() -> i32 { let s = S147 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s148() -> i32 { let s = S148 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s149() -> i32 { let s = S149 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s150() -> i32 { let s = S150 { a: 1, b: 2, c: 3, d: 4, e: 5, f: 6, g: 7, h: 8 }; s.a + s.b + s.c + s.d + s.e + s.f + s.g + s.h }
+fn use_s151() -> i32 { let s = S151 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s152() -> i32 { let s = S152 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s153() -> i32 { let s = S153 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s154() -> i32 { let s = S154 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s155() -> i32 { let s = S155 { a: 1, b: 2, c: 3, d: 4, e: 5, f: 6 }; s.a + s.b + s.c + s.d + s.e + s.f }
+fn use_s156() -> i32 { let s = S156 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s157() -> i32 { let s = S157 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s158() -> i32 { let s = S158 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s159() -> i32 { let s = S159 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s160() -> i32 { let s = S160 { a: 1, b: 2, c: 3, d: 4, e: 5, f: 6, g: 7, h: 8 }; s.a + s.b + s.c + s.d + s.e + s.f + s.g + s.h }
+
+fn use_s161() -> i32 { let s = S161 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s162() -> i32 { let s = S162 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s163() -> i32 { let s = S163 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s164() -> i32 { let s = S164 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s165() -> i32 { let s = S165 { a: 1, b: 2, c: 3, d: 4, e: 5, f: 6 }; s.a + s.b + s.c + s.d + s.e + s.f }
+fn use_s166() -> i32 { let s = S166 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s167() -> i32 { let s = S167 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s168() -> i32 { let s = S168 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s169() -> i32 { let s = S169 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s170() -> i32 { let s = S170 { a: 1, b: 2, c: 3, d: 4, e: 5, f: 6, g: 7, h: 8 }; s.a + s.b + s.c + s.d + s.e + s.f + s.g + s.h }
+fn use_s171() -> i32 { let s = S171 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s172() -> i32 { let s = S172 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s173() -> i32 { let s = S173 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s174() -> i32 { let s = S174 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s175() -> i32 { let s = S175 { a: 1, b: 2, c: 3, d: 4, e: 5, f: 6 }; s.a + s.b + s.c + s.d + s.e + s.f }
+fn use_s176() -> i32 { let s = S176 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s177() -> i32 { let s = S177 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s178() -> i32 { let s = S178 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s179() -> i32 { let s = S179 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s180() -> i32 { let s = S180 { a: 1, b: 2, c: 3, d: 4, e: 5, f: 6, g: 7, h: 8 }; s.a + s.b + s.c + s.d + s.e + s.f + s.g + s.h }
+
+fn use_s181() -> i32 { let s = S181 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s182() -> i32 { let s = S182 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s183() -> i32 { let s = S183 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s184() -> i32 { let s = S184 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s185() -> i32 { let s = S185 { a: 1, b: 2, c: 3, d: 4, e: 5, f: 6 }; s.a + s.b + s.c + s.d + s.e + s.f }
+fn use_s186() -> i32 { let s = S186 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s187() -> i32 { let s = S187 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s188() -> i32 { let s = S188 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s189() -> i32 { let s = S189 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s190() -> i32 { let s = S190 { a: 1, b: 2, c: 3, d: 4, e: 5, f: 6, g: 7, h: 8 }; s.a + s.b + s.c + s.d + s.e + s.f + s.g + s.h }
+fn use_s191() -> i32 { let s = S191 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s192() -> i32 { let s = S192 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s193() -> i32 { let s = S193 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s194() -> i32 { let s = S194 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s195() -> i32 { let s = S195 { a: 1, b: 2, c: 3, d: 4, e: 5, f: 6 }; s.a + s.b + s.c + s.d + s.e + s.f }
+fn use_s196() -> i32 { let s = S196 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s197() -> i32 { let s = S197 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s198() -> i32 { let s = S198 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s199() -> i32 { let s = S199 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s200() -> i32 { let s = S200 { a: 1, b: 2, c: 3, d: 4, e: 5, f: 6, g: 7, h: 8 }; s.a + s.b + s.c + s.d + s.e + s.f + s.g + s.h }
+
+fn use_s201() -> i32 { let s = S201 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s202() -> i32 { let s = S202 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s203() -> i32 { let s = S203 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s204() -> i32 { let s = S204 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s205() -> i32 { let s = S205 { a: 1, b: 2, c: 3, d: 4, e: 5, f: 6 }; s.a + s.b + s.c + s.d + s.e + s.f }
+fn use_s206() -> i32 { let s = S206 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s207() -> i32 { let s = S207 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s208() -> i32 { let s = S208 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s209() -> i32 { let s = S209 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s210() -> i32 { let s = S210 { a: 1, b: 2, c: 3, d: 4, e: 5, f: 6, g: 7, h: 8 }; s.a + s.b + s.c + s.d + s.e + s.f + s.g + s.h }
+fn use_s211() -> i32 { let s = S211 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s212() -> i32 { let s = S212 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s213() -> i32 { let s = S213 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s214() -> i32 { let s = S214 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s215() -> i32 { let s = S215 { a: 1, b: 2, c: 3, d: 4, e: 5, f: 6 }; s.a + s.b + s.c + s.d + s.e + s.f }
+fn use_s216() -> i32 { let s = S216 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s217() -> i32 { let s = S217 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s218() -> i32 { let s = S218 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s219() -> i32 { let s = S219 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s220() -> i32 { let s = S220 { a: 1, b: 2, c: 3, d: 4, e: 5, f: 6, g: 7, h: 8 }; s.a + s.b + s.c + s.d + s.e + s.f + s.g + s.h }
+
+fn use_s221() -> i32 { let s = S221 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s222() -> i32 { let s = S222 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s223() -> i32 { let s = S223 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s224() -> i32 { let s = S224 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s225() -> i32 { let s = S225 { a: 1, b: 2, c: 3, d: 4, e: 5, f: 6 }; s.a + s.b + s.c + s.d + s.e + s.f }
+fn use_s226() -> i32 { let s = S226 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s227() -> i32 { let s = S227 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s228() -> i32 { let s = S228 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s229() -> i32 { let s = S229 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s230() -> i32 { let s = S230 { a: 1, b: 2, c: 3, d: 4, e: 5, f: 6, g: 7, h: 8 }; s.a + s.b + s.c + s.d + s.e + s.f + s.g + s.h }
+fn use_s231() -> i32 { let s = S231 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s232() -> i32 { let s = S232 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s233() -> i32 { let s = S233 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s234() -> i32 { let s = S234 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s235() -> i32 { let s = S235 { a: 1, b: 2, c: 3, d: 4, e: 5, f: 6 }; s.a + s.b + s.c + s.d + s.e + s.f }
+fn use_s236() -> i32 { let s = S236 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s237() -> i32 { let s = S237 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s238() -> i32 { let s = S238 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s239() -> i32 { let s = S239 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s240() -> i32 { let s = S240 { a: 1, b: 2, c: 3, d: 4, e: 5, f: 6, g: 7, h: 8 }; s.a + s.b + s.c + s.d + s.e + s.f + s.g + s.h }
+
+fn use_s241() -> i32 { let s = S241 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s242() -> i32 { let s = S242 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s243() -> i32 { let s = S243 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s244() -> i32 { let s = S244 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s245() -> i32 { let s = S245 { a: 1, b: 2, c: 3, d: 4, e: 5, f: 6 }; s.a + s.b + s.c + s.d + s.e + s.f }
+fn use_s246() -> i32 { let s = S246 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s247() -> i32 { let s = S247 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s248() -> i32 { let s = S248 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s249() -> i32 { let s = S249 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s250() -> i32 { let s = S250 { a: 1, b: 2, c: 3, d: 4, e: 5, f: 6, g: 7, h: 8 }; s.a + s.b + s.c + s.d + s.e + s.f + s.g + s.h }
+fn use_s251() -> i32 { let s = S251 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s252() -> i32 { let s = S252 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s253() -> i32 { let s = S253 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s254() -> i32 { let s = S254 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s255() -> i32 { let s = S255 { a: 1, b: 2, c: 3, d: 4, e: 5, f: 6 }; s.a + s.b + s.c + s.d + s.e + s.f }
+fn use_s256() -> i32 { let s = S256 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s257() -> i32 { let s = S257 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s258() -> i32 { let s = S258 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s259() -> i32 { let s = S259 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s260() -> i32 { let s = S260 { a: 1, b: 2, c: 3, d: 4, e: 5, f: 6, g: 7, h: 8 }; s.a + s.b + s.c + s.d + s.e + s.f + s.g + s.h }
+
+fn use_s261() -> i32 { let s = S261 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s262() -> i32 { let s = S262 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s263() -> i32 { let s = S263 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s264() -> i32 { let s = S264 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s265() -> i32 { let s = S265 { a: 1, b: 2, c: 3, d: 4, e: 5, f: 6 }; s.a + s.b + s.c + s.d + s.e + s.f }
+fn use_s266() -> i32 { let s = S266 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s267() -> i32 { let s = S267 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s268() -> i32 { let s = S268 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s269() -> i32 { let s = S269 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s270() -> i32 { let s = S270 { a: 1, b: 2, c: 3, d: 4, e: 5, f: 6, g: 7, h: 8 }; s.a + s.b + s.c + s.d + s.e + s.f + s.g + s.h }
+fn use_s271() -> i32 { let s = S271 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s272() -> i32 { let s = S272 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s273() -> i32 { let s = S273 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s274() -> i32 { let s = S274 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s275() -> i32 { let s = S275 { a: 1, b: 2, c: 3, d: 4, e: 5, f: 6 }; s.a + s.b + s.c + s.d + s.e + s.f }
+fn use_s276() -> i32 { let s = S276 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s277() -> i32 { let s = S277 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s278() -> i32 { let s = S278 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s279() -> i32 { let s = S279 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s280() -> i32 { let s = S280 { a: 1, b: 2, c: 3, d: 4, e: 5, f: 6, g: 7, h: 8 }; s.a + s.b + s.c + s.d + s.e + s.f + s.g + s.h }
+
+fn use_s281() -> i32 { let s = S281 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s282() -> i32 { let s = S282 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s283() -> i32 { let s = S283 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s284() -> i32 { let s = S284 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s285() -> i32 { let s = S285 { a: 1, b: 2, c: 3, d: 4, e: 5, f: 6 }; s.a + s.b + s.c + s.d + s.e + s.f }
+fn use_s286() -> i32 { let s = S286 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s287() -> i32 { let s = S287 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s288() -> i32 { let s = S288 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s289() -> i32 { let s = S289 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s290() -> i32 { let s = S290 { a: 1, b: 2, c: 3, d: 4, e: 5, f: 6, g: 7, h: 8 }; s.a + s.b + s.c + s.d + s.e + s.f + s.g + s.h }
+fn use_s291() -> i32 { let s = S291 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s292() -> i32 { let s = S292 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s293() -> i32 { let s = S293 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s294() -> i32 { let s = S294 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s295() -> i32 { let s = S295 { a: 1, b: 2, c: 3, d: 4, e: 5, f: 6 }; s.a + s.b + s.c + s.d + s.e + s.f }
+fn use_s296() -> i32 { let s = S296 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s297() -> i32 { let s = S297 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s298() -> i32 { let s = S298 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s299() -> i32 { let s = S299 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s300() -> i32 { let s = S300 { a: 1, b: 2, c: 3, d: 4, e: 5, f: 6, g: 7, h: 8 }; s.a + s.b + s.c + s.d + s.e + s.f + s.g + s.h }
+
+fn use_s301() -> i32 { let s = S301 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s302() -> i32 { let s = S302 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s303() -> i32 { let s = S303 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s304() -> i32 { let s = S304 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s305() -> i32 { let s = S305 { a: 1, b: 2, c: 3, d: 4, e: 5, f: 6 }; s.a + s.b + s.c + s.d + s.e + s.f }
+fn use_s306() -> i32 { let s = S306 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s307() -> i32 { let s = S307 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s308() -> i32 { let s = S308 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s309() -> i32 { let s = S309 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s310() -> i32 { let s = S310 { a: 1, b: 2, c: 3, d: 4, e: 5, f: 6, g: 7, h: 8 }; s.a + s.b + s.c + s.d + s.e + s.f + s.g + s.h }
+fn use_s311() -> i32 { let s = S311 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s312() -> i32 { let s = S312 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s313() -> i32 { let s = S313 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s314() -> i32 { let s = S314 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s315() -> i32 { let s = S315 { a: 1, b: 2, c: 3, d: 4, e: 5, f: 6 }; s.a + s.b + s.c + s.d + s.e + s.f }
+fn use_s316() -> i32 { let s = S316 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s317() -> i32 { let s = S317 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s318() -> i32 { let s = S318 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s319() -> i32 { let s = S319 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s320() -> i32 { let s = S320 { a: 1, b: 2, c: 3, d: 4, e: 5, f: 6, g: 7, h: 8 }; s.a + s.b + s.c + s.d + s.e + s.f + s.g + s.h }
+
+fn use_s321() -> i32 { let s = S321 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s322() -> i32 { let s = S322 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s323() -> i32 { let s = S323 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s324() -> i32 { let s = S324 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s325() -> i32 { let s = S325 { a: 1, b: 2, c: 3, d: 4, e: 5, f: 6 }; s.a + s.b + s.c + s.d + s.e + s.f }
+fn use_s326() -> i32 { let s = S326 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s327() -> i32 { let s = S327 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s328() -> i32 { let s = S328 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s329() -> i32 { let s = S329 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s330() -> i32 { let s = S330 { a: 1, b: 2, c: 3, d: 4, e: 5, f: 6, g: 7, h: 8 }; s.a + s.b + s.c + s.d + s.e + s.f + s.g + s.h }
+fn use_s331() -> i32 { let s = S331 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s332() -> i32 { let s = S332 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s333() -> i32 { let s = S333 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s334() -> i32 { let s = S334 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s335() -> i32 { let s = S335 { a: 1, b: 2, c: 3, d: 4, e: 5, f: 6 }; s.a + s.b + s.c + s.d + s.e + s.f }
+fn use_s336() -> i32 { let s = S336 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s337() -> i32 { let s = S337 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s338() -> i32 { let s = S338 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s339() -> i32 { let s = S339 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s340() -> i32 { let s = S340 { a: 1, b: 2, c: 3, d: 4, e: 5, f: 6, g: 7, h: 8 }; s.a + s.b + s.c + s.d + s.e + s.f + s.g + s.h }
+
+fn use_s341() -> i32 { let s = S341 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s342() -> i32 { let s = S342 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s343() -> i32 { let s = S343 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s344() -> i32 { let s = S344 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s345() -> i32 { let s = S345 { a: 1, b: 2, c: 3, d: 4, e: 5, f: 6 }; s.a + s.b + s.c + s.d + s.e + s.f }
+fn use_s346() -> i32 { let s = S346 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s347() -> i32 { let s = S347 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s348() -> i32 { let s = S348 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s349() -> i32 { let s = S349 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s350() -> i32 { let s = S350 { a: 1, b: 2, c: 3, d: 4, e: 5, f: 6, g: 7, h: 8 }; s.a + s.b + s.c + s.d + s.e + s.f + s.g + s.h }
+fn use_s351() -> i32 { let s = S351 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s352() -> i32 { let s = S352 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s353() -> i32 { let s = S353 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s354() -> i32 { let s = S354 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s355() -> i32 { let s = S355 { a: 1, b: 2, c: 3, d: 4, e: 5, f: 6 }; s.a + s.b + s.c + s.d + s.e + s.f }
+fn use_s356() -> i32 { let s = S356 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s357() -> i32 { let s = S357 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s358() -> i32 { let s = S358 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s359() -> i32 { let s = S359 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s360() -> i32 { let s = S360 { a: 1, b: 2, c: 3, d: 4, e: 5, f: 6, g: 7, h: 8 }; s.a + s.b + s.c + s.d + s.e + s.f + s.g + s.h }
+
+fn use_s361() -> i32 { let s = S361 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s362() -> i32 { let s = S362 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s363() -> i32 { let s = S363 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s364() -> i32 { let s = S364 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s365() -> i32 { let s = S365 { a: 1, b: 2, c: 3, d: 4, e: 5, f: 6 }; s.a + s.b + s.c + s.d + s.e + s.f }
+fn use_s366() -> i32 { let s = S366 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s367() -> i32 { let s = S367 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s368() -> i32 { let s = S368 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s369() -> i32 { let s = S369 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s370() -> i32 { let s = S370 { a: 1, b: 2, c: 3, d: 4, e: 5, f: 6, g: 7, h: 8 }; s.a + s.b + s.c + s.d + s.e + s.f + s.g + s.h }
+fn use_s371() -> i32 { let s = S371 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s372() -> i32 { let s = S372 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s373() -> i32 { let s = S373 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s374() -> i32 { let s = S374 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s375() -> i32 { let s = S375 { a: 1, b: 2, c: 3, d: 4, e: 5, f: 6 }; s.a + s.b + s.c + s.d + s.e + s.f }
+fn use_s376() -> i32 { let s = S376 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s377() -> i32 { let s = S377 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s378() -> i32 { let s = S378 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s379() -> i32 { let s = S379 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s380() -> i32 { let s = S380 { a: 1, b: 2, c: 3, d: 4, e: 5, f: 6, g: 7, h: 8 }; s.a + s.b + s.c + s.d + s.e + s.f + s.g + s.h }
+
+fn use_s381() -> i32 { let s = S381 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s382() -> i32 { let s = S382 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s383() -> i32 { let s = S383 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s384() -> i32 { let s = S384 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s385() -> i32 { let s = S385 { a: 1, b: 2, c: 3, d: 4, e: 5, f: 6 }; s.a + s.b + s.c + s.d + s.e + s.f }
+fn use_s386() -> i32 { let s = S386 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s387() -> i32 { let s = S387 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s388() -> i32 { let s = S388 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s389() -> i32 { let s = S389 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s390() -> i32 { let s = S390 { a: 1, b: 2, c: 3, d: 4, e: 5, f: 6, g: 7, h: 8 }; s.a + s.b + s.c + s.d + s.e + s.f + s.g + s.h }
+fn use_s391() -> i32 { let s = S391 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s392() -> i32 { let s = S392 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s393() -> i32 { let s = S393 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s394() -> i32 { let s = S394 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s395() -> i32 { let s = S395 { a: 1, b: 2, c: 3, d: 4, e: 5, f: 6 }; s.a + s.b + s.c + s.d + s.e + s.f }
+fn use_s396() -> i32 { let s = S396 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s397() -> i32 { let s = S397 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s398() -> i32 { let s = S398 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s399() -> i32 { let s = S399 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s400() -> i32 { let s = S400 { a: 1, b: 2, c: 3, d: 4, e: 5, f: 6, g: 7, h: 8 }; s.a + s.b + s.c + s.d + s.e + s.f + s.g + s.h }
+
+fn use_s401() -> i32 { let s = S401 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s402() -> i32 { let s = S402 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s403() -> i32 { let s = S403 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s404() -> i32 { let s = S404 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s405() -> i32 { let s = S405 { a: 1, b: 2, c: 3, d: 4, e: 5, f: 6 }; s.a + s.b + s.c + s.d + s.e + s.f }
+fn use_s406() -> i32 { let s = S406 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s407() -> i32 { let s = S407 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s408() -> i32 { let s = S408 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s409() -> i32 { let s = S409 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s410() -> i32 { let s = S410 { a: 1, b: 2, c: 3, d: 4, e: 5, f: 6, g: 7, h: 8 }; s.a + s.b + s.c + s.d + s.e + s.f + s.g + s.h }
+fn use_s411() -> i32 { let s = S411 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s412() -> i32 { let s = S412 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s413() -> i32 { let s = S413 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s414() -> i32 { let s = S414 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s415() -> i32 { let s = S415 { a: 1, b: 2, c: 3, d: 4, e: 5, f: 6 }; s.a + s.b + s.c + s.d + s.e + s.f }
+fn use_s416() -> i32 { let s = S416 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s417() -> i32 { let s = S417 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s418() -> i32 { let s = S418 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s419() -> i32 { let s = S419 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s420() -> i32 { let s = S420 { a: 1, b: 2, c: 3, d: 4, e: 5, f: 6, g: 7, h: 8 }; s.a + s.b + s.c + s.d + s.e + s.f + s.g + s.h }
+
+fn use_s421() -> i32 { let s = S421 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s422() -> i32 { let s = S422 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s423() -> i32 { let s = S423 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s424() -> i32 { let s = S424 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s425() -> i32 { let s = S425 { a: 1, b: 2, c: 3, d: 4, e: 5, f: 6 }; s.a + s.b + s.c + s.d + s.e + s.f }
+fn use_s426() -> i32 { let s = S426 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s427() -> i32 { let s = S427 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s428() -> i32 { let s = S428 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s429() -> i32 { let s = S429 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s430() -> i32 { let s = S430 { a: 1, b: 2, c: 3, d: 4, e: 5, f: 6, g: 7, h: 8 }; s.a + s.b + s.c + s.d + s.e + s.f + s.g + s.h }
+fn use_s431() -> i32 { let s = S431 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s432() -> i32 { let s = S432 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s433() -> i32 { let s = S433 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s434() -> i32 { let s = S434 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s435() -> i32 { let s = S435 { a: 1, b: 2, c: 3, d: 4, e: 5, f: 6 }; s.a + s.b + s.c + s.d + s.e + s.f }
+fn use_s436() -> i32 { let s = S436 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s437() -> i32 { let s = S437 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s438() -> i32 { let s = S438 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s439() -> i32 { let s = S439 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s440() -> i32 { let s = S440 { a: 1, b: 2, c: 3, d: 4, e: 5, f: 6, g: 7, h: 8 }; s.a + s.b + s.c + s.d + s.e + s.f + s.g + s.h }
+
+fn use_s441() -> i32 { let s = S441 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s442() -> i32 { let s = S442 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s443() -> i32 { let s = S443 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s444() -> i32 { let s = S444 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s445() -> i32 { let s = S445 { a: 1, b: 2, c: 3, d: 4, e: 5, f: 6 }; s.a + s.b + s.c + s.d + s.e + s.f }
+fn use_s446() -> i32 { let s = S446 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s447() -> i32 { let s = S447 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s448() -> i32 { let s = S448 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s449() -> i32 { let s = S449 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s450() -> i32 { let s = S450 { a: 1, b: 2, c: 3, d: 4, e: 5, f: 6, g: 7, h: 8 }; s.a + s.b + s.c + s.d + s.e + s.f + s.g + s.h }
+fn use_s451() -> i32 { let s = S451 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s452() -> i32 { let s = S452 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s453() -> i32 { let s = S453 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s454() -> i32 { let s = S454 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s455() -> i32 { let s = S455 { a: 1, b: 2, c: 3, d: 4, e: 5, f: 6 }; s.a + s.b + s.c + s.d + s.e + s.f }
+fn use_s456() -> i32 { let s = S456 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s457() -> i32 { let s = S457 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s458() -> i32 { let s = S458 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s459() -> i32 { let s = S459 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s460() -> i32 { let s = S460 { a: 1, b: 2, c: 3, d: 4, e: 5, f: 6, g: 7, h: 8 }; s.a + s.b + s.c + s.d + s.e + s.f + s.g + s.h }
+
+fn use_s461() -> i32 { let s = S461 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s462() -> i32 { let s = S462 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s463() -> i32 { let s = S463 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s464() -> i32 { let s = S464 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s465() -> i32 { let s = S465 { a: 1, b: 2, c: 3, d: 4, e: 5, f: 6 }; s.a + s.b + s.c + s.d + s.e + s.f }
+fn use_s466() -> i32 { let s = S466 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s467() -> i32 { let s = S467 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s468() -> i32 { let s = S468 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s469() -> i32 { let s = S469 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s470() -> i32 { let s = S470 { a: 1, b: 2, c: 3, d: 4, e: 5, f: 6, g: 7, h: 8 }; s.a + s.b + s.c + s.d + s.e + s.f + s.g + s.h }
+fn use_s471() -> i32 { let s = S471 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s472() -> i32 { let s = S472 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s473() -> i32 { let s = S473 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s474() -> i32 { let s = S474 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s475() -> i32 { let s = S475 { a: 1, b: 2, c: 3, d: 4, e: 5, f: 6 }; s.a + s.b + s.c + s.d + s.e + s.f }
+fn use_s476() -> i32 { let s = S476 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s477() -> i32 { let s = S477 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s478() -> i32 { let s = S478 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s479() -> i32 { let s = S479 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s480() -> i32 { let s = S480 { a: 1, b: 2, c: 3, d: 4, e: 5, f: 6, g: 7, h: 8 }; s.a + s.b + s.c + s.d + s.e + s.f + s.g + s.h }
+
+fn use_s481() -> i32 { let s = S481 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s482() -> i32 { let s = S482 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s483() -> i32 { let s = S483 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s484() -> i32 { let s = S484 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s485() -> i32 { let s = S485 { a: 1, b: 2, c: 3, d: 4, e: 5, f: 6 }; s.a + s.b + s.c + s.d + s.e + s.f }
+fn use_s486() -> i32 { let s = S486 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s487() -> i32 { let s = S487 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s488() -> i32 { let s = S488 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s489() -> i32 { let s = S489 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s490() -> i32 { let s = S490 { a: 1, b: 2, c: 3, d: 4, e: 5, f: 6, g: 7, h: 8 }; s.a + s.b + s.c + s.d + s.e + s.f + s.g + s.h }
+fn use_s491() -> i32 { let s = S491 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s492() -> i32 { let s = S492 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s493() -> i32 { let s = S493 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s494() -> i32 { let s = S494 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s495() -> i32 { let s = S495 { a: 1, b: 2, c: 3, d: 4, e: 5, f: 6 }; s.a + s.b + s.c + s.d + s.e + s.f }
+fn use_s496() -> i32 { let s = S496 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s497() -> i32 { let s = S497 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s498() -> i32 { let s = S498 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s499() -> i32 { let s = S499 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s500() -> i32 { let s = S500 { a: 1, b: 2, c: 3, d: 4, e: 5, f: 6, g: 7, h: 8 }; s.a + s.b + s.c + s.d + s.e + s.f + s.g + s.h }
+
+fn use_s501() -> i32 { let s = S501 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s502() -> i32 { let s = S502 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s503() -> i32 { let s = S503 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s504() -> i32 { let s = S504 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s505() -> i32 { let s = S505 { a: 1, b: 2, c: 3, d: 4, e: 5, f: 6 }; s.a + s.b + s.c + s.d + s.e + s.f }
+fn use_s506() -> i32 { let s = S506 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s507() -> i32 { let s = S507 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s508() -> i32 { let s = S508 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s509() -> i32 { let s = S509 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s510() -> i32 { let s = S510 { a: 1, b: 2, c: 3, d: 4, e: 5, f: 6, g: 7, h: 8 }; s.a + s.b + s.c + s.d + s.e + s.f + s.g + s.h }
+fn use_s511() -> i32 { let s = S511 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s512() -> i32 { let s = S512 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s513() -> i32 { let s = S513 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s514() -> i32 { let s = S514 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s515() -> i32 { let s = S515 { a: 1, b: 2, c: 3, d: 4, e: 5, f: 6 }; s.a + s.b + s.c + s.d + s.e + s.f }
+fn use_s516() -> i32 { let s = S516 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s517() -> i32 { let s = S517 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s518() -> i32 { let s = S518 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s519() -> i32 { let s = S519 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s520() -> i32 { let s = S520 { a: 1, b: 2, c: 3, d: 4, e: 5, f: 6, g: 7, h: 8 }; s.a + s.b + s.c + s.d + s.e + s.f + s.g + s.h }
+
+fn use_s521() -> i32 { let s = S521 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s522() -> i32 { let s = S522 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s523() -> i32 { let s = S523 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s524() -> i32 { let s = S524 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s525() -> i32 { let s = S525 { a: 1, b: 2, c: 3, d: 4, e: 5, f: 6 }; s.a + s.b + s.c + s.d + s.e + s.f }
+fn use_s526() -> i32 { let s = S526 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s527() -> i32 { let s = S527 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s528() -> i32 { let s = S528 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s529() -> i32 { let s = S529 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s530() -> i32 { let s = S530 { a: 1, b: 2, c: 3, d: 4, e: 5, f: 6, g: 7, h: 8 }; s.a + s.b + s.c + s.d + s.e + s.f + s.g + s.h }
+fn use_s531() -> i32 { let s = S531 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s532() -> i32 { let s = S532 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s533() -> i32 { let s = S533 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s534() -> i32 { let s = S534 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s535() -> i32 { let s = S535 { a: 1, b: 2, c: 3, d: 4, e: 5, f: 6 }; s.a + s.b + s.c + s.d + s.e + s.f }
+fn use_s536() -> i32 { let s = S536 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s537() -> i32 { let s = S537 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s538() -> i32 { let s = S538 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s539() -> i32 { let s = S539 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s540() -> i32 { let s = S540 { a: 1, b: 2, c: 3, d: 4, e: 5, f: 6, g: 7, h: 8 }; s.a + s.b + s.c + s.d + s.e + s.f + s.g + s.h }
+
+fn use_s541() -> i32 { let s = S541 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s542() -> i32 { let s = S542 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s543() -> i32 { let s = S543 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s544() -> i32 { let s = S544 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s545() -> i32 { let s = S545 { a: 1, b: 2, c: 3, d: 4, e: 5, f: 6 }; s.a + s.b + s.c + s.d + s.e + s.f }
+fn use_s546() -> i32 { let s = S546 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s547() -> i32 { let s = S547 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s548() -> i32 { let s = S548 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s549() -> i32 { let s = S549 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s550() -> i32 { let s = S550 { a: 1, b: 2, c: 3, d: 4, e: 5, f: 6, g: 7, h: 8 }; s.a + s.b + s.c + s.d + s.e + s.f + s.g + s.h }
+fn use_s551() -> i32 { let s = S551 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s552() -> i32 { let s = S552 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s553() -> i32 { let s = S553 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s554() -> i32 { let s = S554 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s555() -> i32 { let s = S555 { a: 1, b: 2, c: 3, d: 4, e: 5, f: 6 }; s.a + s.b + s.c + s.d + s.e + s.f }
+fn use_s556() -> i32 { let s = S556 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s557() -> i32 { let s = S557 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s558() -> i32 { let s = S558 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s559() -> i32 { let s = S559 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s560() -> i32 { let s = S560 { a: 1, b: 2, c: 3, d: 4, e: 5, f: 6, g: 7, h: 8 }; s.a + s.b + s.c + s.d + s.e + s.f + s.g + s.h }
+
+fn use_s561() -> i32 { let s = S561 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s562() -> i32 { let s = S562 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s563() -> i32 { let s = S563 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s564() -> i32 { let s = S564 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s565() -> i32 { let s = S565 { a: 1, b: 2, c: 3, d: 4, e: 5, f: 6 }; s.a + s.b + s.c + s.d + s.e + s.f }
+fn use_s566() -> i32 { let s = S566 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s567() -> i32 { let s = S567 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s568() -> i32 { let s = S568 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s569() -> i32 { let s = S569 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s570() -> i32 { let s = S570 { a: 1, b: 2, c: 3, d: 4, e: 5, f: 6, g: 7, h: 8 }; s.a + s.b + s.c + s.d + s.e + s.f + s.g + s.h }
+fn use_s571() -> i32 { let s = S571 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s572() -> i32 { let s = S572 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s573() -> i32 { let s = S573 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s574() -> i32 { let s = S574 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s575() -> i32 { let s = S575 { a: 1, b: 2, c: 3, d: 4, e: 5, f: 6 }; s.a + s.b + s.c + s.d + s.e + s.f }
+fn use_s576() -> i32 { let s = S576 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s577() -> i32 { let s = S577 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s578() -> i32 { let s = S578 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s579() -> i32 { let s = S579 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s580() -> i32 { let s = S580 { a: 1, b: 2, c: 3, d: 4, e: 5, f: 6, g: 7, h: 8 }; s.a + s.b + s.c + s.d + s.e + s.f + s.g + s.h }
+
+fn use_s581() -> i32 { let s = S581 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s582() -> i32 { let s = S582 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s583() -> i32 { let s = S583 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s584() -> i32 { let s = S584 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s585() -> i32 { let s = S585 { a: 1, b: 2, c: 3, d: 4, e: 5, f: 6 }; s.a + s.b + s.c + s.d + s.e + s.f }
+fn use_s586() -> i32 { let s = S586 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s587() -> i32 { let s = S587 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s588() -> i32 { let s = S588 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s589() -> i32 { let s = S589 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s590() -> i32 { let s = S590 { a: 1, b: 2, c: 3, d: 4, e: 5, f: 6, g: 7, h: 8 }; s.a + s.b + s.c + s.d + s.e + s.f + s.g + s.h }
+fn use_s591() -> i32 { let s = S591 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s592() -> i32 { let s = S592 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s593() -> i32 { let s = S593 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s594() -> i32 { let s = S594 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s595() -> i32 { let s = S595 { a: 1, b: 2, c: 3, d: 4, e: 5, f: 6 }; s.a + s.b + s.c + s.d + s.e + s.f }
+fn use_s596() -> i32 { let s = S596 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s597() -> i32 { let s = S597 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s598() -> i32 { let s = S598 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s599() -> i32 { let s = S599 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s600() -> i32 { let s = S600 { a: 1, b: 2, c: 3, d: 4, e: 5, f: 6, g: 7, h: 8 }; s.a + s.b + s.c + s.d + s.e + s.f + s.g + s.h }
+
+fn use_s601() -> i32 { let s = S601 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s602() -> i32 { let s = S602 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s603() -> i32 { let s = S603 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s604() -> i32 { let s = S604 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s605() -> i32 { let s = S605 { a: 1, b: 2, c: 3, d: 4, e: 5, f: 6 }; s.a + s.b + s.c + s.d + s.e + s.f }
+fn use_s606() -> i32 { let s = S606 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s607() -> i32 { let s = S607 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s608() -> i32 { let s = S608 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s609() -> i32 { let s = S609 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s610() -> i32 { let s = S610 { a: 1, b: 2, c: 3, d: 4, e: 5, f: 6, g: 7, h: 8 }; s.a + s.b + s.c + s.d + s.e + s.f + s.g + s.h }
+fn use_s611() -> i32 { let s = S611 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s612() -> i32 { let s = S612 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s613() -> i32 { let s = S613 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s614() -> i32 { let s = S614 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s615() -> i32 { let s = S615 { a: 1, b: 2, c: 3, d: 4, e: 5, f: 6 }; s.a + s.b + s.c + s.d + s.e + s.f }
+fn use_s616() -> i32 { let s = S616 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s617() -> i32 { let s = S617 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s618() -> i32 { let s = S618 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s619() -> i32 { let s = S619 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s620() -> i32 { let s = S620 { a: 1, b: 2, c: 3, d: 4, e: 5, f: 6, g: 7, h: 8 }; s.a + s.b + s.c + s.d + s.e + s.f + s.g + s.h }
+
+fn use_s621() -> i32 { let s = S621 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s622() -> i32 { let s = S622 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s623() -> i32 { let s = S623 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s624() -> i32 { let s = S624 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s625() -> i32 { let s = S625 { a: 1, b: 2, c: 3, d: 4, e: 5, f: 6 }; s.a + s.b + s.c + s.d + s.e + s.f }
+fn use_s626() -> i32 { let s = S626 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s627() -> i32 { let s = S627 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s628() -> i32 { let s = S628 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s629() -> i32 { let s = S629 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s630() -> i32 { let s = S630 { a: 1, b: 2, c: 3, d: 4, e: 5, f: 6, g: 7, h: 8 }; s.a + s.b + s.c + s.d + s.e + s.f + s.g + s.h }
+fn use_s631() -> i32 { let s = S631 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s632() -> i32 { let s = S632 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s633() -> i32 { let s = S633 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s634() -> i32 { let s = S634 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s635() -> i32 { let s = S635 { a: 1, b: 2, c: 3, d: 4, e: 5, f: 6 }; s.a + s.b + s.c + s.d + s.e + s.f }
+fn use_s636() -> i32 { let s = S636 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s637() -> i32 { let s = S637 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s638() -> i32 { let s = S638 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s639() -> i32 { let s = S639 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s640() -> i32 { let s = S640 { a: 1, b: 2, c: 3, d: 4, e: 5, f: 6, g: 7, h: 8 }; s.a + s.b + s.c + s.d + s.e + s.f + s.g + s.h }
+
+fn use_s641() -> i32 { let s = S641 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s642() -> i32 { let s = S642 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s643() -> i32 { let s = S643 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s644() -> i32 { let s = S644 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s645() -> i32 { let s = S645 { a: 1, b: 2, c: 3, d: 4, e: 5, f: 6 }; s.a + s.b + s.c + s.d + s.e + s.f }
+fn use_s646() -> i32 { let s = S646 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s647() -> i32 { let s = S647 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s648() -> i32 { let s = S648 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s649() -> i32 { let s = S649 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s650() -> i32 { let s = S650 { a: 1, b: 2, c: 3, d: 4, e: 5, f: 6, g: 7, h: 8 }; s.a + s.b + s.c + s.d + s.e + s.f + s.g + s.h }
+fn use_s651() -> i32 { let s = S651 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s652() -> i32 { let s = S652 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s653() -> i32 { let s = S653 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s654() -> i32 { let s = S654 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s655() -> i32 { let s = S655 { a: 1, b: 2, c: 3, d: 4, e: 5, f: 6 }; s.a + s.b + s.c + s.d + s.e + s.f }
+fn use_s656() -> i32 { let s = S656 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s657() -> i32 { let s = S657 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s658() -> i32 { let s = S658 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s659() -> i32 { let s = S659 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s660() -> i32 { let s = S660 { a: 1, b: 2, c: 3, d: 4, e: 5, f: 6, g: 7, h: 8 }; s.a + s.b + s.c + s.d + s.e + s.f + s.g + s.h }
+
+fn use_s661() -> i32 { let s = S661 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s662() -> i32 { let s = S662 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s663() -> i32 { let s = S663 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s664() -> i32 { let s = S664 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s665() -> i32 { let s = S665 { a: 1, b: 2, c: 3, d: 4, e: 5, f: 6 }; s.a + s.b + s.c + s.d + s.e + s.f }
+fn use_s666() -> i32 { let s = S666 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s667() -> i32 { let s = S667 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s668() -> i32 { let s = S668 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s669() -> i32 { let s = S669 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s670() -> i32 { let s = S670 { a: 1, b: 2, c: 3, d: 4, e: 5, f: 6, g: 7, h: 8 }; s.a + s.b + s.c + s.d + s.e + s.f + s.g + s.h }
+fn use_s671() -> i32 { let s = S671 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s672() -> i32 { let s = S672 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s673() -> i32 { let s = S673 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s674() -> i32 { let s = S674 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s675() -> i32 { let s = S675 { a: 1, b: 2, c: 3, d: 4, e: 5, f: 6 }; s.a + s.b + s.c + s.d + s.e + s.f }
+fn use_s676() -> i32 { let s = S676 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s677() -> i32 { let s = S677 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s678() -> i32 { let s = S678 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s679() -> i32 { let s = S679 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s680() -> i32 { let s = S680 { a: 1, b: 2, c: 3, d: 4, e: 5, f: 6, g: 7, h: 8 }; s.a + s.b + s.c + s.d + s.e + s.f + s.g + s.h }
+
+fn use_s681() -> i32 { let s = S681 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s682() -> i32 { let s = S682 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s683() -> i32 { let s = S683 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s684() -> i32 { let s = S684 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s685() -> i32 { let s = S685 { a: 1, b: 2, c: 3, d: 4, e: 5, f: 6 }; s.a + s.b + s.c + s.d + s.e + s.f }
+fn use_s686() -> i32 { let s = S686 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s687() -> i32 { let s = S687 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s688() -> i32 { let s = S688 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s689() -> i32 { let s = S689 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s690() -> i32 { let s = S690 { a: 1, b: 2, c: 3, d: 4, e: 5, f: 6, g: 7, h: 8 }; s.a + s.b + s.c + s.d + s.e + s.f + s.g + s.h }
+fn use_s691() -> i32 { let s = S691 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s692() -> i32 { let s = S692 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s693() -> i32 { let s = S693 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s694() -> i32 { let s = S694 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s695() -> i32 { let s = S695 { a: 1, b: 2, c: 3, d: 4, e: 5, f: 6 }; s.a + s.b + s.c + s.d + s.e + s.f }
+fn use_s696() -> i32 { let s = S696 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s697() -> i32 { let s = S697 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s698() -> i32 { let s = S698 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s699() -> i32 { let s = S699 { a: 1, b: 2, c: 3, d: 4 }; s.a + s.b + s.c + s.d }
+fn use_s700() -> i32 { let s = S700 { a: 1, b: 2, c: 3, d: 4, e: 5, f: 6, g: 7, h: 8 }; s.a + s.b + s.c + s.d + s.e + s.f + s.g + s.h }
+
 
 fn main() -> i32 {
-    // Use all struct types to ensure they're compiled
-    let sum = use_s01() + use_s02() + use_s03() + use_s04() + use_s05()
-            + use_s06() + use_s07() + use_s08() + use_s09() + use_s10()
-            + use_s11() + use_s12() + use_s13() + use_s14() + use_s15()
-            + use_s16() + use_s17() + use_s18() + use_s19() + use_s20()
-            + use_s21() + use_s22() + use_s23() + use_s24() + use_s25()
-            + use_s26() + use_s27() + use_s28() + use_s29() + use_s30()
-            + use_s31() + use_s32() + use_s33() + use_s34() + use_s35()
-            + use_s36() + use_s37() + use_s38() + use_s39() + use_s40()
-            + use_s41() + use_s42() + use_s43() + use_s44() + use_s45()
-            + use_s46() + use_s47() + use_s48() + use_s49() + use_s50();
-    // Each use_sXX returns 10, so sum = 50 * 10 = 500
-    // Return sum mod 256 for exit code
+    let mut sum = 0;
+    sum = sum + use_s001();
+    sum = sum + use_s002();
+    sum = sum + use_s003();
+    sum = sum + use_s004();
+    sum = sum + use_s005();
+    sum = sum + use_s006();
+    sum = sum + use_s007();
+    sum = sum + use_s008();
+    sum = sum + use_s009();
+    sum = sum + use_s010();
+    sum = sum + use_s011();
+    sum = sum + use_s012();
+    sum = sum + use_s013();
+    sum = sum + use_s014();
+    sum = sum + use_s015();
+    sum = sum + use_s016();
+    sum = sum + use_s017();
+    sum = sum + use_s018();
+    sum = sum + use_s019();
+    sum = sum + use_s020();
+    sum = sum + use_s021();
+    sum = sum + use_s022();
+    sum = sum + use_s023();
+    sum = sum + use_s024();
+    sum = sum + use_s025();
+    sum = sum + use_s026();
+    sum = sum + use_s027();
+    sum = sum + use_s028();
+    sum = sum + use_s029();
+    sum = sum + use_s030();
+    sum = sum + use_s031();
+    sum = sum + use_s032();
+    sum = sum + use_s033();
+    sum = sum + use_s034();
+    sum = sum + use_s035();
+    sum = sum + use_s036();
+    sum = sum + use_s037();
+    sum = sum + use_s038();
+    sum = sum + use_s039();
+    sum = sum + use_s040();
+    sum = sum + use_s041();
+    sum = sum + use_s042();
+    sum = sum + use_s043();
+    sum = sum + use_s044();
+    sum = sum + use_s045();
+    sum = sum + use_s046();
+    sum = sum + use_s047();
+    sum = sum + use_s048();
+    sum = sum + use_s049();
+    sum = sum + use_s050();
+    sum = sum + use_s051();
+    sum = sum + use_s052();
+    sum = sum + use_s053();
+    sum = sum + use_s054();
+    sum = sum + use_s055();
+    sum = sum + use_s056();
+    sum = sum + use_s057();
+    sum = sum + use_s058();
+    sum = sum + use_s059();
+    sum = sum + use_s060();
+    sum = sum + use_s061();
+    sum = sum + use_s062();
+    sum = sum + use_s063();
+    sum = sum + use_s064();
+    sum = sum + use_s065();
+    sum = sum + use_s066();
+    sum = sum + use_s067();
+    sum = sum + use_s068();
+    sum = sum + use_s069();
+    sum = sum + use_s070();
+    sum = sum + use_s071();
+    sum = sum + use_s072();
+    sum = sum + use_s073();
+    sum = sum + use_s074();
+    sum = sum + use_s075();
+    sum = sum + use_s076();
+    sum = sum + use_s077();
+    sum = sum + use_s078();
+    sum = sum + use_s079();
+    sum = sum + use_s080();
+    sum = sum + use_s081();
+    sum = sum + use_s082();
+    sum = sum + use_s083();
+    sum = sum + use_s084();
+    sum = sum + use_s085();
+    sum = sum + use_s086();
+    sum = sum + use_s087();
+    sum = sum + use_s088();
+    sum = sum + use_s089();
+    sum = sum + use_s090();
+    sum = sum + use_s091();
+    sum = sum + use_s092();
+    sum = sum + use_s093();
+    sum = sum + use_s094();
+    sum = sum + use_s095();
+    sum = sum + use_s096();
+    sum = sum + use_s097();
+    sum = sum + use_s098();
+    sum = sum + use_s099();
+    sum = sum + use_s100();
+    // sum after use_s100
+    sum = sum + use_s101();
+    sum = sum + use_s102();
+    sum = sum + use_s103();
+    sum = sum + use_s104();
+    sum = sum + use_s105();
+    sum = sum + use_s106();
+    sum = sum + use_s107();
+    sum = sum + use_s108();
+    sum = sum + use_s109();
+    sum = sum + use_s110();
+    sum = sum + use_s111();
+    sum = sum + use_s112();
+    sum = sum + use_s113();
+    sum = sum + use_s114();
+    sum = sum + use_s115();
+    sum = sum + use_s116();
+    sum = sum + use_s117();
+    sum = sum + use_s118();
+    sum = sum + use_s119();
+    sum = sum + use_s120();
+    sum = sum + use_s121();
+    sum = sum + use_s122();
+    sum = sum + use_s123();
+    sum = sum + use_s124();
+    sum = sum + use_s125();
+    sum = sum + use_s126();
+    sum = sum + use_s127();
+    sum = sum + use_s128();
+    sum = sum + use_s129();
+    sum = sum + use_s130();
+    sum = sum + use_s131();
+    sum = sum + use_s132();
+    sum = sum + use_s133();
+    sum = sum + use_s134();
+    sum = sum + use_s135();
+    sum = sum + use_s136();
+    sum = sum + use_s137();
+    sum = sum + use_s138();
+    sum = sum + use_s139();
+    sum = sum + use_s140();
+    sum = sum + use_s141();
+    sum = sum + use_s142();
+    sum = sum + use_s143();
+    sum = sum + use_s144();
+    sum = sum + use_s145();
+    sum = sum + use_s146();
+    sum = sum + use_s147();
+    sum = sum + use_s148();
+    sum = sum + use_s149();
+    sum = sum + use_s150();
+    sum = sum + use_s151();
+    sum = sum + use_s152();
+    sum = sum + use_s153();
+    sum = sum + use_s154();
+    sum = sum + use_s155();
+    sum = sum + use_s156();
+    sum = sum + use_s157();
+    sum = sum + use_s158();
+    sum = sum + use_s159();
+    sum = sum + use_s160();
+    sum = sum + use_s161();
+    sum = sum + use_s162();
+    sum = sum + use_s163();
+    sum = sum + use_s164();
+    sum = sum + use_s165();
+    sum = sum + use_s166();
+    sum = sum + use_s167();
+    sum = sum + use_s168();
+    sum = sum + use_s169();
+    sum = sum + use_s170();
+    sum = sum + use_s171();
+    sum = sum + use_s172();
+    sum = sum + use_s173();
+    sum = sum + use_s174();
+    sum = sum + use_s175();
+    sum = sum + use_s176();
+    sum = sum + use_s177();
+    sum = sum + use_s178();
+    sum = sum + use_s179();
+    sum = sum + use_s180();
+    sum = sum + use_s181();
+    sum = sum + use_s182();
+    sum = sum + use_s183();
+    sum = sum + use_s184();
+    sum = sum + use_s185();
+    sum = sum + use_s186();
+    sum = sum + use_s187();
+    sum = sum + use_s188();
+    sum = sum + use_s189();
+    sum = sum + use_s190();
+    sum = sum + use_s191();
+    sum = sum + use_s192();
+    sum = sum + use_s193();
+    sum = sum + use_s194();
+    sum = sum + use_s195();
+    sum = sum + use_s196();
+    sum = sum + use_s197();
+    sum = sum + use_s198();
+    sum = sum + use_s199();
+    sum = sum + use_s200();
+    // sum after use_s200
+    sum = sum + use_s201();
+    sum = sum + use_s202();
+    sum = sum + use_s203();
+    sum = sum + use_s204();
+    sum = sum + use_s205();
+    sum = sum + use_s206();
+    sum = sum + use_s207();
+    sum = sum + use_s208();
+    sum = sum + use_s209();
+    sum = sum + use_s210();
+    sum = sum + use_s211();
+    sum = sum + use_s212();
+    sum = sum + use_s213();
+    sum = sum + use_s214();
+    sum = sum + use_s215();
+    sum = sum + use_s216();
+    sum = sum + use_s217();
+    sum = sum + use_s218();
+    sum = sum + use_s219();
+    sum = sum + use_s220();
+    sum = sum + use_s221();
+    sum = sum + use_s222();
+    sum = sum + use_s223();
+    sum = sum + use_s224();
+    sum = sum + use_s225();
+    sum = sum + use_s226();
+    sum = sum + use_s227();
+    sum = sum + use_s228();
+    sum = sum + use_s229();
+    sum = sum + use_s230();
+    sum = sum + use_s231();
+    sum = sum + use_s232();
+    sum = sum + use_s233();
+    sum = sum + use_s234();
+    sum = sum + use_s235();
+    sum = sum + use_s236();
+    sum = sum + use_s237();
+    sum = sum + use_s238();
+    sum = sum + use_s239();
+    sum = sum + use_s240();
+    sum = sum + use_s241();
+    sum = sum + use_s242();
+    sum = sum + use_s243();
+    sum = sum + use_s244();
+    sum = sum + use_s245();
+    sum = sum + use_s246();
+    sum = sum + use_s247();
+    sum = sum + use_s248();
+    sum = sum + use_s249();
+    sum = sum + use_s250();
+    sum = sum + use_s251();
+    sum = sum + use_s252();
+    sum = sum + use_s253();
+    sum = sum + use_s254();
+    sum = sum + use_s255();
+    sum = sum + use_s256();
+    sum = sum + use_s257();
+    sum = sum + use_s258();
+    sum = sum + use_s259();
+    sum = sum + use_s260();
+    sum = sum + use_s261();
+    sum = sum + use_s262();
+    sum = sum + use_s263();
+    sum = sum + use_s264();
+    sum = sum + use_s265();
+    sum = sum + use_s266();
+    sum = sum + use_s267();
+    sum = sum + use_s268();
+    sum = sum + use_s269();
+    sum = sum + use_s270();
+    sum = sum + use_s271();
+    sum = sum + use_s272();
+    sum = sum + use_s273();
+    sum = sum + use_s274();
+    sum = sum + use_s275();
+    sum = sum + use_s276();
+    sum = sum + use_s277();
+    sum = sum + use_s278();
+    sum = sum + use_s279();
+    sum = sum + use_s280();
+    sum = sum + use_s281();
+    sum = sum + use_s282();
+    sum = sum + use_s283();
+    sum = sum + use_s284();
+    sum = sum + use_s285();
+    sum = sum + use_s286();
+    sum = sum + use_s287();
+    sum = sum + use_s288();
+    sum = sum + use_s289();
+    sum = sum + use_s290();
+    sum = sum + use_s291();
+    sum = sum + use_s292();
+    sum = sum + use_s293();
+    sum = sum + use_s294();
+    sum = sum + use_s295();
+    sum = sum + use_s296();
+    sum = sum + use_s297();
+    sum = sum + use_s298();
+    sum = sum + use_s299();
+    sum = sum + use_s300();
+    // sum after use_s300
+    sum = sum + use_s301();
+    sum = sum + use_s302();
+    sum = sum + use_s303();
+    sum = sum + use_s304();
+    sum = sum + use_s305();
+    sum = sum + use_s306();
+    sum = sum + use_s307();
+    sum = sum + use_s308();
+    sum = sum + use_s309();
+    sum = sum + use_s310();
+    sum = sum + use_s311();
+    sum = sum + use_s312();
+    sum = sum + use_s313();
+    sum = sum + use_s314();
+    sum = sum + use_s315();
+    sum = sum + use_s316();
+    sum = sum + use_s317();
+    sum = sum + use_s318();
+    sum = sum + use_s319();
+    sum = sum + use_s320();
+    sum = sum + use_s321();
+    sum = sum + use_s322();
+    sum = sum + use_s323();
+    sum = sum + use_s324();
+    sum = sum + use_s325();
+    sum = sum + use_s326();
+    sum = sum + use_s327();
+    sum = sum + use_s328();
+    sum = sum + use_s329();
+    sum = sum + use_s330();
+    sum = sum + use_s331();
+    sum = sum + use_s332();
+    sum = sum + use_s333();
+    sum = sum + use_s334();
+    sum = sum + use_s335();
+    sum = sum + use_s336();
+    sum = sum + use_s337();
+    sum = sum + use_s338();
+    sum = sum + use_s339();
+    sum = sum + use_s340();
+    sum = sum + use_s341();
+    sum = sum + use_s342();
+    sum = sum + use_s343();
+    sum = sum + use_s344();
+    sum = sum + use_s345();
+    sum = sum + use_s346();
+    sum = sum + use_s347();
+    sum = sum + use_s348();
+    sum = sum + use_s349();
+    sum = sum + use_s350();
+    sum = sum + use_s351();
+    sum = sum + use_s352();
+    sum = sum + use_s353();
+    sum = sum + use_s354();
+    sum = sum + use_s355();
+    sum = sum + use_s356();
+    sum = sum + use_s357();
+    sum = sum + use_s358();
+    sum = sum + use_s359();
+    sum = sum + use_s360();
+    sum = sum + use_s361();
+    sum = sum + use_s362();
+    sum = sum + use_s363();
+    sum = sum + use_s364();
+    sum = sum + use_s365();
+    sum = sum + use_s366();
+    sum = sum + use_s367();
+    sum = sum + use_s368();
+    sum = sum + use_s369();
+    sum = sum + use_s370();
+    sum = sum + use_s371();
+    sum = sum + use_s372();
+    sum = sum + use_s373();
+    sum = sum + use_s374();
+    sum = sum + use_s375();
+    sum = sum + use_s376();
+    sum = sum + use_s377();
+    sum = sum + use_s378();
+    sum = sum + use_s379();
+    sum = sum + use_s380();
+    sum = sum + use_s381();
+    sum = sum + use_s382();
+    sum = sum + use_s383();
+    sum = sum + use_s384();
+    sum = sum + use_s385();
+    sum = sum + use_s386();
+    sum = sum + use_s387();
+    sum = sum + use_s388();
+    sum = sum + use_s389();
+    sum = sum + use_s390();
+    sum = sum + use_s391();
+    sum = sum + use_s392();
+    sum = sum + use_s393();
+    sum = sum + use_s394();
+    sum = sum + use_s395();
+    sum = sum + use_s396();
+    sum = sum + use_s397();
+    sum = sum + use_s398();
+    sum = sum + use_s399();
+    sum = sum + use_s400();
+    // sum after use_s400
+    sum = sum + use_s401();
+    sum = sum + use_s402();
+    sum = sum + use_s403();
+    sum = sum + use_s404();
+    sum = sum + use_s405();
+    sum = sum + use_s406();
+    sum = sum + use_s407();
+    sum = sum + use_s408();
+    sum = sum + use_s409();
+    sum = sum + use_s410();
+    sum = sum + use_s411();
+    sum = sum + use_s412();
+    sum = sum + use_s413();
+    sum = sum + use_s414();
+    sum = sum + use_s415();
+    sum = sum + use_s416();
+    sum = sum + use_s417();
+    sum = sum + use_s418();
+    sum = sum + use_s419();
+    sum = sum + use_s420();
+    sum = sum + use_s421();
+    sum = sum + use_s422();
+    sum = sum + use_s423();
+    sum = sum + use_s424();
+    sum = sum + use_s425();
+    sum = sum + use_s426();
+    sum = sum + use_s427();
+    sum = sum + use_s428();
+    sum = sum + use_s429();
+    sum = sum + use_s430();
+    sum = sum + use_s431();
+    sum = sum + use_s432();
+    sum = sum + use_s433();
+    sum = sum + use_s434();
+    sum = sum + use_s435();
+    sum = sum + use_s436();
+    sum = sum + use_s437();
+    sum = sum + use_s438();
+    sum = sum + use_s439();
+    sum = sum + use_s440();
+    sum = sum + use_s441();
+    sum = sum + use_s442();
+    sum = sum + use_s443();
+    sum = sum + use_s444();
+    sum = sum + use_s445();
+    sum = sum + use_s446();
+    sum = sum + use_s447();
+    sum = sum + use_s448();
+    sum = sum + use_s449();
+    sum = sum + use_s450();
+    sum = sum + use_s451();
+    sum = sum + use_s452();
+    sum = sum + use_s453();
+    sum = sum + use_s454();
+    sum = sum + use_s455();
+    sum = sum + use_s456();
+    sum = sum + use_s457();
+    sum = sum + use_s458();
+    sum = sum + use_s459();
+    sum = sum + use_s460();
+    sum = sum + use_s461();
+    sum = sum + use_s462();
+    sum = sum + use_s463();
+    sum = sum + use_s464();
+    sum = sum + use_s465();
+    sum = sum + use_s466();
+    sum = sum + use_s467();
+    sum = sum + use_s468();
+    sum = sum + use_s469();
+    sum = sum + use_s470();
+    sum = sum + use_s471();
+    sum = sum + use_s472();
+    sum = sum + use_s473();
+    sum = sum + use_s474();
+    sum = sum + use_s475();
+    sum = sum + use_s476();
+    sum = sum + use_s477();
+    sum = sum + use_s478();
+    sum = sum + use_s479();
+    sum = sum + use_s480();
+    sum = sum + use_s481();
+    sum = sum + use_s482();
+    sum = sum + use_s483();
+    sum = sum + use_s484();
+    sum = sum + use_s485();
+    sum = sum + use_s486();
+    sum = sum + use_s487();
+    sum = sum + use_s488();
+    sum = sum + use_s489();
+    sum = sum + use_s490();
+    sum = sum + use_s491();
+    sum = sum + use_s492();
+    sum = sum + use_s493();
+    sum = sum + use_s494();
+    sum = sum + use_s495();
+    sum = sum + use_s496();
+    sum = sum + use_s497();
+    sum = sum + use_s498();
+    sum = sum + use_s499();
+    sum = sum + use_s500();
+    // sum after use_s500
+    sum = sum + use_s501();
+    sum = sum + use_s502();
+    sum = sum + use_s503();
+    sum = sum + use_s504();
+    sum = sum + use_s505();
+    sum = sum + use_s506();
+    sum = sum + use_s507();
+    sum = sum + use_s508();
+    sum = sum + use_s509();
+    sum = sum + use_s510();
+    sum = sum + use_s511();
+    sum = sum + use_s512();
+    sum = sum + use_s513();
+    sum = sum + use_s514();
+    sum = sum + use_s515();
+    sum = sum + use_s516();
+    sum = sum + use_s517();
+    sum = sum + use_s518();
+    sum = sum + use_s519();
+    sum = sum + use_s520();
+    sum = sum + use_s521();
+    sum = sum + use_s522();
+    sum = sum + use_s523();
+    sum = sum + use_s524();
+    sum = sum + use_s525();
+    sum = sum + use_s526();
+    sum = sum + use_s527();
+    sum = sum + use_s528();
+    sum = sum + use_s529();
+    sum = sum + use_s530();
+    sum = sum + use_s531();
+    sum = sum + use_s532();
+    sum = sum + use_s533();
+    sum = sum + use_s534();
+    sum = sum + use_s535();
+    sum = sum + use_s536();
+    sum = sum + use_s537();
+    sum = sum + use_s538();
+    sum = sum + use_s539();
+    sum = sum + use_s540();
+    sum = sum + use_s541();
+    sum = sum + use_s542();
+    sum = sum + use_s543();
+    sum = sum + use_s544();
+    sum = sum + use_s545();
+    sum = sum + use_s546();
+    sum = sum + use_s547();
+    sum = sum + use_s548();
+    sum = sum + use_s549();
+    sum = sum + use_s550();
+    sum = sum + use_s551();
+    sum = sum + use_s552();
+    sum = sum + use_s553();
+    sum = sum + use_s554();
+    sum = sum + use_s555();
+    sum = sum + use_s556();
+    sum = sum + use_s557();
+    sum = sum + use_s558();
+    sum = sum + use_s559();
+    sum = sum + use_s560();
+    sum = sum + use_s561();
+    sum = sum + use_s562();
+    sum = sum + use_s563();
+    sum = sum + use_s564();
+    sum = sum + use_s565();
+    sum = sum + use_s566();
+    sum = sum + use_s567();
+    sum = sum + use_s568();
+    sum = sum + use_s569();
+    sum = sum + use_s570();
+    sum = sum + use_s571();
+    sum = sum + use_s572();
+    sum = sum + use_s573();
+    sum = sum + use_s574();
+    sum = sum + use_s575();
+    sum = sum + use_s576();
+    sum = sum + use_s577();
+    sum = sum + use_s578();
+    sum = sum + use_s579();
+    sum = sum + use_s580();
+    sum = sum + use_s581();
+    sum = sum + use_s582();
+    sum = sum + use_s583();
+    sum = sum + use_s584();
+    sum = sum + use_s585();
+    sum = sum + use_s586();
+    sum = sum + use_s587();
+    sum = sum + use_s588();
+    sum = sum + use_s589();
+    sum = sum + use_s590();
+    sum = sum + use_s591();
+    sum = sum + use_s592();
+    sum = sum + use_s593();
+    sum = sum + use_s594();
+    sum = sum + use_s595();
+    sum = sum + use_s596();
+    sum = sum + use_s597();
+    sum = sum + use_s598();
+    sum = sum + use_s599();
+    sum = sum + use_s600();
+    // sum after use_s600
+    sum = sum + use_s601();
+    sum = sum + use_s602();
+    sum = sum + use_s603();
+    sum = sum + use_s604();
+    sum = sum + use_s605();
+    sum = sum + use_s606();
+    sum = sum + use_s607();
+    sum = sum + use_s608();
+    sum = sum + use_s609();
+    sum = sum + use_s610();
+    sum = sum + use_s611();
+    sum = sum + use_s612();
+    sum = sum + use_s613();
+    sum = sum + use_s614();
+    sum = sum + use_s615();
+    sum = sum + use_s616();
+    sum = sum + use_s617();
+    sum = sum + use_s618();
+    sum = sum + use_s619();
+    sum = sum + use_s620();
+    sum = sum + use_s621();
+    sum = sum + use_s622();
+    sum = sum + use_s623();
+    sum = sum + use_s624();
+    sum = sum + use_s625();
+    sum = sum + use_s626();
+    sum = sum + use_s627();
+    sum = sum + use_s628();
+    sum = sum + use_s629();
+    sum = sum + use_s630();
+    sum = sum + use_s631();
+    sum = sum + use_s632();
+    sum = sum + use_s633();
+    sum = sum + use_s634();
+    sum = sum + use_s635();
+    sum = sum + use_s636();
+    sum = sum + use_s637();
+    sum = sum + use_s638();
+    sum = sum + use_s639();
+    sum = sum + use_s640();
+    sum = sum + use_s641();
+    sum = sum + use_s642();
+    sum = sum + use_s643();
+    sum = sum + use_s644();
+    sum = sum + use_s645();
+    sum = sum + use_s646();
+    sum = sum + use_s647();
+    sum = sum + use_s648();
+    sum = sum + use_s649();
+    sum = sum + use_s650();
+    sum = sum + use_s651();
+    sum = sum + use_s652();
+    sum = sum + use_s653();
+    sum = sum + use_s654();
+    sum = sum + use_s655();
+    sum = sum + use_s656();
+    sum = sum + use_s657();
+    sum = sum + use_s658();
+    sum = sum + use_s659();
+    sum = sum + use_s660();
+    sum = sum + use_s661();
+    sum = sum + use_s662();
+    sum = sum + use_s663();
+    sum = sum + use_s664();
+    sum = sum + use_s665();
+    sum = sum + use_s666();
+    sum = sum + use_s667();
+    sum = sum + use_s668();
+    sum = sum + use_s669();
+    sum = sum + use_s670();
+    sum = sum + use_s671();
+    sum = sum + use_s672();
+    sum = sum + use_s673();
+    sum = sum + use_s674();
+    sum = sum + use_s675();
+    sum = sum + use_s676();
+    sum = sum + use_s677();
+    sum = sum + use_s678();
+    sum = sum + use_s679();
+    sum = sum + use_s680();
+    sum = sum + use_s681();
+    sum = sum + use_s682();
+    sum = sum + use_s683();
+    sum = sum + use_s684();
+    sum = sum + use_s685();
+    sum = sum + use_s686();
+    sum = sum + use_s687();
+    sum = sum + use_s688();
+    sum = sum + use_s689();
+    sum = sum + use_s690();
+    sum = sum + use_s691();
+    sum = sum + use_s692();
+    sum = sum + use_s693();
+    sum = sum + use_s694();
+    sum = sum + use_s695();
+    sum = sum + use_s696();
+    sum = sum + use_s697();
+    sum = sum + use_s698();
+    sum = sum + use_s699();
+    sum = sum + use_s700();
+    // sum after use_s700
     sum % 256
 }
+
