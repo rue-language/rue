@@ -16,6 +16,7 @@ use crate::types::{
     parse_array_type_syntax,
 };
 use lasso::{Spur, ThreadedRodeo};
+use rue_builtins::{BUILTIN_TYPES, BuiltinFieldType, is_reserved_type_name};
 use rue_error::{
     CompileError, CompileErrors, CompileResult, CompileWarning, CopyStructNonCopyFieldError,
     ErrorKind, IntrinsicTypeMismatchError, MissingFieldsError, MultiErrorResult, OptionExt,
@@ -173,6 +174,8 @@ pub struct GatherOutput<'a> {
     pub methods: HashMap<(Spur, Spur), MethodInfo>,
     /// Enabled preview features.
     pub preview_features: PreviewFeatures,
+    /// StructId of the synthetic String type.
+    pub builtin_string_id: Option<StructId>,
 }
 
 impl<'a> GatherOutput<'a> {
@@ -196,6 +199,7 @@ impl<'a> GatherOutput<'a> {
             warnings: Vec::new(),
             methods: self.methods,
             preview_features: self.preview_features,
+            builtin_string_id: self.builtin_string_id,
         }
     }
 
@@ -475,6 +479,9 @@ pub struct Sema<'a> {
     methods: HashMap<(Spur, Spur), MethodInfo>,
     /// Enabled preview features
     preview_features: PreviewFeatures,
+    /// StructId of the synthetic String type.
+    /// This is populated during `inject_builtin_types()` and used for quick lookups.
+    builtin_string_id: Option<StructId>,
 }
 
 /// Storage location for a String receiver in mutation methods.
@@ -510,6 +517,7 @@ impl<'a> Sema<'a> {
             warnings: Vec::new(),
             methods: HashMap::new(),
             preview_features,
+            builtin_string_id: None,
         }
     }
 
@@ -671,7 +679,10 @@ impl<'a> Sema<'a> {
     /// }
     /// ```
     pub fn gather_declarations(mut self) -> CompileResult<(TypeContext, GatherOutput<'a>)> {
-        // Two-phase approach for correctness and performance:
+        // Three-phase approach for correctness and performance:
+        //
+        // Phase 0: Inject built-in types (synthetic structs like String)
+        // These must be registered before user code to enable collision detection.
         //
         // Phase 1: Register all type names (enum and struct IDs)
         // This allows types to reference each other in any order.
@@ -679,6 +690,7 @@ impl<'a> Sema<'a> {
         // Phase 2: Resolve all declarations in a single pass
         // Now that all type names are known, we can resolve field types,
         // validate @copy structs, and collect functions/methods together.
+        self.inject_builtin_types();
         self.register_type_names()?;
         self.resolve_declarations()?;
 
@@ -698,6 +710,7 @@ impl<'a> Sema<'a> {
             functions: self.functions,
             methods: self.methods,
             preview_features: self.preview_features,
+            builtin_string_id: self.builtin_string_id,
         };
 
         Ok((type_ctx, output))
@@ -1491,6 +1504,60 @@ impl<'a> Sema<'a> {
         }
     }
 
+    /// Phase 0: Inject built-in types as synthetic structs.
+    ///
+    /// This creates `StructDef` entries for built-in types like `String` before
+    /// processing user code. The built-in types are registered in the `structs`
+    /// HashMap so they can be looked up by name, and their StructIds are stored
+    /// in dedicated fields (e.g., `builtin_string_id`) for fast access.
+    ///
+    /// Built-in types are marked with `is_builtin: true` and have their fields,
+    /// destructor, and copy status derived from the `rue-builtins` registry.
+    fn inject_builtin_types(&mut self) {
+        for builtin in BUILTIN_TYPES {
+            let struct_id = StructId(self.struct_defs.len() as u32);
+
+            // Convert builtin field types to our Type enum
+            let fields: Vec<StructField> = builtin
+                .fields
+                .iter()
+                .map(|f| StructField {
+                    name: f.name.to_string(),
+                    ty: match f.ty {
+                        BuiltinFieldType::U64 => Type::U64,
+                        BuiltinFieldType::U8 => Type::U8,
+                        BuiltinFieldType::Bool => Type::Bool,
+                    },
+                })
+                .collect();
+
+            // Create the synthetic struct definition
+            let struct_def = StructDef {
+                name: builtin.name.to_string(),
+                fields,
+                is_copy: builtin.is_copy,
+                destructor: builtin.drop_fn.map(|s| s.to_string()),
+                is_builtin: true,
+            };
+
+            self.struct_defs.push(struct_def);
+
+            // Register in struct lookup
+            let name_spur = self.interner.get_or_intern(builtin.name);
+            self.structs.insert(name_spur, struct_id);
+
+            // Store special IDs for quick access
+            if builtin.name == "String" {
+                self.builtin_string_id = Some(struct_id);
+            }
+
+            // Note: Associated functions and methods are not registered here.
+            // They are still handled specially via Type::String checks in the current
+            // implementation. Phase 2 (rue-hp13) will migrate those to struct-based
+            // queries using the builtin registry.
+        }
+    }
+
     /// Phase 1: Register all type names (enum and struct IDs).
     ///
     /// This creates name → ID mappings for all enums and structs in a single pass,
@@ -1506,6 +1573,17 @@ impl<'a> Sema<'a> {
                 } => {
                     let enum_id = EnumId(self.enum_defs.len() as u32);
                     let enum_name = self.interner.resolve(&*name).to_string();
+
+                    // Check for collision with built-in type names
+                    if is_reserved_type_name(&enum_name) {
+                        return Err(CompileError::new(
+                            ErrorKind::ReservedTypeName {
+                                type_name: enum_name,
+                            },
+                            inst.span,
+                        ));
+                    }
+
                     let variants = self.rir.get_symbols(*variants_start, *variants_len);
 
                     // Check for duplicate variant names
@@ -1544,6 +1622,17 @@ impl<'a> Sema<'a> {
                 } => {
                     let struct_id = StructId(self.struct_defs.len() as u32);
                     let struct_name = self.interner.resolve(&*name).to_string();
+
+                    // Check for collision with built-in type names
+                    if is_reserved_type_name(&struct_name) {
+                        return Err(CompileError::new(
+                            ErrorKind::ReservedTypeName {
+                                type_name: struct_name,
+                            },
+                            inst.span,
+                        ));
+                    }
+
                     let directives = self.rir.get_directives(*directives_start, *directives_len);
                     let is_copy = self.has_copy_directive(&directives);
 

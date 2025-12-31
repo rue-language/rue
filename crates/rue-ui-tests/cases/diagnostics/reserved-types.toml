@@ -1,0 +1,37 @@
+[section]
+id = "diagnostics.reserved-types"
+name = "Reserved Type Name Errors"
+description = "Tests that user-defined types cannot collide with built-in type names."
+
+# =============================================================================
+# Reserved Type Names
+# =============================================================================
+
+[[case]]
+name = "struct_named_string"
+source = """
+struct String {
+    data: i32,
+}
+
+fn main() -> i32 {
+    0
+}
+"""
+compile_fail = true
+error_contains = "cannot define type `String`: name is reserved for built-in type"
+
+[[case]]
+name = "enum_named_string"
+source = """
+enum String {
+    Empty,
+    Full,
+}
+
+fn main() -> i32 {
+    0
+}
+"""
+compile_fail = true
+error_contains = "cannot define type `String`: name is reserved for built-in type"

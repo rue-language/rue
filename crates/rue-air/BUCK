@@ -2,6 +2,7 @@ rust_library(
     name = "rue-air",
     srcs = glob(["src/**/*.rs"]),
     deps = [
+        "//crates/rue-builtins:rue-builtins",
         "//crates/rue-error:rue-error",
         "//third-party:lasso",
         "//crates/rue-lexer:rue-lexer",
@@ -16,6 +17,7 @@ rust_test(
     name = "rue-air-test",
     srcs = glob(["src/**/*.rs"]),
     deps = [
+        "//crates/rue-builtins:rue-builtins",
         "//crates/rue-error:rue-error",
         "//third-party:lasso",
         "//crates/rue-lexer:rue-lexer",

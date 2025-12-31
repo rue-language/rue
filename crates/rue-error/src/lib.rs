@@ -486,6 +486,9 @@ pub enum ErrorKind {
     /// @copy struct contains a field with non-Copy type
     #[error("@copy struct '{struct_name}' has field '{field_name}' with non-Copy type '{field_type}'", struct_name = .0.struct_name, field_name = .0.field_name, field_type = .0.field_type)]
     CopyStructNonCopyField(Box<CopyStructNonCopyFieldError>),
+    /// User-defined type collides with a built-in type name
+    #[error("cannot define type `{type_name}`: name is reserved for built-in type")]
+    ReservedTypeName { type_name: String },
     /// Duplicate method definition in impl blocks for the same type
     #[error("duplicate method '{method_name}' for type '{type_name}'")]
     DuplicateMethod {
