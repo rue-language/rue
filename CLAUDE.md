@@ -37,9 +37,20 @@ This project uses Buck2 (via `./buck2` wrapper script), not Cargo.
 ./buck2 run //crates/rue-spec:rue-spec -- "1.1"  # Section 1.1
 ./buck2 run //crates/rue-spec:rue-spec -- "zero" # Tests matching "zero"
 
-# Compile and run a program
+# Compile and run a program (single file)
 ./buck2 run //crates/rue:rue -- source.rue output
 ./output
+
+# Compile multiple files into one program
+./buck2 run //crates/rue:rue -- main.rue utils.rue math.rue -o program
+./program
+
+# With shell glob expansion
+./buck2 run //crates/rue:rue -- src/*.rue -o program
+
+# Note: -o is required when compiling multiple files
+./buck2 run //crates/rue:rue -- a.rue b.rue          # Error!
+./buck2 run //crates/rue:rue -- a.rue b.rue -o out   # OK
 
 # Emit intermediate representations (can specify multiple stages)
 ./buck2 run //crates/rue:rue -- --emit tokens source.rue  # Lexer tokens
@@ -94,6 +105,27 @@ graph LR
 | `rue-spec` | Specification test runner |
 | `rue-runtime` | Runtime support |
 | `rue-builtins` | Built-in type definitions (String, future Vec, etc.) |
+
+### Multi-File Compilation
+
+Rue supports compiling multiple source files into a single executable:
+
+```bash
+# All files share a flat global namespace (no modules yet)
+rue main.rue utils.rue lib.rue -o program
+```
+
+**Key semantics:**
+- All functions, structs, and enums are globally visible across files
+- Duplicate definitions (same name in multiple files) cause a compile error
+- `main()` must exist in exactly one file
+- Files are parsed in parallel, then merged for semantic analysis
+
+**Current limitations (will be addressed by the module system):**
+- No visibility control (`pub`/private)
+- No namespacing - all symbols share global scope
+- No `mod` or `use` syntax
+- Must list all files explicitly on command line
 
 ### Key Design Decisions
 

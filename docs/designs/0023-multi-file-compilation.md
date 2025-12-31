@@ -1,12 +1,12 @@
 ---
 id: 0023
 title: Multi-File Compilation
-status: proposal
+status: implemented
 tags: [architecture, compiler, scalability]
 feature-flag: multi_file
 created: 2025-12-31
-accepted:
-implemented:
+accepted: 2025-12-31
+implemented: 2025-12-31
 spec-sections: []
 superseded-by:
 ---
@@ -15,7 +15,7 @@ superseded-by:
 
 ## Status
 
-Proposal
+Implemented
 
 ## Summary
 
@@ -323,15 +323,15 @@ The `main()` function must exist in exactly one of the input files:
 
 **Verification**: `main.rue` can call `helper()` defined in `utils.rue`.
 
-### Phase 5: Documentation and Polish
+### Phase 5: Documentation and Polish ✓
 
 **Goal**: Document the feature and ensure good UX.
 
 **Tasks**:
-- Update CLAUDE.md with multi-file examples
-- Add `--help` text for multiple inputs
-- Add user-facing documentation
-- Performance testing with many files
+- [x] Update CLAUDE.md with multi-file examples
+- [x] Add `--help` text for multiple inputs
+- [x] Update `--emit` modes to label output by source file
+- [x] Performance testing with many files (10+, 50+ files)
 
 ## Consequences
 

@@ -12,11 +12,11 @@ use tracing_subscriber::{EnvFilter, fmt};
 mod timing;
 
 use rue_compiler::{
-    CompileOptions, DiagnosticFormatter, FileId, Lexer, LinkerMode, OptLevel, Parser,
+    CompileOptions, DiagnosticFormatter, FileId, Lexer, LinkerMode, OptLevel, ParsedProgram,
     PreviewFeature, PreviewFeatures, SourceFile, SourceInfo,
     compile_frontend_from_ast_with_options, compile_multi_file_with_options, generate_emitted_asm,
     generate_liveness_info, generate_lowering_info, generate_mir, generate_regalloc_info,
-    generate_stack_frame_info,
+    generate_stack_frame_info, merge_symbols, parse_all_files,
 };
 use rue_rir::RirPrinter;
 use rue_target::Target;
@@ -773,10 +773,9 @@ fn main() {
         None
     };
 
-    // Handle emit modes (currently only supports single file)
-    // TODO: Update emit modes to support multi-file (Phase 5)
+    // Handle emit modes with multi-file support
     if !options.emit_stages.is_empty() {
-        if let Err(()) = handle_emit(primary_source, &options, &formatter) {
+        if let Err(()) = handle_emit_multi_file(&source_files, &options, &formatter) {
             std::process::exit(1);
         }
         print_timing_output(
@@ -867,77 +866,58 @@ fn main() {
     }
 }
 
-/// Handle emit stages - print requested IRs and exit.
+/// Handle emit stages for multi-file compilation.
 ///
-/// This uses a single-pass approach: each compilation stage is run at most once,
-/// and the results are reused for later stages.
-fn handle_emit(source: &str, options: &Options, formatter: &DiagnosticFormatter) -> Result<(), ()> {
-    // Determine the highest stage we need to compute
-    let max_stage = options
-        .emit_stages
-        .iter()
-        .map(|s| match s {
-            EmitStage::Tokens => 0,
-            EmitStage::Ast => 1,
-            EmitStage::Rir
-            | EmitStage::Air
-            | EmitStage::Cfg
-            | EmitStage::Lowering
-            | EmitStage::Mir
-            | EmitStage::Liveness
-            | EmitStage::RegAlloc
-            | EmitStage::Asm
-            | EmitStage::StackFrame => 2,
-        })
-        .max()
-        .unwrap_or(0);
-
-    // Stage 0: Tokenize (needed for tokens output or any later stage)
-    let (tokens, interner) = if max_stage >= 0 {
-        let lexer = Lexer::new(source);
-        match lexer.tokenize() {
-            Ok((tokens, interner)) => (Some(tokens), Some(interner)),
-            Err(e) => {
-                eprintln!("{}", formatter.format_error(&e));
-                return Err(());
-            }
-        }
-    } else {
-        (None, None)
-    };
-
-    // Stage 1: Parse (needed for AST output or any later stage)
-    // Only clone tokens if we're also emitting them; otherwise move them into the parser
+/// For early stages (tokens, ast), each file is processed and labeled individually.
+/// For later stages (rir, air, cfg, etc.), the merged program is used.
+fn handle_emit_multi_file(
+    sources: &[SourceFile<'_>],
+    options: &Options,
+    formatter: &DiagnosticFormatter,
+) -> Result<(), ()> {
+    // Determine which stages we need
     let needs_tokens = options.emit_stages.contains(&EmitStage::Tokens);
-    let (tokens, ast, interner) = if max_stage >= 1 {
-        let (kept_tokens, parser_tokens) = if needs_tokens {
-            let t = tokens.unwrap();
-            (Some(t.clone()), t)
-        } else {
-            (None, tokens.unwrap())
-        };
-        let parser = Parser::new(parser_tokens, interner.unwrap());
-        match parser.parse() {
-            Ok((ast, interner)) => (kept_tokens, Some(ast), Some(interner)),
-            Err(errors) => {
-                eprintln!("{}", formatter.format_errors(&errors));
-                return Err(());
+    let needs_ast = options.emit_stages.contains(&EmitStage::Ast);
+    let needs_later_stages = options.emit_stages.iter().any(|s| {
+        matches!(
+            s,
+            EmitStage::Rir
+                | EmitStage::Air
+                | EmitStage::Cfg
+                | EmitStage::Lowering
+                | EmitStage::Mir
+                | EmitStage::Liveness
+                | EmitStage::RegAlloc
+                | EmitStage::Asm
+                | EmitStage::StackFrame
+        )
+    });
+
+    // For tokens, we need to lex each file separately (before parsing merges interners)
+    // We'll collect per-file tokens if needed
+    let per_file_tokens: Option<Vec<(String, Vec<rue_compiler::Token>)>> = if needs_tokens {
+        let mut file_tokens = Vec::with_capacity(sources.len());
+        for source in sources {
+            let lexer = Lexer::new(source.source);
+            match lexer.tokenize() {
+                Ok((tokens, _interner)) => {
+                    file_tokens.push((source.path.to_string(), tokens));
+                }
+                Err(e) => {
+                    eprintln!("{}", formatter.format_error(&e));
+                    return Err(());
+                }
             }
         }
+        Some(file_tokens)
     } else {
-        (tokens, None, interner)
+        None
     };
 
-    // Stage 2: Full frontend (RIR, AIR, CFG) - reuses the already-parsed AST
-    // Applies optimization based on the -O level
-    let frontend_state = if max_stage >= 2 {
-        match compile_frontend_from_ast_with_options(
-            ast.clone().unwrap(),
-            interner.unwrap(),
-            options.opt_level,
-            &options.preview_features,
-        ) {
-            Ok(state) => Some(state),
+    // Parse all files (needed for AST output or later stages)
+    let parsed: Option<ParsedProgram> = if needs_ast || needs_later_stages {
+        match parse_all_files(sources) {
+            Ok(program) => Some(program),
             Err(errors) => {
                 eprintln!("{}", formatter.format_errors(&errors));
                 return Err(());
@@ -947,27 +927,79 @@ fn handle_emit(source: &str, options: &Options, formatter: &DiagnosticFormatter)
         None
     };
 
+    // For AST output, collect the per-file AST info before merging (which consumes the program)
+    let per_file_asts: Option<Vec<(String, rue_compiler::Ast)>> = if needs_ast {
+        parsed.as_ref().map(|program| {
+            program
+                .files
+                .iter()
+                .map(|f| (f.path.clone(), f.ast.clone()))
+                .collect()
+        })
+    } else {
+        None
+    };
+
+    // Merge symbols and compile frontend (needed for later stages)
+    let frontend_state = if needs_later_stages {
+        // We need to re-parse for merge_symbols since it consumes the ParsedProgram
+        // This is because we already consumed parsed above for AST cloning
+        let program = match parse_all_files(sources) {
+            Ok(program) => program,
+            Err(errors) => {
+                eprintln!("{}", formatter.format_errors(&errors));
+                return Err(());
+            }
+        };
+
+        let merged = match merge_symbols(program) {
+            Ok(m) => m,
+            Err(errors) => {
+                eprintln!("{}", formatter.format_errors(&errors));
+                return Err(());
+            }
+        };
+
+        let state = match compile_frontend_from_ast_with_options(
+            merged.ast,
+            merged.interner,
+            options.opt_level,
+            &options.preview_features,
+        ) {
+            Ok(state) => state,
+            Err(errors) => {
+                eprintln!("{}", formatter.format_errors(&errors));
+                return Err(());
+            }
+        };
+
+        Some(state)
+    } else {
+        None
+    };
+
     // Now emit in order
     for stage in &options.emit_stages {
         match stage {
             EmitStage::Tokens => {
-                println!("=== Tokens ===");
-                if let Some(ref tokens) = tokens {
-                    for token in tokens {
-                        println!("{}", token);
+                if let Some(ref file_tokens) = per_file_tokens {
+                    for (path, tokens) in file_tokens {
+                        println!("=== Tokens ({}) ===", path);
+                        for token in tokens {
+                            println!("{}", token);
+                        }
+                        println!();
                     }
                 }
-                println!();
             }
             EmitStage::Ast => {
-                println!("=== AST ===");
-                // Prefer the AST from frontend_state if available (same AST, avoids clone)
-                if let Some(ref state) = frontend_state {
-                    print!("{}", state.ast);
-                } else if let Some(ref ast) = ast {
-                    print!("{}", ast);
+                if let Some(ref asts) = per_file_asts {
+                    for (path, ast) in asts {
+                        println!("=== AST ({}) ===", path);
+                        print!("{}", ast);
+                        println!();
+                    }
                 }
-                println!();
             }
             EmitStage::Rir => {
                 println!("=== RIR ===");
