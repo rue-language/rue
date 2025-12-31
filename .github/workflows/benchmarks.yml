@@ -17,6 +17,7 @@ jobs:
   benchmark:
     strategy:
       fail-fast: false
+      max-parallel: 1  # Run sequentially to avoid race conditions on perf branch
       matrix:
         include:
           - runner: ubuntu-latest
@@ -28,11 +29,6 @@ jobs:
           - runner: macos-latest
             platform: aarch64-macos
             name: macOS ARM64
-
-    # Allow parallel runs on different platforms, but serialize per-platform
-    concurrency:
-      group: benchmarks-${{ matrix.platform }}
-      cancel-in-progress: false
 
     runs-on: ${{ matrix.runner }}
     name: benchmark (${{ matrix.name }})
@@ -123,17 +119,8 @@ jobs:
             git commit -m "[${{ matrix.platform }}] Benchmark results for ${{ steps.commit.outputs.sha }}"
 
             # Push to perf branch (create if doesn't exist)
-            # Retry a few times in case of concurrent pushes from other platform jobs
-            for i in 1 2 3; do
-              if git push https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git HEAD:perf; then
-                echo "Push succeeded"
-                break
-              else
-                echo "Push failed, attempt $i/3. Pulling and retrying..."
-                git pull --rebase https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git perf || true
-                sleep $((i * 2))
-              fi
-            done
+            # Jobs run sequentially (max-parallel: 1) so no race conditions
+            git push https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git HEAD:perf
           fi
 
       - name: Summary

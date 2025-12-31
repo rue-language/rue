@@ -68,15 +68,29 @@ fi
 
 # Generate root metadata.json listing all platforms
 echo "  Generating root metadata.json..."
+# Build a JSON array of platform IDs to pass to Python
+PLATFORMS_JSON="["
+first=true
+for platform in "${PLATFORMS_WITH_DATA[@]+"${PLATFORMS_WITH_DATA[@]}"}"; do
+    if [ "$first" = true ]; then
+        first=false
+    else
+        PLATFORMS_JSON+=","
+    fi
+    PLATFORMS_JSON+="\"$platform\""
+done
+PLATFORMS_JSON+="]"
+
 python3 -c "
 import json
-import os
+import sys
 from pathlib import Path
 
 benchmarks_dir = Path('$BENCHMARKS_DIR')
+platforms_with_data = json.loads('$PLATFORMS_JSON')
 platforms = []
 
-for platform in ${PLATFORMS_WITH_DATA[@]+"${PLATFORMS_WITH_DATA[@]}"}:
+for platform in platforms_with_data:
     platform = platform.strip()
     if not platform:
         continue
@@ -113,7 +127,8 @@ metadata = {
 
 with open(benchmarks_dir / 'metadata.json', 'w') as f:
     json.dump(metadata, f, indent=2)
-" 2>/dev/null || echo "  (No platform data available)"
+print(f'  Generated {benchmarks_dir}/metadata.json with {len([p for p in platforms if p[\"has_data\"]])} platforms with data')
+"
 
 # Backwards compatibility: Generate charts from legacy history.json if it exists
 # and no per-platform history exists yet
