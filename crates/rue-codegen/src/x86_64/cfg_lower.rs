@@ -29,6 +29,7 @@ use std::collections::HashMap;
 
 use lasso::ThreadedRodeo;
 use rue_air::{ArrayTypeDef, ArrayTypeId};
+use rue_builtins::{BinOp, get_builtin_type};
 use rue_cfg::{
     BasicBlock, BlockId, Cfg, CfgInstData, CfgValue, StructDef, StructId, Terminator, Type,
 };
@@ -130,6 +131,32 @@ impl<'a> CfgLower<'a> {
     /// Get the array type definition.
     fn array_type_def(&self, array_type_id: ArrayTypeId) -> Option<&ArrayTypeDef> {
         types::array_type_def(self.array_types, array_type_id)
+    }
+
+    // ========================================================================
+    // Builtin type helpers
+    // ========================================================================
+
+    /// Get the builtin operator runtime function for a type and operation.
+    ///
+    /// Returns `Some((runtime_fn, invert_result))` if the type has a builtin
+    /// operator implementation, `None` otherwise.
+    fn get_builtin_operator(&self, ty: Type, op: BinOp) -> Option<(&'static str, bool)> {
+        let builtin = match ty {
+            Type::Struct(struct_id) => {
+                let struct_def = &self.struct_defs[struct_id.0 as usize];
+                if struct_def.is_builtin {
+                    get_builtin_type(&struct_def.name)?
+                } else {
+                    return None;
+                }
+            }
+            Type::String => get_builtin_type("String")?,
+            _ => return None,
+        };
+        builtin
+            .find_operator(op)
+            .map(|op_def| (op_def.runtime_fn, op_def.invert_result))
     }
 
     /// Calculate the total number of slots needed to store a type.
@@ -1226,10 +1253,16 @@ impl<'a> CfgLower<'a> {
             CfgInstData::Eq(lhs, rhs) => {
                 let lhs_ty = self.cfg.get_inst(*lhs).ty;
 
-                if lhs_ty == Type::String {
-                    // String equality: call __rue_str_eq(ptr1, len1, ptr2, len2)
-                    let vreg = self.emit_string_eq_call(*lhs, *rhs);
+                // Check for builtin operator (e.g., String equality via __rue_str_eq)
+                if let Some((runtime_fn, invert)) = self.get_builtin_operator(lhs_ty, BinOp::Eq) {
+                    let vreg = self.emit_builtin_eq_call(*lhs, *rhs, runtime_fn);
                     self.value_map.insert(value, vreg);
+                    if invert {
+                        self.mir.push(X86Inst::XorRI {
+                            dst: Operand::Virtual(vreg),
+                            imm: 1,
+                        });
+                    }
                 } else if lhs_ty == Type::Unit {
                     // Unit equality: () == () is always true
                     let vreg = self.mir.alloc_vreg();
@@ -1253,15 +1286,17 @@ impl<'a> CfgLower<'a> {
             CfgInstData::Ne(lhs, rhs) => {
                 let lhs_ty = self.cfg.get_inst(*lhs).ty;
 
-                if lhs_ty == Type::String {
-                    // String inequality: call __rue_str_eq and invert result
-                    let vreg = self.emit_string_eq_call(*lhs, *rhs);
+                // Check for builtin operator (e.g., String inequality via __rue_str_eq + invert)
+                if let Some((runtime_fn, invert)) = self.get_builtin_operator(lhs_ty, BinOp::Ne) {
+                    let vreg = self.emit_builtin_eq_call(*lhs, *rhs, runtime_fn);
                     self.value_map.insert(value, vreg);
-                    // Invert result: 0 -> 1, 1 -> 0
-                    self.mir.push(X86Inst::XorRI {
-                        dst: Operand::Virtual(vreg),
-                        imm: 1,
-                    });
+                    if invert {
+                        // Invert result: 0 -> 1, 1 -> 0
+                        self.mir.push(X86Inst::XorRI {
+                            dst: Operand::Virtual(vreg),
+                            imm: 1,
+                        });
+                    }
                 } else if lhs_ty == Type::Unit {
                     // Unit inequality: () != () is always false
                     let vreg = self.mir.alloc_vreg();
@@ -2637,7 +2672,24 @@ impl<'a> CfgLower<'a> {
                         ARG_REGS.len()
                     );
 
-                    // For user-defined destructor, we need to call it first with all fields
+                    // For builtin types (e.g., String), the destructor IS the drop glue.
+                    // We call only the destructor and skip the drop glue to avoid double-calling.
+                    if struct_def.is_builtin {
+                        if let Some(ref destructor_name) = struct_def.destructor {
+                            for (i, vreg) in field_vregs.iter().enumerate() {
+                                self.mir.push(X86Inst::MovRR {
+                                    dst: Operand::Physical(ARG_REGS[i]),
+                                    src: Operand::Virtual(*vreg),
+                                });
+                            }
+                            let symbol_id = self.intern_symbol(destructor_name);
+                            self.mir.push(X86Inst::CallRel { symbol_id });
+                        }
+                        // No drop glue for builtins - destructor handles everything
+                        return;
+                    }
+
+                    // For user-defined structs, call destructor first (if any), then drop glue
                     if let Some(ref destructor_name) = struct_def.destructor {
                         // Pass all fields to the user destructor
                         for (i, vreg) in field_vregs.iter().enumerate() {
@@ -3155,42 +3207,39 @@ impl<'a> CfgLower<'a> {
         }
     }
 
-    /// Emit a call to __rue_str_eq for string comparison.
+    /// Emit a call to a builtin equality function (e.g., __rue_str_eq).
     ///
-    /// Returns the vreg containing the result (0 or 1).
-    fn emit_string_eq_call(&mut self, lhs: CfgValue, rhs: CfgValue) -> VReg {
+    /// The runtime function is expected to take (ptr1, len1, ptr2, len2) and return 0 or 1.
+    /// Returns the vreg containing the result.
+    fn emit_builtin_eq_call(&mut self, lhs: CfgValue, rhs: CfgValue, runtime_fn: &str) -> VReg {
         let result_vreg = self.mir.alloc_vreg();
 
-        // Get string fields (ptr, len, cap) from struct_slot_vregs
-        // For comparison, we only use ptr and len (cap is not compared)
+        // Get struct fields from struct_slot_vregs
+        // For comparison, we use ptr and len (first two fields)
         let lhs_fields = self
             .struct_slot_vregs
             .get(&lhs)
             .cloned()
-            .expect("string should have fat pointer fields");
+            .expect("builtin type should have field vregs");
         let rhs_fields = self
             .struct_slot_vregs
             .get(&rhs)
             .cloned()
-            .expect("string should have fat pointer fields");
+            .expect("builtin type should have field vregs");
 
-        debug_assert_eq!(
-            lhs_fields.len(),
-            3,
-            "string should have 3 fields (ptr, len, cap)"
+        debug_assert!(
+            lhs_fields.len() >= 2,
+            "builtin type should have at least 2 fields for comparison"
         );
-        debug_assert_eq!(
-            rhs_fields.len(),
-            3,
-            "string should have 3 fields (ptr, len, cap)"
+        debug_assert!(
+            rhs_fields.len() >= 2,
+            "builtin type should have at least 2 fields for comparison"
         );
 
         let lhs_ptr = lhs_fields[0];
         let lhs_len = lhs_fields[1];
-        // lhs_fields[2] is cap, not used for comparison
         let rhs_ptr = rhs_fields[0];
         let rhs_len = rhs_fields[1];
-        // rhs_fields[2] is cap, not used for comparison
 
         // Move arguments to calling convention registers
         // RDI = ptr1, RSI = len1, RDX = ptr2, RCX = len2
@@ -3211,8 +3260,8 @@ impl<'a> CfgLower<'a> {
             src: Operand::Virtual(rhs_len),
         });
 
-        // Call __rue_str_eq
-        let symbol_id = self.intern_symbol("__rue_str_eq");
+        // Call the runtime function
+        let symbol_id = self.intern_symbol(runtime_fn);
         self.mir.push(X86Inst::CallRel { symbol_id });
 
         // Result is in RAX (0 or 1)
