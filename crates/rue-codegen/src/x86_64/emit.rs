@@ -99,7 +99,7 @@ use rue_error::{CompileError, CompileResult, ErrorKind};
 
 use super::mir::{LabelId, Reg, X86Inst, X86Mir};
 use crate::vreg::BLOCK_LABEL_BASE;
-use crate::{EmittedCode, EmittedInst, EmittedRelocation, format_offset};
+use crate::{EmittedCode, EmittedInst, EmittedRelocation, end_inst, format_offset};
 
 /// Kind of jump fixup (rel8 or rel32).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -248,15 +248,9 @@ impl<'a> Emitter<'a> {
         self.inst_start = self.code.len();
     }
 
-    /// End recording an instruction. Captures bytes emitted since begin_inst().
-    ///
-    /// When `emit_asm` is false, this is a no-op (the bytes are already in `code`).
-    fn end_inst(&mut self, asm: impl Into<String>) {
-        if self.emit_asm {
-            let bytes = self.code[self.inst_start..].to_vec();
-            self.instructions.push(EmittedInst::new(bytes, asm));
-        }
-    }
+    // Note: Use the `end_inst!` macro instead of a method to get lazy format
+    // string evaluation. The macro only evaluates format!(...) when emit_asm
+    // is true, avoiding allocations in normal compilation.
 
     /// Record a label (no bytes, just marks a position in the asm output).
     fn record_label(&mut self, name: impl Into<String>) {
@@ -385,14 +379,14 @@ impl<'a> Emitter<'a> {
         // push rbp: 55
         self.begin_inst();
         self.code.push(0x55);
-        self.end_inst("push rbp");
+        end_inst!(self, "push rbp");
 
         // mov rbp, rsp: 48 89 E5
         self.begin_inst();
         self.code.push(0x48);
         self.code.push(0x89);
         self.code.push(0xE5);
-        self.end_inst("mov rbp, rsp");
+        end_inst!(self, "mov rbp, rsp");
 
         // Save callee-saved registers AFTER rbp setup
         // This ensures stack args are at fixed offsets from rbp
@@ -400,7 +394,7 @@ impl<'a> Emitter<'a> {
         for &reg in &callee_saved {
             self.begin_inst();
             self.emit_push(reg);
-            self.end_inst(format!("push {}", reg));
+            end_inst!(self, "push {}", reg);
         }
 
         // Calculate stack space needed:
@@ -425,7 +419,7 @@ impl<'a> Emitter<'a> {
             self.code.push(0x81);
             self.code.push(0xEC);
             self.code.extend_from_slice(&stack_size.to_le_bytes());
-            self.end_inst(format!("sub rsp, {}", stack_size));
+            end_inst!(self, "sub rsp, {}", stack_size);
         }
 
         // Save incoming parameters from registers to the stack.
@@ -450,7 +444,7 @@ impl<'a> Emitter<'a> {
             // Emit: mov [rbp + offset], reg
             self.begin_inst();
             self.emit_mov_mr(Reg::Rbp, offset, reg);
-            self.end_inst(format!("mov [rbp{}], {}", offset, reg));
+            end_inst!(self, "mov [rbp{}], {}", offset, reg);
         }
     }
 
@@ -471,7 +465,7 @@ impl<'a> Emitter<'a> {
         if !self.callee_saved.is_empty() || self.num_locals > 0 || self.num_params > 0 {
             self.begin_inst();
             self.emit_lea_rsp_rbp_offset(-size);
-            self.end_inst(format!("lea rsp, [rbp{}]", format_offset(-size)));
+            end_inst!(self, "lea rsp, [rbp{}]", format_offset(-size));
         }
 
         // Pop callee-saved registers in reverse order
@@ -479,13 +473,13 @@ impl<'a> Emitter<'a> {
         for reg in callee_saved {
             self.begin_inst();
             self.emit_pop(reg);
-            self.end_inst(format!("pop {}", reg));
+            end_inst!(self, "pop {}", reg);
         }
 
         // Pop rbp to restore caller's frame pointer
         self.begin_inst();
         self.emit_pop(Reg::Rbp);
-        self.end_inst("pop rbp");
+        end_inst!(self, "pop rbp");
     }
 
     /// Apply all fixups for forward jumps.
@@ -548,370 +542,336 @@ impl<'a> Emitter<'a> {
             X86Inst::MovRI32 { dst, imm } => {
                 self.begin_inst();
                 self.emit_mov_ri32(dst.as_physical(), *imm);
-                self.end_inst(format!("mov {}, {}", dst.as_physical(), *imm));
+                end_inst!(self, "mov {}, {}", dst.as_physical(), *imm);
             }
             X86Inst::MovRI64 { dst, imm } => {
                 self.begin_inst();
                 self.emit_mov_ri64(dst.as_physical(), *imm);
-                self.end_inst(format!("mov {}, {}", dst.as_physical(), *imm));
+                end_inst!(self, "mov {}, {}", dst.as_physical(), *imm);
             }
             X86Inst::MovRR { dst, src } => {
                 self.begin_inst();
                 self.emit_mov_rr(dst.as_physical(), src.as_physical());
-                self.end_inst(format!("mov {}, {}", dst.as_physical(), src.as_physical()));
+                end_inst!(self, "mov {}, {}", dst.as_physical(), src.as_physical());
             }
             X86Inst::MovRM { dst, base, offset } => {
                 let adjusted_offset = self.adjust_fp_offset(*base, *offset);
                 self.begin_inst();
                 self.emit_mov_rm(dst.as_physical(), *base, adjusted_offset);
-                self.end_inst(format!(
+                end_inst!(
+                    self,
                     "mov {}, [{}{}]",
                     dst.as_physical(),
                     base,
                     format_offset(adjusted_offset)
-                ));
+                );
             }
             X86Inst::MovMR { base, offset, src } => {
                 let adjusted_offset = self.adjust_fp_offset(*base, *offset);
                 self.begin_inst();
                 self.emit_mov_mr(*base, adjusted_offset, src.as_physical());
-                self.end_inst(format!(
+                end_inst!(
+                    self,
                     "mov [{}{}], {}",
                     base,
                     format_offset(adjusted_offset),
                     src.as_physical()
-                ));
+                );
             }
             X86Inst::AddRR { dst, src } => {
                 self.begin_inst();
                 self.emit_add_rr(dst.as_physical(), src.as_physical());
-                self.end_inst(format!("add {}, {}", dst.as_physical(), src.as_physical()));
+                end_inst!(self, "add {}, {}", dst.as_physical(), src.as_physical());
             }
             X86Inst::AddRR64 { dst, src } => {
                 self.begin_inst();
                 self.emit_add_rr64(dst.as_physical(), src.as_physical());
-                self.end_inst(format!("add {}, {}", dst.as_physical(), src.as_physical()));
+                end_inst!(self, "add {}, {}", dst.as_physical(), src.as_physical());
             }
             X86Inst::AddRI { dst, imm } => {
                 self.begin_inst();
                 self.emit_add_ri(dst.as_physical(), *imm);
-                self.end_inst(format!("add {}, {}", dst.as_physical(), imm));
+                end_inst!(self, "add {}, {}", dst.as_physical(), imm);
             }
             X86Inst::SubRR { dst, src } => {
                 self.begin_inst();
                 self.emit_sub_rr(dst.as_physical(), src.as_physical());
-                self.end_inst(format!("sub {}, {}", dst.as_physical(), src.as_physical()));
+                end_inst!(self, "sub {}, {}", dst.as_physical(), src.as_physical());
             }
             X86Inst::SubRR64 { dst, src } => {
                 self.begin_inst();
                 self.emit_sub_rr64(dst.as_physical(), src.as_physical());
-                self.end_inst(format!("sub {}, {}", dst.as_physical(), src.as_physical()));
+                end_inst!(self, "sub {}, {}", dst.as_physical(), src.as_physical());
             }
             X86Inst::ImulRR { dst, src } => {
                 self.begin_inst();
                 self.emit_imul_rr(dst.as_physical(), src.as_physical());
-                self.end_inst(format!("imul {}, {}", dst.as_physical(), src.as_physical()));
+                end_inst!(self, "imul {}, {}", dst.as_physical(), src.as_physical());
             }
             X86Inst::ImulRR64 { dst, src } => {
                 self.begin_inst();
                 self.emit_imul_rr64(dst.as_physical(), src.as_physical());
-                self.end_inst(format!("imul {}, {}", dst.as_physical(), src.as_physical()));
+                end_inst!(self, "imul {}, {}", dst.as_physical(), src.as_physical());
             }
             X86Inst::Neg { dst } => {
                 self.begin_inst();
                 self.emit_neg(dst.as_physical());
-                self.end_inst(format!("neg {}", dst.as_physical()));
+                end_inst!(self, "neg {}", dst.as_physical());
             }
             X86Inst::Neg64 { dst } => {
                 self.begin_inst();
                 self.emit_neg64(dst.as_physical());
-                self.end_inst(format!("neg {}", dst.as_physical()));
+                end_inst!(self, "neg {}", dst.as_physical());
             }
             X86Inst::XorRI { dst, imm } => {
                 self.begin_inst();
                 self.emit_xor_ri(dst.as_physical(), *imm);
-                self.end_inst(format!("xor {}, {}", dst.as_physical(), imm));
+                end_inst!(self, "xor {}, {}", dst.as_physical(), imm);
             }
             X86Inst::AndRR { dst, src } => {
                 self.begin_inst();
                 self.emit_and_rr(dst.as_physical(), src.as_physical());
-                self.end_inst(format!("and {}, {}", dst.as_physical(), src.as_physical()));
+                end_inst!(self, "and {}, {}", dst.as_physical(), src.as_physical());
             }
             X86Inst::OrRR { dst, src } => {
                 self.begin_inst();
                 self.emit_or_rr(dst.as_physical(), src.as_physical());
-                self.end_inst(format!("or {}, {}", dst.as_physical(), src.as_physical()));
+                end_inst!(self, "or {}, {}", dst.as_physical(), src.as_physical());
             }
             X86Inst::XorRR { dst, src } => {
                 self.begin_inst();
                 self.emit_xor_rr(dst.as_physical(), src.as_physical());
-                self.end_inst(format!("xor {}, {}", dst.as_physical(), src.as_physical()));
+                end_inst!(self, "xor {}, {}", dst.as_physical(), src.as_physical());
             }
             X86Inst::NotR { dst } => {
                 self.begin_inst();
                 self.emit_not(dst.as_physical());
-                self.end_inst(format!("not {}", dst.as_physical()));
+                end_inst!(self, "not {}", dst.as_physical());
             }
             X86Inst::ShlRCl { dst } => {
                 self.begin_inst();
                 self.emit_shl_cl(dst.as_physical());
-                self.end_inst(format!("shl {}, cl", dst.as_physical()));
+                end_inst!(self, "shl {}, cl", dst.as_physical());
             }
             X86Inst::Shl32RCl { dst } => {
                 self.begin_inst();
                 self.emit_shl32_cl(dst.as_physical());
-                self.end_inst(format!("shl {}, cl", dst.as_physical()));
+                end_inst!(self, "shl {}, cl", dst.as_physical());
             }
             X86Inst::ShlRI { dst, imm } => {
                 self.begin_inst();
                 self.emit_shl_imm(dst.as_physical(), *imm);
-                self.end_inst(format!("shl {}, {}", dst.as_physical(), imm));
+                end_inst!(self, "shl {}, {}", dst.as_physical(), imm);
             }
             X86Inst::Shl32RI { dst, imm } => {
                 self.begin_inst();
                 self.emit_shl32_imm(dst.as_physical(), *imm);
-                self.end_inst(format!("shl {}, {}", dst.as_physical(), imm));
+                end_inst!(self, "shl {}, {}", dst.as_physical(), imm);
             }
             X86Inst::ShrRCl { dst } => {
                 self.begin_inst();
                 self.emit_shr_cl(dst.as_physical());
-                self.end_inst(format!("shr {}, cl", dst.as_physical()));
+                end_inst!(self, "shr {}, cl", dst.as_physical());
             }
             X86Inst::Shr32RCl { dst } => {
                 self.begin_inst();
                 self.emit_shr32_cl(dst.as_physical());
-                self.end_inst(format!("shr {}, cl", dst.as_physical()));
+                end_inst!(self, "shr {}, cl", dst.as_physical());
             }
             X86Inst::ShrRI { dst, imm } => {
                 self.begin_inst();
                 self.emit_shr_imm(dst.as_physical(), *imm);
-                self.end_inst(format!("shr {}, {}", dst.as_physical(), imm));
+                end_inst!(self, "shr {}, {}", dst.as_physical(), imm);
             }
             X86Inst::Shr32RI { dst, imm } => {
                 self.begin_inst();
                 self.emit_shr32_imm(dst.as_physical(), *imm);
-                self.end_inst(format!("shr {}, {}", dst.as_physical(), imm));
+                end_inst!(self, "shr {}, {}", dst.as_physical(), imm);
             }
             X86Inst::SarRCl { dst } => {
                 self.begin_inst();
                 self.emit_sar_cl(dst.as_physical());
-                self.end_inst(format!("sar {}, cl", dst.as_physical()));
+                end_inst!(self, "sar {}, cl", dst.as_physical());
             }
             X86Inst::Sar32RCl { dst } => {
                 self.begin_inst();
                 self.emit_sar32_cl(dst.as_physical());
-                self.end_inst(format!("sar {}, cl", dst.as_physical()));
+                end_inst!(self, "sar {}, cl", dst.as_physical());
             }
             X86Inst::SarRI { dst, imm } => {
                 self.begin_inst();
                 self.emit_sar_imm(dst.as_physical(), *imm);
-                self.end_inst(format!("sar {}, {}", dst.as_physical(), imm));
+                end_inst!(self, "sar {}, {}", dst.as_physical(), imm);
             }
             X86Inst::Sar32RI { dst, imm } => {
                 self.begin_inst();
                 self.emit_sar32_imm(dst.as_physical(), *imm);
-                self.end_inst(format!("sar {}, {}", dst.as_physical(), imm));
+                end_inst!(self, "sar {}, {}", dst.as_physical(), imm);
             }
             X86Inst::Cdq => {
                 self.begin_inst();
                 self.emit_cdq();
-                self.end_inst("cdq");
+                end_inst!(self, "cdq");
             }
             X86Inst::IdivR { src } => {
                 self.begin_inst();
                 self.emit_idiv(src.as_physical());
-                self.end_inst(format!("idiv {}", src.as_physical()));
+                end_inst!(self, "idiv {}", src.as_physical());
             }
             X86Inst::CmpRR { src1, src2 } => {
                 self.begin_inst();
                 self.emit_cmp_rr(src1.as_physical(), src2.as_physical());
-                self.end_inst(format!(
-                    "cmp {}, {}",
-                    src1.as_physical(),
-                    src2.as_physical()
-                ));
+                end_inst!(self, "cmp {}, {}", src1.as_physical(), src2.as_physical());
             }
             X86Inst::Cmp64RR { src1, src2 } => {
                 self.begin_inst();
                 self.emit_cmp64_rr(src1.as_physical(), src2.as_physical());
-                self.end_inst(format!(
-                    "cmp {}, {}",
-                    src1.as_physical(),
-                    src2.as_physical()
-                ));
+                end_inst!(self, "cmp {}, {}", src1.as_physical(), src2.as_physical());
             }
             X86Inst::CmpRI { src, imm } => {
                 self.begin_inst();
                 self.emit_cmp_ri(src.as_physical(), *imm);
-                self.end_inst(format!("cmp {}, {}", src.as_physical(), imm));
+                end_inst!(self, "cmp {}, {}", src.as_physical(), imm);
             }
             X86Inst::Cmp64RI { src, imm } => {
                 self.begin_inst();
                 self.emit_cmp64_ri(src.as_physical(), *imm);
-                self.end_inst(format!("cmp {}, {}", src.as_physical(), imm));
+                end_inst!(self, "cmp {}, {}", src.as_physical(), imm);
             }
             X86Inst::Sete { dst } => {
                 self.begin_inst();
                 self.emit_setcc(0x94, dst.as_physical());
-                self.end_inst(format!("sete {}", dst.as_physical()));
+                end_inst!(self, "sete {}", dst.as_physical());
             }
             X86Inst::Setne { dst } => {
                 self.begin_inst();
                 self.emit_setcc(0x95, dst.as_physical());
-                self.end_inst(format!("setne {}", dst.as_physical()));
+                end_inst!(self, "setne {}", dst.as_physical());
             }
             X86Inst::Setl { dst } => {
                 self.begin_inst();
                 self.emit_setcc(0x9C, dst.as_physical());
-                self.end_inst(format!("setl {}", dst.as_physical()));
+                end_inst!(self, "setl {}", dst.as_physical());
             }
             X86Inst::Setg { dst } => {
                 self.begin_inst();
                 self.emit_setcc(0x9F, dst.as_physical());
-                self.end_inst(format!("setg {}", dst.as_physical()));
+                end_inst!(self, "setg {}", dst.as_physical());
             }
             X86Inst::Setle { dst } => {
                 self.begin_inst();
                 self.emit_setcc(0x9E, dst.as_physical());
-                self.end_inst(format!("setle {}", dst.as_physical()));
+                end_inst!(self, "setle {}", dst.as_physical());
             }
             X86Inst::Setge { dst } => {
                 self.begin_inst();
                 self.emit_setcc(0x9D, dst.as_physical());
-                self.end_inst(format!("setge {}", dst.as_physical()));
+                end_inst!(self, "setge {}", dst.as_physical());
             }
             X86Inst::Setb { dst } => {
                 self.begin_inst();
                 self.emit_setcc(0x92, dst.as_physical());
-                self.end_inst(format!("setb {}", dst.as_physical()));
+                end_inst!(self, "setb {}", dst.as_physical());
             }
             X86Inst::Seta { dst } => {
                 self.begin_inst();
                 self.emit_setcc(0x97, dst.as_physical());
-                self.end_inst(format!("seta {}", dst.as_physical()));
+                end_inst!(self, "seta {}", dst.as_physical());
             }
             X86Inst::Setbe { dst } => {
                 self.begin_inst();
                 self.emit_setcc(0x96, dst.as_physical());
-                self.end_inst(format!("setbe {}", dst.as_physical()));
+                end_inst!(self, "setbe {}", dst.as_physical());
             }
             X86Inst::Setae { dst } => {
                 self.begin_inst();
                 self.emit_setcc(0x93, dst.as_physical());
-                self.end_inst(format!("setae {}", dst.as_physical()));
+                end_inst!(self, "setae {}", dst.as_physical());
             }
             X86Inst::Movzx { dst, src } => {
                 self.begin_inst();
                 self.emit_movzx(dst.as_physical(), src.as_physical());
-                self.end_inst(format!(
-                    "movzx {}, {}",
-                    dst.as_physical(),
-                    src.as_physical()
-                ));
+                end_inst!(self, "movzx {}, {}", dst.as_physical(), src.as_physical());
             }
             X86Inst::Movsx8To64 { dst, src } => {
                 self.begin_inst();
                 self.emit_movsx8_to64(dst.as_physical(), src.as_physical());
-                self.end_inst(format!(
-                    "movsx {}, {}",
-                    dst.as_physical(),
-                    src.as_physical()
-                ));
+                end_inst!(self, "movsx {}, {}", dst.as_physical(), src.as_physical());
             }
             X86Inst::Movsx16To64 { dst, src } => {
                 self.begin_inst();
                 self.emit_movsx16_to64(dst.as_physical(), src.as_physical());
-                self.end_inst(format!(
-                    "movsx {}, {}",
-                    dst.as_physical(),
-                    src.as_physical()
-                ));
+                end_inst!(self, "movsx {}, {}", dst.as_physical(), src.as_physical());
             }
             X86Inst::Movsx32To64 { dst, src } => {
                 self.begin_inst();
                 self.emit_movsxd(dst.as_physical(), src.as_physical());
-                self.end_inst(format!(
-                    "movsxd {}, {}",
-                    dst.as_physical(),
-                    src.as_physical()
-                ));
+                end_inst!(self, "movsxd {}, {}", dst.as_physical(), src.as_physical());
             }
             X86Inst::Movzx8To64 { dst, src } => {
                 self.begin_inst();
                 self.emit_movzx8_to64(dst.as_physical(), src.as_physical());
-                self.end_inst(format!(
-                    "movzx {}, {}",
-                    dst.as_physical(),
-                    src.as_physical()
-                ));
+                end_inst!(self, "movzx {}, {}", dst.as_physical(), src.as_physical());
             }
             X86Inst::Movzx16To64 { dst, src } => {
                 self.begin_inst();
                 self.emit_movzx16_to64(dst.as_physical(), src.as_physical());
-                self.end_inst(format!(
-                    "movzx {}, {}",
-                    dst.as_physical(),
-                    src.as_physical()
-                ));
+                end_inst!(self, "movzx {}, {}", dst.as_physical(), src.as_physical());
             }
             X86Inst::TestRR { src1, src2 } => {
                 self.begin_inst();
                 self.emit_test_rr(src1.as_physical(), src2.as_physical());
-                self.end_inst(format!(
-                    "test {}, {}",
-                    src1.as_physical(),
-                    src2.as_physical()
-                ));
+                end_inst!(self, "test {}, {}", src1.as_physical(), src2.as_physical());
             }
             X86Inst::Jz { label } => {
                 self.begin_inst();
                 self.emit_jcc(0x74, *label);
-                self.end_inst(format!("jz {}", label));
+                end_inst!(self, "jz {}", label);
             }
             X86Inst::Jnz { label } => {
                 self.begin_inst();
                 self.emit_jcc(0x75, *label);
-                self.end_inst(format!("jnz {}", label));
+                end_inst!(self, "jnz {}", label);
             }
             X86Inst::Jo { label } => {
                 self.begin_inst();
                 self.emit_jcc(0x70, *label);
-                self.end_inst(format!("jo {}", label));
+                end_inst!(self, "jo {}", label);
             }
             X86Inst::Jno { label } => {
                 self.begin_inst();
                 self.emit_jcc(0x71, *label);
-                self.end_inst(format!("jno {}", label));
+                end_inst!(self, "jno {}", label);
             }
             X86Inst::Jb { label } => {
                 self.begin_inst();
                 self.emit_jcc(0x72, *label);
-                self.end_inst(format!("jb {}", label));
+                end_inst!(self, "jb {}", label);
             }
             X86Inst::Jae { label } => {
                 self.begin_inst();
                 self.emit_jcc(0x73, *label);
-                self.end_inst(format!("jae {}", label));
+                end_inst!(self, "jae {}", label);
             }
             X86Inst::Jbe { label } => {
                 self.begin_inst();
                 self.emit_jcc(0x76, *label);
-                self.end_inst(format!("jbe {}", label));
+                end_inst!(self, "jbe {}", label);
             }
             X86Inst::Jge { label } => {
                 self.begin_inst();
                 self.emit_jcc(0x7D, *label);
-                self.end_inst(format!("jge {}", label));
+                end_inst!(self, "jge {}", label);
             }
             X86Inst::Jle { label } => {
                 self.begin_inst();
                 self.emit_jcc(0x7E, *label);
-                self.end_inst(format!("jle {}", label));
+                end_inst!(self, "jle {}", label);
             }
             X86Inst::Jmp { label } => {
                 self.begin_inst();
                 self.emit_jmp(*label);
-                self.end_inst(format!("jmp {}", label));
+                end_inst!(self, "jmp {}", label);
             }
             X86Inst::Label { id } => {
                 // Record the current code offset for this label
@@ -922,12 +882,12 @@ impl<'a> Emitter<'a> {
                 let symbol = self.mir.get_symbol(*symbol_id);
                 self.begin_inst();
                 self.emit_call_rel(symbol);
-                self.end_inst(format!("call {}", symbol));
+                end_inst!(self, "call {}", symbol);
             }
             X86Inst::Syscall => {
                 self.begin_inst();
                 self.emit_syscall();
-                self.end_inst("syscall");
+                end_inst!(self, "syscall");
             }
             X86Inst::Ret => {
                 if self.has_frame {
@@ -935,17 +895,17 @@ impl<'a> Emitter<'a> {
                 }
                 self.begin_inst();
                 self.emit_ret();
-                self.end_inst("ret");
+                end_inst!(self, "ret");
             }
             X86Inst::Pop { dst } => {
                 self.begin_inst();
                 self.emit_pop(dst.as_physical());
-                self.end_inst(format!("pop {}", dst.as_physical()));
+                end_inst!(self, "pop {}", dst.as_physical());
             }
             X86Inst::Push { src } => {
                 self.begin_inst();
                 self.emit_push(src.as_physical());
-                self.end_inst(format!("push {}", src.as_physical()));
+                end_inst!(self, "push {}", src.as_physical());
             }
             X86Inst::Lea {
                 dst,
@@ -958,12 +918,13 @@ impl<'a> Emitter<'a> {
                 // Simplified: LEA dst, [base + disp] without index
                 self.begin_inst();
                 self.emit_lea_simple(dst.as_physical(), *base, adjusted_disp);
-                self.end_inst(format!(
+                end_inst!(
+                    self,
                     "lea {}, [{}{}]",
                     dst.as_physical(),
                     base,
                     format_offset(adjusted_disp)
-                ));
+                );
             }
             X86Inst::Shl { dst, count } => {
                 let dst_reg = dst.as_physical();
@@ -974,7 +935,7 @@ impl<'a> Emitter<'a> {
                     // NB: this clobbers rcx, which is exactly what we want.
                     self.begin_inst();
                     self.emit_mov_rr(Reg::Rcx, cnt);
-                    self.end_inst(format!("mov rcx, {}", cnt));
+                    end_inst!(self, "mov rcx, {}", cnt);
                 }
 
                 // If dst is RCX, that's a conflict (dst would be clobbered by the move above
@@ -987,7 +948,7 @@ impl<'a> Emitter<'a> {
 
                 self.begin_inst();
                 self.emit_shl_cl(dst_reg);
-                self.end_inst(format!("shl {}, cl", dst_reg));
+                end_inst!(self, "shl {}, cl", dst_reg);
             }
 
             X86Inst::MovRMIndexed { dst, base, offset } => {
@@ -1001,7 +962,7 @@ impl<'a> Emitter<'a> {
                 // This is handled specially - after regalloc the base VReg is in Rax
                 self.begin_inst();
                 self.emit_mov_rm(dst.as_physical(), Reg::Rax, 0);
-                self.end_inst(format!("mov {}, [rax]", dst.as_physical()));
+                end_inst!(self, "mov {}, [rax]", dst.as_physical());
             }
             X86Inst::MovMRIndexed { base, offset, src } => {
                 // MOV [base_vreg + offset], src
@@ -1010,7 +971,7 @@ impl<'a> Emitter<'a> {
                 // Same as above - base should be in Rax after regalloc
                 self.begin_inst();
                 self.emit_mov_mr(Reg::Rax, 0, src.as_physical());
-                self.end_inst(format!("mov [rax], {}", src.as_physical()));
+                end_inst!(self, "mov [rax], {}", src.as_physical());
             }
 
             X86Inst::StringConstPtr { dst, string_id } => {
@@ -1019,11 +980,12 @@ impl<'a> Emitter<'a> {
                 // The relocation will point to .rodata.str{string_id}
                 self.begin_inst();
                 self.emit_string_const_ptr(dst.as_physical(), *string_id);
-                self.end_inst(format!(
+                end_inst!(
+                    self,
                     "lea {}, [rip + .rodata.str{}]",
                     dst.as_physical(),
                     string_id
-                ));
+                );
             }
 
             X86Inst::StringConstLen { dst, string_id } => {
@@ -1035,7 +997,7 @@ impl<'a> Emitter<'a> {
                     .unwrap_or(0);
                 self.begin_inst();
                 self.emit_mov_ri64(dst.as_physical(), string_len);
-                self.end_inst(format!("mov {}, {}", dst.as_physical(), string_len));
+                end_inst!(self, "mov {}, {}", dst.as_physical(), string_len);
             }
 
             X86Inst::StringConstCap { dst, string_id: _ } => {
@@ -1043,7 +1005,7 @@ impl<'a> Emitter<'a> {
                 // This distinguishes rodata strings from heap-allocated ones
                 self.begin_inst();
                 self.emit_mov_ri64(dst.as_physical(), 0);
-                self.end_inst(format!("mov {}, 0", dst.as_physical()));
+                end_inst!(self, "mov {}, 0", dst.as_physical());
             }
         }
     }

@@ -13,6 +13,34 @@
 //! instructions but uses virtual registers. Register allocation then maps
 //! virtual registers to physical registers before final emission.
 
+/// Ends recording an instruction with lazy format string evaluation.
+///
+/// When `emit_asm` is false (normal compilation), this is a no-op and the
+/// format string arguments are never evaluated. When `emit_asm` is true
+/// (--emit asm mode), the format string is evaluated and stored.
+///
+/// This is more efficient than calling `end_inst(format!(...))` directly,
+/// which would always evaluate the format string.
+///
+/// # Examples
+///
+/// ```ignore
+/// // Instead of:
+/// self.end_inst(format!("mov {}, {}", dst, src));
+///
+/// // Use:
+/// end_inst!(self, "mov {}, {}", dst, src);
+/// ```
+#[macro_export]
+macro_rules! end_inst {
+    ($emitter:expr, $($arg:tt)*) => {
+        if $emitter.emit_asm {
+            let bytes = $emitter.code[$emitter.inst_start..].to_vec();
+            $emitter.instructions.push($crate::EmittedInst::new(bytes, format!($($arg)*)));
+        }
+    };
+}
+
 mod stack_frame;
 
 pub mod aarch64;
