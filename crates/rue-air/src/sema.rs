@@ -2091,6 +2091,28 @@ impl<'a> Sema<'a> {
         self.analyze_inst(air, inst_ref, ctx)
     }
 
+    /// Look up the resolved type for an instruction from HM inference.
+    ///
+    /// Returns an `InternalError` if the type was not resolved. This should
+    /// never happen in normal operation, but provides a better error message
+    /// than a panic if there's a bug in type inference.
+    fn get_resolved_type(
+        ctx: &AnalysisContext,
+        inst_ref: InstRef,
+        span: Span,
+        context: &str,
+    ) -> CompileResult<Type> {
+        ctx.resolved_types.get(&inst_ref).copied().ok_or_else(|| {
+            CompileError::new(
+                ErrorKind::InternalError(format!(
+                    "type inference did not resolve type for {} (instruction {:?})",
+                    context, inst_ref
+                )),
+                span,
+            )
+        })
+    }
+
     /// Analyze an RIR instruction, producing AIR instructions.
     ///
     /// Types are determined by Hindley-Milner inference (stored in `resolved_types`).
@@ -2106,11 +2128,7 @@ impl<'a> Sema<'a> {
         match &inst.data {
             InstData::IntConst(value) => {
                 // Get the type from HM inference
-                let ty = ctx
-                    .resolved_types
-                    .get(&inst_ref)
-                    .copied()
-                    .expect("HM inference should provide type for all expressions");
+                let ty = Self::get_resolved_type(ctx, inst_ref, inst.span, "integer literal")?;
 
                 // Check if the literal value fits in the target type's range
                 if !ty.literal_fits(*value) {
@@ -2261,11 +2279,7 @@ impl<'a> Sema<'a> {
 
             InstData::Neg { operand } => {
                 // Get the resolved type from HM inference
-                let ty = ctx
-                    .resolved_types
-                    .get(&inst_ref)
-                    .copied()
-                    .expect("HM inference should provide type for Neg");
+                let ty = Self::get_resolved_type(ctx, inst_ref, inst.span, "negation operator")?;
 
                 // Check if trying to negate an unsigned type.
                 // Note: HM inference also checks this via IsSigned constraint, but that
@@ -2329,11 +2343,7 @@ impl<'a> Sema<'a> {
 
             InstData::BitNot { operand } => {
                 // Get the resolved type from HM inference
-                let ty = ctx
-                    .resolved_types
-                    .get(&inst_ref)
-                    .copied()
-                    .expect("HM inference should provide type for BitNot");
+                let ty = Self::get_resolved_type(ctx, inst_ref, inst.span, "bitwise NOT operator")?;
 
                 // Bitwise NOT operates on integer types only
                 if !ty.is_integer() && !ty.is_error() && !ty.is_never() {
