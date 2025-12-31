@@ -785,6 +785,12 @@ impl From<CompileError> for CompileErrors {
     }
 }
 
+impl From<Vec<CompileError>> for CompileErrors {
+    fn from(errors: Vec<CompileError>) -> Self {
+        Self { errors }
+    }
+}
+
 impl From<CompileErrors> for CompileError {
     /// Convert a collection to a single error.
     ///

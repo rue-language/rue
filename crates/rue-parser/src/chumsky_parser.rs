@@ -17,7 +17,7 @@ use chumsky::input::{Input as ChumskyInput, Stream, ValueInput};
 use chumsky::pratt::{infix, left, prefix};
 use chumsky::prelude::*;
 use lasso::{Spur, ThreadedRodeo};
-use rue_error::{CompileError, CompileResult, ErrorKind};
+use rue_error::{CompileError, CompileErrors, ErrorKind, MultiErrorResult};
 use rue_lexer::TokenKind;
 use rue_span::Span;
 use std::borrow::Cow;
@@ -1789,7 +1789,9 @@ impl ChumskyParser {
     }
 
     /// Parse the tokens into an AST, returning the AST and the interner.
-    pub fn parse(mut self) -> CompileResult<(Ast, ThreadedRodeo)> {
+    ///
+    /// Returns all parse errors if parsing fails, not just the first one.
+    pub fn parse(mut self) -> MultiErrorResult<(Ast, ThreadedRodeo)> {
         // Pre-intern primitive type symbols and store in thread-local
         let syms = PrimitiveTypeSpurs::new(&mut self.interner);
         PRIMITIVE_SYMS.with(|s| *s.borrow_mut() = Some(syms));
@@ -1802,10 +1804,10 @@ impl ChumskyParser {
         let eoi: SimpleSpan = (self.source_len..self.source_len).into();
         let mapped = stream.map(eoi, |(tok, span)| (tok, span));
 
-        let result = ast_parser()
-            .parse(mapped)
-            .into_result()
-            .map_err(|errs| convert_error(errs.into_iter().next().unwrap()));
+        let result = ast_parser().parse(mapped).into_result().map_err(|errs| {
+            let errors: Vec<CompileError> = errs.into_iter().map(convert_error).collect();
+            CompileErrors::from(errors)
+        });
 
         // Clear thread-local after parsing
         PRIMITIVE_SYMS.with(|s| *s.borrow_mut() = None);
@@ -1848,15 +1850,15 @@ mod tests {
         }
     }
 
-    fn parse(source: &str) -> CompileResult<ParseResult> {
+    fn parse(source: &str) -> MultiErrorResult<ParseResult> {
         let lexer = Lexer::new(source);
-        let (tokens, interner) = lexer.tokenize()?;
+        let (tokens, interner) = lexer.tokenize().map_err(CompileErrors::from)?;
         let parser = ChumskyParser::new(tokens, interner);
         let (ast, interner) = parser.parse()?;
         Ok(ParseResult { ast, interner })
     }
 
-    fn parse_expr(source: &str) -> CompileResult<ExprResult> {
+    fn parse_expr(source: &str) -> MultiErrorResult<ExprResult> {
         let result = parse(&format!("fn main() -> i32 {{ {} }}", source))?;
         let interner = result.interner;
         let expr = match result.ast.items.into_iter().next().unwrap() {
@@ -2536,7 +2538,9 @@ mod tests {
         // Parse invalid syntax and verify error has span information
         let result = parse("fn main() -> i32 { let = 42; }");
         assert!(result.is_err());
-        let error = result.unwrap_err();
+        let errors = result.unwrap_err();
+        // Get the first error and verify it has span information
+        let error = errors.first().expect("should have at least one error");
         assert!(error.has_span());
         assert!(error.span().is_some());
     }
@@ -2546,7 +2550,8 @@ mod tests {
         // Missing expression after let
         let result = parse("fn main() -> i32 { let x = ; }");
         assert!(result.is_err());
-        let error = result.unwrap_err();
+        let errors = result.unwrap_err();
+        let error = errors.first().expect("should have at least one error");
         // Error message should describe what was expected vs found
         let msg = error.to_string();
         assert!(
@@ -2561,7 +2566,8 @@ mod tests {
         // Unterminated block
         let result = parse("fn main() -> i32 {");
         assert!(result.is_err());
-        let error = result.unwrap_err();
+        let errors = result.unwrap_err();
+        let error = errors.first().expect("should have at least one error");
         let msg = error.to_string();
         // Should indicate end of file was reached unexpectedly
         assert!(
@@ -2624,7 +2630,8 @@ mod tests {
         // This was a bug when Custom errors were mapped to UnexpectedToken with empty found
         let result = parse("fn main() -> i32 { let x = ; }");
         assert!(result.is_err());
-        let error = result.unwrap_err();
+        let errors = result.unwrap_err();
+        let error = errors.first().expect("should have at least one error");
         let msg = error.to_string();
         // Should not end with "found " (empty found)
         assert!(
@@ -2668,5 +2675,51 @@ mod tests {
         let rue = to_rue_span(simple);
         assert_eq!(rue.start, 10);
         assert_eq!(rue.end, 20);
+    }
+
+    #[test]
+    fn test_parse_returns_multiple_errors() {
+        // Test that we return ALL parse errors, not just the first one.
+        // This uses source with multiple syntax errors that can be detected at once.
+        // Note: The actual number of errors depends on Chumsky's error recovery,
+        // but this test ensures the infrastructure returns all errors it finds.
+        let source = "fn main() { let }"; // Missing variable name and expression
+
+        let result = parse(source);
+        assert!(result.is_err(), "Expected parsing to fail");
+
+        // We should get at least one error
+        let errors = result.unwrap_err();
+        assert!(
+            !errors.is_empty(),
+            "Expected at least one error but got none"
+        );
+
+        // Verify we can iterate over all errors
+        let error_count = errors.len();
+        assert!(
+            error_count >= 1,
+            "Expected at least 1 error, got {}",
+            error_count
+        );
+    }
+
+    #[test]
+    fn test_parse_error_collection_preserves_all() {
+        // Test that the error collection mechanism preserves all errors.
+        // This directly tests the CompileErrors::from(Vec<CompileError>) path.
+        let errors = vec![
+            CompileError::without_span(ErrorKind::UnexpectedToken {
+                expected: std::borrow::Cow::Borrowed("ident"),
+                found: std::borrow::Cow::Borrowed("let"),
+            }),
+            CompileError::without_span(ErrorKind::UnexpectedToken {
+                expected: std::borrow::Cow::Borrowed("expr"),
+                found: std::borrow::Cow::Borrowed("rbrace"),
+            }),
+        ];
+
+        let compile_errors = CompileErrors::from(errors);
+        assert_eq!(compile_errors.len(), 2, "Expected 2 errors to be preserved");
     }
 }

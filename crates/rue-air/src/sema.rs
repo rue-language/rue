@@ -5468,7 +5468,7 @@ mod tests {
         let lexer = Lexer::new(source);
         let (tokens, interner) = lexer.tokenize().map_err(CompileErrors::from_error)?;
         let parser = Parser::new(tokens, interner);
-        let (ast, mut interner) = parser.parse().map_err(CompileErrors::from_error)?;
+        let (ast, mut interner) = parser.parse()?;
 
         let astgen = AstGen::new(&ast, &mut interner);
         let rir = astgen.generate();

@@ -867,8 +867,8 @@ fn handle_emit(source: &str, options: &Options, formatter: &DiagnosticFormatter)
         let parser = Parser::new(parser_tokens, interner.unwrap());
         match parser.parse() {
             Ok((ast, interner)) => (kept_tokens, Some(ast), Some(interner)),
-            Err(e) => {
-                eprintln!("{}", formatter.format_error(&e));
+            Err(errors) => {
+                eprintln!("{}", formatter.format_errors(&errors));
                 return Err(());
             }
         }

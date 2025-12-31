@@ -325,7 +325,7 @@ pub fn compile_frontend_with_options(
     let (ast, interner) = {
         let _span = info_span!("parser").entered();
         let parser = Parser::new(tokens, interner);
-        let (ast, interner) = parser.parse().map_err(CompileErrors::from)?;
+        let (ast, interner) = parser.parse()?;
         info!(item_count = ast.items.len(), "parsing complete");
         (ast, interner)
     };
@@ -1196,7 +1196,7 @@ pub fn compile_to_air(source: &str) -> MultiErrorResult<AirOutput> {
 
     // Parsing
     let parser = Parser::new(tokens, interner);
-    let (ast, interner) = parser.parse().map_err(CompileErrors::from)?;
+    let (ast, interner) = parser.parse()?;
 
     // AST to RIR (untyped IR)
     let astgen = AstGen::new(&ast, &interner);
