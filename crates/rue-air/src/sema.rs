@@ -2425,6 +2425,71 @@ impl<'a> Sema<'a> {
             return Ok(AnalysisResult::new(air_ref, field_type));
         }
 
+        // For index access in projection mode (e.g., `arr[i].field`), we allow the
+        // indexing without checking if the element type is Copy. This enables
+        // accessing Copy fields of non-Copy array elements.
+        if let InstData::IndexGet { base, index } = &inst.data {
+            // Recursively analyze the base in projection mode
+            let base_result = self.analyze_inst_for_projection(air, *base, ctx)?;
+            let base_type = base_result.ty;
+
+            let array_type_id = match base_type {
+                Type::Array(id) => id,
+                _ => {
+                    return Err(CompileError::new(
+                        ErrorKind::IndexOnNonArray {
+                            found: base_type.name().to_string(),
+                        },
+                        inst.span,
+                    ));
+                }
+            };
+
+            // Index must be an unsigned integer
+            let index_result = self.analyze_inst(air, *index, ctx)?;
+            if !index_result.ty.is_unsigned() && !index_result.ty.is_error() {
+                return Err(CompileError::new(
+                    ErrorKind::TypeMismatch {
+                        expected: "unsigned integer type".to_string(),
+                        found: index_result.ty.name().to_string(),
+                    },
+                    self.rir.get(*index).span,
+                ));
+            }
+
+            let array_def = &self.array_type_defs[array_type_id.0 as usize];
+            let element_type = array_def.element_type;
+            let array_length = array_def.length;
+
+            // Compile-time bounds check for constant indices
+            if let Some(const_index) = self.try_get_const_index(*index) {
+                if const_index < 0 || const_index as u64 >= array_length {
+                    return Err(CompileError::new(
+                        ErrorKind::IndexOutOfBounds {
+                            index: const_index,
+                            length: array_length,
+                        },
+                        self.rir.get(*index).span,
+                    ));
+                }
+            }
+
+            // NOTE: We do NOT check if element_type is Copy here.
+            // In projection mode, we allow accessing elements for further projection
+            // (e.g., arr[i].field where field is Copy).
+
+            let air_ref = air.add_inst(AirInst {
+                data: AirInstData::IndexGet {
+                    base: base_result.air_ref,
+                    array_type_id,
+                    index: index_result.air_ref,
+                },
+                ty: element_type,
+                span: inst.span,
+            });
+            return Ok(AnalysisResult::new(air_ref, element_type));
+        }
+
         // For other expressions, use the normal analyze_inst
         // (they will trigger move semantics as expected)
         self.analyze_inst(air, inst_ref, ctx)
@@ -4432,6 +4497,24 @@ impl<'a> Sema<'a> {
                                 length: array_length,
                             },
                             self.rir.get(*index).span,
+                        ));
+                    }
+                }
+
+                // When affine_mvs is enabled, prevent moving non-Copy elements out of arrays.
+                // This check is only applied in consume context (analyze_inst), not in
+                // projection context (analyze_inst_for_projection), which allows
+                // patterns like `arr[i].field` where field is Copy.
+                if self.preview_features.contains(&PreviewFeature::AffineMvs) {
+                    if !self.is_type_copy(element_type) {
+                        return Err(CompileError::new(
+                            ErrorKind::MoveOutOfIndex {
+                                element_type: element_type.name().to_string(),
+                            },
+                            inst.span,
+                        )
+                        .with_help(
+                            "use explicit methods like swap() or take() to remove elements",
                         ));
                     }
                 }

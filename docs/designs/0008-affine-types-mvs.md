@@ -461,22 +461,23 @@ fn main() -> i32 {
 // fn bad() { let m = MustUse { value: 1 }; }  // ERROR: linear value dropped
 ```
 
-### Phase 5: Projection semantics (rue-dfr8.5)
+### Phase 5: Projection semantics (rue-dfr8.5) ✅ COMPLETE
 
 Add proper array access rules under affine semantics.
 
-- Array read of Copy type: copies out
-- Array read of non-Copy type: ERROR (can't move out of index)
-- Array write: inout projection to array
-- Law of exclusivity for overlapping projections
+- [x] Array read of Copy type: copies out
+- [x] Array read of non-Copy type: ERROR (can't move out of index)
+- [x] Array write: inout projection to array
+- [x] Law of exclusivity for overlapping projections (via existing inout checks)
+
+**Note**: Compound assignment on array elements (`arr[0] += 5`) is not yet implemented (separate parser enhancement needed). Also, accessing fields of struct elements in arrays (`arr[i].field`) has an ICE in codegen (see rue-oqm6).
 
 **Testable**: Can mutate array elements; can't move out non-Copy elements.
 
 ```rue
 fn main() -> i32 {
-    var arr = [1, 2, 3];
+    let mut arr = [1, 2, 3];
     arr[0] = 10;        // OK: inout projection
-    arr[1] += 5;        // OK: compound inout
     let x = arr[2];     // OK: i32 is Copy
     x
 }

@@ -159,3 +159,55 @@ fn main() -> i32 {
     sum(data)  // 42
 }
 ```
+
+## Array Projection Semantics
+
+{{ rule(id="7.1:25", cat="normative") }}
+
+Array indexing operates as a projection. Reading an element does not move the array itself.
+
+{{ rule(id="7.1:26", cat="normative") }}
+
+When reading an element of a Copy type (e.g., integers, booleans), the element is copied out.
+
+{{ rule(id="7.1:27") }}
+
+```rue
+fn main() -> i32 {
+    let arr: [i32; 3] = [10, 20, 30];
+    let x = arr[0];     // i32 is Copy, so x is a copy
+    let y = arr[0];     // Can read same element again
+    x + y               // 20
+}
+```
+
+{{ rule(id="7.1:28", cat="legality-rule") }}
+
+When reading an element of a non-Copy type, it is a compile-time error to move the element out of an array position. Use explicit methods like `swap` or `take` instead.
+
+{{ rule(id="7.1:29") }}
+
+```rue
+struct BigThing { value: i32 }
+
+fn main() -> i32 {
+    let arr: [BigThing; 2] = [BigThing { value: 1 }, BigThing { value: 2 }];
+    let x = arr[0];     // ERROR: cannot move out of indexed position
+    0
+}
+```
+
+{{ rule(id="7.1:30", cat="normative") }}
+
+Array element assignment is an in-place mutation. It modifies the array without moving it.
+
+{{ rule(id="7.1:31") }}
+
+```rue
+fn main() -> i32 {
+    let mut arr: [i32; 3] = [1, 2, 3];
+    arr[0] = 10;        // Mutates in place
+    arr[1] = 20;        // Another mutation
+    arr[0] + arr[1]     // 30
+}
+```

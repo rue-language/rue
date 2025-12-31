@@ -636,6 +636,9 @@ pub enum ErrorKind {
     IndexOutOfBounds { index: i64, length: u64 },
     #[error("type annotation required for empty array")]
     TypeAnnotationRequired,
+    /// Cannot move non-Copy element out of array index position
+    #[error("cannot move out of indexed position: element type '{element_type}' is not Copy")]
+    MoveOutOfIndex { element_type: String },
 
     // Linker errors
     #[error("link error: {0}")]
