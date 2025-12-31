@@ -192,7 +192,9 @@ impl LogFormat {
 }
 
 struct Options {
-    source_path: String,
+    /// Source files to compile. In single-file mode, contains one path.
+    /// In multi-file mode, contains multiple paths.
+    source_paths: Vec<String>,
     output_path: String,
     emit_stages: Vec<EmitStage>,
     target: Target,
@@ -216,8 +218,10 @@ fn print_version() {
 
 fn print_usage() {
     eprintln!("Usage: rue [options] <source.rue> [output]");
+    eprintln!("       rue [options] <source1.rue> <source2.rue> ... -o <output>");
     eprintln!();
     eprintln!("Options:");
+    eprintln!("  -o, --output <path>  Set output path (required for multiple source files)");
     eprintln!("  --target <target>    Set compilation target (default: host)");
     eprintln!(
         "                       Valid targets: {}",
@@ -276,6 +280,7 @@ fn parse_args_from(args: &[&str]) -> ParseResult {
     let mut time_passes = false;
     let mut benchmark_json = false;
     let mut jobs: Option<usize> = None;
+    let mut output_path: Option<String> = None;
     let mut positional = Vec::new();
     let mut args_iter = args.iter().peekable();
 
@@ -382,6 +387,13 @@ fn parse_args_from(args: &[&str]) -> ParseResult {
                     }
                 }
             }
+            "-o" | "--output" => {
+                let Some(out_str) = args_iter.next() else {
+                    eprintln!("Error: -o requires an output path");
+                    return ParseResult::Error;
+                };
+                output_path = Some(out_str.to_string());
+            }
             "--time-passes" => {
                 time_passes = true;
             }
@@ -434,15 +446,29 @@ fn parse_args_from(args: &[&str]) -> ParseResult {
         return ParseResult::Error;
     }
 
-    let source_path = positional[0].clone();
-    let output_path = positional
-        .get(1)
-        .cloned()
-        .unwrap_or_else(|| "a.out".to_string());
+    // Determine source files and output path based on argument count and -o flag
+    let (source_paths, final_output_path) = if let Some(out) = output_path {
+        // -o was specified: all positional args are source files
+        (positional, out)
+    } else if positional.len() == 1 {
+        // Single source file, no -o: default output to a.out
+        (positional, "a.out".to_string())
+    } else if positional.len() == 2 {
+        // Two positional args, no -o: backwards compatible mode
+        // First is source, second is output
+        let mut pos = positional;
+        let out = pos.pop().unwrap();
+        (pos, out)
+    } else {
+        // Multiple source files without -o: error
+        eprintln!("Error: multiple source files require -o to specify output path");
+        eprintln!("Usage: rue a.rue b.rue -o output");
+        return ParseResult::Error;
+    };
 
     ParseResult::Options(Options {
-        source_path,
-        output_path,
+        source_paths,
+        output_path: final_output_path,
         emit_stages,
         target: target.unwrap_or_else(Target::host),
         linker: linker.unwrap_or_default(),
@@ -700,27 +726,38 @@ fn main() {
         options.benchmark_json,
     );
 
-    // Read source
-    let source = fs::read_to_string(&options.source_path).unwrap_or_else(|e| {
-        eprintln!("Error reading {}: {}", options.source_path, e);
-        std::process::exit(1);
-    });
+    // Read all source files into memory
+    let sources: Vec<(String, String)> = options
+        .source_paths
+        .iter()
+        .map(|path| {
+            let content = fs::read_to_string(path).unwrap_or_else(|e| {
+                eprintln!("Error reading {}: {}", path, e);
+                std::process::exit(1);
+            });
+            (path.clone(), content)
+        })
+        .collect();
+
+    // For Phase 1: use only the first source file for compilation
+    // Future phases will compile all files
+    let (primary_path, primary_source) = &sources[0];
 
     // Create source info for diagnostic formatting
-    let source_info = SourceInfo::new(&source, &options.source_path);
+    let source_info = SourceInfo::new(primary_source, primary_path);
     let formatter = DiagnosticFormatter::new(&source_info);
 
     // Compute source metrics if benchmark JSON is requested
     let source_metrics = if options.benchmark_json {
         // We need token count, so do a quick lex
-        let lexer = Lexer::new(&source);
+        let lexer = Lexer::new(primary_source);
         let token_count = match lexer.tokenize() {
             Ok((tokens, _interner)) => tokens.len(),
             Err(_) => 0, // If lexing fails, we'll get the error during compilation anyway
         };
         Some(timing::SourceMetrics {
-            bytes: source.len(),
-            lines: source.lines().count(),
+            bytes: primary_source.len(),
+            lines: primary_source.lines().count(),
             tokens: token_count,
         })
     } else {
@@ -729,7 +766,7 @@ fn main() {
 
     // Handle emit modes
     if !options.emit_stages.is_empty() {
-        if let Err(()) = handle_emit(&source, &options, &formatter) {
+        if let Err(()) = handle_emit(primary_source, &options, &formatter) {
             std::process::exit(1);
         }
         print_timing_output(
@@ -750,7 +787,7 @@ fn main() {
         preview_features: options.preview_features.clone(),
         jobs: options.jobs,
     };
-    match compile_with_options(&source, &compile_options) {
+    match compile_with_options(primary_source, &compile_options) {
         Ok(output) => {
             // Print warnings using the diagnostic formatter
             if !output.warnings.is_empty() {
@@ -794,9 +831,14 @@ fn main() {
                     LinkerMode::Internal => "internal".to_string(),
                     LinkerMode::System(cmd) => cmd.clone(),
                 };
+                let source_str = if options.source_paths.len() == 1 {
+                    options.source_paths[0].clone()
+                } else {
+                    format!("{} files", options.source_paths.len())
+                };
                 println!(
                     "Compiled {} -> {} (target: {}, linker: {})",
-                    options.source_path, options.output_path, options.target, linker_str
+                    source_str, options.output_path, options.target, linker_str
                 );
             }
 
@@ -1101,20 +1143,82 @@ mod tests {
     #[test]
     fn parse_source_file_only() {
         let opts = unwrap_options(parse_args_from(&["source.rue"]));
-        assert_eq!(opts.source_path, "source.rue");
+        assert_eq!(opts.source_paths, vec!["source.rue"]);
         assert_eq!(opts.output_path, "a.out");
     }
 
     #[test]
     fn parse_source_and_output() {
         let opts = unwrap_options(parse_args_from(&["source.rue", "output"]));
-        assert_eq!(opts.source_path, "source.rue");
+        assert_eq!(opts.source_paths, vec!["source.rue"]);
         assert_eq!(opts.output_path, "output");
     }
 
     #[test]
     fn parse_no_args_returns_error() {
         assert!(is_error(&parse_args_from(&[])));
+    }
+
+    // ========== Multi-file argument parsing tests ==========
+
+    #[test]
+    fn parse_multi_file_with_output_flag() {
+        let opts = unwrap_options(parse_args_from(&["a.rue", "b.rue", "-o", "output"]));
+        assert_eq!(opts.source_paths, vec!["a.rue", "b.rue"]);
+        assert_eq!(opts.output_path, "output");
+    }
+
+    #[test]
+    fn parse_multi_file_with_output_long_flag() {
+        let opts = unwrap_options(parse_args_from(&["a.rue", "b.rue", "--output", "out"]));
+        assert_eq!(opts.source_paths, vec!["a.rue", "b.rue"]);
+        assert_eq!(opts.output_path, "out");
+    }
+
+    #[test]
+    fn parse_multi_file_without_output_flag_error() {
+        // Three positional args without -o should error
+        assert!(is_error(&parse_args_from(&["a.rue", "b.rue", "c.rue"])));
+    }
+
+    #[test]
+    fn parse_multi_file_with_options() {
+        let opts = unwrap_options(parse_args_from(&[
+            "-O2",
+            "main.rue",
+            "utils.rue",
+            "lib.rue",
+            "-o",
+            "program",
+        ]));
+        assert_eq!(opts.source_paths, vec!["main.rue", "utils.rue", "lib.rue"]);
+        assert_eq!(opts.output_path, "program");
+        assert_eq!(opts.opt_level, OptLevel::O2);
+    }
+
+    #[test]
+    fn parse_output_flag_before_sources() {
+        let opts = unwrap_options(parse_args_from(&["-o", "output", "a.rue", "b.rue"]));
+        assert_eq!(opts.source_paths, vec!["a.rue", "b.rue"]);
+        assert_eq!(opts.output_path, "output");
+    }
+
+    #[test]
+    fn parse_single_file_with_output_flag() {
+        // Even single file can use -o explicitly
+        let opts = unwrap_options(parse_args_from(&["source.rue", "-o", "myprogram"]));
+        assert_eq!(opts.source_paths, vec!["source.rue"]);
+        assert_eq!(opts.output_path, "myprogram");
+    }
+
+    #[test]
+    fn parse_output_flag_missing_value() {
+        assert!(is_error(&parse_args_from(&["source.rue", "-o"])));
+    }
+
+    #[test]
+    fn parse_output_long_flag_missing_value() {
+        assert!(is_error(&parse_args_from(&["source.rue", "--output"])));
     }
 
     // ========== --emit tests ==========
@@ -1446,7 +1550,7 @@ mod tests {
             "source.rue",
             "output",
         ]));
-        assert_eq!(opts.source_path, "source.rue");
+        assert_eq!(opts.source_paths, vec!["source.rue"]);
         assert_eq!(opts.output_path, "output");
         assert_eq!(opts.target, Target::X86_64Linux);
         assert_eq!(opts.linker, LinkerMode::System("clang".to_string()));
@@ -1458,7 +1562,7 @@ mod tests {
     fn parse_options_after_source() {
         // Options can appear after the source file
         let opts = unwrap_options(parse_args_from(&["source.rue", "-O1"]));
-        assert_eq!(opts.source_path, "source.rue");
+        assert_eq!(opts.source_paths, vec!["source.rue"]);
         assert_eq!(opts.opt_level, OptLevel::O1);
     }
 
@@ -1471,7 +1575,7 @@ mod tests {
             "x86_64-linux",
             "output",
         ]));
-        assert_eq!(opts.source_path, "source.rue");
+        assert_eq!(opts.source_paths, vec!["source.rue"]);
         assert_eq!(opts.output_path, "output");
         assert_eq!(opts.opt_level, OptLevel::O1);
         assert_eq!(opts.target, Target::X86_64Linux);
