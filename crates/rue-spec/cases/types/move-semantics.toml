@@ -775,6 +775,7 @@ exit_code = 42
 name = "linear_in_branch_consumed"
 spec = ["3.8:32"]
 preview = "affine_mvs"
+preview_should_pass = true
 description = "Linear value must be consumed in all branches"
 source = """
 linear struct MustUse { value: i32 }
@@ -792,6 +793,72 @@ fn main() -> i32 {
 }
 """
 exit_code = 42
+
+[[case]]
+name = "affine_in_branch_consumed"
+spec = ["3.8:5", "3.8:7"]
+description = "Affine value consumed in both branches is considered moved after"
+source = """
+struct Point { x: i32, y: i32 }
+
+fn consume(p: Point) -> i32 { p.x }
+
+fn main() -> i32 {
+    let p = Point { x: 1, y: 2 };
+    let cond = true;
+    let result = if cond {
+        consume(p)
+    } else {
+        consume(p)
+    };
+    result
+}
+"""
+exit_code = 1
+
+[[case]]
+name = "affine_in_branch_use_after_both_moves"
+spec = ["3.8:5", "3.8:7"]
+description = "Using affine value after consuming in both branches is an error"
+source = """
+struct Point { x: i32, y: i32 }
+
+fn consume(p: Point) -> i32 { p.x }
+
+fn main() -> i32 {
+    let p = Point { x: 1, y: 2 };
+    let cond = true;
+    if cond {
+        consume(p);
+    } else {
+        consume(p);
+    }
+    p.x
+}
+"""
+compile_fail = true
+error_contains = "use of moved value"
+
+[[case]]
+name = "affine_in_one_branch_use_after"
+spec = ["3.8:5", "3.8:7"]
+description = "Using affine value after consuming in only one branch is an error"
+source = """
+struct Point { x: i32, y: i32 }
+
+fn consume(p: Point) -> i32 { p.x }
+
+fn main() -> i32 {
+    let p = Point { x: 1, y: 2 };
+    let cond = true;
+    if cond {
+        consume(p);
+    }
+    p.x
+}
+"""
+compile_fail = true
+error_contains = "use of moved value"
 
 [[case]]
 name = "linear_field_access"

@@ -315,6 +315,26 @@ impl VariableMoveState {
     fn is_empty(&self) -> bool {
         self.full_move.is_none() && self.partial_moves.is_empty()
     }
+
+    /// Merge move states from two branches (union semantics).
+    /// A variable is considered moved after a branch if it was moved in EITHER branch.
+    /// This prevents use-after-move when a value might have been moved.
+    fn merge_union(branch1: &Self, branch2: &Self) -> Self {
+        // If either branch has a full move, the result is a full move
+        // (use the span from whichever branch has it, preferring branch1)
+        let full_move = branch1.full_move.or(branch2.full_move);
+
+        // A partial move is kept if it appears in EITHER branch
+        let mut partial_moves = branch1.partial_moves.clone();
+        for (path, span) in &branch2.partial_moves {
+            partial_moves.entry(path.clone()).or_insert(*span);
+        }
+
+        Self {
+            full_move,
+            partial_moves,
+        }
+    }
 }
 
 /// Information about a function parameter.
@@ -402,6 +422,81 @@ impl AnalysisContext<'_> {
         // This handles shadowing: `let x = moved_val; let x = new_val;`
         // The new `x` is a fresh binding and shouldn't carry the old moved state.
         self.moved_vars.remove(&symbol);
+    }
+
+    /// Merge move states from two branches.
+    ///
+    /// For if-else expressions, a variable is considered moved after the expression
+    /// if it was moved in EITHER branch (union semantics). This prevents use-after-move
+    /// when a value might have been moved in one branch:
+    ///
+    /// ```rue
+    /// if cond { consume(x) } else { }
+    /// x  // Error: x might have been moved in the then-branch
+    /// ```
+    ///
+    /// When one branch diverges (returns Never), only the other branch's moves matter:
+    /// - If then-branch diverges, else-branch's moves are used (then never returns)
+    /// - If else-branch diverges, then-branch's moves are used (else never returns)
+    /// - If both diverge, the whole if-else diverges and moves don't matter
+    fn merge_branch_moves(
+        &mut self,
+        then_moves: HashMap<Spur, VariableMoveState>,
+        else_moves: HashMap<Spur, VariableMoveState>,
+        then_diverges: bool,
+        else_diverges: bool,
+    ) {
+        // If then-branch diverges, use else-branch's moves
+        // If else-branch diverges, use then-branch's moves
+        // If both diverge, the whole expression diverges - doesn't matter what we do
+        // If neither diverges, merge the moves (union - moved in either = moved after)
+        match (then_diverges, else_diverges) {
+            (true, true) => {
+                // Both branches diverge - no need to merge, the code after
+                // the if-else is unreachable. Use then_moves arbitrarily.
+                self.moved_vars = then_moves;
+            }
+            (true, false) => {
+                // Then-branch diverges, else-branch continues.
+                // Use else-branch's moves (then never executes to completion).
+                self.moved_vars = else_moves;
+            }
+            (false, true) => {
+                // Else-branch diverges, then-branch continues.
+                // Use then-branch's moves (else never executes to completion).
+                self.moved_vars = then_moves;
+            }
+            (false, false) => {
+                // Neither diverges - merge the moves (union).
+                // A variable is moved after if-else if moved in EITHER branch.
+                let mut merged = HashMap::new();
+
+                // Include all moves from then-branch
+                for (symbol, then_state) in &then_moves {
+                    if let Some(else_state) = else_moves.get(symbol) {
+                        // Variable has state in both branches - merge them
+                        let merged_state = VariableMoveState::merge_union(then_state, else_state);
+                        if !merged_state.is_empty() {
+                            merged.insert(*symbol, merged_state);
+                        }
+                    } else {
+                        // Variable only moved in then-branch
+                        if !then_state.is_empty() {
+                            merged.insert(*symbol, then_state.clone());
+                        }
+                    }
+                }
+
+                // Include moves that only appear in else-branch
+                for (symbol, else_state) in &else_moves {
+                    if !then_moves.contains_key(symbol) && !else_state.is_empty() {
+                        merged.insert(*symbol, else_state.clone());
+                    }
+                }
+
+                self.moved_vars = merged;
+            }
+        }
     }
 }
 
@@ -3028,6 +3123,10 @@ impl<'a> Sema<'a> {
                 //   (Never type can coerce to any type)
                 // - If else is absent, the result is Unit
                 if let Some(else_b) = else_block {
+                    // Save move state before entering branches.
+                    // Each branch starts from this saved state.
+                    let saved_moves = ctx.moved_vars.clone();
+
                     // Analyze then branch with its own scope
                     ctx.push_scope();
                     let then_result = self.analyze_inst(air, *then_block, ctx)?;
@@ -3035,12 +3134,31 @@ impl<'a> Sema<'a> {
                     let then_span = self.rir.get(*then_block).span;
                     ctx.pop_scope();
 
+                    // Capture then-branch's move state
+                    let then_moves = ctx.moved_vars.clone();
+
+                    // Restore to saved state before analyzing else branch
+                    ctx.moved_vars = saved_moves;
+
                     // Analyze else branch with its own scope
                     ctx.push_scope();
                     let else_result = self.analyze_inst(air, *else_b, ctx)?;
                     let else_type = else_result.ty;
                     let else_span = self.rir.get(*else_b).span;
                     ctx.pop_scope();
+
+                    // Capture else-branch's move state
+                    let else_moves = ctx.moved_vars.clone();
+
+                    // Merge move states from both branches.
+                    // A variable is moved after if-else if moved in EITHER branch
+                    // (or if one branch diverges, use the other's moves).
+                    ctx.merge_branch_moves(
+                        then_moves,
+                        else_moves,
+                        then_type.is_never(),
+                        else_type.is_never(),
+                    );
 
                     // Compute the unified result type using never type coercion:
                     // - If both branches are Never, result is Never
@@ -3086,6 +3204,10 @@ impl<'a> Sema<'a> {
                 } else {
                     // No else branch - result is Unit
                     // The then branch must have unit type (spec 4.6:5)
+
+                    // Save move state before entering then-branch.
+                    let saved_moves = ctx.moved_vars.clone();
+
                     ctx.push_scope();
                     let then_result = self.analyze_inst(air, *then_block, ctx)?;
                     ctx.pop_scope();
@@ -3104,6 +3226,31 @@ impl<'a> Sema<'a> {
                             "if expressions without else must have unit type; \
                              consider adding an else branch or making the body return ()",
                         ));
+                    }
+
+                    // Capture then-branch's move state
+                    let then_moves = ctx.moved_vars.clone();
+
+                    // For if-without-else:
+                    // - If then-branch diverges, only the then-branch's moves apply
+                    //   (execution only continues if condition was false, so the
+                    //   then-branch didn't execute, thus we use saved_moves)
+                    // - If then-branch doesn't diverge, merge with saved_moves.
+                    //   Values moved in then-branch are "maybe moved" and thus
+                    //   unusable after the if.
+                    if then_type.is_never() {
+                        // Then-branch diverges - code after if only runs if cond was false
+                        // In that case, then-branch never executed, so use saved state
+                        ctx.moved_vars = saved_moves;
+                    } else {
+                        // Then-branch doesn't diverge - merge moves (union semantics).
+                        // A value moved in the then-branch MIGHT have been moved.
+                        ctx.merge_branch_moves(
+                            then_moves,
+                            saved_moves,
+                            false, // then doesn't diverge
+                            false, // "else" (empty) doesn't diverge
+                        );
                     }
 
                     let air_ref = air.add_inst(AirInst {
