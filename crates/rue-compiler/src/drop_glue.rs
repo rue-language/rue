@@ -58,8 +58,7 @@ fn type_needs_drop(ty: Type, struct_defs: &[StructDef], array_types: &[ArrayType
                 .any(|f| type_needs_drop(f.ty, struct_defs, array_types))
         }
 
-        // Type::String still supported during migration
-        Type::String => true,
+        // Note: String is now Type::Struct with is_builtin=true, handled above
 
         // Array types need drop if element type needs drop
         Type::Array(array_id) => {
@@ -97,8 +96,7 @@ fn type_slot_count(ty: Type, struct_defs: &[StructDef], array_types: &[ArrayType
                 .sum()
         }
 
-        // Type::String still supported during migration (uses 3 slots: ptr, len, cap)
-        Type::String => 3,
+        // Note: String is now Type::Struct with is_builtin=true, handled above
 
         // Array uses element slots * length
         Type::Array(array_id) => {
@@ -188,31 +186,8 @@ fn create_struct_drop_glue_function(
 
         if type_needs_drop(field.ty, struct_defs, array_types) {
             // Emit Drop for this field.
-            // Note: Type::Struct handles both user-defined structs and builtin String
-            // (when String becomes a struct). Type::String is the migration path.
+            // Type::Struct handles both user-defined structs and builtin String.
             match field.ty {
-                Type::String => {
-                    // String has 3 params (ptr, len, cap)
-                    // We need to load all three and pass them to the Drop instruction
-                    // The Drop instruction in AIR operates on a value, and the CFG/codegen
-                    // will handle the flattening.
-
-                    // For simplicity, emit a Param to get the first slot, then drop it.
-                    // The codegen knows this is a String and will use all 3 slots.
-                    let param_ref = air.add_inst(AirInst {
-                        data: AirInstData::Param {
-                            index: current_param_slot,
-                        },
-                        ty: Type::String,
-                        span,
-                    });
-                    let drop_ref = air.add_inst(AirInst {
-                        data: AirInstData::Drop { value: param_ref },
-                        ty: Type::Unit,
-                        span,
-                    });
-                    drop_statements.push(drop_ref);
-                }
                 Type::Struct(nested_struct_id) => {
                     // Nested struct - load it and drop it
                     // The recursive drop glue will handle its fields
@@ -326,28 +301,12 @@ fn create_array_drop_glue_function(
     let mut drop_statements = Vec::new();
 
     // For each element, emit a Drop instruction.
-    // Note: Type::Struct handles both user-defined structs and builtin String
-    // (when String becomes a struct). Type::String is the migration path.
+    // Type::Struct handles both user-defined structs and builtin String.
     for elem_idx in 0..array_def.length {
         let current_param_slot = elem_idx as u32 * element_slot_count;
 
         // Emit Drop for this element
         match array_def.element_type {
-            Type::String => {
-                let param_ref = air.add_inst(AirInst {
-                    data: AirInstData::Param {
-                        index: current_param_slot,
-                    },
-                    ty: Type::String,
-                    span,
-                });
-                let drop_ref = air.add_inst(AirInst {
-                    data: AirInstData::Drop { value: param_ref },
-                    ty: Type::Unit,
-                    span,
-                });
-                drop_statements.push(drop_ref);
-            }
             Type::Struct(struct_id) => {
                 let param_ref = air.add_inst(AirInst {
                     data: AirInstData::Param {
@@ -458,8 +417,8 @@ fn type_name(ty: Type, struct_defs: &[StructDef], array_types: &[ArrayTypeDef]) 
         Type::Unit => "unit".to_string(),
         Type::Never => "never".to_string(),
         Type::Error => "error".to_string(),
-        Type::String => "String".to_string(),
         Type::Enum(enum_id) => format!("enum{}", enum_id.0),
+        // Struct types include builtin types like String
         Type::Struct(struct_id) => struct_defs[struct_id.0 as usize].name.clone(),
         Type::Array(array_id) => {
             let array_def = &array_types[array_id.0 as usize];

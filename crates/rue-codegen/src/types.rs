@@ -49,9 +49,7 @@ pub fn type_slot_count(struct_defs: &[StructDef], array_types: &[ArrayTypeDef], 
                 1
             }
         }
-        // Type::String still supported during migration (uses 3 slots: ptr, len, cap)
-        // Once String is a struct, the Type::Struct case handles it via field count
-        Type::String => 3,
+        // Scalars and other types use 1 slot
         _ => 1,
     }
 }
@@ -128,21 +126,13 @@ pub fn collect_array_scalar_vregs(
                         get_vreg,
                     ));
                 } else if matches!(elem_inst.ty, Type::Struct(_)) {
-                    // Recursively collect from struct element
+                    // Recursively collect from struct element (includes builtin String)
                     result.extend(collect_struct_scalar_vregs(
                         cfg,
                         struct_slot_vregs,
                         *elem,
                         get_vreg,
                     ));
-                } else if elem_inst.ty == Type::String {
-                    // Type::String migration path - has 3 slots (ptr, len, cap)
-                    // Once String is a struct, the Type::Struct case handles it
-                    if let Some(vregs) = struct_slot_vregs.get(elem).cloned() {
-                        result.extend(vregs);
-                    } else {
-                        result.push(get_vreg(*elem));
-                    }
                 } else {
                     // Scalar element - get its vreg
                     result.push(get_vreg(*elem));
@@ -193,9 +183,8 @@ fn type_name(ty: Type, struct_defs: &[StructDef], array_types: &[ArrayTypeDef]) 
         Type::Unit => "unit".to_string(),
         Type::Never => "never".to_string(),
         Type::Error => "error".to_string(),
-        // Type::String migration path - once String is a struct, uses struct_def.name
-        Type::String => "String".to_string(),
         Type::Enum(enum_id) => format!("enum{}", enum_id.0),
+        // Struct types include builtin types like String
         Type::Struct(struct_id) => struct_defs[struct_id.0 as usize].name.clone(),
         Type::Array(array_id) => {
             let array_def = &array_types[array_id.0 as usize];
@@ -242,22 +231,13 @@ pub fn collect_struct_scalar_vregs(
                         get_vreg,
                     ));
                 } else if matches!(field_inst.ty, Type::Struct(_)) {
-                    // Recursively collect from nested struct field
+                    // Recursively collect from nested struct field (includes builtin String)
                     result.extend(collect_struct_scalar_vregs(
                         cfg,
                         struct_slot_vregs,
                         *field,
                         get_vreg,
                     ));
-                } else if field_inst.ty == Type::String {
-                    // Type::String migration path - has 3 slots (ptr, len, cap)
-                    // Once String is a struct, the Type::Struct case handles it
-                    if let Some(vregs) = struct_slot_vregs.get(field).cloned() {
-                        result.extend(vregs);
-                    } else {
-                        // Fallback: just get the main vreg (should not happen for properly lowered String)
-                        result.push(get_vreg(*field));
-                    }
                 } else {
                     // Scalar field - get its vreg
                     result.push(get_vreg(*field));

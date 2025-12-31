@@ -1730,9 +1730,7 @@ impl<'a> CfgBuilder<'a> {
                 struct_def.fields.iter().any(|f| self.type_needs_drop(f.ty))
             }
 
-            // Type::String still supported during migration - will be removed
-            // once all downstream code uses struct-based String
-            Type::String => true,
+            // Note: String is now Type::Struct with is_builtin=true, handled above
 
             // Array types need drop if element type needs drop
             Type::Array(array_id) => {

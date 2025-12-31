@@ -261,9 +261,20 @@ impl<'a> ConstraintGenerator<'a> {
 
             InstData::BoolConst(_) => InferType::Concrete(Type::Bool),
 
-            // String constants use Type::String during migration.
-            // Once String is a struct, sema converts this to the struct type.
-            InstData::StringConst(_) => InferType::Concrete(Type::String),
+            // String constants use the builtin String struct type.
+            InstData::StringConst(_) => {
+                // Look up the String type from the structs map
+                if let Some(string_spur) = self.interner.get("String") {
+                    if let Some(&string_ty) = self.structs.get(&string_spur) {
+                        InferType::Concrete(string_ty)
+                    } else {
+                        // Fallback if String struct not found (shouldn't happen after builtin injection)
+                        InferType::Concrete(Type::Error)
+                    }
+                } else {
+                    InferType::Concrete(Type::Error)
+                }
+            }
 
             InstData::UnitConst => InferType::Concrete(Type::Unit),
 
@@ -988,9 +999,18 @@ impl<'a> ConstraintGenerator<'a> {
             "u64" => Type::U64,
             "bool" => Type::Bool,
             "()" => Type::Unit,
-            // Type::String migration path - sema converts to struct-based String
-            "String" => Type::String,
-            _ => return None, // Struct/enum types need to be looked up separately
+            _ => {
+                // Check for struct types (including builtin String)
+                if let Some(name_spur) = self.interner.get(name) {
+                    if let Some(&struct_ty) = self.structs.get(&name_spur) {
+                        return Some(InferType::Concrete(struct_ty));
+                    }
+                    if let Some(&enum_ty) = self.enums.get(&name_spur) {
+                        return Some(InferType::Concrete(enum_ty));
+                    }
+                }
+                return None;
+            }
         };
         Some(InferType::Concrete(ty))
     }

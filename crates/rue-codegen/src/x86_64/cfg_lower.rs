@@ -139,15 +139,13 @@ impl<'a> CfgLower<'a> {
 
     /// Check if a type is the builtin String struct.
     ///
-    /// Returns true if the type is a struct that is marked as builtin with name "String",
-    /// or if it's the legacy Type::String variant (migration path).
+    /// Returns true if the type is a struct that is marked as builtin with name "String".
     fn is_builtin_string(&self, ty: Type) -> bool {
         match ty {
             Type::Struct(struct_id) => {
                 let struct_def = &self.struct_defs[struct_id.0 as usize];
                 struct_def.is_builtin && struct_def.name == "String"
             }
-            Type::String => true, // Migration path - will be removed
             _ => false,
         }
     }
@@ -166,8 +164,6 @@ impl<'a> CfgLower<'a> {
                     return None;
                 }
             }
-            // Type::String migration path
-            Type::String => get_builtin_type("String")?,
             _ => return None,
         };
         builtin
@@ -1843,56 +1839,7 @@ impl<'a> CfgLower<'a> {
                                 }
                             }
                         }
-                        Type::String => {
-                            // Type::String migration path - once String becomes a struct,
-                            // the Type::Struct case handles it (String has 3 slots: ptr, len, cap)
-                            let arg_data = &self.cfg.get_inst(arg_value).data;
-                            match arg_data {
-                                CfgInstData::Load { slot } => {
-                                    // Load all 3 String fields from stack
-                                    for field_idx in 0..3u32 {
-                                        let field_vreg = self.mir.alloc_vreg();
-                                        let field_slot = slot + field_idx;
-                                        let offset = self.local_offset(field_slot);
-                                        self.mir.push(X86Inst::MovRM {
-                                            dst: Operand::Virtual(field_vreg),
-                                            base: Reg::Rbp,
-                                            offset,
-                                        });
-                                        flattened_vregs.push(field_vreg);
-                                    }
-                                }
-                                CfgInstData::Param { index } => {
-                                    // Load all 3 String fields from param slots
-                                    for field_idx in 0..3u32 {
-                                        let field_vreg = self.mir.alloc_vreg();
-                                        let param_slot = self.num_locals + index + field_idx;
-                                        let offset = self.local_offset(param_slot);
-                                        self.mir.push(X86Inst::MovRM {
-                                            dst: Operand::Virtual(field_vreg),
-                                            base: Reg::Rbp,
-                                            offset,
-                                        });
-                                        flattened_vregs.push(field_vreg);
-                                    }
-                                }
-                                CfgInstData::StringConst(_) | CfgInstData::Call { .. } => {
-                                    // String from a call result or string const - use vregs
-                                    if let Some(field_vregs) =
-                                        self.struct_slot_vregs.get(&arg_value)
-                                    {
-                                        flattened_vregs.extend(field_vregs.iter().copied());
-                                    } else {
-                                        // Single vreg case (shouldn't happen for String)
-                                        flattened_vregs.push(self.get_vreg(arg_value));
-                                    }
-                                }
-                                _ => {
-                                    // Fallback - should be rare for String
-                                    flattened_vregs.push(self.get_vreg(arg_value));
-                                }
-                            }
-                        }
+                        // Note: String is now Type::Struct, handled above
                         _ => {
                             flattened_vregs.push(self.get_vreg(arg_value));
                         }
@@ -1945,27 +1892,8 @@ impl<'a> CfgLower<'a> {
                 }
 
                 // Handle struct and string returns (multi-slot types)
-                if let Type::Struct(struct_id) = ty {
-                    let slot_count = self.type_slot_count(Type::Struct(struct_id));
-                    let mut slot_vregs = Vec::new();
-                    for slot_idx in 0..slot_count {
-                        let slot_vreg = self.mir.alloc_vreg();
-                        if (slot_idx as usize) < RET_REGS.len() {
-                            self.mir.push(X86Inst::MovRR {
-                                dst: Operand::Virtual(slot_vreg),
-                                src: Operand::Physical(RET_REGS[slot_idx as usize]),
-                            });
-                        }
-                        slot_vregs.push(slot_vreg);
-                    }
-                    self.struct_slot_vregs.insert(value, slot_vregs.clone());
-                    if let Some(&first_vreg) = slot_vregs.first() {
-                        self.mir.push(X86Inst::MovRR {
-                            dst: Operand::Virtual(result_vreg),
-                            src: Operand::Virtual(first_vreg),
-                        });
-                    }
-                } else if self.is_builtin_string(ty) {
+                // Check builtin String first - it uses sret convention
+                if self.is_builtin_string(ty) {
                     // Builtin String uses sret convention: result was written to [rsp]
                     // Load ptr, len, cap from stack
                     let mut slot_vregs = Vec::new();
@@ -1989,6 +1917,27 @@ impl<'a> CfgLower<'a> {
                         dst: Operand::Virtual(result_vreg),
                         src: Operand::Virtual(slot_vregs[0]),
                     });
+                } else if let Type::Struct(struct_id) = ty {
+                    // Non-builtin structs return in registers
+                    let slot_count = self.type_slot_count(Type::Struct(struct_id));
+                    let mut slot_vregs = Vec::new();
+                    for slot_idx in 0..slot_count {
+                        let slot_vreg = self.mir.alloc_vreg();
+                        if (slot_idx as usize) < RET_REGS.len() {
+                            self.mir.push(X86Inst::MovRR {
+                                dst: Operand::Virtual(slot_vreg),
+                                src: Operand::Physical(RET_REGS[slot_idx as usize]),
+                            });
+                        }
+                        slot_vregs.push(slot_vreg);
+                    }
+                    self.struct_slot_vregs.insert(value, slot_vregs.clone());
+                    if let Some(&first_vreg) = slot_vregs.first() {
+                        self.mir.push(X86Inst::MovRR {
+                            dst: Operand::Virtual(result_vreg),
+                            src: Operand::Virtual(first_vreg),
+                        });
+                    }
                 } else {
                     self.mir.push(X86Inst::MovRR {
                         dst: Operand::Virtual(result_vreg),

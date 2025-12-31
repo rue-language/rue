@@ -1554,7 +1554,7 @@ impl<'a> Sema<'a> {
             Type::Unit => "()".to_string(),
             Type::Never => "!".to_string(),
             Type::Error => "<error>".to_string(),
-            Type::String => "String".to_string(),
+            // Note: String is now handled via Type::Struct with builtin_string_id
             Type::Struct(struct_id) => self.struct_defs[struct_id.0 as usize].name.clone(),
             Type::Enum(enum_id) => self.enum_defs[enum_id.0 as usize].name.clone(),
             Type::Array(array_id) => {
@@ -1593,8 +1593,7 @@ impl<'a> Sema<'a> {
                 let struct_def = &self.struct_defs[struct_id.0 as usize];
                 struct_def.is_copy
             }
-            // String is a move type (owns heap data)
-            Type::String => false,
+            // Note: String is now handled via Type::Struct with is_builtin
             // Arrays are move types for now
             // TODO: Arrays of Copy types could be Copy
             Type::Array(_) => false,
@@ -1662,12 +1661,10 @@ impl<'a> Sema<'a> {
 
     /// Check if a type is the builtin String type.
     ///
-    /// This replaces direct `ty == Type::String` checks throughout sema.
     /// Uses the stored `builtin_string_id` for fast comparison.
     fn is_builtin_string(&self, ty: Type) -> bool {
         match ty {
             Type::Struct(struct_id) => Some(struct_id) == self.builtin_string_id,
-            Type::String => true, // Still support during migration
             _ => false,
         }
     }
@@ -1716,16 +1713,9 @@ impl<'a> Sema<'a> {
 
     /// Get the AIR output type for a builtin struct.
     ///
-    /// During migration, builtin types still use their Type enum variants
-    /// (e.g., Type::String) for AIR output so downstream code (codegen, drop_glue)
-    /// continues to work. This will be removed once all downstream code is migrated.
+    /// Builtin types like String are now represented as Type::Struct with is_builtin=true.
     fn builtin_air_type(&self, struct_id: StructId) -> Type {
-        // String is special - uses Type::String for AIR output
-        if Some(struct_id) == self.builtin_string_id {
-            Type::String
-        } else {
-            Type::Struct(struct_id)
-        }
+        Type::Struct(struct_id)
     }
 
     /// Check if a type is a linear type.
@@ -2806,10 +2796,8 @@ impl<'a> Sema<'a> {
             }
 
             InstData::StringConst(symbol) => {
-                // String literals - keep using Type::String for AIR output
-                // so downstream code (codegen, drop_glue) continues to work.
-                // The internal sema checks use struct-based queries.
-                let ty = Type::String;
+                // String literals use the builtin String struct type.
+                let ty = self.builtin_string_type();
                 // Add string to the string table
                 let string_content = self.interner.resolve(&*symbol).to_string();
                 let string_id = self.add_string(string_content);
@@ -5068,11 +5056,6 @@ impl<'a> Sema<'a> {
                 // Check that receiver is a struct type
                 let struct_id = match receiver_type {
                     Type::Struct(id) => id,
-                    Type::String => {
-                        // During migration, Type::String might still appear from inference
-                        // Fall back to builtin_string_id
-                        self.builtin_string_id.expect("builtin string not injected")
-                    }
                     _ => {
                         return Err(CompileError::new(
                             ErrorKind::MethodCallOnNonStruct {
@@ -5291,9 +5274,8 @@ impl<'a> Sema<'a> {
     fn resolve_type(&mut self, type_sym: Spur, span: Span) -> CompileResult<Type> {
         let type_name = self.interner.resolve(&type_sym);
 
-        // Check primitive and builtin types first.
-        // Note: String still uses Type::String for AIR compatibility with downstream code.
-        // Struct-based queries are used internally in sema.rs for method dispatch etc.
+        // Check primitive types first.
+        // Note: String is handled below via struct lookup (it's a builtin struct).
         match type_name {
             "i8" => return Ok(Type::I8),
             "i16" => return Ok(Type::I16),
@@ -5306,7 +5288,6 @@ impl<'a> Sema<'a> {
             "bool" => return Ok(Type::Bool),
             "()" => return Ok(Type::Unit),
             "!" => return Ok(Type::Never),
-            "String" => return Ok(Type::String),
             _ => {}
         }
 
@@ -5427,17 +5408,7 @@ impl<'a> Sema<'a> {
             Type::Unit | Type::Never => 0,
             // Enums are represented as their discriminant type (a scalar), so 1 slot
             Type::Enum(_) => 1,
-            // String during migration - use builtin struct's slot count
-            Type::String => {
-                // Fall through to synthetic struct handling
-                let string_id = self.builtin_string_id.expect("builtin string not injected");
-                let struct_def = &self.struct_defs[string_id.0 as usize];
-                struct_def
-                    .fields
-                    .iter()
-                    .map(|f| self.abi_slot_count(f.ty))
-                    .sum()
-            }
+            // Struct uses sum of all field slots (includes builtin String with 3 fields)
             Type::Struct(struct_id) => {
                 // Sum the slot counts of all fields (handles arrays, nested structs, and builtins)
                 // Empty structs naturally get 0 slots here

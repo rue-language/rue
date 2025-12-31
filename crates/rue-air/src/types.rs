@@ -45,8 +45,6 @@ pub enum Type {
     Enum(EnumId),
     /// Fixed-size array type: [T; N]
     Array(ArrayTypeId),
-    /// String type (ptr + len + cap, 24 bytes)
-    String,
     /// An error type (used during type checking to continue after errors)
     Error,
     /// The never type - represents computations that don't return (e.g., break, continue).
@@ -175,7 +173,6 @@ impl Type {
             Type::Struct(_) => "<struct>",
             Type::Enum(_) => "<enum>",
             Type::Array(_) => "<array>",
-            Type::String => "String",
             Type::Error => "<error>",
             Type::Never => "!",
         }
@@ -245,11 +242,6 @@ impl Type {
         }
     }
 
-    /// Check if this is a string type.
-    pub fn is_string(&self) -> bool {
-        matches!(self, Type::String)
-    }
-
     /// Check if this is a signed integer type.
     pub fn is_signed(&self) -> bool {
         matches!(self, Type::I8 | Type::I16 | Type::I32 | Type::I64)
@@ -265,9 +257,11 @@ impl Type {
     /// - Never type and Error type (for convenience in error recovery)
     ///
     /// Non-Copy types (move types) are:
-    /// - Struct types
-    /// - String
+    /// - Struct types (unless marked @copy, checked via StructDef.is_copy)
     /// - Array types (until we implement Copy arrays with Copy elements)
+    ///
+    /// Note: This method can't check struct's is_copy attribute since it doesn't
+    /// have access to StructDefs. Use Sema.is_type_copy() for full checking.
     pub fn is_copy(&self) -> bool {
         match self {
             // Primitive Copy types
@@ -285,10 +279,8 @@ impl Type {
             Type::Enum(_) => true,
             // Never and Error are Copy for convenience
             Type::Never | Type::Error => true,
-            // Struct types are move types
+            // Struct types are move types by default (may be @copy, but need StructDef to check)
             Type::Struct(_) => false,
-            // String is a move type (owns heap data)
-            Type::String => false,
             // Arrays are move types for now
             // TODO: Arrays of Copy types could be Copy
             Type::Array(_) => false,
@@ -445,7 +437,6 @@ mod tests {
     fn test_type_name_other() {
         assert_eq!(Type::Bool.name(), "bool");
         assert_eq!(Type::Unit.name(), "()");
-        assert_eq!(Type::String.name(), "String");
         assert_eq!(Type::Error.name(), "<error>");
         assert_eq!(Type::Never.name(), "!");
     }
@@ -479,7 +470,6 @@ mod tests {
     fn test_is_integer_non_integers() {
         assert!(!Type::Bool.is_integer());
         assert!(!Type::Unit.is_integer());
-        assert!(!Type::String.is_integer());
         assert!(!Type::Struct(StructId(0)).is_integer());
         assert!(!Type::Enum(EnumId(0)).is_integer());
         assert!(!Type::Array(ArrayTypeId(0)).is_integer());
@@ -604,15 +594,6 @@ mod tests {
         assert_eq!(Type::Struct(StructId(0)).as_array(), None);
     }
 
-    // ========== Type::is_string() tests ==========
-
-    #[test]
-    fn test_is_string() {
-        assert!(Type::String.is_string());
-        assert!(!Type::I32.is_string());
-        assert!(!Type::Array(ArrayTypeId(0)).is_string());
-    }
-
     // ========== Type::is_copy() tests ==========
 
     #[test]
@@ -644,9 +625,8 @@ mod tests {
 
     #[test]
     fn test_is_copy_move_types() {
-        // Struct, String, and Array are move types
+        // Struct and Array are move types (String is a builtin struct now)
         assert!(!Type::Struct(StructId(0)).is_copy());
-        assert!(!Type::String.is_copy());
         assert!(!Type::Array(ArrayTypeId(0)).is_copy());
     }
 
@@ -656,14 +636,13 @@ mod tests {
     fn test_can_coerce_to_same_type() {
         assert!(Type::I32.can_coerce_to(&Type::I32));
         assert!(Type::Bool.can_coerce_to(&Type::Bool));
-        assert!(Type::String.can_coerce_to(&Type::String));
+        assert!(Type::Struct(StructId(0)).can_coerce_to(&Type::Struct(StructId(0))));
     }
 
     #[test]
     fn test_can_coerce_to_never_coerces_to_anything() {
         assert!(Type::Never.can_coerce_to(&Type::I32));
         assert!(Type::Never.can_coerce_to(&Type::Bool));
-        assert!(Type::Never.can_coerce_to(&Type::String));
         assert!(Type::Never.can_coerce_to(&Type::Struct(StructId(0))));
     }
 
@@ -671,7 +650,7 @@ mod tests {
     fn test_can_coerce_to_error_coerces_to_anything() {
         assert!(Type::Error.can_coerce_to(&Type::I32));
         assert!(Type::Error.can_coerce_to(&Type::Bool));
-        assert!(Type::Error.can_coerce_to(&Type::String));
+        assert!(Type::Error.can_coerce_to(&Type::Struct(StructId(0))));
     }
 
     #[test]
@@ -679,7 +658,7 @@ mod tests {
         assert!(!Type::I32.can_coerce_to(&Type::Bool));
         assert!(!Type::Bool.can_coerce_to(&Type::I32));
         assert!(!Type::I32.can_coerce_to(&Type::I64));
-        assert!(!Type::String.can_coerce_to(&Type::I32));
+        assert!(!Type::Struct(StructId(0)).can_coerce_to(&Type::I32));
     }
 
     // ========== Type::literal_fits() tests ==========
@@ -742,7 +721,7 @@ mod tests {
     #[test]
     fn test_literal_fits_non_integer() {
         assert!(!Type::Bool.literal_fits(0));
-        assert!(!Type::String.literal_fits(0));
+        assert!(!Type::Struct(StructId(0)).literal_fits(0));
         assert!(!Type::Unit.literal_fits(0));
     }
 
@@ -784,7 +763,7 @@ mod tests {
     #[test]
     fn test_negated_literal_fits_non_integer() {
         assert!(!Type::Bool.negated_literal_fits(1));
-        assert!(!Type::String.negated_literal_fits(1));
+        assert!(!Type::Struct(StructId(0)).negated_literal_fits(1));
     }
 
     // ========== Type Display tests ==========

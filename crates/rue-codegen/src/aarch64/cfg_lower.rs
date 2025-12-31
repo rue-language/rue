@@ -311,14 +311,12 @@ impl<'a> CfgLower<'a> {
     /// Check if a type is the builtin String struct.
     ///
     /// Returns true if the type is a struct that is marked as builtin with name "String".
-    /// This is used to identify String types during the transition away from Type::String.
     fn is_builtin_string(&self, ty: Type) -> bool {
         match ty {
             Type::Struct(struct_id) => {
                 let struct_def = &self.struct_defs[struct_id.0 as usize];
                 struct_def.is_builtin && struct_def.name == "String"
             }
-            Type::String => true, // Keep compatibility during transition
             _ => false,
         }
     }
@@ -1575,8 +1573,7 @@ impl<'a> CfgLower<'a> {
                         continue;
                     }
 
-                    // Handle builtin String specially - check before the match
-                    // since String can be either Type::String or Type::Struct(builtin_string_id)
+                    // Handle builtin String specially (String is a builtin struct type)
                     if self.is_builtin_string(arg_type) {
                         // String has 3 slots: ptr, len, cap
                         let arg_data = &self.cfg.get_inst(arg_value).data;
@@ -1772,27 +1769,8 @@ impl<'a> CfgLower<'a> {
                 }
 
                 // Handle struct and string returns (multi-slot types)
-                if let Type::Struct(struct_id) = ty {
-                    let slot_count = self.type_slot_count(Type::Struct(struct_id));
-                    let mut slot_vregs = Vec::new();
-                    for slot_idx in 0..slot_count {
-                        let slot_vreg = self.mir.alloc_vreg();
-                        if (slot_idx as usize) < RET_REGS.len() {
-                            self.mir.push(Aarch64Inst::MovRR {
-                                dst: Operand::Virtual(slot_vreg),
-                                src: Operand::Physical(RET_REGS[slot_idx as usize]),
-                            });
-                        }
-                        slot_vregs.push(slot_vreg);
-                    }
-                    self.struct_slot_vregs.insert(value, slot_vregs.clone());
-                    if let Some(&first_vreg) = slot_vregs.first() {
-                        self.mir.push(Aarch64Inst::MovRR {
-                            dst: Operand::Virtual(result_vreg),
-                            src: Operand::Virtual(first_vreg),
-                        });
-                    }
-                } else if self.is_builtin_string(ty) {
+                // Check builtin String first - it uses sret convention
+                if self.is_builtin_string(ty) {
                     // String uses sret convention: result was written to [sp]
                     // Load ptr, len, cap from stack
                     let mut slot_vregs = Vec::new();
@@ -1817,6 +1795,27 @@ impl<'a> CfgLower<'a> {
                         dst: Operand::Virtual(result_vreg),
                         src: Operand::Virtual(slot_vregs[0]),
                     });
+                } else if let Type::Struct(struct_id) = ty {
+                    // Non-builtin structs return in registers
+                    let slot_count = self.type_slot_count(Type::Struct(struct_id));
+                    let mut slot_vregs = Vec::new();
+                    for slot_idx in 0..slot_count {
+                        let slot_vreg = self.mir.alloc_vreg();
+                        if (slot_idx as usize) < RET_REGS.len() {
+                            self.mir.push(Aarch64Inst::MovRR {
+                                dst: Operand::Virtual(slot_vreg),
+                                src: Operand::Physical(RET_REGS[slot_idx as usize]),
+                            });
+                        }
+                        slot_vregs.push(slot_vreg);
+                    }
+                    self.struct_slot_vregs.insert(value, slot_vregs.clone());
+                    if let Some(&first_vreg) = slot_vregs.first() {
+                        self.mir.push(Aarch64Inst::MovRR {
+                            dst: Operand::Virtual(result_vreg),
+                            src: Operand::Virtual(first_vreg),
+                        });
+                    }
                 } else {
                     // Move result from X0
                     self.mir.push(Aarch64Inst::MovRR {
