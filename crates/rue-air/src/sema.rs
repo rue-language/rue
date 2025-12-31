@@ -1552,7 +1552,8 @@ impl<'a> Sema<'a> {
                         name: struct_name,
                         fields: Vec::new(), // Filled in during resolve_declarations
                         is_copy,
-                        destructor: None, // Filled in during resolve_declarations
+                        destructor: None,  // Filled in during resolve_declarations
+                        is_builtin: false, // User-defined struct
                     });
                     self.structs.insert(*name, struct_id);
                 }

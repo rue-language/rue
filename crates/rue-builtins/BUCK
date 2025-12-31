@@ -1,0 +1,12 @@
+rust_library(
+    name = "rue-builtins",
+    srcs = glob(["src/**/*.rs"]),
+    deps = [],
+    visibility = ["PUBLIC"],
+)
+
+rust_test(
+    name = "rue-builtins-test",
+    srcs = glob(["src/**/*.rs"]),
+    deps = [],
+)

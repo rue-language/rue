@@ -65,6 +65,11 @@ pub struct StructDef {
     pub is_copy: bool,
     /// User-defined destructor function name, if any (e.g., "Data.__drop")
     pub destructor: Option<String>,
+    /// Whether this is a built-in type (e.g., String) injected by the compiler.
+    ///
+    /// Built-in types behave like regular structs but have runtime implementations
+    /// for their methods rather than generated code.
+    pub is_builtin: bool,
 }
 
 /// A field in a struct definition.
@@ -812,6 +817,7 @@ mod tests {
             ],
             is_copy: false,
             destructor: None,
+            is_builtin: false,
         };
 
         let (idx, field) = def.find_field("x").unwrap();
@@ -833,6 +839,7 @@ mod tests {
             fields: vec![],
             is_copy: false,
             destructor: None,
+            is_builtin: false,
         };
         assert_eq!(empty.field_count(), 0);
 
@@ -854,6 +861,7 @@ mod tests {
             ],
             is_copy: false,
             destructor: None,
+            is_builtin: false,
         };
         assert_eq!(with_fields.field_count(), 3);
     }
