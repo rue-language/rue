@@ -127,6 +127,7 @@ A linear type **MUST** be explicitly consumed. It is a compile-time error for a 
 A linear value is consumed when it is:
 - Passed as an argument to a function (the function is the consumer)
 - Returned from a function (the caller becomes responsible for consuming it)
+- Field access is performed on the value (the value is destructured)
 
 {{ rule(id="3.8:34", cat="example") }}
 

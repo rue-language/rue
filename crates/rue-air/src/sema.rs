@@ -4125,6 +4125,7 @@ impl<'a> Sema<'a> {
                 };
 
                 let struct_def = &self.struct_defs[struct_id.0 as usize];
+                let is_linear = struct_def.is_linear;
                 let field_name_str = self.interner.resolve(&*field).to_string();
 
                 let (field_index, struct_field) =
@@ -4138,8 +4139,19 @@ impl<'a> Sema<'a> {
 
                 let field_type = struct_field.ty;
 
-                // Check if accessing a non-Copy field - track field-level moves
-                if !self.is_type_copy(field_type) {
+                // For linear types, field access consumes the entire struct.
+                // This is a destructuring move - the struct is no longer usable after.
+                if is_linear {
+                    if let Some(root_var) = self.extract_root_variable(inst_ref) {
+                        // Mark the entire struct as fully moved (empty path = full move)
+                        ctx.moved_vars
+                            .entry(root_var)
+                            .or_default()
+                            .mark_path_moved(&[], inst.span);
+                    }
+                }
+                // For non-linear types, check if accessing a non-Copy field - track field-level moves
+                else if !self.is_type_copy(field_type) {
                     // Extract the full field path (root variable + field names)
                     if let Some((root_var, mut field_path)) = self.extract_field_path(inst_ref) {
                         // Check if this field path is already moved

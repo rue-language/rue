@@ -797,6 +797,7 @@ exit_code = 42
 name = "linear_field_access"
 spec = ["3.8:32", "3.8:33"]
 preview = "affine_mvs"
+preview_should_pass = true
 description = "Field access on linear struct counts as move (consuming)"
 source = """
 linear struct MustUse { value: i32 }
