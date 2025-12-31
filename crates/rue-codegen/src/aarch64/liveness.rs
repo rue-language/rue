@@ -1,20 +1,12 @@
-//! Liveness analysis for register allocation.
+//! Liveness analysis for AArch64 register allocation.
 //!
-//! This module computes which virtual registers are "live" (their values may still
-//! be used) at each program point. This information is used by the register
-//! allocator to determine when registers can be reused.
-//!
-//! The analysis handles control flow by:
-//! 1. Building a CFG from labels and branch instructions
-//! 2. Computing live-out sets using backward dataflow analysis
-//! 3. Extending live ranges to account for values live across branches
+//! This module provides AArch64 specific instruction information for liveness analysis.
+//! The actual dataflow algorithm is shared via [`crate::liveness`].
 
 use std::collections::HashMap;
 
-use fixedbitset::FixedBitSet;
-
-use super::mir::{Aarch64Inst, Aarch64Mir, LabelId, Operand, Reg, VReg};
-use crate::index_map::IndexMap;
+use super::mir::{Aarch64Inst, Aarch64Mir, Operand, Reg};
+use crate::vreg::{LabelId, VReg};
 
 // Re-export shared types from the regalloc module
 pub use crate::regalloc::{InstructionLiveness, LiveRange, LivenessDebugInfo};
@@ -32,176 +24,16 @@ pub type LivenessInfo = crate::regalloc::LivenessInfo<Reg>;
 pub fn analyze(mir: &Aarch64Mir) -> LivenessInfo {
     let instructions = mir.instructions();
     let num_insts = instructions.len();
-    let vreg_count = mir.vreg_count();
 
-    if num_insts == 0 {
-        return LivenessInfo {
-            ranges: IndexMap::new(),
-            live_at: Vec::new(),
-            clobbers_at: Vec::new(),
-        };
-    }
-
-    // Step 1: Build label -> instruction index map
-    let mut label_to_idx: HashMap<LabelId, usize> = HashMap::new();
-    for (idx, inst) in instructions.iter().enumerate() {
-        if let Aarch64Inst::Label { id } = inst {
-            label_to_idx.insert(*id, idx);
-        }
-    }
-
-    // Step 2: Build successor lists for each instruction
-    let mut successors: Vec<Vec<usize>> = vec![Vec::new(); num_insts];
-    for (idx, inst) in instructions.iter().enumerate() {
-        match inst {
-            // Unconditional branch - only successor is the target
-            Aarch64Inst::B { label } => {
-                if let Some(&target) = label_to_idx.get(label) {
-                    successors[idx].push(target);
-                }
-            }
-            // Conditional branches - successor is both target and fall-through
-            Aarch64Inst::BCond { label, .. }
-            | Aarch64Inst::Bvs { label }
-            | Aarch64Inst::Bvc { label }
-            | Aarch64Inst::Cbz { label, .. }
-            | Aarch64Inst::Cbnz { label, .. } => {
-                // Fall-through to next instruction
-                if idx + 1 < num_insts {
-                    successors[idx].push(idx + 1);
-                }
-                // Branch target
-                if let Some(&target) = label_to_idx.get(label) {
-                    successors[idx].push(target);
-                }
-            }
-            // Return has no successors
-            Aarch64Inst::Ret => {}
-            // Function calls fall through (callee returns)
-            Aarch64Inst::Bl { .. } => {
-                if idx + 1 < num_insts {
-                    successors[idx].push(idx + 1);
-                }
-            }
-            // All other instructions fall through to the next
-            _ => {
-                if idx + 1 < num_insts {
-                    successors[idx].push(idx + 1);
-                }
-            }
-        }
-    }
-
-    // Step 3: Backward dataflow analysis to compute live sets
-    // live_out[i] = union of live_in[s] for all successors s of i
-    // live_in[i] = uses[i] ∪ (live_out[i] - defs[i])
-    //
-    // Using FixedBitSet for efficient bitwise operations:
-    // - Union is O(n/64) bitwise OR instead of O(n) hash iteration
-    // - Memory is ~8-16 bytes per bitset vs ~400+ bytes per HashSet
-    // - Better cache locality (contiguous bits)
-    let vreg_count_usize = vreg_count as usize;
-    let mut live_in: Vec<FixedBitSet> =
-        vec![FixedBitSet::with_capacity(vreg_count_usize); num_insts];
-    let mut live_out: Vec<FixedBitSet> =
-        vec![FixedBitSet::with_capacity(vreg_count_usize); num_insts];
-
-    // Pre-compute uses and defs for each instruction
-    let inst_uses: Vec<Vec<VReg>> = instructions.iter().map(uses).collect();
-    let inst_defs: Vec<Vec<VReg>> = instructions.iter().map(defs).collect();
-
-    // Iterate until fixed point
-    let mut changed = true;
-    while changed {
-        changed = false;
-
-        // Process instructions in reverse order for faster convergence
-        for idx in (0..num_insts).rev() {
-            // Compute live_out as union of live_in of all successors
-            let mut new_live_out = FixedBitSet::with_capacity(vreg_count_usize);
-            for &succ in &successors[idx] {
-                new_live_out.union_with(&live_in[succ]);
-            }
-
-            // Compute live_in = uses ∪ (live_out - defs)
-            let mut new_live_in = new_live_out.clone();
-            for vreg in &inst_defs[idx] {
-                new_live_in.set(vreg.index() as usize, false);
-            }
-            for vreg in &inst_uses[idx] {
-                new_live_in.insert(vreg.index() as usize);
-            }
-
-            // Check if anything changed
-            if new_live_in != live_in[idx] || new_live_out != live_out[idx] {
-                changed = true;
-                live_in[idx] = new_live_in;
-                live_out[idx] = new_live_out;
-            }
-        }
-    }
-
-    // Step 4: Build live ranges from dataflow results
-    // A vreg is live at instruction i if it's in live_in[i] or live_out[i] or defined/used at i
-    let mut first_live: HashMap<VReg, usize> = HashMap::new();
-    let mut last_live: HashMap<VReg, usize> = HashMap::new();
-
-    for idx in 0..num_insts {
-        // Check definitions
-        for vreg in &inst_defs[idx] {
-            first_live.entry(*vreg).or_insert(idx);
-            last_live.insert(*vreg, idx);
-        }
-        // Check uses
-        for vreg in &inst_uses[idx] {
-            first_live.entry(*vreg).or_insert(idx);
-            last_live.insert(*vreg, idx);
-        }
-        // Check live_in (iterate over set bits in FixedBitSet)
-        for vreg_idx in live_in[idx].ones() {
-            let vreg = VReg::new(vreg_idx as u32);
-            first_live.entry(vreg).or_insert(idx);
-            if last_live.get(&vreg).map_or(true, |&last| idx > last) {
-                last_live.insert(vreg, idx);
-            }
-        }
-        // Check live_out (iterate over set bits in FixedBitSet)
-        for vreg_idx in live_out[idx].ones() {
-            let vreg = VReg::new(vreg_idx as u32);
-            first_live.entry(vreg).or_insert(idx);
-            if last_live.get(&vreg).map_or(true, |&last| idx > last) {
-                last_live.insert(vreg, idx);
-            }
-        }
-    }
-
-    // Build ranges using dense Vec storage
-    let mut ranges: IndexMap<VReg, Option<LiveRange>> =
-        IndexMap::with_capacity(vreg_count as usize);
-    ranges.resize(vreg_count as usize, None);
-    for vreg_idx in 0..vreg_count {
-        let vreg = VReg::new(vreg_idx);
-        if let (Some(&start), Some(&end)) = (first_live.get(&vreg), last_live.get(&vreg)) {
-            ranges[vreg] = Some(LiveRange::new(start, end));
-        }
-    }
-
-    // Compute live_at for each instruction (union of live_in and live_out)
-    let mut live_at: Vec<FixedBitSet> =
-        vec![FixedBitSet::with_capacity(vreg_count_usize); num_insts];
-    for (idx, (li, lo)) in live_in.iter().zip(live_out.iter()).enumerate() {
-        live_at[idx].union_with(li);
-        live_at[idx].union_with(lo);
-    }
-
-    // Collect clobbers
-    let clobbers_at: Vec<Vec<Reg>> = instructions.iter().map(|i| i.clobbers().to_vec()).collect();
-
-    LivenessInfo {
-        ranges,
-        live_at,
-        clobbers_at,
-    }
+    crate::liveness::analyze(
+        instructions,
+        mir.vreg_count(),
+        get_label,
+        |idx, inst, label_to_idx| get_successors(idx, inst, label_to_idx, num_insts),
+        uses,
+        defs,
+        |inst| inst.clobbers().to_vec(),
+    )
 }
 
 /// Compute detailed liveness debug information for Aarch64Mir.
@@ -211,156 +43,74 @@ pub fn analyze(mir: &Aarch64Mir) -> LivenessInfo {
 pub fn analyze_debug(mir: &Aarch64Mir) -> LivenessDebugInfo {
     let instructions = mir.instructions();
     let num_insts = instructions.len();
-    let vreg_count = mir.vreg_count();
 
-    if num_insts == 0 {
-        return LivenessDebugInfo {
-            instructions: Vec::new(),
-            live_ranges: IndexMap::new(),
-            vreg_count,
-        };
+    crate::liveness::analyze_debug::<_, Reg>(
+        instructions,
+        mir.vreg_count(),
+        get_label,
+        |idx, inst, label_to_idx| get_successors(idx, inst, label_to_idx, num_insts),
+        uses,
+        defs,
+    )
+}
+
+// ============================================================================
+// AArch64 specific instruction information
+// ============================================================================
+
+/// Get the label ID if this instruction is a label.
+fn get_label(inst: &Aarch64Inst) -> Option<LabelId> {
+    match inst {
+        Aarch64Inst::Label { id } => Some(*id),
+        _ => None,
     }
+}
 
-    // Step 1: Build label -> instruction index map
-    let mut label_to_idx: HashMap<LabelId, usize> = HashMap::new();
-    for (idx, inst) in instructions.iter().enumerate() {
-        if let Aarch64Inst::Label { id } = inst {
-            label_to_idx.insert(*id, idx);
+/// Get successor instruction indices for control flow analysis.
+fn get_successors(
+    idx: usize,
+    inst: &Aarch64Inst,
+    label_to_idx: &HashMap<LabelId, usize>,
+    num_insts: usize,
+) -> Vec<usize> {
+    match inst {
+        // Unconditional branch - only successor is the target
+        Aarch64Inst::B { label } => label_to_idx.get(label).copied().into_iter().collect(),
+        // Conditional branches - successor is both target and fall-through
+        Aarch64Inst::BCond { label, .. }
+        | Aarch64Inst::Bvs { label }
+        | Aarch64Inst::Bvc { label }
+        | Aarch64Inst::Cbz { label, .. }
+        | Aarch64Inst::Cbnz { label, .. } => {
+            let mut succs = Vec::with_capacity(2);
+            // Fall-through to next instruction
+            if idx + 1 < num_insts {
+                succs.push(idx + 1);
+            }
+            // Branch target
+            if let Some(&target) = label_to_idx.get(label) {
+                succs.push(target);
+            }
+            succs
         }
-    }
-
-    // Step 2: Build successor lists for each instruction
-    let mut successors: Vec<Vec<usize>> = vec![Vec::new(); num_insts];
-    for (idx, inst) in instructions.iter().enumerate() {
-        match inst {
-            Aarch64Inst::B { label } => {
-                if let Some(&target) = label_to_idx.get(label) {
-                    successors[idx].push(target);
-                }
-            }
-            Aarch64Inst::BCond { label, .. }
-            | Aarch64Inst::Bvs { label }
-            | Aarch64Inst::Bvc { label }
-            | Aarch64Inst::Cbz { label, .. }
-            | Aarch64Inst::Cbnz { label, .. } => {
-                if idx + 1 < num_insts {
-                    successors[idx].push(idx + 1);
-                }
-                if let Some(&target) = label_to_idx.get(label) {
-                    successors[idx].push(target);
-                }
-            }
-            Aarch64Inst::Ret => {}
-            Aarch64Inst::Bl { .. } => {
-                if idx + 1 < num_insts {
-                    successors[idx].push(idx + 1);
-                }
-            }
-            _ => {
-                if idx + 1 < num_insts {
-                    successors[idx].push(idx + 1);
-                }
+        // Return has no successors
+        Aarch64Inst::Ret => Vec::new(),
+        // Function calls fall through (callee returns)
+        Aarch64Inst::Bl { .. } => {
+            if idx + 1 < num_insts {
+                vec![idx + 1]
+            } else {
+                Vec::new()
             }
         }
-    }
-
-    // Step 3: Backward dataflow analysis using FixedBitSet for efficiency
-    let vreg_count_usize = vreg_count as usize;
-    let mut live_in: Vec<FixedBitSet> =
-        vec![FixedBitSet::with_capacity(vreg_count_usize); num_insts];
-    let mut live_out: Vec<FixedBitSet> =
-        vec![FixedBitSet::with_capacity(vreg_count_usize); num_insts];
-
-    let inst_uses: Vec<Vec<VReg>> = instructions.iter().map(uses).collect();
-    let inst_defs: Vec<Vec<VReg>> = instructions.iter().map(defs).collect();
-
-    let mut changed = true;
-    while changed {
-        changed = false;
-
-        for idx in (0..num_insts).rev() {
-            let mut new_live_out = FixedBitSet::with_capacity(vreg_count_usize);
-            for &succ in &successors[idx] {
-                new_live_out.union_with(&live_in[succ]);
-            }
-
-            let mut new_live_in = new_live_out.clone();
-            for vreg in &inst_defs[idx] {
-                new_live_in.set(vreg.index() as usize, false);
-            }
-            for vreg in &inst_uses[idx] {
-                new_live_in.insert(vreg.index() as usize);
-            }
-
-            if new_live_in != live_in[idx] || new_live_out != live_out[idx] {
-                changed = true;
-                live_in[idx] = new_live_in;
-                live_out[idx] = new_live_out;
+        // All other instructions fall through to the next
+        _ => {
+            if idx + 1 < num_insts {
+                vec![idx + 1]
+            } else {
+                Vec::new()
             }
         }
-    }
-
-    // Step 4: Build live ranges from dataflow results
-    let mut first_live: HashMap<VReg, usize> = HashMap::new();
-    let mut last_live: HashMap<VReg, usize> = HashMap::new();
-
-    for idx in 0..num_insts {
-        for vreg in &inst_defs[idx] {
-            first_live.entry(*vreg).or_insert(idx);
-            last_live.insert(*vreg, idx);
-        }
-        for vreg in &inst_uses[idx] {
-            first_live.entry(*vreg).or_insert(idx);
-            last_live.insert(*vreg, idx);
-        }
-        // Iterate over set bits in FixedBitSet
-        for vreg_idx in live_in[idx].ones() {
-            let vreg = VReg::new(vreg_idx as u32);
-            first_live.entry(vreg).or_insert(idx);
-            if last_live.get(&vreg).map_or(true, |&last| idx > last) {
-                last_live.insert(vreg, idx);
-            }
-        }
-        for vreg_idx in live_out[idx].ones() {
-            let vreg = VReg::new(vreg_idx as u32);
-            first_live.entry(vreg).or_insert(idx);
-            if last_live.get(&vreg).map_or(true, |&last| idx > last) {
-                last_live.insert(vreg, idx);
-            }
-        }
-    }
-
-    // Build ranges using dense Vec storage
-    let mut live_ranges: IndexMap<VReg, Option<crate::regalloc::LiveRange>> =
-        IndexMap::with_capacity(vreg_count as usize);
-    live_ranges.resize(vreg_count as usize, None);
-    for vreg_idx in 0..vreg_count {
-        let vreg = VReg::new(vreg_idx);
-        if let (Some(&start), Some(&end)) = (first_live.get(&vreg), last_live.get(&vreg)) {
-            live_ranges[vreg] = Some(crate::regalloc::LiveRange::new(start, end));
-        }
-    }
-
-    // Helper to convert FixedBitSet to HashSet<VReg> for debug output
-    let bitset_to_hashset = |bs: &FixedBitSet| -> std::collections::HashSet<VReg> {
-        bs.ones().map(|idx| VReg::new(idx as u32)).collect()
-    };
-
-    // Build per-instruction liveness info (convert to HashSet for debug output)
-    let instruction_liveness: Vec<InstructionLiveness> = (0..num_insts)
-        .map(|idx| InstructionLiveness {
-            index: idx,
-            live_in: bitset_to_hashset(&live_in[idx]),
-            live_out: bitset_to_hashset(&live_out[idx]),
-            defs: inst_defs[idx].clone(),
-            uses: inst_uses[idx].clone(),
-        })
-        .collect();
-
-    LivenessDebugInfo {
-        instructions: instruction_liveness,
-        live_ranges,
-        vreg_count: mir.vreg_count(),
     }
 }
 
@@ -689,17 +439,6 @@ mod tests {
 
     #[test]
     fn test_liveness_across_branch() {
-        // Test that liveness analysis correctly handles control flow.
-        // Code pattern:
-        //   v0 = 1
-        //   cbz v0, label_else
-        //   v1 = v0  ; v0 used in then branch
-        //   b label_end
-        // label_else:
-        //   v1 = 2
-        // label_end:
-        //   ret
-
         let mut mir = Aarch64Mir::new();
         let v0 = mir.alloc_vreg();
         let v1 = mir.alloc_vreg();
@@ -804,14 +543,6 @@ mod tests {
 
     #[test]
     fn test_liveness_loop_pattern() {
-        // Test a simple loop pattern where a value is used across a back edge
-        //   v0 = 10
-        // loop:
-        //   v1 = v0
-        //   v0 = v0 - 1
-        //   cbnz v0, loop
-        //   ret
-
         let mut mir = Aarch64Mir::new();
         let v0 = mir.alloc_vreg();
         let v1 = mir.alloc_vreg();
