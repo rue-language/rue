@@ -819,3 +819,211 @@ fn main() -> i32 { 0 }
 """
 compile_fail = true
 error_contains = "preview feature"
+
+# =============================================================================
+# @handle Directive (Preview: affine_mvs)
+# =============================================================================
+
+[[case]]
+name = "handle_struct_basic"
+spec = ["3.8:40", "3.8:42", "3.8:44", "3.8:45"]
+preview = "affine_mvs"
+description = "@handle struct with valid .handle() method"
+source = """
+@handle
+struct Counter { count: i32 }
+
+impl Counter {
+    fn handle(self) -> Counter {
+        Counter { count: self.count }
+    }
+}
+
+fn main() -> i32 {
+    let a = Counter { count: 42 };
+    let b = a.handle();
+    b.count
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "handle_struct_explicit_duplication"
+spec = ["3.8:40", "3.8:45"]
+preview = "affine_mvs"
+description = "@handle struct can be explicitly duplicated via .handle()"
+source = """
+@handle
+struct Value { n: i32 }
+
+impl Value {
+    fn handle(self) -> Value {
+        Value { n: self.n }
+    }
+}
+
+fn main() -> i32 {
+    let a = Value { n: 10 };
+    let b = a.handle();  // explicit duplication
+    b.n
+}
+"""
+exit_code = 10
+
+[[case]]
+name = "handle_struct_missing_method_error"
+spec = ["3.8:42"]
+preview = "affine_mvs"
+description = "@handle struct without .handle() method is an error"
+source = """
+@handle
+struct NoMethod { value: i32 }
+
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = "has no `handle` method"
+
+[[case]]
+name = "handle_struct_wrong_return_type_error"
+spec = ["3.8:43"]
+preview = "affine_mvs"
+description = "@handle method with wrong return type is an error"
+source = """
+@handle
+struct BadReturn { value: i32 }
+
+impl BadReturn {
+    fn handle(self) -> i32 {
+        self.value
+    }
+}
+
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = "wrong signature"
+
+[[case]]
+name = "handle_struct_extra_param_error"
+spec = ["3.8:43"]
+preview = "affine_mvs"
+description = "@handle method with extra parameters is an error"
+source = """
+@handle
+struct ExtraParam { value: i32 }
+
+impl ExtraParam {
+    fn handle(self, extra: i32) -> ExtraParam {
+        ExtraParam { value: self.value + extra }
+    }
+}
+
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = "wrong signature"
+
+[[case]]
+name = "handle_struct_no_self_error"
+spec = ["3.8:43"]
+preview = "affine_mvs"
+description = "@handle method without self is an error"
+source = """
+@handle
+struct NoSelf { value: i32 }
+
+impl NoSelf {
+    fn handle() -> NoSelf {
+        NoSelf { value: 0 }
+    }
+}
+
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = "wrong signature"
+
+[[case]]
+name = "handle_requires_preview"
+spec = ["3.8:40"]
+description = "@handle directive requires affine_mvs preview feature"
+source = """
+@handle
+struct Counter { count: i32 }
+
+impl Counter {
+    fn handle(self) -> Counter {
+        Counter { count: self.count }
+    }
+}
+
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = "preview feature"
+
+[[case]]
+name = "handle_with_linear"
+spec = ["3.8:49"]
+preview = "affine_mvs"
+description = "Linear struct can be marked @handle"
+source = """
+@handle
+linear struct Transaction { id: i32 }
+
+impl Transaction {
+    fn handle(self) -> Transaction {
+        Transaction { id: self.id }
+    }
+}
+
+fn consume(t: Transaction) -> i32 { t.id }
+
+fn main() -> i32 {
+    let t = Transaction { id: 42 };
+    let t2 = t.handle();
+    consume(t2)
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "handle_directive_syntax"
+spec = ["3.8:41"]
+preview = "affine_mvs"
+description = "@handle directive appears before struct definition"
+source = """
+@handle
+struct Data { value: i32 }
+
+impl Data {
+    fn handle(self) -> Data {
+        Data { value: self.value }
+    }
+}
+
+fn main() -> i32 {
+    let d = Data { value: 5 };
+    let d2 = d.handle();
+    d2.value
+}
+"""
+exit_code = 5
+
+[[case]]
+name = "copy_struct_implicit_handle_semantics"
+spec = ["3.8:47"]
+description = "@copy struct can be duplicated without explicit .handle() method"
+source = """
+@copy
+struct Point { x: i32, y: i32 }
+
+fn main() -> i32 {
+    let p = Point { x: 1, y: 2 };
+    let q = p;  // implicit copy (handle semantics without .handle() method)
+    let r = p;  // can copy again
+    p.x + q.x + r.x
+}
+"""
+exit_code = 3

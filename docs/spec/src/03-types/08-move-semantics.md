@@ -174,6 +174,78 @@ Linear types are useful for:
 - Protocol enforcement (ensuring state machine transitions are completed)
 - Results that must be checked (similar to `must_use` attributes)
 
+## The `@handle` Directive
+
+{{ rule(id="3.8:40", cat="normative") }}
+
+A struct type **MAY** be declared as a handle type using the `@handle` directive before the struct definition. Handle types support explicit duplication via a `.handle()` method.
+
+{{ rule(id="3.8:41", cat="syntax") }}
+
+```ebnf
+handle_struct = "@handle" struct_def ;
+```
+
+{{ rule(id="3.8:42", cat="normative") }}
+
+A struct marked with `@handle` **MUST** provide a method named `handle` with the following signature:
+
+```rue
+fn handle(self) -> T
+```
+
+where `T` is the handle struct type. It is a compile-time error to mark a struct with `@handle` if it does not provide this method.
+
+{{ rule(id="3.8:43", cat="legality-rule") }}
+
+The `handle` method **MUST** take exactly one parameter (`self` of the struct type) and **MUST** return the same struct type. It is a compile-time error if the method signature differs.
+
+{{ rule(id="3.8:44", cat="example") }}
+
+```rue
+@handle
+struct Counter { count: i32 }
+
+impl Counter {
+    fn handle(self) -> Counter {
+        Counter { count: self.count }
+    }
+}
+
+fn main() -> i32 {
+    let a = Counter { count: 1 };
+    let b = a.handle();  // explicit duplication
+    b.count
+}
+```
+
+{{ rule(id="3.8:45", cat="normative") }}
+
+Calling `.handle()` on a handle type consumes the receiver and returns a new owned value. Both the original and the returned value are valid after the call.
+
+{{ rule(id="3.8:46", cat="informative") }}
+
+Handle types are useful for:
+- Reference-counted types (Rc, Arc) where duplication increments the count
+- Interned strings where duplication is cheap
+- Shared resources where explicit duplication makes cost visible
+
+{{ rule(id="3.8:47", cat="normative") }}
+
+A `@copy` struct implicitly supports handle semantics. Any `@copy` type can be explicitly duplicated, although the `.handle()` method is not required.
+
+{{ rule(id="3.8:48", cat="informative") }}
+
+The difference between `@copy` and `@handle`:
+- `@copy` types are duplicated implicitly when used
+- `@handle` types require explicit `.handle()` calls for duplication
+- `@copy` is appropriate for small, cheap-to-copy types (like `Point`)
+- `@handle` is appropriate for types where duplication has visible cost (like reference-counted types)
+
+{{ rule(id="3.8:49", cat="normative") }}
+
+A linear struct **MAY** be marked with `@handle` if explicit duplication is meaningful (e.g., forking a transaction).
+
 ## Use After Move
 
 {{ rule(id="3.8:5", cat="legality-rule") }}

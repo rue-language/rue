@@ -501,6 +501,17 @@ pub enum ErrorKind {
     /// Linear struct cannot be marked @copy
     #[error("linear struct '{0}' cannot be marked @copy")]
     LinearStructCopy(String),
+    /// @handle struct missing required .handle() method
+    #[error("struct '{struct_name}' is marked @handle but has no `handle` method")]
+    HandleStructMissingMethod { struct_name: String },
+    /// @handle struct's .handle() method has wrong signature
+    #[error(
+        "struct '{struct_name}' has `handle` method with wrong signature: expected `fn handle(self: {struct_name}) -> {struct_name}`, found `{found_signature}`"
+    )]
+    HandleMethodWrongSignature {
+        struct_name: String,
+        found_signature: String,
+    },
     /// Duplicate method definition in impl blocks for the same type
     #[error("duplicate method '{method_name}' for type '{type_name}'")]
     DuplicateMethod {
