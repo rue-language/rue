@@ -283,6 +283,21 @@ impl<'a> CfgLower<'a> {
         ptr_vreg
     }
 
+    /// Check if a type is the builtin String struct.
+    ///
+    /// Returns true if the type is a struct that is marked as builtin with name "String".
+    /// This is used to identify String types during the transition away from Type::String.
+    fn is_builtin_string(&self, ty: Type) -> bool {
+        match ty {
+            Type::Struct(struct_id) => {
+                let struct_def = &self.struct_defs[struct_id.0 as usize];
+                struct_def.is_builtin && struct_def.name == "String"
+            }
+            Type::String => true, // Keep compatibility during transition
+            _ => false,
+        }
+    }
+
     /// Emit a bounds check for array indexing.
     ///
     /// Generates code to check that `index_vreg < length` and calls `__rue_bounds_check`
@@ -943,7 +958,7 @@ impl<'a> CfgLower<'a> {
             CfgInstData::Eq(lhs, rhs) => {
                 let lhs_ty = self.cfg.get_inst(*lhs).ty;
 
-                if lhs_ty == Type::String {
+                if self.is_builtin_string(lhs_ty) {
                     // String equality: call __rue_str_eq(ptr1, len1, ptr2, len2)
                     let vreg = self.emit_string_eq_call(*lhs, *rhs);
                     self.value_map.insert(value, vreg);
@@ -966,7 +981,7 @@ impl<'a> CfgLower<'a> {
             CfgInstData::Ne(lhs, rhs) => {
                 let lhs_ty = self.cfg.get_inst(*lhs).ty;
 
-                if lhs_ty == Type::String {
+                if self.is_builtin_string(lhs_ty) {
                     // String inequality: call __rue_str_eq and invert result
                     let vreg = self.emit_string_eq_call(*lhs, *rhs);
                     self.value_map.insert(value, vreg);
@@ -1235,7 +1250,7 @@ impl<'a> CfgLower<'a> {
                             offset,
                         });
                     }
-                } else if init_type == Type::String {
+                } else if self.is_builtin_string(init_type) {
                     // String: store ptr, len, and cap to consecutive slots
                     let field_vregs = self
                         .struct_slot_vregs
@@ -1289,7 +1304,7 @@ impl<'a> CfgLower<'a> {
             CfgInstData::Load { slot } => {
                 let load_type = self.cfg.get_inst(value).ty;
 
-                if load_type == Type::String {
+                if self.is_builtin_string(load_type) {
                     // String: load ptr, len, and cap from consecutive slots
                     let ptr_vreg = self.mir.alloc_vreg();
                     let len_vreg = self.mir.alloc_vreg();
@@ -1364,7 +1379,7 @@ impl<'a> CfgLower<'a> {
 
             CfgInstData::Store { slot, value: val } => {
                 let val_type = self.cfg.get_inst(*val).ty;
-                if val_type == Type::String {
+                if self.is_builtin_string(val_type) {
                     // String: store ptr, len, and cap to consecutive slots
                     let field_vregs = self
                         .struct_slot_vregs
@@ -1459,7 +1474,7 @@ impl<'a> CfgLower<'a> {
                 self.value_map.insert(value, result_vreg);
 
                 // Check if this call returns a String (uses sret convention)
-                let is_sret_call = ty == Type::String;
+                let is_sret_call = self.is_builtin_string(ty);
 
                 // For sret calls, allocate 32 bytes on stack for the return value (24 bytes + padding for 16-byte alignment)
                 // We'll pass a pointer to this space as the first argument
@@ -1532,6 +1547,57 @@ impl<'a> CfgLower<'a> {
                             }
                         }
                         flattened_vregs.push(addr_vreg);
+                        continue;
+                    }
+
+                    // Handle builtin String specially - check before the match
+                    // since String can be either Type::String or Type::Struct(builtin_string_id)
+                    if self.is_builtin_string(arg_type) {
+                        // String has 3 slots: ptr, len, cap
+                        let arg_data = &self.cfg.get_inst(arg_value).data;
+                        match arg_data {
+                            CfgInstData::Load { slot } => {
+                                // Load all 3 String fields from stack
+                                for field_idx in 0..3u32 {
+                                    let field_vreg = self.mir.alloc_vreg();
+                                    let field_slot = slot + field_idx;
+                                    let offset = self.local_offset(field_slot);
+                                    self.mir.push(Aarch64Inst::Ldr {
+                                        dst: Operand::Virtual(field_vreg),
+                                        base: Reg::Fp,
+                                        offset,
+                                    });
+                                    flattened_vregs.push(field_vreg);
+                                }
+                            }
+                            CfgInstData::Param { index } => {
+                                // Load all 3 String fields from param slots
+                                for field_idx in 0..3u32 {
+                                    let field_vreg = self.mir.alloc_vreg();
+                                    let param_slot = self.num_locals + index + field_idx;
+                                    let offset = self.local_offset(param_slot);
+                                    self.mir.push(Aarch64Inst::Ldr {
+                                        dst: Operand::Virtual(field_vreg),
+                                        base: Reg::Fp,
+                                        offset,
+                                    });
+                                    flattened_vregs.push(field_vreg);
+                                }
+                            }
+                            CfgInstData::StringConst(_) | CfgInstData::Call { .. } => {
+                                // String from a call result or string const - use vregs
+                                if let Some(field_vregs) = self.struct_slot_vregs.get(&arg_value) {
+                                    flattened_vregs.extend(field_vregs.iter().copied());
+                                } else {
+                                    // Single vreg case (shouldn't happen for String)
+                                    flattened_vregs.push(self.get_vreg(arg_value));
+                                }
+                            }
+                            _ => {
+                                // Fallback - should be rare for String
+                                flattened_vregs.push(self.get_vreg(arg_value));
+                            }
+                        }
                         continue;
                     }
 
@@ -1623,56 +1689,6 @@ impl<'a> CfgLower<'a> {
                                 }
                             }
                         }
-                        Type::String => {
-                            // String has 3 slots: ptr, len, cap
-                            // Handle like a struct with 3 fields
-                            let arg_data = &self.cfg.get_inst(arg_value).data;
-                            match arg_data {
-                                CfgInstData::Load { slot } => {
-                                    // Load all 3 String fields from stack
-                                    for field_idx in 0..3u32 {
-                                        let field_vreg = self.mir.alloc_vreg();
-                                        let field_slot = slot + field_idx;
-                                        let offset = self.local_offset(field_slot);
-                                        self.mir.push(Aarch64Inst::Ldr {
-                                            dst: Operand::Virtual(field_vreg),
-                                            base: Reg::Fp,
-                                            offset,
-                                        });
-                                        flattened_vregs.push(field_vreg);
-                                    }
-                                }
-                                CfgInstData::Param { index } => {
-                                    // Load all 3 String fields from param slots
-                                    for field_idx in 0..3u32 {
-                                        let field_vreg = self.mir.alloc_vreg();
-                                        let param_slot = self.num_locals + index + field_idx;
-                                        let offset = self.local_offset(param_slot);
-                                        self.mir.push(Aarch64Inst::Ldr {
-                                            dst: Operand::Virtual(field_vreg),
-                                            base: Reg::Fp,
-                                            offset,
-                                        });
-                                        flattened_vregs.push(field_vreg);
-                                    }
-                                }
-                                CfgInstData::StringConst(_) | CfgInstData::Call { .. } => {
-                                    // String from a call result or string const - use vregs
-                                    if let Some(field_vregs) =
-                                        self.struct_slot_vregs.get(&arg_value)
-                                    {
-                                        flattened_vregs.extend(field_vregs.iter().copied());
-                                    } else {
-                                        // Single vreg case (shouldn't happen for String)
-                                        flattened_vregs.push(self.get_vreg(arg_value));
-                                    }
-                                }
-                                _ => {
-                                    // Fallback - should be rare for String
-                                    flattened_vregs.push(self.get_vreg(arg_value));
-                                }
-                            }
-                        }
                         _ => {
                             flattened_vregs.push(self.get_vreg(arg_value));
                         }
@@ -1751,7 +1767,7 @@ impl<'a> CfgLower<'a> {
                             src: Operand::Virtual(first_vreg),
                         });
                     }
-                } else if ty == Type::String {
+                } else if self.is_builtin_string(ty) {
                     // String uses sret convention: result was written to [sp]
                     // Load ptr, len, cap from stack
                     let mut slot_vregs = Vec::new();
@@ -1797,7 +1813,7 @@ impl<'a> CfgLower<'a> {
                     let arg_type = self.cfg.get_inst(arg_val).ty;
 
                     // Handle String arguments separately
-                    if arg_type == Type::String {
+                    if self.is_builtin_string(arg_type) {
                         // String is a fat pointer stored as [ptr_vreg, len_vreg] in struct_slot_vregs
                         if let Some(field_vregs) = self.struct_slot_vregs.get(&arg_val) {
                             let ptr_vreg = field_vregs[0];
@@ -2386,7 +2402,7 @@ impl<'a> CfgLower<'a> {
                 let dropped_ty = self.cfg.get_inst(*dropped_value).ty;
 
                 // Handle String specially - it's a fat pointer (ptr, len, cap)
-                if dropped_ty == Type::String {
+                if self.is_builtin_string(dropped_ty) {
                     // String requires all 3 slots as arguments to __rue_drop_String
                     // First, try to get the vregs from cache
                     let field_vregs =
@@ -3125,7 +3141,7 @@ impl<'a> CfgLower<'a> {
         let lhs_ty = self.cfg.get_inst(lhs).ty;
 
         // Special handling for string comparisons
-        if lhs_ty == Type::String {
+        if self.is_builtin_string(lhs_ty) {
             // String comparison requires calling __rue_str_eq runtime function
             // Strings are fat pointers: [ptr_vreg, len_vreg] in struct_slot_vregs
 
