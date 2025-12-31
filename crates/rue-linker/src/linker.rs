@@ -503,20 +503,123 @@ impl Linker {
             let patch_offset = offset as usize;
 
             match rel_type {
-                RelocationType::Pc32
-                | RelocationType::Plt32
-                | RelocationType::GotPcRel
-                | RelocationType::GotPcRelX
-                | RelocationType::RexGotPcRelX => {
+                RelocationType::Pc32 | RelocationType::Plt32 => {
                     // S + A - P, where S is symbol address, A is addend, P is place
-                    //
-                    // For GOT relocations (GotPcRel, GotPcRelX, RexGotPcRelX), we perform
-                    // "GOT relaxation": instead of computing the address through the GOT,
-                    // we directly compute the PC-relative offset to the symbol.
-                    // This works because we're doing static linking and all symbols
-                    // have known addresses at link time.
                     let value = target_addr as i64 + addend - pc as i64;
                     // Check for overflow: value must fit in i32
+                    if value < i32::MIN as i64 || value > i32::MAX as i64 {
+                        return Err(LinkError::RelocationOverflow {
+                            symbol: sym_name.clone(),
+                            rel_type: format!("{:?}", rel_type),
+                        });
+                    }
+                    if patch_offset + 4 > merged_code.len() {
+                        return Err(LinkError::RelocationPatchOutOfBounds {
+                            patch_offset,
+                            patch_size: 4,
+                            section_size: merged_code.len(),
+                            rel_type: format!("{:?}", rel_type),
+                        });
+                    }
+                    merged_code[patch_offset..patch_offset + 4]
+                        .copy_from_slice(&(value as i32).to_le_bytes());
+                }
+                RelocationType::GotPcRel => {
+                    // R_X86_64_GOTPCREL: Load from GOT entry.
+                    // For static linking, we "relax" this to compute the address directly.
+                    // Unlike GotPcRelX/RexGotPcRelX, we don't rewrite the opcode because
+                    // the instruction might not support the transformation.
+                    // The instruction will dereference the computed address, which works
+                    // correctly if the symbol is data being accessed.
+                    let value = target_addr as i64 + addend - pc as i64;
+                    if value < i32::MIN as i64 || value > i32::MAX as i64 {
+                        return Err(LinkError::RelocationOverflow {
+                            symbol: sym_name.clone(),
+                            rel_type: format!("{:?}", rel_type),
+                        });
+                    }
+                    if patch_offset + 4 > merged_code.len() {
+                        return Err(LinkError::RelocationPatchOutOfBounds {
+                            patch_offset,
+                            patch_size: 4,
+                            section_size: merged_code.len(),
+                            rel_type: format!("{:?}", rel_type),
+                        });
+                    }
+                    merged_code[patch_offset..patch_offset + 4]
+                        .copy_from_slice(&(value as i32).to_le_bytes());
+                }
+                RelocationType::GotPcRelX => {
+                    // R_X86_64_GOTPCRELX: GOT access without REX prefix.
+                    // For static linking, we perform GOT relaxation:
+                    // - `mov reg, [rip+disp]` (8B) -> `lea reg, [rip+disp]` (8D)
+                    // - `call *[rip+disp]` (FF /2) -> `addr32 call rel32` (67 E8)
+                    //
+                    // The relocation offset points to the displacement, so:
+                    // - For MOV: opcode is at offset - 2
+                    // - For CALL: opcode (FF) is at offset - 2, ModR/M is at offset - 1
+                    if patch_offset >= 2 {
+                        let opcode_offset = patch_offset - 2;
+                        if merged_code[opcode_offset] == 0xFF
+                            && merged_code[opcode_offset + 1] & 0x38 == 0x10
+                        {
+                            // Indirect call: `call *[rip+disp]` (FF /2, ModR/M 15)
+                            // Transform to: `addr32 call rel32` (67 E8)
+                            merged_code[opcode_offset] = 0x67; // addr32 prefix
+                            merged_code[opcode_offset + 1] = 0xE8; // direct call opcode
+                        } else if merged_code[opcode_offset] == 0x8B {
+                            // MOV: `mov reg, [rip+disp]` -> `lea reg, [rip+disp]`
+                            merged_code[opcode_offset] = 0x8D; // LEA opcode
+                        }
+                        // Other patterns: just patch displacement (best effort)
+                    }
+
+                    let value = target_addr as i64 + addend - pc as i64;
+                    if value < i32::MIN as i64 || value > i32::MAX as i64 {
+                        return Err(LinkError::RelocationOverflow {
+                            symbol: sym_name.clone(),
+                            rel_type: format!("{:?}", rel_type),
+                        });
+                    }
+                    if patch_offset + 4 > merged_code.len() {
+                        return Err(LinkError::RelocationPatchOutOfBounds {
+                            patch_offset,
+                            patch_size: 4,
+                            section_size: merged_code.len(),
+                            rel_type: format!("{:?}", rel_type),
+                        });
+                    }
+                    merged_code[patch_offset..patch_offset + 4]
+                        .copy_from_slice(&(value as i32).to_le_bytes());
+                }
+                RelocationType::RexGotPcRelX => {
+                    // R_X86_64_REX_GOTPCRELX: GOT access with REX prefix.
+                    // For static linking, we perform GOT relaxation:
+                    // - `mov reg, [rip+disp]` (REX 8B) -> `lea reg, [rip+disp]` (REX 8D)
+                    // - `call *[rip+disp]` (REX FF /2) -> `addr32 call rel32` (REX 67 E8)
+                    //
+                    // The relocation offset points to the displacement, so:
+                    // - For MOV with REX: REX is at offset - 3, opcode at offset - 2
+                    // - For CALL with REX: similar layout
+                    if patch_offset >= 2 {
+                        let opcode_offset = patch_offset - 2;
+                        if merged_code[opcode_offset] == 0xFF
+                            && merged_code[opcode_offset + 1] & 0x38 == 0x10
+                        {
+                            // Indirect call with REX: `REX call *[rip+disp]` (4x FF /2)
+                            // Transform to: `addr32 call rel32` (67 E8) - REX stays at offset-3
+                            // Actually, we rewrite the FF 15 -> 67 E8
+                            merged_code[opcode_offset] = 0x67; // addr32 prefix
+                            merged_code[opcode_offset + 1] = 0xE8; // direct call opcode
+                        // Note: REX prefix at offset-3 becomes harmless (no-op for CALL)
+                        } else if merged_code[opcode_offset] == 0x8B {
+                            // MOV with REX: `REX mov reg, [rip+disp]` -> `REX lea reg, [rip+disp]`
+                            merged_code[opcode_offset] = 0x8D; // LEA opcode
+                        }
+                        // Other patterns: just patch displacement (best effort)
+                    }
+
+                    let value = target_addr as i64 + addend - pc as i64;
                     if value < i32::MIN as i64 || value > i32::MAX as i64 {
                         return Err(LinkError::RelocationOverflow {
                             symbol: sym_name.clone(),
@@ -1840,5 +1943,287 @@ mod tests {
 
         let elf = linker.link("main").unwrap();
         assert_eq!(&elf[0..4], &ELF_MAGIC);
+    }
+
+    // =========================================================================
+    // GOT Relaxation Opcode Verification Tests
+    // =========================================================================
+    //
+    // These tests verify that GOT relaxation actually rewrites the instruction
+    // opcodes, not just the displacement. This is critical for correctness:
+    // without opcode rewriting, MOV would dereference the computed address
+    // instead of loading the address itself.
+
+    /// Verify that RexGotPcRelX relaxation converts MOV (8B) to LEA (8D).
+    #[test]
+    fn test_rex_got_pcrelx_mov_to_lea_opcode_rewrite() {
+        // Build target object (data to be addressed)
+        let target_bytes = ObjectBuilder::new(ELF_TARGET, "target_data")
+            .code(vec![0xDE, 0xAD, 0xBE, 0xEF])
+            .build();
+
+        // Build caller with REX.W MOV rax, [rip+disp] (48 8B 05 <disp32>)
+        let caller_bytes = ObjectBuilder::new(ELF_TARGET, "main")
+            .code(vec![
+                0x48, 0x8B, 0x05, 0x00, 0x00, 0x00, 0x00, // mov rax, [rip+disp]
+                0xC3, // ret
+            ])
+            .relocation(CodeRelocation {
+                offset: 3,
+                symbol: "target_data".into(),
+                rel_type: RelocationType::RexGotPcRelX,
+                addend: -4,
+            })
+            .build();
+
+        let target = ObjectFile::parse(&target_bytes).unwrap();
+        let caller = ObjectFile::parse(&caller_bytes).unwrap();
+
+        let mut linker = Linker::new(ELF_TARGET);
+        // Add caller first so it appears at the beginning of the code section
+        linker.add_object(caller).unwrap();
+        linker.add_object(target).unwrap();
+
+        let elf = linker.link("main").unwrap();
+
+        // Find the code section (after headers)
+        let header_size = TEST_EHDR_SIZE + TEST_PHDR_SIZE;
+        let code = &elf[header_size..];
+
+        // The instruction should now be LEA (8D) instead of MOV (8B)
+        // Layout: REX.W (48) + opcode + ModR/M + disp32
+        assert_eq!(code[0], 0x48, "REX.W prefix should be preserved");
+        assert_eq!(
+            code[1], 0x8D,
+            "Opcode should be changed from MOV (8B) to LEA (8D)"
+        );
+        assert_eq!(code[2], 0x05, "ModR/M byte should be preserved");
+    }
+
+    /// Verify that GotPcRelX relaxation converts MOV (8B) to LEA (8D) without REX.
+    #[test]
+    fn test_got_pcrelx_mov_to_lea_opcode_rewrite() {
+        // Build target object
+        let target_bytes = ObjectBuilder::new(ELF_TARGET, "target_data")
+            .code(vec![0x42, 0x00, 0x00, 0x00])
+            .build();
+
+        // Build caller with MOV eax, [rip+disp] (8B 05 <disp32>) - no REX prefix
+        let caller_bytes = ObjectBuilder::new(ELF_TARGET, "main")
+            .code(vec![
+                0x8B, 0x05, 0x00, 0x00, 0x00, 0x00, // mov eax, [rip+disp]
+                0xC3, // ret
+            ])
+            .relocation(CodeRelocation {
+                offset: 2, // Points to displacement
+                symbol: "target_data".into(),
+                rel_type: RelocationType::GotPcRelX,
+                addend: -4,
+            })
+            .build();
+
+        let target = ObjectFile::parse(&target_bytes).unwrap();
+        let caller = ObjectFile::parse(&caller_bytes).unwrap();
+
+        let mut linker = Linker::new(ELF_TARGET);
+        // Add caller first so it appears at the beginning of the code section
+        linker.add_object(caller).unwrap();
+        linker.add_object(target).unwrap();
+
+        let elf = linker.link("main").unwrap();
+
+        let header_size = TEST_EHDR_SIZE + TEST_PHDR_SIZE;
+        let code = &elf[header_size..];
+
+        // The instruction should now be LEA (8D) instead of MOV (8B)
+        assert_eq!(
+            code[0], 0x8D,
+            "Opcode should be changed from MOV (8B) to LEA (8D)"
+        );
+        assert_eq!(code[1], 0x05, "ModR/M byte should be preserved");
+    }
+
+    /// Verify that GotPcRelX relaxation converts indirect CALL to direct CALL.
+    #[test]
+    fn test_got_pcrelx_indirect_call_relaxation() {
+        // Build callee function
+        let callee_bytes = ObjectBuilder::new(ELF_TARGET, "callee")
+            .code(vec![
+                0xB8, 0x07, 0x00, 0x00, 0x00, // mov eax, 7
+                0xC3, // ret
+            ])
+            .build();
+
+        // Build caller with indirect call: call *[rip+disp] (FF 15 <disp32>)
+        let caller_bytes = ObjectBuilder::new(ELF_TARGET, "main")
+            .code(vec![
+                0xFF, 0x15, 0x00, 0x00, 0x00, 0x00, // call *[rip+disp]
+                0xC3, // ret
+            ])
+            .relocation(CodeRelocation {
+                offset: 2, // Points to displacement
+                symbol: "callee".into(),
+                rel_type: RelocationType::GotPcRelX,
+                addend: -4,
+            })
+            .build();
+
+        let callee = ObjectFile::parse(&callee_bytes).unwrap();
+        let caller = ObjectFile::parse(&caller_bytes).unwrap();
+
+        let mut linker = Linker::new(ELF_TARGET);
+        // Add caller first so it appears at the beginning of the code section
+        linker.add_object(caller).unwrap();
+        linker.add_object(callee).unwrap();
+
+        let elf = linker.link("main").unwrap();
+
+        let header_size = TEST_EHDR_SIZE + TEST_PHDR_SIZE;
+        let code = &elf[header_size..];
+
+        // The indirect call should be transformed to: addr32 prefix + direct call
+        // FF 15 -> 67 E8 (addr32 prefix makes this a 2-byte replacement)
+        assert_eq!(
+            code[0], 0x67,
+            "First byte should be addr32 prefix (67) for call relaxation"
+        );
+        assert_eq!(
+            code[1], 0xE8,
+            "Second byte should be direct call opcode (E8)"
+        );
+    }
+
+    /// Verify that RexGotPcRelX relaxation converts indirect CALL with REX prefix.
+    #[test]
+    fn test_rex_got_pcrelx_indirect_call_relaxation() {
+        // Build callee function
+        let callee_bytes = ObjectBuilder::new(ELF_TARGET, "callee")
+            .code(vec![
+                0xB8, 0x0A, 0x00, 0x00, 0x00, // mov eax, 10
+                0xC3, // ret
+            ])
+            .build();
+
+        // Build caller with REX + indirect call: REX call *[rip+disp] (48 FF 15 <disp32>)
+        // Note: REX.W on CALL is unusual but we should handle it
+        let caller_bytes = ObjectBuilder::new(ELF_TARGET, "main")
+            .code(vec![
+                0x48, 0xFF, 0x15, 0x00, 0x00, 0x00, 0x00, // REX.W call *[rip+disp]
+                0xC3, // ret
+            ])
+            .relocation(CodeRelocation {
+                offset: 3, // Points to displacement
+                symbol: "callee".into(),
+                rel_type: RelocationType::RexGotPcRelX,
+                addend: -4,
+            })
+            .build();
+
+        let callee = ObjectFile::parse(&callee_bytes).unwrap();
+        let caller = ObjectFile::parse(&caller_bytes).unwrap();
+
+        let mut linker = Linker::new(ELF_TARGET);
+        // Add caller first so it appears at the beginning of the code section
+        linker.add_object(caller).unwrap();
+        linker.add_object(callee).unwrap();
+
+        let elf = linker.link("main").unwrap();
+
+        let header_size = TEST_EHDR_SIZE + TEST_PHDR_SIZE;
+        let code = &elf[header_size..];
+
+        // REX prefix is preserved, FF 15 becomes 67 E8
+        assert_eq!(code[0], 0x48, "REX.W prefix should be preserved");
+        assert_eq!(
+            code[1], 0x67,
+            "FF should become addr32 prefix (67) for call relaxation"
+        );
+        assert_eq!(code[2], 0xE8, "15 should become direct call opcode (E8)");
+    }
+
+    /// Verify that different register encodings are handled correctly.
+    #[test]
+    fn test_got_pcrelx_different_registers() {
+        // Build target
+        let target_bytes = ObjectBuilder::new(ELF_TARGET, "target")
+            .code(vec![0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00])
+            .build();
+
+        // Test with RBX (ModR/M = 1D for RIP-relative addressing)
+        // mov rbx, [rip+disp] = 48 8B 1D <disp32>
+        let caller_bytes = ObjectBuilder::new(ELF_TARGET, "main")
+            .code(vec![
+                0x48, 0x8B, 0x1D, 0x00, 0x00, 0x00, 0x00, // mov rbx, [rip+disp]
+                0xC3, // ret
+            ])
+            .relocation(CodeRelocation {
+                offset: 3,
+                symbol: "target".into(),
+                rel_type: RelocationType::RexGotPcRelX,
+                addend: -4,
+            })
+            .build();
+
+        let target = ObjectFile::parse(&target_bytes).unwrap();
+        let caller = ObjectFile::parse(&caller_bytes).unwrap();
+
+        let mut linker = Linker::new(ELF_TARGET);
+        // Add caller first so it appears at the beginning of the code section
+        linker.add_object(caller).unwrap();
+        linker.add_object(target).unwrap();
+
+        let elf = linker.link("main").unwrap();
+
+        let header_size = TEST_EHDR_SIZE + TEST_PHDR_SIZE;
+        let code = &elf[header_size..];
+
+        // Verify LEA transformation preserves the register encoding
+        assert_eq!(code[0], 0x48, "REX.W prefix should be preserved");
+        assert_eq!(code[1], 0x8D, "Opcode should be LEA (8D)");
+        assert_eq!(code[2], 0x1D, "ModR/M should preserve RBX register (1D)");
+    }
+
+    /// Verify that GotPcRel (non-relaxable) does NOT rewrite the opcode.
+    #[test]
+    fn test_got_pcrel_no_opcode_rewrite() {
+        // Build target
+        let target_bytes = ObjectBuilder::new(ELF_TARGET, "target_data")
+            .code(vec![0x42, 0x00, 0x00, 0x00])
+            .build();
+
+        // Build caller with MOV instruction using GotPcRel (not GotPcRelX)
+        let caller_bytes = ObjectBuilder::new(ELF_TARGET, "main")
+            .code(vec![
+                0x48, 0x8B, 0x05, 0x00, 0x00, 0x00, 0x00, // mov rax, [rip+disp]
+                0xC3, // ret
+            ])
+            .relocation(CodeRelocation {
+                offset: 3,
+                symbol: "target_data".into(),
+                rel_type: RelocationType::GotPcRel, // Note: not GotPcRelX
+                addend: -4,
+            })
+            .build();
+
+        let target = ObjectFile::parse(&target_bytes).unwrap();
+        let caller = ObjectFile::parse(&caller_bytes).unwrap();
+
+        let mut linker = Linker::new(ELF_TARGET);
+        // Add caller first so it appears at the beginning of the code section
+        linker.add_object(caller).unwrap();
+        linker.add_object(target).unwrap();
+
+        let elf = linker.link("main").unwrap();
+
+        let header_size = TEST_EHDR_SIZE + TEST_PHDR_SIZE;
+        let code = &elf[header_size..];
+
+        // For GotPcRel, the opcode should NOT be changed (remains MOV)
+        // This is intentional - GotPcRel doesn't guarantee relaxability
+        assert_eq!(code[0], 0x48, "REX.W prefix should be preserved");
+        assert_eq!(
+            code[1], 0x8B,
+            "Opcode should remain MOV (8B) for GotPcRel - no relaxation"
+        );
     }
 }
