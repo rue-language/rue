@@ -2423,10 +2423,11 @@ impl<'a> Sema<'a> {
         ));
 
         // Consume the constraint generator to release borrows
-        let (constraints, int_literal_vars, expr_types) = cgen.into_parts();
+        let (constraints, int_literal_vars, expr_types, type_var_count) = cgen.into_parts();
 
         // Phase 2: Solve constraints via unification
-        let mut unifier = Unifier::new();
+        // Pre-size the substitution for better performance on large functions
+        let mut unifier = Unifier::with_capacity(type_var_count);
         let errors = unifier.solve_constraints(&constraints);
 
         // Convert unification errors to compile errors

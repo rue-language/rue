@@ -226,11 +226,24 @@ impl<'a> ConstraintGenerator<'a> {
         &self.expr_types
     }
 
-    /// Consume the constraint generator and return (constraints, int_literal_vars, expr_types).
+    /// Consume the constraint generator and return (constraints, int_literal_vars, expr_types, type_var_count).
     ///
     /// This is useful when you need ownership of the expression types map.
-    pub fn into_parts(self) -> (Vec<Constraint>, Vec<TypeVarId>, HashMap<InstRef, InferType>) {
-        (self.constraints, self.int_literal_vars, self.expr_types)
+    /// The `type_var_count` can be used to pre-size the unifier's substitution for better performance.
+    pub fn into_parts(
+        self,
+    ) -> (
+        Vec<Constraint>,
+        Vec<TypeVarId>,
+        HashMap<InstRef, InferType>,
+        u32,
+    ) {
+        (
+            self.constraints,
+            self.int_literal_vars,
+            self.expr_types,
+            self.type_vars.count(),
+        )
     }
 
     /// Generate constraints for an expression.

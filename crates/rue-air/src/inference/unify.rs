@@ -118,6 +118,16 @@ impl Unifier {
         }
     }
 
+    /// Create a new unifier with a pre-sized substitution.
+    ///
+    /// Use this when you know how many type variables will be created
+    /// (e.g., from `TypeVarAllocator::count()`).
+    pub fn with_capacity(type_var_count: u32) -> Self {
+        Unifier {
+            substitution: Substitution::with_capacity(type_var_count as usize),
+        }
+    }
+
     /// Unify two types.
     ///
     /// This is the core of Algorithm W. It updates the substitution
