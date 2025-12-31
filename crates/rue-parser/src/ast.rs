@@ -3,6 +3,12 @@
 //! The AST represents the syntactic structure of the source code.
 //! It closely mirrors the source syntax and preserves all information
 //! needed for error reporting.
+//!
+//! Note: AST types use Vec rather than SmallVec because Expr is recursive
+//! (Expr contains CallExpr which contains CallArg which contains Expr).
+//! SmallVec requires fixed-size inline storage, which doesn't work with
+//! recursive types. The IR layers (RIR, AIR, CFG) use index-based references
+//! which avoid this issue and are already efficiently allocated.
 
 use std::fmt;
 

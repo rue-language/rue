@@ -508,8 +508,8 @@ pub enum AirInstData {
 
     /// Intrinsic call (e.g., @dbg)
     Intrinsic {
-        /// Intrinsic name (without @)
-        name: String,
+        /// Intrinsic name (without @, interned)
+        name: Symbol,
         /// Start index into extra array for arguments
         args_start: u32,
         /// Number of arguments
@@ -786,7 +786,7 @@ impl fmt::Display for Air {
                     args_start,
                     args_len,
                 } => {
-                    write!(f, "intrinsic @{}(", name)?;
+                    write!(f, "intrinsic @sym:{}(", name.as_u32())?;
                     for (i, arg) in self.get_air_refs(*args_start, *args_len).enumerate() {
                         if i > 0 {
                             write!(f, ", ")?;

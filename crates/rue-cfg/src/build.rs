@@ -675,13 +675,11 @@ impl<'a> CfgBuilder<'a> {
                     };
                     arg_vals.push(val);
                 }
-                // Intern the intrinsic name since AIR still uses String
-                let name_sym = self.interner.intern(name);
                 // Store args in extra array
                 let (args_start, args_len) = self.cfg.push_extra(arg_vals);
                 let value = self.emit(
                     CfgInstData::Intrinsic {
-                        name: name_sym,
+                        name: *name,
                         args_start,
                         args_len,
                     },

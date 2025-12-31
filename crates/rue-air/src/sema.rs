@@ -3312,15 +3312,15 @@ impl<'a> Sema<'a> {
                 args_len,
             } => {
                 let args = self.rir.get_call_args(*args_start, *args_len);
-                let intrinsic_name = self.interner.get(*name).to_string();
+                let intrinsic_name_str = self.interner.get(*name);
 
-                match intrinsic_name.as_str() {
+                match intrinsic_name_str {
                     "dbg" => {
                         // @dbg expects exactly one argument
                         if args.len() != 1 {
                             return Err(CompileError::new(
                                 ErrorKind::IntrinsicWrongArgCount {
-                                    name: intrinsic_name,
+                                    name: intrinsic_name_str.to_string(),
                                     expected: 1,
                                     found: args.len(),
                                 },
@@ -3340,7 +3340,7 @@ impl<'a> Sema<'a> {
                             return Err(CompileError::new(
                                 ErrorKind::IntrinsicTypeMismatch(Box::new(
                                     IntrinsicTypeMismatchError {
-                                        name: intrinsic_name,
+                                        name: intrinsic_name_str.to_string(),
                                         expected: "integer, bool, or string".to_string(),
                                         found: arg_type.name().to_string(),
                                     },
@@ -3353,7 +3353,7 @@ impl<'a> Sema<'a> {
                         let args_start = air.add_extra(&[arg_result.air_ref.as_u32()]);
                         let air_ref = air.add_inst(AirInst {
                             data: AirInstData::Intrinsic {
-                                name: intrinsic_name,
+                                name: *name,
                                 args_start,
                                 args_len: 1,
                             },
@@ -3367,7 +3367,7 @@ impl<'a> Sema<'a> {
                         if args.len() != 1 {
                             return Err(CompileError::new(
                                 ErrorKind::IntrinsicWrongArgCount {
-                                    name: intrinsic_name,
+                                    name: intrinsic_name_str.to_string(),
                                     expected: 1,
                                     found: args.len(),
                                 },
@@ -3384,7 +3384,7 @@ impl<'a> Sema<'a> {
                             return Err(CompileError::new(
                                 ErrorKind::IntrinsicTypeMismatch(Box::new(
                                     IntrinsicTypeMismatchError {
-                                        name: intrinsic_name,
+                                        name: intrinsic_name_str.to_string(),
                                         expected: "integer".to_string(),
                                         found: from_ty.name().to_string(),
                                     },
@@ -3407,7 +3407,7 @@ impl<'a> Sema<'a> {
                                 return Err(CompileError::new(
                                     ErrorKind::IntrinsicTypeMismatch(Box::new(
                                         IntrinsicTypeMismatchError {
-                                            name: intrinsic_name,
+                                            name: intrinsic_name_str.to_string(),
                                             expected: "integer".to_string(),
                                             found: ty.name().to_string(),
                                         },
@@ -3447,7 +3447,7 @@ impl<'a> Sema<'a> {
                         if !args.is_empty() {
                             return Err(CompileError::new(
                                 ErrorKind::IntrinsicWrongArgCount {
-                                    name: intrinsic_name,
+                                    name: intrinsic_name_str.to_string(),
                                     expected: 0,
                                     found: args.len(),
                                 },
@@ -3464,17 +3464,17 @@ impl<'a> Sema<'a> {
                         Ok(AnalysisResult::new(air_ref, Type::Unit))
                     }
                     _ => Err(CompileError::new(
-                        ErrorKind::UnknownIntrinsic(intrinsic_name),
+                        ErrorKind::UnknownIntrinsic(intrinsic_name_str.to_string()),
                         inst.span,
                     )),
                 }
             }
 
             InstData::TypeIntrinsic { name, type_arg } => {
-                let intrinsic_name = self.interner.get(*name).to_string();
+                let intrinsic_name_str = self.interner.get(*name);
                 let ty = self.resolve_type(*type_arg, inst.span)?;
 
-                let value: u64 = match intrinsic_name.as_str() {
+                let value: u64 = match intrinsic_name_str {
                     "size_of" => {
                         // Calculate size in bytes (slot count * 8)
                         let slot_count = self.abi_slot_count(ty);
@@ -3487,7 +3487,7 @@ impl<'a> Sema<'a> {
                     }
                     _ => {
                         return Err(CompileError::new(
-                            ErrorKind::UnknownIntrinsic(intrinsic_name),
+                            ErrorKind::UnknownIntrinsic(intrinsic_name_str.to_string()),
                             inst.span,
                         ));
                     }
