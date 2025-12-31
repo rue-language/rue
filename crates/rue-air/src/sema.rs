@@ -16,7 +16,7 @@ use crate::types::{
     parse_array_type_syntax,
 };
 use lasso::{Spur, ThreadedRodeo};
-use rue_builtins::{BUILTIN_TYPES, BuiltinFieldType, is_reserved_type_name};
+use rue_builtins::{BUILTIN_TYPES, BuiltinFieldType, BuiltinTypeDef, is_reserved_type_name};
 use rue_error::{
     CompileError, CompileErrors, CompileResult, CompileWarning, CopyStructNonCopyFieldError,
     ErrorKind, IntrinsicTypeMismatchError, MissingFieldsError, MultiErrorResult, OptionExt,
@@ -486,7 +486,7 @@ pub struct Sema<'a> {
 
 /// Storage location for a String receiver in mutation methods.
 ///
-/// This is used by `analyze_string_mutation_method` to store the updated
+/// This is used by `analyze_builtin_method` to store the updated
 /// String back to the original variable after calling the runtime function.
 enum StringReceiverStorage {
     /// The receiver is a local variable with the given slot.
@@ -990,6 +990,10 @@ impl<'a> Sema<'a> {
     /// first error, allowing users to see all issues at once. Errors within type/struct
     /// definitions still cause early termination since they affect all subsequent analysis.
     pub fn analyze_all(mut self) -> MultiErrorResult<SemaOutput> {
+        // Phase 0: Inject built-in types (String, etc.) before user code
+        // This must happen first so builtins are registered when resolving types.
+        self.inject_builtin_types();
+
         // Two-phase declaration gathering (see gather_declarations for details):
         // Phase 1: Register type names
         // Phase 2: Resolve all declarations
@@ -1596,9 +1600,80 @@ impl<'a> Sema<'a> {
             }
 
             // Note: Associated functions and methods are not registered here.
-            // They are still handled specially via Type::String checks in the current
-            // implementation. Phase 2 (rue-hp13) will migrate those to struct-based
-            // queries using the builtin registry.
+            // They are handled by looking up methods in the builtin registry
+            // when analyzing method calls on builtin types.
+        }
+    }
+
+    // ========================================================================
+    // Builtin type helper methods
+    // ========================================================================
+
+    /// Check if a type is the builtin String type.
+    ///
+    /// This replaces direct `ty == Type::String` checks throughout sema.
+    /// Uses the stored `builtin_string_id` for fast comparison.
+    fn is_builtin_string(&self, ty: Type) -> bool {
+        match ty {
+            Type::Struct(struct_id) => Some(struct_id) == self.builtin_string_id,
+            Type::String => true, // Still support during migration
+            _ => false,
+        }
+    }
+
+    /// Get the builtin type definition for a struct if it's a builtin type.
+    ///
+    /// Returns `Some(&BuiltinTypeDef)` if the struct is a builtin type,
+    /// `None` otherwise.
+    fn get_builtin_type_def(&self, struct_id: StructId) -> Option<&'static BuiltinTypeDef> {
+        let struct_def = &self.struct_defs[struct_id.0 as usize];
+        if struct_def.is_builtin {
+            rue_builtins::get_builtin_type(&struct_def.name)
+        } else {
+            None
+        }
+    }
+
+    /// Get the String struct type.
+    ///
+    /// Returns the Type::Struct for the builtin String type.
+    /// Panics if called before builtin types are injected.
+    fn builtin_string_type(&self) -> Type {
+        Type::Struct(
+            self.builtin_string_id
+                .expect("builtin types not injected yet"),
+        )
+    }
+
+    /// Check if a method name is a builtin mutation method.
+    ///
+    /// Mutation methods need special handling because they require storage location
+    /// to be captured before the receiver is analyzed.
+    fn is_builtin_mutation_method(&self, method_name: &str) -> bool {
+        use rue_builtins::ReceiverMode;
+
+        // Check all builtin types for methods with ByMutRef receiver
+        for builtin in BUILTIN_TYPES {
+            if let Some(method) = builtin.find_method(method_name) {
+                if method.receiver_mode == ReceiverMode::ByMutRef {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    /// Get the AIR output type for a builtin struct.
+    ///
+    /// During migration, builtin types still use their Type enum variants
+    /// (e.g., Type::String) for AIR output so downstream code (codegen, drop_glue)
+    /// continues to work. This will be removed once all downstream code is migrated.
+    fn builtin_air_type(&self, struct_id: StructId) -> Type {
+        // String is special - uses Type::String for AIR output
+        if Some(struct_id) == self.builtin_string_id {
+            Type::String
+        } else {
+            Type::Struct(struct_id)
         }
     }
 
@@ -2432,6 +2507,9 @@ impl<'a> Sema<'a> {
             }
 
             InstData::StringConst(symbol) => {
+                // String literals - keep using Type::String for AIR output
+                // so downstream code (codegen, drop_glue) continues to work.
+                // The internal sema checks use struct-based queries.
                 let ty = Type::String;
                 // Add string to the string table
                 let string_content = self.interner.resolve(&*symbol).to_string();
@@ -4089,7 +4167,7 @@ impl<'a> Sema<'a> {
                         // Check that argument is a supported type (integer, bool, or string)
                         let is_supported = arg_type.is_integer()
                             || arg_type == Type::Bool
-                            || arg_type == Type::String;
+                            || self.is_builtin_string(arg_type);
                         if !is_supported {
                             return Err(CompileError::new(
                                 ErrorKind::IntrinsicTypeMismatch(Box::new(
@@ -4640,24 +4718,22 @@ impl<'a> Sema<'a> {
                 args_len,
             } => {
                 let args = self.rir.get_call_args(*args_start, *args_len);
-                // For String borrow methods, we need to extract the root variable before
-                // analyzing the receiver so we can "unmove" it afterwards. String query
-                // methods (len, capacity, is_empty) use `borrow self` semantics - they
-                // don't consume the String.
+                // For builtin borrow methods, we need to extract the root variable before
+                // analyzing the receiver so we can "unmove" it afterwards. Query methods
+                // (len, capacity, is_empty) use `borrow self` semantics - they
+                // don't consume the receiver.
                 let receiver_var = self.extract_root_variable(*receiver);
 
                 // Get the method name as a string before analyzing receiver
                 let method_name_str = self.interner.resolve(&*method).to_string();
 
-                // Check if this is a String mutation method that needs storage location
-                let is_string_mutation_method = matches!(
-                    method_name_str.as_str(),
-                    "push_str" | "push" | "clear" | "reserve"
-                );
+                // Check if this is a builtin mutation method that needs storage location.
+                // We need to determine this BEFORE analyzing the receiver.
+                let is_builtin_mutation_method = self.is_builtin_mutation_method(&method_name_str);
 
-                // For String mutation methods, we need to get the storage location
+                // For mutation methods, we need to get the storage location
                 // BEFORE analyzing the receiver (which may mark it as moved)
-                let receiver_storage = if is_string_mutation_method {
+                let receiver_storage = if is_builtin_mutation_method {
                     self.get_string_receiver_storage(*receiver, ctx, inst.span)?
                 } else {
                     None
@@ -4667,51 +4743,14 @@ impl<'a> Sema<'a> {
                 let receiver_result = self.analyze_inst(air, *receiver, ctx)?;
                 let receiver_type = receiver_result.ty;
 
-                // Handle String methods specially
-                if receiver_type == Type::String {
-                    // String query methods (len, capacity, is_empty) use borrow semantics.
-                    // The receiver was marked as moved during analysis, but we need to
-                    // "unmove" it since it's actually being borrowed, not consumed.
-                    let is_borrow_method = matches!(
-                        method_name_str.as_str(),
-                        "len" | "capacity" | "is_empty" | "clone"
-                    );
-                    if is_borrow_method {
-                        if let Some(var_symbol) = receiver_var {
-                            ctx.moved_vars.remove(&var_symbol);
-                        }
-                    }
-
-                    // String mutation methods need special handling
-                    if is_string_mutation_method {
-                        // Mutation methods use inout semantics - variable remains valid after
-                        if let Some(var_symbol) = receiver_var {
-                            ctx.moved_vars.remove(&var_symbol);
-                        }
-                        return self.analyze_string_mutation_method(
-                            air,
-                            ctx,
-                            &method_name_str,
-                            receiver_result,
-                            receiver_storage,
-                            &args,
-                            inst.span,
-                        );
-                    }
-
-                    return self.analyze_string_method(
-                        air,
-                        ctx,
-                        &method_name_str,
-                        receiver_result,
-                        &args,
-                        inst.span,
-                    );
-                }
-
                 // Check that receiver is a struct type
                 let struct_id = match receiver_type {
                     Type::Struct(id) => id,
+                    Type::String => {
+                        // During migration, Type::String might still appear from inference
+                        // Fall back to builtin_string_id
+                        self.builtin_string_id.expect("builtin string not injected")
+                    }
                     _ => {
                         return Err(CompileError::new(
                             ErrorKind::MethodCallOnNonStruct {
@@ -4722,6 +4761,22 @@ impl<'a> Sema<'a> {
                         ));
                     }
                 };
+
+                // Check if this is a builtin type and handle its methods
+                if let Some(builtin_def) = self.get_builtin_type_def(struct_id) {
+                    return self.analyze_builtin_method(
+                        air,
+                        ctx,
+                        struct_id,
+                        builtin_def,
+                        receiver_result,
+                        receiver_var,
+                        receiver_storage,
+                        &method_name_str,
+                        &args,
+                        inst.span,
+                    );
+                }
 
                 // Look up the struct name by its ID
                 let struct_def = &self.struct_defs[struct_id.0 as usize];
@@ -4812,22 +4867,24 @@ impl<'a> Sema<'a> {
                 let type_name_str = self.interner.resolve(&*type_name).to_string();
                 let function_name_str = self.interner.resolve(&*function).to_string();
 
-                // Handle String::new() and String::with_capacity()
-                if type_name_str == "String" {
-                    return self.analyze_string_assoc_fn(
+                // Check that the type exists and is a struct
+                let struct_id = *self.structs.get(type_name).ok_or_compile_error(
+                    ErrorKind::UnknownType(type_name_str.clone()),
+                    inst.span,
+                )?;
+
+                // Handle builtin type associated functions (e.g., String::new)
+                if let Some(builtin_def) = self.get_builtin_type_def(struct_id) {
+                    return self.analyze_builtin_assoc_fn(
                         air,
                         ctx,
+                        struct_id,
+                        builtin_def,
                         &function_name_str,
                         &args,
                         inst.span,
                     );
                 }
-
-                // Check that the type exists and is a struct
-                let _struct_id = self.structs.get(type_name).ok_or_compile_error(
-                    ErrorKind::UnknownType(type_name_str.clone()),
-                    inst.span,
-                )?;
 
                 // Look up the function
                 let method_key = (*type_name, *function);
@@ -4912,7 +4969,9 @@ impl<'a> Sema<'a> {
     fn resolve_type(&mut self, type_sym: Spur, span: Span) -> CompileResult<Type> {
         let type_name = self.interner.resolve(&type_sym);
 
-        // Check built-in types first
+        // Check primitive and builtin types first.
+        // Note: String still uses Type::String for AIR compatibility with downstream code.
+        // Struct-based queries are used internally in sema.rs for method dispatch etc.
         match type_name {
             "i8" => return Ok(Type::I8),
             "i16" => return Ok(Type::I16),
@@ -5046,10 +5105,19 @@ impl<'a> Sema<'a> {
             Type::Unit | Type::Never => 0,
             // Enums are represented as their discriminant type (a scalar), so 1 slot
             Type::Enum(_) => 1,
-            // Strings are (ptr + len + cap), so 3 slots
-            Type::String => 3,
+            // String during migration - use builtin struct's slot count
+            Type::String => {
+                // Fall through to synthetic struct handling
+                let string_id = self.builtin_string_id.expect("builtin string not injected");
+                let struct_def = &self.struct_defs[string_id.0 as usize];
+                struct_def
+                    .fields
+                    .iter()
+                    .map(|f| self.abi_slot_count(f.ty))
+                    .sum()
+            }
             Type::Struct(struct_id) => {
-                // Sum the slot counts of all fields (handles arrays and nested structs)
+                // Sum the slot counts of all fields (handles arrays, nested structs, and builtins)
                 // Empty structs naturally get 0 slots here
                 let struct_def = &self.struct_defs[struct_id.0 as usize];
                 struct_def
@@ -5161,11 +5229,12 @@ impl<'a> Sema<'a> {
         // Validate the type is appropriate for this comparison
         if allow_bool {
             // Equality operators (==, !=) work on integers, booleans, strings, unit, and structs
+            // Note: String is now a struct, so is_struct() covers it
             if !lhs_type.is_integer()
                 && lhs_type != Type::Bool
-                && lhs_type != Type::String
                 && lhs_type != Type::Unit
                 && !lhs_type.is_struct()
+                && !self.is_builtin_string(lhs_type)
             {
                 return Err(CompileError::new(
                     ErrorKind::TypeMismatch {
@@ -5396,101 +5465,243 @@ impl<'a> Sema<'a> {
         )
     }
 
-    /// Analyze a String associated function call (String::new, String::with_capacity).
+    /// Analyze a builtin type associated function call.
     ///
-    /// These are built-in functions for the String type that construct new String values.
-    fn analyze_string_assoc_fn(
+    /// Dispatches to the appropriate runtime function based on the builtin registry.
+    fn analyze_builtin_assoc_fn(
         &mut self,
         air: &mut Air,
         ctx: &mut AnalysisContext,
+        struct_id: StructId,
+        builtin_def: &'static BuiltinTypeDef,
         function_name: &str,
         args: &[RirCallArg],
         span: Span,
     ) -> CompileResult<AnalysisResult> {
-        match function_name {
-            "new" => {
-                // String::new() takes no arguments and returns an empty String
-                if !args.is_empty() {
-                    return Err(CompileError::new(
-                        ErrorKind::WrongArgumentCount {
-                            expected: 0,
-                            found: args.len(),
-                        },
-                        span,
-                    ));
-                }
+        use rue_builtins::{BuiltinParamType, BuiltinReturnType};
 
-                // Generate a call to String__new (runtime function)
-                // We use double underscore because :: is not valid in C symbol names
-                let call_name = self.interner.get_or_intern("String__new");
-                // No args to encode
-                let args_start = air.add_extra(&[]);
-                let air_ref = air.add_inst(AirInst {
-                    data: AirInstData::Call {
-                        name: call_name,
-                        args_start,
-                        args_len: 0,
-                    },
-                    ty: Type::String,
-                    span,
-                });
-                Ok(AnalysisResult::new(air_ref, Type::String))
-            }
-
-            "with_capacity" => {
-                // String::with_capacity(cap: u64) takes one u64 argument
-                if args.len() != 1 {
-                    return Err(CompileError::new(
-                        ErrorKind::WrongArgumentCount {
-                            expected: 1,
-                            found: args.len(),
-                        },
-                        span,
-                    ));
-                }
-
-                // Analyze the capacity argument
-                let cap_result = self.analyze_inst(air, args[0].value, ctx)?;
-
-                // Verify the type is u64
-                if cap_result.ty != Type::U64 && !cap_result.ty.is_error() {
-                    return Err(CompileError::new(
-                        ErrorKind::TypeMismatch {
-                            expected: "u64".to_string(),
-                            found: cap_result.ty.name().to_string(),
-                        },
-                        span,
-                    ));
-                }
-
-                // Generate a call to String__with_capacity (runtime function)
-                let call_name = self.interner.get_or_intern("String__with_capacity");
-                // Encode args into extra array
-                let args_start =
-                    air.add_extra(&[cap_result.air_ref.as_u32(), AirArgMode::Normal.as_u32()]);
-                let air_ref = air.add_inst(AirInst {
-                    data: AirInstData::Call {
-                        name: call_name,
-                        args_start,
-                        args_len: 1,
-                    },
-                    ty: Type::String,
-                    span,
-                });
-                Ok(AnalysisResult::new(air_ref, Type::String))
-            }
-
-            _ => {
-                // Unknown associated function for String
-                Err(CompileError::new(
+        // Look up the associated function in the registry
+        let assoc_fn = builtin_def
+            .find_associated_fn(function_name)
+            .ok_or_else(|| {
+                CompileError::new(
                     ErrorKind::UndefinedAssocFn {
-                        type_name: "String".to_string(),
+                        type_name: builtin_def.name.to_string(),
                         function_name: function_name.to_string(),
                     },
                     span,
-                ))
+                )
+            })?;
+
+        // Check argument count
+        if args.len() != assoc_fn.params.len() {
+            return Err(CompileError::new(
+                ErrorKind::WrongArgumentCount {
+                    expected: assoc_fn.params.len(),
+                    found: args.len(),
+                },
+                span,
+            ));
+        }
+
+        // Analyze arguments and check types
+        let mut air_args: Vec<(AirRef, AirArgMode)> = Vec::with_capacity(args.len());
+        for (i, arg) in args.iter().enumerate() {
+            let arg_result = self.analyze_inst(air, arg.value, ctx)?;
+
+            // Get expected type from param
+            let expected_ty = match assoc_fn.params[i].ty {
+                BuiltinParamType::U64 => Type::U64,
+                BuiltinParamType::U8 => Type::U8,
+                BuiltinParamType::Bool => Type::Bool,
+                BuiltinParamType::SelfType => Type::Struct(struct_id),
+            };
+
+            // Type check
+            if arg_result.ty != expected_ty && !arg_result.ty.is_error() {
+                return Err(CompileError::new(
+                    ErrorKind::TypeMismatch {
+                        expected: expected_ty.name().to_string(),
+                        found: arg_result.ty.name().to_string(),
+                    },
+                    span,
+                ));
+            }
+
+            air_args.push((arg_result.air_ref, AirArgMode::Normal));
+        }
+
+        // Determine return type
+        // Use builtin_air_type for SelfType to get correct AIR output type
+        let return_ty = match assoc_fn.return_ty {
+            BuiltinReturnType::Unit => Type::Unit,
+            BuiltinReturnType::U64 => Type::U64,
+            BuiltinReturnType::U8 => Type::U8,
+            BuiltinReturnType::Bool => Type::Bool,
+            BuiltinReturnType::SelfType => self.builtin_air_type(struct_id),
+        };
+
+        // Generate runtime function call
+        let call_name = self.interner.get_or_intern(assoc_fn.runtime_fn);
+
+        // Encode args into extra array
+        let mut extra_data: Vec<u32> = Vec::with_capacity(air_args.len() * 2);
+        for (air_ref, mode) in &air_args {
+            extra_data.push(air_ref.as_u32());
+            extra_data.push(mode.as_u32());
+        }
+        let args_start = air.add_extra(&extra_data);
+
+        let air_ref = air.add_inst(AirInst {
+            data: AirInstData::Call {
+                name: call_name,
+                args_start,
+                args_len: air_args.len() as u32,
+            },
+            ty: return_ty,
+            span,
+        });
+
+        Ok(AnalysisResult::new(air_ref, return_ty))
+    }
+
+    /// Analyze a builtin type method call.
+    ///
+    /// Dispatches to the appropriate runtime function based on the builtin registry.
+    /// Handles borrow semantics (for query methods) and mutation semantics (for
+    /// methods that modify the receiver).
+    #[allow(clippy::too_many_arguments)]
+    fn analyze_builtin_method(
+        &mut self,
+        air: &mut Air,
+        ctx: &mut AnalysisContext,
+        struct_id: StructId,
+        builtin_def: &'static BuiltinTypeDef,
+        receiver: AnalysisResult,
+        receiver_var: Option<Spur>,
+        receiver_storage: Option<StringReceiverStorage>,
+        method_name: &str,
+        args: &[RirCallArg],
+        span: Span,
+    ) -> CompileResult<AnalysisResult> {
+        use rue_builtins::{BuiltinParamType, BuiltinReturnType, ReceiverMode};
+
+        // Look up the method in the registry
+        let method = builtin_def.find_method(method_name).ok_or_else(|| {
+            CompileError::new(
+                ErrorKind::UndefinedMethod {
+                    type_name: builtin_def.name.to_string(),
+                    method_name: method_name.to_string(),
+                },
+                span,
+            )
+        })?;
+
+        // Handle receiver mode (borrow vs mutation vs consume)
+        match method.receiver_mode {
+            ReceiverMode::ByRef => {
+                // Borrow semantics - "unmove" the variable since it's not consumed
+                if let Some(var_symbol) = receiver_var {
+                    ctx.moved_vars.remove(&var_symbol);
+                }
+            }
+            ReceiverMode::ByMutRef => {
+                // Mutation semantics - variable remains valid after
+                if let Some(var_symbol) = receiver_var {
+                    ctx.moved_vars.remove(&var_symbol);
+                }
+            }
+            ReceiverMode::ByValue => {
+                // Consume semantics - variable is moved (already handled by analyze_inst)
             }
         }
+
+        // Check argument count
+        if args.len() != method.params.len() {
+            return Err(CompileError::new(
+                ErrorKind::WrongArgumentCount {
+                    expected: method.params.len(),
+                    found: args.len(),
+                },
+                span,
+            ));
+        }
+
+        // Analyze arguments and check types
+        let mut air_args: Vec<(AirRef, AirArgMode)> = Vec::with_capacity(args.len() + 1);
+
+        // Add receiver as first argument
+        air_args.push((receiver.air_ref, AirArgMode::Normal));
+
+        // Analyze and add other arguments
+        for (i, arg) in args.iter().enumerate() {
+            let arg_result = self.analyze_inst(air, arg.value, ctx)?;
+
+            // Get expected type from param
+            let expected_ty = match method.params[i].ty {
+                BuiltinParamType::U64 => Type::U64,
+                BuiltinParamType::U8 => Type::U8,
+                BuiltinParamType::Bool => Type::Bool,
+                BuiltinParamType::SelfType => Type::Struct(struct_id),
+            };
+
+            // Type check
+            if arg_result.ty != expected_ty
+                && !arg_result.ty.is_error()
+                && !(self.is_builtin_string(arg_result.ty)
+                    && matches!(method.params[i].ty, BuiltinParamType::SelfType))
+            {
+                return Err(CompileError::new(
+                    ErrorKind::TypeMismatch {
+                        expected: expected_ty.name().to_string(),
+                        found: arg_result.ty.name().to_string(),
+                    },
+                    span,
+                ));
+            }
+
+            air_args.push((arg_result.air_ref, AirArgMode::Normal));
+        }
+
+        // Determine return type
+        // Use builtin_air_type for SelfType to get correct AIR output type
+        let return_ty = match method.return_ty {
+            BuiltinReturnType::Unit => Type::Unit,
+            BuiltinReturnType::U64 => Type::U64,
+            BuiltinReturnType::U8 => Type::U8,
+            BuiltinReturnType::Bool => Type::Bool,
+            BuiltinReturnType::SelfType => self.builtin_air_type(struct_id),
+        };
+
+        // Generate runtime function call
+        let call_name = self.interner.get_or_intern(method.runtime_fn);
+
+        // Encode args into extra array
+        let mut extra_data: Vec<u32> = Vec::with_capacity(air_args.len() * 2);
+        for (air_ref, mode) in &air_args {
+            extra_data.push(air_ref.as_u32());
+            extra_data.push(mode.as_u32());
+        }
+        let args_start = air.add_extra(&extra_data);
+
+        let call_ref = air.add_inst(AirInst {
+            data: AirInstData::Call {
+                name: call_name,
+                args_start,
+                args_len: air_args.len() as u32,
+            },
+            ty: return_ty,
+            span,
+        });
+
+        // For mutation methods, store the result back to the receiver
+        if method.receiver_mode == ReceiverMode::ByMutRef {
+            let storage = receiver_storage
+                .ok_or_else(|| CompileError::new(ErrorKind::InvalidAssignmentTarget, span))?;
+            return self.store_string_result(air, call_ref, storage, span);
+        }
+
+        Ok(AnalysisResult::new(call_ref, return_ty))
     }
 
     /// Get the storage location for a String receiver in a mutation method call.
@@ -5569,213 +5780,6 @@ impl<'a> Sema<'a> {
         }
     }
 
-    /// Analyze a String mutation method call (push_str, push, clear, reserve).
-    ///
-    /// These methods use `inout self` semantics - they modify the string in place.
-    /// The runtime function returns an updated String (ptr, len, cap) which we
-    /// store back to the original variable.
-    fn analyze_string_mutation_method(
-        &mut self,
-        air: &mut Air,
-        ctx: &mut AnalysisContext,
-        method_name: &str,
-        receiver: AnalysisResult,
-        receiver_storage: Option<StringReceiverStorage>,
-        args: &[RirCallArg],
-        span: Span,
-    ) -> CompileResult<AnalysisResult> {
-        // Storage is required for mutation methods
-        let storage = receiver_storage
-            .ok_or_else(|| CompileError::new(ErrorKind::InvalidAssignmentTarget, span))?;
-
-        match method_name {
-            "push_str" => {
-                // fn push_str(inout self, other: String)
-                if args.len() != 1 {
-                    return Err(CompileError::new(
-                        ErrorKind::WrongArgumentCount {
-                            expected: 1,
-                            found: args.len(),
-                        },
-                        span,
-                    ));
-                }
-
-                // Analyze the other string argument
-                let other_result = self.analyze_inst(air, args[0].value, ctx)?;
-
-                // Type check: other must be String
-                if other_result.ty != Type::String && !other_result.ty.is_error() {
-                    return Err(CompileError::new(
-                        ErrorKind::TypeMismatch {
-                            expected: "String".to_string(),
-                            found: other_result.ty.name().to_string(),
-                        },
-                        span,
-                    ));
-                }
-
-                // Call String__push_str(self, other) -> String
-                let call_name = self.interner.get_or_intern("String__push_str");
-                let args_start = air.add_extra(&[
-                    receiver.air_ref.as_u32(),
-                    AirArgMode::Normal.as_u32(),
-                    other_result.air_ref.as_u32(),
-                    AirArgMode::Normal.as_u32(),
-                ]);
-                let call_ref = air.add_inst(AirInst {
-                    data: AirInstData::Call {
-                        name: call_name,
-                        args_start,
-                        args_len: 2,
-                    },
-                    ty: Type::String,
-                    span,
-                });
-
-                // Store the result back to the receiver
-                self.store_string_result(air, call_ref, storage, span)
-            }
-
-            "push" => {
-                // fn push(inout self, byte: u8)
-                if args.len() != 1 {
-                    return Err(CompileError::new(
-                        ErrorKind::WrongArgumentCount {
-                            expected: 1,
-                            found: args.len(),
-                        },
-                        span,
-                    ));
-                }
-
-                // Analyze the byte argument
-                let byte_result = self.analyze_inst(air, args[0].value, ctx)?;
-
-                // Type check: byte must be u8
-                if byte_result.ty != Type::U8 && !byte_result.ty.is_error() {
-                    return Err(CompileError::new(
-                        ErrorKind::TypeMismatch {
-                            expected: "u8".to_string(),
-                            found: byte_result.ty.name().to_string(),
-                        },
-                        span,
-                    ));
-                }
-
-                // Call String__push(self, byte) -> String
-                let call_name = self.interner.get_or_intern("String__push");
-                let args_start = air.add_extra(&[
-                    receiver.air_ref.as_u32(),
-                    AirArgMode::Normal.as_u32(),
-                    byte_result.air_ref.as_u32(),
-                    AirArgMode::Normal.as_u32(),
-                ]);
-                let call_ref = air.add_inst(AirInst {
-                    data: AirInstData::Call {
-                        name: call_name,
-                        args_start,
-                        args_len: 2,
-                    },
-                    ty: Type::String,
-                    span,
-                });
-
-                // Store the result back to the receiver
-                self.store_string_result(air, call_ref, storage, span)
-            }
-
-            "clear" => {
-                // fn clear(inout self)
-                if !args.is_empty() {
-                    return Err(CompileError::new(
-                        ErrorKind::WrongArgumentCount {
-                            expected: 0,
-                            found: args.len(),
-                        },
-                        span,
-                    ));
-                }
-
-                // Call String__clear(self) -> String
-                let call_name = self.interner.get_or_intern("String__clear");
-                let args_start =
-                    air.add_extra(&[receiver.air_ref.as_u32(), AirArgMode::Normal.as_u32()]);
-                let call_ref = air.add_inst(AirInst {
-                    data: AirInstData::Call {
-                        name: call_name,
-                        args_start,
-                        args_len: 1,
-                    },
-                    ty: Type::String,
-                    span,
-                });
-
-                // Store the result back to the receiver
-                self.store_string_result(air, call_ref, storage, span)
-            }
-
-            "reserve" => {
-                // fn reserve(inout self, additional: u64)
-                if args.len() != 1 {
-                    return Err(CompileError::new(
-                        ErrorKind::WrongArgumentCount {
-                            expected: 1,
-                            found: args.len(),
-                        },
-                        span,
-                    ));
-                }
-
-                // Analyze the additional argument
-                let additional_result = self.analyze_inst(air, args[0].value, ctx)?;
-
-                // Type check: additional must be u64
-                if additional_result.ty != Type::U64 && !additional_result.ty.is_error() {
-                    return Err(CompileError::new(
-                        ErrorKind::TypeMismatch {
-                            expected: "u64".to_string(),
-                            found: additional_result.ty.name().to_string(),
-                        },
-                        span,
-                    ));
-                }
-
-                // Call String__reserve(self, additional) -> String
-                let call_name = self.interner.get_or_intern("String__reserve");
-                let args_start = air.add_extra(&[
-                    receiver.air_ref.as_u32(),
-                    AirArgMode::Normal.as_u32(),
-                    additional_result.air_ref.as_u32(),
-                    AirArgMode::Normal.as_u32(),
-                ]);
-                let call_ref = air.add_inst(AirInst {
-                    data: AirInstData::Call {
-                        name: call_name,
-                        args_start,
-                        args_len: 2,
-                    },
-                    ty: Type::String,
-                    span,
-                });
-
-                // Store the result back to the receiver
-                self.store_string_result(air, call_ref, storage, span)
-            }
-
-            _ => {
-                // This should never happen - caller should only call this for mutation methods
-                Err(CompileError::new(
-                    ErrorKind::UndefinedMethod {
-                        type_name: "String".to_string(),
-                        method_name: method_name.to_string(),
-                    },
-                    span,
-                ))
-            }
-        }
-    }
-
     /// Store the result of a String mutation method back to the receiver's storage.
     ///
     /// Returns a Unit-typed result since mutation methods don't return a value.
@@ -5806,157 +5810,6 @@ impl<'a> Sema<'a> {
         };
 
         Ok(AnalysisResult::new(store_ref, Type::Unit))
-    }
-
-    /// Analyze a String method call (len, capacity, is_empty, etc.).
-    ///
-    /// These are built-in methods for the String type that query the string's state.
-    /// Query methods use `borrow self` semantics - they don't consume the string.
-    fn analyze_string_method(
-        &mut self,
-        air: &mut Air,
-        _ctx: &mut AnalysisContext,
-        method_name: &str,
-        receiver: AnalysisResult,
-        args: &[RirCallArg],
-        span: Span,
-    ) -> CompileResult<AnalysisResult> {
-        match method_name {
-            "len" => {
-                // fn len(borrow self) -> u64
-                // Returns the length of the string in bytes
-                if !args.is_empty() {
-                    return Err(CompileError::new(
-                        ErrorKind::WrongArgumentCount {
-                            expected: 0,
-                            found: args.len(),
-                        },
-                        span,
-                    ));
-                }
-
-                // Generate a call to String__len (runtime function)
-                // We pass the String by value (its 3 fields) but don't consume it semantically.
-                // The caller still owns the String after this call.
-                // Using Normal mode instead of Borrow because String's 3 fields should be
-                // passed directly, not by reference.
-                let call_name = self.interner.get_or_intern("String__len");
-                let args_start =
-                    air.add_extra(&[receiver.air_ref.as_u32(), AirArgMode::Normal.as_u32()]);
-                let air_ref = air.add_inst(AirInst {
-                    data: AirInstData::Call {
-                        name: call_name,
-                        args_start,
-                        args_len: 1,
-                    },
-                    ty: Type::U64,
-                    span,
-                });
-                Ok(AnalysisResult::new(air_ref, Type::U64))
-            }
-
-            "capacity" => {
-                // fn capacity(borrow self) -> u64
-                // Returns the allocated capacity (0 for string literals)
-                if !args.is_empty() {
-                    return Err(CompileError::new(
-                        ErrorKind::WrongArgumentCount {
-                            expected: 0,
-                            found: args.len(),
-                        },
-                        span,
-                    ));
-                }
-
-                // Generate a call to String__capacity (runtime function)
-                // Same pattern as len() - pass by value, don't consume.
-                let call_name = self.interner.get_or_intern("String__capacity");
-                let args_start =
-                    air.add_extra(&[receiver.air_ref.as_u32(), AirArgMode::Normal.as_u32()]);
-                let air_ref = air.add_inst(AirInst {
-                    data: AirInstData::Call {
-                        name: call_name,
-                        args_start,
-                        args_len: 1,
-                    },
-                    ty: Type::U64,
-                    span,
-                });
-                Ok(AnalysisResult::new(air_ref, Type::U64))
-            }
-
-            "is_empty" => {
-                // fn is_empty(borrow self) -> bool
-                // Returns true if the string length is zero
-                if !args.is_empty() {
-                    return Err(CompileError::new(
-                        ErrorKind::WrongArgumentCount {
-                            expected: 0,
-                            found: args.len(),
-                        },
-                        span,
-                    ));
-                }
-
-                // Generate a call to String__is_empty (runtime function)
-                // Same pattern as len() - pass by value, don't consume.
-                let call_name = self.interner.get_or_intern("String__is_empty");
-                let args_start =
-                    air.add_extra(&[receiver.air_ref.as_u32(), AirArgMode::Normal.as_u32()]);
-                let air_ref = air.add_inst(AirInst {
-                    data: AirInstData::Call {
-                        name: call_name,
-                        args_start,
-                        args_len: 1,
-                    },
-                    ty: Type::Bool,
-                    span,
-                });
-                Ok(AnalysisResult::new(air_ref, Type::Bool))
-            }
-
-            "clone" => {
-                // fn clone(borrow self) -> String
-                // Creates a deep copy of the string
-                if !args.is_empty() {
-                    return Err(CompileError::new(
-                        ErrorKind::WrongArgumentCount {
-                            expected: 0,
-                            found: args.len(),
-                        },
-                        span,
-                    ));
-                }
-
-                // Generate a call to String__clone (runtime function)
-                // Takes the String (ptr, len, cap) and returns a new String (ptr, len, cap)
-                // where the new ptr points to freshly allocated memory with copied content.
-                let call_name = self.interner.get_or_intern("String__clone");
-                let args_start =
-                    air.add_extra(&[receiver.air_ref.as_u32(), AirArgMode::Normal.as_u32()]);
-                let air_ref = air.add_inst(AirInst {
-                    data: AirInstData::Call {
-                        name: call_name,
-                        args_start,
-                        args_len: 1,
-                    },
-                    ty: Type::String,
-                    span,
-                });
-                Ok(AnalysisResult::new(air_ref, Type::String))
-            }
-
-            _ => {
-                // Unknown method for String
-                Err(CompileError::new(
-                    ErrorKind::UndefinedMethod {
-                        type_name: "String".to_string(),
-                        method_name: method_name.to_string(),
-                    },
-                    span,
-                ))
-            }
-        }
     }
 }
 

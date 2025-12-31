@@ -1968,7 +1968,11 @@ mod integration_tests {
                 fn main() -> i32 { 0 }
             "#;
             let result = compile_to_air(src).unwrap();
-            assert_eq!(result.struct_defs.len(), 1);
+            // struct_defs includes builtin types (String) plus user-defined structs
+            // There's 1 builtin (String) + 1 user-defined (Point) = 2 total
+            assert_eq!(result.struct_defs.len(), 2);
+            // Verify Point is present (builtins are injected first, so it's at index 1)
+            assert_eq!(result.struct_defs[1].name, "Point");
         }
 
         #[test]
