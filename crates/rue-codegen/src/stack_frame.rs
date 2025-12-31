@@ -4,10 +4,10 @@
 //! information from compiled code. This is useful for debugging ABI issues,
 //! calling convention bugs, and understanding how values are laid out on the stack.
 
+use lasso::ThreadedRodeo;
 use rue_air::{ArrayTypeDef, StructDef};
 use rue_cfg::Cfg;
 use rue_error::CompileResult;
-use rue_intern::Interner;
 use rue_target::{Arch, Target};
 
 /// A slot on the stack (local variable or spill slot).
@@ -257,7 +257,7 @@ pub fn generate_stack_frame_info(
     struct_defs: &[StructDef],
     array_types: &[ArrayTypeDef],
     strings: &[String],
-    interner: &Interner,
+    interner: &ThreadedRodeo,
     target: Target,
 ) -> CompileResult<StackFrameInfo> {
     match target.arch() {
@@ -289,7 +289,7 @@ fn generate_x86_64_stack_frame(
     struct_defs: &[StructDef],
     array_types: &[ArrayTypeDef],
     strings: &[String],
-    interner: &Interner,
+    interner: &ThreadedRodeo,
     target: Target,
 ) -> CompileResult<StackFrameInfo> {
     use crate::x86_64::{CfgLower, RegAlloc};
@@ -413,7 +413,7 @@ fn generate_aarch64_stack_frame(
     struct_defs: &[StructDef],
     array_types: &[ArrayTypeDef],
     strings: &[String],
-    interner: &Interner,
+    interner: &ThreadedRodeo,
     target: Target,
 ) -> CompileResult<StackFrameInfo> {
     use crate::aarch64::{CfgLower, RegAlloc};
@@ -559,12 +559,17 @@ fn generate_aarch64_stack_frame(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use lasso::ThreadedRodeo;
     use rue_air::{Air, AirInst, AirInstData, Type};
     use rue_cfg::CfgBuilder;
-    use rue_intern::Interner;
     use rue_span::Span;
 
-    fn create_simple_cfg() -> (rue_cfg::Cfg, Vec<StructDef>, Vec<ArrayTypeDef>, Interner) {
+    fn create_simple_cfg() -> (
+        rue_cfg::Cfg,
+        Vec<StructDef>,
+        Vec<ArrayTypeDef>,
+        ThreadedRodeo,
+    ) {
         let mut air = Air::new(Type::I32);
 
         let const_ref = air.add_inst(AirInst {
@@ -579,7 +584,7 @@ mod tests {
             span: Span::new(0, 2),
         });
 
-        let interner = Interner::new();
+        let interner = ThreadedRodeo::new();
         let cfg_output = CfgBuilder::build(&air, 0, 0, "test", &[], &[], vec![], &interner);
         (cfg_output.cfg, vec![], vec![], interner)
     }

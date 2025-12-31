@@ -27,11 +27,11 @@
 
 use std::collections::HashMap;
 
+use lasso::ThreadedRodeo;
 use rue_air::{ArrayTypeDef, ArrayTypeId};
 use rue_cfg::{
     BasicBlock, BlockId, Cfg, CfgInstData, CfgValue, StructDef, StructId, Terminator, Type,
 };
-use rue_intern::Interner;
 
 use super::mir::{LabelId, Operand, Reg, VReg, X86Inst, X86Mir};
 use crate::cfg_lower::{FieldChainBase, IndexChainBase, IndexLevel};
@@ -52,8 +52,8 @@ pub struct CfgLower<'a> {
     array_types: &'a [ArrayTypeDef],
     /// String table from semantic analysis (indexed by StringId).
     strings: &'a [String],
-    /// Interner for resolving Symbol to string
-    interner: &'a Interner,
+    /// Interner for resolving Spur to string
+    interner: &'a ThreadedRodeo,
     mir: X86Mir,
     /// Maps CFG values to vregs
     value_map: HashMap<CfgValue, VReg>,
@@ -85,7 +85,7 @@ impl<'a> CfgLower<'a> {
         struct_defs: &'a [StructDef],
         array_types: &'a [ArrayTypeDef],
         strings: &'a [String],
-        interner: &'a Interner,
+        interner: &'a ThreadedRodeo,
     ) -> Self {
         let num_locals = cfg.num_locals();
         let num_params = cfg.num_params();
@@ -1850,7 +1850,7 @@ impl<'a> CfgLower<'a> {
                     });
                 }
 
-                let symbol_name = self.interner.get(*name);
+                let symbol_name = self.interner.resolve(name);
                 let symbol_id = self.intern_symbol(symbol_name);
                 self.mir.push(X86Inst::CallRel { symbol_id });
 
@@ -1921,7 +1921,7 @@ impl<'a> CfgLower<'a> {
                 args_start,
                 args_len,
             } => {
-                let name_str = self.interner.get(*name);
+                let name_str = self.interner.resolve(name);
                 if name_str == "dbg" {
                     let args = self.cfg.get_extra(*args_start, *args_len);
                     let arg_val = args[0];
@@ -3448,10 +3448,10 @@ impl<'a> CfgLower<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use lasso::ThreadedRodeo;
     use rue_air::Sema;
     use rue_cfg::CfgBuilder;
     use rue_error::PreviewFeatures;
-    use rue_intern::Interner;
     use rue_lexer::Lexer;
     use rue_parser::Parser;
     use rue_rir::AstGen;

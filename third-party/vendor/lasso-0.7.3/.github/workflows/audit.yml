@@ -1,0 +1,23 @@
+name: Security Audit
+
+on:
+  schedule:
+    - cron: "0 22 * * *"
+  push:
+    branches: [master]
+    paths:
+      - "**/Cargo.toml"
+      - ".github/workflows/audit.yml"
+  pull_request:
+    branches: [master]
+
+jobs:
+  Audit:
+    name: Audit Dependencies
+
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v2
+      - uses: actions-rs/audit-check@v1
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}

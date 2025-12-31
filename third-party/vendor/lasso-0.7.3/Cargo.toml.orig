@@ -1,0 +1,106 @@
+[package]
+name = "lasso"
+version = "0.7.3"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/Kixiron/lasso"
+documentation = "https://docs.rs/lasso"
+authors = ["Chase Wilson <contact@chasewilson.dev>"]
+keywords = ["interner", "intern", "string", "str", "symbol"]
+description = """A multithreaded and single threaded string interner that allows strings to be cached with a
+minimal memory footprint, associating them with a unique key that can be used to retrieve them at any time.
+"""
+readme = "README.md"
+categories = ["data-structures", "concurrency", "no-std"]
+edition = "2021"
+
+[features]
+default = []
+inline-more = []
+no-std = ["ahasher"]
+multi-threaded = ["dashmap"]
+ahasher = ["ahash"]
+serialize = ["serde", "hashbrown/serde"]
+
+# Provides a concurrent hashmap, enabled with the `multi-threaded` feature
+[dependencies.dashmap]
+version = "6.0.0"
+features = ["raw-api"]
+optional = true
+
+# Provides a no_std hasher, enabled with the `no-std` feature
+[dependencies.ahash]
+version = "0.8.0"
+default-features = false
+features = ["no-rng"]
+optional = true
+
+# Provides the hashmap that all single-threaded interners use
+[dependencies.hashbrown]
+version = "0.14.0"
+features = ["raw"]
+
+# Allows {de}serialization of Spurs
+[dependencies.serde]
+version = "1.0.123"
+default-features = false
+features = ["alloc"]
+optional = true
+
+# Provides abomonation support for keys, enabled with the `abomonation` feature
+[dependencies.abomonation]
+version = "0.7.3"
+default-features = false
+optional = true
+
+# Provides support for the `deepsize` crate, enabled with the `deepsize` feature
+[dependencies.deepsize]
+version = "0.2.0"
+default-features = false
+optional = true
+
+# Benchmarking
+[dev-dependencies.criterion]
+version = "0.3.4"
+
+# Benchmarking
+[dev-dependencies.lazy_static]
+version = "1.4.0"
+
+# Cross-hash comparisons with benchmarking
+[dev-dependencies.ahash]
+version = "0.8.0"
+default-features = false
+
+# Cross-hash comparisons with benchmarking
+[dev-dependencies.fxhash]
+version = "0.2.1"
+
+# Testing serialization
+[dev-dependencies.serde_json]
+version = "1.0.62"
+
+[[bench]]
+name = "single_threaded"
+harness = false
+
+[[bench]]
+name = "multi_threaded"
+harness = false
+required-features = ["multi-threaded"]
+
+[[bench]]
+name = "reader"
+harness = false
+
+[[bench]]
+name = "resolver"
+harness = false
+
+[[example]]
+name = "hello_world"
+required-features = ["multi-threaded"]
+
+[package.metadata.docs.rs]
+features = ["multi-threaded", "serialize"]
+targets = ["x86_64-unknown-linux-gnu"]
+rustc-args = ["--cfg", "docsrs"]

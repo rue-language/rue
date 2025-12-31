@@ -16,8 +16,8 @@ use crate::ast::{
 use chumsky::input::{Input as ChumskyInput, Stream, ValueInput};
 use chumsky::pratt::{infix, left, prefix};
 use chumsky::prelude::*;
+use lasso::{Spur, ThreadedRodeo};
 use rue_error::{CompileError, CompileResult, ErrorKind};
-use rue_intern::{Interner, Symbol};
 use rue_lexer::TokenKind;
 use rue_span::Span;
 use std::borrow::Cow;
@@ -27,31 +27,31 @@ use std::cell::RefCell;
 /// Pre-interned symbols for primitive type names.
 /// These are interned once when the parser is created and reused for all parsing.
 #[derive(Clone, Copy)]
-pub struct PrimitiveTypeSymbols {
-    pub i8: Symbol,
-    pub i16: Symbol,
-    pub i32: Symbol,
-    pub i64: Symbol,
-    pub u8: Symbol,
-    pub u16: Symbol,
-    pub u32: Symbol,
-    pub u64: Symbol,
-    pub bool: Symbol,
+pub struct PrimitiveTypeSpurs {
+    pub i8: Spur,
+    pub i16: Spur,
+    pub i32: Spur,
+    pub i64: Spur,
+    pub u8: Spur,
+    pub u16: Spur,
+    pub u32: Spur,
+    pub u64: Spur,
+    pub bool: Spur,
 }
 
-impl PrimitiveTypeSymbols {
+impl PrimitiveTypeSpurs {
     /// Create a new set of primitive type symbols by interning them.
-    pub fn new(interner: &mut Interner) -> Self {
+    pub fn new(interner: &mut ThreadedRodeo) -> Self {
         Self {
-            i8: interner.intern("i8"),
-            i16: interner.intern("i16"),
-            i32: interner.intern("i32"),
-            i64: interner.intern("i64"),
-            u8: interner.intern("u8"),
-            u16: interner.intern("u16"),
-            u32: interner.intern("u32"),
-            u64: interner.intern("u64"),
-            bool: interner.intern("bool"),
+            i8: interner.get_or_intern("i8"),
+            i16: interner.get_or_intern("i16"),
+            i32: interner.get_or_intern("i32"),
+            i64: interner.get_or_intern("i64"),
+            u8: interner.get_or_intern("u8"),
+            u16: interner.get_or_intern("u16"),
+            u32: interner.get_or_intern("u32"),
+            u64: interner.get_or_intern("u64"),
+            bool: interner.get_or_intern("bool"),
         }
     }
 }
@@ -59,11 +59,11 @@ impl PrimitiveTypeSymbols {
 // Thread-local storage for the primitive type symbols during parsing.
 // This is set before parsing and read during parsing.
 thread_local! {
-    static PRIMITIVE_SYMS: RefCell<Option<PrimitiveTypeSymbols>> = const { RefCell::new(None) };
+    static PRIMITIVE_SYMS: RefCell<Option<PrimitiveTypeSpurs>> = const { RefCell::new(None) };
 }
 
 /// Get the primitive type symbols. Panics if not set.
-fn get_primitive_syms() -> PrimitiveTypeSymbols {
+fn get_primitive_syms() -> PrimitiveTypeSpurs {
     PRIMITIVE_SYMS.with(|syms| {
         syms.borrow()
             .expect("Primitive type symbols not initialized - call parse() instead of using parsers directly")
@@ -1763,12 +1763,12 @@ fn convert_error(err: Rich<'_, TokenKind>) -> CompileError {
 pub struct ChumskyParser {
     tokens: Vec<(TokenKind, SimpleSpan)>,
     source_len: usize,
-    interner: Interner,
+    interner: ThreadedRodeo,
 }
 
 impl ChumskyParser {
     /// Create a new parser from tokens and an interner produced by the lexer.
-    pub fn new(tokens: Vec<rue_lexer::Token>, interner: Interner) -> Self {
+    pub fn new(tokens: Vec<rue_lexer::Token>, interner: ThreadedRodeo) -> Self {
         let source_len = tokens.last().map(|t| t.span.end as usize).unwrap_or(0);
 
         let spanned_tokens: Vec<(TokenKind, SimpleSpan)> = tokens
@@ -1789,9 +1789,9 @@ impl ChumskyParser {
     }
 
     /// Parse the tokens into an AST, returning the AST and the interner.
-    pub fn parse(mut self) -> CompileResult<(Ast, Interner)> {
+    pub fn parse(mut self) -> CompileResult<(Ast, ThreadedRodeo)> {
         // Pre-intern primitive type symbols and store in thread-local
-        let syms = PrimitiveTypeSymbols::new(&mut self.interner);
+        let syms = PrimitiveTypeSpurs::new(&mut self.interner);
         PRIMITIVE_SYMS.with(|s| *s.borrow_mut() = Some(syms));
 
         // Create a stream from the token iterator
@@ -1824,13 +1824,13 @@ mod tests {
     #[derive(Debug)]
     struct ParseResult {
         ast: Ast,
-        interner: Interner,
+        interner: ThreadedRodeo,
     }
 
     impl ParseResult {
         /// Get the string for a symbol.
-        fn get(&self, sym: Symbol) -> &str {
-            self.interner.get(sym)
+        fn get(&self, sym: Spur) -> &str {
+            self.interner.resolve(&sym)
         }
     }
 
@@ -1838,13 +1838,13 @@ mod tests {
     #[derive(Debug)]
     struct ExprResult {
         expr: Expr,
-        interner: Interner,
+        interner: ThreadedRodeo,
     }
 
     impl ExprResult {
         /// Get the string for a symbol.
-        fn get(&self, sym: Symbol) -> &str {
-            self.interner.get(sym)
+        fn get(&self, sym: Spur) -> &str {
+            self.interner.resolve(&sym)
         }
     }
 

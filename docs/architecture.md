@@ -132,9 +132,6 @@ Shared error types and reporting infrastructure.
 ### `rue-span`
 Source location tracking (`Span` type) used throughout for error messages.
 
-### `rue-intern`
-String interning for identifiers. Reduces memory usage and enables fast equality comparisons.
-
 ### `rue`
 The CLI binary. Supports:
 - Normal compilation: `rue source.rue [output]`

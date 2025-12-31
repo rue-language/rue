@@ -5,6 +5,7 @@
 
 use std::fmt;
 
+use lasso::Key;
 use rue_air::ArrayTypeId;
 use rue_cfg::{BlockId, CfgValue};
 
@@ -141,12 +142,12 @@ pub fn format_cfg_inst_data(data: &rue_cfg::CfgInstData) -> String {
         CfgInstData::Call { name, .. } => {
             // Note: Can't show args without Cfg access; just show name
             // Display symbol as @{id} since we don't have interner access
-            format!("call @{}(...)", name.as_u32())
+            format!("call @{}(...)", name.into_usize())
         }
         CfgInstData::Intrinsic { name, .. } => {
             // Note: Can't show args without Cfg access; just show name
             // Display symbol as @{id} since we don't have interner access
-            format!("intrinsic @{}(...)", name.as_u32())
+            format!("intrinsic @{}(...)", name.into_usize())
         }
         CfgInstData::StructInit { struct_id, .. } => {
             // Note: Can't show fields without Cfg access; just show struct_id

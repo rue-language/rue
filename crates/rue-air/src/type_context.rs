@@ -6,7 +6,7 @@
 
 use std::collections::HashMap;
 
-use rue_intern::Symbol;
+use lasso::Spur;
 use rue_rir::RirParamMode;
 
 use crate::types::{EnumDef, EnumId, StructDef, StructId, Type};
@@ -34,15 +34,15 @@ use crate::types::{EnumDef, EnumId, StructDef, StructId, Type};
 #[derive(Debug, Clone)]
 pub struct TypeContext {
     /// Function signatures: maps function name to signature info.
-    pub func_sigs: HashMap<Symbol, FunctionSignature>,
+    pub func_sigs: HashMap<Spur, FunctionSignature>,
     /// Method signatures: maps (type_name, method_name) to signature info.
-    pub method_sigs: HashMap<(Symbol, Symbol), MethodSignature>,
+    pub method_sigs: HashMap<(Spur, Spur), MethodSignature>,
     /// Struct lookup: maps struct name symbol to StructId.
-    pub struct_by_name: HashMap<Symbol, StructId>,
+    pub struct_by_name: HashMap<Spur, StructId>,
     /// Struct definitions indexed by StructId.
     pub struct_defs: Vec<StructDef>,
     /// Enum lookup: maps enum name symbol to EnumId.
-    pub enum_by_name: HashMap<Symbol, EnumId>,
+    pub enum_by_name: HashMap<Spur, EnumId>,
     /// Enum definitions indexed by EnumId.
     pub enum_defs: Vec<EnumDef>,
 }
@@ -68,7 +68,7 @@ pub struct MethodSignature {
     /// Whether this is a method (has self) or associated function (no self).
     pub has_self: bool,
     /// Parameter names (excluding self if present).
-    pub param_names: Vec<Symbol>,
+    pub param_names: Vec<Spur>,
     /// Parameter types (excluding self if present).
     pub param_types: Vec<Type>,
     /// Return type.
@@ -89,7 +89,7 @@ impl TypeContext {
     }
 
     /// Look up a struct by name.
-    pub fn get_struct(&self, name: Symbol) -> Option<StructId> {
+    pub fn get_struct(&self, name: Spur) -> Option<StructId> {
         self.struct_by_name.get(&name).copied()
     }
 
@@ -99,7 +99,7 @@ impl TypeContext {
     }
 
     /// Look up an enum by name.
-    pub fn get_enum(&self, name: Symbol) -> Option<EnumId> {
+    pub fn get_enum(&self, name: Spur) -> Option<EnumId> {
         self.enum_by_name.get(&name).copied()
     }
 
@@ -109,12 +109,12 @@ impl TypeContext {
     }
 
     /// Look up a function signature by name.
-    pub fn get_function(&self, name: Symbol) -> Option<&FunctionSignature> {
+    pub fn get_function(&self, name: Spur) -> Option<&FunctionSignature> {
         self.func_sigs.get(&name)
     }
 
     /// Look up a method signature by type and method name.
-    pub fn get_method(&self, type_name: Symbol, method_name: Symbol) -> Option<&MethodSignature> {
+    pub fn get_method(&self, type_name: Spur, method_name: Spur) -> Option<&MethodSignature> {
         self.method_sigs.get(&(type_name, method_name))
     }
 }

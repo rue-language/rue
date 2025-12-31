@@ -5,7 +5,7 @@
 use std::fmt;
 
 use crate::types::{ArrayTypeId, StructId, Type};
-use rue_intern::Symbol;
+use lasso::{Key, Spur};
 use rue_span::Span;
 
 /// Parameter passing mode in AIR.
@@ -499,7 +499,7 @@ pub enum AirInstData {
     /// Function call
     Call {
         /// Function name (interned symbol)
-        name: Symbol,
+        name: Spur,
         /// Start index into extra array for arguments
         args_start: u32,
         /// Number of arguments
@@ -509,7 +509,7 @@ pub enum AirInstData {
     /// Intrinsic call (e.g., @dbg)
     Intrinsic {
         /// Intrinsic name (without @, interned)
-        name: Symbol,
+        name: Spur,
         /// Start index into extra array for arguments
         args_start: u32,
         /// Number of arguments
@@ -772,7 +772,7 @@ impl fmt::Display for Air {
                     args_start,
                     args_len,
                 } => {
-                    write!(f, "call @{}(", name.as_u32())?;
+                    write!(f, "call @{}(", name.into_usize())?;
                     for (i, arg) in self.get_call_args(*args_start, *args_len).enumerate() {
                         if i > 0 {
                             write!(f, ", ")?;
@@ -786,7 +786,7 @@ impl fmt::Display for Air {
                     args_start,
                     args_len,
                 } => {
-                    write!(f, "intrinsic @sym:{}(", name.as_u32())?;
+                    write!(f, "intrinsic @sym:{}(", name.into_usize())?;
                     for (i, arg) in self.get_air_refs(*args_start, *args_len).enumerate() {
                         if i > 0 {
                             write!(f, ", ")?;

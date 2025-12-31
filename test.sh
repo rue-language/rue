@@ -9,7 +9,6 @@ cd "$(dirname "$0")"
 echo "Running unit tests..."
 ./buck2 test \
     //crates/rue-span:rue-span-test \
-    //crates/rue-intern:rue-intern-test \
     //crates/rue-error:rue-error-test \
     //crates/rue-target:rue-target-test \
     //crates/rue-lexer:rue-lexer-test \

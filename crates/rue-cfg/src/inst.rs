@@ -5,8 +5,8 @@
 
 use std::fmt;
 
+use lasso::{Key, Spur};
 use rue_air::{ArrayTypeId, EnumId, StructId, Type};
-use rue_intern::Symbol;
 use rue_span::Span;
 
 /// A basic block identifier.
@@ -182,7 +182,7 @@ pub enum CfgInstData {
     /// Use `Cfg::get_call_args(args_start, args_len)` to retrieve them.
     Call {
         /// Function name (interned symbol)
-        name: Symbol,
+        name: Spur,
         /// Start index into Cfg's call_args array
         args_start: u32,
         /// Number of arguments
@@ -193,7 +193,7 @@ pub enum CfgInstData {
     /// Use `Cfg::get_extra(args_start, args_len)` to retrieve them.
     Intrinsic {
         /// Intrinsic name (interned symbol)
-        name: Symbol,
+        name: Spur,
         /// Start index into Cfg's extra array
         args_start: u32,
         /// Number of arguments
@@ -783,7 +783,7 @@ impl Cfg {
                 args_len,
             } => {
                 // Display symbol as @{id} since we don't have interner access here
-                write!(f, "call @{}(", name.as_u32())?;
+                write!(f, "call @{}(", name.into_usize())?;
                 let args = self.get_call_args(*args_start, *args_len);
                 for (i, arg) in args.iter().enumerate() {
                     if i > 0 {
@@ -803,7 +803,7 @@ impl Cfg {
                 args_len,
             } => {
                 // Display symbol as @{id} since we don't have interner access here
-                write!(f, "intrinsic @{}(", name.as_u32())?;
+                write!(f, "intrinsic @{}(", name.into_usize())?;
                 let args = self.get_extra(*args_start, *args_len);
                 for (i, arg) in args.iter().enumerate() {
                     if i > 0 {

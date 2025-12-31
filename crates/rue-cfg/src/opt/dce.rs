@@ -394,8 +394,8 @@ fn compute_reachable_blocks(cfg: &Cfg) -> BitSet {
 mod tests {
     use super::*;
     use crate::{CfgInst, CfgInstData};
+    use lasso::ThreadedRodeo;
     use rue_air::Type;
-    use rue_intern::Interner;
     use rue_span::Span;
 
     fn make_cfg() -> Cfg {
@@ -560,8 +560,8 @@ mod tests {
         let entry = cfg.entry;
 
         // Create a call (side effect) that's not used by return
-        let interner = Interner::new();
-        let side_effect_sym = interner.intern("side_effect");
+        let interner = ThreadedRodeo::new();
+        let side_effect_sym = interner.get_or_intern("side_effect");
         let (args_start, args_len) = cfg.push_call_args(std::iter::empty());
         let call = cfg.add_inst_to_block(
             entry,

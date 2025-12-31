@@ -4,7 +4,7 @@ rust_library(
     deps = [
         "//crates/rue-air:rue-air",
         "//crates/rue-error:rue-error",
-        "//crates/rue-intern:rue-intern",
+        "//third-party:lasso",
         "//crates/rue-span:rue-span",
     ],
     visibility = ["PUBLIC"],
@@ -16,7 +16,7 @@ rust_test(
     deps = [
         "//crates/rue-air:rue-air",
         "//crates/rue-error:rue-error",
-        "//crates/rue-intern:rue-intern",
+        "//third-party:lasso",
         "//crates/rue-lexer:rue-lexer",
         "//crates/rue-parser:rue-parser",
         "//crates/rue-rir:rue-rir",

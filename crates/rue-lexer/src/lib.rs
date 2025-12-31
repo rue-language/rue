@@ -5,8 +5,8 @@
 
 mod logos_lexer;
 
+pub use lasso::{Key, Spur, ThreadedRodeo};
 pub use logos_lexer::LogosLexer as Lexer;
-pub use rue_intern::{Interner, Symbol};
 pub use rue_span::FileId;
 use rue_span::Span;
 
@@ -56,10 +56,10 @@ pub enum TokenKind {
 
     // Literals
     Int(u64),
-    String(Symbol),
+    String(Spur),
 
     // Identifiers
-    Ident(Symbol),
+    Ident(Spur),
 
     // Operators
     Plus,     // +
@@ -232,8 +232,8 @@ impl std::fmt::Display for TokenKind {
             TokenKind::Bool => write!(f, "TYPE(bool)"),
             TokenKind::Underscore => write!(f, "UNDERSCORE"),
             TokenKind::Int(v) => write!(f, "INT({})", v),
-            TokenKind::String(s) => write!(f, "STRING(sym:{})", s.as_u32()),
-            TokenKind::Ident(s) => write!(f, "IDENT(sym:{})", s.as_u32()),
+            TokenKind::String(s) => write!(f, "STRING(sym:{})", s.into_usize()),
+            TokenKind::Ident(s) => write!(f, "IDENT(sym:{})", s.into_usize()),
             TokenKind::Plus => write!(f, "PLUS"),
             TokenKind::Minus => write!(f, "MINUS"),
             TokenKind::Star => write!(f, "STAR"),

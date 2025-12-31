@@ -3,9 +3,9 @@
 //! This module provides a lexer implementation using the logos derive macro
 //! for efficient tokenization.
 
+use lasso::{Spur, ThreadedRodeo};
 use logos::Logos;
 use rue_error::{CompileError, CompileResult, ErrorKind};
-use rue_intern::{Interner, Symbol};
 use rue_span::{FileId, Span};
 
 /// Error type for lexing failures.
@@ -21,9 +21,7 @@ pub enum LexError {
 /// Process a string literal starting from an opening quote.
 /// This manually scans for the string content and closing quote,
 /// enabling detection of unterminated strings.
-fn process_string_from_quote(
-    lex: &mut logos::Lexer<'_, LogosTokenKind>,
-) -> Result<Symbol, LexError> {
+fn process_string_from_quote(lex: &mut logos::Lexer<'_, LogosTokenKind>) -> Result<Spur, LexError> {
     // At this point we've matched just the opening quote "
     // We need to scan remainder for string content and closing quote
     let remainder = lex.remainder();
@@ -99,14 +97,14 @@ fn process_string_from_quote(
     lex.bump(consumed);
 
     // Intern the string
-    let symbol = lex.extras.intern(&result);
-    Ok(symbol)
+    let spur = lex.extras.get_or_intern(&result);
+    Ok(spur)
 }
 
 /// Token kinds in the Rue language, using logos derive macro.
 #[derive(Logos, Debug, Clone, PartialEq, Eq)]
 #[logos(error = LexError)]
-#[logos(extras = Interner)]
+#[logos(extras = ThreadedRodeo)]
 #[logos(skip r"[ \t\n\r\f]+")]
 #[logos(skip r"//[^\n]*")]
 pub enum LogosTokenKind {
@@ -183,11 +181,11 @@ pub enum LogosTokenKind {
     // String literals - match opening quote and process content manually
     // This allows detection of unterminated strings
     #[token("\"", process_string_from_quote)]
-    String(Symbol),
+    String(Spur),
 
     // Identifiers (lower priority than keywords)
-    #[regex(r"[a-zA-Z_][a-zA-Z0-9_]*", |lex| lex.extras.intern(lex.slice()), priority = 1)]
-    Ident(Symbol),
+    #[regex(r"[a-zA-Z_][a-zA-Z0-9_]*", |lex| lex.extras.get_or_intern(lex.slice()), priority = 1)]
+    Ident(Spur),
 
     // Multi-character operators (logos automatically prefers longer matches)
     #[token("==")]
@@ -346,7 +344,7 @@ impl From<LogosTokenKind> for TokenKind {
 /// Logos-based lexer that converts source text into tokens.
 pub struct LogosLexer<'a> {
     source: &'a str,
-    interner: Interner,
+    interner: ThreadedRodeo,
     file_id: FileId,
 }
 
@@ -357,13 +355,13 @@ impl<'a> LogosLexer<'a> {
     pub fn new(source: &'a str) -> Self {
         Self {
             source,
-            interner: Interner::new(),
+            interner: ThreadedRodeo::default(),
             file_id: FileId::DEFAULT,
         }
     }
 
     /// Create a new lexer with an existing interner.
-    pub fn with_interner(source: &'a str, interner: Interner) -> Self {
+    pub fn with_interner(source: &'a str, interner: ThreadedRodeo) -> Self {
         Self {
             source,
             interner,
@@ -375,13 +373,17 @@ impl<'a> LogosLexer<'a> {
     pub fn with_file_id(source: &'a str, file_id: FileId) -> Self {
         Self {
             source,
-            interner: Interner::new(),
+            interner: ThreadedRodeo::default(),
             file_id,
         }
     }
 
     /// Create a new lexer with both an existing interner and a specific file ID.
-    pub fn with_interner_and_file_id(source: &'a str, interner: Interner, file_id: FileId) -> Self {
+    pub fn with_interner_and_file_id(
+        source: &'a str,
+        interner: ThreadedRodeo,
+        file_id: FileId,
+    ) -> Self {
         Self {
             source,
             interner,
@@ -390,7 +392,7 @@ impl<'a> LogosLexer<'a> {
     }
 
     /// Tokenize the entire source, returning all tokens and the interner.
-    pub fn tokenize(self) -> CompileResult<(Vec<Token>, Interner)> {
+    pub fn tokenize(self) -> CompileResult<(Vec<Token>, ThreadedRodeo)> {
         // Estimate capacity: source length / 4 is a rough heuristic for token density
         let mut tokens = Vec::with_capacity(self.source.len() / 4);
 
@@ -458,17 +460,17 @@ mod tests {
     use super::*;
 
     /// Helper to get the string for a symbol from the interner.
-    fn get_ident_str<'a>(kind: &TokenKind, interner: &'a Interner) -> Option<&'a str> {
+    fn get_ident_str<'a>(kind: &TokenKind, interner: &'a ThreadedRodeo) -> Option<&'a str> {
         match kind {
-            TokenKind::Ident(sym) => Some(interner.get(*sym)),
+            TokenKind::Ident(sym) => Some(interner.resolve(sym)),
             _ => None,
         }
     }
 
     /// Helper to get the string for a string literal symbol.
-    fn get_string_str<'a>(kind: &TokenKind, interner: &'a Interner) -> Option<&'a str> {
+    fn get_string_str<'a>(kind: &TokenKind, interner: &'a ThreadedRodeo) -> Option<&'a str> {
         match kind {
-            TokenKind::String(sym) => Some(interner.get(*sym)),
+            TokenKind::String(sym) => Some(interner.resolve(sym)),
             _ => None,
         }
     }

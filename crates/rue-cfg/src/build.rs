@@ -3,9 +3,9 @@
 //! This module converts the structured control flow in AIR (Branch, Loop)
 //! into explicit basic blocks with terminators.
 
+use lasso::ThreadedRodeo;
 use rue_air::{Air, AirArgMode, AirInstData, AirPattern, AirRef, ArrayTypeDef, StructDef, Type};
 use rue_error::{CompileWarning, WarningKind};
-use rue_intern::Interner;
 
 use crate::CfgOutput;
 use crate::inst::{
@@ -62,7 +62,7 @@ pub struct CfgBuilder<'a> {
     /// Array type definitions for type queries
     array_types: &'a [ArrayTypeDef],
     /// Interner for resolving symbols to strings
-    interner: &'a Interner,
+    interner: &'a ThreadedRodeo,
     /// Current block we're building
     current_block: BlockId,
     /// Stack of loop contexts for nested loops
@@ -91,7 +91,7 @@ impl<'a> CfgBuilder<'a> {
         struct_defs: &'a [StructDef],
         array_types: &'a [ArrayTypeDef],
         param_modes: Vec<bool>,
-        interner: &'a Interner,
+        interner: &'a ThreadedRodeo,
     ) -> CfgOutput {
         let mut builder = CfgBuilder {
             air,
@@ -1765,9 +1765,9 @@ impl<'a> CfgBuilder<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use lasso::ThreadedRodeo;
     use rue_air::Sema;
     use rue_error::PreviewFeatures;
-    use rue_intern::Interner;
     use rue_lexer::Lexer;
     use rue_parser::Parser;
     use rue_rir::AstGen;

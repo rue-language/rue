@@ -1,0 +1,5 @@
+# zerocopy build script detects Rust version features
+# We need to run it for proper version-gated features
+buildscript.run = true
+# zerocopy uses env!("CARGO_PKG_VERSION") in doc comments
+cargo_env = true

@@ -34,7 +34,6 @@ rue/
 │   ├── rue-codegen/   # Machine code generation
 │   ├── rue-compiler/  # Pipeline orchestration
 │   ├── rue-error/     # Error types
-│   ├── rue-intern/    # String interning
 │   ├── rue-lexer/     # Tokenizer
 │   ├── rue-linker/    # Object file creation and linking
 │   ├── rue-parser/    # AST construction

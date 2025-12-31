@@ -1,0 +1,64 @@
+name: Coverage
+
+on: [push, pull_request]
+
+jobs:
+  check:
+    name: Lasso
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v2
+      - run: git checkout HEAD
+
+      - uses: actions/cache@v3
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-cargo-coverage-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Install stable toolchain
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          override: true
+
+      - name: Install Tarpaulin
+        uses: actions-rs/install@v0.1
+        with:
+          crate: cargo-tarpaulin
+          version: latest
+
+      - name: Run cargo-tarpaulin
+        uses: actions-rs/cargo@v1
+        with:
+          command: tarpaulin
+          args: >-
+            --exclude-files benches/*
+            --exclude-files fuzzing/*
+            --coveralls ${{ secrets.COVERALLS_TOKEN }}
+            --features multi-threaded,serialize
+            --out Lcov
+        if: github.ref == 'refs/heads/master'
+
+      - name: Run cargo-tarpaulin for contributors
+        uses: actions-rs/cargo@v1
+        with:
+          command: tarpaulin
+          args: >-
+            --exclude-files benches/*
+            --exclude-files fuzzing/*
+            --features multi-threaded,serialize
+            --out Lcov
+        if: github.ref == 'refs/heads/master'
+
+      - name: Upload to Coveralls
+        uses: coverallsapp/github-action@master
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          path-to-lcov: ./lcov.info
+        if: github.ref == 'refs/heads/master'

@@ -90,7 +90,6 @@ graph LR
 | `rue-linker` | ELF object file creation and linking |
 | `rue-error` | Error types and diagnostics |
 | `rue-span` | Source location tracking |
-| `rue-intern` | String interning |
 | `rue-target` | Target platform configuration |
 | `rue-spec` | Specification test runner |
 | `rue-runtime` | Runtime support |

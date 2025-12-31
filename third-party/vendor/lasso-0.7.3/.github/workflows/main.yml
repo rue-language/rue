@@ -1,0 +1,329 @@
+name: CI
+
+on: [pull_request, push]
+
+jobs:
+  msrv:
+    name: MSRV
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+
+    steps:
+      - uses: actions/checkout@v2
+      - uses: actions-rs/toolchain@v1
+        with:
+          profile: minimal
+          toolchain: 1.71.0
+          override: true
+
+      - name: Check
+        uses: actions-rs/cargo@v1
+        with:
+          command: check
+
+  check:
+    name: Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v2
+      - uses: actions-rs/toolchain@v1
+        with:
+          profile: minimal
+          toolchain: nightly
+          override: true
+
+      - name: No default features
+        if: ${{ !matrix.custom-features }}
+        uses: actions-rs/cargo@v1
+        with:
+          command: check
+          args: --no-default-features
+
+      - name: Single threaded
+        if: ${{ !matrix.custom-features }}
+        uses: actions-rs/cargo@v1
+        with:
+          command: check
+
+      - name: Multi threaded
+        if: ${{ !matrix.custom-features }}
+        uses: actions-rs/cargo@v1
+        with:
+          command: check
+          args: --features multi-threaded
+
+      - name: No std
+        if: ${{ !matrix.custom-features }}
+        uses: actions-rs/cargo@v1
+        with:
+          command: check
+          args: --features no-std
+
+      - name: Serde
+        if: ${{ !matrix.custom-features }}
+        uses: actions-rs/cargo@v1
+        with:
+          command: check
+          args: --features serialize
+
+      - name: Serde Multi Threaded
+        if: ${{ !matrix.custom-features }}
+        uses: actions-rs/cargo@v1
+        with:
+          command: check
+          args: --features serialize,multi-threaded
+
+      - name: Serde No Std
+        if: ${{ !matrix.custom-features }}
+        uses: actions-rs/cargo@v1
+        with:
+          command: check
+          args: --features serialize,no-std
+
+  fmt:
+    name: Rustfmt
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v2
+      - uses: actions-rs/toolchain@v1
+        with:
+          profile: minimal
+          toolchain: stable
+          override: true
+          components: rustfmt
+      - uses: actions-rs/cargo@v1
+        with:
+          command: fmt
+          args: --all -- --check
+
+  doc:
+    name: Docs
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v2
+      - uses: actions-rs/toolchain@v1
+        with:
+          profile: minimal
+          toolchain: stable
+          override: true
+      - uses: actions-rs/cargo@v1
+        with:
+          command: doc
+          args: --all --document-private-items --no-deps --features multi-threaded
+
+  clippy:
+    name: Clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v2
+      - uses: actions-rs/toolchain@v1
+        with:
+          profile: minimal
+          toolchain: stable
+          override: true
+          components: clippy
+      - uses: actions-rs/cargo@v1
+        with:
+          command: clippy
+          args: --all -- -D warnings
+
+  test:
+    name: Test ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Windows
+          - name: x86_64-pc-windows-msvc
+            os: windows-latest
+            target: x86_64-pc-windows-msvc
+          - name: i686-pc-windows-msvc
+            os: windows-latest
+            target: i686-pc-windows-msvc
+
+          # Linux
+          - name: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+          - name: i686-unknown-linux-gnu
+            os: ubuntu-latest
+            target: i686-unknown-linux-gnu
+
+          # FIXME: OSX breaks randomly on CI
+          # OSX
+          # - name: x86_64-apple-darwin
+          #   os: macos-latest
+          #   target: x86_64-apple-darwin
+
+    env:
+      RUST_BACKTRACE: 1
+      CARGO_INCREMENTAL: 0
+
+    steps:
+      - uses: actions/checkout@v2
+      - shell: bash
+        if: matrix.target == 'i686-unknown-linux-gnu'
+        run: |
+          sudo apt update
+          sudo apt install -y gcc-multilib libc6-dev-i386
+      - uses: actions-rs/toolchain@v1
+        with:
+          profile: minimal
+          toolchain: stable
+          target: ${{ matrix.target }}
+          override: true
+
+      - name: Cache Cargo Registry
+        uses: actions/cache@v3
+        with:
+          path: ~/.cargo/registry
+          key: ${{ matrix.os }}-cargo-registry-${{ hashFiles('**/Cargo.toml') }}
+      - name: Cache Cargo Bin
+        uses: actions/cache@v3
+        with:
+          path: ~/.cargo/bin
+          key: ${{ matrix.os }}-cargo-bin-${{ hashFiles('**/Cargo.toml') }}
+      - name: Cache Cargo Git
+        uses: actions/cache@v3
+        with:
+          path: ~/.cargo/git
+          key: ${{ matrix.os }}-cargo-git-${{ hashFiles('**/Cargo.toml') }}
+      - name: Cache Cargo Build
+        uses: actions/cache@v3
+        with:
+          path: target
+          key: ${{ matrix.os }}-cargo-build-test-${{ matrix.target }}-${{ env.CURRENT_RUSTC_VERSION }}-${{ hashFiles('**/Cargo.toml') }}
+
+      - name: No default features
+        if: ${{ !matrix.custom-features }}
+        uses: actions-rs/cargo@v1
+        with:
+          command: test
+          args: --target ${{ matrix.target }} --no-default-features
+
+      - name: Single threaded
+        if: ${{ !matrix.custom-features }}
+        uses: actions-rs/cargo@v1
+        with:
+          command: test
+          args: --target ${{ matrix.target }}
+
+      - name: Multi threaded
+        if: ${{ !matrix.custom-features }}
+        uses: actions-rs/cargo@v1
+        with:
+          command: test
+          args: --target ${{ matrix.target }} --features multi-threaded
+
+      - name: No std
+        if: ${{ !matrix.custom-features }}
+        uses: actions-rs/cargo@v1
+        with:
+          command: test
+          args: --target ${{ matrix.target }} --features no-std
+
+  miri:
+    name: Miri ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Windows
+          - name: x86_64-pc-windows-msvc
+            os: windows-latest
+            target: x86_64-pc-windows-msvc
+          - name: i686-pc-windows-msvc
+            os: windows-latest
+            target: i686-pc-windows-msvc
+
+          # Linux
+          - name: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+          - name: i686-unknown-linux-gnu
+            os: ubuntu-latest
+            target: i686-unknown-linux-gnu
+
+          # FIXME: OSX breaks randomly on CI
+          # OSX
+          # - name: x86_64-apple-darwin
+          #   os: macos-latest
+          #   target: x86_64-apple-darwin
+
+    env:
+      RUST_BACKTRACE: 1
+      CARGO_INCREMENTAL: 0
+      MIRIFLAGS: "-Zmiri-disable-isolation"
+
+    steps:
+      - uses: actions/checkout@v2
+      - shell: bash
+        if: matrix.target == 'i686-unknown-linux-gnu'
+        run: |
+          sudo apt update
+          sudo apt install -y gcc-multilib libc6-dev-i386
+      - uses: actions-rs/toolchain@v1
+        with:
+          profile: minimal
+          toolchain: nightly
+          target: ${{ matrix.target }}
+          override: true
+          components: miri
+      - name: Set rustc version
+        run: echo "CURRENT_RUSTC_VERSION=$(rustc -V)" >> $GITHUB_ENV
+
+      - name: Cache Cargo Registry
+        uses: actions/cache@v3
+        with:
+          path: ~/.cargo/registry
+          key: ${{ matrix.os }}-cargo-registry-${{ hashFiles('**/Cargo.toml') }}
+      - name: Cache Cargo Bin
+        uses: actions/cache@v3
+        with:
+          path: ~/.cargo/bin
+          key: ${{ matrix.os }}-cargo-bin-${{ hashFiles('**/Cargo.toml') }}
+      - name: Cache Cargo Git
+        uses: actions/cache@v3
+        with:
+          path: ~/.cargo/git
+          key: ${{ matrix.os }}-cargo-git-${{ hashFiles('**/Cargo.toml') }}
+      - name: Cache Cargo Build
+        uses: actions/cache@v3
+        with:
+          path: target
+          key: ${{ matrix.os }}-cargo-build-miri-${{ matrix.target }}-${{ env.CURRENT_RUSTC_VERSION }}-${{ hashFiles('**/Cargo.toml') }}
+
+      - name: No default features
+        if: ${{ !matrix.custom-features }}
+        uses: actions-rs/cargo@v1
+        with:
+          command: miri
+          args: test --target ${{ matrix.target }} --no-default-features
+
+      - name: Single threaded
+        if: ${{ !matrix.custom-features }}
+        uses: actions-rs/cargo@v1
+        with:
+          command: miri
+          args: test --target ${{ matrix.target }}
+
+      - name: Multi threaded
+        if: ${{ !matrix.custom-features }}
+        uses: actions-rs/cargo@v1
+        with:
+          command: miri
+          args: test --target ${{ matrix.target }} --features multi-threaded
+
+      # TODO: Miri breaks on ahash since it uses bcrypt
+      # - name: No std
+      #   if: ${{ !matrix.custom-features }}
+      #   uses: actions-rs/cargo@v1
+      #   with:
+      #     command: miri
+      #     args: test --target ${{ matrix.target }} --features no-std

@@ -331,9 +331,9 @@ pub use x86_64::{Operand, Reg, X86Inst, X86Mir};
 #[cfg(test)]
 mod tests {
     use super::*;
+    use lasso::ThreadedRodeo;
     use rue_air::{Air, AirInst, AirInstData, Type};
     use rue_cfg::CfgBuilder;
-    use rue_intern::Interner;
     use rue_span::Span;
 
     #[test]
@@ -353,7 +353,7 @@ mod tests {
         });
 
         // Build CFG from AIR (no struct/array types in this simple test)
-        let interner = Interner::new();
+        let interner = ThreadedRodeo::new();
         let cfg_output = CfgBuilder::build(&air, 0, 0, "main", &[], &[], vec![], &interner);
 
         // Test the generate function

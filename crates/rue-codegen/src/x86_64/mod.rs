@@ -25,10 +25,10 @@ pub use regalloc::RegAlloc;
 
 use crate::regalloc::RegAllocDebugInfo;
 
+use lasso::ThreadedRodeo;
 use rue_air::{ArrayTypeDef, StructDef};
 use rue_cfg::Cfg;
 use rue_error::CompileResult;
-use rue_intern::Interner;
 
 // Re-export from parent
 pub use super::{EmittedCode, EmittedRelocation, MachineCode};
@@ -42,7 +42,7 @@ pub fn generate(
     struct_defs: &[StructDef],
     array_types: &[ArrayTypeDef],
     strings: &[String],
-    interner: &Interner,
+    interner: &ThreadedRodeo,
 ) -> CompileResult<MachineCode> {
     let num_locals = cfg.num_locals();
     let num_params = cfg.num_params();
@@ -90,7 +90,7 @@ pub fn generate_with_asm(
     struct_defs: &[StructDef],
     array_types: &[ArrayTypeDef],
     strings: &[String],
-    interner: &Interner,
+    interner: &ThreadedRodeo,
 ) -> CompileResult<(MachineCode, String)> {
     let num_locals = cfg.num_locals();
     let num_params = cfg.num_params();
@@ -137,7 +137,7 @@ pub fn generate_regalloc_info(
     struct_defs: &[StructDef],
     array_types: &[ArrayTypeDef],
     strings: &[String],
-    interner: &Interner,
+    interner: &ThreadedRodeo,
 ) -> CompileResult<RegAllocDebugInfo<Reg>> {
     let num_locals = cfg.num_locals();
     let num_params = cfg.num_params();

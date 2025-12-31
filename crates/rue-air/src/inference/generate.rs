@@ -10,7 +10,7 @@ use super::constraint::Constraint;
 use super::types::{InferType, TypeVarAllocator, TypeVarId};
 use crate::Type;
 use crate::types::parse_array_type_syntax;
-use rue_intern::{Interner, Symbol};
+use lasso::{Spur, ThreadedRodeo};
 use rue_rir::{InstData, InstRef, Rir};
 use rue_span::Span;
 use std::collections::HashMap;
@@ -64,20 +64,20 @@ pub struct MethodSig {
 /// Context for constraint generation within a single function.
 pub struct ConstraintContext<'a> {
     /// Local variables in scope.
-    pub locals: HashMap<Symbol, LocalVarInfo>,
+    pub locals: HashMap<Spur, LocalVarInfo>,
     /// Function parameters.
-    pub params: &'a HashMap<Symbol, ParamVarInfo>,
+    pub params: &'a HashMap<Spur, ParamVarInfo>,
     /// Return type of the current function.
     pub return_type: Type,
     /// How many loops we're nested inside (for break/continue validation).
     pub loop_depth: u32,
     /// Scope stack for efficient scope management.
-    scope_stack: Vec<Vec<(Symbol, Option<LocalVarInfo>)>>,
+    scope_stack: Vec<Vec<(Spur, Option<LocalVarInfo>)>>,
 }
 
 impl<'a> ConstraintContext<'a> {
     /// Create a new context for a function.
-    pub fn new(params: &'a HashMap<Symbol, ParamVarInfo>, return_type: Type) -> Self {
+    pub fn new(params: &'a HashMap<Spur, ParamVarInfo>, return_type: Type) -> Self {
         Self {
             locals: HashMap::new(),
             params,
@@ -110,7 +110,7 @@ impl<'a> ConstraintContext<'a> {
     }
 
     /// Insert a local variable, tracking it in the current scope.
-    pub fn insert_local(&mut self, symbol: Symbol, var: LocalVarInfo) {
+    pub fn insert_local(&mut self, symbol: Spur, var: LocalVarInfo) {
         let old_value = self.locals.insert(symbol, var);
         if let Some(current_scope) = self.scope_stack.last_mut() {
             current_scope.push((symbol, old_value));
@@ -142,7 +142,7 @@ pub struct ConstraintGenerator<'a> {
     /// The RIR being analyzed.
     rir: &'a Rir,
     /// String interner for resolving symbols.
-    interner: &'a Interner,
+    interner: &'a ThreadedRodeo,
     /// Type variable allocator.
     type_vars: TypeVarAllocator,
     /// Collected constraints.
@@ -150,13 +150,13 @@ pub struct ConstraintGenerator<'a> {
     /// Mapping from RIR instruction to its inferred type.
     expr_types: HashMap<InstRef, InferType>,
     /// Function signatures (for call type checking).
-    functions: &'a HashMap<Symbol, FunctionSig>,
+    functions: &'a HashMap<Spur, FunctionSig>,
     /// Struct types (name -> Type::Struct(id)).
-    structs: &'a HashMap<Symbol, Type>,
+    structs: &'a HashMap<Spur, Type>,
     /// Enum types (name -> Type::Enum(id)).
-    enums: &'a HashMap<Symbol, Type>,
+    enums: &'a HashMap<Spur, Type>,
     /// Method signatures: (struct_name, method_name) -> MethodSig
-    methods: &'a HashMap<(Symbol, Symbol), MethodSig>,
+    methods: &'a HashMap<(Spur, Spur), MethodSig>,
     /// Type variables allocated for integer literals.
     /// These start as unbound and need to be defaulted to i32 if unconstrained.
     int_literal_vars: Vec<TypeVarId>,
@@ -166,11 +166,11 @@ impl<'a> ConstraintGenerator<'a> {
     /// Create a new constraint generator.
     pub fn new(
         rir: &'a Rir,
-        interner: &'a Interner,
-        functions: &'a HashMap<Symbol, FunctionSig>,
-        structs: &'a HashMap<Symbol, Type>,
-        enums: &'a HashMap<Symbol, Type>,
-        methods: &'a HashMap<(Symbol, Symbol), MethodSig>,
+        interner: &'a ThreadedRodeo,
+        functions: &'a HashMap<Spur, FunctionSig>,
+        structs: &'a HashMap<Spur, Type>,
+        enums: &'a HashMap<Spur, Type>,
+        methods: &'a HashMap<(Spur, Spur), MethodSig>,
     ) -> Self {
         Self {
             rir,
@@ -374,7 +374,7 @@ impl<'a> ConstraintGenerator<'a> {
 
                 let var_ty = if let Some(ty_sym) = type_annotation {
                     // Explicit type annotation - use it and constrain init to match
-                    let ty_name = self.interner.get(*ty_sym);
+                    let ty_name = self.interner.resolve(ty_sym);
                     if let Some(annotated_ty) = self.resolve_type_name(ty_name) {
                         self.add_constraint(Constraint::equal(
                             init_info.ty,
@@ -487,7 +487,7 @@ impl<'a> ConstraintGenerator<'a> {
                 args_start,
                 args_len,
             } => {
-                let intrinsic_name = self.interner.get(*name);
+                let intrinsic_name = self.interner.resolve(name);
                 let args = self.rir.get_inst_refs(*args_start, *args_len);
 
                 if intrinsic_name == "intCast" {
@@ -996,12 +996,12 @@ impl<'a> ConstraintGenerator<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rue_intern::Interner;
+    use lasso::ThreadedRodeo;
 
     /// Helper to create a minimal RIR for testing.
-    fn make_test_rir_and_interner() -> (Rir, Interner) {
+    fn make_test_rir_and_interner() -> (Rir, ThreadedRodeo) {
         let rir = Rir::new();
-        let interner = Interner::new();
+        let interner = ThreadedRodeo::new();
         (rir, interner)
     }
 
@@ -1011,7 +1011,7 @@ mod tests {
         let functions = HashMap::new();
         let structs = HashMap::new();
         let enums = HashMap::new();
-        let methods: HashMap<(Symbol, Symbol), MethodSig> = HashMap::new();
+        let methods: HashMap<(Spur, Spur), MethodSig> = HashMap::new();
 
         // Add an integer constant to RIR
         let inst_ref = rir.add_inst(rue_rir::Inst {
@@ -1040,7 +1040,7 @@ mod tests {
         let functions = HashMap::new();
         let structs = HashMap::new();
         let enums = HashMap::new();
-        let methods: HashMap<(Symbol, Symbol), MethodSig> = HashMap::new();
+        let methods: HashMap<(Spur, Spur), MethodSig> = HashMap::new();
 
         let inst_ref = rir.add_inst(rue_rir::Inst {
             data: InstData::BoolConst(true),
@@ -1064,7 +1064,7 @@ mod tests {
         let functions = HashMap::new();
         let structs = HashMap::new();
         let enums = HashMap::new();
-        let methods: HashMap<(Symbol, Symbol), MethodSig> = HashMap::new();
+        let methods: HashMap<(Spur, Spur), MethodSig> = HashMap::new();
 
         // Create: 1 + 2
         let lhs = rir.add_inst(rue_rir::Inst {
@@ -1099,7 +1099,7 @@ mod tests {
         let functions = HashMap::new();
         let structs = HashMap::new();
         let enums = HashMap::new();
-        let methods: HashMap<(Symbol, Symbol), MethodSig> = HashMap::new();
+        let methods: HashMap<(Spur, Spur), MethodSig> = HashMap::new();
 
         // Create: 1 < 2
         let lhs = rir.add_inst(rue_rir::Inst {
@@ -1134,7 +1134,7 @@ mod tests {
         let functions = HashMap::new();
         let structs = HashMap::new();
         let enums = HashMap::new();
-        let methods: HashMap<(Symbol, Symbol), MethodSig> = HashMap::new();
+        let methods: HashMap<(Spur, Spur), MethodSig> = HashMap::new();
 
         // Create: true && false
         let lhs = rir.add_inst(rue_rir::Inst {
@@ -1169,7 +1169,7 @@ mod tests {
         let functions = HashMap::new();
         let structs = HashMap::new();
         let enums = HashMap::new();
-        let methods: HashMap<(Symbol, Symbol), MethodSig> = HashMap::new();
+        let methods: HashMap<(Spur, Spur), MethodSig> = HashMap::new();
 
         // Create: -42
         let operand = rir.add_inst(rue_rir::Inst {
@@ -1205,7 +1205,7 @@ mod tests {
         let functions = HashMap::new();
         let structs = HashMap::new();
         let enums = HashMap::new();
-        let methods: HashMap<(Symbol, Symbol), MethodSig> = HashMap::new();
+        let methods: HashMap<(Spur, Spur), MethodSig> = HashMap::new();
 
         // Create: return 42
         let value = rir.add_inst(rue_rir::Inst {
@@ -1236,7 +1236,7 @@ mod tests {
         let functions = HashMap::new();
         let structs = HashMap::new();
         let enums = HashMap::new();
-        let methods: HashMap<(Symbol, Symbol), MethodSig> = HashMap::new();
+        let methods: HashMap<(Spur, Spur), MethodSig> = HashMap::new();
 
         // Create: if true { 1 } else { 2 }
         let cond = rir.add_inst(rue_rir::Inst {
@@ -1279,7 +1279,7 @@ mod tests {
         let functions = HashMap::new();
         let structs = HashMap::new();
         let enums = HashMap::new();
-        let methods: HashMap<(Symbol, Symbol), MethodSig> = HashMap::new();
+        let methods: HashMap<(Spur, Spur), MethodSig> = HashMap::new();
 
         // Create: while true { 0 }
         let cond = rir.add_inst(rue_rir::Inst {
@@ -1314,8 +1314,8 @@ mod tests {
         let mut ctx = ConstraintContext::new(&params, Type::I32);
 
         // Use an interner to create a symbol
-        let mut interner = Interner::new();
-        let sym = interner.intern("x");
+        let interner = ThreadedRodeo::new();
+        let sym = interner.get_or_intern("x");
         ctx.insert_local(
             sym,
             LocalVarInfo {
@@ -1376,7 +1376,7 @@ mod tests {
         let functions = HashMap::new();
         let structs = HashMap::new();
         let enums = HashMap::new();
-        let methods: HashMap<(Symbol, Symbol), MethodSig> = HashMap::new();
+        let methods: HashMap<(Spur, Spur), MethodSig> = HashMap::new();
 
         // Create: loop { 0 }
         let body = rir.add_inst(rue_rir::Inst {
@@ -1407,7 +1407,7 @@ mod tests {
         let functions = HashMap::new();
         let structs = HashMap::new();
         let enums = HashMap::new();
-        let methods: HashMap<(Symbol, Symbol), MethodSig> = HashMap::new();
+        let methods: HashMap<(Spur, Spur), MethodSig> = HashMap::new();
 
         let break_inst = rir.add_inst(rue_rir::Inst {
             data: InstData::Break,
@@ -1432,7 +1432,7 @@ mod tests {
         let functions = HashMap::new();
         let structs = HashMap::new();
         let enums = HashMap::new();
-        let methods: HashMap<(Symbol, Symbol), MethodSig> = HashMap::new();
+        let methods: HashMap<(Spur, Spur), MethodSig> = HashMap::new();
 
         // Create: arr[0]
         let base = rir.add_inst(rue_rir::Inst {
@@ -1471,7 +1471,7 @@ mod tests {
         let functions = HashMap::new();
         let structs = HashMap::new();
         let enums = HashMap::new();
-        let methods: HashMap<(Symbol, Symbol), MethodSig> = HashMap::new();
+        let methods: HashMap<(Spur, Spur), MethodSig> = HashMap::new();
 
         // Create: arr[0] = 42
         let base = rir.add_inst(rue_rir::Inst {
@@ -1514,7 +1514,7 @@ mod tests {
         let functions = HashMap::new();
         let structs = HashMap::new();
         let enums = HashMap::new();
-        let methods: HashMap<(Symbol, Symbol), MethodSig> = HashMap::new();
+        let methods: HashMap<(Spur, Spur), MethodSig> = HashMap::new();
 
         // Create: { } (empty block)
         let block = rir.add_inst(rue_rir::Inst {
@@ -1543,7 +1543,7 @@ mod tests {
         let functions = HashMap::new();
         let structs = HashMap::new();
         let enums = HashMap::new();
-        let methods: HashMap<(Symbol, Symbol), MethodSig> = HashMap::new();
+        let methods: HashMap<(Spur, Spur), MethodSig> = HashMap::new();
 
         // Create: !42 (bitwise NOT)
         let operand = rir.add_inst(rue_rir::Inst {
@@ -1574,14 +1574,14 @@ mod tests {
 
     #[test]
     fn test_constraint_generator_function_call_arg_count_mismatch() {
-        let (mut rir, mut interner) = make_test_rir_and_interner();
+        let (mut rir, interner) = make_test_rir_and_interner();
         let mut functions = HashMap::new();
         let structs = HashMap::new();
         let enums = HashMap::new();
-        let methods: HashMap<(Symbol, Symbol), MethodSig> = HashMap::new();
+        let methods: HashMap<(Spur, Spur), MethodSig> = HashMap::new();
 
         // Register a function that takes 2 parameters
-        let func_name = interner.intern("foo");
+        let func_name = interner.get_or_intern("foo");
         functions.insert(
             func_name,
             FunctionSig {
@@ -1626,14 +1626,14 @@ mod tests {
 
     #[test]
     fn test_constraint_generator_unknown_function() {
-        let (mut rir, mut interner) = make_test_rir_and_interner();
+        let (mut rir, interner) = make_test_rir_and_interner();
         let functions = HashMap::new(); // Empty - no functions registered
         let structs = HashMap::new();
         let enums = HashMap::new();
-        let methods: HashMap<(Symbol, Symbol), MethodSig> = HashMap::new();
+        let methods: HashMap<(Spur, Spur), MethodSig> = HashMap::new();
 
         // Create a call to an unknown function
-        let unknown_func = interner.intern("unknown");
+        let unknown_func = interner.get_or_intern("unknown");
         let arg = rir.add_inst(rue_rir::Inst {
             data: InstData::IntConst(42),
             span: Span::new(8, 10),
@@ -1670,7 +1670,7 @@ mod tests {
         let functions = HashMap::new();
         let structs = HashMap::new();
         let enums = HashMap::new();
-        let methods: HashMap<(Symbol, Symbol), MethodSig> = HashMap::new();
+        let methods: HashMap<(Spur, Spur), MethodSig> = HashMap::new();
 
         // Create: match x { 1 => 10, 2 => 20, _ => 30 }
         let scrutinee = rir.add_inst(rue_rir::Inst {

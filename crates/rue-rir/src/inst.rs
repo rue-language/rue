@@ -5,7 +5,7 @@
 
 use std::fmt;
 
-use rue_intern::Symbol;
+use lasso::{Key, Spur};
 use rue_span::Span;
 
 /// A reference to an instruction in the RIR.
@@ -32,9 +32,9 @@ impl InstRef {
 #[derive(Debug, Clone)]
 pub struct RirDirective {
     /// Directive name (e.g., "allow")
-    pub name: Symbol,
+    pub name: Spur,
     /// Arguments (e.g., ["unused_variable"])
-    pub args: Vec<Symbol>,
+    pub args: Vec<Spur>,
     /// Span covering the directive
     pub span: Span,
 }
@@ -55,9 +55,9 @@ pub enum RirParamMode {
 #[derive(Debug, Clone)]
 pub struct RirParam {
     /// Parameter name
-    pub name: Symbol,
+    pub name: Spur,
     /// Parameter type
-    pub ty: Symbol,
+    pub ty: Spur,
     /// Parameter passing mode
     pub mode: RirParamMode,
 }
@@ -108,9 +108,9 @@ pub enum RirPattern {
     /// Path pattern for enum variants (e.g., Color::Red)
     Path {
         /// The enum type name
-        type_name: Symbol,
+        type_name: Spur,
         /// The variant name
-        variant: Symbol,
+        variant: Spur,
         /// Span of the pattern
         span: Span,
     },
@@ -182,7 +182,7 @@ const FIELD_DECL_SIZE: u32 = 2;
 #[derive(Debug, Clone)]
 pub struct FunctionSpan {
     /// Function name symbol
-    pub name: Symbol,
+    pub name: Spur,
     /// Index of the first instruction of this function's body.
     /// This is the first instruction generated for the function's expressions/statements.
     pub body_start: InstRef,
@@ -193,7 +193,7 @@ pub struct FunctionSpan {
 
 impl FunctionSpan {
     /// Create a new function span.
-    pub fn new(name: Symbol, body_start: InstRef, decl: InstRef) -> Self {
+    pub fn new(name: Spur, body_start: InstRef, decl: InstRef) -> Self {
         Self {
             name,
             body_start,
@@ -376,18 +376,18 @@ impl Rir {
             .collect()
     }
 
-    /// Store a slice of Symbols and return (start, len).
-    pub fn add_symbols(&mut self, symbols: &[Symbol]) -> (u32, u32) {
-        let data: Vec<u32> = symbols.iter().map(|s| s.as_u32()).collect();
+    /// Store a slice of Spurs and return (start, len).
+    pub fn add_symbols(&mut self, symbols: &[Spur]) -> (u32, u32) {
+        let data: Vec<u32> = symbols.iter().map(|s| s.into_usize() as u32).collect();
         let start = self.add_extra(&data);
         (start, symbols.len() as u32)
     }
 
-    /// Retrieve Symbols from the extra array.
-    pub fn get_symbols(&self, start: u32, len: u32) -> Vec<Symbol> {
+    /// Retrieve Spurs from the extra array.
+    pub fn get_symbols(&self, start: u32, len: u32) -> Vec<Spur> {
         self.get_extra(start, len)
             .iter()
-            .map(|&v| Symbol::from_raw(v))
+            .map(|&v| Spur::try_from_usize(v as usize).unwrap())
             .collect()
     }
 
@@ -425,8 +425,8 @@ impl Rir {
     pub fn add_params(&mut self, params: &[RirParam]) -> (u32, u32) {
         let mut data = Vec::with_capacity(params.len() * PARAM_SIZE as usize);
         for param in params {
-            data.push(param.name.as_u32());
-            data.push(param.ty.as_u32());
+            data.push(param.name.into_usize() as u32);
+            data.push(param.ty.into_usize() as u32);
             data.push(param.mode as u32);
         }
         let start = self.add_extra(&data);
@@ -438,8 +438,8 @@ impl Rir {
         let data = self.get_extra(start, len * PARAM_SIZE);
         let mut params = Vec::with_capacity(len as usize);
         for chunk in data.chunks(PARAM_SIZE as usize) {
-            let name = Symbol::from_raw(chunk[0]);
-            let ty = Symbol::from_raw(chunk[1]);
+            let name = Spur::try_from_usize(chunk[0] as usize).unwrap();
+            let ty = Spur::try_from_usize(chunk[1] as usize).unwrap();
             let mode = match chunk[2] {
                 0 => RirParamMode::Normal,
                 1 => RirParamMode::Inout,
@@ -487,8 +487,8 @@ impl Rir {
                     self.extra.push(PatternKind::Path as u32);
                     self.extra.push(span.start());
                     self.extra.push(span.len());
-                    self.extra.push(type_name.as_u32());
-                    self.extra.push(variant.as_u32());
+                    self.extra.push(type_name.into_usize() as u32);
+                    self.extra.push(variant.into_usize() as u32);
                     self.extra.push(body.as_u32());
                 }
             }
@@ -536,8 +536,8 @@ impl Rir {
                     let span_start = self.extra[pos + 1];
                     let span_len = self.extra[pos + 2];
                     let span = Span::new(span_start, span_start + span_len);
-                    let type_name = Symbol::from_raw(self.extra[pos + 3]);
-                    let variant = Symbol::from_raw(self.extra[pos + 4]);
+                    let type_name = Spur::try_from_usize(self.extra[pos + 3] as usize).unwrap();
+                    let variant = Spur::try_from_usize(self.extra[pos + 4] as usize).unwrap();
                     let body = InstRef::from_raw(self.extra[pos + 5]);
                     arms.push((
                         RirPattern::Path {
@@ -557,10 +557,10 @@ impl Rir {
 
     /// Store field initializers (name, value) and return (start, len).
     /// Layout: [name: u32, value: u32] per field
-    pub fn add_field_inits(&mut self, fields: &[(Symbol, InstRef)]) -> (u32, u32) {
+    pub fn add_field_inits(&mut self, fields: &[(Spur, InstRef)]) -> (u32, u32) {
         let mut data = Vec::with_capacity(fields.len() * FIELD_INIT_SIZE as usize);
         for (name, value) in fields {
-            data.push(name.as_u32());
+            data.push(name.into_usize() as u32);
             data.push(value.as_u32());
         }
         let start = self.add_extra(&data);
@@ -568,11 +568,11 @@ impl Rir {
     }
 
     /// Retrieve field initializers from the extra array.
-    pub fn get_field_inits(&self, start: u32, len: u32) -> Vec<(Symbol, InstRef)> {
+    pub fn get_field_inits(&self, start: u32, len: u32) -> Vec<(Spur, InstRef)> {
         let data = self.get_extra(start, len * FIELD_INIT_SIZE);
         let mut fields = Vec::with_capacity(len as usize);
         for chunk in data.chunks(FIELD_INIT_SIZE as usize) {
-            let name = Symbol::from_raw(chunk[0]);
+            let name = Spur::try_from_usize(chunk[0] as usize).unwrap();
             let value = InstRef::from_raw(chunk[1]);
             fields.push((name, value));
         }
@@ -581,23 +581,23 @@ impl Rir {
 
     /// Store field declarations (name, type) and return (start, len).
     /// Layout: [name: u32, type: u32] per field
-    pub fn add_field_decls(&mut self, fields: &[(Symbol, Symbol)]) -> (u32, u32) {
+    pub fn add_field_decls(&mut self, fields: &[(Spur, Spur)]) -> (u32, u32) {
         let mut data = Vec::with_capacity(fields.len() * FIELD_DECL_SIZE as usize);
         for (name, ty) in fields {
-            data.push(name.as_u32());
-            data.push(ty.as_u32());
+            data.push(name.into_usize() as u32);
+            data.push(ty.into_usize() as u32);
         }
         let start = self.add_extra(&data);
         (start, fields.len() as u32)
     }
 
     /// Retrieve field declarations from the extra array.
-    pub fn get_field_decls(&self, start: u32, len: u32) -> Vec<(Symbol, Symbol)> {
+    pub fn get_field_decls(&self, start: u32, len: u32) -> Vec<(Spur, Spur)> {
         let data = self.get_extra(start, len * FIELD_DECL_SIZE);
         let mut fields = Vec::with_capacity(len as usize);
         for chunk in data.chunks(FIELD_DECL_SIZE as usize) {
-            let name = Symbol::from_raw(chunk[0]);
-            let ty = Symbol::from_raw(chunk[1]);
+            let name = Spur::try_from_usize(chunk[0] as usize).unwrap();
+            let ty = Spur::try_from_usize(chunk[1] as usize).unwrap();
             fields.push((name, ty));
         }
         fields
@@ -608,12 +608,12 @@ impl Rir {
     pub fn add_directives(&mut self, directives: &[RirDirective]) -> (u32, u32) {
         let start = self.extra.len() as u32;
         for directive in directives {
-            self.extra.push(directive.name.as_u32());
+            self.extra.push(directive.name.into_usize() as u32);
             self.extra.push(directive.span.start());
             self.extra.push(directive.span.len());
             self.extra.push(directive.args.len() as u32);
             for arg in &directive.args {
-                self.extra.push(arg.as_u32());
+                self.extra.push(arg.into_usize() as u32);
             }
         }
         (start, directives.len() as u32)
@@ -625,13 +625,13 @@ impl Rir {
         let mut pos = start as usize;
 
         for _ in 0..directive_count {
-            let name = Symbol::from_raw(self.extra[pos]);
+            let name = Spur::try_from_usize(self.extra[pos] as usize).unwrap();
             let span = Span::new(self.extra[pos + 1], self.extra[pos + 2]);
             let args_len = self.extra[pos + 3] as usize;
             pos += 4;
 
-            let args: Vec<Symbol> = (0..args_len)
-                .map(|i| Symbol::from_raw(self.extra[pos + i]))
+            let args: Vec<Spur> = (0..args_len)
+                .map(|i| Spur::try_from_usize(self.extra[pos + i] as usize).unwrap())
                 .collect();
             pos += args_len;
 
@@ -672,7 +672,7 @@ impl Rir {
     }
 
     /// Find a function span by name.
-    pub fn find_function(&self, name: Symbol) -> Option<&FunctionSpan> {
+    pub fn find_function(&self, name: Spur) -> Option<&FunctionSpan> {
         self.function_spans.iter().find(|span| span.name == name)
     }
 
@@ -699,7 +699,7 @@ pub enum InstData {
     BoolConst(bool),
 
     /// String constant (interned string content)
-    StringConst(Symbol),
+    StringConst(Spur),
 
     /// Unit constant (for blocks that produce unit type)
     UnitConst,
@@ -795,12 +795,12 @@ pub enum InstData {
         directives_start: u32,
         /// Number of directives
         directives_len: u32,
-        name: Symbol,
+        name: Spur,
         /// Index into extra data where params start
         params_start: u32,
         /// Number of parameters
         params_len: u32,
-        return_type: Symbol,
+        return_type: Spur,
         body: InstRef,
         /// Whether this function/method takes `self` as a receiver.
         /// Only true for methods in impl blocks that have a self parameter.
@@ -812,7 +812,7 @@ pub enum InstData {
     /// Args are stored in the extra array using add_call_args/get_call_args.
     Call {
         /// Function name
-        name: Symbol,
+        name: Spur,
         /// Index into extra data where args start
         args_start: u32,
         /// Number of arguments
@@ -823,7 +823,7 @@ pub enum InstData {
     /// Args are stored in the extra array using add_inst_refs/get_inst_refs.
     Intrinsic {
         /// Intrinsic name (without @)
-        name: Symbol,
+        name: Spur,
         /// Index into extra data where args start
         args_start: u32,
         /// Number of arguments
@@ -833,9 +833,9 @@ pub enum InstData {
     /// Intrinsic call with a type argument (e.g., @size_of, @align_of)
     TypeIntrinsic {
         /// Intrinsic name (without @)
-        name: Symbol,
+        name: Spur,
         /// Type argument (as an interned string, e.g., "i32", "Point", "[i32; 4]")
-        type_arg: Symbol,
+        type_arg: Spur,
     },
 
     /// Reference to a function parameter
@@ -843,7 +843,7 @@ pub enum InstData {
         /// Parameter index (0-based)
         index: u32,
         /// Parameter name (for error messages)
-        name: Symbol,
+        name: Spur,
     },
 
     /// Return value from function (None for `return;` in unit-returning functions)
@@ -868,11 +868,11 @@ pub enum InstData {
         /// Number of directives
         directives_len: u32,
         /// Variable name (None for wildcard `_` pattern that discards the value)
-        name: Option<Symbol>,
+        name: Option<Spur>,
         /// Whether the variable is mutable
         is_mut: bool,
         /// Optional type annotation
-        ty: Option<Symbol>,
+        ty: Option<Spur>,
         /// Initial value instruction
         init: InstRef,
     },
@@ -880,13 +880,13 @@ pub enum InstData {
     /// Variable reference: reads the value of a variable
     VarRef {
         /// Variable name
-        name: Symbol,
+        name: Spur,
     },
 
     /// Assignment: stores a value into a mutable variable
     Assign {
         /// Variable name
-        name: Symbol,
+        name: Spur,
         /// Value to store
         value: InstRef,
     },
@@ -900,7 +900,7 @@ pub enum InstData {
         /// Number of directives
         directives_len: u32,
         /// Struct name
-        name: Symbol,
+        name: Spur,
         /// Index into extra data where fields start
         fields_start: u32,
         /// Number of fields
@@ -911,7 +911,7 @@ pub enum InstData {
     /// Fields are stored in the extra array using add_field_inits/get_field_inits.
     StructInit {
         /// Struct type name
-        type_name: Symbol,
+        type_name: Spur,
         /// Index into extra data where fields start
         fields_start: u32,
         /// Number of fields
@@ -923,7 +923,7 @@ pub enum InstData {
         /// Base struct value
         base: InstRef,
         /// Field name
-        field: Symbol,
+        field: Spur,
     },
 
     /// Field assignment: writes a value to a struct field
@@ -931,7 +931,7 @@ pub enum InstData {
         /// Base struct value
         base: InstRef,
         /// Field name
-        field: Symbol,
+        field: Spur,
         /// Value to store
         value: InstRef,
     },
@@ -941,7 +941,7 @@ pub enum InstData {
     /// Variants are stored in the extra array using add_symbols/get_symbols.
     EnumDecl {
         /// Enum name
-        name: Symbol,
+        name: Spur,
         /// Index into extra data where variants start
         variants_start: u32,
         /// Number of variants
@@ -951,9 +951,9 @@ pub enum InstData {
     /// Enum variant: creates a value of an enum type
     EnumVariant {
         /// Enum type name
-        type_name: Symbol,
+        type_name: Spur,
         /// Variant name
-        variant: Symbol,
+        variant: Spur,
     },
 
     // Array operations
@@ -989,7 +989,7 @@ pub enum InstData {
     /// Methods are stored in the extra array using add_inst_refs/get_inst_refs.
     ImplDecl {
         /// Type name this impl block is for
-        type_name: Symbol,
+        type_name: Spur,
         /// Index into extra data where method refs start
         methods_start: u32,
         /// Number of methods
@@ -1002,7 +1002,7 @@ pub enum InstData {
         /// Receiver expression (the struct value)
         receiver: InstRef,
         /// Method name
-        method: Symbol,
+        method: Spur,
         /// Index into extra data where args start
         args_start: u32,
         /// Number of arguments
@@ -1013,9 +1013,9 @@ pub enum InstData {
     /// Args are stored in the extra array using add_call_args/get_call_args.
     AssocFnCall {
         /// Type name (e.g., Point)
-        type_name: Symbol,
+        type_name: Spur,
         /// Function name (e.g., origin)
-        function: Symbol,
+        function: Spur,
         /// Index into extra data where args start
         args_start: u32,
         /// Number of arguments
@@ -1025,7 +1025,7 @@ pub enum InstData {
     /// User-defined destructor declaration: drop fn TypeName(self) { ... }
     DropFnDecl {
         /// The struct type this destructor is for
-        type_name: Symbol,
+        type_name: Spur,
         /// Destructor body instruction ref
         body: InstRef,
     },
@@ -1040,12 +1040,12 @@ impl fmt::Display for InstRef {
 /// Printer for RIR that resolves symbols to their string values.
 pub struct RirPrinter<'a, 'b> {
     rir: &'a Rir,
-    interner: &'b rue_intern::Interner,
+    interner: &'b lasso::ThreadedRodeo,
 }
 
 impl<'a, 'b> RirPrinter<'a, 'b> {
     /// Create a new RIR printer.
-    pub fn new(rir: &'a Rir, interner: &'b rue_intern::Interner) -> Self {
+    pub fn new(rir: &'a Rir, interner: &'b lasso::ThreadedRodeo) -> Self {
         Self { rir, interner }
     }
 
@@ -1077,8 +1077,8 @@ impl<'a, 'b> RirPrinter<'a, 'b> {
             } => {
                 format!(
                     "{}::{}",
-                    self.interner.get(*type_name),
-                    self.interner.get(*variant)
+                    self.interner.resolve(&*type_name),
+                    self.interner.resolve(&*variant)
                 )
             }
         }
@@ -1096,7 +1096,7 @@ impl<'a, 'b> RirPrinter<'a, 'b> {
                 InstData::IntConst(v) => writeln!(out, "const {}", v).unwrap(),
                 InstData::BoolConst(v) => writeln!(out, "const {}", v).unwrap(),
                 InstData::StringConst(s) => {
-                    writeln!(out, "const {:?}", self.interner.get(*s)).unwrap()
+                    writeln!(out, "const {:?}", self.interner.resolve(&*s)).unwrap()
                 }
                 InstData::UnitConst => writeln!(out, "const ()").unwrap(),
 
@@ -1165,8 +1165,8 @@ impl<'a, 'b> RirPrinter<'a, 'b> {
                     body,
                     has_self,
                 } => {
-                    let name_str = self.interner.get(*name);
-                    let ret_str = self.interner.get(*return_type);
+                    let name_str = self.interner.resolve(&*name);
+                    let ret_str = self.interner.resolve(&*return_type);
                     let self_str = if *has_self { "self, " } else { "" };
                     let params = self.rir.get_params(*params_start, *params_len);
                     let params_str: Vec<String> = params
@@ -1180,8 +1180,8 @@ impl<'a, 'b> RirPrinter<'a, 'b> {
                             format!(
                                 "{}{}: {}",
                                 mode_prefix,
-                                self.interner.get(p.name),
-                                self.interner.get(p.ty)
+                                self.interner.resolve(&p.name),
+                                self.interner.resolve(&p.ty)
                             )
                         })
                         .collect();
@@ -1209,7 +1209,7 @@ impl<'a, 'b> RirPrinter<'a, 'b> {
                     args_start,
                     args_len,
                 } => {
-                    let name_str = self.interner.get(*name);
+                    let name_str = self.interner.resolve(&*name);
                     let args = self.rir.get_call_args(*args_start, *args_len);
                     writeln!(out, "call {}({})", name_str, Self::format_call_args(&args)).unwrap();
                 }
@@ -1218,18 +1218,18 @@ impl<'a, 'b> RirPrinter<'a, 'b> {
                     args_start,
                     args_len,
                 } => {
-                    let name_str = self.interner.get(*name);
+                    let name_str = self.interner.resolve(&*name);
                     let args = self.rir.get_inst_refs(*args_start, *args_len);
                     let args_str: Vec<String> = args.iter().map(|a| format!("{}", a)).collect();
                     writeln!(out, "intrinsic @{}({})", name_str, args_str.join(", ")).unwrap();
                 }
                 InstData::TypeIntrinsic { name, type_arg } => {
-                    let name_str = self.interner.get(*name);
-                    let type_str = self.interner.get(*type_arg);
+                    let name_str = self.interner.resolve(&*name);
+                    let type_str = self.interner.resolve(&*type_arg);
                     writeln!(out, "type_intrinsic @{}({})", name_str, type_str).unwrap();
                 }
                 InstData::ParamRef { index, name } => {
-                    writeln!(out, "param {} ({})", index, self.interner.get(*name)).unwrap();
+                    writeln!(out, "param {} ({})", index, self.interner.resolve(&*name)).unwrap();
                 }
                 InstData::Block { extra_start, len } => {
                     writeln!(out, "block({}, {})", extra_start, len).unwrap();
@@ -1245,19 +1245,19 @@ impl<'a, 'b> RirPrinter<'a, 'b> {
                     init,
                 } => {
                     let name_str = name
-                        .map(|n| self.interner.get(n).to_string())
+                        .map(|n| self.interner.resolve(&n).to_string())
                         .unwrap_or_else(|| "_".to_string());
                     let mut_str = if *is_mut { "mut " } else { "" };
                     let ty_str = ty
-                        .map(|t| format!(": {}", self.interner.get(t)))
+                        .map(|t| format!(": {}", self.interner.resolve(&t)))
                         .unwrap_or_default();
                     writeln!(out, "alloc {}{}{}= {}", mut_str, name_str, ty_str, init).unwrap();
                 }
                 InstData::VarRef { name } => {
-                    writeln!(out, "var_ref {}", self.interner.get(*name)).unwrap();
+                    writeln!(out, "var_ref {}", self.interner.resolve(&*name)).unwrap();
                 }
                 InstData::Assign { name, value } => {
-                    writeln!(out, "assign {} = {}", self.interner.get(*name), value).unwrap();
+                    writeln!(out, "assign {} = {}", self.interner.resolve(&*name), value).unwrap();
                 }
 
                 // Structs
@@ -1268,15 +1268,15 @@ impl<'a, 'b> RirPrinter<'a, 'b> {
                     fields_start,
                     fields_len,
                 } => {
-                    let name_str = self.interner.get(*name);
+                    let name_str = self.interner.resolve(&*name);
                     let fields = self.rir.get_field_decls(*fields_start, *fields_len);
                     let fields_str: Vec<String> = fields
                         .iter()
                         .map(|(fname, ftype)| {
                             format!(
                                 "{}: {}",
-                                self.interner.get(*fname),
-                                self.interner.get(*ftype)
+                                self.interner.resolve(&*fname),
+                                self.interner.resolve(&*ftype)
                             )
                         })
                         .collect();
@@ -1286,7 +1286,7 @@ impl<'a, 'b> RirPrinter<'a, 'b> {
                     } else {
                         let dir_names: Vec<String> = directives
                             .iter()
-                            .map(|d| format!("@{}", self.interner.get(d.name)))
+                            .map(|d| format!("@{}", self.interner.resolve(&d.name)))
                             .collect();
                         format!("{} ", dir_names.join(" "))
                     };
@@ -1304,11 +1304,13 @@ impl<'a, 'b> RirPrinter<'a, 'b> {
                     fields_start,
                     fields_len,
                 } => {
-                    let type_str = self.interner.get(*type_name);
+                    let type_str = self.interner.resolve(&*type_name);
                     let fields = self.rir.get_field_inits(*fields_start, *fields_len);
                     let fields_str: Vec<String> = fields
                         .iter()
-                        .map(|(fname, value)| format!("{}: {}", self.interner.get(*fname), value))
+                        .map(|(fname, value)| {
+                            format!("{}: {}", self.interner.resolve(&*fname), value)
+                        })
                         .collect();
                     writeln!(
                         out,
@@ -1319,14 +1321,14 @@ impl<'a, 'b> RirPrinter<'a, 'b> {
                     .unwrap();
                 }
                 InstData::FieldGet { base, field } => {
-                    writeln!(out, "field_get {}.{}", base, self.interner.get(*field)).unwrap();
+                    writeln!(out, "field_get {}.{}", base, self.interner.resolve(&*field)).unwrap();
                 }
                 InstData::FieldSet { base, field, value } => {
                     writeln!(
                         out,
                         "field_set {}.{} = {}",
                         base,
-                        self.interner.get(*field),
+                        self.interner.resolve(&*field),
                         value
                     )
                     .unwrap();
@@ -1338,11 +1340,11 @@ impl<'a, 'b> RirPrinter<'a, 'b> {
                     variants_start,
                     variants_len,
                 } => {
-                    let name_str = self.interner.get(*name);
+                    let name_str = self.interner.resolve(&*name);
                     let variants = self.rir.get_symbols(*variants_start, *variants_len);
                     let variants_str: Vec<String> = variants
                         .iter()
-                        .map(|v| self.interner.get(*v).to_string())
+                        .map(|v| self.interner.resolve(&*v).to_string())
                         .collect();
                     writeln!(out, "enum {} {{ {} }}", name_str, variants_str.join(", ")).unwrap();
                 }
@@ -1350,8 +1352,8 @@ impl<'a, 'b> RirPrinter<'a, 'b> {
                     writeln!(
                         out,
                         "enum_variant {}::{}",
-                        self.interner.get(*type_name),
-                        self.interner.get(*variant)
+                        self.interner.resolve(&*type_name),
+                        self.interner.resolve(&*variant)
                     )
                     .unwrap();
                 }
@@ -1379,7 +1381,7 @@ impl<'a, 'b> RirPrinter<'a, 'b> {
                     methods_start,
                     methods_len,
                 } => {
-                    let type_str = self.interner.get(*type_name);
+                    let type_str = self.interner.resolve(&*type_name);
                     let methods = self.rir.get_inst_refs(*methods_start, *methods_len);
                     let methods_str: Vec<String> =
                         methods.iter().map(|m| format!("{}", m)).collect();
@@ -1396,7 +1398,7 @@ impl<'a, 'b> RirPrinter<'a, 'b> {
                         out,
                         "method_call {}.{}({})",
                         receiver,
-                        self.interner.get(*method),
+                        self.interner.resolve(&*method),
                         Self::format_call_args(&args)
                     )
                     .unwrap();
@@ -1411,8 +1413,8 @@ impl<'a, 'b> RirPrinter<'a, 'b> {
                     writeln!(
                         out,
                         "assoc_fn_call {}::{}({})",
-                        self.interner.get(*type_name),
-                        self.interner.get(*function),
+                        self.interner.resolve(&*type_name),
+                        self.interner.resolve(&*function),
                         Self::format_call_args(&args)
                     )
                     .unwrap();
@@ -1420,7 +1422,12 @@ impl<'a, 'b> RirPrinter<'a, 'b> {
 
                 // Drop
                 InstData::DropFnDecl { type_name, body } => {
-                    writeln!(out, "drop fn {}(self) {{", self.interner.get(*type_name)).unwrap();
+                    writeln!(
+                        out,
+                        "drop fn {}(self) {{",
+                        self.interner.resolve(&*type_name)
+                    )
+                    .unwrap();
                     writeln!(out, "    {}", body).unwrap();
                     writeln!(out, "}}").unwrap();
                 }
@@ -1439,7 +1446,7 @@ impl fmt::Display for RirPrinter<'_, '_> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rue_intern::Interner;
+    use lasso::ThreadedRodeo;
 
     #[test]
     fn test_inst_ref_size() {
@@ -1538,9 +1545,9 @@ mod tests {
     #[test]
     fn test_rir_pattern_path_span() {
         let span = Span::new(40, 50);
-        let mut interner = Interner::new();
-        let type_name = interner.intern("Color");
-        let variant = interner.intern("Red");
+        let interner = ThreadedRodeo::new();
+        let type_name = interner.get_or_intern("Color");
+        let variant = interner.get_or_intern("Red");
 
         let pattern = RirPattern::Path {
             type_name,
@@ -1576,9 +1583,9 @@ mod tests {
     }
 
     // RirPrinter tests
-    fn create_printer_test_rir() -> (Rir, Interner) {
-        let mut rir = Rir::new();
-        let interner = Interner::new();
+    fn create_printer_test_rir() -> (Rir, ThreadedRodeo) {
+        let rir = Rir::new();
+        let interner = ThreadedRodeo::new();
         (rir, interner)
     }
 
@@ -1616,7 +1623,7 @@ mod tests {
     #[test]
     fn test_printer_string_const() {
         let (mut rir, mut interner) = create_printer_test_rir();
-        let hello = interner.intern("hello world");
+        let hello = interner.get_or_intern("hello world");
         rir.add_inst(Inst {
             data: InstData::StringConst(hello),
             span: Span::new(0, 13),
@@ -1900,10 +1907,10 @@ mod tests {
             span: Span::new(0, 2),
         });
 
-        let name = interner.intern("main");
-        let return_type = interner.intern("i32");
-        let param_name = interner.intern("x");
-        let param_type = interner.intern("i32");
+        let name = interner.get_or_intern("main");
+        let return_type = interner.get_or_intern("i32");
+        let param_name = interner.get_or_intern("x");
+        let param_type = interner.get_or_intern("i32");
 
         let (directives_start, directives_len) = rir.add_directives(&[]);
         let (params_start, params_len) = rir.add_params(&[RirParam {
@@ -1939,8 +1946,8 @@ mod tests {
             span: Span::new(0, 1),
         });
 
-        let name = interner.intern("get_x");
-        let return_type = interner.intern("i32");
+        let name = interner.get_or_intern("get_x");
+        let return_type = interner.get_or_intern("i32");
 
         let (directives_start, directives_len) = rir.add_directives(&[]);
         let (params_start, params_len) = rir.add_params(&[]);
@@ -1972,14 +1979,14 @@ mod tests {
             span: Span::new(0, 2),
         });
 
-        let name = interner.intern("modify");
-        let return_type = interner.intern("()");
-        let param1_name = interner.intern("a");
-        let param1_type = interner.intern("i32");
-        let param2_name = interner.intern("b");
-        let param2_type = interner.intern("i32");
-        let param3_name = interner.intern("c");
-        let param3_type = interner.intern("i32");
+        let name = interner.get_or_intern("modify");
+        let return_type = interner.get_or_intern("()");
+        let param1_name = interner.get_or_intern("a");
+        let param1_type = interner.get_or_intern("i32");
+        let param2_name = interner.get_or_intern("b");
+        let param2_type = interner.get_or_intern("i32");
+        let param3_name = interner.get_or_intern("c");
+        let param3_type = interner.get_or_intern("i32");
 
         let (directives_start, directives_len) = rir.add_directives(&[]);
         let (params_start, params_len) = rir.add_params(&[
@@ -2029,7 +2036,7 @@ mod tests {
             span: Span::new(0, 2),
         });
 
-        let name = interner.intern("foo");
+        let name = interner.get_or_intern("foo");
 
         let (args_start, args_len) = rir.add_call_args(&[RirCallArg {
             value: arg,
@@ -2066,7 +2073,7 @@ mod tests {
             span: Span::new(0, 1),
         });
 
-        let name = interner.intern("modify");
+        let name = interner.get_or_intern("modify");
 
         let (args_start, args_len) = rir.add_call_args(&[
             RirCallArg {
@@ -2105,7 +2112,7 @@ mod tests {
             span: Span::new(0, 2),
         });
 
-        let name = interner.intern("dbg");
+        let name = interner.get_or_intern("dbg");
 
         let (args_start, args_len) = rir.add_call_args(&[RirCallArg {
             value: arg,
@@ -2129,8 +2136,8 @@ mod tests {
     #[test]
     fn test_printer_type_intrinsic() {
         let (mut rir, mut interner) = create_printer_test_rir();
-        let name = interner.intern("size_of");
-        let type_arg = interner.intern("i32");
+        let name = interner.get_or_intern("size_of");
+        let type_arg = interner.get_or_intern("i32");
 
         rir.add_inst(Inst {
             data: InstData::TypeIntrinsic { name, type_arg },
@@ -2145,7 +2152,7 @@ mod tests {
     #[test]
     fn test_printer_param_ref() {
         let (mut rir, mut interner) = create_printer_test_rir();
-        let name = interner.intern("x");
+        let name = interner.get_or_intern("x");
 
         rir.add_inst(Inst {
             data: InstData::ParamRef { index: 0, name },
@@ -2181,8 +2188,8 @@ mod tests {
             span: Span::new(0, 2),
         });
 
-        let name = interner.intern("x");
-        let ty = interner.intern("i32");
+        let name = interner.get_or_intern("x");
+        let ty = interner.get_or_intern("i32");
 
         let (directives_start, directives_len) = rir.add_directives(&[]);
 
@@ -2212,7 +2219,7 @@ mod tests {
             span: Span::new(0, 2),
         });
 
-        let name = interner.intern("x");
+        let name = interner.get_or_intern("x");
 
         let (directives_start, directives_len) = rir.add_directives(&[]);
 
@@ -2263,7 +2270,7 @@ mod tests {
     #[test]
     fn test_printer_var_ref() {
         let (mut rir, mut interner) = create_printer_test_rir();
-        let name = interner.intern("x");
+        let name = interner.get_or_intern("x");
 
         rir.add_inst(Inst {
             data: InstData::VarRef { name },
@@ -2283,7 +2290,7 @@ mod tests {
             span: Span::new(0, 2),
         });
 
-        let name = interner.intern("x");
+        let name = interner.get_or_intern("x");
 
         rir.add_inst(Inst {
             data: InstData::Assign { name, value },
@@ -2298,10 +2305,10 @@ mod tests {
     #[test]
     fn test_printer_struct_decl() {
         let (mut rir, mut interner) = create_printer_test_rir();
-        let name = interner.intern("Point");
-        let x_name = interner.intern("x");
-        let y_name = interner.intern("y");
-        let i32_type = interner.intern("i32");
+        let name = interner.get_or_intern("Point");
+        let x_name = interner.get_or_intern("x");
+        let y_name = interner.get_or_intern("y");
+        let i32_type = interner.get_or_intern("i32");
 
         let (directives_start, directives_len) = rir.add_directives(&[]);
         let (fields_start, fields_len) =
@@ -2326,10 +2333,10 @@ mod tests {
     #[test]
     fn test_printer_struct_decl_with_directive() {
         let (mut rir, mut interner) = create_printer_test_rir();
-        let name = interner.intern("Point");
-        let x_name = interner.intern("x");
-        let i32_type = interner.intern("i32");
-        let copy_name = interner.intern("copy");
+        let name = interner.get_or_intern("Point");
+        let x_name = interner.get_or_intern("x");
+        let i32_type = interner.get_or_intern("i32");
+        let copy_name = interner.get_or_intern("copy");
 
         let (directives_start, directives_len) = rir.add_directives(&[RirDirective {
             name: copy_name,
@@ -2366,9 +2373,9 @@ mod tests {
             span: Span::new(0, 2),
         });
 
-        let type_name = interner.intern("Point");
-        let x_name = interner.intern("x");
-        let y_name = interner.intern("y");
+        let type_name = interner.get_or_intern("Point");
+        let x_name = interner.get_or_intern("x");
+        let y_name = interner.get_or_intern("y");
 
         let (fields_start, fields_len) = rir.add_field_inits(&[(x_name, x_val), (y_name, y_val)]);
 
@@ -2394,7 +2401,7 @@ mod tests {
             span: Span::new(0, 1),
         });
 
-        let field = interner.intern("x");
+        let field = interner.get_or_intern("x");
 
         rir.add_inst(Inst {
             data: InstData::FieldGet { base, field },
@@ -2418,7 +2425,7 @@ mod tests {
             span: Span::new(0, 2),
         });
 
-        let field = interner.intern("x");
+        let field = interner.get_or_intern("x");
 
         rir.add_inst(Inst {
             data: InstData::FieldSet { base, field, value },
@@ -2433,10 +2440,10 @@ mod tests {
     #[test]
     fn test_printer_enum_decl() {
         let (mut rir, mut interner) = create_printer_test_rir();
-        let name = interner.intern("Color");
-        let red = interner.intern("Red");
-        let green = interner.intern("Green");
-        let blue = interner.intern("Blue");
+        let name = interner.get_or_intern("Color");
+        let red = interner.get_or_intern("Red");
+        let green = interner.get_or_intern("Green");
+        let blue = interner.get_or_intern("Blue");
 
         let (variants_start, variants_len) = rir.add_symbols(&[red, green, blue]);
 
@@ -2457,8 +2464,8 @@ mod tests {
     #[test]
     fn test_printer_enum_variant() {
         let (mut rir, mut interner) = create_printer_test_rir();
-        let type_name = interner.intern("Color");
-        let variant = interner.intern("Red");
+        let type_name = interner.get_or_intern("Color");
+        let variant = interner.get_or_intern("Red");
 
         rir.add_inst(Inst {
             data: InstData::EnumVariant { type_name, variant },
@@ -2559,8 +2566,8 @@ mod tests {
             data: InstData::IntConst(0),
             span: Span::new(0, 1),
         });
-        let method_name = interner.intern("get_x");
-        let return_type = interner.intern("i32");
+        let method_name = interner.get_or_intern("get_x");
+        let return_type = interner.get_or_intern("i32");
 
         let (directives_start, directives_len) = rir.add_directives(&[]);
         let (params_start, params_len) = rir.add_params(&[]);
@@ -2579,7 +2586,7 @@ mod tests {
             span: Span::new(0, 30),
         });
 
-        let type_name = interner.intern("Point");
+        let type_name = interner.get_or_intern("Point");
 
         let (methods_start, methods_len) = rir.add_inst_refs(&[method_ref]);
 
@@ -2609,7 +2616,7 @@ mod tests {
             span: Span::new(0, 2),
         });
 
-        let method = interner.intern("add");
+        let method = interner.get_or_intern("add");
 
         let (args_start, args_len) = rir.add_call_args(&[RirCallArg {
             value: arg,
@@ -2647,7 +2654,7 @@ mod tests {
             span: Span::new(0, 1),
         });
 
-        let method = interner.intern("modify");
+        let method = interner.get_or_intern("modify");
 
         let (args_start, args_len) = rir.add_call_args(&[
             RirCallArg {
@@ -2679,8 +2686,8 @@ mod tests {
     fn test_printer_assoc_fn_call() {
         let (mut rir, mut interner) = create_printer_test_rir();
 
-        let type_name = interner.intern("Point");
-        let function = interner.intern("origin");
+        let type_name = interner.get_or_intern("Point");
+        let function = interner.get_or_intern("origin");
 
         let (args_start, args_len) = rir.add_call_args(&[]);
 
@@ -2711,8 +2718,8 @@ mod tests {
             span: Span::new(0, 2),
         });
 
-        let type_name = interner.intern("Point");
-        let function = interner.intern("new");
+        let type_name = interner.get_or_intern("Point");
+        let function = interner.get_or_intern("new");
 
         let (args_start, args_len) = rir.add_call_args(&[
             RirCallArg {
@@ -2748,7 +2755,7 @@ mod tests {
             span: Span::new(0, 2),
         });
 
-        let type_name = interner.intern("Resource");
+        let type_name = interner.get_or_intern("Resource");
 
         rir.add_inst(Inst {
             data: InstData::DropFnDecl { type_name, body },
@@ -2885,9 +2892,9 @@ mod tests {
             span: Span::new(0, 1),
         });
 
-        let color = interner.intern("Color");
-        let red = interner.intern("Red");
-        let green = interner.intern("Green");
+        let color = interner.get_or_intern("Color");
+        let red = interner.get_or_intern("Red");
+        let green = interner.get_or_intern("Green");
 
         let (arms_start, arms_len) = rir.add_match_arms(&[
             (

@@ -3,7 +3,7 @@
 //! AstGen converts the Abstract Syntax Tree into RIR instructions.
 //! This is analogous to Zig's AstGen phase.
 
-use rue_intern::Interner;
+use lasso::{Spur, ThreadedRodeo};
 
 /// Known type intrinsics that take a type argument rather than an expression.
 /// These intrinsics operate on types at compile time (e.g., @size_of(i32)).
@@ -25,14 +25,14 @@ pub struct AstGen<'a> {
     /// The AST being processed
     ast: &'a Ast,
     /// String interner for symbols (thread-safe, takes shared reference)
-    interner: &'a Interner,
+    interner: &'a ThreadedRodeo,
     /// Output RIR
     rir: Rir,
 }
 
 impl<'a> AstGen<'a> {
     /// Create a new AstGen for the given AST.
-    pub fn new(ast: &'a Ast, interner: &'a Interner) -> Self {
+    pub fn new(ast: &'a Ast, interner: &'a ThreadedRodeo) -> Self {
         Self {
             ast,
             interner,
@@ -72,20 +72,20 @@ impl<'a> AstGen<'a> {
 
     /// Convert a TypeExpr to its symbol representation.
     /// For named types, returns the existing symbol. For compound types, interns a new string.
-    fn intern_type(&mut self, ty: &TypeExpr) -> rue_intern::Symbol {
+    fn intern_type(&mut self, ty: &TypeExpr) -> Spur {
         match ty {
-            TypeExpr::Named(ident) => ident.name, // Already a Symbol
-            TypeExpr::Unit(_) => self.interner.intern("()"),
-            TypeExpr::Never(_) => self.interner.intern("!"),
+            TypeExpr::Named(ident) => ident.name, // Already a Spur
+            TypeExpr::Unit(_) => self.interner.get_or_intern("()"),
+            TypeExpr::Never(_) => self.interner.get_or_intern("!"),
             TypeExpr::Array {
                 element, length, ..
             } => {
                 // For arrays, we need to construct a string representation
                 // Get the element symbol first, then look it up
                 let elem_sym = self.intern_type(element);
-                let elem_name = self.interner.get(elem_sym);
+                let elem_name = self.interner.resolve(&elem_sym);
                 let s = format!("[{}; {}]", elem_name, length);
-                self.interner.intern(&s)
+                self.interner.get_or_intern(&s)
             }
         }
     }
@@ -93,12 +93,12 @@ impl<'a> AstGen<'a> {
     fn gen_struct(&mut self, struct_decl: &StructDecl) -> InstRef {
         let directives = self.convert_directives(&struct_decl.directives);
         let (directives_start, directives_len) = self.rir.add_directives(&directives);
-        let name = struct_decl.name.name; // Already a Symbol
+        let name = struct_decl.name.name; // Already a Spur
         let fields: Vec<_> = struct_decl
             .fields
             .iter()
             .map(|f| {
-                let field_name = f.name.name; // Already a Symbol
+                let field_name = f.name.name; // Already a Spur
                 let field_type = self.intern_type(&f.ty);
                 (field_name, field_type)
             })
@@ -118,11 +118,11 @@ impl<'a> AstGen<'a> {
     }
 
     fn gen_enum(&mut self, enum_decl: &EnumDecl) -> InstRef {
-        let name = enum_decl.name.name; // Already a Symbol
+        let name = enum_decl.name.name; // Already a Spur
         let variants: Vec<_> = enum_decl
             .variants
             .iter()
-            .map(|v| v.name.name) // Already a Symbol
+            .map(|v| v.name.name) // Already a Spur
             .collect();
         let (variants_start, variants_len) = self.rir.add_symbols(&variants);
 
@@ -137,7 +137,7 @@ impl<'a> AstGen<'a> {
     }
 
     fn gen_impl_block(&mut self, impl_block: &ImplBlock) -> InstRef {
-        let type_name = impl_block.type_name.name; // Already a Symbol
+        let type_name = impl_block.type_name.name; // Already a Spur
 
         // Generate each method in the impl block
         let methods: Vec<_> = impl_block
@@ -158,7 +158,7 @@ impl<'a> AstGen<'a> {
     }
 
     fn gen_drop_fn(&mut self, drop_fn: &DropFn) -> InstRef {
-        let type_name = drop_fn.type_name.name; // Already a Symbol
+        let type_name = drop_fn.type_name.name; // Already a Spur
 
         // Generate the body expression
         let body = self.gen_expr(&drop_fn.body);
@@ -175,10 +175,10 @@ impl<'a> AstGen<'a> {
         let (directives_start, directives_len) = self.rir.add_directives(&directives);
 
         // Get the method name (already a Symbol) and return type
-        let name = method.name.name; // Already a Symbol
+        let name = method.name.name; // Already a Spur
         let return_type = match &method.return_type {
             Some(ty) => self.intern_type(ty),
-            None => self.interner.intern("()"), // Default to unit type
+            None => self.interner.get_or_intern("()"), // Default to unit type
         };
 
         // Convert parameters (excluding self, which is handled specially by sema)
@@ -186,7 +186,7 @@ impl<'a> AstGen<'a> {
             .params
             .iter()
             .map(|p| RirParam {
-                name: p.name.name, // Already a Symbol
+                name: p.name.name, // Already a Spur
                 ty: self.intern_type(&p.ty),
                 mode: self.convert_param_mode(p.mode),
             })
@@ -231,12 +231,12 @@ impl<'a> AstGen<'a> {
         directives
             .iter()
             .map(|d| RirDirective {
-                name: d.name.name, // Already a Symbol
+                name: d.name.name, // Already a Spur
                 args: d
                     .args
                     .iter()
                     .map(|arg| match arg {
-                        DirectiveArg::Ident(ident) => ident.name, // Already a Symbol
+                        DirectiveArg::Ident(ident) => ident.name, // Already a Spur
                     })
                     .collect(),
                 span: d.span,
@@ -276,10 +276,10 @@ impl<'a> AstGen<'a> {
         let (directives_start, directives_len) = self.rir.add_directives(&directives);
 
         // Get the function name (already a Symbol) and return type
-        let name = func.name.name; // Already a Symbol
+        let name = func.name.name; // Already a Spur
         let return_type = match &func.return_type {
             Some(ty) => self.intern_type(ty),
-            None => self.interner.intern("()"), // Default to unit type
+            None => self.interner.get_or_intern("()"), // Default to unit type
         };
 
         // Convert parameters
@@ -287,7 +287,7 @@ impl<'a> AstGen<'a> {
             .params
             .iter()
             .map(|p| RirParam {
-                name: p.name.name, // Already a Symbol
+                name: p.name.name, // Already a Spur
                 ty: self.intern_type(&p.ty),
                 mode: self.convert_param_mode(p.mode),
             })
@@ -335,7 +335,7 @@ impl<'a> AstGen<'a> {
             }),
             Expr::String(lit) => {
                 self.rir.add_inst(Inst {
-                    data: InstData::StringConst(lit.value), // Already a Symbol
+                    data: InstData::StringConst(lit.value), // Already a Spur
                     span: lit.span,
                 })
             }
@@ -345,7 +345,7 @@ impl<'a> AstGen<'a> {
             }),
             Expr::Ident(ident) => {
                 self.rir.add_inst(Inst {
-                    data: InstData::VarRef { name: ident.name }, // Already a Symbol
+                    data: InstData::VarRef { name: ident.name }, // Already a Spur
                     span: ident.span,
                 })
             }
@@ -451,7 +451,7 @@ impl<'a> AstGen<'a> {
 
                 self.rir.add_inst(Inst {
                     data: InstData::Call {
-                        name: call.name.name, // Already a Symbol
+                        name: call.name.name, // Already a Spur
                         args_start,
                         args_len,
                     },
@@ -486,7 +486,7 @@ impl<'a> AstGen<'a> {
 
                 self.rir.add_inst(Inst {
                     data: InstData::StructInit {
-                        type_name: struct_lit.name.name, // Already a Symbol
+                        type_name: struct_lit.name.name, // Already a Spur
                         fields_start,
                         fields_len,
                     },
@@ -499,14 +499,14 @@ impl<'a> AstGen<'a> {
                 self.rir.add_inst(Inst {
                     data: InstData::FieldGet {
                         base,
-                        field: field_expr.field.name, // Already a Symbol
+                        field: field_expr.field.name, // Already a Spur
                     },
                     span: field_expr.span,
                 })
             }
             Expr::IntrinsicCall(intrinsic) => {
-                let name = intrinsic.name.name; // Already a Symbol
-                let intrinsic_name_str = self.interner.get(name);
+                let name = intrinsic.name.name; // Already a Spur
+                let intrinsic_name_str = self.interner.resolve(&name);
 
                 let is_type_intrinsic = TYPE_INTRINSICS.contains(&intrinsic_name_str);
 
@@ -526,7 +526,7 @@ impl<'a> AstGen<'a> {
                         return self.rir.add_inst(Inst {
                             data: InstData::TypeIntrinsic {
                                 name,
-                                type_arg: ident.name, // Already a Symbol
+                                type_arg: ident.name, // Already a Spur
                             },
                             span: intrinsic.span,
                         });
@@ -581,8 +581,8 @@ impl<'a> AstGen<'a> {
             Expr::Path(path_expr) => {
                 self.rir.add_inst(Inst {
                     data: InstData::EnumVariant {
-                        type_name: path_expr.type_name.name, // Already a Symbol
-                        variant: path_expr.variant.name,     // Already a Symbol
+                        type_name: path_expr.type_name.name, // Already a Spur
+                        variant: path_expr.variant.name,     // Already a Spur
                     },
                     span: path_expr.span,
                 })
@@ -599,7 +599,7 @@ impl<'a> AstGen<'a> {
                 self.rir.add_inst(Inst {
                     data: InstData::MethodCall {
                         receiver,
-                        method: method_call.method.name, // Already a Symbol
+                        method: method_call.method.name, // Already a Spur
                         args_start,
                         args_len,
                     },
@@ -616,8 +616,8 @@ impl<'a> AstGen<'a> {
 
                 self.rir.add_inst(Inst {
                     data: InstData::AssocFnCall {
-                        type_name: assoc_fn_call.type_name.name, // Already a Symbol
-                        function: assoc_fn_call.function.name,   // Already a Symbol
+                        type_name: assoc_fn_call.type_name.name, // Already a Spur
+                        function: assoc_fn_call.function.name,   // Already a Spur
                         args_start,
                         args_len,
                     },
@@ -626,7 +626,7 @@ impl<'a> AstGen<'a> {
             }
             Expr::SelfExpr(self_expr) => {
                 // `self` in method bodies is just a variable reference to the implicit self parameter
-                let name = self.interner.intern("self");
+                let name = self.interner.get_or_intern("self");
                 self.rir.add_inst(Inst {
                     data: InstData::VarRef { name },
                     span: self_expr.span,
@@ -643,8 +643,8 @@ impl<'a> AstGen<'a> {
             Pattern::Bool(lit) => RirPattern::Bool(lit.value, lit.span),
             Pattern::Path(path) => {
                 RirPattern::Path {
-                    type_name: path.type_name.name, // Already a Symbol
-                    variant: path.variant.name,     // Already a Symbol
+                    type_name: path.type_name.name, // Already a Spur
+                    variant: path.variant.name,     // Already a Spur
                     span: path.span,
                 }
             }
@@ -687,7 +687,7 @@ impl<'a> AstGen<'a> {
                 let directives = self.convert_directives(&let_stmt.directives);
                 let (directives_start, directives_len) = self.rir.add_directives(&directives);
                 let name = match &let_stmt.pattern {
-                    LetPattern::Ident(ident) => Some(ident.name), // Already a Symbol
+                    LetPattern::Ident(ident) => Some(ident.name), // Already a Spur
                     LetPattern::Wildcard(_) => None,
                 };
                 let ty = let_stmt.ty.as_ref().map(|t| self.intern_type(t));
@@ -710,7 +710,7 @@ impl<'a> AstGen<'a> {
                     AssignTarget::Var(ident) => {
                         self.rir.add_inst(Inst {
                             data: InstData::Assign {
-                                name: ident.name, // Already a Symbol
+                                name: ident.name, // Already a Spur
                                 value,
                             },
                             span: assign.span,
@@ -721,7 +721,7 @@ impl<'a> AstGen<'a> {
                         self.rir.add_inst(Inst {
                             data: InstData::FieldSet {
                                 base,
-                                field: field_expr.field.name, // Already a Symbol
+                                field: field_expr.field.name, // Already a Spur
                                 value,
                             },
                             span: assign.span,
@@ -753,7 +753,7 @@ mod tests {
     use rue_lexer::Lexer;
     use rue_parser::Parser;
 
-    fn gen_rir(source: &str) -> (Rir, Interner) {
+    fn gen_rir(source: &str) -> (Rir, ThreadedRodeo) {
         let lexer = Lexer::new(source);
         let (tokens, interner) = lexer.tokenize().unwrap();
         let parser = Parser::new(tokens, interner);
@@ -783,10 +783,10 @@ mod tests {
                 has_self,
                 ..
             } => {
-                assert_eq!(interner.get(*name), "main");
+                assert_eq!(interner.resolve(&*name), "main");
                 let params = rir.get_params(*params_start, *params_len);
                 assert!(params.is_empty());
-                assert_eq!(interner.get(*return_type), "i32");
+                assert_eq!(interner.resolve(&*return_type), "i32");
                 assert!(!has_self); // Regular functions don't have self
                 // Body should be the int constant
                 let body_inst = rir.get(*body);
@@ -937,7 +937,7 @@ mod tests {
                 init,
                 ..
             } => {
-                assert_eq!(interner.get(name.unwrap()), "x");
+                assert_eq!(interner.resolve(&name.unwrap()), "x");
                 assert!(!is_mut);
                 assert!(ty.is_none());
                 assert!(matches!(rir.get(*init).data, InstData::IntConst(42)));
@@ -958,7 +958,7 @@ mod tests {
         let (_, inst) = alloc_inst.unwrap();
         match &inst.data {
             InstData::Alloc { name, is_mut, .. } => {
-                assert_eq!(interner.get(name.unwrap()), "x");
+                assert_eq!(interner.resolve(&name.unwrap()), "x");
                 assert!(*is_mut);
             }
             _ => panic!("expected Alloc"),
@@ -983,7 +983,7 @@ mod tests {
                         let var_ref_inst = rir.get(InstRef::from_raw(inst_refs[1]));
                         match &var_ref_inst.data {
                             InstData::VarRef { name } => {
-                                assert_eq!(interner.get(*name), "x");
+                                assert_eq!(interner.resolve(&*name), "x");
                             }
                             _ => panic!("expected VarRef"),
                         }
@@ -1008,7 +1008,7 @@ mod tests {
         let (_, inst) = assign_inst.unwrap();
         match &inst.data {
             InstData::Assign { name, value } => {
-                assert_eq!(interner.get(*name), "x");
+                assert_eq!(interner.resolve(&*name), "x");
                 assert!(matches!(rir.get(*value).data, InstData::IntConst(20)));
             }
             _ => panic!("expected Assign"),
@@ -1074,7 +1074,7 @@ mod tests {
                 methods_start,
                 methods_len,
             } => {
-                assert_eq!(interner.get(*type_name), "Point");
+                assert_eq!(interner.resolve(&*type_name), "Point");
                 let methods = rir.get_inst_refs(*methods_start, *methods_len);
                 assert_eq!(methods.len(), 1);
 
@@ -1082,7 +1082,7 @@ mod tests {
                 let method_inst = rir.get(methods[0]);
                 match &method_inst.data {
                     InstData::FnDecl { name, has_self, .. } => {
-                        assert_eq!(interner.get(*name), "get_x");
+                        assert_eq!(interner.resolve(&*name), "get_x");
                         assert!(*has_self);
                     }
                     _ => panic!("expected FnDecl"),
@@ -1125,7 +1125,7 @@ mod tests {
                     let method_inst = rir.get(method_ref);
                     match &method_inst.data {
                         InstData::FnDecl { name, has_self, .. } => {
-                            let method_name = interner.get(*name);
+                            let method_name = interner.resolve(&*name);
                             if method_name == "origin" {
                                 assert!(!has_self, "origin should not have self");
                             } else {
@@ -1168,7 +1168,7 @@ mod tests {
                 args_start,
                 args_len,
             } => {
-                assert_eq!(interner.get(*method), "get_x");
+                assert_eq!(interner.resolve(&*method), "get_x");
                 let args = rir.get_call_args(*args_start, *args_len);
                 assert!(args.is_empty()); // No explicit args (self is implicit)
             }
@@ -1204,8 +1204,8 @@ mod tests {
                 args_start,
                 args_len,
             } => {
-                assert_eq!(interner.get(*type_name), "Point");
-                assert_eq!(interner.get(*function), "origin");
+                assert_eq!(interner.resolve(&*type_name), "Point");
+                assert_eq!(interner.resolve(&*function), "origin");
                 let args = rir.get_call_args(*args_start, *args_len);
                 assert!(args.is_empty());
             }
@@ -1388,8 +1388,8 @@ mod tests {
                     RirPattern::Path {
                         type_name, variant, ..
                     } => {
-                        assert_eq!(interner.get(*type_name), "Color");
-                        assert_eq!(interner.get(*variant), "Red");
+                        assert_eq!(interner.resolve(&*type_name), "Color");
+                        assert_eq!(interner.resolve(&*variant), "Red");
                     }
                     _ => panic!("expected Path pattern"),
                 }
@@ -1399,8 +1399,8 @@ mod tests {
                     RirPattern::Path {
                         type_name, variant, ..
                     } => {
-                        assert_eq!(interner.get(*type_name), "Color");
-                        assert_eq!(interner.get(*variant), "Green");
+                        assert_eq!(interner.resolve(&*type_name), "Color");
+                        assert_eq!(interner.resolve(&*variant), "Green");
                     }
                     _ => panic!("expected Path pattern"),
                 }
@@ -1410,8 +1410,8 @@ mod tests {
                     RirPattern::Path {
                         type_name, variant, ..
                     } => {
-                        assert_eq!(interner.get(*type_name), "Color");
-                        assert_eq!(interner.get(*variant), "Blue");
+                        assert_eq!(interner.resolve(&*type_name), "Color");
+                        assert_eq!(interner.resolve(&*variant), "Blue");
                     }
                     _ => panic!("expected Path pattern"),
                 }
@@ -1433,7 +1433,7 @@ mod tests {
 
         // Find the VarRef instruction for "self"
         let self_ref = rir.iter().find(|(_, inst)| match &inst.data {
-            InstData::VarRef { name } => interner.get(*name) == "self",
+            InstData::VarRef { name } => interner.resolve(&*name) == "self",
             _ => false,
         });
         assert!(self_ref.is_some(), "Expected self VarRef instruction");
@@ -1457,7 +1457,7 @@ mod tests {
         let (_, inst) = drop_fn.unwrap();
         match &inst.data {
             InstData::DropFnDecl { type_name, body: _ } => {
-                assert_eq!(interner.get(*type_name), "Resource");
+                assert_eq!(interner.resolve(&*type_name), "Resource");
             }
             _ => panic!("expected DropFnDecl"),
         }
@@ -1483,8 +1483,8 @@ mod tests {
         let (_, inst) = enum_variant.unwrap();
         match &inst.data {
             InstData::EnumVariant { type_name, variant } => {
-                assert_eq!(interner.get(*type_name), "Color");
-                assert_eq!(interner.get(*variant), "Red");
+                assert_eq!(interner.resolve(&*type_name), "Color");
+                assert_eq!(interner.resolve(&*variant), "Red");
             }
             _ => panic!("expected EnumVariant"),
         }
@@ -1524,12 +1524,12 @@ mod tests {
                         has_self,
                         ..
                     } => {
-                        assert_eq!(interner.get(*name), "add");
+                        assert_eq!(interner.resolve(&*name), "add");
                         assert!(*has_self);
                         // params should contain 'amount', not 'self'
                         let params = rir.get_params(*params_start, *params_len);
                         assert_eq!(params.len(), 1);
-                        assert_eq!(interner.get(params[0].name), "amount");
+                        assert_eq!(interner.resolve(&params[0].name), "amount");
                     }
                     _ => panic!("expected FnDecl"),
                 }
@@ -1579,7 +1579,7 @@ mod tests {
         assert_eq!(spans.len(), 1);
 
         let span = &spans[0];
-        assert_eq!(interner.get(span.name), "main");
+        assert_eq!(interner.resolve(&span.name), "main");
 
         // The function should have 2 instructions: IntConst(42) and FnDecl
         assert_eq!(span.instruction_count(), 2);
@@ -1604,11 +1604,11 @@ mod tests {
         assert_eq!(spans.len(), 2);
 
         // First function: helper
-        assert_eq!(interner.get(spans[0].name), "helper");
+        assert_eq!(interner.resolve(&spans[0].name), "helper");
         assert_eq!(spans[0].instruction_count(), 2);
 
         // Second function: main
-        assert_eq!(interner.get(spans[1].name), "main");
+        assert_eq!(interner.resolve(&spans[1].name), "main");
         assert_eq!(spans[1].instruction_count(), 2);
 
         // Function spans should be non-overlapping
@@ -1636,7 +1636,7 @@ mod tests {
         let spans: Vec<_> = rir.functions().collect();
 
         // Methods should be tracked as well
-        let names: Vec<_> = spans.iter().map(|s| interner.get(s.name)).collect();
+        let names: Vec<_> = spans.iter().map(|s| interner.resolve(&s.name)).collect();
         assert!(names.contains(&"get_x"));
         assert!(names.contains(&"origin"));
         assert!(names.contains(&"main"));
@@ -1651,7 +1651,7 @@ mod tests {
         let (rir, interner) = gen_rir(source);
 
         // Find the main function span
-        let main_span = rir.find_function(interner.intern("main")).unwrap();
+        let main_span = rir.find_function(interner.get_or_intern("main")).unwrap();
 
         // Get a view of main's instructions
         let view = rir.function_view(main_span);
@@ -1663,7 +1663,7 @@ mod tests {
         let fn_decl = view.fn_decl();
         match &fn_decl.data {
             InstData::FnDecl { name, .. } => {
-                assert_eq!(interner.get(*name), "main");
+                assert_eq!(interner.resolve(&*name), "main");
             }
             _ => panic!("Expected FnDecl"),
         }
@@ -1695,7 +1695,9 @@ mod tests {
 
         assert_eq!(rir.function_count(), 1);
 
-        let span = rir.find_function(interner.intern("complex")).unwrap();
+        let span = rir
+            .find_function(interner.get_or_intern("complex"))
+            .unwrap();
 
         // The function should have multiple instructions for the body
         // At minimum: 2 IntConsts, 2 Allocs, comparison, branches, operations, FnDecl
@@ -1733,10 +1735,10 @@ mod tests {
         let (rir, interner) = gen_rir(source);
 
         // Find existing functions
-        let foo_sym = interner.intern("foo");
-        let bar_sym = interner.intern("bar");
-        let baz_sym = interner.intern("baz");
-        let nonexistent_sym = interner.intern("nonexistent");
+        let foo_sym = interner.get_or_intern("foo");
+        let bar_sym = interner.get_or_intern("bar");
+        let baz_sym = interner.get_or_intern("baz");
+        let nonexistent_sym = interner.get_or_intern("nonexistent");
 
         assert!(rir.find_function(foo_sym).is_some());
         assert!(rir.find_function(bar_sym).is_some());

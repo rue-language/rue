@@ -15,12 +15,12 @@ use crate::types::{
     ArrayTypeDef, ArrayTypeId, EnumDef, EnumId, StructDef, StructField, StructId, Type,
     parse_array_type_syntax,
 };
+use lasso::{Spur, ThreadedRodeo};
 use rue_error::{
     CompileError, CompileErrors, CompileResult, CompileWarning, CopyStructNonCopyFieldError,
     ErrorKind, IntrinsicTypeMismatchError, MissingFieldsError, MultiErrorResult, OptionExt,
     PreviewFeature, PreviewFeatures, WarningKind,
 };
-use rue_intern::{Interner, Symbol};
 use rue_rir::{
     InstData, InstRef, Rir, RirArgMode, RirCallArg, RirDirective, RirParamMode, RirPattern,
 };
@@ -129,7 +129,7 @@ pub struct GatherOutput<'a> {
     /// Reference to the RIR being analyzed.
     pub rir: &'a Rir,
     /// Reference to the string interner.
-    pub interner: &'a Interner,
+    pub interner: &'a ThreadedRodeo,
     /// Struct definitions indexed by StructId.
     pub struct_defs: Vec<StructDef>,
     /// Enum definitions indexed by EnumId.
@@ -140,13 +140,13 @@ pub struct GatherOutput<'a> {
     /// Array type definitions indexed by ArrayTypeId.
     pub array_type_defs: Vec<ArrayTypeDef>,
     /// Struct lookup: maps struct name symbol to StructId.
-    pub structs: HashMap<Symbol, StructId>,
+    pub structs: HashMap<Spur, StructId>,
     /// Enum lookup: maps enum name symbol to EnumId.
-    pub enums: HashMap<Symbol, EnumId>,
+    pub enums: HashMap<Spur, EnumId>,
     /// Function lookup: maps function name to info.
-    pub functions: HashMap<Symbol, FunctionInfo>,
+    pub functions: HashMap<Spur, FunctionInfo>,
     /// Method lookup: maps (struct_name, method_name) to info.
-    pub methods: HashMap<(Symbol, Symbol), MethodInfo>,
+    pub methods: HashMap<(Spur, Spur), MethodInfo>,
     /// Enabled preview features.
     pub preview_features: PreviewFeatures,
 }
@@ -225,21 +225,21 @@ struct ParamInfo {
 /// recursive `analyze_inst` calls.
 struct AnalysisContext<'a> {
     /// Local variables in scope
-    locals: HashMap<Symbol, LocalVar>,
+    locals: HashMap<Spur, LocalVar>,
     /// Function parameters (immutable reference, shared across the function)
-    params: &'a HashMap<Symbol, ParamInfo>,
+    params: &'a HashMap<Spur, ParamInfo>,
     /// Next available slot for local variables
     next_slot: u32,
     /// How many loops we're nested inside (for break/continue validation)
     loop_depth: u32,
     /// Local variables that have been read (for unused variable detection)
-    used_locals: HashSet<Symbol>,
+    used_locals: HashSet<Spur>,
     /// Return type of the current function (for explicit return validation)
     return_type: Type,
     /// Scope stack for efficient scope management.
     /// Each entry is a list of (symbol, old_value) pairs for variables added/shadowed in that scope.
     /// When a scope is popped, we restore old values (for shadowed vars) or remove new vars.
-    scope_stack: Vec<Vec<(Symbol, Option<LocalVar>)>>,
+    scope_stack: Vec<Vec<(Spur, Option<LocalVar>)>>,
     /// Resolved types from HM inference.
     /// Maps RIR instruction refs to their resolved concrete types.
     /// This is populated by running constraint generation and unification
@@ -247,7 +247,7 @@ struct AnalysisContext<'a> {
     resolved_types: &'a HashMap<InstRef, Type>,
     /// Variables that have been moved (for affine type checking).
     /// Maps variable symbol to move information.
-    moved_vars: HashMap<Symbol, MoveInfo>,
+    moved_vars: HashMap<Spur, MoveInfo>,
 }
 
 impl AnalysisContext<'_> {
@@ -278,7 +278,7 @@ impl AnalysisContext<'_> {
     }
 
     /// Insert a local variable, tracking it in the current scope for later cleanup.
-    fn insert_local(&mut self, symbol: Symbol, var: LocalVar) {
+    fn insert_local(&mut self, symbol: Spur, var: LocalVar) {
         let old_value = self.locals.insert(symbol, var);
         // Track in the current scope (if any) for cleanup on pop
         if let Some(current_scope) = self.scope_stack.last_mut() {
@@ -310,7 +310,7 @@ pub struct MethodInfo {
     /// Whether this is a method (has self) or associated function (no self)
     pub has_self: bool,
     /// Parameter names (excluding self if present)
-    pub param_names: Vec<Symbol>,
+    pub param_names: Vec<Spur>,
     /// Parameter types (excluding self if present)
     pub param_types: Vec<Type>,
     /// Return type
@@ -340,15 +340,15 @@ impl AnalysisResult {
 /// Semantic analyzer that converts RIR to AIR.
 pub struct Sema<'a> {
     rir: &'a Rir,
-    interner: &'a Interner,
+    interner: &'a ThreadedRodeo,
     /// Function table: maps function name symbols to their info
-    functions: HashMap<Symbol, FunctionInfo>,
+    functions: HashMap<Spur, FunctionInfo>,
     /// Struct table: maps struct name symbols to their StructId
-    structs: HashMap<Symbol, StructId>,
+    structs: HashMap<Spur, StructId>,
     /// Struct definitions indexed by StructId
     struct_defs: Vec<StructDef>,
     /// Enum table: maps enum name symbols to their EnumId
-    enums: HashMap<Symbol, EnumId>,
+    enums: HashMap<Spur, EnumId>,
     /// Enum definitions indexed by EnumId
     enum_defs: Vec<EnumDef>,
     /// Array type table: maps (element_type, length) to ArrayTypeId
@@ -364,7 +364,7 @@ pub struct Sema<'a> {
     /// Method table: maps (struct_name, method_name) to method info
     /// Used for resolving method calls (receiver.method()) and associated
     /// function calls (Type::function())
-    methods: HashMap<(Symbol, Symbol), MethodInfo>,
+    methods: HashMap<(Spur, Spur), MethodInfo>,
     /// Enabled preview features
     preview_features: PreviewFeatures,
 }
@@ -382,7 +382,11 @@ enum StringReceiverStorage {
 
 impl<'a> Sema<'a> {
     /// Create a new semantic analyzer.
-    pub fn new(rir: &'a Rir, interner: &'a Interner, preview_features: PreviewFeatures) -> Self {
+    pub fn new(
+        rir: &'a Rir,
+        interner: &'a ThreadedRodeo,
+        preview_features: PreviewFeatures,
+    ) -> Self {
         Self {
             rir,
             interner,
@@ -416,7 +420,7 @@ impl<'a> Sema<'a> {
     /// once per analysis to avoid unnecessary allocations.
     pub fn build_type_context(&self) -> TypeContext {
         // Build function signatures
-        let func_sigs: HashMap<Symbol, FunctionSignature> = self
+        let func_sigs: HashMap<Spur, FunctionSignature> = self
             .functions
             .iter()
             .map(|(name, info)| {
@@ -432,7 +436,7 @@ impl<'a> Sema<'a> {
             .collect();
 
         // Build method signatures
-        let method_sigs: HashMap<(Symbol, Symbol), MethodSignature> = self
+        let method_sigs: HashMap<(Spur, Spur), MethodSignature> = self
             .methods
             .iter()
             .map(|((type_name, method_name), info)| {
@@ -575,8 +579,8 @@ impl<'a> Sema<'a> {
 
     /// Check if directives contain @allow for a specific warning name.
     fn has_allow_directive(&self, directives: &[RirDirective], warning_name: &str) -> bool {
-        let allow_sym = self.interner.get_symbol("allow");
-        let warning_sym = self.interner.get_symbol(warning_name);
+        let allow_sym = self.interner.get("allow");
+        let warning_sym = self.interner.get(warning_name);
 
         for directive in directives {
             if Some(directive.name) == allow_sym {
@@ -610,7 +614,7 @@ impl<'a> Sema<'a> {
             };
 
             // Get variable name
-            let name = self.interner.get(*symbol);
+            let name = self.interner.resolve(&*symbol);
 
             // Skip variables starting with underscore (convention for intentionally unused)
             if name.starts_with('_') {
@@ -645,7 +649,7 @@ impl<'a> Sema<'a> {
     /// - IndexGet { base, .. } -> recursively extract from base
     ///
     /// Returns None for expressions that don't refer to a variable (literals, calls, etc.)
-    fn extract_root_variable(&self, inst_ref: InstRef) -> Option<Symbol> {
+    fn extract_root_variable(&self, inst_ref: InstRef) -> Option<Spur> {
         let inst = self.rir.get(inst_ref);
         match &inst.data {
             InstData::VarRef { name } => Some(*name),
@@ -666,8 +670,8 @@ impl<'a> Sema<'a> {
     /// immutable (borrow) accesses, never both simultaneously.
     fn check_exclusive_access(&self, args: &[RirCallArg], call_span: Span) -> CompileResult<()> {
         use std::collections::HashSet;
-        let mut inout_vars: HashSet<Symbol> = HashSet::new();
-        let mut borrow_vars: HashSet<Symbol> = HashSet::new();
+        let mut inout_vars: HashSet<Spur> = HashSet::new();
+        let mut borrow_vars: HashSet<Spur> = HashSet::new();
 
         for arg in args {
             let maybe_var_symbol = self.extract_root_variable(arg.value);
@@ -690,7 +694,7 @@ impl<'a> Sema<'a> {
                 if arg.is_inout() {
                     // Check for duplicate inout access
                     if !inout_vars.insert(var_symbol) {
-                        let var_name = self.interner.get(var_symbol).to_string();
+                        let var_name = self.interner.resolve(&var_symbol).to_string();
                         return Err(CompileError::new(
                             ErrorKind::InoutExclusiveAccess { variable: var_name },
                             call_span,
@@ -698,7 +702,7 @@ impl<'a> Sema<'a> {
                     }
                     // Check for borrow/inout conflict
                     if borrow_vars.contains(&var_symbol) {
-                        let var_name = self.interner.get(var_symbol).to_string();
+                        let var_name = self.interner.resolve(&var_symbol).to_string();
                         return Err(CompileError::new(
                             ErrorKind::BorrowInoutConflict { variable: var_name },
                             call_span,
@@ -708,7 +712,7 @@ impl<'a> Sema<'a> {
                     borrow_vars.insert(var_symbol);
                     // Check for borrow/inout conflict
                     if inout_vars.contains(&var_symbol) {
-                        let var_name = self.interner.get(var_symbol).to_string();
+                        let var_name = self.interner.resolve(&var_symbol).to_string();
                         return Err(CompileError::new(
                             ErrorKind::BorrowInoutConflict { variable: var_name },
                             call_span,
@@ -826,7 +830,7 @@ impl<'a> Sema<'a> {
                     continue;
                 }
 
-                let fn_name = self.interner.get(*name).to_string();
+                let fn_name = self.interner.resolve(&*name).to_string();
                 let params = self.rir.get_params(*params_start, *params_len);
 
                 // Try to analyze this function - on error, record it and continue
@@ -851,7 +855,7 @@ impl<'a> Sema<'a> {
                 methods_len,
             } = &inst.data
             {
-                let type_name_str = self.interner.get(*type_name).to_string();
+                let type_name_str = self.interner.resolve(&*type_name).to_string();
                 let struct_id = *self.structs.get(type_name).unwrap();
                 let struct_type = Type::Struct(struct_id);
 
@@ -868,7 +872,7 @@ impl<'a> Sema<'a> {
                         ..
                     } = &method_inst.data
                     {
-                        let method_name_str = self.interner.get(*method_name).to_string();
+                        let method_name_str = self.interner.resolve(&*method_name).to_string();
                         let params = self.rir.get_params(*params_start, *params_len);
 
                         // Generate method name with struct prefix: "Type.method" or "Type::function"
@@ -899,7 +903,7 @@ impl<'a> Sema<'a> {
         // Fifth pass: analyze destructor bodies
         for (_, inst) in self.rir.iter() {
             if let InstData::DropFnDecl { type_name, body } = &inst.data {
-                let type_name_str = self.interner.get(*type_name).to_string();
+                let type_name_str = self.interner.resolve(&*type_name).to_string();
                 let struct_id = *self.structs.get(type_name).unwrap();
                 let struct_type = Type::Struct(struct_id);
 
@@ -985,7 +989,7 @@ impl<'a> Sema<'a> {
                     continue;
                 }
 
-                let fn_name = self.interner.get(*name).to_string();
+                let fn_name = self.interner.resolve(&*name).to_string();
                 let params = self.rir.get_params(*params_start, *params_len);
 
                 // Try to analyze this function - on error, record it and continue
@@ -1010,7 +1014,7 @@ impl<'a> Sema<'a> {
                 methods_len,
             } = &inst.data
             {
-                let type_name_str = self.interner.get(*type_name).to_string();
+                let type_name_str = self.interner.resolve(&*type_name).to_string();
                 let struct_id = *self.structs.get(type_name).unwrap();
                 let struct_type = Type::Struct(struct_id);
 
@@ -1027,7 +1031,7 @@ impl<'a> Sema<'a> {
                         ..
                     } = &method_inst.data
                     {
-                        let method_name_str = self.interner.get(*method_name).to_string();
+                        let method_name_str = self.interner.resolve(&*method_name).to_string();
                         let params = self.rir.get_params(*params_start, *params_len);
 
                         // Generate method name with struct prefix: "Type.method" or "Type::function"
@@ -1058,7 +1062,7 @@ impl<'a> Sema<'a> {
         // Analyze destructor bodies
         for (_, inst) in self.rir.iter() {
             if let InstData::DropFnDecl { type_name, body } = &inst.data {
-                let type_name_str = self.interner.get(*type_name).to_string();
+                let type_name_str = self.interner.resolve(&*type_name).to_string();
                 let struct_id = *self.structs.get(type_name).unwrap();
                 let struct_type = Type::Struct(struct_id);
 
@@ -1091,7 +1095,7 @@ impl<'a> Sema<'a> {
     fn analyze_single_function(
         &mut self,
         fn_name: &str,
-        return_type: Symbol,
+        return_type: Spur,
         params: &[rue_rir::RirParam],
         body: InstRef,
         span: Span,
@@ -1099,7 +1103,7 @@ impl<'a> Sema<'a> {
         let ret_type = self.resolve_type(return_type, span)?;
 
         // Resolve parameter types and modes
-        let param_info: Vec<(Symbol, Type, RirParamMode)> = params
+        let param_info: Vec<(Spur, Type, RirParamMode)> = params
             .iter()
             .map(|p| {
                 let ty = self.resolve_type(p.ty, span)?;
@@ -1123,7 +1127,7 @@ impl<'a> Sema<'a> {
     fn analyze_method_function(
         &mut self,
         full_name: &str,
-        return_type: Symbol,
+        return_type: Spur,
         params: &[rue_rir::RirParam],
         body: InstRef,
         span: Span,
@@ -1133,11 +1137,11 @@ impl<'a> Sema<'a> {
         let ret_type = self.resolve_type(return_type, span)?;
 
         // Build parameter list, adding self as first parameter for methods
-        let mut param_info: Vec<(Symbol, Type, RirParamMode)> = Vec::new();
+        let mut param_info: Vec<(Spur, Type, RirParamMode)> = Vec::new();
 
         if has_self {
             // Add self parameter (Normal mode - passed by value)
-            let self_sym = self.interner.intern("self");
+            let self_sym = self.interner.get_or_intern("self");
             param_info.push((self_sym, struct_type, RirParamMode::Normal));
         }
 
@@ -1168,8 +1172,8 @@ impl<'a> Sema<'a> {
         struct_type: Type,
     ) -> CompileResult<AnalyzedFunction> {
         // Destructors take self parameter and return unit
-        let self_sym = self.interner.intern("self");
-        let param_info: Vec<(Symbol, Type, RirParamMode)> =
+        let self_sym = self.interner.get_or_intern("self");
+        let param_info: Vec<(Spur, Type, RirParamMode)> =
             vec![(self_sym, struct_type, RirParamMode::Normal)];
 
         let (air, num_locals, num_param_slots, param_modes) =
@@ -1186,7 +1190,7 @@ impl<'a> Sema<'a> {
 
     /// Check if a directive list contains the @copy directive
     fn has_copy_directive(&self, directives: &[RirDirective]) -> bool {
-        let copy_sym = self.interner.get_symbol("copy");
+        let copy_sym = self.interner.get("copy");
         for directive in directives {
             if Some(directive.name) == copy_sym {
                 return true;
@@ -1207,16 +1211,16 @@ impl<'a> Sema<'a> {
             } = &inst.data
             {
                 let struct_id = StructId(self.struct_defs.len() as u32);
-                let struct_name = self.interner.get(*name).to_string();
+                let struct_name = self.interner.resolve(&*name).to_string();
                 let directives = self.rir.get_directives(*directives_start, *directives_len);
                 let is_copy = self.has_copy_directive(&directives);
 
                 let fields = self.rir.get_field_decls(*fields_start, *fields_len);
                 // Check for duplicate field names
-                let mut seen_fields: HashSet<Symbol> = HashSet::new();
+                let mut seen_fields: HashSet<Spur> = HashSet::new();
                 for (field_name, _) in &fields {
                     if !seen_fields.insert(*field_name) {
-                        let field_name_str = self.interner.get(*field_name).to_string();
+                        let field_name_str = self.interner.resolve(&*field_name).to_string();
                         return Err(CompileError::new(
                             ErrorKind::DuplicateField {
                                 struct_name: struct_name.clone(),
@@ -1232,7 +1236,7 @@ impl<'a> Sema<'a> {
                 for (field_name, field_type) in &fields {
                     let field_ty = self.resolve_type(*field_type, inst.span)?;
                     resolved_fields.push(StructField {
-                        name: self.interner.get(*field_name).to_string(),
+                        name: self.interner.resolve(&*field_name).to_string(),
                         ty: field_ty,
                     });
                 }
@@ -1259,14 +1263,14 @@ impl<'a> Sema<'a> {
             } = &inst.data
             {
                 let enum_id = EnumId(self.enum_defs.len() as u32);
-                let enum_name = self.interner.get(*name).to_string();
+                let enum_name = self.interner.resolve(&*name).to_string();
                 let variants = self.rir.get_symbols(*variants_start, *variants_len);
 
                 // Check for duplicate variant names
-                let mut seen_variants: HashSet<Symbol> = HashSet::new();
+                let mut seen_variants: HashSet<Spur> = HashSet::new();
                 for variant_name in &variants {
                     if !seen_variants.insert(*variant_name) {
-                        let variant_name_str = self.interner.get(*variant_name).to_string();
+                        let variant_name_str = self.interner.resolve(&*variant_name).to_string();
                         return Err(CompileError::new(
                             ErrorKind::DuplicateVariant {
                                 enum_name: enum_name.clone(),
@@ -1280,7 +1284,7 @@ impl<'a> Sema<'a> {
                 // Convert variant symbols to strings
                 let variant_names: Vec<String> = variants
                     .iter()
-                    .map(|v| self.interner.get(*v).to_string())
+                    .map(|v| self.interner.resolve(&*v).to_string())
                     .collect();
 
                 self.enum_defs.push(EnumDef {
@@ -1372,7 +1376,7 @@ impl<'a> Sema<'a> {
                     continue;
                 }
 
-                let struct_name = self.interner.get(*name).to_string();
+                let struct_name = self.interner.resolve(&*name).to_string();
                 let struct_id = *self.structs.get(name).unwrap();
                 let struct_def = &self.struct_defs[struct_id.0 as usize];
 
@@ -1401,7 +1405,7 @@ impl<'a> Sema<'a> {
     fn collect_destructor_definitions(&mut self) -> CompileResult<()> {
         for (_, inst) in self.rir.iter() {
             if let InstData::DropFnDecl { type_name, body: _ } = &inst.data {
-                let type_name_str = self.interner.get(*type_name).to_string();
+                let type_name_str = self.interner.resolve(&*type_name).to_string();
 
                 // Check that the type exists and is a struct
                 let struct_id = match self.structs.get(type_name) {
@@ -1484,7 +1488,7 @@ impl<'a> Sema<'a> {
                 let struct_id = match self.structs.get(type_name) {
                     Some(id) => *id,
                     None => {
-                        let type_name_str = self.interner.get(*type_name).to_string();
+                        let type_name_str = self.interner.resolve(&*type_name).to_string();
                         return Err(CompileError::new(
                             ErrorKind::UnknownType(type_name_str),
                             inst.span,
@@ -1510,8 +1514,8 @@ impl<'a> Sema<'a> {
                         // Check for duplicate method names
                         let key = (*type_name, *method_name);
                         if self.methods.contains_key(&key) {
-                            let type_name_str = self.interner.get(*type_name).to_string();
-                            let method_name_str = self.interner.get(*method_name).to_string();
+                            let type_name_str = self.interner.resolve(&*type_name).to_string();
+                            let method_name_str = self.interner.resolve(&*method_name).to_string();
                             return Err(CompileError::new(
                                 ErrorKind::DuplicateMethod {
                                     type_name: type_name_str,
@@ -1523,7 +1527,7 @@ impl<'a> Sema<'a> {
 
                         // Resolve parameter types
                         let params = self.rir.get_params(*params_start, *params_len);
-                        let param_names: Vec<Symbol> = params.iter().map(|p| p.name).collect();
+                        let param_names: Vec<Spur> = params.iter().map(|p| p.name).collect();
                         let param_types: Vec<Type> = params
                             .iter()
                             .map(|p| self.resolve_type(p.ty, method_inst.span))
@@ -1554,11 +1558,11 @@ impl<'a> Sema<'a> {
     fn analyze_function(
         &mut self,
         return_type: Type,
-        params: &[(Symbol, Type, RirParamMode)], // (name, type, mode)
+        params: &[(Spur, Type, RirParamMode)], // (name, type, mode)
         body: InstRef,
     ) -> CompileResult<(Air, u32, u32, Vec<bool>)> {
         let mut air = Air::new(return_type);
-        let mut param_map: HashMap<Symbol, ParamInfo> = HashMap::new();
+        let mut param_map: HashMap<Spur, ParamInfo> = HashMap::new();
         let mut param_modes: Vec<bool> = Vec::new();
 
         // Add parameters to the param map, tracking ABI slot offsets.
@@ -1637,12 +1641,12 @@ impl<'a> Sema<'a> {
     fn run_type_inference(
         &mut self,
         return_type: Type,
-        params: &[(Symbol, Type, RirParamMode)],
+        params: &[(Spur, Type, RirParamMode)],
         body: InstRef,
     ) -> CompileResult<HashMap<InstRef, Type>> {
         // Build function signatures map for the constraint generator.
         // Convert Type to InferType so arrays are represented structurally.
-        let func_sigs: HashMap<Symbol, FunctionSig> = self
+        let func_sigs: HashMap<Spur, FunctionSig> = self
             .functions
             .iter()
             .map(|(name, info)| {
@@ -1661,21 +1665,21 @@ impl<'a> Sema<'a> {
             .collect();
 
         // Build struct types map (name -> Type::Struct(id))
-        let struct_types: HashMap<Symbol, Type> = self
+        let struct_types: HashMap<Spur, Type> = self
             .structs
             .iter()
             .map(|(name, id)| (*name, Type::Struct(*id)))
             .collect();
 
         // Build enum types map (name -> Type::Enum(id))
-        let enum_types: HashMap<Symbol, Type> = self
+        let enum_types: HashMap<Spur, Type> = self
             .enums
             .iter()
             .map(|(name, id)| (*name, Type::Enum(*id)))
             .collect();
 
         // Build method signatures map for the constraint generator
-        let method_sigs: HashMap<(Symbol, Symbol), MethodSig> = self
+        let method_sigs: HashMap<(Spur, Spur), MethodSig> = self
             .methods
             .iter()
             .map(|((type_name, method_name), info)| {
@@ -1707,7 +1711,7 @@ impl<'a> Sema<'a> {
 
         // Build parameter map for constraint context.
         // Convert Type to InferType so arrays are represented structurally.
-        let param_vars: HashMap<Symbol, ParamVarInfo> = params
+        let param_vars: HashMap<Spur, ParamVarInfo> = params
             .iter()
             .map(|(name, ty, _mode)| {
                 (
@@ -1864,7 +1868,7 @@ impl<'a> Sema<'a> {
 
                 // Check if this parameter has been moved
                 if let Some(move_info) = ctx.moved_vars.get(name) {
-                    let name_str = self.interner.get(*name);
+                    let name_str = self.interner.resolve(&*name);
                     return Err(CompileError::new(
                         ErrorKind::UseAfterMove(name_str.to_string()),
                         inst.span,
@@ -1885,7 +1889,7 @@ impl<'a> Sema<'a> {
             }
 
             // Look up the variable in locals
-            let name_str = self.interner.get(*name);
+            let name_str = self.interner.resolve(&*name);
             let local = ctx.locals.get(name).ok_or_compile_error(
                 ErrorKind::UndefinedVariable(name_str.to_string()),
                 inst.span,
@@ -1935,7 +1939,7 @@ impl<'a> Sema<'a> {
             };
 
             let struct_def = &self.struct_defs[struct_id.0 as usize];
-            let field_name_str = self.interner.get(*field).to_string();
+            let field_name_str = self.interner.resolve(&*field).to_string();
 
             let (field_index, struct_field) =
                 struct_def.find_field(&field_name_str).ok_or_compile_error(
@@ -2018,7 +2022,7 @@ impl<'a> Sema<'a> {
             InstData::StringConst(symbol) => {
                 let ty = Type::String;
                 // Add string to the string table
-                let string_content = self.interner.get(*symbol).to_string();
+                let string_content = self.interner.resolve(&*symbol).to_string();
                 let string_id = self.add_string(string_content);
 
                 let air_ref = air.add_inst(AirInst {
@@ -2436,8 +2440,8 @@ impl<'a> Sema<'a> {
                             } => {
                                 format!(
                                     "{}::{}",
-                                    self.interner.get(*type_name),
-                                    self.interner.get(*variant)
+                                    self.interner.resolve(&*type_name),
+                                    self.interner.resolve(&*variant)
                                 )
                             }
                         };
@@ -2530,7 +2534,7 @@ impl<'a> Sema<'a> {
                             // Look up the enum type
                             let enum_id = self.enums.get(type_name).ok_or_compile_error(
                                 ErrorKind::UnknownEnumType(
-                                    self.interner.get(*type_name).to_string(),
+                                    self.interner.resolve(&*type_name).to_string(),
                                 ),
                                 pattern_span,
                             )?;
@@ -2548,7 +2552,7 @@ impl<'a> Sema<'a> {
                             }
 
                             // Find the variant index
-                            let variant_name = self.interner.get(*variant);
+                            let variant_name = self.interner.resolve(&*variant);
                             let variant_index =
                                 enum_def.find_variant(variant_name).ok_or_compile_error(
                                     ErrorKind::UnknownVariant {
@@ -2606,7 +2610,7 @@ impl<'a> Sema<'a> {
                             // We already validated this above, so unwrap is safe
                             let enum_id = *self.enums.get(type_name).unwrap();
                             let enum_def = &self.enum_defs[enum_id.0 as usize];
-                            let variant_name = self.interner.get(*variant);
+                            let variant_name = self.interner.resolve(&*variant);
                             let variant_index = enum_def.find_variant(variant_name).unwrap();
                             AirPattern::EnumVariant {
                                 enum_id,
@@ -2743,7 +2747,7 @@ impl<'a> Sema<'a> {
 
                     // Check if this parameter has been moved
                     if let Some(move_info) = ctx.moved_vars.get(name) {
-                        let name_str = self.interner.get(*name);
+                        let name_str = self.interner.resolve(&*name);
                         return Err(CompileError::new(
                             ErrorKind::UseAfterMove(name_str.to_string()),
                             inst.span,
@@ -2776,7 +2780,7 @@ impl<'a> Sema<'a> {
                             }
                             RirParamMode::Borrow => {
                                 // Cannot move out of a borrowed parameter!
-                                let name_str = self.interner.get(*name);
+                                let name_str = self.interner.resolve(&*name);
                                 return Err(CompileError::new(
                                     ErrorKind::MoveOutOfBorrow {
                                         variable: name_str.to_string(),
@@ -2800,7 +2804,7 @@ impl<'a> Sema<'a> {
                 }
 
                 // Look up the variable in locals
-                let name_str = self.interner.get(*name);
+                let name_str = self.interner.resolve(&*name);
                 let local = ctx.locals.get(name).ok_or_compile_error(
                     ErrorKind::UndefinedVariable(name_str.to_string()),
                     inst.span,
@@ -2841,7 +2845,7 @@ impl<'a> Sema<'a> {
             }
 
             InstData::Assign { name, value } => {
-                let name_str = self.interner.get(*name);
+                let name_str = self.interner.resolve(&*name);
 
                 // First check if it's a parameter (for inout params)
                 if let Some(param_info) = ctx.params.get(name) {
@@ -3099,7 +3103,7 @@ impl<'a> Sema<'a> {
                 args_len,
             } => {
                 // Look up the function
-                let fn_name_str = self.interner.get(*name).to_string();
+                let fn_name_str = self.interner.resolve(&*name).to_string();
                 let fn_info = self.functions.get(name).ok_or_compile_error(
                     ErrorKind::UndefinedFunction(fn_name_str.clone()),
                     inst.span,
@@ -3175,7 +3179,7 @@ impl<'a> Sema<'a> {
 
             InstData::ParamRef { index: _, name } => {
                 // Look up the parameter type and ABI slot from the params map
-                let name_str = self.interner.get(*name);
+                let name_str = self.interner.resolve(&*name);
                 let param_info = ctx.params.get(name).ok_or_compile_error(
                     ErrorKind::UndefinedVariable(name_str.to_string()),
                     inst.span,
@@ -3211,7 +3215,7 @@ impl<'a> Sema<'a> {
             } => {
                 let field_inits = self.rir.get_field_inits(*fields_start, *fields_len);
                 // Look up the struct type
-                let type_name_str = self.interner.get(*type_name);
+                let type_name_str = self.interner.resolve(&*type_name);
                 let struct_id = *self.structs.get(type_name).ok_or_compile_error(
                     ErrorKind::UnknownType(type_name_str.to_string()),
                     inst.span,
@@ -3232,7 +3236,7 @@ impl<'a> Sema<'a> {
                 // Check for unknown or duplicate fields
                 let mut seen_fields = std::collections::HashSet::new();
                 for (init_field_name, _) in field_inits.iter() {
-                    let init_name = self.interner.get(*init_field_name);
+                    let init_name = self.interner.resolve(&*init_field_name);
 
                     // Check if field exists in struct
                     if !field_index_map.contains_key(init_name) {
@@ -3282,7 +3286,7 @@ impl<'a> Sema<'a> {
                 let mut source_order: Vec<usize> = Vec::with_capacity(field_inits.len());
 
                 for (init_field_name, field_value) in field_inits.iter() {
-                    let init_name = self.interner.get(*init_field_name);
+                    let init_name = self.interner.resolve(&*init_field_name);
                     let field_idx = field_index_map[init_name];
 
                     let field_result = self.analyze_inst(air, *field_value, ctx)?;
@@ -3337,7 +3341,7 @@ impl<'a> Sema<'a> {
                 };
 
                 let struct_def = &self.struct_defs[struct_id.0 as usize];
-                let field_name_str = self.interner.get(*field).to_string();
+                let field_name_str = self.interner.resolve(&*field).to_string();
 
                 let (field_index, struct_field) =
                     struct_def.find_field(&field_name_str).ok_or_compile_error(
@@ -3377,7 +3381,7 @@ impl<'a> Sema<'a> {
 
                 // Walk up to find the root variable, collecting field symbols
                 let mut current_base = *base;
-                let mut field_symbols: Vec<Symbol> = Vec::new();
+                let mut field_symbols: Vec<Spur> = Vec::new();
 
                 // Result is either (Local, slot, type, is_mut, name) or (Param, abi_slot, type, mode, name)
                 enum RootKind {
@@ -3389,7 +3393,7 @@ impl<'a> Sema<'a> {
                     let current_inst = self.rir.get(current_base);
                     match &current_inst.data {
                         InstData::VarRef { name } => {
-                            let name_str = self.interner.get(*name);
+                            let name_str = self.interner.resolve(&*name);
 
                             // Check if this variable has been moved
                             if let Some(move_info) = ctx.moved_vars.get(name) {
@@ -3430,7 +3434,7 @@ impl<'a> Sema<'a> {
                             );
                         }
                         InstData::ParamRef { name, .. } => {
-                            let name_str = self.interner.get(*name);
+                            let name_str = self.interner.resolve(&*name);
                             let param_info = ctx.params.get(name).ok_or_compile_error(
                                 ErrorKind::UndefinedVariable(name_str.to_string()),
                                 inst.span,
@@ -3537,7 +3541,7 @@ impl<'a> Sema<'a> {
                     };
 
                     let struct_def = &self.struct_defs[struct_id.0 as usize];
-                    let field_name_str = self.interner.get(*field_sym).to_string();
+                    let field_name_str = self.interner.resolve(&*field_sym).to_string();
 
                     let (field_index, struct_field) =
                         struct_def.find_field(&field_name_str).ok_or_compile_error(
@@ -3566,7 +3570,7 @@ impl<'a> Sema<'a> {
                 };
 
                 let struct_def = &self.struct_defs[struct_id.0 as usize];
-                let field_name_str = self.interner.get(*field).to_string();
+                let field_name_str = self.interner.resolve(&*field).to_string();
 
                 let (field_index, _struct_field) =
                     struct_def.find_field(&field_name_str).ok_or_compile_error(
@@ -3622,7 +3626,7 @@ impl<'a> Sema<'a> {
                 args_len,
             } => {
                 let args = self.rir.get_call_args(*args_start, *args_len);
-                let intrinsic_name_str = self.interner.get(*name);
+                let intrinsic_name_str = self.interner.resolve(&*name);
 
                 match intrinsic_name_str {
                     "dbg" => {
@@ -3781,7 +3785,7 @@ impl<'a> Sema<'a> {
             }
 
             InstData::TypeIntrinsic { name, type_arg } => {
-                let intrinsic_name_str = self.interner.get(*name);
+                let intrinsic_name_str = self.interner.resolve(&*name);
                 let ty = self.resolve_type(*type_arg, inst.span)?;
 
                 let value: u64 = match intrinsic_name_str {
@@ -3944,7 +3948,7 @@ impl<'a> Sema<'a> {
 
                 let (var_name, root_kind, base_type) = match &base_inst.data {
                     InstData::VarRef { name } => {
-                        let name_str = self.interner.get(*name);
+                        let name_str = self.interner.resolve(&*name);
 
                         // Check if this variable has been moved
                         if let Some(move_info) = ctx.moved_vars.get(name) {
@@ -3983,7 +3987,7 @@ impl<'a> Sema<'a> {
                         }
                     }
                     InstData::ParamRef { name, .. } => {
-                        let name_str = self.interner.get(*name);
+                        let name_str = self.interner.resolve(&*name);
                         let param_info = ctx.params.get(name).ok_or_compile_error(
                             ErrorKind::UndefinedVariable(name_str.to_string()),
                             inst.span,
@@ -4134,13 +4138,13 @@ impl<'a> Sema<'a> {
             InstData::EnumVariant { type_name, variant } => {
                 // Look up the enum type
                 let enum_id = self.enums.get(type_name).ok_or_compile_error(
-                    ErrorKind::UnknownEnumType(self.interner.get(*type_name).to_string()),
+                    ErrorKind::UnknownEnumType(self.interner.resolve(&*type_name).to_string()),
                     inst.span,
                 )?;
                 let enum_def = &self.enum_defs[enum_id.0 as usize];
 
                 // Find the variant index
-                let variant_name = self.interner.get(*variant);
+                let variant_name = self.interner.resolve(&*variant);
                 let variant_index = enum_def.find_variant(variant_name).ok_or_compile_error(
                     ErrorKind::UnknownVariant {
                         enum_name: enum_def.name.clone(),
@@ -4199,7 +4203,7 @@ impl<'a> Sema<'a> {
                 let receiver_var = self.extract_root_variable(*receiver);
 
                 // Get the method name as a string before analyzing receiver
-                let method_name_str = self.interner.get(*method).to_string();
+                let method_name_str = self.interner.resolve(&*method).to_string();
 
                 // Check if this is a String mutation method that needs storage location
                 let is_string_mutation_method = matches!(
@@ -4280,7 +4284,7 @@ impl<'a> Sema<'a> {
                 let struct_name_str = struct_def.name.clone();
 
                 // Find the struct name symbol for method lookup
-                let struct_name_sym = self.interner.intern(&struct_name_str);
+                let struct_name_sym = self.interner.get_or_intern(&struct_name_str);
 
                 // Look up the method
                 let method_key = (struct_name_sym, *method);
@@ -4329,7 +4333,7 @@ impl<'a> Sema<'a> {
 
                 // Generate a method call name: Type.method (intern for AIR)
                 let call_name = format!("{}.{}", struct_name_str, method_name_str);
-                let call_name_sym = self.interner.intern(&call_name);
+                let call_name_sym = self.interner.get_or_intern(&call_name);
 
                 // Encode call args into extra array
                 let args_len = air_args.len() as u32;
@@ -4361,14 +4365,11 @@ impl<'a> Sema<'a> {
             } => {
                 let args = self.rir.get_call_args(*args_start, *args_len);
                 // Get the type and function names for error messages
-                let type_name_str = self.interner.get(*type_name).to_string();
-                let function_name_str = self.interner.get(*function).to_string();
-
-                // Check if this is a built-in type with associated functions
-                let well_known = self.interner.well_known();
+                let type_name_str = self.interner.resolve(&*type_name).to_string();
+                let function_name_str = self.interner.resolve(&*function).to_string();
 
                 // Handle String::new() and String::with_capacity()
-                if *type_name == well_known.string {
+                if type_name_str == "String" {
                     return self.analyze_string_assoc_fn(
                         air,
                         ctx,
@@ -4427,7 +4428,7 @@ impl<'a> Sema<'a> {
 
                 // Generate a function call name: Type::function (intern for AIR)
                 let call_name = format!("{}::{}", type_name_str, function_name_str);
-                let call_name_sym = self.interner.intern(&call_name);
+                let call_name_sym = self.interner.get_or_intern(&call_name);
 
                 // Encode call args into extra array
                 let args_len = air_args.len() as u32;
@@ -4463,45 +4464,36 @@ impl<'a> Sema<'a> {
 
     /// Resolve a type symbol to a Type.
     ///
-    /// Uses symbol comparison instead of string comparison for efficiency.
     /// Handles array types with the syntax "[T; N]".
-    fn resolve_type(&mut self, type_sym: Symbol, span: Span) -> CompileResult<Type> {
-        let well_known = self.interner.well_known();
+    fn resolve_type(&mut self, type_sym: Spur, span: Span) -> CompileResult<Type> {
+        let type_name = self.interner.resolve(&type_sym);
 
-        if type_sym == well_known.i8 {
-            Ok(Type::I8)
-        } else if type_sym == well_known.i16 {
-            Ok(Type::I16)
-        } else if type_sym == well_known.i32 {
-            Ok(Type::I32)
-        } else if type_sym == well_known.i64 {
-            Ok(Type::I64)
-        } else if type_sym == well_known.u8 {
-            Ok(Type::U8)
-        } else if type_sym == well_known.u16 {
-            Ok(Type::U16)
-        } else if type_sym == well_known.u32 {
-            Ok(Type::U32)
-        } else if type_sym == well_known.u64 {
-            Ok(Type::U64)
-        } else if type_sym == well_known.bool {
-            Ok(Type::Bool)
-        } else if type_sym == well_known.unit {
-            Ok(Type::Unit)
-        } else if type_sym == well_known.never {
-            Ok(Type::Never)
-        } else if type_sym == well_known.string {
-            Ok(Type::String)
-        } else if let Some(&struct_id) = self.structs.get(&type_sym) {
+        // Check built-in types first
+        match type_name {
+            "i8" => return Ok(Type::I8),
+            "i16" => return Ok(Type::I16),
+            "i32" => return Ok(Type::I32),
+            "i64" => return Ok(Type::I64),
+            "u8" => return Ok(Type::U8),
+            "u16" => return Ok(Type::U16),
+            "u32" => return Ok(Type::U32),
+            "u64" => return Ok(Type::U64),
+            "bool" => return Ok(Type::Bool),
+            "()" => return Ok(Type::Unit),
+            "!" => return Ok(Type::Never),
+            "String" => return Ok(Type::String),
+            _ => {}
+        }
+
+        if let Some(&struct_id) = self.structs.get(&type_sym) {
             Ok(Type::Struct(struct_id))
         } else if let Some(&enum_id) = self.enums.get(&type_sym) {
             Ok(Type::Enum(enum_id))
         } else {
             // Check for array type syntax: [T; N]
-            let type_name = self.interner.get(type_sym);
             if let Some((element_type, length)) = parse_array_type_syntax(type_name) {
                 // Resolve the element type first
-                let element_sym = self.interner.intern(&element_type);
+                let element_sym = self.interner.get_or_intern(&element_type);
                 let element_ty = self.resolve_type(element_sym, span)?;
                 // Get or create the array type
                 let array_type_id = self.get_or_create_array_type(element_ty, length);
@@ -4927,7 +4919,7 @@ impl<'a> Sema<'a> {
 
                 // Generate a call to String__new (runtime function)
                 // We use double underscore because :: is not valid in C symbol names
-                let call_name = self.interner.intern("String__new");
+                let call_name = self.interner.get_or_intern("String__new");
                 // No args to encode
                 let args_start = air.add_extra(&[]);
                 let air_ref = air.add_inst(AirInst {
@@ -4969,7 +4961,7 @@ impl<'a> Sema<'a> {
                 }
 
                 // Generate a call to String__with_capacity (runtime function)
-                let call_name = self.interner.intern("String__with_capacity");
+                let call_name = self.interner.get_or_intern("String__with_capacity");
                 // Encode args into extra array
                 let args_start =
                     air.add_extra(&[cap_result.air_ref.as_u32(), AirArgMode::Normal.as_u32()]);
@@ -5028,7 +5020,7 @@ impl<'a> Sema<'a> {
                             }));
                         }
                         RirParamMode::Borrow => {
-                            let name_str = self.interner.get(*name);
+                            let name_str = self.interner.resolve(&*name);
                             return Err(CompileError::new(
                                 ErrorKind::MutateBorrowedValue {
                                     variable: name_str.to_string(),
@@ -5039,7 +5031,7 @@ impl<'a> Sema<'a> {
                         RirParamMode::Normal => {
                             // Normal parameters can be mutated if declared as `var`
                             // For now, we don't allow mutation of normal params
-                            let name_str = self.interner.get(*name);
+                            let name_str = self.interner.resolve(&*name);
                             return Err(CompileError::new(
                                 ErrorKind::AssignToImmutable(name_str.to_string()),
                                 span,
@@ -5051,7 +5043,7 @@ impl<'a> Sema<'a> {
                 // Check if it's a local variable
                 if let Some(local) = ctx.locals.get(name) {
                     if !local.is_mut {
-                        let name_str = self.interner.get(*name);
+                        let name_str = self.interner.resolve(&*name);
                         return Err(CompileError::new(
                             ErrorKind::AssignToImmutable(name_str.to_string()),
                             span,
@@ -5061,7 +5053,7 @@ impl<'a> Sema<'a> {
                 }
 
                 // Variable not found
-                let name_str = self.interner.get(*name);
+                let name_str = self.interner.resolve(&*name);
                 Err(CompileError::new(
                     ErrorKind::UndefinedVariable(name_str.to_string()),
                     span,
@@ -5121,7 +5113,7 @@ impl<'a> Sema<'a> {
                 }
 
                 // Call String__push_str(self, other) -> String
-                let call_name = self.interner.intern("String__push_str");
+                let call_name = self.interner.get_or_intern("String__push_str");
                 let args_start = air.add_extra(&[
                     receiver.air_ref.as_u32(),
                     AirArgMode::Normal.as_u32(),
@@ -5169,7 +5161,7 @@ impl<'a> Sema<'a> {
                 }
 
                 // Call String__push(self, byte) -> String
-                let call_name = self.interner.intern("String__push");
+                let call_name = self.interner.get_or_intern("String__push");
                 let args_start = air.add_extra(&[
                     receiver.air_ref.as_u32(),
                     AirArgMode::Normal.as_u32(),
@@ -5203,7 +5195,7 @@ impl<'a> Sema<'a> {
                 }
 
                 // Call String__clear(self) -> String
-                let call_name = self.interner.intern("String__clear");
+                let call_name = self.interner.get_or_intern("String__clear");
                 let args_start =
                     air.add_extra(&[receiver.air_ref.as_u32(), AirArgMode::Normal.as_u32()]);
                 let call_ref = air.add_inst(AirInst {
@@ -5247,7 +5239,7 @@ impl<'a> Sema<'a> {
                 }
 
                 // Call String__reserve(self, additional) -> String
-                let call_name = self.interner.intern("String__reserve");
+                let call_name = self.interner.get_or_intern("String__reserve");
                 let args_start = air.add_extra(&[
                     receiver.air_ref.as_u32(),
                     AirArgMode::Normal.as_u32(),
@@ -5345,7 +5337,7 @@ impl<'a> Sema<'a> {
                 // The caller still owns the String after this call.
                 // Using Normal mode instead of Borrow because String's 3 fields should be
                 // passed directly, not by reference.
-                let call_name = self.interner.intern("String__len");
+                let call_name = self.interner.get_or_intern("String__len");
                 let args_start =
                     air.add_extra(&[receiver.air_ref.as_u32(), AirArgMode::Normal.as_u32()]);
                 let air_ref = air.add_inst(AirInst {
@@ -5375,7 +5367,7 @@ impl<'a> Sema<'a> {
 
                 // Generate a call to String__capacity (runtime function)
                 // Same pattern as len() - pass by value, don't consume.
-                let call_name = self.interner.intern("String__capacity");
+                let call_name = self.interner.get_or_intern("String__capacity");
                 let args_start =
                     air.add_extra(&[receiver.air_ref.as_u32(), AirArgMode::Normal.as_u32()]);
                 let air_ref = air.add_inst(AirInst {
@@ -5405,7 +5397,7 @@ impl<'a> Sema<'a> {
 
                 // Generate a call to String__is_empty (runtime function)
                 // Same pattern as len() - pass by value, don't consume.
-                let call_name = self.interner.intern("String__is_empty");
+                let call_name = self.interner.get_or_intern("String__is_empty");
                 let args_start =
                     air.add_extra(&[receiver.air_ref.as_u32(), AirArgMode::Normal.as_u32()]);
                 let air_ref = air.add_inst(AirInst {
@@ -5436,7 +5428,7 @@ impl<'a> Sema<'a> {
                 // Generate a call to String__clone (runtime function)
                 // Takes the String (ptr, len, cap) and returns a new String (ptr, len, cap)
                 // where the new ptr points to freshly allocated memory with copied content.
-                let call_name = self.interner.intern("String__clone");
+                let call_name = self.interner.get_or_intern("String__clone");
                 let args_start =
                     air.add_extra(&[receiver.air_ref.as_u32(), AirArgMode::Normal.as_u32()]);
                 let air_ref = air.add_inst(AirInst {

@@ -1,0 +1,4 @@
+# parking_lot_core build script only detects thread sanitizer
+# We don't use tsan, so we can skip it
+[buildscript]
+run = false
