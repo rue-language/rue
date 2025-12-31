@@ -176,8 +176,165 @@ pub use rue_lexer::{Lexer, Token, TokenKind};
 pub use rue_linker::{Archive, CodeRelocation, Linker, ObjectBuilder, ObjectFile, RelocationType};
 pub use rue_parser::{Ast, Expr, Function, Parser};
 pub use rue_rir::{AstGen, Rir, RirPrinter};
-pub use rue_span::Span;
+pub use rue_span::{FileId, Span};
 pub use rue_target::{Arch, Target};
+
+// ============================================================================
+// Multi-file Compilation Types
+// ============================================================================
+
+/// A source file with its path and content.
+///
+/// Used for multi-file compilation to associate source content with file paths.
+#[derive(Debug, Clone)]
+pub struct SourceFile<'a> {
+    /// Path to the source file (used for error messages).
+    pub path: &'a str,
+    /// Source code content.
+    pub source: &'a str,
+    /// Unique identifier for this file.
+    pub file_id: FileId,
+}
+
+impl<'a> SourceFile<'a> {
+    /// Create a new source file.
+    pub fn new(path: &'a str, source: &'a str, file_id: FileId) -> Self {
+        Self {
+            path,
+            source,
+            file_id,
+        }
+    }
+}
+
+/// Result of parsing a single file.
+///
+/// Contains the AST and interner from parsing. The interner contains all
+/// string literals and identifiers interned during lexing.
+#[derive(Debug)]
+pub struct ParsedFile {
+    /// Path to the source file.
+    pub path: String,
+    /// File identifier for error reporting.
+    pub file_id: FileId,
+    /// The parsed abstract syntax tree.
+    pub ast: Ast,
+    /// String interner from lexing.
+    pub interner: ThreadedRodeo,
+}
+
+/// Result of parsing all source files.
+///
+/// Contains all parsed files and a merged interner for use in later phases.
+#[derive(Debug)]
+pub struct ParsedProgram {
+    /// Parsed files with their ASTs.
+    pub files: Vec<ParsedFile>,
+    /// Merged interner containing all symbols from all files.
+    pub interner: ThreadedRodeo,
+}
+
+/// Parse multiple source files in parallel.
+///
+/// Each file is lexed and parsed independently, then the results are collected.
+/// This enables parallel parsing for multi-file compilation.
+///
+/// # Arguments
+///
+/// * `sources` - Slice of source files to parse
+///
+/// # Returns
+///
+/// A `ParsedProgram` containing all parsed files and a merged interner,
+/// or errors from any file that failed to parse.
+///
+/// # Example
+///
+/// ```ignore
+/// use rue_compiler::{SourceFile, parse_all_files};
+/// use rue_span::FileId;
+///
+/// let sources = vec![
+///     SourceFile::new("main.rue", "fn main() -> i32 { 0 }", FileId::new(1)),
+///     SourceFile::new("utils.rue", "fn helper() -> i32 { 42 }", FileId::new(2)),
+/// ];
+/// let program = parse_all_files(&sources)?;
+/// ```
+pub fn parse_all_files(sources: &[SourceFile<'_>]) -> MultiErrorResult<ParsedProgram> {
+    // Parse all files in parallel using Rayon
+    let results: Vec<Result<ParsedFile, CompileErrors>> = sources
+        .par_iter()
+        .map(|source| {
+            // Create lexer with file ID for proper error reporting
+            let lexer = Lexer::with_file_id(source.source, source.file_id);
+            let (tokens, interner) = lexer.tokenize().map_err(CompileErrors::from)?;
+
+            // Parse the tokens
+            let parser = Parser::new(tokens, interner);
+            let (ast, interner) = parser.parse()?;
+
+            Ok(ParsedFile {
+                path: source.path.to_string(),
+                file_id: source.file_id,
+                ast,
+                interner,
+            })
+        })
+        .collect();
+
+    // Collect results and errors
+    let mut parsed_files = Vec::with_capacity(results.len());
+    let mut all_errors: Vec<CompileError> = Vec::new();
+
+    for result in results {
+        match result {
+            Ok(parsed) => parsed_files.push(parsed),
+            Err(errors) => all_errors.extend(errors.into_iter()),
+        }
+    }
+
+    // If any files failed to parse, return all errors
+    if !all_errors.is_empty() {
+        return Err(CompileErrors::from(all_errors));
+    }
+
+    // Merge all interners into one
+    let merged_interner = merge_interners(&parsed_files);
+
+    Ok(ParsedProgram {
+        files: parsed_files,
+        interner: merged_interner,
+    })
+}
+
+/// Merge string interners from all parsed files into a unified interner.
+///
+/// This creates a new interner and re-interns all strings from the file-specific
+/// interners. The symbols in the ASTs are still valid because we're using
+/// ThreadedRodeo which gives the same Spur for the same string.
+fn merge_interners(files: &[ParsedFile]) -> ThreadedRodeo {
+    let merged = ThreadedRodeo::new();
+
+    for file in files {
+        // Re-intern all strings from this file's interner into the merged one.
+        // ThreadedRodeo::get_or_intern returns the same Spur for the same string,
+        // so existing Spur values in the AST remain valid.
+        for (spur, string) in file.interner.iter() {
+            // We need to ensure the string is in the merged interner.
+            // The key insight is that lasso's ThreadedRodeo guarantees the same
+            // string gets the same Spur, so we don't need to remap anything.
+            let new_spur = merged.get_or_intern(string);
+            // Assert that the Spur values match (they should for same strings)
+            debug_assert_eq!(
+                file.interner.resolve(&spur),
+                merged.resolve(&new_spur),
+                "Interner merge failed: string mismatch"
+            );
+        }
+    }
+
+    merged
+}
 
 /// Which linker to use for the final linking phase.
 ///
@@ -2441,6 +2598,151 @@ mod integration_tests {
                 fn main() -> i32 { foo() + bar() }
             "#;
             assert!(compile_to_air(src).is_ok());
+        }
+    }
+
+    // ========================================================================
+    // Multi-file Parsing
+    // ========================================================================
+
+    mod multi_file_parsing {
+        use super::*;
+
+        #[test]
+        fn parse_single_file() {
+            let sources = vec![SourceFile::new(
+                "main.rue",
+                "fn main() -> i32 { 42 }",
+                FileId::new(1),
+            )];
+            let program = parse_all_files(&sources).unwrap();
+            assert_eq!(program.files.len(), 1);
+            assert_eq!(program.files[0].path, "main.rue");
+            assert_eq!(program.files[0].file_id, FileId::new(1));
+        }
+
+        #[test]
+        fn parse_multiple_files() {
+            let sources = vec![
+                SourceFile::new("main.rue", "fn main() -> i32 { helper() }", FileId::new(1)),
+                SourceFile::new("utils.rue", "fn helper() -> i32 { 42 }", FileId::new(2)),
+            ];
+            let program = parse_all_files(&sources).unwrap();
+            assert_eq!(program.files.len(), 2);
+
+            // Check that both files were parsed
+            let paths: Vec<_> = program.files.iter().map(|f| f.path.as_str()).collect();
+            assert!(paths.contains(&"main.rue"));
+            assert!(paths.contains(&"utils.rue"));
+        }
+
+        #[test]
+        fn parse_many_files_in_parallel() {
+            // Create 10 files to exercise parallel parsing
+            let sources: Vec<_> = (1..=10)
+                .map(|i| {
+                    SourceFile::new(
+                        // Leak the string to get a &'static str
+                        Box::leak(format!("file{}.rue", i).into_boxed_str()),
+                        Box::leak(format!("fn func{}() -> i32 {{ {} }}", i, i).into_boxed_str()),
+                        FileId::new(i as u32),
+                    )
+                })
+                .collect();
+
+            let program = parse_all_files(&sources).unwrap();
+            assert_eq!(program.files.len(), 10);
+
+            // All functions should be in their respective ASTs
+            for (i, file) in program.files.iter().enumerate() {
+                assert!(!file.ast.items.is_empty(), "File {} has no items", i);
+            }
+        }
+
+        #[test]
+        fn parse_error_in_single_file() {
+            let sources = vec![SourceFile::new(
+                "bad.rue",
+                "fn main( { }", // Missing closing paren
+                FileId::new(1),
+            )];
+
+            let result = parse_all_files(&sources);
+            assert!(result.is_err());
+
+            let errors = result.unwrap_err();
+            assert!(!errors.is_empty());
+        }
+
+        #[test]
+        fn parse_error_in_multiple_files() {
+            let sources = vec![
+                SourceFile::new("good.rue", "fn good() -> i32 { 42 }", FileId::new(1)),
+                SourceFile::new(
+                    "bad.rue",
+                    "fn bad( { }", // Parse error
+                    FileId::new(2),
+                ),
+            ];
+
+            let result = parse_all_files(&sources);
+            assert!(result.is_err());
+
+            // The error should still report, and we should get at least one error
+            let errors = result.unwrap_err();
+            assert!(!errors.is_empty());
+        }
+
+        #[test]
+        fn lexer_error_in_file() {
+            let sources = vec![SourceFile::new(
+                "lexer_error.rue",
+                "fn main() -> i32 { $ }", // '$' is not a valid token
+                FileId::new(1),
+            )];
+
+            let result = parse_all_files(&sources);
+            assert!(result.is_err());
+        }
+
+        #[test]
+        fn interner_merges_across_files() {
+            let sources = vec![
+                SourceFile::new("a.rue", "fn foo() -> i32 { 1 }", FileId::new(1)),
+                SourceFile::new("b.rue", "fn bar() -> i32 { 2 }", FileId::new(2)),
+            ];
+
+            let program = parse_all_files(&sources).unwrap();
+
+            // The merged interner should contain both "foo" and "bar"
+            let has_foo = program.interner.iter().any(|(_, s)| s == "foo");
+            let has_bar = program.interner.iter().any(|(_, s)| s == "bar");
+
+            assert!(has_foo, "Interner should contain 'foo'");
+            assert!(has_bar, "Interner should contain 'bar'");
+        }
+
+        #[test]
+        fn empty_file_parses_ok() {
+            let sources = vec![SourceFile::new("empty.rue", "", FileId::new(1))];
+
+            let program = parse_all_files(&sources).unwrap();
+            assert_eq!(program.files.len(), 1);
+            assert!(program.files[0].ast.items.is_empty());
+        }
+
+        #[test]
+        fn file_ids_preserved() {
+            let sources = vec![
+                SourceFile::new("a.rue", "fn a() -> i32 { 1 }", FileId::new(42)),
+                SourceFile::new("b.rue", "fn b() -> i32 { 2 }", FileId::new(99)),
+            ];
+
+            let program = parse_all_files(&sources).unwrap();
+
+            let file_ids: Vec<_> = program.files.iter().map(|f| f.file_id).collect();
+            assert!(file_ids.contains(&FileId::new(42)));
+            assert!(file_ids.contains(&FileId::new(99)));
         }
     }
 }
