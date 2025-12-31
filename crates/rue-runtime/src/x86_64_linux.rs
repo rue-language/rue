@@ -81,8 +81,12 @@ pub const STDERR: u64 = 2;
 /// the return value and use [`write_all`] if complete writes are required.
 pub fn write(fd: u64, buf: *const u8, len: usize) -> i64 {
     let result: i64;
-    // SAFETY: We're making a syscall with the provided arguments.
-    // The caller is responsible for ensuring buf/len are valid.
+    // SAFETY: Making the write(2) syscall is safe because:
+    // - The syscall interface is stable and well-defined
+    // - We pass arguments in the correct registers per x86-64 Linux ABI
+    // - The kernel validates fd, buf, and len; invalid values return errors
+    // - We correctly mark rcx and r11 as clobbered (per syscall ABI)
+    // - The caller is responsible for ensuring buf points to valid memory
     unsafe {
         asm!(
             "syscall",
@@ -122,8 +126,12 @@ pub fn write(fd: u64, buf: *const u8, len: usize) -> i64 {
 /// - The memory region remains valid for the duration of the syscall
 pub fn read(fd: u64, buf: *mut u8, len: usize) -> i64 {
     let result: i64;
-    // SAFETY: We're making a syscall with the provided arguments.
-    // The caller is responsible for ensuring buf/len are valid.
+    // SAFETY: Making the read(2) syscall is safe because:
+    // - The syscall interface is stable and well-defined
+    // - We pass arguments in the correct registers per x86-64 Linux ABI
+    // - The kernel validates fd, buf, and len; invalid values return errors
+    // - We correctly mark rcx and r11 as clobbered (per syscall ABI)
+    // - The caller is responsible for ensuring buf points to writable memory
     unsafe {
         asm!(
             "syscall",
@@ -326,8 +334,13 @@ pub fn mmap(size: usize) -> *mut u8 {
     const MAP_ANONYMOUS: i64 = 0x20;
 
     let result: i64;
-    // SAFETY: mmap syscall with anonymous mapping is safe.
-    // We're requesting private anonymous memory with read/write permissions.
+    // SAFETY: Making the mmap(2) syscall with anonymous mapping is safe because:
+    // - MAP_ANONYMOUS + MAP_PRIVATE creates a private zero-initialized memory region
+    // - We request PROT_READ | PROT_WRITE which is safe for heap memory
+    // - addr=NULL lets the kernel choose a safe address
+    // - fd=-1 is correct for anonymous mappings (no file backing)
+    // - The kernel validates all parameters and returns an error on failure
+    // - We correctly mark rcx and r11 as clobbered (per syscall ABI)
     unsafe {
         asm!(
             "syscall",
@@ -373,7 +386,12 @@ pub fn mmap(size: usize) -> *mut u8 {
 /// - The memory is not accessed after this call
 pub fn munmap(addr: *mut u8, size: usize) -> i64 {
     let result: i64;
-    // SAFETY: munmap is safe if addr/size are valid from a previous mmap.
+    // SAFETY: Making the munmap(2) syscall is safe because:
+    // - The kernel validates addr and size; invalid values return errors
+    // - The caller guarantees addr was returned by a previous mmap call
+    // - The caller guarantees size matches the mmap call
+    // - The caller guarantees the memory won't be accessed after this call
+    // - We correctly mark rcx and r11 as clobbered (per syscall ABI)
     unsafe {
         asm!(
             "syscall",

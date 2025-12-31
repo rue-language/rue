@@ -78,8 +78,13 @@ pub fn write(fd: u64, buf: *const u8, len: usize) -> i64 {
     let result: i64;
     let err_flag: u64;
 
-    // SAFETY: We're making a syscall with the provided arguments.
-    // The caller is responsible for ensuring buf/len are valid.
+    // SAFETY: Making the write(2) syscall is safe because:
+    // - The Darwin syscall interface is stable and well-defined
+    // - We pass arguments in the correct registers per AAPCS64/Darwin ABI
+    // - The kernel validates fd, buf, and len; invalid values return errors
+    // - We check the carry flag to detect errors (Darwin convention)
+    // - We correctly mark x17 as clobbered (per Darwin syscall ABI)
+    // - The caller is responsible for ensuring buf points to valid memory
     unsafe {
         asm!(
             "svc #0x80",
@@ -125,8 +130,13 @@ pub fn read(fd: u64, buf: *mut u8, len: usize) -> i64 {
     let result: i64;
     let err_flag: u64;
 
-    // SAFETY: We're making a syscall with the provided arguments.
-    // The caller is responsible for ensuring buf/len are valid.
+    // SAFETY: Making the read(2) syscall is safe because:
+    // - The Darwin syscall interface is stable and well-defined
+    // - We pass arguments in the correct registers per AAPCS64/Darwin ABI
+    // - The kernel validates fd, buf, and len; invalid values return errors
+    // - We check the carry flag to detect errors (Darwin convention)
+    // - We correctly mark x17 as clobbered (per Darwin syscall ABI)
+    // - The caller is responsible for ensuring buf points to writable memory
     unsafe {
         asm!(
             "svc #0x80",
@@ -301,8 +311,14 @@ pub fn mmap(size: usize) -> *mut u8 {
     let result: i64;
     let err_flag: u64;
 
-    // SAFETY: mmap syscall with anonymous mapping is safe.
-    // We're requesting private anonymous memory with read/write permissions.
+    // SAFETY: Making the mmap(2) syscall with anonymous mapping is safe because:
+    // - MAP_ANONYMOUS + MAP_PRIVATE creates a private zero-initialized memory region
+    // - We request PROT_READ | PROT_WRITE which is safe for heap memory
+    // - addr=0 lets the kernel choose a safe address
+    // - fd=-1 is correct for anonymous mappings (no file backing)
+    // - The kernel validates all parameters and returns an error on failure
+    // - We check the carry flag to detect errors (Darwin convention)
+    // - We correctly mark x17 as clobbered (per Darwin syscall ABI)
     unsafe {
         asm!(
             "svc #0x80",
@@ -352,7 +368,13 @@ pub fn munmap(addr: *mut u8, size: usize) -> i64 {
     let result: i64;
     let err_flag: u64;
 
-    // SAFETY: munmap is safe if addr/size are valid from a previous mmap.
+    // SAFETY: Making the munmap(2) syscall is safe because:
+    // - The kernel validates addr and size; invalid values return errors
+    // - The caller guarantees addr was returned by a previous mmap call
+    // - The caller guarantees size matches the mmap call
+    // - The caller guarantees the memory won't be accessed after this call
+    // - We check the carry flag to detect errors (Darwin convention)
+    // - We correctly mark x17 as clobbered (per Darwin syscall ABI)
     unsafe {
         asm!(
             "svc #0x80",

@@ -68,6 +68,17 @@ struct ArenaHeader {
     offset: AtomicUsize,
 }
 
+// Static assertions to verify ArenaHeader layout assumptions.
+// These ensure the arena fits at the start of an mmap'd page.
+const _: () = {
+    // ArenaHeader is 24 bytes: 8 (next) + 8 (size) + 8 (offset)
+    assert!(core::mem::size_of::<ArenaHeader>() == 24);
+    // ArenaHeader is 8-byte aligned
+    assert!(core::mem::align_of::<ArenaHeader>() == 8);
+    // ArenaHeader fits in a single cache line (64 bytes)
+    assert!(core::mem::size_of::<ArenaHeader>() <= 64);
+};
+
 /// Global pointer to the current arena.
 ///
 /// This is the head of a linked list of arenas. New arenas are prepended
@@ -120,7 +131,12 @@ fn alloc_arena(min_size: usize) -> *mut ArenaHeader {
 
     // Initialize the header
     let header = ptr as *mut ArenaHeader;
-    // SAFETY: ptr is valid and properly aligned (mmap returns page-aligned memory)
+    // SAFETY: Writing to the header is safe because:
+    // - `ptr` was just returned by mmap, which returns page-aligned memory
+    // - The mmap succeeded (we checked for null above)
+    // - ArenaHeader is smaller than a page, so it fits in the allocation
+    // - We have exclusive access to this memory (just allocated)
+    // - ArenaHeader is repr(C) with no padding issues
     unsafe {
         (*header).next = ptr::null_mut();
         (*header).size = arena_size;
@@ -186,7 +202,11 @@ pub fn alloc(size: u64, align: u64) -> *mut u8 {
                 }
                 Err(_) => {
                     // Someone else beat us - free our arena and retry
-                    // SAFETY: new_arena was just created by us and not shared
+                    // SAFETY: Freeing this arena is safe because:
+                    // - `new_arena` was just created by us via alloc_arena
+                    // - The compare_exchange failed, so no one else has a reference
+                    // - We read the size from the header we initialized
+                    // - After munmap, we don't use this pointer again
                     unsafe {
                         platform::munmap(new_arena as *mut u8, (*new_arena).size);
                     }
@@ -196,7 +216,11 @@ pub fn alloc(size: u64, align: u64) -> *mut u8 {
         }
 
         // Try to allocate from the current arena
-        // SAFETY: arena is non-null and points to valid memory from mmap
+        // SAFETY: Accessing the arena is safe because:
+        // - `arena` is non-null (we checked above)
+        // - `arena` points to memory from mmap that's still valid
+        // - The arena was initialized by alloc_arena before being published
+        // - ArenaHeader fields (except offset) are immutable after initialization
         unsafe {
             let arena_size = (*arena).size;
 
@@ -224,6 +248,11 @@ pub fn alloc(size: u64, align: u64) -> *mut u8 {
                 ) {
                     Ok(_) => {
                         // Success! Return the allocated memory
+                        // SAFETY: Computing the return pointer is safe because:
+                        // - `arena` points to valid mmap'd memory
+                        // - `aligned_offset` is within [0, arena_size) (checked above)
+                        // - The memory at this offset is part of our arena allocation
+                        // - We just atomically claimed this region via compare_exchange
                         return (arena as *mut u8).add(aligned_offset);
                     }
                     Err(_) => {
@@ -240,6 +269,10 @@ pub fn alloc(size: u64, align: u64) -> *mut u8 {
             }
 
             // Link new arena to the old one
+            // SAFETY: Writing to new_arena is safe because:
+            // - new_arena was just allocated by us
+            // - No one else has a reference to it yet (not published)
+            // - arena is a valid pointer we read earlier (may become stale, but that's ok)
             (*new_arena).next = arena;
 
             // Try to install our new arena as the current one
@@ -255,6 +288,10 @@ pub fn alloc(size: u64, align: u64) -> *mut u8 {
                 }
                 Err(_) => {
                     // Someone else changed the arena - free ours and retry
+                    // SAFETY: Freeing is safe because:
+                    // - new_arena was allocated by us
+                    // - compare_exchange failed so no one else has a reference
+                    // - We read size from our own initialized header
                     platform::munmap(new_arena as *mut u8, (*new_arena).size);
                     continue;
                 }
@@ -268,7 +305,12 @@ pub fn alloc(size: u64, align: u64) -> *mut u8 {
 /// This is a helper for the common case where we just created an arena
 /// and know we're the only thread using it.
 fn alloc_from_arena(arena: *mut ArenaHeader, size: usize, align: usize) -> *mut u8 {
-    // SAFETY: arena is valid and we have exclusive access (just created it)
+    // SAFETY: Accessing and modifying the arena is safe because:
+    // - `arena` was just created by alloc_arena and is valid
+    // - We just installed it via compare_exchange, so we have logical ownership
+    // - No other thread can see this arena yet (we're the first to allocate)
+    // - The offset store and pointer arithmetic are within the arena bounds
+    //   (alloc_arena ensures the arena is large enough for header + size)
     unsafe {
         let header_size = core::mem::size_of::<ArenaHeader>();
         let aligned_offset = align_up(header_size, align);
@@ -369,8 +411,11 @@ pub fn realloc(ptr: *mut u8, old_size: u64, new_size: u64, align: u64) -> *mut u
     }
 
     // Copy old data to new location
-    // SAFETY: Both pointers are valid, and we're copying old_size bytes
-    // which is guaranteed to be <= both allocation sizes
+    // SAFETY: Copying is safe because:
+    // - `ptr` points to a valid allocation of at least `old_size` bytes (from caller)
+    // - `new_ptr` was just allocated with `new_size` bytes (which is > old_size)
+    // - `old_size <= new_size` (we only get here if new_size > old_size)
+    // - The regions don't overlap (new_ptr is a fresh allocation)
     unsafe {
         ptr::copy_nonoverlapping(ptr, new_ptr, old_size as usize);
     }

@@ -168,7 +168,12 @@ macro_rules! define_for_all_platforms {
 pub unsafe extern "C" fn memcpy(dst: *mut u8, src: *const u8, n: usize) -> *mut u8 {
     let mut i = 0;
     while i < n {
-        // SAFETY: Caller guarantees dst and src are valid for n bytes and don't overlap
+        // SAFETY: We are within bounds because:
+        // - `i < n` is our loop invariant
+        // - Caller guarantees `dst` is valid for writes of `n` bytes
+        // - Caller guarantees `src` is valid for reads of `n` bytes
+        // - Caller guarantees the regions don't overlap
+        // The byte-by-byte copy is safe because u8 has no alignment requirements.
         unsafe { *dst.add(i) = *src.add(i) };
         i += 1;
     }
@@ -184,19 +189,29 @@ pub unsafe extern "C" fn memcpy(dst: *mut u8, src: *const u8, n: usize) -> *mut 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn memmove(dst: *mut u8, src: *const u8, n: usize) -> *mut u8 {
     if (dst as usize) < (src as usize) {
-        // Copy forwards
+        // Copy forwards when dst is before src (or they don't overlap)
         let mut i = 0;
         while i < n {
-            // SAFETY: Caller guarantees dst and src are valid for n bytes
+            // SAFETY: We are within bounds because:
+            // - `i < n` is our loop invariant
+            // - Caller guarantees `dst` is valid for writes of `n` bytes
+            // - Caller guarantees `src` is valid for reads of `n` bytes
+            // Forward copy is correct when dst < src because we write to lower
+            // addresses before reading from them.
             unsafe { *dst.add(i) = *src.add(i) };
             i += 1;
         }
     } else {
-        // Copy backwards to handle overlap
+        // Copy backwards to handle overlap when dst >= src
         let mut i = n;
         while i > 0 {
             i -= 1;
-            // SAFETY: Caller guarantees dst and src are valid for n bytes
+            // SAFETY: We are within bounds because:
+            // - After decrement, `i < n` (we started at n and decremented before use)
+            // - Caller guarantees `dst` is valid for writes of `n` bytes
+            // - Caller guarantees `src` is valid for reads of `n` bytes
+            // Backward copy is correct when dst >= src because we write to higher
+            // addresses before reading from them.
             unsafe { *dst.add(i) = *src.add(i) };
         }
     }
@@ -213,7 +228,10 @@ pub unsafe extern "C" fn memset(dst: *mut u8, c: i32, n: usize) -> *mut u8 {
     let byte = c as u8;
     let mut i = 0;
     while i < n {
-        // SAFETY: Caller guarantees dst is valid for n bytes
+        // SAFETY: We are within bounds because:
+        // - `i < n` is our loop invariant
+        // - Caller guarantees `dst` is valid for writes of `n` bytes
+        // The byte write is safe because u8 has no alignment requirements.
         unsafe { *dst.add(i) = byte };
         i += 1;
     }
@@ -232,7 +250,11 @@ pub unsafe extern "C" fn memset(dst: *mut u8, c: i32, n: usize) -> *mut u8 {
 pub unsafe extern "C" fn memcmp(s1: *const u8, s2: *const u8, n: usize) -> i32 {
     let mut i = 0;
     while i < n {
-        // SAFETY: Caller guarantees s1 and s2 are valid for n bytes
+        // SAFETY: We are within bounds because:
+        // - `i < n` is our loop invariant
+        // - Caller guarantees `s1` is valid for reads of `n` bytes
+        // - Caller guarantees `s2` is valid for reads of `n` bytes
+        // The byte reads are safe because u8 has no alignment requirements.
         let a = unsafe { *s1.add(i) };
         let b = unsafe { *s2.add(i) };
         if a != b {
@@ -259,7 +281,11 @@ pub unsafe extern "C" fn memcmp(s1: *const u8, s2: *const u8, n: usize) -> i32 {
 pub unsafe extern "C" fn bcmp(s1: *const u8, s2: *const u8, n: usize) -> i32 {
     let mut i = 0;
     while i < n {
-        // SAFETY: Caller guarantees s1 and s2 are valid for n bytes
+        // SAFETY: We are within bounds because:
+        // - `i < n` is our loop invariant
+        // - Caller guarantees `s1` is valid for reads of `n` bytes
+        // - Caller guarantees `s2` is valid for reads of `n` bytes
+        // The byte reads are safe because u8 has no alignment requirements.
         let a = unsafe { *s1.add(i) };
         let b = unsafe { *s2.add(i) };
         if a != b {
@@ -352,8 +378,13 @@ pub unsafe extern "C" fn _start() -> ! {
     }
 
     let exit_code: i32;
-    // SAFETY: We're setting up the stack frame and calling main, which is
-    // the expected behavior for a program entry point.
+    // SAFETY: This is the program entry point called by the kernel.
+    // - The kernel starts execution with RSP 16-byte aligned
+    // - We adjust the stack to maintain proper alignment for the call
+    // - `main` is an extern "C" function defined by user code and linked in
+    // - The assembly uses the System V AMD64 calling convention
+    // - After `main` returns, we pass its return value to exit()
+    // - This function never returns (we call exit() which is noreturn)
     unsafe {
         asm!(
             // Stack alignment: kernel starts us with 16-byte aligned RSP.
@@ -388,7 +419,12 @@ pub unsafe extern "C" fn _main() -> ! {
     }
 
     let exit_code: i32;
-    // SAFETY: We're setting up the stack frame and calling main.
+    // SAFETY: This is the program entry point called by the kernel.
+    // - The kernel starts execution with SP 16-byte aligned
+    // - `main` is an extern "C" function defined by user code and linked in
+    // - The assembly uses the AAPCS64 calling convention
+    // - After `main` returns, we pass its return value (in w0) to exit()
+    // - This function never returns (we call exit() which is noreturn)
     unsafe {
         asm!(
             // Call user's main function
@@ -418,7 +454,12 @@ pub unsafe extern "C" fn _start() -> ! {
     }
 
     let exit_code: i32;
-    // SAFETY: We're setting up the stack frame and calling main.
+    // SAFETY: This is the program entry point called by the kernel.
+    // - The kernel starts execution with SP 16-byte aligned
+    // - `main` is an extern "C" function defined by user code and linked in
+    // - The assembly uses the AAPCS64 calling convention
+    // - After `main` returns, we pass its return value (in w0) to exit()
+    // - This function never returns (we call exit() which is noreturn)
     unsafe {
         asm!(
             // Call user's main function
@@ -621,7 +662,14 @@ define_for_all_platforms! {
 /// - The memory region remains valid for the duration of the call
 define_for_all_platforms! {
     pub extern "C" fn __rue_dbg_str(ptr: *const u8, len: u64) {
-        // SAFETY: The caller guarantees ptr and len are valid
+        // SAFETY: Creating a slice from the raw pointer is safe because:
+        // - The caller (Rue-generated code) guarantees `ptr` points to valid UTF-8
+        //   string data of exactly `len` bytes
+        // - The String type in Rue ensures the memory is properly allocated and
+        //   remains valid for the duration of this call
+        // - `ptr` is properly aligned (u8 requires only byte alignment)
+        // - The pointed-to memory is initialized (Rue initializes all memory)
+        // - We only read from the slice, never write
         let bytes = unsafe { core::slice::from_raw_parts(ptr, len as usize) };
         platform::write_stdout(bytes);
         platform::write_stdout(b"\n");
@@ -674,8 +722,12 @@ define_for_all_platforms! {
         // Slow path: compare bytes one by one
         // We avoid slice comparison (==) because it generates a call to bcmp,
         // which is a libc function not available in our no_std runtime.
-        // SAFETY: Caller guarantees pointers are valid for their respective lengths
         for i in 0..len1 as usize {
+            // SAFETY: Reading from both pointers is safe because:
+            // - `i < len1` (which equals len2) is our loop invariant
+            // - Caller guarantees `ptr1` is valid for reads of `len1` bytes
+            // - Caller guarantees `ptr2` is valid for reads of `len2` bytes
+            // - u8 has no alignment requirements
             let b1 = unsafe { *ptr1.add(i) };
             let b2 = unsafe { *ptr2.add(i) };
             if b1 != b2 {
@@ -882,8 +934,11 @@ define_for_all_platforms! {
 
         // Copy the string content
         if len > 0 && !ptr.is_null() {
-            // SAFETY: Caller guarantees ptr is valid for len bytes
-            // and new_ptr is freshly allocated with at least len bytes
+            // SAFETY: Copying is safe because:
+            // - Caller guarantees `ptr` is valid for reads of `len` bytes
+            // - `new_ptr` was just allocated with at least `len` bytes capacity
+            // - The regions don't overlap (new_ptr is freshly allocated)
+            // - u8 has no alignment requirements
             unsafe {
                 core::ptr::copy_nonoverlapping(ptr, new_ptr, len as usize);
             }
@@ -959,10 +1014,23 @@ pub struct StringResult {
     pub cap: u64,
 }
 
+// Static assertions to verify StringResult layout assumptions.
+// These ensure the sret convention works correctly across all platforms.
+const _: () = {
+    // StringResult is 24 bytes: 8 (ptr) + 8 (len) + 8 (cap)
+    assert!(core::mem::size_of::<StringResult>() == 24);
+    // StringResult is 8-byte aligned (pointer alignment)
+    assert!(core::mem::align_of::<StringResult>() == 8);
+};
+
 #[cfg(all(target_arch = "x86_64", target_os = "linux"))]
 #[unsafe(no_mangle)]
 #[allow(non_snake_case)]
 pub extern "C" fn String__new(out: *mut StringResult) {
+    // SAFETY: Writing to `out` is safe because:
+    // - Caller (Rue-generated code) allocates stack space and passes a valid pointer
+    // - The sret convention guarantees `out` points to properly sized/aligned memory
+    // - We have exclusive write access to this memory
     unsafe {
         (*out).ptr = core::ptr::null_mut();
         (*out).len = 0;
@@ -974,6 +1042,10 @@ pub extern "C" fn String__new(out: *mut StringResult) {
 #[unsafe(no_mangle)]
 #[allow(non_snake_case)]
 pub extern "C" fn String__new(out: *mut StringResult) {
+    // SAFETY: Writing to `out` is safe because:
+    // - Caller (Rue-generated code) allocates stack space and passes a valid pointer
+    // - The sret convention guarantees `out` points to properly sized/aligned memory
+    // - We have exclusive write access to this memory
     unsafe {
         (*out).ptr = core::ptr::null_mut();
         (*out).len = 0;
@@ -985,6 +1057,10 @@ pub extern "C" fn String__new(out: *mut StringResult) {
 #[unsafe(no_mangle)]
 #[allow(non_snake_case)]
 pub extern "C" fn String__new(out: *mut StringResult) {
+    // SAFETY: Writing to `out` is safe because:
+    // - Caller (Rue-generated code) allocates stack space and passes a valid pointer
+    // - The sret convention guarantees `out` points to properly sized/aligned memory
+    // - We have exclusive write access to this memory
     unsafe {
         (*out).ptr = core::ptr::null_mut();
         (*out).len = 0;
@@ -1017,6 +1093,10 @@ pub extern "C" fn String__with_capacity(out: *mut StringResult, requested_cap: u
         requested_cap
     };
     let ptr = heap::alloc(actual_cap, 1);
+    // SAFETY: Writing to `out` is safe because:
+    // - Caller (Rue-generated code) allocates stack space and passes a valid pointer
+    // - The sret convention guarantees `out` points to properly sized/aligned memory
+    // - We have exclusive write access to this memory
     unsafe {
         (*out).ptr = ptr;
         (*out).len = 0;
@@ -1034,6 +1114,10 @@ pub extern "C" fn String__with_capacity(out: *mut StringResult, requested_cap: u
         requested_cap
     };
     let ptr = heap::alloc(actual_cap, 1);
+    // SAFETY: Writing to `out` is safe because:
+    // - Caller (Rue-generated code) allocates stack space and passes a valid pointer
+    // - The sret convention guarantees `out` points to properly sized/aligned memory
+    // - We have exclusive write access to this memory
     unsafe {
         (*out).ptr = ptr;
         (*out).len = 0;
@@ -1051,6 +1135,10 @@ pub extern "C" fn String__with_capacity(out: *mut StringResult, requested_cap: u
         requested_cap
     };
     let ptr = heap::alloc(actual_cap, 1);
+    // SAFETY: Writing to `out` is safe because:
+    // - Caller (Rue-generated code) allocates stack space and passes a valid pointer
+    // - The sret convention guarantees `out` points to properly sized/aligned memory
+    // - We have exclusive write access to this memory
     unsafe {
         (*out).ptr = ptr;
         (*out).len = 0;
@@ -1195,6 +1283,7 @@ pub extern "C" fn String__clone(out: *mut StringResult, ptr: *const u8, len: u64
 
     // Check for allocation failure before copy to avoid UB
     if new_ptr.is_null() {
+        // SAFETY: Writing to `out` is safe - see String__new for rationale
         unsafe {
             (*out).ptr = core::ptr::null_mut();
             (*out).len = 0;
@@ -1204,11 +1293,16 @@ pub extern "C" fn String__clone(out: *mut StringResult, ptr: *const u8, len: u64
     }
 
     if len > 0 && !ptr.is_null() {
+        // SAFETY: Copying is safe because:
+        // - Caller guarantees `ptr` is valid for reads of `len` bytes
+        // - `new_ptr` was just allocated with at least `len` bytes capacity
+        // - The regions don't overlap (new_ptr is freshly allocated)
         unsafe {
             core::ptr::copy_nonoverlapping(ptr, new_ptr, len as usize);
         }
     }
 
+    // SAFETY: Writing to `out` is safe - see String__new for rationale
     unsafe {
         (*out).ptr = new_ptr;
         (*out).len = len;
@@ -1225,6 +1319,7 @@ pub extern "C" fn String__clone(out: *mut StringResult, ptr: *const u8, len: u64
 
     // Check for allocation failure before copy to avoid UB
     if new_ptr.is_null() {
+        // SAFETY: Writing to `out` is safe - see String__new for rationale
         unsafe {
             (*out).ptr = core::ptr::null_mut();
             (*out).len = 0;
@@ -1234,11 +1329,16 @@ pub extern "C" fn String__clone(out: *mut StringResult, ptr: *const u8, len: u64
     }
 
     if len > 0 && !ptr.is_null() {
+        // SAFETY: Copying is safe because:
+        // - Caller guarantees `ptr` is valid for reads of `len` bytes
+        // - `new_ptr` was just allocated with at least `len` bytes capacity
+        // - The regions don't overlap (new_ptr is freshly allocated)
         unsafe {
             core::ptr::copy_nonoverlapping(ptr, new_ptr, len as usize);
         }
     }
 
+    // SAFETY: Writing to `out` is safe - see String__new for rationale
     unsafe {
         (*out).ptr = new_ptr;
         (*out).len = len;
@@ -1255,6 +1355,7 @@ pub extern "C" fn String__clone(out: *mut StringResult, ptr: *const u8, len: u64
 
     // Check for allocation failure before copy to avoid UB
     if new_ptr.is_null() {
+        // SAFETY: Writing to `out` is safe - see String__new for rationale
         unsafe {
             (*out).ptr = core::ptr::null_mut();
             (*out).len = 0;
@@ -1264,11 +1365,16 @@ pub extern "C" fn String__clone(out: *mut StringResult, ptr: *const u8, len: u64
     }
 
     if len > 0 && !ptr.is_null() {
+        // SAFETY: Copying is safe because:
+        // - Caller guarantees `ptr` is valid for reads of `len` bytes
+        // - `new_ptr` was just allocated with at least `len` bytes capacity
+        // - The regions don't overlap (new_ptr is freshly allocated)
         unsafe {
             core::ptr::copy_nonoverlapping(ptr, new_ptr, len as usize);
         }
     }
 
+    // SAFETY: Writing to `out` is safe - see String__new for rationale
     unsafe {
         (*out).ptr = new_ptr;
         (*out).len = len;
@@ -1315,6 +1421,11 @@ pub extern "C" fn String__push_str(
     let (new_ptr, new_cap) = string_ensure_capacity(ptr, len, cap, other_len);
 
     if other_len > 0 && !other_ptr.is_null() {
+        // SAFETY: Copying is safe because:
+        // - Caller guarantees `other_ptr` is valid for reads of `other_len` bytes
+        // - `string_ensure_capacity` guarantees `new_ptr` has room for `len + other_len` bytes
+        // - `new_ptr.add(len)` points to the first unused byte after existing content
+        // - The regions don't overlap (other is a separate String)
         unsafe {
             core::ptr::copy_nonoverlapping(
                 other_ptr,
@@ -1326,6 +1437,7 @@ pub extern "C" fn String__push_str(
 
     let new_len = len + other_len;
 
+    // SAFETY: Writing to `out` is safe - see String__new for rationale
     unsafe {
         (*out).ptr = new_ptr;
         (*out).len = new_len;
@@ -1348,6 +1460,11 @@ pub extern "C" fn String__push_str(
     let (new_ptr, new_cap) = string_ensure_capacity(ptr, len, cap, other_len);
 
     if other_len > 0 && !other_ptr.is_null() {
+        // SAFETY: Copying is safe because:
+        // - Caller guarantees `other_ptr` is valid for reads of `other_len` bytes
+        // - `string_ensure_capacity` guarantees `new_ptr` has room for `len + other_len` bytes
+        // - `new_ptr.add(len)` points to the first unused byte after existing content
+        // - The regions don't overlap (other is a separate String)
         unsafe {
             core::ptr::copy_nonoverlapping(
                 other_ptr,
@@ -1359,6 +1476,7 @@ pub extern "C" fn String__push_str(
 
     let new_len = len + other_len;
 
+    // SAFETY: Writing to `out` is safe - see String__new for rationale
     unsafe {
         (*out).ptr = new_ptr;
         (*out).len = new_len;
@@ -1381,6 +1499,11 @@ pub extern "C" fn String__push_str(
     let (new_ptr, new_cap) = string_ensure_capacity(ptr, len, cap, other_len);
 
     if other_len > 0 && !other_ptr.is_null() {
+        // SAFETY: Copying is safe because:
+        // - Caller guarantees `other_ptr` is valid for reads of `other_len` bytes
+        // - `string_ensure_capacity` guarantees `new_ptr` has room for `len + other_len` bytes
+        // - `new_ptr.add(len)` points to the first unused byte after existing content
+        // - The regions don't overlap (other is a separate String)
         unsafe {
             core::ptr::copy_nonoverlapping(
                 other_ptr,
@@ -1392,6 +1515,7 @@ pub extern "C" fn String__push_str(
 
     let new_len = len + other_len;
 
+    // SAFETY: Writing to `out` is safe - see String__new for rationale
     unsafe {
         (*out).ptr = new_ptr;
         (*out).len = new_len;
@@ -1414,12 +1538,17 @@ pub extern "C" fn String__push_str(
 pub extern "C" fn String__push(out: *mut StringResult, ptr: *mut u8, len: u64, cap: u64, byte: u8) {
     let (new_ptr, new_cap) = string_ensure_capacity(ptr, len, cap, 1);
 
+    // SAFETY: Writing the byte is safe because:
+    // - `string_ensure_capacity` guarantees `new_ptr` has room for `len + 1` bytes
+    // - `new_ptr.add(len)` points to the first unused byte after existing content
+    // - u8 has no alignment requirements
     unsafe {
         *new_ptr.add(len as usize) = byte;
     }
 
     let new_len = len + 1;
 
+    // SAFETY: Writing to `out` is safe - see String__new for rationale
     unsafe {
         (*out).ptr = new_ptr;
         (*out).len = new_len;
@@ -1433,12 +1562,17 @@ pub extern "C" fn String__push(out: *mut StringResult, ptr: *mut u8, len: u64, c
 pub extern "C" fn String__push(out: *mut StringResult, ptr: *mut u8, len: u64, cap: u64, byte: u8) {
     let (new_ptr, new_cap) = string_ensure_capacity(ptr, len, cap, 1);
 
+    // SAFETY: Writing the byte is safe because:
+    // - `string_ensure_capacity` guarantees `new_ptr` has room for `len + 1` bytes
+    // - `new_ptr.add(len)` points to the first unused byte after existing content
+    // - u8 has no alignment requirements
     unsafe {
         *new_ptr.add(len as usize) = byte;
     }
 
     let new_len = len + 1;
 
+    // SAFETY: Writing to `out` is safe - see String__new for rationale
     unsafe {
         (*out).ptr = new_ptr;
         (*out).len = new_len;
@@ -1452,12 +1586,17 @@ pub extern "C" fn String__push(out: *mut StringResult, ptr: *mut u8, len: u64, c
 pub extern "C" fn String__push(out: *mut StringResult, ptr: *mut u8, len: u64, cap: u64, byte: u8) {
     let (new_ptr, new_cap) = string_ensure_capacity(ptr, len, cap, 1);
 
+    // SAFETY: Writing the byte is safe because:
+    // - `string_ensure_capacity` guarantees `new_ptr` has room for `len + 1` bytes
+    // - `new_ptr.add(len)` points to the first unused byte after existing content
+    // - u8 has no alignment requirements
     unsafe {
         *new_ptr.add(len as usize) = byte;
     }
 
     let new_len = len + 1;
 
+    // SAFETY: Writing to `out` is safe - see String__new for rationale
     unsafe {
         (*out).ptr = new_ptr;
         (*out).len = new_len;
@@ -1477,6 +1616,7 @@ pub extern "C" fn String__push(out: *mut StringResult, ptr: *mut u8, len: u64, c
 #[unsafe(no_mangle)]
 #[allow(non_snake_case)]
 pub extern "C" fn String__clear(out: *mut StringResult, ptr: *mut u8, _len: u64, cap: u64) {
+    // SAFETY: Writing to `out` is safe - see String__new for rationale
     unsafe {
         (*out).ptr = ptr;
         (*out).len = 0;
@@ -1488,6 +1628,7 @@ pub extern "C" fn String__clear(out: *mut StringResult, ptr: *mut u8, _len: u64,
 #[unsafe(no_mangle)]
 #[allow(non_snake_case)]
 pub extern "C" fn String__clear(out: *mut StringResult, ptr: *mut u8, _len: u64, cap: u64) {
+    // SAFETY: Writing to `out` is safe - see String__new for rationale
     unsafe {
         (*out).ptr = ptr;
         (*out).len = 0;
@@ -1499,6 +1640,7 @@ pub extern "C" fn String__clear(out: *mut StringResult, ptr: *mut u8, _len: u64,
 #[unsafe(no_mangle)]
 #[allow(non_snake_case)]
 pub extern "C" fn String__clear(out: *mut StringResult, ptr: *mut u8, _len: u64, cap: u64) {
+    // SAFETY: Writing to `out` is safe - see String__new for rationale
     unsafe {
         (*out).ptr = ptr;
         (*out).len = 0;
@@ -1527,6 +1669,7 @@ pub extern "C" fn String__reserve(
 ) {
     let (new_ptr, new_cap) = string_ensure_capacity(ptr, len, cap, additional);
 
+    // SAFETY: Writing to `out` is safe - see String__new for rationale
     unsafe {
         (*out).ptr = new_ptr;
         (*out).len = len; // len stays the same for reserve
@@ -1546,6 +1689,7 @@ pub extern "C" fn String__reserve(
 ) {
     let (new_ptr, new_cap) = string_ensure_capacity(ptr, len, cap, additional);
 
+    // SAFETY: Writing to `out` is safe - see String__new for rationale
     unsafe {
         (*out).ptr = new_ptr;
         (*out).len = len;
@@ -1565,6 +1709,7 @@ pub extern "C" fn String__reserve(
 ) {
     let (new_ptr, new_cap) = string_ensure_capacity(ptr, len, cap, additional);
 
+    // SAFETY: Writing to `out` is safe - see String__new for rationale
     unsafe {
         (*out).ptr = new_ptr;
         (*out).len = len;
@@ -1600,6 +1745,11 @@ fn string_ensure_capacity(ptr: *mut u8, len: u64, cap: u64, additional: u64) -> 
             return (core::ptr::null_mut(), 0);
         }
         if len > 0 && !ptr.is_null() {
+            // SAFETY: Copying is safe because:
+            // - `ptr` is valid for reads of `len` bytes (string content from rodata or heap)
+            // - `new_ptr` was just allocated with at least `len` bytes
+            // - The regions don't overlap (new_ptr is freshly allocated from heap,
+            //   ptr points to either rodata or a different heap allocation)
             unsafe {
                 core::ptr::copy_nonoverlapping(ptr as *const u8, new_ptr, len as usize);
             }
@@ -1744,6 +1894,10 @@ fn read_line_impl(out: *mut StringResult) {
         }
 
         // Store the byte
+        // SAFETY: Writing is safe because:
+        // - We checked `len < cap` above and grew the buffer if needed
+        // - `ptr` points to valid heap memory from our allocation
+        // - u8 has no alignment requirements
         unsafe {
             *ptr.add(len as usize) = byte;
         }
@@ -1751,6 +1905,7 @@ fn read_line_impl(out: *mut StringResult) {
     }
 
     // Return the string
+    // SAFETY: Writing to `out` is safe - see String__new for rationale
     unsafe {
         (*out).ptr = ptr;
         (*out).len = len;
