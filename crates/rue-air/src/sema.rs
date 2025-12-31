@@ -2029,7 +2029,18 @@ impl<'a> Sema<'a> {
         // Default any unconstrained integer literals to i32
         unifier.default_int_literal_vars(&int_literal_vars);
 
-        // Build the resolved types map, converting InferType to Type
+        // Pre-collect all array types from resolved InferTypes before converting them.
+        // This ensures all array types are created before the conversion loop, which
+        // enables parallelization of function analysis (mutation happens here, not in
+        // infer_type_to_type).
+        for (_, infer_ty) in &expr_types {
+            let resolved = unifier.resolve_infer_type(infer_ty);
+            self.pre_create_array_types_from_infer_type(&resolved);
+        }
+
+        // Build the resolved types map, converting InferType to Type.
+        // Since we pre-created all array types above, infer_type_to_type only
+        // performs lookups (no mutation).
         let mut resolved_types = HashMap::new();
         for (inst_ref, infer_ty) in &expr_types {
             let resolved = unifier.resolve_infer_type(infer_ty);
@@ -4812,6 +4823,65 @@ impl<'a> Sema<'a> {
         });
         self.array_types.insert(key, id);
         id
+    }
+
+    /// Pre-create array types from a resolved InferType.
+    ///
+    /// This walks the InferType recursively and ensures all array types that will
+    /// be needed during `infer_type_to_type` conversion are created beforehand.
+    /// This separation enables future parallelization of function analysis, where
+    /// all mutations happen in this pre-collection phase.
+    fn pre_create_array_types_from_infer_type(&mut self, ty: &InferType) {
+        match ty {
+            InferType::Array { element, length } => {
+                // First recursively process nested array types (e.g., [[i32; 3]; 4])
+                self.pre_create_array_types_from_infer_type(element);
+
+                // Convert the element type to get the concrete Type
+                // (This is safe because we processed nested arrays first)
+                let elem_ty = self.infer_type_to_concrete_type_for_key(element);
+                if elem_ty != Type::Error {
+                    // Pre-create this array type
+                    self.get_or_create_array_type(elem_ty, *length);
+                }
+            }
+            InferType::Concrete(_) | InferType::Var(_) | InferType::IntLiteral => {
+                // Non-array types don't need pre-creation
+            }
+        }
+    }
+
+    /// Convert an InferType to a concrete Type for use as an array element key.
+    ///
+    /// This is a helper for `pre_create_array_types_from_infer_type` that converts
+    /// the element type without mutating `self.array_types` (since we're in a
+    /// pre-creation context where the array type may not exist yet).
+    fn infer_type_to_concrete_type_for_key(&self, ty: &InferType) -> Type {
+        match ty {
+            InferType::Concrete(t) => *t,
+            InferType::Var(_) => Type::Error,   // Unbound variable
+            InferType::IntLiteral => Type::I32, // Default
+            InferType::Array { element, length } => {
+                // For nested arrays, look up the already-created array type
+                let elem_ty = self.infer_type_to_concrete_type_for_key(element);
+                if elem_ty == Type::Error {
+                    return Type::Error;
+                }
+                // The array type should already exist from the recursive call
+                let key = (elem_ty, *length);
+                if let Some(&id) = self.array_types.get(&key) {
+                    Type::Array(id)
+                } else {
+                    // This shouldn't happen if we process depth-first, but handle gracefully
+                    debug_assert!(
+                        false,
+                        "Array type not found during pre-creation: ({:?}, {})",
+                        elem_ty, length
+                    );
+                    Type::Error
+                }
+            }
+        }
     }
 
     /// Get the number of ABI slots required for a type.
