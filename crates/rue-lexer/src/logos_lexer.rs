@@ -50,6 +50,22 @@ fn process_string_from_quote(
                     consumed += 1;
                     result.push('"');
                 }
+                Some('n') => {
+                    consumed += 1;
+                    result.push('\n');
+                }
+                Some('t') => {
+                    consumed += 1;
+                    result.push('\t');
+                }
+                Some('r') => {
+                    consumed += 1;
+                    result.push('\r');
+                }
+                Some('0') => {
+                    consumed += 1;
+                    result.push('\0');
+                }
                 Some(other) => {
                     // Invalid escape - consume the char to get better error position
                     consumed += other.len_utf8();
@@ -776,6 +792,63 @@ mod tests {
         assert_eq!(
             get_string_str(&tokens[0].kind, &interner),
             Some("hello\\world")
+        );
+    }
+
+    #[test]
+    fn test_logos_escape_newline() {
+        let lexer = LogosLexer::new(r#""line1\nline2""#);
+        let (tokens, interner) = lexer.tokenize().unwrap();
+        assert_eq!(
+            get_string_str(&tokens[0].kind, &interner),
+            Some("line1\nline2")
+        );
+    }
+
+    #[test]
+    fn test_logos_escape_tab() {
+        let lexer = LogosLexer::new(r#""col1\tcol2""#);
+        let (tokens, interner) = lexer.tokenize().unwrap();
+        assert_eq!(
+            get_string_str(&tokens[0].kind, &interner),
+            Some("col1\tcol2")
+        );
+    }
+
+    #[test]
+    fn test_logos_escape_carriage_return() {
+        let lexer = LogosLexer::new(r#""line\r\n""#);
+        let (tokens, interner) = lexer.tokenize().unwrap();
+        assert_eq!(get_string_str(&tokens[0].kind, &interner), Some("line\r\n"));
+    }
+
+    #[test]
+    fn test_logos_escape_null() {
+        let lexer = LogosLexer::new(r#""null\0byte""#);
+        let (tokens, interner) = lexer.tokenize().unwrap();
+        assert_eq!(
+            get_string_str(&tokens[0].kind, &interner),
+            Some("null\0byte")
+        );
+    }
+
+    #[test]
+    fn test_logos_invalid_escape_q() {
+        let lexer = LogosLexer::new(r#""bad\qescape""#);
+        let result = lexer.tokenize();
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(matches!(err.kind, ErrorKind::InvalidStringEscape('q')));
+    }
+
+    #[test]
+    fn test_logos_all_escapes_combined() {
+        // Test all escape sequences in one string
+        let lexer = LogosLexer::new(r#""\\\"abc\n\t\r\0xyz""#);
+        let (tokens, interner) = lexer.tokenize().unwrap();
+        assert_eq!(
+            get_string_str(&tokens[0].kind, &interner),
+            Some("\\\"abc\n\t\r\0xyz")
         );
     }
 

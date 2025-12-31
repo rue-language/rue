@@ -59,12 +59,21 @@ A string literal is a sequence of characters enclosed in double quotes (`"`).
 ```ebnf
 string_literal = '"' { string_char } '"' ;
 string_char = any_char_except_quote_or_backslash | escape_sequence ;
-escape_sequence = "\\" | "\"" ;
+escape_sequence = "\\" | "\"" | "\n" | "\t" | "\r" | "\0" ;
 ```
 
 {{ rule(id="2.1:7", cat="normative") }}
 
-String literals support escape sequences: `\\` for a backslash and `\"` for a double quote.
+String literals support the following escape sequences:
+
+| Escape | Character |
+|--------|-----------|
+| `\\` | Backslash |
+| `\"` | Double quote |
+| `\n` | Newline (line feed, U+000A) |
+| `\t` | Horizontal tab (U+0009) |
+| `\r` | Carriage return (U+000D) |
+| `\0` | Null character (U+0000) |
 
 {{ rule(id="2.1:8", cat="legality-rule") }}
 
@@ -81,6 +90,8 @@ fn main() -> i32 {
     let a = "hello world";
     let b = "with \"quotes\"";
     let c = "with \\ backslash";
+    let d = "line1\nline2";   // newline
+    let e = "col1\tcol2";     // tab
     0
 }
 ```

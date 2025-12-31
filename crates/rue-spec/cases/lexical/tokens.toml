@@ -92,11 +92,55 @@ fn main() -> i32 {
 exit_code = 0
 
 [[case]]
+name = "string_literal_escape_newline"
+spec = ["2.1:6", "2.1:7"]
+source = '''
+fn main() -> i32 {
+    let _s = "line1\nline2";
+    0
+}
+'''
+exit_code = 0
+
+[[case]]
+name = "string_literal_escape_tab"
+spec = ["2.1:6", "2.1:7"]
+source = '''
+fn main() -> i32 {
+    let _s = "col1\tcol2";
+    0
+}
+'''
+exit_code = 0
+
+[[case]]
+name = "string_literal_escape_carriage_return"
+spec = ["2.1:6", "2.1:7"]
+source = '''
+fn main() -> i32 {
+    let _s = "line\r\n";
+    0
+}
+'''
+exit_code = 0
+
+[[case]]
+name = "string_literal_escape_null"
+spec = ["2.1:6", "2.1:7"]
+source = '''
+fn main() -> i32 {
+    let _s = "null\0byte";
+    0
+}
+'''
+exit_code = 0
+
+[[case]]
 name = "string_literal_invalid_escape"
 spec = ["2.1:8"]
 source = '''
 fn main() -> i32 {
-    let _s = "bad \n escape";
+    let _s = "bad \q escape";
     0
 }
 '''

@@ -41,6 +41,10 @@ String literals support the following escape sequences:
 |--------|---------|
 | `\\` | Backslash |
 | `\"` | Double quote |
+| `\n` | Newline (line feed, U+000A) |
+| `\t` | Horizontal tab (U+0009) |
+| `\r` | Carriage return (U+000D) |
+| `\0` | Null character (U+0000) |
 
 {{ rule(id="3.7:7", cat="normative") }}
 
@@ -53,6 +57,8 @@ fn main() -> i32 {
     let a = "hello world";
     let b = "with \"quotes\"";
     let c = "with \\ backslash";
+    let d = "line1\nline2";   // newline
+    let e = "col1\tcol2";     // tab
     0
 }
 ```
