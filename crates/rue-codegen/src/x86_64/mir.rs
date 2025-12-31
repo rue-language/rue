@@ -766,7 +766,6 @@ mod tests {
         // Document actual sizes for future reference.
         // If this test fails, update the const assertions at the top of this file.
         let x86_inst_size = std::mem::size_of::<X86Inst>();
-        eprintln!("X86Inst size: {} bytes", x86_inst_size);
 
         // This assertion documents the current size.
         // If the layout changes, update both this value and the const assertion.

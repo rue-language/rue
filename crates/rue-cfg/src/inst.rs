@@ -1065,8 +1065,6 @@ mod tests {
         // If this test fails, update the const assertions at the top of this file.
         let cfg_inst_size = std::mem::size_of::<CfgInst>();
         let cfg_inst_data_size = std::mem::size_of::<CfgInstData>();
-        eprintln!("CfgInst size: {} bytes", cfg_inst_size);
-        eprintln!("CfgInstData size: {} bytes", cfg_inst_data_size);
 
         // These assertions document the current sizes.
         // If the layout changes, update both these values and the const assertions.

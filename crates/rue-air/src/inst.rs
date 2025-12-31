@@ -960,8 +960,6 @@ mod tests {
         // If this test fails, update the const assertions at the top of this file.
         let air_inst_size = std::mem::size_of::<AirInst>();
         let air_inst_data_size = std::mem::size_of::<AirInstData>();
-        eprintln!("AirInst size: {} bytes", air_inst_size);
-        eprintln!("AirInstData size: {} bytes", air_inst_data_size);
 
         // These assertions document the current sizes.
         // If the layout changes, update both these values and the const assertions.
