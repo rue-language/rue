@@ -201,6 +201,17 @@ impl LabelOffsets {
         Self::default()
     }
 
+    /// Create a new label offset map with pre-allocated capacity.
+    ///
+    /// - `inline_capacity`: Expected number of inline labels (overflow checks, etc.)
+    /// - `block_capacity`: Expected number of block labels (CFG blocks)
+    fn with_capacity(inline_capacity: usize, block_capacity: usize) -> Self {
+        Self {
+            inline: Vec::with_capacity(inline_capacity),
+            block: Vec::with_capacity(block_capacity),
+        }
+    }
+
     /// Insert a label offset.
     fn insert(&mut self, label: LabelId, offset: usize) {
         let id = label.index();
@@ -274,13 +285,24 @@ impl<'a> Emitter<'a> {
         callee_saved: &[Reg],
         strings: &'a [String],
     ) -> Self {
+        // Pre-calculate capacity hints to reduce Vec reallocations
+        let num_instructions = mir.instructions().len();
+        // AArch64 instructions are fixed at 4 bytes each
+        let estimated_code_size = num_instructions.saturating_mul(4);
+        // Estimate ~10% of instructions are branches that need fixups
+        let estimated_fixups = num_instructions / 10;
+        // Estimate inline labels: ~5% of instructions generate overflow/bounds check labels
+        let estimated_inline_labels = num_instructions / 20;
+        // Estimate block labels: ~10% of instructions are block boundaries
+        let estimated_block_labels = num_instructions / 10;
+
         Self {
             mir,
-            code: Vec::new(),
-            instructions: Vec::new(),
-            relocations: Vec::new(),
-            labels: LabelOffsets::new(),
-            fixups: Vec::new(),
+            code: Vec::with_capacity(estimated_code_size),
+            instructions: Vec::with_capacity(num_instructions),
+            relocations: Vec::new(), // Relocations are rare, don't pre-allocate
+            labels: LabelOffsets::with_capacity(estimated_inline_labels, estimated_block_labels),
+            fixups: Vec::with_capacity(estimated_fixups),
             num_locals,
             num_params,
             callee_saved: callee_saved.to_vec(),

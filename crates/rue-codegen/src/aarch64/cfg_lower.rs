@@ -79,6 +79,17 @@ impl<'a> CfgLower<'a> {
     ) -> Self {
         let num_locals = cfg.num_locals();
         let num_params = cfg.num_params();
+
+        // Pre-calculate capacity hints to reduce HashMap reallocations
+        let num_values = cfg.value_count();
+        let num_blocks = cfg.blocks().len();
+        // Estimate ~4 block params per block on average
+        let estimated_block_params = num_blocks.saturating_mul(4);
+        // Estimate ~10% of values are struct inits
+        let estimated_struct_inits = num_values / 10;
+        // Estimate inout params are rare, start small
+        let estimated_inout_params = num_params.min(4) as usize;
+
         Self {
             cfg,
             struct_defs,
@@ -86,13 +97,13 @@ impl<'a> CfgLower<'a> {
             strings,
             interner,
             mir: Aarch64Mir::new(),
-            value_map: HashMap::new(),
-            block_param_vregs: HashMap::new(),
+            value_map: HashMap::with_capacity(num_values),
+            block_param_vregs: HashMap::with_capacity(estimated_block_params),
             num_locals,
             num_params,
             fn_name: cfg.fn_name(),
-            struct_slot_vregs: HashMap::new(),
-            inout_param_ptrs: HashMap::new(),
+            struct_slot_vregs: HashMap::with_capacity(estimated_struct_inits),
+            inout_param_ptrs: HashMap::with_capacity(estimated_inout_params),
         }
     }
 
