@@ -6,7 +6,7 @@ tags: [types, semantics, ownership]
 feature-flag: affine-mvs
 created: 2025-12-24
 accepted: 2025-12-24
-implemented:
+implemented: 2025-12-31
 spec-sections: ["3.8"]
 superseded-by:
 ---
