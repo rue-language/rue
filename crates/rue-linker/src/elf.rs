@@ -85,8 +85,10 @@ pub struct ObjectFile {
 pub struct Section {
     /// Section name (e.g., ".text.rue_print").
     pub name: String,
-    /// Section contents.
+    /// Section contents (empty for NOBITS sections like .bss).
     pub data: Vec<u8>,
+    /// Section size in memory (may differ from data.len() for NOBITS sections).
+    pub size: u64,
     /// Section flags.
     pub flags: SectionFlags,
     /// Relocations that apply to this section.
@@ -454,6 +456,7 @@ impl ObjectFile {
                 sections.push(Section {
                     name: name.clone(),
                     data: Vec::new(),
+                    size: 0,
                     flags: SectionFlags::empty(),
                     relocations: Vec::new(),
                     align: raw.align,
@@ -464,7 +467,11 @@ impl ObjectFile {
                 continue;
             }
 
-            let section_data = if raw.size > 0 && raw.offset > 0 {
+            // For NOBITS sections (like .bss), don't read data from file.
+            // The size is tracked in raw.size but there's no file content.
+            let section_data = if raw.sh_type == crate::constants::SHT_NOBITS {
+                Vec::new()
+            } else if raw.size > 0 && raw.offset > 0 {
                 let section_end = raw
                     .offset
                     .checked_add(raw.size)
@@ -491,6 +498,7 @@ impl ObjectFile {
             sections.push(Section {
                 name: name.clone(),
                 data: section_data,
+                size: raw.size,
                 flags,
                 relocations: Vec::new(),
                 align: raw.align,

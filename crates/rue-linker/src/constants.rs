@@ -89,6 +89,8 @@ pub const SHT_SYMTAB: u32 = 2;
 pub const SHT_STRTAB: u32 = 3;
 /// SHT_RELA: Relocation entries with explicit addends
 pub const SHT_RELA: u32 = 4;
+/// SHT_NOBITS: Section occupies no space in file (e.g., .bss)
+pub const SHT_NOBITS: u32 = 8;
 
 // Section header flags (sh_flags)
 
