@@ -174,7 +174,7 @@ pub use rue_error::{
 };
 pub use rue_lexer::{Lexer, Token, TokenKind};
 pub use rue_linker::{Archive, CodeRelocation, Linker, ObjectBuilder, ObjectFile, RelocationType};
-pub use rue_parser::{Ast, Expr, Function, Parser};
+pub use rue_parser::{Ast, Expr, Function, Item, Parser};
 pub use rue_rir::{AstGen, Rir, RirPrinter};
 pub use rue_span::{FileId, Span};
 pub use rue_target::{Arch, Target};
@@ -334,6 +334,201 @@ fn merge_interners(files: &[ParsedFile]) -> ThreadedRodeo {
     }
 
     merged
+}
+
+/// Result of merging symbols from multiple parsed files.
+///
+/// Contains a merged AST with all items from all files and the merged interner.
+/// Used as input to RIR generation for multi-file compilation.
+#[derive(Debug)]
+pub struct MergedProgram {
+    /// The merged AST containing items from all files.
+    pub ast: Ast,
+    /// Merged interner containing all symbols from all files.
+    pub interner: ThreadedRodeo,
+}
+
+/// Information about a symbol definition for duplicate detection.
+#[derive(Debug, Clone)]
+struct SymbolDef {
+    /// Name of the symbol (function, struct, or enum name).
+    name: String,
+    /// Span of the first definition.
+    span: Span,
+    /// File path where the first definition was found.
+    file_path: String,
+}
+
+/// Merge symbols from all parsed files into a unified program.
+///
+/// This function:
+/// 1. Combines all items from all files into a single merged AST
+/// 2. Detects duplicate function, struct, and enum definitions
+/// 3. Reports errors with both locations for any duplicates found
+///
+/// # Arguments
+///
+/// * `program` - The parsed program containing all files
+///
+/// # Returns
+///
+/// A `MergedProgram` ready for RIR generation, or errors if duplicates are found.
+///
+/// # Example
+///
+/// ```ignore
+/// use rue_compiler::{parse_all_files, merge_symbols, SourceFile};
+/// use rue_span::FileId;
+///
+/// let sources = vec![
+///     SourceFile::new("main.rue", "fn main() -> i32 { helper() }", FileId::new(1)),
+///     SourceFile::new("utils.rue", "fn helper() -> i32 { 42 }", FileId::new(2)),
+/// ];
+/// let parsed = parse_all_files(&sources)?;
+/// let merged = merge_symbols(parsed)?;
+/// // merged.ast now contains both functions
+/// ```
+pub fn merge_symbols(program: ParsedProgram) -> MultiErrorResult<MergedProgram> {
+    use std::collections::HashMap;
+
+    let _span = info_span!("merge_symbols", file_count = program.files.len()).entered();
+
+    // Track seen symbols for duplicate detection.
+    // Key: symbol name (resolved string), Value: first definition info
+    let mut functions: HashMap<String, SymbolDef> = HashMap::new();
+    let mut structs: HashMap<String, SymbolDef> = HashMap::new();
+    let mut enums: HashMap<String, SymbolDef> = HashMap::new();
+
+    // Collect all items and detect duplicates
+    let mut all_items = Vec::new();
+    let mut errors: Vec<CompileError> = Vec::new();
+
+    for file in &program.files {
+        for item in &file.ast.items {
+            match item {
+                Item::Function(func) => {
+                    // Use file's interner since Spur values are local to each interner
+                    let name = file.interner.resolve(&func.name.name).to_string();
+                    if let Some(first) = functions.get(&name) {
+                        // Duplicate function definition
+                        let err = CompileError::new(
+                            ErrorKind::DuplicateTypeDefinition {
+                                type_name: format!("function `{}`", name),
+                            },
+                            func.span,
+                        )
+                        .with_label(format!("first defined in {}", first.file_path), first.span);
+                        errors.push(err);
+                    } else {
+                        functions.insert(
+                            name.clone(),
+                            SymbolDef {
+                                name,
+                                span: func.span,
+                                file_path: file.path.clone(),
+                            },
+                        );
+                    }
+                }
+                Item::Struct(s) => {
+                    // Use file's interner since Spur values are local to each interner
+                    let name = file.interner.resolve(&s.name.name).to_string();
+                    if let Some(first) = structs.get(&name) {
+                        // Duplicate struct definition
+                        let err = CompileError::new(
+                            ErrorKind::DuplicateTypeDefinition {
+                                type_name: format!("struct `{}`", name),
+                            },
+                            s.span,
+                        )
+                        .with_label(format!("first defined in {}", first.file_path), first.span);
+                        errors.push(err);
+                    } else if let Some(first) = enums.get(&name) {
+                        // Struct name conflicts with enum
+                        let err = CompileError::new(
+                            ErrorKind::DuplicateTypeDefinition {
+                                type_name: format!("struct `{}` (conflicts with enum)", name),
+                            },
+                            s.span,
+                        )
+                        .with_label(
+                            format!("enum first defined in {}", first.file_path),
+                            first.span,
+                        );
+                        errors.push(err);
+                    } else {
+                        structs.insert(
+                            name.clone(),
+                            SymbolDef {
+                                name,
+                                span: s.span,
+                                file_path: file.path.clone(),
+                            },
+                        );
+                    }
+                }
+                Item::Enum(e) => {
+                    // Use file's interner since Spur values are local to each interner
+                    let name = file.interner.resolve(&e.name.name).to_string();
+                    if let Some(first) = enums.get(&name) {
+                        // Duplicate enum definition
+                        let err = CompileError::new(
+                            ErrorKind::DuplicateTypeDefinition {
+                                type_name: format!("enum `{}`", name),
+                            },
+                            e.span,
+                        )
+                        .with_label(format!("first defined in {}", first.file_path), first.span);
+                        errors.push(err);
+                    } else if let Some(first) = structs.get(&name) {
+                        // Enum name conflicts with struct
+                        let err = CompileError::new(
+                            ErrorKind::DuplicateTypeDefinition {
+                                type_name: format!("enum `{}` (conflicts with struct)", name),
+                            },
+                            e.span,
+                        )
+                        .with_label(
+                            format!("struct first defined in {}", first.file_path),
+                            first.span,
+                        );
+                        errors.push(err);
+                    } else {
+                        enums.insert(
+                            name.clone(),
+                            SymbolDef {
+                                name,
+                                span: e.span,
+                                file_path: file.path.clone(),
+                            },
+                        );
+                    }
+                }
+                Item::Impl(_) | Item::DropFn(_) => {
+                    // Impl blocks and drop fns are validated in Sema, not here.
+                    // They can have multiple impl blocks for the same type (with different methods).
+                }
+            }
+            all_items.push(item.clone());
+        }
+    }
+
+    // If there are any duplicate definitions, return all errors
+    if !errors.is_empty() {
+        return Err(CompileErrors::from(errors));
+    }
+
+    info!(
+        function_count = functions.len(),
+        struct_count = structs.len(),
+        enum_count = enums.len(),
+        "symbol merging complete"
+    );
+
+    Ok(MergedProgram {
+        ast: Ast { items: all_items },
+        interner: program.interner,
+    })
 }
 
 /// Which linker to use for the final linking phase.
@@ -1518,6 +1713,159 @@ mod tests {
                 .to_string()
                 .contains("type mismatch")
         );
+    }
+
+    // ========================================================================
+    // Multi-file Symbol Merging Tests
+    // ========================================================================
+
+    #[test]
+    fn test_merge_symbols_no_duplicates() {
+        let sources = vec![
+            SourceFile::new("main.rue", "fn main() -> i32 { 0 }", FileId::new(1)),
+            SourceFile::new("utils.rue", "fn helper() -> i32 { 42 }", FileId::new(2)),
+        ];
+        let parsed = parse_all_files(&sources).unwrap();
+        let merged = merge_symbols(parsed);
+        assert!(merged.is_ok(), "merge should succeed with no duplicates");
+
+        let program = merged.unwrap();
+        assert_eq!(program.ast.items.len(), 2, "should have 2 items");
+    }
+
+    #[test]
+    fn test_merge_symbols_duplicate_function() {
+        let sources = vec![
+            SourceFile::new("a.rue", "fn foo() -> i32 { 1 }", FileId::new(1)),
+            SourceFile::new("b.rue", "fn foo() -> i32 { 2 }", FileId::new(2)),
+        ];
+        let parsed = parse_all_files(&sources).unwrap();
+        let result = merge_symbols(parsed);
+        assert!(result.is_err(), "merge should fail with duplicate function");
+
+        let errors = result.unwrap_err();
+        assert_eq!(errors.len(), 1, "should have 1 error");
+        let err_msg = errors.first().unwrap().to_string();
+        assert!(
+            err_msg.contains("function `foo`"),
+            "error should mention the function name"
+        );
+    }
+
+    #[test]
+    fn test_merge_symbols_duplicate_struct() {
+        let sources = vec![
+            SourceFile::new(
+                "a.rue",
+                "struct Point { x: i32 } fn main() -> i32 { 0 }",
+                FileId::new(1),
+            ),
+            SourceFile::new("b.rue", "struct Point { y: i32 }", FileId::new(2)),
+        ];
+        let parsed = parse_all_files(&sources).unwrap();
+        let result = merge_symbols(parsed);
+        assert!(result.is_err(), "merge should fail with duplicate struct");
+
+        let errors = result.unwrap_err();
+        assert_eq!(errors.len(), 1, "should have 1 error");
+        let err_msg = errors.first().unwrap().to_string();
+        assert!(
+            err_msg.contains("struct `Point`"),
+            "error should mention the struct name"
+        );
+    }
+
+    #[test]
+    fn test_merge_symbols_duplicate_enum() {
+        let sources = vec![
+            SourceFile::new(
+                "a.rue",
+                "enum Color { Red } fn main() -> i32 { 0 }",
+                FileId::new(1),
+            ),
+            SourceFile::new("b.rue", "enum Color { Blue }", FileId::new(2)),
+        ];
+        let parsed = parse_all_files(&sources).unwrap();
+        let result = merge_symbols(parsed);
+        assert!(result.is_err(), "merge should fail with duplicate enum");
+
+        let errors = result.unwrap_err();
+        assert_eq!(errors.len(), 1, "should have 1 error");
+        let err_msg = errors.first().unwrap().to_string();
+        assert!(
+            err_msg.contains("enum `Color`"),
+            "error should mention the enum name"
+        );
+    }
+
+    #[test]
+    fn test_merge_symbols_struct_enum_conflict() {
+        // Struct and enum with the same name should conflict
+        let sources = vec![
+            SourceFile::new(
+                "a.rue",
+                "struct Foo { x: i32 } fn main() -> i32 { 0 }",
+                FileId::new(1),
+            ),
+            SourceFile::new("b.rue", "enum Foo { Bar }", FileId::new(2)),
+        ];
+        let parsed = parse_all_files(&sources).unwrap();
+        let result = merge_symbols(parsed);
+        assert!(
+            result.is_err(),
+            "merge should fail when struct and enum have same name"
+        );
+
+        let errors = result.unwrap_err();
+        assert_eq!(errors.len(), 1, "should have 1 error");
+        let err_msg = errors.first().unwrap().to_string();
+        assert!(
+            err_msg.contains("Foo") && err_msg.contains("conflicts"),
+            "error should mention the conflict: {}",
+            err_msg
+        );
+    }
+
+    #[test]
+    fn test_merge_symbols_multiple_duplicates() {
+        // Multiple duplicates should report multiple errors
+        let sources = vec![
+            SourceFile::new(
+                "a.rue",
+                "fn foo() -> i32 { 1 } fn bar() -> i32 { 2 }",
+                FileId::new(1),
+            ),
+            SourceFile::new(
+                "b.rue",
+                "fn foo() -> i32 { 3 } fn bar() -> i32 { 4 }",
+                FileId::new(2),
+            ),
+        ];
+        let parsed = parse_all_files(&sources).unwrap();
+        let result = merge_symbols(parsed);
+        assert!(
+            result.is_err(),
+            "merge should fail with duplicate functions"
+        );
+
+        let errors = result.unwrap_err();
+        assert_eq!(errors.len(), 2, "should have 2 errors for 2 duplicates");
+    }
+
+    #[test]
+    fn test_merge_symbols_with_impl_blocks() {
+        // Impl blocks for the same type from different files should be allowed
+        let sources = vec![
+            SourceFile::new(
+                "a.rue",
+                "struct Point { x: i32 } impl Point { fn get_x(self) -> i32 { self.x } } fn main() -> i32 { 0 }",
+                FileId::new(1),
+            ),
+            SourceFile::new("b.rue", "fn helper() -> i32 { 42 }", FileId::new(2)),
+        ];
+        let parsed = parse_all_files(&sources).unwrap();
+        let result = merge_symbols(parsed);
+        assert!(result.is_ok(), "impl blocks should not cause conflicts");
     }
 }
 
