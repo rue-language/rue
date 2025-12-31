@@ -27,6 +27,7 @@
 //! any realistic function. The separation is handled automatically by the
 //! respective methods.
 
+use std::collections::HashMap;
 use std::fmt;
 
 pub use crate::vreg::{BLOCK_LABEL_BASE, LabelId, VReg};
@@ -949,6 +950,10 @@ pub struct Aarch64Mir {
     /// Stores symbol names indexed by `symbol_id` in `Bl` instructions.
     /// This avoids heap-allocating a String for every call instruction.
     symbols: Vec<String>,
+    /// Index for O(1) symbol lookup during interning.
+    ///
+    /// Maps symbol names to their indices in the `symbols` vector.
+    symbol_index: HashMap<String, u32>,
 }
 
 impl Aarch64Mir {
@@ -959,6 +964,7 @@ impl Aarch64Mir {
             next_vreg: 0,
             next_label: 0,
             symbols: Vec::new(),
+            symbol_index: HashMap::new(),
         }
     }
 
@@ -967,13 +973,15 @@ impl Aarch64Mir {
     /// If the symbol already exists, returns its existing ID.
     /// Otherwise, adds it to the table and returns the new ID.
     pub fn intern_symbol(&mut self, symbol: &str) -> u32 {
-        // Check if symbol already exists
-        if let Some(idx) = self.symbols.iter().position(|s| s == symbol) {
-            return idx as u32;
+        // O(1) lookup via HashMap
+        if let Some(&idx) = self.symbol_index.get(symbol) {
+            return idx;
         }
         // Add new symbol
         let idx = self.symbols.len() as u32;
-        self.symbols.push(symbol.to_string());
+        let owned = symbol.to_string();
+        self.symbol_index.insert(owned.clone(), idx);
+        self.symbols.push(owned);
         idx
     }
 
@@ -996,6 +1004,7 @@ impl Aarch64Mir {
     ///
     /// Used during register allocation to transfer symbols to the new MIR.
     pub fn take_symbols(&mut self) -> Vec<String> {
+        self.symbol_index.clear();
         std::mem::take(&mut self.symbols)
     }
 
@@ -1003,6 +1012,11 @@ impl Aarch64Mir {
     ///
     /// Used during register allocation to restore symbols from the old MIR.
     pub fn set_symbols(&mut self, symbols: Vec<String>) {
+        // Rebuild the index from the symbol table
+        self.symbol_index.clear();
+        for (idx, sym) in symbols.iter().enumerate() {
+            self.symbol_index.insert(sym.clone(), idx as u32);
+        }
         self.symbols = symbols;
     }
 
