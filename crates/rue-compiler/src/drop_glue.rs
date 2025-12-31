@@ -43,17 +43,23 @@ fn type_needs_drop(ty: Type, struct_defs: &[StructDef], array_types: &[ArrayType
         // Enum types are trivially droppable (just discriminant values)
         Type::Enum(_) => false,
 
-        // String needs drop - heap-allocated strings must be freed
-        Type::String => true,
-
-        // Struct types need drop if any field needs drop
+        // Struct types need drop if they have a destructor (e.g., builtin String)
+        // or if any field needs drop
         Type::Struct(struct_id) => {
             let struct_def = &struct_defs[struct_id.0 as usize];
+            // Builtins with destructors (like String) need drop
+            if struct_def.destructor.is_some() {
+                return true;
+            }
+            // Otherwise, check if any field needs drop
             struct_def
                 .fields
                 .iter()
                 .any(|f| type_needs_drop(f.ty, struct_defs, array_types))
         }
+
+        // Type::String still supported during migration
+        Type::String => true,
 
         // Array types need drop if element type needs drop
         Type::Array(array_id) => {
@@ -81,10 +87,7 @@ fn type_slot_count(ty: Type, struct_defs: &[StructDef], array_types: &[ArrayType
         | Type::Error
         | Type::Enum(_) => 1,
 
-        // String uses 3 slots (ptr, len, cap)
-        Type::String => 3,
-
-        // Struct uses sum of all field slots
+        // Struct uses sum of all field slots (including builtin String with 3 fields)
         Type::Struct(struct_id) => {
             let struct_def = &struct_defs[struct_id.0 as usize];
             struct_def
@@ -93,6 +96,9 @@ fn type_slot_count(ty: Type, struct_defs: &[StructDef], array_types: &[ArrayType
                 .map(|f| type_slot_count(f.ty, struct_defs, array_types))
                 .sum()
         }
+
+        // Type::String still supported during migration (uses 3 slots: ptr, len, cap)
+        Type::String => 3,
 
         // Array uses element slots * length
         Type::Array(array_id) => {
@@ -118,6 +124,13 @@ pub fn synthesize_drop_glue(
         let struct_id = rue_air::StructId(struct_idx as u32);
         let struct_ty = Type::Struct(struct_id);
         if !type_needs_drop(struct_ty, struct_defs, array_types) {
+            continue;
+        }
+
+        // Skip builtins that have runtime-provided destructors (e.g., String)
+        // to avoid duplicate symbol errors. User-defined destructors still need
+        // synthesized drop glue.
+        if struct_def.is_builtin && struct_def.destructor.is_some() {
             continue;
         }
 
@@ -174,8 +187,9 @@ fn create_struct_drop_glue_function(
         let field_slot_count = type_slot_count(field.ty, struct_defs, array_types);
 
         if type_needs_drop(field.ty, struct_defs, array_types) {
-            // Emit Drop for this field
-            // For now, we handle String and nested structs
+            // Emit Drop for this field.
+            // Note: Type::Struct handles both user-defined structs and builtin String
+            // (when String becomes a struct). Type::String is the migration path.
             match field.ty {
                 Type::String => {
                     // String has 3 params (ptr, len, cap)
@@ -311,7 +325,9 @@ fn create_array_drop_glue_function(
     // Collect drop statements for each element
     let mut drop_statements = Vec::new();
 
-    // For each element, emit a Drop instruction
+    // For each element, emit a Drop instruction.
+    // Note: Type::Struct handles both user-defined structs and builtin String
+    // (when String becomes a struct). Type::String is the migration path.
     for elem_idx in 0..array_def.length {
         let current_param_slot = elem_idx as u32 * element_slot_count;
 

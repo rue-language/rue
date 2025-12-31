@@ -1718,16 +1718,21 @@ impl<'a> CfgBuilder<'a> {
             // Enum types are trivially droppable (just discriminant values)
             Type::Enum(_) => false,
 
-            // String needs drop - heap-allocated strings must be freed.
-            // String literals have cap=0 and the runtime __rue_drop_String
-            // function is a no-op for them.
-            Type::String => true,
-
-            // Struct types need drop if any field needs drop
+            // Struct types need drop if they have a destructor (e.g., builtin String)
+            // or if any field needs drop
             Type::Struct(struct_id) => {
                 let struct_def = &self.struct_defs[struct_id.0 as usize];
+                // Builtins with destructors (like String) need drop
+                if struct_def.destructor.is_some() {
+                    return true;
+                }
+                // Otherwise, check if any field needs drop
                 struct_def.fields.iter().any(|f| self.type_needs_drop(f.ty))
             }
+
+            // Type::String still supported during migration - will be removed
+            // once all downstream code uses struct-based String
+            Type::String => true,
 
             // Array types need drop if element type needs drop
             Type::Array(array_id) => {

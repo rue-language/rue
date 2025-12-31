@@ -49,7 +49,8 @@ pub fn type_slot_count(struct_defs: &[StructDef], array_types: &[ArrayTypeDef], 
                 1
             }
         }
-        // Strings are (ptr + len + cap), so 3 slots
+        // Type::String still supported during migration (uses 3 slots: ptr, len, cap)
+        // Once String is a struct, the Type::Struct case handles it via field count
         Type::String => 3,
         _ => 1,
     }
@@ -135,7 +136,8 @@ pub fn collect_array_scalar_vregs(
                         get_vreg,
                     ));
                 } else if elem_inst.ty == Type::String {
-                    // String element - has 3 slots (ptr, len, cap)
+                    // Type::String migration path - has 3 slots (ptr, len, cap)
+                    // Once String is a struct, the Type::Struct case handles it
                     if let Some(vregs) = struct_slot_vregs.get(elem).cloned() {
                         result.extend(vregs);
                     } else {
@@ -191,6 +193,7 @@ fn type_name(ty: Type, struct_defs: &[StructDef], array_types: &[ArrayTypeDef]) 
         Type::Unit => "unit".to_string(),
         Type::Never => "never".to_string(),
         Type::Error => "error".to_string(),
+        // Type::String migration path - once String is a struct, uses struct_def.name
         Type::String => "String".to_string(),
         Type::Enum(enum_id) => format!("enum{}", enum_id.0),
         Type::Struct(struct_id) => struct_defs[struct_id.0 as usize].name.clone(),
@@ -247,8 +250,8 @@ pub fn collect_struct_scalar_vregs(
                         get_vreg,
                     ));
                 } else if field_inst.ty == Type::String {
-                    // String field - has 3 slots (ptr, len, cap)
-                    // Look up the field's slot vregs from the cache
+                    // Type::String migration path - has 3 slots (ptr, len, cap)
+                    // Once String is a struct, the Type::Struct case handles it
                     if let Some(vregs) = struct_slot_vregs.get(field).cloned() {
                         result.extend(vregs);
                     } else {

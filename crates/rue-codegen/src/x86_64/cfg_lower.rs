@@ -137,6 +137,21 @@ impl<'a> CfgLower<'a> {
     // Builtin type helpers
     // ========================================================================
 
+    /// Check if a type is the builtin String struct.
+    ///
+    /// Returns true if the type is a struct that is marked as builtin with name "String",
+    /// or if it's the legacy Type::String variant (migration path).
+    fn is_builtin_string(&self, ty: Type) -> bool {
+        match ty {
+            Type::Struct(struct_id) => {
+                let struct_def = &self.struct_defs[struct_id.0 as usize];
+                struct_def.is_builtin && struct_def.name == "String"
+            }
+            Type::String => true, // Migration path - will be removed
+            _ => false,
+        }
+    }
+
     /// Get the builtin operator runtime function for a type and operation.
     ///
     /// Returns `Some((runtime_fn, invert_result))` if the type has a builtin
@@ -151,6 +166,7 @@ impl<'a> CfgLower<'a> {
                     return None;
                 }
             }
+            // Type::String migration path
             Type::String => get_builtin_type("String")?,
             _ => return None,
         };
@@ -1416,20 +1432,9 @@ impl<'a> CfgLower<'a> {
                             src: Operand::Virtual(*scalar_vreg),
                         });
                     }
-                } else if matches!(init_type, Type::Struct(_)) {
-                    // Struct: recursively flatten struct fields (including array fields) to scalars
-                    let scalar_vregs = self.collect_struct_scalar_vregs(*init);
-                    for (i, scalar_vreg) in scalar_vregs.iter().enumerate() {
-                        let field_slot = slot + i as u32;
-                        let offset = self.local_offset(field_slot);
-                        self.mir.push(X86Inst::MovMR {
-                            base: Reg::Rbp,
-                            offset,
-                            src: Operand::Virtual(*scalar_vreg),
-                        });
-                    }
-                } else if init_type == Type::String {
-                    // String: store ptr, len, and cap to consecutive slots
+                } else if self.is_builtin_string(init_type) {
+                    // Builtin String: store ptr, len, and cap to consecutive slots
+                    // Check this before generic Struct case so builtin String uses this path
                     let field_vregs = self
                         .struct_slot_vregs
                         .get(init)
@@ -1468,6 +1473,18 @@ impl<'a> CfgLower<'a> {
                         offset: cap_offset,
                         src: Operand::Virtual(cap_vreg),
                     });
+                } else if matches!(init_type, Type::Struct(_)) {
+                    // Struct: recursively flatten struct fields (including array fields) to scalars
+                    let scalar_vregs = self.collect_struct_scalar_vregs(*init);
+                    for (i, scalar_vreg) in scalar_vregs.iter().enumerate() {
+                        let field_slot = slot + i as u32;
+                        let offset = self.local_offset(field_slot);
+                        self.mir.push(X86Inst::MovMR {
+                            base: Reg::Rbp,
+                            offset,
+                            src: Operand::Virtual(*scalar_vreg),
+                        });
+                    }
                 } else {
                     let init_vreg = self.get_vreg(*init);
                     let offset = self.local_offset(*slot);
@@ -1482,8 +1499,9 @@ impl<'a> CfgLower<'a> {
             CfgInstData::Load { slot } => {
                 let load_type = self.cfg.get_inst(value).ty;
 
-                if load_type == Type::String {
-                    // String: load ptr, len, and cap from consecutive slots
+                if self.is_builtin_string(load_type) {
+                    // Builtin String: load ptr, len, and cap from consecutive slots
+                    // Check this before generic Struct case so builtin String uses this path
                     let ptr_vreg = self.mir.alloc_vreg();
                     let len_vreg = self.mir.alloc_vreg();
                     let cap_vreg = self.mir.alloc_vreg();
@@ -1557,8 +1575,8 @@ impl<'a> CfgLower<'a> {
 
             CfgInstData::Store { slot, value: val } => {
                 let val_type = self.cfg.get_inst(*val).ty;
-                if val_type == Type::String {
-                    // String: store ptr, len, and cap to consecutive slots
+                if self.is_builtin_string(val_type) {
+                    // Builtin String: store ptr, len, and cap to consecutive slots
                     let field_vregs = self
                         .struct_slot_vregs
                         .get(val)
@@ -1654,8 +1672,8 @@ impl<'a> CfgLower<'a> {
                 let result_vreg = self.mir.alloc_vreg();
                 self.value_map.insert(value, result_vreg);
 
-                // Check if this call returns a String (uses sret convention)
-                let is_sret_call = ty == Type::String;
+                // Check if this call returns a builtin String (uses sret convention)
+                let is_sret_call = self.is_builtin_string(ty);
 
                 // For sret calls, allocate 32 bytes on stack for the return value (24 bytes + padding for 16-byte alignment)
                 // We'll pass a pointer to this space as the first argument
@@ -1765,7 +1783,10 @@ impl<'a> CfgLower<'a> {
                                         flattened_vregs.push(slot_vreg);
                                     }
                                 }
-                                CfgInstData::StructInit { .. } | CfgInstData::Call { .. } => {
+                                // StringConst for builtin String (when String becomes a struct)
+                                CfgInstData::StructInit { .. }
+                                | CfgInstData::Call { .. }
+                                | CfgInstData::StringConst(_) => {
                                     if let Some(field_vregs) =
                                         self.struct_slot_vregs.get(&arg_value)
                                     {
@@ -1823,8 +1844,8 @@ impl<'a> CfgLower<'a> {
                             }
                         }
                         Type::String => {
-                            // String has 3 slots: ptr, len, cap
-                            // Handle like a struct with 3 fields
+                            // Type::String migration path - once String becomes a struct,
+                            // the Type::Struct case handles it (String has 3 slots: ptr, len, cap)
                             let arg_data = &self.cfg.get_inst(arg_value).data;
                             match arg_data {
                                 CfgInstData::Load { slot } => {
@@ -1944,8 +1965,8 @@ impl<'a> CfgLower<'a> {
                             src: Operand::Virtual(first_vreg),
                         });
                     }
-                } else if ty == Type::String {
-                    // String uses sret convention: result was written to [rsp]
+                } else if self.is_builtin_string(ty) {
+                    // Builtin String uses sret convention: result was written to [rsp]
                     // Load ptr, len, cap from stack
                     let mut slot_vregs = Vec::new();
                     for slot_idx in 0..3 {
@@ -1987,8 +2008,8 @@ impl<'a> CfgLower<'a> {
                     let arg_val = args[0];
                     let arg_type = self.cfg.get_inst(arg_val).ty;
 
-                    // Handle string type specially
-                    if arg_type == Type::String {
+                    // Handle builtin String type specially
+                    if self.is_builtin_string(arg_type) {
                         // Get the fat pointer (ptr, len, cap) from struct_slot_vregs
                         if let Some(field_vregs) = self.struct_slot_vregs.get(&arg_val).cloned() {
                             debug_assert_eq!(
@@ -2758,8 +2779,8 @@ impl<'a> CfgLower<'a> {
                 // destructor function to call.
                 let dropped_ty = self.cfg.get_inst(*dropped_value).ty;
 
-                // Handle String specially - it's a fat pointer (ptr, len, cap)
-                if dropped_ty == Type::String {
+                // Handle builtin String specially - it's a fat pointer (ptr, len, cap)
+                if self.is_builtin_string(dropped_ty) {
                     // String requires all 3 slots as arguments to __rue_drop_String
                     // First, try to get the vregs from cache
                     let field_vregs =

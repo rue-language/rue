@@ -261,6 +261,8 @@ impl<'a> ConstraintGenerator<'a> {
 
             InstData::BoolConst(_) => InferType::Concrete(Type::Bool),
 
+            // String constants use Type::String during migration.
+            // Once String is a struct, sema converts this to the struct type.
             InstData::StringConst(_) => InferType::Concrete(Type::String),
 
             InstData::UnitConst => InferType::Concrete(Type::Unit),
@@ -986,6 +988,7 @@ impl<'a> ConstraintGenerator<'a> {
             "u64" => Type::U64,
             "bool" => Type::Bool,
             "()" => Type::Unit,
+            // Type::String migration path - sema converts to struct-based String
             "String" => Type::String,
             _ => return None, // Struct/enum types need to be looked up separately
         };
