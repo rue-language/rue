@@ -667,3 +667,155 @@ fn main() -> i32 {
 """
 compile_fail = true
 error_contains = "use of moved value"
+
+# =============================================================================
+# Linear Types (Preview: affine_mvs)
+# =============================================================================
+
+[[case]]
+name = "linear_struct_consumed"
+spec = ["3.8:30", "3.8:31", "3.8:32", "3.8:33", "3.8:34"]
+preview = "affine_mvs"
+description = "Linear struct can be consumed by passing to a function"
+source = """
+linear struct MustUse { value: i32 }
+
+fn consume(m: MustUse) -> i32 { m.value }
+
+fn main() -> i32 {
+    let m = MustUse { value: 42 };
+    consume(m)
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "linear_struct_returned"
+spec = ["3.8:32", "3.8:33"]
+preview = "affine_mvs"
+description = "Linear struct returned from function transfers responsibility to caller"
+source = """
+linear struct MustUse { value: i32 }
+
+fn create() -> MustUse { MustUse { value: 10 } }
+fn consume(m: MustUse) -> i32 { m.value }
+
+fn main() -> i32 {
+    let m = create();
+    consume(m)
+}
+"""
+exit_code = 10
+
+[[case]]
+name = "linear_struct_dropped_error"
+spec = ["3.8:32", "3.8:35", "3.8:36"]
+preview = "affine_mvs"
+description = "Linear value dropped without being consumed is an error"
+source = """
+linear struct MustUse { value: i32 }
+
+fn main() -> i32 {
+    let m = MustUse { value: 1 };
+    0
+}
+"""
+compile_fail = true
+error_contains = "linear value"
+
+[[case]]
+name = "linear_struct_copy_error"
+spec = ["3.8:37", "3.8:38"]
+preview = "affine_mvs"
+description = "Linear struct cannot be marked @copy"
+source = """
+@copy
+linear struct Invalid { value: i32 }
+
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = "cannot be marked @copy"
+
+[[case]]
+name = "linear_copy_reverse_order_error"
+spec = ["3.8:37"]
+preview = "affine_mvs"
+description = "Linear and @copy in reverse order is also an error"
+source = """
+linear struct Invalid { value: i32 }
+
+fn main() -> i32 { 0 }
+"""
+compile_fail = false
+exit_code = 0
+
+[[case]]
+name = "linear_struct_chain_consumed"
+spec = ["3.8:32", "3.8:33"]
+preview = "affine_mvs"
+description = "Linear value can be chained through functions"
+source = """
+linear struct MustUse { value: i32 }
+
+fn transform(m: MustUse) -> MustUse {
+    MustUse { value: m.value * 2 }
+}
+fn consume(m: MustUse) -> i32 { m.value }
+
+fn main() -> i32 {
+    let m = MustUse { value: 21 };
+    let m2 = transform(m);
+    consume(m2)
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "linear_in_branch_consumed"
+spec = ["3.8:32"]
+preview = "affine_mvs"
+description = "Linear value must be consumed in all branches"
+source = """
+linear struct MustUse { value: i32 }
+
+fn consume(m: MustUse) -> i32 { m.value }
+
+fn main() -> i32 {
+    let m = MustUse { value: 42 };
+    let cond = true;
+    if cond {
+        consume(m)
+    } else {
+        consume(m)
+    }
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "linear_field_access"
+spec = ["3.8:32", "3.8:33"]
+preview = "affine_mvs"
+description = "Field access on linear struct counts as move (consuming)"
+source = """
+linear struct MustUse { value: i32 }
+
+fn main() -> i32 {
+    let m = MustUse { value: 42 };
+    m.value
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "linear_requires_preview"
+spec = ["3.8:30"]
+description = "Linear keyword requires affine_mvs preview feature"
+source = """
+linear struct MustUse { value: i32 }
+
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = "preview feature"

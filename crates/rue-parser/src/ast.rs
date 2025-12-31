@@ -76,6 +76,8 @@ pub enum Item {
 pub struct StructDecl {
     /// Directives applied to this struct (e.g., @copy)
     pub directives: Directives,
+    /// Whether this struct is a linear type (must be consumed, cannot be dropped)
+    pub is_linear: bool,
     /// Struct name
     pub name: Ident,
     /// Struct fields
@@ -815,6 +817,9 @@ fn fmt_struct(f: &mut fmt::Formatter<'_>, s: &StructDecl, level: usize) -> fmt::
     indent(f, level)?;
     for directive in &s.directives {
         write!(f, "@sym:{} ", directive.name.name.into_usize())?;
+    }
+    if s.is_linear {
+        write!(f, "linear ")?;
     }
     writeln!(f, "Struct sym:{}", s.name.name.into_usize())?;
     for field in &s.fields {

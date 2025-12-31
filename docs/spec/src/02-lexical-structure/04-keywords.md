@@ -22,6 +22,7 @@ The following words are keywords and cannot be used as identifiers:
 | `fn` | Function declaration |
 | `inout` | Inout parameter mode |
 | `let` | Variable binding |
+| `linear` | Linear struct modifier |
 | `mut` | Mutable binding modifier |
 | `if` | Conditional expression |
 | `else` | Alternative branch |

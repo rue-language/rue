@@ -109,6 +109,7 @@ impl<'a> AstGen<'a> {
             data: InstData::StructDecl {
                 directives_start,
                 directives_len,
+                is_linear: struct_decl.is_linear,
                 name,
                 fields_start,
                 fields_len,

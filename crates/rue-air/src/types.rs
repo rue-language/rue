@@ -63,6 +63,8 @@ pub struct StructDef {
     pub fields: Vec<StructField>,
     /// Whether this struct is marked with @copy (can be implicitly duplicated)
     pub is_copy: bool,
+    /// Whether this struct is a linear type (must be consumed, cannot be dropped)
+    pub is_linear: bool,
     /// User-defined destructor function name, if any (e.g., "Data.__drop")
     pub destructor: Option<String>,
     /// Whether this is a built-in type (e.g., String) injected by the compiler.
@@ -816,6 +818,7 @@ mod tests {
                 },
             ],
             is_copy: false,
+            is_linear: false,
             destructor: None,
             is_builtin: false,
         };
@@ -838,6 +841,7 @@ mod tests {
             name: "Empty".to_string(),
             fields: vec![],
             is_copy: false,
+            is_linear: false,
             destructor: None,
             is_builtin: false,
         };
@@ -860,6 +864,7 @@ mod tests {
                 },
             ],
             is_copy: false,
+            is_linear: false,
             destructor: None,
             is_builtin: false,
         };

@@ -106,6 +106,74 @@ fn main() -> i32 {
 }
 ```
 
+## Linear Types
+
+{{ rule(id="3.8:30", cat="normative") }}
+
+A struct type **MAY** be declared as a linear type using the `linear` keyword before the struct definition.
+
+{{ rule(id="3.8:31", cat="syntax") }}
+
+```ebnf
+linear_struct = "linear" "struct" IDENT "{" [ struct_fields ] "}" ;
+```
+
+{{ rule(id="3.8:32", cat="normative") }}
+
+A linear type **MUST** be explicitly consumed. It is a compile-time error for a linear value to go out of scope without being consumed by a function call.
+
+{{ rule(id="3.8:33", cat="normative") }}
+
+A linear value is consumed when it is:
+- Passed as an argument to a function (the function is the consumer)
+- Returned from a function (the caller becomes responsible for consuming it)
+
+{{ rule(id="3.8:34", cat="example") }}
+
+```rue
+linear struct MustUse { value: i32 }
+
+fn consume(m: MustUse) -> i32 { m.value }
+
+fn main() -> i32 {
+    let m = MustUse { value: 42 };
+    consume(m)  // OK: m is consumed
+}
+```
+
+{{ rule(id="3.8:35", cat="legality-rule") }}
+
+It is a compile-time error to allow a linear value to be implicitly dropped.
+
+{{ rule(id="3.8:36", cat="example") }}
+
+```rue
+linear struct MustUse { value: i32 }
+
+fn main() -> i32 {
+    let m = MustUse { value: 1 };  // ERROR: linear value dropped without being consumed
+    0
+}
+```
+
+{{ rule(id="3.8:37", cat="legality-rule") }}
+
+A linear struct **MUST NOT** be marked with `@copy`. Linear types cannot be implicitly copied.
+
+{{ rule(id="3.8:38", cat="example") }}
+
+```rue
+@copy
+linear struct Invalid { value: i32 }  // ERROR: linear types cannot be @copy
+```
+
+{{ rule(id="3.8:39", cat="informative") }}
+
+Linear types are useful for:
+- Resources that must be explicitly released (file handles, database transactions)
+- Protocol enforcement (ensuring state machine transitions are completed)
+- Results that must be checked (similar to `must_use` attributes)
+
 ## Use After Move
 
 {{ rule(id="3.8:5", cat="legality-rule") }}

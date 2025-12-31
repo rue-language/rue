@@ -899,6 +899,8 @@ pub enum InstData {
         directives_start: u32,
         /// Number of directives
         directives_len: u32,
+        /// Whether this struct is a linear type (must be consumed)
+        is_linear: bool,
         /// Struct name
         name: Spur,
         /// Index into extra data where fields start
@@ -1264,6 +1266,7 @@ impl<'a, 'b> RirPrinter<'a, 'b> {
                 InstData::StructDecl {
                     directives_start,
                     directives_len,
+                    is_linear,
                     name,
                     fields_start,
                     fields_len,
@@ -1281,6 +1284,7 @@ impl<'a, 'b> RirPrinter<'a, 'b> {
                         })
                         .collect();
                     let directives = self.rir.get_directives(*directives_start, *directives_len);
+                    let linear_str = if *is_linear { "linear " } else { "" };
                     let directives_str = if directives.is_empty() {
                         String::new()
                     } else {
@@ -1292,8 +1296,9 @@ impl<'a, 'b> RirPrinter<'a, 'b> {
                     };
                     writeln!(
                         out,
-                        "{}struct {} {{ {} }}",
+                        "{}{}struct {} {{ {} }}",
                         directives_str,
+                        linear_str,
                         name_str,
                         fields_str.join(", ")
                     )
@@ -2318,6 +2323,7 @@ mod tests {
             data: InstData::StructDecl {
                 directives_start,
                 directives_len,
+                is_linear: false,
                 name,
                 fields_start,
                 fields_len,
@@ -2349,6 +2355,7 @@ mod tests {
             data: InstData::StructDecl {
                 directives_start,
                 directives_len,
+                is_linear: false,
                 name,
                 fields_start,
                 fields_len,

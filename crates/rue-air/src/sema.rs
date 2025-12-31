@@ -827,6 +827,44 @@ impl<'a> Sema<'a> {
         }
     }
 
+    /// Check for unconsumed linear values in the current scope (before popping it).
+    /// Linear values MUST be consumed (moved) - it's an error to let them drop implicitly.
+    /// Returns an error if any linear value was not consumed.
+    fn check_unconsumed_linear_values(&self, ctx: &AnalysisContext) -> CompileResult<()> {
+        // Get the current scope entries (variables added in this scope)
+        let Some(current_scope) = ctx.scope_stack.last() else {
+            return Ok(());
+        };
+
+        for (symbol, _old_value) in current_scope {
+            // Get the local var info (it should still be in ctx.locals before pop)
+            let Some(local) = ctx.locals.get(symbol) else {
+                continue;
+            };
+
+            // Only check linear types
+            if !self.is_type_linear(local.ty) {
+                continue;
+            }
+
+            // Check if this variable was moved (consumed)
+            let was_consumed = ctx
+                .moved_vars
+                .get(symbol)
+                .is_some_and(|state| state.full_move.is_some());
+
+            if !was_consumed {
+                let name = self.interner.resolve(&*symbol);
+                return Err(CompileError::new(
+                    ErrorKind::LinearValueNotConsumed(name.to_string()),
+                    local.span,
+                ));
+            }
+        }
+
+        Ok(())
+    }
+
     /// Extract the root variable symbol from an expression, if it refers to a variable.
     ///
     /// For inout arguments, we need to track which variable is being passed to detect
@@ -1580,6 +1618,7 @@ impl<'a> Sema<'a> {
                 name: builtin.name.to_string(),
                 fields,
                 is_copy: builtin.is_copy,
+                is_linear: false, // Built-in types are not linear
                 destructor: builtin.drop_fn.map(|s| s.to_string()),
                 is_builtin: true,
             };
@@ -1599,6 +1638,19 @@ impl<'a> Sema<'a> {
             // They are still handled specially via Type::String checks in the current
             // implementation. Phase 2 (rue-hp13) will migrate those to struct-based
             // queries using the builtin registry.
+        }
+    }
+
+    /// Check if a type is a linear type.
+    /// Only struct types can be linear - primitives and other types are not linear.
+    fn is_type_linear(&self, ty: Type) -> bool {
+        match ty {
+            Type::Struct(struct_id) => {
+                let struct_def = &self.struct_defs[struct_id.0 as usize];
+                struct_def.is_linear
+            }
+            // Only struct types can be linear
+            _ => false,
         }
     }
 
@@ -1661,6 +1713,7 @@ impl<'a> Sema<'a> {
                 InstData::StructDecl {
                     directives_start,
                     directives_len,
+                    is_linear,
                     name,
                     ..
                 } => {
@@ -1680,11 +1733,25 @@ impl<'a> Sema<'a> {
                     let directives = self.rir.get_directives(*directives_start, *directives_len);
                     let is_copy = self.has_copy_directive(&directives);
 
+                    // Linear types require preview feature
+                    if *is_linear {
+                        self.require_preview(PreviewFeature::AffineMvs, "linear types", inst.span)?;
+
+                        // Linear types cannot be @copy
+                        if is_copy {
+                            return Err(CompileError::new(
+                                ErrorKind::LinearStructCopy(struct_name.clone()),
+                                inst.span,
+                            ));
+                        }
+                    }
+
                     // Create placeholder struct def (fields will be resolved in phase 2)
                     self.struct_defs.push(StructDef {
                         name: struct_name,
                         fields: Vec::new(), // Filled in during resolve_declarations
                         is_copy,
+                        is_linear: *is_linear,
                         destructor: None,  // Filled in during resolve_declarations
                         is_builtin: false, // User-defined struct
                     });
@@ -3452,6 +3519,11 @@ impl<'a> Sema<'a> {
                         statements.push(result.air_ref);
                     }
                 }
+
+                // Check for unconsumed linear values before popping scope
+                // This must be checked before unused variable checks since linear values
+                // that are consumed are also "used"
+                self.check_unconsumed_linear_values(ctx)?;
 
                 // Check for unused variables before popping scope
                 self.check_unused_locals_in_current_scope(ctx);
