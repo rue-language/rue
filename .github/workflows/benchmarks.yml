@@ -10,19 +10,33 @@ on:
         default: '5'
         type: string
 
-# Only run one benchmark at a time to ensure consistent results
-concurrency:
-  group: benchmarks
-  cancel-in-progress: false
-
 permissions:
   contents: write  # Needed to push to perf branch
 
 jobs:
   benchmark:
-    # Run on a consistent runner for reproducible results
-    # macOS provides the most consistent performance on GitHub Actions
-    runs-on: macos-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            platform: x86-64-linux
+            name: Linux x86-64
+          - runner: ubuntu-24.04-arm
+            platform: aarch64-linux
+            name: Linux ARM64
+          - runner: macos-latest
+            platform: aarch64-macos
+            name: macOS ARM64
+
+    # Allow parallel runs on different platforms, but serialize per-platform
+    concurrency:
+      group: benchmarks-${{ matrix.platform }}
+      cancel-in-progress: false
+
+    runs-on: ${{ matrix.runner }}
+    name: benchmark (${{ matrix.name }})
+
     steps:
       - name: Checkout trunk
         uses: actions/checkout@v4
@@ -40,9 +54,9 @@ jobs:
           path: |
             buck-out/v2/gen
             ~/.cache/buck2
-          key: buck2-macos-release-${{ hashFiles('**/BUCK', 'toolchains/rust/defs.bzl') }}
+          key: buck2-${{ matrix.platform }}-release-${{ hashFiles('**/BUCK', 'toolchains/rust/defs.bzl') }}
           restore-keys: |
-            buck2-macos-release-
+            buck2-${{ matrix.platform }}-release-
 
       - name: Get commit info
         id: commit
@@ -54,7 +68,7 @@ jobs:
         id: bench
         run: |
           iterations="${{ github.event.inputs.iterations || '5' }}"
-          echo "Running benchmarks with $iterations iterations..."
+          echo "Running benchmarks with $iterations iterations on ${{ matrix.platform }}..."
           ./bench.sh --iterations "$iterations" --output /tmp/results.json --no-history
 
           # Extract summary for PR comment
@@ -78,7 +92,6 @@ jobs:
             git init
             git checkout -b perf
             mkdir -p benchmarks
-            echo '{"version": 1, "runs": []}' > benchmarks/history.json
             echo "# Performance History" > README.md
             echo "" >> README.md
             echo "This branch stores benchmark history for the Rue compiler." >> README.md
@@ -87,7 +100,13 @@ jobs:
 
       - name: Append to history
         run: |
-          python3 scripts/append-benchmark.py /tmp/results.json perf-branch/benchmarks/history.json
+          # Create platform-specific history file if it doesn't exist
+          history_file="perf-branch/benchmarks/history-${{ matrix.platform }}.json"
+          if [ ! -f "$history_file" ]; then
+            mkdir -p perf-branch/benchmarks
+            echo '{"version": 1, "runs": []}' > "$history_file"
+          fi
+          python3 scripts/append-benchmark.py /tmp/results.json "$history_file"
 
       - name: Commit and push to perf branch
         run: |
@@ -95,23 +114,34 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-          git add benchmarks/history.json
+          git add benchmarks/
 
           # Only commit if there are changes
           if git diff --staged --quiet; then
             echo "No changes to commit"
           else
-            git commit -m "Benchmark results for ${{ steps.commit.outputs.sha }}"
+            git commit -m "[${{ matrix.platform }}] Benchmark results for ${{ steps.commit.outputs.sha }}"
 
             # Push to perf branch (create if doesn't exist)
-            git push https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git HEAD:perf
+            # Retry a few times in case of concurrent pushes from other platform jobs
+            for i in 1 2 3; do
+              if git push https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git HEAD:perf; then
+                echo "Push succeeded"
+                break
+              else
+                echo "Push failed, attempt $i/3. Pulling and retrying..."
+                git pull --rebase https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git perf || true
+                sleep $((i * 2))
+              fi
+            done
           fi
 
       - name: Summary
         run: |
-          echo "## Benchmark Results" >> $GITHUB_STEP_SUMMARY
+          echo "## Benchmark Results (${{ matrix.name }})" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "Commit: \`${{ steps.commit.outputs.sha }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "**Platform:** ${{ matrix.platform }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Commit:** \`${{ steps.commit.outputs.sha }}\`" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### Results" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY

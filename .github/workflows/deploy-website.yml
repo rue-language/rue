@@ -45,14 +45,25 @@ jobs:
         run: |
           # Try to fetch benchmark history from the perf branch
           # This may fail if the perf branch doesn't exist yet (new repos)
+          mkdir -p website/static/benchmarks
+
           if git fetch origin perf --depth=1 2>/dev/null; then
-            mkdir -p website/static/benchmarks
-            git show origin/perf:benchmarks/history.json > website/static/benchmarks/history.json 2>/dev/null || echo '{"version": 1, "runs": []}' > website/static/benchmarks/history.json
-            echo "Fetched benchmark history from perf branch"
+            echo "Fetched perf branch, extracting benchmark history..."
+
+            # Fetch per-platform history files
+            for platform in x86-64-linux aarch64-linux aarch64-macos; do
+              if git show origin/perf:benchmarks/history-${platform}.json > website/static/benchmarks/history-${platform}.json 2>/dev/null; then
+                echo "  Fetched history-${platform}.json"
+              else
+                echo "  No history for ${platform} yet"
+                rm -f website/static/benchmarks/history-${platform}.json
+              fi
+            done
+
+            # Also fetch legacy history.json for backwards compatibility
+            git show origin/perf:benchmarks/history.json > website/static/benchmarks/history.json 2>/dev/null || true
           else
             echo "Perf branch not found, using empty benchmark history"
-            mkdir -p website/static/benchmarks
-            echo '{"version": 1, "runs": []}' > website/static/benchmarks/history.json
           fi
 
       - name: Build website
