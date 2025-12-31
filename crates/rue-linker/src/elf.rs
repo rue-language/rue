@@ -87,6 +87,9 @@ pub struct Section {
     pub name: String,
     /// Section contents.
     pub data: Vec<u8>,
+    /// Section size in virtual memory. For normal sections this equals `data.len()`,
+    /// but for BSS sections (SHT_NOBITS) this is the virtual size while `data` is empty.
+    pub size: u64,
     /// Section flags.
     pub flags: SectionFlags,
     /// Relocations that apply to this section.
@@ -454,6 +457,7 @@ impl ObjectFile {
                 sections.push(Section {
                     name: name.clone(),
                     data: Vec::new(),
+                    size: 0,
                     flags: SectionFlags::empty(),
                     relocations: Vec::new(),
                     align: raw.align,
@@ -464,7 +468,11 @@ impl ObjectFile {
                 continue;
             }
 
-            let section_data = if raw.size > 0 && raw.offset > 0 {
+            // Handle SHT_NOBITS (BSS) sections: they have size but no file data
+            let section_data = if raw.sh_type == crate::constants::SHT_NOBITS {
+                // BSS sections have no file data, just virtual size
+                Vec::new()
+            } else if raw.size > 0 && raw.offset > 0 {
                 let section_end = raw
                     .offset
                     .checked_add(raw.size)
@@ -491,6 +499,7 @@ impl ObjectFile {
             sections.push(Section {
                 name: name.clone(),
                 data: section_data,
+                size: raw.size,
                 flags,
                 relocations: Vec::new(),
                 align: raw.align,

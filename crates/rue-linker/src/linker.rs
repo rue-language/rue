@@ -287,10 +287,11 @@ impl Linker {
         // Layout constants - use separate program headers for proper W^X security:
         // - Segment 1: .text (R+X) - executable code
         // - Segment 2: .rodata (R) - read-only data (only if rodata exists)
+        // - Segment 3: .data+.bss (RW) - writable data (only if data/bss exists)
         //
         // This follows the W^X (Write XOR Execute) security principle:
         // memory should never be both writable and executable.
-        const MAX_PROGRAM_HEADERS: u64 = 2;
+        const MAX_PROGRAM_HEADERS: u64 = 3;
         const HEADER_SIZE: u64 =
             (ELF64_EHDR_SIZE as u64) + (ELF64_PHDR_SIZE as u64) * MAX_PROGRAM_HEADERS;
 
@@ -302,6 +303,8 @@ impl Linker {
         // First, collect and merge all code sections
         let mut merged_code = Vec::new();
         let mut merged_rodata = Vec::new();
+        let mut merged_data = Vec::new();
+        let mut bss_size: u64 = 0;
         let mut pending_relocations = Vec::new();
 
         // Track where each section ends up in the merged output
@@ -342,14 +345,16 @@ impl Linker {
                     let sym = &obj.symbols[reloc.symbol_index];
 
                     // Skip relocations to symbols in sections we don't handle
-                    // (e.g., .bss, .data, debug sections, etc.)
+                    // (e.g., debug sections, DWARF info, etc.)
                     if let Some(sec_idx) = sym.section_index {
                         if sec_idx < obj.sections.len() {
                             let target_sec = &obj.sections[sec_idx];
                             if !target_sec.name.starts_with(".text")
                                 && !target_sec.name.starts_with(".rodata")
+                                && !target_sec.name.starts_with(".data")
+                                && !target_sec.name.starts_with(".bss")
                             {
-                                // Symbol is in a section we don't link (e.g., .bss)
+                                // Symbol is in a section we don't link (e.g., debug info)
                                 // Skip this relocation - it's likely for internal use
                                 continue;
                             }
@@ -391,12 +396,64 @@ impl Linker {
             }
         }
 
+        // Merge .data sections (initialized writable data, placed after rodata)
+        // We use separate offset tracking for data sections (offset into merged_data)
+        for (obj_idx, obj) in self.objects.iter().enumerate() {
+            for (sec_idx, section) in obj.sections.iter().enumerate() {
+                if !section.name.starts_with(".data") {
+                    continue;
+                }
+
+                let align = section.align.max(1);
+                let padding = align_up(merged_data.len() as u64, align) - merged_data.len() as u64;
+                merged_data.resize(merged_data.len() + padding as usize, 0);
+
+                let offset = merged_data.len() as u64;
+                section_offsets.insert((obj_idx, sec_idx), offset);
+
+                merged_data.extend_from_slice(&section.data);
+            }
+        }
+
+        // Collect .bss sections (zero-initialized writable data, placed after .data)
+        // BSS sections don't take space in the file but need virtual memory.
+        // We track offsets into a virtual "bss region" starting at 0.
+        for (obj_idx, obj) in self.objects.iter().enumerate() {
+            for (sec_idx, section) in obj.sections.iter().enumerate() {
+                if !section.name.starts_with(".bss") {
+                    continue;
+                }
+
+                let align = section.align.max(1);
+                let padding = align_up(bss_size, align) - bss_size;
+                bss_size += padding;
+
+                let offset = bss_size;
+                section_offsets.insert((obj_idx, sec_idx), offset);
+
+                // BSS sections contribute only virtual size, not file data
+                // The size comes from the section's size field (not data.len() which is 0)
+                bss_size += section.size;
+            }
+        }
+
         // Virtual addresses - calculate with page alignment between segments
         let code_vaddr = code_start;
         let code_size = merged_code.len() as u64;
 
         // Rodata starts on the next page boundary after code for W^X protection
         let rodata_vaddr = align_up(code_vaddr + code_size, self.page_size);
+
+        // .data follows rodata on the next page boundary (needs RW permissions)
+        let rodata_size = merged_rodata.len() as u64;
+        let data_vaddr = if !merged_data.is_empty() || bss_size > 0 {
+            align_up(rodata_vaddr + rodata_size, self.page_size)
+        } else {
+            0 // unused
+        };
+
+        // .bss follows .data (same segment, just virtual space)
+        let bss_vaddr = data_vaddr + merged_data.len() as u64;
 
         // Build final symbol addresses
         let mut symbol_addresses: HashMap<String, u64> = HashMap::new();
@@ -419,6 +476,10 @@ impl Linker {
                             code_vaddr
                         } else if section.name.starts_with(".rodata") {
                             rodata_vaddr
+                        } else if section.name.starts_with(".data") {
+                            data_vaddr
+                        } else if section.name.starts_with(".bss") {
+                            bss_vaddr
                         } else {
                             continue;
                         };
@@ -437,15 +498,21 @@ impl Linker {
             }
         }
 
-        // Also add section symbols for rodata relocation
+        // Also add section symbols for rodata, data, and bss relocation
         for (obj_idx, obj) in self.objects.iter().enumerate() {
             for (sec_idx, section) in obj.sections.iter().enumerate() {
-                if section.name.starts_with(".rodata") {
-                    if let Some(&offset) = section_offsets.get(&(obj_idx, sec_idx)) {
-                        let addr = rodata_vaddr + offset;
-                        // Use section name as fallback
-                        symbol_addresses.entry(section.name.clone()).or_insert(addr);
-                    }
+                if let Some(&offset) = section_offsets.get(&(obj_idx, sec_idx)) {
+                    let addr = if section.name.starts_with(".rodata") {
+                        rodata_vaddr + offset
+                    } else if section.name.starts_with(".data") {
+                        data_vaddr + offset
+                    } else if section.name.starts_with(".bss") {
+                        bss_vaddr + offset
+                    } else {
+                        continue;
+                    };
+                    // Use section name as fallback
+                    symbol_addresses.entry(section.name.clone()).or_insert(addr);
                 }
             }
         }
@@ -476,12 +543,10 @@ impl Linker {
                         code_vaddr
                     } else if section.name.starts_with(".rodata") {
                         rodata_vaddr
-                    } else if section.name.starts_with(".bss") || section.name.starts_with(".data")
-                    {
-                        // .bss and .data sections need to be placed after rodata
-                        // For now, we don't support them - skip the relocation
-                        // TODO: Add proper support for .bss/.data sections
-                        continue;
+                    } else if section.name.starts_with(".data") {
+                        data_vaddr
+                    } else if section.name.starts_with(".bss") {
+                        bss_vaddr
                     } else {
                         return Err(LinkError::UndefinedSymbol(format!(
                             "{} (in section '{}')",
@@ -707,18 +772,25 @@ impl Linker {
         //
         // File layout:
         //   [ELF Header]
-        //   [Program Header 1: .text (R+X)]
-        //   [Program Header 2: .rodata (R)]  -- only if rodata exists
+        //   [Program Headers: .text (R+X), .rodata (R), .data+.bss (RW)]
         //   [.text section data]
-        //   [padding to page boundary]       -- only if rodata exists
+        //   [padding to page boundary]
         //   [.rodata section data]
+        //   [padding to page boundary]
+        //   [.data section data]
+        //   (no .bss in file - it's virtual only)
         //
         // Memory layout:
         //   0x400000 + header_size: .text (R+X)
-        //   next page boundary: .rodata (R)   -- only if rodata exists
+        //   next page boundary: .rodata (R)
+        //   next page boundary: .data + .bss (RW)
 
         let has_rodata = !merged_rodata.is_empty();
-        let num_program_headers: u64 = if has_rodata { 2 } else { 1 };
+        let has_data_or_bss = !merged_data.is_empty() || bss_size > 0;
+
+        // Count program headers: .text (always), .rodata (if exists), .data/.bss (if exists)
+        let num_program_headers: u64 =
+            1 + if has_rodata { 1 } else { 0 } + if has_data_or_bss { 1 } else { 0 };
 
         // File offsets
         let code_file_offset = HEADER_SIZE;
@@ -729,10 +801,21 @@ impl Linker {
         } else {
             0 // unused
         };
+        let data_file_offset = if has_data_or_bss {
+            if has_rodata {
+                align_up(rodata_file_offset + rodata_size, self.page_size)
+            } else {
+                align_up(HEADER_SIZE + code_size, self.page_size)
+            }
+        } else {
+            0 // unused
+        };
 
-        // Calculate total file size
-        let total_file_size = if has_rodata {
-            rodata_file_offset + merged_rodata.len() as u64
+        // Calculate total file size (BSS doesn't take file space)
+        let total_file_size = if has_data_or_bss {
+            data_file_offset + merged_data.len() as u64
+        } else if has_rodata {
+            rodata_file_offset + rodata_size
         } else {
             HEADER_SIZE + code_size
         };
@@ -781,7 +864,6 @@ impl Linker {
 
         // ===== Program Header 2: .rodata (R) - only if rodata exists =====
         if has_rodata {
-            let rodata_size = merged_rodata.len() as u64;
             elf.extend_from_slice(&PT_LOAD.to_le_bytes()); // p_type: PT_LOAD
             elf.extend_from_slice(&PF_R.to_le_bytes()); // p_flags: PF_R only (read-only, not executable)
             elf.extend_from_slice(&rodata_file_offset.to_le_bytes()); // p_offset
@@ -789,6 +871,20 @@ impl Linker {
             elf.extend_from_slice(&rodata_vaddr.to_le_bytes()); // p_paddr
             elf.extend_from_slice(&rodata_size.to_le_bytes()); // p_filesz
             elf.extend_from_slice(&rodata_size.to_le_bytes()); // p_memsz
+            elf.extend_from_slice(&self.page_size.to_le_bytes()); // p_align
+        }
+
+        // ===== Program Header 3: .data + .bss (RW) - only if data/bss exists =====
+        if has_data_or_bss {
+            let data_file_size = merged_data.len() as u64;
+            let data_mem_size = data_file_size + bss_size; // BSS adds to virtual size only
+            elf.extend_from_slice(&PT_LOAD.to_le_bytes()); // p_type: PT_LOAD
+            elf.extend_from_slice(&(PF_R | PF_W).to_le_bytes()); // p_flags: PF_R | PF_W (readable, writable)
+            elf.extend_from_slice(&data_file_offset.to_le_bytes()); // p_offset
+            elf.extend_from_slice(&data_vaddr.to_le_bytes()); // p_vaddr
+            elf.extend_from_slice(&data_vaddr.to_le_bytes()); // p_paddr
+            elf.extend_from_slice(&data_file_size.to_le_bytes()); // p_filesz (just .data)
+            elf.extend_from_slice(&data_mem_size.to_le_bytes()); // p_memsz (includes BSS)
             elf.extend_from_slice(&self.page_size.to_le_bytes()); // p_align
         }
 
@@ -803,6 +899,17 @@ impl Linker {
             // Write rodata section
             elf.extend_from_slice(&merged_rodata);
         }
+
+        // Pad to data file offset and write data section if needed
+        if has_data_or_bss {
+            let padding_needed = data_file_offset as usize - elf.len();
+            elf.resize(elf.len() + padding_needed, 0);
+
+            // Write data section
+            elf.extend_from_slice(&merged_data);
+        }
+
+        // Note: BSS is not written to the file - it's zero-initialized at load time
 
         Ok(elf)
     }
@@ -1272,12 +1379,14 @@ mod tests {
 
         // Create an object file manually with a symbol referencing an invalid section index.
         // This simulates a malformed object file.
+        let data = vec![
+            0xE8, 0x00, 0x00, 0x00, 0x00, // call <placeholder>
+            0xC3, // ret
+        ];
         let text_section = Section {
             name: ".text".into(),
-            data: vec![
-                0xE8, 0x00, 0x00, 0x00, 0x00, // call <placeholder>
-                0xC3, // ret
-            ],
+            size: data.len() as u64,
+            data,
             flags: SectionFlags::ALLOC | SectionFlags::EXEC,
             relocations: vec![Relocation {
                 offset: 1,
@@ -1353,12 +1462,14 @@ mod tests {
 
         // Create an object file manually with a relocation referencing an invalid symbol index.
         // This simulates a malformed object file.
+        let data = vec![
+            0xE8, 0x00, 0x00, 0x00, 0x00, // call <placeholder>
+            0xC3, // ret
+        ];
         let text_section = Section {
             name: ".text".into(),
-            data: vec![
-                0xE8, 0x00, 0x00, 0x00, 0x00, // call <placeholder>
-                0xC3, // ret
-            ],
+            size: data.len() as u64,
+            data,
             flags: SectionFlags::ALLOC | SectionFlags::EXEC,
             relocations: vec![Relocation {
                 offset: 1,
@@ -1977,5 +2088,346 @@ mod tests {
 
         let elf = linker.link("main").unwrap();
         assert_eq!(&elf[0..4], &ELF_MAGIC);
+    }
+
+    // =========================================================================
+    // .data and .bss Section Tests
+    // =========================================================================
+
+    /// Test that .data sections are properly linked.
+    ///
+    /// This verifies that initialized global data sections are included in the
+    /// output executable and that symbols in .data are resolved correctly.
+    #[test]
+    fn test_link_with_data_section() {
+        use crate::elf::{Relocation, Section, SectionFlags, Symbol, SymbolBinding, SymbolType};
+
+        // Create .text section with code that would reference a data symbol
+        let code_data = vec![
+            0xB8, 0x00, 0x00, 0x00, 0x00, // mov eax, <placeholder for data address>
+            0xC3, // ret
+        ];
+        let text_section = Section {
+            name: ".text".into(),
+            size: code_data.len() as u64,
+            data: code_data,
+            flags: SectionFlags::ALLOC | SectionFlags::EXEC,
+            relocations: vec![Relocation {
+                offset: 1,
+                symbol_index: 2, // References the data symbol
+                rel_type: RelocationType::Abs32,
+                addend: 0,
+            }],
+            align: 16,
+        };
+
+        // Create .data section with initialized data
+        let data_bytes = vec![0x42, 0x00, 0x00, 0x00]; // 32-bit value 0x42
+        let data_section = Section {
+            name: ".data".into(),
+            size: data_bytes.len() as u64,
+            data: data_bytes,
+            flags: SectionFlags::ALLOC | SectionFlags::WRITE,
+            relocations: vec![],
+            align: 4,
+        };
+
+        // Null symbol (required at index 0)
+        let null_symbol = Symbol {
+            name: String::new(),
+            section_index: None,
+            value: 0,
+            size: 0,
+            binding: SymbolBinding::Local,
+            sym_type: SymbolType::None,
+        };
+
+        // Main function symbol
+        let main_symbol = Symbol {
+            name: "main".into(),
+            section_index: Some(0),
+            value: 0,
+            size: 6,
+            binding: SymbolBinding::Global,
+            sym_type: SymbolType::Func,
+        };
+
+        // Data symbol
+        let data_symbol = Symbol {
+            name: "my_global".into(),
+            section_index: Some(1), // References .data section
+            value: 0,
+            size: 4,
+            binding: SymbolBinding::Global,
+            sym_type: SymbolType::Object,
+        };
+
+        let obj = ObjectFile {
+            sections: vec![text_section, data_section],
+            symbols: vec![null_symbol, main_symbol, data_symbol],
+            section_map: HashMap::from([(".text".into(), 0), (".data".into(), 1)]),
+        };
+
+        let mut linker = Linker::new(ELF_TARGET);
+        linker.add_object(obj).unwrap();
+
+        let elf = linker.link("main").unwrap();
+
+        // Verify ELF is valid
+        assert_eq!(&elf[0..4], &ELF_MAGIC);
+
+        // The data section should be included in the output
+        // The total size should include code + data
+        let file_size = elf.len();
+        assert!(file_size > 100); // Should be a reasonable size
+
+        // Verify the data appears in the output (0x42 value)
+        assert!(
+            elf.windows(4).any(|w| w == [0x42, 0x00, 0x00, 0x00]),
+            "Data section content (0x42) should appear in the ELF output"
+        );
+    }
+
+    /// Test that .bss sections are handled correctly.
+    ///
+    /// BSS sections contain zero-initialized data and take up virtual memory
+    /// but no file space. This test verifies that BSS symbols are resolved
+    /// correctly and the p_memsz > p_filesz relationship is maintained.
+    #[test]
+    fn test_link_with_bss_section() {
+        use crate::elf::{Section, SectionFlags, Symbol, SymbolBinding, SymbolType};
+
+        // Create .text section with simple code
+        let code_data = vec![
+            0xB8, 0x2A, 0x00, 0x00, 0x00, // mov eax, 42
+            0xC3, // ret
+        ];
+        let text_section = Section {
+            name: ".text".into(),
+            size: code_data.len() as u64,
+            data: code_data,
+            flags: SectionFlags::ALLOC | SectionFlags::EXEC,
+            relocations: vec![],
+            align: 16,
+        };
+
+        // Create .bss section - has size but no file data
+        let bss_section = Section {
+            name: ".bss".into(),
+            size: 1024,   // 1KB of BSS space
+            data: vec![], // BSS has no file data
+            flags: SectionFlags::ALLOC | SectionFlags::WRITE,
+            relocations: vec![],
+            align: 8,
+        };
+
+        // Null symbol
+        let null_symbol = Symbol {
+            name: String::new(),
+            section_index: None,
+            value: 0,
+            size: 0,
+            binding: SymbolBinding::Local,
+            sym_type: SymbolType::None,
+        };
+
+        // Main function symbol
+        let main_symbol = Symbol {
+            name: "main".into(),
+            section_index: Some(0),
+            value: 0,
+            size: 6,
+            binding: SymbolBinding::Global,
+            sym_type: SymbolType::Func,
+        };
+
+        // BSS symbol
+        let bss_symbol = Symbol {
+            name: "bss_buffer".into(),
+            section_index: Some(1), // References .bss section
+            value: 0,
+            size: 1024,
+            binding: SymbolBinding::Global,
+            sym_type: SymbolType::Object,
+        };
+
+        let obj = ObjectFile {
+            sections: vec![text_section, bss_section],
+            symbols: vec![null_symbol, main_symbol, bss_symbol],
+            section_map: HashMap::from([(".text".into(), 0), (".bss".into(), 1)]),
+        };
+
+        let mut linker = Linker::new(ELF_TARGET);
+        linker.add_object(obj).unwrap();
+
+        let elf = linker.link("main").unwrap();
+
+        // Verify ELF is valid
+        assert_eq!(&elf[0..4], &ELF_MAGIC);
+
+        // Read p_filesz and p_memsz from the third program header (the .data/.bss segment)
+        // Program headers start at offset 64 (ELF header size), each is 56 bytes
+        // With W^X segment separation: header 0 = .text, header 1 = .rodata (optional), header 2 = .data/.bss
+        // Since this test has no rodata, .data/.bss is at header 1
+        let phdr_size = 56_usize;
+        let phdr_offset = 64_usize + phdr_size; // Second program header (.data/.bss)
+
+        let p_filesz = u64::from_le_bytes([
+            elf[phdr_offset + 32],
+            elf[phdr_offset + 33],
+            elf[phdr_offset + 34],
+            elf[phdr_offset + 35],
+            elf[phdr_offset + 36],
+            elf[phdr_offset + 37],
+            elf[phdr_offset + 38],
+            elf[phdr_offset + 39],
+        ]);
+
+        let p_memsz = u64::from_le_bytes([
+            elf[phdr_offset + 40],
+            elf[phdr_offset + 41],
+            elf[phdr_offset + 42],
+            elf[phdr_offset + 43],
+            elf[phdr_offset + 44],
+            elf[phdr_offset + 45],
+            elf[phdr_offset + 46],
+            elf[phdr_offset + 47],
+        ]);
+
+        // p_memsz should be larger than p_filesz by at least the BSS size
+        assert!(
+            p_memsz >= p_filesz + 1024,
+            "p_memsz ({}) should be >= p_filesz ({}) + BSS size (1024)",
+            p_memsz,
+            p_filesz
+        );
+
+        // With W^X and page alignment, file size is larger due to padding
+        // Just verify BSS doesn't bloat it beyond reasonable limits
+        assert!(
+            elf.len() < 20000,
+            "File size ({}) should be reasonable (not megabytes from BSS)",
+            elf.len()
+        );
+    }
+
+    /// Test linking with both .data and .bss sections together.
+    #[test]
+    fn test_link_with_data_and_bss_sections() {
+        use crate::elf::{Section, SectionFlags, Symbol, SymbolBinding, SymbolType};
+
+        // Create .text section
+        let code_data = vec![
+            0xB8, 0x2A, 0x00, 0x00, 0x00, // mov eax, 42
+            0xC3, // ret
+        ];
+        let text_section = Section {
+            name: ".text".into(),
+            size: code_data.len() as u64,
+            data: code_data,
+            flags: SectionFlags::ALLOC | SectionFlags::EXEC,
+            relocations: vec![],
+            align: 16,
+        };
+
+        // Create .data section with initialized data
+        let data_bytes = vec![0xDE, 0xAD, 0xBE, 0xEF];
+        let data_section = Section {
+            name: ".data".into(),
+            size: data_bytes.len() as u64,
+            data: data_bytes,
+            flags: SectionFlags::ALLOC | SectionFlags::WRITE,
+            relocations: vec![],
+            align: 4,
+        };
+
+        // Create .bss section
+        let bss_section = Section {
+            name: ".bss".into(),
+            size: 256,
+            data: vec![],
+            flags: SectionFlags::ALLOC | SectionFlags::WRITE,
+            relocations: vec![],
+            align: 8,
+        };
+
+        // Symbols
+        let null_symbol = Symbol {
+            name: String::new(),
+            section_index: None,
+            value: 0,
+            size: 0,
+            binding: SymbolBinding::Local,
+            sym_type: SymbolType::None,
+        };
+
+        let main_symbol = Symbol {
+            name: "main".into(),
+            section_index: Some(0),
+            value: 0,
+            size: 6,
+            binding: SymbolBinding::Global,
+            sym_type: SymbolType::Func,
+        };
+
+        let obj = ObjectFile {
+            sections: vec![text_section, data_section, bss_section],
+            symbols: vec![null_symbol, main_symbol],
+            section_map: HashMap::from([
+                (".text".into(), 0),
+                (".data".into(), 1),
+                (".bss".into(), 2),
+            ]),
+        };
+
+        let mut linker = Linker::new(ELF_TARGET);
+        linker.add_object(obj).unwrap();
+
+        let elf = linker.link("main").unwrap();
+
+        // Verify ELF is valid
+        assert_eq!(&elf[0..4], &ELF_MAGIC);
+
+        // Verify .data content is in the output
+        assert!(
+            elf.windows(4).any(|w| w == [0xDE, 0xAD, 0xBE, 0xEF]),
+            "Data section content should appear in the ELF output"
+        );
+
+        // Read p_filesz and p_memsz from the .data/.bss segment (third program header)
+        // With W^X segment separation: header 0 = .text, header 1 = .rodata (none here), header 2 = .data/.bss
+        // Since this test has no rodata, .data/.bss is at header 1
+        let phdr_size = 56_usize;
+        let phdr_offset = 64_usize + phdr_size; // Second program header (.data/.bss)
+
+        let p_filesz = u64::from_le_bytes([
+            elf[phdr_offset + 32],
+            elf[phdr_offset + 33],
+            elf[phdr_offset + 34],
+            elf[phdr_offset + 35],
+            elf[phdr_offset + 36],
+            elf[phdr_offset + 37],
+            elf[phdr_offset + 38],
+            elf[phdr_offset + 39],
+        ]);
+
+        let p_memsz = u64::from_le_bytes([
+            elf[phdr_offset + 40],
+            elf[phdr_offset + 41],
+            elf[phdr_offset + 42],
+            elf[phdr_offset + 43],
+            elf[phdr_offset + 44],
+            elf[phdr_offset + 45],
+            elf[phdr_offset + 46],
+            elf[phdr_offset + 47],
+        ]);
+
+        // BSS adds 256 bytes to virtual size
+        assert!(
+            p_memsz >= p_filesz + 256,
+            "p_memsz ({}) should be >= p_filesz ({}) + BSS size (256)",
+            p_memsz,
+            p_filesz
+        );
     }
 }
