@@ -794,13 +794,18 @@ impl From<Vec<CompileError>> for CompileErrors {
 impl From<CompileErrors> for CompileError {
     /// Convert a collection to a single error.
     ///
-    /// Uses the first error in the collection. Panics if the collection is empty.
+    /// Uses the first error in the collection. If the collection is empty,
+    /// returns an internal error (this indicates a compiler bug).
     fn from(errors: CompileErrors) -> Self {
-        errors
-            .errors
-            .into_iter()
-            .next()
-            .expect("cannot convert empty CompileErrors to CompileError")
+        debug_assert!(
+            !errors.is_empty(),
+            "converting empty CompileErrors to CompileError"
+        );
+        errors.errors.into_iter().next().unwrap_or_else(|| {
+            CompileError::without_span(ErrorKind::InternalError(
+                "empty error collection converted to single error".into(),
+            ))
+        })
     }
 }
 
@@ -1385,6 +1390,26 @@ mod tests {
         let error: CompileError = errors.into();
         // Should get the first error
         assert!(matches!(error.kind, ErrorKind::InvalidInteger));
+    }
+
+    /// Test that empty CompileErrors conversion doesn't panic in release builds.
+    /// In debug builds, this triggers a debug_assert panic (as expected).
+    /// This test verifies the graceful fallback behavior in release mode.
+    #[test]
+    #[cfg_attr(debug_assertions, ignore)]
+    fn test_empty_compile_errors_to_single_error() {
+        // Converting an empty CompileErrors should not panic in release;
+        // instead it should return an InternalError.
+        let empty = CompileErrors::new();
+        let error: CompileError = empty.into();
+
+        // Should get an InternalError with a descriptive message
+        match &error.kind {
+            ErrorKind::InternalError(msg) => {
+                assert!(msg.contains("empty error collection"));
+            }
+            other => panic!("expected InternalError, got {:?}", other),
+        }
     }
 
     #[test]
