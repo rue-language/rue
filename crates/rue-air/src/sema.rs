@@ -93,6 +93,30 @@ pub struct SemaOutput {
     pub warnings: Vec<CompileWarning>,
 }
 
+/// Pre-computed type information for constraint generation.
+///
+/// This struct holds the function, struct, enum, and method signature maps
+/// converted to `InferType` format for use in Hindley-Milner type inference.
+/// Building this once and reusing it for all function analyses avoids the
+/// O(n²) cost of rebuilding these maps for each function.
+///
+/// # Performance
+///
+/// For a program with 100 functions and 50 structs:
+/// - **Before**: 100 × (HashMap rebuild + InferType conversions) per analysis
+/// - **After**: 1 × (HashMap build + InferType conversions) total
+#[derive(Debug)]
+pub struct InferenceContext {
+    /// Function signatures with InferType (for constraint generation).
+    pub func_sigs: HashMap<Spur, FunctionSig>,
+    /// Struct types: name -> Type::Struct(id).
+    pub struct_types: HashMap<Spur, Type>,
+    /// Enum types: name -> Type::Enum(id).
+    pub enum_types: HashMap<Spur, Type>,
+    /// Method signatures with InferType: (struct_name, method_name) -> MethodSig.
+    pub method_sigs: HashMap<(Spur, Spur), MethodSig>,
+}
+
 /// Output from the declaration gathering phase.
 ///
 /// This contains the state built during declaration gathering that is needed
@@ -549,6 +573,81 @@ impl<'a> Sema<'a> {
         }
     }
 
+    /// Build an `InferenceContext` from the collected type information.
+    ///
+    /// This should be called after the collection phase and builds the
+    /// pre-computed maps needed for Hindley-Milner type inference.
+    /// Building this once and reusing for all function analyses avoids
+    /// the O(n²) cost of rebuilding these maps per function.
+    ///
+    /// # Performance
+    ///
+    /// This converts all function/method signatures to use `InferType`
+    /// (which handles arrays structurally rather than by ID). This conversion
+    /// is done once instead of per-function.
+    pub fn build_inference_context(&self) -> InferenceContext {
+        // Build function signatures with InferType for constraint generation
+        let func_sigs: HashMap<Spur, FunctionSig> = self
+            .functions
+            .iter()
+            .map(|(name, info)| {
+                (
+                    *name,
+                    FunctionSig {
+                        param_types: info
+                            .param_types
+                            .iter()
+                            .map(|t| self.type_to_infer_type(*t))
+                            .collect(),
+                        return_type: self.type_to_infer_type(info.return_type),
+                    },
+                )
+            })
+            .collect();
+
+        // Build struct types map (name -> Type::Struct(id))
+        let struct_types: HashMap<Spur, Type> = self
+            .structs
+            .iter()
+            .map(|(name, id)| (*name, Type::Struct(*id)))
+            .collect();
+
+        // Build enum types map (name -> Type::Enum(id))
+        let enum_types: HashMap<Spur, Type> = self
+            .enums
+            .iter()
+            .map(|(name, id)| (*name, Type::Enum(*id)))
+            .collect();
+
+        // Build method signatures with InferType for constraint generation
+        let method_sigs: HashMap<(Spur, Spur), MethodSig> = self
+            .methods
+            .iter()
+            .map(|((type_name, method_name), info)| {
+                (
+                    (*type_name, *method_name),
+                    MethodSig {
+                        struct_type: info.struct_type,
+                        has_self: info.has_self,
+                        param_types: info
+                            .param_types
+                            .iter()
+                            .map(|t| self.type_to_infer_type(*t))
+                            .collect(),
+                        return_type: self.type_to_infer_type(info.return_type),
+                    },
+                )
+            })
+            .collect();
+
+        InferenceContext {
+            func_sigs,
+            struct_types,
+            enum_types,
+            method_sigs,
+        }
+    }
+
     /// Gather all declarations from the RIR and build a TypeContext.
     ///
     /// This is Phase 1 of semantic analysis. It collects:
@@ -906,6 +1005,11 @@ impl<'a> Sema<'a> {
         self.collect_method_definitions()
             .map_err(CompileErrors::from)?;
 
+        // Build inference context once - this contains pre-computed type information
+        // (func_sigs, struct_types, enum_types, method_sigs) that would otherwise
+        // be rebuilt for each function analysis.
+        let infer_ctx = self.build_inference_context();
+
         // Now analyze function bodies - these can be analyzed independently
         // so we collect errors from all of them instead of stopping at the first
         let mut functions = Vec::new();
@@ -950,6 +1054,7 @@ impl<'a> Sema<'a> {
 
                 // Try to analyze this function - on error, record it and continue
                 match self.analyze_single_function(
+                    &infer_ctx,
                     &fn_name,
                     *return_type,
                     &params,
@@ -999,6 +1104,7 @@ impl<'a> Sema<'a> {
 
                         // Try to analyze this method - on error, record it and continue
                         match self.analyze_method_function(
+                            &infer_ctx,
                             &full_name,
                             *return_type,
                             &params,
@@ -1026,7 +1132,13 @@ impl<'a> Sema<'a> {
                 let full_name = format!("{}.__drop", type_name_str);
 
                 // Try to analyze destructor - on error, record it and continue
-                match self.analyze_destructor_function(&full_name, *body, inst.span, struct_type) {
+                match self.analyze_destructor_function(
+                    &infer_ctx,
+                    &full_name,
+                    *body,
+                    inst.span,
+                    struct_type,
+                ) {
                     Ok(analyzed) => functions.push(analyzed),
                     Err(e) => errors.push(e),
                 }
@@ -1067,6 +1179,11 @@ impl<'a> Sema<'a> {
     /// let output = sema.analyze_all_bodies()?;
     /// ```
     pub fn analyze_all_bodies(mut self) -> MultiErrorResult<SemaOutput> {
+        // Build inference context once - this contains pre-computed type information
+        // (func_sigs, struct_types, enum_types, method_sigs) that would otherwise
+        // be rebuilt for each function analysis.
+        let infer_ctx = self.build_inference_context();
+
         let mut functions = Vec::new();
         let mut errors = CompileErrors::new();
 
@@ -1109,6 +1226,7 @@ impl<'a> Sema<'a> {
 
                 // Try to analyze this function - on error, record it and continue
                 match self.analyze_single_function(
+                    &infer_ctx,
                     &fn_name,
                     *return_type,
                     &params,
@@ -1158,6 +1276,7 @@ impl<'a> Sema<'a> {
 
                         // Try to analyze this method - on error, record it and continue
                         match self.analyze_method_function(
+                            &infer_ctx,
                             &full_name,
                             *return_type,
                             &params,
@@ -1185,7 +1304,13 @@ impl<'a> Sema<'a> {
                 let full_name = format!("{}.__drop", type_name_str);
 
                 // Try to analyze destructor - on error, record it and continue
-                match self.analyze_destructor_function(&full_name, *body, inst.span, struct_type) {
+                match self.analyze_destructor_function(
+                    &infer_ctx,
+                    &full_name,
+                    *body,
+                    inst.span,
+                    struct_type,
+                ) {
                     Ok(analyzed) => functions.push(analyzed),
                     Err(e) => errors.push(e),
                 }
@@ -1207,8 +1332,12 @@ impl<'a> Sema<'a> {
     ///
     /// This helper factors out the function analysis logic to make error
     /// collection cleaner in analyze_all.
+    ///
+    /// The `infer_ctx` provides pre-computed type information for constraint generation,
+    /// avoiding the cost of rebuilding maps for each function.
     fn analyze_single_function(
         &mut self,
+        infer_ctx: &InferenceContext,
         fn_name: &str,
         return_type: Spur,
         params: &[rue_rir::RirParam],
@@ -1227,7 +1356,7 @@ impl<'a> Sema<'a> {
             .collect::<CompileResult<Vec<_>>>()?;
 
         let (air, num_locals, num_param_slots, param_modes) =
-            self.analyze_function(ret_type, &param_info, body)?;
+            self.analyze_function(infer_ctx, ret_type, &param_info, body)?;
 
         Ok(AnalyzedFunction {
             name: fn_name.to_string(),
@@ -1239,8 +1368,11 @@ impl<'a> Sema<'a> {
     }
 
     /// Analyze a method function from an impl block.
+    ///
+    /// The `infer_ctx` provides pre-computed type information for constraint generation.
     fn analyze_method_function(
         &mut self,
+        infer_ctx: &InferenceContext,
         full_name: &str,
         return_type: Spur,
         params: &[rue_rir::RirParam],
@@ -1267,7 +1399,7 @@ impl<'a> Sema<'a> {
         }
 
         let (air, num_locals, num_param_slots, param_modes) =
-            self.analyze_function(ret_type, &param_info, body)?;
+            self.analyze_function(infer_ctx, ret_type, &param_info, body)?;
 
         Ok(AnalyzedFunction {
             name: full_name.to_string(),
@@ -1279,8 +1411,11 @@ impl<'a> Sema<'a> {
     }
 
     /// Analyze a destructor function.
+    ///
+    /// The `infer_ctx` provides pre-computed type information for constraint generation.
     fn analyze_destructor_function(
         &mut self,
+        infer_ctx: &InferenceContext,
         full_name: &str,
         body: InstRef,
         _span: Span,
@@ -1292,7 +1427,7 @@ impl<'a> Sema<'a> {
             vec![(self_sym, struct_type, RirParamMode::Normal)];
 
         let (air, num_locals, num_param_slots, param_modes) =
-            self.analyze_function(Type::Unit, &param_info, body)?;
+            self.analyze_function(infer_ctx, Type::Unit, &param_info, body)?;
 
         Ok(AnalyzedFunction {
             name: full_name.to_string(),
@@ -1669,9 +1804,14 @@ impl<'a> Sema<'a> {
     }
 
     /// Analyze a single function, producing AIR.
+    ///
+    /// The `infer_ctx` provides pre-computed type information for constraint generation,
+    /// avoiding the cost of rebuilding maps for each function.
+    ///
     /// Returns (air, num_locals, num_param_slots, param_modes).
     fn analyze_function(
         &mut self,
+        infer_ctx: &InferenceContext,
         return_type: Type,
         params: &[(Spur, Type, RirParamMode)], // (name, type, mode)
         body: InstRef,
@@ -1713,7 +1853,7 @@ impl<'a> Sema<'a> {
         // ======================================================================
         // Run constraint generation and unification to determine types
         // for all expressions BEFORE emitting AIR.
-        let resolved_types = self.run_type_inference(return_type, params, body)?;
+        let resolved_types = self.run_type_inference(infer_ctx, return_type, params, body)?;
 
         // Create analysis context with resolved types
         let mut ctx = AnalysisContext {
@@ -1752,76 +1892,26 @@ impl<'a> Sema<'a> {
     /// 1. Generate constraints by walking the RIR
     /// 2. Solve constraints via unification
     ///
+    /// The `infer_ctx` parameter provides pre-computed type information (function
+    /// signatures, struct/enum types, method signatures) converted to InferType format.
+    /// This avoids rebuilding these maps for each function, reducing O(n²) to O(n).
+    ///
     /// Returns a map from RIR instruction refs to their resolved concrete types.
     fn run_type_inference(
         &mut self,
+        infer_ctx: &InferenceContext,
         return_type: Type,
         params: &[(Spur, Type, RirParamMode)],
         body: InstRef,
     ) -> CompileResult<HashMap<InstRef, Type>> {
-        // Build function signatures map for the constraint generator.
-        // Convert Type to InferType so arrays are represented structurally.
-        let func_sigs: HashMap<Spur, FunctionSig> = self
-            .functions
-            .iter()
-            .map(|(name, info)| {
-                (
-                    *name,
-                    FunctionSig {
-                        param_types: info
-                            .param_types
-                            .iter()
-                            .map(|t| self.type_to_infer_type(*t))
-                            .collect(),
-                        return_type: self.type_to_infer_type(info.return_type),
-                    },
-                )
-            })
-            .collect();
-
-        // Build struct types map (name -> Type::Struct(id))
-        let struct_types: HashMap<Spur, Type> = self
-            .structs
-            .iter()
-            .map(|(name, id)| (*name, Type::Struct(*id)))
-            .collect();
-
-        // Build enum types map (name -> Type::Enum(id))
-        let enum_types: HashMap<Spur, Type> = self
-            .enums
-            .iter()
-            .map(|(name, id)| (*name, Type::Enum(*id)))
-            .collect();
-
-        // Build method signatures map for the constraint generator
-        let method_sigs: HashMap<(Spur, Spur), MethodSig> = self
-            .methods
-            .iter()
-            .map(|((type_name, method_name), info)| {
-                (
-                    (*type_name, *method_name),
-                    MethodSig {
-                        struct_type: info.struct_type,
-                        has_self: info.has_self,
-                        param_types: info
-                            .param_types
-                            .iter()
-                            .map(|t| self.type_to_infer_type(*t))
-                            .collect(),
-                        return_type: self.type_to_infer_type(info.return_type),
-                    },
-                )
-            })
-            .collect();
-
-        // Create constraint generator
+        // Create constraint generator using pre-computed inference context
         let mut cgen = ConstraintGenerator::new(
             self.rir,
             self.interner,
-            &func_sigs,
-            &struct_types,
-            &enum_types,
-            &method_sigs,
+            &infer_ctx.func_sigs,
+            &infer_ctx.struct_types,
+            &infer_ctx.enum_types,
+            &infer_ctx.method_sigs,
         );
 
         // Build parameter map for constraint context.
