@@ -364,6 +364,22 @@ impl Air {
             .map(|&v| v as usize);
         (fields, source_order)
     }
+
+    /// Remap string constant IDs using the provided mapping function.
+    ///
+    /// This is used after parallel function analysis to convert local string IDs
+    /// (per-function) to global string IDs (across all functions). The mapping
+    /// function takes a local string ID and returns the global string ID.
+    pub fn remap_string_ids<F>(&mut self, map_fn: F)
+    where
+        F: Fn(u32) -> u32,
+    {
+        for inst in &mut self.instructions {
+            if let AirInstData::StringConst(ref mut id) = inst.data {
+                *id = map_fn(*id);
+            }
+        }
+    }
 }
 
 /// A single AIR instruction.

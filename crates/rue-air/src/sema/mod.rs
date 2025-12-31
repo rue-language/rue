@@ -113,8 +113,6 @@ impl<'a> GatherOutput<'a> {
             enum_defs: self.enum_defs,
             array_types: self.array_types,
             array_type_defs: self.array_type_defs,
-            string_table: HashMap::new(),
-            strings: Vec::new(),
             methods: self.methods,
             preview_features: self.preview_features,
             builtin_string_id: self.builtin_string_id,
@@ -239,10 +237,6 @@ pub struct Sema<'a> {
     pub(crate) array_types: HashMap<(Type, u64), ArrayTypeId>,
     /// Array type definitions indexed by ArrayTypeId
     pub(crate) array_type_defs: Vec<ArrayTypeDef>,
-    /// String table: maps string content to index (for deduplication)
-    pub(crate) string_table: HashMap<String, u32>,
-    /// String data indexed by string table index
-    pub(crate) strings: Vec<String>,
     /// Method table: maps (struct_name, method_name) to method info
     /// Used for resolving method calls (receiver.method()) and associated
     /// function calls (Type::function())
@@ -271,8 +265,6 @@ impl<'a> Sema<'a> {
             enum_defs: Vec::new(),
             array_types: HashMap::new(),
             array_type_defs: Vec::new(),
-            string_table: HashMap::new(),
-            strings: Vec::new(),
             methods: HashMap::new(),
             preview_features,
             builtin_string_id: None,

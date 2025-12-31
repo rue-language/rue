@@ -184,6 +184,12 @@ pub(crate) struct AnalysisContext<'a> {
     /// Warnings collected during function analysis.
     /// This is per-function to enable future parallel analysis.
     pub warnings: Vec<CompileWarning>,
+    /// Local string table: maps string content to local index (for deduplication within function).
+    /// This is per-function to enable parallel analysis - strings are merged globally after.
+    pub local_string_table: HashMap<String, u32>,
+    /// Local string data indexed by local string table index.
+    /// After analysis, these are merged into the global string table with ID remapping.
+    pub local_strings: Vec<String>,
 }
 
 // Import InstRef for use in resolved_types
@@ -300,6 +306,24 @@ impl AnalysisContext<'_> {
                 }
 
                 self.moved_vars = merged;
+            }
+        }
+    }
+
+    /// Add a string to the local string table, returning its local index.
+    ///
+    /// This deduplicates strings within a single function. After function analysis
+    /// completes, local strings are merged into the global string table with ID
+    /// remapping in the AIR instructions.
+    pub fn add_local_string(&mut self, content: String) -> u32 {
+        use std::collections::hash_map::Entry;
+        match self.local_string_table.entry(content) {
+            Entry::Occupied(e) => *e.get(),
+            Entry::Vacant(e) => {
+                let id = self.local_strings.len() as u32;
+                self.local_strings.push(e.key().clone());
+                e.insert(id);
+                id
             }
         }
     }

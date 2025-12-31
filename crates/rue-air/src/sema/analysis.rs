@@ -37,7 +37,10 @@ pub(crate) fn analyze_all_function_bodies(mut sema: Sema<'_>) -> MultiErrorResul
     // Build inference context once
     let infer_ctx = sema.build_inference_context();
 
-    let mut functions = Vec::new();
+    // Collect analyzed functions with their local strings.
+    // Each function collects strings independently (enabling future parallelization),
+    // then we merge and deduplicate globally, remapping string IDs in the AIR.
+    let mut functions_with_strings: Vec<(AnalyzedFunction, Vec<String>)> = Vec::new();
     let mut errors = CompileErrors::new();
     let mut all_warnings = Vec::new();
 
@@ -84,8 +87,8 @@ pub(crate) fn analyze_all_function_bodies(mut sema: Sema<'_>) -> MultiErrorResul
                 *body,
                 inst.span,
             ) {
-                Ok((analyzed, warnings)) => {
-                    functions.push(analyzed);
+                Ok((analyzed, warnings, local_strings)) => {
+                    functions_with_strings.push((analyzed, local_strings));
                     all_warnings.extend(warnings);
                 }
                 Err(e) => errors.push(e),
@@ -149,8 +152,8 @@ pub(crate) fn analyze_all_function_bodies(mut sema: Sema<'_>) -> MultiErrorResul
                         struct_type,
                         *has_self,
                     ) {
-                        Ok((analyzed, warnings)) => {
-                            functions.push(analyzed);
+                        Ok((analyzed, warnings, local_strings)) => {
+                            functions_with_strings.push((analyzed, local_strings));
                             all_warnings.extend(warnings);
                         }
                         Err(e) => errors.push(e),
@@ -187,13 +190,42 @@ pub(crate) fn analyze_all_function_bodies(mut sema: Sema<'_>) -> MultiErrorResul
                 inst.span,
                 struct_type,
             ) {
-                Ok((analyzed, warnings)) => {
-                    functions.push(analyzed);
+                Ok((analyzed, warnings, local_strings)) => {
+                    functions_with_strings.push((analyzed, local_strings));
                     all_warnings.extend(warnings);
                 }
                 Err(e) => errors.push(e),
             }
         }
+    }
+
+    // Merge strings from all functions into a global table with deduplication.
+    // Build a mapping from (local_strings_vec, local_id) -> global_id for remapping.
+    let mut global_string_table: HashMap<String, u32> = HashMap::new();
+    let mut global_strings: Vec<String> = Vec::new();
+
+    // For each function, build a mapping from local string ID to global string ID
+    let mut functions: Vec<AnalyzedFunction> = Vec::new();
+    for (mut analyzed, local_strings) in functions_with_strings {
+        if !local_strings.is_empty() {
+            // Build mapping from local IDs to global IDs
+            let local_to_global: Vec<u32> = local_strings
+                .into_iter()
+                .map(|s| {
+                    *global_string_table.entry(s.clone()).or_insert_with(|| {
+                        let id = global_strings.len() as u32;
+                        global_strings.push(s);
+                        id
+                    })
+                })
+                .collect();
+
+            // Remap string IDs in the AIR
+            analyzed
+                .air
+                .remap_string_ids(|local_id| local_to_global[local_id as usize]);
+        }
+        functions.push(analyzed);
     }
 
     all_warnings.sort_by_key(|w| w.span().map(|s| s.start));
@@ -203,7 +235,7 @@ pub(crate) fn analyze_all_function_bodies(mut sema: Sema<'_>) -> MultiErrorResul
         struct_defs: sema.struct_defs,
         enum_defs: sema.enum_defs,
         array_types: sema.array_type_defs,
-        strings: sema.strings,
+        strings: global_strings,
         warnings: all_warnings,
     })
 }
@@ -254,7 +286,7 @@ impl<'a> Sema<'a> {
         params: &[rue_rir::RirParam],
         body: InstRef,
         span: Span,
-    ) -> CompileResult<(AnalyzedFunction, Vec<CompileWarning>)> {
+    ) -> CompileResult<(AnalyzedFunction, Vec<CompileWarning>, Vec<String>)> {
         let ret_type = self.resolve_type(return_type, span)?;
 
         // Resolve parameter types and modes
@@ -266,7 +298,7 @@ impl<'a> Sema<'a> {
             })
             .collect::<CompileResult<Vec<_>>>()?;
 
-        let (air, num_locals, num_param_slots, param_modes, warnings) =
+        let (air, num_locals, num_param_slots, param_modes, warnings, local_strings) =
             self.analyze_function(infer_ctx, ret_type, &param_info, body)?;
 
         Ok((
@@ -278,6 +310,7 @@ impl<'a> Sema<'a> {
                 param_modes,
             },
             warnings,
+            local_strings,
         ))
     }
 
@@ -285,7 +318,7 @@ impl<'a> Sema<'a> {
     ///
     /// The `infer_ctx` provides pre-computed type information for constraint generation.
     ///
-    /// Returns the analyzed function and any warnings generated during analysis.
+    /// Returns the analyzed function, any warnings, and local strings collected during analysis.
     fn analyze_method_function(
         &mut self,
         infer_ctx: &InferenceContext,
@@ -296,7 +329,7 @@ impl<'a> Sema<'a> {
         span: Span,
         struct_type: Type,
         has_self: bool,
-    ) -> CompileResult<(AnalyzedFunction, Vec<CompileWarning>)> {
+    ) -> CompileResult<(AnalyzedFunction, Vec<CompileWarning>, Vec<String>)> {
         let ret_type = self.resolve_type(return_type, span)?;
 
         // Build parameter list, adding self as first parameter for methods
@@ -314,7 +347,7 @@ impl<'a> Sema<'a> {
             param_info.push((p.name, ty, p.mode));
         }
 
-        let (air, num_locals, num_param_slots, param_modes, warnings) =
+        let (air, num_locals, num_param_slots, param_modes, warnings, local_strings) =
             self.analyze_function(infer_ctx, ret_type, &param_info, body)?;
 
         Ok((
@@ -326,6 +359,7 @@ impl<'a> Sema<'a> {
                 param_modes,
             },
             warnings,
+            local_strings,
         ))
     }
 
@@ -333,7 +367,7 @@ impl<'a> Sema<'a> {
     ///
     /// The `infer_ctx` provides pre-computed type information for constraint generation.
     ///
-    /// Returns the analyzed function and any warnings generated during analysis.
+    /// Returns the analyzed function, any warnings, and local strings collected during analysis.
     fn analyze_destructor_function(
         &mut self,
         infer_ctx: &InferenceContext,
@@ -341,13 +375,13 @@ impl<'a> Sema<'a> {
         body: InstRef,
         _span: Span,
         struct_type: Type,
-    ) -> CompileResult<(AnalyzedFunction, Vec<CompileWarning>)> {
+    ) -> CompileResult<(AnalyzedFunction, Vec<CompileWarning>, Vec<String>)> {
         // Destructors take self parameter and return unit
         let self_sym = self.interner.get_or_intern("self");
         let param_info: Vec<(Spur, Type, RirParamMode)> =
             vec![(self_sym, struct_type, RirParamMode::Normal)];
 
-        let (air, num_locals, num_param_slots, param_modes, warnings) =
+        let (air, num_locals, num_param_slots, param_modes, warnings, local_strings) =
             self.analyze_function(infer_ctx, Type::Unit, &param_info, body)?;
 
         Ok((
@@ -359,6 +393,7 @@ impl<'a> Sema<'a> {
                 param_modes,
             },
             warnings,
+            local_strings,
         ))
     }
     /// Analyze a single function, producing AIR.
@@ -374,7 +409,7 @@ impl<'a> Sema<'a> {
         return_type: Type,
         params: &[(Spur, Type, RirParamMode)], // (name, type, mode)
         body: InstRef,
-    ) -> CompileResult<(Air, u32, u32, Vec<bool>, Vec<CompileWarning>)> {
+    ) -> CompileResult<(Air, u32, u32, Vec<bool>, Vec<CompileWarning>, Vec<String>)> {
         let mut air = Air::new(return_type);
         let mut param_map: HashMap<Spur, ParamInfo> = HashMap::new();
         let mut param_modes: Vec<bool> = Vec::new();
@@ -426,6 +461,8 @@ impl<'a> Sema<'a> {
             resolved_types: &resolved_types,
             moved_vars: HashMap::new(),
             warnings: Vec::new(),
+            local_string_table: HashMap::new(),
+            local_strings: Vec::new(),
         };
 
         // ======================================================================
@@ -449,6 +486,7 @@ impl<'a> Sema<'a> {
             num_param_slots,
             param_modes,
             ctx.warnings,
+            ctx.local_strings,
         ))
     }
 
@@ -853,12 +891,12 @@ impl<'a> Sema<'a> {
             InstData::StringConst(symbol) => {
                 // String literals use the builtin String struct type.
                 let ty = self.builtin_string_type();
-                // Add string to the string table
+                // Add string to the local string table (per-function for parallel analysis)
                 let string_content = self.interner.resolve(&*symbol).to_string();
-                let string_id = self.add_string(string_content);
+                let local_string_id = ctx.add_local_string(string_content);
 
                 let air_ref = air.add_inst(AirInst {
-                    data: AirInstData::StringConst(string_id),
+                    data: AirInstData::StringConst(local_string_id),
                     ty,
                     span: inst.span,
                 });
@@ -4164,19 +4202,6 @@ impl<'a> Sema<'a> {
         };
 
         Ok(AnalysisResult::new(store_ref, Type::Unit))
-    }
-
-    fn add_string(&mut self, content: String) -> u32 {
-        use std::collections::hash_map::Entry;
-        match self.string_table.entry(content) {
-            Entry::Occupied(e) => *e.get(),
-            Entry::Vacant(e) => {
-                let id = self.strings.len() as u32;
-                self.strings.push(e.key().clone());
-                e.insert(id);
-                id
-            }
-        }
     }
 
     /// Check if directives contain @allow for a specific warning name.
