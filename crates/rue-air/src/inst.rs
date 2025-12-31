@@ -4,6 +4,16 @@
 
 use std::fmt;
 
+// Compile-time size assertions to prevent silent size growth during refactoring.
+// These limits are set slightly above current sizes to allow minor changes,
+// but will catch significant size regressions.
+//
+// Current sizes (as of 2025-12):
+// - AirInst: 40 bytes (AirInstData + Type + Span)
+// - AirInstData: 24 bytes
+const _: () = assert!(std::mem::size_of::<AirInst>() <= 48);
+const _: () = assert!(std::mem::size_of::<AirInstData>() <= 32);
+
 use crate::types::{ArrayTypeId, StructId, Type};
 use lasso::{Key, Spur};
 use rue_span::Span;
@@ -942,6 +952,29 @@ mod tests {
     #[test]
     fn test_air_ref_size() {
         assert_eq!(std::mem::size_of::<AirRef>(), 4);
+    }
+
+    #[test]
+    fn test_air_inst_size() {
+        // Document actual sizes for future reference.
+        // If this test fails, update the const assertions at the top of this file.
+        let air_inst_size = std::mem::size_of::<AirInst>();
+        let air_inst_data_size = std::mem::size_of::<AirInstData>();
+        eprintln!("AirInst size: {} bytes", air_inst_size);
+        eprintln!("AirInstData size: {} bytes", air_inst_data_size);
+
+        // These assertions document the current sizes.
+        // If the layout changes, update both these values and the const assertions.
+        assert!(
+            air_inst_size <= 48,
+            "AirInst grew beyond 48 bytes: {}",
+            air_inst_size
+        );
+        assert!(
+            air_inst_data_size <= 32,
+            "AirInstData grew beyond 32 bytes: {}",
+            air_inst_data_size
+        );
     }
 
     #[test]

@@ -30,6 +30,14 @@
 use std::collections::HashMap;
 use std::fmt;
 
+// Compile-time size assertions to prevent silent size growth during refactoring.
+// These limits are set slightly above current sizes to allow minor changes,
+// but will catch significant size regressions.
+//
+// Current sizes (as of 2025-12):
+// - Aarch64Inst: 40 bytes
+const _: () = assert!(std::mem::size_of::<Aarch64Inst>() <= 48);
+
 pub use crate::vreg::{BLOCK_LABEL_BASE, LabelId, VReg};
 
 /// A physical AArch64 register.
@@ -1115,6 +1123,22 @@ impl fmt::Display for Aarch64Mir {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_aarch64_inst_size() {
+        // Document actual sizes for future reference.
+        // If this test fails, update the const assertions at the top of this file.
+        let aarch64_inst_size = std::mem::size_of::<Aarch64Inst>();
+        eprintln!("Aarch64Inst size: {} bytes", aarch64_inst_size);
+
+        // This assertion documents the current size.
+        // If the layout changes, update both this value and the const assertion.
+        assert!(
+            aarch64_inst_size <= 48,
+            "Aarch64Inst grew beyond 48 bytes: {}",
+            aarch64_inst_size
+        );
+    }
 
     #[test]
     fn test_vreg_allocation() {

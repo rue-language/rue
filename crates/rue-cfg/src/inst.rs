@@ -5,6 +5,16 @@
 
 use std::fmt;
 
+// Compile-time size assertions to prevent silent size growth during refactoring.
+// These limits are set slightly above current sizes to allow minor changes,
+// but will catch significant size regressions.
+//
+// Current sizes (as of 2025-12):
+// - CfgInst: 40 bytes (CfgInstData + Type + Span)
+// - CfgInstData: 24 bytes
+const _: () = assert!(std::mem::size_of::<CfgInst>() <= 48);
+const _: () = assert!(std::mem::size_of::<CfgInstData>() <= 32);
+
 use lasso::{Key, Spur};
 use rue_air::{ArrayTypeId, EnumId, StructId, Type};
 use rue_span::Span;
@@ -940,6 +950,29 @@ mod tests {
     #[test]
     fn test_cfg_value_size() {
         assert_eq!(std::mem::size_of::<CfgValue>(), 4);
+    }
+
+    #[test]
+    fn test_cfg_inst_size() {
+        // Document actual sizes for future reference.
+        // If this test fails, update the const assertions at the top of this file.
+        let cfg_inst_size = std::mem::size_of::<CfgInst>();
+        let cfg_inst_data_size = std::mem::size_of::<CfgInstData>();
+        eprintln!("CfgInst size: {} bytes", cfg_inst_size);
+        eprintln!("CfgInstData size: {} bytes", cfg_inst_data_size);
+
+        // These assertions document the current sizes.
+        // If the layout changes, update both these values and the const assertions.
+        assert!(
+            cfg_inst_size <= 48,
+            "CfgInst grew beyond 48 bytes: {}",
+            cfg_inst_size
+        );
+        assert!(
+            cfg_inst_data_size <= 32,
+            "CfgInstData grew beyond 32 bytes: {}",
+            cfg_inst_data_size
+        );
     }
 
     #[test]

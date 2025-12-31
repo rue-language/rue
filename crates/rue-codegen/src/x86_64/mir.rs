@@ -8,6 +8,14 @@
 use std::collections::HashMap;
 use std::fmt;
 
+// Compile-time size assertions to prevent silent size growth during refactoring.
+// These limits are set slightly above current sizes to allow minor changes,
+// but will catch significant size regressions.
+//
+// Current sizes (as of 2025-12):
+// - X86Inst: 32 bytes
+const _: () = assert!(std::mem::size_of::<X86Inst>() <= 40);
+
 pub use crate::vreg::{LabelId, VReg};
 
 /// A physical x86-64 register.
@@ -752,6 +760,22 @@ impl fmt::Display for X86Mir {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_x86_inst_size() {
+        // Document actual sizes for future reference.
+        // If this test fails, update the const assertions at the top of this file.
+        let x86_inst_size = std::mem::size_of::<X86Inst>();
+        eprintln!("X86Inst size: {} bytes", x86_inst_size);
+
+        // This assertion documents the current size.
+        // If the layout changes, update both this value and the const assertion.
+        assert!(
+            x86_inst_size <= 40,
+            "X86Inst grew beyond 40 bytes: {}",
+            x86_inst_size
+        );
+    }
 
     #[test]
     fn test_vreg_allocation() {
