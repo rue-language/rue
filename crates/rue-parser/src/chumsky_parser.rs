@@ -13,7 +13,7 @@ use crate::ast::{
     Statement, StringLit, StructDecl, StructLitExpr, TypeExpr, UnaryExpr, UnaryOp, UnitLit,
     WhileExpr,
 };
-use chumsky::input::{Input as ChumskyInput, Stream, ValueInput};
+use chumsky::input::{Input as ChumskyInput, MapExtra, Stream, ValueInput};
 use chumsky::pratt::{infix, left, prefix};
 use chumsky::prelude::*;
 use lasso::{Spur, ThreadedRodeo};
@@ -22,7 +22,7 @@ use rue_lexer::TokenKind;
 use rue_span::Span;
 use std::borrow::Cow;
 
-use std::cell::RefCell;
+use chumsky::extra::SimpleState;
 
 /// Pre-interned symbols for primitive type names.
 /// These are interned once when the parser is created and reused for all parsing.
@@ -56,19 +56,9 @@ impl PrimitiveTypeSpurs {
     }
 }
 
-// Thread-local storage for the primitive type symbols during parsing.
-// This is set before parsing and read during parsing.
-thread_local! {
-    static PRIMITIVE_SYMS: RefCell<Option<PrimitiveTypeSpurs>> = const { RefCell::new(None) };
-}
-
-/// Get the primitive type symbols. Panics if not set.
-fn get_primitive_syms() -> PrimitiveTypeSpurs {
-    PRIMITIVE_SYMS.with(|syms| {
-        syms.borrow()
-            .expect("Primitive type symbols not initialized - call parse() instead of using parsers directly")
-    })
-}
+/// Type alias for parser extras that carries primitive type symbols as state.
+/// This replaces the previous thread-local approach with compile-time safe state passing.
+type ParserExtras<'src> = extra::Full<Rich<'src, TokenKind>, SimpleState<PrimitiveTypeSpurs>, ()>;
 
 /// Convert a `usize` offset to `u32`, asserting it fits in debug builds.
 ///
@@ -97,7 +87,7 @@ fn to_rue_span(span: SimpleSpan) -> Span {
 }
 
 /// Parser that produces Ident from identifier tokens
-fn ident_parser<'src, I>() -> impl Parser<'src, I, Ident, extra::Err<Rich<'src, TokenKind>>> + Clone
+fn ident_parser<'src, I>() -> impl Parser<'src, I, Ident, ParserExtras<'src>> + Clone
 where
     I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
 {
@@ -111,68 +101,85 @@ where
 
 /// Parser for primitive type keywords: i8, i16, i32, i64, u8, u16, u32, u64, bool
 /// These are reserved keywords that cannot be used as identifiers.
-fn primitive_type_parser<'src, I>()
--> impl Parser<'src, I, TypeExpr, extra::Err<Rich<'src, TokenKind>>> + Clone
+fn primitive_type_parser<'src, I>() -> impl Parser<'src, I, TypeExpr, ParserExtras<'src>> + Clone
 where
     I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
 {
-    let syms = get_primitive_syms();
-
-    // Create individual parsers for each primitive type
-    let i8_parser = just(TokenKind::I8).map_with(move |_, e| {
-        TypeExpr::Named(Ident {
-            name: syms.i8,
-            span: to_rue_span(e.span()),
-        })
-    });
-    let i16_parser = just(TokenKind::I16).map_with(move |_, e| {
-        TypeExpr::Named(Ident {
-            name: syms.i16,
-            span: to_rue_span(e.span()),
-        })
-    });
-    let i32_parser = just(TokenKind::I32).map_with(move |_, e| {
-        TypeExpr::Named(Ident {
-            name: syms.i32,
-            span: to_rue_span(e.span()),
-        })
-    });
-    let i64_parser = just(TokenKind::I64).map_with(move |_, e| {
-        TypeExpr::Named(Ident {
-            name: syms.i64,
-            span: to_rue_span(e.span()),
-        })
-    });
-    let u8_parser = just(TokenKind::U8).map_with(move |_, e| {
-        TypeExpr::Named(Ident {
-            name: syms.u8,
-            span: to_rue_span(e.span()),
-        })
-    });
-    let u16_parser = just(TokenKind::U16).map_with(move |_, e| {
-        TypeExpr::Named(Ident {
-            name: syms.u16,
-            span: to_rue_span(e.span()),
-        })
-    });
-    let u32_parser = just(TokenKind::U32).map_with(move |_, e| {
-        TypeExpr::Named(Ident {
-            name: syms.u32,
-            span: to_rue_span(e.span()),
-        })
-    });
-    let u64_parser = just(TokenKind::U64).map_with(move |_, e| {
-        TypeExpr::Named(Ident {
-            name: syms.u64,
-            span: to_rue_span(e.span()),
-        })
-    });
-    let bool_parser = just(TokenKind::Bool).map_with(move |_, e| {
-        TypeExpr::Named(Ident {
-            name: syms.bool,
-            span: to_rue_span(e.span()),
-        })
-    });
+    // Access primitive type symbols from parser state via e.state().0
+    // SimpleState<T> wraps T in a .0 field
+    // Type annotation on closure parameter is needed to help Rust infer the Extra type
+    let i8_parser =
+        just(TokenKind::I8).map_with(|_, e: &mut MapExtra<'src, '_, I, ParserExtras<'src>>| {
+            let syms = e.state().0;
+            TypeExpr::Named(Ident {
+                name: syms.i8,
+                span: to_rue_span(e.span()),
+            })
+        });
+    let i16_parser =
+        just(TokenKind::I16).map_with(|_, e: &mut MapExtra<'src, '_, I, ParserExtras<'src>>| {
+            let syms = e.state().0;
+            TypeExpr::Named(Ident {
+                name: syms.i16,
+                span: to_rue_span(e.span()),
+            })
+        });
+    let i32_parser =
+        just(TokenKind::I32).map_with(|_, e: &mut MapExtra<'src, '_, I, ParserExtras<'src>>| {
+            let syms = e.state().0;
+            TypeExpr::Named(Ident {
+                name: syms.i32,
+                span: to_rue_span(e.span()),
+            })
+        });
+    let i64_parser =
+        just(TokenKind::I64).map_with(|_, e: &mut MapExtra<'src, '_, I, ParserExtras<'src>>| {
+            let syms = e.state().0;
+            TypeExpr::Named(Ident {
+                name: syms.i64,
+                span: to_rue_span(e.span()),
+            })
+        });
+    let u8_parser =
+        just(TokenKind::U8).map_with(|_, e: &mut MapExtra<'src, '_, I, ParserExtras<'src>>| {
+            let syms = e.state().0;
+            TypeExpr::Named(Ident {
+                name: syms.u8,
+                span: to_rue_span(e.span()),
+            })
+        });
+    let u16_parser =
+        just(TokenKind::U16).map_with(|_, e: &mut MapExtra<'src, '_, I, ParserExtras<'src>>| {
+            let syms = e.state().0;
+            TypeExpr::Named(Ident {
+                name: syms.u16,
+                span: to_rue_span(e.span()),
+            })
+        });
+    let u32_parser =
+        just(TokenKind::U32).map_with(|_, e: &mut MapExtra<'src, '_, I, ParserExtras<'src>>| {
+            let syms = e.state().0;
+            TypeExpr::Named(Ident {
+                name: syms.u32,
+                span: to_rue_span(e.span()),
+            })
+        });
+    let u64_parser =
+        just(TokenKind::U64).map_with(|_, e: &mut MapExtra<'src, '_, I, ParserExtras<'src>>| {
+            let syms = e.state().0;
+            TypeExpr::Named(Ident {
+                name: syms.u64,
+                span: to_rue_span(e.span()),
+            })
+        });
+    let bool_parser =
+        just(TokenKind::Bool).map_with(|_, e: &mut MapExtra<'src, '_, I, ParserExtras<'src>>| {
+            let syms = e.state().0;
+            TypeExpr::Named(Ident {
+                name: syms.bool,
+                span: to_rue_span(e.span()),
+            })
+        });
 
     choice((
         i8_parser,
@@ -188,8 +195,7 @@ where
 }
 
 /// Parser for type expressions: primitive types (i32, bool, etc.), () for unit, ! for never, or [T; N] for arrays
-fn type_parser<'src, I>()
--> impl Parser<'src, I, TypeExpr, extra::Err<Rich<'src, TokenKind>>> + Clone
+fn type_parser<'src, I>() -> impl Parser<'src, I, TypeExpr, ParserExtras<'src>> + Clone
 where
     I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
 {
@@ -231,8 +237,7 @@ where
 }
 
 /// Parser for parameter mode: inout or borrow
-fn param_mode_parser<'src, I>()
--> impl Parser<'src, I, ParamMode, extra::Err<Rich<'src, TokenKind>>> + Clone
+fn param_mode_parser<'src, I>() -> impl Parser<'src, I, ParamMode, ParserExtras<'src>> + Clone
 where
     I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
 {
@@ -243,7 +248,7 @@ where
 }
 
 /// Parser for function parameters: [inout|borrow] name: type
-fn param_parser<'src, I>() -> impl Parser<'src, I, Param, extra::Err<Rich<'src, TokenKind>>> + Clone
+fn param_parser<'src, I>() -> impl Parser<'src, I, Param, ParserExtras<'src>> + Clone
 where
     I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
 {
@@ -261,8 +266,7 @@ where
 }
 
 /// Parser for struct field declarations: name: type
-fn field_decl_parser<'src, I>()
--> impl Parser<'src, I, FieldDecl, extra::Err<Rich<'src, TokenKind>>> + Clone
+fn field_decl_parser<'src, I>() -> impl Parser<'src, I, FieldDecl, ParserExtras<'src>> + Clone
 where
     I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
 {
@@ -277,8 +281,7 @@ where
 }
 
 /// Parser for comma-separated struct field declarations
-fn field_decls_parser<'src, I>()
--> impl Parser<'src, I, Vec<FieldDecl>, extra::Err<Rich<'src, TokenKind>>> + Clone
+fn field_decls_parser<'src, I>() -> impl Parser<'src, I, Vec<FieldDecl>, ParserExtras<'src>> + Clone
 where
     I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
 {
@@ -289,8 +292,7 @@ where
 }
 
 /// Parser for comma-separated parameters
-fn params_parser<'src, I>()
--> impl Parser<'src, I, Vec<Param>, extra::Err<Rich<'src, TokenKind>>> + Clone
+fn params_parser<'src, I>() -> impl Parser<'src, I, Vec<Param>, ParserExtras<'src>> + Clone
 where
     I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
 {
@@ -300,8 +302,7 @@ where
 }
 
 /// Parser for a single directive: @name or @name(arg1, arg2, ...)
-fn directive_parser<'src, I>()
--> impl Parser<'src, I, Directive, extra::Err<Rich<'src, TokenKind>>> + Clone
+fn directive_parser<'src, I>() -> impl Parser<'src, I, Directive, ParserExtras<'src>> + Clone
 where
     I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
 {
@@ -324,8 +325,7 @@ where
 }
 
 /// Parser for zero or more directives
-fn directives_parser<'src, I>()
--> impl Parser<'src, I, Vec<Directive>, extra::Err<Rich<'src, TokenKind>>> + Clone
+fn directives_parser<'src, I>() -> impl Parser<'src, I, Vec<Directive>, ParserExtras<'src>> + Clone
 where
     I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
 {
@@ -333,8 +333,7 @@ where
 }
 
 /// Parser for argument mode: inout or borrow
-fn arg_mode_parser<'src, I>()
--> impl Parser<'src, I, ArgMode, extra::Err<Rich<'src, TokenKind>>> + Clone
+fn arg_mode_parser<'src, I>() -> impl Parser<'src, I, ArgMode, ParserExtras<'src>> + Clone
 where
     I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
 {
@@ -346,8 +345,8 @@ where
 
 /// Parser for a single call argument: [inout|borrow] expr
 fn call_arg_parser<'src, I>(
-    expr: impl Parser<'src, I, Expr, extra::Err<Rich<'src, TokenKind>>> + Clone,
-) -> impl Parser<'src, I, CallArg, extra::Err<Rich<'src, TokenKind>>> + Clone
+    expr: impl Parser<'src, I, Expr, ParserExtras<'src>> + Clone,
+) -> impl Parser<'src, I, CallArg, ParserExtras<'src>> + Clone
 where
     I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
 {
@@ -363,8 +362,8 @@ where
 
 /// Parser for comma-separated call arguments with optional inout
 fn call_args_parser<'src, I>(
-    expr: impl Parser<'src, I, Expr, extra::Err<Rich<'src, TokenKind>>> + Clone,
-) -> impl Parser<'src, I, Vec<CallArg>, extra::Err<Rich<'src, TokenKind>>> + Clone
+    expr: impl Parser<'src, I, Expr, ParserExtras<'src>> + Clone,
+) -> impl Parser<'src, I, Vec<CallArg>, ParserExtras<'src>> + Clone
 where
     I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
 {
@@ -375,8 +374,8 @@ where
 
 /// Parser for comma-separated expression arguments (for contexts that don't support inout)
 fn args_parser<'src, I>(
-    expr: impl Parser<'src, I, Expr, extra::Err<Rich<'src, TokenKind>>> + Clone,
-) -> impl Parser<'src, I, Vec<Expr>, extra::Err<Rich<'src, TokenKind>>> + Clone
+    expr: impl Parser<'src, I, Expr, ParserExtras<'src>> + Clone,
+) -> impl Parser<'src, I, Vec<Expr>, ParserExtras<'src>> + Clone
 where
     I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
 {
@@ -385,8 +384,8 @@ where
 
 /// Parser for struct field initializers: name: expr
 fn field_init_parser<'src, I>(
-    expr: impl Parser<'src, I, Expr, extra::Err<Rich<'src, TokenKind>>> + Clone,
-) -> impl Parser<'src, I, FieldInit, extra::Err<Rich<'src, TokenKind>>> + Clone
+    expr: impl Parser<'src, I, Expr, ParserExtras<'src>> + Clone,
+) -> impl Parser<'src, I, FieldInit, ParserExtras<'src>> + Clone
 where
     I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
 {
@@ -402,8 +401,8 @@ where
 
 /// Parser for comma-separated field initializers
 fn field_inits_parser<'src, I>(
-    expr: impl Parser<'src, I, Expr, extra::Err<Rich<'src, TokenKind>>> + Clone,
-) -> impl Parser<'src, I, Vec<FieldInit>, extra::Err<Rich<'src, TokenKind>>> + Clone
+    expr: impl Parser<'src, I, Expr, ParserExtras<'src>> + Clone,
+) -> impl Parser<'src, I, Vec<FieldInit>, ParserExtras<'src>> + Clone
 where
     I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
 {
@@ -465,7 +464,7 @@ mod precedence {
 }
 
 /// Expression parser with Pratt parsing for operator precedence
-fn expr_parser<'src, I>() -> impl Parser<'src, I, Expr, extra::Err<Rich<'src, TokenKind>>> + Clone
+fn expr_parser<'src, I>() -> impl Parser<'src, I, Expr, ParserExtras<'src>> + Clone
 where
     I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
 {
@@ -595,8 +594,7 @@ where
 }
 
 /// Parser for patterns in match arms
-fn pattern_parser<'src, I>()
--> impl Parser<'src, I, Pattern, extra::Err<Rich<'src, TokenKind>>> + Clone
+fn pattern_parser<'src, I>() -> impl Parser<'src, I, Pattern, ParserExtras<'src>> + Clone
 where
     I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
 {
@@ -661,8 +659,8 @@ where
 
 /// Parser for a single match arm: pattern => expr
 fn match_arm_parser<'src, I>(
-    expr: impl Parser<'src, I, Expr, extra::Err<Rich<'src, TokenKind>>> + Clone,
-) -> impl Parser<'src, I, MatchArm, extra::Err<Rich<'src, TokenKind>>> + Clone
+    expr: impl Parser<'src, I, Expr, ParserExtras<'src>> + Clone,
+) -> impl Parser<'src, I, MatchArm, ParserExtras<'src>> + Clone
 where
     I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
 {
@@ -677,7 +675,7 @@ where
 }
 
 /// Parser for literal expressions: integers, strings, booleans, and unit
-fn literal_parser<'src, I>() -> impl Parser<'src, I, Expr, extra::Err<Rich<'src, TokenKind>>> + Clone
+fn literal_parser<'src, I>() -> impl Parser<'src, I, Expr, ParserExtras<'src>> + Clone
 where
     I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
 {
@@ -726,8 +724,8 @@ where
 
 /// Parser for control flow expressions: break, continue, return, if, while, loop, match
 fn control_flow_parser<'src, I>(
-    expr: impl Parser<'src, I, Expr, extra::Err<Rich<'src, TokenKind>>> + Clone + 'src,
-) -> impl Parser<'src, I, Expr, extra::Err<Rich<'src, TokenKind>>> + Clone
+    expr: impl Parser<'src, I, Expr, ParserExtras<'src>> + Clone + 'src,
+) -> impl Parser<'src, I, Expr, ParserExtras<'src>> + Clone
 where
     I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
 {
@@ -850,8 +848,8 @@ enum IdentSuffix {
 
 /// Parser for identifier-based expressions: identifiers, function calls, struct literals, and paths
 fn call_and_access_parser<'src, I>(
-    expr: impl Parser<'src, I, Expr, extra::Err<Rich<'src, TokenKind>>> + Clone,
-) -> impl Parser<'src, I, Expr, extra::Err<Rich<'src, TokenKind>>> + Clone
+    expr: impl Parser<'src, I, Expr, ParserExtras<'src>> + Clone,
+) -> impl Parser<'src, I, Expr, ParserExtras<'src>> + Clone
 where
     I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
 {
@@ -920,9 +918,9 @@ enum Suffix {
 
 /// Wraps a primary expression parser with field access, method call, and indexing suffixes
 fn with_suffix_parser<'src, I>(
-    primary: impl Parser<'src, I, Expr, extra::Err<Rich<'src, TokenKind>>> + Clone,
-    expr: impl Parser<'src, I, Expr, extra::Err<Rich<'src, TokenKind>>> + Clone,
-) -> impl Parser<'src, I, Expr, extra::Err<Rich<'src, TokenKind>>> + Clone
+    primary: impl Parser<'src, I, Expr, ParserExtras<'src>> + Clone,
+    expr: impl Parser<'src, I, Expr, ParserExtras<'src>> + Clone,
+) -> impl Parser<'src, I, Expr, ParserExtras<'src>> + Clone
 where
     I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
 {
@@ -984,8 +982,8 @@ where
 
 /// Atom parser - primary expressions (literals, identifiers, parens, blocks, control flow)
 fn atom_parser<'src, I>(
-    expr: impl Parser<'src, I, Expr, extra::Err<Rich<'src, TokenKind>>> + Clone + 'src,
-) -> impl Parser<'src, I, Expr, extra::Err<Rich<'src, TokenKind>>> + Clone
+    expr: impl Parser<'src, I, Expr, ParserExtras<'src>> + Clone + 'src,
+) -> impl Parser<'src, I, Expr, ParserExtras<'src>> + Clone
 where
     I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
 {
@@ -1114,8 +1112,7 @@ enum ExprFollower {
 }
 
 /// Parser for a let binding pattern: either an identifier or _ (wildcard/discard)
-fn let_pattern_parser<'src, I>()
--> impl Parser<'src, I, LetPattern, extra::Err<Rich<'src, TokenKind>>> + Clone
+fn let_pattern_parser<'src, I>() -> impl Parser<'src, I, LetPattern, ParserExtras<'src>> + Clone
 where
     I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
 {
@@ -1127,8 +1124,8 @@ where
 
 /// Parser for let statements: [@directive]* let [mut] pattern [: type] = expr;
 fn let_statement_parser<'src, I>(
-    expr: impl Parser<'src, I, Expr, extra::Err<Rich<'src, TokenKind>>> + Clone,
-) -> impl Parser<'src, I, Statement, extra::Err<Rich<'src, TokenKind>>> + Clone
+    expr: impl Parser<'src, I, Expr, ParserExtras<'src>> + Clone,
+) -> impl Parser<'src, I, Statement, ParserExtras<'src>> + Clone
 where
     I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
 {
@@ -1161,8 +1158,8 @@ enum AssignSuffix {
 /// Parser for assignment target: variable, field access, or index access
 /// Parses: name or name.field or name[idx] or name.field[idx].field...
 fn assign_target_parser<'src, I>(
-    expr: impl Parser<'src, I, Expr, extra::Err<Rich<'src, TokenKind>>> + Clone,
-) -> impl Parser<'src, I, AssignTarget, extra::Err<Rich<'src, TokenKind>>> + Clone
+    expr: impl Parser<'src, I, Expr, ParserExtras<'src>> + Clone,
+) -> impl Parser<'src, I, AssignTarget, ParserExtras<'src>> + Clone
 where
     I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
 {
@@ -1241,8 +1238,8 @@ where
 /// Parser for assignment statements: target = expr;
 /// Supports variable (x = 5), field (point.x = 5), and index (arr[0] = 5) assignment
 fn assign_statement_parser<'src, I>(
-    expr: impl Parser<'src, I, Expr, extra::Err<Rich<'src, TokenKind>>> + Clone,
-) -> impl Parser<'src, I, Statement, extra::Err<Rich<'src, TokenKind>>> + Clone
+    expr: impl Parser<'src, I, Expr, ParserExtras<'src>> + Clone,
+) -> impl Parser<'src, I, Statement, ParserExtras<'src>> + Clone
 where
     I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
 {
@@ -1342,8 +1339,8 @@ fn is_diverging_expr(e: &Expr) -> bool {
 /// The assignment parser is tried before general expressions because `x = 5;`
 /// could otherwise be misparsed as expression `x` followed by unexpected `=`.
 fn block_item_parser<'src, I>(
-    expr: impl Parser<'src, I, Expr, extra::Err<Rich<'src, TokenKind>>> + Clone + 'src,
-) -> impl Parser<'src, I, BlockItem, extra::Err<Rich<'src, TokenKind>>> + Clone
+    expr: impl Parser<'src, I, Expr, ParserExtras<'src>> + Clone + 'src,
+) -> impl Parser<'src, I, BlockItem, ParserExtras<'src>> + Clone
 where
     I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
 {
@@ -1449,8 +1446,8 @@ fn process_block_items(items: Vec<BlockItem>, block_span: Span) -> (Vec<Statemen
 
 /// Parser for blocks that may end without a final expression (for if/while bodies)
 fn maybe_unit_block_parser<'src, I>(
-    expr: impl Parser<'src, I, Expr, extra::Err<Rich<'src, TokenKind>>> + Clone + 'src,
-) -> impl Parser<'src, I, BlockExpr, extra::Err<Rich<'src, TokenKind>>> + Clone
+    expr: impl Parser<'src, I, Expr, ParserExtras<'src>> + Clone + 'src,
+) -> impl Parser<'src, I, BlockExpr, ParserExtras<'src>> + Clone
 where
     I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
 {
@@ -1471,8 +1468,8 @@ where
 
 /// Parser for blocks that require a final expression: { statements... expr }
 fn block_parser<'src, I>(
-    expr: impl Parser<'src, I, Expr, extra::Err<Rich<'src, TokenKind>>> + Clone + 'src,
-) -> impl Parser<'src, I, Expr, extra::Err<Rich<'src, TokenKind>>> + Clone
+    expr: impl Parser<'src, I, Expr, ParserExtras<'src>> + Clone + 'src,
+) -> impl Parser<'src, I, Expr, ParserExtras<'src>> + Clone
 where
     I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
 {
@@ -1492,8 +1489,7 @@ where
 }
 
 /// Parser for function definitions: [@directive]* fn name(params) -> Type { body }
-fn function_parser<'src, I>()
--> impl Parser<'src, I, Function, extra::Err<Rich<'src, TokenKind>>> + Clone
+fn function_parser<'src, I>() -> impl Parser<'src, I, Function, ParserExtras<'src>> + Clone
 where
     I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
 {
@@ -1517,8 +1513,7 @@ where
 }
 
 /// Parser for struct definitions: [@directive]* struct Name { field: Type, ... }
-fn struct_parser<'src, I>()
--> impl Parser<'src, I, StructDecl, extra::Err<Rich<'src, TokenKind>>> + Clone
+fn struct_parser<'src, I>() -> impl Parser<'src, I, StructDecl, ParserExtras<'src>> + Clone
 where
     I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
 {
@@ -1534,8 +1529,7 @@ where
 }
 
 /// Parser for enum variant: just an identifier
-fn enum_variant_parser<'src, I>()
--> impl Parser<'src, I, EnumVariant, extra::Err<Rich<'src, TokenKind>>> + Clone
+fn enum_variant_parser<'src, I>() -> impl Parser<'src, I, EnumVariant, ParserExtras<'src>> + Clone
 where
     I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
 {
@@ -1547,7 +1541,7 @@ where
 
 /// Parser for comma-separated enum variants
 fn enum_variants_parser<'src, I>()
--> impl Parser<'src, I, Vec<EnumVariant>, extra::Err<Rich<'src, TokenKind>>> + Clone
+-> impl Parser<'src, I, Vec<EnumVariant>, ParserExtras<'src>> + Clone
 where
     I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
 {
@@ -1558,8 +1552,7 @@ where
 }
 
 /// Parser for enum definitions: enum Name { Variant1, Variant2, ... }
-fn enum_parser<'src, I>()
--> impl Parser<'src, I, EnumDecl, extra::Err<Rich<'src, TokenKind>>> + Clone
+fn enum_parser<'src, I>() -> impl Parser<'src, I, EnumDecl, ParserExtras<'src>> + Clone
 where
     I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
 {
@@ -1575,8 +1568,7 @@ where
 
 /// Parser for method definitions: [@directive]* fn name(self, params) -> Type { body }
 /// Methods differ from functions in that they can have `self` as the first parameter.
-fn method_parser<'src, I>()
--> impl Parser<'src, I, Method, extra::Err<Rich<'src, TokenKind>>> + Clone
+fn method_parser<'src, I>() -> impl Parser<'src, I, Method, ParserExtras<'src>> + Clone
 where
     I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
 {
@@ -1625,8 +1617,7 @@ where
 }
 
 /// Parser for impl blocks: impl Type { fn... }
-fn impl_parser<'src, I>()
--> impl Parser<'src, I, ImplBlock, extra::Err<Rich<'src, TokenKind>>> + Clone
+fn impl_parser<'src, I>() -> impl Parser<'src, I, ImplBlock, ParserExtras<'src>> + Clone
 where
     I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
 {
@@ -1646,8 +1637,7 @@ where
 }
 
 /// Parser for drop fn declarations: drop fn TypeName(self) { body }
-fn drop_fn_parser<'src, I>()
--> impl Parser<'src, I, DropFn, extra::Err<Rich<'src, TokenKind>>> + Clone
+fn drop_fn_parser<'src, I>() -> impl Parser<'src, I, DropFn, ParserExtras<'src>> + Clone
 where
     I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
 {
@@ -1672,7 +1662,7 @@ where
 }
 
 /// Parser for top-level items (functions, structs, enums, impl blocks, and drop fns)
-fn item_parser<'src, I>() -> impl Parser<'src, I, Item, extra::Err<Rich<'src, TokenKind>>> + Clone
+fn item_parser<'src, I>() -> impl Parser<'src, I, Item, ParserExtras<'src>> + Clone
 where
     I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
 {
@@ -1686,7 +1676,7 @@ where
 }
 
 /// Main parser that produces an AST
-fn ast_parser<'src, I>() -> impl Parser<'src, I, Ast, extra::Err<Rich<'src, TokenKind>>> + Clone
+fn ast_parser<'src, I>() -> impl Parser<'src, I, Ast, ParserExtras<'src>> + Clone
 where
     I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
 {
@@ -1792,9 +1782,9 @@ impl ChumskyParser {
     ///
     /// Returns all parse errors if parsing fails, not just the first one.
     pub fn parse(mut self) -> MultiErrorResult<(Ast, ThreadedRodeo)> {
-        // Pre-intern primitive type symbols and store in thread-local
+        // Pre-intern primitive type symbols for use as parser state
         let syms = PrimitiveTypeSpurs::new(&mut self.interner);
-        PRIMITIVE_SYMS.with(|s| *s.borrow_mut() = Some(syms));
+        let mut state = SimpleState(syms);
 
         // Create a stream from the token iterator
         let token_iter = self.tokens.iter().cloned();
@@ -1804,13 +1794,13 @@ impl ChumskyParser {
         let eoi: SimpleSpan = (self.source_len..self.source_len).into();
         let mapped = stream.map(eoi, |(tok, span)| (tok, span));
 
-        let result = ast_parser().parse(mapped).into_result().map_err(|errs| {
-            let errors: Vec<CompileError> = errs.into_iter().map(convert_error).collect();
-            CompileErrors::from(errors)
-        });
-
-        // Clear thread-local after parsing
-        PRIMITIVE_SYMS.with(|s| *s.borrow_mut() = None);
+        let result = ast_parser()
+            .parse_with_state(mapped, &mut state)
+            .into_result()
+            .map_err(|errs| {
+                let errors: Vec<CompileError> = errs.into_iter().map(convert_error).collect();
+                CompileErrors::from(errors)
+            });
 
         result.map(|ast| (ast, self.interner))
     }
