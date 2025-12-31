@@ -16,8 +16,8 @@ use rue_parser::{
 };
 
 use crate::inst::{
-    Inst, InstData, InstRef, Rir, RirArgMode, RirCallArg, RirDirective, RirParam, RirParamMode,
-    RirPattern,
+    FunctionSpan, Inst, InstData, InstRef, Rir, RirArgMode, RirCallArg, RirDirective, RirParam,
+    RirParamMode, RirPattern,
 };
 
 /// Generates RIR from an AST.
@@ -193,6 +193,9 @@ impl<'a> AstGen<'a> {
             .collect();
         let (params_start, params_len) = self.rir.add_params(&params);
 
+        // Record the body start before generating body instructions
+        let body_start = InstRef::from_raw(self.rir.current_inst_index());
+
         // Generate body expression
         let body = self.gen_expr(&method.body);
 
@@ -201,7 +204,7 @@ impl<'a> AstGen<'a> {
 
         // Emit methods as FnDecl instructions with has_self flag.
         // Sema uses has_self to add the implicit self parameter for methods.
-        self.rir.add_inst(Inst {
+        let decl = self.rir.add_inst(Inst {
             data: InstData::FnDecl {
                 directives_start,
                 directives_len,
@@ -213,7 +216,14 @@ impl<'a> AstGen<'a> {
                 has_self,
             },
             span: method.span,
-        })
+        });
+
+        // Record the function span for per-function analysis
+        // Methods are also tracked as functions for per-function analysis
+        self.rir
+            .add_function_span(FunctionSpan::new(name, body_start, decl));
+
+        decl
     }
 
     /// Convert AST directives to RIR directives
@@ -284,12 +294,15 @@ impl<'a> AstGen<'a> {
             .collect();
         let (params_start, params_len) = self.rir.add_params(&params);
 
+        // Record the body start before generating body instructions
+        let body_start = InstRef::from_raw(self.rir.current_inst_index());
+
         // Generate body expression
         let body = self.gen_expr(&func.body);
 
         // Create function declaration instruction
         // Regular functions don't have a self receiver
-        self.rir.add_inst(Inst {
+        let decl = self.rir.add_inst(Inst {
             data: InstData::FnDecl {
                 directives_start,
                 directives_len,
@@ -301,7 +314,13 @@ impl<'a> AstGen<'a> {
                 has_self: false,
             },
             span: func.span,
-        })
+        });
+
+        // Record the function span for per-function analysis
+        self.rir
+            .add_function_span(FunctionSpan::new(name, body_start, decl));
+
+        decl
     }
 
     fn gen_expr(&mut self, expr: &Expr) -> InstRef {
@@ -1545,5 +1564,206 @@ mod tests {
         assert!(output.contains("struct_init Point"));
         assert!(output.contains("assoc_fn_call Point::origin"));
         assert!(output.contains("field_get"));
+    }
+
+    // ===== Function span tests =====
+
+    #[test]
+    fn test_function_spans_simple() {
+        let (rir, interner) = gen_rir("fn main() -> i32 { 42 }");
+
+        // Should have exactly one function span
+        assert_eq!(rir.function_count(), 1);
+
+        let spans: Vec<_> = rir.functions().collect();
+        assert_eq!(spans.len(), 1);
+
+        let span = &spans[0];
+        assert_eq!(interner.get(span.name), "main");
+
+        // The function should have 2 instructions: IntConst(42) and FnDecl
+        assert_eq!(span.instruction_count(), 2);
+
+        // The FnDecl should be the last instruction
+        let fn_inst = rir.get(span.decl);
+        assert!(matches!(fn_inst.data, InstData::FnDecl { .. }));
+    }
+
+    #[test]
+    fn test_function_spans_multiple_functions() {
+        let source = r#"
+            fn helper() -> i32 { 1 }
+            fn main() -> i32 { 42 }
+        "#;
+        let (rir, interner) = gen_rir(source);
+
+        // Should have two function spans
+        assert_eq!(rir.function_count(), 2);
+
+        let spans: Vec<_> = rir.functions().collect();
+        assert_eq!(spans.len(), 2);
+
+        // First function: helper
+        assert_eq!(interner.get(spans[0].name), "helper");
+        assert_eq!(spans[0].instruction_count(), 2);
+
+        // Second function: main
+        assert_eq!(interner.get(spans[1].name), "main");
+        assert_eq!(spans[1].instruction_count(), 2);
+
+        // Function spans should be non-overlapping
+        assert!(
+            spans[0].decl.as_u32() < spans[1].body_start.as_u32(),
+            "helper should end before main starts"
+        );
+    }
+
+    #[test]
+    fn test_function_spans_with_methods() {
+        let source = r#"
+            struct Point { x: i32 }
+            impl Point {
+                fn get_x(self) -> i32 { self.x }
+                fn origin() -> Point { Point { x: 0 } }
+            }
+            fn main() -> i32 { 0 }
+        "#;
+        let (rir, interner) = gen_rir(source);
+
+        // Should have three function spans: get_x, origin, main
+        assert_eq!(rir.function_count(), 3);
+
+        let spans: Vec<_> = rir.functions().collect();
+
+        // Methods should be tracked as well
+        let names: Vec<_> = spans.iter().map(|s| interner.get(s.name)).collect();
+        assert!(names.contains(&"get_x"));
+        assert!(names.contains(&"origin"));
+        assert!(names.contains(&"main"));
+    }
+
+    #[test]
+    fn test_function_view() {
+        let source = r#"
+            fn helper(x: i32) -> i32 { x + 1 }
+            fn main() -> i32 { helper(41) }
+        "#;
+        let (rir, interner) = gen_rir(source);
+
+        // Find the main function span
+        let main_span = rir.find_function(interner.intern("main")).unwrap();
+
+        // Get a view of main's instructions
+        let view = rir.function_view(main_span);
+
+        // The view should contain the right number of instructions
+        assert_eq!(view.len(), main_span.instruction_count() as usize);
+
+        // The last instruction should be the FnDecl
+        let fn_decl = view.fn_decl();
+        match &fn_decl.data {
+            InstData::FnDecl { name, .. } => {
+                assert_eq!(interner.get(*name), "main");
+            }
+            _ => panic!("Expected FnDecl"),
+        }
+
+        // We should be able to iterate over the view
+        let mut found_call = false;
+        for (_, inst) in view.iter() {
+            if matches!(inst.data, InstData::Call { .. }) {
+                found_call = true;
+            }
+        }
+        assert!(found_call, "main should contain a call to helper");
+    }
+
+    #[test]
+    fn test_function_span_complex_body() {
+        let source = r#"
+            fn complex() -> i32 {
+                let x = 1;
+                let y = 2;
+                if x < y {
+                    x + y
+                } else {
+                    x - y
+                }
+            }
+        "#;
+        let (rir, interner) = gen_rir(source);
+
+        assert_eq!(rir.function_count(), 1);
+
+        let span = rir.find_function(interner.intern("complex")).unwrap();
+
+        // The function should have multiple instructions for the body
+        // At minimum: 2 IntConsts, 2 Allocs, comparison, branches, operations, FnDecl
+        assert!(
+            span.instruction_count() >= 8,
+            "Complex function should have at least 8 instructions, got {}",
+            span.instruction_count()
+        );
+
+        // Verify the view contains all expected instruction types
+        let view = rir.function_view(span);
+        let mut has_alloc = false;
+        let mut has_branch = false;
+
+        for (_, inst) in view.iter() {
+            if matches!(inst.data, InstData::Alloc { .. }) {
+                has_alloc = true;
+            }
+            if matches!(inst.data, InstData::Branch { .. }) {
+                has_branch = true;
+            }
+        }
+
+        assert!(has_alloc, "Function should have Alloc instructions");
+        assert!(has_branch, "Function should have Branch instruction");
+    }
+
+    #[test]
+    fn test_find_function() {
+        let source = r#"
+            fn foo() -> i32 { 1 }
+            fn bar() -> i32 { 2 }
+            fn baz() -> i32 { 3 }
+        "#;
+        let (rir, interner) = gen_rir(source);
+
+        // Find existing functions
+        let foo_sym = interner.intern("foo");
+        let bar_sym = interner.intern("bar");
+        let baz_sym = interner.intern("baz");
+        let nonexistent_sym = interner.intern("nonexistent");
+
+        assert!(rir.find_function(foo_sym).is_some());
+        assert!(rir.find_function(bar_sym).is_some());
+        assert!(rir.find_function(baz_sym).is_some());
+        assert!(rir.find_function(nonexistent_sym).is_none());
+    }
+
+    #[test]
+    fn test_function_span_ordering() {
+        let source = r#"
+            fn a() -> i32 { 1 }
+            fn b() -> i32 { 2 }
+            fn c() -> i32 { 3 }
+        "#;
+        let (rir, _interner) = gen_rir(source);
+
+        let spans: Vec<_> = rir.functions().collect();
+        assert_eq!(spans.len(), 3);
+
+        // Verify functions are recorded in source order
+        for i in 1..spans.len() {
+            assert!(
+                spans[i - 1].decl.as_u32() < spans[i].body_start.as_u32(),
+                "Function {} should end before function {} starts",
+                i - 1,
+                i
+            );
+        }
     }
 }

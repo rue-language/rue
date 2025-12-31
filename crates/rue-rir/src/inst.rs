@@ -175,6 +175,99 @@ const FIELD_DECL_SIZE: u32 = 2;
 /// Layout: [name: u32, span_start: u32, span_len: u32, args_len: u32, args...]
 /// Variable size due to args.
 
+/// A span marking the boundaries of a function in the RIR.
+///
+/// This allows efficient per-function analysis by identifying which instructions
+/// belong to each function without scanning the entire instruction array.
+#[derive(Debug, Clone)]
+pub struct FunctionSpan {
+    /// Function name symbol
+    pub name: Symbol,
+    /// Index of the first instruction of this function's body.
+    /// This is the first instruction generated for the function's expressions/statements.
+    pub body_start: InstRef,
+    /// Index of the FnDecl instruction for this function.
+    /// This is always the last instruction of the function.
+    pub decl: InstRef,
+}
+
+impl FunctionSpan {
+    /// Create a new function span.
+    pub fn new(name: Symbol, body_start: InstRef, decl: InstRef) -> Self {
+        Self {
+            name,
+            body_start,
+            decl,
+        }
+    }
+
+    /// Get the number of instructions in this function (including the FnDecl).
+    pub fn instruction_count(&self) -> u32 {
+        self.decl.as_u32() - self.body_start.as_u32() + 1
+    }
+}
+
+/// A view into a function's instructions within the RIR.
+///
+/// This provides a way to iterate over just the instructions belonging to a
+/// specific function, enabling per-function analysis without copying data.
+#[derive(Debug)]
+pub struct RirFunctionView<'a> {
+    rir: &'a Rir,
+    body_start: InstRef,
+    decl: InstRef,
+}
+
+impl<'a> RirFunctionView<'a> {
+    /// Get the instruction at the given reference.
+    ///
+    /// Note: The reference must be within this function's range.
+    #[inline]
+    pub fn get(&self, inst_ref: InstRef) -> &'a Inst {
+        debug_assert!(
+            inst_ref.as_u32() >= self.body_start.as_u32()
+                && inst_ref.as_u32() <= self.decl.as_u32(),
+            "InstRef {} is outside function range [{}, {}]",
+            inst_ref,
+            self.body_start,
+            self.decl
+        );
+        self.rir.get(inst_ref)
+    }
+
+    /// Get the FnDecl instruction for this function.
+    #[inline]
+    pub fn fn_decl(&self) -> &'a Inst {
+        self.rir.get(self.decl)
+    }
+
+    /// Iterate over all instructions in this function (including FnDecl).
+    pub fn iter(&self) -> impl Iterator<Item = (InstRef, &'a Inst)> {
+        let start = self.body_start.as_u32();
+        let end = self.decl.as_u32() + 1;
+        (start..end).map(move |i| {
+            let inst_ref = InstRef::from_raw(i);
+            (inst_ref, self.rir.get(inst_ref))
+        })
+    }
+
+    /// Get the number of instructions in this function view.
+    pub fn len(&self) -> usize {
+        (self.decl.as_u32() - self.body_start.as_u32() + 1) as usize
+    }
+
+    /// Whether this view is empty (should never be true for valid functions).
+    pub fn is_empty(&self) -> bool {
+        self.body_start.as_u32() > self.decl.as_u32()
+    }
+
+    /// Access the underlying RIR for operations that need the full context
+    /// (e.g., accessing extra data).
+    pub fn rir(&self) -> &'a Rir {
+        self.rir
+    }
+}
+
 /// The complete RIR for a source file.
 #[derive(Debug, Default)]
 pub struct Rir {
@@ -182,6 +275,8 @@ pub struct Rir {
     instructions: Vec<Inst>,
     /// Extra data for variable-length instruction payloads
     extra: Vec<u32>,
+    /// Function boundaries for per-function analysis
+    function_spans: Vec<FunctionSpan>,
 }
 
 impl Rir {
@@ -543,6 +638,47 @@ impl Rir {
             directives.push(RirDirective { name, args, span });
         }
         directives
+    }
+
+    // ===== Function span methods =====
+
+    /// Add a function span to track function boundaries.
+    pub fn add_function_span(&mut self, span: FunctionSpan) {
+        self.function_spans.push(span);
+    }
+
+    /// Get all function spans.
+    pub fn function_spans(&self) -> &[FunctionSpan] {
+        &self.function_spans
+    }
+
+    /// Iterate over function spans.
+    pub fn functions(&self) -> impl Iterator<Item = &FunctionSpan> {
+        self.function_spans.iter()
+    }
+
+    /// Get the number of functions.
+    pub fn function_count(&self) -> usize {
+        self.function_spans.len()
+    }
+
+    /// Get a view of just one function's instructions.
+    pub fn function_view(&self, fn_span: &FunctionSpan) -> RirFunctionView<'_> {
+        RirFunctionView {
+            rir: self,
+            body_start: fn_span.body_start,
+            decl: fn_span.decl,
+        }
+    }
+
+    /// Find a function span by name.
+    pub fn find_function(&self, name: Symbol) -> Option<&FunctionSpan> {
+        self.function_spans.iter().find(|span| span.name == name)
+    }
+
+    /// Get the current instruction count (useful for tracking body start).
+    pub fn current_inst_index(&self) -> u32 {
+        self.instructions.len() as u32
     }
 }
 
