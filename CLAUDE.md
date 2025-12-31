@@ -93,6 +93,7 @@ graph LR
 | `rue-target` | Target platform configuration |
 | `rue-spec` | Specification test runner |
 | `rue-runtime` | Runtime support |
+| `rue-builtins` | Built-in type definitions (String, future Vec, etc.) |
 
 ### Key Design Decisions
 
@@ -100,6 +101,31 @@ graph LR
 - **Index-based references**: Instructions stored in vectors, referenced by u32 indices (cache-friendly, no lifetimes)
 - **Direct code emission**: No LLVM dependency; machine code emitted directly
 - **Minimal ELF**: Static executables with direct syscalls (Linux x86-64 only)
+- **Built-in types as synthetic structs**: Types like `String` are defined in `rue-builtins` and injected as synthetic structs, not as hardcoded `Type` enum variants (see [ADR-0020](docs/designs/0020-builtin-types-as-structs.md))
+
+### Built-in Types Architecture
+
+Built-in types (currently just `String`, future `Vec<T>`, etc.) are implemented as "synthetic structs" — the compiler injects them before processing user code. This architecture:
+
+- **Eliminates special-casing**: Built-in types flow through the same code paths as user-defined structs
+- **Centralizes metadata**: All type information (fields, methods, operators) lives in `rue-builtins`
+- **Scales to new types**: Adding `Vec<T>` or `HashMap<K,V>` becomes "add an entry to `BUILTIN_TYPES`"
+
+**Key components:**
+
+| Component | Location | Purpose |
+|-----------|----------|---------|
+| Type definitions | `rue-builtins/src/lib.rs` | `BuiltinTypeDef` constants describing fields, methods, operators |
+| Injection point | `rue-air/src/sema.rs` | `inject_builtin_types()` creates synthetic `StructDef` entries |
+| Runtime functions | `rue-runtime/src/lib.rs` | Actual implementations (e.g., `String__len`, `__rue_drop_String`) |
+
+**Adding a new built-in type:**
+
+1. Define a `BuiltinTypeDef` in `rue-builtins/src/lib.rs`
+2. Add it to the `BUILTIN_TYPES` slice
+3. Implement runtime functions in `rue-runtime`
+
+See the module documentation in `rue-builtins` for a detailed example with hypothetical `Vec` type.
 
 ## Testing
 

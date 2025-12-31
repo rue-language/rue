@@ -1,12 +1,12 @@
 ---
 id: 0020
 title: Built-in Types as Synthetic Structs
-status: proposal
+status: implemented
 tags: [architecture, types, refactoring, strings]
 feature-flag:
 created: 2025-12-31
-accepted:
-implemented:
+accepted: 2025-12-31
+implemented: 2025-12-31
 spec-sections: []
 superseded-by:
 ---
@@ -15,7 +15,7 @@ superseded-by:
 
 ## Status
 
-Proposal
+Implemented
 
 ## Summary
 

@@ -11,14 +11,128 @@
 //! flow through the same code paths as user-defined types, eliminating scattered
 //! special-case handling throughout the compiler.
 //!
+//! The injection happens in `Sema::inject_builtin_types()` during the declaration
+//! gathering phase. After injection:
+//!
+//! - The type is accessible by name (e.g., `String`)
+//! - Methods are registered and callable (e.g., `s.len()`)
+//! - Associated functions work (e.g., `String::new()`)
+//! - Operators are supported (e.g., `s1 == s2`)
+//! - Drop glue is automatically generated if `drop_fn` is set
+//!
 //! # Adding a New Built-in Type
 //!
-//! 1. Define a `BuiltinTypeDef` constant describing the type's fields, methods,
-//!    operators, and runtime functions.
-//! 2. Add it to the `BUILTIN_TYPES` slice.
-//! 3. Implement the runtime functions in `rue-runtime`.
+//! To add a new built-in type (e.g., `Vec<T>` when generics are available):
 //!
-//! See `STRING_TYPE` for an example.
+//! ## Step 1: Define the Type
+//!
+//! Create a `BuiltinTypeDef` constant describing the type's structure:
+//!
+//! ```rust,ignore
+//! pub static VEC_TYPE: BuiltinTypeDef = BuiltinTypeDef {
+//!     name: "Vec",  // How users refer to it in source code
+//!     fields: &[
+//!         BuiltinField { name: "ptr", ty: BuiltinFieldType::U64 },
+//!         BuiltinField { name: "len", ty: BuiltinFieldType::U64 },
+//!         BuiltinField { name: "cap", ty: BuiltinFieldType::U64 },
+//!     ],
+//!     is_copy: false,  // Vec owns heap memory, so it's a move type
+//!     drop_fn: Some("__rue_drop_Vec"),  // Runtime destructor
+//!     operators: &[
+//!         // Vec might support equality if elements do
+//!     ],
+//!     associated_fns: &[
+//!         BuiltinAssociatedFn {
+//!             name: "new",
+//!             params: &[],
+//!             return_ty: BuiltinReturnType::SelfType,
+//!             runtime_fn: "Vec__new",
+//!         },
+//!         BuiltinAssociatedFn {
+//!             name: "with_capacity",
+//!             params: &[BuiltinParam { name: "capacity", ty: BuiltinParamType::U64 }],
+//!             return_ty: BuiltinReturnType::SelfType,
+//!             runtime_fn: "Vec__with_capacity",
+//!         },
+//!     ],
+//!     methods: &[
+//!         BuiltinMethod {
+//!             name: "len",
+//!             receiver_mode: ReceiverMode::ByRef,
+//!             params: &[],
+//!             return_ty: BuiltinReturnType::U64,
+//!             runtime_fn: "Vec__len",
+//!         },
+//!         BuiltinMethod {
+//!             name: "push",
+//!             receiver_mode: ReceiverMode::ByMutRef,
+//!             params: &[BuiltinParam { name: "value", ty: BuiltinParamType::U64 }],
+//!             return_ty: BuiltinReturnType::SelfType,
+//!             runtime_fn: "Vec__push",
+//!         },
+//!         // ... more methods
+//!     ],
+//! };
+//! ```
+//!
+//! ## Step 2: Register the Type
+//!
+//! Add it to the `BUILTIN_TYPES` slice:
+//!
+//! ```rust,ignore
+//! pub static BUILTIN_TYPES: &[&BuiltinTypeDef] = &[
+//!     &STRING_TYPE,
+//!     &VEC_TYPE,  // Add new types here
+//! ];
+//! ```
+//!
+//! ## Step 3: Implement Runtime Functions
+//!
+//! In `rue-runtime`, implement the functions referenced in the type definition:
+//!
+//! ```rust,ignore
+//! // In rue-runtime/src/lib.rs or a new module
+//!
+//! #[unsafe(no_mangle)]
+//! pub extern "C" fn Vec__new(out: *mut u64) {
+//!     // Initialize empty Vec at `out` pointer
+//!     unsafe {
+//!         *out = 0;           // ptr = null
+//!         *out.add(1) = 0;    // len = 0
+//!         *out.add(2) = 0;    // cap = 0
+//!     }
+//! }
+//!
+//! #[unsafe(no_mangle)]
+//! pub extern "C" fn __rue_drop_Vec(ptr: *mut u64) {
+//!     // Free the Vec's heap allocation if any
+//!     unsafe {
+//!         let data_ptr = *ptr as *mut u8;
+//!         let cap = *ptr.add(2);
+//!         if cap > 0 {
+//!             __rue_free(data_ptr, cap as usize);
+//!         }
+//!     }
+//! }
+//! ```
+//!
+//! ## Naming Conventions
+//!
+//! - **Associated functions**: `TypeName__function_name` (e.g., `String__new`)
+//! - **Methods**: `TypeName__method_name` (e.g., `String__len`)
+//! - **Drop functions**: `__rue_drop_TypeName` (e.g., `__rue_drop_String`)
+//! - **Operators**: `__rue_typename_op` (e.g., `__rue_str_eq`)
+//!
+//! ## Key Types
+//!
+//! - [`BuiltinTypeDef`]: Complete definition of a built-in type
+//! - [`BuiltinField`]: A field in the struct layout
+//! - [`BuiltinMethod`]: An instance method (takes `self`)
+//! - [`BuiltinAssociatedFn`]: A static function (e.g., `Type::new()`)
+//! - [`BuiltinOperator`]: Operator overload (e.g., `==`, `!=`)
+//! - [`ReceiverMode`]: How `self` is passed to methods
+//!
+//! See [`STRING_TYPE`] for a complete working example.
 
 /// Binary operators that can be overloaded for built-in types.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
