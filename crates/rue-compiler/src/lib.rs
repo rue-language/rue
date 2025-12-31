@@ -234,10 +234,15 @@ pub struct ParsedProgram {
     pub interner: ThreadedRodeo,
 }
 
-/// Parse multiple source files in parallel.
+/// Parse multiple source files with a shared interner.
 ///
-/// Each file is lexed and parsed independently, then the results are collected.
-/// This enables parallel parsing for multi-file compilation.
+/// Each file is lexed and parsed sequentially with a single shared interner.
+/// This ensures Spur values are consistent across all files, enabling cross-file
+/// symbol resolution during semantic analysis.
+///
+/// Note: This uses sequential parsing rather than parallel to share the interner.
+/// A future optimization could add parallel parsing with interner merging and
+/// AST Spur remapping.
 ///
 /// # Arguments
 ///
@@ -245,7 +250,7 @@ pub struct ParsedProgram {
 ///
 /// # Returns
 ///
-/// A `ParsedProgram` containing all parsed files and a merged interner,
+/// A `ParsedProgram` containing all parsed files and the shared interner,
 /// or errors from any file that failed to parse.
 ///
 /// # Example
@@ -261,79 +266,38 @@ pub struct ParsedProgram {
 /// let program = parse_all_files(&sources)?;
 /// ```
 pub fn parse_all_files(sources: &[SourceFile<'_>]) -> MultiErrorResult<ParsedProgram> {
-    // Parse all files in parallel using Rayon
-    let results: Vec<Result<ParsedFile, CompileErrors>> = sources
-        .par_iter()
-        .map(|source| {
-            // Create lexer with file ID for proper error reporting
-            let lexer = Lexer::with_file_id(source.source, source.file_id);
-            let (tokens, interner) = lexer.tokenize().map_err(CompileErrors::from)?;
+    // Parse all files sequentially with a shared interner
+    // This ensures Spur values are consistent across files for cross-file symbol resolution
+    let mut parsed_files = Vec::with_capacity(sources.len());
+    let mut interner = ThreadedRodeo::new();
 
-            // Parse the tokens
-            let parser = Parser::new(tokens, interner);
-            let (ast, interner) = parser.parse()?;
+    for source in sources {
+        // Create lexer with shared interner and file ID for proper error reporting
+        let lexer = Lexer::with_interner_and_file_id(source.source, interner, source.file_id);
 
-            Ok(ParsedFile {
-                path: source.path.to_string(),
-                file_id: source.file_id,
-                ast,
-                interner,
-            })
-        })
-        .collect();
+        // Tokenize - propagate error immediately (interner is consumed)
+        let (tokens, returned_interner) = lexer.tokenize().map_err(CompileErrors::from)?;
+        interner = returned_interner;
 
-    // Collect results and errors
-    let mut parsed_files = Vec::with_capacity(results.len());
-    let mut all_errors: Vec<CompileError> = Vec::new();
+        // Parse the tokens - propagate error immediately (interner is consumed)
+        let parser = Parser::new(tokens, interner);
+        let (ast, returned_interner) = parser.parse()?;
+        interner = returned_interner;
 
-    for result in results {
-        match result {
-            Ok(parsed) => parsed_files.push(parsed),
-            Err(errors) => all_errors.extend(errors.into_iter()),
-        }
+        parsed_files.push(ParsedFile {
+            path: source.path.to_string(),
+            file_id: source.file_id,
+            ast,
+            // Note: interner is shared, but we store a dummy here for API compatibility
+            // The real interner is in the returned ParsedProgram
+            interner: ThreadedRodeo::new(),
+        });
     }
-
-    // If any files failed to parse, return all errors
-    if !all_errors.is_empty() {
-        return Err(CompileErrors::from(all_errors));
-    }
-
-    // Merge all interners into one
-    let merged_interner = merge_interners(&parsed_files);
 
     Ok(ParsedProgram {
         files: parsed_files,
-        interner: merged_interner,
+        interner,
     })
-}
-
-/// Merge string interners from all parsed files into a unified interner.
-///
-/// This creates a new interner and re-interns all strings from the file-specific
-/// interners. The symbols in the ASTs are still valid because we're using
-/// ThreadedRodeo which gives the same Spur for the same string.
-fn merge_interners(files: &[ParsedFile]) -> ThreadedRodeo {
-    let merged = ThreadedRodeo::new();
-
-    for file in files {
-        // Re-intern all strings from this file's interner into the merged one.
-        // ThreadedRodeo::get_or_intern returns the same Spur for the same string,
-        // so existing Spur values in the AST remain valid.
-        for (spur, string) in file.interner.iter() {
-            // We need to ensure the string is in the merged interner.
-            // The key insight is that lasso's ThreadedRodeo guarantees the same
-            // string gets the same Spur, so we don't need to remap anything.
-            let new_spur = merged.get_or_intern(string);
-            // Assert that the Spur values match (they should for same strings)
-            debug_assert_eq!(
-                file.interner.resolve(&spur),
-                merged.resolve(&new_spur),
-                "Interner merge failed: string mismatch"
-            );
-        }
-    }
-
-    merged
 }
 
 /// Result of merging symbols from multiple parsed files.
@@ -403,12 +367,15 @@ pub fn merge_symbols(program: ParsedProgram) -> MultiErrorResult<MergedProgram> 
     let mut all_items = Vec::new();
     let mut errors: Vec<CompileError> = Vec::new();
 
+    // Use the shared interner for resolving all symbol names
+    let interner = &program.interner;
+
     for file in &program.files {
         for item in &file.ast.items {
             match item {
                 Item::Function(func) => {
-                    // Use file's interner since Spur values are local to each interner
-                    let name = file.interner.resolve(&func.name.name).to_string();
+                    // Use shared interner for consistent Spur resolution
+                    let name = interner.resolve(&func.name.name).to_string();
                     if let Some(first) = functions.get(&name) {
                         // Duplicate function definition
                         let err = CompileError::new(
@@ -431,8 +398,8 @@ pub fn merge_symbols(program: ParsedProgram) -> MultiErrorResult<MergedProgram> 
                     }
                 }
                 Item::Struct(s) => {
-                    // Use file's interner since Spur values are local to each interner
-                    let name = file.interner.resolve(&s.name.name).to_string();
+                    // Use shared interner for consistent Spur resolution
+                    let name = interner.resolve(&s.name.name).to_string();
                     if let Some(first) = structs.get(&name) {
                         // Duplicate struct definition
                         let err = CompileError::new(
@@ -468,8 +435,8 @@ pub fn merge_symbols(program: ParsedProgram) -> MultiErrorResult<MergedProgram> 
                     }
                 }
                 Item::Enum(e) => {
-                    // Use file's interner since Spur values are local to each interner
-                    let name = file.interner.resolve(&e.name.name).to_string();
+                    // Use shared interner for consistent Spur resolution
+                    let name = interner.resolve(&e.name.name).to_string();
                     if let Some(first) = enums.get(&name) {
                         // Duplicate enum definition
                         let err = CompileError::new(
@@ -629,6 +596,7 @@ pub struct CompileState {
 /// Contains the compiled executable binary and any warnings generated
 /// during compilation. The binary format depends on the target platform
 /// (ELF for Linux, Mach-O for macOS).
+#[derive(Debug)]
 pub struct CompileOutput {
     /// The compiled ELF binary.
     pub elf: Vec<u8>,
@@ -833,6 +801,49 @@ pub fn compile_with_options(
     source: &str,
     options: &CompileOptions,
 ) -> MultiErrorResult<CompileOutput> {
+    // Delegate to multi-file compilation with a single source file
+    let sources = vec![SourceFile::new("<source>", source, FileId::new(1))];
+    compile_multi_file_with_options(&sources, options)
+}
+
+/// Compile multiple source files to an ELF binary.
+///
+/// This is the main entry point for multi-file compilation. It:
+/// 1. Parses all files in parallel
+/// 2. Merges symbols into a unified program
+/// 3. Performs semantic analysis across all files
+/// 4. Generates code for the combined program
+///
+/// Cross-file references (function calls, struct/enum usage) are resolved during
+/// semantic analysis since all symbols are visible in the merged program.
+///
+/// # Arguments
+///
+/// * `sources` - Slice of source files to compile
+/// * `options` - Compilation options (target, linker, optimization level, etc.)
+///
+/// # Returns
+///
+/// A `CompileOutput` containing the ELF binary and any warnings,
+/// or errors if compilation fails.
+///
+/// # Example
+///
+/// ```ignore
+/// use rue_compiler::{SourceFile, CompileOptions, compile_multi_file_with_options};
+/// use rue_span::FileId;
+///
+/// let sources = vec![
+///     SourceFile::new("main.rue", "fn main() -> i32 { helper() }", FileId::new(1)),
+///     SourceFile::new("utils.rue", "fn helper() -> i32 { 42 }", FileId::new(2)),
+/// ];
+/// let options = CompileOptions::default();
+/// let output = compile_multi_file_with_options(&sources, &options)?;
+/// ```
+pub fn compile_multi_file_with_options(
+    sources: &[SourceFile<'_>],
+    options: &CompileOptions,
+) -> MultiErrorResult<CompileOutput> {
     // Configure Rayon's global thread pool based on the jobs setting.
     // This must happen before any parallel operations.
     // 0 means auto-detect (use all cores), which is Rayon's default.
@@ -844,15 +855,28 @@ pub fn compile_with_options(
             .build_global();
     }
 
+    let total_source_bytes: usize = sources.iter().map(|s| s.source.len()).sum();
     let _span = info_span!(
         "compile",
         target = %options.target,
-        source_bytes = source.len()
+        file_count = sources.len(),
+        source_bytes = total_source_bytes
     )
     .entered();
 
-    let state =
-        compile_frontend_with_options(source, options.opt_level, &options.preview_features)?;
+    // Parse all files in parallel
+    let parsed = parse_all_files(sources)?;
+
+    // Merge symbols into a unified program
+    let merged = merge_symbols(parsed)?;
+
+    // Compile from the merged AST
+    let state = compile_frontend_from_ast_with_options(
+        merged.ast,
+        merged.interner,
+        options.opt_level,
+        &options.preview_features,
+    )?;
 
     // Check for main function
     let _main_fn = state
@@ -1866,6 +1890,238 @@ mod tests {
         let parsed = parse_all_files(&sources).unwrap();
         let result = merge_symbols(parsed);
         assert!(result.is_ok(), "impl blocks should not cause conflicts");
+    }
+
+    // ========================================================================
+    // Cross-File Semantic Analysis Tests
+    // ========================================================================
+
+    #[test]
+    fn test_cross_file_function_call() {
+        // Function in main.rue calls function in utils.rue
+        let sources = vec![
+            SourceFile::new("main.rue", "fn main() -> i32 { helper() }", FileId::new(1)),
+            SourceFile::new("utils.rue", "fn helper() -> i32 { 42 }", FileId::new(2)),
+        ];
+        let result = compile_multi_file_with_options(&sources, &CompileOptions::default());
+        assert!(
+            result.is_ok(),
+            "cross-file function call should compile: {:?}",
+            result.err()
+        );
+    }
+
+    #[test]
+    fn test_cross_file_function_call_with_args() {
+        // Function in main.rue calls function in utils.rue with arguments
+        let sources = vec![
+            SourceFile::new(
+                "main.rue",
+                "fn main() -> i32 { add(10, 32) }",
+                FileId::new(1),
+            ),
+            SourceFile::new(
+                "utils.rue",
+                "fn add(a: i32, b: i32) -> i32 { a + b }",
+                FileId::new(2),
+            ),
+        ];
+        let result = compile_multi_file_with_options(&sources, &CompileOptions::default());
+        assert!(
+            result.is_ok(),
+            "cross-file function call with args should compile: {:?}",
+            result.err()
+        );
+    }
+
+    #[test]
+    fn test_cross_file_struct_usage() {
+        // Struct defined in types.rue, used in main.rue
+        let sources = vec![
+            SourceFile::new(
+                "main.rue",
+                "fn main() -> i32 { let p = Point { x: 1, y: 2 }; p.x + p.y }",
+                FileId::new(1),
+            ),
+            SourceFile::new(
+                "types.rue",
+                "struct Point { x: i32, y: i32 }",
+                FileId::new(2),
+            ),
+        ];
+        let result = compile_multi_file_with_options(&sources, &CompileOptions::default());
+        assert!(
+            result.is_ok(),
+            "cross-file struct usage should compile: {:?}",
+            result.err()
+        );
+    }
+
+    #[test]
+    fn test_cross_file_struct_as_function_param() {
+        // Struct defined in types.rue, function in utils.rue takes it as param
+        let sources = vec![
+            SourceFile::new(
+                "main.rue",
+                "fn main() -> i32 { let p = Point { x: 10, y: 5 }; get_sum(p) }",
+                FileId::new(1),
+            ),
+            SourceFile::new(
+                "types.rue",
+                "struct Point { x: i32, y: i32 }",
+                FileId::new(2),
+            ),
+            SourceFile::new(
+                "utils.rue",
+                "fn get_sum(p: Point) -> i32 { p.x + p.y }",
+                FileId::new(3),
+            ),
+        ];
+        let result = compile_multi_file_with_options(&sources, &CompileOptions::default());
+        assert!(
+            result.is_ok(),
+            "cross-file struct as function param should compile: {:?}",
+            result.err()
+        );
+    }
+
+    #[test]
+    fn test_cross_file_enum_usage() {
+        // Enum defined in types.rue, used in main.rue
+        let sources = vec![
+            SourceFile::new(
+                "main.rue",
+                r#"fn main() -> i32 {
+                    let c = Color::Red;
+                    match c { Color::Red => 1, Color::Green => 2, Color::Blue => 3 }
+                }"#,
+                FileId::new(1),
+            ),
+            SourceFile::new(
+                "types.rue",
+                "enum Color { Red, Green, Blue }",
+                FileId::new(2),
+            ),
+        ];
+        let result = compile_multi_file_with_options(&sources, &CompileOptions::default());
+        assert!(
+            result.is_ok(),
+            "cross-file enum usage should compile: {:?}",
+            result.err()
+        );
+    }
+
+    #[test]
+    fn test_cross_file_no_main_function() {
+        // No main function in any file
+        let sources = vec![
+            SourceFile::new("a.rue", "fn foo() -> i32 { 1 }", FileId::new(1)),
+            SourceFile::new("b.rue", "fn bar() -> i32 { 2 }", FileId::new(2)),
+        ];
+        let result = compile_multi_file_with_options(&sources, &CompileOptions::default());
+        assert!(result.is_err(), "should fail without main function");
+
+        let errors = result.unwrap_err();
+        let err_msg = errors.first().unwrap().to_string();
+        assert!(
+            err_msg.contains("main") && err_msg.contains("function"),
+            "error should mention missing main function: {}",
+            err_msg
+        );
+    }
+
+    #[test]
+    fn test_cross_file_duplicate_main() {
+        // main() defined in multiple files
+        let sources = vec![
+            SourceFile::new("a.rue", "fn main() -> i32 { 1 }", FileId::new(1)),
+            SourceFile::new("b.rue", "fn main() -> i32 { 2 }", FileId::new(2)),
+        ];
+        let result = compile_multi_file_with_options(&sources, &CompileOptions::default());
+        assert!(result.is_err(), "should fail with duplicate main");
+
+        let errors = result.unwrap_err();
+        let err_msg = errors.first().unwrap().to_string();
+        assert!(
+            err_msg.contains("main"),
+            "error should mention duplicate main: {}",
+            err_msg
+        );
+    }
+
+    #[test]
+    fn test_cross_file_undefined_function() {
+        // main.rue calls function that doesn't exist
+        let sources = vec![
+            SourceFile::new(
+                "main.rue",
+                "fn main() -> i32 { nonexistent() }",
+                FileId::new(1),
+            ),
+            SourceFile::new("utils.rue", "fn helper() -> i32 { 42 }", FileId::new(2)),
+        ];
+        let result = compile_multi_file_with_options(&sources, &CompileOptions::default());
+        assert!(result.is_err(), "should fail with undefined function");
+
+        let errors = result.unwrap_err();
+        let err_msg = errors.first().unwrap().to_string();
+        assert!(
+            err_msg.contains("nonexistent") || err_msg.contains("undefined"),
+            "error should mention undefined function: {}",
+            err_msg
+        );
+    }
+
+    #[test]
+    fn test_cross_file_three_files_chain() {
+        // main.rue -> utils.rue -> math.rue chain of calls
+        let sources = vec![
+            SourceFile::new(
+                "main.rue",
+                "fn main() -> i32 { compute(6, 7) }",
+                FileId::new(1),
+            ),
+            SourceFile::new(
+                "utils.rue",
+                "fn compute(a: i32, b: i32) -> i32 { multiply(a, b) }",
+                FileId::new(2),
+            ),
+            SourceFile::new(
+                "math.rue",
+                "fn multiply(x: i32, y: i32) -> i32 { x * y }",
+                FileId::new(3),
+            ),
+        ];
+        let result = compile_multi_file_with_options(&sources, &CompileOptions::default());
+        assert!(
+            result.is_ok(),
+            "chain of cross-file calls should compile: {:?}",
+            result.err()
+        );
+    }
+
+    #[test]
+    fn test_cross_file_mutual_calls() {
+        // Two files calling each other (mutual recursion possible)
+        let sources = vec![
+            SourceFile::new(
+                "main.rue",
+                r#"fn main() -> i32 { is_even(4) }
+                fn is_even(n: i32) -> i32 { if n == 0 { 1 } else { is_odd(n - 1) } }"#,
+                FileId::new(1),
+            ),
+            SourceFile::new(
+                "utils.rue",
+                "fn is_odd(n: i32) -> i32 { if n == 0 { 0 } else { is_even(n - 1) } }",
+                FileId::new(2),
+            ),
+        ];
+        let result = compile_multi_file_with_options(&sources, &CompileOptions::default());
+        assert!(
+            result.is_ok(),
+            "mutual cross-file calls should compile: {:?}",
+            result.err()
+        );
     }
 }
 

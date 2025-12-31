@@ -7,16 +7,16 @@ use std::path::Path;
 
 use tracing::Level;
 use tracing_subscriber::fmt::format::FmtSpan;
-use tracing_subscriber::prelude::*;
 use tracing_subscriber::{EnvFilter, fmt};
 
 mod timing;
 
 use rue_compiler::{
-    CompileOptions, DiagnosticFormatter, Lexer, LinkerMode, OptLevel, Parser, PreviewFeature,
-    PreviewFeatures, SourceInfo, compile_frontend_from_ast_with_options, compile_with_options,
-    generate_allocated_mir, generate_emitted_asm, generate_liveness_info, generate_lowering_info,
-    generate_mir, generate_regalloc_info, generate_stack_frame_info,
+    CompileOptions, DiagnosticFormatter, FileId, Lexer, LinkerMode, OptLevel, Parser,
+    PreviewFeature, PreviewFeatures, SourceFile, SourceInfo,
+    compile_frontend_from_ast_with_options, compile_multi_file_with_options, generate_emitted_asm,
+    generate_liveness_info, generate_lowering_info, generate_mir, generate_regalloc_info,
+    generate_stack_frame_info,
 };
 use rue_rir::RirPrinter;
 use rue_target::Target;
@@ -739,8 +739,17 @@ fn main() {
         })
         .collect();
 
-    // For Phase 1: use only the first source file for compilation
-    // Future phases will compile all files
+    // Build SourceFile structs for multi-file compilation
+    let source_files: Vec<SourceFile<'_>> = sources
+        .iter()
+        .enumerate()
+        .map(|(i, (path, content))| {
+            SourceFile::new(path.as_str(), content.as_str(), FileId::new((i + 1) as u32))
+        })
+        .collect();
+
+    // For diagnostic formatting, we use the first file as primary
+    // (multi-file diagnostics include file paths in error messages)
     let (primary_path, primary_source) = &sources[0];
 
     // Create source info for diagnostic formatting
@@ -764,7 +773,8 @@ fn main() {
         None
     };
 
-    // Handle emit modes
+    // Handle emit modes (currently only supports single file)
+    // TODO: Update emit modes to support multi-file (Phase 5)
     if !options.emit_stages.is_empty() {
         if let Err(()) = handle_emit(primary_source, &options, &formatter) {
             std::process::exit(1);
@@ -779,7 +789,7 @@ fn main() {
         return;
     }
 
-    // Normal compilation
+    // Normal compilation - uses multi-file compilation for all source files
     let compile_options = CompileOptions {
         target: options.target,
         linker: options.linker.clone(),
@@ -787,7 +797,7 @@ fn main() {
         preview_features: options.preview_features.clone(),
         jobs: options.jobs,
     };
-    match compile_with_options(primary_source, &compile_options) {
+    match compile_multi_file_with_options(&source_files, &compile_options) {
         Ok(output) => {
             // Print warnings using the diagnostic formatter
             if !output.warnings.is_empty() {
