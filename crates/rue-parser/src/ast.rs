@@ -4,16 +4,35 @@
 //! It closely mirrors the source syntax and preserves all information
 //! needed for error reporting.
 //!
-//! Note: AST types use Vec rather than SmallVec because Expr is recursive
-//! (Expr contains CallExpr which contains CallArg which contains Expr).
-//! SmallVec requires fixed-size inline storage, which doesn't work with
-//! recursive types. The IR layers (RIR, AIR, CFG) use index-based references
-//! which avoid this issue and are already efficiently allocated.
+//! ## SmallVec Usage
+//!
+//! Some non-recursive Vec fields use SmallVec to avoid heap allocation for
+//! common small sizes:
+//! - `Directives` (SmallVec<[Directive; 1]>) - most items have 0-1 directives
+//!
+//! ## Vec Usage (Cannot Use SmallVec)
+//!
+//! Vec fields containing recursive types (Expr) cannot use SmallVec because
+//! Expr's size cannot be determined at compile time. These include:
+//! - `Vec<CallArg>` - CallArg contains Expr
+//! - `Vec<MatchArm>` - contains Expr
+//! - `Vec<FieldInit>` - contains Box<Expr>
+//! - `Vec<IntrinsicArg>` - contains Expr
+//! - `Vec<Statement>` - Statement contains Expr
+//! - `Vec<Expr>` - directly recursive
+//!
+//! The IR layers (RIR, AIR, CFG) use index-based references which avoid
+//! this issue and are already efficiently allocated.
 
 use std::fmt;
 
 use lasso::{Key, Spur};
 use rue_span::Span;
+use smallvec::SmallVec;
+
+/// Type alias for a small vector of directives.
+/// Most items have 0-1 directives, so we inline capacity for 1.
+pub type Directives = SmallVec<[Directive; 1]>;
 
 /// A complete source file (list of items).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -56,7 +75,7 @@ pub enum Item {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StructDecl {
     /// Directives applied to this struct (e.g., @copy)
-    pub directives: Vec<Directive>,
+    pub directives: Directives,
     /// Struct name
     pub name: Ident,
     /// Struct fields
@@ -126,7 +145,7 @@ pub struct DropFn {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Method {
     /// Directives applied to this method
-    pub directives: Vec<Directive>,
+    pub directives: Directives,
     /// Method name
     pub name: Ident,
     /// Whether this method takes self (None = associated function, Some = method with receiver)
@@ -152,7 +171,7 @@ pub struct SelfParam {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Function {
     /// Directives applied to this function
-    pub directives: Vec<Directive>,
+    pub directives: Directives,
     /// Function name
     pub name: Ident,
     /// Function parameters
@@ -657,7 +676,7 @@ impl LetPattern {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LetStatement {
     /// Directives applied to this let binding
-    pub directives: Vec<Directive>,
+    pub directives: Directives,
     /// Whether the binding is mutable
     pub is_mut: bool,
     /// The binding pattern (identifier or wildcard)

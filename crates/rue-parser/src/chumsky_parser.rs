@@ -6,10 +6,10 @@
 use crate::ast::{
     ArgMode, ArrayLitExpr, AssignStatement, AssignTarget, AssocFnCallExpr, Ast, BinaryExpr,
     BinaryOp, BlockExpr, BoolLit, BreakExpr, CallArg, CallExpr, ContinueExpr, Directive,
-    DirectiveArg, DropFn, EnumDecl, EnumVariant, Expr, FieldDecl, FieldExpr, FieldInit, Function,
-    Ident, IfExpr, ImplBlock, IndexExpr, IntLit, IntrinsicArg, IntrinsicCallExpr, Item, LetPattern,
-    LetStatement, LoopExpr, MatchArm, MatchExpr, Method, MethodCallExpr, NegIntLit, Param,
-    ParamMode, ParenExpr, PathExpr, PathPattern, Pattern, ReturnExpr, SelfExpr, SelfParam,
+    DirectiveArg, Directives, DropFn, EnumDecl, EnumVariant, Expr, FieldDecl, FieldExpr, FieldInit,
+    Function, Ident, IfExpr, ImplBlock, IndexExpr, IntLit, IntrinsicArg, IntrinsicCallExpr, Item,
+    LetPattern, LetStatement, LoopExpr, MatchArm, MatchExpr, Method, MethodCallExpr, NegIntLit,
+    Param, ParamMode, ParenExpr, PathExpr, PathPattern, Pattern, ReturnExpr, SelfExpr, SelfParam,
     Statement, StringLit, StructDecl, StructLitExpr, TypeExpr, UnaryExpr, UnaryOp, UnitLit,
     WhileExpr,
 };
@@ -325,11 +325,17 @@ where
 }
 
 /// Parser for zero or more directives
-fn directives_parser<'src, I>() -> impl Parser<'src, I, Vec<Directive>, ParserExtras<'src>> + Clone
+fn directives_parser<'src, I>() -> impl Parser<'src, I, Directives, ParserExtras<'src>> + Clone
 where
     I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
 {
-    directive_parser().repeated().collect()
+    // Chumsky's collect() requires its Container trait, which SmallVec doesn't implement.
+    // So we collect to Vec first, then convert. The overhead is minimal since most
+    // items have 0-1 directives (Vec is cheap for empty/small collections).
+    directive_parser()
+        .repeated()
+        .collect::<Vec<_>>()
+        .map(|v| v.into_iter().collect())
 }
 
 /// Parser for argument mode: inout or borrow

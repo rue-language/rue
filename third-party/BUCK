@@ -3778,6 +3778,12 @@ cargo.rust_library(
     visibility = [],
 )
 
+alias(
+    name = "smallvec",
+    actual = ":smallvec-1.15.1",
+    visibility = ["PUBLIC"],
+)
+
 cargo.rust_library(
     name = "stacker-0.1.22",
     srcs = [

@@ -7,6 +7,7 @@ rust_library(
         "//crates/rue-lexer:rue-lexer",
         "//crates/rue-span:rue-span",
         "//third-party:chumsky",
+        "//third-party:smallvec",
     ],
     visibility = ["PUBLIC"],
 )
@@ -20,5 +21,6 @@ rust_test(
         "//crates/rue-lexer:rue-lexer",
         "//crates/rue-span:rue-span",
         "//third-party:chumsky",
+        "//third-party:smallvec",
     ],
 )
