@@ -556,3 +556,114 @@ fn main() -> i32 {
 """
 compile_fail = true
 error_contains = "use of moved value"
+
+# =============================================================================
+# Partial Moves (Field-Level Moves)
+# =============================================================================
+
+[[case]]
+name = "partial_move_different_fields"
+spec = ["3.8:22", "3.8:23"]
+description = "Moving one field leaves other fields accessible"
+source = """
+struct Inner { x: i32 }
+struct S { a: Inner, b: Inner }
+
+fn main() -> i32 {
+    let s = S { a: Inner { x: 1 }, b: Inner { x: 2 } };
+    let x = s.a;   // Only s.a is moved
+    let y = s.b;   // s.b is still valid
+    x.x + y.x
+}
+"""
+exit_code = 3
+
+[[case]]
+name = "partial_move_use_after_field_move"
+spec = ["3.8:24", "3.8:25"]
+description = "Accessing a field that has been moved is an error"
+source = """
+struct Inner { x: i32 }
+struct S { a: Inner, b: Inner }
+
+fn main() -> i32 {
+    let s = S { a: Inner { x: 1 }, b: Inner { x: 2 } };
+    let x = s.a;
+    let z = s.a;
+    0
+}
+"""
+compile_fail = true
+error_contains = "use of moved value"
+
+[[case]]
+name = "partial_move_use_whole_struct"
+spec = ["3.8:26", "3.8:27"]
+description = "Using whole struct after partial move is an error"
+source = """
+struct Inner { x: i32 }
+struct S { a: Inner, b: Inner }
+
+fn consume(s: S) -> i32 { s.a.x + s.b.x }
+
+fn main() -> i32 {
+    let s = S { a: Inner { x: 1 }, b: Inner { x: 2 } };
+    let x = s.a;
+    consume(s)
+}
+"""
+compile_fail = true
+error_contains = "use of moved value"
+
+[[case]]
+name = "copy_fields_no_partial_move"
+spec = ["3.8:28", "3.8:29"]
+description = "Copy-type fields can be accessed multiple times"
+source = """
+struct S { a: i32, b: i32 }
+
+fn main() -> i32 {
+    let s = S { a: 1, b: 2 };
+    let x = s.a;
+    let y = s.a;
+    let z = s.b;
+    x + y + z
+}
+"""
+exit_code = 4
+
+[[case]]
+name = "nested_partial_move"
+spec = ["3.8:22"]
+description = "Partial moves work with nested structs"
+source = """
+struct Inner { x: i32 }
+struct Middle { a: Inner, b: Inner }
+struct Outer { m: Middle }
+
+fn main() -> i32 {
+    let o = Outer { m: Middle { a: Inner { x: 1 }, b: Inner { x: 2 } } };
+    let x = o.m.a;   // Move o.m.a
+    let y = o.m.b;   // o.m.b is still valid
+    x.x + y.x
+}
+"""
+exit_code = 3
+
+[[case]]
+name = "partial_move_assign_after"
+spec = ["3.8:26"]
+description = "Assigning to whole struct after partial move is an error"
+source = """
+struct Inner { x: i32 }
+struct S { a: Inner, b: Inner }
+
+fn main() -> i32 {
+    let mut s = S { a: Inner { x: 1 }, b: Inner { x: 2 } };
+    let x = s.a;
+    let s2 = s;
+    0
+}
+"""
+compile_fail = true
+error_contains = "use of moved value"

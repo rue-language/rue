@@ -168,6 +168,81 @@ fn main() -> i32 {
 
 Function parameters of Copy types receive a copy of the argument. Function parameters of move types receive ownership of the argument.
 
+## Partial Moves (Field-Level Moves)
+
+{{ rule(id="3.8:22", cat="normative") }}
+
+When a non-Copy field of a struct is accessed (moved out of), only that specific field is moved, not the entire struct. Other fields remain accessible.
+
+{{ rule(id="3.8:23", cat="example") }}
+
+```rue
+struct Inner { x: i32 }
+struct S { a: Inner, b: Inner }
+
+fn main() -> i32 {
+    let s = S { a: Inner { x: 1 }, b: Inner { x: 2 } };
+    let x = s.a;   // Only s.a is moved
+    let y = s.b;   // s.b is still valid
+    x.x + y.x      // 3
+}
+```
+
+{{ rule(id="3.8:24", cat="legality-rule") }}
+
+It is a compile-time error to access a field that has already been moved.
+
+{{ rule(id="3.8:25", cat="example") }}
+
+```rue
+struct Inner { x: i32 }
+struct S { a: Inner, b: Inner }
+
+fn main() -> i32 {
+    let s = S { a: Inner { x: 1 }, b: Inner { x: 2 } };
+    let x = s.a;   // s.a is moved
+    let z = s.a;   // ERROR: use of moved value 's.a'
+    0
+}
+```
+
+{{ rule(id="3.8:26", cat="legality-rule") }}
+
+A struct with any moved fields cannot be used as a whole value. It is a compile-time error to move or pass the struct after any of its non-Copy fields have been moved.
+
+{{ rule(id="3.8:27", cat="example") }}
+
+```rue
+struct Inner { x: i32 }
+struct S { a: Inner, b: Inner }
+
+fn consume(s: S) -> i32 { s.a.x + s.b.x }
+
+fn main() -> i32 {
+    let s = S { a: Inner { x: 1 }, b: Inner { x: 2 } };
+    let x = s.a;   // s.a is moved (partial move)
+    consume(s)     // ERROR: use of moved value 's' (partially moved)
+}
+```
+
+{{ rule(id="3.8:28", cat="normative") }}
+
+Accessing Copy-type fields does not move them. Copy-type fields can be accessed any number of times without affecting the struct's move state.
+
+{{ rule(id="3.8:29", cat="example") }}
+
+```rue
+struct S { a: i32, b: i32 }
+
+fn main() -> i32 {
+    let s = S { a: 1, b: 2 };
+    let x = s.a;   // s.a is copied
+    let y = s.a;   // s.a can be copied again
+    let z = s.b;   // s.b is also valid
+    x + y + z      // 4
+}
+```
+
 ## Shadowing and Moves
 
 {{ rule(id="3.8:12", cat="normative") }}

@@ -199,11 +199,95 @@ struct LocalVar {
     allow_unused: bool,
 }
 
+/// A path of field accesses from a root variable.
+/// For example, `s.a.b` is represented as [sym("a"), sym("b")] with root sym("s").
+type FieldPath = Vec<Spur>;
+
 /// Information about a variable that has been moved.
 #[derive(Debug, Clone)]
 struct MoveInfo {
     /// Span where the move occurred
     moved_at: Span,
+}
+
+/// Tracks move state for a variable, including partial (field-level) moves.
+#[derive(Debug, Clone, Default)]
+struct VariableMoveState {
+    /// If Some, the entire variable has been fully moved at this span.
+    full_move: Option<Span>,
+    /// Partial moves: maps field paths to the span where they were moved.
+    /// For example, if `s.a` was moved, this contains ([sym("a")], span).
+    partial_moves: HashMap<FieldPath, Span>,
+}
+
+impl VariableMoveState {
+    /// Mark a field path as moved.
+    fn mark_path_moved(&mut self, path: &[Spur], span: Span) {
+        if path.is_empty() {
+            // Moving the whole variable
+            self.full_move = Some(span);
+            // Clear partial moves since the whole thing is moved
+            self.partial_moves.clear();
+        } else {
+            // Partial move - only if not already fully moved
+            if self.full_move.is_none() {
+                self.partial_moves.insert(path.to_vec(), span);
+            }
+        }
+    }
+
+    /// Check if a field path is moved.
+    /// Returns Some(span) if the path (or any ancestor) is moved.
+    fn is_path_moved(&self, path: &[Spur]) -> Option<Span> {
+        // If fully moved, everything is moved
+        if let Some(span) = self.full_move {
+            return Some(span);
+        }
+
+        // Check if this exact path is moved
+        if let Some(span) = self.partial_moves.get(path) {
+            return Some(*span);
+        }
+
+        // Check if any prefix (ancestor) of this path is moved
+        // e.g., if s.a is moved, then s.a.b is also considered moved
+        for len in 1..path.len() {
+            if let Some(span) = self.partial_moves.get(&path[..len]) {
+                return Some(*span);
+            }
+        }
+
+        None
+    }
+
+    /// Check if the variable is partially moved (some field is moved but not the whole var).
+    /// Returns Some(span) of the first partial move found.
+    fn is_partially_moved(&self) -> Option<Span> {
+        if self.full_move.is_some() {
+            return None; // Fully moved, not partially moved
+        }
+        self.partial_moves.values().next().copied()
+    }
+
+    /// Check if the entire variable (including all fields) is fully valid to use.
+    /// Returns Some(span) if there's any move (full or partial) that would prevent use.
+    fn is_any_part_moved(&self) -> Option<Span> {
+        if let Some(span) = self.full_move {
+            return Some(span);
+        }
+        self.partial_moves.values().next().copied()
+    }
+
+    /// Clear all move state (used when variable is reassigned).
+    fn clear(&mut self) {
+        self.full_move = None;
+        self.partial_moves.clear();
+    }
+
+    /// Check if the variable has any move state.
+    fn is_empty(&self) -> bool {
+        self.full_move.is_none() && self.partial_moves.is_empty()
+    }
 }
 
 /// Information about a function parameter.
@@ -246,8 +330,8 @@ struct AnalysisContext<'a> {
     /// before AIR emission.
     resolved_types: &'a HashMap<InstRef, Type>,
     /// Variables that have been moved (for affine type checking).
-    /// Maps variable symbol to move information.
-    moved_vars: HashMap<Spur, MoveInfo>,
+    /// Maps variable symbol to move state (supports partial/field-level moves).
+    moved_vars: HashMap<Spur, VariableMoveState>,
 }
 
 impl AnalysisContext<'_> {
@@ -656,6 +740,37 @@ impl<'a> Sema<'a> {
             InstData::ParamRef { name, .. } => Some(*name),
             InstData::FieldGet { base, .. } => self.extract_root_variable(*base),
             InstData::IndexGet { base, .. } => self.extract_root_variable(*base),
+            _ => None,
+        }
+    }
+
+    /// Extract the root variable symbol and field path from an expression.
+    ///
+    /// For expressions like `s.a.b`, returns (sym("s"), [sym("a"), sym("b")]).
+    /// For `s`, returns (sym("s"), []).
+    ///
+    /// Returns None for expressions that don't refer to a variable (literals, calls, etc.)
+    fn extract_field_path(&self, inst_ref: InstRef) -> Option<(Spur, FieldPath)> {
+        let mut path = Vec::new();
+        let root = self.extract_field_path_inner(inst_ref, &mut path)?;
+        // Path is built in reverse order, so reverse it
+        path.reverse();
+        Some((root, path))
+    }
+
+    /// Helper for extract_field_path that builds the path in reverse order.
+    fn extract_field_path_inner(&self, inst_ref: InstRef, path: &mut FieldPath) -> Option<Spur> {
+        let inst = self.rir.get(inst_ref);
+        match &inst.data {
+            InstData::VarRef { name } => Some(*name),
+            InstData::ParamRef { name, .. } => Some(*name),
+            InstData::FieldGet { base, field } => {
+                path.push(*field);
+                self.extract_field_path_inner(*base, path)
+            }
+            // For index expressions, we stop tracking the field path
+            // (index-based moves are more complex and not addressed here)
+            InstData::IndexGet { .. } => None,
             _ => None,
         }
     }
@@ -1851,7 +1966,8 @@ impl<'a> Sema<'a> {
     ///
     /// This is like `analyze_inst` but does NOT mark non-Copy values as moved.
     /// Used for field access where we're reading from a struct without consuming it.
-    /// We still check that the variable hasn't already been moved.
+    /// We still check that the variable hasn't already been moved (fully moved).
+    /// Field-level move checking is done at the FieldGet level, not here.
     fn analyze_inst_for_projection(
         &mut self,
         air: &mut Air,
@@ -1860,20 +1976,23 @@ impl<'a> Sema<'a> {
     ) -> CompileResult<AnalysisResult> {
         let inst = self.rir.get(inst_ref);
 
-        // For VarRef, we handle it specially: check for moves but don't mark as moved
+        // For VarRef, we handle it specially: check for full moves but don't mark as moved
         if let InstData::VarRef { name } = &inst.data {
             // First check if it's a parameter
             if let Some(param_info) = ctx.params.get(name) {
                 let ty = param_info.ty;
 
-                // Check if this parameter has been moved
-                if let Some(move_info) = ctx.moved_vars.get(name) {
-                    let name_str = self.interner.resolve(&*name);
-                    return Err(CompileError::new(
-                        ErrorKind::UseAfterMove(name_str.to_string()),
-                        inst.span,
-                    )
-                    .with_label("value moved here", move_info.moved_at));
+                // Check if this parameter has been fully moved
+                // (Partial moves are checked at the FieldGet level)
+                if let Some(move_state) = ctx.moved_vars.get(name) {
+                    if let Some(moved_span) = move_state.full_move {
+                        let name_str = self.interner.resolve(&*name);
+                        return Err(CompileError::new(
+                            ErrorKind::UseAfterMove(name_str.to_string()),
+                            inst.span,
+                        )
+                        .with_label("value moved here", moved_span));
+                    }
                 }
 
                 // NOTE: We do NOT mark as moved here - this is a projection
@@ -1898,13 +2017,16 @@ impl<'a> Sema<'a> {
             let ty = local.ty;
             let slot = local.slot;
 
-            // Check if this variable has been moved
-            if let Some(move_info) = ctx.moved_vars.get(name) {
-                return Err(CompileError::new(
-                    ErrorKind::UseAfterMove(name_str.to_string()),
-                    inst.span,
-                )
-                .with_label("value moved here", move_info.moved_at));
+            // Check if this variable has been fully moved
+            // (Partial moves are checked at the FieldGet level)
+            if let Some(move_state) = ctx.moved_vars.get(name) {
+                if let Some(moved_span) = move_state.full_move {
+                    return Err(CompileError::new(
+                        ErrorKind::UseAfterMove(name_str.to_string()),
+                        inst.span,
+                    )
+                    .with_label("value moved here", moved_span));
+                }
             }
 
             // NOTE: We do NOT mark as moved here - this is a projection
@@ -2744,15 +2866,17 @@ impl<'a> Sema<'a> {
                 // First check if it's a parameter
                 if let Some(param_info) = ctx.params.get(name) {
                     let ty = param_info.ty;
+                    let name_str = self.interner.resolve(&*name);
 
-                    // Check if this parameter has been moved
-                    if let Some(move_info) = ctx.moved_vars.get(name) {
-                        let name_str = self.interner.resolve(&*name);
-                        return Err(CompileError::new(
-                            ErrorKind::UseAfterMove(name_str.to_string()),
-                            inst.span,
-                        )
-                        .with_label("value moved here", move_info.moved_at));
+                    // Check if this parameter has been moved (fully or partially)
+                    if let Some(move_state) = ctx.moved_vars.get(name) {
+                        if let Some(moved_span) = move_state.is_any_part_moved() {
+                            return Err(CompileError::new(
+                                ErrorKind::UseAfterMove(name_str.to_string()),
+                                inst.span,
+                            )
+                            .with_label("value moved here", moved_span));
+                        }
                     }
 
                     // Handle move semantics based on parameter mode
@@ -2760,23 +2884,19 @@ impl<'a> Sema<'a> {
                         match param_info.mode {
                             RirParamMode::Normal => {
                                 // Normal (owned) parameters can be moved
-                                ctx.moved_vars.insert(
-                                    *name,
-                                    MoveInfo {
-                                        moved_at: inst.span,
-                                    },
-                                );
+                                ctx.moved_vars
+                                    .entry(*name)
+                                    .or_default()
+                                    .mark_path_moved(&[], inst.span);
                             }
                             RirParamMode::Inout => {
                                 // Inout parameters cannot be moved out of - they're returned to caller
                                 // For now, we treat them like normal owned for move tracking
                                 // (The caller still owns it, we just have mutable access)
-                                ctx.moved_vars.insert(
-                                    *name,
-                                    MoveInfo {
-                                        moved_at: inst.span,
-                                    },
-                                );
+                                ctx.moved_vars
+                                    .entry(*name)
+                                    .or_default()
+                                    .mark_path_moved(&[], inst.span);
                             }
                             RirParamMode::Borrow => {
                                 // Cannot move out of a borrowed parameter!
@@ -2813,23 +2933,23 @@ impl<'a> Sema<'a> {
                 let ty = local.ty;
                 let slot = local.slot;
 
-                // Check if this variable has been moved
-                if let Some(move_info) = ctx.moved_vars.get(name) {
-                    return Err(CompileError::new(
-                        ErrorKind::UseAfterMove(name_str.to_string()),
-                        inst.span,
-                    )
-                    .with_label("value moved here", move_info.moved_at));
+                // Check if this variable has been moved (fully or partially)
+                if let Some(move_state) = ctx.moved_vars.get(name) {
+                    if let Some(moved_span) = move_state.is_any_part_moved() {
+                        return Err(CompileError::new(
+                            ErrorKind::UseAfterMove(name_str.to_string()),
+                            inst.span,
+                        )
+                        .with_label("value moved here", moved_span));
+                    }
                 }
 
                 // If type is not Copy, mark as moved
                 if !self.is_type_copy(ty) {
-                    ctx.moved_vars.insert(
-                        *name,
-                        MoveInfo {
-                            moved_at: inst.span,
-                        },
-                    );
+                    ctx.moved_vars
+                        .entry(*name)
+                        .or_default()
+                        .mark_path_moved(&[], inst.span);
                 }
 
                 // Mark variable as used
@@ -3354,6 +3474,40 @@ impl<'a> Sema<'a> {
 
                 let field_type = struct_field.ty;
 
+                // Check if accessing a non-Copy field - track field-level moves
+                if !self.is_type_copy(field_type) {
+                    // Extract the full field path (root variable + field names)
+                    if let Some((root_var, mut field_path)) = self.extract_field_path(inst_ref) {
+                        // Check if this field path is already moved
+                        if let Some(state) = ctx.moved_vars.get(&root_var) {
+                            if let Some(moved_span) = state.is_path_moved(&field_path) {
+                                // Format the field path for error message
+                                let root_name = self.interner.resolve(&root_var);
+                                let path_str = if field_path.is_empty() {
+                                    root_name.to_string()
+                                } else {
+                                    let field_names: Vec<_> = field_path
+                                        .iter()
+                                        .map(|s| self.interner.resolve(s).to_string())
+                                        .collect();
+                                    format!("{}.{}", root_name, field_names.join("."))
+                                };
+                                return Err(CompileError::new(
+                                    ErrorKind::UseAfterMove(path_str),
+                                    inst.span,
+                                )
+                                .with_label("value moved here", moved_span));
+                            }
+                        }
+
+                        // Mark this field path as moved
+                        ctx.moved_vars
+                            .entry(root_var)
+                            .or_default()
+                            .mark_path_moved(&field_path, inst.span);
+                    }
+                }
+
                 let air_ref = air.add_inst(AirInst {
                     data: AirInstData::FieldGet {
                         base: base_result.air_ref,
@@ -3395,13 +3549,15 @@ impl<'a> Sema<'a> {
                         InstData::VarRef { name } => {
                             let name_str = self.interner.resolve(&*name);
 
-                            // Check if this variable has been moved
-                            if let Some(move_info) = ctx.moved_vars.get(name) {
-                                return Err(CompileError::new(
-                                    ErrorKind::UseAfterMove(name_str.to_string()),
-                                    inst.span,
-                                )
-                                .with_label("value moved here", move_info.moved_at));
+                            // Check if this variable has been moved (fully or partially)
+                            if let Some(move_state) = ctx.moved_vars.get(name) {
+                                if let Some(moved_span) = move_state.is_any_part_moved() {
+                                    return Err(CompileError::new(
+                                        ErrorKind::UseAfterMove(name_str.to_string()),
+                                        inst.span,
+                                    )
+                                    .with_label("value moved here", moved_span));
+                                }
                             }
 
                             // First check if it's a parameter
@@ -3440,13 +3596,15 @@ impl<'a> Sema<'a> {
                                 inst.span,
                             )?;
 
-                            // Check if this parameter has been moved
-                            if let Some(move_info) = ctx.moved_vars.get(name) {
-                                return Err(CompileError::new(
-                                    ErrorKind::UseAfterMove(name_str.to_string()),
-                                    inst.span,
-                                )
-                                .with_label("value moved here", move_info.moved_at));
+                            // Check if this parameter has been moved (fully or partially)
+                            if let Some(move_state) = ctx.moved_vars.get(name) {
+                                if let Some(moved_span) = move_state.is_any_part_moved() {
+                                    return Err(CompileError::new(
+                                        ErrorKind::UseAfterMove(name_str.to_string()),
+                                        inst.span,
+                                    )
+                                    .with_label("value moved here", moved_span));
+                                }
                             }
 
                             break (
@@ -3950,13 +4108,15 @@ impl<'a> Sema<'a> {
                     InstData::VarRef { name } => {
                         let name_str = self.interner.resolve(&*name);
 
-                        // Check if this variable has been moved
-                        if let Some(move_info) = ctx.moved_vars.get(name) {
-                            return Err(CompileError::new(
-                                ErrorKind::UseAfterMove(name_str.to_string()),
-                                inst.span,
-                            )
-                            .with_label("value moved here", move_info.moved_at));
+                        // Check if this variable has been moved (fully or partially)
+                        if let Some(move_state) = ctx.moved_vars.get(name) {
+                            if let Some(moved_span) = move_state.is_any_part_moved() {
+                                return Err(CompileError::new(
+                                    ErrorKind::UseAfterMove(name_str.to_string()),
+                                    inst.span,
+                                )
+                                .with_label("value moved here", moved_span));
+                            }
                         }
 
                         // First check if it's a parameter (like FieldSet does)
@@ -3993,13 +4153,15 @@ impl<'a> Sema<'a> {
                             inst.span,
                         )?;
 
-                        // Check if this parameter has been moved
-                        if let Some(move_info) = ctx.moved_vars.get(name) {
-                            return Err(CompileError::new(
-                                ErrorKind::UseAfterMove(name_str.to_string()),
-                                inst.span,
-                            )
-                            .with_label("value moved here", move_info.moved_at));
+                        // Check if this parameter has been moved (fully or partially)
+                        if let Some(move_state) = ctx.moved_vars.get(name) {
+                            if let Some(moved_span) = move_state.is_any_part_moved() {
+                                return Err(CompileError::new(
+                                    ErrorKind::UseAfterMove(name_str.to_string()),
+                                    inst.span,
+                                )
+                                .with_label("value moved here", moved_span));
+                            }
                         }
 
                         (
