@@ -252,6 +252,64 @@ fn main() -> i32 {
 """
 exit_code = 254
 
+# Test signed right shift for narrow types (i8, i16) to ensure sign extension
+# is handled correctly during constant folding
+[[case]]
+name = "shift_right_i8_negative_one"
+spec = ["4.3a:8"]
+source = """
+fn main() -> i32 {
+    let tmp: i32 = -1;
+    let x: i8 = @intCast(tmp);
+    // Arithmetic right shift of -1 by any amount should remain -1
+    let result: i8 = x >> 1;
+    @intCast(result)
+}
+"""
+exit_code = 255
+
+[[case]]
+name = "shift_right_i8_negative"
+spec = ["4.3a:8"]
+source = """
+fn main() -> i32 {
+    let tmp: i32 = -8;
+    let x: i8 = @intCast(tmp);
+    // Arithmetic right shift by 2: 0xF8 >> 2 = 0xFE = -2
+    let result: i8 = x >> 2;
+    @intCast(result)
+}
+"""
+exit_code = 254
+
+[[case]]
+name = "shift_right_i16_negative_one"
+spec = ["4.3a:8"]
+source = """
+fn main() -> i32 {
+    let tmp: i32 = -1;
+    let x: i16 = @intCast(tmp);
+    // Arithmetic right shift of -1 by any amount should remain -1
+    let result: i16 = x >> 4;
+    @intCast(result)
+}
+"""
+exit_code = 255
+
+[[case]]
+name = "shift_right_i16_negative"
+spec = ["4.3a:8"]
+source = """
+fn main() -> i32 {
+    let tmp: i32 = -256;
+    let x: i16 = @intCast(tmp);
+    // Arithmetic right shift by 4: 0xFF00 >> 4 = 0xFFF0 = -16
+    let result: i16 = x >> 4;
+    @intCast(result)
+}
+"""
+exit_code = 240
+
 [[case]]
 name = "shift_right_unsigned_fills_zeros"
 spec = ["4.3a:8"]

@@ -182,8 +182,10 @@ fn fold_shift(
     let result = if is_left {
         lhs_val << rhs_val
     } else if is_signed(ty) {
-        // Arithmetic right shift for signed types
-        ((lhs_val as i64) >> rhs_val) as u64
+        // Arithmetic right shift for signed types.
+        // Must sign-extend narrow types to i64 before shifting.
+        let signed_val = sign_extend(lhs_val, ty) as i64;
+        (signed_val >> rhs_val) as u64
     } else {
         // Logical right shift for unsigned types
         lhs_val >> rhs_val
@@ -537,6 +539,125 @@ mod tests {
         match &cfg.get_inst(lt_val).data {
             CfgInstData::BoolConst(true) => {}
             other => panic!("Expected BoolConst(true), got {:?}", other),
+        }
+    }
+
+    fn add_shr(cfg: &mut Cfg, lhs: CfgValue, rhs: CfgValue, ty: Type) -> CfgValue {
+        let entry = cfg.entry;
+        cfg.add_inst_to_block(
+            entry,
+            CfgInst {
+                data: CfgInstData::Shr(lhs, rhs),
+                ty,
+                span: Span::new(0, 0),
+            },
+        )
+    }
+
+    #[test]
+    fn test_fold_signed_shift_right_i8_negative_one() {
+        // Test that arithmetic right shift of -1 as i8 gives -1
+        // This tests the sign extension fix for narrow types.
+        let mut cfg = make_cfg();
+        // -1 as i8 is 0xFF, stored as u64 it's 255
+        let c1 = add_const(&mut cfg, (-1i8) as u8 as u64, Type::I8);
+        let c2 = add_const(&mut cfg, 1, Type::I8);
+        let shr = add_shr(&mut cfg, c1, c2, Type::I8);
+        finalize_cfg(&mut cfg, shr);
+
+        run(&mut cfg);
+
+        // -1 >> 1 should be -1 (0xFF in i8)
+        match &cfg.get_inst(shr).data {
+            CfgInstData::Const(val) => {
+                assert_eq!(*val, 0xFF, "Expected 0xFF (-1 as i8), got 0x{:X}", val);
+            }
+            other => panic!("Expected Const, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_fold_signed_shift_right_i8_negative_eight() {
+        // Test that arithmetic right shift of -8 as i8 by 2 gives -2
+        // -8 as i8 is 0xF8, -8 >> 2 = -2 = 0xFE
+        let mut cfg = make_cfg();
+        let c1 = add_const(&mut cfg, (-8i8) as u8 as u64, Type::I8);
+        let c2 = add_const(&mut cfg, 2, Type::I8);
+        let shr = add_shr(&mut cfg, c1, c2, Type::I8);
+        finalize_cfg(&mut cfg, shr);
+
+        run(&mut cfg);
+
+        // -8 >> 2 should be -2 (0xFE in i8)
+        match &cfg.get_inst(shr).data {
+            CfgInstData::Const(val) => {
+                assert_eq!(*val, 0xFE, "Expected 0xFE (-2 as i8), got 0x{:X}", val);
+            }
+            other => panic!("Expected Const, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_fold_signed_shift_right_i16_negative_one() {
+        // Test that arithmetic right shift of -1 as i16 gives -1
+        let mut cfg = make_cfg();
+        let c1 = add_const(&mut cfg, (-1i16) as u16 as u64, Type::I16);
+        let c2 = add_const(&mut cfg, 4, Type::I16);
+        let shr = add_shr(&mut cfg, c1, c2, Type::I16);
+        finalize_cfg(&mut cfg, shr);
+
+        run(&mut cfg);
+
+        // -1 >> 4 should be -1 (0xFFFF in i16)
+        match &cfg.get_inst(shr).data {
+            CfgInstData::Const(val) => {
+                assert_eq!(*val, 0xFFFF, "Expected 0xFFFF (-1 as i16), got 0x{:X}", val);
+            }
+            other => panic!("Expected Const, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_fold_signed_shift_right_i32_negative_one() {
+        // Test that arithmetic right shift of -1 as i32 gives -1
+        let mut cfg = make_cfg();
+        let c1 = add_const(&mut cfg, (-1i32) as u32 as u64, Type::I32);
+        let c2 = add_const(&mut cfg, 8, Type::I32);
+        let shr = add_shr(&mut cfg, c1, c2, Type::I32);
+        finalize_cfg(&mut cfg, shr);
+
+        run(&mut cfg);
+
+        // -1 >> 8 should be -1 (0xFFFFFFFF in i32)
+        match &cfg.get_inst(shr).data {
+            CfgInstData::Const(val) => {
+                assert_eq!(
+                    *val, 0xFFFF_FFFF,
+                    "Expected 0xFFFFFFFF (-1 as i32), got 0x{:X}",
+                    val
+                );
+            }
+            other => panic!("Expected Const, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_fold_unsigned_shift_right_u8() {
+        // Test that logical right shift of 0xFF as u8 gives 0x7F (not 0xFF)
+        let mut cfg = make_cfg();
+        let c1 = add_const(&mut cfg, 0xFF, Type::U8);
+        let c2 = add_const(&mut cfg, 1, Type::U8);
+        let shr = add_shr(&mut cfg, c1, c2, Type::U8);
+        finalize_cfg(&mut cfg, shr);
+
+        run(&mut cfg);
+
+        // 0xFF >> 1 should be 0x7F (logical shift fills with 0)
+        match &cfg.get_inst(shr).data {
+            CfgInstData::Const(val) => {
+                assert_eq!(*val, 0x7F, "Expected 0x7F, got 0x{:X}", val);
+            }
+            other => panic!("Expected Const, got {:?}", other),
         }
     }
 }
