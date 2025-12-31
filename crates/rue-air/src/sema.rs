@@ -1721,9 +1721,11 @@ impl<'a> Sema<'a> {
                 struct_def.is_copy
             }
             // Note: String is now handled via Type::Struct with is_builtin
-            // Arrays are move types for now
-            // TODO: Arrays of Copy types could be Copy
-            Type::Array(_) => false,
+            // Arrays are Copy if their element type is Copy
+            Type::Array(array_id) => {
+                let array_def = &self.array_type_defs[array_id.0 as usize];
+                self.is_type_copy(array_def.element_type)
+            }
         }
     }
 

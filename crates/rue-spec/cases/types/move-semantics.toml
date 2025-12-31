@@ -91,6 +91,127 @@ fn main() -> i32 {
 """
 exit_code = 1
 
+[[case]]
+name = "array_of_copy_is_copy"
+spec = ["3.8:2"]
+description = "Array of Copy type (i32) can be used multiple times"
+source = """
+fn main() -> i32 {
+    let arr: [i32; 3] = [1, 2, 3];
+    let arr2 = arr;
+    let arr3 = arr;
+    arr[0] + arr2[1] + arr3[2]
+}
+"""
+exit_code = 6
+
+[[case]]
+name = "array_of_copy_nested"
+spec = ["3.8:2"]
+description = "Nested arrays of Copy types are Copy"
+source = """
+fn main() -> i32 {
+    let matrix: [[i32; 2]; 2] = [[1, 2], [3, 4]];
+    let m2 = matrix;
+    let m3 = matrix;
+    matrix[0][0] + m2[1][1] + m3[0][1]
+}
+"""
+exit_code = 7
+
+[[case]]
+name = "array_of_bool_is_copy"
+spec = ["3.8:2"]
+description = "Array of bool is Copy"
+source = """
+fn main() -> i32 {
+    let flags: [bool; 2] = [true, false];
+    let f2 = flags;
+    if flags[0] && f2[0] { 42 } else { 0 }
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "array_of_enum_is_copy"
+spec = ["3.8:2"]
+description = "Array of enum is Copy (enums are Copy)"
+source = """
+enum Status { On, Off }
+fn main() -> i32 {
+    let states: [Status; 2] = [Status::On, Status::Off];
+    let s2 = states;
+    match states[0] {
+        Status::On => match s2[1] {
+            Status::Off => 42,
+            Status::On => 0,
+        },
+        Status::Off => 0,
+    }
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "array_of_non_copy_is_not_copy"
+spec = ["3.8:2", "3.8:3"]
+description = "Array of non-Copy struct is not Copy"
+source = """
+struct Data { value: i32 }
+fn main() -> i32 {
+    let arr: [Data; 2] = [Data { value: 1 }, Data { value: 2 }];
+    let arr2 = arr;
+    arr[0].value
+}
+"""
+compile_fail = true
+error_contains = "use of moved value"
+
+[[case]]
+name = "array_of_copy_struct_is_copy"
+spec = ["3.8:2", "3.8:16"]
+description = "Array of @copy struct is Copy"
+source = """
+@copy
+struct Point { x: i32, y: i32 }
+fn main() -> i32 {
+    let points: [Point; 2] = [Point { x: 1, y: 2 }, Point { x: 3, y: 4 }];
+    let p2 = points;
+    points[0].x + p2[1].x
+}
+"""
+exit_code = 4
+
+[[case]]
+name = "copy_struct_with_array_field"
+spec = ["3.8:2", "3.8:20"]
+description = "@copy struct can contain array of Copy type"
+source = """
+@copy
+struct Container { values: [i32; 3] }
+fn main() -> i32 {
+    let c = Container { values: [10, 20, 30] };
+    let c2 = c;
+    c.values[0] + c2.values[2]
+}
+"""
+exit_code = 40
+
+[[case]]
+name = "copy_struct_with_array_of_non_copy_error"
+spec = ["3.8:18", "3.8:20"]
+description = "@copy struct cannot contain array of non-Copy type"
+source = """
+struct Data { value: i32 }
+
+@copy
+struct Container { items: [Data; 2] }
+
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = "non-Copy type"
+
 # =============================================================================
 # Move Types (Structs)
 # =============================================================================

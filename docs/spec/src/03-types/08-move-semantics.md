@@ -22,6 +22,7 @@ The following types are Copy types:
 - The boolean type (`bool`)
 - The unit type (`()`)
 - Enum types (all variants of an enum)
+- Array types `[T; N]` where `T` is a Copy type
 
 {{ rule(id="3.8:3", cat="normative") }}
 
@@ -85,7 +86,7 @@ struct Outer { inner: Inner }  // ERROR: field 'inner' has non-Copy type 'Inner'
 
 {{ rule(id="3.8:20", cat="normative") }}
 
-A `@copy` struct **MAY** contain fields of primitive Copy types (integers, booleans, unit), enum types, or other `@copy` struct types.
+A `@copy` struct **MAY** contain fields of primitive Copy types (integers, booleans, unit), enum types, arrays of Copy types, or other `@copy` struct types.
 
 {{ rule(id="3.8:21", cat="example") }}
 

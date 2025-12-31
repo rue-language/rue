@@ -1372,6 +1372,32 @@ impl<'a> CfgLower<'a> {
                     self.struct_slot_vregs
                         .insert(value, vec![ptr_vreg, len_vreg, cap_vreg]);
                     self.value_map.insert(value, ptr_vreg);
+                } else if let Type::Array(_) = load_type {
+                    // Array: load all element slots (recursively flattened)
+                    let slot_count = self.type_slot_count(load_type);
+                    let mut slot_vregs = Vec::with_capacity(slot_count as usize);
+
+                    for i in 0..slot_count {
+                        let elem_vreg = self.mir.alloc_vreg();
+                        let elem_offset = self.local_offset(slot + i);
+                        self.mir.push(Aarch64Inst::Ldr {
+                            dst: Operand::Virtual(elem_vreg),
+                            base: Reg::Fp,
+                            offset: elem_offset,
+                        });
+                        slot_vregs.push(elem_vreg);
+                    }
+
+                    // Register array element vregs
+                    self.struct_slot_vregs.insert(value, slot_vregs.clone());
+
+                    // Use first element as the primary vreg
+                    if let Some(&first_vreg) = slot_vregs.first() {
+                        self.value_map.insert(value, first_vreg);
+                    } else {
+                        let vreg = self.mir.alloc_vreg();
+                        self.value_map.insert(value, vreg);
+                    }
                 } else if let Type::Struct(struct_id) = load_type {
                     // Struct: load all field slots (recursively flattened)
                     let slot_count = self.type_slot_count(Type::Struct(struct_id));
