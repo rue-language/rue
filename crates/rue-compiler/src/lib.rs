@@ -505,51 +505,66 @@ fn compile_x86_64(
     state: &CompileState,
     options: &CompileOptions,
 ) -> MultiErrorResult<CompileOutput> {
-    // Generate machine code for all functions
+    // Generate machine code for all functions in parallel
     let object_files = {
         let _span = info_span!("codegen", arch = "x86_64").entered();
-        let mut object_files: Vec<Vec<u8>> = Vec::new();
+
+        // Parallel code generation - each function is independent
+        let results: Vec<CompileResult<Vec<u8>>> = state
+            .functions
+            .par_iter()
+            .map(|func| {
+                let machine_code = rue_codegen::x86_64::generate(
+                    &func.cfg,
+                    &state.struct_defs,
+                    &state.array_types,
+                    &state.strings,
+                    &state.interner,
+                )?;
+
+                // Build object file for this function
+                let mut obj_builder = ObjectBuilder::new(options.target, &func.analyzed.name)
+                    .code(machine_code.code)
+                    .strings(machine_code.strings);
+
+                // Add relocations from codegen (convert RelocationKind to RelocationType).
+                for reloc in machine_code.relocations {
+                    let rel_type = match reloc.kind {
+                        RelocationKind::X86Pc32 => RelocationType::Pc32,
+                        RelocationKind::X86Plt32 => RelocationType::Plt32,
+                        // AArch64 relocations should never appear in x86-64 codegen
+                        RelocationKind::Aarch64AdrpPage21
+                        | RelocationKind::Aarch64AddLo12
+                        | RelocationKind::Aarch64Call26 => {
+                            unreachable!(
+                                "x86-64 codegen emitted AArch64 relocation {:?}",
+                                reloc.kind
+                            )
+                        }
+                    };
+
+                    obj_builder = obj_builder.relocation(CodeRelocation {
+                        offset: reloc.offset,
+                        symbol: reloc.symbol,
+                        rel_type,
+                        addend: reloc.addend,
+                    });
+                }
+
+                Ok(obj_builder.build())
+            })
+            .collect();
+
+        // Collect results, propagating any errors
+        let mut object_files = Vec::with_capacity(results.len());
         let mut total_code_bytes = 0usize;
-
-        for func in &state.functions {
-            let machine_code = rue_codegen::x86_64::generate(
-                &func.cfg,
-                &state.struct_defs,
-                &state.array_types,
-                &state.strings,
-                &state.interner,
-            )
-            .map_err(CompileErrors::from)?;
-            total_code_bytes += machine_code.code.len();
-
-            // Build object file for this function
-            let mut obj_builder = ObjectBuilder::new(options.target, &func.analyzed.name)
-                .code(machine_code.code)
-                .strings(machine_code.strings);
-
-            // Add relocations from codegen (convert RelocationKind to RelocationType).
-            for reloc in machine_code.relocations {
-                let rel_type = match reloc.kind {
-                    RelocationKind::X86Pc32 => RelocationType::Pc32,
-                    RelocationKind::X86Plt32 => RelocationType::Plt32,
-                    // AArch64 relocations should never appear in x86-64 codegen
-                    RelocationKind::Aarch64AdrpPage21
-                    | RelocationKind::Aarch64AddLo12
-                    | RelocationKind::Aarch64Call26 => {
-                        unreachable!("x86-64 codegen emitted AArch64 relocation {:?}", reloc.kind)
-                    }
-                };
-
-                obj_builder = obj_builder.relocation(CodeRelocation {
-                    offset: reloc.offset,
-                    symbol: reloc.symbol,
-                    rel_type,
-                    addend: reloc.addend,
-                });
-            }
-
-            object_files.push(obj_builder.build());
+        for result in results {
+            let obj = result.map_err(CompileErrors::from)?;
+            // Estimate code bytes from object file size (not exact, but close)
+            total_code_bytes += obj.len();
+            object_files.push(obj);
         }
+
         info!(
             function_count = state.functions.len(),
             code_bytes = total_code_bytes,
@@ -722,49 +737,64 @@ fn compile_aarch64(
     state: &CompileState,
     options: &CompileOptions,
 ) -> MultiErrorResult<CompileOutput> {
-    // Generate machine code for all functions using the aarch64 backend
+    // Generate machine code for all functions in parallel using the aarch64 backend
     let object_files = {
         let _span = info_span!("codegen", arch = "aarch64").entered();
-        let mut object_files: Vec<Vec<u8>> = Vec::new();
+
+        // Parallel code generation - each function is independent
+        let results: Vec<CompileResult<Vec<u8>>> = state
+            .functions
+            .par_iter()
+            .map(|func| {
+                let machine_code = rue_codegen::aarch64::generate(
+                    &func.cfg,
+                    &state.struct_defs,
+                    &state.array_types,
+                    &state.strings,
+                    &state.interner,
+                )?;
+
+                let mut obj_builder = ObjectBuilder::new(options.target, &func.analyzed.name)
+                    .code(machine_code.code)
+                    .strings(machine_code.strings);
+
+                // Add relocations from codegen (convert RelocationKind to RelocationType).
+                for reloc in machine_code.relocations {
+                    let rel_type = match reloc.kind {
+                        RelocationKind::Aarch64AdrpPage21 => RelocationType::AdrpPage21,
+                        RelocationKind::Aarch64AddLo12 => RelocationType::AddLo12,
+                        RelocationKind::Aarch64Call26 => RelocationType::Call26,
+                        // x86-64 relocations should never appear in AArch64 codegen
+                        RelocationKind::X86Pc32 | RelocationKind::X86Plt32 => {
+                            unreachable!(
+                                "AArch64 codegen emitted x86-64 relocation {:?}",
+                                reloc.kind
+                            )
+                        }
+                    };
+
+                    obj_builder = obj_builder.relocation(CodeRelocation {
+                        offset: reloc.offset,
+                        symbol: reloc.symbol,
+                        rel_type,
+                        addend: reloc.addend,
+                    });
+                }
+
+                Ok(obj_builder.build())
+            })
+            .collect();
+
+        // Collect results, propagating any errors
+        let mut object_files = Vec::with_capacity(results.len());
         let mut total_code_bytes = 0usize;
-
-        for func in &state.functions {
-            let machine_code = rue_codegen::aarch64::generate(
-                &func.cfg,
-                &state.struct_defs,
-                &state.array_types,
-                &state.strings,
-                &state.interner,
-            )
-            .map_err(CompileErrors::from)?;
-            total_code_bytes += machine_code.code.len();
-
-            let mut obj_builder = ObjectBuilder::new(options.target, &func.analyzed.name)
-                .code(machine_code.code)
-                .strings(machine_code.strings);
-
-            // Add relocations from codegen (convert RelocationKind to RelocationType).
-            for reloc in machine_code.relocations {
-                let rel_type = match reloc.kind {
-                    RelocationKind::Aarch64AdrpPage21 => RelocationType::AdrpPage21,
-                    RelocationKind::Aarch64AddLo12 => RelocationType::AddLo12,
-                    RelocationKind::Aarch64Call26 => RelocationType::Call26,
-                    // x86-64 relocations should never appear in AArch64 codegen
-                    RelocationKind::X86Pc32 | RelocationKind::X86Plt32 => {
-                        unreachable!("AArch64 codegen emitted x86-64 relocation {:?}", reloc.kind)
-                    }
-                };
-
-                obj_builder = obj_builder.relocation(CodeRelocation {
-                    offset: reloc.offset,
-                    symbol: reloc.symbol,
-                    rel_type,
-                    addend: reloc.addend,
-                });
-            }
-
-            object_files.push(obj_builder.build());
+        for result in results {
+            let obj = result.map_err(CompileErrors::from)?;
+            // Estimate code bytes from object file size (not exact, but close)
+            total_code_bytes += obj.len();
+            object_files.push(obj);
         }
+
         info!(
             function_count = state.functions.len(),
             code_bytes = total_code_bytes,
