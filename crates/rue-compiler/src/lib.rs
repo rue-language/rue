@@ -28,6 +28,7 @@
 mod diagnostic;
 mod drop_glue;
 
+use rayon::prelude::*;
 use tracing::{info, info_span};
 
 pub use diagnostic::{DiagnosticFormatter, SourceInfo};
@@ -392,34 +393,47 @@ pub fn compile_frontend_from_ast_with_options(
         .chain(drop_glue_functions)
         .collect();
 
-    // Build CFGs from AIR (one per function), collecting warnings
+    // Build CFGs from AIR (one per function) in parallel, collecting warnings
     let (functions, warnings) = {
         let _span = info_span!("cfg_construction").entered();
-        let mut functions = Vec::with_capacity(all_functions.len());
+
+        // Build CFGs in parallel - each function is independent
+        let results: Vec<(FunctionWithCfg, Vec<CompileWarning>)> = all_functions
+            .into_par_iter()
+            .map(|func| {
+                let cfg_output = CfgBuilder::build(
+                    &func.air,
+                    func.num_locals,
+                    func.num_param_slots,
+                    &func.name,
+                    &sema_output.struct_defs,
+                    &sema_output.array_types,
+                    func.param_modes.clone(),
+                    &interner,
+                );
+
+                // Apply optimizations to the CFG
+                let mut cfg = cfg_output.cfg;
+                rue_cfg::opt::optimize(&mut cfg, opt_level);
+
+                (
+                    FunctionWithCfg {
+                        analyzed: func,
+                        cfg,
+                    },
+                    cfg_output.warnings,
+                )
+            })
+            .collect();
+
+        // Unzip the results and collect all warnings
+        let mut functions = Vec::with_capacity(results.len());
         let mut warnings = sema_output.warnings;
-
-        for func in all_functions {
-            let cfg_output = CfgBuilder::build(
-                &func.air,
-                func.num_locals,
-                func.num_param_slots,
-                &func.name,
-                &sema_output.struct_defs,
-                &sema_output.array_types,
-                func.param_modes.clone(),
-                &interner,
-            );
-            warnings.extend(cfg_output.warnings);
-
-            // Apply optimizations to the CFG
-            let mut cfg = cfg_output.cfg;
-            rue_cfg::opt::optimize(&mut cfg, opt_level);
-
-            functions.push(FunctionWithCfg {
-                analyzed: func,
-                cfg,
-            });
+        for (func, func_warnings) in results {
+            functions.push(func);
+            warnings.extend(func_warnings);
         }
+
         info!(
             function_count = functions.len(),
             "CFG construction complete"
