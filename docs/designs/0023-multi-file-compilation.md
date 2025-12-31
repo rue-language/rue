@@ -19,7 +19,7 @@ Implemented
 
 ## Summary
 
-Enable the Rue compiler to accept multiple source files and compile them into a single executable. This is a foundational capability that unblocks real-world programs that don't fit in a single file, and lays groundwork for the module system (ADR-0022).
+Enable the Rue compiler to accept multiple source files and compile them into a single executable. This is a foundational capability that unblocks real-world programs that don't fit in a single file, and lays groundwork for a future module system.
 
 ## Context
 
@@ -48,7 +48,7 @@ A minimal multi-file compilation model that:
 ### What We Explicitly Defer
 
 This ADR does **not** address:
-- **Module syntax** (`mod`, `use`, `pub`) — that's ADR-0022
+- **Module syntax** (`mod`, `use`, `pub`) — future work (TBD)
 - **Visibility/privacy** — all symbols are public for now
 - **Namespacing** — all symbols share a flat global namespace
 - **Incremental compilation** — we rebuild everything each time
@@ -352,7 +352,7 @@ The `main()` function must exist in exactly one of the input files:
 ### Neutral
 
 - **Stepping stone**: This is explicitly a transitional design
-- **UX will improve**: Module system (ADR-0022) will provide better ergonomics
+- **UX will improve**: A future module system will provide better ergonomics
 - **Tests as validation**: Spec tests can use multiple files once modules land
 
 ## Design Decisions
@@ -401,7 +401,7 @@ None at this time.
 
 ## Future Work
 
-- **Module system** (ADR-0022): Adds `mod`, `use`, `pub` syntax
+- **Module system**: Adds `mod`, `use`, `pub` syntax (future ADR)
 - **Visibility**: Private-by-default, explicit `pub` for exports
 - **Incremental compilation**: Rebuild only changed files
 - **Build system**: `rue.toml` or similar for project definition
@@ -409,7 +409,6 @@ None at this time.
 
 ## References
 
-- [ADR-0022: Module System](0022-modules.md) — Upcoming design for modules and visibility
 - [ADR-0020: Built-in Types as Synthetic Structs](0020-builtin-types-as-structs.md) — Related type system work
 - Current CLI implementation: `crates/rue/src/main.rs`
 - Current compiler driver: `crates/rue-compiler/src/lib.rs`
