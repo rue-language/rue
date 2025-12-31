@@ -491,9 +491,8 @@ impl<'a> Sema<'a> {
 
     /// Build a `TypeContext` from the collected type information.
     ///
-    /// This should be called after the collection phase (after calling
-    /// `collect_struct_definitions`, `collect_enum_definitions`,
-    /// `collect_function_signatures`, and `collect_method_definitions`).
+    /// This should be called after the declaration gathering phase (after calling
+    /// `register_type_names` and `resolve_declarations`).
     ///
     /// The returned `TypeContext` is immutable and can be shared across
     /// threads for parallel function analysis.
@@ -573,20 +572,16 @@ impl<'a> Sema<'a> {
     /// }
     /// ```
     pub fn gather_declarations(mut self) -> CompileResult<(TypeContext, GatherOutput<'a>)> {
-        // First pass: collect type definitions (enums then structs)
-        // Enums must be collected first so struct fields can reference enum types
-        self.collect_enum_definitions()?;
-        self.collect_struct_definitions()?;
-
-        // Validate @copy struct fields are all Copy types
-        self.validate_copy_structs()?;
-
-        // Collect user-defined destructors
-        self.collect_destructor_definitions()?;
-
-        // Second pass: collect function and method signatures
-        self.collect_function_signatures()?;
-        self.collect_method_definitions()?;
+        // Two-phase approach for correctness and performance:
+        //
+        // Phase 1: Register all type names (enum and struct IDs)
+        // This allows types to reference each other in any order.
+        //
+        // Phase 2: Resolve all declarations in a single pass
+        // Now that all type names are known, we can resolve field types,
+        // validate @copy structs, and collect functions/methods together.
+        self.register_type_names()?;
+        self.resolve_declarations()?;
 
         // Build the immutable type context
         let type_ctx = self.build_type_context();
@@ -884,27 +879,12 @@ impl<'a> Sema<'a> {
     /// first error, allowing users to see all issues at once. Errors within type/struct
     /// definitions still cause early termination since they affect all subsequent analysis.
     pub fn analyze_all(mut self) -> MultiErrorResult<SemaOutput> {
-        // First pass: collect type definitions (enums then structs)
-        // Enums must be collected first so struct fields can reference enum types
+        // Two-phase declaration gathering (see gather_declarations for details):
+        // Phase 1: Register type names
+        // Phase 2: Resolve all declarations
         // These are critical and must succeed before we can analyze functions
-        self.collect_enum_definitions()
-            .map_err(CompileErrors::from)?;
-        self.collect_struct_definitions()
-            .map_err(CompileErrors::from)?;
-
-        // Validate @copy struct fields are all Copy types
-        self.validate_copy_structs().map_err(CompileErrors::from)?;
-
-        // Collect user-defined destructors
-        self.collect_destructor_definitions()
-            .map_err(CompileErrors::from)?;
-
-        // Second pass: collect function and method signatures
-        // These are also critical since they affect type checking of calls
-        self.collect_function_signatures()
-            .map_err(CompileErrors::from)?;
-        self.collect_method_definitions()
-            .map_err(CompileErrors::from)?;
+        self.register_type_names().map_err(CompileErrors::from)?;
+        self.resolve_declarations().map_err(CompileErrors::from)?;
 
         // Now analyze function bodies - these can be analyzed independently
         // so we collect errors from all of them instead of stopping at the first
@@ -1314,104 +1294,6 @@ impl<'a> Sema<'a> {
         false
     }
 
-    /// Collect all struct definitions from the RIR.
-    fn collect_struct_definitions(&mut self) -> CompileResult<()> {
-        for (_, inst) in self.rir.iter() {
-            if let InstData::StructDecl {
-                directives_start,
-                directives_len,
-                name,
-                fields_start,
-                fields_len,
-            } = &inst.data
-            {
-                let struct_id = StructId(self.struct_defs.len() as u32);
-                let struct_name = self.interner.resolve(&*name).to_string();
-                let directives = self.rir.get_directives(*directives_start, *directives_len);
-                let is_copy = self.has_copy_directive(&directives);
-
-                let fields = self.rir.get_field_decls(*fields_start, *fields_len);
-                // Check for duplicate field names
-                let mut seen_fields: HashSet<Spur> = HashSet::new();
-                for (field_name, _) in &fields {
-                    if !seen_fields.insert(*field_name) {
-                        let field_name_str = self.interner.resolve(&*field_name).to_string();
-                        return Err(CompileError::new(
-                            ErrorKind::DuplicateField {
-                                struct_name: struct_name.clone(),
-                                field_name: field_name_str,
-                            },
-                            inst.span,
-                        ));
-                    }
-                }
-
-                // Resolve field types (can only be primitive types for now, or other structs)
-                let mut resolved_fields = Vec::new();
-                for (field_name, field_type) in &fields {
-                    let field_ty = self.resolve_type(*field_type, inst.span)?;
-                    resolved_fields.push(StructField {
-                        name: self.interner.resolve(&*field_name).to_string(),
-                        ty: field_ty,
-                    });
-                }
-
-                self.struct_defs.push(StructDef {
-                    name: struct_name,
-                    fields: resolved_fields,
-                    is_copy,
-                    destructor: None, // Filled in during collect_destructor_definitions
-                });
-                self.structs.insert(*name, struct_id);
-            }
-        }
-        Ok(())
-    }
-
-    /// Collect all enum definitions from the RIR.
-    fn collect_enum_definitions(&mut self) -> CompileResult<()> {
-        for (_, inst) in self.rir.iter() {
-            if let InstData::EnumDecl {
-                name,
-                variants_start,
-                variants_len,
-            } = &inst.data
-            {
-                let enum_id = EnumId(self.enum_defs.len() as u32);
-                let enum_name = self.interner.resolve(&*name).to_string();
-                let variants = self.rir.get_symbols(*variants_start, *variants_len);
-
-                // Check for duplicate variant names
-                let mut seen_variants: HashSet<Spur> = HashSet::new();
-                for variant_name in &variants {
-                    if !seen_variants.insert(*variant_name) {
-                        let variant_name_str = self.interner.resolve(&*variant_name).to_string();
-                        return Err(CompileError::new(
-                            ErrorKind::DuplicateVariant {
-                                enum_name: enum_name.clone(),
-                                variant_name: variant_name_str,
-                            },
-                            inst.span,
-                        ));
-                    }
-                }
-
-                // Convert variant symbols to strings
-                let variant_names: Vec<String> = variants
-                    .iter()
-                    .map(|v| self.interner.resolve(&*v).to_string())
-                    .collect();
-
-                self.enum_defs.push(EnumDef {
-                    name: enum_name,
-                    variants: variant_names,
-                });
-                self.enums.insert(*name, enum_id);
-            }
-        }
-        Ok(())
-    }
-
     /// Get a human-readable name for a type.
     fn format_type_name(&self, ty: Type) -> String {
         match ty {
@@ -1474,195 +1356,342 @@ impl<'a> Sema<'a> {
         }
     }
 
-    /// Validate that @copy structs only contain Copy type fields.
-    /// Must be called after collect_struct_definitions.
-    fn validate_copy_structs(&self) -> CompileResult<()> {
+    /// Phase 1: Register all type names (enum and struct IDs).
+    ///
+    /// This creates name → ID mappings for all enums and structs in a single pass,
+    /// allowing types to reference each other in any order. Struct definitions are
+    /// created with placeholder empty fields that will be filled in during phase 2.
+    fn register_type_names(&mut self) -> CompileResult<()> {
         for (_, inst) in self.rir.iter() {
-            if let InstData::StructDecl {
-                directives_start,
-                directives_len,
-                name,
-                ..
-            } = &inst.data
-            {
-                let directives = self.rir.get_directives(*directives_start, *directives_len);
-                let is_copy = self.has_copy_directive(&directives);
-                if !is_copy {
-                    continue;
-                }
+            match &inst.data {
+                InstData::EnumDecl {
+                    name,
+                    variants_start,
+                    variants_len,
+                } => {
+                    let enum_id = EnumId(self.enum_defs.len() as u32);
+                    let enum_name = self.interner.resolve(&*name).to_string();
+                    let variants = self.rir.get_symbols(*variants_start, *variants_len);
 
-                let struct_name = self.interner.resolve(&*name).to_string();
-                let struct_id = *self.structs.get(name).unwrap();
-                let struct_def = &self.struct_defs[struct_id.0 as usize];
-
-                for field in &struct_def.fields {
-                    if !self.is_type_copy(field.ty) {
-                        let field_type_name = self.format_type_name(field.ty);
-                        return Err(CompileError::new(
-                            ErrorKind::CopyStructNonCopyField(Box::new(
-                                CopyStructNonCopyFieldError {
-                                    struct_name,
-                                    field_name: field.name.clone(),
-                                    field_type: field_type_name,
+                    // Check for duplicate variant names
+                    let mut seen_variants: HashSet<Spur> = HashSet::new();
+                    for variant_name in &variants {
+                        if !seen_variants.insert(*variant_name) {
+                            let variant_name_str =
+                                self.interner.resolve(&*variant_name).to_string();
+                            return Err(CompileError::new(
+                                ErrorKind::DuplicateVariant {
+                                    enum_name: enum_name.clone(),
+                                    variant_name: variant_name_str,
                                 },
-                            )),
-                            inst.span,
-                        ));
+                                inst.span,
+                            ));
+                        }
                     }
+
+                    // Convert variant symbols to strings
+                    let variant_names: Vec<String> = variants
+                        .iter()
+                        .map(|v| self.interner.resolve(&*v).to_string())
+                        .collect();
+
+                    self.enum_defs.push(EnumDef {
+                        name: enum_name,
+                        variants: variant_names,
+                    });
+                    self.enums.insert(*name, enum_id);
                 }
+                InstData::StructDecl {
+                    directives_start,
+                    directives_len,
+                    name,
+                    ..
+                } => {
+                    let struct_id = StructId(self.struct_defs.len() as u32);
+                    let struct_name = self.interner.resolve(&*name).to_string();
+                    let directives = self.rir.get_directives(*directives_start, *directives_len);
+                    let is_copy = self.has_copy_directive(&directives);
+
+                    // Create placeholder struct def (fields will be resolved in phase 2)
+                    self.struct_defs.push(StructDef {
+                        name: struct_name,
+                        fields: Vec::new(), // Filled in during resolve_declarations
+                        is_copy,
+                        destructor: None, // Filled in during resolve_declarations
+                    });
+                    self.structs.insert(*name, struct_id);
+                }
+                _ => {}
             }
         }
         Ok(())
     }
 
-    /// Collect all user-defined destructor definitions.
-    /// Must be called after collect_struct_definitions.
-    fn collect_destructor_definitions(&mut self) -> CompileResult<()> {
-        for (_, inst) in self.rir.iter() {
-            if let InstData::DropFnDecl { type_name, body: _ } = &inst.data {
-                let type_name_str = self.interner.resolve(&*type_name).to_string();
+    /// Phase 2: Resolve all declarations.
+    ///
+    /// Now that all type names are registered, this resolves:
+    /// - Struct field types (must be done first for @copy validation)
+    /// - @copy struct validation, destructors, functions, and methods
+    fn resolve_declarations(&mut self) -> CompileResult<()> {
+        self.resolve_struct_fields()?;
+        self.resolve_remaining_declarations()
+    }
 
-                // Check that the type exists and is a struct
-                let struct_id = match self.structs.get(type_name) {
-                    Some(id) => *id,
-                    None => {
+    /// Resolve struct field types. Must run before @copy validation.
+    fn resolve_struct_fields(&mut self) -> CompileResult<()> {
+        for (_, inst) in self.rir.iter() {
+            if let InstData::StructDecl {
+                name,
+                fields_start,
+                fields_len,
+                ..
+            } = &inst.data
+            {
+                let struct_id = *self.structs.get(name).unwrap();
+                let struct_name = self.struct_defs[struct_id.0 as usize].name.clone();
+                let fields = self.rir.get_field_decls(*fields_start, *fields_len);
+
+                // Check for duplicate field names
+                let mut seen_fields: HashSet<Spur> = HashSet::new();
+                for (field_name, _) in &fields {
+                    if !seen_fields.insert(*field_name) {
+                        let field_name_str = self.interner.resolve(&*field_name).to_string();
                         return Err(CompileError::new(
-                            ErrorKind::DestructorUnknownType {
-                                type_name: type_name_str,
+                            ErrorKind::DuplicateField {
+                                struct_name,
+                                field_name: field_name_str,
                             },
                             inst.span,
                         ));
                     }
-                };
-
-                // Check for duplicate destructor
-                let struct_def = &self.struct_defs[struct_id.0 as usize];
-                if struct_def.destructor.is_some() {
-                    return Err(CompileError::new(
-                        ErrorKind::DuplicateDestructor {
-                            type_name: type_name_str,
-                        },
-                        inst.span,
-                    ));
                 }
 
-                // Register the destructor with the struct
-                // The destructor function will be named "TypeName.__drop"
-                let destructor_name = format!("{}.__drop", type_name_str);
-                self.struct_defs[struct_id.0 as usize].destructor = Some(destructor_name);
+                // Resolve field types
+                let mut resolved_fields = Vec::new();
+                for (field_name, field_type) in &fields {
+                    let field_ty = self.resolve_type(*field_type, inst.span)?;
+                    resolved_fields.push(StructField {
+                        name: self.interner.resolve(&*field_name).to_string(),
+                        ty: field_ty,
+                    });
+                }
+
+                self.struct_defs[struct_id.0 as usize].fields = resolved_fields;
             }
         }
         Ok(())
     }
 
-    /// Collect all function signatures for forward reference
-    fn collect_function_signatures(&mut self) -> CompileResult<()> {
+    /// Resolve @copy validation, destructors, functions, and methods.
+    fn resolve_remaining_declarations(&mut self) -> CompileResult<()> {
         for (_, inst) in self.rir.iter() {
+            match &inst.data {
+                InstData::StructDecl {
+                    directives_start,
+                    directives_len,
+                    name,
+                    ..
+                } => {
+                    self.validate_copy_struct(
+                        *directives_start,
+                        *directives_len,
+                        *name,
+                        inst.span,
+                    )?;
+                }
+
+                InstData::DropFnDecl { type_name, .. } => {
+                    self.collect_destructor(*type_name, inst.span)?;
+                }
+
+                InstData::FnDecl {
+                    name,
+                    params_start,
+                    params_len,
+                    return_type,
+                    ..
+                } => {
+                    self.collect_function_signature(
+                        *name,
+                        *params_start,
+                        *params_len,
+                        *return_type,
+                        inst.span,
+                    )?;
+                }
+
+                InstData::ImplDecl {
+                    type_name,
+                    methods_start,
+                    methods_len,
+                } => {
+                    self.collect_impl_methods(*type_name, *methods_start, *methods_len, inst.span)?;
+                }
+
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+
+    /// Validate that a @copy struct only contains Copy type fields.
+    fn validate_copy_struct(
+        &self,
+        directives_start: u32,
+        directives_len: u32,
+        name: Spur,
+        span: Span,
+    ) -> CompileResult<()> {
+        let directives = self.rir.get_directives(directives_start, directives_len);
+        if !self.has_copy_directive(&directives) {
+            return Ok(());
+        }
+
+        let struct_name = self.interner.resolve(&name).to_string();
+        let struct_id = *self.structs.get(&name).unwrap();
+        let struct_def = &self.struct_defs[struct_id.0 as usize];
+
+        for field in &struct_def.fields {
+            if !self.is_type_copy(field.ty) {
+                let field_type_name = self.format_type_name(field.ty);
+                return Err(CompileError::new(
+                    ErrorKind::CopyStructNonCopyField(Box::new(CopyStructNonCopyFieldError {
+                        struct_name,
+                        field_name: field.name.clone(),
+                        field_type: field_type_name,
+                    })),
+                    span,
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    /// Collect a destructor definition and register it with its struct.
+    fn collect_destructor(&mut self, type_name: Spur, span: Span) -> CompileResult<()> {
+        let type_name_str = self.interner.resolve(&type_name).to_string();
+
+        let struct_id = match self.structs.get(&type_name) {
+            Some(id) => *id,
+            None => {
+                return Err(CompileError::new(
+                    ErrorKind::DestructorUnknownType {
+                        type_name: type_name_str,
+                    },
+                    span,
+                ));
+            }
+        };
+
+        let struct_def = &self.struct_defs[struct_id.0 as usize];
+        if struct_def.destructor.is_some() {
+            return Err(CompileError::new(
+                ErrorKind::DuplicateDestructor {
+                    type_name: type_name_str,
+                },
+                span,
+            ));
+        }
+
+        let destructor_name = format!("{}.__drop", type_name_str);
+        self.struct_defs[struct_id.0 as usize].destructor = Some(destructor_name);
+        Ok(())
+    }
+
+    /// Collect a function signature for forward reference.
+    fn collect_function_signature(
+        &mut self,
+        name: Spur,
+        params_start: u32,
+        params_len: u32,
+        return_type: Spur,
+        span: Span,
+    ) -> CompileResult<()> {
+        let ret_type = self.resolve_type(return_type, span)?;
+        let params = self.rir.get_params(params_start, params_len);
+        let param_types: Vec<Type> = params
+            .iter()
+            .map(|p| self.resolve_type(p.ty, span))
+            .collect::<CompileResult<Vec<_>>>()?;
+        let param_modes: Vec<RirParamMode> = params.iter().map(|p| p.mode).collect();
+
+        self.functions.insert(
+            name,
+            FunctionInfo {
+                param_types,
+                param_modes,
+                return_type: ret_type,
+            },
+        );
+        Ok(())
+    }
+
+    /// Collect method definitions from an impl block.
+    fn collect_impl_methods(
+        &mut self,
+        type_name: Spur,
+        methods_start: u32,
+        methods_len: u32,
+        span: Span,
+    ) -> CompileResult<()> {
+        let struct_id = match self.structs.get(&type_name) {
+            Some(id) => *id,
+            None => {
+                let type_name_str = self.interner.resolve(&type_name).to_string();
+                return Err(CompileError::new(
+                    ErrorKind::UnknownType(type_name_str),
+                    span,
+                ));
+            }
+        };
+        let struct_type = Type::Struct(struct_id);
+
+        let methods = self.rir.get_inst_refs(methods_start, methods_len);
+        for method_ref in methods {
+            let method_inst = self.rir.get(method_ref);
             if let InstData::FnDecl {
-                name,
+                name: method_name,
                 params_start,
                 params_len,
                 return_type,
+                body,
+                has_self,
                 ..
-            } = &inst.data
+            } = &method_inst.data
             {
-                let ret_type = self.resolve_type(*return_type, inst.span)?;
+                let key = (type_name, *method_name);
+                if self.methods.contains_key(&key) {
+                    let type_name_str = self.interner.resolve(&type_name).to_string();
+                    let method_name_str = self.interner.resolve(&*method_name).to_string();
+                    return Err(CompileError::new(
+                        ErrorKind::DuplicateMethod {
+                            type_name: type_name_str,
+                            method_name: method_name_str,
+                        },
+                        method_inst.span,
+                    ));
+                }
+
                 let params = self.rir.get_params(*params_start, *params_len);
+                let param_names: Vec<Spur> = params.iter().map(|p| p.name).collect();
                 let param_types: Vec<Type> = params
                     .iter()
-                    .map(|p| self.resolve_type(p.ty, inst.span))
+                    .map(|p| self.resolve_type(p.ty, method_inst.span))
                     .collect::<CompileResult<Vec<_>>>()?;
-                let param_modes: Vec<RirParamMode> = params.iter().map(|p| p.mode).collect();
+                let ret_type = self.resolve_type(*return_type, method_inst.span)?;
 
-                self.functions.insert(
-                    *name,
-                    FunctionInfo {
+                self.methods.insert(
+                    key,
+                    MethodInfo {
+                        struct_type,
+                        has_self: *has_self,
+                        param_names,
                         param_types,
-                        param_modes,
                         return_type: ret_type,
+                        body: *body,
+                        span: method_inst.span,
                     },
                 );
-            }
-        }
-        Ok(())
-    }
-
-    /// Collect all method definitions from impl blocks.
-    ///
-    /// This processes all ImplDecl instructions and builds the method table
-    /// that maps (struct_name, method_name) to MethodInfo.
-    fn collect_method_definitions(&mut self) -> CompileResult<()> {
-        for (_, inst) in self.rir.iter() {
-            if let InstData::ImplDecl {
-                type_name,
-                methods_start,
-                methods_len,
-            } = &inst.data
-            {
-                // Check that the type exists
-                let struct_id = match self.structs.get(type_name) {
-                    Some(id) => *id,
-                    None => {
-                        let type_name_str = self.interner.resolve(&*type_name).to_string();
-                        return Err(CompileError::new(
-                            ErrorKind::UnknownType(type_name_str),
-                            inst.span,
-                        ));
-                    }
-                };
-                let struct_type = Type::Struct(struct_id);
-
-                // Process each method in the impl block
-                let methods = self.rir.get_inst_refs(*methods_start, *methods_len);
-                for method_ref in methods {
-                    let method_inst = self.rir.get(method_ref);
-                    if let InstData::FnDecl {
-                        name: method_name,
-                        params_start,
-                        params_len,
-                        return_type,
-                        body,
-                        has_self,
-                        ..
-                    } = &method_inst.data
-                    {
-                        // Check for duplicate method names
-                        let key = (*type_name, *method_name);
-                        if self.methods.contains_key(&key) {
-                            let type_name_str = self.interner.resolve(&*type_name).to_string();
-                            let method_name_str = self.interner.resolve(&*method_name).to_string();
-                            return Err(CompileError::new(
-                                ErrorKind::DuplicateMethod {
-                                    type_name: type_name_str,
-                                    method_name: method_name_str,
-                                },
-                                method_inst.span,
-                            ));
-                        }
-
-                        // Resolve parameter types
-                        let params = self.rir.get_params(*params_start, *params_len);
-                        let param_names: Vec<Spur> = params.iter().map(|p| p.name).collect();
-                        let param_types: Vec<Type> = params
-                            .iter()
-                            .map(|p| self.resolve_type(p.ty, method_inst.span))
-                            .collect::<CompileResult<Vec<_>>>()?;
-                        let ret_type = self.resolve_type(*return_type, method_inst.span)?;
-
-                        self.methods.insert(
-                            key,
-                            MethodInfo {
-                                struct_type,
-                                has_self: *has_self,
-                                param_names,
-                                param_types,
-                                return_type: ret_type,
-                                body: *body,
-                                span: method_inst.span,
-                            },
-                        );
-                    }
-                }
             }
         }
         Ok(())
