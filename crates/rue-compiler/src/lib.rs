@@ -616,17 +616,9 @@ fn link_internal(
         return link_system(state, options, object_files, "clang");
     }
 
-    // WORKAROUND: Use system linker on Linux when runtime is used.
-    // The internal linker now correctly handles GOT relaxation (rue-05k9),
-    // but the runtime archive has R_X86_64_GOTPCREL relocations to external
-    // symbols (memcpy, __multf3, etc.) that require libc/compiler_builtins.
-    // The internal linker cannot resolve these external dependencies.
-    // This workaround remains until we either:
-    // 1. Build the runtime without external dependencies, or
-    // 2. Add libc linking support to the internal linker
-    if options.target.is_elf() {
-        return link_system(state, options, object_files, "clang");
-    }
+    // The internal linker handles ELF targets natively.
+    // The runtime is compiled with -Crelocation-model=static to avoid
+    // GOT-relative relocations that would require external symbols.
 
     let mut linker = Linker::new(options.target);
 

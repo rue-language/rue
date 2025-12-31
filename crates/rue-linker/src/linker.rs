@@ -454,10 +454,15 @@ impl Linker {
         let rodata_vaddr = align_up(code_vaddr + code_size, self.page_size);
 
         // Calculate data segment layout
-        // The data segment starts after code+rodata, page-aligned
-        let code_rodata_end = code_vaddr + merged_code.len() as u64 + merged_rodata.len() as u64;
+        // The data segment starts after rodata (or code if no rodata), page-aligned
         let data_vaddr = if has_data_segment {
-            align_up(code_rodata_end, self.page_size)
+            // Calculate the end of the last segment before data
+            let preceding_end = if has_rodata {
+                rodata_vaddr + merged_rodata.len() as u64
+            } else {
+                code_vaddr + code_size
+            };
+            align_up(preceding_end, self.page_size)
         } else {
             0 // Not used
         };
@@ -608,11 +613,37 @@ impl Linker {
                 }
                 RelocationType::GotPcRel => {
                     // R_X86_64_GOTPCREL: Load from GOT entry.
-                    // For static linking, we "relax" this to compute the address directly.
-                    // Unlike GotPcRelX/RexGotPcRelX, we don't rewrite the opcode because
-                    // the instruction might not support the transformation.
-                    // The instruction will dereference the computed address, which works
-                    // correctly if the symbol is data being accessed.
+                    // For static linking, we relax this to use the symbol address directly.
+                    // This requires rewriting indirect calls/jumps to direct ones, similar to
+                    // GotPcRelX but without the compiler's guarantee that it's safe.
+                    // In static linking, we know all symbols are resolved, so it's always safe.
+                    //
+                    // Transform indirect call: `call *[rip+disp]` (FF /2) -> `addr32 call rel32` (67 E8)
+                    // Transform indirect jmp:  `jmp *[rip+disp]` (FF /4) -> `addr32 jmp rel32` (67 E9)
+                    // Transform indirect mov:  `mov reg, [rip+disp]` (8B) -> `lea reg, [rip+disp]` (8D)
+                    if patch_offset >= 2 {
+                        let opcode_offset = patch_offset - 2;
+                        if merged_code[opcode_offset] == 0xFF {
+                            let modrm = merged_code[opcode_offset + 1];
+                            let reg_field = (modrm >> 3) & 0x7;
+                            if reg_field == 2 {
+                                // Indirect call: `call *[rip+disp]` (FF /2, ModR/M 15)
+                                // Transform to: `addr32 call rel32` (67 E8)
+                                merged_code[opcode_offset] = 0x67; // addr32 prefix
+                                merged_code[opcode_offset + 1] = 0xE8; // direct call opcode
+                            } else if reg_field == 4 {
+                                // Indirect jmp: `jmp *[rip+disp]` (FF /4, ModR/M 25)
+                                // Transform to: `addr32 jmp rel32` (67 E9)
+                                merged_code[opcode_offset] = 0x67; // addr32 prefix
+                                merged_code[opcode_offset + 1] = 0xE9; // direct jmp opcode
+                            }
+                        } else if merged_code[opcode_offset] == 0x8B {
+                            // MOV: `mov reg, [rip+disp]` -> `lea reg, [rip+disp]`
+                            merged_code[opcode_offset] = 0x8D; // LEA opcode
+                        }
+                        // Other patterns: just patch displacement (best effort)
+                    }
+
                     let value = target_addr as i64 + addend - pc as i64;
                     if value < i32::MIN as i64 || value > i32::MAX as i64 {
                         return Err(LinkError::RelocationOverflow {
@@ -636,19 +667,27 @@ impl Linker {
                     // For static linking, we perform GOT relaxation:
                     // - `mov reg, [rip+disp]` (8B) -> `lea reg, [rip+disp]` (8D)
                     // - `call *[rip+disp]` (FF /2) -> `addr32 call rel32` (67 E8)
+                    // - `jmp *[rip+disp]` (FF /4) -> `addr32 jmp rel32` (67 E9)
                     //
                     // The relocation offset points to the displacement, so:
                     // - For MOV: opcode is at offset - 2
-                    // - For CALL: opcode (FF) is at offset - 2, ModR/M is at offset - 1
+                    // - For CALL/JMP: opcode (FF) is at offset - 2, ModR/M is at offset - 1
                     if patch_offset >= 2 {
                         let opcode_offset = patch_offset - 2;
-                        if merged_code[opcode_offset] == 0xFF
-                            && merged_code[opcode_offset + 1] & 0x38 == 0x10
-                        {
-                            // Indirect call: `call *[rip+disp]` (FF /2, ModR/M 15)
-                            // Transform to: `addr32 call rel32` (67 E8)
-                            merged_code[opcode_offset] = 0x67; // addr32 prefix
-                            merged_code[opcode_offset + 1] = 0xE8; // direct call opcode
+                        if merged_code[opcode_offset] == 0xFF {
+                            let modrm = merged_code[opcode_offset + 1];
+                            let reg_field = (modrm >> 3) & 0x7;
+                            if reg_field == 2 {
+                                // Indirect call: `call *[rip+disp]` (FF /2, ModR/M 15)
+                                // Transform to: `addr32 call rel32` (67 E8)
+                                merged_code[opcode_offset] = 0x67; // addr32 prefix
+                                merged_code[opcode_offset + 1] = 0xE8; // direct call opcode
+                            } else if reg_field == 4 {
+                                // Indirect jmp: `jmp *[rip+disp]` (FF /4, ModR/M 25)
+                                // Transform to: `addr32 jmp rel32` (67 E9)
+                                merged_code[opcode_offset] = 0x67; // addr32 prefix
+                                merged_code[opcode_offset + 1] = 0xE9; // direct jmp opcode
+                            }
                         } else if merged_code[opcode_offset] == 0x8B {
                             // MOV: `mov reg, [rip+disp]` -> `lea reg, [rip+disp]`
                             merged_code[opcode_offset] = 0x8D; // LEA opcode
@@ -679,21 +718,28 @@ impl Linker {
                     // For static linking, we perform GOT relaxation:
                     // - `mov reg, [rip+disp]` (REX 8B) -> `lea reg, [rip+disp]` (REX 8D)
                     // - `call *[rip+disp]` (REX FF /2) -> `addr32 call rel32` (REX 67 E8)
+                    // - `jmp *[rip+disp]` (REX FF /4) -> `addr32 jmp rel32` (REX 67 E9)
                     //
                     // The relocation offset points to the displacement, so:
                     // - For MOV with REX: REX is at offset - 3, opcode at offset - 2
-                    // - For CALL with REX: similar layout
+                    // - For CALL/JMP with REX: similar layout
                     if patch_offset >= 2 {
                         let opcode_offset = patch_offset - 2;
-                        if merged_code[opcode_offset] == 0xFF
-                            && merged_code[opcode_offset + 1] & 0x38 == 0x10
-                        {
-                            // Indirect call with REX: `REX call *[rip+disp]` (4x FF /2)
-                            // Transform to: `addr32 call rel32` (67 E8) - REX stays at offset-3
-                            // Actually, we rewrite the FF 15 -> 67 E8
-                            merged_code[opcode_offset] = 0x67; // addr32 prefix
-                            merged_code[opcode_offset + 1] = 0xE8; // direct call opcode
-                        // Note: REX prefix at offset-3 becomes harmless (no-op for CALL)
+                        if merged_code[opcode_offset] == 0xFF {
+                            let modrm = merged_code[opcode_offset + 1];
+                            let reg_field = (modrm >> 3) & 0x7;
+                            if reg_field == 2 {
+                                // Indirect call with REX: `REX call *[rip+disp]` (4x FF /2)
+                                // Transform to: `addr32 call rel32` (67 E8) - REX stays at offset-3
+                                merged_code[opcode_offset] = 0x67; // addr32 prefix
+                                merged_code[opcode_offset + 1] = 0xE8; // direct call opcode
+                            // Note: REX prefix at offset-3 becomes harmless (no-op for CALL)
+                            } else if reg_field == 4 {
+                                // Indirect jmp with REX: `REX jmp *[rip+disp]` (4x FF /4)
+                                // Transform to: `addr32 jmp rel32` (67 E9)
+                                merged_code[opcode_offset] = 0x67; // addr32 prefix
+                                merged_code[opcode_offset + 1] = 0xE9; // direct jmp opcode
+                            }
                         } else if merged_code[opcode_offset] == 0x8B {
                             // MOV with REX: `REX mov reg, [rip+disp]` -> `REX lea reg, [rip+disp]`
                             merged_code[opcode_offset] = 0x8D; // LEA opcode
@@ -2443,15 +2489,15 @@ mod tests {
         assert_eq!(code[2], 0x1D, "ModR/M should preserve RBX register (1D)");
     }
 
-    /// Verify that GotPcRel (non-relaxable) does NOT rewrite the opcode.
+    /// Verify that GotPcRel rewrites MOV to LEA (GOT relaxation for static linking).
     #[test]
-    fn test_got_pcrel_no_opcode_rewrite() {
+    fn test_got_pcrel_mov_to_lea_relaxation() {
         // Build target
         let target_bytes = ObjectBuilder::new(ELF_TARGET, "target_data")
             .code(vec![0x42, 0x00, 0x00, 0x00])
             .build();
 
-        // Build caller with MOV instruction using GotPcRel (not GotPcRelX)
+        // Build caller with MOV instruction using GotPcRel
         let caller_bytes = ObjectBuilder::new(ELF_TARGET, "main")
             .code(vec![
                 0x48, 0x8B, 0x05, 0x00, 0x00, 0x00, 0x00, // mov rax, [rip+disp]
@@ -2460,7 +2506,7 @@ mod tests {
             .relocation(CodeRelocation {
                 offset: 3,
                 symbol: "target_data".into(),
-                rel_type: RelocationType::GotPcRel, // Note: not GotPcRelX
+                rel_type: RelocationType::GotPcRel,
                 addend: -4,
             })
             .build();
@@ -2478,12 +2524,12 @@ mod tests {
         let header_size = TEST_EHDR_SIZE + TEST_PHDR_SIZE;
         let code = &elf[header_size..];
 
-        // For GotPcRel, the opcode should NOT be changed (remains MOV)
-        // This is intentional - GotPcRel doesn't guarantee relaxability
+        // For static linking, GotPcRel should be relaxed just like GotPcRelX:
+        // MOV (8B) -> LEA (8D)
         assert_eq!(code[0], 0x48, "REX.W prefix should be preserved");
         assert_eq!(
-            code[1], 0x8B,
-            "Opcode should remain MOV (8B) for GotPcRel - no relaxation"
+            code[1], 0x8D,
+            "Opcode should be rewritten to LEA (8D) for GotPcRel relaxation"
         );
     }
 }
