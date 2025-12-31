@@ -5,6 +5,9 @@
 
 use serde::Deserialize;
 
+/// Default timeout for test execution in milliseconds (10 seconds).
+pub const DEFAULT_TIMEOUT_MS: u64 = 10_000;
+
 /// Exit code used by the Rue runtime for runtime errors (division by zero, overflow, etc.).
 ///
 /// This matches the convention used by Rust's test harness and the Rue runtime.
@@ -12,9 +15,10 @@ use serde::Deserialize;
 pub const RUNTIME_ERROR_EXIT_CODE: i32 = 101;
 use std::collections::HashMap;
 use std::fs;
-use std::io::Write;
+use std::io::{Read as IoRead, Write};
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Output, Stdio};
+use std::time::{Duration, Instant};
 
 /// A section header in a test file.
 #[derive(Debug, Deserialize)]
@@ -130,6 +134,11 @@ pub struct Case {
     /// Defaults to 0 (no optimization) if not specified.
     #[serde(default)]
     pub opt_level: Option<u8>,
+    /// Timeout for test execution in milliseconds.
+    /// Defaults to [`DEFAULT_TIMEOUT_MS`] if not specified.
+    /// If the test exceeds this timeout, it will be killed and marked as failed.
+    #[serde(default)]
+    pub timeout_ms: Option<u64>,
     /// Parameter sets for generating multiple test instances from a template.
     /// When present, this case is expanded into multiple cases, one per param set.
     /// Template placeholders like `{type}` in `source` and `name` are substituted.
@@ -223,6 +232,7 @@ pub fn expand_case(case: Case) -> Vec<Case> {
                 preview_should_pass: case.preview_should_pass,
                 target: case.target.clone(),
                 opt_level: case.opt_level,
+                timeout_ms: case.timeout_ms,
 
                 // Clear params on expanded case
                 params: vec![],
@@ -277,6 +287,11 @@ pub fn expand_case(case: Case) -> Vec<Case> {
             if let Some(value) = params.get("preview_should_pass") {
                 if let Some(b) = value.as_bool() {
                     expanded.preview_should_pass = b;
+                }
+            }
+            if let Some(value) = params.get("timeout_ms") {
+                if let Some(i) = value.as_integer() {
+                    expanded.timeout_ms = Some(i as u64);
                 }
             }
 
@@ -473,6 +488,67 @@ fn run_golden_ir_test(
     check_golden(&actual, expected, header_name)
 }
 
+/// Helper to read all bytes from a reader.
+fn read_all_bytes<R: IoRead>(mut reader: R) -> Vec<u8> {
+    let mut bytes = Vec::new();
+    reader.read_to_end(&mut bytes).unwrap_or_default();
+    bytes
+}
+
+/// Run a command with a timeout.
+///
+/// This function spawns a child process and polls for completion,
+/// killing the process if it exceeds the specified timeout.
+///
+/// # Arguments
+/// * `cmd` - The command to run (already configured with arguments)
+/// * `timeout` - Maximum duration to wait for the process to complete
+///
+/// # Returns
+/// * `Ok(Output)` - The process output (stdout, stderr, exit status)
+/// * `Err(String)` - Error message if the process timed out or failed to start
+fn run_with_timeout(mut cmd: Command, timeout: Duration) -> Result<Output, String> {
+    let mut child = cmd
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("Failed to spawn process: {}", e))?;
+
+    let start = Instant::now();
+
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                // Process finished - collect output
+                let stdout = child.stdout.take().map(read_all_bytes).unwrap_or_default();
+                let stderr = child.stderr.take().map(read_all_bytes).unwrap_or_default();
+                return Ok(Output {
+                    status,
+                    stdout,
+                    stderr,
+                });
+            }
+            Ok(None) => {
+                // Still running - check timeout
+                if start.elapsed() > timeout {
+                    // Kill the process and return timeout error
+                    let _ = child.kill();
+                    let _ = child.wait(); // Reap the zombie process
+                    return Err(format!(
+                        "Test execution timed out after {} ms",
+                        timeout.as_millis()
+                    ));
+                }
+                // Sleep briefly before polling again
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            Err(e) => {
+                return Err(format!("Failed to wait for process: {}", e));
+            }
+        }
+    }
+}
+
 /// Run a single test case.
 pub fn run_test_case(case: &Case, rue_binary: &Path) -> TestResult {
     // Create a temporary directory for this test
@@ -639,10 +715,9 @@ pub fn run_test_case(case: &Case, rue_binary: &Path) -> TestResult {
         return Ok(());
     }
 
-    // Run the compiled binary
-    let run_output = Command::new(&output_path)
-        .output()
-        .map_err(|e| format!("Failed to run compiled binary: {}", e))?;
+    // Run the compiled binary with timeout
+    let timeout = Duration::from_millis(case.timeout_ms.unwrap_or(DEFAULT_TIMEOUT_MS));
+    let run_output = run_with_timeout(Command::new(&output_path), timeout)?;
 
     let actual_exit_code = run_output.status.code().unwrap_or(-1);
     let stderr = String::from_utf8_lossy(&run_output.stderr);
@@ -832,6 +907,7 @@ mod tests {
             preview_should_pass: false,
             target: None,
             opt_level: None,
+            timeout_ms: None,
             params: vec![],
         };
 
@@ -876,6 +952,7 @@ mod tests {
             preview_should_pass: false,
             target: None,
             opt_level: None,
+            timeout_ms: None,
             params: vec![ParamSet { values: param1 }, ParamSet { values: param2 }],
         };
 
@@ -928,6 +1005,7 @@ mod tests {
             preview_should_pass: false,
             target: None,
             opt_level: None,
+            timeout_ms: None,
             params: vec![ParamSet { values: params }],
         };
 
@@ -972,6 +1050,7 @@ mod tests {
             preview_should_pass: false,
             target: None,
             opt_level: None,
+            timeout_ms: None,
             params: vec![ParamSet { values: params }],
         };
 
@@ -1172,5 +1251,54 @@ mod tests {
         let actual = "\n\nline1\n\n";
         let expected = "line1";
         assert!(check_golden(actual, expected, "Test").is_ok());
+    }
+
+    // Tests for run_with_timeout
+    #[test]
+    fn test_run_with_timeout_completes_normally() {
+        // A simple command that completes quickly
+        let cmd = Command::new("echo");
+        let result = run_with_timeout(cmd, Duration::from_secs(5));
+        assert!(result.is_ok());
+        let output = result.unwrap();
+        assert!(output.status.success());
+    }
+
+    #[test]
+    fn test_run_with_timeout_captures_stdout() {
+        let mut cmd = Command::new("echo");
+        cmd.arg("hello");
+        let result = run_with_timeout(cmd, Duration::from_secs(5));
+        assert!(result.is_ok());
+        let output = result.unwrap();
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(stdout.contains("hello"));
+    }
+
+    #[test]
+    fn test_run_with_timeout_kills_slow_process() {
+        // Sleep for 10 seconds but timeout after 100ms
+        let mut cmd = Command::new("sleep");
+        cmd.arg("10");
+        let result = run_with_timeout(cmd, Duration::from_millis(100));
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            err.contains("timed out"),
+            "Error should mention timeout: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn test_run_with_timeout_captures_exit_code() {
+        // Use a command that exits with a non-zero status
+        let mut cmd = Command::new("sh");
+        cmd.arg("-c").arg("exit 42");
+        let result = run_with_timeout(cmd, Duration::from_secs(5));
+        assert!(result.is_ok());
+        let output = result.unwrap();
+        assert_eq!(output.status.code(), Some(42));
     }
 }
