@@ -1,0 +1,89 @@
+[section]
+id = "items.general"
+spec_chapter = "6.0"
+name = "Items General"
+description = "General rules for items, including type name uniqueness."
+
+# =============================================================================
+# Reserved Type Names
+# =============================================================================
+
+[[case]]
+name = "struct_reserved_string"
+spec = ["6.0:3"]
+description = "User-defined struct cannot use reserved name 'String'"
+source = """
+struct String { data: i32 }
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = "cannot define type `String`: name is reserved for built-in type"
+
+[[case]]
+name = "enum_reserved_string"
+spec = ["6.0:3"]
+description = "User-defined enum cannot use reserved name 'String'"
+source = """
+enum String { Empty, Full }
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = "cannot define type `String`: name is reserved for built-in type"
+
+# =============================================================================
+# Type Name Uniqueness - Duplicate Definitions
+# =============================================================================
+
+[[case]]
+name = "duplicate_struct_definitions"
+spec = ["6.0:2"]
+description = "Two structs with the same name are not allowed"
+source = """
+struct Point { x: i32 }
+struct Point { y: i32 }
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = "duplicate type"
+
+[[case]]
+name = "duplicate_enum_definitions"
+spec = ["6.0:2"]
+description = "Two enums with the same name are not allowed"
+source = """
+enum Color { Red, Green }
+enum Color { Blue, Yellow }
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = "duplicate type"
+
+[[case]]
+name = "struct_and_enum_same_name"
+spec = ["6.0:2"]
+description = "A struct and enum cannot have the same name"
+source = """
+struct Point { x: i32 }
+enum Point { Up, Down }
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = "duplicate type"
+
+# =============================================================================
+# Valid Type Names
+# =============================================================================
+
+[[case]]
+name = "custom_type_names_allowed"
+spec = ["6.0:2", "6.0:3"]
+description = "User-defined types with non-reserved names are allowed"
+source = """
+struct MyString { len: i32 }
+enum MyColor { Red, Blue }
+fn main() -> i32 {
+    let s = MyString { len: 42 };
+    s.len
+}
+"""
+exit_code = 42

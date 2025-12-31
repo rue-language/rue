@@ -1755,6 +1755,16 @@ impl<'a> Sema<'a> {
                         ));
                     }
 
+                    // Check for duplicate type definitions (struct or enum with same name)
+                    if self.enums.contains_key(name) || self.structs.contains_key(name) {
+                        return Err(CompileError::new(
+                            ErrorKind::DuplicateTypeDefinition {
+                                type_name: enum_name,
+                            },
+                            inst.span,
+                        ));
+                    }
+
                     let variants = self.rir.get_symbols(*variants_start, *variants_len);
 
                     // Check for duplicate variant names
@@ -1799,6 +1809,16 @@ impl<'a> Sema<'a> {
                     if is_reserved_type_name(&struct_name) {
                         return Err(CompileError::new(
                             ErrorKind::ReservedTypeName {
+                                type_name: struct_name,
+                            },
+                            inst.span,
+                        ));
+                    }
+
+                    // Check for duplicate type definitions (struct or enum with same name)
+                    if self.structs.contains_key(name) || self.enums.contains_key(name) {
+                        return Err(CompileError::new(
+                            ErrorKind::DuplicateTypeDefinition {
                                 type_name: struct_name,
                             },
                             inst.span,

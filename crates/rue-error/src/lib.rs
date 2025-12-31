@@ -495,6 +495,9 @@ pub enum ErrorKind {
     /// User-defined type collides with a built-in type name
     #[error("cannot define type `{type_name}`: name is reserved for built-in type")]
     ReservedTypeName { type_name: String },
+    /// Duplicate type definition
+    #[error("duplicate type definition: `{type_name}` is already defined")]
+    DuplicateTypeDefinition { type_name: String },
     /// Linear value was not consumed before going out of scope
     #[error("linear value '{0}' must be consumed but was dropped")]
     LinearValueNotConsumed(String),
