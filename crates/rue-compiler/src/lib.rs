@@ -209,6 +209,7 @@ impl Default for LinkerMode {
 ///     linker: LinkerMode::Internal,
 ///     opt_level: OptLevel::O1,
 ///     preview_features: PreviewFeatures::new(),
+///     jobs: 0, // 0 = auto-detect
 /// };
 /// let output = compile_with_options(source, &options)?;
 /// ```
@@ -222,6 +223,8 @@ pub struct CompileOptions {
     pub opt_level: OptLevel,
     /// Enabled preview features.
     pub preview_features: PreviewFeatures,
+    /// Number of parallel jobs (0 = auto-detect, use all cores).
+    pub jobs: usize,
 }
 
 impl Default for CompileOptions {
@@ -231,6 +234,7 @@ impl Default for CompileOptions {
             linker: LinkerMode::Internal,
             opt_level: OptLevel::default(),
             preview_features: PreviewFeatures::new(),
+            jobs: 0, // 0 = auto-detect
         }
     }
 }
@@ -474,6 +478,17 @@ pub fn compile_with_options(
     source: &str,
     options: &CompileOptions,
 ) -> MultiErrorResult<CompileOutput> {
+    // Configure Rayon's global thread pool based on the jobs setting.
+    // This must happen before any parallel operations.
+    // 0 means auto-detect (use all cores), which is Rayon's default.
+    if options.jobs > 0 {
+        // Ignore the error if the pool has already been initialized (e.g., in tests).
+        // This is safe because we're just trying to set the thread count.
+        let _ = rayon::ThreadPoolBuilder::new()
+            .num_threads(options.jobs)
+            .build_global();
+    }
+
     let _span = info_span!(
         "compile",
         target = %options.target,

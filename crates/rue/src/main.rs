@@ -748,6 +748,7 @@ fn main() {
         linker: options.linker.clone(),
         opt_level: options.opt_level,
         preview_features: options.preview_features.clone(),
+        jobs: options.jobs,
     };
     match compile_with_options(&source, &compile_options) {
         Ok(output) => {
