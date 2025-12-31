@@ -1,829 +1,228 @@
-//! Semantic analysis - RIR to AIR conversion.
+//! Function body analysis and AIR generation.
 //!
-//! Sema performs type checking and converts untyped RIR to typed AIR.
-//! This is analogous to Zig's Sema phase.
+//! This module contains the core semantic analysis functionality:
+//! - Function analysis (analyze_single_function, analyze_method_function, analyze_destructor_function)
+//! - Hindley-Milner type inference (run_type_inference)
+//! - RIR to AIR instruction lowering (analyze_inst)
+//! - Helper functions for expression analysis
 
 use std::collections::{HashMap, HashSet};
 
-use crate::inference::{
-    Constraint, ConstraintContext, ConstraintGenerator, FunctionSig, InferType, MethodSig,
-    ParamVarInfo, Unifier, UnifyResult,
-};
-use crate::inst::{Air, AirArgMode, AirCallArg, AirInst, AirInstData, AirPattern, AirRef};
-use crate::type_context::{FunctionSignature, MethodSignature, TypeContext};
-use crate::types::{
-    ArrayTypeDef, ArrayTypeId, EnumDef, EnumId, StructDef, StructField, StructId, Type,
-    parse_array_type_syntax,
-};
-use lasso::{Spur, ThreadedRodeo};
-use rue_builtins::{BUILTIN_TYPES, BuiltinFieldType, BuiltinTypeDef, is_reserved_type_name};
+use lasso::Spur;
+use rue_builtins::BuiltinTypeDef;
 use rue_error::{
-    CompileError, CompileErrors, CompileResult, CompileWarning, CopyStructNonCopyFieldError,
-    ErrorKind, IntrinsicTypeMismatchError, MissingFieldsError, MultiErrorResult, OptionExt,
-    PreviewFeature, PreviewFeatures, WarningKind,
+    CompileError, CompileErrors, CompileResult, CompileWarning, ErrorKind,
+    IntrinsicTypeMismatchError, MissingFieldsError, MultiErrorResult, OptionExt, PreviewFeature,
+    WarningKind,
 };
-use rue_rir::{
-    InstData, InstRef, Rir, RirArgMode, RirCallArg, RirDirective, RirParamMode, RirPattern,
-};
+use rue_rir::{InstData, InstRef, RirArgMode, RirCallArg, RirDirective, RirParamMode, RirPattern};
 use rue_span::Span;
 
-/// A value that can be computed at compile time.
+use super::context::{
+    AnalysisContext, AnalysisResult, ConstValue, FieldPath, LocalVar, ParamInfo,
+    StringReceiverStorage,
+};
+use super::{AnalyzedFunction, InferenceContext, Sema, SemaOutput};
+use crate::inference::{
+    Constraint, ConstraintContext, ConstraintGenerator, InferType, ParamVarInfo, Unifier,
+    UnifyResult,
+};
+use crate::inst::{Air, AirArgMode, AirCallArg, AirInst, AirInstData, AirPattern, AirRef};
+use crate::types::{EnumId, StructId, Type};
+
+/// Main entry point for analyzing all function bodies.
 ///
-/// This is used for constant expression evaluation, primarily for compile-time
-/// bounds checking. It can be extended for future `comptime` features.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ConstValue {
-    /// Integer value (signed to handle arithmetic correctly)
-    Integer(i64),
-    /// Boolean value
-    Bool(bool),
-}
+/// Called from Sema::analyze_all after declarations are collected.
+pub(crate) fn analyze_all_function_bodies(mut sema: Sema<'_>) -> MultiErrorResult<SemaOutput> {
+    // Build inference context once
+    let infer_ctx = sema.build_inference_context();
 
-impl ConstValue {
-    /// Try to extract an integer value.
-    fn as_integer(self) -> Option<i64> {
-        match self {
-            ConstValue::Integer(n) => Some(n),
-            ConstValue::Bool(_) => None,
-        }
-    }
+    let mut functions = Vec::new();
+    let mut errors = CompileErrors::new();
+    let mut all_warnings = Vec::new();
 
-    /// Try to extract a boolean value.
-    fn as_bool(self) -> Option<bool> {
-        match self {
-            ConstValue::Bool(b) => Some(b),
-            ConstValue::Integer(_) => None,
-        }
-    }
-}
-
-/// Result of analyzing a function.
-#[derive(Debug)]
-pub struct AnalyzedFunction {
-    pub name: String,
-    pub air: Air,
-    /// Number of local variable slots needed
-    pub num_locals: u32,
-    /// Number of ABI slots used by parameters.
-    /// For scalar types (i32, bool), each parameter uses 1 slot.
-    /// For struct types, each field uses 1 slot (flattened ABI).
-    pub num_param_slots: u32,
-    /// Whether each parameter slot is passed as inout (by reference).
-    /// Length matches num_param_slots - for struct params, all slots share
-    /// the same mode as the original parameter.
-    pub param_modes: Vec<bool>,
-}
-
-/// Output from semantic analysis.
-///
-/// Contains all analyzed functions, struct definitions, enum definitions, and any warnings
-/// generated during analysis.
-#[derive(Debug)]
-pub struct SemaOutput {
-    /// Analyzed functions with typed IR.
-    pub functions: Vec<AnalyzedFunction>,
-    /// Struct definitions.
-    pub struct_defs: Vec<StructDef>,
-    /// Enum definitions.
-    pub enum_defs: Vec<EnumDef>,
-    /// Array type definitions.
-    pub array_types: Vec<ArrayTypeDef>,
-    /// String literals indexed by their AIR string_const index.
-    pub strings: Vec<String>,
-    /// Warnings collected during analysis.
-    pub warnings: Vec<CompileWarning>,
-}
-
-/// Pre-computed type information for constraint generation.
-///
-/// This struct holds the function, struct, enum, and method signature maps
-/// converted to `InferType` format for use in Hindley-Milner type inference.
-/// Building this once and reusing it for all function analyses avoids the
-/// O(n²) cost of rebuilding these maps for each function.
-///
-/// # Performance
-///
-/// For a program with 100 functions and 50 structs:
-/// - **Before**: 100 × (HashMap rebuild + InferType conversions) per analysis
-/// - **After**: 1 × (HashMap build + InferType conversions) total
-#[derive(Debug)]
-pub struct InferenceContext {
-    /// Function signatures with InferType (for constraint generation).
-    pub func_sigs: HashMap<Spur, FunctionSig>,
-    /// Struct types: name -> Type::Struct(id).
-    pub struct_types: HashMap<Spur, Type>,
-    /// Enum types: name -> Type::Enum(id).
-    pub enum_types: HashMap<Spur, Type>,
-    /// Method signatures with InferType: (struct_name, method_name) -> MethodSig.
-    pub method_sigs: HashMap<(Spur, Spur), MethodSig>,
-}
-
-/// Output from the declaration gathering phase.
-///
-/// This contains the state built during declaration gathering that is needed
-/// for function body analysis. After gathering, this can be converted back
-/// into a `Sema` for sequential analysis, or used to drive parallel analysis.
-///
-/// # Architecture
-///
-/// The separation of declaration gathering from body analysis enables:
-/// 1. **Parallel type checking** - Each function can be analyzed independently
-/// 2. **Clearer architecture** - Separation of concerns
-/// 3. **Foundation for incremental** - Can cache TypeContext across compilations
-/// 4. **Better error recovery** - One function's error doesn't block others
-///
-/// # Usage
-///
-/// ```ignore
-/// // Phase 1: Gather declarations (sequential)
-/// let sema = Sema::new(rir, interner, preview);
-/// let (type_ctx, gather_output) = sema.gather_declarations()?;
-///
-/// // Phase 2: Analyze function bodies
-/// // Option A: Sequential (current)
-/// let sema = gather_output.into_sema();
-/// let output = sema.analyze_all_bodies()?;
-///
-/// // Option B: Parallel (future)
-/// // let results: Vec<_> = functions.par_iter()
-/// //     .map(|f| analyze_function_body(&type_ctx, &gather_output, f))
-/// //     .collect();
-/// ```
-#[derive(Debug)]
-pub struct GatherOutput<'a> {
-    /// Reference to the RIR being analyzed.
-    pub rir: &'a Rir,
-    /// Reference to the string interner.
-    pub interner: &'a ThreadedRodeo,
-    /// Struct definitions indexed by StructId.
-    pub struct_defs: Vec<StructDef>,
-    /// Enum definitions indexed by EnumId.
-    pub enum_defs: Vec<EnumDef>,
-    /// Array type table: maps (element_type, length) to ArrayTypeId.
-    /// Pre-populated during declaration gathering for array types in signatures.
-    pub array_types: HashMap<(Type, u64), ArrayTypeId>,
-    /// Array type definitions indexed by ArrayTypeId.
-    pub array_type_defs: Vec<ArrayTypeDef>,
-    /// Struct lookup: maps struct name symbol to StructId.
-    pub structs: HashMap<Spur, StructId>,
-    /// Enum lookup: maps enum name symbol to EnumId.
-    pub enums: HashMap<Spur, EnumId>,
-    /// Function lookup: maps function name to info.
-    pub functions: HashMap<Spur, FunctionInfo>,
-    /// Method lookup: maps (struct_name, method_name) to info.
-    pub methods: HashMap<(Spur, Spur), MethodInfo>,
-    /// Enabled preview features.
-    pub preview_features: PreviewFeatures,
-    /// StructId of the synthetic String type.
-    pub builtin_string_id: Option<StructId>,
-}
-
-impl<'a> GatherOutput<'a> {
-    /// Convert this gather output back into a Sema for function body analysis.
-    ///
-    /// This is used for sequential analysis. The returned Sema has all
-    /// declarations already collected and is ready to analyze function bodies.
-    pub fn into_sema(self) -> Sema<'a> {
-        Sema {
-            rir: self.rir,
-            interner: self.interner,
-            functions: self.functions,
-            structs: self.structs,
-            struct_defs: self.struct_defs,
-            enums: self.enums,
-            enum_defs: self.enum_defs,
-            array_types: self.array_types,
-            array_type_defs: self.array_type_defs,
-            string_table: HashMap::new(),
-            strings: Vec::new(),
-            methods: self.methods,
-            preview_features: self.preview_features,
-            builtin_string_id: self.builtin_string_id,
-        }
-    }
-
-    /// Consume the gather output and return ownership of struct and enum definitions.
-    ///
-    /// This is used after all function analysis is complete to build the final
-    /// `SemaOutput`.
-    pub fn into_type_defs(self) -> (Vec<StructDef>, Vec<EnumDef>) {
-        (self.struct_defs, self.enum_defs)
-    }
-}
-
-/// Information about a local variable.
-#[derive(Debug, Clone)]
-struct LocalVar {
-    /// Slot index for this variable
-    slot: u32,
-    /// Type of the variable
-    ty: Type,
-    /// Whether the variable is mutable
-    is_mut: bool,
-    /// Span of the variable declaration (for unused variable warnings)
-    span: Span,
-    /// Whether @allow(unused_variable) was applied to this binding
-    allow_unused: bool,
-}
-
-/// A path of field accesses from a root variable.
-/// For example, `s.a.b` is represented as [sym("a"), sym("b")] with root sym("s").
-type FieldPath = Vec<Spur>;
-
-/// Information about a variable that has been moved.
-#[derive(Debug, Clone)]
-struct MoveInfo {
-    /// Span where the move occurred
-    moved_at: Span,
-}
-
-/// Tracks move state for a variable, including partial (field-level) moves.
-#[derive(Debug, Clone, Default)]
-struct VariableMoveState {
-    /// If Some, the entire variable has been fully moved at this span.
-    full_move: Option<Span>,
-    /// Partial moves: maps field paths to the span where they were moved.
-    /// For example, if `s.a` was moved, this contains ([sym("a")], span).
-    partial_moves: HashMap<FieldPath, Span>,
-}
-
-impl VariableMoveState {
-    /// Mark a field path as moved.
-    fn mark_path_moved(&mut self, path: &[Spur], span: Span) {
-        if path.is_empty() {
-            // Moving the whole variable
-            self.full_move = Some(span);
-            // Clear partial moves since the whole thing is moved
-            self.partial_moves.clear();
-        } else {
-            // Partial move - only if not already fully moved
-            if self.full_move.is_none() {
-                self.partial_moves.insert(path.to_vec(), span);
+    // Collect method refs from impl blocks
+    let mut method_refs: HashSet<InstRef> = HashSet::new();
+    for (_, inst) in sema.rir.iter() {
+        if let InstData::ImplDecl {
+            methods_start,
+            methods_len,
+            ..
+        } = &inst.data
+        {
+            let methods = sema.rir.get_inst_refs(*methods_start, *methods_len);
+            for method_ref in methods {
+                method_refs.insert(method_ref);
             }
         }
     }
 
-    /// Check if a field path is moved.
-    /// Returns Some(span) if the path (or any ancestor) is moved.
-    fn is_path_moved(&self, path: &[Spur]) -> Option<Span> {
-        // If fully moved, everything is moved
-        if let Some(span) = self.full_move {
-            return Some(span);
-        }
-
-        // Check if this exact path is moved
-        if let Some(span) = self.partial_moves.get(path) {
-            return Some(*span);
-        }
-
-        // Check if any prefix (ancestor) of this path is moved
-        // e.g., if s.a is moved, then s.a.b is also considered moved
-        for len in 1..path.len() {
-            if let Some(span) = self.partial_moves.get(&path[..len]) {
-                return Some(*span);
+    // Analyze regular functions
+    for (inst_ref, inst) in sema.rir.iter() {
+        if let InstData::FnDecl {
+            name,
+            params_start,
+            params_len,
+            return_type,
+            body,
+            has_self: _,
+            ..
+        } = &inst.data
+        {
+            if method_refs.contains(&inst_ref) {
+                continue;
             }
-        }
 
-        None
-    }
+            let fn_name = sema.interner.resolve(&*name).to_string();
+            let params = sema.rir.get_params(*params_start, *params_len);
 
-    /// Check if the variable is partially moved (some field is moved but not the whole var).
-    /// Returns Some(span) of the first partial move found.
-    fn is_partially_moved(&self) -> Option<Span> {
-        if self.full_move.is_some() {
-            return None; // Fully moved, not partially moved
-        }
-        self.partial_moves.values().next().copied()
-    }
-
-    /// Check if the entire variable (including all fields) is fully valid to use.
-    /// Returns Some(span) if there's any move (full or partial) that would prevent use.
-    fn is_any_part_moved(&self) -> Option<Span> {
-        if let Some(span) = self.full_move {
-            return Some(span);
-        }
-        self.partial_moves.values().next().copied()
-    }
-
-    /// Clear all move state (used when variable is reassigned).
-    fn clear(&mut self) {
-        self.full_move = None;
-        self.partial_moves.clear();
-    }
-
-    /// Check if the variable has any move state.
-    fn is_empty(&self) -> bool {
-        self.full_move.is_none() && self.partial_moves.is_empty()
-    }
-
-    /// Merge move states from two branches (union semantics).
-    /// A variable is considered moved after a branch if it was moved in EITHER branch.
-    /// This prevents use-after-move when a value might have been moved.
-    fn merge_union(branch1: &Self, branch2: &Self) -> Self {
-        // If either branch has a full move, the result is a full move
-        // (use the span from whichever branch has it, preferring branch1)
-        let full_move = branch1.full_move.or(branch2.full_move);
-
-        // A partial move is kept if it appears in EITHER branch
-        let mut partial_moves = branch1.partial_moves.clone();
-        for (path, span) in &branch2.partial_moves {
-            partial_moves.entry(path.clone()).or_insert(*span);
-        }
-
-        Self {
-            full_move,
-            partial_moves,
-        }
-    }
-}
-
-/// Information about a function parameter.
-#[derive(Debug, Clone)]
-struct ParamInfo {
-    /// Starting ABI slot for this parameter (0-based).
-    /// For scalar types, this is the single slot.
-    /// For struct types, this is the first field's slot.
-    abi_slot: u32,
-    /// Parameter type
-    ty: Type,
-    /// Parameter passing mode
-    mode: RirParamMode,
-}
-
-/// Context for analyzing instructions within a function.
-///
-/// Bundles together the mutable state that needs to be threaded through
-/// recursive `analyze_inst` calls.
-struct AnalysisContext<'a> {
-    /// Local variables in scope
-    locals: HashMap<Spur, LocalVar>,
-    /// Function parameters (immutable reference, shared across the function)
-    params: &'a HashMap<Spur, ParamInfo>,
-    /// Next available slot for local variables
-    next_slot: u32,
-    /// How many loops we're nested inside (for break/continue validation)
-    loop_depth: u32,
-    /// Local variables that have been read (for unused variable detection)
-    used_locals: HashSet<Spur>,
-    /// Return type of the current function (for explicit return validation)
-    return_type: Type,
-    /// Scope stack for efficient scope management.
-    /// Each entry is a list of (symbol, old_value) pairs for variables added/shadowed in that scope.
-    /// When a scope is popped, we restore old values (for shadowed vars) or remove new vars.
-    scope_stack: Vec<Vec<(Spur, Option<LocalVar>)>>,
-    /// Resolved types from HM inference.
-    /// Maps RIR instruction refs to their resolved concrete types.
-    /// This is populated by running constraint generation and unification
-    /// before AIR emission.
-    resolved_types: &'a HashMap<InstRef, Type>,
-    /// Variables that have been moved (for affine type checking).
-    /// Maps variable symbol to move state (supports partial/field-level moves).
-    moved_vars: HashMap<Spur, VariableMoveState>,
-    /// Warnings collected during function analysis.
-    /// This is per-function to enable future parallel analysis.
-    warnings: Vec<CompileWarning>,
-}
-
-impl AnalysisContext<'_> {
-    /// Push a new scope onto the stack.
-    fn push_scope(&mut self) {
-        // Preallocate for a small number of variables. Most scopes (loop bodies,
-        // if/match arms) have 0-2 variables; function bodies have more but are
-        // less frequent. 2 is a conservative choice until we have real metrics.
-        self.scope_stack.push(Vec::with_capacity(2));
-    }
-
-    /// Pop the current scope, restoring any shadowed variables and removing new ones.
-    fn pop_scope(&mut self) {
-        if let Some(scope_entries) = self.scope_stack.pop() {
-            for (symbol, old_value) in scope_entries {
-                match old_value {
-                    Some(old_var) => {
-                        // Restore the shadowed variable
-                        self.locals.insert(symbol, old_var);
-                    }
-                    None => {
-                        // Remove the variable that was added in this scope
-                        self.locals.remove(&symbol);
-                    }
+            match sema.analyze_single_function(
+                &infer_ctx,
+                &fn_name,
+                *return_type,
+                &params,
+                *body,
+                inst.span,
+            ) {
+                Ok((analyzed, warnings)) => {
+                    functions.push(analyzed);
+                    all_warnings.extend(warnings);
                 }
+                Err(e) => errors.push(e),
             }
         }
     }
 
-    /// Insert a local variable, tracking it in the current scope for later cleanup.
-    fn insert_local(&mut self, symbol: Spur, var: LocalVar) {
-        let old_value = self.locals.insert(symbol, var);
-        // Track in the current scope (if any) for cleanup on pop
-        if let Some(current_scope) = self.scope_stack.last_mut() {
-            current_scope.push((symbol, old_value));
-        }
-        // When a variable is (re)declared, clear any moved state for it.
-        // This handles shadowing: `let x = moved_val; let x = new_val;`
-        // The new `x` is a fresh binding and shouldn't carry the old moved state.
-        self.moved_vars.remove(&symbol);
-    }
+    // Analyze method bodies from impl blocks
+    for (_, inst) in sema.rir.iter() {
+        if let InstData::ImplDecl {
+            type_name,
+            methods_start,
+            methods_len,
+        } = &inst.data
+        {
+            let type_name_str = sema.interner.resolve(&*type_name).to_string();
+            let struct_id = match sema.structs.get(type_name) {
+                Some(id) => *id,
+                None => {
+                    errors.push(CompileError::new(
+                        ErrorKind::InternalError(format!(
+                            "impl block for undefined type '{}' survived validation",
+                            type_name_str
+                        )),
+                        inst.span,
+                    ));
+                    continue;
+                }
+            };
+            let struct_type = Type::Struct(struct_id);
 
-    /// Merge move states from two branches.
-    ///
-    /// For if-else expressions, a variable is considered moved after the expression
-    /// if it was moved in EITHER branch (union semantics). This prevents use-after-move
-    /// when a value might have been moved in one branch:
-    ///
-    /// ```rue
-    /// if cond { consume(x) } else { }
-    /// x  // Error: x might have been moved in the then-branch
-    /// ```
-    ///
-    /// When one branch diverges (returns Never), only the other branch's moves matter:
-    /// - If then-branch diverges, else-branch's moves are used (then never returns)
-    /// - If else-branch diverges, then-branch's moves are used (else never returns)
-    /// - If both diverge, the whole if-else diverges and moves don't matter
-    fn merge_branch_moves(
-        &mut self,
-        then_moves: HashMap<Spur, VariableMoveState>,
-        else_moves: HashMap<Spur, VariableMoveState>,
-        then_diverges: bool,
-        else_diverges: bool,
-    ) {
-        // If then-branch diverges, use else-branch's moves
-        // If else-branch diverges, use then-branch's moves
-        // If both diverge, the whole expression diverges - doesn't matter what we do
-        // If neither diverges, merge the moves (union - moved in either = moved after)
-        match (then_diverges, else_diverges) {
-            (true, true) => {
-                // Both branches diverge - no need to merge, the code after
-                // the if-else is unreachable. Use then_moves arbitrarily.
-                self.moved_vars = then_moves;
-            }
-            (true, false) => {
-                // Then-branch diverges, else-branch continues.
-                // Use else-branch's moves (then never executes to completion).
-                self.moved_vars = else_moves;
-            }
-            (false, true) => {
-                // Else-branch diverges, then-branch continues.
-                // Use then-branch's moves (else never executes to completion).
-                self.moved_vars = then_moves;
-            }
-            (false, false) => {
-                // Neither diverges - merge the moves (union).
-                // A variable is moved after if-else if moved in EITHER branch.
-                let mut merged = HashMap::new();
+            let methods = sema.rir.get_inst_refs(*methods_start, *methods_len);
+            for method_ref in methods {
+                let method_inst = sema.rir.get(method_ref);
+                if let InstData::FnDecl {
+                    name: method_name,
+                    params_start,
+                    params_len,
+                    return_type,
+                    body,
+                    has_self,
+                    ..
+                } = &method_inst.data
+                {
+                    let method_name_str = sema.interner.resolve(&*method_name).to_string();
+                    let params = sema.rir.get_params(*params_start, *params_len);
 
-                // Include all moves from then-branch
-                for (symbol, then_state) in &then_moves {
-                    if let Some(else_state) = else_moves.get(symbol) {
-                        // Variable has state in both branches - merge them
-                        let merged_state = VariableMoveState::merge_union(then_state, else_state);
-                        if !merged_state.is_empty() {
-                            merged.insert(*symbol, merged_state);
-                        }
+                    let full_name = if *has_self {
+                        format!("{}.{}", type_name_str, method_name_str)
                     } else {
-                        // Variable only moved in then-branch
-                        if !then_state.is_empty() {
-                            merged.insert(*symbol, then_state.clone());
+                        format!("{}::{}", type_name_str, method_name_str)
+                    };
+
+                    match sema.analyze_method_function(
+                        &infer_ctx,
+                        &full_name,
+                        *return_type,
+                        &params,
+                        *body,
+                        method_inst.span,
+                        struct_type,
+                        *has_self,
+                    ) {
+                        Ok((analyzed, warnings)) => {
+                            functions.push(analyzed);
+                            all_warnings.extend(warnings);
                         }
+                        Err(e) => errors.push(e),
                     }
                 }
-
-                // Include moves that only appear in else-branch
-                for (symbol, else_state) in &else_moves {
-                    if !then_moves.contains_key(symbol) && !else_state.is_empty() {
-                        merged.insert(*symbol, else_state.clone());
-                    }
-                }
-
-                self.moved_vars = merged;
             }
         }
     }
-}
 
-/// Information about a function.
-#[derive(Debug, Clone)]
-pub struct FunctionInfo {
-    /// Parameter types (in order)
-    pub param_types: Vec<Type>,
-    /// Parameter modes (in order)
-    pub param_modes: Vec<RirParamMode>,
-    /// Return type
-    pub return_type: Type,
-}
+    // Analyze destructor bodies
+    for (_, inst) in sema.rir.iter() {
+        if let InstData::DropFnDecl { type_name, body } = &inst.data {
+            let type_name_str = sema.interner.resolve(&*type_name).to_string();
+            let struct_id = match sema.structs.get(type_name) {
+                Some(id) => *id,
+                None => {
+                    errors.push(CompileError::new(
+                        ErrorKind::InternalError(format!(
+                            "destructor for undefined type '{}' survived validation",
+                            type_name_str
+                        )),
+                        inst.span,
+                    ));
+                    continue;
+                }
+            };
+            let struct_type = Type::Struct(struct_id);
+            let full_name = format!("{}.__drop", type_name_str);
 
-/// Information about a method in an impl block.
-#[derive(Debug, Clone)]
-pub struct MethodInfo {
-    /// The struct type this method belongs to
-    pub struct_type: Type,
-    /// Whether this is a method (has self) or associated function (no self)
-    pub has_self: bool,
-    /// Parameter names (excluding self if present)
-    pub param_names: Vec<Spur>,
-    /// Parameter types (excluding self if present)
-    pub param_types: Vec<Type>,
-    /// Return type
-    pub return_type: Type,
-    /// The RIR instruction ref for the method body
-    pub body: InstRef,
-    /// Span of the method declaration
-    pub span: Span,
-}
-
-/// Result of analyzing an instruction: the AIR reference and its synthesized type.
-#[derive(Debug, Clone, Copy)]
-struct AnalysisResult {
-    /// Reference to the generated AIR instruction
-    air_ref: AirRef,
-    /// The synthesized type of this expression
-    ty: Type,
-}
-
-impl AnalysisResult {
-    #[must_use]
-    fn new(air_ref: AirRef, ty: Type) -> Self {
-        Self { air_ref, ty }
+            match sema.analyze_destructor_function(
+                &infer_ctx,
+                &full_name,
+                *body,
+                inst.span,
+                struct_type,
+            ) {
+                Ok((analyzed, warnings)) => {
+                    functions.push(analyzed);
+                    all_warnings.extend(warnings);
+                }
+                Err(e) => errors.push(e),
+            }
+        }
     }
-}
 
-/// Semantic analyzer that converts RIR to AIR.
-pub struct Sema<'a> {
-    rir: &'a Rir,
-    interner: &'a ThreadedRodeo,
-    /// Function table: maps function name symbols to their info
-    functions: HashMap<Spur, FunctionInfo>,
-    /// Struct table: maps struct name symbols to their StructId
-    structs: HashMap<Spur, StructId>,
-    /// Struct definitions indexed by StructId
-    struct_defs: Vec<StructDef>,
-    /// Enum table: maps enum name symbols to their EnumId
-    enums: HashMap<Spur, EnumId>,
-    /// Enum definitions indexed by EnumId
-    enum_defs: Vec<EnumDef>,
-    /// Array type table: maps (element_type, length) to ArrayTypeId
-    array_types: HashMap<(Type, u64), ArrayTypeId>,
-    /// Array type definitions indexed by ArrayTypeId
-    array_type_defs: Vec<ArrayTypeDef>,
-    /// String table: maps string content to index (for deduplication)
-    string_table: HashMap<String, u32>,
-    /// String data indexed by string table index
-    strings: Vec<String>,
-    /// Method table: maps (struct_name, method_name) to method info
-    /// Used for resolving method calls (receiver.method()) and associated
-    /// function calls (Type::function())
-    methods: HashMap<(Spur, Spur), MethodInfo>,
-    /// Enabled preview features
-    preview_features: PreviewFeatures,
-    /// StructId of the synthetic String type.
-    /// This is populated during `inject_builtin_types()` and used for quick lookups.
-    builtin_string_id: Option<StructId>,
-}
+    all_warnings.sort_by_key(|w| w.span().map(|s| s.start));
 
-/// Storage location for a String receiver in mutation methods.
-///
-/// This is used by `analyze_builtin_method` to store the updated
-/// String back to the original variable after calling the runtime function.
-enum StringReceiverStorage {
-    /// The receiver is a local variable with the given slot.
-    Local { slot: u32 },
-    /// The receiver is a parameter with the given ABI slot.
-    Param { abi_slot: u32 },
+    errors.into_result_with(SemaOutput {
+        functions,
+        struct_defs: sema.struct_defs,
+        enum_defs: sema.enum_defs,
+        array_types: sema.array_type_defs,
+        strings: sema.strings,
+        warnings: all_warnings,
+    })
 }
 
 impl<'a> Sema<'a> {
-    /// Create a new semantic analyzer.
-    pub fn new(
-        rir: &'a Rir,
-        interner: &'a ThreadedRodeo,
-        preview_features: PreviewFeatures,
-    ) -> Self {
-        Self {
-            rir,
-            interner,
-            functions: HashMap::new(),
-            structs: HashMap::new(),
-            struct_defs: Vec::new(),
-            enums: HashMap::new(),
-            enum_defs: Vec::new(),
-            array_types: HashMap::new(),
-            array_type_defs: Vec::new(),
-            string_table: HashMap::new(),
-            strings: Vec::new(),
-            methods: HashMap::new(),
-            preview_features,
-            builtin_string_id: None,
-        }
-    }
-
-    /// Build a `TypeContext` from the collected type information.
+    /// Check that a preview feature is enabled.
     ///
-    /// This should be called after the declaration gathering phase (after calling
-    /// `register_type_names` and `resolve_declarations`).
+    /// This is used to gate experimental features behind the `--preview` flag.
+    /// Returns an error with a helpful message if the feature is not enabled.
     ///
-    /// The returned `TypeContext` is immutable and can be shared across
-    /// threads for parallel function analysis.
-    ///
-    /// # Panics
-    ///
-    /// This method clones the type information, so it should only be called
-    /// once per analysis to avoid unnecessary allocations.
-    pub fn build_type_context(&self) -> TypeContext {
-        // Build function signatures
-        let func_sigs: HashMap<Spur, FunctionSignature> = self
-            .functions
-            .iter()
-            .map(|(name, info)| {
-                (
-                    *name,
-                    FunctionSignature {
-                        param_types: info.param_types.clone(),
-                        param_modes: info.param_modes.clone(),
-                        return_type: info.return_type,
-                    },
-                )
-            })
-            .collect();
-
-        // Build method signatures
-        let method_sigs: HashMap<(Spur, Spur), MethodSignature> = self
-            .methods
-            .iter()
-            .map(|((type_name, method_name), info)| {
-                let struct_id = *self.structs.get(type_name).expect("method type must exist");
-                (
-                    (*type_name, *method_name),
-                    MethodSignature {
-                        struct_id,
-                        struct_type: info.struct_type,
-                        has_self: info.has_self,
-                        param_names: info.param_names.clone(),
-                        param_types: info.param_types.clone(),
-                        return_type: info.return_type,
-                    },
-                )
-            })
-            .collect();
-
-        TypeContext {
-            func_sigs,
-            method_sigs,
-            struct_by_name: self.structs.clone(),
-            struct_defs: self.struct_defs.clone(),
-            enum_by_name: self.enums.clone(),
-            enum_defs: self.enum_defs.clone(),
-        }
-    }
-
-    /// Build an `InferenceContext` from the collected type information.
-    ///
-    /// This should be called after the collection phase and builds the
-    /// pre-computed maps needed for Hindley-Milner type inference.
-    /// Building this once and reusing for all function analyses avoids
-    /// the O(n²) cost of rebuilding these maps per function.
-    ///
-    /// # Performance
-    ///
-    /// This converts all function/method signatures to use `InferType`
-    /// (which handles arrays structurally rather than by ID). This conversion
-    /// is done once instead of per-function.
-    pub fn build_inference_context(&self) -> InferenceContext {
-        // Build function signatures with InferType for constraint generation
-        let func_sigs: HashMap<Spur, FunctionSig> = self
-            .functions
-            .iter()
-            .map(|(name, info)| {
-                (
-                    *name,
-                    FunctionSig {
-                        param_types: info
-                            .param_types
-                            .iter()
-                            .map(|t| self.type_to_infer_type(*t))
-                            .collect(),
-                        return_type: self.type_to_infer_type(info.return_type),
-                    },
-                )
-            })
-            .collect();
-
-        // Build struct types map (name -> Type::Struct(id))
-        let struct_types: HashMap<Spur, Type> = self
-            .structs
-            .iter()
-            .map(|(name, id)| (*name, Type::Struct(*id)))
-            .collect();
-
-        // Build enum types map (name -> Type::Enum(id))
-        let enum_types: HashMap<Spur, Type> = self
-            .enums
-            .iter()
-            .map(|(name, id)| (*name, Type::Enum(*id)))
-            .collect();
-
-        // Build method signatures with InferType for constraint generation
-        let method_sigs: HashMap<(Spur, Spur), MethodSig> = self
-            .methods
-            .iter()
-            .map(|((type_name, method_name), info)| {
-                (
-                    (*type_name, *method_name),
-                    MethodSig {
-                        struct_type: info.struct_type,
-                        has_self: info.has_self,
-                        param_types: info
-                            .param_types
-                            .iter()
-                            .map(|t| self.type_to_infer_type(*t))
-                            .collect(),
-                        return_type: self.type_to_infer_type(info.return_type),
-                    },
-                )
-            })
-            .collect();
-
-        InferenceContext {
-            func_sigs,
-            struct_types,
-            enum_types,
-            method_sigs,
-        }
-    }
-
-    /// Gather all declarations from the RIR and build a TypeContext.
-    ///
-    /// This is Phase 1 of semantic analysis. It collects:
-    /// - Enum definitions
-    /// - Struct definitions
-    /// - Function signatures
-    /// - Method signatures
-    ///
-    /// The returned `TypeContext` is immutable and can be shared across
-    /// threads for parallel function body analysis.
-    ///
-    /// # Example
-    ///
-    /// ```ignore
-    /// // Phase 1: Gather declarations (sequential)
-    /// let sema = Sema::new(rir, interner, preview);
-    /// let (type_ctx, sema) = sema.gather_declarations()?;
-    ///
-    /// // Phase 2: Analyze function bodies (can be parallel)
-    /// for fn_ref in rir.function_refs() {
-    ///     let result = analyze_function_body(&type_ctx, ...)?;
-    /// }
-    /// ```
-    pub fn gather_declarations(mut self) -> CompileResult<(TypeContext, GatherOutput<'a>)> {
-        // Three-phase approach for correctness and performance:
-        //
-        // Phase 0: Inject built-in types (synthetic structs like String)
-        // These must be registered before user code to enable collision detection.
-        //
-        // Phase 1: Register all type names (enum and struct IDs)
-        // This allows types to reference each other in any order.
-        //
-        // Phase 2: Resolve all declarations in a single pass
-        // Now that all type names are known, we can resolve field types,
-        // validate @copy structs, and collect functions/methods together.
-        self.inject_builtin_types();
-        self.register_type_names()?;
-        self.resolve_declarations()?;
-
-        // Build the immutable type context
-        let type_ctx = self.build_type_context();
-
-        // Package up the remaining Sema state needed for function analysis
-        let output = GatherOutput {
-            rir: self.rir,
-            interner: self.interner,
-            struct_defs: self.struct_defs,
-            enum_defs: self.enum_defs,
-            array_types: self.array_types,
-            array_type_defs: self.array_type_defs,
-            structs: self.structs,
-            enums: self.enums,
-            functions: self.functions,
-            methods: self.methods,
-            preview_features: self.preview_features,
-            builtin_string_id: self.builtin_string_id,
-        };
-
-        Ok((type_ctx, output))
-    }
-
-    /// Check if a preview feature is enabled, returning an error if not.
-    ///
-    /// This is the gating mechanism for preview features. Call this method
-    /// when semantic analysis encounters a feature that requires a preview flag.
-    ///
-    /// # Parameters
-    /// - `feature`: The preview feature that is required
-    /// - `what`: A description of what requires the feature (e.g., "string concatenation")
+    /// # Arguments
+    /// - `feature`: The preview feature to check
+    /// - `what`: Human-readable description of what requires this feature
     /// - `span`: The source location where the feature is used
     ///
     /// # Returns
     /// - `Ok(())` if the feature is enabled
     /// - `Err(CompileError)` with a helpful message if not enabled
-    fn require_preview(
+    pub(crate) fn require_preview(
         &self,
         feature: PreviewFeature,
         what: &str,
@@ -847,687 +246,6 @@ impl<'a> Sema<'a> {
         }
     }
 
-    /// Add a string to the string table, returning its index.
-    /// Deduplicates identical strings.
-    fn add_string(&mut self, content: String) -> u32 {
-        use std::collections::hash_map::Entry;
-        match self.string_table.entry(content) {
-            Entry::Occupied(e) => *e.get(),
-            Entry::Vacant(e) => {
-                let id = self.strings.len() as u32;
-                self.strings.push(e.key().clone());
-                e.insert(id);
-                id
-            }
-        }
-    }
-
-    /// Check if directives contain @allow for a specific warning name.
-    fn has_allow_directive(&self, directives: &[RirDirective], warning_name: &str) -> bool {
-        let allow_sym = self.interner.get("allow");
-        let warning_sym = self.interner.get(warning_name);
-
-        for directive in directives {
-            if Some(directive.name) == allow_sym {
-                for arg in &directive.args {
-                    if Some(*arg) == warning_sym {
-                        return true;
-                    }
-                }
-            }
-        }
-        false
-    }
-
-    /// Check for unused local variables in the current scope (before popping it).
-    /// Uses the scope stack to determine which variables were added in the current scope.
-    fn check_unused_locals_in_current_scope(&self, ctx: &mut AnalysisContext) {
-        // Get the current scope entries (variables added in this scope)
-        let Some(current_scope) = ctx.scope_stack.last() else {
-            return;
-        };
-
-        for (symbol, _old_value) in current_scope {
-            // Skip if variable was used
-            if ctx.used_locals.contains(symbol) {
-                continue;
-            }
-
-            // Get the local var info (it should still be in ctx.locals before pop)
-            let Some(local) = ctx.locals.get(symbol) else {
-                continue;
-            };
-
-            // Get variable name
-            let name = self.interner.resolve(&*symbol);
-
-            // Skip variables starting with underscore (convention for intentionally unused)
-            if name.starts_with('_') {
-                continue;
-            }
-
-            // Skip if @allow(unused_variable) was applied
-            if local.allow_unused {
-                continue;
-            }
-
-            // Emit warning with help suggestion (to ctx.warnings for parallel safety)
-            ctx.warnings.push(
-                CompileWarning::new(WarningKind::UnusedVariable(name.to_string()), local.span)
-                    .with_help(format!(
-                        "if this is intentional, prefix it with an underscore: `_{}`",
-                        name
-                    )),
-            );
-        }
-    }
-
-    /// Check for unconsumed linear values in the current scope (before popping it).
-    /// Linear values MUST be consumed (moved) - it's an error to let them drop implicitly.
-    /// Returns an error if any linear value was not consumed.
-    fn check_unconsumed_linear_values(&self, ctx: &AnalysisContext) -> CompileResult<()> {
-        // Get the current scope entries (variables added in this scope)
-        let Some(current_scope) = ctx.scope_stack.last() else {
-            return Ok(());
-        };
-
-        for (symbol, _old_value) in current_scope {
-            // Get the local var info (it should still be in ctx.locals before pop)
-            let Some(local) = ctx.locals.get(symbol) else {
-                continue;
-            };
-
-            // Only check linear types
-            if !self.is_type_linear(local.ty) {
-                continue;
-            }
-
-            // Check if this variable was moved (consumed)
-            let was_consumed = ctx
-                .moved_vars
-                .get(symbol)
-                .is_some_and(|state| state.full_move.is_some());
-
-            if !was_consumed {
-                let name = self.interner.resolve(&*symbol);
-                return Err(CompileError::new(
-                    ErrorKind::LinearValueNotConsumed(name.to_string()),
-                    local.span,
-                ));
-            }
-        }
-
-        Ok(())
-    }
-
-    /// Extract the root variable symbol from an expression, if it refers to a variable.
-    ///
-    /// For inout arguments, we need to track which variable is being passed to detect
-    /// when the same variable is passed to multiple inout parameters.
-    ///
-    /// Returns Some(symbol) for:
-    /// - VarRef { name } -> the variable symbol
-    /// - ParamRef { name, .. } -> the parameter symbol
-    /// - FieldGet { base, .. } -> recursively extract from base
-    /// - IndexGet { base, .. } -> recursively extract from base
-    ///
-    /// Returns None for expressions that don't refer to a variable (literals, calls, etc.)
-    fn extract_root_variable(&self, inst_ref: InstRef) -> Option<Spur> {
-        let inst = self.rir.get(inst_ref);
-        match &inst.data {
-            InstData::VarRef { name } => Some(*name),
-            InstData::ParamRef { name, .. } => Some(*name),
-            InstData::FieldGet { base, .. } => self.extract_root_variable(*base),
-            InstData::IndexGet { base, .. } => self.extract_root_variable(*base),
-            _ => None,
-        }
-    }
-
-    /// Extract the root variable symbol and field path from an expression.
-    ///
-    /// For expressions like `s.a.b`, returns (sym("s"), [sym("a"), sym("b")]).
-    /// For `s`, returns (sym("s"), []).
-    ///
-    /// Returns None for expressions that don't refer to a variable (literals, calls, etc.)
-    fn extract_field_path(&self, inst_ref: InstRef) -> Option<(Spur, FieldPath)> {
-        let mut path = Vec::new();
-        let root = self.extract_field_path_inner(inst_ref, &mut path)?;
-        // Path is built in reverse order, so reverse it
-        path.reverse();
-        Some((root, path))
-    }
-
-    /// Helper for extract_field_path that builds the path in reverse order.
-    fn extract_field_path_inner(&self, inst_ref: InstRef, path: &mut FieldPath) -> Option<Spur> {
-        let inst = self.rir.get(inst_ref);
-        match &inst.data {
-            InstData::VarRef { name } => Some(*name),
-            InstData::ParamRef { name, .. } => Some(*name),
-            InstData::FieldGet { base, field } => {
-                path.push(*field);
-                self.extract_field_path_inner(*base, path)
-            }
-            // For index expressions, we stop tracking the field path
-            // (index-based moves are more complex and not addressed here)
-            InstData::IndexGet { .. } => None,
-            _ => None,
-        }
-    }
-
-    /// Check exclusivity rules for inout and borrow parameters in a call.
-    ///
-    /// This enforces two rules:
-    /// 1. Same variable cannot be passed to multiple inout parameters (prevents aliasing)
-    /// 2. Same variable cannot be passed to both inout and borrow (law of exclusivity)
-    ///
-    /// The law of exclusivity: either one mutable (inout) access OR any number of
-    /// immutable (borrow) accesses, never both simultaneously.
-    fn check_exclusive_access(&self, args: &[RirCallArg], call_span: Span) -> CompileResult<()> {
-        use std::collections::HashSet;
-        let mut inout_vars: HashSet<Spur> = HashSet::new();
-        let mut borrow_vars: HashSet<Spur> = HashSet::new();
-
-        for arg in args {
-            let maybe_var_symbol = self.extract_root_variable(arg.value);
-
-            // Check that inout/borrow arguments are lvalues
-            if arg.is_inout() && maybe_var_symbol.is_none() {
-                return Err(CompileError::new(
-                    ErrorKind::InoutNonLvalue,
-                    self.rir.get(arg.value).span,
-                ));
-            }
-            if arg.is_borrow() && maybe_var_symbol.is_none() {
-                return Err(CompileError::new(
-                    ErrorKind::BorrowNonLvalue,
-                    self.rir.get(arg.value).span,
-                ));
-            }
-
-            if let Some(var_symbol) = maybe_var_symbol {
-                if arg.is_inout() {
-                    // Check for duplicate inout access
-                    if !inout_vars.insert(var_symbol) {
-                        let var_name = self.interner.resolve(&var_symbol).to_string();
-                        return Err(CompileError::new(
-                            ErrorKind::InoutExclusiveAccess { variable: var_name },
-                            call_span,
-                        ));
-                    }
-                    // Check for borrow/inout conflict
-                    if borrow_vars.contains(&var_symbol) {
-                        let var_name = self.interner.resolve(&var_symbol).to_string();
-                        return Err(CompileError::new(
-                            ErrorKind::BorrowInoutConflict { variable: var_name },
-                            call_span,
-                        ));
-                    }
-                } else if arg.is_borrow() {
-                    borrow_vars.insert(var_symbol);
-                    // Check for borrow/inout conflict
-                    if inout_vars.contains(&var_symbol) {
-                        let var_name = self.interner.resolve(&var_symbol).to_string();
-                        return Err(CompileError::new(
-                            ErrorKind::BorrowInoutConflict { variable: var_name },
-                            call_span,
-                        ));
-                    }
-                }
-            }
-        }
-        Ok(())
-    }
-
-    /// Analyze a list of call arguments, handling inout unmove logic.
-    ///
-    /// For inout arguments, the variable is "unmoving" after analysis - this is because
-    /// inout is a mutable borrow, not a move. The value stays valid after the call.
-    fn analyze_call_args(
-        &mut self,
-        air: &mut Air,
-        args: &[RirCallArg],
-        ctx: &mut AnalysisContext,
-    ) -> CompileResult<Vec<AirCallArg>> {
-        let mut air_args = Vec::new();
-        for arg in args.iter() {
-            // For inout/borrow arguments, extract the variable name before analysis
-            // so we can "unmove" it after - these are borrows, not moves
-            let borrowed_var = if arg.is_inout() || arg.is_borrow() {
-                self.extract_root_variable(arg.value)
-            } else {
-                None
-            };
-
-            let arg_result = self.analyze_inst(air, arg.value, ctx)?;
-
-            // If this was an inout/borrow argument, the variable shouldn't be marked as moved
-            // because these are borrows - the value stays valid after the call
-            if let Some(var_symbol) = borrowed_var {
-                ctx.moved_vars.remove(&var_symbol);
-            }
-
-            air_args.push(AirCallArg {
-                value: arg_result.air_ref,
-                mode: Self::convert_arg_mode(arg.mode),
-            });
-        }
-        Ok(air_args)
-    }
-
-    /// Analyze all functions in the RIR.
-    ///
-    /// Consumes the Sema and returns a [`SemaOutput`] containing all analyzed
-    /// functions, struct definitions, enum definitions, and any warnings generated during analysis.
-    ///
-    /// This function collects errors from multiple functions instead of stopping at the
-    /// first error, allowing users to see all issues at once. Errors within type/struct
-    /// definitions still cause early termination since they affect all subsequent analysis.
-    pub fn analyze_all(mut self) -> MultiErrorResult<SemaOutput> {
-        // Phase 0: Inject built-in types (String, etc.) before user code
-        // This must happen first so builtins are registered when resolving types.
-        self.inject_builtin_types();
-
-        // Two-phase declaration gathering (see gather_declarations for details):
-        // Phase 1: Register type names
-        // Phase 2: Resolve all declarations
-        // These are critical and must succeed before we can analyze functions
-        self.register_type_names().map_err(CompileErrors::from)?;
-        self.resolve_declarations().map_err(CompileErrors::from)?;
-
-        // Build inference context once - this contains pre-computed type information
-        // (func_sigs, struct_types, enum_types, method_sigs) that would otherwise
-        // be rebuilt for each function analysis.
-        let infer_ctx = self.build_inference_context();
-
-        // Now analyze function bodies - these can be analyzed independently
-        // so we collect errors from all of them instead of stopping at the first
-        let mut functions = Vec::new();
-        let mut errors = CompileErrors::new();
-        // Collect warnings from each function for parallel-safe warning collection
-        let mut all_warnings = Vec::new();
-
-        // Collect method refs from impl blocks so we can skip them in the first pass
-        let mut method_refs: HashSet<InstRef> = HashSet::new();
-        for (_, inst) in self.rir.iter() {
-            if let InstData::ImplDecl {
-                methods_start,
-                methods_len,
-                ..
-            } = &inst.data
-            {
-                let methods = self.rir.get_inst_refs(*methods_start, *methods_len);
-                for method_ref in methods {
-                    method_refs.insert(method_ref);
-                }
-            }
-        }
-
-        // Analyze regular functions (not methods in impl blocks)
-        for (inst_ref, inst) in self.rir.iter() {
-            if let InstData::FnDecl {
-                directives_start: _,
-                directives_len: _,
-                name,
-                params_start,
-                params_len,
-                return_type,
-                body,
-                has_self: _,
-            } = &inst.data
-            {
-                // Skip methods - they'll be analyzed separately with impl block context
-                if method_refs.contains(&inst_ref) {
-                    continue;
-                }
-
-                let fn_name = self.interner.resolve(&*name).to_string();
-                let params = self.rir.get_params(*params_start, *params_len);
-
-                // Try to analyze this function - on error, record it and continue
-                match self.analyze_single_function(
-                    &infer_ctx,
-                    &fn_name,
-                    *return_type,
-                    &params,
-                    *body,
-                    inst.span,
-                ) {
-                    Ok((analyzed, warnings)) => {
-                        functions.push(analyzed);
-                        all_warnings.extend(warnings);
-                    }
-                    Err(e) => errors.push(e),
-                }
-            }
-        }
-
-        // Fourth pass: analyze method bodies from impl blocks
-        for (_, inst) in self.rir.iter() {
-            if let InstData::ImplDecl {
-                type_name,
-                methods_start,
-                methods_len,
-            } = &inst.data
-            {
-                let type_name_str = self.interner.resolve(&*type_name).to_string();
-                let struct_id = *self.structs.get(type_name).ok_or_else(|| {
-                    CompileError::new(
-                        ErrorKind::InternalError(format!(
-                            "impl block for undefined type '{}' survived validation",
-                            type_name_str
-                        )),
-                        inst.span,
-                    )
-                })?;
-                let struct_type = Type::Struct(struct_id);
-
-                let methods = self.rir.get_inst_refs(*methods_start, *methods_len);
-                for method_ref in methods {
-                    let method_inst = self.rir.get(method_ref);
-                    if let InstData::FnDecl {
-                        name: method_name,
-                        params_start,
-                        params_len,
-                        return_type,
-                        body,
-                        has_self,
-                        ..
-                    } = &method_inst.data
-                    {
-                        let method_name_str = self.interner.resolve(&*method_name).to_string();
-                        let params = self.rir.get_params(*params_start, *params_len);
-
-                        // Generate method name with struct prefix: "Type.method" or "Type::function"
-                        let full_name = if *has_self {
-                            format!("{}.{}", type_name_str, method_name_str)
-                        } else {
-                            format!("{}::{}", type_name_str, method_name_str)
-                        };
-
-                        // Try to analyze this method - on error, record it and continue
-                        match self.analyze_method_function(
-                            &infer_ctx,
-                            &full_name,
-                            *return_type,
-                            &params,
-                            *body,
-                            method_inst.span,
-                            struct_type,
-                            *has_self,
-                        ) {
-                            Ok((analyzed, warnings)) => {
-                                functions.push(analyzed);
-                                all_warnings.extend(warnings);
-                            }
-                            Err(e) => errors.push(e),
-                        }
-                    }
-                }
-            }
-        }
-
-        // Fifth pass: analyze destructor bodies
-        for (_, inst) in self.rir.iter() {
-            if let InstData::DropFnDecl { type_name, body } = &inst.data {
-                let type_name_str = self.interner.resolve(&*type_name).to_string();
-                let struct_id = *self.structs.get(type_name).ok_or_else(|| {
-                    CompileError::new(
-                        ErrorKind::InternalError(format!(
-                            "destructor for undefined type '{}' survived validation",
-                            type_name_str
-                        )),
-                        inst.span,
-                    )
-                })?;
-                let struct_type = Type::Struct(struct_id);
-
-                // Generate destructor name: "TypeName.__drop"
-                let full_name = format!("{}.__drop", type_name_str);
-
-                // Try to analyze destructor - on error, record it and continue
-                match self.analyze_destructor_function(
-                    &infer_ctx,
-                    &full_name,
-                    *body,
-                    inst.span,
-                    struct_type,
-                ) {
-                    Ok((analyzed, warnings)) => {
-                        functions.push(analyzed);
-                        all_warnings.extend(warnings);
-                    }
-                    Err(e) => errors.push(e),
-                }
-            }
-        }
-
-        // Sort warnings by source location for deterministic output
-        // (especially important when parallel analysis is enabled in the future)
-        all_warnings.sort_by_key(|w| w.span().map(|s| s.start));
-
-        // Return errors if any were collected
-        errors.into_result_with(SemaOutput {
-            functions,
-            struct_defs: self.struct_defs,
-            enum_defs: self.enum_defs,
-            array_types: self.array_type_defs,
-            strings: self.strings,
-            warnings: all_warnings,
-        })
-    }
-
-    /// Analyze all function bodies, assuming declarations are already collected.
-    ///
-    /// This is Phase 2 of semantic analysis. It assumes that `gather_declarations`
-    /// has already been called (or that this Sema was created from `GatherOutput::into_sema`).
-    ///
-    /// # Architecture
-    ///
-    /// This method is the entry point for function body analysis after declaration
-    /// gathering. Currently it runs sequentially, but the design allows for future
-    /// parallelization since each function body can be analyzed independently.
-    ///
-    /// # Example
-    ///
-    /// ```ignore
-    /// // Phase 1: Gather declarations
-    /// let sema = Sema::new(rir, interner, preview);
-    /// let (type_ctx, gather_output) = sema.gather_declarations()?;
-    ///
-    /// // Phase 2: Analyze function bodies
-    /// let sema = gather_output.into_sema();
-    /// let output = sema.analyze_all_bodies()?;
-    /// ```
-    pub fn analyze_all_bodies(mut self) -> MultiErrorResult<SemaOutput> {
-        // Build inference context once - this contains pre-computed type information
-        // (func_sigs, struct_types, enum_types, method_sigs) that would otherwise
-        // be rebuilt for each function analysis.
-        let infer_ctx = self.build_inference_context();
-
-        let mut functions = Vec::new();
-        let mut errors = CompileErrors::new();
-        // Collect warnings from each function for parallel-safe warning collection
-        let mut all_warnings = Vec::new();
-
-        // Collect method refs from impl blocks so we can skip them in the first pass
-        let mut method_refs: HashSet<InstRef> = HashSet::new();
-        for (_, inst) in self.rir.iter() {
-            if let InstData::ImplDecl {
-                methods_start,
-                methods_len,
-                ..
-            } = &inst.data
-            {
-                let methods = self.rir.get_inst_refs(*methods_start, *methods_len);
-                for method_ref in methods {
-                    method_refs.insert(method_ref);
-                }
-            }
-        }
-
-        // Analyze regular functions (not methods in impl blocks)
-        for (inst_ref, inst) in self.rir.iter() {
-            if let InstData::FnDecl {
-                directives_start: _,
-                directives_len: _,
-                name,
-                params_start,
-                params_len,
-                return_type,
-                body,
-                has_self: _,
-            } = &inst.data
-            {
-                // Skip methods - they'll be analyzed separately with impl block context
-                if method_refs.contains(&inst_ref) {
-                    continue;
-                }
-
-                let fn_name = self.interner.resolve(&*name).to_string();
-                let params = self.rir.get_params(*params_start, *params_len);
-
-                // Try to analyze this function - on error, record it and continue
-                match self.analyze_single_function(
-                    &infer_ctx,
-                    &fn_name,
-                    *return_type,
-                    &params,
-                    *body,
-                    inst.span,
-                ) {
-                    Ok((analyzed, warnings)) => {
-                        functions.push(analyzed);
-                        all_warnings.extend(warnings);
-                    }
-                    Err(e) => errors.push(e),
-                }
-            }
-        }
-
-        // Analyze method bodies from impl blocks
-        for (_, inst) in self.rir.iter() {
-            if let InstData::ImplDecl {
-                type_name,
-                methods_start,
-                methods_len,
-            } = &inst.data
-            {
-                let type_name_str = self.interner.resolve(&*type_name).to_string();
-                let struct_id = *self.structs.get(type_name).ok_or_else(|| {
-                    CompileError::new(
-                        ErrorKind::InternalError(format!(
-                            "impl block for undefined type '{}' survived validation",
-                            type_name_str
-                        )),
-                        inst.span,
-                    )
-                })?;
-                let struct_type = Type::Struct(struct_id);
-
-                let methods = self.rir.get_inst_refs(*methods_start, *methods_len);
-                for method_ref in methods {
-                    let method_inst = self.rir.get(method_ref);
-                    if let InstData::FnDecl {
-                        name: method_name,
-                        params_start,
-                        params_len,
-                        return_type,
-                        body,
-                        has_self,
-                        ..
-                    } = &method_inst.data
-                    {
-                        let method_name_str = self.interner.resolve(&*method_name).to_string();
-                        let params = self.rir.get_params(*params_start, *params_len);
-
-                        // Generate method name with struct prefix: "Type.method" or "Type::function"
-                        let full_name = if *has_self {
-                            format!("{}.{}", type_name_str, method_name_str)
-                        } else {
-                            format!("{}::{}", type_name_str, method_name_str)
-                        };
-
-                        // Try to analyze this method - on error, record it and continue
-                        match self.analyze_method_function(
-                            &infer_ctx,
-                            &full_name,
-                            *return_type,
-                            &params,
-                            *body,
-                            method_inst.span,
-                            struct_type,
-                            *has_self,
-                        ) {
-                            Ok((analyzed, warnings)) => {
-                                functions.push(analyzed);
-                                all_warnings.extend(warnings);
-                            }
-                            Err(e) => errors.push(e),
-                        }
-                    }
-                }
-            }
-        }
-
-        // Analyze destructor bodies
-        for (_, inst) in self.rir.iter() {
-            if let InstData::DropFnDecl { type_name, body } = &inst.data {
-                let type_name_str = self.interner.resolve(&*type_name).to_string();
-                let struct_id = *self.structs.get(type_name).ok_or_else(|| {
-                    CompileError::new(
-                        ErrorKind::InternalError(format!(
-                            "destructor for undefined type '{}' survived validation",
-                            type_name_str
-                        )),
-                        inst.span,
-                    )
-                })?;
-                let struct_type = Type::Struct(struct_id);
-
-                // Generate destructor name: "TypeName.__drop"
-                let full_name = format!("{}.__drop", type_name_str);
-
-                // Try to analyze destructor - on error, record it and continue
-                match self.analyze_destructor_function(
-                    &infer_ctx,
-                    &full_name,
-                    *body,
-                    inst.span,
-                    struct_type,
-                ) {
-                    Ok((analyzed, warnings)) => {
-                        functions.push(analyzed);
-                        all_warnings.extend(warnings);
-                    }
-                    Err(e) => errors.push(e),
-                }
-            }
-        }
-
-        // Sort warnings by source location for deterministic output
-        // (especially important when parallel analysis is enabled in the future)
-        all_warnings.sort_by_key(|w| w.span().map(|s| s.start));
-
-        // Return errors if any were collected
-        errors.into_result_with(SemaOutput {
-            functions,
-            struct_defs: self.struct_defs,
-            enum_defs: self.enum_defs,
-            array_types: self.array_type_defs,
-            strings: self.strings,
-            warnings: all_warnings,
-        })
-    }
-
-    /// Analyze a single regular function.
-    ///
-    /// This helper factors out the function analysis logic to make error
-    /// collection cleaner in analyze_all.
-    ///
-    /// The `infer_ctx` provides pre-computed type information for constraint generation,
-    /// avoiding the cost of rebuilding maps for each function.
-    ///
-    /// Returns the analyzed function and any warnings generated during analysis.
     fn analyze_single_function(
         &mut self,
         infer_ctx: &InferenceContext,
@@ -1643,773 +361,6 @@ impl<'a> Sema<'a> {
             warnings,
         ))
     }
-
-    /// Check if a directive list contains the @copy directive
-    fn has_copy_directive(&self, directives: &[RirDirective]) -> bool {
-        let copy_sym = self.interner.get("copy");
-        for directive in directives {
-            if Some(directive.name) == copy_sym {
-                return true;
-            }
-        }
-        false
-    }
-
-    /// Check if a directive list contains the @handle directive
-    fn has_handle_directive(&self, directives: &[RirDirective]) -> bool {
-        let handle_sym = self.interner.get("handle");
-        for directive in directives {
-            if Some(directive.name) == handle_sym {
-                return true;
-            }
-        }
-        false
-    }
-
-    /// Get a human-readable name for a type.
-    fn format_type_name(&self, ty: Type) -> String {
-        match ty {
-            Type::I8 => "i8".to_string(),
-            Type::I16 => "i16".to_string(),
-            Type::I32 => "i32".to_string(),
-            Type::I64 => "i64".to_string(),
-            Type::U8 => "u8".to_string(),
-            Type::U16 => "u16".to_string(),
-            Type::U32 => "u32".to_string(),
-            Type::U64 => "u64".to_string(),
-            Type::Bool => "bool".to_string(),
-            Type::Unit => "()".to_string(),
-            Type::Never => "!".to_string(),
-            Type::Error => "<error>".to_string(),
-            // Note: String is now handled via Type::Struct with builtin_string_id
-            Type::Struct(struct_id) => self.struct_defs[struct_id.0 as usize].name.clone(),
-            Type::Enum(enum_id) => self.enum_defs[enum_id.0 as usize].name.clone(),
-            Type::Array(array_id) => {
-                let array_def = &self.array_type_defs[array_id.0 as usize];
-                format!(
-                    "[{}; {}]",
-                    self.format_type_name(array_def.element_type),
-                    array_def.length
-                )
-            }
-        }
-    }
-
-    /// Check if a type is a Copy type.
-    /// This differs from Type::is_copy() because it can look up struct definitions
-    /// to check if a struct is marked with @copy.
-    fn is_type_copy(&self, ty: Type) -> bool {
-        match ty {
-            // Primitive Copy types
-            Type::I8
-            | Type::I16
-            | Type::I32
-            | Type::I64
-            | Type::U8
-            | Type::U16
-            | Type::U32
-            | Type::U64
-            | Type::Bool
-            | Type::Unit => true,
-            // Enum types are Copy (they're small discriminant values)
-            Type::Enum(_) => true,
-            // Never and Error are Copy for convenience
-            Type::Never | Type::Error => true,
-            // Struct types: check if marked with @copy
-            Type::Struct(struct_id) => {
-                let struct_def = &self.struct_defs[struct_id.0 as usize];
-                struct_def.is_copy
-            }
-            // Note: String is now handled via Type::Struct with is_builtin
-            // Arrays are Copy if their element type is Copy
-            Type::Array(array_id) => {
-                let array_def = &self.array_type_defs[array_id.0 as usize];
-                self.is_type_copy(array_def.element_type)
-            }
-        }
-    }
-
-    /// Phase 0: Inject built-in types as synthetic structs.
-    ///
-    /// This creates `StructDef` entries for built-in types like `String` before
-    /// processing user code. The built-in types are registered in the `structs`
-    /// HashMap so they can be looked up by name, and their StructIds are stored
-    /// in dedicated fields (e.g., `builtin_string_id`) for fast access.
-    ///
-    /// Built-in types are marked with `is_builtin: true` and have their fields,
-    /// destructor, and copy status derived from the `rue-builtins` registry.
-    fn inject_builtin_types(&mut self) {
-        for builtin in BUILTIN_TYPES {
-            let struct_id = StructId(self.struct_defs.len() as u32);
-
-            // Convert builtin field types to our Type enum
-            let fields: Vec<StructField> = builtin
-                .fields
-                .iter()
-                .map(|f| StructField {
-                    name: f.name.to_string(),
-                    ty: match f.ty {
-                        BuiltinFieldType::U64 => Type::U64,
-                        BuiltinFieldType::U8 => Type::U8,
-                        BuiltinFieldType::Bool => Type::Bool,
-                    },
-                })
-                .collect();
-
-            // Create the synthetic struct definition
-            let struct_def = StructDef {
-                name: builtin.name.to_string(),
-                fields,
-                is_copy: builtin.is_copy,
-                is_handle: false, // Built-in types don't use @handle yet
-                is_linear: false, // Built-in types are not linear
-                destructor: builtin.drop_fn.map(|s| s.to_string()),
-                is_builtin: true,
-            };
-
-            self.struct_defs.push(struct_def);
-
-            // Register in struct lookup
-            let name_spur = self.interner.get_or_intern(builtin.name);
-            self.structs.insert(name_spur, struct_id);
-
-            // Store special IDs for quick access
-            if builtin.name == "String" {
-                self.builtin_string_id = Some(struct_id);
-            }
-
-            // Note: Associated functions and methods are not registered here.
-            // They are handled by looking up methods in the builtin registry
-            // when analyzing method calls on builtin types.
-        }
-    }
-
-    // ========================================================================
-    // Builtin type helper methods
-    // ========================================================================
-
-    /// Check if a type is the builtin String type.
-    ///
-    /// Uses the stored `builtin_string_id` for fast comparison.
-    fn is_builtin_string(&self, ty: Type) -> bool {
-        match ty {
-            Type::Struct(struct_id) => Some(struct_id) == self.builtin_string_id,
-            _ => false,
-        }
-    }
-
-    /// Get the builtin type definition for a struct if it's a builtin type.
-    ///
-    /// Returns `Some(&BuiltinTypeDef)` if the struct is a builtin type,
-    /// `None` otherwise.
-    fn get_builtin_type_def(&self, struct_id: StructId) -> Option<&'static BuiltinTypeDef> {
-        let struct_def = &self.struct_defs[struct_id.0 as usize];
-        if struct_def.is_builtin {
-            rue_builtins::get_builtin_type(&struct_def.name)
-        } else {
-            None
-        }
-    }
-
-    /// Get the String struct type.
-    ///
-    /// Returns the Type::Struct for the builtin String type.
-    /// Panics if called before builtin types are injected.
-    fn builtin_string_type(&self) -> Type {
-        Type::Struct(
-            self.builtin_string_id
-                .expect("builtin types not injected yet"),
-        )
-    }
-
-    /// Check if a method name is a builtin mutation method.
-    ///
-    /// Mutation methods need special handling because they require storage location
-    /// to be captured before the receiver is analyzed.
-    fn is_builtin_mutation_method(&self, method_name: &str) -> bool {
-        use rue_builtins::ReceiverMode;
-
-        // Check all builtin types for methods with ByMutRef receiver
-        for builtin in BUILTIN_TYPES {
-            if let Some(method) = builtin.find_method(method_name) {
-                if method.receiver_mode == ReceiverMode::ByMutRef {
-                    return true;
-                }
-            }
-        }
-        false
-    }
-
-    /// Get the AIR output type for a builtin struct.
-    ///
-    /// Builtin types like String are now represented as Type::Struct with is_builtin=true.
-    fn builtin_air_type(&self, struct_id: StructId) -> Type {
-        Type::Struct(struct_id)
-    }
-
-    /// Check if a type is a linear type.
-    /// Only struct types can be linear - primitives and other types are not linear.
-    fn is_type_linear(&self, ty: Type) -> bool {
-        match ty {
-            Type::Struct(struct_id) => {
-                let struct_def = &self.struct_defs[struct_id.0 as usize];
-                struct_def.is_linear
-            }
-            // Only struct types can be linear
-            _ => false,
-        }
-    }
-
-    /// Phase 1: Register all type names (enum and struct IDs).
-    ///
-    /// This creates name → ID mappings for all enums and structs in a single pass,
-    /// allowing types to reference each other in any order. Struct definitions are
-    /// created with placeholder empty fields that will be filled in during phase 2.
-    fn register_type_names(&mut self) -> CompileResult<()> {
-        for (_, inst) in self.rir.iter() {
-            match &inst.data {
-                InstData::EnumDecl {
-                    name,
-                    variants_start,
-                    variants_len,
-                } => {
-                    let enum_id = EnumId(self.enum_defs.len() as u32);
-                    let enum_name = self.interner.resolve(&*name).to_string();
-
-                    // Check for collision with built-in type names
-                    if is_reserved_type_name(&enum_name) {
-                        return Err(CompileError::new(
-                            ErrorKind::ReservedTypeName {
-                                type_name: enum_name,
-                            },
-                            inst.span,
-                        ));
-                    }
-
-                    // Check for duplicate type definitions (struct or enum with same name)
-                    if self.enums.contains_key(name) || self.structs.contains_key(name) {
-                        return Err(CompileError::new(
-                            ErrorKind::DuplicateTypeDefinition {
-                                type_name: enum_name,
-                            },
-                            inst.span,
-                        ));
-                    }
-
-                    let variants = self.rir.get_symbols(*variants_start, *variants_len);
-
-                    // Check for duplicate variant names
-                    let mut seen_variants: HashSet<Spur> = HashSet::new();
-                    for variant_name in &variants {
-                        if !seen_variants.insert(*variant_name) {
-                            let variant_name_str =
-                                self.interner.resolve(&*variant_name).to_string();
-                            return Err(CompileError::new(
-                                ErrorKind::DuplicateVariant {
-                                    enum_name: enum_name.clone(),
-                                    variant_name: variant_name_str,
-                                },
-                                inst.span,
-                            ));
-                        }
-                    }
-
-                    // Convert variant symbols to strings
-                    let variant_names: Vec<String> = variants
-                        .iter()
-                        .map(|v| self.interner.resolve(&*v).to_string())
-                        .collect();
-
-                    self.enum_defs.push(EnumDef {
-                        name: enum_name,
-                        variants: variant_names,
-                    });
-                    self.enums.insert(*name, enum_id);
-                }
-                InstData::StructDecl {
-                    directives_start,
-                    directives_len,
-                    is_linear,
-                    name,
-                    ..
-                } => {
-                    let struct_id = StructId(self.struct_defs.len() as u32);
-                    let struct_name = self.interner.resolve(&*name).to_string();
-
-                    // Check for collision with built-in type names
-                    if is_reserved_type_name(&struct_name) {
-                        return Err(CompileError::new(
-                            ErrorKind::ReservedTypeName {
-                                type_name: struct_name,
-                            },
-                            inst.span,
-                        ));
-                    }
-
-                    // Check for duplicate type definitions (struct or enum with same name)
-                    if self.structs.contains_key(name) || self.enums.contains_key(name) {
-                        return Err(CompileError::new(
-                            ErrorKind::DuplicateTypeDefinition {
-                                type_name: struct_name,
-                            },
-                            inst.span,
-                        ));
-                    }
-
-                    let directives = self.rir.get_directives(*directives_start, *directives_len);
-                    let is_copy = self.has_copy_directive(&directives);
-                    let is_handle = self.has_handle_directive(&directives);
-
-                    // Linear types require preview feature
-                    if *is_linear {
-                        self.require_preview(PreviewFeature::AffineMvs, "linear types", inst.span)?;
-
-                        // Linear types cannot be @copy
-                        if is_copy {
-                            return Err(CompileError::new(
-                                ErrorKind::LinearStructCopy(struct_name.clone()),
-                                inst.span,
-                            ));
-                        }
-                    }
-
-                    // Create placeholder struct def (fields will be resolved in phase 2)
-                    self.struct_defs.push(StructDef {
-                        name: struct_name,
-                        fields: Vec::new(), // Filled in during resolve_declarations
-                        is_copy,
-                        is_handle,
-                        is_linear: *is_linear,
-                        destructor: None,  // Filled in during resolve_declarations
-                        is_builtin: false, // User-defined struct
-                    });
-                    self.structs.insert(*name, struct_id);
-                }
-                _ => {}
-            }
-        }
-        Ok(())
-    }
-
-    /// Phase 2: Resolve all declarations.
-    ///
-    /// Now that all type names are registered, this resolves:
-    /// - Struct field types (must be done first for @copy validation)
-    /// - @copy struct validation, destructors, functions, and methods
-    fn resolve_declarations(&mut self) -> CompileResult<()> {
-        self.resolve_struct_fields()?;
-        self.resolve_remaining_declarations()
-    }
-
-    /// Resolve struct field types. Must run before @copy validation.
-    fn resolve_struct_fields(&mut self) -> CompileResult<()> {
-        for (_, inst) in self.rir.iter() {
-            if let InstData::StructDecl {
-                name,
-                fields_start,
-                fields_len,
-                ..
-            } = &inst.data
-            {
-                let name_str = self.interner.resolve(&*name).to_string();
-                let struct_id = *self.structs.get(name).ok_or_else(|| {
-                    CompileError::new(
-                        ErrorKind::InternalError(format!(
-                            "struct '{}' not found in struct map during field resolution",
-                            name_str
-                        )),
-                        inst.span,
-                    )
-                })?;
-                let struct_name = self.struct_defs[struct_id.0 as usize].name.clone();
-                let fields = self.rir.get_field_decls(*fields_start, *fields_len);
-
-                // Check for duplicate field names
-                let mut seen_fields: HashSet<Spur> = HashSet::new();
-                for (field_name, _) in &fields {
-                    if !seen_fields.insert(*field_name) {
-                        let field_name_str = self.interner.resolve(&*field_name).to_string();
-                        return Err(CompileError::new(
-                            ErrorKind::DuplicateField {
-                                struct_name,
-                                field_name: field_name_str,
-                            },
-                            inst.span,
-                        ));
-                    }
-                }
-
-                // Resolve field types
-                let mut resolved_fields = Vec::new();
-                for (field_name, field_type) in &fields {
-                    let field_ty = self.resolve_type(*field_type, inst.span)?;
-                    resolved_fields.push(StructField {
-                        name: self.interner.resolve(&*field_name).to_string(),
-                        ty: field_ty,
-                    });
-                }
-
-                self.struct_defs[struct_id.0 as usize].fields = resolved_fields;
-            }
-        }
-        Ok(())
-    }
-
-    /// Resolve @copy validation, destructors, functions, and methods.
-    fn resolve_remaining_declarations(&mut self) -> CompileResult<()> {
-        // First pass: collect all declarations and validate @copy structs
-        for (_, inst) in self.rir.iter() {
-            match &inst.data {
-                InstData::StructDecl {
-                    directives_start,
-                    directives_len,
-                    name,
-                    ..
-                } => {
-                    self.validate_copy_struct(
-                        *directives_start,
-                        *directives_len,
-                        *name,
-                        inst.span,
-                    )?;
-                }
-
-                InstData::DropFnDecl { type_name, .. } => {
-                    self.collect_destructor(*type_name, inst.span)?;
-                }
-
-                InstData::FnDecl {
-                    name,
-                    params_start,
-                    params_len,
-                    return_type,
-                    ..
-                } => {
-                    self.collect_function_signature(
-                        *name,
-                        *params_start,
-                        *params_len,
-                        *return_type,
-                        inst.span,
-                    )?;
-                }
-
-                InstData::ImplDecl {
-                    type_name,
-                    methods_start,
-                    methods_len,
-                } => {
-                    self.collect_impl_methods(*type_name, *methods_start, *methods_len, inst.span)?;
-                }
-
-                _ => {}
-            }
-        }
-
-        // Second pass: validate @handle structs (after all methods are collected)
-        self.validate_handle_structs()?;
-
-        Ok(())
-    }
-
-    /// Validate that a @copy struct only contains Copy type fields.
-    fn validate_copy_struct(
-        &self,
-        directives_start: u32,
-        directives_len: u32,
-        name: Spur,
-        span: Span,
-    ) -> CompileResult<()> {
-        let directives = self.rir.get_directives(directives_start, directives_len);
-        if !self.has_copy_directive(&directives) {
-            return Ok(());
-        }
-
-        let struct_name = self.interner.resolve(&name).to_string();
-        let struct_id = *self.structs.get(&name).ok_or_else(|| {
-            CompileError::new(
-                ErrorKind::InternalError(format!(
-                    "struct '{}' not found in struct map during @copy validation",
-                    struct_name
-                )),
-                span,
-            )
-        })?;
-        let struct_def = &self.struct_defs[struct_id.0 as usize];
-
-        for field in &struct_def.fields {
-            if !self.is_type_copy(field.ty) {
-                let field_type_name = self.format_type_name(field.ty);
-                return Err(CompileError::new(
-                    ErrorKind::CopyStructNonCopyField(Box::new(CopyStructNonCopyFieldError {
-                        struct_name,
-                        field_name: field.name.clone(),
-                        field_type: field_type_name,
-                    })),
-                    span,
-                ));
-            }
-        }
-        Ok(())
-    }
-
-    /// Validate that all @handle structs have a valid .handle() method.
-    ///
-    /// This runs after all methods are collected so we can look up
-    /// method signatures in the `methods` map.
-    fn validate_handle_structs(&self) -> CompileResult<()> {
-        // We need to iterate through structs and find their spans
-        for (_, inst) in self.rir.iter() {
-            if let InstData::StructDecl {
-                directives_start,
-                directives_len,
-                name,
-                ..
-            } = &inst.data
-            {
-                let directives = self.rir.get_directives(*directives_start, *directives_len);
-                if !self.has_handle_directive(&directives) {
-                    continue;
-                }
-
-                let struct_name = self.interner.resolve(&*name).to_string();
-                let struct_id = *self.structs.get(name).ok_or_else(|| {
-                    CompileError::new(
-                        ErrorKind::InternalError(format!(
-                            "struct '{}' not found in struct map during @handle validation",
-                            struct_name
-                        )),
-                        inst.span,
-                    )
-                })?;
-                let struct_type = Type::Struct(struct_id);
-
-                // Look for a .handle() method
-                let handle_sym = self.interner.get("handle");
-                let method_key = match handle_sym {
-                    Some(sym) => (*name, sym),
-                    None => {
-                        // "handle" not interned means no .handle() method exists
-                        return Err(CompileError::new(
-                            ErrorKind::HandleStructMissingMethod { struct_name },
-                            inst.span,
-                        ));
-                    }
-                };
-
-                let method_info = match self.methods.get(&method_key) {
-                    Some(info) => info,
-                    None => {
-                        return Err(CompileError::new(
-                            ErrorKind::HandleStructMissingMethod { struct_name },
-                            inst.span,
-                        ));
-                    }
-                };
-
-                // Validate: must be a method (has self), not associated function
-                if !method_info.has_self {
-                    let found_signature = format!(
-                        "fn handle({}) -> {}",
-                        method_info
-                            .param_types
-                            .iter()
-                            .map(|t| self.format_type_name(*t))
-                            .collect::<Vec<_>>()
-                            .join(", "),
-                        self.format_type_name(method_info.return_type)
-                    );
-                    return Err(CompileError::new(
-                        ErrorKind::HandleMethodWrongSignature {
-                            struct_name,
-                            found_signature,
-                        },
-                        method_info.span,
-                    ));
-                }
-
-                // Validate: should take no extra parameters (just self)
-                if !method_info.param_types.is_empty() {
-                    let params = std::iter::once(format!("self: {}", struct_name))
-                        .chain(
-                            method_info
-                                .param_types
-                                .iter()
-                                .zip(&method_info.param_names)
-                                .map(|(ty, name)| {
-                                    format!(
-                                        "{}: {}",
-                                        self.interner.resolve(name),
-                                        self.format_type_name(*ty)
-                                    )
-                                }),
-                        )
-                        .collect::<Vec<_>>()
-                        .join(", ");
-                    let found_signature = format!(
-                        "fn handle({}) -> {}",
-                        params,
-                        self.format_type_name(method_info.return_type)
-                    );
-                    return Err(CompileError::new(
-                        ErrorKind::HandleMethodWrongSignature {
-                            struct_name,
-                            found_signature,
-                        },
-                        method_info.span,
-                    ));
-                }
-
-                // Validate: return type must be the same struct type
-                if method_info.return_type != struct_type {
-                    let found_signature = format!(
-                        "fn handle(self: {}) -> {}",
-                        struct_name,
-                        self.format_type_name(method_info.return_type)
-                    );
-                    return Err(CompileError::new(
-                        ErrorKind::HandleMethodWrongSignature {
-                            struct_name,
-                            found_signature,
-                        },
-                        method_info.span,
-                    ));
-                }
-            }
-        }
-        Ok(())
-    }
-
-    /// Collect a destructor definition and register it with its struct.
-    fn collect_destructor(&mut self, type_name: Spur, span: Span) -> CompileResult<()> {
-        let type_name_str = self.interner.resolve(&type_name).to_string();
-
-        let struct_id = match self.structs.get(&type_name) {
-            Some(id) => *id,
-            None => {
-                return Err(CompileError::new(
-                    ErrorKind::DestructorUnknownType {
-                        type_name: type_name_str,
-                    },
-                    span,
-                ));
-            }
-        };
-
-        let struct_def = &self.struct_defs[struct_id.0 as usize];
-        if struct_def.destructor.is_some() {
-            return Err(CompileError::new(
-                ErrorKind::DuplicateDestructor {
-                    type_name: type_name_str,
-                },
-                span,
-            ));
-        }
-
-        let destructor_name = format!("{}.__drop", type_name_str);
-        self.struct_defs[struct_id.0 as usize].destructor = Some(destructor_name);
-        Ok(())
-    }
-
-    /// Collect a function signature for forward reference.
-    fn collect_function_signature(
-        &mut self,
-        name: Spur,
-        params_start: u32,
-        params_len: u32,
-        return_type: Spur,
-        span: Span,
-    ) -> CompileResult<()> {
-        let ret_type = self.resolve_type(return_type, span)?;
-        let params = self.rir.get_params(params_start, params_len);
-        let param_types: Vec<Type> = params
-            .iter()
-            .map(|p| self.resolve_type(p.ty, span))
-            .collect::<CompileResult<Vec<_>>>()?;
-        let param_modes: Vec<RirParamMode> = params.iter().map(|p| p.mode).collect();
-
-        self.functions.insert(
-            name,
-            FunctionInfo {
-                param_types,
-                param_modes,
-                return_type: ret_type,
-            },
-        );
-        Ok(())
-    }
-
-    /// Collect method definitions from an impl block.
-    fn collect_impl_methods(
-        &mut self,
-        type_name: Spur,
-        methods_start: u32,
-        methods_len: u32,
-        span: Span,
-    ) -> CompileResult<()> {
-        let struct_id = match self.structs.get(&type_name) {
-            Some(id) => *id,
-            None => {
-                let type_name_str = self.interner.resolve(&type_name).to_string();
-                return Err(CompileError::new(
-                    ErrorKind::UnknownType(type_name_str),
-                    span,
-                ));
-            }
-        };
-        let struct_type = Type::Struct(struct_id);
-
-        let methods = self.rir.get_inst_refs(methods_start, methods_len);
-        for method_ref in methods {
-            let method_inst = self.rir.get(method_ref);
-            if let InstData::FnDecl {
-                name: method_name,
-                params_start,
-                params_len,
-                return_type,
-                body,
-                has_self,
-                ..
-            } = &method_inst.data
-            {
-                let key = (type_name, *method_name);
-                if self.methods.contains_key(&key) {
-                    let type_name_str = self.interner.resolve(&type_name).to_string();
-                    let method_name_str = self.interner.resolve(&*method_name).to_string();
-                    return Err(CompileError::new(
-                        ErrorKind::DuplicateMethod {
-                            type_name: type_name_str,
-                            method_name: method_name_str,
-                        },
-                        method_inst.span,
-                    ));
-                }
-
-                let params = self.rir.get_params(*params_start, *params_len);
-                let param_names: Vec<Spur> = params.iter().map(|p| p.name).collect();
-                let param_types: Vec<Type> = params
-                    .iter()
-                    .map(|p| self.resolve_type(p.ty, method_inst.span))
-                    .collect::<CompileResult<Vec<_>>>()?;
-                let ret_type = self.resolve_type(*return_type, method_inst.span)?;
-
-                self.methods.insert(
-                    key,
-                    MethodInfo {
-                        struct_type,
-                        has_self: *has_self,
-                        param_names,
-                        param_types,
-                        return_type: ret_type,
-                        body: *body,
-                        span: method_inst.span,
-                    },
-                );
-            }
-        }
-        Ok(())
-    }
-
     /// Analyze a single function, producing AIR.
     ///
     /// The `infer_ctx` provides pre-computed type information for constraint generation,
@@ -2637,48 +588,6 @@ impl<'a> Sema<'a> {
 
         Ok(resolved_types)
     }
-
-    /// Convert a fully-resolved InferType to a concrete Type.
-    ///
-    /// This handles the conversion of InferType::Array to Type::Array(id)
-    /// by using the array type registry.
-    fn infer_type_to_type(&mut self, ty: &InferType) -> Type {
-        match ty {
-            InferType::Concrete(t) => *t,
-            InferType::Var(_) => Type::Error,   // Unbound variable
-            InferType::IntLiteral => Type::I32, // Default (shouldn't happen after resolution)
-            InferType::Array { element, length } => {
-                // Recursively convert element type
-                let elem_ty = self.infer_type_to_type(element);
-                if elem_ty == Type::Error {
-                    return Type::Error;
-                }
-                // Get or create the array type ID
-                let array_type_id = self.get_or_create_array_type(elem_ty, *length);
-                Type::Array(array_type_id)
-            }
-        }
-    }
-
-    /// Convert a concrete Type to InferType for use in constraint generation.
-    ///
-    /// This handles the conversion of Type::Array(id) to InferType::Array
-    /// by looking up the array definition to get element type and length.
-    fn type_to_infer_type(&self, ty: Type) -> InferType {
-        match ty {
-            Type::Array(array_id) => {
-                let array_def = &self.array_type_defs[array_id.0 as usize];
-                let element_infer = self.type_to_infer_type(array_def.element_type);
-                InferType::Array {
-                    element: Box::new(element_infer),
-                    length: array_def.length,
-                }
-            }
-            // All other types wrap directly
-            _ => InferType::Concrete(ty),
-        }
-    }
-
     /// Analyze an RIR instruction for projection (field access).
     ///
     /// This is like `analyze_inst` but does NOT mark non-Copy values as moved.
@@ -5590,177 +3499,6 @@ impl<'a> Sema<'a> {
             RirArgMode::Borrow => AirArgMode::Borrow,
         }
     }
-
-    /// Resolve a type symbol to a Type.
-    ///
-    /// Handles array types with the syntax "[T; N]".
-    fn resolve_type(&mut self, type_sym: Spur, span: Span) -> CompileResult<Type> {
-        let type_name = self.interner.resolve(&type_sym);
-
-        // Check primitive types first.
-        // Note: String is handled below via struct lookup (it's a builtin struct).
-        match type_name {
-            "i8" => return Ok(Type::I8),
-            "i16" => return Ok(Type::I16),
-            "i32" => return Ok(Type::I32),
-            "i64" => return Ok(Type::I64),
-            "u8" => return Ok(Type::U8),
-            "u16" => return Ok(Type::U16),
-            "u32" => return Ok(Type::U32),
-            "u64" => return Ok(Type::U64),
-            "bool" => return Ok(Type::Bool),
-            "()" => return Ok(Type::Unit),
-            "!" => return Ok(Type::Never),
-            _ => {}
-        }
-
-        if let Some(&struct_id) = self.structs.get(&type_sym) {
-            Ok(Type::Struct(struct_id))
-        } else if let Some(&enum_id) = self.enums.get(&type_sym) {
-            Ok(Type::Enum(enum_id))
-        } else {
-            // Check for array type syntax: [T; N]
-            if let Some((element_type, length)) = parse_array_type_syntax(type_name) {
-                // Resolve the element type first
-                let element_sym = self.interner.get_or_intern(&element_type);
-                let element_ty = self.resolve_type(element_sym, span)?;
-                // Get or create the array type
-                let array_type_id = self.get_or_create_array_type(element_ty, length);
-                Ok(Type::Array(array_type_id))
-            } else {
-                Err(CompileError::new(
-                    ErrorKind::UnknownType(type_name.to_string()),
-                    span,
-                ))
-            }
-        }
-    }
-
-    /// Get or create an array type for the given element type and length.
-    fn get_or_create_array_type(&mut self, element_type: Type, length: u64) -> ArrayTypeId {
-        let key = (element_type, length);
-        if let Some(&id) = self.array_types.get(&key) {
-            return id;
-        }
-
-        let id = ArrayTypeId(self.array_type_defs.len() as u32);
-        self.array_type_defs.push(ArrayTypeDef {
-            element_type,
-            length,
-        });
-        self.array_types.insert(key, id);
-        id
-    }
-
-    /// Pre-create array types from a resolved InferType.
-    ///
-    /// This walks the InferType recursively and ensures all array types that will
-    /// be needed during `infer_type_to_type` conversion are created beforehand.
-    /// This separation enables future parallelization of function analysis, where
-    /// all mutations happen in this pre-collection phase.
-    fn pre_create_array_types_from_infer_type(&mut self, ty: &InferType) {
-        match ty {
-            InferType::Array { element, length } => {
-                // First recursively process nested array types (e.g., [[i32; 3]; 4])
-                self.pre_create_array_types_from_infer_type(element);
-
-                // Convert the element type to get the concrete Type
-                // (This is safe because we processed nested arrays first)
-                let elem_ty = self.infer_type_to_concrete_type_for_key(element);
-                if elem_ty != Type::Error {
-                    // Pre-create this array type
-                    self.get_or_create_array_type(elem_ty, *length);
-                }
-            }
-            InferType::Concrete(_) | InferType::Var(_) | InferType::IntLiteral => {
-                // Non-array types don't need pre-creation
-            }
-        }
-    }
-
-    /// Convert an InferType to a concrete Type for use as an array element key.
-    ///
-    /// This is a helper for `pre_create_array_types_from_infer_type` that converts
-    /// the element type without mutating `self.array_types` (since we're in a
-    /// pre-creation context where the array type may not exist yet).
-    fn infer_type_to_concrete_type_for_key(&self, ty: &InferType) -> Type {
-        match ty {
-            InferType::Concrete(t) => *t,
-            InferType::Var(_) => Type::Error,   // Unbound variable
-            InferType::IntLiteral => Type::I32, // Default
-            InferType::Array { element, length } => {
-                // For nested arrays, look up the already-created array type
-                let elem_ty = self.infer_type_to_concrete_type_for_key(element);
-                if elem_ty == Type::Error {
-                    return Type::Error;
-                }
-                // The array type should already exist from the recursive call
-                let key = (elem_ty, *length);
-                if let Some(&id) = self.array_types.get(&key) {
-                    Type::Array(id)
-                } else {
-                    // This shouldn't happen if we process depth-first, but handle gracefully
-                    debug_assert!(
-                        false,
-                        "Array type not found during pre-creation: ({:?}, {})",
-                        elem_ty, length
-                    );
-                    Type::Error
-                }
-            }
-        }
-    }
-
-    /// Get the number of ABI slots required for a type.
-    /// Scalar types (i8, i16, i32, i64, u8, u16, u32, u64, bool) use 1 slot,
-    /// structs use 1 slot per field, arrays use 1 slot per element.
-    /// Zero-sized types (unit, never, empty structs, zero-length arrays) use 0 slots.
-    fn abi_slot_count(&self, ty: Type) -> u32 {
-        match ty {
-            Type::I8
-            | Type::I16
-            | Type::I32
-            | Type::I64
-            | Type::U8
-            | Type::U16
-            | Type::U32
-            | Type::U64
-            | Type::Bool
-            | Type::Error => 1,
-            // Zero-sized types use 0 slots
-            Type::Unit | Type::Never => 0,
-            // Enums are represented as their discriminant type (a scalar), so 1 slot
-            Type::Enum(_) => 1,
-            // Struct uses sum of all field slots (includes builtin String with 3 fields)
-            Type::Struct(struct_id) => {
-                // Sum the slot counts of all fields (handles arrays, nested structs, and builtins)
-                // Empty structs naturally get 0 slots here
-                let struct_def = &self.struct_defs[struct_id.0 as usize];
-                struct_def
-                    .fields
-                    .iter()
-                    .map(|f| self.abi_slot_count(f.ty))
-                    .sum()
-            }
-            Type::Array(array_type_id) => {
-                // Zero-length arrays naturally get 0 slots (0 * element_slots)
-                let array_def = &self.array_type_defs[array_type_id.0 as usize];
-                let element_slots = self.abi_slot_count(array_def.element_type);
-                element_slots * array_def.length as u32
-            }
-        }
-    }
-
-    /// Get the slot offset of a field within a struct.
-    /// Returns the number of slots before the field starts.
-    fn field_slot_offset(&self, struct_id: StructId, field_index: usize) -> u32 {
-        let struct_def = &self.struct_defs[struct_id.0 as usize];
-        struct_def.fields[..field_index]
-            .iter()
-            .map(|f| self.abi_slot_count(f.ty))
-            .sum()
-    }
-
     /// Analyze a binary arithmetic operator (+, -, *, /, %).
     ///
     /// Follows Rust's type inference rules:
@@ -6427,187 +4165,269 @@ impl<'a> Sema<'a> {
 
         Ok(AnalysisResult::new(store_ref, Type::Unit))
     }
-}
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use rue_lexer::Lexer;
-    use rue_parser::Parser;
-    use rue_rir::AstGen;
-
-    fn compile_to_air(source: &str) -> MultiErrorResult<SemaOutput> {
-        let lexer = Lexer::new(source);
-        let (tokens, interner) = lexer.tokenize().map_err(CompileErrors::from_error)?;
-        let parser = Parser::new(tokens, interner);
-        let (ast, mut interner) = parser.parse()?;
-
-        let astgen = AstGen::new(&ast, &mut interner);
-        let rir = astgen.generate();
-
-        let sema = Sema::new(&rir, &mut interner, PreviewFeatures::new());
-        sema.analyze_all()
+    fn add_string(&mut self, content: String) -> u32 {
+        use std::collections::hash_map::Entry;
+        match self.string_table.entry(content) {
+            Entry::Occupied(e) => *e.get(),
+            Entry::Vacant(e) => {
+                let id = self.strings.len() as u32;
+                self.strings.push(e.key().clone());
+                e.insert(id);
+                id
+            }
+        }
     }
 
-    #[test]
-    fn test_analyze_simple_function() {
-        let output = compile_to_air("fn main() -> i32 { 42 }").unwrap();
-        let functions = &output.functions;
+    /// Check if directives contain @allow for a specific warning name.
+    fn has_allow_directive(&self, directives: &[RirDirective], warning_name: &str) -> bool {
+        let allow_sym = self.interner.get("allow");
+        let warning_sym = self.interner.get(warning_name);
 
-        assert_eq!(functions.len(), 1);
-        assert_eq!(functions[0].name, "main");
-
-        let air = &functions[0].air;
-        assert_eq!(air.return_type(), Type::I32);
-        assert_eq!(air.len(), 2); // Const + Ret
+        for directive in directives {
+            if Some(directive.name) == allow_sym {
+                for arg in &directive.args {
+                    if Some(*arg) == warning_sym {
+                        return true;
+                    }
+                }
+            }
+        }
+        false
     }
 
-    #[test]
-    fn test_analyze_addition() {
-        let output = compile_to_air("fn main() -> i32 { 1 + 2 }").unwrap();
+    /// Check for unused local variables in the current scope (before popping it).
+    /// Uses the scope stack to determine which variables were added in the current scope.
+    fn check_unused_locals_in_current_scope(&self, ctx: &mut AnalysisContext) {
+        // Get the current scope entries (variables added in this scope)
+        let Some(current_scope) = ctx.scope_stack.last() else {
+            return;
+        };
 
-        let air = &output.functions[0].air;
-        assert_eq!(air.return_type(), Type::I32);
-        // Const(1) + Const(2) + Add + Ret = 4 instructions
-        assert_eq!(air.len(), 4);
+        for (symbol, _old_value) in current_scope {
+            // Skip if variable was used
+            if ctx.used_locals.contains(symbol) {
+                continue;
+            }
 
-        // Check that add instruction exists with correct type
-        let add_inst = air.get(AirRef::from_raw(2));
-        assert!(matches!(add_inst.data, AirInstData::Add(_, _)));
-        assert_eq!(add_inst.ty, Type::I32);
+            // Get the local var info (it should still be in ctx.locals before pop)
+            let Some(local) = ctx.locals.get(symbol) else {
+                continue;
+            };
+
+            // Get variable name
+            let name = self.interner.resolve(&*symbol);
+
+            // Skip variables starting with underscore (convention for intentionally unused)
+            if name.starts_with('_') {
+                continue;
+            }
+
+            // Skip if @allow(unused_variable) was applied
+            if local.allow_unused {
+                continue;
+            }
+
+            // Emit warning with help suggestion (to ctx.warnings for parallel safety)
+            ctx.warnings.push(
+                CompileWarning::new(WarningKind::UnusedVariable(name.to_string()), local.span)
+                    .with_help(format!(
+                        "if this is intentional, prefix it with an underscore: `_{}`",
+                        name
+                    )),
+            );
+        }
     }
 
-    #[test]
-    fn test_analyze_all_binary_ops() {
-        // Test that all binary operators compile correctly
-        assert!(compile_to_air("fn main() -> i32 { 1 + 2 }").is_ok());
-        assert!(compile_to_air("fn main() -> i32 { 1 - 2 }").is_ok());
-        assert!(compile_to_air("fn main() -> i32 { 1 * 2 }").is_ok());
-        assert!(compile_to_air("fn main() -> i32 { 1 / 2 }").is_ok());
-        assert!(compile_to_air("fn main() -> i32 { 1 % 2 }").is_ok());
+    /// Check for unconsumed linear values in the current scope (before popping it).
+    /// Linear values MUST be consumed (moved) - it's an error to let them drop implicitly.
+    /// Returns an error if any linear value was not consumed.
+    fn check_unconsumed_linear_values(&self, ctx: &AnalysisContext) -> CompileResult<()> {
+        // Get the current scope entries (variables added in this scope)
+        let Some(current_scope) = ctx.scope_stack.last() else {
+            return Ok(());
+        };
+
+        for (symbol, _old_value) in current_scope {
+            // Get the local var info (it should still be in ctx.locals before pop)
+            let Some(local) = ctx.locals.get(symbol) else {
+                continue;
+            };
+
+            // Only check linear types
+            if !self.is_type_linear(local.ty) {
+                continue;
+            }
+
+            // Check if this variable was moved (consumed)
+            let was_consumed = ctx
+                .moved_vars
+                .get(symbol)
+                .is_some_and(|state| state.full_move.is_some());
+
+            if !was_consumed {
+                let name = self.interner.resolve(&*symbol);
+                return Err(CompileError::new(
+                    ErrorKind::LinearValueNotConsumed(name.to_string()),
+                    local.span,
+                ));
+            }
+        }
+
+        Ok(())
     }
 
-    #[test]
-    fn test_analyze_negation() {
-        let output = compile_to_air("fn main() -> i32 { -42 }").unwrap();
-
-        let air = &output.functions[0].air;
-        // Const(42) + Neg + Ret = 3 instructions
-        assert_eq!(air.len(), 3);
-
-        let neg_inst = air.get(AirRef::from_raw(1));
-        assert!(matches!(neg_inst.data, AirInstData::Neg(_)));
-        assert_eq!(neg_inst.ty, Type::I32);
+    /// Extract the root variable symbol from an expression, if it refers to a variable.
+    ///
+    /// For inout arguments, we need to track which variable is being passed to detect
+    /// when the same variable is passed to multiple inout parameters.
+    ///
+    /// Returns Some(symbol) for:
+    /// - VarRef { name } -> the variable symbol
+    /// - ParamRef { name, .. } -> the parameter symbol
+    /// - FieldGet { base, .. } -> recursively extract from base
+    /// - IndexGet { base, .. } -> recursively extract from base
+    ///
+    /// Returns None for expressions that don't refer to a variable (literals, calls, etc.)
+    fn extract_root_variable(&self, inst_ref: InstRef) -> Option<Spur> {
+        let inst = self.rir.get(inst_ref);
+        match &inst.data {
+            InstData::VarRef { name } => Some(*name),
+            InstData::ParamRef { name, .. } => Some(*name),
+            InstData::FieldGet { base, .. } => self.extract_root_variable(*base),
+            InstData::IndexGet { base, .. } => self.extract_root_variable(*base),
+            _ => None,
+        }
     }
 
-    #[test]
-    fn test_analyze_complex_expr() {
-        let output = compile_to_air("fn main() -> i32 { (1 + 2) * 3 }").unwrap();
-
-        let air = &output.functions[0].air;
-        // Const(1) + Const(2) + Add + Const(3) + Mul + Ret = 6 instructions
-        assert_eq!(air.len(), 6);
-
-        // Check that result is multiplication
-        let mul_inst = air.get(AirRef::from_raw(4));
-        assert!(matches!(mul_inst.data, AirInstData::Mul(_, _)));
+    /// Extract the root variable symbol and field path from an expression.
+    ///
+    /// For expressions like `s.a.b`, returns (sym("s"), [sym("a"), sym("b")]).
+    /// For `s`, returns (sym("s"), []).
+    ///
+    /// Returns None for expressions that don't refer to a variable (literals, calls, etc.)
+    fn extract_field_path(&self, inst_ref: InstRef) -> Option<(Spur, FieldPath)> {
+        let mut path = Vec::new();
+        let root = self.extract_field_path_inner(inst_ref, &mut path)?;
+        // Path is built in reverse order, so reverse it
+        path.reverse();
+        Some((root, path))
     }
 
-    #[test]
-    fn test_analyze_let_binding() {
-        let output = compile_to_air("fn main() -> i32 { let x = 42; x }").unwrap();
-
-        assert_eq!(output.functions.len(), 1);
-        assert_eq!(output.functions[0].num_locals, 1);
-
-        let air = &output.functions[0].air;
-        // Const(42) + StorageLive + Alloc + Block([StorageLive], Alloc) + Load + Block([alloc block], Load) + Ret = 7 instructions
-        assert_eq!(air.len(), 7);
-
-        // Check storage_live instruction
-        let storage_live_inst = air.get(AirRef::from_raw(1));
-        assert!(matches!(
-            storage_live_inst.data,
-            AirInstData::StorageLive { slot: 0 }
-        ));
-
-        // Check alloc instruction
-        let alloc_inst = air.get(AirRef::from_raw(2));
-        assert!(matches!(
-            alloc_inst.data,
-            AirInstData::Alloc { slot: 0, .. }
-        ));
-
-        // Check load instruction
-        let load_inst = air.get(AirRef::from_raw(4));
-        assert!(matches!(load_inst.data, AirInstData::Load { slot: 0 }));
-
-        // Check block instruction groups the alloc with the load
-        let block_inst = air.get(AirRef::from_raw(5));
-        assert!(matches!(block_inst.data, AirInstData::Block { .. }));
+    /// Helper for extract_field_path that builds the path in reverse order.
+    fn extract_field_path_inner(&self, inst_ref: InstRef, path: &mut FieldPath) -> Option<Spur> {
+        let inst = self.rir.get(inst_ref);
+        match &inst.data {
+            InstData::VarRef { name } => Some(*name),
+            InstData::ParamRef { name, .. } => Some(*name),
+            InstData::FieldGet { base, field } => {
+                path.push(*field);
+                self.extract_field_path_inner(*base, path)
+            }
+            // For index expressions, we stop tracking the field path
+            // (index-based moves are more complex and not addressed here)
+            InstData::IndexGet { .. } => None,
+            _ => None,
+        }
     }
 
-    #[test]
-    fn test_analyze_let_mut_assignment() {
-        let output = compile_to_air("fn main() -> i32 { let mut x = 10; x = 20; x }").unwrap();
+    /// Check exclusivity rules for inout and borrow parameters in a call.
+    ///
+    /// This enforces two rules:
+    /// 1. Same variable cannot be passed to multiple inout parameters (prevents aliasing)
+    /// 2. Same variable cannot be passed to both inout and borrow (law of exclusivity)
+    ///
+    /// The law of exclusivity: either one mutable (inout) access OR any number of
+    /// immutable (borrow) accesses, never both simultaneously.
+    fn check_exclusive_access(&self, args: &[RirCallArg], call_span: Span) -> CompileResult<()> {
+        use std::collections::HashSet;
+        let mut inout_vars: HashSet<Spur> = HashSet::new();
+        let mut borrow_vars: HashSet<Spur> = HashSet::new();
 
-        let air = &output.functions[0].air;
-        // Const(10) + StorageLive + Alloc + Block([StorageLive], Alloc) + Const(20) + Store + Load + Block([alloc block, Store], Load) + Ret = 9 instructions
-        assert_eq!(air.len(), 9);
+        for arg in args {
+            let maybe_var_symbol = self.extract_root_variable(arg.value);
 
-        // Check store instruction
-        let store_inst = air.get(AirRef::from_raw(5));
-        assert!(matches!(
-            store_inst.data,
-            AirInstData::Store { slot: 0, .. }
-        ));
+            // Check that inout/borrow arguments are lvalues
+            if arg.is_inout() && maybe_var_symbol.is_none() {
+                return Err(CompileError::new(
+                    ErrorKind::InoutNonLvalue,
+                    self.rir.get(arg.value).span,
+                ));
+            }
+            if arg.is_borrow() && maybe_var_symbol.is_none() {
+                return Err(CompileError::new(
+                    ErrorKind::BorrowNonLvalue,
+                    self.rir.get(arg.value).span,
+                ));
+            }
 
-        // Check block instruction groups statements
-        let block_inst = air.get(AirRef::from_raw(7));
-        assert!(matches!(block_inst.data, AirInstData::Block { .. }));
+            if let Some(var_symbol) = maybe_var_symbol {
+                if arg.is_inout() {
+                    // Check for duplicate inout access
+                    if !inout_vars.insert(var_symbol) {
+                        let var_name = self.interner.resolve(&var_symbol).to_string();
+                        return Err(CompileError::new(
+                            ErrorKind::InoutExclusiveAccess { variable: var_name },
+                            call_span,
+                        ));
+                    }
+                    // Check for borrow/inout conflict
+                    if borrow_vars.contains(&var_symbol) {
+                        let var_name = self.interner.resolve(&var_symbol).to_string();
+                        return Err(CompileError::new(
+                            ErrorKind::BorrowInoutConflict { variable: var_name },
+                            call_span,
+                        ));
+                    }
+                } else if arg.is_borrow() {
+                    borrow_vars.insert(var_symbol);
+                    // Check for borrow/inout conflict
+                    if inout_vars.contains(&var_symbol) {
+                        let var_name = self.interner.resolve(&var_symbol).to_string();
+                        return Err(CompileError::new(
+                            ErrorKind::BorrowInoutConflict { variable: var_name },
+                            call_span,
+                        ));
+                    }
+                }
+            }
+        }
+        Ok(())
     }
 
-    #[test]
-    fn test_undefined_variable() {
-        let result = compile_to_air("fn main() -> i32 { x }");
-        assert!(result.is_err());
-        let errors = result.unwrap_err();
-        assert_eq!(errors.len(), 1);
-        assert!(matches!(
-            errors.iter().next().unwrap().kind,
-            ErrorKind::UndefinedVariable(_)
-        ));
-    }
+    /// Analyze a list of call arguments, handling inout unmove logic.
+    ///
+    /// For inout arguments, the variable is "unmoving" after analysis - this is because
+    /// inout is a mutable borrow, not a move. The value stays valid after the call.
+    fn analyze_call_args(
+        &mut self,
+        air: &mut Air,
+        args: &[RirCallArg],
+        ctx: &mut AnalysisContext,
+    ) -> CompileResult<Vec<AirCallArg>> {
+        let mut air_args = Vec::new();
+        for arg in args.iter() {
+            // For inout/borrow arguments, extract the variable name before analysis
+            // so we can "unmove" it after - these are borrows, not moves
+            let borrowed_var = if arg.is_inout() || arg.is_borrow() {
+                self.extract_root_variable(arg.value)
+            } else {
+                None
+            };
 
-    #[test]
-    fn test_assign_to_immutable() {
-        let result = compile_to_air("fn main() -> i32 { let x = 10; x = 20; x }");
-        assert!(result.is_err());
-        let errors = result.unwrap_err();
-        assert_eq!(errors.len(), 1);
-        assert!(matches!(
-            errors.iter().next().unwrap().kind,
-            ErrorKind::AssignToImmutable(_)
-        ));
-    }
+            let arg_result = self.analyze_inst(air, arg.value, ctx)?;
 
-    #[test]
-    fn test_multiple_variables() {
-        let output = compile_to_air("fn main() -> i32 { let x = 10; let y = 20; x + y }").unwrap();
+            // If this was an inout/borrow argument, the variable shouldn't be marked as moved
+            // because these are borrows - the value stays valid after the call
+            if let Some(var_symbol) = borrowed_var {
+                ctx.moved_vars.remove(&var_symbol);
+            }
 
-        assert_eq!(output.functions[0].num_locals, 2);
-    }
-
-    #[test]
-    fn test_empty_block_evaluates_to_unit() {
-        // Empty block should evaluate to () and not panic
-        let output = compile_to_air("fn main() { let _x: () = {}; }").unwrap();
-
-        let air = &output.functions[0].air;
-        // Should have a UnitConst instruction for the empty block
-        let has_unit_const = air
-            .iter()
-            .any(|(_, inst)| matches!(inst.data, AirInstData::UnitConst));
-        assert!(has_unit_const, "Empty block should produce UnitConst");
+            air_args.push(AirCallArg {
+                value: arg_result.air_ref,
+                mode: Self::convert_arg_mode(arg.mode),
+            });
+        }
+        Ok(air_args)
     }
 }
