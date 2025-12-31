@@ -1210,7 +1210,15 @@ impl<'a> Sema<'a> {
             } = &inst.data
             {
                 let type_name_str = self.interner.resolve(&*type_name).to_string();
-                let struct_id = *self.structs.get(type_name).unwrap();
+                let struct_id = *self.structs.get(type_name).ok_or_else(|| {
+                    CompileError::new(
+                        ErrorKind::InternalError(format!(
+                            "impl block for undefined type '{}' survived validation",
+                            type_name_str
+                        )),
+                        inst.span,
+                    )
+                })?;
                 let struct_type = Type::Struct(struct_id);
 
                 let methods = self.rir.get_inst_refs(*methods_start, *methods_len);
@@ -1262,7 +1270,15 @@ impl<'a> Sema<'a> {
         for (_, inst) in self.rir.iter() {
             if let InstData::DropFnDecl { type_name, body } = &inst.data {
                 let type_name_str = self.interner.resolve(&*type_name).to_string();
-                let struct_id = *self.structs.get(type_name).unwrap();
+                let struct_id = *self.structs.get(type_name).ok_or_else(|| {
+                    CompileError::new(
+                        ErrorKind::InternalError(format!(
+                            "destructor for undefined type '{}' survived validation",
+                            type_name_str
+                        )),
+                        inst.span,
+                    )
+                })?;
                 let struct_type = Type::Struct(struct_id);
 
                 // Generate destructor name: "TypeName.__drop"
@@ -1397,7 +1413,15 @@ impl<'a> Sema<'a> {
             } = &inst.data
             {
                 let type_name_str = self.interner.resolve(&*type_name).to_string();
-                let struct_id = *self.structs.get(type_name).unwrap();
+                let struct_id = *self.structs.get(type_name).ok_or_else(|| {
+                    CompileError::new(
+                        ErrorKind::InternalError(format!(
+                            "impl block for undefined type '{}' survived validation",
+                            type_name_str
+                        )),
+                        inst.span,
+                    )
+                })?;
                 let struct_type = Type::Struct(struct_id);
 
                 let methods = self.rir.get_inst_refs(*methods_start, *methods_len);
@@ -1449,7 +1473,15 @@ impl<'a> Sema<'a> {
         for (_, inst) in self.rir.iter() {
             if let InstData::DropFnDecl { type_name, body } = &inst.data {
                 let type_name_str = self.interner.resolve(&*type_name).to_string();
-                let struct_id = *self.structs.get(type_name).unwrap();
+                let struct_id = *self.structs.get(type_name).ok_or_else(|| {
+                    CompileError::new(
+                        ErrorKind::InternalError(format!(
+                            "destructor for undefined type '{}' survived validation",
+                            type_name_str
+                        )),
+                        inst.span,
+                    )
+                })?;
                 let struct_type = Type::Struct(struct_id);
 
                 // Generate destructor name: "TypeName.__drop"
@@ -1977,7 +2009,16 @@ impl<'a> Sema<'a> {
                 ..
             } = &inst.data
             {
-                let struct_id = *self.structs.get(name).unwrap();
+                let name_str = self.interner.resolve(&*name).to_string();
+                let struct_id = *self.structs.get(name).ok_or_else(|| {
+                    CompileError::new(
+                        ErrorKind::InternalError(format!(
+                            "struct '{}' not found in struct map during field resolution",
+                            name_str
+                        )),
+                        inst.span,
+                    )
+                })?;
                 let struct_name = self.struct_defs[struct_id.0 as usize].name.clone();
                 let fields = self.rir.get_field_decls(*fields_start, *fields_len);
 
@@ -2083,7 +2124,15 @@ impl<'a> Sema<'a> {
         }
 
         let struct_name = self.interner.resolve(&name).to_string();
-        let struct_id = *self.structs.get(&name).unwrap();
+        let struct_id = *self.structs.get(&name).ok_or_else(|| {
+            CompileError::new(
+                ErrorKind::InternalError(format!(
+                    "struct '{}' not found in struct map during @copy validation",
+                    struct_name
+                )),
+                span,
+            )
+        })?;
         let struct_def = &self.struct_defs[struct_id.0 as usize];
 
         for field in &struct_def.fields {
@@ -2122,7 +2171,15 @@ impl<'a> Sema<'a> {
                 }
 
                 let struct_name = self.interner.resolve(&*name).to_string();
-                let struct_id = *self.structs.get(name).unwrap();
+                let struct_id = *self.structs.get(name).ok_or_else(|| {
+                    CompileError::new(
+                        ErrorKind::InternalError(format!(
+                            "struct '{}' not found in struct map during @handle validation",
+                            struct_name
+                        )),
+                        inst.span,
+                    )
+                })?;
                 let struct_type = Type::Struct(struct_id);
 
                 // Look for a .handle() method
@@ -3515,11 +3572,29 @@ impl<'a> Sema<'a> {
                         RirPattern::Path {
                             type_name, variant, ..
                         } => {
-                            // We already validated this above, so unwrap is safe
-                            let enum_id = *self.enums.get(type_name).unwrap();
+                            // We already validated this above in the pattern loop,
+                            // so these should always succeed. Use internal error as fallback.
+                            let type_name_str = self.interner.resolve(&*type_name).to_string();
+                            let enum_id = *self.enums.get(type_name).ok_or_else(|| {
+                                CompileError::new(
+                                    ErrorKind::InternalError(format!(
+                                        "enum type '{}' not found during pattern conversion (should have been validated)",
+                                        type_name_str
+                                    )),
+                                    pattern_span,
+                                )
+                            })?;
                             let enum_def = &self.enum_defs[enum_id.0 as usize];
                             let variant_name = self.interner.resolve(&*variant);
-                            let variant_index = enum_def.find_variant(variant_name).unwrap();
+                            let variant_index = enum_def.find_variant(variant_name).ok_or_else(|| {
+                                CompileError::new(
+                                    ErrorKind::InternalError(format!(
+                                        "enum variant '{}::{}' not found during pattern conversion (should have been validated)",
+                                        type_name_str, variant_name
+                                    )),
+                                    pattern_span,
+                                )
+                            })?;
                             AirPattern::EnumVariant {
                                 enum_id,
                                 variant_index: variant_index as u32,
