@@ -821,13 +821,12 @@ compile_fail = true
 error_contains = "preview feature"
 
 # =============================================================================
-# @handle Directive (Preview: affine_mvs)
+# @handle Directive (Stable)
 # =============================================================================
 
 [[case]]
 name = "handle_struct_basic"
 spec = ["3.8:40", "3.8:42", "3.8:44", "3.8:45"]
-preview = "affine_mvs"
 description = "@handle struct with valid .handle() method"
 source = """
 @handle
@@ -850,7 +849,6 @@ exit_code = 42
 [[case]]
 name = "handle_struct_explicit_duplication"
 spec = ["3.8:40", "3.8:45"]
-preview = "affine_mvs"
 description = "@handle struct can be explicitly duplicated via .handle()"
 source = """
 @handle
@@ -873,7 +871,6 @@ exit_code = 10
 [[case]]
 name = "handle_struct_missing_method_error"
 spec = ["3.8:42"]
-preview = "affine_mvs"
 description = "@handle struct without .handle() method is an error"
 source = """
 @handle
@@ -887,7 +884,6 @@ error_contains = "has no `handle` method"
 [[case]]
 name = "handle_struct_wrong_return_type_error"
 spec = ["3.8:43"]
-preview = "affine_mvs"
 description = "@handle method with wrong return type is an error"
 source = """
 @handle
@@ -907,7 +903,6 @@ error_contains = "wrong signature"
 [[case]]
 name = "handle_struct_extra_param_error"
 spec = ["3.8:43"]
-preview = "affine_mvs"
 description = "@handle method with extra parameters is an error"
 source = """
 @handle
@@ -927,7 +922,6 @@ error_contains = "wrong signature"
 [[case]]
 name = "handle_struct_no_self_error"
 spec = ["3.8:43"]
-preview = "affine_mvs"
 description = "@handle method without self is an error"
 source = """
 @handle
@@ -943,25 +937,6 @@ fn main() -> i32 { 0 }
 """
 compile_fail = true
 error_contains = "wrong signature"
-
-[[case]]
-name = "handle_requires_preview"
-spec = ["3.8:40"]
-description = "@handle directive requires affine_mvs preview feature"
-source = """
-@handle
-struct Counter { count: i32 }
-
-impl Counter {
-    fn handle(self) -> Counter {
-        Counter { count: self.count }
-    }
-}
-
-fn main() -> i32 { 0 }
-"""
-compile_fail = true
-error_contains = "preview feature"
 
 [[case]]
 name = "handle_with_linear"
@@ -991,7 +966,6 @@ exit_code = 42
 [[case]]
 name = "handle_directive_syntax"
 spec = ["3.8:41"]
-preview = "affine_mvs"
 description = "@handle directive appears before struct definition"
 source = """
 @handle

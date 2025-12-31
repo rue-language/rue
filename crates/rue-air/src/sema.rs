@@ -1841,15 +1841,6 @@ impl<'a> Sema<'a> {
                     let is_copy = self.has_copy_directive(&directives);
                     let is_handle = self.has_handle_directive(&directives);
 
-                    // @handle requires the affine_mvs preview feature
-                    if is_handle {
-                        self.require_preview(
-                            PreviewFeature::AffineMvs,
-                            "@handle directive",
-                            inst.span,
-                        )?;
-                    }
-
                     // Linear types require preview feature
                     if *is_linear {
                         self.require_preview(PreviewFeature::AffineMvs, "linear types", inst.span)?;
@@ -4746,22 +4737,18 @@ impl<'a> Sema<'a> {
                     }
                 }
 
-                // When affine_mvs is enabled, prevent moving non-Copy elements out of arrays.
+                // Prevent moving non-Copy elements out of arrays.
                 // This check is only applied in consume context (analyze_inst), not in
                 // projection context (analyze_inst_for_projection), which allows
                 // patterns like `arr[i].field` where field is Copy.
-                if self.preview_features.contains(&PreviewFeature::AffineMvs) {
-                    if !self.is_type_copy(element_type) {
-                        return Err(CompileError::new(
-                            ErrorKind::MoveOutOfIndex {
-                                element_type: element_type.name().to_string(),
-                            },
-                            inst.span,
-                        )
-                        .with_help(
-                            "use explicit methods like swap() or take() to remove elements",
-                        ));
-                    }
+                if !self.is_type_copy(element_type) {
+                    return Err(CompileError::new(
+                        ErrorKind::MoveOutOfIndex {
+                            element_type: element_type.name().to_string(),
+                        },
+                        inst.span,
+                    )
+                    .with_help("use explicit methods like swap() or take() to remove elements"));
                 }
 
                 let air_ref = air.add_inst(AirInst {

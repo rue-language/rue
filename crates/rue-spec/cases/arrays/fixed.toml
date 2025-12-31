@@ -588,7 +588,6 @@ exit_code = 42
 name = "array_non_copy_element_move_error"
 spec = ["7.1:28"]
 description = "Cannot move non-Copy element out of array index"
-preview = "affine_mvs"
 source = """
 struct BigThing { value: i32 }
 
@@ -605,7 +604,6 @@ error_contains = "cannot move out of"
 name = "array_non_copy_field_access_ok"
 spec = ["7.1:25", "7.1:28"]
 description = "Accessing Copy field of non-Copy element is OK (projection chain)"
-preview = "affine_mvs"
 source = """
 struct BigThing { value: i32 }
 
