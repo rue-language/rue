@@ -193,7 +193,6 @@ impl<'a> GatherOutput<'a> {
             array_type_defs: self.array_type_defs,
             string_table: HashMap::new(),
             strings: Vec::new(),
-            warnings: Vec::new(),
             methods: self.methods,
             preview_features: self.preview_features,
         }
@@ -356,6 +355,9 @@ struct AnalysisContext<'a> {
     /// Variables that have been moved (for affine type checking).
     /// Maps variable symbol to move state (supports partial/field-level moves).
     moved_vars: HashMap<Spur, VariableMoveState>,
+    /// Warnings collected during function analysis.
+    /// This is per-function to enable future parallel analysis.
+    warnings: Vec<CompileWarning>,
 }
 
 impl AnalysisContext<'_> {
@@ -467,8 +469,6 @@ pub struct Sema<'a> {
     string_table: HashMap<String, u32>,
     /// String data indexed by string table index
     strings: Vec<String>,
-    /// Warnings collected during analysis
-    warnings: Vec<CompileWarning>,
     /// Method table: maps (struct_name, method_name) to method info
     /// Used for resolving method calls (receiver.method()) and associated
     /// function calls (Type::function())
@@ -507,7 +507,6 @@ impl<'a> Sema<'a> {
             array_type_defs: Vec::new(),
             string_table: HashMap::new(),
             strings: Vec::new(),
-            warnings: Vec::new(),
             methods: HashMap::new(),
             preview_features,
         }
@@ -774,7 +773,7 @@ impl<'a> Sema<'a> {
 
     /// Check for unused local variables in the current scope (before popping it).
     /// Uses the scope stack to determine which variables were added in the current scope.
-    fn check_unused_locals_in_current_scope(&mut self, ctx: &AnalysisContext) {
+    fn check_unused_locals_in_current_scope(&self, ctx: &mut AnalysisContext) {
         // Get the current scope entries (variables added in this scope)
         let Some(current_scope) = ctx.scope_stack.last() else {
             return;
@@ -804,8 +803,8 @@ impl<'a> Sema<'a> {
                 continue;
             }
 
-            // Emit warning with help suggestion
-            self.warnings.push(
+            // Emit warning with help suggestion (to ctx.warnings for parallel safety)
+            ctx.warnings.push(
                 CompileWarning::new(WarningKind::UnusedVariable(name.to_string()), local.span)
                     .with_help(format!(
                         "if this is intentional, prefix it with an underscore: `_{}`",
@@ -994,6 +993,8 @@ impl<'a> Sema<'a> {
         // so we collect errors from all of them instead of stopping at the first
         let mut functions = Vec::new();
         let mut errors = CompileErrors::new();
+        // Collect warnings from each function for parallel-safe warning collection
+        let mut all_warnings = Vec::new();
 
         // Collect method refs from impl blocks so we can skip them in the first pass
         let mut method_refs: HashSet<InstRef> = HashSet::new();
@@ -1041,7 +1042,10 @@ impl<'a> Sema<'a> {
                     *body,
                     inst.span,
                 ) {
-                    Ok(analyzed) => functions.push(analyzed),
+                    Ok((analyzed, warnings)) => {
+                        functions.push(analyzed);
+                        all_warnings.extend(warnings);
+                    }
                     Err(e) => errors.push(e),
                 }
             }
@@ -1093,7 +1097,10 @@ impl<'a> Sema<'a> {
                             struct_type,
                             *has_self,
                         ) {
-                            Ok(analyzed) => functions.push(analyzed),
+                            Ok((analyzed, warnings)) => {
+                                functions.push(analyzed);
+                                all_warnings.extend(warnings);
+                            }
                             Err(e) => errors.push(e),
                         }
                     }
@@ -1119,11 +1126,18 @@ impl<'a> Sema<'a> {
                     inst.span,
                     struct_type,
                 ) {
-                    Ok(analyzed) => functions.push(analyzed),
+                    Ok((analyzed, warnings)) => {
+                        functions.push(analyzed);
+                        all_warnings.extend(warnings);
+                    }
                     Err(e) => errors.push(e),
                 }
             }
         }
+
+        // Sort warnings by source location for deterministic output
+        // (especially important when parallel analysis is enabled in the future)
+        all_warnings.sort_by_key(|w| w.span().map(|s| s.start));
 
         // Return errors if any were collected
         errors.into_result_with(SemaOutput {
@@ -1132,7 +1146,7 @@ impl<'a> Sema<'a> {
             enum_defs: self.enum_defs,
             array_types: self.array_type_defs,
             strings: self.strings,
-            warnings: self.warnings,
+            warnings: all_warnings,
         })
     }
 
@@ -1166,6 +1180,8 @@ impl<'a> Sema<'a> {
 
         let mut functions = Vec::new();
         let mut errors = CompileErrors::new();
+        // Collect warnings from each function for parallel-safe warning collection
+        let mut all_warnings = Vec::new();
 
         // Collect method refs from impl blocks so we can skip them in the first pass
         let mut method_refs: HashSet<InstRef> = HashSet::new();
@@ -1213,7 +1229,10 @@ impl<'a> Sema<'a> {
                     *body,
                     inst.span,
                 ) {
-                    Ok(analyzed) => functions.push(analyzed),
+                    Ok((analyzed, warnings)) => {
+                        functions.push(analyzed);
+                        all_warnings.extend(warnings);
+                    }
                     Err(e) => errors.push(e),
                 }
             }
@@ -1265,7 +1284,10 @@ impl<'a> Sema<'a> {
                             struct_type,
                             *has_self,
                         ) {
-                            Ok(analyzed) => functions.push(analyzed),
+                            Ok((analyzed, warnings)) => {
+                                functions.push(analyzed);
+                                all_warnings.extend(warnings);
+                            }
                             Err(e) => errors.push(e),
                         }
                     }
@@ -1291,11 +1313,18 @@ impl<'a> Sema<'a> {
                     inst.span,
                     struct_type,
                 ) {
-                    Ok(analyzed) => functions.push(analyzed),
+                    Ok((analyzed, warnings)) => {
+                        functions.push(analyzed);
+                        all_warnings.extend(warnings);
+                    }
                     Err(e) => errors.push(e),
                 }
             }
         }
+
+        // Sort warnings by source location for deterministic output
+        // (especially important when parallel analysis is enabled in the future)
+        all_warnings.sort_by_key(|w| w.span().map(|s| s.start));
 
         // Return errors if any were collected
         errors.into_result_with(SemaOutput {
@@ -1304,7 +1333,7 @@ impl<'a> Sema<'a> {
             enum_defs: self.enum_defs,
             array_types: self.array_type_defs,
             strings: self.strings,
-            warnings: self.warnings,
+            warnings: all_warnings,
         })
     }
 
@@ -1315,6 +1344,8 @@ impl<'a> Sema<'a> {
     ///
     /// The `infer_ctx` provides pre-computed type information for constraint generation,
     /// avoiding the cost of rebuilding maps for each function.
+    ///
+    /// Returns the analyzed function and any warnings generated during analysis.
     fn analyze_single_function(
         &mut self,
         infer_ctx: &InferenceContext,
@@ -1323,7 +1354,7 @@ impl<'a> Sema<'a> {
         params: &[rue_rir::RirParam],
         body: InstRef,
         span: Span,
-    ) -> CompileResult<AnalyzedFunction> {
+    ) -> CompileResult<(AnalyzedFunction, Vec<CompileWarning>)> {
         let ret_type = self.resolve_type(return_type, span)?;
 
         // Resolve parameter types and modes
@@ -1335,21 +1366,26 @@ impl<'a> Sema<'a> {
             })
             .collect::<CompileResult<Vec<_>>>()?;
 
-        let (air, num_locals, num_param_slots, param_modes) =
+        let (air, num_locals, num_param_slots, param_modes, warnings) =
             self.analyze_function(infer_ctx, ret_type, &param_info, body)?;
 
-        Ok(AnalyzedFunction {
-            name: fn_name.to_string(),
-            air,
-            num_locals,
-            num_param_slots,
-            param_modes,
-        })
+        Ok((
+            AnalyzedFunction {
+                name: fn_name.to_string(),
+                air,
+                num_locals,
+                num_param_slots,
+                param_modes,
+            },
+            warnings,
+        ))
     }
 
     /// Analyze a method function from an impl block.
     ///
     /// The `infer_ctx` provides pre-computed type information for constraint generation.
+    ///
+    /// Returns the analyzed function and any warnings generated during analysis.
     fn analyze_method_function(
         &mut self,
         infer_ctx: &InferenceContext,
@@ -1360,7 +1396,7 @@ impl<'a> Sema<'a> {
         span: Span,
         struct_type: Type,
         has_self: bool,
-    ) -> CompileResult<AnalyzedFunction> {
+    ) -> CompileResult<(AnalyzedFunction, Vec<CompileWarning>)> {
         let ret_type = self.resolve_type(return_type, span)?;
 
         // Build parameter list, adding self as first parameter for methods
@@ -1378,21 +1414,26 @@ impl<'a> Sema<'a> {
             param_info.push((p.name, ty, p.mode));
         }
 
-        let (air, num_locals, num_param_slots, param_modes) =
+        let (air, num_locals, num_param_slots, param_modes, warnings) =
             self.analyze_function(infer_ctx, ret_type, &param_info, body)?;
 
-        Ok(AnalyzedFunction {
-            name: full_name.to_string(),
-            air,
-            num_locals,
-            num_param_slots,
-            param_modes,
-        })
+        Ok((
+            AnalyzedFunction {
+                name: full_name.to_string(),
+                air,
+                num_locals,
+                num_param_slots,
+                param_modes,
+            },
+            warnings,
+        ))
     }
 
     /// Analyze a destructor function.
     ///
     /// The `infer_ctx` provides pre-computed type information for constraint generation.
+    ///
+    /// Returns the analyzed function and any warnings generated during analysis.
     fn analyze_destructor_function(
         &mut self,
         infer_ctx: &InferenceContext,
@@ -1400,22 +1441,25 @@ impl<'a> Sema<'a> {
         body: InstRef,
         _span: Span,
         struct_type: Type,
-    ) -> CompileResult<AnalyzedFunction> {
+    ) -> CompileResult<(AnalyzedFunction, Vec<CompileWarning>)> {
         // Destructors take self parameter and return unit
         let self_sym = self.interner.get_or_intern("self");
         let param_info: Vec<(Spur, Type, RirParamMode)> =
             vec![(self_sym, struct_type, RirParamMode::Normal)];
 
-        let (air, num_locals, num_param_slots, param_modes) =
+        let (air, num_locals, num_param_slots, param_modes, warnings) =
             self.analyze_function(infer_ctx, Type::Unit, &param_info, body)?;
 
-        Ok(AnalyzedFunction {
-            name: full_name.to_string(),
-            air,
-            num_locals,
-            num_param_slots,
-            param_modes,
-        })
+        Ok((
+            AnalyzedFunction {
+                name: full_name.to_string(),
+                air,
+                num_locals,
+                num_param_slots,
+                param_modes,
+            },
+            warnings,
+        ))
     }
 
     /// Check if a directive list contains the @copy directive
@@ -1837,14 +1881,15 @@ impl<'a> Sema<'a> {
     /// The `infer_ctx` provides pre-computed type information for constraint generation,
     /// avoiding the cost of rebuilding maps for each function.
     ///
-    /// Returns (air, num_locals, num_param_slots, param_modes).
+    /// Returns (air, num_locals, num_param_slots, param_modes, warnings).
+    /// Warnings are collected per-function to enable future parallel analysis.
     fn analyze_function(
         &mut self,
         infer_ctx: &InferenceContext,
         return_type: Type,
         params: &[(Spur, Type, RirParamMode)], // (name, type, mode)
         body: InstRef,
-    ) -> CompileResult<(Air, u32, u32, Vec<bool>)> {
+    ) -> CompileResult<(Air, u32, u32, Vec<bool>, Vec<CompileWarning>)> {
         let mut air = Air::new(return_type);
         let mut param_map: HashMap<Spur, ParamInfo> = HashMap::new();
         let mut param_modes: Vec<bool> = Vec::new();
@@ -1895,6 +1940,7 @@ impl<'a> Sema<'a> {
             scope_stack: Vec::new(),
             resolved_types: &resolved_types,
             moved_vars: HashMap::new(),
+            warnings: Vec::new(),
         };
 
         // ======================================================================
@@ -1912,7 +1958,13 @@ impl<'a> Sema<'a> {
             });
         }
 
-        Ok((air, ctx.next_slot, num_param_slots, param_modes))
+        Ok((
+            air,
+            ctx.next_slot,
+            num_param_slots,
+            param_modes,
+            ctx.warnings,
+        ))
     }
 
     /// Run Hindley-Milner type inference on a function body.
@@ -2696,7 +2748,7 @@ impl<'a> Sema<'a> {
                                 )
                             }
                         };
-                        self.warnings.push(
+                        ctx.warnings.push(
                             CompileWarning::new(
                                 WarningKind::UnreachablePattern(pat_str),
                                 pattern_span,
@@ -2730,7 +2782,7 @@ impl<'a> Sema<'a> {
                             if let Some(first_span) = seen_ints.get(n) {
                                 if wildcard_span.is_none() {
                                     // Only emit if not already covered by wildcard warning
-                                    self.warnings.push(
+                                    ctx.warnings.push(
                                         CompileWarning::new(
                                             WarningKind::UnreachablePattern(n.to_string()),
                                             pattern_span,
@@ -2764,7 +2816,7 @@ impl<'a> Sema<'a> {
                             if let Some(first_span) = *first_span_opt {
                                 if wildcard_span.is_none() {
                                     // Only emit if not already covered by wildcard warning
-                                    self.warnings.push(
+                                    ctx.warnings.push(
                                         CompileWarning::new(
                                             WarningKind::UnreachablePattern(is_true.to_string()),
                                             pattern_span,
