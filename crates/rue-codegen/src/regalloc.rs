@@ -554,6 +554,76 @@ pub enum Allocation<Reg: Copy> {
 }
 
 // ============================================================================
+// Spill Slot Allocator
+// ============================================================================
+
+/// Tracks spill slot availability based on live range endpoints.
+///
+/// This allows non-overlapping live ranges to share the same spill slot,
+/// reducing stack frame size for functions with many spills.
+///
+/// Each slot tracks the endpoint of its current occupant. When allocating
+/// a new spill, we first look for a slot whose occupant has ended before
+/// the new range starts.
+struct SpillSlotAllocator {
+    /// For each spill slot, the end point of its current occupant.
+    /// None means the slot is free (never used or occupant has ended).
+    slots: Vec<Option<usize>>,
+    /// Base offset for spill slots (after existing locals).
+    base_offset: i32,
+}
+
+impl SpillSlotAllocator {
+    /// Create a new spill slot allocator.
+    ///
+    /// `existing_locals` is the number of local variable slots already on the stack.
+    /// Spill slots start after those.
+    fn new(existing_locals: u32) -> Self {
+        Self {
+            slots: Vec::new(),
+            base_offset: -((existing_locals as i32 + 1) * 8),
+        }
+    }
+
+    /// Allocate a spill slot for a live range.
+    ///
+    /// If possible, reuses a slot whose previous occupant is no longer live.
+    /// Otherwise, allocates a new slot.
+    ///
+    /// Returns the stack offset for the spill slot.
+    fn allocate(&mut self, live_range_start: usize, live_range_end: usize) -> i32 {
+        // Try to find a reusable slot whose occupant ended before this range starts
+        for (i, slot_end) in self.slots.iter_mut().enumerate() {
+            if let Some(end) = slot_end {
+                // The occupant is dead if its end point is strictly before our start.
+                // Note: We use < not <= because at the same instruction index,
+                // both ranges are considered live (inclusive endpoints).
+                if *end < live_range_start {
+                    // Reuse this slot
+                    *slot_end = Some(live_range_end);
+                    return self.offset_for_slot(i);
+                }
+            }
+        }
+
+        // No reusable slot found, allocate a new one
+        let slot_index = self.slots.len();
+        self.slots.push(Some(live_range_end));
+        self.offset_for_slot(slot_index)
+    }
+
+    /// Get the stack offset for a given slot index.
+    fn offset_for_slot(&self, slot_index: usize) -> i32 {
+        self.base_offset - (slot_index as i32 * 8)
+    }
+
+    /// Get the number of unique spill slots used.
+    fn num_slots(&self) -> u32 {
+        self.slots.len() as u32
+    }
+}
+
+// ============================================================================
 // Register Allocation Debug Info
 // ============================================================================
 
@@ -703,10 +773,8 @@ fn linear_scan_impl<Reg: Copy + Eq + std::hash::Hash>(
         IndexMap::with_capacity(vreg_count_usize);
     allocation.resize(vreg_count_usize, None);
 
-    // Spill slots start after existing locals
-    // Each local is 8 bytes, slot 0 is at [fp-8], etc.
-    let mut next_spill_offset = -((existing_locals as i32 + 1) * 8);
-    let mut num_spills = 0u32;
+    // Spill slot allocator that reuses slots for non-overlapping live ranges
+    let mut spill_allocator = SpillSlotAllocator::new(existing_locals);
     let mut used_callee_saved: Vec<Reg> = Vec::new();
 
     // Debug info collections
@@ -781,10 +849,10 @@ fn linear_scan_impl<Reg: Copy + Eq + std::hash::Hash>(
 
             if let Some(idx) = longest_idx {
                 // Spill the existing vreg with longest range
-                let (spilled_vreg, freed_reg, _) = active.remove(idx);
-                let spill_offset = next_spill_offset;
-                next_spill_offset -= 8;
-                num_spills += 1;
+                let (spilled_vreg, freed_reg, spilled_end) = active.remove(idx);
+                // Get the start of the spilled vreg's range for slot allocation
+                let spilled_range = liveness.range(spilled_vreg).unwrap();
+                let spill_offset = spill_allocator.allocate(spilled_range.start, spilled_end);
                 allocation[spilled_vreg] = Some(Allocation::Spill(spill_offset));
                 debug_spills.push(spilled_vreg.index());
 
@@ -793,9 +861,7 @@ fn linear_scan_impl<Reg: Copy + Eq + std::hash::Hash>(
                 active.push((vreg, freed_reg, range.end));
             } else {
                 // Current vreg has the longest range, spill it
-                let spill_offset = next_spill_offset;
-                next_spill_offset -= 8;
-                num_spills += 1;
+                let spill_offset = spill_allocator.allocate(range.start, range.end);
                 allocation[vreg] = Some(Allocation::Spill(spill_offset));
                 debug_spills.push(vreg.index());
             }
@@ -817,7 +883,12 @@ fn linear_scan_impl<Reg: Copy + Eq + std::hash::Hash>(
         callee_saved_used: used_callee_saved.clone(),
     };
 
-    (allocation, num_spills, used_callee_saved, debug_info)
+    (
+        allocation,
+        spill_allocator.num_slots(),
+        used_callee_saved,
+        debug_info,
+    )
 }
 
 #[cfg(test)]
@@ -1181,34 +1252,153 @@ mod tests {
     }
 
     #[test]
-    fn test_register_reuse_across_non_overlapping_spills() {
-        // If a vreg is spilled but its spill slot is freed, a new spill
-        // can reuse that slot. However, in linear scan, spill slots are
-        // allocated once and not reclaimed (simpler implementation).
-        // This test verifies the current behavior.
+    fn test_spill_slot_reuse_non_overlapping() {
+        // Spill slots can be reused for non-overlapping live ranges.
+        // This reduces stack frame size.
+        //
+        // Timeline:
+        //   v0: [0, 2] - starts first, gets register initially
+        //   v1: [1, 5] - overlaps v0, has longer range -> v1 gets spilled
+        //   v2: [7, 9] - non-overlapping with v1's spilled range, can reuse slot
+        //   v3: [8, 12] - overlaps v2, has longer range -> v3 gets spilled, reuses slot
+        //
+        // Linear scan spills the vreg with the longest REMAINING range.
+        // At time 1: v0 ends at 2, v1 ends at 5 -> v1 is spilled (longer remaining)
+        // At time 8: v2 ends at 9, v3 ends at 12 -> v3 is spilled (longer remaining)
+        // v1 ends at 5, v3 starts at 8 -> they can share a slot!
         let allocatable = vec![TestReg(0)];
         let liveness = make_liveness(vec![
-            (0, 0, 2), // v0 - first
-            (1, 1, 3), // v1 - overlaps v0, one spilled
-            (2, 5, 7), // v2 - non-overlapping, separate spill
-            (3, 6, 8), // v3 - overlaps v2, one spilled
+            (0, 0, 2),  // v0 - gets register (shorter range)
+            (1, 1, 5),  // v1 - spilled (longer remaining range)
+            (2, 7, 9),  // v2 - gets register (shorter range)
+            (3, 8, 12), // v3 - spilled (longer remaining range), can reuse v1's slot
         ]);
 
-        let (allocation, num_spills, _) = linear_scan(4, &liveness, &allocatable, 0);
+        let (allocation, num_slots, _) = linear_scan(4, &liveness, &allocatable, 0);
 
-        // Two separate spilling events, each spills one vreg
-        assert_eq!(num_spills, 2);
+        // Two vregs get spilled (v1 and v3), but they can share one slot
+        // because v1 ends at 5 and v3 starts at 8
+        assert_eq!(num_slots, 1, "Non-overlapping spills should share a slot");
 
-        // Verify both spills have different offsets (no reuse in current impl)
-        let spill_offsets: Vec<i32> = (0..4)
-            .filter_map(|i| match allocation[VReg::new(i)] {
-                Some(Allocation::Spill(off)) => Some(off),
-                _ => None,
-            })
-            .collect();
+        // v1 and v3 should be spilled with the same offset
+        let v1_offset = match allocation[VReg::new(1)] {
+            Some(Allocation::Spill(off)) => off,
+            _ => panic!("v1 should be spilled"),
+        };
+        let v3_offset = match allocation[VReg::new(3)] {
+            Some(Allocation::Spill(off)) => off,
+            _ => panic!("v3 should be spilled"),
+        };
+        assert_eq!(
+            v1_offset, v3_offset,
+            "Non-overlapping spills should reuse the same slot"
+        );
+    }
 
-        let unique: std::collections::HashSet<_> = spill_offsets.iter().copied().collect();
-        assert_eq!(spill_offsets.len(), unique.len());
+    #[test]
+    fn test_spill_slot_no_reuse_overlapping() {
+        // Overlapping spills cannot share a slot.
+        //
+        // Timeline:
+        //   v0: [0, 10] - live entire time
+        //   v1: [1, 9]  - overlaps v0
+        //   v2: [2, 8]  - overlaps both
+        // All three overlap, so with only 1 register, we need 2 spills
+        // and they cannot share a slot.
+        let allocatable = vec![TestReg(0)];
+        let liveness = make_liveness(vec![
+            (0, 0, 10), // v0 - longest, gets spilled
+            (1, 1, 9),  // v1 - second longest, gets spilled
+            (2, 2, 8),  // v2 - shortest, gets the register
+        ]);
+
+        let (allocation, num_slots, _) = linear_scan(3, &liveness, &allocatable, 0);
+
+        // Two spills that overlap - cannot share
+        assert_eq!(num_slots, 2, "Overlapping spills need separate slots");
+
+        // Verify they have different offsets
+        let v0_offset = match allocation[VReg::new(0)] {
+            Some(Allocation::Spill(off)) => off,
+            _ => panic!("v0 should be spilled"),
+        };
+        let v1_offset = match allocation[VReg::new(1)] {
+            Some(Allocation::Spill(off)) => off,
+            _ => panic!("v1 should be spilled"),
+        };
+        assert_ne!(
+            v0_offset, v1_offset,
+            "Overlapping spills must have different slots"
+        );
+    }
+
+    #[test]
+    fn test_spill_slot_reuse_multiple_waves() {
+        // Multiple waves of non-overlapping spills can all reuse one slot.
+        //
+        // Timeline (with 1 register):
+        //   Wave 1: v0 [0,2] overlaps v1 [1,5] -> v1 spilled (longer remaining)
+        //   Wave 2: v2 [7,9] overlaps v3 [8,12] -> v3 spilled (longer remaining)
+        //   Wave 3: v4 [14,16] overlaps v5 [15,19] -> v5 spilled (longer remaining)
+        //
+        // All three spilled ranges (v1:[1,5], v3:[8,12], v5:[15,19]) are non-overlapping
+        // so they can all share the same slot.
+        let allocatable = vec![TestReg(0)];
+        let liveness = make_liveness(vec![
+            (0, 0, 2),   // Wave 1 - gets register
+            (1, 1, 5),   // Wave 1 - spilled (longer)
+            (2, 7, 9),   // Wave 2 - gets register
+            (3, 8, 12),  // Wave 2 - spilled (longer), reuses slot
+            (4, 14, 16), // Wave 3 - gets register
+            (5, 15, 19), // Wave 3 - spilled (longer), reuses slot
+        ]);
+
+        let (allocation, num_slots, _) = linear_scan(6, &liveness, &allocatable, 0);
+
+        // Three spills total, but all can share one slot
+        assert_eq!(
+            num_slots, 1,
+            "Non-overlapping spill waves should share slot"
+        );
+
+        // Count actual spills
+        let spilled_count = (0..6)
+            .filter(|&i| matches!(allocation[VReg::new(i)], Some(Allocation::Spill(_))))
+            .count();
+        assert_eq!(spilled_count, 3, "Should have 3 vregs spilled");
+    }
+
+    #[test]
+    fn test_spill_slot_reuse_partial() {
+        // Some spills can share, others cannot.
+        //
+        // Timeline (with 1 register):
+        //   v0: [0, 5]  - long range
+        //   v1: [1, 4]  - overlaps v0 entirely
+        //   v2: [7, 10] - starts after v0 ends, can reuse v0's slot
+        //   v3: [3, 6]  - overlaps v0, cannot share with v0 but can reuse later
+        //
+        // v0 and v1 overlap -> 1 spill
+        // v0 and v3 overlap -> v3 needs own slot (v0's slot still occupied at 3)
+        // v2 doesn't overlap v0 -> can reuse v0's slot
+        let allocatable = vec![TestReg(0)];
+        let liveness = make_liveness(vec![
+            (0, 0, 5),  // v0
+            (1, 1, 4),  // v1 - overlaps v0
+            (2, 7, 10), // v2 - after v0, can reuse
+            (3, 3, 6),  // v3 - overlaps v0
+        ]);
+
+        let (allocation, num_slots, _) = linear_scan(4, &liveness, &allocatable, 0);
+
+        // We need to check that slot reuse happens appropriately
+        // The exact number depends on spill decisions, but should be <= 2
+        // (v0, v3 need separate slots if both spilled; v2 can reuse v0's)
+        assert!(
+            num_slots <= 2,
+            "Should reuse slots where possible, got {} slots",
+            num_slots
+        );
     }
 
     // ========================================
