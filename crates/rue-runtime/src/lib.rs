@@ -1193,6 +1193,16 @@ pub extern "C" fn String__clone(out: *mut StringResult, ptr: *const u8, len: u64
     let new_cap = len.max(STRING_MIN_CAPACITY);
     let new_ptr = heap::alloc(new_cap, 1);
 
+    // Check for allocation failure before copy to avoid UB
+    if new_ptr.is_null() {
+        unsafe {
+            (*out).ptr = core::ptr::null_mut();
+            (*out).len = 0;
+            (*out).cap = 0;
+        }
+        return;
+    }
+
     if len > 0 && !ptr.is_null() {
         unsafe {
             core::ptr::copy_nonoverlapping(ptr, new_ptr, len as usize);
@@ -1213,6 +1223,16 @@ pub extern "C" fn String__clone(out: *mut StringResult, ptr: *const u8, len: u64
     let new_cap = len.max(STRING_MIN_CAPACITY);
     let new_ptr = heap::alloc(new_cap, 1);
 
+    // Check for allocation failure before copy to avoid UB
+    if new_ptr.is_null() {
+        unsafe {
+            (*out).ptr = core::ptr::null_mut();
+            (*out).len = 0;
+            (*out).cap = 0;
+        }
+        return;
+    }
+
     if len > 0 && !ptr.is_null() {
         unsafe {
             core::ptr::copy_nonoverlapping(ptr, new_ptr, len as usize);
@@ -1232,6 +1252,16 @@ pub extern "C" fn String__clone(out: *mut StringResult, ptr: *const u8, len: u64
 pub extern "C" fn String__clone(out: *mut StringResult, ptr: *const u8, len: u64, _cap: u64) {
     let new_cap = len.max(STRING_MIN_CAPACITY);
     let new_ptr = heap::alloc(new_cap, 1);
+
+    // Check for allocation failure before copy to avoid UB
+    if new_ptr.is_null() {
+        unsafe {
+            (*out).ptr = core::ptr::null_mut();
+            (*out).len = 0;
+            (*out).cap = 0;
+        }
+        return;
+    }
 
     if len > 0 && !ptr.is_null() {
         unsafe {
@@ -1556,6 +1586,7 @@ pub extern "C" fn String__reserve(
 /// # Returns
 ///
 /// (new_ptr, new_cap) with capacity >= len + additional.
+/// Returns (null, 0) if allocation fails.
 #[inline]
 fn string_ensure_capacity(ptr: *mut u8, len: u64, cap: u64, additional: u64) -> (*mut u8, u64) {
     let required = len.saturating_add(additional);
@@ -1564,6 +1595,10 @@ fn string_ensure_capacity(ptr: *mut u8, len: u64, cap: u64, additional: u64) -> 
         // Heap promotion: allocate new buffer and copy existing content
         let new_cap = required.max(STRING_MIN_CAPACITY);
         let new_ptr = heap::alloc(new_cap, 1);
+        // Check for allocation failure before copy to avoid UB
+        if new_ptr.is_null() {
+            return (core::ptr::null_mut(), 0);
+        }
         if len > 0 && !ptr.is_null() {
             unsafe {
                 core::ptr::copy_nonoverlapping(ptr as *const u8, new_ptr, len as usize);
@@ -1573,6 +1608,10 @@ fn string_ensure_capacity(ptr: *mut u8, len: u64, cap: u64, additional: u64) -> 
     } else if required > cap {
         // Need to grow: use the realloc function which implements growth strategy
         let new_ptr = heap::realloc(ptr, cap, required, 1);
+        // Check for allocation failure
+        if new_ptr.is_null() {
+            return (core::ptr::null_mut(), 0);
+        }
         // Calculate actual new capacity (realloc uses 2x growth strategy)
         let grown_cap = cap.saturating_mul(2);
         let new_cap = required.max(grown_cap).max(STRING_MIN_CAPACITY);
