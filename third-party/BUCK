@@ -826,6 +826,35 @@ cargo.rust_library(
     visibility = [],
 )
 
+alias(
+    name = "fixedbitset",
+    actual = ":fixedbitset-0.5.7",
+    visibility = ["PUBLIC"],
+)
+
+cargo.rust_library(
+    name = "fixedbitset-0.5.7",
+    srcs = [
+        "vendor/fixedbitset-0.5.7/src/block/avx.rs",
+        "vendor/fixedbitset-0.5.7/src/block/avx2.rs",
+        "vendor/fixedbitset-0.5.7/src/block/default.rs",
+        "vendor/fixedbitset-0.5.7/src/block/mod.rs",
+        "vendor/fixedbitset-0.5.7/src/block/sse2.rs",
+        "vendor/fixedbitset-0.5.7/src/block/wasm.rs",
+        "vendor/fixedbitset-0.5.7/src/lib.rs",
+        "vendor/fixedbitset-0.5.7/src/range.rs",
+        "vendor/fixedbitset-0.5.7/src/serde_impl.rs",
+    ],
+    crate = "fixedbitset",
+    crate_root = "vendor/fixedbitset-0.5.7/src/lib.rs",
+    edition = "2021",
+    features = [
+        "default",
+        "std",
+    ],
+    visibility = [],
+)
+
 cargo.rust_library(
     name = "fnv-1.0.7",
     srcs = ["vendor/fnv-1.0.7/lib.rs"],

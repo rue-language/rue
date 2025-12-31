@@ -9,7 +9,9 @@
 //! 2. Computing live-out sets using backward dataflow analysis
 //! 3. Extending live ranges to account for values live across branches
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
+
+use fixedbitset::FixedBitSet;
 
 use super::mir::{LabelId, Operand, Reg, VReg, X86Inst, X86Mir};
 use crate::index_map::IndexMap;
@@ -97,8 +99,16 @@ pub fn analyze(mir: &X86Mir) -> LivenessInfo {
     // Step 3: Backward dataflow analysis to compute live sets
     // live_out[i] = union of live_in[s] for all successors s of i
     // live_in[i] = uses[i] ∪ (live_out[i] - defs[i])
-    let mut live_in: Vec<HashSet<VReg>> = vec![HashSet::new(); num_insts];
-    let mut live_out: Vec<HashSet<VReg>> = vec![HashSet::new(); num_insts];
+    //
+    // Using FixedBitSet for efficient bitwise operations:
+    // - Union is O(n/64) bitwise OR instead of O(n) hash iteration
+    // - Memory is ~8-16 bytes per bitset vs ~400+ bytes per HashSet
+    // - Better cache locality (contiguous bits)
+    let vreg_count_usize = vreg_count as usize;
+    let mut live_in: Vec<FixedBitSet> =
+        vec![FixedBitSet::with_capacity(vreg_count_usize); num_insts];
+    let mut live_out: Vec<FixedBitSet> =
+        vec![FixedBitSet::with_capacity(vreg_count_usize); num_insts];
 
     // Pre-compute uses and defs for each instruction
     let inst_uses: Vec<Vec<VReg>> = instructions.iter().map(uses).collect();
@@ -112,18 +122,18 @@ pub fn analyze(mir: &X86Mir) -> LivenessInfo {
         // Process instructions in reverse order for faster convergence
         for idx in (0..num_insts).rev() {
             // Compute live_out as union of live_in of all successors
-            let mut new_live_out = HashSet::new();
+            let mut new_live_out = FixedBitSet::with_capacity(vreg_count_usize);
             for &succ in &successors[idx] {
-                new_live_out.extend(&live_in[succ]);
+                new_live_out.union_with(&live_in[succ]);
             }
 
             // Compute live_in = uses ∪ (live_out - defs)
-            let mut new_live_in: HashSet<VReg> = new_live_out.clone();
+            let mut new_live_in = new_live_out.clone();
             for vreg in &inst_defs[idx] {
-                new_live_in.remove(vreg);
+                new_live_in.set(vreg.index() as usize, false);
             }
             for vreg in &inst_uses[idx] {
-                new_live_in.insert(*vreg);
+                new_live_in.insert(vreg.index() as usize);
             }
 
             // Check if anything changed
@@ -151,18 +161,20 @@ pub fn analyze(mir: &X86Mir) -> LivenessInfo {
             first_live.entry(*vreg).or_insert(idx);
             last_live.insert(*vreg, idx);
         }
-        // Check live_in
-        for vreg in &live_in[idx] {
-            first_live.entry(*vreg).or_insert(idx);
-            if last_live.get(vreg).is_none_or(|&last| idx > last) {
-                last_live.insert(*vreg, idx);
+        // Check live_in (iterate over set bits in FixedBitSet)
+        for vreg_idx in live_in[idx].ones() {
+            let vreg = VReg::new(vreg_idx as u32);
+            first_live.entry(vreg).or_insert(idx);
+            if last_live.get(&vreg).is_none_or(|&last| idx > last) {
+                last_live.insert(vreg, idx);
             }
         }
-        // Check live_out
-        for vreg in &live_out[idx] {
-            first_live.entry(*vreg).or_insert(idx);
-            if last_live.get(vreg).is_none_or(|&last| idx > last) {
-                last_live.insert(*vreg, idx);
+        // Check live_out (iterate over set bits in FixedBitSet)
+        for vreg_idx in live_out[idx].ones() {
+            let vreg = VReg::new(vreg_idx as u32);
+            first_live.entry(vreg).or_insert(idx);
+            if last_live.get(&vreg).is_none_or(|&last| idx > last) {
+                last_live.insert(vreg, idx);
             }
         }
     }
@@ -179,10 +191,11 @@ pub fn analyze(mir: &X86Mir) -> LivenessInfo {
     }
 
     // Compute live_at for each instruction (union of live_in and live_out)
-    let mut live_at = vec![HashSet::new(); num_insts];
+    let mut live_at: Vec<FixedBitSet> =
+        vec![FixedBitSet::with_capacity(vreg_count_usize); num_insts];
     for (idx, (li, lo)) in live_in.iter().zip(live_out.iter()).enumerate() {
-        live_at[idx].extend(li);
-        live_at[idx].extend(lo);
+        live_at[idx].union_with(li);
+        live_at[idx].union_with(lo);
     }
 
     // Collect clobbers
@@ -259,9 +272,12 @@ pub fn analyze_debug(mir: &X86Mir) -> LivenessDebugInfo {
         }
     }
 
-    // Step 3: Backward dataflow analysis
-    let mut live_in: Vec<HashSet<VReg>> = vec![HashSet::new(); num_insts];
-    let mut live_out: Vec<HashSet<VReg>> = vec![HashSet::new(); num_insts];
+    // Step 3: Backward dataflow analysis using FixedBitSet for efficiency
+    let vreg_count_usize = vreg_count as usize;
+    let mut live_in: Vec<FixedBitSet> =
+        vec![FixedBitSet::with_capacity(vreg_count_usize); num_insts];
+    let mut live_out: Vec<FixedBitSet> =
+        vec![FixedBitSet::with_capacity(vreg_count_usize); num_insts];
 
     let inst_uses: Vec<Vec<VReg>> = instructions.iter().map(uses).collect();
     let inst_defs: Vec<Vec<VReg>> = instructions.iter().map(defs).collect();
@@ -271,17 +287,17 @@ pub fn analyze_debug(mir: &X86Mir) -> LivenessDebugInfo {
         changed = false;
 
         for idx in (0..num_insts).rev() {
-            let mut new_live_out = HashSet::new();
+            let mut new_live_out = FixedBitSet::with_capacity(vreg_count_usize);
             for &succ in &successors[idx] {
-                new_live_out.extend(&live_in[succ]);
+                new_live_out.union_with(&live_in[succ]);
             }
 
-            let mut new_live_in: HashSet<VReg> = new_live_out.clone();
+            let mut new_live_in = new_live_out.clone();
             for vreg in &inst_defs[idx] {
-                new_live_in.remove(vreg);
+                new_live_in.set(vreg.index() as usize, false);
             }
             for vreg in &inst_uses[idx] {
-                new_live_in.insert(*vreg);
+                new_live_in.insert(vreg.index() as usize);
             }
 
             if new_live_in != live_in[idx] || new_live_out != live_out[idx] {
@@ -305,16 +321,19 @@ pub fn analyze_debug(mir: &X86Mir) -> LivenessDebugInfo {
             first_live.entry(*vreg).or_insert(idx);
             last_live.insert(*vreg, idx);
         }
-        for vreg in &live_in[idx] {
-            first_live.entry(*vreg).or_insert(idx);
-            if last_live.get(vreg).is_none_or(|&last| idx > last) {
-                last_live.insert(*vreg, idx);
+        // Iterate over set bits in FixedBitSet
+        for vreg_idx in live_in[idx].ones() {
+            let vreg = VReg::new(vreg_idx as u32);
+            first_live.entry(vreg).or_insert(idx);
+            if last_live.get(&vreg).is_none_or(|&last| idx > last) {
+                last_live.insert(vreg, idx);
             }
         }
-        for vreg in &live_out[idx] {
-            first_live.entry(*vreg).or_insert(idx);
-            if last_live.get(vreg).is_none_or(|&last| idx > last) {
-                last_live.insert(*vreg, idx);
+        for vreg_idx in live_out[idx].ones() {
+            let vreg = VReg::new(vreg_idx as u32);
+            first_live.entry(vreg).or_insert(idx);
+            if last_live.get(&vreg).is_none_or(|&last| idx > last) {
+                last_live.insert(vreg, idx);
             }
         }
     }
@@ -330,12 +349,17 @@ pub fn analyze_debug(mir: &X86Mir) -> LivenessDebugInfo {
         }
     }
 
-    // Build per-instruction liveness info
+    // Helper to convert FixedBitSet to HashSet<VReg> for debug output
+    let bitset_to_hashset = |bs: &FixedBitSet| -> std::collections::HashSet<VReg> {
+        bs.ones().map(|idx| VReg::new(idx as u32)).collect()
+    };
+
+    // Build per-instruction liveness info (convert to HashSet for debug output)
     let instruction_liveness: Vec<InstructionLiveness> = (0..num_insts)
         .map(|idx| InstructionLiveness {
             index: idx,
-            live_in: live_in[idx].clone(),
-            live_out: live_out[idx].clone(),
+            live_in: bitset_to_hashset(&live_in[idx]),
+            live_out: bitset_to_hashset(&live_out[idx]),
             defs: inst_defs[idx].clone(),
             uses: inst_uses[idx].clone(),
         })

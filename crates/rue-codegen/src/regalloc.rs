@@ -41,6 +41,8 @@
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 
+use fixedbitset::FixedBitSet;
+
 use crate::index_map::IndexMap;
 use crate::vreg::VReg;
 
@@ -197,8 +199,9 @@ pub struct LivenessInfo<Reg: Copy + Eq + std::hash::Hash> {
     /// Uses dense Vec storage since VReg indices are contiguous.
     pub ranges: IndexMap<VReg, Option<LiveRange>>,
     /// For each instruction, which vregs are live after it executes.
+    /// Uses FixedBitSet for O(n/64) bitwise operations instead of HashSet iteration.
     /// This is useful for determining which registers are in use at any point.
-    pub live_at: Vec<HashSet<VReg>>,
+    pub live_at: Vec<FixedBitSet>,
     /// For each instruction index, the physical registers clobbered by that instruction.
     /// This is used to prevent allocating vregs to registers that would be clobbered.
     pub clobbers_at: Vec<Vec<Reg>>,
@@ -226,7 +229,7 @@ impl<Reg: Copy + Eq + std::hash::Hash> LivenessInfo<Reg> {
     }
 
     /// Get vregs that are live at a given instruction index.
-    pub fn live_at(&self, inst_idx: usize) -> &HashSet<VReg> {
+    pub fn live_at(&self, inst_idx: usize) -> &FixedBitSet {
         &self.live_at[inst_idx]
     }
 
@@ -436,10 +439,15 @@ pub fn coalesce<Reg: Copy + Eq + std::hash::Hash>(
             liveness.ranges[src] = Some(merged_range);
             liveness.ranges[dst] = None;
 
-            // Update live_at sets: replace dst with src
+            // Update live_at bitsets: replace dst with src
             for live_set in &mut liveness.live_at {
-                if live_set.remove(&dst) {
-                    live_set.insert(src);
+                let dst_idx = dst.index() as usize;
+                let src_idx = src.index() as usize;
+                if dst_idx < live_set.len() && live_set.contains(dst_idx) {
+                    live_set.set(dst_idx, false);
+                    if src_idx < live_set.len() {
+                        live_set.insert(src_idx);
+                    }
                 }
             }
 
@@ -948,6 +956,7 @@ mod tests {
         // Find max vreg index and max instruction index
         let max_vreg = ranges.iter().map(|(v, _, _)| *v).max().unwrap_or(0);
         let max_inst = ranges.iter().map(|(_, _, e)| *e).max().unwrap_or(0);
+        let vreg_count = (max_vreg + 1) as usize;
 
         let mut info = LivenessInfo::with_vreg_capacity(max_vreg + 1);
         for (vreg_idx, start, end) in ranges {
@@ -955,7 +964,7 @@ mod tests {
         }
 
         // Initialize live_at and clobbers_at based on max instruction index
-        info.live_at = vec![HashSet::new(); max_inst + 1];
+        info.live_at = vec![FixedBitSet::with_capacity(vreg_count); max_inst + 1];
         info.clobbers_at = vec![Vec::new(); max_inst + 1];
         info
     }
