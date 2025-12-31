@@ -203,6 +203,8 @@ struct Options {
     log_format: LogFormat,
     time_passes: bool,
     benchmark_json: bool,
+    /// Number of parallel jobs (0 = auto-detect, use all cores).
+    jobs: usize,
 }
 
 /// Version string for the rue compiler.
@@ -226,6 +228,8 @@ fn print_usage() {
     eprintln!("                       like 'clang', 'gcc', or 'ld' for system linker");
     eprintln!("  -O<level>            Set optimization level (default: -O0)");
     eprintln!("                       Levels: {}", OptLevel::all_names());
+    eprintln!("  -j, --jobs <N>       Set number of parallel jobs (default: 0 = auto)");
+    eprintln!("                       Use -j1 for single-threaded compilation");
     eprintln!("  --emit <stage>       Emit intermediate representation and exit");
     eprintln!("                       Can be specified multiple times for multiple outputs");
     eprintln!("                       Stages: tokens, ast, rir, air, cfg, mir, asm");
@@ -271,6 +275,7 @@ fn parse_args_from(args: &[&str]) -> ParseResult {
     let mut log_format: Option<LogFormat> = None;
     let mut time_passes = false;
     let mut benchmark_json = false;
+    let mut jobs: Option<usize> = None;
     let mut positional = Vec::new();
     let mut args_iter = args.iter().peekable();
 
@@ -364,6 +369,19 @@ fn parse_args_from(args: &[&str]) -> ParseResult {
                     }
                 }
             }
+            "--jobs" | "-j" => {
+                let Some(jobs_str) = args_iter.next() else {
+                    eprintln!("Error: --jobs requires a value");
+                    return ParseResult::Error;
+                };
+                match jobs_str.parse::<usize>() {
+                    Ok(j) => jobs = Some(j),
+                    Err(_) => {
+                        eprintln!("Error: --jobs value must be a non-negative integer");
+                        return ParseResult::Error;
+                    }
+                }
+            }
             "--time-passes" => {
                 time_passes = true;
             }
@@ -386,6 +404,17 @@ fn parse_args_from(args: &[&str]) -> ParseResult {
                     Err(e) => {
                         eprintln!("Error: {}", e);
                         eprintln!("Valid levels: {}", OptLevel::all_names());
+                        return ParseResult::Error;
+                    }
+                }
+            }
+            _ if arg.starts_with("-j") && arg.len() > 2 => {
+                // Parse -j1, -j4, etc. (attached form)
+                let jobs_str = &arg[2..];
+                match jobs_str.parse::<usize>() {
+                    Ok(j) => jobs = Some(j),
+                    Err(_) => {
+                        eprintln!("Error: --jobs value must be a non-negative integer");
                         return ParseResult::Error;
                     }
                 }
@@ -423,6 +452,7 @@ fn parse_args_from(args: &[&str]) -> ParseResult {
         log_format: log_format.unwrap_or_default(),
         time_passes,
         benchmark_json,
+        jobs: jobs.unwrap_or(0),
     })
 }
 
@@ -1550,6 +1580,79 @@ mod tests {
         ]));
         assert!(opts.time_passes);
         assert!(opts.benchmark_json);
+    }
+
+    // ========== --jobs tests ==========
+
+    #[test]
+    fn parse_jobs_long_form() {
+        let opts = unwrap_options(parse_args_from(&["--jobs", "4", "source.rue"]));
+        assert_eq!(opts.jobs, 4);
+    }
+
+    #[test]
+    fn parse_jobs_short_form() {
+        let opts = unwrap_options(parse_args_from(&["-j", "4", "source.rue"]));
+        assert_eq!(opts.jobs, 4);
+    }
+
+    #[test]
+    fn parse_jobs_attached_form() {
+        let opts = unwrap_options(parse_args_from(&["-j4", "source.rue"]));
+        assert_eq!(opts.jobs, 4);
+    }
+
+    #[test]
+    fn parse_jobs_single_thread() {
+        let opts = unwrap_options(parse_args_from(&["-j1", "source.rue"]));
+        assert_eq!(opts.jobs, 1);
+    }
+
+    #[test]
+    fn parse_jobs_auto_detect() {
+        let opts = unwrap_options(parse_args_from(&["--jobs", "0", "source.rue"]));
+        assert_eq!(opts.jobs, 0);
+    }
+
+    #[test]
+    fn parse_jobs_missing_value() {
+        assert!(is_error(&parse_args_from(&["source.rue", "--jobs"])));
+    }
+
+    #[test]
+    fn parse_jobs_missing_value_short() {
+        assert!(is_error(&parse_args_from(&["source.rue", "-j"])));
+    }
+
+    #[test]
+    fn parse_jobs_invalid_value() {
+        assert!(is_error(&parse_args_from(&["--jobs", "abc", "source.rue"])));
+    }
+
+    #[test]
+    fn parse_jobs_negative_value() {
+        // Negative values should fail to parse as usize
+        assert!(is_error(&parse_args_from(&["--jobs", "-1", "source.rue"])));
+    }
+
+    #[test]
+    fn parse_jobs_with_other_options() {
+        let opts = unwrap_options(parse_args_from(&[
+            "-j4",
+            "-O2",
+            "--target",
+            "x86_64-linux",
+            "source.rue",
+        ]));
+        assert_eq!(opts.jobs, 4);
+        assert_eq!(opts.opt_level, OptLevel::O2);
+        assert_eq!(opts.target, Target::X86_64Linux);
+    }
+
+    #[test]
+    fn parse_defaults_jobs() {
+        let opts = unwrap_options(parse_args_from(&["source.rue"]));
+        assert_eq!(opts.jobs, 0);
     }
 
     // ========== EmitStage FromStr tests ==========
