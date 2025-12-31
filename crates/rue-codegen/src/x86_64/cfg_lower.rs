@@ -2117,6 +2117,58 @@ impl<'a> CfgLower<'a> {
                         let result_vreg = self.mir.alloc_vreg();
                         self.value_map.insert(value, result_vreg);
                     }
+                } else if name_str == "parse_i32"
+                    || name_str == "parse_i64"
+                    || name_str == "parse_u32"
+                    || name_str == "parse_u64"
+                {
+                    // @parse_* intrinsics: take a String, return an integer
+                    let args = self.cfg.get_extra(*args_start, *args_len);
+                    let arg_val = args[0];
+
+                    // Get the String fat pointer (ptr, len, cap) from struct_slot_vregs
+                    if let Some(field_vregs) = self.struct_slot_vregs.get(&arg_val).cloned() {
+                        debug_assert_eq!(
+                            field_vregs.len(),
+                            3,
+                            "string should have exactly 3 vregs (ptr, len, cap)"
+                        );
+                        let ptr_vreg = field_vregs[0];
+                        let len_vreg = field_vregs[1];
+
+                        // Move ptr to RDI, len to RSI
+                        self.mir.push(X86Inst::MovRR {
+                            dst: Operand::Physical(Reg::Rdi),
+                            src: Operand::Virtual(ptr_vreg),
+                        });
+                        self.mir.push(X86Inst::MovRR {
+                            dst: Operand::Physical(Reg::Rsi),
+                            src: Operand::Virtual(len_vreg),
+                        });
+
+                        // Determine the runtime function based on intrinsic name
+                        let runtime_fn = match name_str {
+                            "parse_i32" => "__rue_parse_i32",
+                            "parse_i64" => "__rue_parse_i64",
+                            "parse_u32" => "__rue_parse_u32",
+                            "parse_u64" => "__rue_parse_u64",
+                            _ => unreachable!(),
+                        };
+
+                        // Call the runtime function
+                        let symbol_id = self.intern_symbol(runtime_fn);
+                        self.mir.push(X86Inst::CallRel { symbol_id });
+
+                        // Result is in RAX, move to a vreg
+                        let result_vreg = self.mir.alloc_vreg();
+                        self.mir.push(X86Inst::MovRR {
+                            dst: Operand::Virtual(result_vreg),
+                            src: Operand::Physical(Reg::Rax),
+                        });
+                        self.value_map.insert(value, result_vreg);
+                    } else {
+                        unreachable!("string value should have field vregs for fat pointer");
+                    }
                 }
             }
 

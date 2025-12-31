@@ -677,3 +677,244 @@ fn main() -> i32 {
 stdin = ""
 exit_code = 101
 stderr_contains = "unexpected end of input"
+
+# =============================================================================
+# @parse_* Intrinsics
+# =============================================================================
+
+[[case]]
+name = "parse_i32_basic"
+spec = ["4.13:43", "4.13:44", "4.13:45"]
+source = """
+fn main() -> i32 {
+    let s = "42";
+    @parse_i32(s)
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "parse_i32_negative"
+spec = ["4.13:43", "4.13:44", "4.13:47"]
+source = """
+fn main() -> i32 {
+    let s = "-17";
+    @parse_i32(s)
+}
+"""
+exit_code = 239
+
+[[case]]
+name = "parse_i32_zero"
+spec = ["4.13:43", "4.13:44"]
+source = """
+fn main() -> i32 {
+    let s = "0";
+    @parse_i32(s)
+}
+"""
+exit_code = 0
+
+[[case]]
+name = "parse_i32_leading_zeros"
+spec = ["4.13:43", "4.13:47"]
+source = """
+fn main() -> i32 {
+    let s = "007";
+    @parse_i32(s)
+}
+"""
+exit_code = 7
+
+[[case]]
+name = "parse_i32_string_not_consumed"
+spec = ["4.13:46"]
+source = """
+fn main() -> i32 {
+    let s = "42";
+    let n = @parse_i32(s);
+    @dbg(s);
+    n
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "parse_i64_basic"
+spec = ["4.13:43", "4.13:44", "4.13:45"]
+source = """
+fn main() -> i32 {
+    let s = "123";
+    let n = @parse_i64(s);
+    @intCast(n)
+}
+"""
+exit_code = 123
+
+[[case]]
+name = "parse_i64_negative"
+spec = ["4.13:43", "4.13:44", "4.13:47"]
+source = """
+fn main() -> i32 {
+    let s = "-5";
+    let n = @parse_i64(s);
+    @intCast(n)
+}
+"""
+exit_code = 251
+
+[[case]]
+name = "parse_u32_basic"
+spec = ["4.13:43", "4.13:44", "4.13:45"]
+source = """
+fn main() -> i32 {
+    let s = "42";
+    let n = @parse_u32(s);
+    @intCast(n)
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "parse_u64_basic"
+spec = ["4.13:43", "4.13:44", "4.13:45"]
+source = """
+fn main() -> i32 {
+    let s = "99";
+    let n = @parse_u64(s);
+    @intCast(n)
+}
+"""
+exit_code = 99
+
+[[case]]
+name = "parse_wrong_arg_count_zero"
+spec = ["4.13:4", "4.13:45"]
+source = """
+fn main() -> i32 {
+    @parse_i32()
+}
+"""
+compile_fail = true
+
+[[case]]
+name = "parse_wrong_arg_count_two"
+spec = ["4.13:4", "4.13:45"]
+source = """
+fn main() -> i32 {
+    @parse_i32("1", "2")
+}
+"""
+compile_fail = true
+
+[[case]]
+name = "parse_non_string_argument"
+spec = ["4.13:45"]
+source = """
+fn main() -> i32 {
+    @parse_i32(42)
+}
+"""
+compile_fail = true
+error_contains = "String"
+
+[[case]]
+name = "parse_empty_string_panic"
+spec = ["4.13:49"]
+source = """
+fn main() -> i32 {
+    let s = "";
+    @parse_i32(s)
+}
+"""
+exit_code = 101
+stderr_contains = "parse error"
+
+[[case]]
+name = "parse_invalid_char_panic"
+spec = ["4.13:49"]
+source = """
+fn main() -> i32 {
+    let s = "12abc";
+    @parse_i32(s)
+}
+"""
+exit_code = 101
+stderr_contains = "parse error"
+
+[[case]]
+name = "parse_overflow_i32_panic"
+spec = ["4.13:49"]
+source = """
+fn main() -> i32 {
+    let s = "2147483648";
+    @parse_i32(s)
+}
+"""
+exit_code = 101
+stderr_contains = "parse error"
+
+[[case]]
+name = "parse_overflow_u32_panic"
+spec = ["4.13:49"]
+source = """
+fn main() -> i32 {
+    let s = "4294967296";
+    let n = @parse_u32(s);
+    @intCast(n)
+}
+"""
+exit_code = 101
+stderr_contains = "parse error"
+
+[[case]]
+name = "parse_negative_unsigned_panic"
+spec = ["4.13:48", "4.13:49"]
+source = """
+fn main() -> i32 {
+    let s = "-1";
+    let n = @parse_u32(s);
+    @intCast(n)
+}
+"""
+exit_code = 101
+stderr_contains = "parse error"
+
+[[case]]
+name = "parse_i32_max"
+spec = ["4.13:43", "4.13:44"]
+source = """
+fn main() -> i32 {
+    let s = "127";
+    @parse_i32(s)
+}
+"""
+exit_code = 127
+
+[[case]]
+name = "parse_i32_boundary"
+spec = ["4.13:43", "4.13:44"]
+source = """
+fn main() -> i32 {
+    // Test parsing of i32::MAX (doesn't overflow)
+    let s = "2147483647";
+    let n = @parse_i32(s);
+    // Return a value we can verify (255 & 0xFF = 255)
+    if n == 2147483647 { 255 } else { 1 }
+}
+"""
+exit_code = 255
+
+[[case]]
+name = "parse_i32_min"
+spec = ["4.13:43", "4.13:44", "4.13:47"]
+source = """
+fn main() -> i32 {
+    // Test parsing of i32::MIN (doesn't overflow)
+    let s = "-2147483648";
+    let n = @parse_i32(s);
+    // Return a value we can verify
+    if n == -2147483648 { 254 } else { 1 }
+}
+"""
+exit_code = 254

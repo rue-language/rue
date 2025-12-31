@@ -540,12 +540,36 @@ impl<'a> ConstraintGenerator<'a> {
                     } else {
                         InferType::Concrete(Type::Error)
                     }
+                } else if intrinsic_name == "parse_i32" {
+                    // @parse_i32: takes a String, returns i32
+                    for arg_ref in args.iter() {
+                        self.generate(*arg_ref, ctx);
+                    }
+                    InferType::Concrete(Type::I32)
+                } else if intrinsic_name == "parse_i64" {
+                    // @parse_i64: takes a String, returns i64
+                    for arg_ref in args.iter() {
+                        self.generate(*arg_ref, ctx);
+                    }
+                    InferType::Concrete(Type::I64)
+                } else if intrinsic_name == "parse_u32" {
+                    // @parse_u32: takes a String, returns u32
+                    for arg_ref in args.iter() {
+                        self.generate(*arg_ref, ctx);
+                    }
+                    InferType::Concrete(Type::U32)
+                } else if intrinsic_name == "parse_u64" {
+                    // @parse_u64: takes a String, returns u64
+                    for arg_ref in args.iter() {
+                        self.generate(*arg_ref, ctx);
+                    }
+                    InferType::Concrete(Type::U64)
                 } else {
                     // Generate constraints for arguments (they need to be processed)
                     for arg_ref in args.iter() {
                         self.generate(*arg_ref, ctx);
                     }
-                    // @dbg returns Unit
+                    // @dbg and other intrinsics return Unit
                     InferType::Concrete(Type::Unit)
                 }
             }

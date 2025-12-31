@@ -4586,7 +4586,16 @@ impl<'a> Sema<'a> {
                 args_start,
                 args_len,
             } => {
-                let args = self.rir.get_call_args(*args_start, *args_len);
+                // Intrinsic arguments are stored as plain InstRefs (not RirCallArgs)
+                let arg_refs = self.rir.get_inst_refs(*args_start, *args_len);
+                // Convert to a pseudo-arg format for consistent handling
+                let args: Vec<RirCallArg> = arg_refs
+                    .into_iter()
+                    .map(|value| RirCallArg {
+                        value,
+                        mode: RirArgMode::Normal,
+                    })
+                    .collect();
                 let intrinsic_name_str = self.interner.resolve(&*name);
 
                 match intrinsic_name_str {
@@ -4769,6 +4778,64 @@ impl<'a> Sema<'a> {
                             span: inst.span,
                         });
                         Ok(AnalysisResult::new(air_ref, string_type))
+                    }
+                    // @parse_i32, @parse_i64, @parse_u32, @parse_u64 - Integer parsing intrinsics
+                    // These take a String argument (borrowed) and return the parsed integer.
+                    // Panics on invalid input or overflow.
+                    "parse_i32" | "parse_i64" | "parse_u32" | "parse_u64" => {
+                        // Expects exactly one argument
+                        if args.len() != 1 {
+                            return Err(CompileError::new(
+                                ErrorKind::IntrinsicWrongArgCount {
+                                    name: intrinsic_name_str.to_string(),
+                                    expected: 1,
+                                    found: args.len(),
+                                },
+                                inst.span,
+                            ));
+                        }
+
+                        // Analyze the argument - String borrows are handled by the caller
+                        // analyze_inst_for_projection to avoid consuming the String
+                        let arg_result =
+                            self.analyze_inst_for_projection(air, args[0].value, ctx)?;
+                        let arg_type = arg_result.ty;
+
+                        // Argument must be a String
+                        if !self.is_builtin_string(arg_type) {
+                            return Err(CompileError::new(
+                                ErrorKind::IntrinsicTypeMismatch(Box::new(
+                                    IntrinsicTypeMismatchError {
+                                        name: format!("@{}", intrinsic_name_str),
+                                        expected: "String".to_string(),
+                                        found: arg_type.name().to_string(),
+                                    },
+                                )),
+                                inst.span,
+                            ));
+                        }
+
+                        // Determine the return type based on the intrinsic name
+                        let return_type = match intrinsic_name_str {
+                            "parse_i32" => Type::I32,
+                            "parse_i64" => Type::I64,
+                            "parse_u32" => Type::U32,
+                            "parse_u64" => Type::U64,
+                            _ => unreachable!(),
+                        };
+
+                        // Encode args into extra array
+                        let args_start = air.add_extra(&[arg_result.air_ref.as_u32()]);
+                        let air_ref = air.add_inst(AirInst {
+                            data: AirInstData::Intrinsic {
+                                name: *name,
+                                args_start,
+                                args_len: 1,
+                            },
+                            ty: return_type,
+                            span: inst.span,
+                        });
+                        Ok(AnalysisResult::new(air_ref, return_type))
                     }
                     _ => Err(CompileError::new(
                         ErrorKind::UnknownIntrinsic(intrinsic_name_str.to_string()),

@@ -2145,3 +2145,361 @@ mod tests {
         assert_eq!(result, 0);
     }
 }
+
+// =============================================================================
+// Integer Parsing Functions
+// =============================================================================
+//
+// These functions parse strings into integers. They are called by the @parse_*
+// intrinsics in Rue. On invalid input or overflow, they panic with an error
+// message.
+//
+// ADR-0022 defines the parsing specification:
+// - Only ASCII decimal digits are accepted (0-9)
+// - Optional leading '-' for signed types
+// - No leading/trailing whitespace allowed
+// - No underscores, no '+' sign, no radix prefixes
+// - Panics on: empty string, invalid character, overflow, negative for unsigned
+
+/// Parse a string as a signed 64-bit integer.
+///
+/// This is the base implementation for all signed parsing. The 32-bit version
+/// delegates to this and then range-checks the result.
+///
+/// # Arguments
+///
+/// * `ptr` - Pointer to the string data
+/// * `len` - Length of the string in bytes
+///
+/// # Returns
+///
+/// The parsed i64 value.
+///
+/// # Panics
+///
+/// Panics with an error message if:
+/// - The string is empty
+/// - The string contains invalid characters
+/// - The value overflows i64
+///
+/// # ABI
+///
+/// ```text
+/// extern "C" fn __rue_parse_i64(ptr: *const u8, len: u64) -> i64
+/// ```
+define_for_all_platforms! {
+    pub extern "C" fn __rue_parse_i64(ptr: *const u8, len: u64) -> i64 {
+        parse_i64_impl(ptr, len)
+    }
+}
+
+/// Parse a string as a signed 32-bit integer.
+///
+/// Delegates to __rue_parse_i64 and range-checks the result.
+///
+/// # Panics
+///
+/// Panics if the value overflows i32 (even if it fits in i64).
+define_for_all_platforms! {
+    pub extern "C" fn __rue_parse_i32(ptr: *const u8, len: u64) -> i32 {
+        let value = parse_i64_impl(ptr, len);
+
+        // Check range for i32
+        if value < i32::MIN as i64 || value > i32::MAX as i64 {
+            platform::write_stderr(b"parse error: integer overflow\n");
+            platform::exit(101);
+        }
+
+        value as i32
+    }
+}
+
+/// Parse a string as an unsigned 64-bit integer.
+///
+/// This is the base implementation for all unsigned parsing. The 32-bit version
+/// delegates to this and then range-checks the result.
+///
+/// # Panics
+///
+/// Panics if the string starts with '-' (negative values not allowed for unsigned).
+define_for_all_platforms! {
+    pub extern "C" fn __rue_parse_u64(ptr: *const u8, len: u64) -> u64 {
+        parse_u64_impl(ptr, len)
+    }
+}
+
+/// Parse a string as an unsigned 32-bit integer.
+///
+/// Delegates to __rue_parse_u64 and range-checks the result.
+///
+/// # Panics
+///
+/// Panics if the value overflows u32 (even if it fits in u64).
+define_for_all_platforms! {
+    pub extern "C" fn __rue_parse_u32(ptr: *const u8, len: u64) -> u32 {
+        let value = parse_u64_impl(ptr, len);
+
+        // Check range for u32
+        if value > u32::MAX as u64 {
+            platform::write_stderr(b"parse error: integer overflow\n");
+            platform::exit(101);
+        }
+
+        value as u32
+    }
+}
+
+/// Core implementation for parsing signed 64-bit integers.
+///
+/// Extracted to avoid code duplication across platform-specific functions.
+#[inline]
+fn parse_i64_impl(ptr: *const u8, len: u64) -> i64 {
+    // Check for empty string
+    if len == 0 || ptr.is_null() {
+        platform::write_stderr(b"parse error: empty string\n");
+        platform::exit(101);
+    }
+
+    // SAFETY: Caller guarantees ptr is valid for len bytes
+    let bytes = unsafe { core::slice::from_raw_parts(ptr, len as usize) };
+
+    // Check for leading minus sign
+    let (is_negative, start_idx) = if bytes[0] == b'-' {
+        if len == 1 {
+            // Just "-" is not a valid number
+            platform::write_stderr(b"parse error: invalid character\n");
+            platform::exit(101);
+        }
+        (true, 1)
+    } else {
+        (false, 0)
+    };
+
+    // Parse digits
+    let mut result: i64 = 0;
+    for i in start_idx..len as usize {
+        let byte = bytes[i];
+
+        // Check for valid digit
+        if byte < b'0' || byte > b'9' {
+            platform::write_stderr(b"parse error: invalid character\n");
+            platform::exit(101);
+        }
+
+        let digit = (byte - b'0') as i64;
+
+        // Check for overflow before multiplying
+        // For negative numbers, we need to check against MIN, not MAX
+        if is_negative {
+            // Check: result * 10 - digit >= i64::MIN
+            // Rearranged: result >= (i64::MIN + digit) / 10
+            // But we need to be careful with integer division for negative numbers
+            let min_before_digit = i64::MIN / 10;
+            let min_last_digit = -(i64::MIN % 10); // Always positive
+            if result < min_before_digit || (result == min_before_digit && digit > min_last_digit) {
+                platform::write_stderr(b"parse error: integer overflow\n");
+                platform::exit(101);
+            }
+            result = result * 10 - digit;
+        } else {
+            // Check: result * 10 + digit <= i64::MAX
+            let max_before_digit = i64::MAX / 10;
+            let max_last_digit = i64::MAX % 10;
+            if result > max_before_digit || (result == max_before_digit && digit > max_last_digit) {
+                platform::write_stderr(b"parse error: integer overflow\n");
+                platform::exit(101);
+            }
+            result = result * 10 + digit;
+        }
+    }
+
+    result
+}
+
+/// Core implementation for parsing unsigned 64-bit integers.
+///
+/// Extracted to avoid code duplication across platform-specific functions.
+#[inline]
+fn parse_u64_impl(ptr: *const u8, len: u64) -> u64 {
+    // Check for empty string
+    if len == 0 || ptr.is_null() {
+        platform::write_stderr(b"parse error: empty string\n");
+        platform::exit(101);
+    }
+
+    // SAFETY: Caller guarantees ptr is valid for len bytes
+    let bytes = unsafe { core::slice::from_raw_parts(ptr, len as usize) };
+
+    // Check for leading minus sign (not allowed for unsigned)
+    if bytes[0] == b'-' {
+        platform::write_stderr(b"parse error: negative value for unsigned type\n");
+        platform::exit(101);
+    }
+
+    // Parse digits
+    let mut result: u64 = 0;
+    for i in 0..len as usize {
+        let byte = bytes[i];
+
+        // Check for valid digit
+        if byte < b'0' || byte > b'9' {
+            platform::write_stderr(b"parse error: invalid character\n");
+            platform::exit(101);
+        }
+
+        let digit = (byte - b'0') as u64;
+
+        // Check for overflow before multiplying
+        let max_before_digit = u64::MAX / 10;
+        let max_last_digit = u64::MAX % 10;
+        if result > max_before_digit || (result == max_before_digit && digit > max_last_digit) {
+            platform::write_stderr(b"parse error: integer overflow\n");
+            platform::exit(101);
+        }
+
+        result = result * 10 + digit;
+    }
+
+    result
+}
+
+#[cfg(test)]
+mod parse_tests {
+    use super::*;
+
+    // =========================================================================
+    // Signed Parsing Tests (i64)
+    // =========================================================================
+
+    #[test]
+    fn test_parse_i64_positive() {
+        let s = b"42";
+        let result = __rue_parse_i64(s.as_ptr(), s.len() as u64);
+        assert_eq!(result, 42);
+    }
+
+    #[test]
+    fn test_parse_i64_negative() {
+        let s = b"-42";
+        let result = __rue_parse_i64(s.as_ptr(), s.len() as u64);
+        assert_eq!(result, -42);
+    }
+
+    #[test]
+    fn test_parse_i64_zero() {
+        let s = b"0";
+        let result = __rue_parse_i64(s.as_ptr(), s.len() as u64);
+        assert_eq!(result, 0);
+    }
+
+    #[test]
+    fn test_parse_i64_negative_zero() {
+        // "-0" is valid and equals 0
+        let s = b"-0";
+        let result = __rue_parse_i64(s.as_ptr(), s.len() as u64);
+        assert_eq!(result, 0);
+    }
+
+    #[test]
+    fn test_parse_i64_max() {
+        let s = b"9223372036854775807"; // i64::MAX
+        let result = __rue_parse_i64(s.as_ptr(), s.len() as u64);
+        assert_eq!(result, i64::MAX);
+    }
+
+    #[test]
+    fn test_parse_i64_min() {
+        let s = b"-9223372036854775808"; // i64::MIN
+        let result = __rue_parse_i64(s.as_ptr(), s.len() as u64);
+        assert_eq!(result, i64::MIN);
+    }
+
+    #[test]
+    fn test_parse_i64_leading_zeros() {
+        let s = b"007";
+        let result = __rue_parse_i64(s.as_ptr(), s.len() as u64);
+        assert_eq!(result, 7);
+    }
+
+    // =========================================================================
+    // Signed Parsing Tests (i32)
+    // =========================================================================
+
+    #[test]
+    fn test_parse_i32_basic() {
+        let s = b"12345";
+        let result = __rue_parse_i32(s.as_ptr(), s.len() as u64);
+        assert_eq!(result, 12345);
+    }
+
+    #[test]
+    fn test_parse_i32_negative() {
+        let s = b"-12345";
+        let result = __rue_parse_i32(s.as_ptr(), s.len() as u64);
+        assert_eq!(result, -12345);
+    }
+
+    #[test]
+    fn test_parse_i32_max() {
+        let s = b"2147483647"; // i32::MAX
+        let result = __rue_parse_i32(s.as_ptr(), s.len() as u64);
+        assert_eq!(result, i32::MAX);
+    }
+
+    #[test]
+    fn test_parse_i32_min() {
+        let s = b"-2147483648"; // i32::MIN
+        let result = __rue_parse_i32(s.as_ptr(), s.len() as u64);
+        assert_eq!(result, i32::MIN);
+    }
+
+    // =========================================================================
+    // Unsigned Parsing Tests (u64)
+    // =========================================================================
+
+    #[test]
+    fn test_parse_u64_basic() {
+        let s = b"42";
+        let result = __rue_parse_u64(s.as_ptr(), s.len() as u64);
+        assert_eq!(result, 42);
+    }
+
+    #[test]
+    fn test_parse_u64_zero() {
+        let s = b"0";
+        let result = __rue_parse_u64(s.as_ptr(), s.len() as u64);
+        assert_eq!(result, 0);
+    }
+
+    #[test]
+    fn test_parse_u64_max() {
+        let s = b"18446744073709551615"; // u64::MAX
+        let result = __rue_parse_u64(s.as_ptr(), s.len() as u64);
+        assert_eq!(result, u64::MAX);
+    }
+
+    #[test]
+    fn test_parse_u64_leading_zeros() {
+        let s = b"007";
+        let result = __rue_parse_u64(s.as_ptr(), s.len() as u64);
+        assert_eq!(result, 7);
+    }
+
+    // =========================================================================
+    // Unsigned Parsing Tests (u32)
+    // =========================================================================
+
+    #[test]
+    fn test_parse_u32_basic() {
+        let s = b"12345";
+        let result = __rue_parse_u32(s.as_ptr(), s.len() as u64);
+        assert_eq!(result, 12345);
+    }
+
+    #[test]
+    fn test_parse_u32_max() {
+        let s = b"4294967295"; // u32::MAX
+        let result = __rue_parse_u32(s.as_ptr(), s.len() as u64);
+        assert_eq!(result, u32::MAX);
+    }
+}

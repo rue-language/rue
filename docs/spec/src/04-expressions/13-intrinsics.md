@@ -275,3 +275,100 @@ fn main() -> i32 {
     0
 }
 ```
+
+## Integer Parsing Intrinsics
+
+{{ rule(id="4.13:43", cat="normative") }}
+
+The integer parsing intrinsics convert a string to an integer value.
+
+{{ rule(id="4.13:44", cat="normative") }}
+
+The following parsing intrinsics are available:
+- `@parse_i32` returns `i32`
+- `@parse_i64` returns `i64`
+- `@parse_u32` returns `u32`
+- `@parse_u64` returns `u64`
+
+{{ rule(id="4.13:45", cat="normative") }}
+
+Each parsing intrinsic accepts exactly one argument, which **MUST** be of type `String`.
+
+{{ rule(id="4.13:46", cat="normative") }}
+
+The string argument is borrowed, not consumed. The original string remains valid after parsing.
+
+{{ rule(id="4.13:47", cat="normative") }}
+
+The parsed string must match the following grammar:
+
+```ebnf
+integer_string = [ "-" ] digit { digit } ;
+digit = "0" | "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" ;
+```
+
+{{ rule(id="4.13:48", cat="legality-rule") }}
+
+Leading minus signs are only allowed for signed types (`@parse_i32`, `@parse_i64`).
+
+{{ rule(id="4.13:49", cat="dynamic-semantics") }}
+
+A runtime panic occurs if:
+- The string is empty
+- The string contains non-digit characters (other than an optional leading minus)
+- The value overflows the target type
+- A negative value is parsed for an unsigned type
+
+{{ rule(id="4.13:50") }}
+
+```rue
+fn main() -> i32 {
+    let s = "42";
+    let n = @parse_i32(s);
+    n  // returns 42
+}
+```
+
+{{ rule(id="4.13:51") }}
+
+```rue
+fn main() -> i32 {
+    let s = "-17";
+    let n = @parse_i32(s);
+    n  // returns -17
+}
+```
+
+{{ rule(id="4.13:52") }}
+
+```rue
+fn main() -> i32 {
+    let s = "42";
+    // String is borrowed, not consumed
+    let n = @parse_i32(s);
+    @dbg(s);  // s is still valid
+    n
+}
+```
+
+{{ rule(id="4.13:53") }}
+
+```rue
+// This panics at runtime: invalid character
+fn main() -> i32 {
+    let s = "12abc";
+    let n = @parse_i32(s);  // panic: invalid character
+    n
+}
+```
+
+{{ rule(id="4.13:54") }}
+
+```rue
+// This panics at runtime: negative for unsigned
+fn main() -> i32 {
+    let s = "-17";
+    let n: u32 = @parse_u32(s);  // panic: negative value for unsigned type
+    @intCast(n)
+}
+```

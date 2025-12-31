@@ -1,12 +1,12 @@
 ---
 id: 0022
 title: Integer Parsing
-status: proposal
+status: implemented
 tags: [intrinsics, runtime, strings]
 feature-flag: integer-parsing
 created: 2025-12-31
-accepted:
-implemented:
+accepted: 2025-12-31
+implemented: 2025-12-31
 spec-sections: ["4.13"]
 superseded-by:
 ---
@@ -15,7 +15,7 @@ superseded-by:
 
 ## Status
 
-Proposal
+Implemented
 
 ## Summary
 
@@ -195,26 +195,26 @@ The String is borrowed, so no drop is inserted for it (the caller retains owners
 
 ### Phase 1: Runtime Parsing Functions
 
-- [ ] Add `__rue_parse_i64` to runtime (signed, 64-bit as base case)
-- [ ] Add `__rue_parse_u64` to runtime (unsigned, 64-bit)
-- [ ] Add `__rue_parse_i32` to runtime (delegates to i64, checks range)
-- [ ] Add `__rue_parse_u32` to runtime (delegates to u64, checks range)
-- [ ] Unit tests in Rust for all parsing functions
-- [ ] Test edge cases: empty, whitespace, overflow, negative
+- [x] Add `__rue_parse_i64` to runtime (signed, 64-bit as base case)
+- [x] Add `__rue_parse_u64` to runtime (unsigned, 64-bit)
+- [x] Add `__rue_parse_i32` to runtime (delegates to i64, checks range)
+- [x] Add `__rue_parse_u32` to runtime (delegates to u64, checks range)
+- [x] Unit tests in Rust for all parsing functions
+- [x] Test edge cases: empty, whitespace, overflow, negative
 
 ### Phase 2: Intrinsics in Compiler
 
-- [ ] Add `@parse_i32`, `@parse_i64`, `@parse_u32`, `@parse_u64` to known intrinsics
-- [ ] Type check: one String argument, returns appropriate integer type
-- [ ] Mark String argument as borrowed (not consumed)
-- [ ] Lower to appropriate `__rue_parse_*` call in codegen
-- [ ] Extract ptr/len from String for call
+- [x] Add `@parse_i32`, `@parse_i64`, `@parse_u32`, `@parse_u64` to known intrinsics
+- [x] Type check: one String argument, returns appropriate integer type
+- [x] Mark String argument as borrowed (not consumed)
+- [x] Lower to appropriate `__rue_parse_*` call in codegen
+- [x] Extract ptr/len from String for call
 
 ### Phase 3: Spec and Tests
 
-- [ ] Add parsing intrinsics to spec section 4.13 (Intrinsics)
-- [ ] Add spec tests for valid parsing
-- [ ] Add spec tests for panic cases (compile_fail with error_contains)
+- [x] Add parsing intrinsics to spec section 4.13 (Intrinsics)
+- [x] Add spec tests for valid parsing
+- [x] Add spec tests for panic cases (compile_fail with error_contains)
 - [ ] Document in language guide
 
 ## Consequences
