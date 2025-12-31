@@ -1,0 +1,26 @@
+rust_binary(
+    name = "rue-fuzz",
+    srcs = glob(["src/**/*.rs"]),
+    deps = [
+        "//crates/rue-lexer:rue-lexer",
+        "//crates/rue-parser:rue-parser",
+        "//crates/rue-compiler:rue-compiler",
+        "//third-party:anyhow",
+        "//third-party:proptest",
+        "//third-party:rayon",
+    ],
+    visibility = ["PUBLIC"],
+)
+
+rust_test(
+    name = "rue-fuzz-test",
+    srcs = glob(["src/**/*.rs"]),
+    deps = [
+        "//crates/rue-lexer:rue-lexer",
+        "//crates/rue-parser:rue-parser",
+        "//crates/rue-compiler:rue-compiler",
+        "//third-party:anyhow",
+        "//third-party:proptest",
+        "//third-party:rayon",
+    ],
+)

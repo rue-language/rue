@@ -445,6 +445,33 @@ cargo.rust_library(
 )
 
 cargo.rust_library(
+    name = "bit-set-0.8.0",
+    srcs = ["vendor/bit-set-0.8.0/src/lib.rs"],
+    crate = "bit_set",
+    crate_root = "vendor/bit-set-0.8.0/src/lib.rs",
+    edition = "2015",
+    features = [
+        "default",
+        "std",
+    ],
+    visibility = [],
+    deps = [":bit-vec-0.8.0"],
+)
+
+cargo.rust_library(
+    name = "bit-vec-0.8.0",
+    srcs = ["vendor/bit-vec-0.8.0/src/lib.rs"],
+    crate = "bit_vec",
+    crate_root = "vendor/bit-vec-0.8.0/src/lib.rs",
+    edition = "2015",
+    features = [
+        "default",
+        "std",
+    ],
+    visibility = [],
+)
+
+cargo.rust_library(
     name = "bitflags-2.10.0",
     srcs = [
         "vendor/bitflags-2.10.0/src/example_generated.rs",
@@ -491,7 +518,20 @@ cargo.rust_library(
     crate = "bitflags",
     crate_root = "vendor/bitflags-2.10.0/src/lib.rs",
     edition = "2021",
-    features = ["std"],
+    platform = {
+        "linux-arm64": dict(
+            features = ["std"],
+        ),
+        "linux-x86_64": dict(
+            features = ["std"],
+        ),
+        "macos-arm64": dict(
+            features = ["std"],
+        ),
+        "macos-x86_64": dict(
+            features = ["std"],
+        ),
+    },
     visibility = [],
 )
 
@@ -922,6 +962,7 @@ cargo.rust_library(
     crate = "getrandom",
     crate_root = "vendor/getrandom-0.3.4/src/lib.rs",
     edition = "2021",
+    features = ["std"],
     platform = {
         "linux-arm64": dict(
             deps = [":libc-0.2.178"],
@@ -2319,6 +2360,36 @@ cargo.rust_library(
     visibility = [],
 )
 
+cargo.rust_library(
+    name = "num-traits-0.2.19",
+    srcs = [
+        "vendor/num-traits-0.2.19/src/bounds.rs",
+        "vendor/num-traits-0.2.19/src/cast.rs",
+        "vendor/num-traits-0.2.19/src/float.rs",
+        "vendor/num-traits-0.2.19/src/identities.rs",
+        "vendor/num-traits-0.2.19/src/int.rs",
+        "vendor/num-traits-0.2.19/src/lib.rs",
+        "vendor/num-traits-0.2.19/src/macros.rs",
+        "vendor/num-traits-0.2.19/src/ops/bytes.rs",
+        "vendor/num-traits-0.2.19/src/ops/checked.rs",
+        "vendor/num-traits-0.2.19/src/ops/euclid.rs",
+        "vendor/num-traits-0.2.19/src/ops/inv.rs",
+        "vendor/num-traits-0.2.19/src/ops/mod.rs",
+        "vendor/num-traits-0.2.19/src/ops/mul_add.rs",
+        "vendor/num-traits-0.2.19/src/ops/overflowing.rs",
+        "vendor/num-traits-0.2.19/src/ops/saturating.rs",
+        "vendor/num-traits-0.2.19/src/ops/wrapping.rs",
+        "vendor/num-traits-0.2.19/src/pow.rs",
+        "vendor/num-traits-0.2.19/src/real.rs",
+        "vendor/num-traits-0.2.19/src/sign.rs",
+    ],
+    crate = "num_traits",
+    crate_root = "vendor/num-traits-0.2.19/src/lib.rs",
+    edition = "2021",
+    features = ["std"],
+    visibility = [],
+)
+
 alias(
     name = "once_cell",
     actual = ":once_cell-1.21.3",
@@ -2420,6 +2491,27 @@ cargo.rust_library(
 )
 
 cargo.rust_library(
+    name = "ppv-lite86-0.2.21",
+    srcs = [
+        "vendor/ppv-lite86-0.2.21/src/generic.rs",
+        "vendor/ppv-lite86-0.2.21/src/lib.rs",
+        "vendor/ppv-lite86-0.2.21/src/soft.rs",
+        "vendor/ppv-lite86-0.2.21/src/types.rs",
+        "vendor/ppv-lite86-0.2.21/src/x86_64/mod.rs",
+        "vendor/ppv-lite86-0.2.21/src/x86_64/sse2.rs",
+    ],
+    crate = "ppv_lite86",
+    crate_root = "vendor/ppv-lite86-0.2.21/src/lib.rs",
+    edition = "2021",
+    features = [
+        "simd",
+        "std",
+    ],
+    visibility = [],
+    deps = [":zerocopy-0.8.31"],
+)
+
+cargo.rust_library(
     name = "proc-macro2-1.0.103",
     srcs = [
         "vendor/proc-macro2-1.0.103/src/detection.rs",
@@ -2450,12 +2542,150 @@ cargo.rust_library(
     deps = [":unicode-ident-1.0.22"],
 )
 
+alias(
+    name = "proptest",
+    actual = ":proptest-1.9.0",
+    visibility = ["PUBLIC"],
+)
+
+cargo.rust_library(
+    name = "proptest-1.9.0",
+    srcs = [
+        "vendor/proptest-1.9.0/src/arbitrary/_alloc/alloc.rs",
+        "vendor/proptest-1.9.0/src/arbitrary/_alloc/borrow.rs",
+        "vendor/proptest-1.9.0/src/arbitrary/_alloc/boxed.rs",
+        "vendor/proptest-1.9.0/src/arbitrary/_alloc/char.rs",
+        "vendor/proptest-1.9.0/src/arbitrary/_alloc/collections.rs",
+        "vendor/proptest-1.9.0/src/arbitrary/_alloc/hash.rs",
+        "vendor/proptest-1.9.0/src/arbitrary/_alloc/mod.rs",
+        "vendor/proptest-1.9.0/src/arbitrary/_alloc/ops.rs",
+        "vendor/proptest-1.9.0/src/arbitrary/_alloc/rc.rs",
+        "vendor/proptest-1.9.0/src/arbitrary/_alloc/str.rs",
+        "vendor/proptest-1.9.0/src/arbitrary/_alloc/sync.rs",
+        "vendor/proptest-1.9.0/src/arbitrary/_core/ascii.rs",
+        "vendor/proptest-1.9.0/src/arbitrary/_core/cell.rs",
+        "vendor/proptest-1.9.0/src/arbitrary/_core/cmp.rs",
+        "vendor/proptest-1.9.0/src/arbitrary/_core/convert.rs",
+        "vendor/proptest-1.9.0/src/arbitrary/_core/fmt.rs",
+        "vendor/proptest-1.9.0/src/arbitrary/_core/iter.rs",
+        "vendor/proptest-1.9.0/src/arbitrary/_core/marker.rs",
+        "vendor/proptest-1.9.0/src/arbitrary/_core/mem.rs",
+        "vendor/proptest-1.9.0/src/arbitrary/_core/mod.rs",
+        "vendor/proptest-1.9.0/src/arbitrary/_core/non_zero.rs",
+        "vendor/proptest-1.9.0/src/arbitrary/_core/num.rs",
+        "vendor/proptest-1.9.0/src/arbitrary/_core/option.rs",
+        "vendor/proptest-1.9.0/src/arbitrary/_core/result.rs",
+        "vendor/proptest-1.9.0/src/arbitrary/_std/env.rs",
+        "vendor/proptest-1.9.0/src/arbitrary/_std/ffi.rs",
+        "vendor/proptest-1.9.0/src/arbitrary/_std/fs.rs",
+        "vendor/proptest-1.9.0/src/arbitrary/_std/io.rs",
+        "vendor/proptest-1.9.0/src/arbitrary/_std/mod.rs",
+        "vendor/proptest-1.9.0/src/arbitrary/_std/net.rs",
+        "vendor/proptest-1.9.0/src/arbitrary/_std/panic.rs",
+        "vendor/proptest-1.9.0/src/arbitrary/_std/path.rs",
+        "vendor/proptest-1.9.0/src/arbitrary/_std/string.rs",
+        "vendor/proptest-1.9.0/src/arbitrary/_std/sync.rs",
+        "vendor/proptest-1.9.0/src/arbitrary/_std/thread.rs",
+        "vendor/proptest-1.9.0/src/arbitrary/_std/time.rs",
+        "vendor/proptest-1.9.0/src/arbitrary/arrays.rs",
+        "vendor/proptest-1.9.0/src/arbitrary/functor.rs",
+        "vendor/proptest-1.9.0/src/arbitrary/macros.rs",
+        "vendor/proptest-1.9.0/src/arbitrary/mod.rs",
+        "vendor/proptest-1.9.0/src/arbitrary/primitives.rs",
+        "vendor/proptest-1.9.0/src/arbitrary/sample.rs",
+        "vendor/proptest-1.9.0/src/arbitrary/traits.rs",
+        "vendor/proptest-1.9.0/src/arbitrary/tuples.rs",
+        "vendor/proptest-1.9.0/src/array.rs",
+        "vendor/proptest-1.9.0/src/bits.rs",
+        "vendor/proptest-1.9.0/src/bool.rs",
+        "vendor/proptest-1.9.0/src/char.rs",
+        "vendor/proptest-1.9.0/src/collection.rs",
+        "vendor/proptest-1.9.0/src/lib.rs",
+        "vendor/proptest-1.9.0/src/macros.rs",
+        "vendor/proptest-1.9.0/src/num.rs",
+        "vendor/proptest-1.9.0/src/num/float_samplers.rs",
+        "vendor/proptest-1.9.0/src/option.rs",
+        "vendor/proptest-1.9.0/src/path.rs",
+        "vendor/proptest-1.9.0/src/prelude.rs",
+        "vendor/proptest-1.9.0/src/product_tuple.rs",
+        "vendor/proptest-1.9.0/src/regex-contrib/crates_regex.rs",
+        "vendor/proptest-1.9.0/src/result.rs",
+        "vendor/proptest-1.9.0/src/sample.rs",
+        "vendor/proptest-1.9.0/src/std_facade.rs",
+        "vendor/proptest-1.9.0/src/strategy/filter.rs",
+        "vendor/proptest-1.9.0/src/strategy/filter_map.rs",
+        "vendor/proptest-1.9.0/src/strategy/flatten.rs",
+        "vendor/proptest-1.9.0/src/strategy/fuse.rs",
+        "vendor/proptest-1.9.0/src/strategy/just.rs",
+        "vendor/proptest-1.9.0/src/strategy/lazy.rs",
+        "vendor/proptest-1.9.0/src/strategy/map.rs",
+        "vendor/proptest-1.9.0/src/strategy/mod.rs",
+        "vendor/proptest-1.9.0/src/strategy/recursive.rs",
+        "vendor/proptest-1.9.0/src/strategy/shuffle.rs",
+        "vendor/proptest-1.9.0/src/strategy/statics.rs",
+        "vendor/proptest-1.9.0/src/strategy/traits.rs",
+        "vendor/proptest-1.9.0/src/strategy/unions.rs",
+        "vendor/proptest-1.9.0/src/string.rs",
+        "vendor/proptest-1.9.0/src/sugar.rs",
+        "vendor/proptest-1.9.0/src/test_runner/config.rs",
+        "vendor/proptest-1.9.0/src/test_runner/errors.rs",
+        "vendor/proptest-1.9.0/src/test_runner/failure_persistence/file.rs",
+        "vendor/proptest-1.9.0/src/test_runner/failure_persistence/map.rs",
+        "vendor/proptest-1.9.0/src/test_runner/failure_persistence/mod.rs",
+        "vendor/proptest-1.9.0/src/test_runner/failure_persistence/noop.rs",
+        "vendor/proptest-1.9.0/src/test_runner/mod.rs",
+        "vendor/proptest-1.9.0/src/test_runner/reason.rs",
+        "vendor/proptest-1.9.0/src/test_runner/replay.rs",
+        "vendor/proptest-1.9.0/src/test_runner/result_cache.rs",
+        "vendor/proptest-1.9.0/src/test_runner/rng.rs",
+        "vendor/proptest-1.9.0/src/test_runner/runner.rs",
+        "vendor/proptest-1.9.0/src/test_runner/scoped_panic_hook.rs",
+        "vendor/proptest-1.9.0/src/tuple.rs",
+    ],
+    crate = "proptest",
+    crate_root = "vendor/proptest-1.9.0/src/lib.rs",
+    edition = "2021",
+    features = [
+        "bit-set",
+        "default",
+        "fork",
+        "regex-syntax",
+        "rusty-fork",
+        "std",
+        "tempfile",
+        "timeout",
+    ],
+    visibility = [],
+    deps = [
+        ":bit-set-0.8.0",
+        ":bit-vec-0.8.0",
+        ":bitflags-2.10.0",
+        ":num-traits-0.2.19",
+        ":rand-0.9.2",
+        ":rand_chacha-0.9.0",
+        ":rand_xorshift-0.4.0",
+        ":regex-syntax-0.8.8",
+        ":rusty-fork-0.3.1",
+        ":tempfile-3.24.0",
+        ":unarray-0.1.4",
+    ],
+)
+
 cargo.rust_library(
     name = "psm-0.1.28",
     srcs = ["vendor/psm-0.1.28/src/lib.rs"],
     crate = "psm",
     crate_root = "vendor/psm-0.1.28/src/lib.rs",
     edition = "2021",
+    visibility = [],
+)
+
+cargo.rust_library(
+    name = "quick-error-1.2.3",
+    srcs = ["vendor/quick-error-1.2.3/src/lib.rs"],
+    crate = "quick_error",
+    crate_root = "vendor/quick-error-1.2.3/src/lib.rs",
+    edition = "2015",
     visibility = [],
 )
 
@@ -2479,6 +2709,101 @@ cargo.rust_library(
     ],
     visibility = [],
     deps = [":proc-macro2-1.0.103"],
+)
+
+cargo.rust_library(
+    name = "rand-0.9.2",
+    srcs = [
+        "vendor/rand-0.9.2/src/distr/bernoulli.rs",
+        "vendor/rand-0.9.2/src/distr/distribution.rs",
+        "vendor/rand-0.9.2/src/distr/float.rs",
+        "vendor/rand-0.9.2/src/distr/integer.rs",
+        "vendor/rand-0.9.2/src/distr/mod.rs",
+        "vendor/rand-0.9.2/src/distr/other.rs",
+        "vendor/rand-0.9.2/src/distr/slice.rs",
+        "vendor/rand-0.9.2/src/distr/uniform.rs",
+        "vendor/rand-0.9.2/src/distr/uniform_float.rs",
+        "vendor/rand-0.9.2/src/distr/uniform_int.rs",
+        "vendor/rand-0.9.2/src/distr/uniform_other.rs",
+        "vendor/rand-0.9.2/src/distr/utils.rs",
+        "vendor/rand-0.9.2/src/distr/weighted/mod.rs",
+        "vendor/rand-0.9.2/src/distr/weighted/weighted_index.rs",
+        "vendor/rand-0.9.2/src/lib.rs",
+        "vendor/rand-0.9.2/src/prelude.rs",
+        "vendor/rand-0.9.2/src/rng.rs",
+        "vendor/rand-0.9.2/src/rngs/mock.rs",
+        "vendor/rand-0.9.2/src/rngs/mod.rs",
+        "vendor/rand-0.9.2/src/rngs/reseeding.rs",
+        "vendor/rand-0.9.2/src/rngs/small.rs",
+        "vendor/rand-0.9.2/src/rngs/std.rs",
+        "vendor/rand-0.9.2/src/rngs/thread.rs",
+        "vendor/rand-0.9.2/src/rngs/xoshiro128plusplus.rs",
+        "vendor/rand-0.9.2/src/rngs/xoshiro256plusplus.rs",
+        "vendor/rand-0.9.2/src/seq/coin_flipper.rs",
+        "vendor/rand-0.9.2/src/seq/increasing_uniform.rs",
+        "vendor/rand-0.9.2/src/seq/index.rs",
+        "vendor/rand-0.9.2/src/seq/iterator.rs",
+        "vendor/rand-0.9.2/src/seq/mod.rs",
+        "vendor/rand-0.9.2/src/seq/slice.rs",
+    ],
+    crate = "rand",
+    crate_root = "vendor/rand-0.9.2/src/lib.rs",
+    edition = "2021",
+    features = [
+        "alloc",
+        "os_rng",
+        "std",
+    ],
+    visibility = [],
+    deps = [":rand_core-0.9.3"],
+)
+
+cargo.rust_library(
+    name = "rand_chacha-0.9.0",
+    srcs = [
+        "vendor/rand_chacha-0.9.0/src/chacha.rs",
+        "vendor/rand_chacha-0.9.0/src/guts.rs",
+        "vendor/rand_chacha-0.9.0/src/lib.rs",
+    ],
+    crate = "rand_chacha",
+    crate_root = "vendor/rand_chacha-0.9.0/src/lib.rs",
+    edition = "2021",
+    features = ["std"],
+    visibility = [],
+    deps = [
+        ":ppv-lite86-0.2.21",
+        ":rand_core-0.9.3",
+    ],
+)
+
+cargo.rust_library(
+    name = "rand_core-0.9.3",
+    srcs = [
+        "vendor/rand_core-0.9.3/src/block.rs",
+        "vendor/rand_core-0.9.3/src/impls.rs",
+        "vendor/rand_core-0.9.3/src/le.rs",
+        "vendor/rand_core-0.9.3/src/lib.rs",
+        "vendor/rand_core-0.9.3/src/os.rs",
+    ],
+    crate = "rand_core",
+    crate_root = "vendor/rand_core-0.9.3/src/lib.rs",
+    edition = "2021",
+    features = [
+        "os_rng",
+        "std",
+    ],
+    visibility = [],
+    deps = [":getrandom-0.3.4"],
+)
+
+cargo.rust_library(
+    name = "rand_xorshift-0.4.0",
+    srcs = ["vendor/rand_xorshift-0.4.0/src/lib.rs"],
+    crate = "rand_xorshift",
+    crate_root = "vendor/rand_xorshift-0.4.0/src/lib.rs",
+    edition = "2021",
+    visibility = [],
+    deps = [":rand_core-0.9.3"],
 )
 
 alias(
@@ -3235,6 +3560,33 @@ cargo.rust_library(
 )
 
 cargo.rust_library(
+    name = "rusty-fork-0.3.1",
+    srcs = [
+        "vendor/rusty-fork-0.3.1/src/child_wrapper.rs",
+        "vendor/rusty-fork-0.3.1/src/cmdline.rs",
+        "vendor/rusty-fork-0.3.1/src/error.rs",
+        "vendor/rusty-fork-0.3.1/src/fork.rs",
+        "vendor/rusty-fork-0.3.1/src/fork_test.rs",
+        "vendor/rusty-fork-0.3.1/src/lib.rs",
+        "vendor/rusty-fork-0.3.1/src/sugar.rs",
+    ],
+    crate = "rusty_fork",
+    crate_root = "vendor/rusty-fork-0.3.1/src/lib.rs",
+    edition = "2018",
+    features = [
+        "timeout",
+        "wait-timeout",
+    ],
+    visibility = [],
+    deps = [
+        ":fnv-1.0.7",
+        ":quick-error-1.2.3",
+        ":tempfile-3.24.0",
+        ":wait-timeout-0.2.1",
+    ],
+)
+
+cargo.rust_library(
     name = "scopeguard-1.2.0",
     srcs = ["vendor/scopeguard-1.2.0/src/lib.rs"],
     crate = "scopeguard",
@@ -3793,6 +4145,12 @@ cargo.rust_library(
     deps = [":lazy_static-1.5.0"],
 )
 
+alias(
+    name = "smallvec",
+    actual = ":smallvec-1.15.1",
+    visibility = ["PUBLIC"],
+)
+
 cargo.rust_library(
     name = "smallvec-1.15.1",
     srcs = [
@@ -3805,12 +4163,6 @@ cargo.rust_library(
     crate_root = "vendor/smallvec-1.15.1/src/lib.rs",
     edition = "2018",
     visibility = [],
-)
-
-alias(
-    name = "smallvec",
-    actual = ":smallvec-1.15.1",
-    visibility = ["PUBLIC"],
 )
 
 cargo.rust_library(
@@ -4543,6 +4895,21 @@ cargo.rust_library(
 )
 
 cargo.rust_library(
+    name = "unarray-0.1.4",
+    srcs = [
+        "vendor/unarray-0.1.4/src/build.rs",
+        "vendor/unarray-0.1.4/src/from_iter.rs",
+        "vendor/unarray-0.1.4/src/lib.rs",
+        "vendor/unarray-0.1.4/src/map.rs",
+        "vendor/unarray-0.1.4/src/testing.rs",
+    ],
+    crate = "unarray",
+    crate_root = "vendor/unarray-0.1.4/src/lib.rs",
+    edition = "2018",
+    visibility = [],
+)
+
+cargo.rust_library(
     name = "unicode-ident-1.0.22",
     srcs = [
         "vendor/unicode-ident-1.0.22/src/lib.rs",
@@ -4609,6 +4976,36 @@ cargo.rust_library(
     crate = "version_check",
     crate_root = "vendor/version_check-0.9.5/src/lib.rs",
     edition = "2015",
+    visibility = [],
+)
+
+cargo.rust_library(
+    name = "wait-timeout-0.2.1",
+    srcs = [
+        "vendor/wait-timeout-0.2.1/src/bin/exit.rs",
+        "vendor/wait-timeout-0.2.1/src/bin/reader.rs",
+        "vendor/wait-timeout-0.2.1/src/bin/sleep.rs",
+        "vendor/wait-timeout-0.2.1/src/lib.rs",
+        "vendor/wait-timeout-0.2.1/src/unix.rs",
+        "vendor/wait-timeout-0.2.1/src/windows.rs",
+    ],
+    crate = "wait_timeout",
+    crate_root = "vendor/wait-timeout-0.2.1/src/lib.rs",
+    edition = "2015",
+    platform = {
+        "linux-arm64": dict(
+            deps = [":libc-0.2.178"],
+        ),
+        "linux-x86_64": dict(
+            deps = [":libc-0.2.178"],
+        ),
+        "macos-arm64": dict(
+            deps = [":libc-0.2.178"],
+        ),
+        "macos-x86_64": dict(
+            deps = [":libc-0.2.178"],
+        ),
+    },
     visibility = [],
 )
 

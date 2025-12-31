@@ -1,0 +1,86 @@
+[package]
+name = "proptest"
+version = "1.9.0"
+authors = ["Jason Lingle"]
+license = "MIT OR Apache-2.0"
+readme = "README.md"
+repository = "https://github.com/proptest-rs/proptest"
+homepage = "https://proptest-rs.github.io/proptest/proptest/index.html"
+documentation = "https://docs.rs/proptest/latest/proptest/"
+keywords = ["property", "testing", "quickcheck", "fuzz", "hypothesis"]
+categories = ["development-tools::testing"]
+edition = "2021"
+rust-version = "1.82"
+exclude = ["/gen-*.sh", "/readme-*.md"]
+
+description = """
+Hypothesis-like property-based testing and shrinking.
+"""
+
+[features]
+
+default = ["std", "fork", "timeout", "bit-set"]
+# Everything in `default` that doesn't break code coverage builds
+default-code-coverage = ["std", "fork", "timeout", "bit-set"]
+
+attr-macro = ["proptest-macro"]
+
+# Enables unstable features of Rust.
+unstable = []
+
+# Enables the use of standard-library dependent features
+std = ["rand/std", "rand/os_rng", "regex-syntax", "num-traits/std"]
+
+# std or libm required for mul_add.
+no_std = ["num-traits/libm"]
+
+# For use in no_std environments with access to an allocator
+#alloc = ["hashmap_core"]
+alloc = []
+
+# Use a hardware random number generator (instead of static seed) for x86 no_std targets
+hardware-rng = ["x86"]
+
+# Enables use of the "fork" feature.
+#
+# Requires std.
+fork = ["std", "rusty-fork", "tempfile"]
+
+# Enables use of the "timeout" feature.
+#
+# Requires the "fork" feature.
+timeout = ["fork", "rusty-fork/timeout"]
+
+# Enables support for 64-bit atomic integers.
+# This is enabled by default. Some no_std environments do not support it and
+# need it excluded, however.
+atomic64bit = []
+
+bit-set = ["dep:bit-set", "dep:bit-vec"]
+
+# Enables proper handling of panics
+# In particular, hides all intermediate panics flowing into stderr during shrink phase
+handle-panics = ["std"]
+
+[dependencies]
+bitflags = { workspace = true }
+unarray = { workspace = true }
+proptest-macro = { workspace = true, optional = true }
+num-traits = { workspace = true }
+regex-syntax = { workspace = true, optional = true }
+bit-set = { workspace = true, optional = true }
+bit-vec = { workspace = true, optional = true }
+rand = { workspace = true, features = ["alloc"] }
+rand_xorshift = { workspace = true }
+rand_chacha = { workspace = true }
+rusty-fork = { workspace = true, optional = true }
+tempfile = { workspace = true, optional = true }
+x86 = { workspace = true, optional = true }
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
+
+[dev-dependencies]
+regex = { workspace = true }
+trybuild = { workspace = true }

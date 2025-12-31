@@ -1,0 +1,83 @@
+name: Fuzz Testing
+
+on:
+  schedule:
+    - cron: '0 0 * * *'  # Daily at midnight UTC
+  workflow_dispatch:  # Allow manual triggering
+
+jobs:
+  fuzz:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dotslash
+        uses: facebook/install-dotslash@latest
+
+      - name: Cache Buck2 outputs
+        uses: actions/cache@v4
+        with:
+          path: |
+            buck-out/v2/gen
+            ~/.cache/buck2
+          key: buck2-fuzz-${{ hashFiles('**/BUCK', 'toolchains/rust/defs.bzl') }}
+          restore-keys: |
+            buck2-fuzz-
+
+      - name: Create seed corpus
+        run: ./buck2 run //crates/rue-fuzz:rue-fuzz -- --init-corpus crates/rue-fuzz/corpus
+
+      - name: Fuzz lexer (5 minutes)
+        run: ./buck2 run //crates/rue-fuzz:rue-fuzz -- --mutate --max-time=300 lexer crates/rue-fuzz/corpus
+
+      - name: Fuzz parser (5 minutes)
+        run: ./buck2 run //crates/rue-fuzz:rue-fuzz -- --mutate --max-time=300 parser crates/rue-fuzz/corpus
+
+      - name: Fuzz compiler (5 minutes)
+        run: ./buck2 run //crates/rue-fuzz:rue-fuzz -- --mutate --max-time=300 compiler crates/rue-fuzz/corpus
+
+      - name: Upload crash artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-crashes
+          path: crates/rue-fuzz/crashes/
+          if-no-files-found: ignore
+
+      - name: Create issue on failure
+        if: failure()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const title = `Fuzz testing found a crash (${new Date().toISOString().split('T')[0]})`;
+            const body = `## Fuzz Testing Failure
+
+            The daily fuzz testing workflow found a crash.
+
+            **Run:** ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}
+
+            Please check the workflow logs and crash artifacts for details.
+
+            ### Next Steps
+            1. Download the crash artifacts from the workflow run
+            2. Reproduce locally with \`./buck2 run //crates/rue:rue -- crashes/crash-*.txt output\`
+            3. Fix the issue and add a regression test
+            `;
+
+            // Check if an open issue already exists
+            const issues = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              labels: 'fuzz-crash'
+            });
+
+            if (issues.data.length === 0) {
+              await github.rest.issues.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                title: title,
+                body: body,
+                labels: ['fuzz-crash', 'bug']
+              });
+            }
