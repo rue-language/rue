@@ -367,6 +367,66 @@ fn main() -> i32 {
 """
 exit_code = 42
 
+[[case]]
+name = "match_i64_min_negative_pattern"
+spec = ["4.7:1", "4.7:5"]
+description = "Match on i64::MIN (-9223372036854775808) using negative pattern"
+source = """
+fn main() -> i32 {
+    let x: i64 = -9223372036854775808;
+    match x {
+        -9223372036854775808 => 1,
+        _ => 0,
+    }
+}
+"""
+exit_code = 1
+
+[[case]]
+name = "match_i32_min_negative_pattern"
+spec = ["4.7:1", "4.7:5"]
+description = "Match on i32::MIN (-2147483648) using negative pattern"
+source = """
+fn main() -> i32 {
+    let x: i32 = -2147483648;
+    match x {
+        -2147483648 => 42,
+        _ => 0,
+    }
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "match_u64_large_value"
+spec = ["4.7:1", "4.7:5"]
+description = "Match on u64 value larger than i64::MAX"
+source = """
+fn main() -> i32 {
+    let x: u64 = 18446744073709551615;
+    match x {
+        18446744073709551615 => 1,
+        _ => 0,
+    }
+}
+"""
+exit_code = 1
+
+[[case]]
+name = "match_u64_just_over_i64_max"
+spec = ["4.7:1", "4.7:5"]
+description = "Match on u64 value exactly i64::MAX + 1"
+source = """
+fn main() -> i32 {
+    let x: u64 = 9223372036854775808;
+    match x {
+        9223372036854775808 => 1,
+        _ => 0,
+    }
+}
+"""
+exit_code = 1
+
 # =============================================================================
 # Error Cases: Non-exhaustive Match
 # =============================================================================

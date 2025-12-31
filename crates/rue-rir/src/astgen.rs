@@ -639,7 +639,8 @@ impl<'a> AstGen<'a> {
         match pattern {
             Pattern::Wildcard(span) => RirPattern::Wildcard(*span),
             Pattern::Int(lit) => RirPattern::Int(lit.value as i64, lit.span),
-            Pattern::NegInt(lit) => RirPattern::Int(-(lit.value as i64), lit.span),
+            // Use wrapping_neg to handle i64::MIN correctly (where value is 9223372036854775808)
+            Pattern::NegInt(lit) => RirPattern::Int((lit.value as i64).wrapping_neg(), lit.span),
             Pattern::Bool(lit) => RirPattern::Bool(lit.value, lit.span),
             Pattern::Path(path) => {
                 RirPattern::Path {
