@@ -167,6 +167,31 @@ impl<'a> CfgLower<'a> {
                     None
                 }
             }
+            CfgInstData::IndexGet {
+                base: array_base,
+                array_type_id,
+                index,
+            } => {
+                // Array of structs case: the field's base is an IndexGet
+                // Try to trace the array base to find the original Load/Param
+                if let Some((index_base, mut levels)) = self.trace_index_chain(*array_base) {
+                    let elem_slot_count = self.array_element_slot_count(*array_type_id);
+                    levels.push(IndexLevel {
+                        index: *index,
+                        elem_slot_count,
+                        array_type_id: *array_type_id,
+                    });
+                    Some((
+                        FieldChainBase::IndexGet {
+                            index_base,
+                            index_levels: levels,
+                        },
+                        0, // No field offset yet - that will be added by the calling FieldGet
+                    ))
+                } else {
+                    None
+                }
+            }
             _ => None,
         }
     }
@@ -2130,6 +2155,155 @@ impl<'a> CfgLower<'a> {
                                     offset,
                                 });
                             }
+                        }
+                        FieldChainBase::IndexGet {
+                            index_base,
+                            index_levels,
+                        } => {
+                            // Array of structs case: arr[i].field
+                            // Calculate the array element offset, then add the field offset
+
+                            // Emit bounds check for the innermost index
+                            if let Some(innermost) = index_levels.last() {
+                                let innermost_index_vreg = self.get_vreg(innermost.index);
+                                let array_length = self.array_length(innermost.array_type_id);
+                                self.emit_bounds_check(innermost_index_vreg, array_length);
+                            }
+
+                            // Calculate total array offset by summing index * stride for each level
+                            let mut total_array_offset_vreg: Option<VReg> = None;
+
+                            for level in &index_levels {
+                                let level_index_vreg = self.get_vreg(level.index);
+                                let level_stride = level.elem_slot_count;
+
+                                // Scale this level's index by its stride
+                                let scaled = self.mir.alloc_vreg();
+                                self.mir.push(X86Inst::MovRR {
+                                    dst: Operand::Virtual(scaled),
+                                    src: Operand::Virtual(level_index_vreg),
+                                });
+
+                                if level_stride == 1 {
+                                    // Simple case: just shift by 3 (multiply by 8)
+                                    let shift_count = self.mir.alloc_vreg();
+                                    self.mir.push(X86Inst::MovRI32 {
+                                        dst: Operand::Virtual(shift_count),
+                                        imm: 3,
+                                    });
+                                    self.mir.push(X86Inst::Shl {
+                                        dst: Operand::Virtual(scaled),
+                                        count: Operand::Virtual(shift_count),
+                                    });
+                                } else {
+                                    // Multiply by stride * 8
+                                    let stride_vreg = self.mir.alloc_vreg();
+                                    self.mir.push(X86Inst::MovRI64 {
+                                        dst: Operand::Virtual(stride_vreg),
+                                        imm: (level_stride * 8) as i64,
+                                    });
+                                    self.mir.push(X86Inst::ImulRR64 {
+                                        dst: Operand::Virtual(scaled),
+                                        src: Operand::Virtual(stride_vreg),
+                                    });
+                                }
+
+                                // Add to running total
+                                if let Some(prev_total) = total_array_offset_vreg {
+                                    self.mir.push(X86Inst::AddRR64 {
+                                        dst: Operand::Virtual(prev_total),
+                                        src: Operand::Virtual(scaled),
+                                    });
+                                } else {
+                                    total_array_offset_vreg = Some(scaled);
+                                }
+                            }
+
+                            // Add the field offset (in bytes) to the array element offset
+                            // total_offset is the field offset within the struct element
+                            if total_offset > 0 {
+                                let field_offset_bytes = (total_offset * 8) as i64;
+                                if let Some(arr_offset) = total_array_offset_vreg {
+                                    let field_offset_vreg = self.mir.alloc_vreg();
+                                    self.mir.push(X86Inst::MovRI64 {
+                                        dst: Operand::Virtual(field_offset_vreg),
+                                        imm: field_offset_bytes,
+                                    });
+                                    self.mir.push(X86Inst::AddRR64 {
+                                        dst: Operand::Virtual(arr_offset),
+                                        src: Operand::Virtual(field_offset_vreg),
+                                    });
+                                }
+                            }
+
+                            // Compute base address
+                            let addr_vreg = self.mir.alloc_vreg();
+
+                            if let IndexChainBase::Param { index: param_index } = &index_base {
+                                if self.cfg.is_param_inout(*param_index) {
+                                    // For inout params, use the stored pointer
+                                    let ptr_vreg = self.ensure_inout_param_ptr(*param_index);
+                                    self.mir.push(X86Inst::MovRR {
+                                        dst: Operand::Virtual(addr_vreg),
+                                        src: Operand::Virtual(ptr_vreg),
+                                    });
+
+                                    // Subtract total offset (array offset + field offset)
+                                    if let Some(total) = total_array_offset_vreg {
+                                        self.mir.push(X86Inst::SubRR64 {
+                                            dst: Operand::Virtual(addr_vreg),
+                                            src: Operand::Virtual(total),
+                                        });
+                                    }
+
+                                    // Load from computed address
+                                    self.mir.push(X86Inst::MovRMIndexed {
+                                        dst: Operand::Virtual(vreg),
+                                        base: addr_vreg,
+                                        offset: 0,
+                                    });
+                                    return;
+                                }
+                            }
+
+                            // Normal case: compute from RBP offset
+                            let base_offset = match &index_base {
+                                IndexChainBase::Load { slot } => self.local_offset(*slot),
+                                IndexChainBase::Param { index: param_index } => {
+                                    let base_slot = self.num_locals + *param_index as u32;
+                                    self.local_offset(base_slot)
+                                }
+                                IndexChainBase::FieldGet {
+                                    struct_base_slot,
+                                    field_slot_offset,
+                                } => {
+                                    let array_base_slot = struct_base_slot + field_slot_offset;
+                                    self.local_offset(array_base_slot)
+                                }
+                            };
+
+                            self.mir.push(X86Inst::Lea {
+                                dst: Operand::Virtual(addr_vreg),
+                                base: Reg::Rbp,
+                                index: None,
+                                scale: 1,
+                                disp: base_offset,
+                            });
+
+                            // Subtract total offset (array offset + field offset)
+                            if let Some(total) = total_array_offset_vreg {
+                                self.mir.push(X86Inst::SubRR64 {
+                                    dst: Operand::Virtual(addr_vreg),
+                                    src: Operand::Virtual(total),
+                                });
+                            }
+
+                            // Load from computed address
+                            self.mir.push(X86Inst::MovRMIndexed {
+                                dst: Operand::Virtual(vreg),
+                                base: addr_vreg,
+                                offset: 0,
+                            });
                         }
                     }
                 } else {

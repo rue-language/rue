@@ -301,11 +301,18 @@ pub fn format_terminator(cfg: &rue_cfg::Cfg, terminator: &rue_cfg::Terminator) -
 }
 
 /// Result of tracing back through FieldGet chains to find the original source.
+#[derive(Clone)]
 pub enum FieldChainBase {
     /// Chain originates from a Load instruction with the given slot.
     Load { slot: u32 },
     /// Chain originates from a Param instruction with the given index.
     Param { index: u32 },
+    /// Chain originates from an IndexGet (struct element within an array).
+    /// Contains the index chain base and levels needed to compute the element address.
+    IndexGet {
+        index_base: IndexChainBase,
+        index_levels: Vec<IndexLevel>,
+    },
 }
 
 /// Result of tracing back through IndexGet chains to find the original source.

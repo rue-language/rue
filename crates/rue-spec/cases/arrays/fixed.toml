@@ -661,22 +661,80 @@ fn main() -> i32 {
 """
 exit_code = 32
 
-# NOTE: Arrays of structs with indexing into struct fields (arr[i].field) currently
-# causes an ICE in codegen. This test is commented out pending that fix.
-# The underlying array projection semantics are correct; only codegen is affected.
-# [[case]]
-# name = "array_of_copy_struct_read"
-# spec = ["7.1:26"]
-# description = "Array of @copy struct allows multiple element reads"
-# source = """
-# @copy
-# struct Point { x: i32, y: i32 }
-#
-# fn main() -> i32 {
-#     let arr: [Point; 2] = [Point { x: 10, y: 20 }, Point { x: 5, y: 7 }];
-#     let p1 = arr[0];
-#     let p2 = arr[0];
-#     p1.x + p2.x + arr[1].x
-# }
-# """
-# exit_code = 25
+[[case]]
+name = "array_of_copy_struct_read"
+spec = ["7.1:26"]
+description = "Array of @copy struct allows multiple element reads"
+source = """
+@copy
+struct Point { x: i32, y: i32 }
+
+fn main() -> i32 {
+    let arr: [Point; 2] = [Point { x: 10, y: 20 }, Point { x: 5, y: 7 }];
+    let p1 = arr[0];
+    let p2 = arr[0];
+    p1.x + p2.x + arr[1].x
+}
+"""
+exit_code = 25
+
+# =============================================================================
+# Structs in Arrays (array of structs, then field access)
+# =============================================================================
+
+[[case]]
+name = "array_of_structs_field_access"
+spec = ["7.1:6", "6.2:8"]
+source = """
+@copy
+struct Point { x: i32, y: i32 }
+
+fn main() -> i32 {
+    let arr: [Point; 2] = [Point { x: 10, y: 20 }, Point { x: 5, y: 7 }];
+    arr[0].x
+}
+"""
+exit_code = 10
+
+[[case]]
+name = "array_of_structs_field_access_second_element"
+spec = ["7.1:6", "6.2:8"]
+source = """
+@copy
+struct Point { x: i32, y: i32 }
+
+fn main() -> i32 {
+    let arr: [Point; 2] = [Point { x: 10, y: 20 }, Point { x: 5, y: 7 }];
+    arr[1].y
+}
+"""
+exit_code = 7
+
+[[case]]
+name = "array_of_structs_sum_fields"
+spec = ["7.1:6", "6.2:8"]
+source = """
+@copy
+struct Point { x: i32, y: i32 }
+
+fn main() -> i32 {
+    let arr: [Point; 2] = [Point { x: 10, y: 20 }, Point { x: 5, y: 7 }];
+    arr[0].x + arr[0].y + arr[1].x + arr[1].y
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "array_of_structs_variable_index"
+spec = ["7.1:6", "7.1:10", "6.2:8"]
+source = """
+@copy
+struct Point { x: i32, y: i32 }
+
+fn main() -> i32 {
+    let arr: [Point; 2] = [Point { x: 10, y: 20 }, Point { x: 5, y: 7 }];
+    let i = 1;
+    arr[i].x
+}
+"""
+exit_code = 5
