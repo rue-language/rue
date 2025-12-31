@@ -26,7 +26,7 @@ pub use inference::{
 pub use inst::{
     Air, AirArgMode, AirCallArg, AirInst, AirInstData, AirParamMode, AirPattern, AirRef,
 };
-pub use sema::{AnalyzedFunction, Sema, SemaOutput};
+pub use sema::{AnalyzedFunction, FunctionInfo, GatherOutput, MethodInfo, Sema, SemaOutput};
 pub use type_context::{FunctionSignature, MethodSignature, TypeContext};
 pub use types::{
     ArrayTypeDef, ArrayTypeId, EnumDef, EnumId, StructDef, StructField, StructId, Type,

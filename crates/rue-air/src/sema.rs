@@ -93,6 +93,97 @@ pub struct SemaOutput {
     pub warnings: Vec<CompileWarning>,
 }
 
+/// Output from the declaration gathering phase.
+///
+/// This contains the state built during declaration gathering that is needed
+/// for function body analysis. After gathering, this can be converted back
+/// into a `Sema` for sequential analysis, or used to drive parallel analysis.
+///
+/// # Architecture
+///
+/// The separation of declaration gathering from body analysis enables:
+/// 1. **Parallel type checking** - Each function can be analyzed independently
+/// 2. **Clearer architecture** - Separation of concerns
+/// 3. **Foundation for incremental** - Can cache TypeContext across compilations
+/// 4. **Better error recovery** - One function's error doesn't block others
+///
+/// # Usage
+///
+/// ```ignore
+/// // Phase 1: Gather declarations (sequential)
+/// let sema = Sema::new(rir, interner, preview);
+/// let (type_ctx, gather_output) = sema.gather_declarations()?;
+///
+/// // Phase 2: Analyze function bodies
+/// // Option A: Sequential (current)
+/// let sema = gather_output.into_sema();
+/// let output = sema.analyze_all_bodies()?;
+///
+/// // Option B: Parallel (future)
+/// // let results: Vec<_> = functions.par_iter()
+/// //     .map(|f| analyze_function_body(&type_ctx, &gather_output, f))
+/// //     .collect();
+/// ```
+#[derive(Debug)]
+pub struct GatherOutput<'a> {
+    /// Reference to the RIR being analyzed.
+    pub rir: &'a Rir,
+    /// Reference to the string interner.
+    pub interner: &'a Interner,
+    /// Struct definitions indexed by StructId.
+    pub struct_defs: Vec<StructDef>,
+    /// Enum definitions indexed by EnumId.
+    pub enum_defs: Vec<EnumDef>,
+    /// Array type table: maps (element_type, length) to ArrayTypeId.
+    /// Pre-populated during declaration gathering for array types in signatures.
+    pub array_types: HashMap<(Type, u64), ArrayTypeId>,
+    /// Array type definitions indexed by ArrayTypeId.
+    pub array_type_defs: Vec<ArrayTypeDef>,
+    /// Struct lookup: maps struct name symbol to StructId.
+    pub structs: HashMap<Symbol, StructId>,
+    /// Enum lookup: maps enum name symbol to EnumId.
+    pub enums: HashMap<Symbol, EnumId>,
+    /// Function lookup: maps function name to info.
+    pub functions: HashMap<Symbol, FunctionInfo>,
+    /// Method lookup: maps (struct_name, method_name) to info.
+    pub methods: HashMap<(Symbol, Symbol), MethodInfo>,
+    /// Enabled preview features.
+    pub preview_features: PreviewFeatures,
+}
+
+impl<'a> GatherOutput<'a> {
+    /// Convert this gather output back into a Sema for function body analysis.
+    ///
+    /// This is used for sequential analysis. The returned Sema has all
+    /// declarations already collected and is ready to analyze function bodies.
+    pub fn into_sema(self) -> Sema<'a> {
+        Sema {
+            rir: self.rir,
+            interner: self.interner,
+            functions: self.functions,
+            structs: self.structs,
+            struct_defs: self.struct_defs,
+            enums: self.enums,
+            enum_defs: self.enum_defs,
+            array_types: self.array_types,
+            array_type_defs: self.array_type_defs,
+            string_table: HashMap::new(),
+            strings: Vec::new(),
+            warnings: Vec::new(),
+            methods: self.methods,
+            preview_features: self.preview_features,
+        }
+    }
+
+    /// Consume the gather output and return ownership of struct and enum definitions.
+    ///
+    /// This is used after all function analysis is complete to build the final
+    /// `SemaOutput`.
+    pub fn into_type_defs(self) -> (Vec<StructDef>, Vec<EnumDef>) {
+        (self.struct_defs, self.enum_defs)
+    }
+}
+
 /// Information about a local variable.
 #[derive(Debug, Clone)]
 struct LocalVar {
@@ -202,32 +293,32 @@ impl AnalysisContext<'_> {
 
 /// Information about a function.
 #[derive(Debug, Clone)]
-struct FunctionInfo {
+pub struct FunctionInfo {
     /// Parameter types (in order)
-    param_types: Vec<Type>,
+    pub param_types: Vec<Type>,
     /// Parameter modes (in order)
-    param_modes: Vec<RirParamMode>,
+    pub param_modes: Vec<RirParamMode>,
     /// Return type
-    return_type: Type,
+    pub return_type: Type,
 }
 
 /// Information about a method in an impl block.
 #[derive(Debug, Clone)]
-struct MethodInfo {
+pub struct MethodInfo {
     /// The struct type this method belongs to
-    struct_type: Type,
+    pub struct_type: Type,
     /// Whether this is a method (has self) or associated function (no self)
-    has_self: bool,
+    pub has_self: bool,
     /// Parameter names (excluding self if present)
-    param_names: Vec<Symbol>,
+    pub param_names: Vec<Symbol>,
     /// Parameter types (excluding self if present)
-    param_types: Vec<Type>,
+    pub param_types: Vec<Type>,
     /// Return type
-    return_type: Type,
+    pub return_type: Type,
     /// The RIR instruction ref for the method body
-    body: InstRef,
+    pub body: InstRef,
     /// Span of the method declaration
-    span: Span,
+    pub span: Span,
 }
 
 /// Result of analyzing an instruction: the AIR reference and its synthesized type.
@@ -368,6 +459,66 @@ impl<'a> Sema<'a> {
             enum_by_name: self.enums.clone(),
             enum_defs: self.enum_defs.clone(),
         }
+    }
+
+    /// Gather all declarations from the RIR and build a TypeContext.
+    ///
+    /// This is Phase 1 of semantic analysis. It collects:
+    /// - Enum definitions
+    /// - Struct definitions
+    /// - Function signatures
+    /// - Method signatures
+    ///
+    /// The returned `TypeContext` is immutable and can be shared across
+    /// threads for parallel function body analysis.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// // Phase 1: Gather declarations (sequential)
+    /// let sema = Sema::new(rir, interner, preview);
+    /// let (type_ctx, sema) = sema.gather_declarations()?;
+    ///
+    /// // Phase 2: Analyze function bodies (can be parallel)
+    /// for fn_ref in rir.function_refs() {
+    ///     let result = analyze_function_body(&type_ctx, ...)?;
+    /// }
+    /// ```
+    pub fn gather_declarations(mut self) -> CompileResult<(TypeContext, GatherOutput<'a>)> {
+        // First pass: collect type definitions (enums then structs)
+        // Enums must be collected first so struct fields can reference enum types
+        self.collect_enum_definitions()?;
+        self.collect_struct_definitions()?;
+
+        // Validate @copy struct fields are all Copy types
+        self.validate_copy_structs()?;
+
+        // Collect user-defined destructors
+        self.collect_destructor_definitions()?;
+
+        // Second pass: collect function and method signatures
+        self.collect_function_signatures()?;
+        self.collect_method_definitions()?;
+
+        // Build the immutable type context
+        let type_ctx = self.build_type_context();
+
+        // Package up the remaining Sema state needed for function analysis
+        let output = GatherOutput {
+            rir: self.rir,
+            interner: self.interner,
+            struct_defs: self.struct_defs,
+            enum_defs: self.enum_defs,
+            array_types: self.array_types,
+            array_type_defs: self.array_type_defs,
+            structs: self.structs,
+            enums: self.enums,
+            functions: self.functions,
+            methods: self.methods,
+            preview_features: self.preview_features,
+        };
+
+        Ok((type_ctx, output))
     }
 
     /// Check if a preview feature is enabled, returning an error if not.
@@ -746,6 +897,165 @@ impl<'a> Sema<'a> {
         }
 
         // Fifth pass: analyze destructor bodies
+        for (_, inst) in self.rir.iter() {
+            if let InstData::DropFnDecl { type_name, body } = &inst.data {
+                let type_name_str = self.interner.get(*type_name).to_string();
+                let struct_id = *self.structs.get(type_name).unwrap();
+                let struct_type = Type::Struct(struct_id);
+
+                // Generate destructor name: "TypeName.__drop"
+                let full_name = format!("{}.__drop", type_name_str);
+
+                // Try to analyze destructor - on error, record it and continue
+                match self.analyze_destructor_function(&full_name, *body, inst.span, struct_type) {
+                    Ok(analyzed) => functions.push(analyzed),
+                    Err(e) => errors.push(e),
+                }
+            }
+        }
+
+        // Return errors if any were collected
+        errors.into_result_with(SemaOutput {
+            functions,
+            struct_defs: self.struct_defs,
+            enum_defs: self.enum_defs,
+            array_types: self.array_type_defs,
+            strings: self.strings,
+            warnings: self.warnings,
+        })
+    }
+
+    /// Analyze all function bodies, assuming declarations are already collected.
+    ///
+    /// This is Phase 2 of semantic analysis. It assumes that `gather_declarations`
+    /// has already been called (or that this Sema was created from `GatherOutput::into_sema`).
+    ///
+    /// # Architecture
+    ///
+    /// This method is the entry point for function body analysis after declaration
+    /// gathering. Currently it runs sequentially, but the design allows for future
+    /// parallelization since each function body can be analyzed independently.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// // Phase 1: Gather declarations
+    /// let sema = Sema::new(rir, interner, preview);
+    /// let (type_ctx, gather_output) = sema.gather_declarations()?;
+    ///
+    /// // Phase 2: Analyze function bodies
+    /// let sema = gather_output.into_sema();
+    /// let output = sema.analyze_all_bodies()?;
+    /// ```
+    pub fn analyze_all_bodies(mut self) -> MultiErrorResult<SemaOutput> {
+        let mut functions = Vec::new();
+        let mut errors = CompileErrors::new();
+
+        // Collect method refs from impl blocks so we can skip them in the first pass
+        let mut method_refs: HashSet<InstRef> = HashSet::new();
+        for (_, inst) in self.rir.iter() {
+            if let InstData::ImplDecl {
+                methods_start,
+                methods_len,
+                ..
+            } = &inst.data
+            {
+                let methods = self.rir.get_inst_refs(*methods_start, *methods_len);
+                for method_ref in methods {
+                    method_refs.insert(method_ref);
+                }
+            }
+        }
+
+        // Analyze regular functions (not methods in impl blocks)
+        for (inst_ref, inst) in self.rir.iter() {
+            if let InstData::FnDecl {
+                directives_start: _,
+                directives_len: _,
+                name,
+                params_start,
+                params_len,
+                return_type,
+                body,
+                has_self: _,
+            } = &inst.data
+            {
+                // Skip methods - they'll be analyzed separately with impl block context
+                if method_refs.contains(&inst_ref) {
+                    continue;
+                }
+
+                let fn_name = self.interner.get(*name).to_string();
+                let params = self.rir.get_params(*params_start, *params_len);
+
+                // Try to analyze this function - on error, record it and continue
+                match self.analyze_single_function(
+                    &fn_name,
+                    *return_type,
+                    &params,
+                    *body,
+                    inst.span,
+                ) {
+                    Ok(analyzed) => functions.push(analyzed),
+                    Err(e) => errors.push(e),
+                }
+            }
+        }
+
+        // Analyze method bodies from impl blocks
+        for (_, inst) in self.rir.iter() {
+            if let InstData::ImplDecl {
+                type_name,
+                methods_start,
+                methods_len,
+            } = &inst.data
+            {
+                let type_name_str = self.interner.get(*type_name).to_string();
+                let struct_id = *self.structs.get(type_name).unwrap();
+                let struct_type = Type::Struct(struct_id);
+
+                let methods = self.rir.get_inst_refs(*methods_start, *methods_len);
+                for method_ref in methods {
+                    let method_inst = self.rir.get(method_ref);
+                    if let InstData::FnDecl {
+                        name: method_name,
+                        params_start,
+                        params_len,
+                        return_type,
+                        body,
+                        has_self,
+                        ..
+                    } = &method_inst.data
+                    {
+                        let method_name_str = self.interner.get(*method_name).to_string();
+                        let params = self.rir.get_params(*params_start, *params_len);
+
+                        // Generate method name with struct prefix: "Type.method" or "Type::function"
+                        let full_name = if *has_self {
+                            format!("{}.{}", type_name_str, method_name_str)
+                        } else {
+                            format!("{}::{}", type_name_str, method_name_str)
+                        };
+
+                        // Try to analyze this method - on error, record it and continue
+                        match self.analyze_method_function(
+                            &full_name,
+                            *return_type,
+                            &params,
+                            *body,
+                            method_inst.span,
+                            struct_type,
+                            *has_self,
+                        ) {
+                            Ok(analyzed) => functions.push(analyzed),
+                            Err(e) => errors.push(e),
+                        }
+                    }
+                }
+            }
+        }
+
+        // Analyze destructor bodies
         for (_, inst) in self.rir.iter() {
             if let InstData::DropFnDecl { type_name, body } = &inst.data {
                 let type_name_str = self.interner.get(*type_name).to_string();
