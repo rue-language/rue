@@ -44,7 +44,7 @@ fn main() -> i32 {
 
 {{ rule(id="3.8:14", cat="normative") }}
 
-A struct type may be declared as a Copy type using the `@copy` directive before the struct definition.
+A struct type **MAY** be declared as a Copy type using the `@copy` directive before the struct definition.
 
 {{ rule(id="3.8:15", cat="syntax") }}
 
@@ -72,7 +72,7 @@ fn main() -> i32 {
 
 {{ rule(id="3.8:18", cat="legality-rule") }}
 
-A `@copy` struct must contain only fields that are themselves Copy types. It is a compile-time error to mark a struct as `@copy` if any of its fields are move types.
+A `@copy` struct **MUST** contain only fields that are themselves Copy types. It is a compile-time error to mark a struct as `@copy` if any of its fields are move types.
 
 {{ rule(id="3.8:19", cat="example") }}
 
@@ -85,7 +85,7 @@ struct Outer { inner: Inner }  // ERROR: field 'inner' has non-Copy type 'Inner'
 
 {{ rule(id="3.8:20", cat="normative") }}
 
-A `@copy` struct may contain fields of primitive Copy types (integers, booleans, unit), enum types, or other `@copy` struct types.
+A `@copy` struct **MAY** contain fields of primitive Copy types (integers, booleans, unit), enum types, or other `@copy` struct types.
 
 {{ rule(id="3.8:21", cat="example") }}
 

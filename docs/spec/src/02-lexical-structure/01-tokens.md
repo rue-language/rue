@@ -38,7 +38,7 @@ digit = "0" | "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" ;
 
 {{ rule(id="2.1:4", cat="normative") }}
 
-Integer literals must be representable in their target type. An unadorned integer literal defaults to type `i32`.
+Integer literals **MUST** be representable in their target type. An unadorned integer literal defaults to type `i32`.
 
 {{ rule(id="2.1:5") }}
 

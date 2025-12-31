@@ -58,7 +58,7 @@ A method call `receiver.method(args)` is desugared to a function call with the r
 
 {{ rule(id="6.4:8", cat="normative") }}
 
-Methods may have additional parameters after `self`.
+Methods **MAY** have additional parameters after `self`.
 
 {{ rule(id="6.4:9", cat="example") }}
 
@@ -82,7 +82,7 @@ fn main() -> i32 {
 
 {{ rule(id="6.4:10", cat="normative") }}
 
-When a method returns the same struct type, method calls may be chained.
+When a method returns the same struct type, method calls **MAY** be chained.
 
 {{ rule(id="6.4:11", cat="example") }}
 

@@ -81,7 +81,7 @@ Fields of nested structs can be assigned through chained field access.
 
 {{ rule(id="5.2:12", cat="normative") }}
 
-All struct values in the chain must be part of a mutable binding.
+All struct values in the chain **MUST** be part of a mutable binding.
 
 {{ rule(id="5.2:13") }}
 

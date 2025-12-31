@@ -19,7 +19,7 @@ intrinsic_arg = expression | type ;
 
 {{ rule(id="4.13:2a", cat="normative") }}
 
-Intrinsics may accept expressions, types, or a combination of both as arguments, depending on the specific intrinsic.
+Intrinsics **MAY** accept expressions, types, or a combination of both as arguments, depending on the specific intrinsic.
 
 {{ rule(id="4.13:3", cat="normative") }}
 
@@ -92,7 +92,7 @@ The `@size_of` intrinsic returns the size of a type in bytes.
 
 {{ rule(id="4.13:13", cat="normative") }}
 
-`@size_of` accepts exactly one argument, which must be a type.
+`@size_of` accepts exactly one argument, which **MUST** be a type.
 
 {{ rule(id="4.13:14", cat="normative") }}
 
@@ -128,7 +128,7 @@ The `@align_of` intrinsic returns the alignment of a type in bytes.
 
 {{ rule(id="4.13:19", cat="normative") }}
 
-`@align_of` accepts exactly one argument, which must be a type.
+`@align_of` accepts exactly one argument, which **MUST** be a type.
 
 {{ rule(id="4.13:20", cat="normative") }}
 
@@ -158,7 +158,7 @@ The `@intCast` intrinsic converts an integer value from one integer type to anot
 
 {{ rule(id="4.13:25", cat="normative") }}
 
-`@intCast` accepts exactly one argument, which must be an integer type (any of `i8`, `i16`, `i32`, `i64`, `u8`, `u16`, `u32`, `u64`).
+`@intCast` accepts exactly one argument, which **MUST** be an integer type (any of `i8`, `i16`, `i32`, `i64`, `u8`, `u16`, `u32`, `u64`).
 
 {{ rule(id="4.13:26", cat="normative") }}
 

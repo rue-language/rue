@@ -18,11 +18,11 @@ field_access = expression "." IDENT ;
 
 {{ rule(id="4.12:3", cat="normative") }}
 
-The expression before the dot must have a struct type.
+The expression before the dot **MUST** have a struct type.
 
 {{ rule(id="4.12:4", cat="normative") }}
 
-The identifier must be a valid field name for that struct type.
+The identifier **MUST** be a valid field name for that struct type.
 
 {{ rule(id="4.12:5", cat="normative") }}
 

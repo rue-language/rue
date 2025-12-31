@@ -159,7 +159,7 @@ fn example() -> i32 {
 
 {{ rule(id="2.5:23", cat="normative") }}
 
-Multiple warning names may be specified in a single `@allow` directive, separated by commas.
+Multiple warning names **MAY** be specified in a single `@allow` directive, separated by commas.
 
 {{ rule(id="2.5:24") }}
 
@@ -200,7 +200,7 @@ The `@copy` directive marks a struct type as a Copy type.
 
 {{ rule(id="2.5:28", cat="normative") }}
 
-`@copy` must appear immediately before a struct definition.
+`@copy` **MUST** appear immediately before a struct definition.
 
 {{ rule(id="2.5:29", cat="normative") }}
 

@@ -12,11 +12,11 @@ An array type, written `[T; N]`, represents a fixed-size sequence of `N` element
 
 {{ rule(id="3.5:2", cat="normative") }}
 
-The length `N` must be a non-negative integer literal known at compile time.
+The length `N` **MUST** be a non-negative integer literal known at compile time.
 
 {{ rule(id="3.5:3", cat="normative") }}
 
-All elements of an array must have the same type `T`.
+All elements of an array **MUST** have the same type `T`.
 
 {{ rule(id="3.5:4", cat="normative") }}
 

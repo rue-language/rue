@@ -40,11 +40,11 @@ Struct fields are accessed using dot notation: `value.field_name`.
 
 {{ rule(id="3.6:5", cat="normative") }}
 
-All fields must be initialized when creating a struct instance.
+All fields **MUST** be initialized when creating a struct instance.
 
 {{ rule(id="3.6:6", cat="normative") }}
 
-Field names must be unique within a struct.
+Field names **MUST** be unique within a struct.
 
 ## Memory Layout
 

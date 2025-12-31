@@ -35,7 +35,7 @@ This specification does not cover:
 
 {{ rule(id="1.3:1", cat="normative") }}
 
-A conforming implementation must implement all normative requirements of this specification.
+A conforming implementation **MUST** implement all normative requirements of this specification.
 
 {{ rule(id="1.3:2") }}
 

@@ -76,7 +76,7 @@ For right shift (`>>`), the behavior depends on the signedness of the operand ty
 
 {{ rule(id="4.3a:9", cat="normative") }}
 
-The shift amount operand shall have the same type as the value being shifted.
+The shift amount operand **MUST** have the same type as the value being shifted.
 
 {{ rule(id="4.3a:10", cat="normative") }}
 

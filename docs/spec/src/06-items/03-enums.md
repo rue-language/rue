@@ -21,7 +21,7 @@ enum_variants = IDENT { "," IDENT } [ "," ] ;
 
 {{ rule(id="6.3:3", cat="normative") }}
 
-Variant names must be unique within an enum.
+Variant names **MUST** be unique within an enum.
 
 {{ rule(id="6.3:12", cat="normative") }}
 
@@ -61,7 +61,7 @@ Each arm pattern uses the same path syntax as enum variant expressions.
 
 {{ rule(id="6.3:8", cat="normative") }}
 
-Match expressions on enums must be exhaustive: all variants must be covered,
+Match expressions on enums **MUST** be exhaustive: all variants **MUST** be covered,
 either explicitly or via a wildcard pattern `_`.
 
 {{ rule(id="6.3:9") }}

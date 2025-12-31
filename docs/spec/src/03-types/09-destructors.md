@@ -155,11 +155,11 @@ drop fn TypeName(self) {
 
 {{ rule(id="3.9:22", cat="normative") }}
 
-A user-defined destructor must be declared at the top level, outside of any `impl` block. It must take exactly one parameter named `self` and return nothing (implicit unit type).
+A user-defined destructor **MUST** be declared at the top level, outside of any `impl` block. It **MUST** take exactly one parameter named `self` and return nothing (implicit unit type).
 
 {{ rule(id="3.9:23", cat="legality-rule") }}
 
-Each struct type may have at most one user-defined destructor. A compile-time error is raised if multiple destructors are declared for the same type.
+Each struct type **MAY** have at most one user-defined destructor. A compile-time error is raised if multiple destructors are declared for the same type.
 
 {{ rule(id="3.9:24", cat="legality-rule") }}
 

@@ -51,7 +51,7 @@ is matched by at least one pattern in the set.
 
 {{ rule(id="4.7:9", cat="normative") }}
 
-A match expression shall have an exhaustive set of patterns for its scrutinee type.
+A match expression **MUST** have an exhaustive set of patterns for its scrutinee type.
 A match expression with a non-exhaustive pattern set is rejected with a compile-time error.
 
 {{ rule(id="4.7:10", cat="normative") }}
@@ -79,18 +79,18 @@ fn main() -> i32 {
 
 {{ rule(id="4.7:12", cat="normative") }}
 
-All match arms shall have the same type. The type of the match expression is the common type of its arms.
+All match arms **MUST** have the same type. The type of the match expression is the common type of its arms.
 
 {{ rule(id="4.7:13", cat="normative") }}
 
-The type of each pattern shall be compatible with the type of the scrutinee.
+The type of each pattern **MUST** be compatible with the type of the scrutinee.
 A pattern with an incompatible type is rejected with a compile-time error.
 
 ## Arm Bodies
 
 {{ rule(id="4.7:14", cat="normative") }}
 
-Match arm bodies may be simple expressions or block expressions.
+Match arm bodies **MAY** be simple expressions or block expressions.
 
 {{ rule(id="4.7:15") }}
 
