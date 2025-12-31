@@ -284,10 +284,15 @@ impl Linker {
     /// Link all objects and produce an executable.
     #[must_use = "linking returns a Result that must be checked"]
     pub fn link(self, entry_point: &str) -> Result<Vec<u8>, LinkError> {
-        // Layout constants - use a single program header for simplicity
-        const NUM_PROGRAM_HEADERS: u64 = 1;
+        // Layout constants - use separate program headers for proper W^X security:
+        // - Segment 1: .text (R+X) - executable code
+        // - Segment 2: .rodata (R) - read-only data (only if rodata exists)
+        //
+        // This follows the W^X (Write XOR Execute) security principle:
+        // memory should never be both writable and executable.
+        const MAX_PROGRAM_HEADERS: u64 = 2;
         const HEADER_SIZE: u64 =
-            (ELF64_EHDR_SIZE as u64) + (ELF64_PHDR_SIZE as u64) * NUM_PROGRAM_HEADERS;
+            (ELF64_EHDR_SIZE as u64) + (ELF64_PHDR_SIZE as u64) * MAX_PROGRAM_HEADERS;
 
         // Code starts right after headers. For ELF loading to work,
         // (vaddr % page_size) must equal (file_offset % page_size).
@@ -363,9 +368,9 @@ impl Linker {
             }
         }
 
-        // Merge rodata sections (placed right after code, no page break)
-        let rodata_offset_in_merged = merged_code.len();
-
+        // Merge rodata sections (placed on a new page for proper W^X protection)
+        // We need page alignment between code and rodata so they can have different
+        // memory protections at runtime.
         for (obj_idx, obj) in self.objects.iter().enumerate() {
             for (sec_idx, section) in obj.sections.iter().enumerate() {
                 if !section.name.starts_with(".rodata") {
@@ -386,9 +391,12 @@ impl Linker {
             }
         }
 
-        // Virtual addresses - rodata follows code directly
+        // Virtual addresses - calculate with page alignment between segments
         let code_vaddr = code_start;
-        let rodata_vaddr = code_vaddr + rodata_offset_in_merged as u64;
+        let code_size = merged_code.len() as u64;
+
+        // Rodata starts on the next page boundary after code for W^X protection
+        let rodata_vaddr = align_up(code_vaddr + code_size, self.page_size);
 
         // Build final symbol addresses
         let mut symbol_addresses: HashMap<String, u64> = HashMap::new();
@@ -693,11 +701,41 @@ impl Linker {
             }
         }
 
-        // Build the ELF - single segment with code + rodata
-        let file_offset = HEADER_SIZE;
-        let total_size = merged_code.len() + merged_rodata.len();
+        // Build the ELF with proper W^X segment separation
+        //
+        // File layout:
+        //   [ELF Header]
+        //   [Program Header 1: .text (R+X)]
+        //   [Program Header 2: .rodata (R)]  -- only if rodata exists
+        //   [.text section data]
+        //   [padding to page boundary]       -- only if rodata exists
+        //   [.rodata section data]
+        //
+        // Memory layout:
+        //   0x400000 + header_size: .text (R+X)
+        //   next page boundary: .rodata (R)   -- only if rodata exists
 
-        let mut elf = Vec::with_capacity((HEADER_SIZE as usize) + total_size);
+        let has_rodata = !merged_rodata.is_empty();
+        let num_program_headers: u64 = if has_rodata { 2 } else { 1 };
+
+        // File offsets
+        let code_file_offset = HEADER_SIZE;
+        let rodata_file_offset = if has_rodata {
+            // Rodata needs to start on a page boundary in the file so that
+            // (vaddr % page_size) == (file_offset % page_size)
+            align_up(HEADER_SIZE + code_size, self.page_size)
+        } else {
+            0 // unused
+        };
+
+        // Calculate total file size
+        let total_file_size = if has_rodata {
+            rodata_file_offset + merged_rodata.len() as u64
+        } else {
+            HEADER_SIZE + code_size
+        };
+
+        let mut elf = Vec::with_capacity(total_file_size as usize);
 
         // ===== ELF Header =====
         elf.extend_from_slice(&ELF_MAGIC);
@@ -723,26 +761,46 @@ impl Linker {
         elf.extend_from_slice(&0_u32.to_le_bytes()); // e_flags
         elf.extend_from_slice(&(ELF64_EHDR_SIZE as u16).to_le_bytes()); // e_ehsize
         elf.extend_from_slice(&(ELF64_PHDR_SIZE as u16).to_le_bytes()); // e_phentsize
-        elf.extend_from_slice(&(NUM_PROGRAM_HEADERS as u16).to_le_bytes()); // e_phnum
+        elf.extend_from_slice(&(num_program_headers as u16).to_le_bytes()); // e_phnum
         elf.extend_from_slice(&0_u16.to_le_bytes()); // e_shentsize
         elf.extend_from_slice(&0_u16.to_le_bytes()); // e_shnum
         elf.extend_from_slice(&0_u16.to_le_bytes()); // e_shstrndx
 
-        // ===== Single Program Header (PT_LOAD, R+W+X) =====
+        // ===== Program Header 1: .text (R+X) =====
+        // Contains executable code - read and execute, but NOT writable
         elf.extend_from_slice(&PT_LOAD.to_le_bytes()); // p_type: PT_LOAD
-        elf.extend_from_slice(&(PF_R | PF_W | PF_X).to_le_bytes()); // p_flags: PF_R | PF_W | PF_X
-        elf.extend_from_slice(&file_offset.to_le_bytes()); // p_offset
+        elf.extend_from_slice(&(PF_R | PF_X).to_le_bytes()); // p_flags: PF_R | PF_X (no PF_W!)
+        elf.extend_from_slice(&code_file_offset.to_le_bytes()); // p_offset
         elf.extend_from_slice(&code_vaddr.to_le_bytes()); // p_vaddr
         elf.extend_from_slice(&code_vaddr.to_le_bytes()); // p_paddr
-        elf.extend_from_slice(&(total_size as u64).to_le_bytes()); // p_filesz
-        elf.extend_from_slice(&(total_size as u64).to_le_bytes()); // p_memsz
+        elf.extend_from_slice(&code_size.to_le_bytes()); // p_filesz
+        elf.extend_from_slice(&code_size.to_le_bytes()); // p_memsz
         elf.extend_from_slice(&self.page_size.to_le_bytes()); // p_align
 
-        // Write code
+        // ===== Program Header 2: .rodata (R) - only if rodata exists =====
+        if has_rodata {
+            let rodata_size = merged_rodata.len() as u64;
+            elf.extend_from_slice(&PT_LOAD.to_le_bytes()); // p_type: PT_LOAD
+            elf.extend_from_slice(&PF_R.to_le_bytes()); // p_flags: PF_R only (read-only, not executable)
+            elf.extend_from_slice(&rodata_file_offset.to_le_bytes()); // p_offset
+            elf.extend_from_slice(&rodata_vaddr.to_le_bytes()); // p_vaddr
+            elf.extend_from_slice(&rodata_vaddr.to_le_bytes()); // p_paddr
+            elf.extend_from_slice(&rodata_size.to_le_bytes()); // p_filesz
+            elf.extend_from_slice(&rodata_size.to_le_bytes()); // p_memsz
+            elf.extend_from_slice(&self.page_size.to_le_bytes()); // p_align
+        }
+
+        // Write code section
         elf.extend_from_slice(&merged_code);
 
-        // Write rodata (immediately follows code)
-        elf.extend_from_slice(&merged_rodata);
+        // Pad to rodata file offset if needed
+        if has_rodata {
+            let padding_needed = rodata_file_offset as usize - elf.len();
+            elf.resize(elf.len() + padding_needed, 0);
+
+            // Write rodata section
+            elf.extend_from_slice(&merged_rodata);
+        }
 
         Ok(elf)
     }
@@ -986,9 +1044,88 @@ mod tests {
         let p_type = u32::from_le_bytes(elf[ph_offset..ph_offset + 4].try_into().unwrap());
         assert_eq!(p_type, PT_LOAD);
 
-        // p_flags = PF_R | PF_W | PF_X
+        // p_flags = PF_R | PF_X (W^X compliant - no PF_W!)
         let p_flags = u32::from_le_bytes(elf[ph_offset + 4..ph_offset + 8].try_into().unwrap());
-        assert_eq!(p_flags, PF_R | PF_W | PF_X);
+        assert_eq!(
+            p_flags,
+            PF_R | PF_X,
+            "code segment should be R+X only, not R+W+X"
+        );
+    }
+
+    /// Test that W^X is properly enforced - no segment should be both writable and executable.
+    #[test]
+    fn test_w_xor_x_security() {
+        let obj_bytes = ObjectBuilder::new(ELF_TARGET, "main")
+            .code(vec![0xC3])
+            .build();
+
+        let obj = ObjectFile::parse(&obj_bytes).unwrap();
+
+        let mut linker = Linker::new(ELF_TARGET);
+        linker.add_object(obj).unwrap();
+
+        let elf = linker.link("main").unwrap();
+
+        // Read e_phnum from ELF header (bytes 56-57)
+        let e_phnum = u16::from_le_bytes(elf[56..58].try_into().unwrap()) as usize;
+
+        // Check each program header for W^X compliance
+        for i in 0..e_phnum {
+            let ph_offset = TEST_EHDR_SIZE + i * TEST_PHDR_SIZE;
+            let p_type = u32::from_le_bytes(elf[ph_offset..ph_offset + 4].try_into().unwrap());
+            let p_flags = u32::from_le_bytes(elf[ph_offset + 4..ph_offset + 8].try_into().unwrap());
+
+            if p_type == PT_LOAD {
+                let is_writable = (p_flags & PF_W) != 0;
+                let is_executable = (p_flags & PF_X) != 0;
+
+                assert!(
+                    !(is_writable && is_executable),
+                    "W^X violation: segment {} has flags {:#x} (W={}, X={})",
+                    i,
+                    p_flags,
+                    is_writable,
+                    is_executable
+                );
+            }
+        }
+    }
+
+    /// Test that rodata gets its own read-only segment.
+    #[test]
+    fn test_rodata_has_readonly_segment() {
+        // Build object with both code and rodata (using strings)
+        let obj_bytes = ObjectBuilder::new(ELF_TARGET, "main")
+            .code(vec![
+                0xB8, 0x00, 0x00, 0x00, 0x00, // mov eax, 0
+                0xC3, // ret
+            ])
+            .strings(vec!["Hello, World!".to_string()])
+            .build();
+
+        let obj = ObjectFile::parse(&obj_bytes).unwrap();
+
+        let mut linker = Linker::new(ELF_TARGET);
+        linker.add_object(obj).unwrap();
+
+        let elf = linker.link("main").unwrap();
+
+        // Read e_phnum from ELF header (bytes 56-57)
+        let e_phnum = u16::from_le_bytes(elf[56..58].try_into().unwrap()) as usize;
+
+        // Should have 2 segments: code (R+X) and rodata (R)
+        assert_eq!(e_phnum, 2, "should have 2 segments when rodata is present");
+
+        // Check first segment is R+X (code)
+        let ph1_offset = TEST_EHDR_SIZE;
+        let p1_flags = u32::from_le_bytes(elf[ph1_offset + 4..ph1_offset + 8].try_into().unwrap());
+        assert_eq!(p1_flags, PF_R | PF_X, "first segment should be R+X (code)");
+
+        // Check second segment is R only (rodata)
+        let ph2_offset = TEST_EHDR_SIZE + TEST_PHDR_SIZE;
+        let p2_flags = u32::from_le_bytes(elf[ph2_offset + 4..ph2_offset + 8].try_into().unwrap());
+        assert_eq!(p2_flags, PF_R, "second segment should be R only (rodata)");
     }
 
     #[test]
