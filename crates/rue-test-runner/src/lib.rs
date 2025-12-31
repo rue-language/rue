@@ -139,6 +139,16 @@ pub struct Case {
     /// If the test exceeds this timeout, it will be killed and marked as failed.
     #[serde(default)]
     pub timeout_ms: Option<u64>,
+    /// Input to provide to the program's stdin during execution.
+    /// This is useful for testing programs that read from stdin (e.g., @read_line).
+    /// The input is piped to the program before execution starts.
+    #[serde(default)]
+    pub stdin: Option<String>,
+    /// Expected stderr output (substring match).
+    /// For runtime errors, use `runtime_error` instead. This field is for
+    /// checking stderr content in successful runs (e.g., panic messages).
+    #[serde(default)]
+    pub stderr_contains: Option<String>,
     /// Parameter sets for generating multiple test instances from a template.
     /// When present, this case is expanded into multiple cases, one per param set.
     /// Template placeholders like `{type}` in `source` and `name` are substituted.
@@ -209,6 +219,14 @@ pub fn expand_case(case: Case) -> Vec<Case> {
                     .map(|s| substitute_placeholders(s, params)),
                 expected_stdout: case
                     .expected_stdout
+                    .as_ref()
+                    .map(|s| substitute_placeholders(s, params)),
+                stdin: case
+                    .stdin
+                    .as_ref()
+                    .map(|s| substitute_placeholders(s, params)),
+                stderr_contains: case
+                    .stderr_contains
                     .as_ref()
                     .map(|s| substitute_placeholders(s, params)),
 
@@ -495,24 +513,44 @@ fn read_all_bytes<R: IoRead>(mut reader: R) -> Vec<u8> {
     bytes
 }
 
-/// Run a command with a timeout.
+/// Run a command with a timeout and optional stdin input.
 ///
-/// This function spawns a child process and polls for completion,
-/// killing the process if it exceeds the specified timeout.
+/// This function spawns a child process, writes to its stdin if provided,
+/// and polls for completion, killing the process if it exceeds the specified timeout.
 ///
 /// # Arguments
 /// * `cmd` - The command to run (already configured with arguments)
 /// * `timeout` - Maximum duration to wait for the process to complete
+/// * `stdin_input` - Optional input to write to the process's stdin
 ///
 /// # Returns
 /// * `Ok(Output)` - The process output (stdout, stderr, exit status)
 /// * `Err(String)` - Error message if the process timed out or failed to start
-fn run_with_timeout(mut cmd: Command, timeout: Duration) -> Result<Output, String> {
+fn run_with_timeout(
+    mut cmd: Command,
+    timeout: Duration,
+    stdin_input: Option<&str>,
+) -> Result<Output, String> {
     let mut child = cmd
+        .stdin(if stdin_input.is_some() {
+            Stdio::piped()
+        } else {
+            Stdio::null()
+        })
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
         .map_err(|e| format!("Failed to spawn process: {}", e))?;
+
+    // Write stdin input if provided
+    if let Some(input) = stdin_input {
+        if let Some(mut stdin) = child.stdin.take() {
+            stdin
+                .write_all(input.as_bytes())
+                .map_err(|e| format!("Failed to write stdin: {}", e))?;
+            // Closing stdin signals EOF to the child process
+        }
+    }
 
     let start = Instant::now();
 
@@ -715,9 +753,9 @@ pub fn run_test_case(case: &Case, rue_binary: &Path) -> TestResult {
         return Ok(());
     }
 
-    // Run the compiled binary with timeout
+    // Run the compiled binary with timeout and optional stdin
     let timeout = Duration::from_millis(case.timeout_ms.unwrap_or(DEFAULT_TIMEOUT_MS));
-    let run_output = run_with_timeout(Command::new(&output_path), timeout)?;
+    let run_output = run_with_timeout(Command::new(&output_path), timeout, case.stdin.as_deref())?;
 
     let actual_exit_code = run_output.status.code().unwrap_or(-1);
     let stderr = String::from_utf8_lossy(&run_output.stderr);
@@ -754,6 +792,16 @@ pub fn run_test_case(case: &Case, rue_binary: &Path) -> TestResult {
             return Err(format!(
                 "Stdout mismatch:\n--- expected ---\n{}\n--- actual ---\n{}\n  source: {}",
                 expected_normalized, actual_normalized, case.source
+            ));
+        }
+    }
+
+    // Check stderr contains expected substring (for non-error cases)
+    if let Some(ref expected) = case.stderr_contains {
+        if !stderr.contains(expected.as_str()) {
+            return Err(format!(
+                "Stderr mismatch:\n  expected to contain: {}\n  actual stderr: {}\n  source: {}",
+                expected, stderr, case.source
             ));
         }
     }
@@ -908,6 +956,8 @@ mod tests {
             target: None,
             opt_level: None,
             timeout_ms: None,
+            stdin: None,
+            stderr_contains: None,
             params: vec![],
         };
 
@@ -953,6 +1003,8 @@ mod tests {
             target: None,
             opt_level: None,
             timeout_ms: None,
+            stdin: None,
+            stderr_contains: None,
             params: vec![ParamSet { values: param1 }, ParamSet { values: param2 }],
         };
 
@@ -1006,6 +1058,8 @@ mod tests {
             target: None,
             opt_level: None,
             timeout_ms: None,
+            stdin: None,
+            stderr_contains: None,
             params: vec![ParamSet { values: params }],
         };
 
@@ -1051,6 +1105,8 @@ mod tests {
             target: None,
             opt_level: None,
             timeout_ms: None,
+            stdin: None,
+            stderr_contains: None,
             params: vec![ParamSet { values: params }],
         };
 
@@ -1258,7 +1314,7 @@ mod tests {
     fn test_run_with_timeout_completes_normally() {
         // A simple command that completes quickly
         let cmd = Command::new("echo");
-        let result = run_with_timeout(cmd, Duration::from_secs(5));
+        let result = run_with_timeout(cmd, Duration::from_secs(5), None);
         assert!(result.is_ok());
         let output = result.unwrap();
         assert!(output.status.success());
@@ -1268,7 +1324,7 @@ mod tests {
     fn test_run_with_timeout_captures_stdout() {
         let mut cmd = Command::new("echo");
         cmd.arg("hello");
-        let result = run_with_timeout(cmd, Duration::from_secs(5));
+        let result = run_with_timeout(cmd, Duration::from_secs(5), None);
         assert!(result.is_ok());
         let output = result.unwrap();
         let stdout = String::from_utf8_lossy(&output.stdout);
@@ -1280,7 +1336,7 @@ mod tests {
         // Sleep for 10 seconds but timeout after 100ms
         let mut cmd = Command::new("sleep");
         cmd.arg("10");
-        let result = run_with_timeout(cmd, Duration::from_millis(100));
+        let result = run_with_timeout(cmd, Duration::from_millis(100), None);
 
         assert!(result.is_err());
         let err = result.unwrap_err();
@@ -1296,9 +1352,31 @@ mod tests {
         // Use a command that exits with a non-zero status
         let mut cmd = Command::new("sh");
         cmd.arg("-c").arg("exit 42");
-        let result = run_with_timeout(cmd, Duration::from_secs(5));
+        let result = run_with_timeout(cmd, Duration::from_secs(5), None);
         assert!(result.is_ok());
         let output = result.unwrap();
         assert_eq!(output.status.code(), Some(42));
+    }
+
+    #[test]
+    fn test_run_with_timeout_pipes_stdin() {
+        // Use cat to echo back stdin
+        let cmd = Command::new("cat");
+        let result = run_with_timeout(cmd, Duration::from_secs(5), Some("hello from stdin"));
+        assert!(result.is_ok());
+        let output = result.unwrap();
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert_eq!(stdout, "hello from stdin");
+    }
+
+    #[test]
+    fn test_run_with_timeout_stdin_with_newlines() {
+        // Use cat to echo back stdin with newlines
+        let cmd = Command::new("cat");
+        let result = run_with_timeout(cmd, Duration::from_secs(5), Some("line1\nline2\n"));
+        assert!(result.is_ok());
+        let output = result.unwrap();
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert_eq!(stdout, "line1\nline2\n");
     }
 }

@@ -1622,6 +1622,142 @@ fn string_ensure_capacity(ptr: *mut u8, len: u64, cap: u64, additional: u64) -> 
     }
 }
 
+// =============================================================================
+// Input Functions
+// =============================================================================
+
+/// Initial buffer size for reading lines.
+/// This is a reasonable size for most interactive input.
+const READ_LINE_INITIAL_CAPACITY: u64 = 128;
+
+/// Read a line from standard input.
+///
+/// Reads bytes from stdin (file descriptor 0) until a newline character (`\n`)
+/// is encountered or EOF is reached. Returns the line as a String (excluding
+/// the trailing newline).
+///
+/// # Returns
+///
+/// Returns the string data via sret convention. Writes to `out`:
+/// - ptr: Pointer to the string data (heap-allocated)
+/// - len: Length of the string in bytes (excluding newline)
+/// - cap: Capacity of the allocated buffer
+///
+/// # Panics
+///
+/// - If EOF is reached with no data read: panics with "unexpected end of input"
+/// - If a read error occurs: panics with "input error"
+///
+/// # ABI (sret convention)
+///
+/// ```text
+/// extern "C" fn __rue_read_line(out: *mut StringResult)
+/// ```
+///
+/// Caller allocates space for the return value and passes pointer.
+#[cfg(all(target_arch = "x86_64", target_os = "linux"))]
+#[unsafe(no_mangle)]
+#[allow(non_snake_case)]
+pub extern "C" fn __rue_read_line(out: *mut StringResult) {
+    read_line_impl(out);
+}
+
+#[cfg(all(target_arch = "aarch64", target_os = "macos"))]
+#[unsafe(no_mangle)]
+#[allow(non_snake_case)]
+pub extern "C" fn __rue_read_line(out: *mut StringResult) {
+    read_line_impl(out);
+}
+
+#[cfg(all(target_arch = "aarch64", target_os = "linux"))]
+#[unsafe(no_mangle)]
+#[allow(non_snake_case)]
+pub extern "C" fn __rue_read_line(out: *mut StringResult) {
+    read_line_impl(out);
+}
+
+/// Implementation of read_line shared across platforms.
+///
+/// This function reads from stdin byte-by-byte until:
+/// - A newline character is found (returns line without the newline)
+/// - EOF is reached with some data (returns partial line)
+/// - EOF is reached with no data (panics)
+/// - A read error occurs (panics)
+#[inline]
+fn read_line_impl(out: *mut StringResult) {
+    // Allocate initial buffer
+    let mut cap = READ_LINE_INITIAL_CAPACITY;
+    let mut ptr = heap::alloc(cap, 1);
+    if ptr.is_null() {
+        // Allocation failed - panic
+        platform::write_stderr(b"error: out of memory\n");
+        platform::exit(101);
+    }
+
+    let mut len: u64 = 0;
+    let mut byte_buf = [0u8; 1];
+
+    loop {
+        // Read one byte at a time
+        let result = platform::read(platform::STDIN, byte_buf.as_mut_ptr(), 1);
+
+        if result < 0 {
+            // Read error - free buffer and panic
+            heap::free(ptr, cap, 1);
+            platform::write_stderr(b"error: input error\n");
+            platform::exit(101);
+        }
+
+        if result == 0 {
+            // EOF reached
+            if len == 0 {
+                // EOF with no data - free buffer and panic
+                heap::free(ptr, cap, 1);
+                platform::write_stderr(b"error: unexpected end of input\n");
+                platform::exit(101);
+            }
+            // EOF with data - return partial line
+            break;
+        }
+
+        // Got a byte
+        let byte = byte_buf[0];
+
+        // Check for newline - line is complete (don't include the newline)
+        if byte == b'\n' {
+            break;
+        }
+
+        // Need to store this byte - ensure we have capacity
+        if len >= cap {
+            // Grow the buffer (2x strategy)
+            let new_cap = cap.saturating_mul(2).max(STRING_MIN_CAPACITY);
+            let new_ptr = heap::realloc(ptr, cap, new_cap, 1);
+            if new_ptr.is_null() {
+                // Realloc failed - free old buffer and panic
+                heap::free(ptr, cap, 1);
+                platform::write_stderr(b"error: out of memory\n");
+                platform::exit(101);
+            }
+            ptr = new_ptr;
+            cap = new_cap;
+        }
+
+        // Store the byte
+        unsafe {
+            *ptr.add(len as usize) = byte;
+        }
+        len += 1;
+    }
+
+    // Return the string
+    unsafe {
+        (*out).ptr = ptr;
+        (*out).len = len;
+        (*out).cap = cap;
+    }
+}
+
 // Re-export platform functions for tests
 #[cfg(all(test, target_arch = "x86_64", target_os = "linux"))]
 pub use x86_64_linux::{exit, write, write_all, write_stderr};

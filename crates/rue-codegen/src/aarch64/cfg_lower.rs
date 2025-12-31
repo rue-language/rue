@@ -1831,7 +1831,58 @@ impl<'a> CfgLower<'a> {
                 args_len,
             } => {
                 let name_str = self.interner.resolve(name);
-                if name_str == "dbg" {
+                if name_str == "read_line" {
+                    // @read_line() intrinsic - reads a line from stdin and returns String.
+                    // Uses sret convention: allocate space on stack for the result (ptr, len, cap).
+
+                    // Allocate 32 bytes on stack for sret (24 bytes for String + 8 for alignment)
+                    self.mir.push(Aarch64Inst::SubImm {
+                        dst: Operand::Physical(Reg::Sp),
+                        src: Operand::Physical(Reg::Sp),
+                        imm: 32,
+                    });
+
+                    // Move SP (pointer to sret space) to X0 as first argument
+                    self.mir.push(Aarch64Inst::MovRR {
+                        dst: Operand::Physical(Reg::X0),
+                        src: Operand::Physical(Reg::Sp),
+                    });
+
+                    // Call __rue_read_line
+                    let symbol_id = self.intern_symbol("__rue_read_line");
+                    self.mir.push(Aarch64Inst::Bl { symbol_id });
+
+                    // Load ptr, len, cap from stack into vregs
+                    let mut slot_vregs = Vec::new();
+                    for slot_idx in 0..3 {
+                        let slot_vreg = self.mir.alloc_vreg();
+                        let offset = (slot_idx * 8) as i32;
+                        self.mir.push(Aarch64Inst::Ldr {
+                            dst: Operand::Virtual(slot_vreg),
+                            base: Reg::Sp,
+                            offset,
+                        });
+                        slot_vregs.push(slot_vreg);
+                    }
+
+                    // Pop the sret space
+                    self.mir.push(Aarch64Inst::AddImm {
+                        dst: Operand::Physical(Reg::Sp),
+                        src: Operand::Physical(Reg::Sp),
+                        imm: 32,
+                    });
+
+                    // Store the slot vregs for the String value
+                    self.struct_slot_vregs.insert(value, slot_vregs.clone());
+
+                    // Create a result vreg (for the primary value representation)
+                    let result_vreg = self.mir.alloc_vreg();
+                    self.mir.push(Aarch64Inst::MovRR {
+                        dst: Operand::Virtual(result_vreg),
+                        src: Operand::Virtual(slot_vregs[0]),
+                    });
+                    self.value_map.insert(value, result_vreg);
+                } else if name_str == "dbg" {
                     let args = self.cfg.get_extra(*args_start, *args_len);
                     let arg_val = args[0];
                     let arg_type = self.cfg.get_inst(arg_val).ty;

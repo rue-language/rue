@@ -4738,6 +4738,38 @@ impl<'a> Sema<'a> {
                         });
                         Ok(AnalysisResult::new(air_ref, Type::Unit))
                     }
+                    "read_line" => {
+                        // @read_line() - reads a line from stdin and returns it as a String.
+                        // Takes no arguments, returns String.
+                        // Panics on EOF with no data or on I/O error.
+
+                        // Takes no arguments
+                        if !args.is_empty() {
+                            return Err(CompileError::new(
+                                ErrorKind::IntrinsicWrongArgCount {
+                                    name: intrinsic_name_str.to_string(),
+                                    expected: 0,
+                                    found: args.len(),
+                                },
+                                inst.span,
+                            ));
+                        }
+
+                        // Get the String type
+                        let string_type = self.builtin_string_type();
+
+                        // Create the intrinsic instruction that returns String
+                        let air_ref = air.add_inst(AirInst {
+                            data: AirInstData::Intrinsic {
+                                name: *name,
+                                args_start: 0, // No args
+                                args_len: 0,
+                            },
+                            ty: string_type,
+                            span: inst.span,
+                        });
+                        Ok(AnalysisResult::new(air_ref, string_type))
+                    }
                     _ => Err(CompileError::new(
                         ErrorKind::UnknownIntrinsic(intrinsic_name_str.to_string()),
                         inst.span,

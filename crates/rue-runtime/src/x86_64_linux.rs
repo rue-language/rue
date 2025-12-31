@@ -27,6 +27,9 @@ compile_error!("rue-runtime only supports x86-64 Linux");
 
 use core::arch::asm;
 
+/// Linux syscall number for read (see `man 2 read`).
+const SYS_READ: i64 = 0;
+
 /// Linux syscall number for write (see `man 2 write`).
 const SYS_WRITE: i64 = 1;
 
@@ -39,11 +42,14 @@ const SYS_MUNMAP: i64 = 11;
 /// Linux syscall number for exit (see `man 2 exit`).
 const SYS_EXIT: i64 = 60;
 
-/// Standard error file descriptor.
-const STDERR: u64 = 2;
+/// Standard input file descriptor.
+pub const STDIN: u64 = 0;
 
 /// Standard output file descriptor.
-const STDOUT: u64 = 1;
+pub const STDOUT: u64 = 1;
+
+/// Standard error file descriptor.
+pub const STDERR: u64 = 2;
 
 /// Write bytes to a file descriptor.
 ///
@@ -81,6 +87,47 @@ pub fn write(fd: u64, buf: *const u8, len: usize) -> i64 {
         asm!(
             "syscall",
             in("rax") SYS_WRITE,
+            in("rdi") fd,
+            in("rsi") buf,
+            in("rdx") len,
+            lateout("rax") result,
+            // syscall clobbers rcx and r11 per x86-64 ABI
+            out("rcx") _,
+            out("r11") _,
+        );
+    }
+    result
+}
+
+/// Read bytes from a file descriptor.
+///
+/// This is a thin wrapper around the Linux `read(2)` syscall.
+///
+/// # Arguments
+///
+/// * `fd` - File descriptor to read from
+/// * `buf` - Pointer to the buffer to read data into
+/// * `len` - Maximum number of bytes to read
+///
+/// # Returns
+///
+/// On success, returns the number of bytes read (0 indicates end-of-file).
+///
+/// On error, returns a negative value representing `-errno`.
+///
+/// # Safety
+///
+/// The caller must ensure:
+/// - `buf` points to a valid, writable memory region of at least `len` bytes
+/// - The memory region remains valid for the duration of the syscall
+pub fn read(fd: u64, buf: *mut u8, len: usize) -> i64 {
+    let result: i64;
+    // SAFETY: We're making a syscall with the provided arguments.
+    // The caller is responsible for ensuring buf/len are valid.
+    unsafe {
+        asm!(
+            "syscall",
+            in("rax") SYS_READ,
             in("rdi") fd,
             in("rsi") buf,
             in("rdx") len,
@@ -444,11 +491,33 @@ mod tests {
     #[test]
     fn test_syscall_constants() {
         // Verify our syscall numbers match Linux x86-64 ABI
+        assert_eq!(SYS_READ, 0);
         assert_eq!(SYS_WRITE, 1);
         assert_eq!(SYS_MMAP, 9);
         assert_eq!(SYS_MUNMAP, 11);
         assert_eq!(SYS_EXIT, 60);
+        assert_eq!(STDIN, 0);
+        assert_eq!(STDOUT, 1);
         assert_eq!(STDERR, 2);
+    }
+
+    #[test]
+    fn test_read_invalid_fd() {
+        // Reading from an invalid fd should return an error
+        let mut buf = [0u8; 16];
+        let result = read(999, buf.as_mut_ptr(), buf.len());
+        // Should return -EBADF (9) for bad file descriptor
+        assert!(result < 0);
+        assert_eq!(-result, 9); // EBADF
+    }
+
+    #[test]
+    fn test_read_zero_bytes() {
+        // Reading zero bytes should succeed and return 0
+        let mut buf = [0u8; 16];
+        // Use stdin (fd 0) - reading 0 bytes should always succeed
+        let result = read(STDIN, buf.as_mut_ptr(), 0);
+        assert_eq!(result, 0);
     }
 
     #[test]

@@ -528,6 +528,18 @@ impl<'a> ConstraintGenerator<'a> {
                     // Return type is inferred from context - create a fresh type variable
                     let result_var = self.fresh_var();
                     InferType::Var(result_var)
+                } else if intrinsic_name == "read_line" {
+                    // @read_line: returns String (same as string constants)
+                    if let Some(string_spur) = self.interner.get("String") {
+                        if let Some(&string_ty) = self.structs.get(&string_spur) {
+                            InferType::Concrete(string_ty)
+                        } else {
+                            // Fallback if String struct not found
+                            InferType::Concrete(Type::Error)
+                        }
+                    } else {
+                        InferType::Concrete(Type::Error)
+                    }
                 } else {
                     // Generate constraints for arguments (they need to be processed)
                     for arg_ref in args.iter() {

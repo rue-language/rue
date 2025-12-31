@@ -31,6 +31,9 @@ use core::arch::asm;
 /// macOS syscall number for exit (SYS_exit).
 const SYS_EXIT: u64 = 1;
 
+/// macOS syscall number for read (SYS_read).
+const SYS_READ: u64 = 3;
+
 /// macOS syscall number for write (SYS_write).
 const SYS_WRITE: u64 = 4;
 
@@ -40,11 +43,14 @@ const SYS_MMAP: u64 = 197;
 /// macOS syscall number for munmap (SYS_munmap).
 const SYS_MUNMAP: u64 = 73;
 
-/// Standard error file descriptor.
-const STDERR: u64 = 2;
+/// Standard input file descriptor.
+pub const STDIN: u64 = 0;
 
 /// Standard output file descriptor.
-const STDOUT: u64 = 1;
+pub const STDOUT: u64 = 1;
+
+/// Standard error file descriptor.
+pub const STDERR: u64 = 2;
 
 /// Write bytes to a file descriptor.
 ///
@@ -80,6 +86,53 @@ pub fn write(fd: u64, buf: *const u8, len: usize) -> i64 {
             // Check carry flag for error
             "cset {err}, cs",
             inlateout("x16") SYS_WRITE => _,
+            in("x0") fd,
+            in("x1") buf,
+            in("x2") len,
+            lateout("x0") result,
+            err = out(reg) err_flag,
+            // x17 may be clobbered by the syscall
+            out("x17") _,
+        );
+    }
+
+    // If carry flag was set, result is errno (positive), negate it
+    if err_flag != 0 { -result } else { result }
+}
+
+/// Read bytes from a file descriptor.
+///
+/// This is a thin wrapper around the macOS `read(2)` syscall.
+///
+/// # Arguments
+///
+/// * `fd` - File descriptor to read from
+/// * `buf` - Pointer to the buffer to read data into
+/// * `len` - Maximum number of bytes to read
+///
+/// # Returns
+///
+/// On success, returns the number of bytes read (0 indicates end-of-file).
+///
+/// On error, returns a negative value representing `-errno`.
+///
+/// # Safety
+///
+/// The caller must ensure:
+/// - `buf` points to a valid, writable memory region of at least `len` bytes
+/// - The memory region remains valid for the duration of the syscall
+pub fn read(fd: u64, buf: *mut u8, len: usize) -> i64 {
+    let result: i64;
+    let err_flag: u64;
+
+    // SAFETY: We're making a syscall with the provided arguments.
+    // The caller is responsible for ensuring buf/len are valid.
+    unsafe {
+        asm!(
+            "svc #0x80",
+            // Check carry flag for error
+            "cset {err}, cs",
+            inlateout("x16") SYS_READ => _,
             in("x0") fd,
             in("x1") buf,
             in("x2") len,
@@ -383,11 +436,32 @@ mod tests {
     fn test_syscall_constants() {
         // Verify our syscall numbers match macOS
         assert_eq!(SYS_EXIT, 1);
+        assert_eq!(SYS_READ, 3);
         assert_eq!(SYS_WRITE, 4);
         assert_eq!(SYS_MMAP, 197);
         assert_eq!(SYS_MUNMAP, 73);
-        assert_eq!(STDERR, 2);
+        assert_eq!(STDIN, 0);
         assert_eq!(STDOUT, 1);
+        assert_eq!(STDERR, 2);
+    }
+
+    #[test]
+    fn test_read_invalid_fd() {
+        // Reading from an invalid fd should return an error
+        let mut buf = [0u8; 16];
+        let result = read(999, buf.as_mut_ptr(), buf.len());
+        // Should return -EBADF (9) for bad file descriptor
+        assert!(result < 0);
+        assert_eq!(-result, 9); // EBADF
+    }
+
+    #[test]
+    fn test_read_zero_bytes() {
+        // Reading zero bytes should succeed and return 0
+        let mut buf = [0u8; 16];
+        // Use stdin (fd 0) - reading 0 bytes should always succeed
+        let result = read(STDIN, buf.as_mut_ptr(), 0);
+        assert_eq!(result, 0);
     }
 
     #[test]

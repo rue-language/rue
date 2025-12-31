@@ -215,3 +215,63 @@ fn main() -> i32 {
     0
 }
 ```
+
+## `@read_line`
+
+{{ rule(id="4.13:33", cat="normative") }}
+
+The `@read_line` intrinsic reads a line of text from standard input.
+
+{{ rule(id="4.13:34", cat="normative") }}
+
+`@read_line` accepts no arguments.
+
+{{ rule(id="4.13:35", cat="normative") }}
+
+The return type of `@read_line` is `String`.
+
+{{ rule(id="4.13:36", cat="dynamic-semantics") }}
+
+`@read_line` reads bytes from standard input until a newline character (`\n`) is encountered or end-of-file is reached.
+
+{{ rule(id="4.13:37", cat="dynamic-semantics") }}
+
+The returned `String` does **not** include the trailing newline character.
+
+{{ rule(id="4.13:38", cat="dynamic-semantics") }}
+
+If end-of-file is reached with some data read, the partial line is returned.
+
+{{ rule(id="4.13:39", cat="dynamic-semantics") }}
+
+If end-of-file is reached with no data read, a runtime panic occurs with the message "unexpected end of input".
+
+{{ rule(id="4.13:40", cat="informative") }}
+
+If a read error occurs, a runtime panic occurs with the message "input error". (This behavior is documented but not tested, as I/O errors cannot be reliably simulated in portable test environments.)
+
+{{ rule(id="4.13:41") }}
+
+```rue
+fn main() -> i32 {
+    @dbg("What is your name?");
+    let name = @read_line();
+    @dbg("Hello, ");
+    @dbg(name);
+    0
+}
+```
+
+{{ rule(id="4.13:42") }}
+
+Reading multiple lines:
+
+```rue
+fn main() -> i32 {
+    let line1 = @read_line();  // First line
+    let line2 = @read_line();  // Second line
+    @dbg(line1);
+    @dbg(line2);
+    0
+}
+```

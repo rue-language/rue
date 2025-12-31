@@ -527,3 +527,153 @@ fn main() -> i32 {
 """
 exit_code = 101
 stderr_contains = "integer cast overflow"
+
+# =============================================================================
+# @read_line Intrinsic
+# =============================================================================
+
+[[case]]
+name = "read_line_returns_string"
+spec = ["4.13:33", "4.13:35"]
+source = """
+fn takes_string(s: String) -> i32 { 0 }
+fn main() -> i32 {
+    // Type checking: @read_line returns String
+    let line: String = @read_line();
+    takes_string(@read_line())
+}
+"""
+# This test will hang waiting for stdin input, so we use compile_only=true
+# to verify it compiles, but don't actually run it
+compile_only = true
+
+[[case]]
+name = "read_line_no_args"
+spec = ["4.13:34"]
+source = """
+fn main() -> i32 {
+    // Verify @read_line takes no arguments
+    let line: String = @read_line();
+    0
+}
+"""
+compile_only = true
+
+[[case]]
+name = "read_line_wrong_arg_count_one"
+spec = ["4.13:4", "4.13:34"]
+source = """
+fn main() -> i32 {
+    let line: String = @read_line(42);
+    0
+}
+"""
+compile_fail = true
+error_contains = "argument"
+
+[[case]]
+name = "read_line_wrong_arg_count_two"
+spec = ["4.13:4", "4.13:34"]
+source = """
+fn main() -> i32 {
+    let line: String = @read_line(1, 2);
+    0
+}
+"""
+compile_fail = true
+error_contains = "argument"
+
+# =============================================================================
+# @read_line Runtime Behavior
+# =============================================================================
+
+[[case]]
+name = "read_line_basic_input"
+spec = ["4.13:33", "4.13:36", "4.13:37"]
+source = """
+fn main() -> i32 {
+    let line = @read_line();
+    @dbg(line);
+    0
+}
+"""
+stdin = "Hello World\n"
+expected_stdout = "Hello World"
+exit_code = 0
+
+[[case]]
+name = "read_line_strips_newline"
+spec = ["4.13:37"]
+source = """
+fn main() -> i32 {
+    let line = @read_line();
+    @dbg(line);
+    0
+}
+"""
+stdin = "test\n"
+expected_stdout = "test"
+exit_code = 0
+
+[[case]]
+name = "read_line_multiple_lines"
+spec = ["4.13:36"]
+source = """
+fn main() -> i32 {
+    let line1 = @read_line();
+    let line2 = @read_line();
+    @dbg(line1);
+    @dbg(line2);
+    0
+}
+"""
+stdin = "first\nsecond\n"
+expected_stdout = """
+first
+second
+"""
+exit_code = 0
+
+[[case]]
+name = "read_line_partial_line_at_eof"
+spec = ["4.13:38"]
+source = """
+fn main() -> i32 {
+    let line = @read_line();
+    @dbg(line);
+    0
+}
+"""
+# No trailing newline - should still return the partial line
+stdin = "partial"
+expected_stdout = "partial"
+exit_code = 0
+
+[[case]]
+name = "read_line_empty_line"
+spec = ["4.13:36", "4.13:37"]
+source = """
+fn main() -> i32 {
+    let line = @read_line();
+    @dbg(line);
+    0
+}
+"""
+# Just a newline - should return empty string
+stdin = "\n"
+expected_stdout = ""
+exit_code = 0
+
+[[case]]
+name = "read_line_eof_no_data_panics"
+spec = ["4.13:39"]
+source = """
+fn main() -> i32 {
+    let line = @read_line();
+    0
+}
+"""
+# Empty stdin - should panic
+stdin = ""
+exit_code = 101
+stderr_contains = "unexpected end of input"
