@@ -107,11 +107,11 @@ fn compute_live_values(cfg: &Cfg) -> BitSet {
 
     // Pass 2: Mark all values used by terminators as live
     for block in cfg.blocks() {
-        for value in terminator_uses(&block.terminator) {
+        visit_terminator_uses(&block.terminator, |value| {
             if live.insert(value.as_u32()) {
                 worklist.push(value);
             }
-        }
+        });
         // Block parameters are also live if the block is reachable
         for (param_val, _) in &block.params {
             if live.insert(param_val.as_u32()) {
@@ -122,11 +122,11 @@ fn compute_live_values(cfg: &Cfg) -> BitSet {
 
     // Pass 3: Transitively mark all values used by live instructions
     while let Some(value) = worklist.pop() {
-        for used_value in instruction_uses(cfg, value) {
+        visit_instruction_uses(cfg, value, |used_value| {
             if live.insert(used_value.as_u32()) {
                 worklist.push(used_value);
             }
-        }
+        });
     }
 
     live
@@ -165,36 +165,55 @@ fn has_side_effects(cfg: &Cfg, value: CfgValue) -> bool {
     }
 }
 
-/// Get values used by a terminator.
-fn terminator_uses(term: &Terminator) -> Vec<CfgValue> {
+/// Visit values used by a terminator.
+///
+/// Calls the provided function for each value used by the terminator.
+/// This avoids allocating a Vec for each call.
+#[inline]
+fn visit_terminator_uses(term: &Terminator, mut f: impl FnMut(CfgValue)) {
     match term {
-        Terminator::Goto { args, .. } => args.clone(),
+        Terminator::Goto { args, .. } => {
+            for arg in args {
+                f(*arg);
+            }
+        }
         Terminator::Branch {
             cond,
             then_args,
             else_args,
             ..
         } => {
-            let mut uses = vec![*cond];
-            uses.extend(then_args);
-            uses.extend(else_args);
-            uses
+            f(*cond);
+            for arg in then_args {
+                f(*arg);
+            }
+            for arg in else_args {
+                f(*arg);
+            }
         }
-        Terminator::Switch { scrutinee, .. } => vec![*scrutinee],
-        Terminator::Return { value } => value.into_iter().copied().collect(),
-        Terminator::Unreachable | Terminator::None => vec![],
+        Terminator::Switch { scrutinee, .. } => f(*scrutinee),
+        Terminator::Return { value } => {
+            if let Some(v) = value {
+                f(*v);
+            }
+        }
+        Terminator::Unreachable | Terminator::None => {}
     }
 }
 
-/// Get values used by an instruction.
-fn instruction_uses(cfg: &Cfg, value: CfgValue) -> Vec<CfgValue> {
+/// Visit values used by an instruction.
+///
+/// Calls the provided function for each value used by the instruction.
+/// This avoids allocating a Vec for each call.
+#[inline]
+fn visit_instruction_uses(cfg: &Cfg, value: CfgValue, mut f: impl FnMut(CfgValue)) {
     match &cfg.get_inst(value).data {
         // Constants and parameters have no uses
         CfgInstData::Const(_)
         | CfgInstData::BoolConst(_)
         | CfgInstData::StringConst(_)
         | CfgInstData::Param { .. }
-        | CfgInstData::BlockParam { .. } => vec![],
+        | CfgInstData::BlockParam { .. } => {}
 
         // Binary operations
         CfgInstData::Add(lhs, rhs)
@@ -212,64 +231,88 @@ fn instruction_uses(cfg: &Cfg, value: CfgValue) -> Vec<CfgValue> {
         | CfgInstData::BitOr(lhs, rhs)
         | CfgInstData::BitXor(lhs, rhs)
         | CfgInstData::Shl(lhs, rhs)
-        | CfgInstData::Shr(lhs, rhs) => vec![*lhs, *rhs],
+        | CfgInstData::Shr(lhs, rhs) => {
+            f(*lhs);
+            f(*rhs);
+        }
 
         // Unary operations
-        CfgInstData::Neg(v) | CfgInstData::Not(v) | CfgInstData::BitNot(v) => vec![*v],
+        CfgInstData::Neg(v) | CfgInstData::Not(v) | CfgInstData::BitNot(v) => f(*v),
 
         // Variable operations
-        CfgInstData::Alloc { init, .. } => vec![*init],
-        CfgInstData::Load { .. } => vec![],
-        CfgInstData::Store { value, .. } => vec![*value],
-        CfgInstData::ParamStore { value, .. } => vec![*value],
+        CfgInstData::Alloc { init, .. } => f(*init),
+        CfgInstData::Load { .. } => {}
+        CfgInstData::Store { value, .. } => f(*value),
+        CfgInstData::ParamStore { value, .. } => f(*value),
 
         // Function calls
         CfgInstData::Call {
             args_start,
             args_len,
             ..
-        } => cfg
-            .get_call_args(*args_start, *args_len)
-            .iter()
-            .map(|a| a.value)
-            .collect(),
+        } => {
+            for arg in cfg.get_call_args(*args_start, *args_len) {
+                f(arg.value);
+            }
+        }
         CfgInstData::Intrinsic {
             args_start,
             args_len,
             ..
-        } => cfg.get_extra(*args_start, *args_len).to_vec(),
+        } => {
+            for &v in cfg.get_extra(*args_start, *args_len) {
+                f(v);
+            }
+        }
 
         // Struct operations
         CfgInstData::StructInit {
             fields_start,
             fields_len,
             ..
-        } => cfg.get_extra(*fields_start, *fields_len).to_vec(),
-        CfgInstData::FieldGet { base, .. } => vec![*base],
-        CfgInstData::FieldSet { value, .. } => vec![*value],
-        CfgInstData::ParamFieldSet { value, .. } => vec![*value],
+        } => {
+            for &v in cfg.get_extra(*fields_start, *fields_len) {
+                f(v);
+            }
+        }
+        CfgInstData::FieldGet { base, .. } => f(*base),
+        CfgInstData::FieldSet { value, .. } => f(*value),
+        CfgInstData::ParamFieldSet { value, .. } => f(*value),
 
         // Array operations
         CfgInstData::ArrayInit {
             elements_start,
             elements_len,
             ..
-        } => cfg.get_extra(*elements_start, *elements_len).to_vec(),
-        CfgInstData::IndexGet { base, index, .. } => vec![*base, *index],
-        CfgInstData::IndexSet { index, value, .. } => vec![*index, *value],
-        CfgInstData::ParamIndexSet { index, value, .. } => vec![*index, *value],
+        } => {
+            for &v in cfg.get_extra(*elements_start, *elements_len) {
+                f(v);
+            }
+        }
+        CfgInstData::IndexGet { base, index, .. } => {
+            f(*base);
+            f(*index);
+        }
+        CfgInstData::IndexSet { index, value, .. } => {
+            f(*index);
+            f(*value);
+        }
+        CfgInstData::ParamIndexSet { index, value, .. } => {
+            f(*index);
+            f(*value);
+        }
 
         // Enum operations
-        CfgInstData::EnumVariant { .. } => vec![],
+        CfgInstData::EnumVariant { .. } => {}
 
         // Type conversion
-        CfgInstData::IntCast { value, .. } => vec![*value],
+        CfgInstData::IntCast { value, .. } => f(*value),
 
         // Drop
-        CfgInstData::Drop { value } => vec![*value],
+        CfgInstData::Drop { value } => f(*value),
 
         // Storage liveness
-        CfgInstData::StorageLive { .. } | CfgInstData::StorageDead { .. } => vec![],
+        CfgInstData::StorageLive { .. } | CfgInstData::StorageDead { .. } => {}
     }
 }
 
