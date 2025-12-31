@@ -107,7 +107,7 @@ fn compute_live_values(cfg: &Cfg) -> BitSet {
 
     // Pass 2: Mark all values used by terminators as live
     for block in cfg.blocks() {
-        visit_terminator_uses(&block.terminator, |value| {
+        visit_terminator_uses(cfg, &block.terminator, |value| {
             if live.insert(value.as_u32()) {
                 worklist.push(value);
             }
@@ -170,25 +170,31 @@ fn has_side_effects(cfg: &Cfg, value: CfgValue) -> bool {
 /// Calls the provided function for each value used by the terminator.
 /// This avoids allocating a Vec for each call.
 #[inline]
-fn visit_terminator_uses(term: &Terminator, mut f: impl FnMut(CfgValue)) {
+fn visit_terminator_uses(cfg: &Cfg, term: &Terminator, mut f: impl FnMut(CfgValue)) {
     match term {
-        Terminator::Goto { args, .. } => {
-            for arg in args {
-                f(*arg);
+        Terminator::Goto {
+            args_start,
+            args_len,
+            ..
+        } => {
+            for &arg in cfg.get_extra(*args_start, *args_len) {
+                f(arg);
             }
         }
         Terminator::Branch {
             cond,
-            then_args,
-            else_args,
+            then_args_start,
+            then_args_len,
+            else_args_start,
+            else_args_len,
             ..
         } => {
             f(*cond);
-            for arg in then_args {
-                f(*arg);
+            for &arg in cfg.get_extra(*then_args_start, *then_args_len) {
+                f(arg);
             }
-            for arg in else_args {
-                f(*arg);
+            for &arg in cfg.get_extra(*else_args_start, *else_args_len) {
+                f(arg);
             }
         }
         Terminator::Switch { scrutinee, .. } => f(*scrutinee),
@@ -377,8 +383,13 @@ fn compute_reachable_blocks(cfg: &Cfg) -> BitSet {
                 worklist.push(*then_block);
                 worklist.push(*else_block);
             }
-            Terminator::Switch { cases, default, .. } => {
-                for (_, target) in cases {
+            Terminator::Switch {
+                cases_start,
+                cases_len,
+                default,
+                ..
+            } => {
+                for (_, target) in cfg.get_switch_cases(*cases_start, *cases_len) {
                     worklist.push(*target);
                 }
                 worklist.push(*default);

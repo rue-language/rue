@@ -549,7 +549,7 @@ impl<'a> CfgLower<'a> {
             let term_rationale = self.get_terminator_rationale(&block.terminator);
 
             block_info.terminator = Some(TerminatorLoweringDecision {
-                terminator_desc: format_terminator(&block.terminator),
+                terminator_desc: format_terminator(self.cfg, &block.terminator),
                 mir_insts: term_mir_insts,
                 rationale: term_rationale,
             });
@@ -631,8 +631,8 @@ impl<'a> CfgLower<'a> {
                     None
                 }
             }
-            Terminator::Switch { cases, .. } => {
-                Some(format!("Linear scan through {} cases", cases.len()))
+            Terminator::Switch { cases_len, .. } => {
+                Some(format!("Linear scan through {} cases", cases_len))
             }
             _ => None,
         }
@@ -3372,8 +3372,13 @@ impl<'a> CfgLower<'a> {
     /// Lower a block terminator.
     fn lower_terminator(&mut self, block: &BasicBlock) {
         match &block.terminator {
-            Terminator::Goto { target, args } => {
+            Terminator::Goto {
+                target,
+                args_start,
+                args_len,
+            } => {
                 // Copy args to target's block params
+                let args = self.cfg.get_extra(*args_start, *args_len);
                 for (i, &arg) in args.iter().enumerate() {
                     let arg_type = self.cfg.get_inst(arg).ty;
                     if matches!(arg_type, Type::Struct(_)) {
@@ -3402,9 +3407,11 @@ impl<'a> CfgLower<'a> {
             Terminator::Branch {
                 cond,
                 then_block,
-                then_args,
+                then_args_start,
+                then_args_len,
                 else_block,
-                else_args,
+                else_args_start,
+                else_args_len,
             } => {
                 let cond_vreg = self.get_vreg(*cond);
 
@@ -3418,6 +3425,7 @@ impl<'a> CfgLower<'a> {
                 });
 
                 // Copy then_args to then_block's params
+                let then_args = self.cfg.get_extra(*then_args_start, *then_args_len);
                 for (i, &arg) in then_args.iter().enumerate() {
                     let arg_type = self.cfg.get_inst(arg).ty;
                     if matches!(arg_type, Type::Struct(_)) {
@@ -3443,6 +3451,7 @@ impl<'a> CfgLower<'a> {
                 self.mir.push(Aarch64Inst::Label {
                     id: else_setup_label,
                 });
+                let else_args = self.cfg.get_extra(*else_args_start, *else_args_len);
                 for (i, &arg) in else_args.iter().enumerate() {
                     let arg_type = self.cfg.get_inst(arg).ty;
                     if matches!(arg_type, Type::Struct(_)) {
@@ -3470,12 +3479,14 @@ impl<'a> CfgLower<'a> {
 
             Terminator::Switch {
                 scrutinee,
-                cases,
+                cases_start,
+                cases_len,
                 default,
             } => {
                 let scrutinee_vreg = self.get_vreg(*scrutinee);
 
                 // Generate comparison and jump for each case
+                let cases = self.cfg.get_switch_cases(*cases_start, *cases_len);
                 for (value, target) in cases {
                     // Compare scrutinee with case value (supports signed values for negative patterns)
                     let imm_vreg = self.mir.alloc_vreg();

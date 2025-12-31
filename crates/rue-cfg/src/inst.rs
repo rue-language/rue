@@ -318,30 +318,47 @@ pub enum CfgInstData {
 /// Block terminator - how control leaves a basic block.
 ///
 /// Terminators are the ONLY place where control flow happens in the CFG.
-#[derive(Debug, Clone)]
+///
+/// Block arguments are stored in the CFG's `extra` array for efficiency.
+/// Use `Cfg::get_goto_args()`, `Cfg::get_branch_then_args()`, and
+/// `Cfg::get_branch_else_args()` to retrieve the arguments.
+#[derive(Debug, Clone, Copy)]
 pub enum Terminator {
     /// Unconditional jump to another block.
+    /// Arguments are stored in Cfg's extra array.
     Goto {
         target: BlockId,
-        /// Arguments to pass to target block's parameters
-        args: Vec<CfgValue>,
+        /// Start index into Cfg's extra array
+        args_start: u32,
+        /// Number of arguments
+        args_len: u32,
     },
 
     /// Conditional branch.
+    /// Arguments for each branch are stored in Cfg's extra array.
     Branch {
         cond: CfgValue,
         then_block: BlockId,
-        then_args: Vec<CfgValue>,
+        /// Start index into Cfg's extra array for then branch args
+        then_args_start: u32,
+        /// Number of arguments for then branch
+        then_args_len: u32,
         else_block: BlockId,
-        else_args: Vec<CfgValue>,
+        /// Start index into Cfg's extra array for else branch args
+        else_args_start: u32,
+        /// Number of arguments for else branch
+        else_args_len: u32,
     },
 
     /// Multi-way branch (switch/match).
+    /// Cases are stored in Cfg's switch_cases array.
     Switch {
         /// The value to switch on
         scrutinee: CfgValue,
-        /// Cases: (value, target_block) - values are signed to support negative patterns
-        cases: Vec<(i64, BlockId)>,
+        /// Start index into Cfg's switch_cases array
+        cases_start: u32,
+        /// Number of cases
+        cases_len: u32,
         /// Default block (for wildcard pattern)
         default: BlockId,
     },
@@ -397,12 +414,15 @@ pub struct Cfg {
     return_type: Type,
     /// All instructions (values) - blocks reference these by CfgValue
     values: Vec<CfgInst>,
-    /// Extra storage for variable-length CfgValue data (struct fields, array elements, intrinsic args).
-    /// Instructions store (start, len) indices into this array.
+    /// Extra storage for variable-length CfgValue data (struct fields, array elements, intrinsic args,
+    /// and terminator block arguments). Instructions and terminators store (start, len) indices into this array.
     extra: Vec<CfgValue>,
     /// Extra storage for call arguments (CfgCallArg).
     /// Call instructions store (start, len) indices into this array.
     call_args: Vec<CfgCallArg>,
+    /// Extra storage for switch cases (value, target block pairs).
+    /// Switch terminators store (start, len) indices into this array.
+    switch_cases: Vec<(i64, BlockId)>,
     /// Number of local variable slots
     num_locals: u32,
     /// Number of parameter slots
@@ -429,6 +449,7 @@ impl Cfg {
             values: Vec::new(),
             extra: Vec::new(),
             call_args: Vec::new(),
+            switch_cases: Vec::new(),
             num_locals,
             num_params,
             fn_name,
@@ -551,6 +572,76 @@ impl Cfg {
         &self.call_args[start as usize..(start + len) as usize]
     }
 
+    /// Add switch cases to the switch_cases array and return (start, len).
+    ///
+    /// Used for Switch terminator cases.
+    pub fn push_switch_cases(
+        &mut self,
+        cases: impl IntoIterator<Item = (i64, BlockId)>,
+    ) -> (u32, u32) {
+        let start = self.switch_cases.len() as u32;
+        self.switch_cases.extend(cases);
+        let len = self.switch_cases.len() as u32 - start;
+        (start, len)
+    }
+
+    /// Get a slice from the switch_cases array.
+    #[inline]
+    pub fn get_switch_cases(&self, start: u32, len: u32) -> &[(i64, BlockId)] {
+        &self.switch_cases[start as usize..(start + len) as usize]
+    }
+
+    /// Get the block arguments from a Goto terminator.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the terminator is not a Goto.
+    #[inline]
+    pub fn get_goto_args(&self, term: &Terminator) -> &[CfgValue] {
+        match term {
+            Terminator::Goto {
+                args_start,
+                args_len,
+                ..
+            } => self.get_extra(*args_start, *args_len),
+            _ => panic!("get_goto_args called on non-Goto terminator"),
+        }
+    }
+
+    /// Get the then branch arguments from a Branch terminator.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the terminator is not a Branch.
+    #[inline]
+    pub fn get_branch_then_args(&self, term: &Terminator) -> &[CfgValue] {
+        match term {
+            Terminator::Branch {
+                then_args_start,
+                then_args_len,
+                ..
+            } => self.get_extra(*then_args_start, *then_args_len),
+            _ => panic!("get_branch_then_args called on non-Branch terminator"),
+        }
+    }
+
+    /// Get the else branch arguments from a Branch terminator.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the terminator is not a Branch.
+    #[inline]
+    pub fn get_branch_else_args(&self, term: &Terminator) -> &[CfgValue] {
+        match term {
+            Terminator::Branch {
+                else_args_start,
+                else_args_len,
+                ..
+            } => self.get_extra(*else_args_start, *else_args_len),
+            _ => panic!("get_branch_else_args called on non-Branch terminator"),
+        }
+    }
+
     /// Add an instruction to a block.
     pub fn add_inst_to_block(&mut self, block: BlockId, inst: CfgInst) -> CfgValue {
         let value = self.add_inst(inst);
@@ -614,8 +705,13 @@ impl Cfg {
                     edges.push((block.id, *then_block));
                     edges.push((block.id, *else_block));
                 }
-                Terminator::Switch { cases, default, .. } => {
-                    for (_, target) in cases {
+                Terminator::Switch {
+                    cases_start,
+                    cases_len,
+                    default,
+                    ..
+                } => {
+                    for (_, target) in self.get_switch_cases(*cases_start, *cases_len) {
                         edges.push((block.id, *target));
                     }
                     edges.push((block.id, *default));
@@ -676,8 +772,13 @@ impl fmt::Display for Cfg {
             // Print terminator
             write!(f, "    ")?;
             match &block.terminator {
-                Terminator::Goto { target, args } => {
+                Terminator::Goto {
+                    target,
+                    args_start,
+                    args_len,
+                } => {
                     write!(f, "goto {}", target)?;
+                    let args = self.get_extra(*args_start, *args_len);
                     if !args.is_empty() {
                         write!(f, "(")?;
                         for (i, arg) in args.iter().enumerate() {
@@ -692,11 +793,14 @@ impl fmt::Display for Cfg {
                 Terminator::Branch {
                     cond,
                     then_block,
-                    then_args,
+                    then_args_start,
+                    then_args_len,
                     else_block,
-                    else_args,
+                    else_args_start,
+                    else_args_len,
                 } => {
                     write!(f, "branch {}, {}", cond, then_block)?;
+                    let then_args = self.get_extra(*then_args_start, *then_args_len);
                     if !then_args.is_empty() {
                         write!(f, "(")?;
                         for (i, arg) in then_args.iter().enumerate() {
@@ -708,6 +812,7 @@ impl fmt::Display for Cfg {
                         write!(f, ")")?;
                     }
                     write!(f, ", {}", else_block)?;
+                    let else_args = self.get_extra(*else_args_start, *else_args_len);
                     if !else_args.is_empty() {
                         write!(f, "(")?;
                         for (i, arg) in else_args.iter().enumerate() {
@@ -721,10 +826,12 @@ impl fmt::Display for Cfg {
                 }
                 Terminator::Switch {
                     scrutinee,
-                    cases,
+                    cases_start,
+                    cases_len,
                     default,
                 } => {
                     write!(f, "switch {} [", scrutinee)?;
+                    let cases = self.get_switch_cases(*cases_start, *cases_len);
                     for (i, (val, target)) in cases.iter().enumerate() {
                         if i > 0 {
                             write!(f, ", ")?;
@@ -973,6 +1080,15 @@ mod tests {
             "CfgInstData grew beyond 32 bytes: {}",
             cfg_inst_data_size
         );
+    }
+
+    #[test]
+    fn test_terminator_size() {
+        // Terminator should be a reasonable size (no heap allocations inside)
+        // 32 bytes: 8 (CfgValue cond) + 4+4+4+4 (BlockId, start, len x2) + 4+4+4 (else) = 36, rounded to 40
+        // Actually: Branch is the largest with cond(4) + then_block(4) + then_start(4) + then_len(4) + else_block(4) + else_start(4) + else_len(4) = 28 bytes + discriminant
+        let size = std::mem::size_of::<Terminator>();
+        assert!(size <= 40, "Terminator is {} bytes, expected <= 40", size);
     }
 
     #[test]

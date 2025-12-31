@@ -374,14 +374,19 @@ impl<'a> CfgBuilder<'a> {
 
                 // Branch: if lhs is false, go to join with false; else evaluate rhs
                 let false_val = self.emit(CfgInstData::BoolConst(false), Type::Bool, span);
+                let (then_args_start, then_args_len) = self.cfg.push_extra(std::iter::empty());
+                let (else_args_start, else_args_len) =
+                    self.cfg.push_extra(std::iter::once(false_val));
                 self.cfg.set_terminator(
                     self.current_block,
                     Terminator::Branch {
                         cond: lhs_val,
                         then_block: rhs_block,
-                        then_args: vec![],
+                        then_args_start,
+                        then_args_len,
                         else_block: join_block,
-                        else_args: vec![false_val],
+                        else_args_start,
+                        else_args_len,
                     },
                 );
 
@@ -390,11 +395,13 @@ impl<'a> CfgBuilder<'a> {
                 let Some(rhs_val) = self.lower_value(*rhs) else {
                     return Self::diverged();
                 };
+                let (args_start, args_len) = self.cfg.push_extra(std::iter::once(rhs_val));
                 self.cfg.set_terminator(
                     self.current_block,
                     Terminator::Goto {
                         target: join_block,
-                        args: vec![rhs_val],
+                        args_start,
+                        args_len,
                     },
                 );
 
@@ -421,14 +428,19 @@ impl<'a> CfgBuilder<'a> {
 
                 // Branch: if lhs is true, go to join with true; else evaluate rhs
                 let true_val = self.emit(CfgInstData::BoolConst(true), Type::Bool, span);
+                let (then_args_start, then_args_len) =
+                    self.cfg.push_extra(std::iter::once(true_val));
+                let (else_args_start, else_args_len) = self.cfg.push_extra(std::iter::empty());
                 self.cfg.set_terminator(
                     self.current_block,
                     Terminator::Branch {
                         cond: lhs_val,
                         then_block: join_block,
-                        then_args: vec![true_val],
+                        then_args_start,
+                        then_args_len,
                         else_block: rhs_block,
-                        else_args: vec![],
+                        else_args_start,
+                        else_args_len,
                     },
                 );
 
@@ -437,11 +449,13 @@ impl<'a> CfgBuilder<'a> {
                 let Some(rhs_val) = self.lower_value(*rhs) else {
                     return Self::diverged();
                 };
+                let (args_start, args_len) = self.cfg.push_extra(std::iter::once(rhs_val));
                 self.cfg.set_terminator(
                     self.current_block,
                     Terminator::Goto {
                         target: join_block,
-                        args: vec![rhs_val],
+                        args_start,
+                        args_len,
                     },
                 );
 
@@ -959,14 +973,18 @@ impl<'a> CfgBuilder<'a> {
                 let else_type = else_value.map(|e| self.air.get(e).ty);
 
                 // Branch to then/else
+                let (then_args_start, then_args_len) = self.cfg.push_extra(std::iter::empty());
+                let (else_args_start, else_args_len) = self.cfg.push_extra(std::iter::empty());
                 self.cfg.set_terminator(
                     self.current_block,
                     Terminator::Branch {
                         cond: cond_val,
                         then_block,
-                        then_args: vec![],
+                        then_args_start,
+                        then_args_len,
                         else_block,
-                        else_args: vec![],
+                        else_args_start,
+                        else_args_len,
                     },
                 );
 
@@ -1016,7 +1034,7 @@ impl<'a> CfgBuilder<'a> {
 
                 // Wire up non-divergent branches to join
                 if !then_diverged {
-                    let args = if let Some(val) = then_result.value {
+                    let args: Vec<CfgValue> = if let Some(val) = then_result.value {
                         if result_param.is_some() {
                             vec![val]
                         } else {
@@ -1025,17 +1043,19 @@ impl<'a> CfgBuilder<'a> {
                     } else {
                         vec![]
                     };
+                    let (args_start, args_len) = self.cfg.push_extra(args);
                     self.cfg.set_terminator(
                         then_exit_block,
                         Terminator::Goto {
                             target: join_block,
-                            args,
+                            args_start,
+                            args_len,
                         },
                     );
                 }
 
                 if !else_diverged {
-                    let args = if let Some(val) = else_result.value {
+                    let args: Vec<CfgValue> = if let Some(val) = else_result.value {
                         if result_param.is_some() {
                             vec![val]
                         } else {
@@ -1044,11 +1064,13 @@ impl<'a> CfgBuilder<'a> {
                     } else {
                         vec![]
                     };
+                    let (args_start, args_len) = self.cfg.push_extra(args);
                     self.cfg.set_terminator(
                         else_exit_block,
                         Terminator::Goto {
                             target: join_block,
-                            args,
+                            args_start,
+                            args_len,
                         },
                     );
                 }
@@ -1071,11 +1093,13 @@ impl<'a> CfgBuilder<'a> {
                 let exit_block = self.cfg.new_block();
 
                 // Jump to header
+                let (args_start, args_len) = self.cfg.push_extra(std::iter::empty());
                 self.cfg.set_terminator(
                     self.current_block,
                     Terminator::Goto {
                         target: header_block,
-                        args: vec![],
+                        args_start,
+                        args_len,
                     },
                 );
 
@@ -1095,14 +1119,18 @@ impl<'a> CfgBuilder<'a> {
                 };
 
                 // Branch: if true go to body, if false exit
+                let (then_args_start, then_args_len) = self.cfg.push_extra(std::iter::empty());
+                let (else_args_start, else_args_len) = self.cfg.push_extra(std::iter::empty());
                 self.cfg.set_terminator(
                     self.current_block,
                     Terminator::Branch {
                         cond: cond_val,
                         then_block: body_block,
-                        then_args: vec![],
+                        then_args_start,
+                        then_args_len,
                         else_block: exit_block,
-                        else_args: vec![],
+                        else_args_start,
+                        else_args_len,
                     },
                 );
 
@@ -1112,11 +1140,13 @@ impl<'a> CfgBuilder<'a> {
 
                 // After body, go back to header (unless diverged)
                 if !matches!(body_result.continuation, Continuation::Diverged) {
+                    let (args_start, args_len) = self.cfg.push_extra(std::iter::empty());
                     self.cfg.set_terminator(
                         self.current_block,
                         Terminator::Goto {
                             target: header_block,
-                            args: vec![],
+                            args_start,
+                            args_len,
                         },
                     );
                 }
@@ -1148,11 +1178,13 @@ impl<'a> CfgBuilder<'a> {
                 let exit_block = self.cfg.new_block();
 
                 // Jump to body
+                let (args_start, args_len) = self.cfg.push_extra(std::iter::empty());
                 self.cfg.set_terminator(
                     self.current_block,
                     Terminator::Goto {
                         target: body_block,
-                        args: vec![],
+                        args_start,
+                        args_len,
                     },
                 );
 
@@ -1171,11 +1203,13 @@ impl<'a> CfgBuilder<'a> {
 
                 // After body, go back to start (unless diverged via return/break/continue)
                 if !matches!(body_result.continuation, Continuation::Diverged) {
+                    let (args_start, args_len) = self.cfg.push_extra(std::iter::empty());
                     self.cfg.set_terminator(
                         self.current_block,
                         Terminator::Goto {
                             target: body_block,
-                            args: vec![],
+                            args_start,
+                            args_len,
                         },
                     );
                 }
@@ -1264,11 +1298,13 @@ impl<'a> CfgBuilder<'a> {
                 });
 
                 // Set the switch terminator on current block
+                let (cases_start, cases_len) = self.cfg.push_switch_cases(switch_cases);
                 self.cfg.set_terminator(
                     self.current_block,
                     Terminator::Switch {
                         scrutinee: scrutinee_val,
-                        cases: switch_cases,
+                        cases_start,
+                        cases_len,
                         default,
                     },
                 );
@@ -1309,7 +1345,7 @@ impl<'a> CfgBuilder<'a> {
                 // Wire up non-divergent arms to join
                 for (exit_block, body_result, diverged) in arm_results {
                     if !diverged {
-                        let args = if let Some(val) = body_result.value {
+                        let args: Vec<CfgValue> = if let Some(val) = body_result.value {
                             if result_param.is_some() {
                                 vec![val]
                             } else {
@@ -1318,11 +1354,13 @@ impl<'a> CfgBuilder<'a> {
                         } else {
                             vec![]
                         };
+                        let (args_start, args_len) = self.cfg.push_extra(args);
                         self.cfg.set_terminator(
                             exit_block,
                             Terminator::Goto {
                                 target: join_block,
-                                args,
+                                args_start,
+                                args_len,
                             },
                         );
                     }
@@ -1347,11 +1385,13 @@ impl<'a> CfgBuilder<'a> {
                 let exit_block = loop_ctx.exit;
                 self.emit_drops_for_loop_exit(target_depth, span);
 
+                let (args_start, args_len) = self.cfg.push_extra(std::iter::empty());
                 self.cfg.set_terminator(
                     self.current_block,
                     Terminator::Goto {
                         target: exit_block,
-                        args: vec![],
+                        args_start,
+                        args_len,
                     },
                 );
 
@@ -1368,11 +1408,13 @@ impl<'a> CfgBuilder<'a> {
                 let header_block = loop_ctx.header;
                 self.emit_drops_for_loop_exit(target_depth, span);
 
+                let (args_start, args_len) = self.cfg.push_extra(std::iter::empty());
                 self.cfg.set_terminator(
                     self.current_block,
                     Terminator::Goto {
                         target: header_block,
-                        args: vec![],
+                        args_start,
+                        args_len,
                     },
                 );
 

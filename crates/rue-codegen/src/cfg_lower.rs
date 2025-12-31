@@ -220,11 +220,16 @@ pub fn format_cfg_inst_data(data: &rue_cfg::CfgInstData) -> String {
 }
 
 /// Format a CFG terminator as a human-readable string.
-pub fn format_terminator(terminator: &rue_cfg::Terminator) -> String {
+pub fn format_terminator(cfg: &rue_cfg::Cfg, terminator: &rue_cfg::Terminator) -> String {
     use rue_cfg::Terminator;
 
     match terminator {
-        Terminator::Goto { target, args } => {
+        Terminator::Goto {
+            target,
+            args_start,
+            args_len,
+        } => {
+            let args = cfg.get_extra(*args_start, *args_len);
             if args.is_empty() {
                 format!("goto {}", target)
             } else {
@@ -239,10 +244,13 @@ pub fn format_terminator(terminator: &rue_cfg::Terminator) -> String {
         Terminator::Branch {
             cond,
             then_block,
-            then_args,
+            then_args_start,
+            then_args_len,
             else_block,
-            else_args,
+            else_args_start,
+            else_args_len,
         } => {
+            let then_args = cfg.get_extra(*then_args_start, *then_args_len);
             let then_str = if then_args.is_empty() {
                 format!("{}", then_block)
             } else {
@@ -253,6 +261,7 @@ pub fn format_terminator(terminator: &rue_cfg::Terminator) -> String {
                     .join(", ");
                 format!("{}({})", then_block, args_str)
             };
+            let else_args = cfg.get_extra(*else_args_start, *else_args_len);
             let else_str = if else_args.is_empty() {
                 format!("{}", else_block)
             } else {
@@ -267,9 +276,11 @@ pub fn format_terminator(terminator: &rue_cfg::Terminator) -> String {
         }
         Terminator::Switch {
             scrutinee,
-            cases,
+            cases_start,
+            cases_len,
             default,
         } => {
+            let cases = cfg.get_switch_cases(*cases_start, *cases_len);
             let cases_str = cases
                 .iter()
                 .map(|(val, target)| format!("{} => {}", val, target))
