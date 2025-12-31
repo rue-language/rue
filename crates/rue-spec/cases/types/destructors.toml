@@ -120,12 +120,77 @@ fn main() -> i32 {
 exit_code = 6
 
 # =============================================================================
+# Arrays with Destructors
+# =============================================================================
+
+[[case]]
+name = "array_of_nontrivial_has_destructor"
+spec = ["3.9:14"]
+description = "Array of non-trivially droppable types has a destructor"
+source = """
+struct Data { value: i32 }
+
+drop fn Data(self) {
+    // destructor body
+}
+
+fn main() -> i32 {
+    let arr: [Data; 2] = [Data { value: 1 }, Data { value: 2 }];
+    // arr goes out of scope here, each Data is dropped
+    0
+}
+"""
+exit_code = 0
+
+[[case]]
+name = "array_drop_order_index_order"
+spec = ["3.9:15"]
+description = "Array elements are dropped in index order (element 0 first)"
+source = """
+struct Data { value: i32 }
+
+drop fn Data(self) {
+    @dbg(self.value);
+}
+
+fn main() -> i32 {
+    let arr: [Data; 3] = [Data { value: 1 }, Data { value: 2 }, Data { value: 3 }];
+    0
+}
+"""
+exit_code = 0
+stdout = "1\n2\n3\n"
+
+[[case]]
+name = "array_of_struct_with_destructor_dropped"
+spec = ["3.9:14", "3.9:15"]
+description = "Arrays of structs with destructors are properly dropped"
+source = """
+struct Container {
+    x: i32,
+    y: i32,
+}
+
+drop fn Container(self) {
+    @dbg(self.x);
+}
+
+fn main() -> i32 {
+    let arr: [Container; 2] = [Container { x: 10, y: 1 }, Container { x: 20, y: 2 }];
+    // arr dropped: arr[0].drop() prints 10, arr[1].drop() prints 20
+    0
+}
+"""
+exit_code = 0
+stdout = "10\n20\n"
+
+# =============================================================================
 # Drop Placement
 # =============================================================================
 
 [[case]]
 name = "drop_at_block_scope_end"
-spec = ["3.9:15"]
+spec = ["3.9:18"]
 description = "Values are dropped at end of block scope"
 source = """
 struct Data { value: i32 }
@@ -142,7 +207,7 @@ exit_code = 42
 
 [[case]]
 name = "drop_before_early_return"
-spec = ["3.9:15", "3.9:17"]
+spec = ["3.9:18", "3.9:20"]
 description = "Values are dropped before early return"
 source = """
 struct Data { value: i32 }
@@ -163,7 +228,7 @@ exit_code = 42
 
 [[case]]
 name = "drop_in_each_branch"
-spec = ["3.9:16", "3.9:17"]
+spec = ["3.9:19", "3.9:20"]
 description = "Each branch independently drops its bindings"
 source = """
 struct Data { value: i32 }
@@ -465,11 +530,11 @@ cfg foo (return_type: i32) {
 # Code Generation Tests
 # =============================================================================
 
-# Tests for spec paragraphs 3.9:18, 3.9:19, 3.9:20
+# Tests for spec paragraphs 3.9:21, 3.9:22, 3.9:23
 
 [[case]]
 name = "codegen_nontrivial_drop_call"
-spec = ["3.9:18", "3.10:29"]
+spec = ["3.9:21", "3.10:29"]
 description = "Non-trivially droppable types generate destructor calls"
 source = """
 fn main() -> i32 {
@@ -482,7 +547,7 @@ exit_code = 0
 
 [[case]]
 name = "codegen_trivial_no_drop"
-spec = ["3.9:19", "3.9:20"]
+spec = ["3.9:22", "3.9:23"]
 description = "Trivially droppable types do not generate drop instructions in CFG"
 source = """
 fn main() -> i32 {
@@ -517,7 +582,7 @@ cfg main (return_type: i32) {
 
 [[case]]
 name = "codegen_trivial_struct_no_drop"
-spec = ["3.9:9", "3.9:19", "3.9:20"]
+spec = ["3.9:9", "3.9:22", "3.9:23"]
 description = "Structs with only trivially droppable fields are trivially droppable"
 source = """
 struct Point { x: i32, y: i32 }
@@ -535,7 +600,7 @@ exit_code = 30
 
 [[case]]
 name = "user_defined_destructor_syntax"
-spec = ["3.9:21", "3.9:22"]
+spec = ["3.9:24", "3.9:25"]
 description = "Basic drop fn syntax parses correctly"
 source = """
 struct Data { value: i32 }
@@ -553,7 +618,7 @@ exit_code = 42
 
 [[case]]
 name = "user_defined_destructor_with_field_access"
-spec = ["3.9:21", "3.9:22", "3.9:26"]
+spec = ["3.9:24", "3.9:25", "3.9:29"]
 description = "User-defined destructor can access fields via self"
 source = """
 struct Counter { value: i32 }
@@ -571,7 +636,7 @@ exit_code = 42
 
 [[case]]
 name = "user_defined_destructor_runs_at_scope_exit"
-spec = ["3.9:25"]
+spec = ["3.9:28"]
 description = "User-defined destructor runs when value goes out of scope"
 source = """
 struct Counter { value: i32 }
@@ -590,7 +655,7 @@ stdout = "99\n"
 
 [[case]]
 name = "duplicate_destructor_error"
-spec = ["3.9:23"]
+spec = ["3.9:26"]
 description = "Duplicate destructors for the same type produce an error"
 source = """
 struct Data { value: i32 }
@@ -606,7 +671,7 @@ error_contains = "duplicate destructor"
 
 [[case]]
 name = "destructor_unknown_type_error"
-spec = ["3.9:24"]
+spec = ["3.9:27"]
 description = "Destructor for unknown type produces an error"
 source = """
 drop fn UnknownType(self) {}

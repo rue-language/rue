@@ -2501,9 +2501,36 @@ impl<'a> CfgLower<'a> {
                     return;
                 }
 
+                // Handle array drops - need to pass all element values
+                if let Type::Array(array_id) = dropped_ty {
+                    // Collect all scalar vregs for this array (flattened)
+                    let element_vregs = self.collect_array_scalar_vregs(*dropped_value);
+
+                    // For now, we only support arrays that fit in registers
+                    debug_assert!(
+                        element_vregs.len() <= ARG_REGS.len(),
+                        "array drop with {} element slots exceeds {} argument registers",
+                        element_vregs.len(),
+                        ARG_REGS.len()
+                    );
+
+                    // Pass all element slots to the drop glue function
+                    for (i, vreg) in element_vregs.iter().enumerate() {
+                        self.mir.push(Aarch64Inst::MovRR {
+                            dst: Operand::Physical(ARG_REGS[i]),
+                            src: Operand::Virtual(*vreg),
+                        });
+                    }
+
+                    let drop_fn_name =
+                        types::array_drop_glue_name(array_id, self.array_types, self.struct_defs);
+                    let symbol_id = self.intern_symbol(&drop_fn_name);
+                    self.mir.push(Aarch64Inst::Bl { symbol_id });
+                    return;
+                }
+
                 // For other types that might need drop in the future
-                debug_assert!(
-                    false,
+                unreachable!(
                     "Drop instruction reached codegen for unexpected type: {:?}",
                     dropped_ty
                 );

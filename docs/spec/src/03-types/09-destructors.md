@@ -96,24 +96,41 @@ A struct has a destructor if any of its fields has a destructor, or if the struc
 
 For a struct with a destructor, fields are dropped in declaration order (first declared, first dropped).
 
-{{ rule(id="3.9:14", cat="informative") }}
+{{ rule(id="3.9:14", cat="normative") }}
 
-The distinction between "drop order of bindings" (reverse declaration) and "drop order of fields" (declaration order) matches C++ and Rust behavior. Bindings use LIFO for dependency correctness; fields use declaration order for consistency with construction order.
+An array type `[T; N]` has a destructor if its element type `T` has a destructor.
+
+{{ rule(id="3.9:15", cat="dynamic-semantics") }}
+
+When an array with a destructor is dropped, each element is dropped in index order (element 0 first, then element 1, and so on).
+
+{{ rule(id="3.9:16", cat="example") }}
+
+```rue
+fn main() -> i32 {
+    let arr: [String; 3] = ["a", "b", "c"];
+    0
+}  // Each String in arr is dropped: arr[0], arr[1], arr[2]
+```
+
+{{ rule(id="3.9:17", cat="informative") }}
+
+The distinction between "drop order of bindings" (reverse declaration) and "drop order of fields/elements" (declaration/index order) matches C++ and Rust behavior. Bindings use LIFO for dependency correctness; fields and array elements use forward order for consistency with construction order.
 
 ## Drop Placement
 
-{{ rule(id="3.9:15", cat="dynamic-semantics") }}
+{{ rule(id="3.9:18", cat="dynamic-semantics") }}
 
 Drops are inserted at the following points:
 - At the end of a block scope, for all live bindings declared in that scope
 - Before a `return` statement, for all live bindings in all enclosing scopes
 - Before a `break` statement, for all live bindings declared inside the loop
 
-{{ rule(id="3.9:16", cat="dynamic-semantics") }}
+{{ rule(id="3.9:19", cat="dynamic-semantics") }}
 
 Each branch of a conditional independently drops bindings declared within that branch.
 
-{{ rule(id="3.9:17", cat="example") }}
+{{ rule(id="3.9:20", cat="example") }}
 
 ```rue
 fn example(condition: bool) -> i32 {
@@ -129,21 +146,21 @@ fn example(condition: bool) -> i32 {
 
 ## Code Generation
 
-{{ rule(id="3.9:18", cat="dynamic-semantics") }}
+{{ rule(id="3.9:21", cat="dynamic-semantics") }}
 
 When a non-trivially droppable value is dropped, the compiler generates a call to the value's destructor function.
 
-{{ rule(id="3.9:19", cat="dynamic-semantics") }}
+{{ rule(id="3.9:22", cat="dynamic-semantics") }}
 
 When a trivially droppable value is dropped, no code is generated. The drop is elided as a no-op.
 
-{{ rule(id="3.9:20", cat="informative") }}
+{{ rule(id="3.9:23", cat="informative") }}
 
 The distinction between trivially droppable and non-trivially droppable types allows the compiler to avoid generating unnecessary cleanup code for simple types like integers and structs containing only integers.
 
 ## User-Defined Destructors
 
-{{ rule(id="3.9:21", cat="syntax") }}
+{{ rule(id="3.9:24", cat="syntax") }}
 
 A user-defined destructor is declared using the `drop fn` syntax:
 
@@ -153,23 +170,23 @@ drop fn TypeName(self) {
 }
 ```
 
-{{ rule(id="3.9:22", cat="normative") }}
+{{ rule(id="3.9:25", cat="normative") }}
 
 A user-defined destructor **MUST** be declared at the top level, outside of any `impl` block. It **MUST** take exactly one parameter named `self` and return nothing (implicit unit type).
 
-{{ rule(id="3.9:23", cat="legality-rule") }}
+{{ rule(id="3.9:26", cat="legality-rule") }}
 
 Each struct type **MAY** have at most one user-defined destructor. A compile-time error is raised if multiple destructors are declared for the same type.
 
-{{ rule(id="3.9:24", cat="legality-rule") }}
+{{ rule(id="3.9:27", cat="legality-rule") }}
 
 A user-defined destructor can only be declared for a struct type that is defined in the same compilation unit. A compile-time error is raised if the destructor references an unknown type or a non-struct type.
 
-{{ rule(id="3.9:25", cat="dynamic-semantics") }}
+{{ rule(id="3.9:28", cat="dynamic-semantics") }}
 
 When a value with a user-defined destructor is dropped, the user-defined destructor runs first, followed by the automatic dropping of any fields that have destructors.
 
-{{ rule(id="3.9:26", cat="example") }}
+{{ rule(id="3.9:29", cat="example") }}
 
 ```rue
 struct FileHandle {
@@ -182,6 +199,6 @@ drop fn FileHandle(self) {
 }
 ```
 
-{{ rule(id="3.9:27", cat="informative") }}
+{{ rule(id="3.9:30", cat="informative") }}
 
 The `drop fn` syntax was chosen because it clearly indicates the purpose of the function while being distinct from regular functions and methods. The destructor is not part of any impl block because it has special calling semantics: it is invoked automatically by the compiler when values go out of scope.
