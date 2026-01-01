@@ -190,15 +190,15 @@ Only two visibility levels:
 fn internal_helper() { ... }  // Private
 
 // utils/parser.rue
-use strings;
+const strings = @import("strings.rue");
 fn parse() {
-    strings::internal_helper()  // OK - same directory
+    strings.internal_helper()  // OK - same directory
 }
 
 // main.rue
-use utils::strings;
+const utils = @import("utils");
 fn main() {
-    // strings::internal_helper()  // Error - different directory
+    // utils.strings.internal_helper()  // Error - different directory
 }
 ```
 
@@ -212,10 +212,10 @@ pub fn works() -> i32 { 42 }
 pub fn broken() -> i32 { "not an int" }  // Type error!
 
 // main.rue
-use broken;
+const broken = @import("broken.rue");
 fn main() -> i32 {
-    broken::works()  // Only this is analyzed
-    // broken::broken() is never called, so its error is NOT reported
+    broken.works()  // Only this is analyzed
+    // broken.broken() is never called, so its error is NOT reported
 }
 ```
 
@@ -237,8 +237,8 @@ fn main() -> i32 {
 The standard library is **not** implicitly imported (unlike Hylo). Users must explicitly import what they need:
 
 ```rue
-use std::io;
-use std::collections::Vec;
+const io = @import("std").io;
+const Vec = @import("std").collections.Vec;
 ```
 
 **Rationale:** Explicit imports make dependencies clear and don't pollute the namespace. This also makes the prelude smaller and compilation faster.
@@ -249,22 +249,22 @@ Circular imports between files are **allowed** at the type level but not at the 
 
 ```rue
 // a.rue
-use b;
-pub struct Foo { b: b::Bar }  // OK - type reference
+const b = @import("b.rue");
+pub struct Foo { b: b.Bar }  // OK - type reference
 
 // b.rue
-use a;
-pub struct Bar { a: a::Foo }  // OK - type reference
+const a = @import("a.rue");
+pub struct Bar { a: a.Foo }  // OK - type reference
 ```
 
 ```rue
 // a.rue
-use b;
-pub const X: i32 = b::Y + 1;  // Error - circular value dependency
+const b = @import("b.rue");
+pub const X: i32 = b.Y + 1;  // Error - circular value dependency
 
 // b.rue
-use a;
-pub const Y: i32 = a::X + 1;  // Error - circular value dependency
+const a = @import("a.rue");
+pub const Y: i32 = a.X + 1;  // Error - circular value dependency
 ```
 
 The compiler detects cycles during lazy analysis and reports clear errors.
@@ -292,7 +292,7 @@ This ADR **supersedes** the flat namespace from ADR-0023. The compilation model 
 
 **Key change:** Instead of merging all symbols into a flat namespace, we now:
 1. Start analysis at `main()`
-2. When encountering `use foo`, lazily analyze `foo.rue`
+2. When encountering `@import("foo.rue")`, lazily analyze `foo.rue`
 3. Only analyze declarations that are actually referenced
 
 ### Future: Package Management
@@ -311,27 +311,27 @@ The resolution order becomes:
 2. Local file `_foo.rue` with `foo/` directory (directory module)
 3. Dependency `foo` from `rue.toml`
 
-The import syntax (`use foo;`) remains unchanged—the package manager just adds another resolution step.
+The import syntax (`@import("foo")`) remains unchanged—the package manager just adds another resolution step.
 
 ## Implementation Phases
 
 ### Phase 1: Basic Module Imports
 
-**Goal:** `use foo;` imports `foo.rue` from the same directory.
+**Goal:** `@import("foo.rue")` imports `foo.rue` from the same directory.
 
 **Tasks:**
-- Add `use` statement to parser
+- Add `@import` builtin to parser
 - Implement single-file module resolution
-- Update sema to handle qualified paths (`foo::bar`)
+- Update sema to handle member access on module structs (`foo.bar`)
 - Add `pub` visibility checking
 
 ### Phase 2: Directory Modules
 
-**Goal:** `use foo;` can import `_foo.rue` which has submodules in `foo/`.
+**Goal:** `@import("foo")` can import `_foo.rue` which has submodules in `foo/`.
 
 **Tasks:**
 - Implement directory module resolution (`_foo.rue` + `foo/` pattern)
-- Implement re-exports (`pub use`)
+- Implement re-exports (`pub const`)
 - Intra-directory visibility rules
 
 ### Phase 3: Lazy Analysis
@@ -350,7 +350,7 @@ The import syntax (`use foo;`) remains unchanged—the package manager just adds
 
 **Tasks:**
 - Structure `std` as a module tree
-- Implement `use std::*` syntax
+- Implement `@import("std")` resolution for the standard library
 - Document standard library modules
 
 ## Consequences
