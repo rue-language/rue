@@ -268,6 +268,20 @@ pub enum LogosTokenKind {
     Dot,
     #[token("@")]
     At,
+
+    // Builtins - use callback to ensure @import is not followed by identifier chars
+    // This prevents @importx from being tokenized as @import + x
+    #[token("@import", at_import_callback)]
+    AtImport,
+}
+
+/// Callback for @import token to ensure word boundary.
+/// Returns Some(()) if @import is NOT followed by identifier chars, None otherwise.
+fn at_import_callback(lex: &mut logos::Lexer<'_, LogosTokenKind>) -> Option<()> {
+    match lex.remainder().chars().next() {
+        Some(c) if c.is_ascii_alphanumeric() || c == '_' => None,
+        _ => Some(()),
+    }
 }
 
 use crate::{Token, TokenKind};
@@ -346,6 +360,7 @@ impl From<LogosTokenKind> for TokenKind {
             LogosTokenKind::Comma => TokenKind::Comma,
             LogosTokenKind::Dot => TokenKind::Dot,
             LogosTokenKind::At => TokenKind::At,
+            LogosTokenKind::AtImport => TokenKind::AtImport,
         }
     }
 }
@@ -516,6 +531,55 @@ mod tests {
         let (tokens, interner) = lexer.tokenize().unwrap();
         assert!(matches!(tokens[0].kind, TokenKind::At));
         assert_eq!(get_ident_str(&tokens[1].kind, &interner), Some("dbg"));
+    }
+
+    #[test]
+    fn test_logos_at_import_token() {
+        // @import should be recognized as a single token
+        let lexer = LogosLexer::new("@import");
+        let (tokens, _) = lexer.tokenize().unwrap();
+        assert!(matches!(tokens[0].kind, TokenKind::AtImport));
+        assert!(matches!(tokens[1].kind, TokenKind::Eof));
+    }
+
+    #[test]
+    fn test_logos_at_import_vs_at_other() {
+        // @import as single token vs @other (At + Ident)
+        let lexer = LogosLexer::new("@import @other");
+        let (tokens, interner) = lexer.tokenize().unwrap();
+        assert!(matches!(tokens[0].kind, TokenKind::AtImport));
+        assert!(matches!(tokens[1].kind, TokenKind::At));
+        assert_eq!(get_ident_str(&tokens[2].kind, &interner), Some("other"));
+    }
+
+    #[test]
+    fn test_logos_at_import_span() {
+        // Verify the span covers the entire @import token
+        let lexer = LogosLexer::new("@import");
+        let (tokens, _) = lexer.tokenize().unwrap();
+        assert_eq!(tokens[0].span, Span::new(0, 7)); // "@import" is 7 chars
+    }
+
+    #[test]
+    fn test_logos_at_import_with_parens() {
+        // @import("path.rue") pattern
+        let lexer = LogosLexer::new(r#"@import("math.rue")"#);
+        let (tokens, interner) = lexer.tokenize().unwrap();
+        assert!(matches!(tokens[0].kind, TokenKind::AtImport));
+        assert!(matches!(tokens[1].kind, TokenKind::LParen));
+        assert_eq!(get_string_str(&tokens[2].kind, &interner), Some("math.rue"));
+        assert!(matches!(tokens[3].kind, TokenKind::RParen));
+    }
+
+    #[test]
+    fn test_logos_at_import_suffix_is_error() {
+        // @importx is an invalid token - @import followed by x cannot be a valid construct
+        // The lexer produces an error because @import matches but is followed by 'x'
+        // which makes it an invalid token sequence
+        let lexer = LogosLexer::new("@importx");
+        let result = lexer.tokenize();
+        // This should error because @importx is neither @import nor @ followed by a space
+        assert!(result.is_err());
     }
 
     #[test]
