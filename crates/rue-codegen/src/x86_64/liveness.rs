@@ -253,6 +253,19 @@ pub fn uses(inst: &X86Inst) -> Vec<VReg> {
             result.push(*base);
             add_if_virtual(src, &mut result);
         }
+        X86Inst::MovRMSib { base, index, .. } => {
+            // SIB load: reads base and index
+            add_if_virtual(base, &mut result);
+            add_if_virtual(index, &mut result);
+        }
+        X86Inst::MovMRSib {
+            base, index, src, ..
+        } => {
+            // SIB store: reads base, index, and src
+            add_if_virtual(base, &mut result);
+            add_if_virtual(index, &mut result);
+            add_if_virtual(src, &mut result);
+        }
         X86Inst::StringConstPtr { .. }
         | X86Inst::StringConstLen { .. }
         | X86Inst::StringConstCap { .. } => {
@@ -381,6 +394,13 @@ pub fn defs(inst: &X86Inst) -> Vec<VReg> {
         }
         X86Inst::MovMRIndexed { .. } => {
             // Writes to memory
+        }
+        X86Inst::MovRMSib { dst, .. } => {
+            // SIB load defines dst
+            add_if_virtual(dst, &mut result);
+        }
+        X86Inst::MovMRSib { .. } => {
+            // SIB store writes to memory, no register def
         }
         X86Inst::StringConstPtr { dst, .. }
         | X86Inst::StringConstLen { dst, .. }

@@ -2792,28 +2792,70 @@ impl<'a> CfgLower<'a> {
                         }
                     };
 
-                    self.mir.push(X86Inst::Lea {
-                        dst: Operand::Virtual(addr_vreg),
-                        base: Reg::Rbp,
-                        index: None,
-                        scale: 1,
-                        disp: base_offset,
-                    });
+                    // Optimization: for single-level array access with element size 8,
+                    // use SIB addressing mode instead of explicit address calculation.
+                    // This reduces instruction count from ~5 to ~3.
+                    //
+                    // Stack arrays grow downward, so arr[i] is at base - i*8.
+                    // We use SIB with a negated index: [base + (-i)*8]
+                    if levels.len() == 1 && levels[0].elem_slot_count == 1 {
+                        // Single-level array with 8-byte elements - use SIB
+                        let index_vreg = self.get_vreg(levels[0].index);
 
-                    // Subtract total offset
-                    if let Some(total) = total_offset_vreg {
+                        // Negate the index for downward-growing stack
+                        let neg_index = self.mir.alloc_vreg();
+                        self.mir.push(X86Inst::MovRI64 {
+                            dst: Operand::Virtual(neg_index),
+                            imm: 0,
+                        });
                         self.mir.push(X86Inst::SubRR64 {
+                            dst: Operand::Virtual(neg_index),
+                            src: Operand::Virtual(index_vreg),
+                        });
+
+                        // Load base address into a register
+                        let base_vreg = self.mir.alloc_vreg();
+                        self.mir.push(X86Inst::Lea {
+                            dst: Operand::Virtual(base_vreg),
+                            base: Reg::Rbp,
+                            index: None,
+                            scale: 1,
+                            disp: base_offset,
+                        });
+
+                        // Use SIB addressing: mov dst, [base + neg_index*8]
+                        self.mir.push(X86Inst::MovRMSib {
+                            dst: Operand::Virtual(vreg),
+                            base: Operand::Virtual(base_vreg),
+                            index: Operand::Virtual(neg_index),
+                            scale: 8,
+                            disp: 0,
+                        });
+                    } else {
+                        // Multi-level or non-8-byte elements - use original code path
+                        self.mir.push(X86Inst::Lea {
                             dst: Operand::Virtual(addr_vreg),
-                            src: Operand::Virtual(total),
+                            base: Reg::Rbp,
+                            index: None,
+                            scale: 1,
+                            disp: base_offset,
+                        });
+
+                        // Subtract total offset
+                        if let Some(total) = total_offset_vreg {
+                            self.mir.push(X86Inst::SubRR64 {
+                                dst: Operand::Virtual(addr_vreg),
+                                src: Operand::Virtual(total),
+                            });
+                        }
+
+                        // Load from computed address
+                        self.mir.push(X86Inst::MovRMIndexed {
+                            dst: Operand::Virtual(vreg),
+                            base: addr_vreg,
+                            offset: 0,
                         });
                     }
-
-                    // Load from computed address
-                    self.mir.push(X86Inst::MovRMIndexed {
-                        dst: Operand::Virtual(vreg),
-                        base: addr_vreg,
-                        offset: 0,
-                    });
                 } else {
                     // Fallback for unsupported patterns
                     self.mir.push(X86Inst::MovRI32 {
@@ -2836,41 +2878,80 @@ impl<'a> CfgLower<'a> {
                 let array_length = self.array_length(*array_type_id);
                 self.emit_bounds_check(index_vreg, array_length);
 
-                // Similar to IndexGet but store instead of load
-                let scaled_index = self.mir.alloc_vreg();
-                self.mir.push(X86Inst::MovRR {
-                    dst: Operand::Virtual(scaled_index),
-                    src: Operand::Virtual(index_vreg),
-                });
-                let eight = self.mir.alloc_vreg();
-                self.mir.push(X86Inst::MovRI32 {
-                    dst: Operand::Virtual(eight),
-                    imm: 3,
-                });
-                self.mir.push(X86Inst::Shl {
-                    dst: Operand::Virtual(scaled_index),
-                    count: Operand::Virtual(eight),
-                });
+                // Optimization: use SIB addressing for single-element arrays
+                // This is always the case for IndexSet (it doesn't chain like IndexGet)
+                let elem_slot_count = self.array_element_slot_count(*array_type_id);
 
                 let base_offset = self.local_offset(*slot);
-                let addr_vreg = self.mir.alloc_vreg();
-                self.mir.push(X86Inst::Lea {
-                    dst: Operand::Virtual(addr_vreg),
-                    base: Reg::Rbp,
-                    index: None,
-                    scale: 1,
-                    disp: base_offset,
-                });
-                self.mir.push(X86Inst::SubRR64 {
-                    dst: Operand::Virtual(addr_vreg),
-                    src: Operand::Virtual(scaled_index),
-                });
 
-                self.mir.push(X86Inst::MovMRIndexed {
-                    base: addr_vreg,
-                    offset: 0,
-                    src: Operand::Virtual(val_vreg),
-                });
+                if elem_slot_count == 1 {
+                    // Single 8-byte element - use SIB addressing
+
+                    // Negate the index for downward-growing stack
+                    let neg_index = self.mir.alloc_vreg();
+                    self.mir.push(X86Inst::MovRI64 {
+                        dst: Operand::Virtual(neg_index),
+                        imm: 0,
+                    });
+                    self.mir.push(X86Inst::SubRR64 {
+                        dst: Operand::Virtual(neg_index),
+                        src: Operand::Virtual(index_vreg),
+                    });
+
+                    // Load base address into a register
+                    let base_vreg = self.mir.alloc_vreg();
+                    self.mir.push(X86Inst::Lea {
+                        dst: Operand::Virtual(base_vreg),
+                        base: Reg::Rbp,
+                        index: None,
+                        scale: 1,
+                        disp: base_offset,
+                    });
+
+                    // Use SIB addressing: mov [base + neg_index*8], src
+                    self.mir.push(X86Inst::MovMRSib {
+                        base: Operand::Virtual(base_vreg),
+                        index: Operand::Virtual(neg_index),
+                        scale: 8,
+                        disp: 0,
+                        src: Operand::Virtual(val_vreg),
+                    });
+                } else {
+                    // Multi-slot elements - use original code path
+                    let scaled_index = self.mir.alloc_vreg();
+                    self.mir.push(X86Inst::MovRR {
+                        dst: Operand::Virtual(scaled_index),
+                        src: Operand::Virtual(index_vreg),
+                    });
+                    let eight = self.mir.alloc_vreg();
+                    self.mir.push(X86Inst::MovRI32 {
+                        dst: Operand::Virtual(eight),
+                        imm: 3,
+                    });
+                    self.mir.push(X86Inst::Shl {
+                        dst: Operand::Virtual(scaled_index),
+                        count: Operand::Virtual(eight),
+                    });
+
+                    let addr_vreg = self.mir.alloc_vreg();
+                    self.mir.push(X86Inst::Lea {
+                        dst: Operand::Virtual(addr_vreg),
+                        base: Reg::Rbp,
+                        index: None,
+                        scale: 1,
+                        disp: base_offset,
+                    });
+                    self.mir.push(X86Inst::SubRR64 {
+                        dst: Operand::Virtual(addr_vreg),
+                        src: Operand::Virtual(scaled_index),
+                    });
+
+                    self.mir.push(X86Inst::MovMRIndexed {
+                        base: addr_vreg,
+                        offset: 0,
+                        src: Operand::Virtual(val_vreg),
+                    });
+                }
             }
 
             CfgInstData::ParamIndexSet {

@@ -420,6 +420,33 @@ pub enum X86Inst {
         src: Operand,
     },
 
+    /// `mov dst, [base + index*scale + disp]` - Load from memory with SIB addressing.
+    ///
+    /// This instruction uses x86-64 SIB (Scale-Index-Base) addressing mode for
+    /// efficient array element access. The scale must be 1, 2, 4, or 8.
+    ///
+    /// Used after register allocation to fold array index multiplication into
+    /// the addressing mode, reducing instruction count for array accesses.
+    MovRMSib {
+        dst: Operand,
+        base: Operand,
+        index: Operand,
+        scale: u8,
+        disp: i32,
+    },
+
+    /// `mov [base + index*scale + disp], src` - Store to memory with SIB addressing.
+    ///
+    /// This instruction uses x86-64 SIB (Scale-Index-Base) addressing mode for
+    /// efficient array element stores. The scale must be 1, 2, 4, or 8.
+    MovMRSib {
+        base: Operand,
+        index: Operand,
+        scale: u8,
+        disp: i32,
+        src: Operand,
+    },
+
     /// Load pointer to string constant (pseudo-instruction resolved during emission)
     StringConstPtr { dst: Operand, string_id: u32 },
 
@@ -585,6 +612,40 @@ impl fmt::Display for X86Inst {
                 } else {
                     write!(f, "mov [{}-{}], {}", base, -offset, src)
                 }
+            }
+            X86Inst::MovRMSib {
+                dst,
+                base,
+                index,
+                scale,
+                disp,
+            } => {
+                // Format: mov dst, [base + index*scale + disp]
+                let mut addr = format!("{}", base);
+                addr.push_str(&format!(" + {}*{}", index, scale));
+                if *disp > 0 {
+                    addr.push_str(&format!(" + {}", disp));
+                } else if *disp < 0 {
+                    addr.push_str(&format!(" - {}", -disp));
+                }
+                write!(f, "mov {}, [{}]", dst, addr)
+            }
+            X86Inst::MovMRSib {
+                base,
+                index,
+                scale,
+                disp,
+                src,
+            } => {
+                // Format: mov [base + index*scale + disp], src
+                let mut addr = format!("{}", base);
+                addr.push_str(&format!(" + {}*{}", index, scale));
+                if *disp > 0 {
+                    addr.push_str(&format!(" + {}", disp));
+                } else if *disp < 0 {
+                    addr.push_str(&format!(" - {}", -disp));
+                }
+                write!(f, "mov [{}], {}", addr, src)
             }
             X86Inst::StringConstPtr { dst, string_id } => {
                 write!(f, "string_const_ptr {}, str{}", dst, string_id)

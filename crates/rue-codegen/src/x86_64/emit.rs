@@ -979,6 +979,58 @@ impl<'a> Emitter<'a> {
                 end_inst!(self, "mov [rax], {}", src.as_physical());
             }
 
+            X86Inst::MovRMSib {
+                dst,
+                base,
+                index,
+                scale,
+                disp,
+            } => {
+                // MOV dst, [base + index*scale + disp] - SIB addressing
+                let dst_reg = dst.as_physical();
+                let base_reg = base.as_physical();
+                let index_reg = index.as_physical();
+                let adjusted_disp = self.adjust_fp_offset(base_reg, *disp);
+
+                self.begin_inst();
+                self.emit_mov_rm_sib(dst_reg, base_reg, index_reg, *scale, adjusted_disp);
+                end_inst!(
+                    self,
+                    "mov {}, [{} + {}*{}{}]",
+                    dst_reg,
+                    base_reg,
+                    index_reg,
+                    scale,
+                    format_offset(adjusted_disp)
+                );
+            }
+
+            X86Inst::MovMRSib {
+                base,
+                index,
+                scale,
+                disp,
+                src,
+            } => {
+                // MOV [base + index*scale + disp], src - SIB addressing store
+                let base_reg = base.as_physical();
+                let index_reg = index.as_physical();
+                let src_reg = src.as_physical();
+                let adjusted_disp = self.adjust_fp_offset(base_reg, *disp);
+
+                self.begin_inst();
+                self.emit_mov_mr_sib(base_reg, index_reg, *scale, adjusted_disp, src_reg);
+                end_inst!(
+                    self,
+                    "mov [{} + {}*{}{}], {}",
+                    base_reg,
+                    index_reg,
+                    scale,
+                    format_offset(adjusted_disp),
+                    src_reg
+                );
+            }
+
             X86Inst::StringConstPtr { dst, string_id } => {
                 // LEA dst, [rip + offset]  - Load address of string in .rodata
                 // This emits a placeholder that will be fixed up by a relocation.
@@ -1200,6 +1252,112 @@ impl<'a> Emitter<'a> {
 
         // ModR/M and optional SIB/displacement
         self.emit_modrm_memory(src_enc, base_enc, offset);
+    }
+
+    /// Emit `mov dst, [base + index*scale + disp]` - Load with SIB addressing.
+    ///
+    /// SIB (Scale-Index-Base) addressing allows encoding array access patterns like
+    /// `arr[i]` in a single instruction when the element size is 1, 2, 4, or 8 bytes.
+    ///
+    /// Encoding: REX.W 8B /r with SIB byte
+    /// SIB byte format: [scale:2][index:3][base:3]
+    /// - scale: 00=1, 01=2, 10=4, 11=8
+    fn emit_mov_rm_sib(&mut self, dst: Reg, base: Reg, index: Reg, scale: u8, disp: i32) {
+        let dst_enc = dst.encoding();
+        let base_enc = base.encoding();
+        let index_enc = index.encoding();
+
+        // REX prefix: W=1, R for dst (reg field), X for index, B for base
+        let rex = 0x48
+            | if dst.needs_rex() { 0x04 } else { 0x00 }    // REX.R
+            | if index.needs_rex() { 0x02 } else { 0x00 }  // REX.X
+            | if base.needs_rex() { 0x01 } else { 0x00 }; // REX.B
+        self.code.push(rex);
+
+        // Opcode: 8B (mov r64, r/m64)
+        self.code.push(0x8B);
+
+        // ModR/M and SIB with displacement
+        self.emit_modrm_sib(dst_enc, base_enc, index_enc, scale, disp);
+    }
+
+    /// Emit `mov [base + index*scale + disp], src` - Store with SIB addressing.
+    ///
+    /// Encoding: REX.W 89 /r with SIB byte
+    fn emit_mov_mr_sib(&mut self, base: Reg, index: Reg, scale: u8, disp: i32, src: Reg) {
+        let src_enc = src.encoding();
+        let base_enc = base.encoding();
+        let index_enc = index.encoding();
+
+        // REX prefix: W=1, R for src (reg field), X for index, B for base
+        let rex = 0x48
+            | if src.needs_rex() { 0x04 } else { 0x00 }    // REX.R
+            | if index.needs_rex() { 0x02 } else { 0x00 }  // REX.X
+            | if base.needs_rex() { 0x01 } else { 0x00 }; // REX.B
+        self.code.push(rex);
+
+        // Opcode: 89 (mov r/m64, r64)
+        self.code.push(0x89);
+
+        // ModR/M and SIB with displacement
+        self.emit_modrm_sib(src_enc, base_enc, index_enc, scale, disp);
+    }
+
+    /// Emit ModR/M and SIB bytes for [base + index*scale + disp] addressing.
+    ///
+    /// This handles the SIB addressing mode encoding:
+    /// - ModR/M: mod determines displacement size, reg is the register operand, r/m=100 means SIB follows
+    /// - SIB: [scale:2][index:3][base:3]
+    fn emit_modrm_sib(&mut self, reg: u8, base: u8, index: u8, scale: u8, disp: i32) {
+        let base_bits = base & 7;
+        let index_bits = index & 7;
+
+        // Convert scale to encoding: 1->00, 2->01, 4->10, 8->11
+        let scale_bits = match scale {
+            1 => 0b00,
+            2 => 0b01,
+            4 => 0b10,
+            8 => 0b11,
+            _ => panic!("Invalid SIB scale: {}", scale),
+        };
+
+        // x86 quirk: index=RSP (100) means "no index" - we shouldn't emit this
+        assert!(
+            index_bits != 4 || index >= 8, // R12 is allowed as it uses REX.X
+            "RSP cannot be used as SIB index register"
+        );
+
+        // Determine ModR/M mod field based on displacement
+        // r/m=100 indicates SIB byte follows
+        if disp == 0 && base_bits != 5 {
+            // mod=00: no displacement (except RBP/R13 which needs disp8)
+            let modrm = 0x04 | ((reg & 7) << 3);
+            self.code.push(modrm);
+            // SIB byte
+            let sib = (scale_bits << 6) | (index_bits << 3) | base_bits;
+            self.code.push(sib);
+        } else if base_bits == 5 && disp == 0 {
+            // RBP/R13 as base with no displacement requires disp8 encoding
+            let modrm = 0x44 | ((reg & 7) << 3);
+            self.code.push(modrm);
+            let sib = (scale_bits << 6) | (index_bits << 3) | base_bits;
+            self.code.push(sib);
+            self.code.push(0x00); // 8-bit displacement of 0
+        } else if disp >= -128 && disp <= 127 {
+            // mod=01: 8-bit displacement
+            let modrm = 0x44 | ((reg & 7) << 3);
+            self.code.push(modrm);
+            let sib = (scale_bits << 6) | (index_bits << 3) | base_bits;
+            self.code.push(sib);
+            self.code.push(disp as u8);
+        } else {
+            // mod=10: 32-bit displacement
+            let modrm = 0x84 | ((reg & 7) << 3);
+            self.code.push(modrm);
+            let sib = (scale_bits << 6) | (index_bits << 3) | base_bits;
+            self.code.push(sib);
+            self.code.extend_from_slice(&disp.to_le_bytes());
+        }
     }
 
     /// Emit ModR/M byte (and SIB/displacement if needed) for memory operand [base + offset].
@@ -4017,5 +4175,138 @@ mod tests {
         });
         // 0F AF F8 where F8 = 11 111 000 (mod=11, reg=rdi(7), r/m=rax(0))
         assert_eq!(code, vec![0x0F, 0xAF, 0xF8]);
+    }
+
+    // =======================================================================
+    // SIB Addressing Mode Tests
+    // =======================================================================
+
+    #[test]
+    fn test_mov_rm_sib_scale8_no_disp() {
+        // mov rax, [rbx + rcx*8]
+        let code = emit_single(X86Inst::MovRMSib {
+            dst: Operand::Physical(Reg::Rax),
+            base: Operand::Physical(Reg::Rbx),
+            index: Operand::Physical(Reg::Rcx),
+            scale: 8,
+            disp: 0,
+        });
+        // REX.W 8B /r with SIB
+        // REX.W = 48 (W=1 for 64-bit)
+        // Opcode = 8B
+        // ModR/M = 04 (mod=00 no disp, reg=rax(0), r/m=100 SIB follows)
+        // SIB = CB (scale=11 for 8, index=001 for rcx, base=011 for rbx)
+        assert_eq!(code, vec![0x48, 0x8B, 0x04, 0xCB]);
+    }
+
+    #[test]
+    fn test_mov_rm_sib_scale4_with_disp8() {
+        // mov rax, [rbx + rcx*4 + 16]
+        let code = emit_single(X86Inst::MovRMSib {
+            dst: Operand::Physical(Reg::Rax),
+            base: Operand::Physical(Reg::Rbx),
+            index: Operand::Physical(Reg::Rcx),
+            scale: 4,
+            disp: 16,
+        });
+        // REX.W 8B /r with SIB and disp8
+        // REX.W = 48
+        // Opcode = 8B
+        // ModR/M = 44 (mod=01 disp8, reg=rax(0), r/m=100 SIB)
+        // SIB = 8B (scale=10 for 4, index=001 for rcx, base=011 for rbx)
+        // disp8 = 10
+        assert_eq!(code, vec![0x48, 0x8B, 0x44, 0x8B, 0x10]);
+    }
+
+    #[test]
+    fn test_mov_rm_sib_scale2_with_disp32() {
+        // mov rax, [rbx + rcx*2 + 256]
+        let code = emit_single(X86Inst::MovRMSib {
+            dst: Operand::Physical(Reg::Rax),
+            base: Operand::Physical(Reg::Rbx),
+            index: Operand::Physical(Reg::Rcx),
+            scale: 2,
+            disp: 256,
+        });
+        // REX.W 8B /r with SIB and disp32
+        // REX.W = 48
+        // Opcode = 8B
+        // ModR/M = 84 (mod=10 disp32, reg=rax(0), r/m=100 SIB)
+        // SIB = 4B (scale=01 for 2, index=001 for rcx, base=011 for rbx)
+        // disp32 = 00 01 00 00
+        assert_eq!(code, vec![0x48, 0x8B, 0x84, 0x4B, 0x00, 0x01, 0x00, 0x00]);
+    }
+
+    #[test]
+    fn test_mov_rm_sib_with_rex_registers() {
+        // mov r12, [r13 + r14*8]
+        let code = emit_single(X86Inst::MovRMSib {
+            dst: Operand::Physical(Reg::R12),
+            base: Operand::Physical(Reg::R13),
+            index: Operand::Physical(Reg::R14),
+            scale: 8,
+            disp: 0,
+        });
+        // REX.WRXB = 4F (W=1, R=1 for r12, X=1 for r14, B=1 for r13)
+        // Opcode = 8B
+        // ModR/M = 64 (mod=01 disp8 because r13 base requires disp, reg=100 for r12&7, r/m=100 SIB)
+        //   mod=01, reg=(r12 & 7)=100, r/m=100 -> 01 100 100 = 0x64
+        // SIB = F5 (scale=11 for 8, index=110 for r14&7, base=101 for r13&7)
+        //   scale=11, index=(r14 & 7)=110, base=(r13 & 7)=101 -> 11 110 101 = 0xF5
+        // disp8 = 00 (r13 as base requires displacement)
+        assert_eq!(code, vec![0x4F, 0x8B, 0x64, 0xF5, 0x00]);
+    }
+
+    #[test]
+    fn test_mov_mr_sib_store() {
+        // mov [rbx + rcx*8], rax
+        let code = emit_single(X86Inst::MovMRSib {
+            base: Operand::Physical(Reg::Rbx),
+            index: Operand::Physical(Reg::Rcx),
+            scale: 8,
+            disp: 0,
+            src: Operand::Physical(Reg::Rax),
+        });
+        // REX.W 89 /r with SIB
+        // REX.W = 48
+        // Opcode = 89
+        // ModR/M = 04 (mod=00, reg=rax(0), r/m=100 SIB)
+        // SIB = CB (scale=11, index=001, base=011)
+        assert_eq!(code, vec![0x48, 0x89, 0x04, 0xCB]);
+    }
+
+    #[test]
+    fn test_mov_mr_sib_store_with_disp() {
+        // mov [rbx + rcx*4 + 32], rdx
+        let code = emit_single(X86Inst::MovMRSib {
+            base: Operand::Physical(Reg::Rbx),
+            index: Operand::Physical(Reg::Rcx),
+            scale: 4,
+            disp: 32,
+            src: Operand::Physical(Reg::Rdx),
+        });
+        // REX.W = 48
+        // Opcode = 89
+        // ModR/M = 54 (mod=01 disp8, reg=rdx(2), r/m=100 SIB)
+        // SIB = 8B (scale=10 for 4, index=001 rcx, base=011 rbx)
+        // disp8 = 20
+        assert_eq!(code, vec![0x48, 0x89, 0x54, 0x8B, 0x20]);
+    }
+
+    #[test]
+    fn test_mov_rm_sib_scale1() {
+        // mov rax, [rbx + rcx*1] - scale 1 is valid
+        let code = emit_single(X86Inst::MovRMSib {
+            dst: Operand::Physical(Reg::Rax),
+            base: Operand::Physical(Reg::Rbx),
+            index: Operand::Physical(Reg::Rcx),
+            scale: 1,
+            disp: 0,
+        });
+        // REX.W = 48
+        // Opcode = 8B
+        // ModR/M = 04
+        // SIB = 0B (scale=00 for 1, index=001 rcx, base=011 rbx)
+        assert_eq!(code, vec![0x48, 0x8B, 0x04, 0x0B]);
     }
 }

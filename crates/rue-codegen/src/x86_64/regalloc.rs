@@ -720,6 +720,82 @@ impl RegAlloc {
                 });
             }
 
+            X86Inst::MovRMSib {
+                dst,
+                base,
+                index,
+                scale,
+                disp,
+            } => {
+                // Load base into a register (use Rdx as scratch to avoid conflicts)
+                let base_op = self.load_operand(mir, base, Reg::Rdx)?;
+                // Load index into a register (use Rcx as scratch)
+                // Note: RSP cannot be used as index in SIB encoding
+                let index_op = self.load_operand(mir, index, Reg::Rcx)?;
+
+                match self.get_allocation(dst) {
+                    Some(Allocation::Register(reg)) => {
+                        mir.push(X86Inst::MovRMSib {
+                            dst: Operand::Physical(reg),
+                            base: base_op,
+                            index: index_op,
+                            scale,
+                            disp,
+                        });
+                    }
+                    Some(Allocation::Spill(offset)) => {
+                        // Load into scratch register then store
+                        mir.push(X86Inst::MovRMSib {
+                            dst: Operand::Physical(Reg::Rax),
+                            base: base_op,
+                            index: index_op,
+                            scale,
+                            disp,
+                        });
+                        mir.push(X86Inst::MovMR {
+                            base: Reg::Rbp,
+                            offset,
+                            src: Operand::Physical(Reg::Rax),
+                        });
+                    }
+                    Some(Allocation::Rematerialize(_)) => {
+                        unreachable!("destination cannot be rematerializable")
+                    }
+                    None => {
+                        mir.push(X86Inst::MovRMSib {
+                            dst,
+                            base: base_op,
+                            index: index_op,
+                            scale,
+                            disp,
+                        });
+                    }
+                }
+            }
+
+            X86Inst::MovMRSib {
+                base,
+                index,
+                scale,
+                disp,
+                src,
+            } => {
+                // Load base into a register (use Rdx as scratch)
+                let base_op = self.load_operand(mir, base, Reg::Rdx)?;
+                // Load index into a register (use Rcx as scratch)
+                let index_op = self.load_operand(mir, index, Reg::Rcx)?;
+                // Load src value
+                let src_op = self.load_operand(mir, src, Reg::Rax)?;
+
+                mir.push(X86Inst::MovMRSib {
+                    base: base_op,
+                    index: index_op,
+                    scale,
+                    disp,
+                    src: src_op,
+                });
+            }
+
             X86Inst::StringConstPtr { dst, string_id } => {
                 alloc_dst!(self.get_allocation(dst), dst, Reg::Rax =>
                     emit |dst_op| {
