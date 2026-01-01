@@ -175,10 +175,20 @@ impl<'a> Sema<'a> {
         for (_, inst) in self.rir.iter() {
             match &inst.data {
                 InstData::EnumDecl {
+                    is_pub,
                     name,
                     variants_start,
                     variants_len,
                 } => {
+                    // pub visibility requires preview feature
+                    if *is_pub {
+                        self.require_preview(
+                            PreviewFeature::Modules,
+                            "pub visibility modifier",
+                            inst.span,
+                        )?;
+                    }
+
                     let enum_id = EnumId(self.enum_defs.len() as u32);
                     let enum_name = self.interner.resolve(&*name).to_string();
 
@@ -235,10 +245,20 @@ impl<'a> Sema<'a> {
                 InstData::StructDecl {
                     directives_start,
                     directives_len,
+                    is_pub,
                     is_linear,
                     name,
                     ..
                 } => {
+                    // pub visibility requires preview feature
+                    if *is_pub {
+                        self.require_preview(
+                            PreviewFeature::Modules,
+                            "pub visibility modifier",
+                            inst.span,
+                        )?;
+                    }
+
                     let struct_id = StructId(self.struct_defs.len() as u32);
                     let struct_name = self.interner.resolve(&*name).to_string();
 
@@ -424,12 +444,22 @@ impl<'a> Sema<'a> {
                 }
 
                 InstData::FnDecl {
+                    is_pub,
                     name,
                     params_start,
                     params_len,
                     return_type,
                     ..
                 } => {
+                    // pub visibility requires preview feature
+                    if *is_pub {
+                        self.require_preview(
+                            PreviewFeature::Modules,
+                            "pub visibility modifier",
+                            inst.span,
+                        )?;
+                    }
+
                     self.collect_function_signature(
                         *name,
                         *params_start,

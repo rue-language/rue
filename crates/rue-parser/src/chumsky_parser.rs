@@ -11,7 +11,7 @@ use crate::ast::{
     IntrinsicCallExpr, Item, LetPattern, LetStatement, LoopExpr, MatchArm, MatchExpr, Method,
     MethodCallExpr, NegIntLit, Param, ParamMode, ParenExpr, PathExpr, PathPattern, Pattern,
     ReturnExpr, SelfExpr, SelfParam, Statement, StringLit, StructDecl, StructLitExpr, TypeExpr,
-    UnaryExpr, UnaryOp, UnitLit, WhileExpr,
+    UnaryExpr, UnaryOp, UnitLit, Visibility, WhileExpr,
 };
 use chumsky::input::{Input as ChumskyInput, MapExtra, Stream, ValueInput};
 use chumsky::pratt::{infix, left, prefix};
@@ -1513,14 +1513,25 @@ where
 {
     let expr = expr_parser();
 
+    // Parse optional visibility (pub keyword)
+    let visibility = just(TokenKind::Pub).or_not().map(|opt| {
+        if opt.is_some() {
+            Visibility::Public
+        } else {
+            Visibility::Private
+        }
+    });
+
     directives_parser()
+        .then(visibility)
         .then(just(TokenKind::Fn).ignore_then(ident_parser()))
         .then(params_parser().delimited_by(just(TokenKind::LParen), just(TokenKind::RParen)))
         .then(just(TokenKind::Arrow).ignore_then(type_parser()).or_not())
         .then(block_parser(expr))
         .map_with(
-            |((((directives, name), params), return_type), body), e| Function {
+            |(((((directives, visibility), name), params), return_type), body), e| Function {
                 directives,
+                visibility,
                 name,
                 params,
                 return_type,
@@ -1530,22 +1541,35 @@ where
         )
 }
 
-/// Parser for struct definitions: [@directive]* [linear] struct Name { field: Type, ... }
+/// Parser for struct definitions: [@directive]* [pub] [linear] struct Name { field: Type, ... }
 fn struct_parser<'src, I>() -> impl Parser<'src, I, StructDecl, ParserExtras<'src>> + Clone
 where
     I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
 {
+    // Parse optional visibility (pub keyword)
+    let visibility = just(TokenKind::Pub).or_not().map(|opt| {
+        if opt.is_some() {
+            Visibility::Public
+        } else {
+            Visibility::Private
+        }
+    });
+
     directives_parser()
+        .then(visibility)
         .then(just(TokenKind::Linear).or_not())
         .then(just(TokenKind::Struct).ignore_then(ident_parser()))
         .then(field_decls_parser().delimited_by(just(TokenKind::LBrace), just(TokenKind::RBrace)))
-        .map_with(|(((directives, is_linear), name), fields), e| StructDecl {
-            directives,
-            is_linear: is_linear.is_some(),
-            name,
-            fields,
-            span: to_rue_span(e.span()),
-        })
+        .map_with(
+            |((((directives, visibility), is_linear), name), fields), e| StructDecl {
+                directives,
+                visibility,
+                is_linear: is_linear.is_some(),
+                name,
+                fields,
+                span: to_rue_span(e.span()),
+            },
+        )
 }
 
 /// Parser for enum variant: just an identifier
@@ -1571,15 +1595,25 @@ where
         .collect()
 }
 
-/// Parser for enum definitions: enum Name { Variant1, Variant2, ... }
+/// Parser for enum definitions: [pub] enum Name { Variant1, Variant2, ... }
 fn enum_parser<'src, I>() -> impl Parser<'src, I, EnumDecl, ParserExtras<'src>> + Clone
 where
     I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
 {
-    just(TokenKind::Enum)
-        .ignore_then(ident_parser())
+    // Parse optional visibility (pub keyword)
+    let visibility = just(TokenKind::Pub).or_not().map(|opt| {
+        if opt.is_some() {
+            Visibility::Public
+        } else {
+            Visibility::Private
+        }
+    });
+
+    visibility
+        .then(just(TokenKind::Enum).ignore_then(ident_parser()))
         .then(enum_variants_parser().delimited_by(just(TokenKind::LBrace), just(TokenKind::RBrace)))
-        .map_with(|(name, variants), e| EnumDecl {
+        .map_with(|((visibility, name), variants), e| EnumDecl {
+            visibility,
             name,
             variants,
             span: to_rue_span(e.span()),

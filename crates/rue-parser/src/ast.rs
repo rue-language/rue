@@ -76,6 +76,8 @@ pub enum Item {
 pub struct StructDecl {
     /// Directives applied to this struct (e.g., @copy)
     pub directives: Directives,
+    /// Visibility of this struct
+    pub visibility: Visibility,
     /// Whether this struct is a linear type (must be consumed, cannot be dropped)
     pub is_linear: bool,
     /// Struct name
@@ -100,6 +102,8 @@ pub struct FieldDecl {
 /// An enum declaration.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EnumDecl {
+    /// Visibility of this enum
+    pub visibility: Visibility,
     /// Enum name
     pub name: Ident,
     /// Enum variants
@@ -169,11 +173,23 @@ pub struct SelfParam {
     pub span: Span,
 }
 
+/// Visibility of an item (function, struct, enum, etc.)
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Visibility {
+    /// Private to the current file (default)
+    #[default]
+    Private,
+    /// Public - visible to importers
+    Public,
+}
+
 /// A function definition.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Function {
     /// Directives applied to this function
     pub directives: Directives,
+    /// Visibility of this function
+    pub visibility: Visibility,
     /// Function name
     pub name: Ident,
     /// Function parameters

@@ -12,7 +12,7 @@ use rue_parser::ast::DropFn;
 use rue_parser::{
     ArgMode, AssignTarget, Ast, BinaryOp, CallArg, Directive, DirectiveArg, EnumDecl, Expr,
     Function, ImplBlock, IntrinsicArg, Item, LetPattern, Method, ParamMode, Pattern, Statement,
-    StructDecl, TypeExpr, UnaryOp,
+    StructDecl, TypeExpr, UnaryOp, ast::Visibility,
 };
 
 use crate::inst::{
@@ -109,6 +109,7 @@ impl<'a> AstGen<'a> {
             data: InstData::StructDecl {
                 directives_start,
                 directives_len,
+                is_pub: struct_decl.visibility == Visibility::Public,
                 is_linear: struct_decl.is_linear,
                 name,
                 fields_start,
@@ -129,6 +130,7 @@ impl<'a> AstGen<'a> {
 
         self.rir.add_inst(Inst {
             data: InstData::EnumDecl {
+                is_pub: enum_decl.visibility == Visibility::Public,
                 name,
                 variants_start,
                 variants_len,
@@ -205,10 +207,12 @@ impl<'a> AstGen<'a> {
 
         // Emit methods as FnDecl instructions with has_self flag.
         // Sema uses has_self to add the implicit self parameter for methods.
+        // Methods don't have their own visibility - they're accessible if the type is accessible.
         let decl = self.rir.add_inst(Inst {
             data: InstData::FnDecl {
                 directives_start,
                 directives_len,
+                is_pub: false,
                 name,
                 params_start,
                 params_len,
@@ -307,6 +311,7 @@ impl<'a> AstGen<'a> {
             data: InstData::FnDecl {
                 directives_start,
                 directives_len,
+                is_pub: func.visibility == Visibility::Public,
                 name,
                 params_start,
                 params_len,

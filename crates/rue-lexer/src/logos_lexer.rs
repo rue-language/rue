@@ -153,6 +153,8 @@ pub enum LogosTokenKind {
     SelfValue,
     #[token("comptime")]
     Comptime,
+    #[token("pub")]
+    Pub,
 
     // Type keywords
     #[token("i8")]
@@ -295,6 +297,7 @@ impl From<LogosTokenKind> for TokenKind {
             LogosTokenKind::Linear => TokenKind::Linear,
             LogosTokenKind::SelfValue => TokenKind::SelfValue,
             LogosTokenKind::Comptime => TokenKind::Comptime,
+            LogosTokenKind::Pub => TokenKind::Pub,
             LogosTokenKind::I8 => TokenKind::I8,
             LogosTokenKind::I16 => TokenKind::I16,
             LogosTokenKind::I32 => TokenKind::I32,
