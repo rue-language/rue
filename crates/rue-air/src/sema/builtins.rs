@@ -48,9 +48,14 @@ impl<'a> Sema<'a> {
 
             // Register in type pool and get pool-based StructId
             let name_spur = self.interner.get_or_intern(builtin.name);
-            let (struct_id, _) = self
+            let (struct_type, _) = self
                 .type_pool
                 .register_struct(name_spur, struct_def.clone());
+
+            // Convert Type to StructId for backwards compatibility during migration
+            let struct_id = StructId::from_pool_index(
+                struct_type.pool_index().expect("struct type should have pool index"),
+            );
 
             // Keep in struct_defs for backwards compatibility during migration
             self.struct_defs.push(struct_def);

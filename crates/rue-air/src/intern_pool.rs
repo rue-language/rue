@@ -15,19 +15,7 @@
 //! - **Arrays** are structural types (same element type + length = same type)
 //!
 //! Primitive types (i8-i64, u8-u64, bool, unit, never, error) are encoded directly
-//! in the `InternedType` index using reserved indices 0-15, requiring no pool lookup.
-//!
-//! # Migration Strategy (ADR-0024)
-//!
-//! This module is part of Phase 1 of the Type Intern Pool migration:
-//! - Phase 1: Introduce pool alongside existing system (this module)
-//! - Phase 2: Migrate array types to the pool
-//! - Phase 3: Migrate struct/enum IDs to pool indices
-//! - Phase 4: Unify Type representation to `InternedType(u32)`
-//!
-//! During Phase 1, the pool coexists with the existing `Type` enum, `StructId`,
-//! `EnumId`, and `ArrayTypeId`. The pool is populated during declaration collection
-//! but not yet used for type operations.
+//! in the `Type` index using reserved indices 0-15, requiring no pool lookup.
 //!
 //! # Thread Safety
 //!
@@ -40,12 +28,16 @@ use std::sync::RwLock;
 
 use lasso::Spur;
 
-use crate::types::{EnumDef, EnumId, StructDef, StructId, Type};
+// Import type definitions but NOT the old Type enum - we're replacing it
+use crate::types::{EnumDef, EnumId, StructDef, StructId, ArrayTypeId};
+// Import old Type with alias for conversion helpers during migration
+use crate::types::Type as OldType;
 
-/// Interned type index - 32 bits, Copy, cheap comparison.
+/// A type in the Rue type system.
 ///
-/// Reserved indices 0-15 are primitives (no lookup needed).
-/// Index 16+ are composite types stored in the pool.
+/// `Type` is a 32-bit index representing any type in the language.
+/// Primitive types are encoded directly in reserved indices 0-15 (no pool lookup needed).
+/// Composite types (struct, enum, array) use indices 16+ that reference the `TypeInternPool`.
 ///
 /// # Primitive Encoding
 ///
@@ -63,23 +55,47 @@ use crate::types::{EnumDef, EnumId, StructDef, StructId, Type};
 /// - 10: never
 /// - 11: error
 /// - 12-15: reserved for future primitives
+///
+/// # Type Equality
+///
+/// Type equality is O(1) - just comparing two u32 values. This is one of the key
+/// benefits of the intern pool design.
+///
+/// # Usage
+///
+/// ```ignore
+/// // Primitive types are constants
+/// let int_type = Type::I32;
+/// let bool_type = Type::BOOL;
+///
+/// // Composite types come from the pool
+/// let array_type = pool.intern_array(Type::I32, 10);
+/// let struct_type = pool.struct_id_to_type(struct_id);
+///
+/// // Type checks work without pool access for primitives
+/// if ty == Type::I32 { ... }
+/// if ty.is_integer() { ... }
+///
+/// // Composite type queries need the pool
+/// if let Some(TypeData::Struct(data)) = pool.get(ty) { ... }
+/// ```
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Default)]
-pub struct InternedType(u32);
+pub struct Type(u32);
 
-impl InternedType {
+impl Type {
     // Reserved indices for primitives
-    pub const I8: InternedType = InternedType(0);
-    pub const I16: InternedType = InternedType(1);
-    pub const I32: InternedType = InternedType(2);
-    pub const I64: InternedType = InternedType(3);
-    pub const U8: InternedType = InternedType(4);
-    pub const U16: InternedType = InternedType(5);
-    pub const U32: InternedType = InternedType(6);
-    pub const U64: InternedType = InternedType(7);
-    pub const BOOL: InternedType = InternedType(8);
-    pub const UNIT: InternedType = InternedType(9);
-    pub const NEVER: InternedType = InternedType(10);
-    pub const ERROR: InternedType = InternedType(11);
+    pub const I8: Type = Type(0);
+    pub const I16: Type = Type(1);
+    pub const I32: Type = Type(2);
+    pub const I64: Type = Type(3);
+    pub const U8: Type = Type(4);
+    pub const U16: Type = Type(5);
+    pub const U32: Type = Type(6);
+    pub const U64: Type = Type(7);
+    pub const BOOL: Type = Type(8);
+    pub const UNIT: Type = Type(9);
+    pub const NEVER: Type = Type(10);
+    pub const ERROR: Type = Type(11);
 
     const PRIMITIVE_COUNT: u32 = 16;
 
@@ -95,7 +111,7 @@ impl InternedType {
         self.0
     }
 
-    /// Create an InternedType from a raw index.
+    /// Create a Type from a raw index.
     ///
     /// # Safety
     ///
@@ -103,15 +119,15 @@ impl InternedType {
     /// or a composite index that exists in the pool).
     #[inline]
     pub fn from_raw(index: u32) -> Self {
-        InternedType(index)
+        Type(index)
     }
 
-    /// Create an InternedType for a composite type from its pool index.
+    /// Create a Type for a composite type from its pool index.
     ///
     /// The pool index is offset by `PRIMITIVE_COUNT` to produce the final index.
     #[inline]
-    fn from_pool_index(pool_index: u32) -> Self {
-        InternedType(pool_index + Self::PRIMITIVE_COUNT)
+    pub(crate) fn from_pool_index(pool_index: u32) -> Self {
+        Type(pool_index + Self::PRIMITIVE_COUNT)
     }
 
     /// Get the pool index for a composite type.
@@ -125,36 +141,165 @@ impl InternedType {
             Some(self.0 - Self::PRIMITIVE_COUNT)
         }
     }
+
+    // ========================================================================
+    // Type classification methods
+    // ========================================================================
+    // These methods provide efficient type queries without pool access for primitives.
+
+    /// Check if this type is an integer type.
+    #[inline]
+    pub fn is_integer(self) -> bool {
+        matches!(
+            self.0,
+            0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 // i8-i64, u8-u64
+        )
+    }
+
+    /// Check if this is a signed integer type.
+    #[inline]
+    pub fn is_signed(self) -> bool {
+        matches!(self.0, 0 | 1 | 2 | 3) // i8, i16, i32, i64
+    }
+
+    /// Check if this is an unsigned integer type.
+    #[inline]
+    pub fn is_unsigned(self) -> bool {
+        matches!(self.0, 4 | 5 | 6 | 7) // u8, u16, u32, u64
+    }
+
+    /// Check if this is the boolean type.
+    #[inline]
+    pub fn is_bool(self) -> bool {
+        self == Self::BOOL
+    }
+
+    /// Check if this is the unit type.
+    #[inline]
+    pub fn is_unit(self) -> bool {
+        self == Self::UNIT
+    }
+
+    /// Check if this is the never type.
+    #[inline]
+    pub fn is_never(self) -> bool {
+        self == Self::NEVER
+    }
+
+    /// Check if this is the error type.
+    #[inline]
+    pub fn is_error(self) -> bool {
+        self == Self::ERROR
+    }
+
+    /// Check if this is a 64-bit type (uses 64-bit operations).
+    #[inline]
+    pub fn is_64_bit(self) -> bool {
+        self == Self::I64 || self == Self::U64
+    }
+
+    /// Get a human-readable name for this type.
+    /// Note: For composite types (struct, enum, array), this returns a placeholder.
+    /// Use `TypeInternPool::type_name()` for full names including composite types.
+    pub fn name(self) -> &'static str {
+        match self.0 {
+            0 => "i8",
+            1 => "i16",
+            2 => "i32",
+            3 => "i64",
+            4 => "u8",
+            5 => "u16",
+            6 => "u32",
+            7 => "u64",
+            8 => "bool",
+            9 => "()",
+            10 => "!",
+            11 => "<error>",
+            12..=15 => "<reserved>",
+            _ => "<composite>",
+        }
+    }
+
+    /// Check if this type can coerce to the target type.
+    ///
+    /// Coercion rules:
+    /// - Never can coerce to any type (it represents divergent control flow)
+    /// - Error can coerce to any type (for error recovery during type checking)
+    /// - Otherwise, types must be equal
+    #[inline]
+    pub fn can_coerce_to(self, target: Type) -> bool {
+        self.is_never() || self.is_error() || self == target
+    }
+
+    /// Check if this is a Copy type based on the primitive type alone.
+    ///
+    /// Copy types are:
+    /// - All integer types (i8-i64, u8-u64)
+    /// - Boolean
+    /// - Unit
+    /// - Never type and Error type (for convenience in error recovery)
+    ///
+    /// Note: For composite types (struct, enum, array), this returns `false`
+    /// even if the type might be @copy. Use `TypeInternPool::is_type_copy()`
+    /// for full checking that includes composite types.
+    #[inline]
+    pub fn is_primitive_copy(self) -> bool {
+        self.is_primitive() && !matches!(self.0, 12..=15) // All non-reserved primitives are Copy
+    }
+
+    /// Check if a u64 value fits within the range of this integer type.
+    ///
+    /// For signed types, only the positive range is checked (0 to max positive).
+    /// Negation is handled separately to allow values like `-128` for i8.
+    ///
+    /// Returns `true` if the value fits, `false` otherwise.
+    /// For non-integer types, returns `false`.
+    #[must_use]
+    pub fn literal_fits(self, value: u64) -> bool {
+        match self.0 {
+            0 => value <= i8::MAX as u64,   // i8
+            1 => value <= i16::MAX as u64,  // i16
+            2 => value <= i32::MAX as u64,  // i32
+            3 => value <= i64::MAX as u64,  // i64
+            4 => value <= u8::MAX as u64,   // u8
+            5 => value <= u16::MAX as u64,  // u16
+            6 => value <= u32::MAX as u64,  // u32
+            7 => true,                      // u64 - any value fits
+            _ => false,
+        }
+    }
+
+    /// Check if a u64 value can be negated to fit within the range of this signed integer type.
+    ///
+    /// This is used to allow literals like `2147483648` when negated to `-2147483648` (i32::MIN).
+    /// Returns `true` if the negated value fits, `false` otherwise.
+    #[must_use]
+    pub fn negated_literal_fits(self, value: u64) -> bool {
+        match self.0 {
+            0 => value <= (i8::MIN as i64).unsigned_abs(),   // i8
+            1 => value <= (i16::MIN as i64).unsigned_abs(),  // i16
+            2 => value <= (i32::MIN as i64).unsigned_abs(),  // i32
+            3 => value <= (i64::MIN).unsigned_abs(),         // i64
+            _ => false,
+        }
+    }
 }
 
-impl std::fmt::Debug for InternedType {
+impl std::fmt::Debug for Type {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        if self.is_primitive() {
-            let name = match self.0 {
-                0 => "i8",
-                1 => "i16",
-                2 => "i32",
-                3 => "i64",
-                4 => "u8",
-                5 => "u16",
-                6 => "u32",
-                7 => "u64",
-                8 => "bool",
-                9 => "()",
-                10 => "!",
-                11 => "<error>",
-                _ => "<reserved>",
-            };
-            write!(f, "InternedType({name})")
-        } else {
-            write!(f, "InternedType(pool:{})", self.0 - Self::PRIMITIVE_COUNT)
-        }
+        write!(f, "Type({})", self.name())
+    }
+}
+
+impl std::fmt::Display for Type {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.name())
     }
 }
 
 /// Type data stored in the intern pool.
 ///
-/// This is NOT Copy - it lives in the pool. You work with `InternedType` indices.
+/// This is NOT Copy - it lives in the pool. You work with `Type` indices.
 ///
 /// # Type Categories
 ///
@@ -176,7 +321,7 @@ pub enum TypeData {
     ///
     /// Arrays with the same element type and length are the same type,
     /// regardless of where they were defined.
-    Array { element: InternedType, len: u64 },
+    Array { element: Type, len: u64 },
 }
 
 /// Data for a struct type in the intern pool.
@@ -245,17 +390,17 @@ pub struct TypeInternPool {
 
 #[derive(Debug)]
 struct TypeInternPoolInner {
-    /// All composite type data, indexed by (InternedType.0 - PRIMITIVE_COUNT).
+    /// All composite type data, indexed by (Type.0 - PRIMITIVE_COUNT).
     types: Vec<TypeData>,
 
-    /// Structural type deduplication: (element, len) -> InternedType for arrays.
-    array_map: HashMap<(InternedType, u64), InternedType>,
+    /// Structural type deduplication: (element, len) -> Type for arrays.
+    array_map: HashMap<(Type, u64), Type>,
 
-    /// Nominal type lookup: name -> InternedType for structs.
-    struct_by_name: HashMap<Spur, InternedType>,
+    /// Nominal type lookup: name -> Type for structs.
+    struct_by_name: HashMap<Spur, Type>,
 
-    /// Nominal type lookup: name -> InternedType for enums.
-    enum_by_name: HashMap<Spur, InternedType>,
+    /// Nominal type lookup: name -> Type for enums.
+    enum_by_name: HashMap<Spur, Type>,
 }
 
 impl TypeInternPool {
@@ -273,20 +418,18 @@ impl TypeInternPool {
 
     /// Register a new struct (nominal - no deduplication).
     ///
-    /// Returns the `StructId` (containing the pool index) and whether it was newly inserted.
-    /// If a struct with this name already exists, returns the existing StructId.
+    /// Returns the `Type` for the struct and whether it was newly inserted.
+    /// If a struct with this name already exists, returns the existing Type.
     ///
     /// # Panics
     ///
     /// Panics if the lock is poisoned.
-    pub fn register_struct(&self, name: Spur, def: StructDef) -> (StructId, bool) {
+    pub fn register_struct(&self, name: Spur, def: StructDef) -> (Type, bool) {
         // Fast path: check with read lock
         {
             let inner = self.inner.read().expect("TypeInternPool lock poisoned");
             if let Some(&existing) = inner.struct_by_name.get(&name) {
-                // Convert InternedType back to StructId via pool_index
-                let pool_index = existing.pool_index().expect("struct must have pool index");
-                return (StructId::from_pool_index(pool_index), false);
+                return (existing, false);
             }
         }
 
@@ -295,35 +438,33 @@ impl TypeInternPool {
 
         // Double-check after acquiring write lock
         if let Some(&existing) = inner.struct_by_name.get(&name) {
-            let pool_index = existing.pool_index().expect("struct must have pool index");
-            return (StructId::from_pool_index(pool_index), false);
+            return (existing, false);
         }
 
         // Create new struct type
         let pool_index = inner.types.len() as u32;
-        let interned = InternedType::from_pool_index(pool_index);
+        let ty = Type::from_pool_index(pool_index);
 
         inner.types.push(TypeData::Struct(StructData { name, def }));
-        inner.struct_by_name.insert(name, interned);
+        inner.struct_by_name.insert(name, ty);
 
-        (StructId::from_pool_index(pool_index), true)
+        (ty, true)
     }
 
     /// Register a new enum (nominal - no deduplication).
     ///
-    /// Returns the `EnumId` (containing the pool index) and whether it was newly inserted.
-    /// If an enum with this name already exists, returns the existing EnumId.
+    /// Returns the `Type` for the enum and whether it was newly inserted.
+    /// If an enum with this name already exists, returns the existing Type.
     ///
     /// # Panics
     ///
     /// Panics if the lock is poisoned.
-    pub fn register_enum(&self, name: Spur, def: EnumDef) -> (EnumId, bool) {
+    pub fn register_enum(&self, name: Spur, def: EnumDef) -> (Type, bool) {
         // Fast path: check with read lock
         {
             let inner = self.inner.read().expect("TypeInternPool lock poisoned");
             if let Some(&existing) = inner.enum_by_name.get(&name) {
-                let pool_index = existing.pool_index().expect("enum must have pool index");
-                return (EnumId::from_pool_index(pool_index), false);
+                return (existing, false);
             }
         }
 
@@ -332,29 +473,28 @@ impl TypeInternPool {
 
         // Double-check after acquiring write lock
         if let Some(&existing) = inner.enum_by_name.get(&name) {
-            let pool_index = existing.pool_index().expect("enum must have pool index");
-            return (EnumId::from_pool_index(pool_index), false);
+            return (existing, false);
         }
 
         // Create new enum type
         let pool_index = inner.types.len() as u32;
-        let interned = InternedType::from_pool_index(pool_index);
+        let ty = Type::from_pool_index(pool_index);
 
         inner.types.push(TypeData::Enum(EnumData { name, def }));
-        inner.enum_by_name.insert(name, interned);
+        inner.enum_by_name.insert(name, ty);
 
-        (EnumId::from_pool_index(pool_index), true)
+        (ty, true)
     }
 
     /// Intern an array type (structural - deduplicates).
     ///
-    /// Returns the canonical `InternedType` for arrays with this element type and length.
+    /// Returns the canonical `Type` for arrays with this element type and length.
     /// If an identical array type already exists, returns the existing type.
     ///
     /// # Panics
     ///
     /// Panics if the lock is poisoned.
-    pub fn intern_array(&self, element: InternedType, len: u64) -> InternedType {
+    pub fn intern_array(&self, element: Type, len: u64) -> Type {
         let key = (element, len);
 
         // Fast path: check with read lock
@@ -375,12 +515,12 @@ impl TypeInternPool {
 
         // Create new array type
         let pool_index = inner.types.len() as u32;
-        let interned = InternedType::from_pool_index(pool_index);
+        let ty = Type::from_pool_index(pool_index);
 
         inner.types.push(TypeData::Array { element, len });
-        inner.array_map.insert(key, interned);
+        inner.array_map.insert(key, ty);
 
-        interned
+        ty
     }
 
     /// Look up a struct by name.
@@ -388,7 +528,7 @@ impl TypeInternPool {
     /// # Panics
     ///
     /// Panics if the lock is poisoned.
-    pub fn get_struct_by_name(&self, name: Spur) -> Option<InternedType> {
+    pub fn get_struct_by_name(&self, name: Spur) -> Option<Type> {
         let inner = self.inner.read().expect("TypeInternPool lock poisoned");
         inner.struct_by_name.get(&name).copied()
     }
@@ -398,7 +538,7 @@ impl TypeInternPool {
     /// # Panics
     ///
     /// Panics if the lock is poisoned.
-    pub fn get_enum_by_name(&self, name: Spur) -> Option<InternedType> {
+    pub fn get_enum_by_name(&self, name: Spur) -> Option<Type> {
         let inner = self.inner.read().expect("TypeInternPool lock poisoned");
         inner.enum_by_name.get(&name).copied()
     }
@@ -408,19 +548,19 @@ impl TypeInternPool {
     /// # Panics
     ///
     /// Panics if the lock is poisoned.
-    pub fn get_array(&self, element: InternedType, len: u64) -> Option<InternedType> {
+    pub fn get_array(&self, element: Type, len: u64) -> Option<Type> {
         let inner = self.inner.read().expect("TypeInternPool lock poisoned");
         inner.array_map.get(&(element, len)).copied()
     }
 
     /// Get type data for a composite type.
     ///
-    /// Returns `None` for primitive types (use `InternedType::is_primitive()` first).
+    /// Returns `None` for primitive types (use `Type::is_primitive()` first).
     ///
     /// # Panics
     ///
     /// Panics if the lock is poisoned or if the index is invalid.
-    pub fn get(&self, ty: InternedType) -> Option<TypeData> {
+    pub fn get(&self, ty: Type) -> Option<TypeData> {
         if ty.is_primitive() {
             return None;
         }
@@ -431,7 +571,7 @@ impl TypeInternPool {
     }
 
     /// Check if this is a struct type.
-    pub fn is_struct(&self, ty: InternedType) -> bool {
+    pub fn is_struct(&self, ty: Type) -> bool {
         if ty.is_primitive() {
             return false;
         }
@@ -439,7 +579,7 @@ impl TypeInternPool {
     }
 
     /// Check if this is an enum type.
-    pub fn is_enum(&self, ty: InternedType) -> bool {
+    pub fn is_enum(&self, ty: Type) -> bool {
         if ty.is_primitive() {
             return false;
         }
@@ -447,7 +587,7 @@ impl TypeInternPool {
     }
 
     /// Check if this is an array type.
-    pub fn is_array(&self, ty: InternedType) -> bool {
+    pub fn is_array(&self, ty: Type) -> bool {
         if ty.is_primitive() {
             return false;
         }
@@ -455,7 +595,7 @@ impl TypeInternPool {
     }
 
     /// Get the struct definition if this is a struct type.
-    pub fn get_struct_def(&self, ty: InternedType) -> Option<StructDef> {
+    pub fn get_struct_def(&self, ty: Type) -> Option<StructDef> {
         match self.get(ty)? {
             TypeData::Struct(data) => Some(data.def),
             _ => None,
@@ -463,7 +603,7 @@ impl TypeInternPool {
     }
 
     /// Get the enum definition if this is an enum type.
-    pub fn get_enum_def(&self, ty: InternedType) -> Option<EnumDef> {
+    pub fn get_enum_def(&self, ty: Type) -> Option<EnumDef> {
         match self.get(ty)? {
             TypeData::Enum(data) => Some(data.def),
             _ => None,
@@ -471,7 +611,7 @@ impl TypeInternPool {
     }
 
     /// Get array info (element type, length) if this is an array type.
-    pub fn get_array_info(&self, ty: InternedType) -> Option<(InternedType, u64)> {
+    pub fn get_array_info(&self, ty: Type) -> Option<(Type, u64)> {
         match self.get(ty)? {
             TypeData::Array { element, len } => Some((element, len)),
             _ => None,
@@ -565,52 +705,37 @@ impl TypeInternPool {
         }
     }
 
-    /// Convert a StructId to an InternedType.
+    /// Convert a StructId to a Type.
     ///
     /// Since StructId now contains a pool index, we just add the primitive offset.
     #[inline]
-    pub fn struct_id_to_interned(&self, struct_id: StructId) -> InternedType {
-        InternedType::from_pool_index(struct_id.0)
+    pub fn struct_id_to_type(&self, struct_id: StructId) -> Type {
+        Type::from_pool_index(struct_id.0)
     }
 
-    /// Convert an EnumId to an InternedType.
+    /// Convert an EnumId to a Type.
     ///
     /// Since EnumId now contains a pool index, we just add the primitive offset.
     #[inline]
-    pub fn enum_id_to_interned(&self, enum_id: EnumId) -> InternedType {
-        InternedType::from_pool_index(enum_id.0)
+    pub fn enum_id_to_type(&self, enum_id: EnumId) -> Type {
+        Type::from_pool_index(enum_id.0)
     }
 
-    /// Get all struct IDs registered in the pool.
+    /// Get all struct types registered in the pool.
     ///
-    /// Returns a vector of all StructId values, useful for iterating over all
+    /// Returns a vector of all struct Types, useful for iterating over all
     /// structs (e.g., for drop glue synthesis).
-    pub fn all_struct_ids(&self) -> Vec<StructId> {
+    pub fn all_struct_types(&self) -> Vec<Type> {
         let inner = self.inner.read().expect("TypeInternPool lock poisoned");
-        inner
-            .struct_by_name
-            .values()
-            .map(|interned| {
-                let pool_index = interned.pool_index().expect("struct must have pool index");
-                StructId::from_pool_index(pool_index)
-            })
-            .collect()
+        inner.struct_by_name.values().copied().collect()
     }
 
-    /// Get all enum IDs registered in the pool.
+    /// Get all enum types registered in the pool.
     ///
-    /// Returns a vector of all EnumId values, useful for iterating over all
-    /// enums.
-    pub fn all_enum_ids(&self) -> Vec<EnumId> {
+    /// Returns a vector of all enum Types, useful for iterating over all enums.
+    pub fn all_enum_types(&self) -> Vec<Type> {
         let inner = self.inner.read().expect("TypeInternPool lock poisoned");
-        inner
-            .enum_by_name
-            .values()
-            .map(|interned| {
-                let pool_index = interned.pool_index().expect("enum must have pool index");
-                EnumId::from_pool_index(pool_index)
-            })
-            .collect()
+        inner.enum_by_name.values().copied().collect()
     }
 
     /// Get the number of composite types in the pool.
@@ -648,64 +773,80 @@ impl TypeInternPool {
     }
 
     // ========================================================================
-    // Conversion helpers for migration (Phase 1)
+    // Conversion helpers for migration
     // ========================================================================
 
-    /// Convert an old-style `Type` to an `InternedType`.
+    /// Convert an old-style `OldType` enum to a `Type`.
     ///
-    /// This is a temporary helper for Phase 1 migration. It converts the
-    /// existing `Type` enum to the new interned representation.
+    /// This is a temporary helper during migration from the old Type enum
+    /// to the new interned Type. It converts primitive types directly.
     ///
-    /// # Note
-    ///
-    /// For struct/enum types, the corresponding type must already be registered
-    /// in the pool. For array types, this returns an error since array interning
-    /// requires the pool to already have the element type interned.
-    pub fn type_to_interned(&self, ty: Type) -> Option<InternedType> {
+    /// For composite types (struct/enum/array), the method looks up the
+    /// type in the pool using the ID.
+    pub fn from_old_type(&self, ty: OldType) -> Type {
         match ty {
-            Type::I8 => Some(InternedType::I8),
-            Type::I16 => Some(InternedType::I16),
-            Type::I32 => Some(InternedType::I32),
-            Type::I64 => Some(InternedType::I64),
-            Type::U8 => Some(InternedType::U8),
-            Type::U16 => Some(InternedType::U16),
-            Type::U32 => Some(InternedType::U32),
-            Type::U64 => Some(InternedType::U64),
-            Type::Bool => Some(InternedType::BOOL),
-            Type::Unit => Some(InternedType::UNIT),
-            Type::Never => Some(InternedType::NEVER),
-            Type::Error => Some(InternedType::ERROR),
-            // Struct and enum require pool lookup by ID - we need the name
-            // to find the interned type. This conversion is not straightforward
-            // without additional context. Return None to indicate we can't convert.
-            Type::Struct(_) | Type::Enum(_) | Type::Array(_) => None,
+            OldType::I8 => Type::I8,
+            OldType::I16 => Type::I16,
+            OldType::I32 => Type::I32,
+            OldType::I64 => Type::I64,
+            OldType::U8 => Type::U8,
+            OldType::U16 => Type::U16,
+            OldType::U32 => Type::U32,
+            OldType::U64 => Type::U64,
+            OldType::Bool => Type::BOOL,
+            OldType::Unit => Type::UNIT,
+            OldType::Never => Type::NEVER,
+            OldType::Error => Type::ERROR,
+            OldType::Struct(struct_id) => self.struct_id_to_type(struct_id),
+            OldType::Enum(enum_id) => self.enum_id_to_type(enum_id),
+            OldType::Array(array_id) => {
+                // Array types need to be looked up - the ArrayTypeId was an index
+                // into a separate array registry, but now we use the pool.
+                // For now, we'll create from the pool index directly.
+                Type::from_pool_index(array_id.0)
+            }
         }
     }
 
-    /// Convert an `InternedType` back to the old-style `Type`.
+    /// Convert a `Type` back to the old-style `OldType` enum.
     ///
-    /// This is a temporary helper for Phase 1 migration to verify correctness.
-    /// Returns `None` for composite types since we need the old IDs.
-    pub fn interned_to_type(&self, ty: InternedType) -> Option<Type> {
-        if !ty.is_primitive() {
-            return None;
+    /// This is a temporary helper during migration.
+    /// Returns the corresponding OldType variant.
+    pub fn to_old_type(&self, ty: Type) -> OldType {
+        if ty.is_primitive() {
+            match ty.0 {
+                0 => OldType::I8,
+                1 => OldType::I16,
+                2 => OldType::I32,
+                3 => OldType::I64,
+                4 => OldType::U8,
+                5 => OldType::U16,
+                6 => OldType::U32,
+                7 => OldType::U64,
+                8 => OldType::Bool,
+                9 => OldType::Unit,
+                10 => OldType::Never,
+                11 => OldType::Error,
+                _ => OldType::Error, // Reserved primitives
+            }
+        } else {
+            // Look up in pool to determine what kind of composite type
+            match self.get(ty) {
+                Some(TypeData::Struct(_)) => {
+                    let pool_index = ty.pool_index().unwrap();
+                    OldType::Struct(StructId::from_pool_index(pool_index))
+                }
+                Some(TypeData::Enum(_)) => {
+                    let pool_index = ty.pool_index().unwrap();
+                    OldType::Enum(EnumId::from_pool_index(pool_index))
+                }
+                Some(TypeData::Array { .. }) => {
+                    let pool_index = ty.pool_index().unwrap();
+                    OldType::Array(ArrayTypeId(pool_index))
+                }
+                None => OldType::Error, // Invalid composite type
+            }
         }
-
-        Some(match ty.0 {
-            0 => Type::I8,
-            1 => Type::I16,
-            2 => Type::I32,
-            3 => Type::I64,
-            4 => Type::U8,
-            5 => Type::U16,
-            6 => Type::U32,
-            7 => Type::U64,
-            8 => Type::Bool,
-            9 => Type::Unit,
-            10 => Type::Never,
-            11 => Type::Error,
-            _ => return None,
-        })
     }
 }
 
@@ -748,65 +889,65 @@ mod tests {
     use lasso::ThreadedRodeo;
 
     // ========================================================================
-    // InternedType tests
+    // Type tests
     // ========================================================================
 
     #[test]
-    fn test_interned_type_primitives() {
-        assert!(InternedType::I8.is_primitive());
-        assert!(InternedType::I16.is_primitive());
-        assert!(InternedType::I32.is_primitive());
-        assert!(InternedType::I64.is_primitive());
-        assert!(InternedType::U8.is_primitive());
-        assert!(InternedType::U16.is_primitive());
-        assert!(InternedType::U32.is_primitive());
-        assert!(InternedType::U64.is_primitive());
-        assert!(InternedType::BOOL.is_primitive());
-        assert!(InternedType::UNIT.is_primitive());
-        assert!(InternedType::NEVER.is_primitive());
-        assert!(InternedType::ERROR.is_primitive());
+    fn test_type_primitives() {
+        assert!(Type::I8.is_primitive());
+        assert!(Type::I16.is_primitive());
+        assert!(Type::I32.is_primitive());
+        assert!(Type::I64.is_primitive());
+        assert!(Type::U8.is_primitive());
+        assert!(Type::U16.is_primitive());
+        assert!(Type::U32.is_primitive());
+        assert!(Type::U64.is_primitive());
+        assert!(Type::BOOL.is_primitive());
+        assert!(Type::UNIT.is_primitive());
+        assert!(Type::NEVER.is_primitive());
+        assert!(Type::ERROR.is_primitive());
     }
 
     #[test]
-    fn test_interned_type_indices() {
-        assert_eq!(InternedType::I8.index(), 0);
-        assert_eq!(InternedType::I16.index(), 1);
-        assert_eq!(InternedType::I32.index(), 2);
-        assert_eq!(InternedType::I64.index(), 3);
-        assert_eq!(InternedType::U8.index(), 4);
-        assert_eq!(InternedType::BOOL.index(), 8);
-        assert_eq!(InternedType::UNIT.index(), 9);
+    fn test_type_indices() {
+        assert_eq!(Type::I8.index(), 0);
+        assert_eq!(Type::I16.index(), 1);
+        assert_eq!(Type::I32.index(), 2);
+        assert_eq!(Type::I64.index(), 3);
+        assert_eq!(Type::U8.index(), 4);
+        assert_eq!(Type::BOOL.index(), 8);
+        assert_eq!(Type::UNIT.index(), 9);
     }
 
     #[test]
-    fn test_interned_type_pool_index() {
+    fn test_type_pool_index() {
         // Primitives don't have pool indices
-        assert_eq!(InternedType::I32.pool_index(), None);
-        assert_eq!(InternedType::BOOL.pool_index(), None);
+        assert_eq!(Type::I32.pool_index(), None);
+        assert_eq!(Type::BOOL.pool_index(), None);
 
         // Composite types have pool indices
-        let composite = InternedType::from_pool_index(0);
+        let composite = Type::from_pool_index(0);
         assert_eq!(composite.pool_index(), Some(0));
         assert!(!composite.is_primitive());
 
-        let composite2 = InternedType::from_pool_index(42);
+        let composite2 = Type::from_pool_index(42);
         assert_eq!(composite2.pool_index(), Some(42));
     }
 
     #[test]
-    fn test_interned_type_equality() {
-        assert_eq!(InternedType::I32, InternedType::I32);
-        assert_ne!(InternedType::I32, InternedType::I64);
-        assert_ne!(InternedType::I32, InternedType::from_pool_index(0));
+    fn test_type_equality() {
+        assert_eq!(Type::I32, Type::I32);
+        assert_ne!(Type::I32, Type::I64);
+        assert_ne!(Type::I32, Type::from_pool_index(0));
     }
 
     #[test]
-    fn test_interned_type_debug() {
-        let i32_str = format!("{:?}", InternedType::I32);
+    fn test_type_debug() {
+        let i32_str = format!("{:?}", Type::I32);
         assert!(i32_str.contains("i32"));
 
-        let composite_str = format!("{:?}", InternedType::from_pool_index(5));
-        assert!(composite_str.contains("pool:5"));
+        let composite_str = format!("{:?}", Type::from_pool_index(5));
+        assert!(composite_str.contains("composite"));
     }
 
     // ========================================================================
@@ -836,15 +977,15 @@ mod tests {
             is_builtin: false,
         };
 
-        let (struct_id, is_new) = pool.register_struct(name, def.clone());
+        let (struct_ty, is_new) = pool.register_struct(name, def.clone());
         assert!(is_new);
-        assert_eq!(struct_id.pool_index(), 0); // First entry in pool
+        assert_eq!(struct_ty.pool_index(), Some(0)); // First entry in pool
         assert_eq!(pool.len(), 1);
 
         // Registering the same name returns the existing type
-        let (struct_id2, is_new2) = pool.register_struct(name, def);
+        let (struct_ty2, is_new2) = pool.register_struct(name, def);
         assert!(!is_new2);
-        assert_eq!(struct_id, struct_id2);
+        assert_eq!(struct_ty, struct_ty2);
         assert_eq!(pool.len(), 1); // No new type added
     }
 
@@ -859,15 +1000,15 @@ mod tests {
             variants: vec!["Red".to_string(), "Green".to_string(), "Blue".to_string()],
         };
 
-        let (enum_id, is_new) = pool.register_enum(name, def.clone());
+        let (enum_ty, is_new) = pool.register_enum(name, def.clone());
         assert!(is_new);
-        assert_eq!(enum_id.pool_index(), 0); // First entry in pool
+        assert_eq!(enum_ty.pool_index(), Some(0)); // First entry in pool
         assert_eq!(pool.len(), 1);
 
         // Registering the same name returns the existing type
-        let (enum_id2, is_new2) = pool.register_enum(name, def);
+        let (enum_ty2, is_new2) = pool.register_enum(name, def);
         assert!(!is_new2);
-        assert_eq!(enum_id, enum_id2);
+        assert_eq!(enum_ty, enum_ty2);
     }
 
     #[test]
@@ -875,22 +1016,22 @@ mod tests {
         let pool = TypeInternPool::new();
 
         // Intern [i32; 5]
-        let arr1 = pool.intern_array(InternedType::I32, 5);
+        let arr1 = pool.intern_array(Type::I32, 5);
         assert!(!arr1.is_primitive());
         assert_eq!(pool.len(), 1);
 
         // Interning the same array returns the same type
-        let arr2 = pool.intern_array(InternedType::I32, 5);
+        let arr2 = pool.intern_array(Type::I32, 5);
         assert_eq!(arr1, arr2);
         assert_eq!(pool.len(), 1);
 
         // Different length is a different type
-        let arr3 = pool.intern_array(InternedType::I32, 10);
+        let arr3 = pool.intern_array(Type::I32, 10);
         assert_ne!(arr1, arr3);
         assert_eq!(pool.len(), 2);
 
         // Different element type is a different type
-        let arr4 = pool.intern_array(InternedType::I64, 5);
+        let arr4 = pool.intern_array(Type::I64, 5);
         assert_ne!(arr1, arr4);
         assert_eq!(pool.len(), 3);
     }
@@ -913,10 +1054,9 @@ mod tests {
             is_builtin: false,
         };
 
-        let (struct_id, _) = pool.register_struct(name, def);
-        // get_struct_by_name returns InternedType, convert StructId for comparison
-        let expected = pool.struct_id_to_interned(struct_id);
-        assert_eq!(pool.get_struct_by_name(name), Some(expected));
+        let (struct_ty, _) = pool.register_struct(name, def);
+        // get_struct_by_name returns Type directly
+        assert_eq!(pool.get_struct_by_name(name), Some(struct_ty));
     }
 
     #[test]
@@ -932,21 +1072,20 @@ mod tests {
             variants: vec!["Active".to_string(), "Inactive".to_string()],
         };
 
-        let (enum_id, _) = pool.register_enum(name, def);
-        // get_enum_by_name returns InternedType, convert EnumId for comparison
-        let expected = pool.enum_id_to_interned(enum_id);
-        assert_eq!(pool.get_enum_by_name(name), Some(expected));
+        let (enum_ty, _) = pool.register_enum(name, def);
+        // get_enum_by_name returns Type directly
+        assert_eq!(pool.get_enum_by_name(name), Some(enum_ty));
     }
 
     #[test]
     fn test_pool_get_array() {
         let pool = TypeInternPool::new();
 
-        assert!(pool.get_array(InternedType::I32, 5).is_none());
+        assert!(pool.get_array(Type::I32, 5).is_none());
 
-        let arr = pool.intern_array(InternedType::I32, 5);
-        assert_eq!(pool.get_array(InternedType::I32, 5), Some(arr));
-        assert!(pool.get_array(InternedType::I32, 10).is_none());
+        let arr = pool.intern_array(Type::I32, 5);
+        assert_eq!(pool.get_array(Type::I32, 5), Some(arr));
+        assert!(pool.get_array(Type::I32, 10).is_none());
     }
 
     #[test]
@@ -955,7 +1094,7 @@ mod tests {
         let interner = ThreadedRodeo::default();
 
         // Primitive types return None
-        assert!(pool.get(InternedType::I32).is_none());
+        assert!(pool.get(Type::I32).is_none());
 
         // Register a struct
         let struct_name = interner.get_or_intern("Point");
@@ -968,19 +1107,18 @@ mod tests {
             destructor: None,
             is_builtin: false,
         };
-        let (struct_id, _) = pool.register_struct(struct_name, struct_def);
-        let struct_ty = pool.struct_id_to_interned(struct_id);
+        let (struct_ty, _) = pool.register_struct(struct_name, struct_def);
 
         // Get struct data
         let data = pool.get(struct_ty).expect("should get struct data");
         assert!(matches!(data, TypeData::Struct(_)));
 
         // Intern an array
-        let arr_ty = pool.intern_array(InternedType::I32, 10);
+        let arr_ty = pool.intern_array(Type::I32, 10);
         let arr_data = pool.get(arr_ty).expect("should get array data");
         match arr_data {
             TypeData::Array { element, len } => {
-                assert_eq!(element, InternedType::I32);
+                assert_eq!(element, Type::I32);
                 assert_eq!(len, 10);
             }
             _ => panic!("expected array data"),
@@ -1002,36 +1140,34 @@ mod tests {
             destructor: None,
             is_builtin: false,
         };
-        let (struct_id, _) = pool.register_struct(struct_name, struct_def);
-        let struct_ty = pool.struct_id_to_interned(struct_id);
+        let (struct_ty, _) = pool.register_struct(struct_name, struct_def);
 
         let enum_name = interner.get_or_intern("Color");
         let enum_def = EnumDef {
             name: "Color".to_string(),
             variants: vec!["Red".to_string()],
         };
-        let (enum_id, _) = pool.register_enum(enum_name, enum_def);
-        let enum_ty = pool.enum_id_to_interned(enum_id);
+        let (enum_ty, _) = pool.register_enum(enum_name, enum_def);
 
-        let array_ty = pool.intern_array(InternedType::I32, 5);
+        let array_ty = pool.intern_array(Type::I32, 5);
 
         // Check is_struct
         assert!(pool.is_struct(struct_ty));
         assert!(!pool.is_struct(enum_ty));
         assert!(!pool.is_struct(array_ty));
-        assert!(!pool.is_struct(InternedType::I32));
+        assert!(!pool.is_struct(Type::I32));
 
         // Check is_enum
         assert!(!pool.is_enum(struct_ty));
         assert!(pool.is_enum(enum_ty));
         assert!(!pool.is_enum(array_ty));
-        assert!(!pool.is_enum(InternedType::I32));
+        assert!(!pool.is_enum(Type::I32));
 
         // Check is_array
         assert!(!pool.is_array(struct_ty));
         assert!(!pool.is_array(enum_ty));
         assert!(pool.is_array(array_ty));
-        assert!(!pool.is_array(InternedType::I32));
+        assert!(!pool.is_array(Type::I32));
     }
 
     #[test]
@@ -1049,24 +1185,24 @@ mod tests {
             destructor: None,
             is_builtin: false,
         };
-        let (struct_id, _) = pool.register_struct(name, def.clone());
+        let (struct_ty, _) = pool.register_struct(name, def.clone());
 
-        // Test the new Phase 3 struct_def() method that takes StructId directly
+        // Test the struct_def() method that takes StructId
+        let struct_id = StructId::from_pool_index(struct_ty.pool_index().unwrap());
         let retrieved = pool.struct_def(struct_id);
         assert_eq!(retrieved.name, def.name);
         assert_eq!(retrieved.is_copy, def.is_copy);
 
-        // Test the old get_struct_def() that takes InternedType
-        let interned = pool.struct_id_to_interned(struct_id);
+        // Test get_struct_def() that takes Type
         let retrieved2 = pool
-            .get_struct_def(interned)
+            .get_struct_def(struct_ty)
             .expect("should get struct def");
         assert_eq!(retrieved2.name, def.name);
 
         // Non-struct returns None for get_struct_def
-        let array_ty = pool.intern_array(InternedType::I32, 5);
+        let array_ty = pool.intern_array(Type::I32, 5);
         assert!(pool.get_struct_def(array_ty).is_none());
-        assert!(pool.get_struct_def(InternedType::I32).is_none());
+        assert!(pool.get_struct_def(Type::I32).is_none());
     }
 
     #[test]
@@ -1079,33 +1215,33 @@ mod tests {
             name: "Status".to_string(),
             variants: vec!["A".to_string(), "B".to_string()],
         };
-        let (enum_id, _) = pool.register_enum(name, def.clone());
+        let (enum_ty, _) = pool.register_enum(name, def.clone());
 
-        // Test the new Phase 3 enum_def() method that takes EnumId directly
+        // Test the enum_def() method that takes EnumId
+        let enum_id = EnumId::from_pool_index(enum_ty.pool_index().unwrap());
         let retrieved = pool.enum_def(enum_id);
         assert_eq!(retrieved.name, def.name);
         assert_eq!(retrieved.variants.len(), 2);
 
-        // Test the old get_enum_def() that takes InternedType
-        let interned = pool.enum_id_to_interned(enum_id);
-        let retrieved2 = pool.get_enum_def(interned).expect("should get enum def");
+        // Test get_enum_def() that takes Type
+        let retrieved2 = pool.get_enum_def(enum_ty).expect("should get enum def");
         assert_eq!(retrieved2.name, def.name);
 
         // Non-enum returns None for get_enum_def
-        let array_ty = pool.intern_array(InternedType::I32, 5);
+        let array_ty = pool.intern_array(Type::I32, 5);
         assert!(pool.get_enum_def(array_ty).is_none());
-        assert!(pool.get_enum_def(InternedType::I32).is_none());
+        assert!(pool.get_enum_def(Type::I32).is_none());
     }
 
     #[test]
     fn test_pool_get_array_info() {
         let pool = TypeInternPool::new();
 
-        let array_ty = pool.intern_array(InternedType::I64, 100);
+        let array_ty = pool.intern_array(Type::I64, 100);
         let (element, len) = pool
             .get_array_info(array_ty)
             .expect("should get array info");
-        assert_eq!(element, InternedType::I64);
+        assert_eq!(element, Type::I64);
         assert_eq!(len, 100);
 
         // Non-array returns None
@@ -1120,10 +1256,9 @@ mod tests {
             destructor: None,
             is_builtin: false,
         };
-        let (struct_id, _) = pool.register_struct(name, def);
-        let struct_ty = pool.struct_id_to_interned(struct_id);
+        let (struct_ty, _) = pool.register_struct(name, def);
         assert!(pool.get_array_info(struct_ty).is_none());
-        assert!(pool.get_array_info(InternedType::I32).is_none());
+        assert!(pool.get_array_info(Type::I32).is_none());
     }
 
     #[test]
@@ -1168,9 +1303,9 @@ mod tests {
             },
         );
 
-        pool.intern_array(InternedType::I32, 5);
-        pool.intern_array(InternedType::I32, 10);
-        pool.intern_array(InternedType::BOOL, 3);
+        pool.intern_array(Type::I32, 5);
+        pool.intern_array(Type::I32, 10);
+        pool.intern_array(Type::BOOL, 3);
 
         let stats = pool.stats();
         assert_eq!(stats.struct_count, 2);
@@ -1184,7 +1319,7 @@ mod tests {
         let pool = TypeInternPool::new();
 
         // Create [i32; 3]
-        let inner = pool.intern_array(InternedType::I32, 3);
+        let inner = pool.intern_array(Type::I32, 3);
 
         // Create [[i32; 3]; 4]
         let outer = pool.intern_array(inner, 4);
@@ -1195,78 +1330,46 @@ mod tests {
         assert_eq!(outer_len, 4);
 
         let (inner_elem, inner_len) = pool.get_array_info(inner).expect("inner array info");
-        assert_eq!(inner_elem, InternedType::I32);
+        assert_eq!(inner_elem, Type::I32);
         assert_eq!(inner_len, 3);
     }
 
     #[test]
-    fn test_pool_type_to_interned() {
+    fn test_pool_from_old_type() {
         let pool = TypeInternPool::new();
 
         // Primitive types convert correctly
-        assert_eq!(pool.type_to_interned(Type::I8), Some(InternedType::I8));
-        assert_eq!(pool.type_to_interned(Type::I16), Some(InternedType::I16));
-        assert_eq!(pool.type_to_interned(Type::I32), Some(InternedType::I32));
-        assert_eq!(pool.type_to_interned(Type::I64), Some(InternedType::I64));
-        assert_eq!(pool.type_to_interned(Type::U8), Some(InternedType::U8));
-        assert_eq!(pool.type_to_interned(Type::U16), Some(InternedType::U16));
-        assert_eq!(pool.type_to_interned(Type::U32), Some(InternedType::U32));
-        assert_eq!(pool.type_to_interned(Type::U64), Some(InternedType::U64));
-        assert_eq!(pool.type_to_interned(Type::Bool), Some(InternedType::BOOL));
-        assert_eq!(pool.type_to_interned(Type::Unit), Some(InternedType::UNIT));
-        assert_eq!(
-            pool.type_to_interned(Type::Never),
-            Some(InternedType::NEVER)
-        );
-        assert_eq!(
-            pool.type_to_interned(Type::Error),
-            Some(InternedType::ERROR)
-        );
-
-        // Composite types return None (need name lookup)
-        assert!(
-            pool.type_to_interned(Type::Struct(crate::types::StructId(0)))
-                .is_none()
-        );
-        assert!(
-            pool.type_to_interned(Type::Enum(crate::types::EnumId(0)))
-                .is_none()
-        );
-        assert!(
-            pool.type_to_interned(Type::Array(crate::types::ArrayTypeId(0)))
-                .is_none()
-        );
+        assert_eq!(pool.from_old_type(OldType::I8), Type::I8);
+        assert_eq!(pool.from_old_type(OldType::I16), Type::I16);
+        assert_eq!(pool.from_old_type(OldType::I32), Type::I32);
+        assert_eq!(pool.from_old_type(OldType::I64), Type::I64);
+        assert_eq!(pool.from_old_type(OldType::U8), Type::U8);
+        assert_eq!(pool.from_old_type(OldType::U16), Type::U16);
+        assert_eq!(pool.from_old_type(OldType::U32), Type::U32);
+        assert_eq!(pool.from_old_type(OldType::U64), Type::U64);
+        assert_eq!(pool.from_old_type(OldType::Bool), Type::BOOL);
+        assert_eq!(pool.from_old_type(OldType::Unit), Type::UNIT);
+        assert_eq!(pool.from_old_type(OldType::Never), Type::NEVER);
+        assert_eq!(pool.from_old_type(OldType::Error), Type::ERROR);
     }
 
     #[test]
-    fn test_pool_interned_to_type() {
+    fn test_pool_to_old_type() {
         let pool = TypeInternPool::new();
 
         // Primitive types convert back correctly
-        assert_eq!(pool.interned_to_type(InternedType::I8), Some(Type::I8));
-        assert_eq!(pool.interned_to_type(InternedType::I16), Some(Type::I16));
-        assert_eq!(pool.interned_to_type(InternedType::I32), Some(Type::I32));
-        assert_eq!(pool.interned_to_type(InternedType::I64), Some(Type::I64));
-        assert_eq!(pool.interned_to_type(InternedType::U8), Some(Type::U8));
-        assert_eq!(pool.interned_to_type(InternedType::U16), Some(Type::U16));
-        assert_eq!(pool.interned_to_type(InternedType::U32), Some(Type::U32));
-        assert_eq!(pool.interned_to_type(InternedType::U64), Some(Type::U64));
-        assert_eq!(pool.interned_to_type(InternedType::BOOL), Some(Type::Bool));
-        assert_eq!(pool.interned_to_type(InternedType::UNIT), Some(Type::Unit));
-        assert_eq!(
-            pool.interned_to_type(InternedType::NEVER),
-            Some(Type::Never)
-        );
-        assert_eq!(
-            pool.interned_to_type(InternedType::ERROR),
-            Some(Type::Error)
-        );
-
-        // Composite types return None
-        assert!(
-            pool.interned_to_type(InternedType::from_pool_index(0))
-                .is_none()
-        );
+        assert_eq!(pool.to_old_type(Type::I8), OldType::I8);
+        assert_eq!(pool.to_old_type(Type::I16), OldType::I16);
+        assert_eq!(pool.to_old_type(Type::I32), OldType::I32);
+        assert_eq!(pool.to_old_type(Type::I64), OldType::I64);
+        assert_eq!(pool.to_old_type(Type::U8), OldType::U8);
+        assert_eq!(pool.to_old_type(Type::U16), OldType::U16);
+        assert_eq!(pool.to_old_type(Type::U32), OldType::U32);
+        assert_eq!(pool.to_old_type(Type::U64), OldType::U64);
+        assert_eq!(pool.to_old_type(Type::BOOL), OldType::Bool);
+        assert_eq!(pool.to_old_type(Type::UNIT), OldType::Unit);
+        assert_eq!(pool.to_old_type(Type::NEVER), OldType::Never);
+        assert_eq!(pool.to_old_type(Type::ERROR), OldType::Error);
     }
 
     // ========================================================================
@@ -1334,7 +1437,7 @@ mod tests {
         let handles: Vec<_> = (0..10)
             .map(|_| {
                 let pool = Arc::clone(&pool);
-                thread::spawn(move || pool.intern_array(InternedType::I32, 42))
+                thread::spawn(move || pool.intern_array(Type::I32, 42))
             })
             .collect();
 

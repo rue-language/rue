@@ -333,7 +333,8 @@ pub use x86_64::{Operand, Reg, X86Inst, X86Mir};
 mod tests {
     use super::*;
     use lasso::ThreadedRodeo;
-    use rue_air::{Air, AirInst, AirInstData, Type};
+    // Use OldType (legacy Type enum) for pattern matching on type variants
+    use rue_air::{Air, AirInst, AirInstData, OldType as Type};
     use rue_cfg::CfgBuilder;
     use rue_span::Span;
 

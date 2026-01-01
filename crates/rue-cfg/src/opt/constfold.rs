@@ -18,7 +18,8 @@
 //! This ensures the runtime panic behavior is preserved.
 
 use crate::{Cfg, CfgInstData, CfgValue};
-use rue_air::Type;
+// Use OldType (legacy Type enum) for pattern matching on type variants
+use rue_air::OldType as Type;
 
 /// Run constant folding on the CFG.
 ///

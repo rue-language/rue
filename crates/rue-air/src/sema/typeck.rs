@@ -12,7 +12,10 @@ use rue_span::Span;
 
 use super::Sema;
 use crate::inference::InferType;
+// OldType for pattern matching and external interfaces
 use crate::types::{ArrayTypeDef, ArrayTypeId, StructId, Type, parse_array_type_syntax};
+// Alias Type to OldType for clarity in this file
+type OldType = Type;
 
 impl<'a> Sema<'a> {
     /// Get a human-readable name for a type.
@@ -84,7 +87,8 @@ impl<'a> Sema<'a> {
     /// by using the array type registry.
     pub(crate) fn infer_type_to_type(&mut self, ty: &InferType) -> Type {
         match ty {
-            InferType::Concrete(t) => *t,
+            // Convert new intern_pool::Type to old types::Type
+            InferType::Concrete(t) => self.type_pool.to_old_type(*t),
             InferType::Var(_) => Type::Error,   // Unbound variable
             InferType::IntLiteral => Type::I32, // Default (shouldn't happen after resolution)
             InferType::Array { element, length } => {
@@ -114,8 +118,8 @@ impl<'a> Sema<'a> {
                     length: array_def.length,
                 }
             }
-            // All other types wrap directly
-            _ => InferType::Concrete(ty),
+            // All other types: convert old Type to new Type and wrap in Concrete
+            _ => InferType::Concrete(self.type_pool.from_old_type(ty)),
         }
     }
     /// Resolve a type symbol to a Type.
@@ -216,7 +220,8 @@ impl<'a> Sema<'a> {
     /// pre-creation context where the array type may not exist yet).
     pub(crate) fn infer_type_to_concrete_type_for_key(&self, ty: &InferType) -> Type {
         match ty {
-            InferType::Concrete(t) => *t,
+            // Convert new intern_pool::Type to old types::Type
+            InferType::Concrete(t) => self.type_pool.to_old_type(*t),
             InferType::Var(_) => Type::Error,   // Unbound variable
             InferType::IntLiteral => Type::I32, // Default
             InferType::Array { element, length } => {

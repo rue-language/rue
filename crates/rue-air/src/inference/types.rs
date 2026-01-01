@@ -5,6 +5,7 @@
 //! - [`InferType`] - Type representation during inference (supports variables)
 //! - [`TypeVarAllocator`] - Allocates fresh type variables
 
+// Use the new unified Type representation from the intern pool.
 use crate::Type;
 
 /// Unique identifier for a type variable.
@@ -119,7 +120,7 @@ impl InferType {
 impl std::fmt::Display for InferType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            InferType::Concrete(ty) => write!(f, "{ty}"),
+            InferType::Concrete(ty) => write!(f, "{}", ty.name()),
             InferType::Var(id) => write!(f, "{id}"),
             InferType::IntLiteral => write!(f, "{{integer}}"),
             InferType::Array { element, length } => write!(f, "[{element}; {length}]"),
@@ -180,6 +181,7 @@ mod tests {
     #[test]
     fn test_infer_type_display() {
         assert_eq!(format!("{}", InferType::Concrete(Type::I32)), "i32");
+        assert_eq!(format!("{}", InferType::Concrete(Type::BOOL)), "bool");
         assert_eq!(format!("{}", InferType::Var(TypeVarId::new(5))), "?5");
         assert_eq!(format!("{}", InferType::IntLiteral), "{integer}");
     }

@@ -22,7 +22,10 @@ use rue_span::Span;
 use super::{FunctionInfo, InferenceContext, MethodInfo, Sema};
 use crate::inference::{FunctionSig, MethodSig};
 use crate::type_context::{FunctionSignature, MethodSignature, TypeContext};
-use crate::types::{EnumDef, EnumId, StructDef, StructField, StructId, Type};
+// OldType is the legacy Type enum for pattern matching
+use crate::types::{EnumDef, EnumId, StructDef, StructField, StructId, Type as OldType};
+// NewType is the intern pool Type for InferenceContext
+use crate::Type as NewType;
 
 impl<'a> Sema<'a> {
     pub fn build_type_context(&self) -> TypeContext {
@@ -103,18 +106,20 @@ impl<'a> Sema<'a> {
             })
             .collect();
 
-        // Build struct types map (name -> Type::Struct(id))
-        let struct_types: HashMap<Spur, Type> = self
+        // Build struct types map (name -> intern_pool::Type)
+        // Convert StructId to new Type using the pool
+        let struct_types: HashMap<Spur, NewType> = self
             .structs
             .iter()
-            .map(|(name, id)| (*name, Type::Struct(*id)))
+            .map(|(name, id)| (*name, self.type_pool.struct_id_to_type(*id)))
             .collect();
 
-        // Build enum types map (name -> Type::Enum(id))
-        let enum_types: HashMap<Spur, Type> = self
+        // Build enum types map (name -> intern_pool::Type)
+        // Convert EnumId to new Type using the pool
+        let enum_types: HashMap<Spur, NewType> = self
             .enums
             .iter()
-            .map(|(name, id)| (*name, Type::Enum(*id)))
+            .map(|(name, id)| (*name, self.type_pool.enum_id_to_type(*id)))
             .collect();
 
         // Build method signatures with InferType for constraint generation
@@ -125,7 +130,8 @@ impl<'a> Sema<'a> {
                 (
                     (*type_name, *method_name),
                     MethodSig {
-                        struct_type: info.struct_type,
+                        // Convert old types::Type to new intern_pool::Type
+                        struct_type: self.type_pool.from_old_type(info.struct_type),
                         has_self: info.has_self,
                         param_types: info
                             .param_types
@@ -241,7 +247,12 @@ impl<'a> Sema<'a> {
                     };
 
                     // Register in type pool and get pool-based EnumId
-                    let (enum_id, _) = self.type_pool.register_enum(*name, enum_def.clone());
+                    let (enum_type, _) = self.type_pool.register_enum(*name, enum_def.clone());
+
+                    // Convert Type to EnumId for backwards compatibility during migration
+                    let enum_id = EnumId::from_pool_index(
+                        enum_type.pool_index().expect("enum type should have pool index"),
+                    );
 
                     // Keep in enum_defs for backwards compatibility during migration
                     self.enum_defs.push(enum_def);
@@ -316,8 +327,13 @@ impl<'a> Sema<'a> {
                         is_builtin: false, // User-defined struct
                     };
 
-                    // Register in type pool and get pool-based StructId
-                    let (struct_id, _) = self.type_pool.register_struct(*name, struct_def.clone());
+                    // Register in type pool and get pool-based Type
+                    let (struct_type, _) = self.type_pool.register_struct(*name, struct_def.clone());
+
+                    // Convert Type to StructId for backwards compatibility during migration
+                    let struct_id = StructId::from_pool_index(
+                        struct_type.pool_index().expect("struct type should have pool index"),
+                    );
 
                     // Keep in struct_defs for backwards compatibility during migration
                     self.struct_defs.push(struct_def);
@@ -608,7 +624,7 @@ impl<'a> Sema<'a> {
                         inst.span,
                     )
                 })?;
-                let struct_type = Type::Struct(struct_id);
+                let struct_type = OldType::Struct(struct_id);
 
                 // Look for a .handle() method
                 let handle_sym = self.interner.get("handle");
@@ -770,7 +786,7 @@ impl<'a> Sema<'a> {
         }
 
         let param_names: Vec<_> = params.iter().map(|p| p.name).collect();
-        let param_types: Vec<Type> = params
+        let param_types: Vec<OldType> = params
             .iter()
             .map(|p| self.resolve_type(p.ty, span))
             .collect::<CompileResult<Vec<_>>>()?;
@@ -808,7 +824,7 @@ impl<'a> Sema<'a> {
                 ));
             }
         };
-        let struct_type = Type::Struct(struct_id);
+        let struct_type = OldType::Struct(struct_id);
 
         let methods = self.rir.get_inst_refs(methods_start, methods_len);
         for method_ref in methods {
@@ -838,7 +854,7 @@ impl<'a> Sema<'a> {
 
                 let params = self.rir.get_params(*params_start, *params_len);
                 let param_names: Vec<Spur> = params.iter().map(|p| p.name).collect();
-                let param_types: Vec<Type> = params
+                let param_types: Vec<OldType> = params
                     .iter()
                     .map(|p| self.resolve_type(p.ty, method_inst.span))
                     .collect::<CompileResult<Vec<_>>>()?;

@@ -41,6 +41,8 @@ use crate::sema_context::{
     ArrayTypeRegistry, InferenceContext as SemaContextInferenceContext, SemaContext,
 };
 use crate::types::{ArrayTypeDef, ArrayTypeId, EnumDef, EnumId, StructDef, StructId, Type};
+// Import new Type from intern pool explicitly when needed for inference context
+use crate::Type as NewType;
 
 // Internal types are used via pub(crate) within submodules
 // No re-exports needed for context types as they're internal
@@ -195,10 +197,10 @@ pub struct SemaOutput {
 pub struct InferenceContext {
     /// Function signatures with InferType (for constraint generation).
     pub func_sigs: HashMap<Spur, crate::inference::FunctionSig>,
-    /// Struct types: name -> Type::Struct(id).
-    pub struct_types: HashMap<Spur, Type>,
-    /// Enum types: name -> Type::Enum(id).
-    pub enum_types: HashMap<Spur, Type>,
+    /// Struct types: name -> intern_pool::Type (new unified type).
+    pub struct_types: HashMap<Spur, NewType>,
+    /// Enum types: name -> intern_pool::Type (new unified type).
+    pub enum_types: HashMap<Spur, NewType>,
     /// Method signatures with InferType: (struct_name, method_name) -> MethodSig.
     pub method_sigs: HashMap<(Spur, Spur), crate::inference::MethodSig>,
 }
@@ -489,18 +491,18 @@ impl<'a> Sema<'a> {
             })
             .collect();
 
-        // Build struct types map (name -> Type::Struct(id))
-        let struct_types: HashMap<Spur, Type> = self
+        // Build struct types map (name -> NewType) using the type pool
+        let struct_types: HashMap<Spur, NewType> = self
             .structs
             .iter()
-            .map(|(name, id)| (*name, Type::Struct(*id)))
+            .map(|(name, id)| (*name, self.type_pool.struct_id_to_type(*id)))
             .collect();
 
-        // Build enum types map (name -> Type::Enum(id))
-        let enum_types: HashMap<Spur, Type> = self
+        // Build enum types map (name -> NewType) using the type pool
+        let enum_types: HashMap<Spur, NewType> = self
             .enums
             .iter()
-            .map(|(name, id)| (*name, Type::Enum(*id)))
+            .map(|(name, id)| (*name, self.type_pool.enum_id_to_type(*id)))
             .collect();
 
         // Build method signatures with InferType for constraint generation
@@ -511,7 +513,8 @@ impl<'a> Sema<'a> {
                 (
                     (*type_name, *method_name),
                     MethodSig {
-                        struct_type: info.struct_type,
+                        // Convert old types::Type to new intern_pool::Type
+                        struct_type: self.type_pool.from_old_type(info.struct_type),
                         has_self: info.has_self,
                         param_types: info
                             .param_types

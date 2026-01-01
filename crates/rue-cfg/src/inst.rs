@@ -16,7 +16,8 @@ const _: () = assert!(std::mem::size_of::<CfgInst>() <= 48);
 const _: () = assert!(std::mem::size_of::<CfgInstData>() <= 32);
 
 use lasso::{Key, Spur};
-use rue_air::{EnumId, StructId, Type};
+// Use OldType (legacy Type enum) for pattern matching on type variants
+use rue_air::{EnumId, OldType as Type, StructId};
 use rue_span::Span;
 
 /// A basic block identifier.

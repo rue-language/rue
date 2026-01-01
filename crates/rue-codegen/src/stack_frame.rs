@@ -560,7 +560,8 @@ fn generate_aarch64_stack_frame(
 mod tests {
     use super::*;
     use lasso::ThreadedRodeo;
-    use rue_air::{Air, AirInst, AirInstData, Type, TypeInternPool};
+    // Use OldType (legacy Type enum) for pattern matching on type variants
+    use rue_air::{Air, AirInst, AirInstData, OldType as Type, TypeInternPool};
     use rue_cfg::CfgBuilder;
     use rue_span::Span;
 

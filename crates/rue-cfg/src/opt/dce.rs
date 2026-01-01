@@ -406,7 +406,8 @@ mod tests {
     use super::*;
     use crate::{CfgInst, CfgInstData};
     use lasso::ThreadedRodeo;
-    use rue_air::Type;
+    // Use OldType (legacy Type enum) for pattern matching on type variants
+    use rue_air::OldType as Type;
     use rue_span::Span;
 
     fn make_cfg() -> Cfg {

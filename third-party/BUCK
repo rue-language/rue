@@ -839,6 +839,9 @@ cargo.rust_library(
     edition = "2018",
     features = ["std"],
     platform = {
+        "linux-x86_64": dict(
+            deps = [":libc-0.2.178"],
+        ),
         "macos-arm64": dict(
             deps = [":libc-0.2.178"],
         ),

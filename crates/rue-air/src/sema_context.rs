@@ -37,10 +37,14 @@ use rue_rir::Rir;
 
 use crate::inference::{FunctionSig, InferType, MethodSig};
 use crate::intern_pool::TypeInternPool;
+// Use the new Type from intern pool for InferenceContext
+use crate::Type;
 // Import FunctionInfo, MethodInfo, and KnownSymbols from sema module to avoid duplication.
 // FunctionInfo and MethodInfo are the canonical definitions; we re-export them for convenience.
 pub use crate::sema::{FunctionInfo, KnownSymbols, MethodInfo};
-use crate::types::{ArrayTypeDef, ArrayTypeId, EnumDef, EnumId, StructDef, StructId, Type};
+// OldType for ArrayTypeRegistry and pattern matching in format_type_name, is_type_copy, etc.
+use crate::types::Type as OldType;
+use crate::types::{ArrayTypeDef, ArrayTypeId, EnumDef, EnumId, StructDef, StructId};
 
 /// Thread-safe registry for array types.
 ///
@@ -50,7 +54,7 @@ use crate::types::{ArrayTypeDef, ArrayTypeId, EnumDef, EnumId, StructDef, Struct
 #[derive(Debug)]
 pub struct ArrayTypeRegistry {
     /// Maps (element_type, length) to ArrayTypeId.
-    types: RwLock<HashMap<(Type, u64), ArrayTypeId>>,
+    types: RwLock<HashMap<(OldType, u64), ArrayTypeId>>,
     /// Array type definitions indexed by ArrayTypeId.
     defs: RwLock<Vec<ArrayTypeDef>>,
 }
@@ -66,7 +70,7 @@ impl ArrayTypeRegistry {
 
     /// Create a registry pre-populated with existing types.
     pub fn from_existing(
-        types: HashMap<(Type, u64), ArrayTypeId>,
+        types: HashMap<(OldType, u64), ArrayTypeId>,
         defs: Vec<ArrayTypeDef>,
     ) -> Self {
         Self {
@@ -76,7 +80,7 @@ impl ArrayTypeRegistry {
     }
 
     /// Look up an array type by element type and length.
-    pub fn get(&self, element_type: Type, length: u64) -> Option<ArrayTypeId> {
+    pub fn get(&self, element_type: OldType, length: u64) -> Option<ArrayTypeId> {
         self.types
             .read()
             .expect("ArrayTypeRegistry lock poisoned")
@@ -85,7 +89,7 @@ impl ArrayTypeRegistry {
     }
 
     /// Get or create an array type. Thread-safe with double-checked locking.
-    pub fn get_or_create(&self, element_type: Type, length: u64) -> ArrayTypeId {
+    pub fn get_or_create(&self, element_type: OldType, length: u64) -> ArrayTypeId {
         let key = (element_type, length);
 
         // Fast path: check with read lock
@@ -246,10 +250,10 @@ unsafe impl<'a> Send for SemaContext<'a> {}
 unsafe impl<'a> Sync for SemaContext<'a> {}
 
 impl<'a> SemaContext<'a> {
-    /// Get the builtin String type as a Type::Struct.
-    pub fn builtin_string_type(&self) -> Type {
+    /// Get the builtin String type as an OldType::Struct.
+    pub fn builtin_string_type(&self) -> OldType {
         self.builtin_string_id
-            .map(Type::Struct)
+            .map(OldType::Struct)
             .expect("String type should be registered during builtin injection")
     }
 
@@ -289,33 +293,33 @@ impl<'a> SemaContext<'a> {
     }
 
     /// Look up an array type by element type and length.
-    pub fn get_array_type(&self, element_type: Type, length: u64) -> Option<ArrayTypeId> {
+    pub fn get_array_type(&self, element_type: OldType, length: u64) -> Option<ArrayTypeId> {
         self.array_registry.get(element_type, length)
     }
 
     /// Get or create an array type. Thread-safe.
-    pub fn get_or_create_array_type(&self, element_type: Type, length: u64) -> ArrayTypeId {
+    pub fn get_or_create_array_type(&self, element_type: OldType, length: u64) -> ArrayTypeId {
         self.array_registry.get_or_create(element_type, length)
     }
 
     /// Get a human-readable name for a type.
-    pub fn format_type_name(&self, ty: Type) -> String {
+    pub fn format_type_name(&self, ty: OldType) -> String {
         match ty {
-            Type::I8 => "i8".to_string(),
-            Type::I16 => "i16".to_string(),
-            Type::I32 => "i32".to_string(),
-            Type::I64 => "i64".to_string(),
-            Type::U8 => "u8".to_string(),
-            Type::U16 => "u16".to_string(),
-            Type::U32 => "u32".to_string(),
-            Type::U64 => "u64".to_string(),
-            Type::Bool => "bool".to_string(),
-            Type::Unit => "()".to_string(),
-            Type::Never => "!".to_string(),
-            Type::Error => "<error>".to_string(),
-            Type::Struct(struct_id) => self.type_pool.struct_def(struct_id).name.clone(),
-            Type::Enum(enum_id) => self.type_pool.enum_def(enum_id).name.clone(),
-            Type::Array(array_id) => {
+            OldType::I8 => "i8".to_string(),
+            OldType::I16 => "i16".to_string(),
+            OldType::I32 => "i32".to_string(),
+            OldType::I64 => "i64".to_string(),
+            OldType::U8 => "u8".to_string(),
+            OldType::U16 => "u16".to_string(),
+            OldType::U32 => "u32".to_string(),
+            OldType::U64 => "u64".to_string(),
+            OldType::Bool => "bool".to_string(),
+            OldType::Unit => "()".to_string(),
+            OldType::Never => "!".to_string(),
+            OldType::Error => "<error>".to_string(),
+            OldType::Struct(struct_id) => self.type_pool.struct_def(struct_id).name.clone(),
+            OldType::Enum(enum_id) => self.type_pool.enum_def(enum_id).name.clone(),
+            OldType::Array(array_id) => {
                 let array_def = self.array_registry.get_def(array_id);
                 format!(
                     "[{}; {}]",
@@ -327,30 +331,30 @@ impl<'a> SemaContext<'a> {
     }
 
     /// Check if a type is a Copy type.
-    pub fn is_type_copy(&self, ty: Type) -> bool {
+    pub fn is_type_copy(&self, ty: OldType) -> bool {
         match ty {
             // Primitive Copy types
-            Type::I8
-            | Type::I16
-            | Type::I32
-            | Type::I64
-            | Type::U8
-            | Type::U16
-            | Type::U32
-            | Type::U64
-            | Type::Bool
-            | Type::Unit => true,
+            OldType::I8
+            | OldType::I16
+            | OldType::I32
+            | OldType::I64
+            | OldType::U8
+            | OldType::U16
+            | OldType::U32
+            | OldType::U64
+            | OldType::Bool
+            | OldType::Unit => true,
             // Enum types are Copy (they're small discriminant values)
-            Type::Enum(_) => true,
+            OldType::Enum(_) => true,
             // Never and Error are Copy for convenience
-            Type::Never | Type::Error => true,
+            OldType::Never | OldType::Error => true,
             // Struct types: check if marked with @copy
-            Type::Struct(struct_id) => {
+            OldType::Struct(struct_id) => {
                 let struct_def = self.type_pool.struct_def(struct_id);
                 struct_def.is_copy
             }
             // Arrays are Copy if their element type is Copy
-            Type::Array(array_id) => {
+            OldType::Array(array_id) => {
                 let array_def = self.array_registry.get_def(array_id);
                 self.is_type_copy(array_def.element_type)
             }
@@ -358,21 +362,21 @@ impl<'a> SemaContext<'a> {
     }
 
     /// Get the number of ABI slots required for a type.
-    pub fn abi_slot_count(&self, ty: Type) -> u32 {
+    pub fn abi_slot_count(&self, ty: OldType) -> u32 {
         match ty {
-            Type::I8
-            | Type::I16
-            | Type::I32
-            | Type::I64
-            | Type::U8
-            | Type::U16
-            | Type::U32
-            | Type::U64
-            | Type::Bool
-            | Type::Error => 1,
-            Type::Unit | Type::Never => 0,
-            Type::Enum(_) => 1,
-            Type::Struct(struct_id) => {
+            OldType::I8
+            | OldType::I16
+            | OldType::I32
+            | OldType::I64
+            | OldType::U8
+            | OldType::U16
+            | OldType::U32
+            | OldType::U64
+            | OldType::Bool
+            | OldType::Error => 1,
+            OldType::Unit | OldType::Never => 0,
+            OldType::Enum(_) => 1,
+            OldType::Struct(struct_id) => {
                 let struct_def = self.type_pool.struct_def(struct_id);
                 struct_def
                     .fields
@@ -380,7 +384,7 @@ impl<'a> SemaContext<'a> {
                     .map(|f| self.abi_slot_count(f.ty))
                     .sum()
             }
-            Type::Array(array_type_id) => {
+            OldType::Array(array_type_id) => {
                 let array_def = self.array_registry.get_def(array_type_id);
                 let element_slots = self.abi_slot_count(array_def.element_type);
                 element_slots * array_def.length as u32
@@ -398,9 +402,11 @@ impl<'a> SemaContext<'a> {
     }
 
     /// Convert a concrete Type to InferType for use in constraint generation.
-    pub fn type_to_infer_type(&self, ty: Type) -> InferType {
+    /// Uses the old Type enum as input (for compatibility with existing code)
+    /// and converts to InferType which uses the new Type internally.
+    pub fn type_to_infer_type(&self, ty: OldType) -> InferType {
         match ty {
-            Type::Array(array_id) => {
+            OldType::Array(array_id) => {
                 let array_def = self.array_registry.get_def(array_id);
                 let element_infer = self.type_to_infer_type(array_def.element_type);
                 InferType::Array {
@@ -408,7 +414,11 @@ impl<'a> SemaContext<'a> {
                     length: array_def.length,
                 }
             }
-            _ => InferType::Concrete(ty),
+            _ => {
+                // Convert old Type to new Type for InferType::Concrete
+                let new_ty = self.type_pool.from_old_type(ty);
+                InferType::Concrete(new_ty)
+            }
         }
     }
 
@@ -417,9 +427,9 @@ impl<'a> SemaContext<'a> {
     // ========================================================================
 
     /// Check if a type is the builtin String type.
-    pub fn is_builtin_string(&self, ty: Type) -> bool {
+    pub fn is_builtin_string(&self, ty: OldType) -> bool {
         match ty {
-            Type::Struct(struct_id) => Some(struct_id) == self.builtin_string_id,
+            OldType::Struct(struct_id) => Some(struct_id) == self.builtin_string_id,
             _ => false,
         }
     }
@@ -452,14 +462,14 @@ impl<'a> SemaContext<'a> {
     }
 
     /// Get the AIR output type for a builtin struct.
-    pub fn builtin_air_type(&self, struct_id: StructId) -> Type {
-        Type::Struct(struct_id)
+    pub fn builtin_air_type(&self, struct_id: StructId) -> OldType {
+        OldType::Struct(struct_id)
     }
 
     /// Check if a type is a linear type.
-    pub fn is_type_linear(&self, ty: Type) -> bool {
+    pub fn is_type_linear(&self, ty: OldType) -> bool {
         match ty {
-            Type::Struct(struct_id) => {
+            OldType::Struct(struct_id) => {
                 let struct_def = self.type_pool.struct_def(struct_id);
                 struct_def.is_linear
             }

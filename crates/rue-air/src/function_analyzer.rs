@@ -24,6 +24,8 @@ use rue_span::Span;
 use crate::inference::InferType;
 use crate::sema_context::SemaContext;
 use crate::types::{ArrayTypeId, Type};
+// New Type from intern pool (used by InferType::Concrete)
+use crate::Type as NewType;
 
 /// Per-function mutable state during semantic analysis.
 ///
@@ -143,9 +145,16 @@ impl<'a, 'ctx> FunctionAnalyzer<'a, 'ctx> {
     }
 
     /// Convert a fully-resolved InferType to a concrete Type.
+    ///
+    /// This converts from the new `intern_pool::Type` (used in `InferType::Concrete`)
+    /// to the old `types::Type` enum. During the Type Intern Pool migration (ADR-0024),
+    /// this conversion layer bridges the two type representations.
     pub fn infer_type_to_type(&self, ty: &InferType) -> Type {
         match ty {
-            InferType::Concrete(t) => *t,
+            InferType::Concrete(t) => {
+                // Convert from new Type to old Type using the pool
+                self.ctx.type_pool.to_old_type(*t)
+            }
             InferType::Var(_) => Type::Error,
             InferType::IntLiteral => Type::I32,
             InferType::Array { element, length } => {

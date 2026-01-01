@@ -59,7 +59,11 @@ impl EnumId {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ArrayTypeId(pub u32);
 
-/// A type in the Rue type system.
+/// Legacy type enum - being replaced by `intern_pool::Type` in Phase 4 (ADR-0024).
+///
+/// This enum is retained during migration. New code should use `crate::intern_pool::Type`
+/// instead. The intern pool type is a 32-bit index that can represent all types
+/// (primitives via reserved indices 0-15, composites via pool lookup).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum Type {
     /// 8-bit signed integer

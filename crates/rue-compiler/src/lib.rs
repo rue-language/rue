@@ -166,7 +166,10 @@ pub fn validate_runtime() -> Result<(), String> {
 // Re-export commonly used types
 pub use lasso::{Spur, ThreadedRodeo};
 pub use rue_air::{
-    Air, AnalyzedFunction, ArrayTypeDef, Sema, SemaOutput, StructDef, Type, TypeInternPool,
+    Air, AnalyzedFunction, ArrayTypeDef,
+    // Re-export OldType as Type for backwards compatibility
+    OldType as Type,
+    Sema, SemaOutput, StructDef, TypeInternPool,
 };
 pub use rue_cfg::{Cfg, CfgBuilder, CfgOutput, OptLevel};
 pub use rue_codegen::{
@@ -3196,8 +3199,8 @@ mod integration_tests {
             let result = compile_to_air(src).unwrap();
             // type_pool includes builtin types (String) plus user-defined structs
             // There's 1 builtin (String) + 1 user-defined (Point) = 2 total structs
-            let all_struct_ids = result.type_pool.all_struct_ids();
-            assert_eq!(all_struct_ids.len(), 2);
+            let all_struct_types = result.type_pool.all_struct_types();
+            assert_eq!(all_struct_types.len(), 2);
             // Verify Point is present
             let point_name = result.interner.get_or_intern("Point");
             let point_interned = result.type_pool.get_struct_by_name(point_name);

@@ -29,7 +29,8 @@ pub use inst::{
 pub use opt::OptLevel;
 
 // Re-export types from rue-air that we use
-pub use rue_air::{StructDef, StructId, Type};
+// Use OldType (the legacy Type enum) for pattern matching on type variants
+pub use rue_air::{OldType as Type, StructDef, StructId};
 
 /// Output from CFG construction.
 ///
