@@ -2,7 +2,7 @@
 //!
 //! This module contains `SemaContext`, which holds all type information and
 //! declarations that are immutable after the declaration gathering phase.
-//! `SemaContext` is designed to be `Send + Sync` for future parallel function analysis.
+//! `SemaContext` is designed to be `Send + Sync` for parallel function analysis.
 //!
 //! # Architecture
 //!
@@ -16,10 +16,20 @@
 //!
 //! This separation enables:
 //! - Parallel type checking (each function can be analyzed independently)
-//! - Better cache locality (immutable context can be shared)
+//! - Better cache locality (context can be shared across threads)
 //! - Foundation for incremental compilation (can cache `SemaContext` across compilations)
+//!
+//! # Array Type Registry
+//!
+//! The array type registry is thread-safe to support parallel function analysis.
+//! Array types can be created during function body analysis when type inference
+//! resolves array literals like `[1, 2, 3]` without explicit type annotations.
+//! The registry uses `RwLock` for concurrent access with the following pattern:
+//! - Read lock for lookups (most common case)
+//! - Write lock for insertions (rare, only for new array types)
 
 use std::collections::HashMap;
+use std::sync::RwLock;
 
 use lasso::{Spur, ThreadedRodeo};
 use rue_error::PreviewFeatures;
@@ -27,6 +37,120 @@ use rue_rir::{Rir, RirParamMode};
 
 use crate::inference::{FunctionSig, InferType, MethodSig};
 use crate::types::{ArrayTypeDef, ArrayTypeId, EnumDef, EnumId, StructDef, StructId, Type};
+
+/// Thread-safe registry for array types.
+///
+/// This registry allows concurrent lookups and insertions of array types during
+/// parallel function analysis. It uses double-checked locking to minimize
+/// contention: most operations only need a read lock.
+#[derive(Debug)]
+pub struct ArrayTypeRegistry {
+    /// Maps (element_type, length) to ArrayTypeId.
+    types: RwLock<HashMap<(Type, u64), ArrayTypeId>>,
+    /// Array type definitions indexed by ArrayTypeId.
+    defs: RwLock<Vec<ArrayTypeDef>>,
+}
+
+impl ArrayTypeRegistry {
+    /// Create a new empty registry.
+    pub fn new() -> Self {
+        Self {
+            types: RwLock::new(HashMap::new()),
+            defs: RwLock::new(Vec::new()),
+        }
+    }
+
+    /// Create a registry pre-populated with existing types.
+    pub fn from_existing(
+        types: HashMap<(Type, u64), ArrayTypeId>,
+        defs: Vec<ArrayTypeDef>,
+    ) -> Self {
+        Self {
+            types: RwLock::new(types),
+            defs: RwLock::new(defs),
+        }
+    }
+
+    /// Look up an array type by element type and length.
+    pub fn get(&self, element_type: Type, length: u64) -> Option<ArrayTypeId> {
+        self.types
+            .read()
+            .expect("ArrayTypeRegistry lock poisoned")
+            .get(&(element_type, length))
+            .copied()
+    }
+
+    /// Get or create an array type. Thread-safe with double-checked locking.
+    pub fn get_or_create(&self, element_type: Type, length: u64) -> ArrayTypeId {
+        let key = (element_type, length);
+
+        // Fast path: check with read lock
+        {
+            let types = self.types.read().expect("ArrayTypeRegistry lock poisoned");
+            if let Some(&id) = types.get(&key) {
+                return id;
+            }
+        }
+
+        // Slow path: acquire write lock and double-check
+        let mut types = self.types.write().expect("ArrayTypeRegistry lock poisoned");
+
+        // Double-check after acquiring write lock (another thread may have inserted)
+        if let Some(&id) = types.get(&key) {
+            return id;
+        }
+
+        // Create new array type
+        let mut defs = self.defs.write().expect("ArrayTypeRegistry lock poisoned");
+        let id = ArrayTypeId(defs.len() as u32);
+        defs.push(ArrayTypeDef {
+            element_type,
+            length,
+        });
+        types.insert(key, id);
+        id
+    }
+
+    /// Get an array type definition by ID.
+    pub fn get_def(&self, id: ArrayTypeId) -> ArrayTypeDef {
+        self.defs.read().expect("ArrayTypeRegistry lock poisoned")[id.0 as usize]
+    }
+
+    /// Get the number of registered array types.
+    pub fn len(&self) -> usize {
+        self.defs
+            .read()
+            .expect("ArrayTypeRegistry lock poisoned")
+            .len()
+    }
+
+    /// Check if the registry is empty.
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// Extract the array type definitions (consumes the registry).
+    /// Used when building the final SemaOutput.
+    pub fn into_defs(self) -> Vec<ArrayTypeDef> {
+        self.defs
+            .into_inner()
+            .expect("ArrayTypeRegistry lock poisoned")
+    }
+
+    /// Get a snapshot of all array type definitions.
+    pub fn snapshot_defs(&self) -> Vec<ArrayTypeDef> {
+        self.defs
+            .read()
+            .expect("ArrayTypeRegistry lock poisoned")
+            .clone()
+    }
+}
+
+impl Default for ArrayTypeRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 /// Information about a function.
 #[derive(Debug, Clone)]
@@ -76,27 +200,27 @@ pub struct InferenceContext {
     pub method_sigs: HashMap<(Spur, Spur), MethodSig>,
 }
 
-/// Immutable context for semantic analysis.
+/// Context for semantic analysis, designed for parallel function analysis.
 ///
-/// This struct contains all type information and declarations that are
-/// read-only after the declaration gathering phase. It is designed to be
-/// `Send + Sync` so it can be shared across threads during parallel function
-/// body analysis.
+/// This struct contains all type information and declarations needed during
+/// function body analysis. It is designed to be `Send + Sync` so it can be
+/// shared across threads during parallel function analysis.
 ///
 /// # Contents
 ///
-/// - Struct and enum definitions
-/// - Function and method signatures
-/// - Array type registry
-/// - Pre-computed inference context
-/// - Built-in type IDs
+/// - Struct and enum definitions (immutable)
+/// - Function and method signatures (immutable)
+/// - Array type registry (thread-safe, allows concurrent insertions)
+/// - Pre-computed inference context (immutable)
+/// - Built-in type IDs (immutable)
 ///
 /// # Thread Safety
 ///
 /// `SemaContext` is `Send + Sync` because:
-/// - All contained data is immutable after construction
+/// - Most fields are immutable after construction
+/// - The array type registry uses `RwLock` for thread-safe mutations
 /// - References to RIR and interner are shared immutably
-/// - No `Cell`, `RefCell`, or other interior mutability types are used
+/// - ThreadedRodeo is designed to be thread-safe
 #[derive(Debug)]
 pub struct SemaContext<'a> {
     /// Reference to the RIR being analyzed.
@@ -107,11 +231,9 @@ pub struct SemaContext<'a> {
     pub struct_defs: Vec<StructDef>,
     /// Enum definitions indexed by EnumId.
     pub enum_defs: Vec<EnumDef>,
-    /// Array type table: maps (element_type, length) to ArrayTypeId.
-    /// Pre-populated during declaration gathering for array types in signatures.
-    pub array_types: HashMap<(Type, u64), ArrayTypeId>,
-    /// Array type definitions indexed by ArrayTypeId.
-    pub array_type_defs: Vec<ArrayTypeDef>,
+    /// Thread-safe array type registry.
+    /// Supports concurrent lookups and insertions during parallel analysis.
+    pub array_registry: ArrayTypeRegistry,
     /// Struct lookup: maps struct name symbol to StructId.
     pub structs: HashMap<Spur, StructId>,
     /// Enum lookup: maps enum name symbol to EnumId.
@@ -128,9 +250,11 @@ pub struct SemaContext<'a> {
     pub inference_ctx: InferenceContext,
 }
 
-// SAFETY: SemaContext contains only immutable data after construction.
-// The references to RIR and ThreadedRodeo are shared immutably.
-// ThreadedRodeo is designed to be thread-safe.
+// SAFETY: SemaContext is Send + Sync because:
+// - Immutable fields are trivially thread-safe
+// - ArrayTypeRegistry uses RwLock for interior mutability
+// - References to RIR and ThreadedRodeo are shared immutably
+// - ThreadedRodeo is designed to be thread-safe
 unsafe impl<'a> Send for SemaContext<'a> {}
 unsafe impl<'a> Sync for SemaContext<'a> {}
 
@@ -173,13 +297,18 @@ impl<'a> SemaContext<'a> {
     }
 
     /// Get an array type definition by ID.
-    pub fn get_array_type_def(&self, id: ArrayTypeId) -> &ArrayTypeDef {
-        &self.array_type_defs[id.0 as usize]
+    pub fn get_array_type_def(&self, id: ArrayTypeId) -> ArrayTypeDef {
+        self.array_registry.get_def(id)
     }
 
     /// Look up an array type by element type and length.
     pub fn get_array_type(&self, element_type: Type, length: u64) -> Option<ArrayTypeId> {
-        self.array_types.get(&(element_type, length)).copied()
+        self.array_registry.get(element_type, length)
+    }
+
+    /// Get or create an array type. Thread-safe.
+    pub fn get_or_create_array_type(&self, element_type: Type, length: u64) -> ArrayTypeId {
+        self.array_registry.get_or_create(element_type, length)
     }
 
     /// Get a human-readable name for a type.
@@ -200,7 +329,7 @@ impl<'a> SemaContext<'a> {
             Type::Struct(struct_id) => self.struct_defs[struct_id.0 as usize].name.clone(),
             Type::Enum(enum_id) => self.enum_defs[enum_id.0 as usize].name.clone(),
             Type::Array(array_id) => {
-                let array_def = &self.array_type_defs[array_id.0 as usize];
+                let array_def = self.array_registry.get_def(array_id);
                 format!(
                     "[{}; {}]",
                     self.format_type_name(array_def.element_type),
@@ -235,7 +364,7 @@ impl<'a> SemaContext<'a> {
             }
             // Arrays are Copy if their element type is Copy
             Type::Array(array_id) => {
-                let array_def = &self.array_type_defs[array_id.0 as usize];
+                let array_def = self.array_registry.get_def(array_id);
                 self.is_type_copy(array_def.element_type)
             }
         }
@@ -265,7 +394,7 @@ impl<'a> SemaContext<'a> {
                     .sum()
             }
             Type::Array(array_type_id) => {
-                let array_def = &self.array_type_defs[array_type_id.0 as usize];
+                let array_def = self.array_registry.get_def(array_type_id);
                 let element_slots = self.abi_slot_count(array_def.element_type);
                 element_slots * array_def.length as u32
             }
@@ -285,7 +414,7 @@ impl<'a> SemaContext<'a> {
     pub fn type_to_infer_type(&self, ty: Type) -> InferType {
         match ty {
             Type::Array(array_id) => {
-                let array_def = &self.array_type_defs[array_id.0 as usize];
+                let array_def = self.array_registry.get_def(array_id);
                 let element_infer = self.type_to_infer_type(array_def.element_type);
                 InferType::Array {
                     element: Box::new(element_infer),

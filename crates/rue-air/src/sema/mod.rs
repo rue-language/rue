@@ -34,8 +34,9 @@ use rue_error::{CompileErrors, MultiErrorResult, PreviewFeatures};
 use rue_rir::Rir;
 
 use crate::sema_context::{
-    FunctionInfo as SemaContextFunctionInfo, InferenceContext as SemaContextInferenceContext,
-    MethodInfo as SemaContextMethodInfo, SemaContext,
+    ArrayTypeRegistry, FunctionInfo as SemaContextFunctionInfo,
+    InferenceContext as SemaContextInferenceContext, MethodInfo as SemaContextMethodInfo,
+    SemaContext,
 };
 use crate::types::{ArrayTypeDef, ArrayTypeId, EnumDef, EnumId, StructDef, StructId, Type};
 
@@ -415,8 +416,10 @@ impl<'a> Sema<'a> {
             interner: self.interner,
             struct_defs: self.struct_defs.clone(),
             enum_defs: self.enum_defs.clone(),
-            array_types: self.array_types.clone(),
-            array_type_defs: self.array_type_defs.clone(),
+            array_registry: ArrayTypeRegistry::from_existing(
+                self.array_types.clone(),
+                self.array_type_defs.clone(),
+            ),
             structs: self.structs.clone(),
             enums: self.enums.clone(),
             functions: self

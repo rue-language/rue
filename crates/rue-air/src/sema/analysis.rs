@@ -308,25 +308,24 @@ fn analyze_all_function_bodies_sequential(sema: &mut Sema<'_>) -> MultiErrorResu
 /// `analyze_inst_with_context`.
 #[allow(dead_code)]
 fn analyze_all_function_bodies_parallel(sema: Sema<'_>) -> MultiErrorResult<SemaOutput> {
-    // Build immutable SemaContext for sharing across threads
+    // Build SemaContext with thread-safe array registry for sharing across threads
     let ctx = sema.build_sema_context();
 
     // Collect all function jobs
     let jobs = collect_function_jobs(&ctx);
 
     // Analyze functions in parallel
+    // Array types may be created during analysis via ctx.get_or_create_array_type()
     let results: Vec<FunctionResult> = jobs
         .into_par_iter()
         .map(|job| analyze_function_job(&ctx, job))
         .collect();
 
+    // Extract array types from the thread-safe registry
+    let array_type_defs = ctx.array_registry.into_defs();
+
     // Merge results
-    merge_function_results(
-        results,
-        sema.struct_defs,
-        sema.enum_defs,
-        sema.array_type_defs,
-    )
+    merge_function_results(results, sema.struct_defs, sema.enum_defs, array_type_defs)
 }
 
 /// Collect all functions to be analyzed from the RIR.
@@ -806,6 +805,9 @@ fn run_type_inference_with_context(
 }
 
 /// Convert an InferType to a concrete Type using the context.
+///
+/// This function is thread-safe and can be called from parallel function analysis.
+/// Array types are created on-demand via the thread-safe `ArrayTypeRegistry`.
 fn infer_type_to_type_standalone(ty: &InferType, ctx: &SemaContext<'_>) -> Type {
     match ty {
         InferType::Concrete(t) => *t,
@@ -816,11 +818,9 @@ fn infer_type_to_type_standalone(ty: &InferType, ctx: &SemaContext<'_>) -> Type 
             if elem_ty == Type::Error {
                 return Type::Error;
             }
-            if let Some(id) = ctx.get_array_type(elem_ty, *length) {
-                Type::Array(id)
-            } else {
-                Type::Error
-            }
+            // Use get_or_create to handle inferred array types from literals
+            let id = ctx.get_or_create_array_type(elem_ty, *length);
+            Type::Array(id)
         }
     }
 }

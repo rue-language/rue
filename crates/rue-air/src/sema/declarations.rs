@@ -302,6 +302,14 @@ impl<'a> Sema<'a> {
     /// Now that all type names are registered, this resolves:
     /// - Struct field types (must be done first for @copy validation)
     /// - @copy struct validation, destructors, functions, and methods
+    ///
+    /// # Array Type Registration
+    ///
+    /// Array types from explicit type annotations (struct fields, function parameters,
+    /// return types, local variable annotations) are registered during this phase via
+    /// `resolve_type()` calls. Array types from literals (inferred during HM inference)
+    /// are created on-demand via the thread-safe `ArrayTypeRegistry` during function
+    /// body analysis.
     pub(crate) fn resolve_declarations(&mut self) -> CompileResult<()> {
         self.resolve_struct_fields()?;
         self.resolve_remaining_declarations()
