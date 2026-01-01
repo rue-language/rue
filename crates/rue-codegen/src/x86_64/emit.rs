@@ -3420,4 +3420,619 @@ mod tests {
             .any(|inst| inst.asm.contains("mov"));
         assert!(has_mov, "Expected assembly text to contain 'mov'");
     }
+
+    // =========================================================================
+    // Comprehensive encoding tests for all X86Inst variants
+    // These tests ensure systematic coverage of instruction encoding
+    // =========================================================================
+
+    // --- MovRI32: All 16 registers ---
+
+    #[test]
+    fn test_mov_ri32_all_low_regs() {
+        // Test all low registers (rax-rdi, no REX.B needed)
+        let regs_and_opcodes = [
+            (Reg::Rax, 0xB8), // eax
+            (Reg::Rcx, 0xB9), // ecx
+            (Reg::Rdx, 0xBA), // edx
+            (Reg::Rbx, 0xBB), // ebx
+            (Reg::Rsp, 0xBC), // esp
+            (Reg::Rbp, 0xBD), // ebp
+            (Reg::Rsi, 0xBE), // esi
+            (Reg::Rdi, 0xBF), // edi
+        ];
+
+        for (reg, opcode) in regs_and_opcodes {
+            let code = emit_single(X86Inst::MovRI32 {
+                dst: Operand::Physical(reg),
+                imm: 0x12345678,
+            });
+            // mov r32, imm32 -> opcode 78 56 34 12
+            assert_eq!(
+                code,
+                vec![opcode, 0x78, 0x56, 0x34, 0x12],
+                "Failed for register {}",
+                reg
+            );
+        }
+    }
+
+    #[test]
+    fn test_mov_ri32_all_high_regs() {
+        // Test all high registers (r8-r15, REX.B needed)
+        let regs_and_opcodes = [
+            (Reg::R8, 0xB8),  // r8d
+            (Reg::R9, 0xB9),  // r9d
+            (Reg::R10, 0xBA), // r10d
+            (Reg::R11, 0xBB), // r11d
+            (Reg::R12, 0xBC), // r12d
+            (Reg::R13, 0xBD), // r13d
+            (Reg::R14, 0xBE), // r14d
+            (Reg::R15, 0xBF), // r15d
+        ];
+
+        for (reg, opcode) in regs_and_opcodes {
+            let code = emit_single(X86Inst::MovRI32 {
+                dst: Operand::Physical(reg),
+                imm: 0x12345678,
+            });
+            // mov r32, imm32 -> 41 opcode 78 56 34 12 (REX.B prefix)
+            assert_eq!(
+                code,
+                vec![0x41, opcode, 0x78, 0x56, 0x34, 0x12],
+                "Failed for register {}",
+                reg
+            );
+        }
+    }
+
+    #[test]
+    fn test_mov_ri32_negative_imm() {
+        // Test with negative immediate (should be encoded as unsigned)
+        let code = emit_single(X86Inst::MovRI32 {
+            dst: Operand::Physical(Reg::Rax),
+            imm: -1,
+        });
+        // mov eax, -1 -> B8 FF FF FF FF
+        assert_eq!(code, vec![0xB8, 0xFF, 0xFF, 0xFF, 0xFF]);
+    }
+
+    // --- MovRI64: All 16 registers ---
+
+    #[test]
+    fn test_mov_ri64_all_low_regs() {
+        // Test all low registers (rax-rdi)
+        let regs_and_opcodes = [
+            (Reg::Rax, 0xB8),
+            (Reg::Rcx, 0xB9),
+            (Reg::Rdx, 0xBA),
+            (Reg::Rbx, 0xBB),
+            (Reg::Rsp, 0xBC),
+            (Reg::Rbp, 0xBD),
+            (Reg::Rsi, 0xBE),
+            (Reg::Rdi, 0xBF),
+        ];
+
+        for (reg, opcode) in regs_and_opcodes {
+            let code = emit_single(X86Inst::MovRI64 {
+                dst: Operand::Physical(reg),
+                imm: 0x123456789ABCDEF0u64 as i64,
+            });
+            // mov r64, imm64 -> 48 opcode F0 DE BC 9A 78 56 34 12 (REX.W prefix)
+            assert_eq!(
+                code,
+                vec![0x48, opcode, 0xF0, 0xDE, 0xBC, 0x9A, 0x78, 0x56, 0x34, 0x12],
+                "Failed for register {}",
+                reg
+            );
+        }
+    }
+
+    #[test]
+    fn test_mov_ri64_all_high_regs() {
+        // Test all high registers (r8-r15, REX.WB needed)
+        let regs_and_opcodes = [
+            (Reg::R8, 0xB8),
+            (Reg::R9, 0xB9),
+            (Reg::R10, 0xBA),
+            (Reg::R11, 0xBB),
+            (Reg::R12, 0xBC),
+            (Reg::R13, 0xBD),
+            (Reg::R14, 0xBE),
+            (Reg::R15, 0xBF),
+        ];
+
+        for (reg, opcode) in regs_and_opcodes {
+            let code = emit_single(X86Inst::MovRI64 {
+                dst: Operand::Physical(reg),
+                imm: 0x123456789ABCDEF0u64 as i64,
+            });
+            // mov r64, imm64 -> 49 opcode imm64 (REX.WB prefix = 0x48 | 0x01)
+            assert_eq!(
+                code,
+                vec![0x49, opcode, 0xF0, 0xDE, 0xBC, 0x9A, 0x78, 0x56, 0x34, 0x12],
+                "Failed for register {}",
+                reg
+            );
+        }
+    }
+
+    // --- REX prefix comprehensive tests ---
+
+    #[test]
+    fn test_rex_mov_rr_no_rex_needed() {
+        // mov rdi, rax - both low regs, still needs REX.W for 64-bit
+        let code = emit_single(X86Inst::MovRR {
+            dst: Operand::Physical(Reg::Rdi),
+            src: Operand::Physical(Reg::Rax),
+        });
+        // REX.W = 0x48, opcode = 0x89, ModRM = 11 000 111 = 0xC7
+        assert_eq!(code, vec![0x48, 0x89, 0xC7]);
+    }
+
+    #[test]
+    fn test_rex_mov_rr_src_extended() {
+        // mov rdi, r10 - src is extended, needs REX.WR
+        let code = emit_single(X86Inst::MovRR {
+            dst: Operand::Physical(Reg::Rdi),
+            src: Operand::Physical(Reg::R10),
+        });
+        // REX.WR = 0x48 | 0x04 = 0x4C
+        assert_eq!(code, vec![0x4C, 0x89, 0xD7]);
+    }
+
+    #[test]
+    fn test_rex_mov_rr_dst_extended() {
+        // mov r10, rdi - dst is extended, needs REX.WB
+        let code = emit_single(X86Inst::MovRR {
+            dst: Operand::Physical(Reg::R10),
+            src: Operand::Physical(Reg::Rdi),
+        });
+        // REX.WB = 0x48 | 0x01 = 0x49
+        assert_eq!(code, vec![0x49, 0x89, 0xFA]);
+    }
+
+    #[test]
+    fn test_rex_mov_rr_both_extended() {
+        // mov r15, r8 - both extended, needs REX.WRB
+        let code = emit_single(X86Inst::MovRR {
+            dst: Operand::Physical(Reg::R15),
+            src: Operand::Physical(Reg::R8),
+        });
+        // REX.WRB = 0x48 | 0x04 | 0x01 = 0x4D
+        // ModRM: mod=11, reg=R8 (000), r/m=R15 (111) = 0xC7
+        assert_eq!(code, vec![0x4D, 0x89, 0xC7]);
+    }
+
+    #[test]
+    fn test_rex_add_rr_both_extended() {
+        // add r15, r8 - both extended (32-bit add, no REX.W)
+        let code = emit_single(X86Inst::AddRR {
+            dst: Operand::Physical(Reg::R15),
+            src: Operand::Physical(Reg::R8),
+        });
+        // REX.RB = 0x40 | 0x04 | 0x01 = 0x45
+        assert_eq!(code, vec![0x45, 0x01, 0xC7]);
+    }
+
+    #[test]
+    fn test_rex_add_rr64_both_extended() {
+        // add r15, r8 - both extended (64-bit add, REX.WRB)
+        let code = emit_single(X86Inst::AddRR64 {
+            dst: Operand::Physical(Reg::R15),
+            src: Operand::Physical(Reg::R8),
+        });
+        // REX.WRB = 0x48 | 0x04 | 0x01 = 0x4D
+        assert_eq!(code, vec![0x4D, 0x01, 0xC7]);
+    }
+
+    // --- Memory addressing edge cases ---
+
+    #[test]
+    fn test_mov_rm_rbp_zero_offset() {
+        // mov rax, [rbp+0] - RBP with zero offset still needs disp8=0
+        // This is a special case in x86 encoding
+        let code = emit_single(X86Inst::MovRM {
+            dst: Operand::Physical(Reg::Rax),
+            base: Reg::Rbp,
+            offset: 0,
+        });
+        // ModRM: mod=01 (disp8), reg=000 (rax), r/m=101 (rbp) = 0x45
+        // disp8 = 0
+        assert_eq!(code, vec![0x48, 0x8B, 0x45, 0x00]);
+    }
+
+    #[test]
+    fn test_mov_rm_r13_zero_offset() {
+        // mov rax, [r13+0] - R13 has same encoding issue as RBP
+        let code = emit_single(X86Inst::MovRM {
+            dst: Operand::Physical(Reg::Rax),
+            base: Reg::R13,
+            offset: 0,
+        });
+        // REX.WB = 0x49, ModRM: mod=01 (disp8), reg=000 (rax), r/m=101 (r13) = 0x45
+        assert_eq!(code, vec![0x49, 0x8B, 0x45, 0x00]);
+    }
+
+    #[test]
+    fn test_mov_rm_r12_requires_sib() {
+        // mov rax, [r12+8] - R12 requires SIB byte (like RSP)
+        let code = emit_single(X86Inst::MovRM {
+            dst: Operand::Physical(Reg::Rax),
+            base: Reg::R12,
+            offset: 8,
+        });
+        // REX.WB = 0x49
+        // ModRM: mod=01 (disp8), reg=000 (rax), r/m=100 (SIB) = 0x44
+        // SIB: scale=00, index=100 (none), base=100 (r12) = 0x24
+        assert_eq!(code, vec![0x49, 0x8B, 0x44, 0x24, 0x08]);
+    }
+
+    #[test]
+    fn test_mov_mr_r12_requires_sib() {
+        // mov [r12+8], rax - Store to R12-based address
+        let code = emit_single(X86Inst::MovMR {
+            base: Reg::R12,
+            offset: 8,
+            src: Operand::Physical(Reg::Rax),
+        });
+        // REX.WB = 0x49
+        assert_eq!(code, vec![0x49, 0x89, 0x44, 0x24, 0x08]);
+    }
+
+    #[test]
+    fn test_mov_rm_disp_boundary_127() {
+        // mov rax, [rbp+127] - Should use disp8 (max positive disp8)
+        let code = emit_single(X86Inst::MovRM {
+            dst: Operand::Physical(Reg::Rax),
+            base: Reg::Rbp,
+            offset: 127,
+        });
+        // ModRM with disp8
+        assert_eq!(code, vec![0x48, 0x8B, 0x45, 0x7F]);
+    }
+
+    #[test]
+    fn test_mov_rm_disp_boundary_128() {
+        // mov rax, [rbp+128] - Should use disp32 (too large for disp8)
+        let code = emit_single(X86Inst::MovRM {
+            dst: Operand::Physical(Reg::Rax),
+            base: Reg::Rbp,
+            offset: 128,
+        });
+        // ModRM with disp32: mod=10 (0x80), reg=000, r/m=101 = 0x85
+        assert_eq!(code, vec![0x48, 0x8B, 0x85, 0x80, 0x00, 0x00, 0x00]);
+    }
+
+    #[test]
+    fn test_mov_rm_disp_boundary_neg128() {
+        // mov rax, [rbp-128] - Should use disp8 (min negative disp8)
+        let code = emit_single(X86Inst::MovRM {
+            dst: Operand::Physical(Reg::Rax),
+            base: Reg::Rbp,
+            offset: -128,
+        });
+        // -128 as signed byte = 0x80
+        assert_eq!(code, vec![0x48, 0x8B, 0x45, 0x80]);
+    }
+
+    #[test]
+    fn test_mov_rm_disp_boundary_neg129() {
+        // mov rax, [rbp-129] - Should use disp32 (too negative for disp8)
+        let code = emit_single(X86Inst::MovRM {
+            dst: Operand::Physical(Reg::Rax),
+            base: Reg::Rbp,
+            offset: -129,
+        });
+        // ModRM with disp32
+        // -129 as i32 = 0xFFFFFF7F
+        assert_eq!(code, vec![0x48, 0x8B, 0x85, 0x7F, 0xFF, 0xFF, 0xFF]);
+    }
+
+    // --- 64-bit comparison with immediate ---
+
+    #[test]
+    fn test_cmp64_ri_rax() {
+        let code = emit_single(X86Inst::Cmp64RI {
+            src: Operand::Physical(Reg::Rax),
+            imm: 42,
+        });
+        // cmp rax, 42 -> 48 81 F8 2A 00 00 00 (REX.W 81 /7 id)
+        assert_eq!(code, vec![0x48, 0x81, 0xF8, 0x2A, 0x00, 0x00, 0x00]);
+    }
+
+    #[test]
+    fn test_cmp64_ri_r10() {
+        let code = emit_single(X86Inst::Cmp64RI {
+            src: Operand::Physical(Reg::R10),
+            imm: 42,
+        });
+        // cmp r10, 42 -> 49 81 FA 2A 00 00 00 (REX.WB 81 /7 id)
+        assert_eq!(code, vec![0x49, 0x81, 0xFA, 0x2A, 0x00, 0x00, 0x00]);
+    }
+
+    #[test]
+    fn test_cmp64_rr_both_extended() {
+        let code = emit_single(X86Inst::Cmp64RR {
+            src1: Operand::Physical(Reg::R10),
+            src2: Operand::Physical(Reg::R11),
+        });
+        // cmp r10, r11 -> 4D 39 DA (REX.WRB 39 /r)
+        assert_eq!(code, vec![0x4D, 0x39, 0xDA]);
+    }
+
+    // --- Remaining Jcc instructions ---
+
+    #[test]
+    fn test_jge_forward() {
+        let mut mir = X86Mir::new();
+        mir.push(X86Inst::Jge {
+            label: LabelId::new(0),
+        });
+        mir.push(X86Inst::Label {
+            id: LabelId::new(0),
+        });
+
+        let (code, _) = Emitter::new(&mir, 0, 0, 0, &[], &[]).emit().unwrap();
+
+        // jge rel32 -> 0F 8D 00 00 00 00 (rel8 opcode 0x7D + 0x10 = 0x8D)
+        assert_eq!(&code[0..6], &[0x0F, 0x8D, 0x00, 0x00, 0x00, 0x00]);
+    }
+
+    #[test]
+    fn test_jle_forward() {
+        let mut mir = X86Mir::new();
+        mir.push(X86Inst::Jle {
+            label: LabelId::new(0),
+        });
+        mir.push(X86Inst::Label {
+            id: LabelId::new(0),
+        });
+
+        let (code, _) = Emitter::new(&mir, 0, 0, 0, &[], &[]).emit().unwrap();
+
+        // jle rel32 -> 0F 8E 00 00 00 00 (rel8 opcode 0x7E + 0x10 = 0x8E)
+        assert_eq!(&code[0..6], &[0x0F, 0x8E, 0x00, 0x00, 0x00, 0x00]);
+    }
+
+    // --- LEA with extended registers ---
+
+    #[test]
+    fn test_lea_r10_rbp_minus_16() {
+        let code = emit_single(X86Inst::Lea {
+            dst: Operand::Physical(Reg::R10),
+            base: Reg::Rbp,
+            index: None,
+            scale: 1,
+            disp: -16,
+        });
+        // lea r10, [rbp-16] -> 4C 8D 55 F0 (REX.WR 8D /r)
+        // REX = 0x48 | 0x04 (R) = 0x4C
+        assert_eq!(code, vec![0x4C, 0x8D, 0x55, 0xF0]);
+    }
+
+    #[test]
+    fn test_lea_rax_r12_plus_8() {
+        // LEA from R12 base - requires SIB byte
+        let code = emit_single(X86Inst::Lea {
+            dst: Operand::Physical(Reg::Rax),
+            base: Reg::R12,
+            index: None,
+            scale: 1,
+            disp: 8,
+        });
+        // lea rax, [r12+8] -> 49 8D 44 24 08 (REX.WB 8D ModRM SIB disp8)
+        assert_eq!(code, vec![0x49, 0x8D, 0x44, 0x24, 0x08]);
+    }
+
+    #[test]
+    fn test_lea_r10_r13_plus_0() {
+        // LEA from R13 base with 0 offset - needs disp8=0 encoding
+        let code = emit_single(X86Inst::Lea {
+            dst: Operand::Physical(Reg::R10),
+            base: Reg::R13,
+            index: None,
+            scale: 1,
+            disp: 0,
+        });
+        // lea r10, [r13] -> 4D 8D 55 00 (REX.WRB 8D mod=01 reg=r10 r/m=r13 disp8=0)
+        assert_eq!(code, vec![0x4D, 0x8D, 0x55, 0x00]);
+    }
+
+    // --- Shift with extended registers ---
+
+    #[test]
+    fn test_shl_r10_cl() {
+        let code = emit_single(X86Inst::ShlRCl {
+            dst: Operand::Physical(Reg::R10),
+        });
+        // shl r10, cl -> 49 D3 E2 (REX.WB D3 /4)
+        assert_eq!(code, vec![0x49, 0xD3, 0xE2]);
+    }
+
+    #[test]
+    fn test_shr_r10_cl() {
+        let code = emit_single(X86Inst::ShrRCl {
+            dst: Operand::Physical(Reg::R10),
+        });
+        // shr r10, cl -> 49 D3 EA (REX.WB D3 /5)
+        assert_eq!(code, vec![0x49, 0xD3, 0xEA]);
+    }
+
+    #[test]
+    fn test_sar_r10_cl() {
+        let code = emit_single(X86Inst::SarRCl {
+            dst: Operand::Physical(Reg::R10),
+        });
+        // sar r10, cl -> 49 D3 FA (REX.WB D3 /7)
+        assert_eq!(code, vec![0x49, 0xD3, 0xFA]);
+    }
+
+    #[test]
+    fn test_shl32_r10_cl() {
+        let code = emit_single(X86Inst::Shl32RCl {
+            dst: Operand::Physical(Reg::R10),
+        });
+        // shl r10d, cl -> 41 D3 E2 (REX.B D3 /4) - no REX.W for 32-bit
+        assert_eq!(code, vec![0x41, 0xD3, 0xE2]);
+    }
+
+    #[test]
+    fn test_shl_r10_imm() {
+        let code = emit_single(X86Inst::ShlRI {
+            dst: Operand::Physical(Reg::R10),
+            imm: 4,
+        });
+        // shl r10, 4 -> 49 C1 E2 04 (REX.WB C1 /4 ib)
+        assert_eq!(code, vec![0x49, 0xC1, 0xE2, 0x04]);
+    }
+
+    #[test]
+    fn test_shr_r10_imm() {
+        let code = emit_single(X86Inst::ShrRI {
+            dst: Operand::Physical(Reg::R10),
+            imm: 4,
+        });
+        // shr r10, 4 -> 49 C1 EA 04 (REX.WB C1 /5 ib)
+        assert_eq!(code, vec![0x49, 0xC1, 0xEA, 0x04]);
+    }
+
+    #[test]
+    fn test_sar_r10_imm() {
+        let code = emit_single(X86Inst::SarRI {
+            dst: Operand::Physical(Reg::R10),
+            imm: 4,
+        });
+        // sar r10, 4 -> 49 C1 FA 04 (REX.WB C1 /7 ib)
+        assert_eq!(code, vec![0x49, 0xC1, 0xFA, 0x04]);
+    }
+
+    // --- Additional arithmetic with extended registers ---
+
+    #[test]
+    fn test_imul_r10_r11_64() {
+        let code = emit_single(X86Inst::ImulRR64 {
+            dst: Operand::Physical(Reg::R10),
+            src: Operand::Physical(Reg::R11),
+        });
+        // imul r10, r11 -> 4D 0F AF D3 (REX.WRB 0F AF /r)
+        assert_eq!(code, vec![0x4D, 0x0F, 0xAF, 0xD3]);
+    }
+
+    #[test]
+    fn test_add_ri_r10_small() {
+        let code = emit_single(X86Inst::AddRI {
+            dst: Operand::Physical(Reg::R10),
+            imm: 8,
+        });
+        // add r10, 8 -> 49 83 C2 08 (REX.WB 83 /0 ib)
+        assert_eq!(code, vec![0x49, 0x83, 0xC2, 0x08]);
+    }
+
+    #[test]
+    fn test_add_ri_r10_large() {
+        let code = emit_single(X86Inst::AddRI {
+            dst: Operand::Physical(Reg::R10),
+            imm: 256,
+        });
+        // add r10, 256 -> 49 81 C2 00 01 00 00 (REX.WB 81 /0 id)
+        assert_eq!(code, vec![0x49, 0x81, 0xC2, 0x00, 0x01, 0x00, 0x00]);
+    }
+
+    // --- String constant with extended register ---
+
+    #[test]
+    fn test_string_const_ptr_r10() {
+        let code = emit_single(X86Inst::StringConstPtr {
+            dst: Operand::Physical(Reg::R10),
+            string_id: 0,
+        });
+        // lea r10, [rip+disp32] -> 4C 8D 15 00 00 00 00 (REX.WR 8D /r)
+        // ModRM: mod=00, reg=r10(010), r/m=101 = 0x15
+        assert_eq!(code, vec![0x4C, 0x8D, 0x15, 0x00, 0x00, 0x00, 0x00]);
+    }
+
+    // --- MOVSX/MOVZX with extended registers ---
+
+    #[test]
+    fn test_movsx8_to64_extended_regs() {
+        let code = emit_single(X86Inst::Movsx8To64 {
+            dst: Operand::Physical(Reg::R10),
+            src: Operand::Physical(Reg::R11),
+        });
+        // movsx r10, r11b -> 4D 0F BE D3 (REX.WRB 0F BE /r)
+        assert_eq!(code, vec![0x4D, 0x0F, 0xBE, 0xD3]);
+    }
+
+    #[test]
+    fn test_movzx_extended_regs() {
+        let code = emit_single(X86Inst::Movzx {
+            dst: Operand::Physical(Reg::R10),
+            src: Operand::Physical(Reg::R11),
+        });
+        // movzx r10d, r11b -> 45 0F B6 D3 (REX.RB 0F B6 /r)
+        assert_eq!(code, vec![0x45, 0x0F, 0xB6, 0xD3]);
+    }
+
+    // --- XOR register-immediate with extended register ---
+
+    #[test]
+    fn test_xor_ri_r10_small() {
+        let code = emit_single(X86Inst::XorRI {
+            dst: Operand::Physical(Reg::R10),
+            imm: 1,
+        });
+        // xor r10d, 1 -> 41 83 F2 01 (REX.B 83 /6 ib)
+        assert_eq!(code, vec![0x41, 0x83, 0xF2, 0x01]);
+    }
+
+    #[test]
+    fn test_xor_ri_r10_large() {
+        let code = emit_single(X86Inst::XorRI {
+            dst: Operand::Physical(Reg::R10),
+            imm: 0x12345678,
+        });
+        // xor r10d, 0x12345678 -> 41 81 F2 78 56 34 12 (REX.B 81 /6 id)
+        assert_eq!(code, vec![0x41, 0x81, 0xF2, 0x78, 0x56, 0x34, 0x12]);
+    }
+
+    // --- Test r/m vs reg field usage ---
+    // These tests verify that the ModRM encoding is correct for instructions
+    // where src goes in reg field and dst goes in r/m field (or vice versa)
+
+    #[test]
+    fn test_sub_rr_direction() {
+        // sub rdi, rax: rdi = rdi - rax
+        // Encoding uses 29 /r (sub r/m, r), so rax goes in reg field
+        let code = emit_single(X86Inst::SubRR {
+            dst: Operand::Physical(Reg::Rdi),
+            src: Operand::Physical(Reg::Rax),
+        });
+        // 29 C7 where C7 = 11 000 111 (mod=11, reg=rax(0), r/m=rdi(7))
+        assert_eq!(code, vec![0x29, 0xC7]);
+    }
+
+    #[test]
+    fn test_cmp_rr_direction() {
+        // cmp rdi, rax: sets flags based on rdi - rax
+        // Encoding uses 39 /r (cmp r/m, r), so rax (src2) goes in reg field
+        let code = emit_single(X86Inst::CmpRR {
+            src1: Operand::Physical(Reg::Rdi),
+            src2: Operand::Physical(Reg::Rax),
+        });
+        // 39 C7 where C7 = 11 000 111 (mod=11, reg=rax(0), r/m=rdi(7))
+        assert_eq!(code, vec![0x39, 0xC7]);
+    }
+
+    #[test]
+    fn test_imul_rr_direction() {
+        // imul rdi, rax: rdi = rdi * rax
+        // Encoding uses 0F AF /r (imul r, r/m), so rdi goes in reg field
+        let code = emit_single(X86Inst::ImulRR {
+            dst: Operand::Physical(Reg::Rdi),
+            src: Operand::Physical(Reg::Rax),
+        });
+        // 0F AF F8 where F8 = 11 111 000 (mod=11, reg=rdi(7), r/m=rax(0))
+        assert_eq!(code, vec![0x0F, 0xAF, 0xF8]);
+    }
 }
