@@ -32,7 +32,8 @@
     <nav class="border-b border-themed">
         <div class="max-w-5xl mx-auto px-6 py-4 flex justify-between items-center">
             <a href="{{ get_url(path='/') }}" class="text-2xl font-bold hover:text-[var(--color-accent)] dark:hover:text-[var(--color-accent-dark)] transition-colors no-underline" style="color: inherit;">Rue</a>
-            <div class="flex items-center gap-6">
+            <!-- Desktop navigation -->
+            <div class="nav-desktop flex items-center gap-6">
                 <ul class="flex gap-6 text-sm">
                     <li><a href="{{ get_url(path='/') }}" class="nav-link">Home</a></li>
                     <li><a href="{{ get_url(path='getting-started') }}" class="nav-link">Get Started</a></li>
@@ -51,6 +52,37 @@
                     </svg>
                 </button>
             </div>
+            <!-- Mobile navigation controls -->
+            <div class="nav-mobile-controls flex items-center gap-4">
+                <button onclick="toggleTheme()" class="theme-toggle" aria-label="Toggle theme">
+                    <svg class="icon-sun w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.364 6.364l-.707-.707M6.343 6.343l-.707-.707m12.728 0l-.707.707M6.343 17.657l-.707.707M16 12a4 4 0 11-8 0 4 4 0 018 0z" />
+                    </svg>
+                    <svg class="icon-moon w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20.354 15.354A9 9 0 018.646 3.646 9.003 9.003 0 0012 21a9.003 9.003 0 008.354-5.646z" />
+                    </svg>
+                </button>
+                <button onclick="toggleMobileMenu()" class="mobile-menu-toggle" aria-label="Toggle menu" aria-expanded="false">
+                    <svg class="icon-menu w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16" />
+                    </svg>
+                    <svg class="icon-close w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+                    </svg>
+                </button>
+            </div>
+        </div>
+        <!-- Mobile menu overlay -->
+        <div id="mobile-menu" class="mobile-menu">
+            <ul class="mobile-menu-list">
+                <li><a href="{{ get_url(path='/') }}" class="mobile-menu-link">Home</a></li>
+                <li><a href="{{ get_url(path='getting-started') }}" class="mobile-menu-link">Get Started</a></li>
+                <li><a href="{{ get_url(path='spec') }}" class="mobile-menu-link">Specification</a></li>
+                <li><a href="{{ get_url(path='performance') }}" class="mobile-menu-link">Performance</a></li>
+                <li><a href="{{ get_url(path='blog') }}" class="mobile-menu-link">Blog</a></li>
+                <li><a href="{{ config.extra.github_url }}" class="mobile-menu-link">GitHub</a></li>
+                <li><a href="{{ config.extra.bluesky_url }}" class="mobile-menu-link">Bluesky</a></li>
+            </ul>
         </div>
     </nav>
 
@@ -75,6 +107,25 @@
             }
             updateSyntaxTheme();
         }
+
+        function toggleMobileMenu() {
+            const menu = document.getElementById('mobile-menu');
+            const toggle = document.querySelector('.mobile-menu-toggle');
+            const isOpen = menu.classList.toggle('open');
+            toggle.classList.toggle('active', isOpen);
+            toggle.setAttribute('aria-expanded', isOpen);
+        }
+
+        // Close mobile menu when clicking a link
+        document.querySelectorAll('.mobile-menu-link').forEach(link => {
+            link.addEventListener('click', () => {
+                const menu = document.getElementById('mobile-menu');
+                const toggle = document.querySelector('.mobile-menu-toggle');
+                menu.classList.remove('open');
+                toggle.classList.remove('active');
+                toggle.setAttribute('aria-expanded', 'false');
+            });
+        });
     </script>
 </body>
 </html>
