@@ -242,17 +242,21 @@ for i in "${!benchmark_names[@]}"; do
         sum=$(echo "$sum + $val" | bc -l)
     done
     count=${#iteration_results[@]}
-    mean=$(echo "scale=3; $sum / $count" | bc -l)
+    # Note: bc may output ".123" instead of "0.123" on some platforms.
+    # We use printf to ensure proper JSON number formatting.
+    mean_raw=$(echo "scale=3; $sum / $count" | bc -l)
+    mean=$(printf "%.3f" "$mean_raw")
 
     # Calculate stddev
     sum_sq=0
     for val in "${iteration_results[@]}"; do
-        diff=$(echo "$val - $mean" | bc -l)
+        diff=$(echo "$val - $mean_raw" | bc -l)
         sq=$(echo "$diff * $diff" | bc -l)
         sum_sq=$(echo "$sum_sq + $sq" | bc -l)
     done
     variance=$(echo "scale=6; $sum_sq / $count" | bc -l)
-    stddev=$(echo "scale=3; sqrt($variance)" | bc -l)
+    stddev_raw=$(echo "scale=6; sqrt($variance)" | bc -l)
+    stddev=$(printf "%.6f" "$stddev_raw")
 
     # Calculate mean and stddev for memory usage
     mem_mean=0
