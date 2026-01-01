@@ -1949,13 +1949,9 @@ impl<'a> Sema<'a> {
         // Check for exclusive access violation
         self.check_exclusive_access(&args, span)?;
 
-        // Clone the data we need before mutable borrow
-        let param_types = fn_info.param_types.clone();
-        let param_modes = fn_info.param_modes.clone();
-        let return_type = fn_info.return_type;
-
         // Check that call-site argument modes match function parameter modes
-        for (i, (arg, expected_mode)) in args.iter().zip(param_modes.iter()).enumerate() {
+        // Do this before the mutable borrow in analyze_call_args, accessing fn_info directly
+        for (i, (arg, expected_mode)) in args.iter().zip(fn_info.param_modes.iter()).enumerate() {
             match expected_mode {
                 RirParamMode::Inout => {
                     if arg.mode != RirArgMode::Inout {
@@ -1978,6 +1974,9 @@ impl<'a> Sema<'a> {
                 }
             }
         }
+
+        // Extract return_type before mutable borrow (Copy type, no allocation)
+        let return_type = fn_info.return_type;
 
         // Analyze arguments
         let air_args = self.analyze_call_args(air, &args, ctx)?;
