@@ -669,6 +669,8 @@ pub fn coalesce<Reg: Copy + Eq + std::hash::Hash>(
 #[macro_export]
 macro_rules! alloc_dst {
     // Form 1: Explicit arms with different behavior
+    // NOTE: Rematerialize is not valid for destinations (only for sources that need reloading),
+    // so we panic if we see it here.
     ($alloc:expr =>
         Register($reg:ident) => $emit_reg:block,
         Spill($offset:ident) => $emit_spill:block then $store:block,
@@ -680,6 +682,13 @@ macro_rules! alloc_dst {
                 $emit_spill
                 $store
             }
+            Some($crate::regalloc::Allocation::Rematerialize(_)) => {
+                // Rematerialize is only valid for source operands (when loading a value).
+                // For destinations, we should never see this - it would mean we're
+                // defining a rematerializable value, which should already have the
+                // original instruction that creates it.
+                unreachable!("alloc_dst! called on rematerializable vreg; this is a bug")
+            }
             None => {
                 let $pass_dst = $pass_dst;
                 $emit_pass
@@ -688,6 +697,8 @@ macro_rules! alloc_dst {
     };
 
     // Form 2: Common case - same emit, different operand
+    // NOTE: Rematerialize is not valid for destinations (only for sources that need reloading),
+    // so we panic if we see it here.
     ($alloc:expr, $dst:expr, $scratch:expr =>
         emit |$op:ident| $emit:block,
         store |$off:ident| $store_body:block $(,)?
@@ -702,12 +713,64 @@ macro_rules! alloc_dst {
                 $emit
                 $store_body
             }
+            Some($crate::regalloc::Allocation::Rematerialize(_)) => {
+                // Rematerialize is only valid for source operands.
+                unreachable!("alloc_dst! called on rematerializable vreg; this is a bug")
+            }
             None => {
                 let $op = $dst;
                 $emit
             }
         }
     };
+}
+
+// ============================================================================
+// Rematerialization Types
+// ============================================================================
+
+/// Information about how a value can be rematerialized (recomputed) instead of spilled.
+///
+/// Rematerialization is an optimization where instead of storing a value to
+/// the stack and reloading it, we simply recompute it. This is beneficial for:
+/// - Constants (cheaper to reload an immediate than memory access)
+/// - String literal addresses (compile-time known pointers)
+///
+/// This enum captures the information needed to regenerate the value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RematerializeOp {
+    /// A 32-bit constant: `mov dst, imm32`
+    Const32(i32),
+    /// A 64-bit constant: `mov dst, imm64`
+    Const64(i64),
+    /// A string literal pointer: `lea dst, [rip + string_offset]`
+    StringPtr(u32),
+    /// A string literal length (compile-time known)
+    StringLen(u32),
+    /// A string literal capacity (compile-time known)
+    StringCap(u32),
+}
+
+/// Information about a virtual register's rematerializability.
+///
+/// This is tracked per-vreg and used by the register allocator to decide
+/// whether to spill (store/load) or rematerialize (recompute) a value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct VRegInfo {
+    /// If Some, this vreg can be rematerialized instead of spilled.
+    pub remat: Option<RematerializeOp>,
+}
+
+impl VRegInfo {
+    /// Create info for a vreg that cannot be rematerialized.
+    pub const fn none() -> Self {
+        Self { remat: None }
+    }
+
+    /// Create info for a rematerializable vreg.
+    pub const fn rematerializable(op: RematerializeOp) -> Self {
+        Self { remat: Some(op) }
+    }
 }
 
 // ============================================================================
@@ -720,6 +783,11 @@ pub enum Allocation<Reg: Copy> {
     Register(Reg),
     /// Spilled to a stack slot (offset from frame pointer).
     Spill(i32),
+    /// Value will be rematerialized (recomputed) when needed.
+    ///
+    /// This is cheaper than spilling for constants and other values that
+    /// can be cheaply recomputed. No stack slot is allocated.
+    Rematerialize(RematerializeOp),
 }
 
 // ============================================================================
@@ -838,6 +906,7 @@ impl<Reg: Copy + Eq + std::hash::Hash + fmt::Display> fmt::Display for RegAllocD
             match alloc {
                 Allocation::Register(reg) => writeln!(f, "  v{} -> {}", vreg, reg)?,
                 Allocation::Spill(offset) => writeln!(f, "  v{} -> [stack{}]", vreg, offset)?,
+                Allocation::Rematerialize(op) => writeln!(f, "  v{} -> remat({:?})", vreg, op)?,
             }
         }
         writeln!(f)?;
@@ -953,6 +1022,50 @@ pub fn linear_scan_with_cost_model<Reg: Copy + Eq + std::hash::Hash>(
         existing_locals,
         cost_model,
         loop_info,
+    );
+    (allocation, num_spills, used_callee_saved)
+}
+
+/// Perform linear scan register allocation with rematerialization support.
+///
+/// This is the preferred allocation function when rematerialization info is available.
+/// When a vreg needs to be spilled but is marked as rematerializable, the allocator
+/// will mark it for rematerialization instead of allocating a stack slot.
+///
+/// # Arguments
+///
+/// * `vreg_count` - Total number of virtual registers
+/// * `liveness` - Liveness information from dataflow analysis
+/// * `allocatable_regs` - Physical registers available for allocation
+/// * `existing_locals` - Number of local variable slots already on the stack
+/// * `vreg_info` - Rematerialization info for each vreg (optional per-vreg)
+///
+/// # Returns
+///
+/// A tuple of:
+/// * `IndexMap<VReg, Option<Allocation<Reg>>>` - Allocation for each vreg
+/// * `u32` - Number of spill slots used (excludes rematerialized vregs)
+/// * `Vec<Reg>` - Callee-saved registers that were used
+pub fn linear_scan_with_remat<Reg: Copy + Eq + std::hash::Hash>(
+    vreg_count: u32,
+    liveness: &LivenessInfo<Reg>,
+    allocatable_regs: &[Reg],
+    existing_locals: u32,
+    vreg_info: &IndexMap<VReg, VRegInfo>,
+) -> (IndexMap<VReg, Option<Allocation<Reg>>>, u32, Vec<Reg>) {
+    let cost_model = CostModel {
+        use_loop_aware_spilling: false,
+        ..Default::default()
+    };
+    let loop_info = LoopInfo::no_loops(liveness.live_at.len());
+    let (allocation, num_spills, used_callee_saved, _debug_info) = linear_scan_impl_with_remat(
+        vreg_count,
+        liveness,
+        allocatable_regs,
+        existing_locals,
+        &cost_model,
+        &loop_info,
+        vreg_info,
     );
     (allocation, num_spills, used_callee_saved)
 }
@@ -1143,6 +1256,201 @@ fn linear_scan_impl<Reg: Copy + Eq + std::hash::Hash>(
                 let spill_offset = spill_allocator.allocate(range.start, range.end);
                 allocation[vreg] = Some(Allocation::Spill(spill_offset));
                 debug_spills.push(vreg.index());
+            }
+        }
+    }
+
+    // Build final allocation list
+    let debug_allocations: Vec<(u32, Allocation<Reg>)> = allocation
+        .iter()
+        .enumerate()
+        .filter_map(|(idx, alloc)| alloc.map(|a| (idx as u32, a)))
+        .collect();
+
+    let debug_info = RegAllocDebugInfo {
+        live_ranges: debug_live_ranges,
+        interference: debug_interference,
+        allocations: debug_allocations,
+        spills: debug_spills,
+        callee_saved_used: used_callee_saved.clone(),
+    };
+
+    (
+        allocation,
+        spill_allocator.num_slots(),
+        used_callee_saved,
+        debug_info,
+    )
+}
+
+/// Internal implementation of linear scan with rematerialization support.
+///
+/// When a vreg needs to be spilled but has rematerialization info, it is marked
+/// for rematerialization instead of being allocated a stack slot. This avoids
+/// memory traffic for values that can be cheaply recomputed (constants, etc.).
+fn linear_scan_impl_with_remat<Reg: Copy + Eq + std::hash::Hash>(
+    vreg_count: u32,
+    liveness: &LivenessInfo<Reg>,
+    allocatable_regs: &[Reg],
+    existing_locals: u32,
+    cost_model: &CostModel,
+    loop_info: &LoopInfo,
+    vreg_info: &IndexMap<VReg, VRegInfo>,
+) -> (
+    IndexMap<VReg, Option<Allocation<Reg>>>,
+    u32,
+    Vec<Reg>,
+    RegAllocDebugInfo<Reg>,
+) {
+    let vreg_count_usize = vreg_count as usize;
+
+    // Initialize allocation map
+    let mut allocation: IndexMap<VReg, Option<Allocation<Reg>>> =
+        IndexMap::with_capacity(vreg_count_usize);
+    allocation.resize(vreg_count_usize, None);
+
+    // Spill slot allocator that reuses slots for non-overlapping live ranges
+    let mut spill_allocator = SpillSlotAllocator::new(existing_locals);
+    let mut used_callee_saved: Vec<Reg> = Vec::new();
+
+    // Debug info collections
+    let mut debug_live_ranges: Vec<(u32, usize, usize)> = Vec::new();
+    let mut debug_interference: Vec<(u32, u32)> = Vec::new();
+    let mut debug_spills: Vec<u32> = Vec::new();
+
+    // Helper to check if a vreg is rematerializable
+    let can_remat =
+        |vreg: VReg| -> Option<RematerializeOp> { vreg_info.get(vreg).and_then(|info| info.remat) };
+
+    // Collect vregs with live ranges and sort by start
+    let mut vregs_by_start: Vec<(VReg, LiveRange)> = Vec::with_capacity(vreg_count_usize);
+    for vreg_idx in 0..vreg_count {
+        let vreg = VReg::new(vreg_idx);
+        if let Some(&range) = liveness.range(vreg) {
+            vregs_by_start.push((vreg, range));
+            debug_live_ranges.push((vreg_idx, range.start, range.end));
+        }
+    }
+    vregs_by_start.sort_by_key(|(_, range)| range.start);
+
+    // Build interference graph: vregs that overlap
+    for i in 0..vregs_by_start.len() {
+        for j in (i + 1)..vregs_by_start.len() {
+            let (vreg1, range1) = &vregs_by_start[i];
+            let (vreg2, range2) = &vregs_by_start[j];
+            if range1.overlaps(range2) {
+                debug_interference.push((vreg1.index(), vreg2.index()));
+            }
+        }
+    }
+
+    // Track which registers are currently in use and when they become free
+    // Tuple: (vreg, physical reg, live range end)
+    let mut active: Vec<(VReg, Reg, usize)> = Vec::with_capacity(allocatable_regs.len());
+
+    for (vreg, range) in vregs_by_start {
+        // Expire old intervals - remove registers whose vregs are no longer live
+        active.retain(|&(_, _, end)| end >= range.start);
+
+        // Find registers currently in use
+        let used_regs: HashSet<Reg> = active.iter().map(|&(_, reg, _)| reg).collect();
+
+        // Try to find a free register
+        let mut allocated_reg = None;
+        for &reg in allocatable_regs {
+            if !used_regs.contains(&reg) {
+                allocated_reg = Some(reg);
+                break;
+            }
+        }
+
+        if let Some(reg) = allocated_reg {
+            // Assign this register
+            allocation[vreg] = Some(Allocation::Register(reg));
+            active.push((vreg, reg, range.end));
+            // Track callee-saved register usage
+            if !used_callee_saved.contains(&reg) {
+                used_callee_saved.push(reg);
+            }
+        } else {
+            // No free register - need to spill or rematerialize
+            // Use cost model to determine which vreg to spill.
+            // Lower priority = cheaper to spill = spill first.
+            // Rematerializable vregs have even lower priority (prefer to evict them).
+
+            // Compute priority for current vreg
+            // If rematerializable, it has the lowest priority (always prefer to evict)
+            let current_is_remat = can_remat(vreg).is_some();
+            let current_loop_depth = loop_info.max_depth_in_range(range.start, range.end);
+            let current_remaining = range.end.saturating_sub(range.start);
+            let current_priority = if current_is_remat {
+                0 // Lowest priority = evict first
+            } else {
+                cost_model.spill_priority(current_loop_depth, current_remaining)
+            };
+
+            // Find the vreg with lowest priority (cheapest to spill/remat) among active vregs
+            let mut best_spill_idx = None;
+            let mut best_spill_priority = current_priority;
+            let mut best_is_remat = current_is_remat;
+
+            for (i, &(active_vreg, _, end)) in active.iter().enumerate() {
+                let active_is_remat = can_remat(active_vreg).is_some();
+                let active_loop_depth = loop_info.max_depth_in_range(range.start, end);
+                let active_remaining = end.saturating_sub(range.start);
+                let active_priority = if active_is_remat {
+                    0 // Lowest priority = evict first
+                } else {
+                    cost_model.spill_priority(active_loop_depth, active_remaining)
+                };
+
+                // Prefer rematerializable vregs, then lowest priority
+                // (rematerializable with priority 0 beats non-remat with any priority)
+                let should_replace = if active_is_remat && !best_is_remat {
+                    true // Prefer to evict rematerializable over non-remat
+                } else if !active_is_remat && best_is_remat {
+                    false // Don't replace remat with non-remat
+                } else {
+                    active_priority < best_spill_priority
+                };
+
+                if should_replace {
+                    best_spill_priority = active_priority;
+                    best_spill_idx = Some(i);
+                    best_is_remat = active_is_remat;
+                }
+            }
+
+            if let Some(idx) = best_spill_idx {
+                // Evict the active vreg with lowest priority
+                let (spilled_vreg, freed_reg, spilled_end) = active.remove(idx);
+
+                // Check if spilled vreg is rematerializable
+                if let Some(remat_op) = can_remat(spilled_vreg) {
+                    // Mark for rematerialization instead of spilling
+                    allocation[spilled_vreg] = Some(Allocation::Rematerialize(remat_op));
+                } else {
+                    // Allocate a stack slot
+                    let spilled_range = liveness.range(spilled_vreg).unwrap();
+                    let spill_offset = spill_allocator.allocate(spilled_range.start, spilled_end);
+                    allocation[spilled_vreg] = Some(Allocation::Spill(spill_offset));
+                    debug_spills.push(spilled_vreg.index());
+                }
+
+                // Give the freed register to the current vreg
+                allocation[vreg] = Some(Allocation::Register(freed_reg));
+                active.push((vreg, freed_reg, range.end));
+            } else {
+                // Current vreg has the lowest priority, evict it
+                if let Some(remat_op) = can_remat(vreg) {
+                    // Mark for rematerialization
+                    allocation[vreg] = Some(Allocation::Rematerialize(remat_op));
+                } else {
+                    // Allocate a stack slot
+                    let spill_offset = spill_allocator.allocate(range.start, range.end);
+                    allocation[vreg] = Some(Allocation::Spill(spill_offset));
+                    debug_spills.push(vreg.index());
+                }
             }
         }
     }
@@ -2143,5 +2451,153 @@ mod tests {
         assert!(deep_priority > shallow_priority);
         // The ratio should be about 10000:1
         assert!(deep_priority > shallow_priority * 1000);
+    }
+
+    // ========================================
+    // Rematerialization tests
+    // ========================================
+
+    #[test]
+    fn test_rematerialization_preferred_over_spill() {
+        // When we run out of registers and one vreg is rematerializable,
+        // that vreg should be marked for rematerialization (not spilled).
+        let allocatable = vec![TestReg(0)]; // Only 1 register
+        let liveness = make_liveness(vec![
+            (0, 0, 5), // v0: constant, lives 0-5
+            (1, 2, 5), // v1: non-constant, overlaps with v0 at 2-5
+        ]);
+
+        // Create vreg info marking v0 as rematerializable
+        let mut vreg_info = IndexMap::with_capacity(2);
+        vreg_info.resize(2, VRegInfo::none());
+        vreg_info[VReg::new(0)] = VRegInfo::rematerializable(RematerializeOp::Const32(42));
+        // v1 is not rematerializable
+
+        let (allocation, num_spills, _) =
+            linear_scan_with_remat(2, &liveness, &allocatable, 0, &vreg_info);
+
+        // v0 should be rematerialized (not spilled)
+        assert!(
+            matches!(
+                allocation[VReg::new(0)],
+                Some(Allocation::Rematerialize(RematerializeOp::Const32(42)))
+            ),
+            "rematerializable vreg should be marked for rematerialization, got: {:?}",
+            allocation[VReg::new(0)]
+        );
+
+        // v1 should get the register (not spilled)
+        assert!(
+            matches!(allocation[VReg::new(1)], Some(Allocation::Register(_))),
+            "non-rematerializable vreg should get register, got: {:?}",
+            allocation[VReg::new(1)]
+        );
+
+        // No actual spills needed because v0 was rematerialized
+        assert_eq!(num_spills, 0, "no spill slots should be used");
+    }
+
+    #[test]
+    fn test_rematerialization_prefers_remat_over_non_remat() {
+        // When multiple vregs compete for a register, rematerializable ones
+        // should be evicted first.
+        let allocatable = vec![TestReg(0)]; // Only 1 register
+        let liveness = make_liveness(vec![
+            (0, 0, 5), // v0: non-constant, lives 0-5
+            (1, 2, 5), // v1: constant, overlaps with v0
+        ]);
+
+        // Mark v1 (the second one) as rematerializable
+        let mut vreg_info = IndexMap::with_capacity(2);
+        vreg_info.resize(2, VRegInfo::none());
+        vreg_info[VReg::new(1)] = VRegInfo::rematerializable(RematerializeOp::Const64(100));
+
+        let (allocation, num_spills, _) =
+            linear_scan_with_remat(2, &liveness, &allocatable, 0, &vreg_info);
+
+        // v0 (starts first, not remat) should get the register
+        assert!(
+            matches!(allocation[VReg::new(0)], Some(Allocation::Register(_))),
+            "non-rematerializable vreg should keep register, got: {:?}",
+            allocation[VReg::new(0)]
+        );
+
+        // v1 (rematerializable) should be rematerialized
+        assert!(
+            matches!(
+                allocation[VReg::new(1)],
+                Some(Allocation::Rematerialize(RematerializeOp::Const64(100)))
+            ),
+            "rematerializable vreg should be marked for rematerialization, got: {:?}",
+            allocation[VReg::new(1)]
+        );
+
+        assert_eq!(num_spills, 0, "no spill slots should be used");
+    }
+
+    #[test]
+    fn test_rematerialization_without_info_falls_back_to_spill() {
+        // Without rematerialization info, vregs should be spilled as before.
+        let allocatable = vec![TestReg(0)]; // Only 1 register
+        let liveness = make_liveness(vec![
+            (0, 0, 5), // v0 lives 0-5
+            (1, 2, 5), // v1 overlaps at 2-5
+        ]);
+
+        // Empty vreg_info - no rematerialization info
+        let mut vreg_info = IndexMap::with_capacity(2);
+        vreg_info.resize(2, VRegInfo::none());
+
+        let (allocation, num_spills, _) =
+            linear_scan_with_remat(2, &liveness, &allocatable, 0, &vreg_info);
+
+        // One vreg should be spilled (not rematerialized)
+        assert_eq!(num_spills, 1, "should have one spill");
+
+        // Check that we have one register allocation and one spill
+        let num_registers = [VReg::new(0), VReg::new(1)]
+            .iter()
+            .filter(|&&v| matches!(allocation[v], Some(Allocation::Register(_))))
+            .count();
+        let num_spilled = [VReg::new(0), VReg::new(1)]
+            .iter()
+            .filter(|&&v| matches!(allocation[v], Some(Allocation::Spill(_))))
+            .count();
+
+        assert_eq!(num_registers, 1, "one vreg should be in register");
+        assert_eq!(num_spilled, 1, "one vreg should be spilled");
+    }
+
+    #[test]
+    fn test_rematerialization_string_operations() {
+        // Test that string rematerialization ops work correctly
+        let allocatable = vec![TestReg(0)];
+        let liveness = make_liveness(vec![
+            (0, 0, 5), // v0: string ptr
+            (1, 2, 5), // v1: string len, overlaps with v0
+        ]);
+
+        let mut vreg_info = IndexMap::with_capacity(2);
+        vreg_info.resize(2, VRegInfo::none());
+        vreg_info[VReg::new(0)] = VRegInfo::rematerializable(RematerializeOp::StringPtr(0));
+        vreg_info[VReg::new(1)] = VRegInfo::rematerializable(RematerializeOp::StringLen(0));
+
+        let (allocation, num_spills, _) =
+            linear_scan_with_remat(2, &liveness, &allocatable, 0, &vreg_info);
+
+        // v0 starts first and gets the register
+        assert!(matches!(
+            allocation[VReg::new(0)],
+            Some(Allocation::Register(_))
+        ));
+
+        // v1 starts later; since both are rematerializable with same priority,
+        // the incoming vreg (v1) gets evicted and marked for rematerialization
+        assert!(matches!(
+            allocation[VReg::new(1)],
+            Some(Allocation::Rematerialize(RematerializeOp::StringLen(0)))
+        ));
+
+        assert_eq!(num_spills, 0, "no spill slots should be used");
     }
 }

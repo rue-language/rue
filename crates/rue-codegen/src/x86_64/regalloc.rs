@@ -262,6 +262,9 @@ impl RegAlloc {
                             src: Operand::Physical(Reg::Rax),
                         });
                     }
+                    Some(Allocation::Rematerialize(_)) => {
+                        unreachable!("destination cannot be rematerializable")
+                    }
                     None => {
                         mir.push(X86Inst::MovRR { dst, src: src_op });
                     }
@@ -648,6 +651,9 @@ impl RegAlloc {
                             src: Operand::Physical(Reg::Rax),
                         });
                     }
+                    Some(Allocation::Rematerialize(_)) => {
+                        unreachable!("destination cannot be rematerializable")
+                    }
                     None => {
                         mir.push(X86Inst::Shl {
                             dst,
@@ -685,6 +691,9 @@ impl RegAlloc {
                             offset: spill_off,
                             src: Operand::Physical(Reg::Rdx),
                         });
+                    }
+                    Some(Allocation::Rematerialize(_)) => {
+                        unreachable!("destination cannot be rematerializable")
                     }
                     None => {
                         mir.push(X86Inst::MovRM {
@@ -790,7 +799,8 @@ impl RegAlloc {
         }
     }
 
-    /// Load an operand into a physical register, inserting a load if spilled.
+    /// Load an operand into a physical register, inserting a load if spilled
+    /// or rematerializing if marked for rematerialization.
     /// Returns the operand to use (either the allocated register or the scratch register).
     ///
     /// For coalesced vregs, this loads the allocation of the representative vreg.
@@ -812,6 +822,43 @@ impl RegAlloc {
                             base: Reg::Rbp,
                             offset,
                         });
+                        Ok(Operand::Physical(scratch))
+                    }
+                    Some(Allocation::Rematerialize(remat_op)) => {
+                        // Rematerialize the value instead of loading from stack
+                        use crate::regalloc::RematerializeOp;
+                        match remat_op {
+                            RematerializeOp::Const32(imm) => {
+                                mir.push(X86Inst::MovRI32 {
+                                    dst: Operand::Physical(scratch),
+                                    imm,
+                                });
+                            }
+                            RematerializeOp::Const64(imm) => {
+                                mir.push(X86Inst::MovRI64 {
+                                    dst: Operand::Physical(scratch),
+                                    imm,
+                                });
+                            }
+                            RematerializeOp::StringPtr(string_id) => {
+                                mir.push(X86Inst::StringConstPtr {
+                                    dst: Operand::Physical(scratch),
+                                    string_id,
+                                });
+                            }
+                            RematerializeOp::StringLen(string_id) => {
+                                mir.push(X86Inst::StringConstLen {
+                                    dst: Operand::Physical(scratch),
+                                    string_id,
+                                });
+                            }
+                            RematerializeOp::StringCap(string_id) => {
+                                mir.push(X86Inst::StringConstCap {
+                                    dst: Operand::Physical(scratch),
+                                    string_id,
+                                });
+                            }
+                        }
                         Ok(Operand::Physical(scratch))
                     }
                     None => Err(CompileError::without_span(ErrorKind::LinkError(format!(
@@ -858,6 +905,9 @@ impl RegAlloc {
                     src: Operand::Physical(Reg::Rax),
                 });
             }
+            Some(Allocation::Rematerialize(_)) => {
+                unreachable!("destination cannot be rematerializable")
+            }
             None => {
                 // Physical register
                 mir.push(make_inst(dst, src_op));
@@ -891,6 +941,9 @@ impl RegAlloc {
                     src: Operand::Physical(Reg::Rax),
                 });
             }
+            Some(Allocation::Rematerialize(_)) => {
+                unreachable!("destination cannot be rematerializable")
+            }
             None => {
                 mir.push(make_inst(dst));
             }
@@ -918,6 +971,9 @@ impl RegAlloc {
                     offset,
                     src: Operand::Physical(Reg::Rax),
                 });
+            }
+            Some(Allocation::Rematerialize(_)) => {
+                unreachable!("destination cannot be rematerializable")
             }
             None => {
                 mir.push(make_inst(dst, imm));
@@ -947,6 +1003,9 @@ impl RegAlloc {
                     src: Operand::Physical(Reg::Rax),
                 });
             }
+            Some(Allocation::Rematerialize(_)) => {
+                unreachable!("destination cannot be rematerializable")
+            }
             None => {
                 mir.push(make_inst(dst, imm));
             }
@@ -970,6 +1029,9 @@ impl RegAlloc {
                     offset,
                     src: Operand::Physical(Reg::Rax),
                 });
+            }
+            Some(Allocation::Rematerialize(_)) => {
+                unreachable!("destination cannot be rematerializable")
             }
             None => {
                 mir.push(make_inst(dst));

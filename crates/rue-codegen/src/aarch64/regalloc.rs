@@ -233,6 +233,9 @@ impl RegAlloc {
                             offset,
                         });
                     }
+                    Some(Allocation::Rematerialize(_)) => {
+                        unreachable!("destination cannot be rematerializable")
+                    }
                     None => {
                         mir.push(Aarch64Inst::MovRR { dst, src: src_op });
                     }
@@ -617,11 +620,17 @@ impl RegAlloc {
                 let dst1_phys = match self.get_allocation(dst1) {
                     Some(Allocation::Register(reg)) => Operand::Physical(reg),
                     Some(Allocation::Spill(_)) => Operand::Physical(Reg::X9),
+                    Some(Allocation::Rematerialize(_)) => {
+                        unreachable!("destination cannot be rematerializable")
+                    }
                     None => dst1,
                 };
                 let dst2_phys = match self.get_allocation(dst2) {
                     Some(Allocation::Register(reg)) => Operand::Physical(reg),
                     Some(Allocation::Spill(_)) => Operand::Physical(Reg::X10),
+                    Some(Allocation::Rematerialize(_)) => {
+                        unreachable!("destination cannot be rematerializable")
+                    }
                     None => dst2,
                 };
                 mir.push(Aarch64Inst::LdpPost {
@@ -674,6 +683,9 @@ impl RegAlloc {
                             base: Reg::Fp,
                             offset,
                         });
+                    }
+                    Some(Allocation::Rematerialize(_)) => {
+                        unreachable!("destination cannot be rematerializable")
                     }
                     None => {
                         mir.push(Aarch64Inst::Ldr {
@@ -728,6 +740,9 @@ impl RegAlloc {
                             base: Reg::Fp,
                             offset: spill_offset,
                         });
+                    }
+                    Some(Allocation::Rematerialize(_)) => {
+                        unreachable!("destination cannot be rematerializable")
                     }
                     None => {
                         mir.push(Aarch64Inst::Ldr {
@@ -889,7 +904,8 @@ impl RegAlloc {
         }
     }
 
-    /// Load an operand into a physical register, inserting a load if spilled.
+    /// Load an operand into a physical register, inserting a load if spilled
+    /// or rematerializing if marked for rematerialization.
     /// Returns the operand to use (either the allocated register or the scratch register).
     ///
     /// For coalesced vregs, this loads the allocation of the representative vreg.
@@ -911,6 +927,43 @@ impl RegAlloc {
                             base: Reg::Fp,
                             offset,
                         });
+                        Ok(Operand::Physical(scratch))
+                    }
+                    Some(Allocation::Rematerialize(remat_op)) => {
+                        // Rematerialize the value instead of loading from stack
+                        use crate::regalloc::RematerializeOp;
+                        match remat_op {
+                            RematerializeOp::Const32(imm) => {
+                                mir.push(Aarch64Inst::MovImm {
+                                    dst: Operand::Physical(scratch),
+                                    imm: imm as i64,
+                                });
+                            }
+                            RematerializeOp::Const64(imm) => {
+                                mir.push(Aarch64Inst::MovImm {
+                                    dst: Operand::Physical(scratch),
+                                    imm,
+                                });
+                            }
+                            RematerializeOp::StringPtr(string_id) => {
+                                mir.push(Aarch64Inst::StringConstPtr {
+                                    dst: Operand::Physical(scratch),
+                                    string_id,
+                                });
+                            }
+                            RematerializeOp::StringLen(string_id) => {
+                                mir.push(Aarch64Inst::StringConstLen {
+                                    dst: Operand::Physical(scratch),
+                                    string_id,
+                                });
+                            }
+                            RematerializeOp::StringCap(string_id) => {
+                                mir.push(Aarch64Inst::StringConstCap {
+                                    dst: Operand::Physical(scratch),
+                                    string_id,
+                                });
+                            }
+                        }
                         Ok(Operand::Physical(scratch))
                     }
                     None => Err(CompileError::without_span(ErrorKind::LinkError(format!(
@@ -946,6 +999,9 @@ impl RegAlloc {
                     offset,
                 });
             }
+            Some(Allocation::Rematerialize(_)) => {
+                unreachable!("destination cannot be rematerializable")
+            }
             None => {
                 mir.push(make_inst(dst, src_op));
             }
@@ -978,6 +1034,9 @@ impl RegAlloc {
                     offset,
                 });
             }
+            Some(Allocation::Rematerialize(_)) => {
+                unreachable!("destination cannot be rematerializable")
+            }
             None => {
                 mir.push(make_inst(dst, src1_op, src2_op));
             }
@@ -1008,6 +1067,9 @@ impl RegAlloc {
                     base: Reg::Fp,
                     offset,
                 });
+            }
+            Some(Allocation::Rematerialize(_)) => {
+                unreachable!("destination cannot be rematerializable")
             }
             None => {
                 mir.push(make_inst(dst, src_op, imm));

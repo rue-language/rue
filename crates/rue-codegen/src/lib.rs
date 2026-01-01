@@ -318,7 +318,8 @@ pub use cfg_lower::{
 };
 pub use index_map::{Handle, IndexMap};
 pub use regalloc::{
-    Allocation, InstructionLiveness, LivenessDebugInfo, RegAllocDebugInfo, linear_scan_with_debug,
+    Allocation, InstructionLiveness, LivenessDebugInfo, RegAllocDebugInfo, RematerializeOp,
+    VRegInfo, linear_scan_with_debug, linear_scan_with_remat,
 };
 pub use stack_frame::{
     ArgumentLocation, ReturnLocation, StackFrameInfo, StackSlot, generate_stack_frame_info,
