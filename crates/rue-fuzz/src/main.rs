@@ -339,6 +339,7 @@ fn print_usage(program: &str) {
     eprintln!("Targets:");
     eprintln!("  lexer       Fuzz the lexer (tokenization)");
     eprintln!("  parser      Fuzz the parser (AST construction)");
+    eprintln!("  sema        Fuzz semantic analysis (type checking, inference)");
     eprintln!("  compiler    Fuzz the full frontend (through sema)");
     eprintln!();
     eprintln!("Options:");

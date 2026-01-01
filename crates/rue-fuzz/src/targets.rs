@@ -3,6 +3,7 @@
 //! Each target exercises a different phase of the compiler:
 //! - Lexer: tokenization
 //! - Parser: AST construction
+//! - Sema: semantic analysis (type checking, name resolution)
 //! - Compiler: full compilation pipeline (frontend only, no codegen)
 //! - Emitter: x86-64 instruction encoding
 //! - Regalloc: register allocation stress testing
@@ -49,6 +50,40 @@ impl FuzzTarget for ParserTarget {
                 // The parser should handle all tokenized input without panicking
                 let _ = parser.parse();
             }
+        }
+    }
+}
+
+/// Fuzz target for semantic analysis specifically.
+///
+/// Goal: Sema should never panic on any valid or invalid input.
+/// This target focuses on type checking, name resolution, and type inference.
+///
+/// Key assumptions that sema makes (and we want to fuzz):
+/// - InstRefs point to valid instructions
+/// - Extra data indices are in bounds
+/// - Type IDs are valid
+/// - Symbol references exist in the interner
+///
+/// Currently uses source-level fuzzing through compile_frontend.
+/// Future enhancement: structured RIR generation with Arbitrary trait.
+pub struct SemaTarget;
+
+impl FuzzTarget for SemaTarget {
+    fn name(&self) -> &'static str {
+        "sema"
+    }
+
+    fn fuzz(&self, input: &[u8]) {
+        // Only test valid UTF-8
+        if let Ok(source) = std::str::from_utf8(input) {
+            // compile_frontend runs through sema (semantic analysis)
+            // without code generation. This tests:
+            // - Type inference (Hindley-Milner with Algorithm W)
+            // - Affine type checking (partial moves, linearity)
+            // - Name resolution
+            // - Multi-error collection
+            let _ = rue_compiler::compile_frontend(source);
         }
     }
 }
@@ -322,6 +357,7 @@ pub fn all_targets() -> Vec<Box<dyn FuzzTarget>> {
     vec![
         Box::new(LexerTarget),
         Box::new(ParserTarget),
+        Box::new(SemaTarget),
         Box::new(CompilerTarget),
         Box::new(EmitterTarget),
         Box::new(EmitterSequenceTarget),
@@ -333,6 +369,7 @@ pub fn get_target(name: &str) -> Option<Box<dyn FuzzTarget>> {
     match name {
         "lexer" => Some(Box::new(LexerTarget)),
         "parser" => Some(Box::new(ParserTarget)),
+        "sema" => Some(Box::new(SemaTarget)),
         "compiler" => Some(Box::new(CompilerTarget)),
         "emitter" => Some(Box::new(EmitterTarget)),
         "emitter_sequence" => Some(Box::new(EmitterSequenceTarget)),
@@ -388,6 +425,34 @@ mod tests {
     }
 
     #[test]
+    fn test_sema_target_valid() {
+        let target = SemaTarget;
+        target.fuzz(b"fn main() -> i32 { 42 }");
+    }
+
+    #[test]
+    fn test_sema_target_type_error() {
+        let target = SemaTarget;
+        // Type mismatch: returning bool where i32 expected
+        target.fuzz(b"fn main() -> i32 { true }");
+    }
+
+    #[test]
+    fn test_sema_target_undefined_variable() {
+        let target = SemaTarget;
+        target.fuzz(b"fn main() -> i32 { x }");
+    }
+
+    #[test]
+    fn test_sema_target_complex_types() {
+        let target = SemaTarget;
+        // Test with structs and type inference
+        target.fuzz(
+            b"struct Point { x: i32, y: i32 } fn main() -> i32 { let p = Point { x: 1, y: 2 }; p.x }",
+        );
+    }
+
+    #[test]
     fn test_emitter_target_valid() {
         let target = EmitterTarget;
         // Simple sequence that generates a few mov instructions
@@ -411,13 +476,14 @@ mod tests {
     #[test]
     fn test_all_targets() {
         let targets = all_targets();
-        assert_eq!(targets.len(), 5);
+        assert_eq!(targets.len(), 6);
     }
 
     #[test]
     fn test_get_target() {
         assert!(get_target("lexer").is_some());
         assert!(get_target("parser").is_some());
+        assert!(get_target("sema").is_some());
         assert!(get_target("compiler").is_some());
         assert!(get_target("emitter").is_some());
         assert!(get_target("emitter_sequence").is_some());
@@ -501,6 +567,30 @@ mod proptest_tests {
         #[test]
         fn compiler_handles_arbitrary_strings(s in ".*") {
             let target = CompilerTarget;
+            target.fuzz(s.as_bytes());
+        }
+
+        /// Sema should never panic on valid programs.
+        #[test]
+        fn sema_never_panics_on_program(program in generators::arb_program(2)) {
+            let target = SemaTarget;
+            target.fuzz(program.as_bytes());
+        }
+
+        /// Sema should never panic on possibly invalid programs.
+        /// This tests error handling in type inference and name resolution.
+        #[test]
+        fn sema_never_panics_on_maybe_invalid(
+            program in generators::arb_maybe_invalid_program(2)
+        ) {
+            let target = SemaTarget;
+            target.fuzz(program.as_bytes());
+        }
+
+        /// Sema should handle arbitrary strings without panicking.
+        #[test]
+        fn sema_handles_arbitrary_strings(s in ".*") {
+            let target = SemaTarget;
             target.fuzz(s.as_bytes());
         }
 

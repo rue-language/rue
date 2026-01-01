@@ -24,6 +24,7 @@ Fuzz testing infrastructure for the Rue compiler. This crate helps find edge cas
 |--------|-------------|-------|
 | `lexer` | Tokenization only | ~27,000 exec/s |
 | `parser` | Lexing + parsing | ~6,500 exec/s |
+| `sema` | Semantic analysis (type checking, inference) | ~4,000-8,000 exec/s |
 | `compiler` | Full frontend (through sema) | ~4,000-8,000 exec/s |
 | `emitter` | x86-64 instruction encoding | ~15,000 exec/s |
 | `emitter_sequence` | Instruction sequences with labels/jumps | ~10,000 exec/s |
@@ -75,11 +76,13 @@ When a panic is detected, the crashing input is saved to the crash directory (de
 
 ## Integration with CI
 
-To add fuzzing to CI, run the fuzzer for a limited time:
+Fuzzing runs automatically in CI via `.github/workflows/fuzz.yml`. Each target runs for 5 minutes daily.
+
+To run fuzzing locally for a limited time:
 
 ```bash
 # Run each target for 5 minutes
-for target in lexer parser compiler emitter emitter_sequence; do
+for target in lexer parser sema compiler emitter emitter_sequence; do
     ./buck2 run //crates/rue-fuzz:rue-fuzz -- --mutate --max-time=300 $target crates/rue-fuzz/corpus
 done
 ```
@@ -107,6 +110,7 @@ This enables much more effective testing than random byte mutation, as it genera
 The proptest tests verify:
 - Lexer never panics on any generated expression or program
 - Parser never panics on any generated program
+- Sema never panics on valid or invalid programs (type inference, name resolution)
 - Compiler frontend never panics on valid or invalid programs
 - All components handle arbitrary strings without panicking
 
@@ -139,6 +143,7 @@ Additionally, proptest-based generators create syntactically valid programs and 
 Each fuzz target exercises a specific phase of the compiler:
 - **Lexer**: Should never panic, always return tokens or an error
 - **Parser**: Should never panic, always return an AST or an error
+- **Sema**: Should never panic, always type-check or return errors (tests assumptions about RIR validity)
 - **Compiler**: Should never panic, always compile or return errors
 - **Emitter**: Should never panic on any valid instruction sequence
 - **Emitter Sequence**: Should handle labels and jumps without panicking

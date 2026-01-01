@@ -33,6 +33,9 @@ jobs:
       - name: Fuzz parser (5 minutes)
         run: ./buck2 run //crates/rue-fuzz:rue-fuzz -- --mutate --max-time=300 parser crates/rue-fuzz/corpus
 
+      - name: Fuzz sema (5 minutes)
+        run: ./buck2 run //crates/rue-fuzz:rue-fuzz -- --mutate --max-time=300 sema crates/rue-fuzz/corpus
+
       - name: Fuzz compiler (5 minutes)
         run: ./buck2 run //crates/rue-fuzz:rue-fuzz -- --mutate --max-time=300 compiler crates/rue-fuzz/corpus
 
