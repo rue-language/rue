@@ -27,9 +27,12 @@ permissions:
   pages: write
   id-token: write
 
+# Use a fixed concurrency group for all website deployments to ensure
+# they run sequentially and don't cancel each other (especially important
+# when triggered by benchmark workflow completion)
 concurrency:
-  group: "pages-${{ github.ref }}"
-  cancel-in-progress: true
+  group: "pages"
+  cancel-in-progress: false
 
 jobs:
   build:

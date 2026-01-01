@@ -13,6 +13,12 @@ on:
 permissions:
   contents: write  # Needed to push to perf branch
 
+# Only allow one benchmark run at a time to prevent race conditions
+# when pushing to the perf branch. New runs will queue and wait.
+concurrency:
+  group: benchmarks
+  cancel-in-progress: false
+
 jobs:
   benchmark:
     strategy:
