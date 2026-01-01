@@ -18,7 +18,7 @@ use std::collections::{HashMap, HashSet};
 
 use lasso::Spur;
 use rayon::prelude::*;
-use rue_builtins::BuiltinTypeDef;
+use rue_builtins::{BuiltinReturnType, BuiltinTypeDef};
 use rue_error::{
     CompileError, CompileErrors, CompileResult, CompileWarning, ErrorKind,
     IntrinsicTypeMismatchError, MultiErrorResult, OptionExt, PreviewFeature, WarningKind,
@@ -1083,16 +1083,353 @@ fn analyze_inst_with_context(
             analysis_ctx,
         ),
 
-        // For other instruction types, we delegate to a full implementation
-        // This is a gradual migration - complex cases are handled separately
-        _ => {
-            // TODO: Implement remaining cases for full parallel support
-            // For now, return an error indicating this path isn't ready
+        // Unary operations
+        InstData::Neg { operand } => {
+            // Get the resolved type from HM inference
+            let ty = get_resolved_type_ctx(analysis_ctx, inst_ref, inst.span, "negation operator")?;
+
+            // Check if trying to negate an unsigned type.
+            if ty.is_unsigned() {
+                return Err(CompileError::new(
+                    ErrorKind::CannotNegateUnsigned(ty.name().to_string()),
+                    inst.span,
+                )
+                .with_note("unsigned values cannot be negated"));
+            }
+
+            // Special case: negating a literal that equals |MIN| for signed types.
+            let operand_inst = ctx.rir.get(*operand);
+            if let InstData::IntConst(value) = &operand_inst.data {
+                // Check if this value, when negated, fits in the target signed type
+                if ty.negated_literal_fits(*value) && !ty.literal_fits(*value) {
+                    // This is the MIN value case - store the MIN value directly.
+                    let neg_value = match ty {
+                        Type::I8 => (i8::MIN as i64) as u64,
+                        Type::I16 => (i16::MIN as i64) as u64,
+                        Type::I32 => (i32::MIN as i64) as u64,
+                        Type::I64 => i64::MIN as u64,
+                        _ => unreachable!(),
+                    };
+                    let air_ref = air.add_inst(AirInst {
+                        data: AirInstData::Const(neg_value),
+                        ty,
+                        span: inst.span,
+                    });
+                    return Ok(AnalysisResult::new(air_ref, ty));
+                }
+            }
+
+            let operand_result = analyze_inst_with_context(ctx, air, *operand, analysis_ctx)?;
+
+            let air_ref = air.add_inst(AirInst {
+                data: AirInstData::Neg(operand_result.air_ref),
+                ty,
+                span: inst.span,
+            });
+            Ok(AnalysisResult::new(air_ref, ty))
+        }
+
+        InstData::Not { operand } => {
+            let operand_result = analyze_inst_with_context(ctx, air, *operand, analysis_ctx)?;
+
+            let air_ref = air.add_inst(AirInst {
+                data: AirInstData::Not(operand_result.air_ref),
+                ty: Type::Bool,
+                span: inst.span,
+            });
+            Ok(AnalysisResult::new(air_ref, Type::Bool))
+        }
+
+        InstData::BitNot { operand } => {
+            // Get the resolved type from HM inference
+            let ty =
+                get_resolved_type_ctx(analysis_ctx, inst_ref, inst.span, "bitwise NOT operator")?;
+
+            // Bitwise NOT operates on integer types only
+            if !ty.is_integer() && !ty.is_error() && !ty.is_never() {
+                return Err(CompileError::new(
+                    ErrorKind::TypeMismatch {
+                        expected: "integer type".to_string(),
+                        found: ty.name().to_string(),
+                    },
+                    inst.span,
+                ));
+            }
+
+            let operand_result = analyze_inst_with_context(ctx, air, *operand, analysis_ctx)?;
+
+            let air_ref = air.add_inst(AirInst {
+                data: AirInstData::BitNot(operand_result.air_ref),
+                ty,
+                span: inst.span,
+            });
+            Ok(AnalysisResult::new(air_ref, ty))
+        }
+
+        // Control flow: Break and Continue
+        InstData::Break => {
+            // Validate that we're inside a loop
+            if analysis_ctx.loop_depth == 0 {
+                return Err(CompileError::new(ErrorKind::BreakOutsideLoop, inst.span));
+            }
+
+            // Break has the never type - it diverges
+            let air_ref = air.add_inst(AirInst {
+                data: AirInstData::Break,
+                ty: Type::Never,
+                span: inst.span,
+            });
+            Ok(AnalysisResult::new(air_ref, Type::Never))
+        }
+
+        InstData::Continue => {
+            // Validate that we're inside a loop
+            if analysis_ctx.loop_depth == 0 {
+                return Err(CompileError::new(ErrorKind::ContinueOutsideLoop, inst.span));
+            }
+
+            // Continue has the never type - it diverges
+            let air_ref = air.add_inst(AirInst {
+                data: AirInstData::Continue,
+                ty: Type::Never,
+                span: inst.span,
+            });
+            Ok(AnalysisResult::new(air_ref, Type::Never))
+        }
+
+        // Return statement
+        InstData::Ret(inner) => {
+            analyze_return_ctx(ctx, air, inner.as_ref().copied(), inst.span, analysis_ctx)
+        }
+
+        // Block expression
+        InstData::Block { extra_start, len } => {
+            analyze_block_ctx(ctx, air, *extra_start, *len, inst.span, analysis_ctx)
+        }
+
+        // Variable operations
+        InstData::VarRef { name } => analyze_var_ref_ctx(ctx, air, *name, inst.span, analysis_ctx),
+
+        InstData::ParamRef { name, .. } => {
+            analyze_param_ref_ctx(ctx, air, *name, inst.span, analysis_ctx)
+        }
+
+        InstData::Alloc {
+            directives_start,
+            directives_len,
+            name,
+            is_mut,
+            ty: _,
+            init,
+        } => analyze_alloc_ctx(
+            ctx,
+            air,
+            *directives_start,
+            *directives_len,
+            *name,
+            *is_mut,
+            *init,
+            inst.span,
+            analysis_ctx,
+        ),
+
+        InstData::Assign { name, value } => {
+            analyze_assign_ctx(ctx, air, *name, *value, inst.span, analysis_ctx)
+        }
+
+        // Control flow: Branch
+        InstData::Branch {
+            cond,
+            then_block,
+            else_block,
+        } => analyze_branch_ctx(
+            ctx,
+            air,
+            *cond,
+            *then_block,
+            *else_block,
+            inst.span,
+            analysis_ctx,
+        ),
+
+        // Control flow: Loops
+        InstData::Loop { cond, body } => {
+            analyze_while_loop_ctx(ctx, air, *cond, *body, inst.span, analysis_ctx)
+        }
+
+        InstData::InfiniteLoop { body } => {
+            analyze_infinite_loop_ctx(ctx, air, *body, inst.span, analysis_ctx)
+        }
+
+        // Match expression
+        InstData::Match {
+            scrutinee,
+            arms_start,
+            arms_len,
+        } => analyze_match_ctx(
+            ctx,
+            air,
+            *scrutinee,
+            *arms_start,
+            *arms_len,
+            inst.span,
+            analysis_ctx,
+        ),
+
+        // Struct operations
+        InstData::StructDecl { .. } => {
+            // Struct declarations are handled at the top level
             Err(CompileError::new(
-                ErrorKind::InternalError(format!(
-                    "parallel analysis not yet implemented for {:?}",
-                    std::mem::discriminant(&inst.data)
-                )),
+                ErrorKind::InternalError(
+                    "StructDecl should not appear in expression context".to_string(),
+                ),
+                inst.span,
+            ))
+        }
+
+        InstData::StructInit {
+            type_name,
+            fields_start,
+            fields_len,
+        } => analyze_struct_init_ctx(
+            ctx,
+            air,
+            *type_name,
+            *fields_start,
+            *fields_len,
+            inst.span,
+            analysis_ctx,
+        ),
+
+        InstData::FieldGet { base, field } => {
+            analyze_field_get_ctx(ctx, air, inst_ref, *base, *field, inst.span, analysis_ctx)
+        }
+
+        InstData::FieldSet { base, field, value } => {
+            analyze_field_set_ctx(ctx, air, *base, *field, *value, inst.span, analysis_ctx)
+        }
+
+        // Array operations
+        InstData::ArrayInit {
+            elems_start,
+            elems_len,
+        } => analyze_array_init_ctx(
+            ctx,
+            air,
+            inst_ref,
+            *elems_start,
+            *elems_len,
+            inst.span,
+            analysis_ctx,
+        ),
+
+        InstData::IndexGet { base, index } => {
+            analyze_index_get_ctx(ctx, air, *base, *index, inst.span, analysis_ctx)
+        }
+
+        InstData::IndexSet { base, index, value } => {
+            analyze_index_set_ctx(ctx, air, *base, *index, *value, inst.span, analysis_ctx)
+        }
+
+        // Enum operations
+        InstData::EnumDecl { .. } => {
+            // Enum declarations are processed during collection phase
+            let air_ref = air.add_inst(AirInst {
+                data: AirInstData::UnitConst,
+                ty: Type::Unit,
+                span: inst.span,
+            });
+            Ok(AnalysisResult::new(air_ref, Type::Unit))
+        }
+
+        InstData::EnumVariant { type_name, variant } => {
+            analyze_enum_variant_ctx(ctx, air, *type_name, *variant, inst.span)
+        }
+
+        // Call operations
+        InstData::Call {
+            name,
+            args_start,
+            args_len,
+        } => analyze_call_ctx(
+            ctx,
+            air,
+            *name,
+            *args_start,
+            *args_len,
+            inst.span,
+            analysis_ctx,
+        ),
+
+        InstData::MethodCall {
+            receiver,
+            method,
+            args_start,
+            args_len,
+        } => analyze_method_call_ctx(
+            ctx,
+            air,
+            *receiver,
+            *method,
+            *args_start,
+            *args_len,
+            inst.span,
+            analysis_ctx,
+        ),
+
+        InstData::AssocFnCall {
+            type_name,
+            function,
+            args_start,
+            args_len,
+        } => analyze_assoc_fn_call_ctx(
+            ctx,
+            air,
+            *type_name,
+            *function,
+            *args_start,
+            *args_len,
+            inst.span,
+            analysis_ctx,
+        ),
+
+        // Intrinsic operations
+        InstData::Intrinsic {
+            name,
+            args_start,
+            args_len,
+        } => analyze_intrinsic_ctx(
+            ctx,
+            air,
+            inst_ref,
+            *name,
+            *args_start,
+            *args_len,
+            inst.span,
+            analysis_ctx,
+        ),
+
+        InstData::TypeIntrinsic { name, type_arg } => {
+            analyze_type_intrinsic_ctx(ctx, air, *name, *type_arg, inst.span)
+        }
+
+        // Declaration no-ops (produce Unit in expression context)
+        InstData::ImplDecl { .. } | InstData::DropFnDecl { .. } => {
+            // These are processed during collection phase, just return Unit
+            let air_ref = air.add_inst(AirInst {
+                data: AirInstData::UnitConst,
+                ty: Type::Unit,
+                span: inst.span,
+            });
+            Ok(AnalysisResult::new(air_ref, Type::Unit))
+        }
+
+        InstData::FnDecl { .. } => {
+            // Function declarations are errors in expression context
+            Err(CompileError::new(
+                ErrorKind::InternalError(
+                    "FnDecl should not appear in expression context".to_string(),
+                ),
                 inst.span,
             ))
         }
@@ -1221,6 +1558,2839 @@ fn merge_function_results(
         strings: global_strings,
         warnings: all_warnings,
     })
+}
+
+// ============================================================================
+// Helper functions for parallel analysis (using SemaContext)
+// ============================================================================
+
+/// Analyze a return statement using the shared context.
+fn analyze_return_ctx(
+    ctx: &SemaContext<'_>,
+    air: &mut Air,
+    inner: Option<InstRef>,
+    span: Span,
+    analysis_ctx: &mut AnalysisContext,
+) -> CompileResult<AnalysisResult> {
+    let inner_air_ref = if let Some(inner) = inner {
+        // Explicit return with value
+        let inner_result = analyze_inst_with_context(ctx, air, inner, analysis_ctx)?;
+        let inner_ty = inner_result.ty;
+
+        // Type check: returned value must match function's return type.
+        if !analysis_ctx.return_type.is_error()
+            && !inner_ty.is_error()
+            && !inner_ty.can_coerce_to(&analysis_ctx.return_type)
+        {
+            return Err(CompileError::new(
+                ErrorKind::TypeMismatch {
+                    expected: analysis_ctx.return_type.name().to_string(),
+                    found: inner_ty.name().to_string(),
+                },
+                span,
+            ));
+        }
+        Some(inner_result.air_ref)
+    } else {
+        // `return;` without expression - only valid for unit-returning functions
+        if analysis_ctx.return_type != Type::Unit && !analysis_ctx.return_type.is_error() {
+            return Err(CompileError::new(
+                ErrorKind::TypeMismatch {
+                    expected: analysis_ctx.return_type.name().to_string(),
+                    found: "()".to_string(),
+                },
+                span,
+            ));
+        }
+        None
+    };
+
+    let air_ref = air.add_inst(AirInst {
+        data: AirInstData::Ret(inner_air_ref),
+        ty: Type::Never, // Return expressions have Never type
+        span,
+    });
+    Ok(AnalysisResult::new(air_ref, Type::Never))
+}
+
+/// Analyze a block expression using the shared context.
+fn analyze_block_ctx(
+    ctx: &SemaContext<'_>,
+    air: &mut Air,
+    extra_start: u32,
+    len: u32,
+    span: Span,
+    analysis_ctx: &mut AnalysisContext,
+) -> CompileResult<AnalysisResult> {
+    // Get the instruction refs from extra data
+    let inst_refs = ctx.rir.get_extra(extra_start, len);
+
+    // Push a new scope for this block.
+    analysis_ctx.push_scope();
+
+    // Process all instructions in the block
+    let mut statements = Vec::new();
+    let mut last_result: Option<AnalysisResult> = None;
+    let num_insts = inst_refs.len();
+    for (i, &raw_ref) in inst_refs.iter().enumerate() {
+        let inst_ref = InstRef::from_raw(raw_ref);
+        let is_last = i == num_insts - 1;
+        let result = analyze_inst_with_context(ctx, air, inst_ref, analysis_ctx)?;
+
+        if is_last {
+            last_result = Some(result);
+        } else {
+            statements.push(result.air_ref);
+        }
+    }
+
+    // Check for unconsumed linear values before popping scope
+    check_unconsumed_linear_values_ctx(ctx, analysis_ctx)?;
+
+    // Check for unused variables before popping scope
+    check_unused_locals_in_current_scope_ctx(ctx, analysis_ctx);
+
+    // Pop scope to remove block-scoped variables.
+    analysis_ctx.pop_scope();
+
+    // Handle empty blocks - they evaluate to Unit
+    let last = match last_result {
+        Some(result) => result,
+        None => {
+            // Empty block: create a UnitConst
+            let air_ref = air.add_inst(AirInst {
+                data: AirInstData::UnitConst,
+                ty: Type::Unit,
+                span,
+            });
+            AnalysisResult::new(air_ref, Type::Unit)
+        }
+    };
+
+    // Only create a Block instruction if there are statements;
+    // otherwise just return the value directly (optimization)
+    if statements.is_empty() {
+        Ok(last)
+    } else {
+        let ty = last.ty;
+        let stmt_u32s: Vec<u32> = statements.iter().map(|r| r.as_u32()).collect();
+        let stmts_start = air.add_extra(&stmt_u32s);
+        let stmts_len = statements.len() as u32;
+        let air_ref = air.add_inst(AirInst {
+            data: AirInstData::Block {
+                stmts_start,
+                stmts_len,
+                value: last.air_ref,
+            },
+            ty,
+            span,
+        });
+        Ok(AnalysisResult::new(air_ref, ty))
+    }
+}
+
+/// Check for unconsumed linear values at scope exit.
+fn check_unconsumed_linear_values_ctx(
+    ctx: &SemaContext<'_>,
+    analysis_ctx: &AnalysisContext,
+) -> CompileResult<()> {
+    // Check locals in the current scope
+    if let Some(scope_entries) = analysis_ctx.scope_stack.last() {
+        for (symbol, _) in scope_entries {
+            if let Some(local) = analysis_ctx.locals.get(symbol) {
+                let ty = local.ty;
+                // Check if this is a linear type
+                if ctx.is_type_linear(ty) {
+                    // Check if it's been consumed (moved)
+                    let is_consumed = analysis_ctx
+                        .moved_vars
+                        .get(symbol)
+                        .map(|state| state.full_move.is_some())
+                        .unwrap_or(false);
+
+                    if !is_consumed {
+                        let name = ctx.interner.resolve(symbol);
+                        return Err(CompileError::new(
+                            ErrorKind::LinearValueNotConsumed(name.to_string()),
+                            local.span,
+                        ));
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Check for unused variables in the current scope.
+fn check_unused_locals_in_current_scope_ctx(
+    ctx: &SemaContext<'_>,
+    analysis_ctx: &mut AnalysisContext,
+) {
+    if let Some(scope_entries) = analysis_ctx.scope_stack.last() {
+        for (symbol, old_value) in scope_entries {
+            // Only check variables that were newly introduced (not shadowed)
+            if old_value.is_none() {
+                if let Some(local) = analysis_ctx.locals.get(symbol) {
+                    // Skip if @allow(unused_variable) was applied
+                    if local.allow_unused {
+                        continue;
+                    }
+                    // Check if the variable was used
+                    if !analysis_ctx.used_locals.contains(symbol) {
+                        let name = ctx.interner.resolve(symbol);
+                        // Don't warn about underscore-prefixed names
+                        if !name.starts_with('_') {
+                            analysis_ctx.warnings.push(CompileWarning::new(
+                                WarningKind::UnusedVariable(name.to_string()),
+                                local.span,
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Analyze a variable reference using the shared context.
+fn analyze_var_ref_ctx(
+    ctx: &SemaContext<'_>,
+    air: &mut Air,
+    name: Spur,
+    span: Span,
+    analysis_ctx: &mut AnalysisContext,
+) -> CompileResult<AnalysisResult> {
+    // First check if it's a parameter
+    if let Some(param_info) = analysis_ctx.params.get(&name) {
+        let ty = param_info.ty;
+        let name_str = ctx.interner.resolve(&name);
+
+        // Check if this parameter has been moved
+        if let Some(move_state) = analysis_ctx.moved_vars.get(&name) {
+            if let Some(moved_span) = move_state.is_any_part_moved() {
+                return Err(
+                    CompileError::new(ErrorKind::UseAfterMove(name_str.to_string()), span)
+                        .with_label("value moved here", moved_span),
+                );
+            }
+        }
+
+        // Handle move semantics based on parameter mode
+        if !ctx.is_type_copy(ty) {
+            match param_info.mode {
+                RirParamMode::Normal => {
+                    analysis_ctx
+                        .moved_vars
+                        .entry(name)
+                        .or_default()
+                        .mark_path_moved(&[], span);
+                }
+                RirParamMode::Inout => {
+                    analysis_ctx
+                        .moved_vars
+                        .entry(name)
+                        .or_default()
+                        .mark_path_moved(&[], span);
+                }
+                RirParamMode::Borrow => {
+                    let name_str = ctx.interner.resolve(&name);
+                    return Err(CompileError::new(
+                        ErrorKind::MoveOutOfBorrow {
+                            variable: name_str.to_string(),
+                        },
+                        span,
+                    ));
+                }
+            }
+        }
+
+        let air_ref = air.add_inst(AirInst {
+            data: AirInstData::Param {
+                index: param_info.abi_slot,
+            },
+            ty,
+            span,
+        });
+        return Ok(AnalysisResult::new(air_ref, ty));
+    }
+
+    // Look up the variable in locals
+    let name_str = ctx.interner.resolve(&name);
+    let local = analysis_ctx
+        .locals
+        .get(&name)
+        .ok_or_compile_error(ErrorKind::UndefinedVariable(name_str.to_string()), span)?;
+
+    let ty = local.ty;
+    let slot = local.slot;
+
+    // Check if this variable has been moved
+    if let Some(move_state) = analysis_ctx.moved_vars.get(&name) {
+        if let Some(moved_span) = move_state.is_any_part_moved() {
+            return Err(
+                CompileError::new(ErrorKind::UseAfterMove(name_str.to_string()), span)
+                    .with_label("value moved here", moved_span),
+            );
+        }
+    }
+
+    // If type is not Copy, mark as moved
+    if !ctx.is_type_copy(ty) {
+        analysis_ctx
+            .moved_vars
+            .entry(name)
+            .or_default()
+            .mark_path_moved(&[], span);
+    }
+
+    // Mark variable as used
+    analysis_ctx.used_locals.insert(name);
+
+    // Load the variable
+    let air_ref = air.add_inst(AirInst {
+        data: AirInstData::Load { slot },
+        ty,
+        span,
+    });
+    Ok(AnalysisResult::new(air_ref, ty))
+}
+
+/// Analyze a parameter reference using the shared context.
+fn analyze_param_ref_ctx(
+    ctx: &SemaContext<'_>,
+    air: &mut Air,
+    name: Spur,
+    span: Span,
+    analysis_ctx: &AnalysisContext,
+) -> CompileResult<AnalysisResult> {
+    let name_str = ctx.interner.resolve(&name);
+    let param_info = analysis_ctx
+        .params
+        .get(&name)
+        .ok_or_compile_error(ErrorKind::UndefinedVariable(name_str.to_string()), span)?;
+
+    let ty = param_info.ty;
+
+    let air_ref = air.add_inst(AirInst {
+        data: AirInstData::Param {
+            index: param_info.abi_slot,
+        },
+        ty,
+        span,
+    });
+    Ok(AnalysisResult::new(air_ref, ty))
+}
+
+/// Check if a directive is an @allow directive with the specified name.
+fn has_allow_directive_ctx(
+    ctx: &SemaContext<'_>,
+    directives: &[RirDirective],
+    directive_name: &str,
+) -> bool {
+    for directive in directives {
+        let name = ctx.interner.resolve(&directive.name);
+        if name == "allow" && !directive.args.is_empty() {
+            let arg_name = ctx.interner.resolve(&directive.args[0]);
+            if arg_name == directive_name {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Analyze a local variable allocation using the shared context.
+fn analyze_alloc_ctx(
+    ctx: &SemaContext<'_>,
+    air: &mut Air,
+    directives_start: u32,
+    directives_len: u32,
+    name: Option<Spur>,
+    is_mut: bool,
+    init: InstRef,
+    span: Span,
+    analysis_ctx: &mut AnalysisContext,
+) -> CompileResult<AnalysisResult> {
+    use super::context::LocalVar;
+
+    // Analyze the initializer
+    let init_result = analyze_inst_with_context(ctx, air, init, analysis_ctx)?;
+    let var_type = init_result.ty;
+
+    // If name is None, this is a wildcard pattern `_` that discards the value
+    let Some(name) = name else {
+        return Ok(AnalysisResult::new(init_result.air_ref, Type::Unit));
+    };
+
+    // Check if @allow(unused_variable) directive is present
+    let directives = ctx.rir.get_directives(directives_start, directives_len);
+    let allow_unused = has_allow_directive_ctx(ctx, &directives, "unused_variable");
+
+    // Allocate slots
+    let slot = analysis_ctx.next_slot;
+    let num_slots = ctx.abi_slot_count(var_type);
+    analysis_ctx.next_slot += num_slots;
+
+    // Register the variable
+    analysis_ctx.insert_local(
+        name,
+        LocalVar {
+            slot,
+            ty: var_type,
+            is_mut,
+            span,
+            allow_unused,
+        },
+    );
+
+    // Emit StorageLive to mark the slot as live
+    let storage_live_ref = air.add_inst(AirInst {
+        data: AirInstData::StorageLive { slot },
+        ty: var_type,
+        span,
+    });
+
+    // Emit the alloc instruction
+    let alloc_ref = air.add_inst(AirInst {
+        data: AirInstData::Alloc {
+            slot,
+            init: init_result.air_ref,
+        },
+        ty: Type::Unit,
+        span,
+    });
+
+    // Return a block containing both StorageLive and Alloc
+    let stmts_start = air.add_extra(&[storage_live_ref.as_u32()]);
+    let block_ref = air.add_inst(AirInst {
+        data: AirInstData::Block {
+            stmts_start,
+            stmts_len: 1,
+            value: alloc_ref,
+        },
+        ty: Type::Unit,
+        span,
+    });
+    Ok(AnalysisResult::new(block_ref, Type::Unit))
+}
+
+/// Analyze an assignment using the shared context.
+fn analyze_assign_ctx(
+    ctx: &SemaContext<'_>,
+    air: &mut Air,
+    name: Spur,
+    value: InstRef,
+    span: Span,
+    analysis_ctx: &mut AnalysisContext,
+) -> CompileResult<AnalysisResult> {
+    let name_str = ctx.interner.resolve(&name);
+
+    // First check if it's a parameter (for inout params)
+    if let Some(param_info) = analysis_ctx.params.get(&name) {
+        // Check parameter mode - only inout can be assigned to
+        match param_info.mode {
+            RirParamMode::Normal => {
+                return Err(CompileError::new(
+                    ErrorKind::AssignToImmutable(name_str.to_string()),
+                    span,
+                )
+                .with_help(format!(
+                    "consider making parameter `{}` inout: `inout {}: {}`",
+                    name_str,
+                    name_str,
+                    param_info.ty.name()
+                )));
+            }
+            RirParamMode::Inout => {
+                // Inout parameters can be assigned to
+            }
+            RirParamMode::Borrow => {
+                return Err(CompileError::new(
+                    ErrorKind::MutateBorrowedValue {
+                        variable: name_str.to_string(),
+                    },
+                    span,
+                ));
+            }
+        }
+
+        let abi_slot = param_info.abi_slot;
+
+        // Analyze the value
+        let value_result = analyze_inst_with_context(ctx, air, value, analysis_ctx)?;
+
+        // Assignment to a parameter resets its move state
+        analysis_ctx.moved_vars.remove(&name);
+
+        let air_ref = air.add_inst(AirInst {
+            data: AirInstData::ParamStore {
+                param_slot: abi_slot,
+                value: value_result.air_ref,
+            },
+            ty: Type::Unit,
+            span,
+        });
+        return Ok(AnalysisResult::new(air_ref, Type::Unit));
+    }
+
+    // Look up local variable
+    let local = analysis_ctx
+        .locals
+        .get(&name)
+        .ok_or_compile_error(ErrorKind::UndefinedVariable(name_str.to_string()), span)?;
+
+    // Check mutability
+    if !local.is_mut {
+        return Err(
+            CompileError::new(ErrorKind::AssignToImmutable(name_str.to_string()), span)
+                .with_label("variable declared as immutable here", local.span)
+                .with_help(format!(
+                    "consider making `{}` mutable: `let mut {}`",
+                    name_str, name_str
+                )),
+        );
+    }
+
+    let slot = local.slot;
+
+    // Analyze the value
+    let value_result = analyze_inst_with_context(ctx, air, value, analysis_ctx)?;
+
+    // Assignment to a mutable variable resets its move state.
+    analysis_ctx.moved_vars.remove(&name);
+
+    // Emit store instruction
+    let air_ref = air.add_inst(AirInst {
+        data: AirInstData::Store {
+            slot,
+            value: value_result.air_ref,
+        },
+        ty: Type::Unit,
+        span,
+    });
+    Ok(AnalysisResult::new(air_ref, Type::Unit))
+}
+
+/// Analyze a branch (if-else) expression using the shared context.
+fn analyze_branch_ctx(
+    ctx: &SemaContext<'_>,
+    air: &mut Air,
+    cond: InstRef,
+    then_block: InstRef,
+    else_block: Option<InstRef>,
+    span: Span,
+    analysis_ctx: &mut AnalysisContext,
+) -> CompileResult<AnalysisResult> {
+    // Condition must be bool
+    let cond_result = analyze_inst_with_context(ctx, air, cond, analysis_ctx)?;
+
+    if let Some(else_b) = else_block {
+        // Save move state before entering branches.
+        let saved_moves = analysis_ctx.moved_vars.clone();
+
+        // Analyze then branch with its own scope
+        analysis_ctx.push_scope();
+        let then_result = analyze_inst_with_context(ctx, air, then_block, analysis_ctx)?;
+        let then_type = then_result.ty;
+        let then_span = ctx.rir.get(then_block).span;
+        analysis_ctx.pop_scope();
+
+        // Capture then-branch's move state
+        let then_moves = analysis_ctx.moved_vars.clone();
+
+        // Restore to saved state before analyzing else branch
+        analysis_ctx.moved_vars = saved_moves;
+
+        // Analyze else branch with its own scope
+        analysis_ctx.push_scope();
+        let else_result = analyze_inst_with_context(ctx, air, else_b, analysis_ctx)?;
+        let else_type = else_result.ty;
+        let else_span = ctx.rir.get(else_b).span;
+        analysis_ctx.pop_scope();
+
+        // Capture else-branch's move state
+        let else_moves = analysis_ctx.moved_vars.clone();
+
+        // Merge move states from both branches.
+        analysis_ctx.merge_branch_moves(
+            then_moves,
+            else_moves,
+            then_type.is_never(),
+            else_type.is_never(),
+        );
+
+        // Compute the unified result type using never type coercion
+        let result_type = match (then_type.is_never(), else_type.is_never()) {
+            (true, true) => Type::Never,
+            (true, false) => else_type,
+            (false, true) => then_type,
+            (false, false) => {
+                // Neither diverges - types must match exactly
+                if then_type != else_type && !then_type.is_error() && !else_type.is_error() {
+                    return Err(CompileError::new(
+                        ErrorKind::TypeMismatch {
+                            expected: then_type.name().to_string(),
+                            found: else_type.name().to_string(),
+                        },
+                        else_span,
+                    )
+                    .with_label(format!("this is of type `{}`", then_type.name()), then_span)
+                    .with_note("if and else branches must have compatible types"));
+                }
+                then_type
+            }
+        };
+
+        let air_ref = air.add_inst(AirInst {
+            data: AirInstData::Branch {
+                cond: cond_result.air_ref,
+                then_value: then_result.air_ref,
+                else_value: Some(else_result.air_ref),
+            },
+            ty: result_type,
+            span,
+        });
+        Ok(AnalysisResult::new(air_ref, result_type))
+    } else {
+        // No else branch - result is Unit
+        // The then branch must have unit type (spec 4.6:5)
+
+        // Save move state before entering then-branch.
+        let saved_moves = analysis_ctx.moved_vars.clone();
+
+        analysis_ctx.push_scope();
+        let then_result = analyze_inst_with_context(ctx, air, then_block, analysis_ctx)?;
+        analysis_ctx.pop_scope();
+
+        // Check that the then branch has unit type (or Never/Error)
+        let then_type = then_result.ty;
+        if then_type != Type::Unit && !then_type.is_never() && !then_type.is_error() {
+            return Err(CompileError::new(
+                ErrorKind::TypeMismatch {
+                    expected: "()".to_string(),
+                    found: then_type.name().to_string(),
+                },
+                ctx.rir.get(then_block).span,
+            )
+            .with_help(
+                "if expressions without else must have unit type; \
+                 consider adding an else branch or making the body return ()",
+            ));
+        }
+
+        // Capture then-branch's move state
+        let then_moves = analysis_ctx.moved_vars.clone();
+
+        // For if-without-else:
+        if then_type.is_never() {
+            // Then-branch diverges - code after if only runs if cond was false
+            analysis_ctx.moved_vars = saved_moves;
+        } else {
+            // Then-branch doesn't diverge - merge moves (union semantics).
+            analysis_ctx.merge_branch_moves(
+                then_moves,
+                saved_moves,
+                false, // then doesn't diverge
+                false, // "else" (empty) doesn't diverge
+            );
+        }
+
+        let air_ref = air.add_inst(AirInst {
+            data: AirInstData::Branch {
+                cond: cond_result.air_ref,
+                then_value: then_result.air_ref,
+                else_value: None,
+            },
+            ty: Type::Unit,
+            span,
+        });
+        Ok(AnalysisResult::new(air_ref, Type::Unit))
+    }
+}
+
+/// Analyze a while loop using the shared context.
+fn analyze_while_loop_ctx(
+    ctx: &SemaContext<'_>,
+    air: &mut Air,
+    cond: InstRef,
+    body: InstRef,
+    span: Span,
+    analysis_ctx: &mut AnalysisContext,
+) -> CompileResult<AnalysisResult> {
+    // While loop: condition must be bool, result is Unit
+    let cond_result = analyze_inst_with_context(ctx, air, cond, analysis_ctx)?;
+
+    // Analyze body with its own scope
+    analysis_ctx.push_scope();
+    analysis_ctx.loop_depth += 1;
+    let body_result = analyze_inst_with_context(ctx, air, body, analysis_ctx)?;
+    analysis_ctx.loop_depth -= 1;
+    analysis_ctx.pop_scope();
+
+    let air_ref = air.add_inst(AirInst {
+        data: AirInstData::Loop {
+            cond: cond_result.air_ref,
+            body: body_result.air_ref,
+        },
+        ty: Type::Unit,
+        span,
+    });
+    Ok(AnalysisResult::new(air_ref, Type::Unit))
+}
+
+/// Analyze an infinite loop using the shared context.
+fn analyze_infinite_loop_ctx(
+    ctx: &SemaContext<'_>,
+    air: &mut Air,
+    body: InstRef,
+    span: Span,
+    analysis_ctx: &mut AnalysisContext,
+) -> CompileResult<AnalysisResult> {
+    // Infinite loop: `loop { body }` - always produces Never type
+
+    analysis_ctx.push_scope();
+    analysis_ctx.loop_depth += 1;
+    let body_result = analyze_inst_with_context(ctx, air, body, analysis_ctx)?;
+    analysis_ctx.loop_depth -= 1;
+    analysis_ctx.pop_scope();
+
+    let air_ref = air.add_inst(AirInst {
+        data: AirInstData::InfiniteLoop {
+            body: body_result.air_ref,
+        },
+        ty: Type::Never,
+        span,
+    });
+    Ok(AnalysisResult::new(air_ref, Type::Never))
+}
+
+/// Analyze a match expression using the shared context.
+fn analyze_match_ctx(
+    ctx: &SemaContext<'_>,
+    air: &mut Air,
+    scrutinee: InstRef,
+    arms_start: u32,
+    arms_len: u32,
+    span: Span,
+    analysis_ctx: &mut AnalysisContext,
+) -> CompileResult<AnalysisResult> {
+    use rue_rir::RirPattern;
+
+    // Analyze the scrutinee to determine its type
+    let scrutinee_result = analyze_inst_with_context(ctx, air, scrutinee, analysis_ctx)?;
+    let scrutinee_type = scrutinee_result.ty;
+
+    // Validate that we can match on this type (integers, booleans, and enums)
+    if !scrutinee_type.is_integer() && scrutinee_type != Type::Bool && !scrutinee_type.is_enum() {
+        return Err(CompileError::new(
+            ErrorKind::InvalidMatchType(scrutinee_type.name().to_string()),
+            span,
+        ));
+    }
+
+    let arms = ctx.rir.get_match_arms(arms_start, arms_len);
+    // Check for empty match
+    if arms.is_empty() {
+        return Err(CompileError::new(ErrorKind::EmptyMatch, span));
+    }
+
+    // Track patterns for exhaustiveness checking and duplicate detection
+    let mut wildcard_span: Option<Span> = None;
+    let mut bool_true_span: Option<Span> = None;
+    let mut bool_false_span: Option<Span> = None;
+    let mut seen_ints: HashMap<i64, Span> = HashMap::new();
+    let mut covered_variants: HashSet<u32> = HashSet::new();
+    let mut seen_variants: HashMap<u32, Span> = HashMap::new();
+    let mut pattern_enum_id: Option<EnumId> = None;
+
+    // Analyze each arm (each arm gets its own scope)
+    let mut air_arms = Vec::new();
+    let mut result_type: Option<Type> = None;
+
+    for (pattern, body) in arms.iter() {
+        let pattern_span = pattern.span();
+
+        // If we've seen a wildcard, everything after is unreachable
+        if let Some(first_wildcard_span) = wildcard_span {
+            let pat_str = match pattern {
+                RirPattern::Wildcard(_) => "_".to_string(),
+                RirPattern::Int(n, _) => n.to_string(),
+                RirPattern::Bool(b, _) => b.to_string(),
+                RirPattern::Path {
+                    type_name, variant, ..
+                } => {
+                    format!(
+                        "{}::{}",
+                        ctx.interner.resolve(&*type_name),
+                        ctx.interner.resolve(&*variant)
+                    )
+                }
+            };
+            analysis_ctx.warnings.push(
+                CompileWarning::new(WarningKind::UnreachablePattern(pat_str), pattern_span)
+                    .with_label("previous wildcard pattern here", first_wildcard_span)
+                    .with_note(
+                        "this pattern will never be matched because the wildcard pattern above matches everything",
+                    ),
+            );
+        }
+
+        // Validate pattern against scrutinee type and check for duplicates
+        match pattern {
+            RirPattern::Wildcard(_) => {
+                if wildcard_span.is_none() {
+                    wildcard_span = Some(pattern_span);
+                }
+            }
+            RirPattern::Int(n, _) => {
+                if !scrutinee_type.is_integer() {
+                    return Err(CompileError::new(
+                        ErrorKind::TypeMismatch {
+                            expected: scrutinee_type.name().to_string(),
+                            found: "integer".to_string(),
+                        },
+                        pattern_span,
+                    ));
+                }
+                // Check for duplicate integer pattern
+                if let Some(first_span) = seen_ints.get(n) {
+                    if wildcard_span.is_none() {
+                        analysis_ctx.warnings.push(
+                            CompileWarning::new(
+                                WarningKind::UnreachablePattern(n.to_string()),
+                                pattern_span,
+                            )
+                            .with_label("first occurrence of this pattern", *first_span)
+                            .with_note(
+                                "this pattern will never be matched because an earlier arm already matches the same value",
+                            ),
+                        );
+                    }
+                } else {
+                    seen_ints.insert(*n, pattern_span);
+                }
+            }
+            RirPattern::Bool(b, _) => {
+                if scrutinee_type != Type::Bool {
+                    return Err(CompileError::new(
+                        ErrorKind::TypeMismatch {
+                            expected: scrutinee_type.name().to_string(),
+                            found: "bool".to_string(),
+                        },
+                        pattern_span,
+                    ));
+                }
+                // Check for duplicate boolean pattern
+                let (first_span_opt, is_true) = if *b {
+                    (&mut bool_true_span, true)
+                } else {
+                    (&mut bool_false_span, false)
+                };
+                if let Some(first_span) = *first_span_opt {
+                    if wildcard_span.is_none() {
+                        analysis_ctx.warnings.push(
+                            CompileWarning::new(
+                                WarningKind::UnreachablePattern(is_true.to_string()),
+                                pattern_span,
+                            )
+                            .with_label("first occurrence of this pattern", first_span)
+                            .with_note(
+                                "this pattern will never be matched because an earlier arm already matches the same value",
+                            ),
+                        );
+                    }
+                } else {
+                    *first_span_opt = Some(pattern_span);
+                }
+            }
+            RirPattern::Path {
+                type_name, variant, ..
+            } => {
+                // Look up the enum type
+                let enum_id = ctx.get_enum(*type_name).ok_or_compile_error(
+                    ErrorKind::UnknownEnumType(ctx.interner.resolve(&*type_name).to_string()),
+                    pattern_span,
+                )?;
+                let enum_def = ctx.get_enum_def(enum_id);
+
+                // Check that scrutinee type matches the pattern's enum type
+                if scrutinee_type != Type::Enum(enum_id) {
+                    return Err(CompileError::new(
+                        ErrorKind::TypeMismatch {
+                            expected: scrutinee_type.name().to_string(),
+                            found: enum_def.name.clone(),
+                        },
+                        pattern_span,
+                    ));
+                }
+
+                // Find the variant index
+                let variant_name = ctx.interner.resolve(&*variant);
+                let variant_index = enum_def.find_variant(variant_name).ok_or_compile_error(
+                    ErrorKind::UnknownVariant {
+                        enum_name: enum_def.name.clone(),
+                        variant_name: variant_name.to_string(),
+                    },
+                    pattern_span,
+                )?;
+
+                // Check for duplicate variant
+                if let Some(first_span) = seen_variants.get(&(variant_index as u32)) {
+                    if wildcard_span.is_none() {
+                        analysis_ctx.warnings.push(
+                            CompileWarning::new(
+                                WarningKind::UnreachablePattern(format!(
+                                    "{}::{}",
+                                    enum_def.name, variant_name
+                                )),
+                                pattern_span,
+                            )
+                            .with_label("first occurrence of this pattern", *first_span)
+                            .with_note(
+                                "this pattern will never be matched because an earlier arm already matches the same value",
+                            ),
+                        );
+                    }
+                } else {
+                    seen_variants.insert(variant_index as u32, pattern_span);
+                }
+
+                covered_variants.insert(variant_index as u32);
+                pattern_enum_id = Some(enum_id);
+            }
+        }
+
+        // Each arm gets its own scope
+        analysis_ctx.push_scope();
+
+        // Analyze arm body
+        let body_result = analyze_inst_with_context(ctx, air, *body, analysis_ctx)?;
+        let body_type = body_result.ty;
+
+        analysis_ctx.pop_scope();
+
+        // Update result type (handle Never type coercion)
+        result_type = Some(match result_type {
+            None => body_type,
+            Some(prev) => {
+                if prev.is_never() {
+                    body_type
+                } else if body_type.is_never() {
+                    prev
+                } else if prev != body_type && !prev.is_error() && !body_type.is_error() {
+                    return Err(CompileError::new(
+                        ErrorKind::TypeMismatch {
+                            expected: prev.name().to_string(),
+                            found: body_type.name().to_string(),
+                        },
+                        ctx.rir.get(*body).span,
+                    ));
+                } else {
+                    prev
+                }
+            }
+        });
+
+        // Convert pattern to AIR pattern
+        let air_pattern = match pattern {
+            RirPattern::Wildcard(_) => AirPattern::Wildcard,
+            RirPattern::Int(n, _) => AirPattern::Int(*n),
+            RirPattern::Bool(b, _) => AirPattern::Bool(*b),
+            RirPattern::Path {
+                type_name, variant, ..
+            } => {
+                let type_name_str = ctx.interner.resolve(&*type_name).to_string();
+                let enum_id = ctx.get_enum(*type_name).ok_or_else(|| {
+                    CompileError::new(
+                        ErrorKind::InternalError(format!(
+                            "enum type '{}' not found during pattern conversion",
+                            type_name_str
+                        )),
+                        pattern_span,
+                    )
+                })?;
+                let enum_def = ctx.get_enum_def(enum_id);
+                let variant_name = ctx.interner.resolve(&*variant);
+                let variant_index = enum_def.find_variant(variant_name).ok_or_else(|| {
+                    CompileError::new(
+                        ErrorKind::InternalError(format!(
+                            "enum variant '{}::{}' not found during pattern conversion",
+                            type_name_str, variant_name
+                        )),
+                        pattern_span,
+                    )
+                })?;
+                AirPattern::EnumVariant {
+                    enum_id,
+                    variant_index: variant_index as u32,
+                }
+            }
+        };
+
+        air_arms.push((air_pattern, body_result.air_ref));
+    }
+
+    // Exhaustiveness checking
+    let has_wildcard = wildcard_span.is_some();
+    let bool_true_covered = bool_true_span.is_some();
+    let bool_false_covered = bool_false_span.is_some();
+    let is_exhaustive = if scrutinee_type == Type::Bool {
+        has_wildcard || (bool_true_covered && bool_false_covered)
+    } else if let Some(enum_id) = pattern_enum_id {
+        let enum_def = ctx.get_enum_def(enum_id);
+        has_wildcard || covered_variants.len() == enum_def.variant_count()
+    } else {
+        // For integers, must have wildcard
+        has_wildcard
+    };
+
+    if !is_exhaustive {
+        return Err(CompileError::new(ErrorKind::NonExhaustiveMatch, span));
+    }
+
+    let final_type = result_type.unwrap_or(Type::Unit);
+
+    // Encode match arms into extra array
+    let arms_len = air_arms.len() as u32;
+    let mut extra_data = Vec::new();
+    for (pattern, body) in &air_arms {
+        pattern.encode(*body, &mut extra_data);
+    }
+    let arms_start = air.add_extra(&extra_data);
+
+    let air_ref = air.add_inst(AirInst {
+        data: AirInstData::Match {
+            scrutinee: scrutinee_result.air_ref,
+            arms_start,
+            arms_len,
+        },
+        ty: final_type,
+        span,
+    });
+    Ok(AnalysisResult::new(air_ref, final_type))
+}
+
+/// Analyze a struct initialization using the shared context.
+fn analyze_struct_init_ctx(
+    ctx: &SemaContext<'_>,
+    air: &mut Air,
+    type_name: Spur,
+    fields_start: u32,
+    fields_len: u32,
+    span: Span,
+    analysis_ctx: &mut AnalysisContext,
+) -> CompileResult<AnalysisResult> {
+    use rue_error::MissingFieldsError;
+
+    let field_inits = ctx.rir.get_field_inits(fields_start, fields_len);
+    // Look up the struct type
+    let type_name_str = ctx.interner.resolve(&type_name);
+    let struct_id = ctx
+        .get_struct(type_name)
+        .ok_or_compile_error(ErrorKind::UnknownType(type_name_str.to_string()), span)?;
+
+    let struct_def = ctx.get_struct_def(struct_id);
+    let struct_type = Type::Struct(struct_id);
+
+    // Build a map from field name to struct field index
+    let field_index_map: std::collections::HashMap<&str, usize> = struct_def
+        .fields
+        .iter()
+        .enumerate()
+        .map(|(i, f)| (f.name.as_str(), i))
+        .collect();
+
+    // Check for unknown or duplicate fields
+    let mut seen_fields = std::collections::HashSet::new();
+    for (init_field_name, _) in field_inits.iter() {
+        let init_name = ctx.interner.resolve(&*init_field_name);
+
+        if !field_index_map.contains_key(init_name) {
+            return Err(CompileError::new(
+                ErrorKind::UnknownField {
+                    struct_name: struct_def.name.clone(),
+                    field_name: init_name.to_string(),
+                },
+                span,
+            ));
+        }
+
+        if !seen_fields.insert(init_name) {
+            return Err(CompileError::new(
+                ErrorKind::DuplicateField {
+                    struct_name: struct_def.name.clone(),
+                    field_name: init_name.to_string(),
+                },
+                span,
+            ));
+        }
+    }
+
+    // Check that all fields are provided
+    if field_inits.len() != struct_def.fields.len() {
+        let missing_fields: Vec<String> = struct_def
+            .fields
+            .iter()
+            .filter(|f| !seen_fields.contains(f.name.as_str()))
+            .map(|f| f.name.clone())
+            .collect();
+        return Err(CompileError::new(
+            ErrorKind::MissingFields(Box::new(MissingFieldsError {
+                struct_name: struct_def.name.clone(),
+                missing_fields,
+            })),
+            span,
+        ));
+    }
+
+    // Analyze field values in SOURCE ORDER (left-to-right as written)
+    let mut analyzed_fields: Vec<Option<AirRef>> = vec![None; struct_def.fields.len()];
+    let mut source_order: Vec<usize> = Vec::with_capacity(field_inits.len());
+
+    for (init_field_name, field_value) in field_inits.iter() {
+        let init_name = ctx.interner.resolve(&*init_field_name);
+        let field_idx = field_index_map[init_name];
+
+        let field_result = analyze_inst_with_context(ctx, air, *field_value, analysis_ctx)?;
+        analyzed_fields[field_idx] = Some(field_result.air_ref);
+        source_order.push(field_idx);
+    }
+
+    // Collect field refs in DECLARATION ORDER
+    let field_refs: Vec<AirRef> = analyzed_fields
+        .into_iter()
+        .map(|opt| opt.expect("all fields should be initialized"))
+        .collect();
+
+    // Encode into extra array
+    let fields_len = field_refs.len() as u32;
+    let field_u32s: Vec<u32> = field_refs.iter().map(|r| r.as_u32()).collect();
+    let fields_start = air.add_extra(&field_u32s);
+    let source_order_u32s: Vec<u32> = source_order.iter().map(|&i| i as u32).collect();
+    let source_order_start = air.add_extra(&source_order_u32s);
+
+    let air_ref = air.add_inst(AirInst {
+        data: AirInstData::StructInit {
+            struct_id,
+            fields_start,
+            fields_len,
+            source_order_start,
+        },
+        ty: struct_type,
+        span,
+    });
+    Ok(AnalysisResult::new(air_ref, struct_type))
+}
+
+/// Analyze instruction for projection (field access chains).
+/// This differs from analyze_inst_with_context in that it does NOT mark
+/// the accessed value as moved - it only checks move state.
+fn analyze_inst_for_projection_ctx(
+    ctx: &SemaContext<'_>,
+    air: &mut Air,
+    inst_ref: InstRef,
+    analysis_ctx: &mut AnalysisContext,
+) -> CompileResult<AnalysisResult> {
+    let inst = ctx.rir.get(inst_ref);
+
+    match &inst.data {
+        InstData::VarRef { name } => {
+            // First check if it's a parameter
+            if let Some(param_info) = analysis_ctx.params.get(name) {
+                let ty = param_info.ty;
+                let name_str = ctx.interner.resolve(name);
+
+                // Check if this parameter has been moved
+                if let Some(move_state) = analysis_ctx.moved_vars.get(name) {
+                    if let Some(moved_span) = move_state.is_any_part_moved() {
+                        return Err(CompileError::new(
+                            ErrorKind::UseAfterMove(name_str.to_string()),
+                            inst.span,
+                        )
+                        .with_label("value moved here", moved_span));
+                    }
+                }
+
+                let air_ref = air.add_inst(AirInst {
+                    data: AirInstData::Param {
+                        index: param_info.abi_slot,
+                    },
+                    ty,
+                    span: inst.span,
+                });
+                return Ok(AnalysisResult::new(air_ref, ty));
+            }
+
+            // Look up the variable in locals
+            let name_str = ctx.interner.resolve(name);
+            let local = analysis_ctx.locals.get(name).ok_or_compile_error(
+                ErrorKind::UndefinedVariable(name_str.to_string()),
+                inst.span,
+            )?;
+
+            let ty = local.ty;
+            let slot = local.slot;
+
+            // Check if this variable has been moved
+            if let Some(move_state) = analysis_ctx.moved_vars.get(name) {
+                if let Some(moved_span) = move_state.is_any_part_moved() {
+                    return Err(CompileError::new(
+                        ErrorKind::UseAfterMove(name_str.to_string()),
+                        inst.span,
+                    )
+                    .with_label("value moved here", moved_span));
+                }
+            }
+
+            // Mark variable as used
+            analysis_ctx.used_locals.insert(*name);
+
+            // Load the variable - but don't mark as moved (projection context)
+            let air_ref = air.add_inst(AirInst {
+                data: AirInstData::Load { slot },
+                ty,
+                span: inst.span,
+            });
+            Ok(AnalysisResult::new(air_ref, ty))
+        }
+        // For field access on projections, recurse into the base
+        InstData::FieldGet { base, field } => {
+            let base_result = analyze_inst_for_projection_ctx(ctx, air, *base, analysis_ctx)?;
+            let base_type = base_result.ty;
+
+            let struct_id = match base_type {
+                Type::Struct(id) => id,
+                _ => {
+                    return Err(CompileError::new(
+                        ErrorKind::FieldAccessOnNonStruct {
+                            found: base_type.name().to_string(),
+                        },
+                        inst.span,
+                    ));
+                }
+            };
+
+            let struct_def = ctx.get_struct_def(struct_id);
+            let field_name_str = ctx.interner.resolve(field).to_string();
+
+            let (field_index, struct_field) =
+                struct_def.find_field(&field_name_str).ok_or_compile_error(
+                    ErrorKind::UnknownField {
+                        struct_name: struct_def.name.clone(),
+                        field_name: field_name_str,
+                    },
+                    inst.span,
+                )?;
+
+            let field_type = struct_field.ty;
+
+            let air_ref = air.add_inst(AirInst {
+                data: AirInstData::FieldGet {
+                    base: base_result.air_ref,
+                    struct_id,
+                    field_index: field_index as u32,
+                },
+                ty: field_type,
+                span: inst.span,
+            });
+            Ok(AnalysisResult::new(air_ref, field_type))
+        }
+        // For index access on projections
+        InstData::IndexGet { base, index } => {
+            let base_result = analyze_inst_for_projection_ctx(ctx, air, *base, analysis_ctx)?;
+            let base_type = base_result.ty;
+
+            let index_result = analyze_inst_with_context(ctx, air, *index, analysis_ctx)?;
+
+            // Verify base is an array
+            let (array_type_id, elem_type, _array_len) = match base_type {
+                Type::Array(type_id) => {
+                    let array_def = ctx.get_array_type_def(type_id);
+                    (type_id, array_def.element_type, array_def.length)
+                }
+                _ => {
+                    return Err(CompileError::new(
+                        ErrorKind::IndexOnNonArray {
+                            found: base_type.name().to_string(),
+                        },
+                        inst.span,
+                    ));
+                }
+            };
+
+            let air_ref = air.add_inst(AirInst {
+                data: AirInstData::IndexGet {
+                    base: base_result.air_ref,
+                    array_type_id,
+                    index: index_result.air_ref,
+                },
+                ty: elem_type,
+                span: inst.span,
+            });
+            Ok(AnalysisResult::new(air_ref, elem_type))
+        }
+        // For other instructions, just call the regular analysis
+        _ => analyze_inst_with_context(ctx, air, inst_ref, analysis_ctx),
+    }
+}
+
+/// Extract the root variable from a field access chain.
+fn extract_root_variable_ctx(ctx: &SemaContext<'_>, inst_ref: InstRef) -> Option<Spur> {
+    let inst = ctx.rir.get(inst_ref);
+    match &inst.data {
+        InstData::VarRef { name } => Some(*name),
+        InstData::ParamRef { name, .. } => Some(*name),
+        InstData::FieldGet { base, .. } => extract_root_variable_ctx(ctx, *base),
+        InstData::IndexGet { base, .. } => extract_root_variable_ctx(ctx, *base),
+        _ => None,
+    }
+}
+
+/// Extract field path from a field access chain.
+fn extract_field_path_ctx(ctx: &SemaContext<'_>, inst_ref: InstRef) -> Option<(Spur, FieldPath)> {
+    let inst = ctx.rir.get(inst_ref);
+    match &inst.data {
+        InstData::VarRef { name } => Some((*name, Vec::new())),
+        InstData::ParamRef { name, .. } => Some((*name, Vec::new())),
+        InstData::FieldGet { base, field } => {
+            let (root, mut path) = extract_field_path_ctx(ctx, *base)?;
+            path.push(*field);
+            Some((root, path))
+        }
+        _ => None,
+    }
+}
+
+/// Analyze a field access using the shared context.
+fn analyze_field_get_ctx(
+    ctx: &SemaContext<'_>,
+    air: &mut Air,
+    inst_ref: InstRef,
+    base: InstRef,
+    field: Spur,
+    span: Span,
+    analysis_ctx: &mut AnalysisContext,
+) -> CompileResult<AnalysisResult> {
+    // Field access is a projection
+    let base_result = analyze_inst_for_projection_ctx(ctx, air, base, analysis_ctx)?;
+    let base_type = base_result.ty;
+
+    let struct_id = match base_type {
+        Type::Struct(id) => id,
+        _ => {
+            return Err(CompileError::new(
+                ErrorKind::FieldAccessOnNonStruct {
+                    found: base_type.name().to_string(),
+                },
+                span,
+            ));
+        }
+    };
+
+    let struct_def = ctx.get_struct_def(struct_id);
+    let is_linear = struct_def.is_linear;
+    let field_name_str = ctx.interner.resolve(&field).to_string();
+
+    let (field_index, struct_field) = struct_def.find_field(&field_name_str).ok_or_compile_error(
+        ErrorKind::UnknownField {
+            struct_name: struct_def.name.clone(),
+            field_name: field_name_str.clone(),
+        },
+        span,
+    )?;
+
+    let field_type = struct_field.ty;
+
+    // For linear types, field access consumes the entire struct.
+    if is_linear {
+        if let Some(root_var) = extract_root_variable_ctx(ctx, inst_ref) {
+            analysis_ctx
+                .moved_vars
+                .entry(root_var)
+                .or_default()
+                .mark_path_moved(&[], span);
+        }
+    }
+    // For non-linear types, check if accessing a non-Copy field
+    else if !ctx.is_type_copy(field_type) {
+        if let Some((root_var, field_path)) = extract_field_path_ctx(ctx, inst_ref) {
+            // Check if this field path is already moved
+            if let Some(state) = analysis_ctx.moved_vars.get(&root_var) {
+                if let Some(moved_span) = state.is_path_moved(&field_path) {
+                    let root_name = ctx.interner.resolve(&root_var);
+                    let path_str = if field_path.is_empty() {
+                        root_name.to_string()
+                    } else {
+                        let field_names: Vec<_> = field_path
+                            .iter()
+                            .map(|s| ctx.interner.resolve(s).to_string())
+                            .collect();
+                        format!("{}.{}", root_name, field_names.join("."))
+                    };
+                    return Err(CompileError::new(ErrorKind::UseAfterMove(path_str), span)
+                        .with_label("value moved here", moved_span));
+                }
+            }
+
+            // Mark this field path as moved
+            analysis_ctx
+                .moved_vars
+                .entry(root_var)
+                .or_default()
+                .mark_path_moved(&field_path, span);
+        }
+    }
+
+    let air_ref = air.add_inst(AirInst {
+        data: AirInstData::FieldGet {
+            base: base_result.air_ref,
+            struct_id,
+            field_index: field_index as u32,
+        },
+        ty: field_type,
+        span,
+    });
+    Ok(AnalysisResult::new(air_ref, field_type))
+}
+
+/// Analyze a field assignment using the shared context.
+fn analyze_field_set_ctx(
+    ctx: &SemaContext<'_>,
+    air: &mut Air,
+    base: InstRef,
+    field: Spur,
+    value: InstRef,
+    span: Span,
+    analysis_ctx: &mut AnalysisContext,
+) -> CompileResult<AnalysisResult> {
+    // For field assignment, we need to walk up the chain of field accesses
+    // to find the root variable. We accumulate the slot offset as we go.
+
+    // Walk up to find the root variable, collecting field symbols
+    let mut current_base = base;
+    let mut field_symbols: Vec<Spur> = Vec::new();
+
+    // Result is either (Local, slot, type, is_mut, name) or (Param, abi_slot, type, mode, name)
+    enum RootKind {
+        Local { slot: u32, is_mut: bool },
+        Param { abi_slot: u32, mode: RirParamMode },
+    }
+
+    let (var_name, root_kind, root_type, _root_symbol) = loop {
+        let current_inst = ctx.rir.get(current_base);
+        match &current_inst.data {
+            InstData::VarRef { name } => {
+                let name_str = ctx.interner.resolve(&*name);
+
+                // Check if this variable has been moved
+                if let Some(move_state) = analysis_ctx.moved_vars.get(name) {
+                    if let Some(moved_span) = move_state.is_any_part_moved() {
+                        return Err(CompileError::new(
+                            ErrorKind::UseAfterMove(name_str.to_string()),
+                            span,
+                        )
+                        .with_label("value moved here", moved_span));
+                    }
+                }
+
+                // First check if it's a parameter
+                if let Some(param_info) = analysis_ctx.params.get(name) {
+                    break (
+                        name_str.to_string(),
+                        RootKind::Param {
+                            abi_slot: param_info.abi_slot,
+                            mode: param_info.mode,
+                        },
+                        param_info.ty,
+                        *name,
+                    );
+                }
+
+                // Then check locals
+                let local = analysis_ctx.locals.get(name).ok_or_compile_error(
+                    ErrorKind::UndefinedVariable(name_str.to_string()),
+                    span,
+                )?;
+
+                break (
+                    name_str.to_string(),
+                    RootKind::Local {
+                        slot: local.slot,
+                        is_mut: local.is_mut,
+                    },
+                    local.ty,
+                    *name,
+                );
+            }
+            InstData::ParamRef { name, .. } => {
+                let name_str = ctx.interner.resolve(&*name);
+                let param_info = analysis_ctx.params.get(name).ok_or_compile_error(
+                    ErrorKind::UndefinedVariable(name_str.to_string()),
+                    span,
+                )?;
+
+                // Check if this parameter has been moved
+                if let Some(move_state) = analysis_ctx.moved_vars.get(name) {
+                    if let Some(moved_span) = move_state.is_any_part_moved() {
+                        return Err(CompileError::new(
+                            ErrorKind::UseAfterMove(name_str.to_string()),
+                            span,
+                        )
+                        .with_label("value moved here", moved_span));
+                    }
+                }
+
+                break (
+                    name_str.to_string(),
+                    RootKind::Param {
+                        abi_slot: param_info.abi_slot,
+                        mode: param_info.mode,
+                    },
+                    param_info.ty,
+                    *name,
+                );
+            }
+            InstData::FieldGet {
+                base: inner_base,
+                field: inner_field,
+            } => {
+                field_symbols.push(*inner_field);
+                current_base = *inner_base;
+            }
+            _ => {
+                return Err(CompileError::new(ErrorKind::InvalidAssignmentTarget, span));
+            }
+        }
+    };
+
+    // Check mutability based on root kind
+    let root_slot = match root_kind {
+        RootKind::Local { slot, is_mut } => {
+            if !is_mut {
+                return Err(CompileError::new(
+                    ErrorKind::AssignToImmutable(var_name),
+                    span,
+                ));
+            }
+            slot
+        }
+        RootKind::Param { abi_slot, mode } => {
+            match mode {
+                RirParamMode::Normal => {
+                    return Err(CompileError::new(
+                        ErrorKind::AssignToImmutable(var_name.clone()),
+                        span,
+                    )
+                    .with_help(format!(
+                        "consider making parameter `{}` inout: `inout {}: {}`",
+                        var_name,
+                        var_name,
+                        root_type.name()
+                    )));
+                }
+                RirParamMode::Inout => {
+                    // Inout parameters can be mutated
+                }
+                RirParamMode::Borrow => {
+                    return Err(CompileError::new(
+                        ErrorKind::MutateBorrowedValue { variable: var_name },
+                        span,
+                    ));
+                }
+            }
+            abi_slot
+        }
+    };
+
+    // Walk through the field chain to compute the slot offset
+    let mut current_type = root_type;
+    let mut slot_offset: u32 = 0;
+
+    for field_sym in field_symbols.iter().rev() {
+        let struct_id = match current_type {
+            Type::Struct(id) => id,
+            _ => {
+                return Err(CompileError::new(
+                    ErrorKind::FieldAccessOnNonStruct {
+                        found: current_type.name().to_string(),
+                    },
+                    span,
+                ));
+            }
+        };
+
+        let struct_def = ctx.get_struct_def(struct_id);
+        let field_name_str = ctx.interner.resolve(&*field_sym).to_string();
+
+        let (field_index, struct_field) =
+            struct_def.find_field(&field_name_str).ok_or_compile_error(
+                ErrorKind::UnknownField {
+                    struct_name: struct_def.name.clone(),
+                    field_name: field_name_str.clone(),
+                },
+                span,
+            )?;
+
+        slot_offset += ctx.field_slot_offset(struct_id, field_index);
+        current_type = struct_field.ty;
+    }
+
+    // Now handle the final field being assigned
+    let struct_id = match current_type {
+        Type::Struct(id) => id,
+        _ => {
+            return Err(CompileError::new(
+                ErrorKind::FieldAccessOnNonStruct {
+                    found: current_type.name().to_string(),
+                },
+                span,
+            ));
+        }
+    };
+
+    let struct_def = ctx.get_struct_def(struct_id);
+    let field_name_str = ctx.interner.resolve(&field).to_string();
+
+    let (field_index, _struct_field) = struct_def.find_field(&field_name_str).ok_or_compile_error(
+        ErrorKind::UnknownField {
+            struct_name: struct_def.name.clone(),
+            field_name: field_name_str.clone(),
+        },
+        span,
+    )?;
+
+    // Analyze the value
+    let value_result = analyze_inst_with_context(ctx, air, value, analysis_ctx)?;
+
+    // Emit the appropriate instruction based on whether root is a local or param
+    let air_ref = match root_kind {
+        RootKind::Local { slot, .. } => {
+            let base_slot = slot + slot_offset;
+            air.add_inst(AirInst {
+                data: AirInstData::FieldSet {
+                    slot: base_slot,
+                    struct_id,
+                    field_index: field_index as u32,
+                    value: value_result.air_ref,
+                },
+                ty: Type::Unit,
+                span,
+            })
+        }
+        RootKind::Param { abi_slot, .. } => air.add_inst(AirInst {
+            data: AirInstData::ParamFieldSet {
+                param_slot: abi_slot,
+                inner_offset: slot_offset,
+                struct_id,
+                field_index: field_index as u32,
+                value: value_result.air_ref,
+            },
+            ty: Type::Unit,
+            span,
+        }),
+    };
+    Ok(AnalysisResult::new(air_ref, Type::Unit))
+}
+
+/// Analyze an array initialization using the shared context.
+fn analyze_array_init_ctx(
+    ctx: &SemaContext<'_>,
+    air: &mut Air,
+    inst_ref: InstRef,
+    elems_start: u32,
+    elems_len: u32,
+    span: Span,
+    analysis_ctx: &mut AnalysisContext,
+) -> CompileResult<AnalysisResult> {
+    let elem_refs = ctx.rir.get_inst_refs(elems_start, elems_len);
+
+    // Get the array type from HM inference
+    let array_type = get_resolved_type_ctx(analysis_ctx, inst_ref, span, "array literal")?;
+
+    let (array_type_id, _elem_type, expected_len) = match array_type {
+        Type::Array(type_id) => {
+            let array_def = ctx.get_array_type_def(type_id);
+            (type_id, array_def.element_type, array_def.length)
+        }
+        _ => {
+            return Err(CompileError::new(
+                ErrorKind::InternalError(format!(
+                    "Array literal inferred as non-array type: {}",
+                    array_type.name()
+                )),
+                span,
+            ));
+        }
+    };
+
+    // Verify length matches
+    if elem_refs.len() as u64 != expected_len {
+        return Err(CompileError::new(
+            ErrorKind::ArrayLengthMismatch {
+                expected: expected_len,
+                found: elem_refs.len() as u64,
+            },
+            span,
+        ));
+    }
+
+    // Analyze elements
+    let mut air_elems = Vec::with_capacity(elem_refs.len());
+    for elem_ref in elem_refs {
+        let elem_result = analyze_inst_with_context(ctx, air, elem_ref, analysis_ctx)?;
+        air_elems.push(elem_result.air_ref);
+    }
+
+    // Encode into extra array
+    let elems_len = air_elems.len() as u32;
+    let elem_u32s: Vec<u32> = air_elems.iter().map(|r| r.as_u32()).collect();
+    let elems_start = air.add_extra(&elem_u32s);
+
+    let air_ref = air.add_inst(AirInst {
+        data: AirInstData::ArrayInit {
+            array_type_id,
+            elems_start,
+            elems_len,
+        },
+        ty: array_type,
+        span,
+    });
+    Ok(AnalysisResult::new(air_ref, array_type))
+}
+
+/// Try to extract a constant integer value from an index expression.
+fn try_get_const_index_ctx(ctx: &SemaContext<'_>, index: InstRef) -> Option<i64> {
+    let inst = ctx.rir.get(index);
+    match &inst.data {
+        InstData::IntConst(value) => Some(*value as i64),
+        InstData::Neg { operand } => {
+            let inner = ctx.rir.get(*operand);
+            if let InstData::IntConst(value) = &inner.data {
+                Some(-(*value as i64))
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
+
+/// Analyze an array index read using the shared context.
+fn analyze_index_get_ctx(
+    ctx: &SemaContext<'_>,
+    air: &mut Air,
+    base: InstRef,
+    index: InstRef,
+    span: Span,
+    analysis_ctx: &mut AnalysisContext,
+) -> CompileResult<AnalysisResult> {
+    // Analyze base and index
+    let base_result = analyze_inst_for_projection_ctx(ctx, air, base, analysis_ctx)?;
+    let base_type = base_result.ty;
+
+    let index_result = analyze_inst_with_context(ctx, air, index, analysis_ctx)?;
+
+    // Verify base is an array
+    let (array_type_id, elem_type, array_len) = match base_type {
+        Type::Array(type_id) => {
+            let array_def = ctx.get_array_type_def(type_id);
+            (type_id, array_def.element_type, array_def.length)
+        }
+        _ => {
+            return Err(CompileError::new(
+                ErrorKind::IndexOnNonArray {
+                    found: base_type.name().to_string(),
+                },
+                span,
+            ));
+        }
+    };
+
+    // Check for constant out-of-bounds index
+    if let Some(const_idx) = try_get_const_index_ctx(ctx, index) {
+        if const_idx < 0 || const_idx as u64 >= array_len {
+            return Err(CompileError::new(
+                ErrorKind::IndexOutOfBounds {
+                    index: const_idx,
+                    length: array_len,
+                },
+                ctx.rir.get(index).span,
+            ));
+        }
+    }
+
+    // Prevent moving non-Copy elements out of arrays.
+    if !ctx.is_type_copy(elem_type) {
+        return Err(CompileError::new(
+            ErrorKind::MoveOutOfIndex {
+                element_type: elem_type.name().to_string(),
+            },
+            span,
+        )
+        .with_help("use explicit methods like swap() or take() to remove elements"));
+    }
+
+    let air_ref = air.add_inst(AirInst {
+        data: AirInstData::IndexGet {
+            base: base_result.air_ref,
+            array_type_id,
+            index: index_result.air_ref,
+        },
+        ty: elem_type,
+        span,
+    });
+    Ok(AnalysisResult::new(air_ref, elem_type))
+}
+
+/// Analyze an array index write using the shared context.
+fn analyze_index_set_ctx(
+    ctx: &SemaContext<'_>,
+    air: &mut Air,
+    base: InstRef,
+    index: InstRef,
+    value: InstRef,
+    span: Span,
+    analysis_ctx: &mut AnalysisContext,
+) -> CompileResult<AnalysisResult> {
+    let base_inst = ctx.rir.get(base);
+
+    enum IndexSetRootKind {
+        Local { slot: u32, is_mut: bool },
+        Param { abi_slot: u32, mode: RirParamMode },
+    }
+
+    let (var_name, root_kind, base_type) = match &base_inst.data {
+        InstData::VarRef { name } => {
+            let name_str = ctx.interner.resolve(&*name);
+
+            // Check if this variable has been moved
+            if let Some(move_state) = analysis_ctx.moved_vars.get(name) {
+                if let Some(moved_span) = move_state.is_any_part_moved() {
+                    return Err(CompileError::new(
+                        ErrorKind::UseAfterMove(name_str.to_string()),
+                        span,
+                    )
+                    .with_label("value moved here", moved_span));
+                }
+            }
+
+            // First check if it's a parameter
+            if let Some(param_info) = analysis_ctx.params.get(name) {
+                (
+                    name_str.to_string(),
+                    IndexSetRootKind::Param {
+                        abi_slot: param_info.abi_slot,
+                        mode: param_info.mode,
+                    },
+                    param_info.ty,
+                )
+            } else {
+                // Then check locals
+                let local = analysis_ctx.locals.get(name).ok_or_compile_error(
+                    ErrorKind::UndefinedVariable(name_str.to_string()),
+                    span,
+                )?;
+
+                (
+                    name_str.to_string(),
+                    IndexSetRootKind::Local {
+                        slot: local.slot,
+                        is_mut: local.is_mut,
+                    },
+                    local.ty,
+                )
+            }
+        }
+        InstData::ParamRef { name, .. } => {
+            let name_str = ctx.interner.resolve(&*name);
+            let param_info = analysis_ctx
+                .params
+                .get(name)
+                .ok_or_compile_error(ErrorKind::UndefinedVariable(name_str.to_string()), span)?;
+
+            // Check if this parameter has been moved
+            if let Some(move_state) = analysis_ctx.moved_vars.get(name) {
+                if let Some(moved_span) = move_state.is_any_part_moved() {
+                    return Err(CompileError::new(
+                        ErrorKind::UseAfterMove(name_str.to_string()),
+                        span,
+                    )
+                    .with_label("value moved here", moved_span));
+                }
+            }
+
+            (
+                name_str.to_string(),
+                IndexSetRootKind::Param {
+                    abi_slot: param_info.abi_slot,
+                    mode: param_info.mode,
+                },
+                param_info.ty,
+            )
+        }
+        _ => {
+            return Err(CompileError::new(ErrorKind::InvalidAssignmentTarget, span));
+        }
+    };
+
+    // Check mutability based on root kind
+    let (is_inout_param, slot) = match root_kind {
+        IndexSetRootKind::Local { slot, is_mut } => {
+            if !is_mut {
+                return Err(CompileError::new(
+                    ErrorKind::AssignToImmutable(var_name),
+                    span,
+                ));
+            }
+            (false, slot)
+        }
+        IndexSetRootKind::Param { abi_slot, mode } => {
+            let is_inout = match mode {
+                RirParamMode::Normal => false,
+                RirParamMode::Inout => true,
+                RirParamMode::Borrow => {
+                    return Err(CompileError::new(
+                        ErrorKind::MutateBorrowedValue { variable: var_name },
+                        span,
+                    ));
+                }
+            };
+            if !is_inout {
+                return Err(CompileError::new(
+                    ErrorKind::AssignToImmutable(var_name.clone()),
+                    span,
+                )
+                .with_help(format!(
+                    "consider making parameter `{}` inout: `inout {}: {}`",
+                    var_name,
+                    var_name,
+                    base_type.name()
+                )));
+            }
+            (true, abi_slot)
+        }
+    };
+
+    // Verify base is an array and get its element type
+    let (array_type_id, _elem_type, array_len) = match base_type {
+        Type::Array(type_id) => {
+            let array_def = ctx.get_array_type_def(type_id);
+            (type_id, array_def.element_type, array_def.length)
+        }
+        _ => {
+            return Err(CompileError::new(
+                ErrorKind::IndexOnNonArray {
+                    found: base_type.name().to_string(),
+                },
+                span,
+            ));
+        }
+    };
+
+    // Analyze the index expression
+    let index_result = analyze_inst_with_context(ctx, air, index, analysis_ctx)?;
+
+    // Check for constant out-of-bounds index
+    if let Some(const_idx) = try_get_const_index_ctx(ctx, index) {
+        if const_idx < 0 || const_idx as u64 >= array_len {
+            return Err(CompileError::new(
+                ErrorKind::IndexOutOfBounds {
+                    index: const_idx,
+                    length: array_len,
+                },
+                ctx.rir.get(index).span,
+            ));
+        }
+    }
+
+    // Analyze the value expression
+    let value_result = analyze_inst_with_context(ctx, air, value, analysis_ctx)?;
+
+    // Emit the appropriate instruction
+    let air_ref = if is_inout_param {
+        air.add_inst(AirInst {
+            data: AirInstData::ParamIndexSet {
+                param_slot: slot,
+                array_type_id,
+                index: index_result.air_ref,
+                value: value_result.air_ref,
+            },
+            ty: Type::Unit,
+            span,
+        })
+    } else {
+        air.add_inst(AirInst {
+            data: AirInstData::IndexSet {
+                slot,
+                array_type_id,
+                index: index_result.air_ref,
+                value: value_result.air_ref,
+            },
+            ty: Type::Unit,
+            span,
+        })
+    };
+    Ok(AnalysisResult::new(air_ref, Type::Unit))
+}
+
+/// Analyze an enum variant using the shared context.
+fn analyze_enum_variant_ctx(
+    ctx: &SemaContext<'_>,
+    air: &mut Air,
+    type_name: Spur,
+    variant: Spur,
+    span: Span,
+) -> CompileResult<AnalysisResult> {
+    // Look up the enum type
+    let enum_id = ctx.get_enum(type_name).ok_or_compile_error(
+        ErrorKind::UnknownEnumType(ctx.interner.resolve(&type_name).to_string()),
+        span,
+    )?;
+    let enum_def = ctx.get_enum_def(enum_id);
+
+    // Find the variant index
+    let variant_name = ctx.interner.resolve(&variant);
+    let variant_index = enum_def.find_variant(variant_name).ok_or_compile_error(
+        ErrorKind::UnknownVariant {
+            enum_name: enum_def.name.clone(),
+            variant_name: variant_name.to_string(),
+        },
+        span,
+    )?;
+
+    let ty = Type::Enum(enum_id);
+
+    let air_ref = air.add_inst(AirInst {
+        data: AirInstData::EnumVariant {
+            enum_id,
+            variant_index: variant_index as u32,
+        },
+        ty,
+        span,
+    });
+    Ok(AnalysisResult::new(air_ref, ty))
+}
+
+/// Analyze a function call using the shared context.
+fn analyze_call_ctx(
+    ctx: &SemaContext<'_>,
+    air: &mut Air,
+    name: Spur,
+    args_start: u32,
+    args_len: u32,
+    span: Span,
+    analysis_ctx: &mut AnalysisContext,
+) -> CompileResult<AnalysisResult> {
+    // Look up the function
+    let fn_name_str = ctx.interner.resolve(&name).to_string();
+    let fn_info = ctx
+        .get_function(name)
+        .ok_or_compile_error(ErrorKind::UndefinedFunction(fn_name_str.clone()), span)?;
+
+    let args = ctx.rir.get_call_args(args_start, args_len);
+    // Check argument count
+    if args.len() != fn_info.param_types.len() {
+        let expected = fn_info.param_types.len();
+        let found = args.len();
+        return Err(CompileError::new(
+            ErrorKind::WrongArgumentCount { expected, found },
+            span,
+        ));
+    }
+
+    // Check for exclusive access violation
+    check_exclusive_access_ctx(ctx, &args, span)?;
+
+    // Check that call-site argument modes match function parameter modes
+    for (i, (arg, expected_mode)) in args.iter().zip(fn_info.param_modes.iter()).enumerate() {
+        match expected_mode {
+            RirParamMode::Inout => {
+                if arg.mode != RirArgMode::Inout {
+                    return Err(CompileError::new(
+                        ErrorKind::InoutKeywordMissing,
+                        ctx.rir.get(args[i].value).span,
+                    ));
+                }
+            }
+            RirParamMode::Borrow => {
+                if arg.mode != RirArgMode::Borrow {
+                    return Err(CompileError::new(
+                        ErrorKind::BorrowKeywordMissing,
+                        ctx.rir.get(args[i].value).span,
+                    ));
+                }
+            }
+            RirParamMode::Normal => {
+                // Normal params accept any mode
+            }
+        }
+    }
+
+    // Extract return_type before mutable borrow
+    let return_type = fn_info.return_type;
+
+    // Analyze arguments
+    let air_args = analyze_call_args_ctx(ctx, air, &args, analysis_ctx)?;
+
+    // Encode call args into extra array
+    let args_len = air_args.len() as u32;
+    let mut extra_data = Vec::with_capacity(air_args.len() * 2);
+    for arg in &air_args {
+        extra_data.push(arg.value.as_u32());
+        extra_data.push(arg.mode.as_u32());
+    }
+    let args_start = air.add_extra(&extra_data);
+
+    let air_ref = air.add_inst(AirInst {
+        data: AirInstData::Call {
+            name,
+            args_start,
+            args_len,
+        },
+        ty: return_type,
+        span,
+    });
+    Ok(AnalysisResult::new(air_ref, return_type))
+}
+
+/// Check for exclusive access violations in call arguments.
+fn check_exclusive_access_ctx(
+    ctx: &SemaContext<'_>,
+    args: &[RirCallArg],
+    _span: Span,
+) -> CompileResult<()> {
+    let mut inout_vars: HashMap<Spur, Span> = HashMap::new();
+
+    for arg in args {
+        if arg.mode == RirArgMode::Inout {
+            // Extract the variable name from the argument
+            if let Some(var_name) = extract_arg_var_name_ctx(ctx, arg.value) {
+                if let Some(first_span) = inout_vars.get(&var_name) {
+                    let var_name_str = ctx.interner.resolve(&var_name);
+                    return Err(CompileError::new(
+                        ErrorKind::InoutExclusiveAccess {
+                            variable: var_name_str.to_string(),
+                        },
+                        ctx.rir.get(arg.value).span,
+                    )
+                    .with_label("first inout borrow here", *first_span)
+                    .with_note("a variable can only be passed as inout once per function call"));
+                }
+                inout_vars.insert(var_name, ctx.rir.get(arg.value).span);
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Extract the variable name from an argument expression.
+fn extract_arg_var_name_ctx(ctx: &SemaContext<'_>, inst_ref: InstRef) -> Option<Spur> {
+    let inst = ctx.rir.get(inst_ref);
+    match &inst.data {
+        InstData::VarRef { name } => Some(*name),
+        InstData::ParamRef { name, .. } => Some(*name),
+        _ => None,
+    }
+}
+
+/// Analyze call arguments using the shared context.
+fn analyze_call_args_ctx(
+    ctx: &SemaContext<'_>,
+    air: &mut Air,
+    args: &[RirCallArg],
+    analysis_ctx: &mut AnalysisContext,
+) -> CompileResult<Vec<AirCallArg>> {
+    let mut air_args = Vec::with_capacity(args.len());
+
+    for arg in args {
+        let arg_result = analyze_inst_with_context(ctx, air, arg.value, analysis_ctx)?;
+        let air_mode = match arg.mode {
+            RirArgMode::Normal => AirArgMode::Normal,
+            RirArgMode::Inout => AirArgMode::Inout,
+            RirArgMode::Borrow => AirArgMode::Borrow,
+        };
+        air_args.push(AirCallArg {
+            value: arg_result.air_ref,
+            mode: air_mode,
+        });
+    }
+
+    Ok(air_args)
+}
+
+/// Analyze a method call using the shared context.
+fn analyze_method_call_ctx(
+    ctx: &SemaContext<'_>,
+    air: &mut Air,
+    receiver: InstRef,
+    method: Spur,
+    args_start: u32,
+    args_len: u32,
+    span: Span,
+    analysis_ctx: &mut AnalysisContext,
+) -> CompileResult<AnalysisResult> {
+    // First analyze the receiver to get its type
+    let receiver_result = analyze_inst_with_context(ctx, air, receiver, analysis_ctx)?;
+    let receiver_type = receiver_result.ty;
+
+    // Get the type name for method lookup
+    let type_name = match receiver_type {
+        Type::Struct(struct_id) => {
+            let struct_def = ctx.get_struct_def(struct_id);
+            ctx.interner.get_or_intern(&struct_def.name)
+        }
+        _ => {
+            let method_name = ctx.interner.resolve(&method);
+            return Err(CompileError::new(
+                ErrorKind::MethodCallOnNonStruct {
+                    method_name: method_name.to_string(),
+                    found: receiver_type.name().to_string(),
+                },
+                span,
+            ));
+        }
+    };
+
+    // Check if this is a builtin type with builtin methods
+    if let Type::Struct(struct_id) = receiver_type {
+        if let Some(builtin_def) = ctx.get_builtin_type_def(struct_id) {
+            let method_name = ctx.interner.resolve(&method);
+            if let Some(builtin_method) = builtin_def.find_method(method_name) {
+                // Handle builtin method call
+                return analyze_builtin_method_ctx(
+                    ctx,
+                    air,
+                    receiver,
+                    receiver_result.air_ref,
+                    receiver_type,
+                    builtin_method,
+                    args_start,
+                    args_len,
+                    span,
+                    analysis_ctx,
+                );
+            }
+        }
+    }
+
+    // Look up the method in user-defined methods
+    let method_info = ctx.get_method(type_name, method).ok_or_compile_error(
+        ErrorKind::UndefinedMethod {
+            type_name: ctx.interner.resolve(&type_name).to_string(),
+            method_name: ctx.interner.resolve(&method).to_string(),
+        },
+        span,
+    )?;
+
+    // Analyze arguments
+    let args = ctx.rir.get_call_args(args_start, args_len);
+    let air_args = analyze_call_args_ctx(ctx, air, &args, analysis_ctx)?;
+
+    // Create the full name for the method
+    let type_name_str = ctx.interner.resolve(&type_name);
+    let method_name_str = ctx.interner.resolve(&method);
+    let full_name = format!("{}::{}", type_name_str, method_name_str);
+    let full_name_sym = ctx.interner.get_or_intern(&full_name);
+
+    let return_type = method_info.return_type;
+
+    // Encode call args with receiver
+    let mut extra_data = Vec::with_capacity((air_args.len() + 1) * 2);
+    // Add receiver as first argument
+    extra_data.push(receiver_result.air_ref.as_u32());
+    extra_data.push(AirArgMode::Normal.as_u32());
+    // Add other arguments
+    for arg in &air_args {
+        extra_data.push(arg.value.as_u32());
+        extra_data.push(arg.mode.as_u32());
+    }
+    let args_start = air.add_extra(&extra_data);
+    let args_len = (air_args.len() + 1) as u32;
+
+    let air_ref = air.add_inst(AirInst {
+        data: AirInstData::Call {
+            name: full_name_sym,
+            args_start,
+            args_len,
+        },
+        ty: return_type,
+        span,
+    });
+    Ok(AnalysisResult::new(air_ref, return_type))
+}
+
+/// Analyze a builtin method call using the shared context.
+fn analyze_builtin_method_ctx(
+    ctx: &SemaContext<'_>,
+    air: &mut Air,
+    receiver: InstRef,
+    receiver_air_ref: AirRef,
+    receiver_type: Type,
+    builtin_method: &'static rue_builtins::BuiltinMethod,
+    args_start: u32,
+    args_len: u32,
+    span: Span,
+    analysis_ctx: &mut AnalysisContext,
+) -> CompileResult<AnalysisResult> {
+    use rue_builtins::ReceiverMode;
+
+    let args = ctx.rir.get_call_args(args_start, args_len);
+
+    // Check argument count
+    if args.len() != builtin_method.params.len() {
+        return Err(CompileError::new(
+            ErrorKind::WrongArgumentCount {
+                expected: builtin_method.params.len(),
+                found: args.len(),
+            },
+            span,
+        ));
+    }
+
+    // Analyze arguments
+    let air_args = analyze_call_args_ctx(ctx, air, &args, analysis_ctx)?;
+
+    // Get the struct ID for builtin type
+    let struct_id = match receiver_type {
+        Type::Struct(id) => id,
+        _ => unreachable!("builtin method called on non-struct type"),
+    };
+
+    // Resolve return type
+    let return_type = resolve_builtin_return_type_ctx(ctx, builtin_method.return_ty, struct_id);
+
+    // For mutation methods, we need to handle the storage update
+    if builtin_method.receiver_mode == ReceiverMode::ByMutRef {
+        // Find the storage location for the receiver
+        let storage = get_receiver_storage_ctx(ctx, receiver, span, analysis_ctx)?;
+
+        // Build the call instruction
+        let full_name_sym = ctx.interner.get_or_intern(builtin_method.runtime_fn);
+
+        // Encode call args with receiver
+        let mut extra_data = Vec::with_capacity((air_args.len() + 1) * 2);
+        extra_data.push(receiver_air_ref.as_u32());
+        extra_data.push(AirArgMode::Normal.as_u32());
+        for arg in &air_args {
+            extra_data.push(arg.value.as_u32());
+            extra_data.push(arg.mode.as_u32());
+        }
+        let call_args_start = air.add_extra(&extra_data);
+        let call_args_len = (air_args.len() + 1) as u32;
+
+        // Call the runtime function - it returns the new value
+        let call_ref = air.add_inst(AirInst {
+            data: AirInstData::Call {
+                name: full_name_sym,
+                args_start: call_args_start,
+                args_len: call_args_len,
+            },
+            ty: receiver_type,
+            span,
+        });
+
+        // Store the result back to the receiver location
+        let store_ref = match storage {
+            StringReceiverStorage::Local { slot } => air.add_inst(AirInst {
+                data: AirInstData::Store {
+                    slot,
+                    value: call_ref,
+                },
+                ty: Type::Unit,
+                span,
+            }),
+            StringReceiverStorage::Param { abi_slot } => air.add_inst(AirInst {
+                data: AirInstData::ParamStore {
+                    param_slot: abi_slot,
+                    value: call_ref,
+                },
+                ty: Type::Unit,
+                span,
+            }),
+        };
+
+        // If return type is the receiver type, return the stored value
+        // Otherwise return the call result (e.g., for pop() which returns the popped char)
+        if return_type == receiver_type {
+            // Return unit since mutation methods that return Self are for chaining
+            Ok(AnalysisResult::new(store_ref, Type::Unit))
+        } else {
+            // Return the actual return value
+            Ok(AnalysisResult::new(call_ref, return_type))
+        }
+    } else {
+        // Non-mutation method - just call and return
+        let full_name_sym = ctx.interner.get_or_intern(builtin_method.runtime_fn);
+
+        let mut extra_data = Vec::with_capacity((air_args.len() + 1) * 2);
+        extra_data.push(receiver_air_ref.as_u32());
+        extra_data.push(AirArgMode::Normal.as_u32());
+        for arg in &air_args {
+            extra_data.push(arg.value.as_u32());
+            extra_data.push(arg.mode.as_u32());
+        }
+        let call_args_start = air.add_extra(&extra_data);
+        let call_args_len = (air_args.len() + 1) as u32;
+
+        let air_ref = air.add_inst(AirInst {
+            data: AirInstData::Call {
+                name: full_name_sym,
+                args_start: call_args_start,
+                args_len: call_args_len,
+            },
+            ty: return_type,
+            span,
+        });
+        Ok(AnalysisResult::new(air_ref, return_type))
+    }
+}
+
+/// Get the storage location for a receiver expression.
+fn get_receiver_storage_ctx(
+    ctx: &SemaContext<'_>,
+    receiver: InstRef,
+    span: Span,
+    analysis_ctx: &AnalysisContext,
+) -> CompileResult<StringReceiverStorage> {
+    let inst = ctx.rir.get(receiver);
+    match &inst.data {
+        InstData::VarRef { name } => {
+            // Check if it's a parameter
+            if let Some(param_info) = analysis_ctx.params.get(name) {
+                // Check parameter mode
+                match param_info.mode {
+                    RirParamMode::Inout => {
+                        return Ok(StringReceiverStorage::Param {
+                            abi_slot: param_info.abi_slot,
+                        });
+                    }
+                    RirParamMode::Borrow => {
+                        let name_str = ctx.interner.resolve(name);
+                        return Err(CompileError::new(
+                            ErrorKind::MutateBorrowedValue {
+                                variable: name_str.to_string(),
+                            },
+                            span,
+                        ));
+                    }
+                    RirParamMode::Normal => {
+                        let name_str = ctx.interner.resolve(name);
+                        return Err(CompileError::new(
+                            ErrorKind::AssignToImmutable(name_str.to_string()),
+                            span,
+                        ));
+                    }
+                }
+            }
+            // Check locals
+            if let Some(local) = analysis_ctx.locals.get(name) {
+                let name_str = ctx.interner.resolve(name);
+                if !local.is_mut {
+                    return Err(CompileError::new(
+                        ErrorKind::AssignToImmutable(name_str.to_string()),
+                        span,
+                    ));
+                }
+                return Ok(StringReceiverStorage::Local { slot: local.slot });
+            }
+            let name_str = ctx.interner.resolve(name);
+            Err(CompileError::new(
+                ErrorKind::UndefinedVariable(name_str.to_string()),
+                span,
+            ))
+        }
+        InstData::ParamRef { name, .. } => {
+            if let Some(param_info) = analysis_ctx.params.get(name) {
+                Ok(StringReceiverStorage::Param {
+                    abi_slot: param_info.abi_slot,
+                })
+            } else {
+                let name_str = ctx.interner.resolve(name);
+                Err(CompileError::new(
+                    ErrorKind::UndefinedVariable(name_str.to_string()),
+                    span,
+                ))
+            }
+        }
+        _ => Err(CompileError::new(ErrorKind::InvalidAssignmentTarget, span)),
+    }
+}
+
+/// Resolve a builtin return type to a concrete Type.
+fn resolve_builtin_return_type_ctx(
+    ctx: &SemaContext<'_>,
+    return_type: BuiltinReturnType,
+    self_struct_id: StructId,
+) -> Type {
+    match return_type {
+        BuiltinReturnType::Unit => Type::Unit,
+        BuiltinReturnType::U64 => Type::U64,
+        BuiltinReturnType::U8 => Type::U8,
+        BuiltinReturnType::Bool => Type::Bool,
+        BuiltinReturnType::SelfType => ctx.builtin_air_type(self_struct_id),
+    }
+}
+
+/// Analyze an associated function call using the shared context.
+fn analyze_assoc_fn_call_ctx(
+    ctx: &SemaContext<'_>,
+    air: &mut Air,
+    type_name: Spur,
+    function: Spur,
+    args_start: u32,
+    args_len: u32,
+    span: Span,
+    analysis_ctx: &mut AnalysisContext,
+) -> CompileResult<AnalysisResult> {
+    // Check if this is a builtin type with builtin associated functions
+    if let Some(struct_id) = ctx.get_struct(type_name) {
+        if let Some(builtin_def) = ctx.get_builtin_type_def(struct_id) {
+            let fn_name = ctx.interner.resolve(&function);
+            if let Some(assoc_fn) = builtin_def.find_associated_fn(fn_name) {
+                // Handle builtin associated function
+                return analyze_builtin_assoc_fn_ctx(
+                    ctx,
+                    air,
+                    struct_id,
+                    assoc_fn,
+                    args_start,
+                    args_len,
+                    span,
+                    analysis_ctx,
+                );
+            }
+        }
+    }
+
+    // Look up user-defined associated function
+    let method_info = ctx.get_method(type_name, function).ok_or_compile_error(
+        ErrorKind::UndefinedMethod {
+            type_name: ctx.interner.resolve(&type_name).to_string(),
+            method_name: ctx.interner.resolve(&function).to_string(),
+        },
+        span,
+    )?;
+
+    // Analyze arguments
+    let args = ctx.rir.get_call_args(args_start, args_len);
+    let air_args = analyze_call_args_ctx(ctx, air, &args, analysis_ctx)?;
+
+    // Create the full name
+    let type_name_str = ctx.interner.resolve(&type_name);
+    let fn_name_str = ctx.interner.resolve(&function);
+    let full_name = format!("{}::{}", type_name_str, fn_name_str);
+    let full_name_sym = ctx.interner.get_or_intern(&full_name);
+
+    let return_type = method_info.return_type;
+
+    // Encode call args
+    let mut extra_data = Vec::with_capacity(air_args.len() * 2);
+    for arg in &air_args {
+        extra_data.push(arg.value.as_u32());
+        extra_data.push(arg.mode.as_u32());
+    }
+    let call_args_start = air.add_extra(&extra_data);
+    let call_args_len = air_args.len() as u32;
+
+    let air_ref = air.add_inst(AirInst {
+        data: AirInstData::Call {
+            name: full_name_sym,
+            args_start: call_args_start,
+            args_len: call_args_len,
+        },
+        ty: return_type,
+        span,
+    });
+    Ok(AnalysisResult::new(air_ref, return_type))
+}
+
+/// Analyze a builtin associated function call.
+fn analyze_builtin_assoc_fn_ctx(
+    ctx: &SemaContext<'_>,
+    air: &mut Air,
+    struct_id: StructId,
+    assoc_fn: &'static rue_builtins::BuiltinAssociatedFn,
+    args_start: u32,
+    args_len: u32,
+    span: Span,
+    analysis_ctx: &mut AnalysisContext,
+) -> CompileResult<AnalysisResult> {
+    let args = ctx.rir.get_call_args(args_start, args_len);
+
+    // Check argument count
+    if args.len() != assoc_fn.params.len() {
+        return Err(CompileError::new(
+            ErrorKind::WrongArgumentCount {
+                expected: assoc_fn.params.len(),
+                found: args.len(),
+            },
+            span,
+        ));
+    }
+
+    // Analyze arguments
+    let air_args = analyze_call_args_ctx(ctx, air, &args, analysis_ctx)?;
+
+    // Resolve return type
+    let return_type = resolve_builtin_return_type_ctx(ctx, assoc_fn.return_ty, struct_id);
+
+    // Build the call
+    let full_name_sym = ctx.interner.get_or_intern(assoc_fn.runtime_fn);
+
+    let mut extra_data = Vec::with_capacity(air_args.len() * 2);
+    for arg in &air_args {
+        extra_data.push(arg.value.as_u32());
+        extra_data.push(arg.mode.as_u32());
+    }
+    let call_args_start = air.add_extra(&extra_data);
+    let call_args_len = air_args.len() as u32;
+
+    let air_ref = air.add_inst(AirInst {
+        data: AirInstData::Call {
+            name: full_name_sym,
+            args_start: call_args_start,
+            args_len: call_args_len,
+        },
+        ty: return_type,
+        span,
+    });
+    Ok(AnalysisResult::new(air_ref, return_type))
+}
+
+/// Analyze an intrinsic call using the shared context.
+fn analyze_intrinsic_ctx(
+    ctx: &SemaContext<'_>,
+    air: &mut Air,
+    inst_ref: InstRef,
+    name: Spur,
+    args_start: u32,
+    args_len: u32,
+    span: Span,
+    analysis_ctx: &mut AnalysisContext,
+) -> CompileResult<AnalysisResult> {
+    // Intrinsic arguments are stored as plain InstRefs
+    let arg_refs = ctx.rir.get_inst_refs(args_start, args_len);
+    let args: Vec<RirCallArg> = arg_refs
+        .into_iter()
+        .map(|value| RirCallArg {
+            value,
+            mode: RirArgMode::Normal,
+        })
+        .collect();
+    let intrinsic_name = ctx.interner.resolve(&name);
+
+    match intrinsic_name {
+        "dbg" => {
+            if args.len() != 1 {
+                return Err(CompileError::new(
+                    ErrorKind::IntrinsicWrongArgCount {
+                        name: "dbg".to_string(),
+                        expected: 1,
+                        found: args.len(),
+                    },
+                    span,
+                ));
+            }
+
+            let arg_result = analyze_inst_with_context(ctx, air, args[0].value, analysis_ctx)?;
+            let arg_type = arg_result.ty;
+
+            // Validate type
+            if !arg_type.is_integer()
+                && arg_type != Type::Bool
+                && !arg_type.is_struct()
+                && !arg_type.is_enum()
+                && !arg_type.is_array()
+                && !arg_type.is_error()
+                && !arg_type.is_never()
+            {
+                return Err(CompileError::new(
+                    ErrorKind::IntrinsicTypeMismatch(Box::new(IntrinsicTypeMismatchError {
+                        name: "dbg".to_string(),
+                        expected: "integer, bool, struct, enum, or array".to_string(),
+                        found: arg_type.name().to_string(),
+                    })),
+                    span,
+                ));
+            }
+
+            let air_args_start = air.add_extra(&[arg_result.air_ref.as_u32()]);
+            let air_ref = air.add_inst(AirInst {
+                data: AirInstData::Intrinsic {
+                    name: ctx.interner.get_or_intern("dbg"),
+                    args_start: air_args_start,
+                    args_len: 1,
+                },
+                ty: Type::Unit,
+                span,
+            });
+            Ok(AnalysisResult::new(air_ref, Type::Unit))
+        }
+        "cast" => {
+            if args.len() != 1 {
+                return Err(CompileError::new(
+                    ErrorKind::IntrinsicWrongArgCount {
+                        name: "cast".to_string(),
+                        expected: 1,
+                        found: args.len(),
+                    },
+                    span,
+                ));
+            }
+
+            // Get target type from HM inference
+            let target_type =
+                get_resolved_type_ctx(analysis_ctx, inst_ref, span, "@cast intrinsic")?;
+
+            let arg_result = analyze_inst_with_context(ctx, air, args[0].value, analysis_ctx)?;
+            let source_type = arg_result.ty;
+
+            // Validate types
+            if !source_type.is_integer() && !source_type.is_error() && !source_type.is_never() {
+                return Err(CompileError::new(
+                    ErrorKind::IntrinsicTypeMismatch(Box::new(IntrinsicTypeMismatchError {
+                        name: "cast".to_string(),
+                        expected: "integer type".to_string(),
+                        found: source_type.name().to_string(),
+                    })),
+                    span,
+                ));
+            }
+            if !target_type.is_integer() && !target_type.is_error() && !target_type.is_never() {
+                return Err(CompileError::new(
+                    ErrorKind::IntrinsicTypeMismatch(Box::new(IntrinsicTypeMismatchError {
+                        name: "cast".to_string(),
+                        expected: "integer target type".to_string(),
+                        found: target_type.name().to_string(),
+                    })),
+                    span,
+                ));
+            }
+
+            // Skip cast if types are the same
+            if source_type == target_type || source_type.is_error() || source_type.is_never() {
+                return Ok(arg_result);
+            }
+
+            let air_ref = air.add_inst(AirInst {
+                data: AirInstData::IntCast {
+                    value: arg_result.air_ref,
+                    from_ty: source_type,
+                },
+                ty: target_type,
+                span,
+            });
+            Ok(AnalysisResult::new(air_ref, target_type))
+        }
+        "panic" => {
+            // @panic takes an optional string message
+            if args.len() > 1 {
+                return Err(CompileError::new(
+                    ErrorKind::IntrinsicWrongArgCount {
+                        name: "panic".to_string(),
+                        expected: 1,
+                        found: args.len(),
+                    },
+                    span,
+                ));
+            }
+
+            if args.is_empty() {
+                // Panic with no message
+                let air_ref = air.add_inst(AirInst {
+                    data: AirInstData::UnitConst,
+                    ty: Type::Never,
+                    span,
+                });
+                return Ok(AnalysisResult::new(air_ref, Type::Never));
+            }
+
+            // Analyze the message argument
+            let arg_result = analyze_inst_with_context(ctx, air, args[0].value, analysis_ctx)?;
+
+            let air_args_start = air.add_extra(&[arg_result.air_ref.as_u32()]);
+            let air_ref = air.add_inst(AirInst {
+                data: AirInstData::Intrinsic {
+                    name: ctx.interner.get_or_intern("panic"),
+                    args_start: air_args_start,
+                    args_len: 1,
+                },
+                ty: Type::Never,
+                span,
+            });
+            Ok(AnalysisResult::new(air_ref, Type::Never))
+        }
+        "assert" => {
+            if args.len() != 1 {
+                return Err(CompileError::new(
+                    ErrorKind::IntrinsicWrongArgCount {
+                        name: "assert".to_string(),
+                        expected: 1,
+                        found: args.len(),
+                    },
+                    span,
+                ));
+            }
+
+            let arg_result = analyze_inst_with_context(ctx, air, args[0].value, analysis_ctx)?;
+
+            let air_args_start = air.add_extra(&[arg_result.air_ref.as_u32()]);
+            let air_ref = air.add_inst(AirInst {
+                data: AirInstData::Intrinsic {
+                    name: ctx.interner.get_or_intern("assert"),
+                    args_start: air_args_start,
+                    args_len: 1,
+                },
+                ty: Type::Unit,
+                span,
+            });
+            Ok(AnalysisResult::new(air_ref, Type::Unit))
+        }
+        _ => Err(CompileError::new(
+            ErrorKind::UnknownIntrinsic(intrinsic_name.to_string()),
+            span,
+        )),
+    }
+}
+
+/// Analyze a type intrinsic (@size_of, @align_of) using the shared context.
+fn analyze_type_intrinsic_ctx(
+    ctx: &SemaContext<'_>,
+    air: &mut Air,
+    name: Spur,
+    type_arg: Spur,
+    span: Span,
+) -> CompileResult<AnalysisResult> {
+    let intrinsic_name = ctx.interner.resolve(&name);
+    let ty = resolve_type_from_ctx(ctx, type_arg, span)?;
+
+    // Calculate the value based on which intrinsic
+    let value: u64 = match intrinsic_name {
+        "size_of" => {
+            // Calculate size in bytes (slot count * 8)
+            let slot_count = ctx.abi_slot_count(ty);
+            (slot_count * 8) as u64
+        }
+        "align_of" => {
+            // Zero-sized types have 1-byte alignment, others have 8-byte
+            let slot_count = ctx.abi_slot_count(ty);
+            if slot_count == 0 { 1u64 } else { 8u64 }
+        }
+        _ => {
+            return Err(CompileError::new(
+                ErrorKind::UnknownIntrinsic(intrinsic_name.to_string()),
+                span,
+            ));
+        }
+    };
+
+    let air_ref = air.add_inst(AirInst {
+        data: AirInstData::Const(value),
+        ty: Type::I32,
+        span,
+    });
+    Ok(AnalysisResult::new(air_ref, Type::I32))
 }
 
 impl<'a> Sema<'a> {
