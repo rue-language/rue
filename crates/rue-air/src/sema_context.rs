@@ -323,6 +323,7 @@ impl<'a> SemaContext<'a> {
                     array_def.length
                 )
             }
+            Type::ComptimeType => "type".to_string(),
         }
     }
 
@@ -342,8 +343,8 @@ impl<'a> SemaContext<'a> {
             | Type::Unit => true,
             // Enum types are Copy (they're small discriminant values)
             Type::Enum(_) => true,
-            // Never and Error are Copy for convenience
-            Type::Never | Type::Error => true,
+            // Never, Error, and ComptimeType are Copy for convenience
+            Type::Never | Type::Error | Type::ComptimeType => true,
             // Struct types: check if marked with @copy
             Type::Struct(struct_id) => {
                 let struct_def = &self.struct_defs[struct_id.0 as usize];
@@ -370,7 +371,8 @@ impl<'a> SemaContext<'a> {
             | Type::U64
             | Type::Bool
             | Type::Error => 1,
-            Type::Unit | Type::Never => 0,
+            // Zero-sized types (including comptime-only)
+            Type::Unit | Type::Never | Type::ComptimeType => 0,
             Type::Enum(_) => 1,
             Type::Struct(struct_id) => {
                 let struct_def = &self.struct_defs[struct_id.0 as usize];

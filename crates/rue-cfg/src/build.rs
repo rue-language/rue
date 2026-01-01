@@ -185,6 +185,26 @@ impl<'a> CfgBuilder<'a> {
                 }
             }
 
+            AirInstData::TypeConst(_) => {
+                // TypeConst instructions are compile-time-only and should be erased
+                // during specialization. If we reach here, it means a TypeConst
+                // was not properly substituted - this is a compiler bug.
+                panic!(
+                    "TypeConst instruction reached CFG building - this is a compiler bug. \
+                     TypeConst should only appear as arguments to generic functions and \
+                     be erased during specialization."
+                );
+            }
+
+            AirInstData::CallGeneric { .. } => {
+                // CallGeneric instructions must be specialized (rewritten to Call)
+                // before CFG building. If we reach here, specialization didn't run.
+                panic!(
+                    "CallGeneric instruction reached CFG building - this is a compiler bug. \
+                     CallGeneric must be specialized to regular Call before codegen."
+                );
+            }
+
             AirInstData::Param { index } => {
                 let value = self.emit(CfgInstData::Param { index: *index }, ty, span);
                 self.cache(air_ref, value);
@@ -1700,6 +1720,7 @@ impl<'a> CfgBuilder<'a> {
     fn type_needs_drop(&self, ty: Type) -> bool {
         match ty {
             // Primitive types are trivially droppable
+            // ComptimeType is a comptime-only type and has no runtime representation
             Type::I8
             | Type::I16
             | Type::I32
@@ -1711,7 +1732,8 @@ impl<'a> CfgBuilder<'a> {
             | Type::Bool
             | Type::Unit
             | Type::Never
-            | Type::Error => false,
+            | Type::Error
+            | Type::ComptimeType => false,
 
             // Enum types are trivially droppable (just discriminant values)
             Type::Enum(_) => false,

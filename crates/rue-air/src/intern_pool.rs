@@ -539,6 +539,8 @@ impl TypeInternPool {
             // to find the interned type. This conversion is not straightforward
             // without additional context. Return None to indicate we can't convert.
             Type::Struct(_) | Type::Enum(_) | Type::Array(_) => None,
+            // ComptimeType is a comptime-only type, cannot be interned for runtime
+            Type::ComptimeType => None,
         }
     }
 

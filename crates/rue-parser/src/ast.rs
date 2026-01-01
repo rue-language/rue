@@ -211,6 +211,8 @@ pub enum ParamMode {
     Inout,
     /// Borrow parameter - immutable borrow without ownership transfer
     Borrow,
+    /// Comptime parameter - evaluated at compile time (used for type parameters)
+    Comptime,
 }
 
 impl Default for ParamMode {
@@ -346,6 +348,8 @@ pub enum Expr {
     SelfExpr(SelfExpr),
     /// Comptime block expression (e.g., `comptime { 1 + 2 }`)
     Comptime(ComptimeBlockExpr),
+    /// Type literal expression (e.g., `i32` used as a value in generic function calls)
+    TypeLit(TypeLitExpr),
 }
 
 /// An integer literal.
@@ -784,6 +788,16 @@ pub struct ComptimeBlockExpr {
     pub span: Span,
 }
 
+/// A type literal expression (e.g., `i32` used as a value).
+/// This represents a type used as a value in expression context, typically
+/// as an argument to a generic function with comptime parameters.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TypeLitExpr {
+    /// The type being used as a value
+    pub type_expr: TypeExpr,
+    pub span: Span,
+}
+
 impl Expr {
     /// Get the span of this expression.
     pub fn span(&self) -> Span {
@@ -815,6 +829,7 @@ impl Expr {
             Expr::AssocFnCall(assoc_fn_call) => assoc_fn_call.span,
             Expr::SelfExpr(self_expr) => self_expr.span,
             Expr::Comptime(comptime_expr) => comptime_expr.span,
+            Expr::TypeLit(type_lit) => type_lit.span,
         }
     }
 }
@@ -923,6 +938,7 @@ fn fmt_param(f: &mut fmt::Formatter<'_>, param: &Param) -> fmt::Result {
     match param.mode {
         ParamMode::Inout => write!(f, "inout ")?,
         ParamMode::Borrow => write!(f, "borrow ")?,
+        ParamMode::Comptime => write!(f, "comptime ")?,
         ParamMode::Normal => {}
     }
     write!(f, "sym:{}: {}", param.name.name.into_usize(), param.ty)
@@ -1134,6 +1150,9 @@ fn fmt_expr(f: &mut fmt::Formatter<'_>, expr: &Expr, level: usize) -> fmt::Resul
         Expr::Comptime(comptime) => {
             writeln!(f, "Comptime")?;
             fmt_expr(f, &comptime.expr, level + 1)
+        }
+        Expr::TypeLit(type_lit) => {
+            writeln!(f, "TypeLit({})", type_lit.type_expr)
         }
     }
 }

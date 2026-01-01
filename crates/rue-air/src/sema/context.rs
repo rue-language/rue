@@ -355,6 +355,12 @@ pub(crate) enum ConstValue {
     Integer(i64),
     /// Boolean value
     Bool(bool),
+    /// Type value - stores a concrete type for type parameters.
+    /// This is used when a `comptime T: type` parameter is instantiated
+    /// with a specific type like `i32` or `bool`.
+    Type(Type),
+    /// Unit value - the value of `()`.
+    Unit,
 }
 
 impl ConstValue {
@@ -362,7 +368,7 @@ impl ConstValue {
     pub fn as_integer(self) -> Option<i64> {
         match self {
             ConstValue::Integer(n) => Some(n),
-            ConstValue::Bool(_) => None,
+            _ => None,
         }
     }
 
@@ -370,7 +376,30 @@ impl ConstValue {
     pub fn as_bool(self) -> Option<bool> {
         match self {
             ConstValue::Bool(b) => Some(b),
-            ConstValue::Integer(_) => None,
+            _ => None,
+        }
+    }
+
+    /// Try to extract a type value.
+    pub fn as_type(self) -> Option<Type> {
+        match self {
+            ConstValue::Type(ty) => Some(ty),
+            _ => None,
+        }
+    }
+
+    /// Check if this is a unit value.
+    pub fn is_unit(self) -> bool {
+        matches!(self, ConstValue::Unit)
+    }
+
+    /// Get the type of this constant value.
+    pub fn get_type(&self) -> Type {
+        match self {
+            ConstValue::Integer(_) => Type::I64, // Default to i64 for comptime integers
+            ConstValue::Bool(_) => Type::Bool,
+            ConstValue::Type(_) => Type::ComptimeType,
+            ConstValue::Unit => Type::Unit,
         }
     }
 }
@@ -732,6 +761,41 @@ mod tests {
         assert_eq!(ConstValue::Bool(true), ConstValue::Bool(true));
         assert_ne!(ConstValue::Bool(true), ConstValue::Bool(false));
         assert_ne!(ConstValue::Integer(1), ConstValue::Bool(true));
+    }
+
+    #[test]
+    fn const_value_as_type() {
+        let cv = ConstValue::Type(Type::I32);
+        assert_eq!(cv.as_type(), Some(Type::I32));
+        assert_eq!(cv.as_integer(), None);
+        assert_eq!(cv.as_bool(), None);
+
+        let cv2 = ConstValue::Type(Type::Bool);
+        assert_eq!(cv2.as_type(), Some(Type::Bool));
+    }
+
+    #[test]
+    fn const_value_unit() {
+        let cv = ConstValue::Unit;
+        assert!(cv.is_unit());
+        assert_eq!(cv.as_integer(), None);
+        assert_eq!(cv.as_bool(), None);
+        assert_eq!(cv.as_type(), None);
+    }
+
+    #[test]
+    fn const_value_get_type() {
+        assert_eq!(ConstValue::Integer(42).get_type(), Type::I64);
+        assert_eq!(ConstValue::Bool(true).get_type(), Type::Bool);
+        assert_eq!(ConstValue::Type(Type::I32).get_type(), Type::ComptimeType);
+        assert_eq!(ConstValue::Unit.get_type(), Type::Unit);
+    }
+
+    #[test]
+    fn const_value_type_equality() {
+        assert_eq!(ConstValue::Type(Type::I32), ConstValue::Type(Type::I32));
+        assert_ne!(ConstValue::Type(Type::I32), ConstValue::Type(Type::I64));
+        assert_ne!(ConstValue::Type(Type::I32), ConstValue::Integer(32));
     }
 
     // =========================================================================

@@ -50,6 +50,10 @@ pub enum Type {
     /// The never type - represents computations that don't return (e.g., break, continue).
     /// Can coerce to any other type.
     Never,
+    /// The comptime type - the type of types themselves.
+    /// Values of this type are types (e.g., `i32`, `bool`, `MyStruct`).
+    /// This is a comptime-only type; it cannot exist at runtime.
+    ComptimeType,
 }
 
 /// Definition of a struct type.
@@ -175,6 +179,7 @@ impl Type {
             Type::Array(_) => "<array>",
             Type::Error => "<error>",
             Type::Never => "!",
+            Type::ComptimeType => "type",
         }
     }
 
@@ -201,6 +206,11 @@ impl Type {
     /// Check if this is the never type.
     pub fn is_never(&self) -> bool {
         matches!(self, Type::Never)
+    }
+
+    /// Check if this is the comptime type (the type of types).
+    pub fn is_comptime_type(&self) -> bool {
+        matches!(self, Type::ComptimeType)
     }
 
     /// Check if this is a struct type.
@@ -278,8 +288,9 @@ impl Type {
             | Type::Unit => true,
             // Enum types are Copy (they're small discriminant values)
             Type::Enum(_) => true,
-            // Never and Error are Copy for convenience
-            Type::Never | Type::Error => true,
+            // Never, Error, and ComptimeType are Copy for convenience
+            // (ComptimeType only exists at comptime anyway)
+            Type::Never | Type::Error | Type::ComptimeType => true,
             // Struct types are move types by default (may be @copy, but need StructDef to check)
             Type::Struct(_) => false,
             // Arrays may be Copy if element type is Copy (need ArrayTypeDef to check)
@@ -342,6 +353,65 @@ impl Type {
             Type::I32 => value <= (i32::MIN as i64).unsigned_abs(),
             Type::I64 => value <= (i64::MIN).unsigned_abs(),
             _ => false,
+        }
+    }
+
+    /// Encode this type as a u32 for storage in extra arrays.
+    ///
+    /// This uses a tag-value encoding:
+    /// - Primitive types (I8..ComptimeType): tag = discriminant, no additional data
+    /// - Struct(id): tag = 100, followed by id
+    /// - Enum(id): tag = 101, followed by id
+    /// - Array(id): tag = 102, followed by id
+    ///
+    /// Note: For compound types, caller must encode additional data separately.
+    /// This method returns the tag only.
+    pub fn as_u32(&self) -> u32 {
+        match self {
+            Type::I8 => 0,
+            Type::I16 => 1,
+            Type::I32 => 2,
+            Type::I64 => 3,
+            Type::U8 => 4,
+            Type::U16 => 5,
+            Type::U32 => 6,
+            Type::U64 => 7,
+            Type::Bool => 8,
+            Type::Unit => 9,
+            Type::Error => 10,
+            Type::Never => 11,
+            Type::ComptimeType => 12,
+            // Compound types need special handling - store ID in high bits
+            Type::Struct(id) => 100 | ((id.0 as u32) << 8),
+            Type::Enum(id) => 101 | ((id.0 as u32) << 8),
+            Type::Array(id) => 102 | ((id.0 as u32) << 8),
+        }
+    }
+
+    /// Decode a type from a u32 value.
+    ///
+    /// This reverses the encoding done by `as_u32`.
+    pub fn from_u32(v: u32) -> Self {
+        let tag = v & 0xFF;
+        let id = (v >> 8) as u32;
+        match tag {
+            0 => Type::I8,
+            1 => Type::I16,
+            2 => Type::I32,
+            3 => Type::I64,
+            4 => Type::U8,
+            5 => Type::U16,
+            6 => Type::U32,
+            7 => Type::U64,
+            8 => Type::Bool,
+            9 => Type::Unit,
+            10 => Type::Error,
+            11 => Type::Never,
+            12 => Type::ComptimeType,
+            100 => Type::Struct(StructId(id)),
+            101 => Type::Enum(EnumId(id)),
+            102 => Type::Array(ArrayTypeId(id)),
+            _ => panic!("invalid Type encoding: {}", v),
         }
     }
 }
@@ -944,5 +1014,50 @@ mod tests {
             variants: (0..257).map(|i| format!("V{}", i)).collect(),
         };
         assert_eq!(medium.discriminant_type(), Type::U16);
+    }
+
+    // ========== Type::ComptimeType tests ==========
+
+    #[test]
+    fn test_comptime_type_name() {
+        assert_eq!(Type::ComptimeType.name(), "type");
+    }
+
+    #[test]
+    fn test_comptime_type_is_copy() {
+        assert!(Type::ComptimeType.is_copy());
+    }
+
+    #[test]
+    fn test_comptime_type_is_comptime_type() {
+        assert!(Type::ComptimeType.is_comptime_type());
+        assert!(!Type::I32.is_comptime_type());
+        assert!(!Type::Bool.is_comptime_type());
+    }
+
+    #[test]
+    fn test_comptime_type_not_integer() {
+        assert!(!Type::ComptimeType.is_integer());
+    }
+
+    #[test]
+    fn test_comptime_type_not_signed() {
+        assert!(!Type::ComptimeType.is_signed());
+    }
+
+    #[test]
+    fn test_comptime_type_not_64_bit() {
+        assert!(!Type::ComptimeType.is_64_bit());
+    }
+
+    #[test]
+    fn test_comptime_type_can_coerce_to_itself() {
+        assert!(Type::ComptimeType.can_coerce_to(&Type::ComptimeType));
+    }
+
+    #[test]
+    fn test_comptime_type_cannot_coerce_to_runtime_types() {
+        assert!(!Type::ComptimeType.can_coerce_to(&Type::I32));
+        assert!(!Type::ComptimeType.can_coerce_to(&Type::Bool));
     }
 }

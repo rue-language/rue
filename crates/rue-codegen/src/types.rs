@@ -226,6 +226,8 @@ fn type_name(ty: Type, struct_defs: &[StructDef], array_types: &[ArrayTypeDef]) 
         Type::Unit => "unit".to_string(),
         Type::Never => "never".to_string(),
         Type::Error => "error".to_string(),
+        // ComptimeType only exists at compile time, no runtime representation
+        Type::ComptimeType => "comptime_type".to_string(),
         Type::Enum(enum_id) => format!("enum{}", enum_id.0),
         // Struct types include builtin types like String
         Type::Struct(struct_id) => struct_defs[struct_id.0 as usize].name.clone(),

@@ -380,6 +380,20 @@ impl Air {
             }
         }
     }
+
+    /// Get a reference to all instructions.
+    #[inline]
+    pub fn instructions(&self) -> &[AirInst] {
+        &self.instructions
+    }
+
+    /// Rewrite the data of an instruction at a given index.
+    ///
+    /// This is used by the specialization pass to rewrite `CallGeneric` to `Call`.
+    /// The type and span are preserved.
+    pub fn rewrite_inst_data(&mut self, index: usize, new_data: AirInstData) {
+        self.instructions[index].data = new_data;
+    }
 }
 
 /// A single AIR instruction.
@@ -404,6 +418,12 @@ pub enum AirInstData {
 
     /// Unit constant
     UnitConst,
+
+    /// Type constant - a compile-time type value.
+    /// This is used for comptime type parameters (e.g., passing `i32` to `fn foo(comptime T: type)`).
+    /// The contained Type is the type being passed as a value.
+    /// This instruction has type `Type::ComptimeType` and is erased during specialization.
+    TypeConst(crate::Type),
 
     // Binary arithmetic operations
     /// Addition
@@ -529,6 +549,27 @@ pub enum AirInstData {
         /// Start index into extra array for arguments
         args_start: u32,
         /// Number of arguments
+        args_len: u32,
+    },
+
+    /// Generic function call - requires specialization before codegen.
+    ///
+    /// This is emitted when calling a function with `comptime T: type` parameters.
+    /// During a post-analysis specialization pass, this is rewritten to a regular
+    /// `Call` to a specialized version of the function (e.g., `identity__i32`).
+    ///
+    /// The type_args are encoded in the extra array as raw Type discriminant values.
+    /// The runtime args (non-comptime) are also in the extra array, after type_args.
+    CallGeneric {
+        /// Base function name (interned symbol)
+        name: Spur,
+        /// Start index into extra array for type arguments (raw Type values)
+        type_args_start: u32,
+        /// Number of type arguments
+        type_args_len: u32,
+        /// Start index into extra array for runtime arguments
+        args_start: u32,
+        /// Number of runtime arguments
         args_len: u32,
     },
 
@@ -722,6 +763,7 @@ impl fmt::Display for Air {
                 AirInstData::BoolConst(v) => writeln!(f, "const {}", v)?,
                 AirInstData::StringConst(idx) => writeln!(f, "string_const @{}", idx)?,
                 AirInstData::UnitConst => writeln!(f, "const ()")?,
+                AirInstData::TypeConst(ty) => writeln!(f, "type_const {}", ty.name())?,
                 AirInstData::Add(lhs, rhs) => writeln!(f, "add {}, {}", lhs, rhs)?,
                 AirInstData::Sub(lhs, rhs) => writeln!(f, "sub {}, {}", lhs, rhs)?,
                 AirInstData::Mul(lhs, rhs) => writeln!(f, "mul {}, {}", lhs, rhs)?,
@@ -801,6 +843,32 @@ impl fmt::Display for Air {
                     args_len,
                 } => {
                     write!(f, "call @{}(", name.into_usize())?;
+                    for (i, arg) in self.get_call_args(*args_start, *args_len).enumerate() {
+                        if i > 0 {
+                            write!(f, ", ")?;
+                        }
+                        write!(f, "{}", arg)?;
+                    }
+                    writeln!(f, ")")?;
+                }
+                AirInstData::CallGeneric {
+                    name,
+                    type_args_start,
+                    type_args_len,
+                    args_start,
+                    args_len,
+                } => {
+                    write!(f, "call_generic @{}<", name.into_usize())?;
+                    // Show type arguments
+                    for i in 0..*type_args_len {
+                        if i > 0 {
+                            write!(f, ", ")?;
+                        }
+                        let type_val = self.extra[(*type_args_start + i) as usize];
+                        write!(f, "type#{}", type_val)?;
+                    }
+                    write!(f, ">(")?;
+                    // Show runtime arguments
                     for (i, arg) in self.get_call_args(*args_start, *args_len).enumerate() {
                         if i > 0 {
                             write!(f, ", ")?;

@@ -16,7 +16,7 @@ use rue_builtins::is_reserved_type_name;
 use rue_error::{
     CompileError, CompileResult, CopyStructNonCopyFieldError, ErrorKind, PreviewFeature,
 };
-use rue_rir::{InstData, RirDirective, RirParamMode};
+use rue_rir::{InstData, InstRef, RirDirective, RirParamMode};
 use rue_span::Span;
 
 use super::{FunctionInfo, InferenceContext, MethodInfo, Sema};
@@ -98,6 +98,10 @@ impl<'a> Sema<'a> {
                             .map(|t| self.type_to_infer_type(*t))
                             .collect(),
                         return_type: self.type_to_infer_type(info.return_type),
+                        is_generic: info.is_generic,
+                        param_modes: info.param_modes.clone(),
+                        param_names: info.param_names.clone(),
+                        return_type_sym: info.return_type_sym,
                     },
                 )
             })
@@ -449,6 +453,7 @@ impl<'a> Sema<'a> {
                     params_start,
                     params_len,
                     return_type,
+                    body,
                     ..
                 } => {
                     // pub visibility requires preview feature
@@ -465,6 +470,7 @@ impl<'a> Sema<'a> {
                         *params_start,
                         *params_len,
                         *return_type,
+                        *body,
                         inst.span,
                     )?;
                 }
@@ -692,10 +698,10 @@ impl<'a> Sema<'a> {
         name: Spur,
         params_start: u32,
         params_len: u32,
-        return_type: Spur,
+        return_type_sym: Spur,
+        body: InstRef,
         span: Span,
     ) -> CompileResult<()> {
-        let ret_type = self.resolve_type(return_type, span)?;
         let params = self.rir.get_params(params_start, params_len);
 
         // Check if any parameter is comptime and gate behind preview feature
@@ -704,13 +710,46 @@ impl<'a> Sema<'a> {
             self.require_preview(PreviewFeature::Comptime, "comptime parameters", span)?;
         }
 
-        let param_names: Vec<_> = params.iter().map(|p| p.name).collect();
+        let param_names: Vec<Spur> = params.iter().map(|p| p.name).collect();
+        let param_modes: Vec<RirParamMode> = params.iter().map(|p| p.mode).collect();
+
+        // Check if this function has any comptime type parameters
+        let is_generic = params.iter().any(|p| p.mode == RirParamMode::Comptime);
+
+        // Collect type parameter names (comptime parameters whose type is `type`)
+        let type_param_names: Vec<Spur> = params
+            .iter()
+            .filter(|p| p.mode == RirParamMode::Comptime)
+            .map(|p| p.name)
+            .collect();
+
+        // For generic functions, we defer type resolution of type parameters until specialization.
+        // We use Type::ComptimeType as a placeholder for comptime T: type parameters.
         let param_types: Vec<Type> = params
             .iter()
-            .map(|p| self.resolve_type(p.ty, span))
+            .map(|p| {
+                if p.mode == RirParamMode::Comptime {
+                    // For comptime type parameters, the type is `type` (represented by ComptimeType)
+                    Ok(Type::ComptimeType)
+                } else if type_param_names.contains(&p.ty) {
+                    // This parameter's type is a type parameter (e.g., `x: T` where T is comptime)
+                    // Use ComptimeType as a placeholder - actual type determined at specialization
+                    Ok(Type::ComptimeType)
+                } else {
+                    self.resolve_type(p.ty, span)
+                }
+            })
             .collect::<CompileResult<Vec<_>>>()?;
-        let param_modes: Vec<RirParamMode> = params.iter().map(|p| p.mode).collect();
         let param_comptime: Vec<bool> = params.iter().map(|p| p.is_comptime).collect();
+
+        // For generic functions, we can't resolve the return type yet if it references
+        // a type parameter. For now, check if it matches any type parameter name.
+        let ret_type = if type_param_names.contains(&return_type_sym) {
+            // Return type is a type parameter - use placeholder
+            Type::ComptimeType
+        } else {
+            self.resolve_type(return_type_sym, span)?
+        };
 
         self.functions.insert(
             name,
@@ -720,6 +759,10 @@ impl<'a> Sema<'a> {
                 param_modes,
                 param_comptime,
                 return_type: ret_type,
+                return_type_sym,
+                body,
+                span,
+                is_generic,
             },
         );
         Ok(())

@@ -206,8 +206,8 @@ pub struct InferenceContext {
 /// Information about a function.
 #[derive(Debug, Clone)]
 pub struct FunctionInfo {
-    /// Parameter names (in order)
-    pub param_names: Vec<lasso::Spur>,
+    /// Parameter names (in order) - needed for generic function specialization
+    pub param_names: Vec<Spur>,
     /// Parameter types (in order)
     pub param_types: Vec<Type>,
     /// Parameter modes (in order)
@@ -216,6 +216,14 @@ pub struct FunctionInfo {
     pub param_comptime: Vec<bool>,
     /// Return type
     pub return_type: Type,
+    /// The return type symbol (before resolution) - needed for generic function specialization
+    pub return_type_sym: Spur,
+    /// The RIR instruction ref for the function body - needed for generic function specialization
+    pub body: rue_rir::InstRef,
+    /// Span of the function declaration
+    pub span: rue_span::Span,
+    /// Whether this function has any comptime type parameters
+    pub is_generic: bool,
 }
 
 /// Information about a method in an impl block.
@@ -484,6 +492,10 @@ impl<'a> Sema<'a> {
                             .map(|t| self.type_to_infer_type(*t))
                             .collect(),
                         return_type: self.type_to_infer_type(info.return_type),
+                        is_generic: info.is_generic,
+                        param_modes: info.param_modes.clone(),
+                        param_names: info.param_names.clone(),
+                        return_type_sym: info.return_type_sym,
                     },
                 )
             })

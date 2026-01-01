@@ -18,6 +18,7 @@ mod intern_pool;
 mod scope;
 mod sema;
 mod sema_context;
+pub mod specialize;
 mod type_context;
 mod types;
 

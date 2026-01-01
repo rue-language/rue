@@ -49,6 +49,8 @@ pub enum RirParamMode {
     Inout,
     /// Borrow parameter - immutable borrow without ownership transfer
     Borrow,
+    /// Comptime parameter - evaluated at compile time (used for type parameters)
+    Comptime,
 }
 
 /// A parameter in a function declaration.
@@ -447,6 +449,7 @@ impl Rir {
                 0 => RirParamMode::Normal,
                 1 => RirParamMode::Inout,
                 2 => RirParamMode::Borrow,
+                3 => RirParamMode::Comptime,
                 _ => RirParamMode::Normal, // Fallback
             };
             let is_comptime = chunk[3] != 0;
@@ -1089,6 +1092,9 @@ impl Rir {
             InstData::Comptime { expr } => InstData::Comptime {
                 expr: renumber(*expr),
             },
+            InstData::TypeConst { type_name } => InstData::TypeConst {
+                type_name: *type_name,
+            },
         };
 
         Inst {
@@ -1264,7 +1270,8 @@ impl Rir {
                 | InstData::IndexSet { .. }
                 | InstData::TypeIntrinsic { .. }
                 | InstData::DropFnDecl { .. }
-                | InstData::Comptime { .. } => {}
+                | InstData::Comptime { .. }
+                | InstData::TypeConst { .. } => {}
             }
         }
     }
@@ -1632,6 +1639,13 @@ pub enum InstData {
         /// The expression to evaluate at compile time
         expr: InstRef,
     },
+
+    /// Type constant: a type used as a value expression (e.g., `i32` in `identity(i32, 42)`)
+    /// The type_name is the symbol for the type (e.g., "i32", "bool").
+    TypeConst {
+        /// The type name symbol
+        type_name: Spur,
+    },
 }
 
 impl fmt::Display for InstRef {
@@ -1780,6 +1794,7 @@ impl<'a, 'b> RirPrinter<'a, 'b> {
                             let mode_prefix = match p.mode {
                                 RirParamMode::Inout => "inout ",
                                 RirParamMode::Borrow => "borrow ",
+                                RirParamMode::Comptime => "comptime ",
                                 RirParamMode::Normal => "",
                             };
                             format!(
@@ -2056,6 +2071,12 @@ impl<'a, 'b> RirPrinter<'a, 'b> {
                 // Comptime block
                 InstData::Comptime { expr } => {
                     writeln!(out, "comptime {{ {} }}", expr).unwrap();
+                }
+
+                // Type constant
+                InstData::TypeConst { type_name } => {
+                    let name = self.interner.resolve(type_name);
+                    writeln!(out, "type {}", name).unwrap();
                 }
             }
         }

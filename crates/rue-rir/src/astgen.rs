@@ -12,7 +12,7 @@ use rue_parser::ast::DropFn;
 use rue_parser::{
     ArgMode, AssignTarget, Ast, BinaryOp, CallArg, Directive, DirectiveArg, EnumDecl, Expr,
     Function, ImplBlock, IntrinsicArg, Item, LetPattern, Method, ParamMode, Pattern, Statement,
-    StructDecl, TypeExpr, UnaryOp, ast::Visibility,
+    StructDecl, TypeExpr, TypeLitExpr, UnaryOp, ast::Visibility,
 };
 
 use crate::inst::{
@@ -256,6 +256,7 @@ impl<'a> AstGen<'a> {
             ParamMode::Normal => RirParamMode::Normal,
             ParamMode::Inout => RirParamMode::Inout,
             ParamMode::Borrow => RirParamMode::Borrow,
+            ParamMode::Comptime => RirParamMode::Comptime,
         }
     }
 
@@ -647,6 +648,24 @@ impl<'a> AstGen<'a> {
                 self.rir.add_inst(Inst {
                     data: InstData::Comptime { expr: inner_expr },
                     span: comptime_block.span,
+                })
+            }
+            Expr::TypeLit(type_lit) => {
+                // Generate a type constant instruction for type-as-value expressions
+                // The type name is extracted from the TypeExpr
+                let type_name = match &type_lit.type_expr {
+                    TypeExpr::Named(ident) => ident.name,
+                    TypeExpr::Unit(_) => self.interner.get_or_intern_static("()"),
+                    TypeExpr::Never(_) => self.interner.get_or_intern_static("!"),
+                    TypeExpr::Array { .. } => {
+                        // Array types as values are not yet supported
+                        // For now, use a placeholder
+                        self.interner.get_or_intern_static("array")
+                    }
+                };
+                self.rir.add_inst(Inst {
+                    data: InstData::TypeConst { type_name },
+                    span: type_lit.span,
                 })
             }
         }

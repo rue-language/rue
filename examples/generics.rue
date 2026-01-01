@@ -1,0 +1,79 @@
+// Generic functions using comptime type parameters
+//
+// This example demonstrates Rue's generic function support through
+// compile-time type parameters. The compiler creates specialized
+// versions for each concrete type used.
+//
+// NOTE: This is a preview feature. Compile with:
+//   rue --preview comptime generics.rue output
+
+// A generic identity function that works with any type.
+// The `comptime T: type` parameter is resolved at compile time,
+// and the function is specialized for each unique type argument.
+fn identity(comptime T: type, x: T) -> T {
+    x
+}
+
+// A generic max function that returns the larger of two values.
+// Works with any type that supports the > operator.
+fn max(comptime T: type, a: T, b: T) -> T {
+    if a > b { a } else { b }
+}
+
+// A generic min function that returns the smaller of two values.
+fn min(comptime T: type, a: T, b: T) -> T {
+    if a < b { a } else { b }
+}
+
+// A generic clamp function that constrains a value to a range.
+fn clamp(comptime T: type, value: T, lo: T, hi: T) -> T {
+    if value < lo {
+        lo
+    } else if value > hi {
+        hi
+    } else {
+        value
+    }
+}
+
+// A generic absolute difference function.
+fn abs_diff(comptime T: type, a: T, b: T) -> T {
+    if a > b { a - b } else { b - a }
+}
+
+fn main() -> i32 {
+    // Using identity with different types
+    let i: i32 = identity(i32, 42);
+    let _b: bool = identity(bool, true);
+
+    @dbg(i);  // 42
+
+    // The compiler creates separate specializations:
+    // - identity__i32
+    // - identity__bool
+
+    // Using max with i32
+    let bigger = max(i32, 10, 20);
+    @dbg(bigger);  // 20
+
+    // Using min with i32
+    let smaller = min(i32, 10, 20);
+    @dbg(smaller);  // 10
+
+    // Clamp a value to a range
+    let clamped = clamp(i32, 150, 0, 100);
+    @dbg(clamped);  // 100
+
+    // Absolute difference
+    let diff = abs_diff(i32, 7, 15);
+    @dbg(diff);  // 8
+
+    // Multiple calls with the same type reuse the same specialization
+    let a = max(i32, 5, 3);
+    let c = max(i32, 8, 12);
+    @dbg(a + c);  // 5 + 12 = 17
+
+    // Return the result of our generic functions
+    // 42 (identity) + 20 (max) + 10 (min) = 72
+    i + bigger + smaller
+}

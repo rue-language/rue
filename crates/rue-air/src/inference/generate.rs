@@ -45,6 +45,17 @@ pub struct FunctionSig {
     pub param_types: Vec<InferType>,
     /// Return type, as InferType for uniform handling.
     pub return_type: InferType,
+    /// Whether this is a generic function (has comptime type parameters).
+    /// Generic functions skip type checking during constraint generation -
+    /// they'll be checked during specialization.
+    pub is_generic: bool,
+    /// Parameter modes (Normal, Inout, Borrow, Comptime).
+    /// Used to identify which parameters are comptime type parameters.
+    pub param_modes: Vec<rue_rir::RirParamMode>,
+    /// Parameter names, needed for type substitution in generic returns.
+    pub param_names: Vec<lasso::Spur>,
+    /// The return type as a symbol (used for substitution lookup).
+    pub return_type_sym: lasso::Spur,
 }
 
 /// Information about a method during constraint generation.
@@ -467,10 +478,69 @@ impl<'a> ConstraintGenerator<'a> {
             } => {
                 let args = self.rir.get_call_args(*args_start, *args_len);
                 if let Some(func) = self.functions.get(name) {
-                    // Check argument count matches parameter count.
-                    // Semantic analysis will emit a proper error; we just need to avoid
-                    // panicking and process what we can.
-                    if args.len() != func.param_types.len() {
+                    // For generic functions, skip constraint generation for arguments.
+                    // The types will be checked during specialization when we know
+                    // the concrete type substitutions.
+                    if func.is_generic {
+                        // Process all arguments and build type substitution map
+                        let mut type_subst: std::collections::HashMap<lasso::Spur, Type> =
+                            std::collections::HashMap::new();
+
+                        for (i, arg) in args.iter().enumerate() {
+                            let arg_info = self.generate(arg.value, ctx);
+
+                            // If this is a comptime parameter, extract the type for substitution
+                            if i < func.param_modes.len()
+                                && func.param_modes[i] == rue_rir::RirParamMode::Comptime
+                            {
+                                // The argument should be a TypeConst - extract the concrete type
+                                if let InferType::Concrete(Type::ComptimeType) = &arg_info.ty {
+                                    // This is a type value - get the actual type from the RIR
+                                    let arg_inst = self.rir.get(arg.value);
+                                    if let rue_rir::InstData::TypeConst { type_name } =
+                                        &arg_inst.data
+                                    {
+                                        // Resolve type_name to a concrete Type
+                                        let type_name_str = self.interner.resolve(type_name);
+                                        let concrete_ty = match type_name_str {
+                                            "i8" => Type::I8,
+                                            "i16" => Type::I16,
+                                            "i32" => Type::I32,
+                                            "i64" => Type::I64,
+                                            "u8" => Type::U8,
+                                            "u16" => Type::U16,
+                                            "u32" => Type::U32,
+                                            "u64" => Type::U64,
+                                            "bool" => Type::Bool,
+                                            "()" => Type::Unit,
+                                            _ => Type::Error, // Unknown type
+                                        };
+                                        if i < func.param_names.len() {
+                                            type_subst.insert(func.param_names[i], concrete_ty);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        // Compute the actual return type by substituting type parameters
+                        let return_type =
+                            if func.return_type == InferType::Concrete(Type::ComptimeType) {
+                                // Return type is a type parameter - look it up in substitutions
+                                if let Some(&concrete_ty) = type_subst.get(&func.return_type_sym) {
+                                    InferType::Concrete(concrete_ty)
+                                } else {
+                                    func.return_type.clone()
+                                }
+                            } else {
+                                func.return_type.clone()
+                            };
+
+                        return_type
+                    } else if args.len() != func.param_types.len() {
+                        // Check argument count matches parameter count.
+                        // Semantic analysis will emit a proper error; we just need to avoid
+                        // panicking and process what we can.
                         // Still process all arguments to catch type errors within them
                         for arg in args.iter() {
                             self.generate(arg.value, ctx);
@@ -974,6 +1044,10 @@ impl<'a> ConstraintGenerator<'a> {
                 self.add_constraint(Constraint::equal(InferType::Var(var), inner_info.ty, span));
                 InferType::Var(var)
             }
+
+            // Type constant: a type used as a value (e.g., `i32` in `identity(i32, 42)`)
+            // This has the special ComptimeType type which indicates it's a type value.
+            InstData::TypeConst { .. } => InferType::Concrete(Type::ComptimeType),
         };
 
         // Record the type for this expression
@@ -1445,15 +1519,28 @@ mod tests {
         assert_eq!(info.span, Span::new(5, 10));
     }
 
+    /// Helper to create a non-generic FunctionSig for tests
+    fn make_test_func_sig(param_types: Vec<InferType>, return_type: InferType) -> FunctionSig {
+        let num_params = param_types.len();
+        FunctionSig {
+            param_types,
+            return_type,
+            is_generic: false,
+            param_modes: vec![rue_rir::RirParamMode::Normal; num_params],
+            param_names: vec![],
+            return_type_sym: lasso::Spur::default(),
+        }
+    }
+
     #[test]
     fn test_function_sig() {
-        let sig = FunctionSig {
-            param_types: vec![
+        let sig = make_test_func_sig(
+            vec![
                 InferType::Concrete(Type::I32),
                 InferType::Concrete(Type::Bool),
             ],
-            return_type: InferType::Concrete(Type::I64),
-        };
+            InferType::Concrete(Type::I64),
+        );
         assert_eq!(sig.param_types.len(), 2);
         assert_eq!(sig.return_type, InferType::Concrete(Type::I64));
     }
@@ -1672,13 +1759,13 @@ mod tests {
         let func_name = interner.get_or_intern("foo");
         functions.insert(
             func_name,
-            FunctionSig {
-                param_types: vec![
+            make_test_func_sig(
+                vec![
                     InferType::Concrete(Type::I32),
                     InferType::Concrete(Type::I32),
                 ],
-                return_type: InferType::Concrete(Type::Bool),
-            },
+                InferType::Concrete(Type::Bool),
+            ),
         );
 
         // Create a call with only 1 argument (mismatch)

@@ -382,3 +382,139 @@ fn main() -> i32 {
 }
 """
 exit_code = 42
+
+# =============================================================================
+# Phase 3: Type Parameters (ADR-0025)
+# =============================================================================
+# Tests for `type` as a type name and comptime type parameters.
+# These tests verify that:
+# 1. `type` can be used as a type annotation for comptime parameters
+# 2. Type parameters are substituted during specialization
+# 3. Generic functions work correctly with different concrete types
+
+[[case]]
+name = "type_as_type_name_can_be_resolved"
+spec = ["4.13:5"]
+preview = "comptime"
+description = "The keyword 'type' can be used as a type annotation"
+source = """
+// Simple test: `type` as a type name is parsed correctly
+// This will fail until comptime parameters are fully implemented
+fn identity(comptime T: type, x: T) -> T {
+    x
+}
+fn main() -> i32 {
+    identity(i32, 42)
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "generic_function_with_i32"
+spec = ["4.13:5"]
+preview = "comptime"
+description = "Generic identity function specialized for i32"
+source = """
+fn identity(comptime T: type, x: T) -> T {
+    x
+}
+fn main() -> i32 {
+    identity(i32, 42)
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "generic_function_with_bool"
+spec = ["4.13:5"]
+preview = "comptime"
+description = "Generic identity function specialized for bool"
+source = """
+fn identity(comptime T: type, x: T) -> T {
+    x
+}
+fn main() -> i32 {
+    if identity(bool, true) { 42 } else { 0 }
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "generic_max_function"
+spec = ["4.13:5"]
+preview = "comptime"
+description = "The ADR example: generic max function"
+source = """
+fn max(comptime T: type, a: T, b: T) -> T {
+    if a > b { a } else { b }
+}
+fn main() -> i32 {
+    max(i32, 10, 20)
+}
+"""
+exit_code = 20
+
+[[case]]
+name = "generic_function_multiple_calls_same_type"
+spec = ["4.13:5"]
+preview = "comptime"
+description = "Multiple calls to generic function with same type reuse specialization"
+source = """
+fn identity(comptime T: type, x: T) -> T {
+    x
+}
+fn main() -> i32 {
+    let a = identity(i32, 10);
+    let b = identity(i32, 32);
+    a + b
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "generic_function_multiple_types"
+spec = ["4.13:5"]
+preview = "comptime"
+description = "Generic function called with different types creates separate specializations"
+source = """
+fn identity(comptime T: type, x: T) -> T {
+    x
+}
+fn main() -> i32 {
+    let i: i32 = identity(i32, 42);
+    let b: bool = identity(bool, true);
+    if b { i } else { 0 }
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "type_parameter_in_arithmetic"
+spec = ["4.13:5"]
+preview = "comptime"
+description = "Type parameter used with arithmetic operators"
+source = """
+fn add_one(comptime T: type, x: T) -> T {
+    x + 1
+}
+fn main() -> i32 {
+    add_one(i32, 41)
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "type_value_cannot_escape_comptime"
+spec = ["4.13:6"]
+preview = "comptime"
+# Not preview_should_pass yet - requires type-as-expression parsing which is Phase 4
+description = "Type values cannot exist at runtime"
+source = """
+fn main() -> i32 {
+    // This should fail because type values can't exist at runtime
+    let t = comptime { i32 };
+    0
+}
+"""
+compile_fail = true
+error_contains = "type values cannot exist at runtime"

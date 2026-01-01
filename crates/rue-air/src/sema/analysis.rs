@@ -64,7 +64,8 @@ fn try_evaluate_const_in_rir(rir: &rue_rir::Rir, inst_ref: InstRef) -> Option<Co
         InstData::Neg { operand } => {
             match try_evaluate_const_in_rir(rir, *operand)? {
                 ConstValue::Integer(n) => n.checked_neg().map(ConstValue::Integer),
-                ConstValue::Bool(_) => None, // Can't negate a boolean
+                // Can't negate a boolean, type, or unit
+                ConstValue::Bool(_) | ConstValue::Type(_) | ConstValue::Unit => None,
             }
         }
 
@@ -72,7 +73,8 @@ fn try_evaluate_const_in_rir(rir: &rue_rir::Rir, inst_ref: InstRef) -> Option<Co
         InstData::Not { operand } => {
             match try_evaluate_const_in_rir(rir, *operand)? {
                 ConstValue::Bool(b) => Some(ConstValue::Bool(!b)),
-                ConstValue::Integer(_) => None, // Can't logical-NOT an integer
+                // Can't logical-NOT an integer, type, or unit
+                ConstValue::Integer(_) | ConstValue::Type(_) | ConstValue::Unit => None,
             }
         }
 
@@ -293,7 +295,7 @@ fn analyze_all_function_bodies_sequential(sema: &mut Sema<'_>) -> MultiErrorResu
         }
     }
 
-    // Analyze regular functions
+    // Analyze regular functions (skip generic functions - they're analyzed during specialization)
     for (inst_ref, inst) in sema.rir.iter() {
         if let InstData::FnDecl {
             name,
@@ -307,6 +309,13 @@ fn analyze_all_function_bodies_sequential(sema: &mut Sema<'_>) -> MultiErrorResu
         {
             if method_refs.contains(&inst_ref) {
                 continue;
+            }
+
+            // Skip generic functions - they'll be analyzed during specialization
+            if let Some(fn_info) = sema.functions.get(name) {
+                if fn_info.is_generic {
+                    continue;
+                }
             }
 
             let fn_name = sema.interner.resolve(&*name).to_string();
@@ -459,7 +468,7 @@ fn analyze_all_function_bodies_sequential(sema: &mut Sema<'_>) -> MultiErrorResu
 
     all_warnings.sort_by_key(|w| w.span().map(|s| s.start));
 
-    errors.into_result_with(SemaOutput {
+    let mut output = SemaOutput {
         functions,
         struct_defs: std::mem::take(&mut sema.struct_defs),
         enum_defs: std::mem::take(&mut sema.enum_defs),
@@ -467,7 +476,15 @@ fn analyze_all_function_bodies_sequential(sema: &mut Sema<'_>) -> MultiErrorResu
         strings: global_strings,
         warnings: all_warnings,
         type_pool: sema.type_pool.clone(),
-    })
+    };
+
+    // Run specialization pass to rewrite CallGeneric instructions to Call
+    // and create specialized function bodies
+    if let Err(e) = crate::specialize::specialize(&mut output, sema, &infer_ctx, sema.interner) {
+        errors.push(e);
+    }
+
+    errors.into_result_with(output)
 }
 
 /// Parallel analysis path (work in progress).
@@ -522,7 +539,7 @@ fn collect_function_jobs(ctx: &SemaContext<'_>) -> Vec<FunctionJob> {
         }
     }
 
-    // Collect regular functions
+    // Collect regular functions (skip generic functions - they're analyzed during specialization)
     for (inst_ref, inst) in ctx.rir.iter() {
         if let InstData::FnDecl {
             name,
@@ -536,6 +553,13 @@ fn collect_function_jobs(ctx: &SemaContext<'_>) -> Vec<FunctionJob> {
         {
             if method_refs.contains(&inst_ref) {
                 continue;
+            }
+
+            // Skip generic functions - they'll be analyzed during specialization
+            if let Some(fn_info) = ctx.functions.get(name) {
+                if fn_info.is_generic {
+                    continue;
+                }
             }
 
             let fn_name = ctx.interner.resolve(&*name).to_string();
@@ -756,6 +780,8 @@ fn resolve_type_from_ctx(ctx: &SemaContext<'_>, type_sym: Spur, span: Span) -> C
         "bool" => return Ok(Type::Bool),
         "()" => return Ok(Type::Unit),
         "!" => return Ok(Type::Never),
+        // The type of types - used for comptime type parameters
+        "type" => return Ok(Type::ComptimeType),
         _ => {}
     }
 
@@ -1672,6 +1698,26 @@ fn analyze_inst_with_context(
                     });
                     Ok(AnalysisResult::new(air_ref, ty))
                 }
+                Some(ConstValue::Type(_type_val)) => {
+                    // Type values can only exist at comptime - they cannot be returned
+                    // from a comptime block since they can't exist at runtime.
+                    // This will be used for type parameter substitution in specialization.
+                    Err(CompileError::new(
+                        ErrorKind::ComptimeEvaluationFailed {
+                            reason: "type values cannot exist at runtime".to_string(),
+                        },
+                        inst.span,
+                    ))
+                }
+                Some(ConstValue::Unit) => {
+                    let ty = Type::Unit;
+                    let air_ref = air.add_inst(AirInst {
+                        data: AirInstData::UnitConst,
+                        ty,
+                        span: inst.span,
+                    });
+                    Ok(AnalysisResult::new(air_ref, ty))
+                }
                 None => {
                     // The expression couldn't be evaluated at compile time
                     Err(CompileError::new(
@@ -1684,6 +1730,17 @@ fn analyze_inst_with_context(
                     ))
                 }
             }
+        }
+
+        InstData::TypeConst { type_name } => {
+            // Resolve the type name to a concrete type
+            let ty = resolve_type_from_ctx(ctx, *type_name, inst.span)?;
+            let air_ref = air.add_inst(AirInst {
+                data: AirInstData::TypeConst(ty),
+                ty: Type::ComptimeType,
+                span: inst.span,
+            });
+            Ok(AnalysisResult::new(air_ref, Type::ComptimeType))
         }
     }
 }
@@ -2033,7 +2090,7 @@ fn analyze_var_ref_ctx(
         // Handle move semantics based on parameter mode
         if !ctx.is_type_copy(ty) {
             match param_info.mode {
-                RirParamMode::Normal => {
+                RirParamMode::Normal | RirParamMode::Comptime => {
                     analysis_ctx
                         .moved_vars
                         .entry(name)
@@ -2244,7 +2301,7 @@ fn analyze_assign_ctx(
     if let Some(param_info) = analysis_ctx.params.get(&name) {
         // Check parameter mode - only inout can be assigned to
         match param_info.mode {
-            RirParamMode::Normal => {
+            RirParamMode::Normal | RirParamMode::Comptime => {
                 return Err(CompileError::new(
                     ErrorKind::AssignToImmutable(name_str.to_string()),
                     span,
@@ -3331,7 +3388,7 @@ fn analyze_field_set_ctx(
         }
         RootKind::Param { abi_slot, mode } => {
             match mode {
-                RirParamMode::Normal => {
+                RirParamMode::Normal | RirParamMode::Comptime => {
                     return Err(CompileError::new(
                         ErrorKind::AssignToImmutable(var_name.clone()),
                         span,
@@ -3700,7 +3757,7 @@ fn analyze_index_set_ctx(
         }
         IndexSetRootKind::Param { abi_slot, mode } => {
             let is_inout = match mode {
-                RirParamMode::Normal => false,
+                RirParamMode::Normal | RirParamMode::Comptime => false,
                 RirParamMode::Inout => true,
                 RirParamMode::Borrow => {
                     return Err(CompileError::new(
@@ -3874,8 +3931,8 @@ fn analyze_call_ctx(
                     ));
                 }
             }
-            RirParamMode::Normal => {
-                // Normal params accept any mode
+            RirParamMode::Normal | RirParamMode::Comptime => {
+                // Normal and comptime params accept any mode
             }
         }
     }
@@ -3920,31 +3977,108 @@ fn analyze_call_ctx(
         }
     }
 
-    // Extract return_type before mutable borrow
-    let return_type = fn_info.return_type;
+    // Extract info before mutable borrow
+    let is_generic = fn_info.is_generic;
+    let param_modes = fn_info.param_modes.clone();
+    let param_names = fn_info.param_names.clone();
+    let return_type_sym = fn_info.return_type_sym;
+    let base_return_type = fn_info.return_type;
 
-    // Analyze arguments
+    // Analyze all arguments
     let air_args = analyze_call_args_ctx(ctx, air, &args, analysis_ctx)?;
 
-    // Encode call args into extra array
-    let args_len = air_args.len() as u32;
-    let mut extra_data = Vec::with_capacity(air_args.len() * 2);
-    for arg in &air_args {
-        extra_data.push(arg.value.as_u32());
-        extra_data.push(arg.mode.as_u32());
-    }
-    let args_start = air.add_extra(&extra_data);
+    // Handle generic function calls differently
+    if is_generic {
+        // Separate type arguments from runtime arguments
+        let mut type_args: Vec<Type> = Vec::new();
+        let mut runtime_args: Vec<AirCallArg> = Vec::new();
+        let mut type_subst: HashMap<Spur, Type> = HashMap::new();
 
-    let air_ref = air.add_inst(AirInst {
-        data: AirInstData::Call {
-            name,
-            args_start,
-            args_len,
-        },
-        ty: return_type,
-        span,
-    });
-    Ok(AnalysisResult::new(air_ref, return_type))
+        for (i, (air_arg, param_mode)) in air_args.iter().zip(param_modes.iter()).enumerate() {
+            if *param_mode == RirParamMode::Comptime {
+                // This should be a TypeConst instruction - extract the type
+                let inst = air.get(air_arg.value);
+                if let AirInstData::TypeConst(ty) = &inst.data {
+                    type_args.push(*ty);
+                    // Record the substitution: param_name -> concrete_type
+                    type_subst.insert(param_names[i], *ty);
+                } else {
+                    // Not a type - this is an error
+                    return Err(CompileError::new(
+                        ErrorKind::ComptimeEvaluationFailed {
+                            reason: "comptime type parameter must be a type literal".to_string(),
+                        },
+                        span,
+                    ));
+                }
+            } else {
+                runtime_args.push(air_arg.clone());
+            }
+        }
+
+        // Determine the actual return type by substituting type parameters
+        let return_type = if base_return_type == Type::ComptimeType {
+            // Return type is a type parameter - look it up in substitutions
+            *type_subst
+                .get(&return_type_sym)
+                .unwrap_or(&base_return_type)
+        } else {
+            base_return_type
+        };
+
+        // Encode type arguments into extra array (as raw Type discriminants)
+        let mut type_extra = Vec::with_capacity(type_args.len());
+        for ty in &type_args {
+            type_extra.push(ty.as_u32());
+        }
+        let type_args_start = air.add_extra(&type_extra);
+        let type_args_len = type_args.len() as u32;
+
+        // Encode runtime args into extra array
+        let mut args_extra = Vec::with_capacity(runtime_args.len() * 2);
+        for arg in &runtime_args {
+            args_extra.push(arg.value.as_u32());
+            args_extra.push(arg.mode.as_u32());
+        }
+        let runtime_args_start = air.add_extra(&args_extra);
+        let runtime_args_len = runtime_args.len() as u32;
+
+        let air_ref = air.add_inst(AirInst {
+            data: AirInstData::CallGeneric {
+                name,
+                type_args_start,
+                type_args_len,
+                args_start: runtime_args_start,
+                args_len: runtime_args_len,
+            },
+            ty: return_type,
+            span,
+        });
+        Ok(AnalysisResult::new(air_ref, return_type))
+    } else {
+        // Regular non-generic call
+        let return_type = base_return_type;
+
+        // Encode call args into extra array
+        let args_len = air_args.len() as u32;
+        let mut extra_data = Vec::with_capacity(air_args.len() * 2);
+        for arg in &air_args {
+            extra_data.push(arg.value.as_u32());
+            extra_data.push(arg.mode.as_u32());
+        }
+        let args_start = air.add_extra(&extra_data);
+
+        let air_ref = air.add_inst(AirInst {
+            data: AirInstData::Call {
+                name,
+                args_start,
+                args_len,
+            },
+            ty: return_type,
+            span,
+        });
+        Ok(AnalysisResult::new(air_ref, return_type))
+    }
 }
 
 /// Check for exclusive access violations in call arguments.
@@ -4267,7 +4401,7 @@ fn get_receiver_storage_ctx(
                             span,
                         ));
                     }
-                    RirParamMode::Normal => {
+                    RirParamMode::Normal | RirParamMode::Comptime => {
                         let name_str = ctx.interner.resolve(name);
                         return Err(CompileError::new(
                             ErrorKind::AssignToImmutable(name_str.to_string()),
@@ -4931,6 +5065,27 @@ impl<'a> Sema<'a> {
         ))
     }
 
+    /// Analyze a specialized function body.
+    ///
+    /// This is similar to `analyze_function` but for generic function specialization.
+    /// The `type_subst` map provides substitutions for type parameters to their
+    /// concrete types.
+    ///
+    /// For example, when specializing `fn identity<T>(x: T) -> T { x }` with `T = i32`,
+    /// the `params` will be `[(x, i32, Normal)]` and `return_type` will be `i32`.
+    pub fn analyze_specialized_function(
+        &mut self,
+        infer_ctx: &InferenceContext,
+        return_type: Type,
+        params: &[(Spur, Type, RirParamMode)],
+        body: InstRef,
+        _type_subst: &std::collections::HashMap<Spur, Type>,
+    ) -> CompileResult<(Air, u32, u32, Vec<bool>, Vec<CompileWarning>, Vec<String>)> {
+        // The type substitution has already been applied to params and return_type,
+        // so we can just call the regular analyze_function.
+        self.analyze_function(infer_ctx, return_type, params, body)
+    }
+
     /// Run Hindley-Milner type inference on a function body.
     ///
     /// This is Phases 1-2 of the HM algorithm:
@@ -5483,6 +5638,25 @@ impl<'a> Sema<'a> {
                         });
                         Ok(AnalysisResult::new(air_ref, ty))
                     }
+                    Some(ConstValue::Type(_type_val)) => {
+                        // Type values can only exist at comptime - they cannot be returned
+                        // from a comptime block since they can't exist at runtime.
+                        Err(CompileError::new(
+                            ErrorKind::ComptimeEvaluationFailed {
+                                reason: "type values cannot exist at runtime".to_string(),
+                            },
+                            inst.span,
+                        ))
+                    }
+                    Some(ConstValue::Unit) => {
+                        let ty = Type::Unit;
+                        let air_ref = air.add_inst(AirInst {
+                            data: AirInstData::UnitConst,
+                            ty,
+                            span: inst.span,
+                        });
+                        Ok(AnalysisResult::new(air_ref, ty))
+                    }
                     None => Err(CompileError::new(
                         ErrorKind::ComptimeEvaluationFailed {
                             reason:
@@ -5492,6 +5666,18 @@ impl<'a> Sema<'a> {
                         inst.span,
                     )),
                 }
+            }
+
+            // Type constant: a type used as a value (e.g., `i32` in `identity(i32, 42)`)
+            InstData::TypeConst { type_name } => {
+                // Resolve the type name to a concrete type
+                let ty = self.resolve_type(*type_name, inst.span)?;
+                let air_ref = air.add_inst(AirInst {
+                    data: AirInstData::TypeConst(ty),
+                    ty: Type::ComptimeType,
+                    span: inst.span,
+                });
+                Ok(AnalysisResult::new(air_ref, Type::ComptimeType))
             }
         }
     }
@@ -5624,7 +5810,7 @@ impl<'a> Sema<'a> {
             }
             RootKind::Param { abi_slot, mode } => {
                 match mode {
-                    RirParamMode::Normal => {
+                    RirParamMode::Normal | RirParamMode::Comptime => {
                         return Err(CompileError::new(
                             ErrorKind::AssignToImmutable(var_name.clone()),
                             span,
@@ -5848,7 +6034,7 @@ impl<'a> Sema<'a> {
             }
             IndexSetRootKind::Param { abi_slot, mode } => {
                 let is_inout = match mode {
-                    RirParamMode::Normal => false,
+                    RirParamMode::Normal | RirParamMode::Comptime => false,
                     RirParamMode::Inout => true,
                     RirParamMode::Borrow => {
                         return Err(CompileError::new(
@@ -6783,7 +6969,8 @@ impl<'a> Sema<'a> {
             InstData::Neg { operand } => {
                 match self.try_evaluate_const(*operand)? {
                     ConstValue::Integer(n) => n.checked_neg().map(ConstValue::Integer),
-                    ConstValue::Bool(_) => None, // Can't negate a boolean
+                    // Can't negate a boolean, type, or unit
+                    ConstValue::Bool(_) | ConstValue::Type(_) | ConstValue::Unit => None,
                 }
             }
 
@@ -6791,7 +6978,8 @@ impl<'a> Sema<'a> {
             InstData::Not { operand } => {
                 match self.try_evaluate_const(*operand)? {
                     ConstValue::Bool(b) => Some(ConstValue::Bool(!b)),
-                    ConstValue::Integer(_) => None, // Can't logical-NOT an integer
+                    // Can't logical-NOT an integer, type, or unit
+                    ConstValue::Integer(_) | ConstValue::Type(_) | ConstValue::Unit => None,
                 }
             }
 
@@ -7243,9 +7431,8 @@ impl<'a> Sema<'a> {
                                 span,
                             ));
                         }
-                        RirParamMode::Normal => {
-                            // Normal parameters can be mutated if declared as `var`
-                            // For now, we don't allow mutation of normal params
+                        RirParamMode::Normal | RirParamMode::Comptime => {
+                            // Normal and comptime parameters are immutable
                             let name_str = self.interner.resolve(&*name);
                             return Err(CompileError::new(
                                 ErrorKind::AssignToImmutable(name_str.to_string()),

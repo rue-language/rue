@@ -11,6 +11,6 @@ pub use ast::{
     FieldInit, Function, Ident, ImplBlock, IndexExpr, IntLit, IntrinsicArg, IntrinsicCallExpr,
     Item, LetPattern, LetStatement, MatchArm, MatchExpr, Method, MethodCallExpr, Param, ParamMode,
     ParenExpr, PathExpr, PathPattern, Pattern, ReturnExpr, SelfParam, Statement, StructDecl,
-    StructLitExpr, TypeExpr, UnaryExpr, UnaryOp, WhileExpr,
+    StructLitExpr, TypeExpr, TypeLitExpr, UnaryExpr, UnaryOp, WhileExpr,
 };
 pub use chumsky_parser::ChumskyParser as Parser;

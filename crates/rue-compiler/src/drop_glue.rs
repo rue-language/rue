@@ -27,6 +27,7 @@ use rue_span::Span;
 fn type_needs_drop(ty: Type, struct_defs: &[StructDef], array_types: &[ArrayTypeDef]) -> bool {
     match ty {
         // Primitive types are trivially droppable
+        // ComptimeType is comptime-only, no runtime representation
         Type::I8
         | Type::I16
         | Type::I32
@@ -38,7 +39,8 @@ fn type_needs_drop(ty: Type, struct_defs: &[StructDef], array_types: &[ArrayType
         | Type::Bool
         | Type::Unit
         | Type::Never
-        | Type::Error => false,
+        | Type::Error
+        | Type::ComptimeType => false,
 
         // Enum types are trivially droppable (just discriminant values)
         Type::Enum(_) => false,
@@ -72,6 +74,7 @@ fn type_needs_drop(ty: Type, struct_defs: &[StructDef], array_types: &[ArrayType
 fn type_slot_count(ty: Type, struct_defs: &[StructDef], array_types: &[ArrayTypeDef]) -> u32 {
     match ty {
         // Primitives use 1 slot
+        // ComptimeType uses 0 slots (comptime-only, no runtime representation)
         Type::I8
         | Type::I16
         | Type::I32
@@ -85,6 +88,7 @@ fn type_slot_count(ty: Type, struct_defs: &[StructDef], array_types: &[ArrayType
         | Type::Never
         | Type::Error
         | Type::Enum(_) => 1,
+        Type::ComptimeType => 0,
 
         // Struct uses sum of all field slots (including builtin String with 3 fields)
         Type::Struct(struct_id) => {
@@ -417,6 +421,8 @@ fn type_name(ty: Type, struct_defs: &[StructDef], array_types: &[ArrayTypeDef]) 
         Type::Unit => "unit".to_string(),
         Type::Never => "never".to_string(),
         Type::Error => "error".to_string(),
+        // ComptimeType only exists at compile time
+        Type::ComptimeType => "comptime_type".to_string(),
         Type::Enum(enum_id) => format!("enum{}", enum_id.0),
         // Struct types include builtin types like String
         Type::Struct(struct_id) => struct_defs[struct_id.0 as usize].name.clone(),

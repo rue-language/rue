@@ -32,7 +32,7 @@ use rue_span::Span;
 
 use super::Sema;
 use super::context::{AnalysisContext, AnalysisResult, LocalVar};
-use crate::inst::{Air, AirInst, AirInstData, AirPattern, AirRef};
+use crate::inst::{Air, AirCallArg, AirInst, AirInstData, AirPattern, AirRef};
 use crate::scope::ScopedContext;
 use crate::types::Type;
 
@@ -1121,7 +1121,9 @@ impl<'a> Sema<'a> {
             // Handle move semantics based on parameter mode
             if !self.is_type_copy(ty) {
                 match param_info.mode {
-                    RirParamMode::Normal => {
+                    // Normal and comptime parameters behave similarly for moves
+                    // (comptime params are substituted at compile time)
+                    RirParamMode::Normal | RirParamMode::Comptime => {
                         ctx.moved_vars
                             .entry(name)
                             .or_default()
@@ -1157,42 +1159,60 @@ impl<'a> Sema<'a> {
 
         // Look up the variable in locals
         let name_str = self.interner.resolve(&name);
-        let local = ctx
-            .locals
-            .get(&name)
-            .ok_or_compile_error(ErrorKind::UndefinedVariable(name_str.to_string()), span)?;
 
-        let ty = local.ty;
-        let slot = local.slot;
+        // Check if this is a local variable first
+        if let Some(local) = ctx.locals.get(&name) {
+            let ty = local.ty;
+            let slot = local.slot;
 
-        // Check if this variable has been moved
-        if let Some(move_state) = ctx.moved_vars.get(&name) {
-            if let Some(moved_span) = move_state.is_any_part_moved() {
-                return Err(
-                    CompileError::new(ErrorKind::UseAfterMove(name_str.to_string()), span)
-                        .with_label("value moved here", moved_span),
-                );
+            // Check if this variable has been moved
+            if let Some(move_state) = ctx.moved_vars.get(&name) {
+                if let Some(moved_span) = move_state.is_any_part_moved() {
+                    return Err(CompileError::new(
+                        ErrorKind::UseAfterMove(name_str.to_string()),
+                        span,
+                    )
+                    .with_label("value moved here", moved_span));
+                }
             }
+
+            // If type is not Copy, mark as moved
+            if !self.is_type_copy(ty) {
+                ctx.moved_vars
+                    .entry(name)
+                    .or_default()
+                    .mark_path_moved(&[], span);
+            }
+
+            // Mark variable as used
+            ctx.used_locals.insert(name);
+
+            // Load the variable
+            let air_ref = air.add_inst(AirInst {
+                data: AirInstData::Load { slot },
+                ty,
+                span,
+            });
+            return Ok(AnalysisResult::new(air_ref, ty));
         }
 
-        // If type is not Copy, mark as moved
-        if !self.is_type_copy(ty) {
-            ctx.moved_vars
-                .entry(name)
-                .or_default()
-                .mark_path_moved(&[], span);
+        // Check if this is a type name (for comptime type parameters)
+        // Try to resolve it as a type - if successful, emit a TypeConst instruction
+        if let Ok(resolved_type) = self.resolve_type(name, span) {
+            // This is a type name being used as a value (e.g., `i32` passed to `comptime T: type`)
+            let air_ref = air.add_inst(AirInst {
+                data: AirInstData::TypeConst(resolved_type),
+                ty: Type::ComptimeType,
+                span,
+            });
+            return Ok(AnalysisResult::new(air_ref, Type::ComptimeType));
         }
 
-        // Mark variable as used
-        ctx.used_locals.insert(name);
-
-        // Load the variable
-        let air_ref = air.add_inst(AirInst {
-            data: AirInstData::Load { slot },
-            ty,
+        // Not a parameter, local, or type - undefined variable
+        Err(CompileError::new(
+            ErrorKind::UndefinedVariable(name_str.to_string()),
             span,
-        });
-        Ok(AnalysisResult::new(air_ref, ty))
+        ))
     }
 
     /// Analyze a parameter reference.
@@ -1236,7 +1256,8 @@ impl<'a> Sema<'a> {
         if let Some(param_info) = ctx.params.get(&name) {
             // Check parameter mode - only inout can be assigned to
             match param_info.mode {
-                RirParamMode::Normal => {
+                // Normal and comptime parameters are immutable
+                RirParamMode::Normal | RirParamMode::Comptime => {
                     return Err(CompileError::new(
                         ErrorKind::AssignToImmutable(name_str.to_string()),
                         span,
@@ -1969,7 +1990,9 @@ impl<'a> Sema<'a> {
                         ));
                     }
                 }
-                RirParamMode::Normal => {
+                // Normal and comptime params accept any mode
+                // (comptime params are substituted at compile time, not passed at runtime)
+                RirParamMode::Normal | RirParamMode::Comptime => {
                     // Normal params accept any mode
                 }
             }
@@ -2004,31 +2027,110 @@ impl<'a> Sema<'a> {
             }
         }
 
-        // Extract return_type before mutable borrow (Copy type, no allocation)
-        let return_type = fn_info.return_type;
+        // Extract info before mutable borrow
+        let is_generic = fn_info.is_generic;
+        let param_modes = fn_info.param_modes.clone();
+        let param_names = fn_info.param_names.clone();
+        let return_type_sym = fn_info.return_type_sym;
+        let base_return_type = fn_info.return_type;
 
-        // Analyze arguments
+        // Analyze all arguments
         let air_args = self.analyze_call_args(air, &args, ctx)?;
 
-        // Encode call args into extra array
-        let args_len = air_args.len() as u32;
-        let mut extra_data = Vec::with_capacity(air_args.len() * 2);
-        for arg in &air_args {
-            extra_data.push(arg.value.as_u32());
-            extra_data.push(arg.mode.as_u32());
-        }
-        let args_start = air.add_extra(&extra_data);
+        // Handle generic function calls differently
+        if is_generic {
+            // Separate type arguments from runtime arguments
+            let mut type_args: Vec<Type> = Vec::new();
+            let mut runtime_args: Vec<AirCallArg> = Vec::new();
+            let mut type_subst: std::collections::HashMap<Spur, Type> =
+                std::collections::HashMap::new();
 
-        let air_ref = air.add_inst(AirInst {
-            data: AirInstData::Call {
-                name,
-                args_start,
-                args_len,
-            },
-            ty: return_type,
-            span,
-        });
-        Ok(AnalysisResult::new(air_ref, return_type))
+            for (i, (air_arg, param_mode)) in air_args.iter().zip(param_modes.iter()).enumerate() {
+                if *param_mode == RirParamMode::Comptime {
+                    // This should be a TypeConst instruction - extract the type
+                    let inst = air.get(air_arg.value);
+                    if let AirInstData::TypeConst(ty) = &inst.data {
+                        type_args.push(*ty);
+                        // Record the substitution: param_name -> concrete_type
+                        type_subst.insert(param_names[i], *ty);
+                    } else {
+                        // Not a type - this is an error
+                        return Err(CompileError::new(
+                            ErrorKind::ComptimeEvaluationFailed {
+                                reason: "comptime type parameter must be a type literal"
+                                    .to_string(),
+                            },
+                            span,
+                        ));
+                    }
+                } else {
+                    runtime_args.push(air_arg.clone());
+                }
+            }
+
+            // Determine the actual return type by substituting type parameters
+            let return_type = if base_return_type == Type::ComptimeType {
+                // Return type is a type parameter - look it up in substitutions
+                *type_subst
+                    .get(&return_type_sym)
+                    .unwrap_or(&base_return_type)
+            } else {
+                base_return_type
+            };
+
+            // Encode type arguments into extra array (as raw Type discriminants)
+            let mut type_extra = Vec::with_capacity(type_args.len());
+            for ty in &type_args {
+                type_extra.push(ty.as_u32());
+            }
+            let type_args_start = air.add_extra(&type_extra);
+            let type_args_len = type_args.len() as u32;
+
+            // Encode runtime args into extra array
+            let mut args_extra = Vec::with_capacity(runtime_args.len() * 2);
+            for arg in &runtime_args {
+                args_extra.push(arg.value.as_u32());
+                args_extra.push(arg.mode.as_u32());
+            }
+            let runtime_args_start = air.add_extra(&args_extra);
+            let runtime_args_len = runtime_args.len() as u32;
+
+            let air_ref = air.add_inst(AirInst {
+                data: AirInstData::CallGeneric {
+                    name,
+                    type_args_start,
+                    type_args_len,
+                    args_start: runtime_args_start,
+                    args_len: runtime_args_len,
+                },
+                ty: return_type,
+                span,
+            });
+            Ok(AnalysisResult::new(air_ref, return_type))
+        } else {
+            // Regular non-generic call
+            let return_type = base_return_type;
+
+            // Encode call args into extra array
+            let args_len = air_args.len() as u32;
+            let mut extra_data = Vec::with_capacity(air_args.len() * 2);
+            for arg in &air_args {
+                extra_data.push(arg.value.as_u32());
+                extra_data.push(arg.mode.as_u32());
+            }
+            let args_start = air.add_extra(&extra_data);
+
+            let air_ref = air.add_inst(AirInst {
+                data: AirInstData::Call {
+                    name,
+                    args_start,
+                    args_len,
+                },
+                ty: return_type,
+                span,
+            });
+            Ok(AnalysisResult::new(air_ref, return_type))
+        }
     }
 
     /// Analyze a method call.

@@ -11,7 +11,7 @@ use crate::ast::{
     IntrinsicCallExpr, Item, LetPattern, LetStatement, LoopExpr, MatchArm, MatchExpr, Method,
     MethodCallExpr, NegIntLit, Param, ParamMode, ParenExpr, PathExpr, PathPattern, Pattern,
     ReturnExpr, SelfExpr, SelfParam, Statement, StringLit, StructDecl, StructLitExpr, TypeExpr,
-    UnaryExpr, UnaryOp, UnitLit, Visibility, WhileExpr,
+    TypeLitExpr, UnaryExpr, UnaryOp, UnitLit, Visibility, WhileExpr,
 };
 use chumsky::input::{Input as ChumskyInput, MapExtra, Stream, ValueInput};
 use chumsky::pratt::{infix, left, prefix};
@@ -236,7 +236,7 @@ where
     })
 }
 
-/// Parser for parameter mode: inout or borrow
+/// Parser for parameter mode: inout, borrow, or comptime
 fn param_mode_parser<'src, I>() -> impl Parser<'src, I, ParamMode, ParserExtras<'src>> + Clone
 where
     I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
@@ -244,6 +244,7 @@ where
     choice((
         just(TokenKind::Inout).to(ParamMode::Inout),
         just(TokenKind::Borrow).to(ParamMode::Borrow),
+        just(TokenKind::Comptime).to(ParamMode::Comptime),
     ))
 }
 
@@ -1090,17 +1091,28 @@ where
             })
         });
 
+    // Type literal expression: i32, bool, etc. used as values
+    // This enables generic function calls like identity(i32, 42)
+    let type_lit_expr = primitive_type_parser().map_with(|type_expr, e| {
+        Expr::TypeLit(TypeLitExpr {
+            type_expr,
+            span: to_rue_span(e.span()),
+        })
+    });
+
     // Primary expression (before field access and indexing)
     // Note: literal_parser() includes unit_lit which must come before paren_expr
     // so () is parsed as unit, not empty parens
     // Note: self_expr must come before call_and_access_parser since self is a keyword
     // Note: comptime_expr must come before block_expr since comptime starts with a keyword
+    // Note: type_lit_expr must come before call_and_access_parser since type names are keywords
     let primary = choice((
         literal_parser(),
         control_flow_parser(expr.clone()),
         self_expr,
         intrinsic_call,
         array_lit,
+        type_lit_expr,
         call_and_access_parser(expr.clone()),
         paren_expr,
         comptime_expr,

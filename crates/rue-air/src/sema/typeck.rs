@@ -41,6 +41,7 @@ impl<'a> Sema<'a> {
                     array_def.length
                 )
             }
+            Type::ComptimeType => "type".to_string(),
         }
     }
 
@@ -75,6 +76,8 @@ impl<'a> Sema<'a> {
                 let array_def = &self.array_type_defs[array_id.0 as usize];
                 self.is_type_copy(array_def.element_type)
             }
+            // ComptimeType is Copy (only exists at comptime anyway)
+            Type::ComptimeType => true,
         }
     }
 
@@ -138,6 +141,8 @@ impl<'a> Sema<'a> {
             "bool" => return Ok(Type::Bool),
             "()" => return Ok(Type::Unit),
             "!" => return Ok(Type::Never),
+            // The type of types - used for comptime type parameters
+            "type" => return Ok(Type::ComptimeType),
             _ => {}
         }
 
@@ -259,7 +264,8 @@ impl<'a> Sema<'a> {
             | Type::Bool
             | Type::Error => 1,
             // Zero-sized types use 0 slots
-            Type::Unit | Type::Never => 0,
+            // ComptimeType is comptime-only and uses 0 runtime slots
+            Type::Unit | Type::Never | Type::ComptimeType => 0,
             // Enums are represented as their discriminant type (a scalar), so 1 slot
             Type::Enum(_) => 1,
             // Struct uses sum of all field slots (includes builtin String with 3 fields)
