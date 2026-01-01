@@ -3,12 +3,13 @@
 //! This module implements the full AArch64 code generation pipeline:
 //!
 //! ```text
-//! CFG → Aarch64Mir (virtual registers) → Register Allocation → Machine Code
+//! CFG → Aarch64Mir (virtual registers) → Register Allocation → Verify → Machine Code
 //! ```
 //!
 //! The pipeline is split into distinct phases:
 //! - `cfg_lower`: Converts CFG to Aarch64Mir with virtual registers
 //! - `regalloc`: Assigns physical registers to virtual registers
+//! - `verify`: Verifies stack alignment invariants (debug mode)
 //! - `emit`: Encodes Aarch64Mir instructions to machine code bytes
 
 mod cfg_lower;
@@ -18,6 +19,7 @@ mod mir;
 mod peephole;
 mod regalloc;
 mod schedule;
+mod verify;
 
 pub use cfg_lower::CfgLower;
 pub use emit::Emitter;
@@ -62,6 +64,10 @@ pub fn generate(
     // Schedule instructions for better performance
     schedule::schedule(&mut mir);
 
+    // Verify stack alignment in debug builds
+    #[cfg(debug_assertions)]
+    verify::verify_stack_alignment(&mir)?;
+
     // Emit machine code bytes
     let total_locals = num_locals + num_spills;
     let (code, relocations) =
@@ -101,6 +107,10 @@ pub fn generate_with_asm(
 
     // Schedule instructions for better performance
     schedule::schedule(&mut mir);
+
+    // Verify stack alignment in debug builds
+    #[cfg(debug_assertions)]
+    verify::verify_stack_alignment(&mir)?;
 
     // Emit machine code bytes with assembly text
     let total_locals = num_locals + num_spills;
