@@ -31,8 +31,8 @@ impl<'a> Sema<'a> {
             Type::Never => "!".to_string(),
             Type::Error => "<error>".to_string(),
             // Note: String is now handled via Type::Struct with builtin_string_id
-            Type::Struct(struct_id) => self.struct_defs[struct_id.0 as usize].name.clone(),
-            Type::Enum(enum_id) => self.enum_defs[enum_id.0 as usize].name.clone(),
+            Type::Struct(struct_id) => self.type_pool.struct_def(struct_id).name.clone(),
+            Type::Enum(enum_id) => self.type_pool.enum_def(enum_id).name.clone(),
             Type::Array(array_id) => {
                 let array_def = &self.array_type_defs[array_id.0 as usize];
                 format!(
@@ -66,7 +66,7 @@ impl<'a> Sema<'a> {
             Type::Never | Type::Error => true,
             // Struct types: check if marked with @copy
             Type::Struct(struct_id) => {
-                let struct_def = &self.struct_defs[struct_id.0 as usize];
+                let struct_def = self.type_pool.struct_def(struct_id);
                 struct_def.is_copy
             }
             // Note: String is now handled via Type::Struct with is_builtin
@@ -266,7 +266,7 @@ impl<'a> Sema<'a> {
             Type::Struct(struct_id) => {
                 // Sum the slot counts of all fields (handles arrays, nested structs, and builtins)
                 // Empty structs naturally get 0 slots here
-                let struct_def = &self.struct_defs[struct_id.0 as usize];
+                let struct_def = self.type_pool.struct_def(struct_id);
                 struct_def
                     .fields
                     .iter()
@@ -285,7 +285,7 @@ impl<'a> Sema<'a> {
     /// Get the slot offset of a field within a struct.
     /// Returns the number of slots before the field starts.
     pub(crate) fn field_slot_offset(&self, struct_id: StructId, field_index: usize) -> u32 {
-        let struct_def = &self.struct_defs[struct_id.0 as usize];
+        let struct_def = self.type_pool.struct_def(struct_id);
         struct_def.fields[..field_index]
             .iter()
             .map(|f| self.abi_slot_count(f.ty))

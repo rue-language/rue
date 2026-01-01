@@ -1041,7 +1041,7 @@ fn handle_emit_multi_file(
                     for func in &state.functions {
                         let lowering_info = generate_lowering_info(
                             &func.cfg,
-                            &state.struct_defs,
+                            &state.type_pool,
                             &state.array_types,
                             &state.strings,
                             &state.interner,
@@ -1058,7 +1058,7 @@ fn handle_emit_multi_file(
                     for func in &state.functions {
                         let mir = generate_mir(
                             &func.cfg,
-                            &state.struct_defs,
+                            &state.type_pool,
                             &state.array_types,
                             &state.strings,
                             &state.interner,
@@ -1077,7 +1077,7 @@ fn handle_emit_multi_file(
                         println!("function {}:", func.analyzed.name);
                         let liveness_info = generate_liveness_info(
                             &func.cfg,
-                            &state.struct_defs,
+                            &state.type_pool,
                             &state.array_types,
                             &state.strings,
                             &state.interner,
@@ -1095,7 +1095,7 @@ fn handle_emit_multi_file(
                         println!("function {}:", func.analyzed.name);
                         let regalloc_info = match generate_regalloc_info(
                             &func.cfg,
-                            &state.struct_defs,
+                            &state.type_pool,
                             &state.array_types,
                             &state.strings,
                             &state.interner,
@@ -1120,7 +1120,7 @@ fn handle_emit_multi_file(
                         println!("{}:", func.analyzed.name);
                         let asm = match generate_emitted_asm(
                             &func.cfg,
-                            &state.struct_defs,
+                            &state.type_pool,
                             &state.array_types,
                             &state.strings,
                             &state.interner,
@@ -1143,7 +1143,7 @@ fn handle_emit_multi_file(
                         let frame_info = match generate_stack_frame_info(
                             &func.cfg,
                             &func.analyzed.name,
-                            &state.struct_defs,
+                            &state.type_pool,
                             &state.array_types,
                             &state.strings,
                             &state.interner,

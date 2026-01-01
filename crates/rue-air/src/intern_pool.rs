@@ -40,7 +40,7 @@ use std::sync::RwLock;
 
 use lasso::Spur;
 
-use crate::types::{EnumDef, StructDef, Type};
+use crate::types::{EnumDef, EnumId, StructDef, StructId, Type};
 
 /// Interned type index - 32 bits, Copy, cheap comparison.
 ///
@@ -273,18 +273,20 @@ impl TypeInternPool {
 
     /// Register a new struct (nominal - no deduplication).
     ///
-    /// Returns the `InternedType` and whether it was newly inserted.
-    /// If a struct with this name already exists, returns the existing type.
+    /// Returns the `StructId` (containing the pool index) and whether it was newly inserted.
+    /// If a struct with this name already exists, returns the existing StructId.
     ///
     /// # Panics
     ///
     /// Panics if the lock is poisoned.
-    pub fn register_struct(&self, name: Spur, def: StructDef) -> (InternedType, bool) {
+    pub fn register_struct(&self, name: Spur, def: StructDef) -> (StructId, bool) {
         // Fast path: check with read lock
         {
             let inner = self.inner.read().expect("TypeInternPool lock poisoned");
             if let Some(&existing) = inner.struct_by_name.get(&name) {
-                return (existing, false);
+                // Convert InternedType back to StructId via pool_index
+                let pool_index = existing.pool_index().expect("struct must have pool index");
+                return (StructId::from_pool_index(pool_index), false);
             }
         }
 
@@ -293,7 +295,8 @@ impl TypeInternPool {
 
         // Double-check after acquiring write lock
         if let Some(&existing) = inner.struct_by_name.get(&name) {
-            return (existing, false);
+            let pool_index = existing.pool_index().expect("struct must have pool index");
+            return (StructId::from_pool_index(pool_index), false);
         }
 
         // Create new struct type
@@ -303,23 +306,24 @@ impl TypeInternPool {
         inner.types.push(TypeData::Struct(StructData { name, def }));
         inner.struct_by_name.insert(name, interned);
 
-        (interned, true)
+        (StructId::from_pool_index(pool_index), true)
     }
 
     /// Register a new enum (nominal - no deduplication).
     ///
-    /// Returns the `InternedType` and whether it was newly inserted.
-    /// If an enum with this name already exists, returns the existing type.
+    /// Returns the `EnumId` (containing the pool index) and whether it was newly inserted.
+    /// If an enum with this name already exists, returns the existing EnumId.
     ///
     /// # Panics
     ///
     /// Panics if the lock is poisoned.
-    pub fn register_enum(&self, name: Spur, def: EnumDef) -> (InternedType, bool) {
+    pub fn register_enum(&self, name: Spur, def: EnumDef) -> (EnumId, bool) {
         // Fast path: check with read lock
         {
             let inner = self.inner.read().expect("TypeInternPool lock poisoned");
             if let Some(&existing) = inner.enum_by_name.get(&name) {
-                return (existing, false);
+                let pool_index = existing.pool_index().expect("enum must have pool index");
+                return (EnumId::from_pool_index(pool_index), false);
             }
         }
 
@@ -328,7 +332,8 @@ impl TypeInternPool {
 
         // Double-check after acquiring write lock
         if let Some(&existing) = inner.enum_by_name.get(&name) {
-            return (existing, false);
+            let pool_index = existing.pool_index().expect("enum must have pool index");
+            return (EnumId::from_pool_index(pool_index), false);
         }
 
         // Create new enum type
@@ -338,7 +343,7 @@ impl TypeInternPool {
         inner.types.push(TypeData::Enum(EnumData { name, def }));
         inner.enum_by_name.insert(name, interned);
 
-        (interned, true)
+        (EnumId::from_pool_index(pool_index), true)
     }
 
     /// Intern an array type (structural - deduplicates).
@@ -471,6 +476,141 @@ impl TypeInternPool {
             TypeData::Array { element, len } => Some((element, len)),
             _ => None,
         }
+    }
+
+    // ========================================================================
+    // Phase 3 helpers: Direct StructId/EnumId access
+    // ========================================================================
+    //
+    // These methods allow accessing struct and enum definitions directly via
+    // StructId/EnumId, which now store pool indices instead of vector indices.
+
+    /// Get a struct definition by StructId.
+    ///
+    /// The StructId contains a pool index. This method looks up the struct
+    /// in the pool and returns a clone of its definition.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the StructId doesn't correspond to a struct in the pool.
+    pub fn struct_def(&self, struct_id: StructId) -> StructDef {
+        let inner = self.inner.read().expect("TypeInternPool lock poisoned");
+        let pool_index = struct_id.0 as usize;
+        match &inner.types[pool_index] {
+            TypeData::Struct(data) => data.def.clone(),
+            other => panic!(
+                "Expected struct at pool index {}, got {:?}",
+                pool_index, other
+            ),
+        }
+    }
+
+    /// Get an enum definition by EnumId.
+    ///
+    /// The EnumId contains a pool index. This method looks up the enum
+    /// in the pool and returns a clone of its definition.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the EnumId doesn't correspond to an enum in the pool.
+    pub fn enum_def(&self, enum_id: EnumId) -> EnumDef {
+        let inner = self.inner.read().expect("TypeInternPool lock poisoned");
+        let pool_index = enum_id.0 as usize;
+        match &inner.types[pool_index] {
+            TypeData::Enum(data) => data.def.clone(),
+            other => panic!(
+                "Expected enum at pool index {}, got {:?}",
+                pool_index, other
+            ),
+        }
+    }
+
+    /// Update a struct definition in the pool.
+    ///
+    /// This is used during semantic analysis when struct fields are resolved
+    /// after the struct is initially registered.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the StructId doesn't correspond to a struct in the pool.
+    pub fn update_struct_def(&self, struct_id: StructId, new_def: StructDef) {
+        let mut inner = self.inner.write().expect("TypeInternPool lock poisoned");
+        let pool_index = struct_id.0 as usize;
+        match &mut inner.types[pool_index] {
+            TypeData::Struct(data) => data.def = new_def,
+            other => panic!(
+                "Expected struct at pool index {}, got {:?}",
+                pool_index, other
+            ),
+        }
+    }
+
+    /// Update an enum definition in the pool.
+    ///
+    /// This is used during semantic analysis when enum variants are resolved
+    /// after the enum is initially registered.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the EnumId doesn't correspond to an enum in the pool.
+    pub fn update_enum_def(&self, enum_id: EnumId, new_def: EnumDef) {
+        let mut inner = self.inner.write().expect("TypeInternPool lock poisoned");
+        let pool_index = enum_id.0 as usize;
+        match &mut inner.types[pool_index] {
+            TypeData::Enum(data) => data.def = new_def,
+            other => panic!(
+                "Expected enum at pool index {}, got {:?}",
+                pool_index, other
+            ),
+        }
+    }
+
+    /// Convert a StructId to an InternedType.
+    ///
+    /// Since StructId now contains a pool index, we just add the primitive offset.
+    #[inline]
+    pub fn struct_id_to_interned(&self, struct_id: StructId) -> InternedType {
+        InternedType::from_pool_index(struct_id.0)
+    }
+
+    /// Convert an EnumId to an InternedType.
+    ///
+    /// Since EnumId now contains a pool index, we just add the primitive offset.
+    #[inline]
+    pub fn enum_id_to_interned(&self, enum_id: EnumId) -> InternedType {
+        InternedType::from_pool_index(enum_id.0)
+    }
+
+    /// Get all struct IDs registered in the pool.
+    ///
+    /// Returns a vector of all StructId values, useful for iterating over all
+    /// structs (e.g., for drop glue synthesis).
+    pub fn all_struct_ids(&self) -> Vec<StructId> {
+        let inner = self.inner.read().expect("TypeInternPool lock poisoned");
+        inner
+            .struct_by_name
+            .values()
+            .map(|interned| {
+                let pool_index = interned.pool_index().expect("struct must have pool index");
+                StructId::from_pool_index(pool_index)
+            })
+            .collect()
+    }
+
+    /// Get all enum IDs registered in the pool.
+    ///
+    /// Returns a vector of all EnumId values, useful for iterating over all
+    /// enums.
+    pub fn all_enum_ids(&self) -> Vec<EnumId> {
+        let inner = self.inner.read().expect("TypeInternPool lock poisoned");
+        inner
+            .enum_by_name
+            .values()
+            .map(|interned| {
+                let pool_index = interned.pool_index().expect("enum must have pool index");
+                EnumId::from_pool_index(pool_index)
+            })
+            .collect()
     }
 
     /// Get the number of composite types in the pool.
@@ -696,15 +836,15 @@ mod tests {
             is_builtin: false,
         };
 
-        let (ty, is_new) = pool.register_struct(name, def.clone());
+        let (struct_id, is_new) = pool.register_struct(name, def.clone());
         assert!(is_new);
-        assert!(!ty.is_primitive());
+        assert_eq!(struct_id.pool_index(), 0); // First entry in pool
         assert_eq!(pool.len(), 1);
 
         // Registering the same name returns the existing type
-        let (ty2, is_new2) = pool.register_struct(name, def);
+        let (struct_id2, is_new2) = pool.register_struct(name, def);
         assert!(!is_new2);
-        assert_eq!(ty, ty2);
+        assert_eq!(struct_id, struct_id2);
         assert_eq!(pool.len(), 1); // No new type added
     }
 
@@ -719,15 +859,15 @@ mod tests {
             variants: vec!["Red".to_string(), "Green".to_string(), "Blue".to_string()],
         };
 
-        let (ty, is_new) = pool.register_enum(name, def.clone());
+        let (enum_id, is_new) = pool.register_enum(name, def.clone());
         assert!(is_new);
-        assert!(!ty.is_primitive());
+        assert_eq!(enum_id.pool_index(), 0); // First entry in pool
         assert_eq!(pool.len(), 1);
 
         // Registering the same name returns the existing type
-        let (ty2, is_new2) = pool.register_enum(name, def);
+        let (enum_id2, is_new2) = pool.register_enum(name, def);
         assert!(!is_new2);
-        assert_eq!(ty, ty2);
+        assert_eq!(enum_id, enum_id2);
     }
 
     #[test]
@@ -773,8 +913,10 @@ mod tests {
             is_builtin: false,
         };
 
-        let (ty, _) = pool.register_struct(name, def);
-        assert_eq!(pool.get_struct_by_name(name), Some(ty));
+        let (struct_id, _) = pool.register_struct(name, def);
+        // get_struct_by_name returns InternedType, convert StructId for comparison
+        let expected = pool.struct_id_to_interned(struct_id);
+        assert_eq!(pool.get_struct_by_name(name), Some(expected));
     }
 
     #[test]
@@ -790,8 +932,10 @@ mod tests {
             variants: vec!["Active".to_string(), "Inactive".to_string()],
         };
 
-        let (ty, _) = pool.register_enum(name, def);
-        assert_eq!(pool.get_enum_by_name(name), Some(ty));
+        let (enum_id, _) = pool.register_enum(name, def);
+        // get_enum_by_name returns InternedType, convert EnumId for comparison
+        let expected = pool.enum_id_to_interned(enum_id);
+        assert_eq!(pool.get_enum_by_name(name), Some(expected));
     }
 
     #[test]
@@ -824,7 +968,8 @@ mod tests {
             destructor: None,
             is_builtin: false,
         };
-        let (struct_ty, _) = pool.register_struct(struct_name, struct_def);
+        let (struct_id, _) = pool.register_struct(struct_name, struct_def);
+        let struct_ty = pool.struct_id_to_interned(struct_id);
 
         // Get struct data
         let data = pool.get(struct_ty).expect("should get struct data");
@@ -857,14 +1002,16 @@ mod tests {
             destructor: None,
             is_builtin: false,
         };
-        let (struct_ty, _) = pool.register_struct(struct_name, struct_def);
+        let (struct_id, _) = pool.register_struct(struct_name, struct_def);
+        let struct_ty = pool.struct_id_to_interned(struct_id);
 
         let enum_name = interner.get_or_intern("Color");
         let enum_def = EnumDef {
             name: "Color".to_string(),
             variants: vec!["Red".to_string()],
         };
-        let (enum_ty, _) = pool.register_enum(enum_name, enum_def);
+        let (enum_id, _) = pool.register_enum(enum_name, enum_def);
+        let enum_ty = pool.enum_id_to_interned(enum_id);
 
         let array_ty = pool.intern_array(InternedType::I32, 5);
 
@@ -902,13 +1049,21 @@ mod tests {
             destructor: None,
             is_builtin: false,
         };
-        let (ty, _) = pool.register_struct(name, def.clone());
+        let (struct_id, _) = pool.register_struct(name, def.clone());
 
-        let retrieved = pool.get_struct_def(ty).expect("should get struct def");
+        // Test the new Phase 3 struct_def() method that takes StructId directly
+        let retrieved = pool.struct_def(struct_id);
         assert_eq!(retrieved.name, def.name);
         assert_eq!(retrieved.is_copy, def.is_copy);
 
-        // Non-struct returns None
+        // Test the old get_struct_def() that takes InternedType
+        let interned = pool.struct_id_to_interned(struct_id);
+        let retrieved2 = pool
+            .get_struct_def(interned)
+            .expect("should get struct def");
+        assert_eq!(retrieved2.name, def.name);
+
+        // Non-struct returns None for get_struct_def
         let array_ty = pool.intern_array(InternedType::I32, 5);
         assert!(pool.get_struct_def(array_ty).is_none());
         assert!(pool.get_struct_def(InternedType::I32).is_none());
@@ -924,13 +1079,19 @@ mod tests {
             name: "Status".to_string(),
             variants: vec!["A".to_string(), "B".to_string()],
         };
-        let (ty, _) = pool.register_enum(name, def.clone());
+        let (enum_id, _) = pool.register_enum(name, def.clone());
 
-        let retrieved = pool.get_enum_def(ty).expect("should get enum def");
+        // Test the new Phase 3 enum_def() method that takes EnumId directly
+        let retrieved = pool.enum_def(enum_id);
         assert_eq!(retrieved.name, def.name);
         assert_eq!(retrieved.variants.len(), 2);
 
-        // Non-enum returns None
+        // Test the old get_enum_def() that takes InternedType
+        let interned = pool.enum_id_to_interned(enum_id);
+        let retrieved2 = pool.get_enum_def(interned).expect("should get enum def");
+        assert_eq!(retrieved2.name, def.name);
+
+        // Non-enum returns None for get_enum_def
         let array_ty = pool.intern_array(InternedType::I32, 5);
         assert!(pool.get_enum_def(array_ty).is_none());
         assert!(pool.get_enum_def(InternedType::I32).is_none());
@@ -959,7 +1120,8 @@ mod tests {
             destructor: None,
             is_builtin: false,
         };
-        let (struct_ty, _) = pool.register_struct(name, def);
+        let (struct_id, _) = pool.register_struct(name, def);
+        let struct_ty = pool.struct_id_to_interned(struct_id);
         assert!(pool.get_array_info(struct_ty).is_none());
         assert!(pool.get_array_info(InternedType::I32).is_none());
     }

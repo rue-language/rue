@@ -165,7 +165,9 @@ pub fn validate_runtime() -> Result<(), String> {
 
 // Re-export commonly used types
 pub use lasso::{Spur, ThreadedRodeo};
-pub use rue_air::{Air, AnalyzedFunction, ArrayTypeDef, Sema, SemaOutput, StructDef, Type};
+pub use rue_air::{
+    Air, AnalyzedFunction, ArrayTypeDef, Sema, SemaOutput, StructDef, Type, TypeInternPool,
+};
 pub use rue_cfg::{Cfg, CfgBuilder, CfgOutput, OptLevel};
 pub use rue_codegen::{
     LoweringDebugInfo, RegAllocDebugInfo, RelocationKind, StackFrameInfo, X86Mir,
@@ -770,8 +772,8 @@ pub struct CompileState {
     pub rir: Rir,
     /// Analyzed functions with typed IR and control flow graphs.
     pub functions: Vec<FunctionWithCfg>,
-    /// Struct definitions.
-    pub struct_defs: Vec<StructDef>,
+    /// Type intern pool containing all struct and enum definitions.
+    pub type_pool: TypeInternPool,
     /// Array type definitions (element type and length).
     pub array_types: Vec<ArrayTypeDef>,
     /// String literals indexed by their string_const index.
@@ -900,7 +902,7 @@ pub fn compile_frontend_from_ast_with_options(
 
     // Synthesize drop glue functions for structs that need them
     let drop_glue_functions =
-        drop_glue::synthesize_drop_glue(&sema_output.struct_defs, &sema_output.array_types);
+        drop_glue::synthesize_drop_glue(&sema_output.type_pool, &sema_output.array_types);
 
     // Combine user functions with synthesized drop glue functions
     let all_functions: Vec<_> = sema_output
@@ -922,7 +924,7 @@ pub fn compile_frontend_from_ast_with_options(
                     func.num_locals,
                     func.num_param_slots,
                     &func.name,
-                    &sema_output.struct_defs,
+                    &sema_output.type_pool,
                     &sema_output.array_types,
                     func.param_modes.clone(),
                     &interner,
@@ -962,7 +964,7 @@ pub fn compile_frontend_from_ast_with_options(
         interner,
         rir,
         functions,
-        struct_defs: sema_output.struct_defs,
+        type_pool: sema_output.type_pool,
         array_types: sema_output.array_types,
         strings: sema_output.strings,
         warnings,
@@ -1006,7 +1008,7 @@ pub fn compile_frontend_from_rir_with_options(
 
     // Synthesize drop glue functions for structs that need them
     let drop_glue_functions =
-        drop_glue::synthesize_drop_glue(&sema_output.struct_defs, &sema_output.array_types);
+        drop_glue::synthesize_drop_glue(&sema_output.type_pool, &sema_output.array_types);
 
     // Combine user functions with synthesized drop glue functions
     let all_functions: Vec<_> = sema_output
@@ -1028,7 +1030,7 @@ pub fn compile_frontend_from_rir_with_options(
                     func.num_locals,
                     func.num_param_slots,
                     &func.name,
-                    &sema_output.struct_defs,
+                    &sema_output.type_pool,
                     &sema_output.array_types,
                     func.param_modes.clone(),
                     &interner,
@@ -1067,7 +1069,7 @@ pub fn compile_frontend_from_rir_with_options(
         interner,
         rir,
         functions,
-        struct_defs: sema_output.struct_defs,
+        type_pool: sema_output.type_pool,
         array_types: sema_output.array_types,
         strings: sema_output.strings,
         warnings,
@@ -1085,8 +1087,8 @@ pub struct CompileStateFromRir {
     pub rir: Rir,
     /// Analyzed functions with typed IR and control flow graphs.
     pub functions: Vec<FunctionWithCfg>,
-    /// Struct definitions.
-    pub struct_defs: Vec<StructDef>,
+    /// Type intern pool containing all struct and enum definitions.
+    pub type_pool: TypeInternPool,
     /// Array type definitions (element type and length).
     pub array_types: Vec<ArrayTypeDef>,
     /// String literals indexed by their string_const index.
@@ -1226,7 +1228,7 @@ fn compile_x86_64(
             .map(|func| {
                 let machine_code = rue_codegen::x86_64::generate(
                     &func.cfg,
-                    &state.struct_defs,
+                    &state.type_pool,
                     &state.array_types,
                     &state.strings,
                     &state.interner,
@@ -1474,7 +1476,7 @@ fn compile_aarch64(
             .map(|func| {
                 let machine_code = rue_codegen::aarch64::generate(
                     &func.cfg,
-                    &state.struct_defs,
+                    &state.type_pool,
                     &state.array_types,
                     &state.strings,
                     &state.interner,
@@ -1556,7 +1558,7 @@ fn compile_x86_64_from_rir(
             .map(|func| {
                 let machine_code = rue_codegen::x86_64::generate(
                     &func.cfg,
-                    &state.struct_defs,
+                    &state.type_pool,
                     &state.array_types,
                     &state.strings,
                     &state.interner,
@@ -1639,7 +1641,7 @@ fn compile_aarch64_from_rir(
             .map(|func| {
                 let machine_code = rue_codegen::aarch64::generate(
                     &func.cfg,
-                    &state.struct_defs,
+                    &state.type_pool,
                     &state.array_types,
                     &state.strings,
                     &state.interner,
@@ -1775,7 +1777,7 @@ impl Mir {
 /// This returns the MIR before register allocation, with virtual registers.
 pub fn generate_mir(
     cfg: &Cfg,
-    struct_defs: &[StructDef],
+    type_pool: &TypeInternPool,
     array_types: &[ArrayTypeDef],
     strings: &[String],
     interner: &ThreadedRodeo,
@@ -1783,25 +1785,15 @@ pub fn generate_mir(
 ) -> Mir {
     match target.arch() {
         Arch::X86_64 => {
-            let mir = rue_codegen::x86_64::CfgLower::new(
-                cfg,
-                struct_defs,
-                array_types,
-                strings,
-                interner,
-            )
-            .lower();
+            let mir =
+                rue_codegen::x86_64::CfgLower::new(cfg, type_pool, array_types, strings, interner)
+                    .lower();
             Mir::X86_64(mir)
         }
         Arch::Aarch64 => {
-            let mir = rue_codegen::aarch64::CfgLower::new(
-                cfg,
-                struct_defs,
-                array_types,
-                strings,
-                interner,
-            )
-            .lower();
+            let mir =
+                rue_codegen::aarch64::CfgLower::new(cfg, type_pool, array_types, strings, interner)
+                    .lower();
             Mir::Aarch64(mir)
         }
     }
@@ -1813,7 +1805,7 @@ pub fn generate_mir(
 /// This is closer to the final assembly that will be emitted.
 pub fn generate_allocated_mir(
     cfg: &Cfg,
-    struct_defs: &[StructDef],
+    type_pool: &TypeInternPool,
     array_types: &[ArrayTypeDef],
     strings: &[String],
     interner: &ThreadedRodeo,
@@ -1826,14 +1818,9 @@ pub fn generate_allocated_mir(
     match target.arch() {
         Arch::X86_64 => {
             // Lower CFG to X86Mir with virtual registers
-            let mir = rue_codegen::x86_64::CfgLower::new(
-                cfg,
-                struct_defs,
-                array_types,
-                strings,
-                interner,
-            )
-            .lower();
+            let mir =
+                rue_codegen::x86_64::CfgLower::new(cfg, type_pool, array_types, strings, interner)
+                    .lower();
 
             // Allocate physical registers
             let (mir, _num_spills, _used_callee_saved) =
@@ -1843,14 +1830,9 @@ pub fn generate_allocated_mir(
         }
         Arch::Aarch64 => {
             // Lower CFG to Aarch64Mir with virtual registers
-            let mir = rue_codegen::aarch64::CfgLower::new(
-                cfg,
-                struct_defs,
-                array_types,
-                strings,
-                interner,
-            )
-            .lower();
+            let mir =
+                rue_codegen::aarch64::CfgLower::new(cfg, type_pool, array_types, strings, interner)
+                    .lower();
 
             // Allocate physical registers
             let (mir, _num_spills, _used_callee_saved) =
@@ -1869,7 +1851,7 @@ pub fn generate_allocated_mir(
 /// Used by `--emit liveness` to visualize which values are live at each program point.
 pub fn generate_liveness_info(
     cfg: &Cfg,
-    struct_defs: &[StructDef],
+    type_pool: &TypeInternPool,
     array_types: &[ArrayTypeDef],
     strings: &[String],
     interner: &ThreadedRodeo,
@@ -1877,25 +1859,15 @@ pub fn generate_liveness_info(
 ) -> rue_codegen::LivenessDebugInfo {
     match target.arch() {
         Arch::X86_64 => {
-            let mir = rue_codegen::x86_64::CfgLower::new(
-                cfg,
-                struct_defs,
-                array_types,
-                strings,
-                interner,
-            )
-            .lower();
+            let mir =
+                rue_codegen::x86_64::CfgLower::new(cfg, type_pool, array_types, strings, interner)
+                    .lower();
             rue_codegen::x86_64::liveness::analyze_debug(&mir)
         }
         Arch::Aarch64 => {
-            let mir = rue_codegen::aarch64::CfgLower::new(
-                cfg,
-                struct_defs,
-                array_types,
-                strings,
-                interner,
-            )
-            .lower();
+            let mir =
+                rue_codegen::aarch64::CfgLower::new(cfg, type_pool, array_types, strings, interner)
+                    .lower();
             rue_codegen::aarch64::liveness::analyze_debug(&mir)
         }
     }
@@ -1909,7 +1881,7 @@ pub fn generate_liveness_info(
 /// Used by `--emit lowering` to visualize the instruction selection process.
 pub fn generate_lowering_info(
     cfg: &Cfg,
-    struct_defs: &[StructDef],
+    type_pool: &TypeInternPool,
     array_types: &[ArrayTypeDef],
     strings: &[String],
     interner: &ThreadedRodeo,
@@ -1917,25 +1889,15 @@ pub fn generate_lowering_info(
 ) -> rue_codegen::LoweringDebugInfo {
     match target.arch() {
         Arch::X86_64 => {
-            let (_mir, debug_info) = rue_codegen::x86_64::CfgLower::new(
-                cfg,
-                struct_defs,
-                array_types,
-                strings,
-                interner,
-            )
-            .lower_with_debug();
+            let (_mir, debug_info) =
+                rue_codegen::x86_64::CfgLower::new(cfg, type_pool, array_types, strings, interner)
+                    .lower_with_debug();
             debug_info
         }
         Arch::Aarch64 => {
-            let (_mir, debug_info) = rue_codegen::aarch64::CfgLower::new(
-                cfg,
-                struct_defs,
-                array_types,
-                strings,
-                interner,
-            )
-            .lower_with_debug();
+            let (_mir, debug_info) =
+                rue_codegen::aarch64::CfgLower::new(cfg, type_pool, array_types, strings, interner)
+                    .lower_with_debug();
             debug_info
         }
     }
@@ -1951,7 +1913,7 @@ pub fn generate_lowering_info(
 /// reflects what's in the binary.
 pub fn generate_emitted_asm(
     cfg: &Cfg,
-    struct_defs: &[StructDef],
+    type_pool: &TypeInternPool,
     array_types: &[ArrayTypeDef],
     strings: &[String],
     interner: &ThreadedRodeo,
@@ -1961,7 +1923,7 @@ pub fn generate_emitted_asm(
         Arch::X86_64 => {
             let (_machine_code, asm) = rue_codegen::x86_64::generate_with_asm(
                 cfg,
-                struct_defs,
+                type_pool,
                 array_types,
                 strings,
                 interner,
@@ -1971,7 +1933,7 @@ pub fn generate_emitted_asm(
         Arch::Aarch64 => {
             let (_machine_code, asm) = rue_codegen::aarch64::generate_with_asm(
                 cfg,
-                struct_defs,
+                type_pool,
                 array_types,
                 strings,
                 interner,
@@ -1988,7 +1950,7 @@ pub fn generate_emitted_asm(
 /// The output is formatted as a human-readable string.
 pub fn generate_regalloc_info(
     cfg: &Cfg,
-    struct_defs: &[StructDef],
+    type_pool: &TypeInternPool,
     array_types: &[ArrayTypeDef],
     strings: &[String],
     interner: &ThreadedRodeo,
@@ -1998,7 +1960,7 @@ pub fn generate_regalloc_info(
         Arch::X86_64 => {
             let debug_info = rue_codegen::x86_64::generate_regalloc_info(
                 cfg,
-                struct_defs,
+                type_pool,
                 array_types,
                 strings,
                 interner,
@@ -2008,7 +1970,7 @@ pub fn generate_regalloc_info(
         Arch::Aarch64 => {
             let debug_info = rue_codegen::aarch64::generate_regalloc_info(
                 cfg,
-                struct_defs,
+                type_pool,
                 array_types,
                 strings,
                 interner,
@@ -2036,8 +1998,8 @@ pub struct AirOutput {
     pub rir: Rir,
     /// Analyzed functions with typed IR.
     pub functions: Vec<AnalyzedFunction>,
-    /// Struct definitions.
-    pub struct_defs: Vec<StructDef>,
+    /// Type intern pool containing all struct and enum definitions.
+    pub type_pool: TypeInternPool,
     /// Array type definitions.
     pub array_types: Vec<ArrayTypeDef>,
     /// String literals.
@@ -2082,7 +2044,7 @@ pub fn compile_to_air(source: &str) -> MultiErrorResult<AirOutput> {
         interner,
         rir,
         functions: sema_output.functions,
-        struct_defs: sema_output.struct_defs,
+        type_pool: sema_output.type_pool,
         array_types: sema_output.array_types,
         strings: sema_output.strings,
         warnings: sema_output.warnings,
@@ -3232,11 +3194,17 @@ mod integration_tests {
                 fn main() -> i32 { 0 }
             "#;
             let result = compile_to_air(src).unwrap();
-            // struct_defs includes builtin types (String) plus user-defined structs
-            // There's 1 builtin (String) + 1 user-defined (Point) = 2 total
-            assert_eq!(result.struct_defs.len(), 2);
-            // Verify Point is present (builtins are injected first, so it's at index 1)
-            assert_eq!(result.struct_defs[1].name, "Point");
+            // type_pool includes builtin types (String) plus user-defined structs
+            // There's 1 builtin (String) + 1 user-defined (Point) = 2 total structs
+            let all_struct_ids = result.type_pool.all_struct_ids();
+            assert_eq!(all_struct_ids.len(), 2);
+            // Verify Point is present
+            let point_name = result.interner.get_or_intern("Point");
+            let point_interned = result.type_pool.get_struct_by_name(point_name);
+            assert!(
+                point_interned.is_some(),
+                "Point struct should exist in pool"
+            );
         }
 
         #[test]

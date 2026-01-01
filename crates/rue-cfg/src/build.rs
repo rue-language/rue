@@ -4,7 +4,9 @@
 //! into explicit basic blocks with terminators.
 
 use lasso::ThreadedRodeo;
-use rue_air::{Air, AirArgMode, AirInstData, AirPattern, AirRef, ArrayTypeDef, StructDef, Type};
+use rue_air::{
+    Air, AirArgMode, AirInstData, AirPattern, AirRef, ArrayTypeDef, Type, TypeInternPool,
+};
 use rue_error::{CompileWarning, WarningKind};
 
 use crate::CfgOutput;
@@ -57,8 +59,8 @@ struct LiveSlot {
 pub struct CfgBuilder<'a> {
     air: &'a Air,
     cfg: Cfg,
-    /// Struct definitions for type queries (e.g., needs_drop)
-    struct_defs: &'a [StructDef],
+    /// Type intern pool for struct/enum lookups (Phase 3 ADR-0024)
+    type_pool: &'a TypeInternPool,
     /// Array type definitions for type queries
     array_types: &'a [ArrayTypeDef],
     /// Interner for resolving symbols to strings
@@ -80,15 +82,15 @@ pub struct CfgBuilder<'a> {
 impl<'a> CfgBuilder<'a> {
     /// Build a CFG from AIR, returning the CFG and any warnings.
     ///
-    /// The `struct_defs` and `array_types` parameters provide type definitions
-    /// needed for queries like `type_needs_drop`. The `interner` is used to
-    /// resolve Symbol values to strings for the CFG.
+    /// The `type_pool` provides struct/enum definitions needed for queries like
+    /// `type_needs_drop`. The `array_types` provides array type definitions.
+    /// The `interner` is used to resolve Symbol values to strings for the CFG.
     pub fn build(
         air: &'a Air,
         num_locals: u32,
         num_params: u32,
         fn_name: &str,
-        struct_defs: &'a [StructDef],
+        type_pool: &'a TypeInternPool,
         array_types: &'a [ArrayTypeDef],
         param_modes: Vec<bool>,
         interner: &'a ThreadedRodeo,
@@ -102,7 +104,7 @@ impl<'a> CfgBuilder<'a> {
                 fn_name.to_string(),
                 param_modes,
             ),
-            struct_defs,
+            type_pool,
             array_types,
             interner,
             current_block: BlockId(0),
@@ -1719,7 +1721,7 @@ impl<'a> CfgBuilder<'a> {
             // Struct types need drop if they have a destructor (e.g., builtin String)
             // or if any field needs drop
             Type::Struct(struct_id) => {
-                let struct_def = &self.struct_defs[struct_id.0 as usize];
+                let struct_def = self.type_pool.struct_def(struct_id);
                 // Builtins with destructors (like String) need drop
                 if struct_def.destructor.is_some() {
                     return true;
@@ -1833,7 +1835,7 @@ mod tests {
             func.num_locals,
             func.num_param_slots,
             &func.name,
-            &output.struct_defs,
+            &output.type_pool,
             &output.array_types,
             func.param_modes.clone(),
             &interner,

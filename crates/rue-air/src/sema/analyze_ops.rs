@@ -704,7 +704,7 @@ impl<'a> Sema<'a> {
                         ErrorKind::UnknownEnumType(self.interner.resolve(&*type_name).to_string()),
                         pattern_span,
                     )?;
-                    let enum_def = &self.enum_defs[enum_id.0 as usize];
+                    let enum_def = self.type_pool.enum_def(*enum_id);
 
                     // Check that scrutinee type matches the pattern's enum type
                     if scrutinee_type != Type::Enum(*enum_id) {
@@ -781,7 +781,7 @@ impl<'a> Sema<'a> {
                             pattern_span,
                         )
                     })?;
-                    let enum_def = &self.enum_defs[enum_id.0 as usize];
+                    let enum_def = self.type_pool.enum_def(enum_id);
                     let variant_name = self.interner.resolve(&*variant);
                     let variant_index = enum_def.find_variant(variant_name).ok_or_else(|| {
                         CompileError::new(
@@ -809,7 +809,7 @@ impl<'a> Sema<'a> {
         let is_exhaustive = if scrutinee_type == Type::Bool {
             has_wildcard || (bool_true_covered && bool_false_covered)
         } else if let Some(enum_id) = pattern_enum_id {
-            let enum_def = &self.enum_defs[enum_id.0 as usize];
+            let enum_def = self.type_pool.enum_def(enum_id);
             has_wildcard || covered_variants.len() == enum_def.variant_count()
         } else {
             // For integers, must have wildcard
@@ -1394,8 +1394,8 @@ impl<'a> Sema<'a> {
             .get(&type_name)
             .ok_or_compile_error(ErrorKind::UnknownType(type_name_str.to_string()), span)?;
 
-        // Clone struct def data before mutable borrow
-        let struct_def = self.struct_defs[struct_id.0 as usize].clone();
+        // Get struct def (returns owned copy from pool)
+        let struct_def = self.type_pool.struct_def(struct_id);
         let struct_type = Type::Struct(struct_id);
 
         // Build a map from field name to struct field index
@@ -1514,7 +1514,7 @@ impl<'a> Sema<'a> {
             }
         };
 
-        let struct_def = &self.struct_defs[struct_id.0 as usize];
+        let struct_def = self.type_pool.struct_def(struct_id);
         let is_linear = struct_def.is_linear;
         let field_name_str = self.interner.resolve(&field).to_string();
 
@@ -1821,7 +1821,7 @@ impl<'a> Sema<'a> {
                     ErrorKind::UnknownEnumType(self.interner.resolve(&*type_name).to_string()),
                     inst.span,
                 )?;
-                let enum_def = &self.enum_defs[enum_id.0 as usize];
+                let enum_def = self.type_pool.enum_def(*enum_id);
 
                 // Find the variant index
                 let variant_name = self.interner.resolve(&*variant);

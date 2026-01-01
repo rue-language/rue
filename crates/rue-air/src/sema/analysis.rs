@@ -5165,7 +5165,7 @@ impl<'a> Sema<'a> {
                 }
             };
 
-            let struct_def = &self.struct_defs[struct_id.0 as usize];
+            let struct_def = self.type_pool.struct_def(struct_id);
             let field_name_str = self.interner.resolve(&*field).to_string();
 
             let (field_index, struct_field) =
@@ -5670,7 +5670,7 @@ impl<'a> Sema<'a> {
                 }
             };
 
-            let struct_def = &self.struct_defs[struct_id.0 as usize];
+            let struct_def = self.type_pool.struct_def(struct_id);
             let field_name_str = self.interner.resolve(&*field_sym).to_string();
 
             let (field_index, struct_field) =
@@ -5699,7 +5699,7 @@ impl<'a> Sema<'a> {
             }
         };
 
-        let struct_def = &self.struct_defs[struct_id.0 as usize];
+        let struct_def = self.type_pool.struct_def(struct_id);
         let field_name_str = self.interner.resolve(&field).to_string();
 
         let (field_index, _struct_field) =
@@ -5992,7 +5992,7 @@ impl<'a> Sema<'a> {
         }
 
         // Look up the struct name by its ID
-        let struct_def = &self.struct_defs[struct_id.0 as usize];
+        let struct_def = self.type_pool.struct_def(struct_id);
         let struct_name_str = struct_def.name.clone();
 
         // Find the struct name symbol for method lookup

@@ -21,8 +21,6 @@ impl<'a> Sema<'a> {
     /// destructor, and copy status derived from the `rue-builtins` registry.
     pub(crate) fn inject_builtin_types(&mut self) {
         for builtin in BUILTIN_TYPES {
-            let struct_id = StructId(self.struct_defs.len() as u32);
-
             // Convert builtin field types to our Type enum
             let fields: Vec<StructField> = builtin
                 .fields
@@ -48,10 +46,16 @@ impl<'a> Sema<'a> {
                 is_builtin: true,
             };
 
+            // Register in type pool and get pool-based StructId
+            let name_spur = self.interner.get_or_intern(builtin.name);
+            let (struct_id, _) = self
+                .type_pool
+                .register_struct(name_spur, struct_def.clone());
+
+            // Keep in struct_defs for backwards compatibility during migration
             self.struct_defs.push(struct_def);
 
-            // Register in struct lookup
-            let name_spur = self.interner.get_or_intern(builtin.name);
+            // Register in struct lookup with pool-based StructId
             self.structs.insert(name_spur, struct_id);
 
             // Store special IDs for quick access
@@ -87,7 +91,7 @@ impl<'a> Sema<'a> {
         &self,
         struct_id: StructId,
     ) -> Option<&'static BuiltinTypeDef> {
-        let struct_def = &self.struct_defs[struct_id.0 as usize];
+        let struct_def = self.type_pool.struct_def(struct_id);
         if struct_def.is_builtin {
             rue_builtins::get_builtin_type(&struct_def.name)
         } else {
@@ -136,7 +140,7 @@ impl<'a> Sema<'a> {
     pub(crate) fn is_type_linear(&self, ty: Type) -> bool {
         match ty {
             Type::Struct(struct_id) => {
-                let struct_def = &self.struct_defs[struct_id.0 as usize];
+                let struct_def = self.type_pool.struct_def(struct_id);
                 struct_def.is_linear
             }
             // Only struct types can be linear

@@ -6,10 +6,8 @@
 use std::collections::HashMap;
 
 use lasso::ThreadedRodeo;
-use rue_air::ArrayTypeDef;
-use rue_cfg::{
-    BasicBlock, BlockId, Cfg, CfgInstData, CfgValue, StructDef, StructId, Terminator, Type,
-};
+use rue_air::{ArrayTypeDef, StructId, TypeInternPool};
+use rue_cfg::{BasicBlock, BlockId, Cfg, CfgInstData, CfgValue, Terminator, Type};
 
 use super::mir::{Aarch64Inst, Aarch64Mir, Cond, LabelId, Operand, Reg, VReg};
 use crate::cfg_lower::{FieldChainBase, IndexChainBase, IndexLevel};
@@ -42,7 +40,8 @@ const RET_REGS: [Reg; 8] = [
 /// CFG to Aarch64Mir lowering.
 pub struct CfgLower<'a> {
     cfg: &'a Cfg,
-    struct_defs: &'a [StructDef],
+    /// Type intern pool for struct/enum lookups (Phase 3 ADR-0024).
+    type_pool: &'a TypeInternPool,
     /// Array type definitions for bounds checking.
     array_types: &'a [ArrayTypeDef],
     /// String table from semantic analysis (indexed by StringId).
@@ -72,7 +71,7 @@ impl<'a> CfgLower<'a> {
     /// Create a new CFG lowering pass.
     pub fn new(
         cfg: &'a Cfg,
-        struct_defs: &'a [StructDef],
+        type_pool: &'a TypeInternPool,
         array_types: &'a [ArrayTypeDef],
         strings: &'a [String],
         interner: &'a ThreadedRodeo,
@@ -92,7 +91,7 @@ impl<'a> CfgLower<'a> {
 
         Self {
             cfg,
-            struct_defs,
+            type_pool,
             array_types,
             strings,
             interner,
@@ -126,17 +125,17 @@ impl<'a> CfgLower<'a> {
 
     /// Calculate the total number of slots needed to store a type.
     fn type_slot_count(&self, ty: Type) -> u32 {
-        types::type_slot_count(self.struct_defs, self.array_types, ty)
+        types::type_slot_count(self.type_pool, self.array_types, ty)
     }
 
     /// Calculate the slot count for a single element of an array type.
     fn array_element_slot_count(&self, array_type: Type) -> u32 {
-        types::array_element_slot_count_from_type(self.struct_defs, self.array_types, array_type)
+        types::array_element_slot_count_from_type(self.type_pool, self.array_types, array_type)
     }
 
     /// Calculate the slot offset for a field within a struct.
     fn struct_field_slot_offset(&self, struct_id: StructId, field_index: u32) -> u32 {
-        types::struct_field_slot_offset(self.struct_defs, self.array_types, struct_id, field_index)
+        types::struct_field_slot_offset(self.type_pool, self.array_types, struct_id, field_index)
     }
 
     /// Trace back through a chain of FieldGet instructions to find the original
@@ -317,7 +316,7 @@ impl<'a> CfgLower<'a> {
     fn is_builtin_string(&self, ty: Type) -> bool {
         match ty {
             Type::Struct(struct_id) => {
-                let struct_def = &self.struct_defs[struct_id.0 as usize];
+                let struct_def = self.type_pool.struct_def(struct_id);
                 struct_def.is_builtin && struct_def.name == "String"
             }
             _ => false,
@@ -2870,7 +2869,7 @@ impl<'a> CfgLower<'a> {
 
                 // Handle struct drops - need to pass all flattened field values
                 if let Type::Struct(struct_id) = dropped_ty {
-                    let struct_def = &self.struct_defs[struct_id.0 as usize];
+                    let struct_def = self.type_pool.struct_def(struct_id);
 
                     // Collect all scalar vregs for this struct (flattened)
                     let field_vregs = self.collect_struct_scalar_vregs(*dropped_value);
@@ -2934,7 +2933,7 @@ impl<'a> CfgLower<'a> {
                     }
 
                     let drop_fn_name =
-                        types::array_drop_glue_name(array_id, self.array_types, self.struct_defs);
+                        types::array_drop_glue_name(array_id, self.array_types, self.type_pool);
                     let symbol_id = self.intern_symbol(&drop_fn_name);
                     self.mir.push(Aarch64Inst::Bl { symbol_id });
                     return;
@@ -3670,7 +3669,7 @@ impl<'a> CfgLower<'a> {
             .cloned()
             .expect("struct should have field vregs");
 
-        let struct_def = &self.struct_defs[struct_id.0 as usize];
+        let struct_def = self.type_pool.struct_def(struct_id);
         let field_count = struct_def.fields.len();
 
         if field_count == 0 {
@@ -4075,7 +4074,7 @@ mod tests {
         let output = sema.analyze_all().unwrap();
 
         let func = &output.functions[0];
-        let struct_defs = &output.struct_defs;
+        let type_pool = &output.type_pool;
         let array_types = &output.array_types;
         let strings = &output.strings;
         let cfg_output = CfgBuilder::build(
@@ -4083,20 +4082,13 @@ mod tests {
             func.num_locals,
             func.num_param_slots,
             &func.name,
-            struct_defs,
+            type_pool,
             array_types,
             func.param_modes.clone(),
             &interner,
         );
 
-        CfgLower::new(
-            &cfg_output.cfg,
-            struct_defs,
-            array_types,
-            strings,
-            &interner,
-        )
-        .lower()
+        CfgLower::new(&cfg_output.cfg, type_pool, array_types, strings, &interner).lower()
     }
 
     #[test]

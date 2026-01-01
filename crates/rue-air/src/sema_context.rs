@@ -259,8 +259,8 @@ impl<'a> SemaContext<'a> {
     }
 
     /// Get a struct definition by ID.
-    pub fn get_struct_def(&self, id: StructId) -> &StructDef {
-        &self.struct_defs[id.0 as usize]
+    pub fn get_struct_def(&self, id: StructId) -> StructDef {
+        self.type_pool.struct_def(id)
     }
 
     /// Look up an enum by name.
@@ -269,8 +269,8 @@ impl<'a> SemaContext<'a> {
     }
 
     /// Get an enum definition by ID.
-    pub fn get_enum_def(&self, id: EnumId) -> &EnumDef {
-        &self.enum_defs[id.0 as usize]
+    pub fn get_enum_def(&self, id: EnumId) -> EnumDef {
+        self.type_pool.enum_def(id)
     }
 
     /// Look up a function by name.
@@ -313,8 +313,8 @@ impl<'a> SemaContext<'a> {
             Type::Unit => "()".to_string(),
             Type::Never => "!".to_string(),
             Type::Error => "<error>".to_string(),
-            Type::Struct(struct_id) => self.struct_defs[struct_id.0 as usize].name.clone(),
-            Type::Enum(enum_id) => self.enum_defs[enum_id.0 as usize].name.clone(),
+            Type::Struct(struct_id) => self.type_pool.struct_def(struct_id).name.clone(),
+            Type::Enum(enum_id) => self.type_pool.enum_def(enum_id).name.clone(),
             Type::Array(array_id) => {
                 let array_def = self.array_registry.get_def(array_id);
                 format!(
@@ -346,7 +346,7 @@ impl<'a> SemaContext<'a> {
             Type::Never | Type::Error => true,
             // Struct types: check if marked with @copy
             Type::Struct(struct_id) => {
-                let struct_def = &self.struct_defs[struct_id.0 as usize];
+                let struct_def = self.type_pool.struct_def(struct_id);
                 struct_def.is_copy
             }
             // Arrays are Copy if their element type is Copy
@@ -373,7 +373,7 @@ impl<'a> SemaContext<'a> {
             Type::Unit | Type::Never => 0,
             Type::Enum(_) => 1,
             Type::Struct(struct_id) => {
-                let struct_def = &self.struct_defs[struct_id.0 as usize];
+                let struct_def = self.type_pool.struct_def(struct_id);
                 struct_def
                     .fields
                     .iter()
@@ -390,7 +390,7 @@ impl<'a> SemaContext<'a> {
 
     /// Get the slot offset of a field within a struct.
     pub fn field_slot_offset(&self, struct_id: StructId, field_index: usize) -> u32 {
-        let struct_def = &self.struct_defs[struct_id.0 as usize];
+        let struct_def = self.type_pool.struct_def(struct_id);
         struct_def.fields[..field_index]
             .iter()
             .map(|f| self.abi_slot_count(f.ty))
@@ -429,7 +429,7 @@ impl<'a> SemaContext<'a> {
         &self,
         struct_id: StructId,
     ) -> Option<&'static rue_builtins::BuiltinTypeDef> {
-        let struct_def = &self.struct_defs[struct_id.0 as usize];
+        let struct_def = self.type_pool.struct_def(struct_id);
         if struct_def.is_builtin {
             rue_builtins::get_builtin_type(&struct_def.name)
         } else {
@@ -460,7 +460,7 @@ impl<'a> SemaContext<'a> {
     pub fn is_type_linear(&self, ty: Type) -> bool {
         match ty {
             Type::Struct(struct_id) => {
-                let struct_def = &self.struct_defs[struct_id.0 as usize];
+                let struct_def = self.type_pool.struct_def(struct_id);
                 struct_def.is_linear
             }
             _ => false,

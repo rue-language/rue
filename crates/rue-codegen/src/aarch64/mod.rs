@@ -27,7 +27,7 @@ pub use mir::{Aarch64Inst, Aarch64Mir, Cond, Operand, Reg, VReg};
 pub use regalloc::RegAlloc;
 
 use lasso::ThreadedRodeo;
-use rue_air::{ArrayTypeDef, StructDef};
+use rue_air::{ArrayTypeDef, TypeInternPool};
 use rue_cfg::Cfg;
 use rue_error::CompileResult;
 
@@ -42,7 +42,7 @@ pub use super::{EmittedCode, EmittedRelocation};
 /// This is the main entry point for AArch64 code generation.
 pub fn generate(
     cfg: &Cfg,
-    struct_defs: &[StructDef],
+    type_pool: &TypeInternPool,
     array_types: &[ArrayTypeDef],
     strings: &[String],
     interner: &ThreadedRodeo,
@@ -51,7 +51,7 @@ pub fn generate(
     let num_params = cfg.num_params();
 
     // Lower CFG to Aarch64Mir with virtual registers
-    let mir = CfgLower::new(cfg, struct_defs, array_types, strings, interner).lower();
+    let mir = CfgLower::new(cfg, type_pool, array_types, strings, interner).lower();
 
     // Allocate physical registers
     let existing_slots = num_locals + num_params;
@@ -86,7 +86,7 @@ pub fn generate(
 /// showing the actual emitted instructions (including prologue/epilogue).
 pub fn generate_with_asm(
     cfg: &Cfg,
-    struct_defs: &[StructDef],
+    type_pool: &TypeInternPool,
     array_types: &[ArrayTypeDef],
     strings: &[String],
     interner: &ThreadedRodeo,
@@ -95,7 +95,7 @@ pub fn generate_with_asm(
     let num_params = cfg.num_params();
 
     // Lower CFG to Aarch64Mir with virtual registers
-    let mir = CfgLower::new(cfg, struct_defs, array_types, strings, interner).lower();
+    let mir = CfgLower::new(cfg, type_pool, array_types, strings, interner).lower();
 
     // Allocate physical registers
     let existing_slots = num_locals + num_params;
@@ -133,7 +133,7 @@ pub fn generate_with_asm(
 /// including live ranges, interference, and allocation decisions.
 pub fn generate_regalloc_info(
     cfg: &Cfg,
-    struct_defs: &[StructDef],
+    type_pool: &TypeInternPool,
     array_types: &[ArrayTypeDef],
     strings: &[String],
     interner: &ThreadedRodeo,
@@ -142,7 +142,7 @@ pub fn generate_regalloc_info(
     let num_params = cfg.num_params();
 
     // Lower CFG to Aarch64Mir with virtual registers
-    let mir = CfgLower::new(cfg, struct_defs, array_types, strings, interner).lower();
+    let mir = CfgLower::new(cfg, type_pool, array_types, strings, interner).lower();
 
     // Allocate physical registers with debug info
     let existing_slots = num_locals + num_params;

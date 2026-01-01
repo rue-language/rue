@@ -2,9 +2,12 @@
 //!
 //! This module provides common functions for calculating type sizes and
 //! field offsets, shared between x86_64 and aarch64 backends.
+//!
+//! As of Phase 3 (ADR-0024), all struct/enum lookups go through `TypeInternPool`
+//! instead of separate `&[StructDef]` slices.
 
-use rue_air::{ArrayTypeDef, ArrayTypeId};
-use rue_cfg::{Cfg, CfgInstData, CfgValue, StructDef, StructId, Type};
+use rue_air::{ArrayTypeDef, ArrayTypeId, StructId, TypeInternPool};
+use rue_cfg::{Cfg, CfgInstData, CfgValue, Type};
 use std::collections::HashMap;
 
 use crate::vreg::VReg;
@@ -49,12 +52,12 @@ pub fn array_length_from_type(array_types: &[ArrayTypeDef], ty: Type) -> u64 {
 /// Calculate the slot count for a single element of an array from its Type.
 #[inline]
 pub fn array_element_slot_count_from_type(
-    struct_defs: &[StructDef],
+    type_pool: &TypeInternPool,
     array_types: &[ArrayTypeDef],
     ty: Type,
 ) -> u32 {
     if let Some(def) = array_type_def_from_type(array_types, ty) {
-        type_slot_count(struct_defs, array_types, def.element_type)
+        type_slot_count(type_pool, array_types, def.element_type)
     } else {
         1
     }
@@ -66,14 +69,14 @@ pub fn array_element_slot_count_from_type(
 /// For structs, this is the sum of slot counts for all fields.
 /// For nested types, this recursively calculates.
 /// Zero-sized types (unit, never, empty structs, zero-length arrays) return 0.
-pub fn type_slot_count(struct_defs: &[StructDef], array_types: &[ArrayTypeDef], ty: Type) -> u32 {
+pub fn type_slot_count(type_pool: &TypeInternPool, array_types: &[ArrayTypeDef], ty: Type) -> u32 {
     match ty {
         // Zero-sized types
         Type::Unit | Type::Never => 0,
         Type::Array(array_type_id) => {
             // Zero-length arrays naturally get 0 slots (0 * element_slots)
             if let Some(def) = array_type_def(array_types, array_type_id) {
-                let elem_slots = type_slot_count(struct_defs, array_types, def.element_type);
+                let elem_slots = type_slot_count(type_pool, array_types, def.element_type);
                 (def.length as u32) * elem_slots
             } else {
                 1
@@ -82,15 +85,12 @@ pub fn type_slot_count(struct_defs: &[StructDef], array_types: &[ArrayTypeDef], 
         Type::Struct(struct_id) => {
             // Sum the slot counts of all fields
             // Empty structs naturally get 0 slots here
-            if let Some(struct_def) = struct_defs.get(struct_id.0 as usize) {
-                let mut total = 0u32;
-                for field in &struct_def.fields {
-                    total += type_slot_count(struct_defs, array_types, field.ty);
-                }
-                total
-            } else {
-                1
+            let struct_def = type_pool.struct_def(struct_id);
+            let mut total = 0u32;
+            for field in &struct_def.fields {
+                total += type_slot_count(type_pool, array_types, field.ty);
             }
+            total
         }
         // Scalars and other types use 1 slot
         _ => 1,
@@ -99,12 +99,12 @@ pub fn type_slot_count(struct_defs: &[StructDef], array_types: &[ArrayTypeDef], 
 
 /// Calculate the slot count for a single element of an array type.
 pub fn array_element_slot_count(
-    struct_defs: &[StructDef],
+    type_pool: &TypeInternPool,
     array_types: &[ArrayTypeDef],
     array_type_id: ArrayTypeId,
 ) -> u32 {
     if let Some(def) = array_type_def(array_types, array_type_id) {
-        type_slot_count(struct_defs, array_types, def.element_type)
+        type_slot_count(type_pool, array_types, def.element_type)
     } else {
         1
     }
@@ -114,22 +114,19 @@ pub fn array_element_slot_count(
 ///
 /// This accounts for the sizes of all preceding fields.
 pub fn struct_field_slot_offset(
-    struct_defs: &[StructDef],
+    type_pool: &TypeInternPool,
     array_types: &[ArrayTypeDef],
     struct_id: StructId,
     field_index: u32,
 ) -> u32 {
-    if let Some(struct_def) = struct_defs.get(struct_id.0 as usize) {
-        let mut offset = 0u32;
-        for i in 0..(field_index as usize) {
-            if let Some(field) = struct_def.fields.get(i) {
-                offset += type_slot_count(struct_defs, array_types, field.ty);
-            }
+    let struct_def = type_pool.struct_def(struct_id);
+    let mut offset = 0u32;
+    for i in 0..(field_index as usize) {
+        if let Some(field) = struct_def.fields.get(i) {
+            offset += type_slot_count(type_pool, array_types, field.ty);
         }
-        offset
-    } else {
-        field_index // Fallback to field index if struct not found
     }
+    offset
 }
 
 /// Recursively collect all scalar vregs from an array value.
@@ -201,10 +198,10 @@ pub fn collect_array_scalar_vregs(
 pub fn array_drop_glue_name(
     array_id: ArrayTypeId,
     array_types: &[ArrayTypeDef],
-    struct_defs: &[StructDef],
+    type_pool: &TypeInternPool,
 ) -> String {
     let array_def = &array_types[array_id.0 as usize];
-    let element_type_name = type_name(array_def.element_type, struct_defs, array_types);
+    let element_type_name = type_name(array_def.element_type, type_pool, array_types);
     format!(
         "__rue_drop_array_{}_{}",
         element_type_name, array_def.length
@@ -212,7 +209,7 @@ pub fn array_drop_glue_name(
 }
 
 /// Get a name for a type (used for generating drop glue function names).
-fn type_name(ty: Type, struct_defs: &[StructDef], array_types: &[ArrayTypeDef]) -> String {
+fn type_name(ty: Type, type_pool: &TypeInternPool, array_types: &[ArrayTypeDef]) -> String {
     match ty {
         Type::I8 => "i8".to_string(),
         Type::I16 => "i16".to_string(),
@@ -228,10 +225,10 @@ fn type_name(ty: Type, struct_defs: &[StructDef], array_types: &[ArrayTypeDef]) 
         Type::Error => "error".to_string(),
         Type::Enum(enum_id) => format!("enum{}", enum_id.0),
         // Struct types include builtin types like String
-        Type::Struct(struct_id) => struct_defs[struct_id.0 as usize].name.clone(),
+        Type::Struct(struct_id) => type_pool.struct_def(struct_id).name.clone(),
         Type::Array(array_id) => {
             let array_def = &array_types[array_id.0 as usize];
-            let elem_name = type_name(array_def.element_type, struct_defs, array_types);
+            let elem_name = type_name(array_def.element_type, type_pool, array_types);
             format!("array_{}_{}", elem_name, array_def.length)
         }
     }

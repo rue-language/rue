@@ -3,12 +3,56 @@
 //! Currently very minimal - just i32. Will be extended as the language grows.
 
 /// A unique identifier for a struct definition.
+///
+/// As of Phase 3 (ADR-0024), the inner value is a pool index into `TypeInternPool`,
+/// not a vector index into a separate struct definitions array.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct StructId(pub u32);
 
+impl StructId {
+    /// Create a StructId from a pool index.
+    ///
+    /// This is the primary way to create StructIds during Phase 3+.
+    /// The pool index is the raw index into `TypeInternPool.types`.
+    #[inline]
+    pub fn from_pool_index(pool_index: u32) -> Self {
+        StructId(pool_index)
+    }
+
+    /// Get the pool index for this struct.
+    ///
+    /// This is the index into `TypeInternPool.types`.
+    #[inline]
+    pub fn pool_index(self) -> u32 {
+        self.0
+    }
+}
+
 /// A unique identifier for an enum definition.
+///
+/// As of Phase 3 (ADR-0024), the inner value is a pool index into `TypeInternPool`,
+/// not a vector index into a separate enum definitions array.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct EnumId(pub u32);
+
+impl EnumId {
+    /// Create an EnumId from a pool index.
+    ///
+    /// This is the primary way to create EnumIds during Phase 3+.
+    /// The pool index is the raw index into `TypeInternPool.types`.
+    #[inline]
+    pub fn from_pool_index(pool_index: u32) -> Self {
+        EnumId(pool_index)
+    }
+
+    /// Get the pool index for this enum.
+    ///
+    /// This is the index into `TypeInternPool.types`.
+    #[inline]
+    pub fn pool_index(self) -> u32 {
+        self.0
+    }
+}
 
 /// A unique identifier for an array type.
 /// This is needed because Type is Copy, so we can't use Box<Type> for the element type.

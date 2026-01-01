@@ -189,7 +189,6 @@ impl<'a> Sema<'a> {
                         )?;
                     }
 
-                    let enum_id = EnumId(self.enum_defs.len() as u32);
                     let enum_name = self.interner.resolve(&*name).to_string();
 
                     // Check for collision with built-in type names
@@ -236,10 +235,18 @@ impl<'a> Sema<'a> {
                         .map(|v| self.interner.resolve(&*v).to_string())
                         .collect();
 
-                    self.enum_defs.push(EnumDef {
+                    let enum_def = EnumDef {
                         name: enum_name,
                         variants: variant_names,
-                    });
+                    };
+
+                    // Register in type pool and get pool-based EnumId
+                    let (enum_id, _) = self.type_pool.register_enum(*name, enum_def.clone());
+
+                    // Keep in enum_defs for backwards compatibility during migration
+                    self.enum_defs.push(enum_def);
+
+                    // Register in enum lookup with pool-based EnumId
                     self.enums.insert(*name, enum_id);
                 }
                 InstData::StructDecl {
@@ -259,7 +266,6 @@ impl<'a> Sema<'a> {
                         )?;
                     }
 
-                    let struct_id = StructId(self.struct_defs.len() as u32);
                     let struct_name = self.interner.resolve(&*name).to_string();
 
                     // Check for collision with built-in type names
@@ -300,7 +306,7 @@ impl<'a> Sema<'a> {
                     }
 
                     // Create placeholder struct def (fields will be resolved in phase 2)
-                    self.struct_defs.push(StructDef {
+                    let struct_def = StructDef {
                         name: struct_name,
                         fields: Vec::new(), // Filled in during resolve_declarations
                         is_copy,
@@ -308,7 +314,15 @@ impl<'a> Sema<'a> {
                         is_linear: *is_linear,
                         destructor: None,  // Filled in during resolve_declarations
                         is_builtin: false, // User-defined struct
-                    });
+                    };
+
+                    // Register in type pool and get pool-based StructId
+                    let (struct_id, _) = self.type_pool.register_struct(*name, struct_def.clone());
+
+                    // Keep in struct_defs for backwards compatibility during migration
+                    self.struct_defs.push(struct_def);
+
+                    // Register in struct lookup with pool-based StructId
                     self.structs.insert(*name, struct_id);
                 }
                 _ => {}
@@ -342,25 +356,29 @@ impl<'a> Sema<'a> {
         Ok(())
     }
 
-    /// Populate the type intern pool with all registered types.
+    /// Update the type intern pool with resolved struct/enum definitions.
     ///
-    /// This is part of ADR-0024 Phase 1: the pool coexists with the existing
-    /// type registries and is populated after declarations are complete.
-    /// The pool can be used for verification but is not yet the canonical
-    /// source for type information.
+    /// This is part of ADR-0024 Phase 3: structs and enums are registered in the
+    /// pool during `register_type_names()` with placeholder empty fields, then
+    /// this method updates them with the fully resolved definitions after
+    /// `resolve_struct_fields()` completes.
     pub(crate) fn populate_type_pool(&mut self) {
-        // Register all structs in the pool
-        for (name_spur, &struct_id) in &self.structs {
-            let def = &self.struct_defs[struct_id.0 as usize];
-            self.type_pool.register_struct(*name_spur, def.clone());
+        // Update all structs in the pool with resolved field definitions
+        for (_, &struct_id) in &self.structs {
+            // Get the fully resolved struct_def from the vector
+            // Note: During this migration phase, struct_defs still uses vector indices
+            // We need to find the matching entry by iterating
+            let pool_def = self.type_pool.struct_def(struct_id);
+            // Find the struct_def in the vector by name (not by struct_id which is pool-based)
+            let vec_def = self
+                .struct_defs
+                .iter()
+                .find(|d| d.name == pool_def.name)
+                .expect("struct must exist in struct_defs");
+            self.type_pool.update_struct_def(struct_id, vec_def.clone());
         }
 
-        // Register all enums in the pool
-        for (name_spur, &enum_id) in &self.enums {
-            let def = &self.enum_defs[enum_id.0 as usize];
-            self.type_pool.register_enum(*name_spur, def.clone());
-        }
-
+        // Note: Enum definitions don't need updating as they are complete when registered.
         // Note: Array types are not populated here during Phase 1.
         // They are created on-demand during function body analysis via the
         // ArrayTypeRegistry, and will be migrated to the pool in Phase 2.
@@ -377,16 +395,34 @@ impl<'a> Sema<'a> {
             } = &inst.data
             {
                 let name_str = self.interner.resolve(&*name).to_string();
-                let struct_id = *self.structs.get(name).ok_or_else(|| {
-                    CompileError::new(
+                // Verify the struct exists in our lookup table
+                if !self.structs.contains_key(name) {
+                    return Err(CompileError::new(
                         ErrorKind::InternalError(format!(
                             "struct '{}' not found in struct map during field resolution",
                             name_str
                         )),
                         inst.span,
-                    )
-                })?;
-                let struct_name = self.struct_defs[struct_id.0 as usize].name.clone();
+                    ));
+                }
+
+                // Find the vector index by searching for the matching name
+                // (struct_defs uses sequential indices, not pool indices)
+                let vec_index = self
+                    .struct_defs
+                    .iter()
+                    .position(|d| d.name == name_str)
+                    .ok_or_else(|| {
+                        CompileError::new(
+                            ErrorKind::InternalError(format!(
+                                "struct '{}' not found in struct_defs during field resolution",
+                                name_str
+                            )),
+                            inst.span,
+                        )
+                    })?;
+
+                let struct_name = name_str.clone();
                 let fields = self.rir.get_field_decls(*fields_start, *fields_len);
 
                 // Check for duplicate field names
@@ -414,7 +450,7 @@ impl<'a> Sema<'a> {
                     });
                 }
 
-                self.struct_defs[struct_id.0 as usize].fields = resolved_fields;
+                self.struct_defs[vec_index].fields = resolved_fields;
             }
         }
         Ok(())
@@ -501,16 +537,31 @@ impl<'a> Sema<'a> {
         }
 
         let struct_name = self.interner.resolve(&name).to_string();
-        let struct_id = *self.structs.get(&name).ok_or_else(|| {
-            CompileError::new(
+        // Verify struct exists in our lookup
+        if !self.structs.contains_key(&name) {
+            return Err(CompileError::new(
                 ErrorKind::InternalError(format!(
                     "struct '{}' not found in struct map during @copy validation",
                     struct_name
                 )),
                 span,
-            )
-        })?;
-        let struct_def = &self.struct_defs[struct_id.0 as usize];
+            ));
+        }
+
+        // Find struct in vector by name (type_pool may not have updated fields yet)
+        let struct_def = self
+            .struct_defs
+            .iter()
+            .find(|d| d.name == struct_name)
+            .ok_or_else(|| {
+                CompileError::new(
+                    ErrorKind::InternalError(format!(
+                        "struct '{}' not found in struct_defs during @copy validation",
+                        struct_name
+                    )),
+                    span,
+                )
+            })?;
 
         for field in &struct_def.fields {
             if !self.is_type_copy(field.ty) {
@@ -659,19 +710,33 @@ impl<'a> Sema<'a> {
     fn collect_destructor(&mut self, type_name: Spur, span: Span) -> CompileResult<()> {
         let type_name_str = self.interner.resolve(&type_name).to_string();
 
-        let struct_id = match self.structs.get(&type_name) {
-            Some(id) => *id,
-            None => {
-                return Err(CompileError::new(
-                    ErrorKind::DestructorUnknownType {
-                        type_name: type_name_str,
-                    },
-                    span,
-                ));
-            }
-        };
+        // Verify the struct exists
+        if !self.structs.contains_key(&type_name) {
+            return Err(CompileError::new(
+                ErrorKind::DestructorUnknownType {
+                    type_name: type_name_str,
+                },
+                span,
+            ));
+        }
 
-        let struct_def = &self.struct_defs[struct_id.0 as usize];
+        // Find the vector index by searching for the matching name
+        // (struct_defs uses sequential indices, not pool indices)
+        let vec_index = self
+            .struct_defs
+            .iter()
+            .position(|d| d.name == type_name_str)
+            .ok_or_else(|| {
+                CompileError::new(
+                    ErrorKind::InternalError(format!(
+                        "struct '{}' not found in struct_defs during destructor collection",
+                        type_name_str
+                    )),
+                    span,
+                )
+            })?;
+
+        let struct_def = &self.struct_defs[vec_index];
         if struct_def.destructor.is_some() {
             return Err(CompileError::new(
                 ErrorKind::DuplicateDestructor {
@@ -682,7 +747,7 @@ impl<'a> Sema<'a> {
         }
 
         let destructor_name = format!("{}.__drop", type_name_str);
-        self.struct_defs[struct_id.0 as usize].destructor = Some(destructor_name);
+        self.struct_defs[vec_index].destructor = Some(destructor_name);
         Ok(())
     }
 

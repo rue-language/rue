@@ -5,7 +5,7 @@
 //! calling convention bugs, and understanding how values are laid out on the stack.
 
 use lasso::ThreadedRodeo;
-use rue_air::{ArrayTypeDef, StructDef};
+use rue_air::{ArrayTypeDef, TypeInternPool};
 use rue_cfg::Cfg;
 use rue_error::CompileResult;
 use rue_target::{Arch, Target};
@@ -254,7 +254,7 @@ impl std::fmt::Display for StackFrameInfo {
 pub fn generate_stack_frame_info(
     cfg: &Cfg,
     function_name: &str,
-    struct_defs: &[StructDef],
+    type_pool: &TypeInternPool,
     array_types: &[ArrayTypeDef],
     strings: &[String],
     interner: &ThreadedRodeo,
@@ -264,7 +264,7 @@ pub fn generate_stack_frame_info(
         Arch::X86_64 => generate_x86_64_stack_frame(
             cfg,
             function_name,
-            struct_defs,
+            type_pool,
             array_types,
             strings,
             interner,
@@ -273,7 +273,7 @@ pub fn generate_stack_frame_info(
         Arch::Aarch64 => generate_aarch64_stack_frame(
             cfg,
             function_name,
-            struct_defs,
+            type_pool,
             array_types,
             strings,
             interner,
@@ -286,7 +286,7 @@ pub fn generate_stack_frame_info(
 fn generate_x86_64_stack_frame(
     cfg: &Cfg,
     function_name: &str,
-    struct_defs: &[StructDef],
+    type_pool: &TypeInternPool,
     array_types: &[ArrayTypeDef],
     strings: &[String],
     interner: &ThreadedRodeo,
@@ -298,7 +298,7 @@ fn generate_x86_64_stack_frame(
     let num_params = cfg.num_params();
 
     // Lower CFG to X86Mir with virtual registers
-    let mir = CfgLower::new(cfg, struct_defs, array_types, strings, interner).lower();
+    let mir = CfgLower::new(cfg, type_pool, array_types, strings, interner).lower();
 
     // Allocate physical registers (may add spill slots)
     let existing_slots = num_locals + num_params;
@@ -410,7 +410,7 @@ fn generate_x86_64_stack_frame(
 fn generate_aarch64_stack_frame(
     cfg: &Cfg,
     function_name: &str,
-    struct_defs: &[StructDef],
+    type_pool: &TypeInternPool,
     array_types: &[ArrayTypeDef],
     strings: &[String],
     interner: &ThreadedRodeo,
@@ -422,7 +422,7 @@ fn generate_aarch64_stack_frame(
     let num_params = cfg.num_params();
 
     // Lower CFG to Aarch64Mir with virtual registers
-    let mir = CfgLower::new(cfg, struct_defs, array_types, strings, interner).lower();
+    let mir = CfgLower::new(cfg, type_pool, array_types, strings, interner).lower();
 
     // Allocate physical registers (may add spill slots)
     let existing_slots = num_locals + num_params;
@@ -560,13 +560,13 @@ fn generate_aarch64_stack_frame(
 mod tests {
     use super::*;
     use lasso::ThreadedRodeo;
-    use rue_air::{Air, AirInst, AirInstData, Type};
+    use rue_air::{Air, AirInst, AirInstData, Type, TypeInternPool};
     use rue_cfg::CfgBuilder;
     use rue_span::Span;
 
     fn create_simple_cfg() -> (
         rue_cfg::Cfg,
-        Vec<StructDef>,
+        TypeInternPool,
         Vec<ArrayTypeDef>,
         ThreadedRodeo,
     ) {
@@ -585,19 +585,20 @@ mod tests {
         });
 
         let interner = ThreadedRodeo::new();
-        let cfg_output = CfgBuilder::build(&air, 0, 0, "test", &[], &[], vec![], &interner);
-        (cfg_output.cfg, vec![], vec![], interner)
+        let type_pool = TypeInternPool::new();
+        let cfg_output = CfgBuilder::build(&air, 0, 0, "test", &type_pool, &[], vec![], &interner);
+        (cfg_output.cfg, type_pool, vec![], interner)
     }
 
     #[test]
     fn test_generate_stack_frame_info_x86_64() {
-        let (cfg, struct_defs, array_types, interner) = create_simple_cfg();
+        let (cfg, type_pool, array_types, interner) = create_simple_cfg();
         let target = Target::X86_64Linux;
 
         let info = generate_stack_frame_info(
             &cfg,
             "test",
-            &struct_defs,
+            &type_pool,
             &array_types,
             &[],
             &interner,
