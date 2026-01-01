@@ -33,10 +33,12 @@ use std::sync::RwLock;
 
 use lasso::{Spur, ThreadedRodeo};
 use rue_error::PreviewFeatures;
-use rue_rir::{Rir, RirParamMode};
+use rue_rir::Rir;
 
 use crate::inference::{FunctionSig, InferType, MethodSig};
-use crate::sema::KnownSymbols;
+// Import FunctionInfo, MethodInfo, and KnownSymbols from sema module to avoid duplication.
+// FunctionInfo and MethodInfo are the canonical definitions; we re-export them for convenience.
+pub use crate::sema::{FunctionInfo, KnownSymbols, MethodInfo};
 use crate::types::{ArrayTypeDef, ArrayTypeId, EnumDef, EnumId, StructDef, StructId, Type};
 
 /// Thread-safe registry for array types.
@@ -151,36 +153,6 @@ impl Default for ArrayTypeRegistry {
     fn default() -> Self {
         Self::new()
     }
-}
-
-/// Information about a function.
-#[derive(Debug, Clone)]
-pub struct FunctionInfo {
-    /// Parameter types (in order)
-    pub param_types: Vec<Type>,
-    /// Parameter modes (in order)
-    pub param_modes: Vec<RirParamMode>,
-    /// Return type
-    pub return_type: Type,
-}
-
-/// Information about a method in an impl block.
-#[derive(Debug, Clone)]
-pub struct MethodInfo {
-    /// The struct type this method belongs to
-    pub struct_type: Type,
-    /// Whether this is a method (has self) or associated function (no self)
-    pub has_self: bool,
-    /// Parameter names (excluding self if present)
-    pub param_names: Vec<Spur>,
-    /// Parameter types (excluding self if present)
-    pub param_types: Vec<Type>,
-    /// Return type
-    pub return_type: Type,
-    /// The RIR instruction ref for the method body
-    pub body: rue_rir::InstRef,
-    /// Span of the method declaration
-    pub span: rue_span::Span,
 }
 
 /// Pre-computed type information for constraint generation.

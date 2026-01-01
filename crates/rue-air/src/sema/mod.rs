@@ -37,9 +37,7 @@ use rue_error::{CompileErrors, MultiErrorResult, PreviewFeatures};
 use rue_rir::Rir;
 
 use crate::sema_context::{
-    ArrayTypeRegistry, FunctionInfo as SemaContextFunctionInfo,
-    InferenceContext as SemaContextInferenceContext, MethodInfo as SemaContextMethodInfo,
-    SemaContext,
+    ArrayTypeRegistry, InferenceContext as SemaContextInferenceContext, SemaContext,
 };
 use crate::types::{ArrayTypeDef, ArrayTypeId, EnumDef, EnumId, StructDef, StructId, Type};
 
@@ -429,38 +427,8 @@ impl<'a> Sema<'a> {
             ),
             structs: self.structs.clone(),
             enums: self.enums.clone(),
-            functions: self
-                .functions
-                .iter()
-                .map(|(name, info)| {
-                    (
-                        *name,
-                        SemaContextFunctionInfo {
-                            param_types: info.param_types.clone(),
-                            param_modes: info.param_modes.clone(),
-                            return_type: info.return_type,
-                        },
-                    )
-                })
-                .collect(),
-            methods: self
-                .methods
-                .iter()
-                .map(|((type_name, method_name), info)| {
-                    (
-                        (*type_name, *method_name),
-                        SemaContextMethodInfo {
-                            struct_type: info.struct_type,
-                            has_self: info.has_self,
-                            param_names: info.param_names.clone(),
-                            param_types: info.param_types.clone(),
-                            return_type: info.return_type,
-                            body: info.body,
-                            span: info.span,
-                        },
-                    )
-                })
-                .collect(),
+            functions: self.functions.clone(),
+            methods: self.methods.clone(),
             preview_features: self.preview_features.clone(),
             builtin_string_id: self.builtin_string_id,
             inference_ctx,

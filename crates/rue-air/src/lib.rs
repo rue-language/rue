@@ -33,10 +33,9 @@ pub use inst::{
     Air, AirArgMode, AirCallArg, AirInst, AirInstData, AirParamMode, AirPattern, AirRef,
 };
 pub use sema::{AnalyzedFunction, FunctionInfo, GatherOutput, MethodInfo, Sema, SemaOutput};
-pub use sema_context::{
-    FunctionInfo as SemaContextFunctionInfo, InferenceContext as SemaContextInferenceContext,
-    MethodInfo as SemaContextMethodInfo, SemaContext,
-};
+// Note: FunctionInfo and MethodInfo are defined in sema and re-exported by sema_context.
+// We export InferenceContext and SemaContext from sema_context.
+pub use sema_context::{InferenceContext as SemaContextInferenceContext, SemaContext};
 pub use type_context::{FunctionSignature, MethodSignature, TypeContext};
 pub use types::{
     ArrayTypeDef, ArrayTypeId, EnumDef, EnumId, StructDef, StructField, StructId, Type,
