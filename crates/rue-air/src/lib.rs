@@ -11,13 +11,18 @@
 //! Inspired by Zig's AIR (Analyzed Intermediate Representation).
 
 mod analysis_state;
+mod function_analyzer;
 mod inference;
 mod inst;
 mod sema;
+mod sema_context;
 mod type_context;
 mod types;
 
 pub use analysis_state::{AnalysisStateRemapping, FunctionAnalysisState, MergedAnalysisState};
+pub use function_analyzer::{
+    FunctionAnalyzer, FunctionAnalyzerOutput, FunctionOutputRemapping, MergedFunctionOutput,
+};
 pub use inference::{
     Constraint, ConstraintContext, ConstraintGenerator, ExprInfo, FunctionSig, InferType,
     LocalVarInfo, MethodSig, ParamVarInfo, Substitution, TypeVarAllocator, TypeVarId,
@@ -27,6 +32,10 @@ pub use inst::{
     Air, AirArgMode, AirCallArg, AirInst, AirInstData, AirParamMode, AirPattern, AirRef,
 };
 pub use sema::{AnalyzedFunction, FunctionInfo, GatherOutput, MethodInfo, Sema, SemaOutput};
+pub use sema_context::{
+    FunctionInfo as SemaContextFunctionInfo, InferenceContext as SemaContextInferenceContext,
+    MethodInfo as SemaContextMethodInfo, SemaContext,
+};
 pub use type_context::{FunctionSignature, MethodSignature, TypeContext};
 pub use types::{
     ArrayTypeDef, ArrayTypeId, EnumDef, EnumId, StructDef, StructField, StructId, Type,

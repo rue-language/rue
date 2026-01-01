@@ -32,6 +32,10 @@ use lasso::{Spur, ThreadedRodeo};
 use rue_error::{CompileErrors, MultiErrorResult, PreviewFeatures};
 use rue_rir::Rir;
 
+use crate::sema_context::{
+    FunctionInfo as SemaContextFunctionInfo, InferenceContext as SemaContextInferenceContext,
+    MethodInfo as SemaContextMethodInfo, SemaContext,
+};
 use crate::types::{ArrayTypeDef, ArrayTypeId, EnumDef, EnumId, StructDef, StructId, Type};
 
 // Internal types are used via pub(crate) within submodules
@@ -391,6 +395,139 @@ impl<'a> Sema<'a> {
         };
 
         Ok((type_ctx, output))
+    }
+
+    /// Build a SemaContext from the current Sema state.
+    ///
+    /// This creates an immutable context that can be shared across threads
+    /// for parallel function body analysis. The SemaContext contains all
+    /// type definitions, function signatures, and method signatures.
+    ///
+    /// # Usage
+    ///
+    /// ```ignore
+    /// let mut sema = Sema::new(rir, interner, preview);
+    /// sema.inject_builtin_types();
+    /// sema.register_type_names()?;
+    /// sema.resolve_declarations()?;
+    /// let ctx = sema.build_sema_context();
+    /// // Now ctx can be shared across threads for parallel analysis
+    /// ```
+    pub fn build_sema_context(&self) -> SemaContext<'a> {
+        // Build the inference context
+        let inference_ctx = self.build_sema_context_inference();
+
+        SemaContext {
+            rir: self.rir,
+            interner: self.interner,
+            struct_defs: self.struct_defs.clone(),
+            enum_defs: self.enum_defs.clone(),
+            array_types: self.array_types.clone(),
+            array_type_defs: self.array_type_defs.clone(),
+            structs: self.structs.clone(),
+            enums: self.enums.clone(),
+            functions: self
+                .functions
+                .iter()
+                .map(|(name, info)| {
+                    (
+                        *name,
+                        SemaContextFunctionInfo {
+                            param_types: info.param_types.clone(),
+                            param_modes: info.param_modes.clone(),
+                            return_type: info.return_type,
+                        },
+                    )
+                })
+                .collect(),
+            methods: self
+                .methods
+                .iter()
+                .map(|((type_name, method_name), info)| {
+                    (
+                        (*type_name, *method_name),
+                        SemaContextMethodInfo {
+                            struct_type: info.struct_type,
+                            has_self: info.has_self,
+                            param_names: info.param_names.clone(),
+                            param_types: info.param_types.clone(),
+                            return_type: info.return_type,
+                            body: info.body,
+                            span: info.span,
+                        },
+                    )
+                })
+                .collect(),
+            preview_features: self.preview_features.clone(),
+            builtin_string_id: self.builtin_string_id,
+            inference_ctx,
+        }
+    }
+
+    /// Build the inference context portion of SemaContext.
+    fn build_sema_context_inference(&self) -> SemaContextInferenceContext {
+        use crate::inference::{FunctionSig, MethodSig};
+
+        // Build function signatures with InferType for constraint generation
+        let func_sigs: HashMap<Spur, FunctionSig> = self
+            .functions
+            .iter()
+            .map(|(name, info)| {
+                (
+                    *name,
+                    FunctionSig {
+                        param_types: info
+                            .param_types
+                            .iter()
+                            .map(|t| self.type_to_infer_type(*t))
+                            .collect(),
+                        return_type: self.type_to_infer_type(info.return_type),
+                    },
+                )
+            })
+            .collect();
+
+        // Build struct types map (name -> Type::Struct(id))
+        let struct_types: HashMap<Spur, Type> = self
+            .structs
+            .iter()
+            .map(|(name, id)| (*name, Type::Struct(*id)))
+            .collect();
+
+        // Build enum types map (name -> Type::Enum(id))
+        let enum_types: HashMap<Spur, Type> = self
+            .enums
+            .iter()
+            .map(|(name, id)| (*name, Type::Enum(*id)))
+            .collect();
+
+        // Build method signatures with InferType for constraint generation
+        let method_sigs: HashMap<(Spur, Spur), MethodSig> = self
+            .methods
+            .iter()
+            .map(|((type_name, method_name), info)| {
+                (
+                    (*type_name, *method_name),
+                    MethodSig {
+                        struct_type: info.struct_type,
+                        has_self: info.has_self,
+                        param_types: info
+                            .param_types
+                            .iter()
+                            .map(|t| self.type_to_infer_type(*t))
+                            .collect(),
+                        return_type: self.type_to_infer_type(info.return_type),
+                    },
+                )
+            })
+            .collect();
+
+        SemaContextInferenceContext {
+            func_sigs,
+            struct_types,
+            enum_types,
+            method_sigs,
+        }
     }
 }
 
