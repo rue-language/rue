@@ -312,6 +312,17 @@ pub struct MergedProgram {
     pub interner: ThreadedRodeo,
 }
 
+/// Result of validating and generating RIR from multiple parsed files.
+///
+/// This is the parallel-optimized path: RIR is generated per-file in parallel,
+/// then merged. Used by `compile_multi_file_with_options`.
+pub struct ValidatedProgram {
+    /// The merged RIR from all files.
+    pub rir: Rir,
+    /// Merged interner containing all symbols from all files.
+    pub interner: ThreadedRodeo,
+}
+
 /// Information about a symbol definition for duplicate detection.
 #[derive(Debug, Clone)]
 struct SymbolDef {
@@ -496,6 +507,180 @@ pub fn merge_symbols(program: ParsedProgram) -> MultiErrorResult<MergedProgram> 
         ast: Ast { items: all_items },
         interner: program.interner,
     })
+}
+
+/// Validate symbols and generate RIR in parallel for multi-file compilation.
+///
+/// This is the optimized path for multi-file compilation:
+/// 1. Validates that there are no duplicate symbol definitions across files
+/// 2. Generates RIR for each file in parallel using Rayon
+/// 3. Merges the per-file RIRs into a single RIR with renumbered references
+///
+/// This is more efficient than the sequential path for projects with many files,
+/// as RIR generation is embarrassingly parallel (no cross-file dependencies
+/// at the RIR level).
+///
+/// # Arguments
+///
+/// * `program` - The parsed program containing all files and shared interner
+///
+/// # Returns
+///
+/// A `ValidatedProgram` containing the merged RIR, or errors if duplicates are found.
+pub fn validate_and_generate_rir_parallel(
+    program: ParsedProgram,
+) -> MultiErrorResult<ValidatedProgram> {
+    use std::collections::HashMap;
+
+    let _span = info_span!(
+        "validate_and_generate_rir",
+        file_count = program.files.len()
+    )
+    .entered();
+
+    // Step 1: Validate symbols for duplicates (same logic as merge_symbols)
+    let mut functions: HashMap<String, SymbolDef> = HashMap::new();
+    let mut structs: HashMap<String, SymbolDef> = HashMap::new();
+    let mut enums: HashMap<String, SymbolDef> = HashMap::new();
+    let mut errors: Vec<CompileError> = Vec::new();
+
+    let interner = &program.interner;
+
+    for file in &program.files {
+        for item in &file.ast.items {
+            match item {
+                Item::Function(func) => {
+                    let name = interner.resolve(&func.name.name).to_string();
+                    if let Some(first) = functions.get(&name) {
+                        let err = CompileError::new(
+                            ErrorKind::DuplicateTypeDefinition {
+                                type_name: format!("function `{}`", name),
+                            },
+                            func.span,
+                        )
+                        .with_label(format!("first defined in {}", first.file_path), first.span);
+                        errors.push(err);
+                    } else {
+                        functions.insert(
+                            name.clone(),
+                            SymbolDef {
+                                name,
+                                span: func.span,
+                                file_path: file.path.clone(),
+                            },
+                        );
+                    }
+                }
+                Item::Struct(s) => {
+                    let name = interner.resolve(&s.name.name).to_string();
+                    if let Some(first) = structs.get(&name) {
+                        let err = CompileError::new(
+                            ErrorKind::DuplicateTypeDefinition {
+                                type_name: format!("struct `{}`", name),
+                            },
+                            s.span,
+                        )
+                        .with_label(format!("first defined in {}", first.file_path), first.span);
+                        errors.push(err);
+                    } else if let Some(first) = enums.get(&name) {
+                        let err = CompileError::new(
+                            ErrorKind::DuplicateTypeDefinition {
+                                type_name: format!("struct `{}` (conflicts with enum)", name),
+                            },
+                            s.span,
+                        )
+                        .with_label(
+                            format!("enum first defined in {}", first.file_path),
+                            first.span,
+                        );
+                        errors.push(err);
+                    } else {
+                        structs.insert(
+                            name.clone(),
+                            SymbolDef {
+                                name,
+                                span: s.span,
+                                file_path: file.path.clone(),
+                            },
+                        );
+                    }
+                }
+                Item::Enum(e) => {
+                    let name = interner.resolve(&e.name.name).to_string();
+                    if let Some(first) = enums.get(&name) {
+                        let err = CompileError::new(
+                            ErrorKind::DuplicateTypeDefinition {
+                                type_name: format!("enum `{}`", name),
+                            },
+                            e.span,
+                        )
+                        .with_label(format!("first defined in {}", first.file_path), first.span);
+                        errors.push(err);
+                    } else if let Some(first) = structs.get(&name) {
+                        let err = CompileError::new(
+                            ErrorKind::DuplicateTypeDefinition {
+                                type_name: format!("enum `{}` (conflicts with struct)", name),
+                            },
+                            e.span,
+                        )
+                        .with_label(
+                            format!("struct first defined in {}", first.file_path),
+                            first.span,
+                        );
+                        errors.push(err);
+                    } else {
+                        enums.insert(
+                            name.clone(),
+                            SymbolDef {
+                                name,
+                                span: e.span,
+                                file_path: file.path.clone(),
+                            },
+                        );
+                    }
+                }
+                Item::Impl(_) | Item::DropFn(_) => {
+                    // Validated in Sema
+                }
+            }
+        }
+    }
+
+    if !errors.is_empty() {
+        return Err(CompileErrors::from(errors));
+    }
+
+    info!(
+        function_count = functions.len(),
+        struct_count = structs.len(),
+        enum_count = enums.len(),
+        "symbol validation complete"
+    );
+
+    // Step 2: Generate RIR per-file in parallel
+    let interner = program.interner;
+    let rirs: Vec<Rir> = {
+        let _span = info_span!("parallel_astgen").entered();
+
+        program
+            .files
+            .par_iter()
+            .map(|file| {
+                let astgen = AstGen::new(&file.ast, &interner);
+                astgen.generate()
+            })
+            .collect()
+    };
+
+    // Step 3: Merge RIRs
+    let rir = {
+        let _span = info_span!("merge_rirs", rir_count = rirs.len()).entered();
+        Rir::merge(&rirs)
+    };
+
+    info!(instruction_count = rir.len(), "RIR generation complete");
+
+    Ok(ValidatedProgram { rir, interner })
 }
 
 /// Which linker to use for the final linking phase.
@@ -780,6 +965,132 @@ pub fn compile_frontend_from_ast_with_options(
     })
 }
 
+/// Compile from already-generated RIR through remaining frontend phases.
+///
+/// This runs: semantic analysis → CFG construction → optimization.
+/// This is the optimized path used by parallel multi-file compilation, where
+/// RIR has already been generated per-file in parallel and merged.
+///
+/// # Arguments
+///
+/// * `rir` - The RIR (already merged if from multiple files)
+/// * `interner` - The shared string interner
+/// * `opt_level` - Optimization level
+/// * `preview_features` - Enabled preview features
+///
+/// # Returns
+///
+/// A `CompileStateFromRir` containing the compilation state.
+pub fn compile_frontend_from_rir_with_options(
+    rir: Rir,
+    interner: ThreadedRodeo,
+    opt_level: OptLevel,
+    preview_features: &PreviewFeatures,
+) -> MultiErrorResult<CompileStateFromRir> {
+    // Semantic analysis (RIR to AIR)
+    let sema_output = {
+        let _span = info_span!("sema").entered();
+        let sema = Sema::new(&rir, &interner, preview_features.clone());
+        let output = sema.analyze_all()?;
+        info!(
+            function_count = output.functions.len(),
+            struct_count = output.struct_defs.len(),
+            "semantic analysis complete"
+        );
+        output
+    };
+
+    // Synthesize drop glue functions for structs that need them
+    let drop_glue_functions =
+        drop_glue::synthesize_drop_glue(&sema_output.struct_defs, &sema_output.array_types);
+
+    // Combine user functions with synthesized drop glue functions
+    let all_functions: Vec<_> = sema_output
+        .functions
+        .into_iter()
+        .chain(drop_glue_functions)
+        .collect();
+
+    // Build CFGs from AIR (one per function) in parallel, collecting warnings
+    let (functions, warnings) = {
+        let _span = info_span!("cfg_construction").entered();
+
+        // Build CFGs in parallel - each function is independent
+        let results: Vec<(FunctionWithCfg, Vec<CompileWarning>)> = all_functions
+            .into_par_iter()
+            .map(|func| {
+                let cfg_output = CfgBuilder::build(
+                    &func.air,
+                    func.num_locals,
+                    func.num_param_slots,
+                    &func.name,
+                    &sema_output.struct_defs,
+                    &sema_output.array_types,
+                    func.param_modes.clone(),
+                    &interner,
+                );
+
+                // Apply optimizations to the CFG
+                let mut cfg = cfg_output.cfg;
+                rue_cfg::opt::optimize(&mut cfg, opt_level);
+
+                (
+                    FunctionWithCfg {
+                        analyzed: func,
+                        cfg,
+                    },
+                    cfg_output.warnings,
+                )
+            })
+            .collect();
+
+        // Unzip the results and collect all warnings
+        let mut functions = Vec::with_capacity(results.len());
+        let mut warnings = sema_output.warnings;
+        for (func, func_warnings) in results {
+            functions.push(func);
+            warnings.extend(func_warnings);
+        }
+
+        info!(
+            function_count = functions.len(),
+            "CFG construction complete"
+        );
+        (functions, warnings)
+    };
+
+    Ok(CompileStateFromRir {
+        interner,
+        rir,
+        functions,
+        struct_defs: sema_output.struct_defs,
+        array_types: sema_output.array_types,
+        strings: sema_output.strings,
+        warnings,
+    })
+}
+
+/// Intermediate compilation state after frontend processing from RIR.
+///
+/// Similar to `CompileState` but without the AST (since we started from RIR directly
+/// in the parallel compilation path).
+pub struct CompileStateFromRir {
+    /// String interner used during compilation.
+    pub interner: ThreadedRodeo,
+    /// The untyped IR (RIR).
+    pub rir: Rir,
+    /// Analyzed functions with typed IR and control flow graphs.
+    pub functions: Vec<FunctionWithCfg>,
+    /// Struct definitions.
+    pub struct_defs: Vec<StructDef>,
+    /// Array type definitions (element type and length).
+    pub array_types: Vec<ArrayTypeDef>,
+    /// String literals indexed by their string_const index.
+    pub strings: Vec<String>,
+    /// Warnings collected during compilation.
+    pub warnings: Vec<CompileWarning>,
+}
+
 /// Compile source code to an ELF binary.
 ///
 /// This is the main entry point for compilation.
@@ -864,16 +1175,17 @@ pub fn compile_multi_file_with_options(
     )
     .entered();
 
-    // Parse all files in parallel
+    // Parse all files with shared interner
     let parsed = parse_all_files(sources)?;
 
-    // Merge symbols into a unified program
-    let merged = merge_symbols(parsed)?;
+    // Validate symbols and generate RIR per-file in parallel, then merge
+    // This is faster than the sequential path for multi-file projects
+    let validated = validate_and_generate_rir_parallel(parsed)?;
 
-    // Compile from the merged AST
-    let state = compile_frontend_from_ast_with_options(
-        merged.ast,
-        merged.interner,
+    // Compile from the merged RIR
+    let state = compile_frontend_from_rir_with_options(
+        validated.rir,
+        validated.interner,
         options.opt_level,
         &options.preview_features,
     )?;
@@ -889,8 +1201,8 @@ pub fn compile_multi_file_with_options(
 
     // Dispatch to the appropriate backend based on target architecture
     match options.target.arch() {
-        Arch::X86_64 => compile_x86_64(&state, options),
-        Arch::Aarch64 => compile_aarch64(&state, options),
+        Arch::X86_64 => compile_x86_64_from_rir(&state, options),
+        Arch::Aarch64 => compile_aarch64_from_rir(&state, options),
     }
 }
 
@@ -984,12 +1296,21 @@ fn link_internal(
     options: &CompileOptions,
     object_files: &[Vec<u8>],
 ) -> MultiErrorResult<CompileOutput> {
+    link_internal_with_warnings(options, object_files, &state.warnings)
+}
+
+/// Link using the internal linker (helper that takes warnings directly).
+fn link_internal_with_warnings(
+    options: &CompileOptions,
+    object_files: &[Vec<u8>],
+    warnings: &[CompileWarning],
+) -> MultiErrorResult<CompileOutput> {
     let _span = info_span!("linker", mode = "internal").entered();
 
     // For macOS targets, the internal linker doesn't support Mach-O,
     // so we delegate to the system linker (clang).
     if options.target.is_macho() {
-        return link_system(state, options, object_files, "clang");
+        return link_system_with_warnings(options, object_files, "clang", warnings);
     }
 
     // The internal linker handles ELF targets natively.
@@ -1037,7 +1358,7 @@ fn link_internal(
 
     Ok(CompileOutput {
         elf,
-        warnings: state.warnings.clone(),
+        warnings: warnings.to_vec(),
     })
 }
 
@@ -1049,6 +1370,16 @@ fn link_system(
     options: &CompileOptions,
     object_files: &[Vec<u8>],
     linker_cmd: &str,
+) -> MultiErrorResult<CompileOutput> {
+    link_system_with_warnings(options, object_files, linker_cmd, &state.warnings)
+}
+
+/// Link using an external system linker (helper that takes warnings directly).
+fn link_system_with_warnings(
+    options: &CompileOptions,
+    object_files: &[Vec<u8>],
+    linker_cmd: &str,
+    warnings: &[CompileWarning],
 ) -> MultiErrorResult<CompileOutput> {
     let _span = info_span!("linker", mode = "system", command = linker_cmd).entered();
 
@@ -1119,7 +1450,7 @@ fn link_system(
     // temp_dir is dropped here, cleaning up automatically
     Ok(CompileOutput {
         elf,
-        warnings: state.warnings.clone(),
+        warnings: warnings.to_vec(),
     })
 }
 
@@ -1196,8 +1527,176 @@ fn compile_aarch64(
 
     // Link to executable (linker selection is handled at the top level, not here)
     match &options.linker {
-        LinkerMode::Internal => link_internal(state, options, &object_files),
-        LinkerMode::System(linker_cmd) => link_system(state, options, &object_files, linker_cmd),
+        LinkerMode::Internal => {
+            link_internal_with_warnings(options, &object_files, &state.warnings)
+        }
+        LinkerMode::System(linker_cmd) => {
+            link_system_with_warnings(options, &object_files, linker_cmd, &state.warnings)
+        }
+    }
+}
+
+/// Compile for x86-64 target from RIR state (used by parallel compilation path).
+fn compile_x86_64_from_rir(
+    state: &CompileStateFromRir,
+    options: &CompileOptions,
+) -> MultiErrorResult<CompileOutput> {
+    // Generate machine code for all functions in parallel
+    let object_files = {
+        let _span = info_span!("codegen", arch = "x86_64").entered();
+
+        // Parallel code generation - each function is independent
+        let results: Vec<CompileResult<Vec<u8>>> = state
+            .functions
+            .par_iter()
+            .map(|func| {
+                let machine_code = rue_codegen::x86_64::generate(
+                    &func.cfg,
+                    &state.struct_defs,
+                    &state.array_types,
+                    &state.strings,
+                    &state.interner,
+                )?;
+
+                // Build object file for this function
+                let mut obj_builder = ObjectBuilder::new(options.target, &func.analyzed.name)
+                    .code(machine_code.code)
+                    .strings(machine_code.strings);
+
+                // Add relocations from codegen (convert RelocationKind to RelocationType).
+                for reloc in machine_code.relocations {
+                    let rel_type = match reloc.kind {
+                        RelocationKind::X86Pc32 => RelocationType::Pc32,
+                        RelocationKind::X86Plt32 => RelocationType::Plt32,
+                        // AArch64 relocations should never appear in x86-64 codegen
+                        RelocationKind::Aarch64AdrpPage21
+                        | RelocationKind::Aarch64AddLo12
+                        | RelocationKind::Aarch64Call26 => {
+                            unreachable!(
+                                "x86-64 codegen emitted AArch64 relocation {:?}",
+                                reloc.kind
+                            )
+                        }
+                    };
+
+                    obj_builder = obj_builder.relocation(CodeRelocation {
+                        offset: reloc.offset,
+                        symbol: reloc.symbol,
+                        rel_type,
+                        addend: reloc.addend,
+                    });
+                }
+
+                Ok(obj_builder.build())
+            })
+            .collect();
+
+        // Collect results, propagating any errors
+        let mut object_files = Vec::with_capacity(results.len());
+        let mut total_code_bytes = 0usize;
+        for result in results {
+            let obj = result.map_err(CompileErrors::from)?;
+            total_code_bytes += obj.len();
+            object_files.push(obj);
+        }
+
+        info!(
+            function_count = state.functions.len(),
+            code_bytes = total_code_bytes,
+            "codegen complete"
+        );
+        object_files
+    };
+
+    // Link to executable
+    match &options.linker {
+        LinkerMode::Internal => {
+            link_internal_with_warnings(options, &object_files, &state.warnings)
+        }
+        LinkerMode::System(linker_cmd) => {
+            link_system_with_warnings(options, &object_files, linker_cmd, &state.warnings)
+        }
+    }
+}
+
+/// Compile for AArch64 target from RIR state (used by parallel compilation path).
+fn compile_aarch64_from_rir(
+    state: &CompileStateFromRir,
+    options: &CompileOptions,
+) -> MultiErrorResult<CompileOutput> {
+    // Generate machine code for all functions in parallel using the aarch64 backend
+    let object_files = {
+        let _span = info_span!("codegen", arch = "aarch64").entered();
+
+        // Parallel code generation - each function is independent
+        let results: Vec<CompileResult<Vec<u8>>> = state
+            .functions
+            .par_iter()
+            .map(|func| {
+                let machine_code = rue_codegen::aarch64::generate(
+                    &func.cfg,
+                    &state.struct_defs,
+                    &state.array_types,
+                    &state.strings,
+                    &state.interner,
+                )?;
+
+                let mut obj_builder = ObjectBuilder::new(options.target, &func.analyzed.name)
+                    .code(machine_code.code)
+                    .strings(machine_code.strings);
+
+                // Add relocations from codegen (convert RelocationKind to RelocationType).
+                for reloc in machine_code.relocations {
+                    let rel_type = match reloc.kind {
+                        RelocationKind::Aarch64AdrpPage21 => RelocationType::AdrpPage21,
+                        RelocationKind::Aarch64AddLo12 => RelocationType::AddLo12,
+                        RelocationKind::Aarch64Call26 => RelocationType::Call26,
+                        // x86-64 relocations should never appear in AArch64 codegen
+                        RelocationKind::X86Pc32 | RelocationKind::X86Plt32 => {
+                            unreachable!(
+                                "AArch64 codegen emitted x86-64 relocation {:?}",
+                                reloc.kind
+                            )
+                        }
+                    };
+
+                    obj_builder = obj_builder.relocation(CodeRelocation {
+                        offset: reloc.offset,
+                        symbol: reloc.symbol,
+                        rel_type,
+                        addend: reloc.addend,
+                    });
+                }
+
+                Ok(obj_builder.build())
+            })
+            .collect();
+
+        // Collect results, propagating any errors
+        let mut object_files = Vec::with_capacity(results.len());
+        let mut total_code_bytes = 0usize;
+        for result in results {
+            let obj = result.map_err(CompileErrors::from)?;
+            total_code_bytes += obj.len();
+            object_files.push(obj);
+        }
+
+        info!(
+            function_count = state.functions.len(),
+            code_bytes = total_code_bytes,
+            "codegen complete"
+        );
+        object_files
+    };
+
+    // Link to executable
+    match &options.linker {
+        LinkerMode::Internal => {
+            link_internal_with_warnings(options, &object_files, &state.warnings)
+        }
+        LinkerMode::System(linker_cmd) => {
+            link_system_with_warnings(options, &object_files, linker_cmd, &state.warnings)
+        }
     }
 }
 

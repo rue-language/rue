@@ -680,6 +680,575 @@ impl Rir {
     pub fn current_inst_index(&self) -> u32 {
         self.instructions.len() as u32
     }
+
+    /// Merge multiple RIRs into a single RIR.
+    ///
+    /// This is used for parallel per-file RIR generation. Each file generates
+    /// its own RIR in parallel, then they are merged into a single RIR with
+    /// all instruction references renumbered to be valid in the merged RIR.
+    ///
+    /// # Arguments
+    ///
+    /// * `rirs` - Slice of RIRs to merge (typically one per source file)
+    ///
+    /// # Returns
+    ///
+    /// A new merged RIR containing all instructions from all input RIRs.
+    pub fn merge(rirs: &[Rir]) -> Rir {
+        if rirs.is_empty() {
+            return Rir::new();
+        }
+
+        if rirs.len() == 1 {
+            // Clone the single RIR directly
+            return Rir {
+                instructions: rirs[0].instructions.clone(),
+                extra: rirs[0].extra.clone(),
+                function_spans: rirs[0].function_spans.clone(),
+            };
+        }
+
+        // Calculate total sizes for preallocation
+        let total_instructions: usize = rirs.iter().map(|r| r.instructions.len()).sum();
+        let total_extra: usize = rirs.iter().map(|r| r.extra.len()).sum();
+        let total_functions: usize = rirs.iter().map(|r| r.function_spans.len()).sum();
+
+        let mut merged = Rir {
+            instructions: Vec::with_capacity(total_instructions),
+            extra: Vec::with_capacity(total_extra),
+            function_spans: Vec::with_capacity(total_functions),
+        };
+
+        // Track offsets as we merge each RIR
+        let mut inst_offset: u32 = 0;
+        let mut extra_offset: u32 = 0;
+
+        for rir in rirs {
+            // Merge extra data first (append raw bytes)
+            merged.extra.extend_from_slice(&rir.extra);
+
+            // Merge and renumber instructions
+            for inst in &rir.instructions {
+                let renumbered = Self::renumber_instruction(inst, inst_offset, extra_offset);
+                merged.instructions.push(renumbered);
+            }
+
+            // Renumber InstRefs in the extra array
+            // This handles call args, match arms, field inits, etc.
+            Self::renumber_extra_inst_refs(
+                &mut merged.extra,
+                &rir.instructions,
+                inst_offset,
+                extra_offset,
+            );
+
+            // Merge function spans with renumbered references
+            for fn_span in &rir.function_spans {
+                merged.function_spans.push(FunctionSpan {
+                    name: fn_span.name,
+                    body_start: InstRef::from_raw(fn_span.body_start.as_u32() + inst_offset),
+                    decl: InstRef::from_raw(fn_span.decl.as_u32() + inst_offset),
+                });
+            }
+
+            // Update offsets for the next RIR
+            inst_offset += rir.instructions.len() as u32;
+            extra_offset += rir.extra.len() as u32;
+        }
+
+        merged
+    }
+
+    /// Renumber a single instruction's InstRef fields.
+    fn renumber_instruction(inst: &Inst, inst_offset: u32, extra_offset: u32) -> Inst {
+        let renumber = |r: InstRef| InstRef::from_raw(r.as_u32() + inst_offset);
+        let renumber_opt = |r: Option<InstRef>| r.map(renumber);
+
+        let data = match &inst.data {
+            // No renumbering needed for these
+            InstData::IntConst(v) => InstData::IntConst(*v),
+            InstData::BoolConst(v) => InstData::BoolConst(*v),
+            InstData::StringConst(s) => InstData::StringConst(*s),
+            InstData::UnitConst => InstData::UnitConst,
+            InstData::Break => InstData::Break,
+            InstData::Continue => InstData::Continue,
+            InstData::VarRef { name } => InstData::VarRef { name: *name },
+            InstData::ParamRef { index, name } => InstData::ParamRef {
+                index: *index,
+                name: *name,
+            },
+            InstData::EnumVariant { type_name, variant } => InstData::EnumVariant {
+                type_name: *type_name,
+                variant: *variant,
+            },
+            InstData::TypeIntrinsic { name, type_arg } => InstData::TypeIntrinsic {
+                name: *name,
+                type_arg: *type_arg,
+            },
+
+            // Binary operations - renumber both operands
+            InstData::Add { lhs, rhs } => InstData::Add {
+                lhs: renumber(*lhs),
+                rhs: renumber(*rhs),
+            },
+            InstData::Sub { lhs, rhs } => InstData::Sub {
+                lhs: renumber(*lhs),
+                rhs: renumber(*rhs),
+            },
+            InstData::Mul { lhs, rhs } => InstData::Mul {
+                lhs: renumber(*lhs),
+                rhs: renumber(*rhs),
+            },
+            InstData::Div { lhs, rhs } => InstData::Div {
+                lhs: renumber(*lhs),
+                rhs: renumber(*rhs),
+            },
+            InstData::Mod { lhs, rhs } => InstData::Mod {
+                lhs: renumber(*lhs),
+                rhs: renumber(*rhs),
+            },
+            InstData::Eq { lhs, rhs } => InstData::Eq {
+                lhs: renumber(*lhs),
+                rhs: renumber(*rhs),
+            },
+            InstData::Ne { lhs, rhs } => InstData::Ne {
+                lhs: renumber(*lhs),
+                rhs: renumber(*rhs),
+            },
+            InstData::Lt { lhs, rhs } => InstData::Lt {
+                lhs: renumber(*lhs),
+                rhs: renumber(*rhs),
+            },
+            InstData::Gt { lhs, rhs } => InstData::Gt {
+                lhs: renumber(*lhs),
+                rhs: renumber(*rhs),
+            },
+            InstData::Le { lhs, rhs } => InstData::Le {
+                lhs: renumber(*lhs),
+                rhs: renumber(*rhs),
+            },
+            InstData::Ge { lhs, rhs } => InstData::Ge {
+                lhs: renumber(*lhs),
+                rhs: renumber(*rhs),
+            },
+            InstData::And { lhs, rhs } => InstData::And {
+                lhs: renumber(*lhs),
+                rhs: renumber(*rhs),
+            },
+            InstData::Or { lhs, rhs } => InstData::Or {
+                lhs: renumber(*lhs),
+                rhs: renumber(*rhs),
+            },
+            InstData::BitAnd { lhs, rhs } => InstData::BitAnd {
+                lhs: renumber(*lhs),
+                rhs: renumber(*rhs),
+            },
+            InstData::BitOr { lhs, rhs } => InstData::BitOr {
+                lhs: renumber(*lhs),
+                rhs: renumber(*rhs),
+            },
+            InstData::BitXor { lhs, rhs } => InstData::BitXor {
+                lhs: renumber(*lhs),
+                rhs: renumber(*rhs),
+            },
+            InstData::Shl { lhs, rhs } => InstData::Shl {
+                lhs: renumber(*lhs),
+                rhs: renumber(*rhs),
+            },
+            InstData::Shr { lhs, rhs } => InstData::Shr {
+                lhs: renumber(*lhs),
+                rhs: renumber(*rhs),
+            },
+
+            // Unary operations
+            InstData::Neg { operand } => InstData::Neg {
+                operand: renumber(*operand),
+            },
+            InstData::Not { operand } => InstData::Not {
+                operand: renumber(*operand),
+            },
+            InstData::BitNot { operand } => InstData::BitNot {
+                operand: renumber(*operand),
+            },
+
+            // Control flow
+            InstData::Branch {
+                cond,
+                then_block,
+                else_block,
+            } => InstData::Branch {
+                cond: renumber(*cond),
+                then_block: renumber(*then_block),
+                else_block: renumber_opt(*else_block),
+            },
+            InstData::Loop { cond, body } => InstData::Loop {
+                cond: renumber(*cond),
+                body: renumber(*body),
+            },
+            InstData::InfiniteLoop { body } => InstData::InfiniteLoop {
+                body: renumber(*body),
+            },
+            InstData::Ret(value) => InstData::Ret(renumber_opt(*value)),
+
+            // Match - InstRefs in extra are handled separately
+            InstData::Match {
+                scrutinee,
+                arms_start,
+                arms_len,
+            } => InstData::Match {
+                scrutinee: renumber(*scrutinee),
+                arms_start: *arms_start + extra_offset,
+                arms_len: *arms_len,
+            },
+
+            // Block - InstRefs in extra are handled separately
+            InstData::Block { extra_start, len } => InstData::Block {
+                extra_start: *extra_start + extra_offset,
+                len: *len,
+            },
+
+            // Variable operations
+            InstData::Alloc {
+                directives_start,
+                directives_len,
+                name,
+                is_mut,
+                ty,
+                init,
+            } => InstData::Alloc {
+                directives_start: *directives_start + extra_offset,
+                directives_len: *directives_len,
+                name: *name,
+                is_mut: *is_mut,
+                ty: *ty,
+                init: renumber(*init),
+            },
+            InstData::Assign { name, value } => InstData::Assign {
+                name: *name,
+                value: renumber(*value),
+            },
+
+            // Function definition - body and params in extra
+            InstData::FnDecl {
+                directives_start,
+                directives_len,
+                name,
+                params_start,
+                params_len,
+                return_type,
+                body,
+                has_self,
+            } => InstData::FnDecl {
+                directives_start: *directives_start + extra_offset,
+                directives_len: *directives_len,
+                name: *name,
+                params_start: *params_start + extra_offset,
+                params_len: *params_len,
+                return_type: *return_type,
+                body: renumber(*body),
+                has_self: *has_self,
+            },
+
+            // Function call - args in extra
+            InstData::Call {
+                name,
+                args_start,
+                args_len,
+            } => InstData::Call {
+                name: *name,
+                args_start: *args_start + extra_offset,
+                args_len: *args_len,
+            },
+
+            // Intrinsic - args in extra
+            InstData::Intrinsic {
+                name,
+                args_start,
+                args_len,
+            } => InstData::Intrinsic {
+                name: *name,
+                args_start: *args_start + extra_offset,
+                args_len: *args_len,
+            },
+
+            // Struct operations
+            InstData::StructDecl {
+                directives_start,
+                directives_len,
+                is_linear,
+                name,
+                fields_start,
+                fields_len,
+            } => InstData::StructDecl {
+                directives_start: *directives_start + extra_offset,
+                directives_len: *directives_len,
+                is_linear: *is_linear,
+                name: *name,
+                fields_start: *fields_start + extra_offset,
+                fields_len: *fields_len,
+            },
+            InstData::StructInit {
+                type_name,
+                fields_start,
+                fields_len,
+            } => InstData::StructInit {
+                type_name: *type_name,
+                fields_start: *fields_start + extra_offset,
+                fields_len: *fields_len,
+            },
+            InstData::FieldGet { base, field } => InstData::FieldGet {
+                base: renumber(*base),
+                field: *field,
+            },
+            InstData::FieldSet { base, field, value } => InstData::FieldSet {
+                base: renumber(*base),
+                field: *field,
+                value: renumber(*value),
+            },
+
+            // Enum operations
+            InstData::EnumDecl {
+                name,
+                variants_start,
+                variants_len,
+            } => InstData::EnumDecl {
+                name: *name,
+                variants_start: *variants_start + extra_offset,
+                variants_len: *variants_len,
+            },
+
+            // Array operations
+            InstData::ArrayInit {
+                elems_start,
+                elems_len,
+            } => InstData::ArrayInit {
+                elems_start: *elems_start + extra_offset,
+                elems_len: *elems_len,
+            },
+            InstData::IndexGet { base, index } => InstData::IndexGet {
+                base: renumber(*base),
+                index: renumber(*index),
+            },
+            InstData::IndexSet { base, index, value } => InstData::IndexSet {
+                base: renumber(*base),
+                index: renumber(*index),
+                value: renumber(*value),
+            },
+
+            // Method operations
+            InstData::ImplDecl {
+                type_name,
+                methods_start,
+                methods_len,
+            } => InstData::ImplDecl {
+                type_name: *type_name,
+                methods_start: *methods_start + extra_offset,
+                methods_len: *methods_len,
+            },
+            InstData::MethodCall {
+                receiver,
+                method,
+                args_start,
+                args_len,
+            } => InstData::MethodCall {
+                receiver: renumber(*receiver),
+                method: *method,
+                args_start: *args_start + extra_offset,
+                args_len: *args_len,
+            },
+            InstData::AssocFnCall {
+                type_name,
+                function,
+                args_start,
+                args_len,
+            } => InstData::AssocFnCall {
+                type_name: *type_name,
+                function: *function,
+                args_start: *args_start + extra_offset,
+                args_len: *args_len,
+            },
+            InstData::DropFnDecl { type_name, body } => InstData::DropFnDecl {
+                type_name: *type_name,
+                body: renumber(*body),
+            },
+        };
+
+        Inst {
+            data,
+            span: inst.span,
+        }
+    }
+
+    /// Renumber InstRefs stored in the extra array.
+    ///
+    /// This handles:
+    /// - Block instruction refs (simple u32 array)
+    /// - Array init element refs (simple u32 array)
+    /// - Intrinsic arg refs (simple u32 array)
+    /// - Impl method refs (simple u32 array)
+    /// - Call args (value field of each arg)
+    /// - Field inits (value field of each init)
+    /// - Match arm bodies (last field of each arm)
+    fn renumber_extra_inst_refs(
+        extra: &mut [u32],
+        instructions: &[Inst],
+        inst_offset: u32,
+        extra_offset: u32,
+    ) {
+        for inst in instructions {
+            match &inst.data {
+                // Block - contains InstRef array
+                InstData::Block { extra_start, len } => {
+                    let start = (*extra_start + extra_offset) as usize;
+                    for i in 0..*len as usize {
+                        extra[start + i] += inst_offset;
+                    }
+                }
+
+                // Array init - contains InstRef array
+                InstData::ArrayInit {
+                    elems_start,
+                    elems_len,
+                } => {
+                    let start = (*elems_start + extra_offset) as usize;
+                    for i in 0..*elems_len as usize {
+                        extra[start + i] += inst_offset;
+                    }
+                }
+
+                // Intrinsic - contains InstRef array
+                InstData::Intrinsic {
+                    args_start,
+                    args_len,
+                    ..
+                } => {
+                    let start = (*args_start + extra_offset) as usize;
+                    for i in 0..*args_len as usize {
+                        extra[start + i] += inst_offset;
+                    }
+                }
+
+                // Impl decl - contains InstRef array for methods
+                InstData::ImplDecl {
+                    methods_start,
+                    methods_len,
+                    ..
+                } => {
+                    let start = (*methods_start + extra_offset) as usize;
+                    for i in 0..*methods_len as usize {
+                        extra[start + i] += inst_offset;
+                    }
+                }
+
+                // Call args - layout: [value, mode] pairs
+                InstData::Call {
+                    args_start,
+                    args_len,
+                    ..
+                }
+                | InstData::MethodCall {
+                    args_start,
+                    args_len,
+                    ..
+                }
+                | InstData::AssocFnCall {
+                    args_start,
+                    args_len,
+                    ..
+                } => {
+                    let start = (*args_start + extra_offset) as usize;
+                    for i in 0..*args_len as usize {
+                        // Each arg is 2 u32s: [value, mode]
+                        extra[start + i * 2] += inst_offset;
+                    }
+                }
+
+                // Field inits - layout: [name, value] pairs
+                InstData::StructInit {
+                    fields_start,
+                    fields_len,
+                    ..
+                } => {
+                    let start = (*fields_start + extra_offset) as usize;
+                    for i in 0..*fields_len as usize {
+                        // Each field is 2 u32s: [name, value]
+                        extra[start + i * 2 + 1] += inst_offset;
+                    }
+                }
+
+                // Match arms - variable size patterns with body InstRef at end
+                InstData::Match {
+                    arms_start,
+                    arms_len,
+                    ..
+                } => {
+                    let mut pos = (*arms_start + extra_offset) as usize;
+                    for _ in 0..*arms_len {
+                        let kind = extra[pos];
+                        let pattern_size = match kind {
+                            k if k == PatternKind::Wildcard as u32 => {
+                                PATTERN_WILDCARD_SIZE as usize
+                            }
+                            k if k == PatternKind::Int as u32 => PATTERN_INT_SIZE as usize,
+                            k if k == PatternKind::Bool as u32 => PATTERN_BOOL_SIZE as usize,
+                            k if k == PatternKind::Path as u32 => PATTERN_PATH_SIZE as usize,
+                            _ => panic!("Unknown pattern kind during merge: {}", kind),
+                        };
+                        // The body InstRef is always the last element of each pattern
+                        extra[pos + pattern_size - 1] += inst_offset;
+                        pos += pattern_size;
+                    }
+                }
+
+                // These don't have InstRefs in extra
+                InstData::IntConst(_)
+                | InstData::BoolConst(_)
+                | InstData::StringConst(_)
+                | InstData::UnitConst
+                | InstData::Add { .. }
+                | InstData::Sub { .. }
+                | InstData::Mul { .. }
+                | InstData::Div { .. }
+                | InstData::Mod { .. }
+                | InstData::Eq { .. }
+                | InstData::Ne { .. }
+                | InstData::Lt { .. }
+                | InstData::Gt { .. }
+                | InstData::Le { .. }
+                | InstData::Ge { .. }
+                | InstData::And { .. }
+                | InstData::Or { .. }
+                | InstData::BitAnd { .. }
+                | InstData::BitOr { .. }
+                | InstData::BitXor { .. }
+                | InstData::Shl { .. }
+                | InstData::Shr { .. }
+                | InstData::Neg { .. }
+                | InstData::Not { .. }
+                | InstData::BitNot { .. }
+                | InstData::Branch { .. }
+                | InstData::Loop { .. }
+                | InstData::InfiniteLoop { .. }
+                | InstData::Break
+                | InstData::Continue
+                | InstData::Ret(_)
+                | InstData::VarRef { .. }
+                | InstData::ParamRef { .. }
+                | InstData::Alloc { .. }
+                | InstData::Assign { .. }
+                | InstData::FnDecl { .. }
+                | InstData::FieldGet { .. }
+                | InstData::FieldSet { .. }
+                | InstData::StructDecl { .. }
+                | InstData::EnumDecl { .. }
+                | InstData::EnumVariant { .. }
+                | InstData::IndexGet { .. }
+                | InstData::IndexSet { .. }
+                | InstData::TypeIntrinsic { .. }
+                | InstData::DropFnDecl { .. } => {}
+            }
+        }
+    }
 }
 
 /// A single RIR instruction.
@@ -2949,5 +3518,327 @@ mod tests {
         // Test Display trait implementation
         let output = format!("{}", printer);
         assert!(output.contains("%0 = const 42"));
+    }
+
+    // ===== RIR merge tests =====
+
+    #[test]
+    fn test_merge_empty_rirs() {
+        let merged = Rir::merge(&[]);
+        assert!(merged.is_empty());
+        assert!(merged.function_spans().is_empty());
+    }
+
+    #[test]
+    fn test_merge_single_rir() {
+        let mut rir = Rir::new();
+        rir.add_inst(Inst {
+            data: InstData::IntConst(42),
+            span: Span::new(0, 2),
+        });
+        rir.add_inst(Inst {
+            data: InstData::BoolConst(true),
+            span: Span::new(3, 7),
+        });
+
+        let merged = Rir::merge(&[rir]);
+        assert_eq!(merged.len(), 2);
+
+        // Check that instructions are preserved
+        assert!(matches!(
+            merged.get(InstRef::from_raw(0)).data,
+            InstData::IntConst(42)
+        ));
+        assert!(matches!(
+            merged.get(InstRef::from_raw(1)).data,
+            InstData::BoolConst(true)
+        ));
+    }
+
+    #[test]
+    fn test_merge_two_rirs_simple() {
+        // RIR 1: just an int constant
+        let mut rir1 = Rir::new();
+        rir1.add_inst(Inst {
+            data: InstData::IntConst(10),
+            span: Span::new(0, 2),
+        });
+
+        // RIR 2: another int constant
+        let mut rir2 = Rir::new();
+        rir2.add_inst(Inst {
+            data: InstData::IntConst(20),
+            span: Span::new(5, 7),
+        });
+
+        let merged = Rir::merge(&[rir1, rir2]);
+        assert_eq!(merged.len(), 2);
+
+        // First instruction from rir1
+        assert!(matches!(
+            merged.get(InstRef::from_raw(0)).data,
+            InstData::IntConst(10)
+        ));
+        // Second instruction from rir2 (renumbered to index 1)
+        assert!(matches!(
+            merged.get(InstRef::from_raw(1)).data,
+            InstData::IntConst(20)
+        ));
+    }
+
+    #[test]
+    fn test_merge_renumbers_inst_refs() {
+        // RIR 1: const and an add that references it
+        let mut rir1 = Rir::new();
+        let const1 = rir1.add_inst(Inst {
+            data: InstData::IntConst(5),
+            span: Span::new(0, 1),
+        });
+        rir1.add_inst(Inst {
+            data: InstData::Add {
+                lhs: const1,
+                rhs: const1,
+            },
+            span: Span::new(2, 5),
+        });
+
+        // RIR 2: const and an add that references it (local indices)
+        let mut rir2 = Rir::new();
+        let const2 = rir2.add_inst(Inst {
+            data: InstData::IntConst(10),
+            span: Span::new(10, 12),
+        });
+        rir2.add_inst(Inst {
+            data: InstData::Add {
+                lhs: const2,
+                rhs: const2,
+            },
+            span: Span::new(12, 16),
+        });
+
+        let merged = Rir::merge(&[rir1, rir2]);
+        assert_eq!(merged.len(), 4);
+
+        // Check rir1's add still references %0
+        if let InstData::Add { lhs, rhs } = &merged.get(InstRef::from_raw(1)).data {
+            assert_eq!(lhs.as_u32(), 0);
+            assert_eq!(rhs.as_u32(), 0);
+        } else {
+            panic!("Expected Add instruction at index 1");
+        }
+
+        // Check rir2's add now references %2 (renumbered from %0)
+        if let InstData::Add { lhs, rhs } = &merged.get(InstRef::from_raw(3)).data {
+            assert_eq!(lhs.as_u32(), 2);
+            assert_eq!(rhs.as_u32(), 2);
+        } else {
+            panic!("Expected Add instruction at index 3");
+        }
+    }
+
+    #[test]
+    fn test_merge_renumbers_extra_data() {
+        // RIR 1: function call with args in extra
+        let mut rir1 = Rir::new();
+        let interner = ThreadedRodeo::new();
+        let fn_name = interner.get_or_intern("foo");
+
+        let const1 = rir1.add_inst(Inst {
+            data: InstData::IntConst(1),
+            span: Span::new(0, 1),
+        });
+        let (args_start, args_len) = rir1.add_call_args(&[RirCallArg {
+            value: const1,
+            mode: RirArgMode::Normal,
+        }]);
+        rir1.add_inst(Inst {
+            data: InstData::Call {
+                name: fn_name,
+                args_start,
+                args_len,
+            },
+            span: Span::new(2, 8),
+        });
+
+        // RIR 2: function call with args in extra
+        let mut rir2 = Rir::new();
+        let const2 = rir2.add_inst(Inst {
+            data: InstData::IntConst(2),
+            span: Span::new(10, 11),
+        });
+        let (args_start2, args_len2) = rir2.add_call_args(&[RirCallArg {
+            value: const2,
+            mode: RirArgMode::Normal,
+        }]);
+        rir2.add_inst(Inst {
+            data: InstData::Call {
+                name: fn_name,
+                args_start: args_start2,
+                args_len: args_len2,
+            },
+            span: Span::new(12, 18),
+        });
+
+        let merged = Rir::merge(&[rir1, rir2]);
+        assert_eq!(merged.len(), 4);
+
+        // Check rir1's call still has correct args_start
+        if let InstData::Call {
+            args_start,
+            args_len,
+            ..
+        } = &merged.get(InstRef::from_raw(1)).data
+        {
+            let args = merged.get_call_args(*args_start, *args_len);
+            assert_eq!(args.len(), 1);
+            assert_eq!(args[0].value.as_u32(), 0); // Still references const1 at %0
+        } else {
+            panic!("Expected Call instruction at index 1");
+        }
+
+        // Check rir2's call has updated args_start and renumbered arg value
+        if let InstData::Call {
+            args_start,
+            args_len,
+            ..
+        } = &merged.get(InstRef::from_raw(3)).data
+        {
+            let args = merged.get_call_args(*args_start, *args_len);
+            assert_eq!(args.len(), 1);
+            assert_eq!(args[0].value.as_u32(), 2); // Now references const2 at %2
+        } else {
+            panic!("Expected Call instruction at index 3");
+        }
+    }
+
+    #[test]
+    fn test_merge_function_spans() {
+        let interner = ThreadedRodeo::new();
+        let main_name = interner.get_or_intern("main");
+        let helper_name = interner.get_or_intern("helper");
+
+        // RIR 1: main function
+        let mut rir1 = Rir::new();
+        let body_start1 = InstRef::from_raw(rir1.current_inst_index());
+        let const1 = rir1.add_inst(Inst {
+            data: InstData::IntConst(0),
+            span: Span::new(0, 1),
+        });
+        let (params_start, params_len) = rir1.add_params(&[]);
+        let (dirs_start, dirs_len) = rir1.add_directives(&[]);
+        let ret_type = interner.get_or_intern("i32");
+        let decl1 = rir1.add_inst(Inst {
+            data: InstData::FnDecl {
+                directives_start: dirs_start,
+                directives_len: dirs_len,
+                name: main_name,
+                params_start,
+                params_len,
+                return_type: ret_type,
+                body: const1,
+                has_self: false,
+            },
+            span: Span::new(0, 10),
+        });
+        rir1.add_function_span(FunctionSpan::new(main_name, body_start1, decl1));
+
+        // RIR 2: helper function
+        let mut rir2 = Rir::new();
+        let body_start2 = InstRef::from_raw(rir2.current_inst_index());
+        let const2 = rir2.add_inst(Inst {
+            data: InstData::IntConst(42),
+            span: Span::new(20, 22),
+        });
+        let (params_start2, params_len2) = rir2.add_params(&[]);
+        let (dirs_start2, dirs_len2) = rir2.add_directives(&[]);
+        let decl2 = rir2.add_inst(Inst {
+            data: InstData::FnDecl {
+                directives_start: dirs_start2,
+                directives_len: dirs_len2,
+                name: helper_name,
+                params_start: params_start2,
+                params_len: params_len2,
+                return_type: ret_type,
+                body: const2,
+                has_self: false,
+            },
+            span: Span::new(20, 35),
+        });
+        rir2.add_function_span(FunctionSpan::new(helper_name, body_start2, decl2));
+
+        let merged = Rir::merge(&[rir1, rir2]);
+
+        // Check we have 2 function spans
+        assert_eq!(merged.function_spans().len(), 2);
+
+        // Check main function span (from rir1, indices unchanged)
+        let main_span = &merged.function_spans()[0];
+        assert_eq!(main_span.name, main_name);
+        assert_eq!(main_span.body_start.as_u32(), 0);
+        assert_eq!(main_span.decl.as_u32(), 1);
+
+        // Check helper function span (from rir2, indices shifted by 2)
+        let helper_span = &merged.function_spans()[1];
+        assert_eq!(helper_span.name, helper_name);
+        assert_eq!(helper_span.body_start.as_u32(), 2); // Was 0, now 0 + 2 = 2
+        assert_eq!(helper_span.decl.as_u32(), 3); // Was 1, now 1 + 2 = 3
+    }
+
+    #[test]
+    fn test_merge_three_rirs() {
+        let mut rir1 = Rir::new();
+        rir1.add_inst(Inst {
+            data: InstData::IntConst(1),
+            span: Span::new(0, 1),
+        });
+
+        let mut rir2 = Rir::new();
+        rir2.add_inst(Inst {
+            data: InstData::IntConst(2),
+            span: Span::new(10, 11),
+        });
+
+        let mut rir3 = Rir::new();
+        rir3.add_inst(Inst {
+            data: InstData::IntConst(3),
+            span: Span::new(20, 21),
+        });
+
+        let merged = Rir::merge(&[rir1, rir2, rir3]);
+        assert_eq!(merged.len(), 3);
+
+        assert!(matches!(
+            merged.get(InstRef::from_raw(0)).data,
+            InstData::IntConst(1)
+        ));
+        assert!(matches!(
+            merged.get(InstRef::from_raw(1)).data,
+            InstData::IntConst(2)
+        ));
+        assert!(matches!(
+            merged.get(InstRef::from_raw(2)).data,
+            InstData::IntConst(3)
+        ));
+    }
+
+    #[test]
+    fn test_merge_preserves_spans() {
+        let mut rir1 = Rir::new();
+        rir1.add_inst(Inst {
+            data: InstData::IntConst(1),
+            span: Span::new(5, 10),
+        });
+
+        let mut rir2 = Rir::new();
+        rir2.add_inst(Inst {
+            data: InstData::IntConst(2),
+            span: Span::new(100, 105),
+        });
+
+        let merged = Rir::merge(&[rir1, rir2]);
+
+        // Spans should be preserved exactly
+        assert_eq!(merged.get(InstRef::from_raw(0)).span, Span::new(5, 10));
+        assert_eq!(merged.get(InstRef::from_raw(1)).span, Span::new(100, 105));
     }
 }
