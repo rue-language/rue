@@ -889,10 +889,110 @@ impl<'a> CfgLower<'a> {
                 self.value_map.insert(value, vreg);
 
                 let lhs_vreg = self.get_vreg(*lhs);
-                let rhs_vreg = self.get_vreg(*rhs);
 
-                // Overflow check for multiplication
-                self.emit_overflow_check_mul(ty, vreg, lhs_vreg, rhs_vreg);
+                // Strength reduction: multiply by power of 2 -> shift left
+                // This replaces expensive MUL with LSL (typically faster).
+                // Only apply to 32/64-bit types - sub-word types (i8, i16, u8, u16)
+                // have complex overflow checking that doesn't work well with shifts.
+                // Check rhs first (more common: x * constant), then lhs (constant * x)
+                //
+                // Future optimization: x * 2 could use `add x, x` instead of `lsl x, #1`
+                // (same latency but potentially better for some microarchitectures).
+                let is_word_or_larger = matches!(ty, Type::I32 | Type::I64 | Type::U32 | Type::U64);
+                let shift_amount = if is_word_or_larger {
+                    self.try_power_of_two_shift(*rhs)
+                        .or_else(|| self.try_power_of_two_shift(*lhs))
+                } else {
+                    None
+                };
+
+                if let Some(shift) = shift_amount {
+                    // Use the non-constant operand as the value to shift
+                    let src_vreg = if self.try_power_of_two_shift(*rhs).is_some() {
+                        lhs_vreg
+                    } else {
+                        self.get_vreg(*rhs)
+                    };
+
+                    // Emit shift left
+                    if ty.is_64_bit() {
+                        self.mir.push(Aarch64Inst::LslImm {
+                            dst: Operand::Virtual(vreg),
+                            src: Operand::Virtual(src_vreg),
+                            imm: shift,
+                        });
+                    } else {
+                        self.mir.push(Aarch64Inst::Lsl32Imm {
+                            dst: Operand::Virtual(vreg),
+                            src: Operand::Virtual(src_vreg),
+                            imm: shift,
+                        });
+                    }
+
+                    // Overflow check: shift back and compare with original
+                    // If they differ, bits were lost during the shift (overflow)
+                    let check_vreg = self.mir.alloc_vreg();
+
+                    // Use arithmetic shift (ASR) for signed, logical shift (LSR) for unsigned
+                    if ty.is_signed() {
+                        if ty.is_64_bit() {
+                            self.mir.push(Aarch64Inst::Asr64Imm {
+                                dst: Operand::Virtual(check_vreg),
+                                src: Operand::Virtual(vreg),
+                                imm: shift,
+                            });
+                        } else {
+                            self.mir.push(Aarch64Inst::Asr32Imm {
+                                dst: Operand::Virtual(check_vreg),
+                                src: Operand::Virtual(vreg),
+                                imm: shift,
+                            });
+                        }
+                    } else if ty.is_64_bit() {
+                        self.mir.push(Aarch64Inst::Lsr64Imm {
+                            dst: Operand::Virtual(check_vreg),
+                            src: Operand::Virtual(vreg),
+                            imm: shift,
+                        });
+                    } else {
+                        self.mir.push(Aarch64Inst::Lsr32Imm {
+                            dst: Operand::Virtual(check_vreg),
+                            src: Operand::Virtual(vreg),
+                            imm: shift,
+                        });
+                    }
+
+                    // Compare with original value
+                    let ok_label = self.mir.alloc_label();
+                    if ty.is_64_bit() {
+                        self.mir.push(Aarch64Inst::Cmp64RR {
+                            src1: Operand::Virtual(check_vreg),
+                            src2: Operand::Virtual(src_vreg),
+                        });
+                    } else {
+                        self.mir.push(Aarch64Inst::CmpRR {
+                            src1: Operand::Virtual(check_vreg),
+                            src2: Operand::Virtual(src_vreg),
+                        });
+                    }
+
+                    // Branch if equal (no overflow)
+                    self.mir.push(Aarch64Inst::BCond {
+                        cond: Cond::Eq,
+                        label: ok_label,
+                    });
+
+                    // Overflow - call panic handler
+                    let symbol_id = self.intern_symbol("__rue_overflow");
+                    self.mir.push(Aarch64Inst::Bl { symbol_id });
+                    self.mir.push(Aarch64Inst::Label { id: ok_label });
+                } else {
+                    // Fall back to regular multiply for non-power-of-2 constants
+                    let rhs_vreg = self.get_vreg(*rhs);
+
+                    // Overflow check for multiplication
+                    self.emit_overflow_check_mul(ty, vreg, lhs_vreg, rhs_vreg);
+                }
             }
 
             CfgInstData::Div(lhs, rhs) => {
@@ -2875,6 +2975,30 @@ impl<'a> CfgLower<'a> {
     /// Sema guarantees both operands have the same signedness, so we only need to check one.
     fn is_unsigned_comparison(&self, lhs: CfgValue) -> bool {
         self.cfg.get_inst(lhs).ty.is_unsigned()
+    }
+
+    /// Try to extract a power-of-two shift amount from a constant value.
+    ///
+    /// Returns `Some(shift_amount)` if the value is a constant that is a power of 2
+    /// greater than 1, otherwise returns `None`.
+    ///
+    /// Used for strength reduction: `x * 2^n` can be lowered to `x << n`.
+    fn try_power_of_two_shift(&self, value: CfgValue) -> Option<u8> {
+        let inst = self.cfg.get_inst(value);
+        match &inst.data {
+            CfgInstData::Const(n) => {
+                let n = *n;
+                // Check if n is a power of 2 and greater than 1
+                // n > 1 because x * 1 should be handled by identity optimization (not here)
+                // n must fit in u64 for is_power_of_two
+                if n > 1 && n.is_power_of_two() {
+                    Some(n.trailing_zeros() as u8)
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        }
     }
 
     /// Emit overflow check for ADD based on the type.

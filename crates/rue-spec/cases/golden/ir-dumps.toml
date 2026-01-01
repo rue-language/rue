@@ -398,6 +398,9 @@ air (return_type: i32) {
 }
 """
 
+# Note: 3 * 4 uses shift (shl/lsl) instead of imul/smull because 4 is a power of 2.
+# The shift-back-and-compare pattern detects overflow.
+
 [[case]]
 name = "multiplication_mir"
 spec = ["4.2:1"]
@@ -408,8 +411,11 @@ function main:
     mov v0, 3
     mov v1, 4
     mov v2, v0
-    imul v2, v1
-    jno .L0
+    shll v2, 2
+    mov v3, v2
+    sarl v3, 2
+    cmp v3, v0
+    jz .L0
     call __rue_overflow
     .L0:
     mov rdi, v2
@@ -425,15 +431,59 @@ expected_mir = """
 function main:
     mov v0, #3
     mov v1, #4
-    smull v3, v0, v1
-    mov v2, v3
-    sxtw v4, v3
-    cmp v3, v4
+    lsl v2, v0, #2 // 32-bit
+    asr v3, v2, #2 // 32-bit
+    cmp v3, v0
     b.eq .L0
     bl __rue_overflow
     .L0:
     mov x0, v2
     bl __rue_exit
+"""
+
+# =============================================================================
+# Strength Reduction (multiply by power of 2 -> shift)
+# =============================================================================
+
+[[case]]
+name = "strength_reduction_multiply_by_8"
+spec = ["4.2:1"]
+source = "fn main() -> i32 { let x = 5; x * 8 }"
+target = "x86-64-linux"
+expected_mir = """
+function main:
+    mov v0, 5
+    mov [rbp-8], v0
+    mov v1, [rbp-8]
+    mov v2, 8
+    mov v3, v1
+    shll v3, 3
+    mov v4, v3
+    sarl v4, 3
+    cmp v4, v1
+    jz .L0
+    call __rue_overflow
+    .L0:
+    mov rdi, v3
+    call __rue_exit
+"""
+
+[[case]]
+name = "non_power_of_2_uses_imul"
+spec = ["4.2:1"]
+source = "fn main() -> i32 { 3 * 5 }"
+target = "x86-64-linux"
+expected_mir = """
+function main:
+    mov v0, 3
+    mov v1, 5
+    mov v2, v0
+    imul v2, v1
+    jno .L0
+    call __rue_overflow
+    .L0:
+    mov rdi, v2
+    call __rue_exit
 """
 
 [[case]]

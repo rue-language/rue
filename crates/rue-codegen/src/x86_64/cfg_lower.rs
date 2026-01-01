@@ -968,30 +968,131 @@ impl<'a> CfgLower<'a> {
                 self.value_map.insert(value, vreg);
 
                 let lhs_vreg = self.get_vreg(*lhs);
-                let rhs_vreg = self.get_vreg(*rhs);
 
-                self.mir.push(X86Inst::MovRR {
-                    dst: Operand::Virtual(vreg),
-                    src: Operand::Virtual(lhs_vreg),
-                });
-
-                // Use 64-bit mul for 64-bit types to get correct overflow detection
-                if matches!(ty, Type::I64 | Type::U64) {
-                    self.mir.push(X86Inst::ImulRR64 {
-                        dst: Operand::Virtual(vreg),
-                        src: Operand::Virtual(rhs_vreg),
-                    });
+                // Strength reduction: multiply by power of 2 -> shift left
+                // This replaces expensive IMUL (3-4 cycles) with SHL (1 cycle).
+                // Only apply to 32/64-bit types - sub-word types (i8, i16, u8, u16)
+                // have complex overflow checking that doesn't work well with shifts.
+                // Check rhs first (more common: x * constant), then lhs (constant * x)
+                //
+                // Future optimization: x * 2 could use `add x, x` instead of `shl x, 1`
+                // (same latency but potentially better for some microarchitectures).
+                let is_word_or_larger = matches!(ty, Type::I32 | Type::I64 | Type::U32 | Type::U64);
+                let shift_amount = if is_word_or_larger {
+                    self.try_power_of_two_shift(*rhs)
+                        .or_else(|| self.try_power_of_two_shift(*lhs))
                 } else {
-                    self.mir.push(X86Inst::ImulRR {
-                        dst: Operand::Virtual(vreg),
-                        src: Operand::Virtual(rhs_vreg),
-                    });
-                }
+                    None
+                };
 
-                // Overflow check - use appropriate flag based on signedness
-                // Note: IMUL sets both OF and CF to the same value, so this works
-                // for both signed and unsigned multiplication
-                self.emit_overflow_check(ty, vreg);
+                if let Some(shift) = shift_amount {
+                    // Use the non-constant operand as the value to shift
+                    let src_vreg = if self.try_power_of_two_shift(*rhs).is_some() {
+                        lhs_vreg
+                    } else {
+                        self.get_vreg(*rhs)
+                    };
+
+                    // Copy source to result
+                    self.mir.push(X86Inst::MovRR {
+                        dst: Operand::Virtual(vreg),
+                        src: Operand::Virtual(src_vreg),
+                    });
+
+                    // Emit shift left
+                    if ty.is_64_bit() {
+                        self.mir.push(X86Inst::ShlRI {
+                            dst: Operand::Virtual(vreg),
+                            imm: shift,
+                        });
+                    } else {
+                        self.mir.push(X86Inst::Shl32RI {
+                            dst: Operand::Virtual(vreg),
+                            imm: shift,
+                        });
+                    }
+
+                    // Overflow check: shift back and compare with original
+                    // If they differ, bits were lost during the shift (overflow)
+                    let check_vreg = self.mir.alloc_vreg();
+                    self.mir.push(X86Inst::MovRR {
+                        dst: Operand::Virtual(check_vreg),
+                        src: Operand::Virtual(vreg),
+                    });
+
+                    // Use arithmetic shift (SAR) for signed, logical shift (SHR) for unsigned
+                    if ty.is_signed() {
+                        if ty.is_64_bit() {
+                            self.mir.push(X86Inst::SarRI {
+                                dst: Operand::Virtual(check_vreg),
+                                imm: shift,
+                            });
+                        } else {
+                            self.mir.push(X86Inst::Sar32RI {
+                                dst: Operand::Virtual(check_vreg),
+                                imm: shift,
+                            });
+                        }
+                    } else if ty.is_64_bit() {
+                        self.mir.push(X86Inst::ShrRI {
+                            dst: Operand::Virtual(check_vreg),
+                            imm: shift,
+                        });
+                    } else {
+                        self.mir.push(X86Inst::Shr32RI {
+                            dst: Operand::Virtual(check_vreg),
+                            imm: shift,
+                        });
+                    }
+
+                    // Compare with original value
+                    if ty.is_64_bit() {
+                        self.mir.push(X86Inst::Cmp64RR {
+                            src1: Operand::Virtual(check_vreg),
+                            src2: Operand::Virtual(src_vreg),
+                        });
+                    } else {
+                        self.mir.push(X86Inst::CmpRR {
+                            src1: Operand::Virtual(check_vreg),
+                            src2: Operand::Virtual(src_vreg),
+                        });
+                    }
+
+                    // Jump if equal (no overflow)
+                    let ok_label = self.new_label();
+                    self.mir.push(X86Inst::Jz { label: ok_label });
+
+                    // Overflow - call panic handler
+                    let symbol_id = self.intern_symbol("__rue_overflow");
+                    self.mir.push(X86Inst::CallRel { symbol_id });
+                    self.mir.push(X86Inst::Label { id: ok_label });
+                } else {
+                    // Fall back to IMUL for non-power-of-2 constants
+                    let rhs_vreg = self.get_vreg(*rhs);
+
+                    self.mir.push(X86Inst::MovRR {
+                        dst: Operand::Virtual(vreg),
+                        src: Operand::Virtual(lhs_vreg),
+                    });
+
+                    // Use 64-bit mul for 64-bit types to get correct overflow detection
+                    if matches!(ty, Type::I64 | Type::U64) {
+                        self.mir.push(X86Inst::ImulRR64 {
+                            dst: Operand::Virtual(vreg),
+                            src: Operand::Virtual(rhs_vreg),
+                        });
+                    } else {
+                        self.mir.push(X86Inst::ImulRR {
+                            dst: Operand::Virtual(vreg),
+                            src: Operand::Virtual(rhs_vreg),
+                        });
+                    }
+
+                    // Overflow check - use appropriate flag based on signedness
+                    // Note: IMUL sets both OF and CF to the same value, so this works
+                    // for both signed and unsigned multiplication
+                    self.emit_overflow_check(ty, vreg);
+                }
             }
 
             CfgInstData::Div(lhs, rhs) => {
@@ -3054,6 +3155,30 @@ impl<'a> CfgLower<'a> {
     /// Sema guarantees both operands have the same signedness, so we only need to check one.
     fn is_unsigned_comparison(&self, lhs: CfgValue) -> bool {
         self.cfg.get_inst(lhs).ty.is_unsigned()
+    }
+
+    /// Try to extract a power-of-two shift amount from a constant value.
+    ///
+    /// Returns `Some(shift_amount)` if the value is a constant that is a power of 2
+    /// greater than 1, otherwise returns `None`.
+    ///
+    /// Used for strength reduction: `x * 2^n` can be lowered to `x << n`.
+    fn try_power_of_two_shift(&self, value: CfgValue) -> Option<u8> {
+        let inst = self.cfg.get_inst(value);
+        match &inst.data {
+            CfgInstData::Const(n) => {
+                let n = *n;
+                // Check if n is a power of 2 and greater than 1
+                // n > 1 because x * 1 should be handled by identity optimization (not here)
+                // n must fit in u64 for is_power_of_two
+                if n > 1 && n.is_power_of_two() {
+                    Some(n.trailing_zeros() as u8)
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        }
     }
 
     /// Emit overflow check based on the type.
