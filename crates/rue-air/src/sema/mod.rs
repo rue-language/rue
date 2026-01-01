@@ -525,4 +525,6 @@ impl<'a> Sema<'a> {
 }
 
 #[cfg(test)]
+mod consistency_tests;
+#[cfg(test)]
 mod tests;
