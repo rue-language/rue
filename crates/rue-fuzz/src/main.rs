@@ -16,6 +16,7 @@
 //! ./buck2 run //crates/rue-fuzz:rue-fuzz -- --list
 //! ```
 
+pub mod codegen_generators;
 mod corpus;
 pub mod generators;
 mod mutate;

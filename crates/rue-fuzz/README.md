@@ -1,6 +1,6 @@
 # Rue Fuzzer
 
-Fuzz testing infrastructure for the Rue compiler. This crate helps find edge cases, crashes, and potential issues in the lexer, parser, and semantic analysis phases.
+Fuzz testing infrastructure for the Rue compiler. This crate helps find edge cases, crashes, and potential issues in the lexer, parser, semantic analysis, and code generation phases.
 
 ## Quick Start
 
@@ -25,6 +25,8 @@ Fuzz testing infrastructure for the Rue compiler. This crate helps find edge cas
 | `lexer` | Tokenization only | ~27,000 exec/s |
 | `parser` | Lexing + parsing | ~6,500 exec/s |
 | `compiler` | Full frontend (through sema) | ~4,000-8,000 exec/s |
+| `emitter` | x86-64 instruction encoding | ~15,000 exec/s |
+| `emitter_sequence` | Instruction sequences with labels/jumps | ~10,000 exec/s |
 
 ## Options
 
@@ -77,7 +79,7 @@ To add fuzzing to CI, run the fuzzer for a limited time:
 
 ```bash
 # Run each target for 5 minutes
-for target in lexer parser compiler; do
+for target in lexer parser compiler emitter emitter_sequence; do
     ./buck2 run //crates/rue-fuzz:rue-fuzz -- --mutate --max-time=300 $target crates/rue-fuzz/corpus
 done
 ```
@@ -108,6 +110,21 @@ The proptest tests verify:
 - Compiler frontend never panics on valid or invalid programs
 - All components handle arbitrary strings without panicking
 
+### Codegen Generators
+
+The fuzzer also includes specialized generators for the code generation phase (`src/codegen_generators.rs`):
+- Physical and virtual register operands
+- x86-64 instructions with various register combinations
+- Instruction sequences with labels and jumps
+- Immediate values (boundary cases like i32::MIN, i32::MAX)
+- Shift amounts and stack offsets
+
+These enable testing the instruction emitter with structured inputs that exercise:
+- REX prefix encoding with unusual register combinations
+- Immediate value encoding edge cases
+- Label resolution and jump fixups
+- Various instruction encodings
+
 ## Design
 
 The fuzzer is designed to work with Buck2 without requiring cargo-fuzz or libFuzzer. It:
@@ -117,9 +134,11 @@ The fuzzer is designed to work with Buck2 without requiring cargo-fuzz or libFuz
 3. Runs the fuzz target in a panic-catching wrapper
 4. Saves any crashing inputs
 
-Additionally, proptest-based generators create syntactically valid programs for deeper testing.
+Additionally, proptest-based generators create syntactically valid programs and structured codegen inputs for deeper testing.
 
 Each fuzz target exercises a specific phase of the compiler:
 - **Lexer**: Should never panic, always return tokens or an error
 - **Parser**: Should never panic, always return an AST or an error
 - **Compiler**: Should never panic, always compile or return errors
+- **Emitter**: Should never panic on any valid instruction sequence
+- **Emitter Sequence**: Should handle labels and jumps without panicking

@@ -36,6 +36,12 @@ jobs:
       - name: Fuzz compiler (5 minutes)
         run: ./buck2 run //crates/rue-fuzz:rue-fuzz -- --mutate --max-time=300 compiler crates/rue-fuzz/corpus
 
+      - name: Fuzz x86-64 emitter (5 minutes)
+        run: ./buck2 run //crates/rue-fuzz:rue-fuzz -- --mutate --max-time=300 emitter crates/rue-fuzz/corpus
+
+      - name: Fuzz x86-64 emitter sequences (5 minutes)
+        run: ./buck2 run //crates/rue-fuzz:rue-fuzz -- --mutate --max-time=300 emitter_sequence crates/rue-fuzz/corpus
+
       - name: Upload crash artifacts
         if: failure()
         uses: actions/upload-artifact@v4
