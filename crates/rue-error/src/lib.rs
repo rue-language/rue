@@ -169,6 +169,7 @@ impl ErrorCode {
     // Comptime errors (E1200-E1299)
     // ========================================================================
     pub const COMPTIME_EVALUATION_FAILED: Self = Self(1200);
+    pub const COMPTIME_ARG_NOT_CONST: Self = Self(1201);
 
     // ========================================================================
     // Internal compiler errors (E9000-E9999)
@@ -980,6 +981,9 @@ pub enum ErrorKind {
     #[error("comptime evaluation failed: {reason}")]
     ComptimeEvaluationFailed { reason: String },
 
+    #[error("comptime parameter requires a compile-time known value")]
+    ComptimeArgNotConst { param_name: String },
+
     // Internal compiler errors (bugs in the compiler itself)
     #[error("internal compiler error: {0}")]
     InternalError(String),
@@ -1088,6 +1092,7 @@ impl ErrorKind {
 
             // Comptime errors (E1200-E1299)
             ErrorKind::ComptimeEvaluationFailed { .. } => ErrorCode::COMPTIME_EVALUATION_FAILED,
+            ErrorKind::ComptimeArgNotConst { .. } => ErrorCode::COMPTIME_ARG_NOT_CONST,
 
             // Internal compiler errors (E9000-E9999)
             ErrorKind::InternalError(_) => ErrorCode::INTERNAL_ERROR,

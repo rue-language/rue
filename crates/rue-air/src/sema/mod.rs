@@ -206,10 +206,14 @@ pub struct InferenceContext {
 /// Information about a function.
 #[derive(Debug, Clone)]
 pub struct FunctionInfo {
+    /// Parameter names (in order)
+    pub param_names: Vec<lasso::Spur>,
     /// Parameter types (in order)
     pub param_types: Vec<Type>,
     /// Parameter modes (in order)
     pub param_modes: Vec<rue_rir::RirParamMode>,
+    /// Whether each parameter is comptime (in order)
+    pub param_comptime: Vec<bool>,
     /// Return type
     pub return_type: Type,
 }

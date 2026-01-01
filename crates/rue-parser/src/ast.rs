@@ -206,6 +206,8 @@ impl Default for ParamMode {
 /// A function parameter.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Param {
+    /// Whether this parameter is evaluated at compile time
+    pub is_comptime: bool,
     /// Parameter passing mode (normal or inout)
     pub mode: ParamMode,
     /// Parameter name

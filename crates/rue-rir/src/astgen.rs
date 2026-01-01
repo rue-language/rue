@@ -190,6 +190,7 @@ impl<'a> AstGen<'a> {
                 name: p.name.name, // Already a Spur
                 ty: self.intern_type(&p.ty),
                 mode: self.convert_param_mode(p.mode),
+                is_comptime: p.is_comptime,
             })
             .collect();
         let (params_start, params_len) = self.rir.add_params(&params);
@@ -291,6 +292,7 @@ impl<'a> AstGen<'a> {
                 name: p.name.name, // Already a Spur
                 ty: self.intern_type(&p.ty),
                 mode: self.convert_param_mode(p.mode),
+                is_comptime: p.is_comptime,
             })
             .collect();
         let (params_start, params_len) = self.rir.add_params(&params);

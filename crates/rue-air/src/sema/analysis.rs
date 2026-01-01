@@ -3880,6 +3880,46 @@ fn analyze_call_ctx(
         }
     }
 
+    // Check that comptime parameters receive compile-time constant values
+    let has_comptime_params = fn_info.param_comptime.iter().any(|&c| c);
+    if has_comptime_params {
+        // Gate behind comptime preview feature
+        if !ctx.preview_features.contains(&PreviewFeature::Comptime) {
+            return Err(CompileError::new(
+                ErrorKind::PreviewFeatureRequired {
+                    feature: PreviewFeature::Comptime,
+                    what: "comptime parameters".to_string(),
+                },
+                span,
+            )
+            .with_help(format!(
+                "use `--preview {}` to enable this feature ({})",
+                PreviewFeature::Comptime.name(),
+                PreviewFeature::Comptime.adr()
+            )));
+        }
+
+        // Validate each comptime parameter receives a compile-time constant
+        for (i, (&is_comptime, arg)) in fn_info.param_comptime.iter().zip(args.iter()).enumerate() {
+            if is_comptime {
+                // Try to evaluate the argument at compile time
+                if try_evaluate_const_in_rir(ctx.rir, arg.value).is_none() {
+                    let param_name = ctx.interner.resolve(&fn_info.param_names[i]).to_string();
+                    return Err(CompileError::new(
+                        ErrorKind::ComptimeArgNotConst {
+                            param_name: param_name.clone(),
+                        },
+                        ctx.rir.get(arg.value).span,
+                    )
+                    .with_help(format!(
+                        "parameter '{}' is declared as 'comptime' and requires a compile-time known value",
+                        param_name
+                    )));
+                }
+            }
+        }
+    }
+
     // Extract return_type before mutable borrow
     let return_type = fn_info.return_type;
 
@@ -6730,7 +6770,7 @@ impl<'a> Sema<'a> {
     ///
     /// This is the foundation for compile-time bounds checking and can be extended
     /// for future `comptime` features.
-    fn try_evaluate_const(&self, inst_ref: InstRef) -> Option<ConstValue> {
+    pub(crate) fn try_evaluate_const(&self, inst_ref: InstRef) -> Option<ConstValue> {
         let inst = self.rir.get(inst_ref);
         match &inst.data {
             // Integer literals
@@ -6887,6 +6927,9 @@ impl<'a> Sema<'a> {
                 let n = self.try_evaluate_const(*operand)?.as_integer()?;
                 Some(ConstValue::Integer(!n))
             }
+
+            // Comptime block: comptime { expr } is compile-time evaluable if its inner expr is
+            InstData::Comptime { expr } => self.try_evaluate_const(*expr),
 
             // Everything else requires runtime evaluation
             _ => None,

@@ -60,6 +60,8 @@ pub struct RirParam {
     pub ty: Spur,
     /// Parameter passing mode
     pub mode: RirParamMode,
+    /// Whether this parameter is evaluated at compile time
+    pub is_comptime: bool,
 }
 
 /// Argument passing mode in RIR.
@@ -136,8 +138,8 @@ impl RirPattern {
 const CALL_ARG_SIZE: u32 = 2;
 
 /// Stored representation of RirParam in the extra array.
-/// Layout: [name: u32, ty: u32, mode: u32] = 3 u32s per param
-const PARAM_SIZE: u32 = 3;
+/// Layout: [name: u32, ty: u32, mode: u32, is_comptime: u32] = 4 u32s per param
+const PARAM_SIZE: u32 = 4;
 
 /// Stored representation of match arm in the extra array.
 /// Layout: pattern data + [body: u32]
@@ -421,13 +423,14 @@ impl Rir {
     }
 
     /// Store RirParams and return (start, len).
-    /// Layout: [name: u32, ty: u32, mode: u32] per param
+    /// Layout: [name: u32, ty: u32, mode: u32, is_comptime: u32] per param
     pub fn add_params(&mut self, params: &[RirParam]) -> (u32, u32) {
         let mut data = Vec::with_capacity(params.len() * PARAM_SIZE as usize);
         for param in params {
             data.push(param.name.into_usize() as u32);
             data.push(param.ty.into_usize() as u32);
             data.push(param.mode as u32);
+            data.push(param.is_comptime as u32);
         }
         let start = self.add_extra(&data);
         (start, params.len() as u32)
@@ -446,7 +449,13 @@ impl Rir {
                 2 => RirParamMode::Borrow,
                 _ => RirParamMode::Normal, // Fallback
             };
-            params.push(RirParam { name, ty, mode });
+            let is_comptime = chunk[3] != 0;
+            params.push(RirParam {
+                name,
+                ty,
+                mode,
+                is_comptime,
+            });
         }
         params
     }
@@ -2507,6 +2516,7 @@ mod tests {
             name: param_name,
             ty: param_type,
             mode: RirParamMode::Normal,
+            is_comptime: false,
         }]);
 
         rir.add_inst(Inst {
@@ -2584,16 +2594,19 @@ mod tests {
                 name: param1_name,
                 ty: param1_type,
                 mode: RirParamMode::Normal,
+                is_comptime: false,
             },
             RirParam {
                 name: param2_name,
                 ty: param2_type,
                 mode: RirParamMode::Inout,
+                is_comptime: false,
             },
             RirParam {
                 name: param3_name,
                 ty: param3_type,
                 mode: RirParamMode::Borrow,
+                is_comptime: false,
             },
         ]);
 

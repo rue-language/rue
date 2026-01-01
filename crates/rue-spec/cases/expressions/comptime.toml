@@ -263,3 +263,122 @@ fn main() -> i32 {
 """
 compile_fail = true
 error_contains = "cannot be known at compile time"
+
+# =============================================================================
+# Comptime Parameters (Phase 2 - ADR-0025)
+# =============================================================================
+
+[[case]]
+name = "comptime_param_requires_preview_flag"
+spec = ["4.13:5"]
+source = """
+fn repeat(comptime n: i32, value: i32) -> i32 { n + value }
+fn main() -> i32 {
+    repeat(3, 10)
+}
+"""
+compile_fail = true
+error_contains = "requires preview feature"
+
+[[case]]
+name = "comptime_param_basic"
+spec = ["4.13:5"]
+preview = "comptime"
+preview_should_pass = true
+source = """
+fn multiply(comptime n: i32, value: i32) -> i32 {
+    n * value
+}
+fn main() -> i32 {
+    multiply(6, 7)
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "comptime_param_with_literal"
+spec = ["4.13:5"]
+preview = "comptime"
+preview_should_pass = true
+source = """
+fn add_constant(comptime c: i32, x: i32) -> i32 {
+    c + x
+}
+fn main() -> i32 {
+    add_constant(40, 2)
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "comptime_param_multiple"
+spec = ["4.13:5"]
+preview = "comptime"
+preview_should_pass = true
+source = """
+fn compute(comptime a: i32, comptime b: i32, x: i32) -> i32 {
+    a * b + x
+}
+fn main() -> i32 {
+    compute(5, 8, 2)
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "comptime_param_runtime_arg_error"
+spec = ["4.13:6"]
+preview = "comptime"
+preview_should_pass = true
+source = """
+fn double(comptime n: i32) -> i32 { n * 2 }
+fn main() -> i32 {
+    let x = 21;
+    double(x)
+}
+"""
+compile_fail = true
+error_contains = "comptime parameter requires a compile-time known value"
+
+[[case]]
+name = "comptime_param_function_call_arg_error"
+spec = ["4.13:6"]
+preview = "comptime"
+preview_should_pass = true
+source = """
+fn get_value() -> i32 { 5 }
+fn scale(comptime factor: i32, value: i32) -> i32 { factor * value }
+fn main() -> i32 {
+    scale(get_value(), 10)
+}
+"""
+compile_fail = true
+error_contains = "comptime parameter requires a compile-time known value"
+
+[[case]]
+name = "comptime_param_comptime_expr_ok"
+spec = ["4.13:5"]
+preview = "comptime"
+preview_should_pass = true
+source = """
+fn triple(comptime n: i32) -> i32 { n * 3 }
+fn main() -> i32 {
+    triple(comptime { 7 * 2 })
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "comptime_param_mixed_with_normal"
+spec = ["4.13:5"]
+preview = "comptime"
+preview_should_pass = true
+source = """
+fn offset(x: i32, comptime delta: i32, y: i32) -> i32 {
+    x + delta + y
+}
+fn main() -> i32 {
+    offset(10, 20, 12)
+}
+"""
+exit_code = 42

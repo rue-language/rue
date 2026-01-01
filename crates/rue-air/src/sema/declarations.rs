@@ -667,17 +667,28 @@ impl<'a> Sema<'a> {
     ) -> CompileResult<()> {
         let ret_type = self.resolve_type(return_type, span)?;
         let params = self.rir.get_params(params_start, params_len);
+
+        // Check if any parameter is comptime and gate behind preview feature
+        let has_comptime_params = params.iter().any(|p| p.is_comptime);
+        if has_comptime_params {
+            self.require_preview(PreviewFeature::Comptime, "comptime parameters", span)?;
+        }
+
+        let param_names: Vec<_> = params.iter().map(|p| p.name).collect();
         let param_types: Vec<Type> = params
             .iter()
             .map(|p| self.resolve_type(p.ty, span))
             .collect::<CompileResult<Vec<_>>>()?;
         let param_modes: Vec<RirParamMode> = params.iter().map(|p| p.mode).collect();
+        let param_comptime: Vec<bool> = params.iter().map(|p| p.is_comptime).collect();
 
         self.functions.insert(
             name,
             FunctionInfo {
+                param_names,
                 param_types,
                 param_modes,
+                param_comptime,
                 return_type: ret_type,
             },
         );

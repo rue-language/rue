@@ -247,17 +247,19 @@ where
     ))
 }
 
-/// Parser for function parameters: [inout|borrow] name: type
+/// Parser for function parameters: [comptime] [inout|borrow] name: type
 fn param_parser<'src, I>() -> impl Parser<'src, I, Param, ParserExtras<'src>> + Clone
 where
     I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
 {
-    param_mode_parser()
+    just(TokenKind::Comptime)
         .or_not()
+        .then(param_mode_parser().or_not())
         .then(ident_parser())
         .then_ignore(just(TokenKind::Colon))
         .then(type_parser())
-        .map_with(|((mode, name), ty), e| Param {
+        .map_with(|(((is_comptime, mode), name), ty), e| Param {
+            is_comptime: is_comptime.is_some(),
             mode: mode.unwrap_or(ParamMode::Normal),
             name,
             ty,

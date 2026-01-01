@@ -25,7 +25,7 @@ use std::collections::{HashMap, HashSet};
 use lasso::Spur;
 use rue_error::{
     CompileError, CompileResult, CompileWarning, ErrorKind, MissingFieldsError, OptionExt,
-    WarningKind,
+    PreviewFeature, WarningKind,
 };
 use rue_rir::{InstData, InstRef, RirArgMode, RirParamMode, RirPattern};
 use rue_span::Span;
@@ -1971,6 +1971,35 @@ impl<'a> Sema<'a> {
                 }
                 RirParamMode::Normal => {
                     // Normal params accept any mode
+                }
+            }
+        }
+
+        // Check that comptime parameters receive compile-time constant values
+        let has_comptime_params = fn_info.param_comptime.iter().any(|&c| c);
+        if has_comptime_params {
+            // Gate behind comptime preview feature
+            self.require_preview(PreviewFeature::Comptime, "comptime parameters", span)?;
+
+            // Validate each comptime parameter receives a compile-time constant
+            for (i, (&is_comptime, arg)) in
+                fn_info.param_comptime.iter().zip(args.iter()).enumerate()
+            {
+                if is_comptime {
+                    // Try to evaluate the argument at compile time
+                    if self.try_evaluate_const(arg.value).is_none() {
+                        let param_name = self.interner.resolve(&fn_info.param_names[i]).to_string();
+                        return Err(CompileError::new(
+                            ErrorKind::ComptimeArgNotConst {
+                                param_name: param_name.clone(),
+                            },
+                            self.rir.get(arg.value).span,
+                        )
+                        .with_help(format!(
+                            "parameter '{}' is declared as 'comptime' and requires a compile-time known value",
+                            param_name
+                        )));
+                    }
                 }
             }
         }
