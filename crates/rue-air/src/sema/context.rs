@@ -419,3 +419,336 @@ pub(crate) struct ReceiverInfo {
     /// Only set when the receiver is a mutable lvalue and the method mutates.
     pub storage: Option<StringReceiverStorage>,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use lasso::ThreadedRodeo;
+
+    // =========================================================================
+    // VariableMoveState tests
+    // =========================================================================
+
+    #[test]
+    fn variable_move_state_default_is_empty() {
+        let state = VariableMoveState::default();
+        assert!(state.full_move.is_none());
+        assert!(state.partial_moves.is_empty());
+        assert!(state.is_empty());
+    }
+
+    #[test]
+    fn variable_move_state_full_move() {
+        let mut state = VariableMoveState::default();
+        let span = Span::new(10, 20);
+        state.mark_path_moved(&[], span);
+
+        assert!(state.full_move.is_some());
+        assert_eq!(state.full_move.unwrap(), span);
+        assert!(state.partial_moves.is_empty()); // Full move clears partials
+    }
+
+    #[test]
+    fn variable_move_state_is_path_moved_after_full_move() {
+        let mut state = VariableMoveState::default();
+        let span = Span::new(10, 20);
+        state.mark_path_moved(&[], span);
+
+        // Any path should be considered moved after a full move
+        assert_eq!(state.is_path_moved(&[]), Some(span));
+
+        let interner = ThreadedRodeo::new();
+        let field_x = interner.get_or_intern("x");
+        assert_eq!(state.is_path_moved(&[field_x]), Some(span));
+    }
+
+    #[test]
+    fn variable_move_state_partial_move() {
+        let mut state = VariableMoveState::default();
+        let interner = ThreadedRodeo::new();
+        let field_x = interner.get_or_intern("x");
+        let span = Span::new(10, 20);
+
+        state.mark_path_moved(&[field_x], span);
+
+        assert!(state.full_move.is_none());
+        assert_eq!(state.partial_moves.len(), 1);
+        assert_eq!(state.is_path_moved(&[field_x]), Some(span));
+    }
+
+    #[test]
+    fn variable_move_state_partial_move_does_not_affect_root() {
+        let mut state = VariableMoveState::default();
+        let interner = ThreadedRodeo::new();
+        let field_x = interner.get_or_intern("x");
+        let span = Span::new(10, 20);
+
+        state.mark_path_moved(&[field_x], span);
+
+        // The root path should not be moved if only a field is moved
+        assert!(state.is_path_moved(&[]).is_none());
+    }
+
+    #[test]
+    fn variable_move_state_partial_move_affects_descendants() {
+        let mut state = VariableMoveState::default();
+        let interner = ThreadedRodeo::new();
+        let field_a = interner.get_or_intern("a");
+        let field_b = interner.get_or_intern("b");
+        let span = Span::new(10, 20);
+
+        // Move s.a
+        state.mark_path_moved(&[field_a], span);
+
+        // s.a.b should also be considered moved (parent is moved)
+        assert_eq!(state.is_path_moved(&[field_a, field_b]), Some(span));
+
+        // s.b should not be moved
+        assert!(state.is_path_moved(&[field_b]).is_none());
+    }
+
+    #[test]
+    fn variable_move_state_multiple_partial_moves() {
+        let mut state = VariableMoveState::default();
+        let interner = ThreadedRodeo::new();
+        let field_x = interner.get_or_intern("x");
+        let field_y = interner.get_or_intern("y");
+        let span1 = Span::new(10, 20);
+        let span2 = Span::new(30, 40);
+
+        state.mark_path_moved(&[field_x], span1);
+        state.mark_path_moved(&[field_y], span2);
+
+        assert!(state.full_move.is_none());
+        assert_eq!(state.partial_moves.len(), 2);
+        assert_eq!(state.is_path_moved(&[field_x]), Some(span1));
+        assert_eq!(state.is_path_moved(&[field_y]), Some(span2));
+    }
+
+    #[test]
+    fn variable_move_state_full_move_after_partial_clears_partials() {
+        let mut state = VariableMoveState::default();
+        let interner = ThreadedRodeo::new();
+        let field_x = interner.get_or_intern("x");
+        let span1 = Span::new(10, 20);
+        let span2 = Span::new(30, 40);
+
+        // First, partially move a field
+        state.mark_path_moved(&[field_x], span1);
+        assert_eq!(state.partial_moves.len(), 1);
+
+        // Then, fully move the variable
+        state.mark_path_moved(&[], span2);
+
+        // Full move should clear partial moves
+        assert!(state.full_move.is_some());
+        assert!(state.partial_moves.is_empty());
+    }
+
+    #[test]
+    fn variable_move_state_partial_after_full_is_ignored() {
+        let mut state = VariableMoveState::default();
+        let interner = ThreadedRodeo::new();
+        let field_x = interner.get_or_intern("x");
+        let span1 = Span::new(10, 20);
+        let span2 = Span::new(30, 40);
+
+        // First, fully move the variable
+        state.mark_path_moved(&[], span1);
+
+        // Then try to partially move a field
+        state.mark_path_moved(&[field_x], span2);
+
+        // Partial move should be ignored when already fully moved
+        assert_eq!(state.full_move, Some(span1));
+        assert!(state.partial_moves.is_empty());
+    }
+
+    #[test]
+    fn variable_move_state_is_partially_moved() {
+        let mut state = VariableMoveState::default();
+        let interner = ThreadedRodeo::new();
+        let field_x = interner.get_or_intern("x");
+        let span = Span::new(10, 20);
+
+        // Initially not partially moved
+        assert!(state.is_partially_moved().is_none());
+
+        // After partial move
+        state.mark_path_moved(&[field_x], span);
+        assert_eq!(state.is_partially_moved(), Some(span));
+
+        // After full move, is_partially_moved returns None
+        state.mark_path_moved(&[], Span::new(50, 60));
+        assert!(state.is_partially_moved().is_none());
+    }
+
+    #[test]
+    fn variable_move_state_is_any_part_moved() {
+        let mut state = VariableMoveState::default();
+        let interner = ThreadedRodeo::new();
+        let field_x = interner.get_or_intern("x");
+        let span1 = Span::new(10, 20);
+        let span2 = Span::new(30, 40);
+
+        // Initially nothing is moved
+        assert!(state.is_any_part_moved().is_none());
+
+        // After partial move
+        state.mark_path_moved(&[field_x], span1);
+        assert_eq!(state.is_any_part_moved(), Some(span1));
+
+        // After full move
+        let mut state2 = VariableMoveState::default();
+        state2.mark_path_moved(&[], span2);
+        assert_eq!(state2.is_any_part_moved(), Some(span2));
+    }
+
+    #[test]
+    fn variable_move_state_clear() {
+        let mut state = VariableMoveState::default();
+        let interner = ThreadedRodeo::new();
+        let field_x = interner.get_or_intern("x");
+        let span = Span::new(10, 20);
+
+        state.mark_path_moved(&[], span);
+        state.partial_moves.insert(vec![field_x], Span::new(30, 40));
+
+        state.clear();
+
+        assert!(state.full_move.is_none());
+        assert!(state.partial_moves.is_empty());
+        assert!(state.is_empty());
+    }
+
+    #[test]
+    fn variable_move_state_merge_union_both_empty() {
+        let state1 = VariableMoveState::default();
+        let state2 = VariableMoveState::default();
+
+        let merged = VariableMoveState::merge_union(&state1, &state2);
+
+        assert!(merged.is_empty());
+    }
+
+    #[test]
+    fn variable_move_state_merge_union_one_full_move() {
+        let mut state1 = VariableMoveState::default();
+        let state2 = VariableMoveState::default();
+        let span = Span::new(10, 20);
+
+        state1.mark_path_moved(&[], span);
+
+        let merged = VariableMoveState::merge_union(&state1, &state2);
+        assert_eq!(merged.full_move, Some(span));
+
+        // Test other order
+        let merged2 = VariableMoveState::merge_union(&state2, &state1);
+        assert_eq!(merged2.full_move, Some(span));
+    }
+
+    #[test]
+    fn variable_move_state_merge_union_both_full_moves_prefers_first() {
+        let mut state1 = VariableMoveState::default();
+        let mut state2 = VariableMoveState::default();
+        let span1 = Span::new(10, 20);
+        let span2 = Span::new(30, 40);
+
+        state1.mark_path_moved(&[], span1);
+        state2.mark_path_moved(&[], span2);
+
+        let merged = VariableMoveState::merge_union(&state1, &state2);
+        assert_eq!(merged.full_move, Some(span1)); // Prefers first
+    }
+
+    #[test]
+    fn variable_move_state_merge_union_partial_moves() {
+        let mut state1 = VariableMoveState::default();
+        let mut state2 = VariableMoveState::default();
+        let interner = ThreadedRodeo::new();
+        let field_x = interner.get_or_intern("x");
+        let field_y = interner.get_or_intern("y");
+        let span1 = Span::new(10, 20);
+        let span2 = Span::new(30, 40);
+
+        state1.mark_path_moved(&[field_x], span1);
+        state2.mark_path_moved(&[field_y], span2);
+
+        let merged = VariableMoveState::merge_union(&state1, &state2);
+
+        // Both partial moves should be present
+        assert_eq!(merged.partial_moves.len(), 2);
+        assert_eq!(merged.is_path_moved(&[field_x]), Some(span1));
+        assert_eq!(merged.is_path_moved(&[field_y]), Some(span2));
+    }
+
+    #[test]
+    fn variable_move_state_merge_union_same_partial_move_prefers_first() {
+        let mut state1 = VariableMoveState::default();
+        let mut state2 = VariableMoveState::default();
+        let interner = ThreadedRodeo::new();
+        let field_x = interner.get_or_intern("x");
+        let span1 = Span::new(10, 20);
+        let span2 = Span::new(30, 40);
+
+        state1.mark_path_moved(&[field_x], span1);
+        state2.mark_path_moved(&[field_x], span2);
+
+        let merged = VariableMoveState::merge_union(&state1, &state2);
+
+        // Should have the span from the first state
+        assert_eq!(merged.partial_moves.len(), 1);
+        assert_eq!(merged.is_path_moved(&[field_x]), Some(span1));
+    }
+
+    // =========================================================================
+    // ConstValue tests
+    // =========================================================================
+
+    #[test]
+    fn const_value_as_integer() {
+        let cv = ConstValue::Integer(42);
+        assert_eq!(cv.as_integer(), Some(42));
+        assert_eq!(cv.as_bool(), None);
+    }
+
+    #[test]
+    fn const_value_as_bool() {
+        let cv = ConstValue::Bool(true);
+        assert_eq!(cv.as_bool(), Some(true));
+        assert_eq!(cv.as_integer(), None);
+
+        let cv2 = ConstValue::Bool(false);
+        assert_eq!(cv2.as_bool(), Some(false));
+    }
+
+    #[test]
+    fn const_value_negative_integer() {
+        let cv = ConstValue::Integer(-100);
+        assert_eq!(cv.as_integer(), Some(-100));
+    }
+
+    #[test]
+    fn const_value_equality() {
+        assert_eq!(ConstValue::Integer(42), ConstValue::Integer(42));
+        assert_ne!(ConstValue::Integer(42), ConstValue::Integer(43));
+        assert_eq!(ConstValue::Bool(true), ConstValue::Bool(true));
+        assert_ne!(ConstValue::Bool(true), ConstValue::Bool(false));
+        assert_ne!(ConstValue::Integer(1), ConstValue::Bool(true));
+    }
+
+    // =========================================================================
+    // AnalysisResult tests
+    // =========================================================================
+
+    #[test]
+    fn analysis_result_new() {
+        let air_ref = AirRef::from_raw(5);
+        let ty = Type::I32;
+
+        let result = AnalysisResult::new(air_ref, ty);
+
+        assert_eq!(result.air_ref.as_u32(), 5);
+        assert_eq!(result.ty, Type::I32);
+    }
+}

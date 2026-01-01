@@ -1078,4 +1078,250 @@ mod tests {
         assert_eq!(unifier.resolve(&InferType::Var(v1)), Some(Type::I64));
         assert_eq!(unifier.resolve(&InferType::Var(v2)), Some(Type::I64));
     }
+
+    // =========================================================================
+    // Additional edge case tests
+    // =========================================================================
+
+    #[test]
+    fn test_check_unsigned_with_unsigned_types() {
+        let unifier = Unifier::new();
+        assert!(
+            unifier
+                .check_unsigned(&InferType::Concrete(Type::U8))
+                .is_ok()
+        );
+        assert!(
+            unifier
+                .check_unsigned(&InferType::Concrete(Type::U16))
+                .is_ok()
+        );
+        assert!(
+            unifier
+                .check_unsigned(&InferType::Concrete(Type::U32))
+                .is_ok()
+        );
+        assert!(
+            unifier
+                .check_unsigned(&InferType::Concrete(Type::U64))
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn test_check_unsigned_with_signed_type() {
+        let unifier = Unifier::new();
+        let result = unifier.check_unsigned(&InferType::Concrete(Type::I32));
+        assert!(!result.is_ok());
+        assert!(matches!(result, UnifyResult::NotUnsigned { ty: Type::I32 }));
+    }
+
+    #[test]
+    fn test_check_unsigned_with_int_literal() {
+        let unifier = Unifier::new();
+        // IntLiteral is OK - it will become an unsigned type if constrained
+        assert!(unifier.check_unsigned(&InferType::IntLiteral).is_ok());
+    }
+
+    #[test]
+    fn test_check_unsigned_with_non_integer_type() {
+        let unifier = Unifier::new();
+        let result = unifier.check_unsigned(&InferType::Concrete(Type::Bool));
+        assert!(!result.is_ok());
+        assert!(matches!(
+            result,
+            UnifyResult::NotUnsigned { ty: Type::Bool }
+        ));
+    }
+
+    #[test]
+    fn test_solve_constraints_is_unsigned() {
+        let mut unifier = Unifier::new();
+        let constraints = vec![Constraint::is_unsigned(
+            InferType::Concrete(Type::U64),
+            Span::new(0, 5),
+        )];
+        let errors = unifier.solve_constraints(&constraints);
+        assert!(errors.is_empty());
+    }
+
+    #[test]
+    fn test_solve_constraints_is_unsigned_fails_for_signed() {
+        let mut unifier = Unifier::new();
+        let constraints = vec![Constraint::is_unsigned(
+            InferType::Concrete(Type::I32),
+            Span::new(0, 5),
+        )];
+        let errors = unifier.solve_constraints(&constraints);
+        assert_eq!(errors.len(), 1);
+        assert!(matches!(
+            errors[0].kind,
+            UnifyResult::NotUnsigned { ty: Type::I32 }
+        ));
+    }
+
+    #[test]
+    fn test_unify_array_same_element_same_length() {
+        let mut unifier = Unifier::new();
+        let arr1 = InferType::Array {
+            element: Box::new(InferType::Concrete(Type::I32)),
+            length: 5,
+        };
+        let arr2 = InferType::Array {
+            element: Box::new(InferType::Concrete(Type::I32)),
+            length: 5,
+        };
+        let result = unifier.unify(&arr1, &arr2);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_unify_array_different_length() {
+        let mut unifier = Unifier::new();
+        let arr1 = InferType::Array {
+            element: Box::new(InferType::Concrete(Type::I32)),
+            length: 3,
+        };
+        let arr2 = InferType::Array {
+            element: Box::new(InferType::Concrete(Type::I32)),
+            length: 5,
+        };
+        let result = unifier.unify(&arr1, &arr2);
+        assert!(!result.is_ok());
+        assert!(matches!(result, UnifyResult::ArrayLengthMismatch { .. }));
+    }
+
+    #[test]
+    fn test_unify_array_different_element_type() {
+        let mut unifier = Unifier::new();
+        let arr1 = InferType::Array {
+            element: Box::new(InferType::Concrete(Type::I32)),
+            length: 3,
+        };
+        let arr2 = InferType::Array {
+            element: Box::new(InferType::Concrete(Type::Bool)),
+            length: 3,
+        };
+        let result = unifier.unify(&arr1, &arr2);
+        assert!(!result.is_ok());
+        assert!(matches!(result, UnifyResult::TypeMismatch { .. }));
+    }
+
+    #[test]
+    fn test_unify_array_with_variable_element() {
+        let mut unifier = Unifier::new();
+        let v0 = TypeVarId::new(0);
+        let arr1 = InferType::Array {
+            element: Box::new(InferType::Var(v0)),
+            length: 3,
+        };
+        let arr2 = InferType::Array {
+            element: Box::new(InferType::Concrete(Type::I64)),
+            length: 3,
+        };
+        let result = unifier.unify(&arr1, &arr2);
+        assert!(result.is_ok());
+
+        // Variable should now be bound to I64
+        assert_eq!(
+            unifier.substitution.apply(&InferType::Var(v0)),
+            InferType::Concrete(Type::I64)
+        );
+    }
+
+    #[test]
+    fn test_unify_array_with_int_literal_element() {
+        let mut unifier = Unifier::new();
+        let arr1 = InferType::Array {
+            element: Box::new(InferType::IntLiteral),
+            length: 3,
+        };
+        let arr2 = InferType::Array {
+            element: Box::new(InferType::Concrete(Type::I32)),
+            length: 3,
+        };
+        let result = unifier.unify(&arr1, &arr2);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_unify_array_with_concrete() {
+        let mut unifier = Unifier::new();
+        let arr = InferType::Array {
+            element: Box::new(InferType::Concrete(Type::I32)),
+            length: 3,
+        };
+        let concrete = InferType::Concrete(Type::I32);
+        let result = unifier.unify(&arr, &concrete);
+        assert!(!result.is_ok());
+        assert!(matches!(result, UnifyResult::TypeMismatch { .. }));
+    }
+
+    #[test]
+    fn test_resolve_array_type() {
+        let mut unifier = Unifier::new();
+        let v0 = TypeVarId::new(0);
+
+        // Bind v0 to array of I32
+        unifier.substitution.insert(
+            v0,
+            InferType::Array {
+                element: Box::new(InferType::Concrete(Type::I32)),
+                length: 10,
+            },
+        );
+
+        // resolve() returns None for arrays (they need special handling)
+        let resolved = unifier.resolve(&InferType::Var(v0));
+        assert!(resolved.is_none());
+
+        // resolve_infer_type() should properly resolve arrays
+        let resolved_infer = unifier.resolve_infer_type(&InferType::Var(v0));
+        match resolved_infer {
+            InferType::Array { element, length } => {
+                assert_eq!(*element, InferType::Concrete(Type::I32));
+                assert_eq!(length, 10);
+            }
+            _ => panic!("Expected InferType::Array, got {:?}", resolved_infer),
+        }
+    }
+
+    #[test]
+    fn test_unification_error_not_unsigned_message() {
+        let error =
+            UnificationError::new(UnifyResult::NotUnsigned { ty: Type::I32 }, Span::new(0, 5));
+        let msg = error.message();
+        assert!(msg.contains("unsigned"));
+        assert!(msg.contains("i32"));
+    }
+
+    #[test]
+    fn test_unification_error_array_length_mismatch_message() {
+        let error = UnificationError::new(
+            UnifyResult::ArrayLengthMismatch {
+                expected: 3,
+                found: 5,
+            },
+            Span::new(0, 10),
+        );
+        let msg = error.message();
+        assert!(msg.contains("3"));
+        assert!(msg.contains("5"));
+    }
+
+    #[test]
+    fn test_unification_error_occurs_check_message() {
+        let error = UnificationError::new(
+            UnifyResult::OccursCheck {
+                var: TypeVarId::new(0),
+                ty: InferType::Array {
+                    element: Box::new(InferType::Var(TypeVarId::new(0))),
+                    length: 3,
+                },
+            },
+            Span::new(0, 5),
+        );
+        let msg = error.message();
+        assert!(msg.contains("infinite") || msg.contains("occurs"));
+    }
 }
