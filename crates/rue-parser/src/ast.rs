@@ -258,6 +258,24 @@ pub enum TypeExpr {
         length: u64,
         span: Span,
     },
+    /// Anonymous struct type: struct { field: Type, ... }
+    /// Used in comptime type construction (e.g., `fn Pair(comptime T: type) -> type { struct { first: T, second: T } }`)
+    AnonymousStruct {
+        /// Field declarations (name and type)
+        fields: Vec<AnonStructField>,
+        span: Span,
+    },
+}
+
+/// A field in an anonymous struct type expression.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AnonStructField {
+    /// Field name
+    pub name: Ident,
+    /// Field type
+    pub ty: TypeExpr,
+    /// Span covering the entire field declaration
+    pub span: Span,
 }
 
 impl TypeExpr {
@@ -268,6 +286,7 @@ impl TypeExpr {
             TypeExpr::Unit(span) => *span,
             TypeExpr::Never(span) => *span,
             TypeExpr::Array { span, .. } => *span,
+            TypeExpr::AnonymousStruct { span, .. } => *span,
         }
     }
 }
@@ -281,6 +300,16 @@ impl fmt::Display for TypeExpr {
             TypeExpr::Array {
                 element, length, ..
             } => write!(f, "[{}; {}]", element, length),
+            TypeExpr::AnonymousStruct { fields, .. } => {
+                write!(f, "struct {{ ")?;
+                for (i, field) in fields.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "sym:{}: {}", field.name.name.into_usize(), field.ty)?;
+                }
+                write!(f, " }}")
+            }
         }
     }
 }

@@ -1095,6 +1095,13 @@ impl Rir {
             InstData::TypeConst { type_name } => InstData::TypeConst {
                 type_name: *type_name,
             },
+            InstData::AnonStructType {
+                fields_start,
+                fields_len,
+            } => InstData::AnonStructType {
+                fields_start: *fields_start,
+                fields_len: *fields_len,
+            },
         };
 
         Inst {
@@ -1271,7 +1278,8 @@ impl Rir {
                 | InstData::TypeIntrinsic { .. }
                 | InstData::DropFnDecl { .. }
                 | InstData::Comptime { .. }
-                | InstData::TypeConst { .. } => {}
+                | InstData::TypeConst { .. }
+                | InstData::AnonStructType { .. } => {}
             }
         }
     }
@@ -1645,6 +1653,16 @@ pub enum InstData {
     TypeConst {
         /// The type name symbol
         type_name: Spur,
+    },
+
+    /// Anonymous struct type: a struct type used as a value expression
+    /// (e.g., `struct { first: T, second: T }` in comptime type construction)
+    /// Fields are stored in the extra array using add_field_decls/get_field_decls.
+    AnonStructType {
+        /// Index into extra data where fields start
+        fields_start: u32,
+        /// Number of fields
+        fields_len: u32,
     },
 }
 
@@ -2077,6 +2095,24 @@ impl<'a, 'b> RirPrinter<'a, 'b> {
                 InstData::TypeConst { type_name } => {
                     let name = self.interner.resolve(type_name);
                     writeln!(out, "type {}", name).unwrap();
+                }
+
+                // Anonymous struct type
+                InstData::AnonStructType {
+                    fields_start,
+                    fields_len,
+                } => {
+                    write!(out, "struct {{ ").unwrap();
+                    let fields = self.rir.get_field_decls(*fields_start, *fields_len);
+                    for (i, (name, ty)) in fields.iter().enumerate() {
+                        if i > 0 {
+                            write!(out, ", ").unwrap();
+                        }
+                        let name_str = self.interner.resolve(name);
+                        let ty_str = self.interner.resolve(ty);
+                        write!(out, "{}: {}", name_str, ty_str).unwrap();
+                    }
+                    writeln!(out, " }}").unwrap();
                 }
             }
         }

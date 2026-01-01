@@ -342,6 +342,25 @@ impl Type {
         }
     }
 
+    /// Check if this type is Copy, with access to StructDefs for struct checking.
+    ///
+    /// This is used during anonymous struct creation to determine if the new struct
+    /// should be Copy based on its field types.
+    pub fn is_copy_in_sema(&self, struct_defs: &[StructDef]) -> bool {
+        match self {
+            Type::Struct(struct_id) => {
+                let idx = struct_id.0 as usize;
+                if idx < struct_defs.len() {
+                    struct_defs[idx].is_copy
+                } else {
+                    false
+                }
+            }
+            // For non-struct types, delegate to is_copy()
+            _ => self.is_copy(),
+        }
+    }
+
     /// Check if this is a 64-bit type (uses 64-bit operations).
     pub fn is_64_bit(&self) -> bool {
         matches!(self, Type::I64 | Type::U64)

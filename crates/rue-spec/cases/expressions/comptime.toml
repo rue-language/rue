@@ -518,3 +518,215 @@ fn main() -> i32 {
 """
 compile_fail = true
 error_contains = "type values cannot exist at runtime"
+
+# =============================================================================
+# Phase 4: Anonymous Struct Types (ADR-0025)
+# =============================================================================
+# Tests for anonymous struct type construction.
+# These tests verify that:
+# 1. Anonymous struct syntax `struct { field: Type, ... }` is parsed correctly
+# 2. Anonymous structs can be returned from functions returning `type`
+# 3. Structural type equality: two structs with same fields are the same type
+# 4. Anonymous structs can be instantiated and used
+#
+# NOTE: These tests depend on Phase 3 (type parameters with comptime T: type)
+# which is not yet complete. Tests are marked as preview without preview_should_pass.
+
+[[case]]
+name = "anon_struct_basic"
+spec = ["4.13:7"]
+preview = "comptime"
+description = "Basic anonymous struct type syntax"
+source = """
+fn make_point() -> type {
+    struct { x: i32, y: i32 }
+}
+fn main() -> i32 {
+    let P = make_point();
+    let p: P = P { x: 10, y: 32 };
+    p.x + p.y
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "anon_struct_single_field"
+spec = ["4.13:7"]
+preview = "comptime"
+description = "Anonymous struct with single field"
+source = """
+fn wrapper() -> type {
+    struct { value: i32 }
+}
+fn main() -> i32 {
+    let W = wrapper();
+    let w: W = W { value: 42 };
+    w.value
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "anon_struct_generic_pair"
+spec = ["4.13:7"]
+preview = "comptime"
+description = "Generic Pair type constructor - ADR deliverable example"
+source = """
+fn Pair(comptime T: type) -> type {
+    struct { first: T, second: T }
+}
+fn main() -> i32 {
+    let IntPair = Pair(i32);
+    let p: IntPair = IntPair { first: 20, second: 22 };
+    p.first + p.second
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "anon_struct_structural_equality"
+spec = ["4.13:8"]
+preview = "comptime"
+description = "Two anonymous structs with same fields are structurally equal"
+source = """
+fn make_point1() -> type {
+    struct { x: i32, y: i32 }
+}
+fn make_point2() -> type {
+    struct { x: i32, y: i32 }
+}
+fn main() -> i32 {
+    let P1 = make_point1();
+    let P2 = make_point2();
+    // P1 and P2 should be the same type due to structural equality
+    let p1: P1 = P1 { x: 10, y: 20 };
+    let p2: P2 = p1;  // This assignment should work
+    p2.x + p2.y
+}
+"""
+exit_code = 30
+
+[[case]]
+name = "anon_struct_different_fields_different_types"
+spec = ["4.13:8"]
+preview = "comptime"
+description = "Anonymous structs with different fields are different types"
+source = """
+fn make_xy() -> type {
+    struct { x: i32, y: i32 }
+}
+fn make_ab() -> type {
+    struct { a: i32, b: i32 }
+}
+fn main() -> i32 {
+    let XY = make_xy();
+    let AB = make_ab();
+    let xy: XY = XY { x: 42, y: 0 };
+    // Cannot assign xy to AB type since field names differ
+    xy.x
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "anon_struct_different_field_types"
+spec = ["4.13:8"]
+preview = "comptime"
+description = "Anonymous structs with different field types are different types"
+source = """
+fn make_i32_pair() -> type {
+    struct { first: i32, second: i32 }
+}
+fn make_bool_pair() -> type {
+    struct { first: bool, second: bool }
+}
+fn main() -> i32 {
+    let I32Pair = make_i32_pair();
+    let BoolPair = make_bool_pair();
+    let ip: I32Pair = I32Pair { first: 42, second: 0 };
+    let bp: BoolPair = BoolPair { first: true, second: false };
+    if bp.first { ip.first } else { ip.second }
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "anon_struct_nested"
+spec = ["4.13:7"]
+preview = "comptime"
+description = "Anonymous struct containing another struct type"
+source = """
+fn Point() -> type {
+    struct { x: i32, y: i32 }
+}
+fn Line(comptime P: type) -> type {
+    struct { start: P, end: P }
+}
+fn main() -> i32 {
+    let P = Point();
+    let L = Line(P);
+    let p1: P = P { x: 0, y: 0 };
+    let p2: P = P { x: 10, y: 32 };
+    let line: L = L { start: p1, end: p2 };
+    line.end.x + line.end.y
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "anon_struct_empty_error"
+spec = ["4.13:9"]
+preview = "comptime"
+description = "Empty anonymous struct is not allowed"
+source = """
+fn empty() -> type {
+    struct { }
+}
+fn main() -> i32 {
+    0
+}
+"""
+compile_fail = true
+error_contains = "empty struct"
+
+[[case]]
+name = "anon_struct_specialization_caching"
+spec = ["4.13:7"]
+preview = "comptime"
+description = "Multiple calls with same type reuse the same anonymous struct"
+source = """
+fn Wrapper(comptime T: type) -> type {
+    struct { value: T }
+}
+fn main() -> i32 {
+    let W1 = Wrapper(i32);
+    let W2 = Wrapper(i32);
+    // W1 and W2 should be identical types
+    let w1: W1 = W1 { value: 20 };
+    let w2: W2 = W2 { value: 22 };
+    w1.value + w2.value
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "anon_struct_method_like_function"
+spec = ["4.13:7"]
+preview = "comptime"
+description = "Using anonymous struct with a function that takes it"
+source = """
+fn Point() -> type {
+    struct { x: i32, y: i32 }
+}
+fn add_points(comptime P: type, a: P, b: P) -> P {
+    P { x: a.x + b.x, y: a.y + b.y }
+}
+fn main() -> i32 {
+    let P = Point();
+    let p1: P = P { x: 10, y: 20 };
+    let p2: P = P { x: 5, y: 7 };
+    let sum = add_points(P, p1, p2);
+    sum.x + sum.y
+}
+"""
+exit_code = 42

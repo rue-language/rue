@@ -40,7 +40,9 @@ use crate::intern_pool::TypeInternPool;
 use crate::sema_context::{
     ArrayTypeRegistry, InferenceContext as SemaContextInferenceContext, SemaContext,
 };
-use crate::types::{ArrayTypeDef, ArrayTypeId, EnumDef, EnumId, StructDef, StructId, Type};
+use crate::types::{
+    ArrayTypeDef, ArrayTypeId, EnumDef, EnumId, StructDef, StructField, StructId, Type,
+};
 
 // Internal types are used via pub(crate) within submodules
 // No re-exports needed for context types as they're internal
@@ -542,6 +544,58 @@ impl<'a> Sema<'a> {
             enum_types,
             method_sigs,
         }
+    }
+
+    /// Find an existing anonymous struct with the same fields, or create a new one.
+    ///
+    /// This implements structural type equality for anonymous structs: two anonymous
+    /// structs with the same field names and types (in the same order) are the same type.
+    pub(crate) fn find_or_create_anon_struct(&mut self, fields: &[StructField]) -> Type {
+        // Check if an equivalent anonymous struct already exists
+        // Anonymous structs have names starting with "__anon_struct_"
+        for (i, struct_def) in self.struct_defs.iter().enumerate() {
+            if struct_def.name.starts_with("__anon_struct_") {
+                if struct_def.fields.len() == fields.len() {
+                    let mut all_match = true;
+                    for (def_field, new_field) in struct_def.fields.iter().zip(fields.iter()) {
+                        if def_field.name != new_field.name || def_field.ty != new_field.ty {
+                            all_match = false;
+                            break;
+                        }
+                    }
+                    if all_match {
+                        return Type::Struct(StructId(i as u32));
+                    }
+                }
+            }
+        }
+
+        // No matching struct found - create a new one
+        let struct_id = StructId(self.struct_defs.len() as u32);
+        let anon_name = format!("__anon_struct_{}", struct_id.0);
+
+        // Determine if the struct is Copy (all fields are Copy)
+        let is_copy = fields
+            .iter()
+            .all(|f| f.ty.is_copy_in_sema(&self.struct_defs));
+
+        let struct_def = StructDef {
+            name: anon_name.clone(),
+            fields: fields.to_vec(),
+            is_copy,
+            is_handle: false,
+            is_linear: false,
+            destructor: None,
+            is_builtin: false,
+        };
+
+        self.struct_defs.push(struct_def);
+
+        // Register in struct lookup
+        let name_spur = self.interner.get_or_intern(&anon_name);
+        self.structs.insert(name_spur, struct_id);
+
+        Type::Struct(struct_id)
     }
 }
 

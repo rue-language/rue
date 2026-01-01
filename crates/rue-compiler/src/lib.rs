@@ -905,9 +905,11 @@ pub fn compile_frontend_from_ast_with_options(
         drop_glue::synthesize_drop_glue(&sema_output.type_pool, &sema_output.array_types);
 
     // Combine user functions with synthesized drop glue functions
+    // Filter out comptime-only functions (those returning `type`) as they don't generate runtime code
     let all_functions: Vec<_> = sema_output
         .functions
         .into_iter()
+        .filter(|f| f.air.return_type() != Type::ComptimeType)
         .chain(drop_glue_functions)
         .collect();
 
@@ -1011,9 +1013,11 @@ pub fn compile_frontend_from_rir_with_options(
         drop_glue::synthesize_drop_glue(&sema_output.type_pool, &sema_output.array_types);
 
     // Combine user functions with synthesized drop glue functions
+    // Filter out comptime-only functions (those returning `type`) as they don't generate runtime code
     let all_functions: Vec<_> = sema_output
         .functions
         .into_iter()
+        .filter(|f| f.air.return_type() != Type::ComptimeType)
         .chain(drop_glue_functions)
         .collect();
 

@@ -1048,6 +1048,10 @@ impl<'a> ConstraintGenerator<'a> {
             // Type constant: a type used as a value (e.g., `i32` in `identity(i32, 42)`)
             // This has the special ComptimeType type which indicates it's a type value.
             InstData::TypeConst { .. } => InferType::Concrete(Type::ComptimeType),
+
+            // Anonymous struct type: a struct type used as a comptime value
+            // This also has the ComptimeType type.
+            InstData::AnonStructType { .. } => InferType::Concrete(Type::ComptimeType),
         };
 
         // Record the type for this expression

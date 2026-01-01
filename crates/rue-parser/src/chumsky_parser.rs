@@ -4,12 +4,12 @@
 //! with Pratt parsing for expression precedence.
 
 use crate::ast::{
-    ArgMode, ArrayLitExpr, AssignStatement, AssignTarget, AssocFnCallExpr, Ast, BinaryExpr,
-    BinaryOp, BlockExpr, BoolLit, BreakExpr, CallArg, CallExpr, ComptimeBlockExpr, ContinueExpr,
-    Directive, DirectiveArg, Directives, DropFn, EnumDecl, EnumVariant, Expr, FieldDecl, FieldExpr,
-    FieldInit, Function, Ident, IfExpr, ImplBlock, IndexExpr, IntLit, IntrinsicArg,
-    IntrinsicCallExpr, Item, LetPattern, LetStatement, LoopExpr, MatchArm, MatchExpr, Method,
-    MethodCallExpr, NegIntLit, Param, ParamMode, ParenExpr, PathExpr, PathPattern, Pattern,
+    AnonStructField, ArgMode, ArrayLitExpr, AssignStatement, AssignTarget, AssocFnCallExpr, Ast,
+    BinaryExpr, BinaryOp, BlockExpr, BoolLit, BreakExpr, CallArg, CallExpr, ComptimeBlockExpr,
+    ContinueExpr, Directive, DirectiveArg, Directives, DropFn, EnumDecl, EnumVariant, Expr,
+    FieldDecl, FieldExpr, FieldInit, Function, Ident, IfExpr, ImplBlock, IndexExpr, IntLit,
+    IntrinsicArg, IntrinsicCallExpr, Item, LetPattern, LetStatement, LoopExpr, MatchArm, MatchExpr,
+    Method, MethodCallExpr, NegIntLit, Param, ParamMode, ParenExpr, PathExpr, PathPattern, Pattern,
     ReturnExpr, SelfExpr, SelfParam, Statement, StringLit, StructDecl, StructLitExpr, TypeExpr,
     TypeLitExpr, UnaryExpr, UnaryOp, UnitLit, Visibility, WhileExpr,
 };
@@ -211,7 +211,7 @@ where
 
         // Array type: [T; N]
         let array_type = just(TokenKind::LBracket)
-            .ignore_then(ty)
+            .ignore_then(ty.clone())
             .then_ignore(just(TokenKind::Semi))
             .then(select! {
                 TokenKind::Int(n) => n as u64,
@@ -223,6 +223,31 @@ where
                 span: to_rue_span(e.span()),
             });
 
+        // Anonymous struct type: struct { field: Type, ... }
+        // Used in comptime type construction
+        let anon_struct_field = ident_parser()
+            .then_ignore(just(TokenKind::Colon))
+            .then(ty.clone())
+            .map_with(|(name, field_ty), e| AnonStructField {
+                name,
+                ty: field_ty,
+                span: to_rue_span(e.span()),
+            });
+
+        let anon_struct_type = just(TokenKind::Struct)
+            .ignore_then(just(TokenKind::LBrace))
+            .ignore_then(
+                anon_struct_field
+                    .separated_by(just(TokenKind::Comma))
+                    .allow_trailing()
+                    .collect::<Vec<_>>(),
+            )
+            .then_ignore(just(TokenKind::RBrace))
+            .map_with(|fields, e| TypeExpr::AnonymousStruct {
+                fields,
+                span: to_rue_span(e.span()),
+            });
+
         // Named type: user-defined types like MyStruct
         let named_type = ident_parser().map(TypeExpr::Named);
 
@@ -230,6 +255,7 @@ where
             unit_type,
             never_type,
             array_type,
+            anon_struct_type,
             primitive_type_parser(),
             named_type,
         ))
@@ -1127,18 +1153,49 @@ where
         })
     });
 
+    // Anonymous struct type as expression: struct { field: Type, ... }
+    // This enables comptime type construction like:
+    //   fn Pair(comptime T: type) -> type { struct { first: T, second: T } }
+    let anon_struct_field = ident_parser()
+        .then_ignore(just(TokenKind::Colon))
+        .then(type_parser())
+        .map_with(|(name, field_ty), e| AnonStructField {
+            name,
+            ty: field_ty,
+            span: to_rue_span(e.span()),
+        });
+
+    let anon_struct_type_expr = just(TokenKind::Struct)
+        .ignore_then(just(TokenKind::LBrace))
+        .ignore_then(
+            anon_struct_field
+                .separated_by(just(TokenKind::Comma))
+                .allow_trailing()
+                .collect::<Vec<_>>(),
+        )
+        .then_ignore(just(TokenKind::RBrace))
+        .map_with(|fields, e| {
+            let span = to_rue_span(e.span());
+            Expr::TypeLit(TypeLitExpr {
+                type_expr: TypeExpr::AnonymousStruct { fields, span },
+                span,
+            })
+        });
+
     // Primary expression (before field access and indexing)
     // Note: literal_parser() includes unit_lit which must come before paren_expr
     // so () is parsed as unit, not empty parens
     // Note: self_expr must come before call_and_access_parser since self is a keyword
     // Note: comptime_expr must come before block_expr since comptime starts with a keyword
     // Note: type_lit_expr must come before call_and_access_parser since type names are keywords
+    // Note: anon_struct_type_expr must come before call_and_access_parser since struct is a keyword
     let primary = choice((
         literal_parser(),
         control_flow_parser(expr.clone()),
         self_expr,
         any_intrinsic_call,
         array_lit,
+        anon_struct_type_expr,
         type_lit_expr,
         call_and_access_parser(expr.clone()),
         paren_expr,

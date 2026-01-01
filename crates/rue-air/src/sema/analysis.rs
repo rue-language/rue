@@ -41,7 +41,7 @@ use crate::inference::{
 use crate::inst::{Air, AirArgMode, AirCallArg, AirInst, AirInstData, AirPattern, AirRef};
 use crate::scope::ScopedContext;
 use crate::sema_context::SemaContext;
-use crate::types::{EnumId, StructId, Type};
+use crate::types::{EnumId, StructDef, StructField, StructId, Type};
 
 /// Try to evaluate an RIR expression as a compile-time constant.
 ///
@@ -1741,6 +1741,17 @@ fn analyze_inst_with_context(
                 span: inst.span,
             });
             Ok(AnalysisResult::new(air_ref, Type::ComptimeType))
+        }
+
+        InstData::AnonStructType { .. } => {
+            // Anonymous struct types are only valid in non-parallel analysis
+            // (they need mutable access to create new struct definitions)
+            Err(CompileError::new(
+                ErrorKind::InternalError(
+                    "anonymous struct types in parallel analysis not supported".to_string(),
+                ),
+                inst.span,
+            ))
         }
     }
 }
@@ -5722,6 +5733,37 @@ impl<'a> Sema<'a> {
                 let ty = self.resolve_type(*type_name, inst.span)?;
                 let air_ref = air.add_inst(AirInst {
                     data: AirInstData::TypeConst(ty),
+                    ty: Type::ComptimeType,
+                    span: inst.span,
+                });
+                Ok(AnalysisResult::new(air_ref, Type::ComptimeType))
+            }
+
+            // Anonymous struct type: a struct type constructed at comptime
+            // (e.g., `struct { first: T, second: T }` in a comptime function)
+            InstData::AnonStructType {
+                fields_start,
+                fields_len,
+            } => {
+                // Get the field declarations from the RIR
+                let field_decls = self.rir.get_field_decls(*fields_start, *fields_len);
+
+                // Resolve each field type and build the struct fields
+                let mut struct_fields = Vec::with_capacity(field_decls.len());
+                for (name_sym, type_sym) in field_decls {
+                    let name_str = self.interner.resolve(&name_sym).to_string();
+                    let field_ty = self.resolve_type(type_sym, inst.span)?;
+                    struct_fields.push(StructField {
+                        name: name_str,
+                        ty: field_ty,
+                    });
+                }
+
+                // Check if an equivalent anonymous struct already exists (structural equality)
+                let struct_ty = self.find_or_create_anon_struct(&struct_fields);
+
+                let air_ref = air.add_inst(AirInst {
+                    data: AirInstData::TypeConst(struct_ty),
                     ty: Type::ComptimeType,
                     span: inst.span,
                 });

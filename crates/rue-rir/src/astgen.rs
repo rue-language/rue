@@ -12,7 +12,7 @@ use rue_parser::ast::DropFn;
 use rue_parser::{
     ArgMode, AssignTarget, Ast, BinaryOp, CallArg, Directive, DirectiveArg, EnumDecl, Expr,
     Function, ImplBlock, IntrinsicArg, Item, LetPattern, Method, ParamMode, Pattern, Statement,
-    StructDecl, TypeExpr, TypeLitExpr, UnaryOp, ast::Visibility,
+    StructDecl, TypeExpr, UnaryOp, ast::Visibility,
 };
 
 use crate::inst::{
@@ -85,6 +85,23 @@ impl<'a> AstGen<'a> {
                 let elem_sym = self.intern_type(element);
                 let elem_name = self.interner.resolve(&elem_sym);
                 let s = format!("[{}; {}]", elem_name, length);
+                self.interner.get_or_intern(&s)
+            }
+            TypeExpr::AnonymousStruct { fields, .. } => {
+                // For anonymous structs, generate a canonical name representation
+                let mut s = String::from("struct { ");
+                for (i, field) in fields.iter().enumerate() {
+                    if i > 0 {
+                        s.push_str(", ");
+                    }
+                    let name = self.interner.resolve(&field.name.name);
+                    let ty_sym = self.intern_type(&field.ty);
+                    let ty_name = self.interner.resolve(&ty_sym);
+                    s.push_str(name);
+                    s.push_str(": ");
+                    s.push_str(ty_name);
+                }
+                s.push_str(" }");
                 self.interner.get_or_intern(&s)
             }
         }
@@ -652,21 +669,47 @@ impl<'a> AstGen<'a> {
             }
             Expr::TypeLit(type_lit) => {
                 // Generate a type constant instruction for type-as-value expressions
-                // The type name is extracted from the TypeExpr
-                let type_name = match &type_lit.type_expr {
-                    TypeExpr::Named(ident) => ident.name,
-                    TypeExpr::Unit(_) => self.interner.get_or_intern_static("()"),
-                    TypeExpr::Never(_) => self.interner.get_or_intern_static("!"),
-                    TypeExpr::Array { .. } => {
-                        // Array types as values are not yet supported
-                        // For now, use a placeholder
-                        self.interner.get_or_intern_static("array")
+                match &type_lit.type_expr {
+                    TypeExpr::AnonymousStruct { fields, .. } => {
+                        // Generate an anonymous struct type instruction
+                        let field_decls: Vec<(Spur, Spur)> = fields
+                            .iter()
+                            .map(|f| {
+                                let name = f.name.name;
+                                let ty = self.intern_type(&f.ty);
+                                (name, ty)
+                            })
+                            .collect();
+                        let (fields_start, fields_len) = self.rir.add_field_decls(&field_decls);
+                        self.rir.add_inst(Inst {
+                            data: InstData::AnonStructType {
+                                fields_start,
+                                fields_len,
+                            },
+                            span: type_lit.span,
+                        })
                     }
-                };
-                self.rir.add_inst(Inst {
-                    data: InstData::TypeConst { type_name },
-                    span: type_lit.span,
-                })
+                    _ => {
+                        // For named types, unit, never, and arrays, generate TypeConst
+                        let type_name = match &type_lit.type_expr {
+                            TypeExpr::Named(ident) => ident.name,
+                            TypeExpr::Unit(_) => self.interner.get_or_intern_static("()"),
+                            TypeExpr::Never(_) => self.interner.get_or_intern_static("!"),
+                            TypeExpr::Array { .. } => {
+                                // Array types as values are not yet supported
+                                // For now, use a placeholder
+                                self.interner.get_or_intern_static("array")
+                            }
+                            TypeExpr::AnonymousStruct { .. } => {
+                                unreachable!("handled above")
+                            }
+                        };
+                        self.rir.add_inst(Inst {
+                            data: InstData::TypeConst { type_name },
+                            span: type_lit.span,
+                        })
+                    }
+                }
             }
         }
     }
