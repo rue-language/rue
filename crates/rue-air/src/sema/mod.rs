@@ -402,6 +402,11 @@ impl<'a> Sema<'a> {
     /// for parallel function body analysis. The SemaContext contains all
     /// type definitions, function signatures, and method signatures.
     ///
+    /// The returned SemaContext borrows functions and methods from Sema,
+    /// so Sema must outlive the SemaContext. This is reflected in the
+    /// lifetime relationship: the returned context lives for `'s` (the
+    /// borrow of self), not `'a` (the lifetime of the RIR/interner).
+    ///
     /// # Usage
     ///
     /// ```ignore
@@ -411,8 +416,12 @@ impl<'a> Sema<'a> {
     /// sema.resolve_declarations()?;
     /// let ctx = sema.build_sema_context();
     /// // Now ctx can be shared across threads for parallel analysis
+    /// // (while sema is borrowed)
     /// ```
-    pub fn build_sema_context(&self) -> SemaContext<'a> {
+    pub fn build_sema_context<'s>(&'s self) -> SemaContext<'s>
+    where
+        'a: 's,
+    {
         // Build the inference context
         let inference_ctx = self.build_sema_context_inference();
 
@@ -427,8 +436,10 @@ impl<'a> Sema<'a> {
             ),
             structs: self.structs.clone(),
             enums: self.enums.clone(),
-            functions: self.functions.clone(),
-            methods: self.methods.clone(),
+            // Pass references to functions/methods instead of cloning.
+            // This is safe because after declaration gathering, these HashMaps are immutable.
+            functions: &self.functions,
+            methods: &self.methods,
             preview_features: self.preview_features.clone(),
             builtin_string_id: self.builtin_string_id,
             inference_ctx,

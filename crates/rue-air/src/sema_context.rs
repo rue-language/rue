@@ -182,7 +182,7 @@ pub struct InferenceContext {
 /// # Contents
 ///
 /// - Struct and enum definitions (immutable)
-/// - Function and method signatures (immutable)
+/// - Function and method signatures (references to immutable data in Sema)
 /// - Array type registry (thread-safe, allows concurrent insertions)
 /// - Pre-computed inference context (immutable)
 /// - Built-in type IDs (immutable)
@@ -193,6 +193,7 @@ pub struct InferenceContext {
 /// - Most fields are immutable after construction
 /// - The array type registry uses `RwLock` for thread-safe mutations
 /// - References to RIR and interner are shared immutably
+/// - References to functions/methods HashMaps are immutable after declaration gathering
 /// - ThreadedRodeo is designed to be thread-safe
 #[derive(Debug)]
 pub struct SemaContext<'a> {
@@ -211,10 +212,10 @@ pub struct SemaContext<'a> {
     pub structs: HashMap<Spur, StructId>,
     /// Enum lookup: maps enum name symbol to EnumId.
     pub enums: HashMap<Spur, EnumId>,
-    /// Function lookup: maps function name to info.
-    pub functions: HashMap<Spur, FunctionInfo>,
-    /// Method lookup: maps (struct_name, method_name) to info.
-    pub methods: HashMap<(Spur, Spur), MethodInfo>,
+    /// Function lookup: reference to Sema's function map (immutable after declaration gathering).
+    pub functions: &'a HashMap<Spur, FunctionInfo>,
+    /// Method lookup: reference to Sema's method map (immutable after declaration gathering).
+    pub methods: &'a HashMap<(Spur, Spur), MethodInfo>,
     /// Enabled preview features.
     pub preview_features: PreviewFeatures,
     /// StructId of the synthetic String type.
@@ -226,10 +227,12 @@ pub struct SemaContext<'a> {
 }
 
 // SAFETY: SemaContext is Send + Sync because:
-// - Immutable fields are trivially thread-safe
+// - Immutable fields (struct_defs, enum_defs, structs, enums, etc.) are trivially thread-safe
 // - ArrayTypeRegistry uses RwLock for interior mutability
 // - References to RIR and ThreadedRodeo are shared immutably
+// - References to functions/methods HashMaps are shared immutably (read-only after declaration gathering)
 // - ThreadedRodeo is designed to be thread-safe
+// - &HashMap<K, V> is Send + Sync when the HashMap is (immutable references are always safe)
 unsafe impl<'a> Send for SemaContext<'a> {}
 unsafe impl<'a> Sync for SemaContext<'a> {}
 
