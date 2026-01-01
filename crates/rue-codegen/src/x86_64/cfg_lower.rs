@@ -1987,6 +1987,18 @@ impl<'a> CfgLower<'a> {
                 let num_reg_args = flattened_vregs.len().min(ARG_REGS.len());
                 let num_stack_args = flattened_vregs.len().saturating_sub(ARG_REGS.len());
 
+                // Add alignment padding if we have an odd number of stack arguments.
+                // RSP must be 16-byte aligned before the call, and each push is 8 bytes.
+                // If we push an odd number of arguments, we need 8 bytes of padding.
+                let needs_alignment = num_stack_args % 2 == 1;
+                if needs_alignment {
+                    // sub rsp, 8 to add alignment padding
+                    self.mir.push(X86Inst::AddRI {
+                        dst: Operand::Physical(Reg::Rsp),
+                        imm: -8,
+                    });
+                }
+
                 // Push stack arguments
                 for arg_vreg in flattened_vregs.iter().skip(ARG_REGS.len()).rev() {
                     self.mir.push(X86Inst::MovRR {
@@ -2020,9 +2032,12 @@ impl<'a> CfgLower<'a> {
                 let symbol_id = self.intern_symbol(symbol_name);
                 self.mir.push(X86Inst::CallRel { symbol_id });
 
-                // Clean up stack arguments
-                if num_stack_args > 0 {
-                    let stack_space = (num_stack_args * 8) as i32;
+                // Clean up stack arguments and alignment padding
+                if num_stack_args > 0 || needs_alignment {
+                    let mut stack_space = (num_stack_args * 8) as i32;
+                    if needs_alignment {
+                        stack_space += 8; // Include alignment padding
+                    }
                     self.mir.push(X86Inst::AddRI {
                         dst: Operand::Physical(Reg::Rsp),
                         imm: stack_space,
