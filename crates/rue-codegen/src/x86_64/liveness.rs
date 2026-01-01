@@ -9,7 +9,7 @@ use super::mir::{Operand, Reg, X86Inst, X86Mir};
 use crate::vreg::{LabelId, VReg};
 
 // Re-export shared types from the regalloc module
-pub use crate::regalloc::{InstructionLiveness, LiveRange, LivenessDebugInfo};
+pub use crate::regalloc::{InstructionLiveness, LiveRange, LivenessDebugInfo, LoopInfo};
 
 /// Type alias for x86_64-specific liveness info.
 pub type LivenessInfo = crate::regalloc::LivenessInfo<Reg>;
@@ -52,6 +52,19 @@ pub fn analyze_debug(mir: &X86Mir) -> LivenessDebugInfo {
         uses,
         defs,
     )
+}
+
+/// Compute loop information for X86Mir.
+///
+/// This detects loops by finding back-edges (jumps to earlier instructions)
+/// and returns loop depth information for each instruction.
+pub fn analyze_loops(mir: &X86Mir) -> LoopInfo {
+    let instructions = mir.instructions();
+    let num_insts = instructions.len();
+
+    crate::liveness::analyze_loops(instructions, get_label, |idx, inst, label_to_idx| {
+        get_successors(idx, inst, label_to_idx, num_insts)
+    })
 }
 
 // ============================================================================

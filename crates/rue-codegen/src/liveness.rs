@@ -23,7 +23,7 @@ use std::collections::HashMap;
 use fixedbitset::FixedBitSet;
 
 use crate::index_map::IndexMap;
-use crate::regalloc::{InstructionLiveness, LiveRange, LivenessDebugInfo, LivenessInfo};
+use crate::regalloc::{InstructionLiveness, LiveRange, LivenessDebugInfo, LivenessInfo, LoopInfo};
 use crate::vreg::{LabelId, VReg};
 
 /// Compute liveness information using the generic dataflow algorithm.
@@ -327,6 +327,136 @@ fn compute_live_at(
     live_at
 }
 
+// ============================================================================
+// Loop Detection
+// ============================================================================
+
+/// Detect loops and compute loop depth for each instruction.
+///
+/// A loop is detected by finding back-edges: edges where a successor index is
+/// less than or equal to the current instruction index. This indicates a jump
+/// back to an earlier point in the code (a loop).
+///
+/// # Algorithm
+///
+/// 1. Identify back-edges by finding successors[i] where successor <= i
+/// 2. For each back-edge (from -> to), mark all instructions in [to, from] as in a loop
+/// 3. Handle nested loops by tracking depth (incremented for each enclosing loop)
+///
+/// # Arguments
+///
+/// * `num_insts` - Total number of instructions
+/// * `successors` - Successor indices for each instruction
+///
+/// # Returns
+///
+/// A `LoopInfo` with loop depth for each instruction.
+pub fn compute_loop_info(num_insts: usize, successors: &[Vec<usize>]) -> LoopInfo {
+    if num_insts == 0 {
+        return LoopInfo::no_loops(0);
+    }
+
+    // Find all back-edges: edges where we jump to an earlier or same instruction
+    // A back-edge from instruction `from` to instruction `to` (where to <= from)
+    // indicates a loop from `to` to `from`
+    let mut loop_ranges: Vec<(usize, usize)> = Vec::new();
+
+    for (from, succs) in successors.iter().enumerate() {
+        for &to in succs {
+            if to <= from {
+                // This is a back-edge: we're jumping backwards
+                // The loop spans from `to` (loop header) to `from` (back-edge source)
+                loop_ranges.push((to, from));
+            }
+        }
+    }
+
+    // Sort loop ranges by start point for consistent processing
+    loop_ranges.sort_by_key(|(start, _)| *start);
+
+    // Compute loop depth for each instruction
+    // Each loop range [start, end] increments the depth of all instructions in that range
+    let mut depths = vec![0u32; num_insts];
+
+    for (loop_start, loop_end) in &loop_ranges {
+        for idx in *loop_start..=*loop_end {
+            depths[idx] = depths[idx].saturating_add(1);
+        }
+    }
+
+    LoopInfo { depths }
+}
+
+/// Compute loop info from instructions using the provided callbacks.
+///
+/// This is a convenience function that builds the label map and successor lists,
+/// then calls `compute_loop_info`.
+pub fn analyze_loops<I>(
+    instructions: &[I],
+    get_label: impl Fn(&I) -> Option<LabelId>,
+    get_successors: impl Fn(usize, &I, &HashMap<LabelId, usize>) -> Vec<usize>,
+) -> LoopInfo {
+    let num_insts = instructions.len();
+
+    if num_insts == 0 {
+        return LoopInfo::no_loops(0);
+    }
+
+    // Build label -> instruction index map
+    let label_to_idx = build_label_map(instructions, &get_label);
+
+    // Build successor lists
+    let successors = build_successor_lists(instructions, &label_to_idx, &get_successors);
+
+    compute_loop_info(num_insts, &successors)
+}
+
+// ============================================================================
+// Pressure Analysis
+// ============================================================================
+
+/// Register pressure at each instruction.
+///
+/// This tracks how many virtual registers are live at each program point,
+/// which helps the register allocator make better spill decisions.
+#[derive(Debug, Clone)]
+pub struct PressureInfo {
+    /// Number of live vregs at each instruction index.
+    pub pressure: Vec<u32>,
+    /// Maximum pressure across all instructions.
+    pub max_pressure: u32,
+}
+
+impl PressureInfo {
+    /// Get the pressure at a specific instruction.
+    pub fn at(&self, inst_idx: usize) -> u32 {
+        self.pressure.get(inst_idx).copied().unwrap_or(0)
+    }
+
+    /// Find instructions where pressure exceeds a threshold.
+    pub fn high_pressure_points(&self, threshold: u32) -> Vec<usize> {
+        self.pressure
+            .iter()
+            .enumerate()
+            .filter(|&(_, &p)| p > threshold)
+            .map(|(idx, _)| idx)
+            .collect()
+    }
+}
+
+/// Compute register pressure from live_at sets.
+///
+/// Pressure is simply the count of live vregs at each instruction.
+pub fn compute_pressure(live_at: &[FixedBitSet]) -> PressureInfo {
+    let pressure: Vec<u32> = live_at.iter().map(|bs| bs.count_ones(..) as u32).collect();
+    let max_pressure = pressure.iter().copied().max().unwrap_or(0);
+
+    PressureInfo {
+        pressure,
+        max_pressure,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -494,5 +624,182 @@ mod tests {
 
         // v0 and v1 should interfere (both live at instruction 2)
         assert!(info.interferes(VReg::new(0), VReg::new(1)));
+    }
+
+    // ========================================
+    // Loop detection tests
+    // ========================================
+
+    #[test]
+    fn test_no_loops() {
+        // Linear code: no back-edges
+        // 0 -> 1 -> 2 -> 3
+        let successors = vec![vec![1], vec![2], vec![3], vec![]];
+        let loop_info = compute_loop_info(4, &successors);
+
+        // All instructions should have depth 0
+        for i in 0..4 {
+            assert_eq!(
+                loop_info.depth(i),
+                0,
+                "Instruction {} should be at depth 0",
+                i
+            );
+        }
+    }
+
+    #[test]
+    fn test_simple_loop() {
+        // Simple loop: 0 -> 1 -> 2 -> 1 (back-edge from 2 to 1)
+        //              |         |
+        //              v         v
+        //              1 <-------+
+        //              |
+        //              v
+        //              3 (exit)
+        //
+        // Instructions 1-2 are in the loop
+        let successors = vec![
+            vec![1],    // 0 -> 1
+            vec![2],    // 1 -> 2
+            vec![1, 3], // 2 -> 1 (back-edge), 2 -> 3 (exit)
+            vec![],     // 3 (end)
+        ];
+        let loop_info = compute_loop_info(4, &successors);
+
+        assert_eq!(loop_info.depth(0), 0, "Before loop");
+        assert_eq!(loop_info.depth(1), 1, "Loop header");
+        assert_eq!(loop_info.depth(2), 1, "Loop body");
+        assert_eq!(loop_info.depth(3), 0, "After loop");
+    }
+
+    #[test]
+    fn test_nested_loops() {
+        // Nested loops:
+        // 0 -> 1 -> 2 -> 3 -> 2 (inner back-edge)
+        //      |         |
+        //      |         v
+        //      |         4 -> 1 (outer back-edge)
+        //      |              |
+        //      |              v
+        //      +------------> 5 (exit)
+        //
+        // Outer loop: 1-4 (depth 1)
+        // Inner loop: 2-3 (depth 2)
+        let successors = vec![
+            vec![1],    // 0 -> 1
+            vec![2],    // 1 -> 2
+            vec![3],    // 2 -> 3
+            vec![2, 4], // 3 -> 2 (inner back-edge), 3 -> 4
+            vec![1, 5], // 4 -> 1 (outer back-edge), 4 -> 5
+            vec![],     // 5 (end)
+        ];
+        let loop_info = compute_loop_info(6, &successors);
+
+        assert_eq!(loop_info.depth(0), 0, "Before loops");
+        assert_eq!(loop_info.depth(1), 1, "Outer loop header");
+        assert_eq!(loop_info.depth(2), 2, "Inner loop header (nested)");
+        assert_eq!(loop_info.depth(3), 2, "Inner loop body (nested)");
+        assert_eq!(loop_info.depth(4), 1, "Outer loop tail");
+        assert_eq!(loop_info.depth(5), 0, "After loops");
+    }
+
+    #[test]
+    fn test_loop_info_max_depth_in_range() {
+        // Same nested loop structure as above
+        let successors = vec![vec![1], vec![2], vec![3], vec![2, 4], vec![1, 5], vec![]];
+        let loop_info = compute_loop_info(6, &successors);
+
+        // Range spanning inner loop should have max depth 2
+        assert_eq!(loop_info.max_depth_in_range(1, 4), 2);
+        // Range outside loops
+        assert_eq!(loop_info.max_depth_in_range(0, 0), 0);
+        assert_eq!(loop_info.max_depth_in_range(5, 5), 0);
+        // Range spanning only outer loop
+        assert_eq!(loop_info.max_depth_in_range(1, 1), 1);
+        assert_eq!(loop_info.max_depth_in_range(4, 4), 1);
+    }
+
+    #[test]
+    fn test_analyze_loops_with_instructions() {
+        // Test the high-level analyze_loops function
+        let loop_label = LabelId::new(0);
+        let instructions = vec![
+            TestInst::Def { dst: 0 },               // 0: v0 = 10
+            TestInst::Label { id: loop_label },     // 1: loop:
+            TestInst::Use { src: 0 },               // 2: use v0
+            TestInst::Branch { label: loop_label }, // 3: if (...) goto loop (back-edge!)
+            TestInst::Ret,                          // 4: return
+        ];
+        let num_insts = instructions.len();
+
+        let loop_info = analyze_loops(&instructions, test_get_label, |idx, inst, label_to_idx| {
+            test_get_successors(idx, inst, label_to_idx, num_insts)
+        });
+
+        assert_eq!(loop_info.depth(0), 0, "Before loop");
+        assert_eq!(loop_info.depth(1), 1, "Loop header");
+        assert_eq!(loop_info.depth(2), 1, "Loop body");
+        assert_eq!(loop_info.depth(3), 1, "Loop back-edge");
+        assert_eq!(loop_info.depth(4), 0, "After loop");
+    }
+
+    // ========================================
+    // Pressure analysis tests
+    // ========================================
+
+    #[test]
+    fn test_pressure_simple() {
+        let vreg_count = 3;
+        let mut live_at = vec![
+            FixedBitSet::with_capacity(vreg_count),
+            FixedBitSet::with_capacity(vreg_count),
+            FixedBitSet::with_capacity(vreg_count),
+        ];
+
+        // Instruction 0: 1 vreg live
+        live_at[0].insert(0);
+
+        // Instruction 1: 2 vregs live
+        live_at[1].insert(0);
+        live_at[1].insert(1);
+
+        // Instruction 2: 3 vregs live
+        live_at[2].insert(0);
+        live_at[2].insert(1);
+        live_at[2].insert(2);
+
+        let pressure = compute_pressure(&live_at);
+
+        assert_eq!(pressure.at(0), 1);
+        assert_eq!(pressure.at(1), 2);
+        assert_eq!(pressure.at(2), 3);
+        assert_eq!(pressure.max_pressure, 3);
+    }
+
+    #[test]
+    fn test_high_pressure_points() {
+        let vreg_count = 5;
+        let mut live_at = vec![
+            FixedBitSet::with_capacity(vreg_count),
+            FixedBitSet::with_capacity(vreg_count),
+            FixedBitSet::with_capacity(vreg_count),
+            FixedBitSet::with_capacity(vreg_count),
+        ];
+
+        // Low pressure at 0 and 3
+        live_at[0].insert(0);
+        live_at[3].insert(0);
+
+        // High pressure at 1 and 2
+        for i in 0..5 {
+            live_at[1].insert(i);
+            live_at[2].insert(i);
+        }
+
+        let pressure = compute_pressure(&live_at);
+        let high_points = pressure.high_pressure_points(3);
+
+        assert_eq!(high_points, vec![1, 2]);
     }
 }

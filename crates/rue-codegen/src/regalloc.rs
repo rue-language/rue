@@ -41,6 +41,25 @@
 //! - **Live range length**: Longer ranges are cheaper to spill (value is stored once)
 //!
 //! The [`CostModel`] struct allows these parameters to be configured.
+//!
+//! ## Live Range Splitting
+//!
+//! For values that span long regions with varying register pressure (especially
+//! across loops), the allocator can split live ranges. Instead of keeping a value
+//! in a register for its entire lifetime, it can be:
+//!
+//! 1. In a register before a loop
+//! 2. Spilled at loop entry if not used inside the loop
+//! 3. Reloaded after the loop if needed again
+//!
+//! This reduces register pressure during high-pressure sections (like loops)
+//! while keeping values in registers during low-pressure sections.
+//!
+//! Split points are identified at loop boundaries when:
+//! - A vreg is live across the loop but not used inside
+//! - The loop has high register pressure
+//!
+//! The [`SplitPoint`] and [`SplitInfo`] types track these decisions.
 
 use std::collections::{HashMap, HashSet};
 use std::fmt;
@@ -205,6 +224,217 @@ impl LoopInfo {
         let end = end.min(self.depths.len() - 1);
         self.depths[start..=end].iter().copied().max().unwrap_or(0)
     }
+
+    /// Find loop boundaries (entry/exit points).
+    ///
+    /// Returns a list of (loop_start, loop_end) tuples representing loops.
+    /// Loop start is the first instruction at depth > 0, loop end is the last.
+    pub fn loop_boundaries(&self) -> Vec<(usize, usize)> {
+        let mut boundaries = Vec::new();
+        let mut in_loop = false;
+        let mut loop_start = 0;
+
+        for (idx, &depth) in self.depths.iter().enumerate() {
+            if depth > 0 && !in_loop {
+                // Entering a loop
+                in_loop = true;
+                loop_start = idx;
+            } else if depth == 0 && in_loop {
+                // Exiting a loop
+                in_loop = false;
+                boundaries.push((loop_start, idx - 1));
+            }
+        }
+
+        // Handle loop that extends to end of function
+        if in_loop {
+            boundaries.push((loop_start, self.depths.len() - 1));
+        }
+
+        boundaries
+    }
+}
+
+// ============================================================================
+// Live Range Splitting Types
+// ============================================================================
+
+/// Reason for splitting a live range at a particular point.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SplitReason {
+    /// Entering a loop where this vreg is not used (spill before loop).
+    LoopEntry,
+    /// Exiting a loop where this vreg was spilled (reload after loop).
+    LoopExit,
+}
+
+/// A point where a live range should be split.
+#[derive(Debug, Clone, Copy)]
+pub struct SplitPoint {
+    /// The instruction index where the split occurs.
+    pub position: usize,
+    /// The vreg being split.
+    pub vreg: VReg,
+    /// Why we're splitting here.
+    pub reason: SplitReason,
+    /// The stack offset to use for spill/reload (assigned during allocation).
+    pub spill_offset: Option<i32>,
+}
+
+/// Information about live range splitting for a function.
+///
+/// This is computed before register allocation and used to insert spill/reload
+/// instructions at split boundaries.
+#[derive(Debug, Clone, Default)]
+pub struct SplitInfo {
+    /// Split points for each vreg, sorted by position.
+    pub splits: Vec<SplitPoint>,
+    /// Mapping from vreg to its split points.
+    pub splits_by_vreg: HashMap<VReg, Vec<usize>>,
+}
+
+impl SplitInfo {
+    /// Create empty split info (no splitting).
+    pub fn empty() -> Self {
+        Self {
+            splits: Vec::new(),
+            splits_by_vreg: HashMap::new(),
+        }
+    }
+
+    /// Check if any splitting was detected.
+    pub fn has_splits(&self) -> bool {
+        !self.splits.is_empty()
+    }
+
+    /// Get split points for a specific vreg.
+    pub fn splits_for(&self, vreg: VReg) -> impl Iterator<Item = &SplitPoint> {
+        self.splits_by_vreg
+            .get(&vreg)
+            .into_iter()
+            .flat_map(|indices| indices.iter().map(|&i| &self.splits[i]))
+    }
+
+    /// Get all splits at a specific instruction position.
+    pub fn splits_at(&self, position: usize) -> impl Iterator<Item = &SplitPoint> {
+        self.splits.iter().filter(move |s| s.position == position)
+    }
+
+    /// Add a split point.
+    pub fn add_split(&mut self, vreg: VReg, position: usize, reason: SplitReason) {
+        let idx = self.splits.len();
+        self.splits.push(SplitPoint {
+            position,
+            vreg,
+            reason,
+            spill_offset: None,
+        });
+        self.splits_by_vreg.entry(vreg).or_default().push(idx);
+    }
+}
+
+/// Find split points at loop boundaries.
+///
+/// A vreg is a candidate for splitting at a loop boundary if:
+/// 1. It's live across the loop (live at loop entry AND loop exit)
+/// 2. It's NOT used inside the loop body
+/// 3. The loop has register pressure (optional threshold check)
+///
+/// # Arguments
+///
+/// * `liveness` - Liveness information including live_at sets
+/// * `loop_info` - Loop depth for each instruction
+/// * `num_registers` - Number of allocatable registers (for pressure threshold)
+///
+/// # Returns
+///
+/// A `SplitInfo` with detected split points.
+pub fn find_loop_split_points<Reg: Copy + Eq + std::hash::Hash>(
+    liveness: &LivenessInfo<Reg>,
+    loop_info: &LoopInfo,
+    _num_registers: usize,
+) -> SplitInfo {
+    let mut split_info = SplitInfo::empty();
+
+    // Find loop boundaries
+    let loop_boundaries = loop_info.loop_boundaries();
+
+    if loop_boundaries.is_empty() {
+        return split_info;
+    }
+
+    // For each loop, find vregs that are live across but not used inside
+    for (loop_start, loop_end) in loop_boundaries {
+        // Skip if we can't check boundaries
+        if loop_start == 0 || loop_end + 1 >= liveness.live_at.len() {
+            continue;
+        }
+
+        // Get vregs live at loop entry (just before the loop)
+        let live_before_loop = &liveness.live_at[loop_start.saturating_sub(1)];
+
+        // Get vregs live at loop exit (just after the loop)
+        let live_after_loop = if loop_end + 1 < liveness.live_at.len() {
+            &liveness.live_at[loop_end + 1]
+        } else {
+            continue; // Loop extends to end, no exit to check
+        };
+
+        // For each vreg live at both entry and exit...
+        for vreg_idx in live_before_loop.ones() {
+            if !live_after_loop.contains(vreg_idx) {
+                continue; // Not live after loop, no split needed
+            }
+
+            let vreg = VReg::new(vreg_idx as u32);
+
+            // Check if the vreg is used inside the loop body
+            let mut used_in_loop = false;
+            for inst_idx in loop_start..=loop_end {
+                if inst_idx < liveness.live_at.len()
+                    && liveness.live_at[inst_idx].contains(vreg_idx)
+                {
+                    // Check if there's a use point here (live range changes)
+                    // A vreg is "used" if it's live-in to an instruction that uses it.
+                    // For simplicity, we check if the live range has any activity in the loop.
+                    // The vreg is live, but we need to determine if it's *used* vs just live-through.
+
+                    // Check the range for this vreg
+                    if let Some(range) = liveness.range(vreg) {
+                        // If the range starts or ends inside the loop, it's used there
+                        if (range.start >= loop_start && range.start <= loop_end)
+                            || (range.end >= loop_start && range.end <= loop_end)
+                        {
+                            used_in_loop = true;
+                            break;
+                        }
+                    }
+                }
+            }
+
+            if !used_in_loop {
+                // This vreg is live across the loop but not used inside!
+                // It's a good candidate for splitting.
+                split_info.add_split(vreg, loop_start, SplitReason::LoopEntry);
+                split_info.add_split(vreg, loop_end + 1, SplitReason::LoopExit);
+            }
+        }
+    }
+
+    // Sort splits by position for efficient iteration
+    split_info.splits.sort_by_key(|s| s.position);
+
+    // Rebuild the by-vreg index after sorting
+    split_info.splits_by_vreg.clear();
+    for (idx, split) in split_info.splits.iter().enumerate() {
+        split_info
+            .splits_by_vreg
+            .entry(split.vreg)
+            .or_default()
+            .push(idx);
+    }
+
+    split_info
 }
 
 // ============================================================================
@@ -2599,5 +2829,197 @@ mod tests {
         ));
 
         assert_eq!(num_spills, 0, "no spill slots should be used");
+    }
+
+    // ========================================
+    // Live range splitting tests
+    // ========================================
+
+    #[test]
+    fn test_loop_boundaries_no_loops() {
+        let loop_info = LoopInfo::no_loops(10);
+        let boundaries = loop_info.loop_boundaries();
+        assert!(boundaries.is_empty());
+    }
+
+    #[test]
+    fn test_loop_boundaries_single_loop() {
+        // Depths: [0, 0, 1, 1, 1, 0, 0]
+        // Loop spans indices 2-4
+        let loop_info = LoopInfo {
+            depths: vec![0, 0, 1, 1, 1, 0, 0],
+        };
+        let boundaries = loop_info.loop_boundaries();
+        assert_eq!(boundaries, vec![(2, 4)]);
+    }
+
+    #[test]
+    fn test_loop_boundaries_nested_loops() {
+        // Depths: [0, 1, 2, 2, 1, 0]
+        // Outer loop: 1-4, Inner loop: 2-3
+        // But loop_boundaries finds contiguous regions, so it returns (1, 4)
+        let loop_info = LoopInfo {
+            depths: vec![0, 1, 2, 2, 1, 0],
+        };
+        let boundaries = loop_info.loop_boundaries();
+        // We get one boundary for the entire loop region
+        assert_eq!(boundaries, vec![(1, 4)]);
+    }
+
+    #[test]
+    fn test_loop_boundaries_multiple_loops() {
+        // Depths: [0, 1, 1, 0, 0, 1, 1, 0]
+        // Two separate loops: 1-2 and 5-6
+        let loop_info = LoopInfo {
+            depths: vec![0, 1, 1, 0, 0, 1, 1, 0],
+        };
+        let boundaries = loop_info.loop_boundaries();
+        assert_eq!(boundaries, vec![(1, 2), (5, 6)]);
+    }
+
+    #[test]
+    fn test_split_info_empty() {
+        let split_info = SplitInfo::empty();
+        assert!(!split_info.has_splits());
+        assert_eq!(split_info.splits_for(VReg::new(0)).count(), 0);
+    }
+
+    #[test]
+    fn test_split_info_add_and_query() {
+        let mut split_info = SplitInfo::empty();
+
+        split_info.add_split(VReg::new(0), 5, SplitReason::LoopEntry);
+        split_info.add_split(VReg::new(0), 10, SplitReason::LoopExit);
+        split_info.add_split(VReg::new(1), 5, SplitReason::LoopEntry);
+
+        assert!(split_info.has_splits());
+        assert_eq!(split_info.splits.len(), 3);
+
+        // Check splits for v0
+        let v0_splits: Vec<_> = split_info.splits_for(VReg::new(0)).collect();
+        assert_eq!(v0_splits.len(), 2);
+        assert_eq!(v0_splits[0].reason, SplitReason::LoopEntry);
+        assert_eq!(v0_splits[1].reason, SplitReason::LoopExit);
+
+        // Check splits at position 5
+        let pos5_splits: Vec<_> = split_info.splits_at(5).collect();
+        assert_eq!(pos5_splits.len(), 2);
+    }
+
+    #[test]
+    fn test_find_loop_split_points_no_loops() {
+        let liveness = make_liveness(vec![(0, 0, 10)]);
+        let loop_info = LoopInfo::no_loops(11);
+
+        let split_info = find_loop_split_points(&liveness, &loop_info, 5);
+        assert!(!split_info.has_splits());
+    }
+
+    #[test]
+    fn test_find_loop_split_points_vreg_used_in_loop() {
+        // v0 is defined inside the loop (range starts at 3)
+        // Loop spans 3-7
+        // Since v0's range starts inside the loop, it should NOT be split
+        let vreg_count = 1;
+        let num_insts = 11;
+
+        let mut ranges = IndexMap::with_capacity(vreg_count);
+        ranges.resize(vreg_count, None);
+        // v0 range starts at 3 (inside the loop at 3-7)
+        ranges[VReg::new(0)] = Some(LiveRange::new(3, 10));
+
+        // Build live_at: v0 is live at instructions 3-10
+        let mut live_at = vec![FixedBitSet::with_capacity(vreg_count); num_insts];
+        for i in 3..=10 {
+            live_at[i].insert(0);
+        }
+
+        let liveness: LivenessInfo<TestReg> = LivenessInfo {
+            ranges,
+            live_at,
+            clobbers_at: vec![Vec::new(); num_insts],
+        };
+
+        // Loop at 3-7
+        let loop_info = LoopInfo {
+            depths: vec![0, 0, 0, 1, 1, 1, 1, 1, 0, 0, 0],
+        };
+
+        let split_info = find_loop_split_points(&liveness, &loop_info, 5);
+
+        // Since v0's range starts at 3 (inside the loop), it's "used" there
+        // So no split should be detected
+        assert!(
+            !split_info.has_splits(),
+            "v0 is defined in the loop, should not be split"
+        );
+    }
+
+    #[test]
+    fn test_find_loop_split_points_vreg_live_through_but_not_used() {
+        // v0 is defined before the loop and used after, but not during
+        // This is the ideal candidate for splitting
+        let vreg_count = 2;
+        let num_insts = 11;
+
+        // v0: defined at 0, used at 10 (lives 0-10, but not *used* in loop 3-7)
+        // v1: defined at 3, used at 7 (lives entirely in loop)
+        let mut ranges = IndexMap::with_capacity(vreg_count);
+        ranges.resize(vreg_count, None);
+        ranges[VReg::new(0)] = Some(LiveRange::new(0, 10));
+        ranges[VReg::new(1)] = Some(LiveRange::new(3, 7));
+
+        // Build live_at
+        let mut live_at = vec![FixedBitSet::with_capacity(vreg_count); num_insts];
+        // v0 live 0-10
+        for i in 0..=10 {
+            live_at[i].insert(0);
+        }
+        // v1 live 3-7
+        for i in 3..=7 {
+            live_at[i].insert(1);
+        }
+
+        let liveness: LivenessInfo<TestReg> = LivenessInfo {
+            ranges,
+            live_at,
+            clobbers_at: vec![Vec::new(); num_insts],
+        };
+
+        // Loop at 3-7
+        let loop_info = LoopInfo {
+            depths: vec![0, 0, 0, 1, 1, 1, 1, 1, 0, 0, 0],
+        };
+
+        let split_info = find_loop_split_points(&liveness, &loop_info, 5);
+
+        // v0's range is 0-10, which starts before and ends after the loop
+        // The loop is 3-7, and v0's range doesn't start or end inside [3,7]
+        // So v0 should be detected as a split candidate
+
+        // v1's range is 3-7, entirely within the loop, so no split for v1
+
+        // Check for v0 splits
+        let v0_splits: Vec<_> = split_info.splits_for(VReg::new(0)).collect();
+        assert_eq!(v0_splits.len(), 2, "v0 should have entry and exit splits");
+
+        let entry_split = v0_splits
+            .iter()
+            .find(|s| s.reason == SplitReason::LoopEntry);
+        let exit_split = v0_splits.iter().find(|s| s.reason == SplitReason::LoopExit);
+
+        assert!(entry_split.is_some(), "Should have loop entry split");
+        assert!(exit_split.is_some(), "Should have loop exit split");
+
+        assert_eq!(
+            entry_split.unwrap().position,
+            3,
+            "Entry split at loop start"
+        );
+        assert_eq!(exit_split.unwrap().position, 8, "Exit split after loop end");
+
+        // v1 should not be split (used in loop)
+        let v1_splits: Vec<_> = split_info.splits_for(VReg::new(1)).collect();
+        assert!(v1_splits.is_empty(), "v1 should not be split");
     }
 }

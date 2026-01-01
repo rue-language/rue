@@ -17,8 +17,9 @@ use super::mir::{Aarch64Inst, Aarch64Mir, Operand, Reg, VReg};
 use crate::alloc_dst;
 use crate::index_map::IndexMap;
 use crate::regalloc::{
-    Allocation, CoalesceCandidate, CoalesceResult, RegAllocDebugInfo, coalesce, linear_scan,
-    linear_scan_with_debug,
+    Allocation, CoalesceCandidate, CoalesceResult, CostModel, LoopInfo, RegAllocDebugInfo,
+    SplitInfo, coalesce, find_loop_split_points, linear_scan_with_cost_model,
+    linear_scan_with_cost_model_and_debug,
 };
 
 /// Available registers for allocation.
@@ -54,6 +55,11 @@ pub struct RegAlloc {
     /// Maps virtual register to its allocation (register or spill slot).
     allocation: IndexMap<VReg, Option<Allocation<Reg>>>,
     liveness: LivenessInfo,
+    /// Loop information for each instruction.
+    loop_info: LoopInfo,
+    /// Split points detected at loop boundaries.
+    #[allow(dead_code)]
+    split_info: SplitInfo,
     /// Result of register coalescing.
     coalesce_result: CoalesceResult,
     num_spills: u32,
@@ -67,6 +73,12 @@ impl RegAlloc {
     pub fn new(mir: Aarch64Mir, existing_locals: u32) -> Self {
         let vreg_count = mir.vreg_count() as usize;
         let mut liveness = liveness::analyze(&mir);
+
+        // Compute loop information for loop-aware allocation
+        let loop_info = liveness::analyze_loops(&mir);
+
+        // Find split points at loop boundaries
+        let split_info = find_loop_split_points(&liveness, &loop_info, ALLOCATABLE_REGS.len());
 
         // Collect coalescing candidates: MovRR where both src and dst are virtual
         let candidates: Vec<CoalesceCandidate> = mir
@@ -100,6 +112,8 @@ impl RegAlloc {
             mir,
             allocation,
             liveness,
+            loop_info,
+            split_info,
             coalesce_result,
             num_spills: 0,
             used_callee_saved: Vec::new(),
@@ -147,11 +161,14 @@ impl RegAlloc {
 
     /// Assign physical registers to all virtual registers using linear scan.
     fn assign_registers(&mut self) {
-        let (allocation, num_spills, used_callee_saved) = linear_scan(
+        let cost_model = CostModel::default();
+        let (allocation, num_spills, used_callee_saved) = linear_scan_with_cost_model(
             self.mir.vreg_count(),
             &self.liveness,
             ALLOCATABLE_REGS,
             self.existing_locals,
+            &cost_model,
+            &self.loop_info,
         );
         self.allocation = allocation;
         self.num_spills = num_spills;
@@ -160,12 +177,16 @@ impl RegAlloc {
 
     /// Assign physical registers and also collect debug information.
     fn assign_registers_with_debug(&mut self) -> RegAllocDebugInfo<Reg> {
-        let (allocation, num_spills, used_callee_saved, debug_info) = linear_scan_with_debug(
-            self.mir.vreg_count(),
-            &self.liveness,
-            ALLOCATABLE_REGS,
-            self.existing_locals,
-        );
+        let cost_model = CostModel::default();
+        let (allocation, num_spills, used_callee_saved, debug_info) =
+            linear_scan_with_cost_model_and_debug(
+                self.mir.vreg_count(),
+                &self.liveness,
+                ALLOCATABLE_REGS,
+                self.existing_locals,
+                &cost_model,
+                &self.loop_info,
+            );
         self.allocation = allocation;
         self.num_spills = num_spills;
         self.used_callee_saved = used_callee_saved;
