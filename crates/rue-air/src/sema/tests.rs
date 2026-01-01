@@ -812,4 +812,229 @@ mod tests {
 
         assert!(result.is_err());
     }
+
+    // ========================================================================
+    // Type Intern Pool tests (ADR-0024 Phase 1)
+    //
+    // These tests verify that the TypeInternPool is correctly populated during
+    // declaration collection and that its contents match the existing type
+    // registries (struct_defs, enum_defs).
+    // ========================================================================
+
+    /// Helper to gather declarations and return the Sema state for testing.
+    fn gather_declarations_for_testing(source: &str) -> Sema<'static> {
+        // We need to leak the interner for the static lifetime
+        let lexer = Lexer::new(source);
+        let (tokens, interner) = lexer.tokenize().unwrap();
+        let parser = Parser::new(tokens, interner);
+        let (ast, mut interner) = parser.parse().unwrap();
+
+        let astgen = AstGen::new(&ast, &mut interner);
+        let rir = astgen.generate();
+
+        // Leak both to get 'static lifetime for testing
+        let rir = Box::leak(Box::new(rir));
+        let interner = Box::leak(Box::new(interner));
+
+        let mut sema = Sema::new(rir, interner, PreviewFeatures::new());
+        sema.inject_builtin_types();
+        sema.register_type_names().unwrap();
+        sema.resolve_declarations().unwrap();
+        sema
+    }
+
+    #[test]
+    fn test_type_pool_populated_with_builtin_string() {
+        // The String type should be in the pool after builtin injection
+        let sema = gather_declarations_for_testing("fn main() -> i32 { 0 }");
+
+        let string_name = sema.interner.get("String").unwrap();
+        let pool_string = sema.type_pool.get_struct_by_name(string_name);
+
+        assert!(pool_string.is_some(), "String should be in the type pool");
+
+        // Verify the pool and existing registry agree
+        let registry_string = sema.structs.get(&string_name);
+        assert!(
+            registry_string.is_some(),
+            "String should be in struct registry"
+        );
+
+        // Check that the definitions match
+        let pool_def = sema.type_pool.get_struct_def(pool_string.unwrap()).unwrap();
+        let registry_def = &sema.struct_defs[registry_string.unwrap().0 as usize];
+
+        assert_eq!(pool_def.name, registry_def.name);
+        assert_eq!(pool_def.is_builtin, registry_def.is_builtin);
+        assert!(pool_def.is_builtin, "String should be marked as builtin");
+    }
+
+    #[test]
+    fn test_type_pool_populated_with_user_struct() {
+        let sema = gather_declarations_for_testing(
+            "struct Point { x: i32, y: i32 }
+             fn main() -> i32 { 0 }",
+        );
+
+        let point_name = sema.interner.get("Point").unwrap();
+
+        // Check the pool has the struct
+        let pool_point = sema.type_pool.get_struct_by_name(point_name);
+        assert!(pool_point.is_some(), "Point should be in the type pool");
+
+        // Verify pool and registry agree
+        let registry_point = sema.structs.get(&point_name);
+        assert!(
+            registry_point.is_some(),
+            "Point should be in struct registry"
+        );
+
+        // Check that definitions match
+        let pool_def = sema.type_pool.get_struct_def(pool_point.unwrap()).unwrap();
+        let registry_def = &sema.struct_defs[registry_point.unwrap().0 as usize];
+
+        assert_eq!(pool_def.name, registry_def.name);
+        assert_eq!(pool_def.fields.len(), registry_def.fields.len());
+        assert_eq!(pool_def.fields.len(), 2);
+        assert_eq!(pool_def.fields[0].name, "x");
+        assert_eq!(pool_def.fields[1].name, "y");
+        assert_eq!(pool_def.is_copy, registry_def.is_copy);
+        assert!(
+            !pool_def.is_builtin,
+            "Point should not be marked as builtin"
+        );
+    }
+
+    #[test]
+    fn test_type_pool_populated_with_enum() {
+        let sema = gather_declarations_for_testing(
+            "enum Color { Red, Green, Blue }
+             fn main() -> i32 { 0 }",
+        );
+
+        let color_name = sema.interner.get("Color").unwrap();
+
+        // Check the pool has the enum
+        let pool_color = sema.type_pool.get_enum_by_name(color_name);
+        assert!(pool_color.is_some(), "Color should be in the type pool");
+
+        // Verify pool and registry agree
+        let registry_color = sema.enums.get(&color_name);
+        assert!(registry_color.is_some(), "Color should be in enum registry");
+
+        // Check that definitions match
+        let pool_def = sema.type_pool.get_enum_def(pool_color.unwrap()).unwrap();
+        let registry_def = &sema.enum_defs[registry_color.unwrap().0 as usize];
+
+        assert_eq!(pool_def.name, registry_def.name);
+        assert_eq!(pool_def.variants.len(), registry_def.variants.len());
+        assert_eq!(pool_def.variants.len(), 3);
+        assert_eq!(pool_def.variants[0], "Red");
+        assert_eq!(pool_def.variants[1], "Green");
+        assert_eq!(pool_def.variants[2], "Blue");
+    }
+
+    #[test]
+    fn test_type_pool_copy_struct() {
+        let sema = gather_declarations_for_testing(
+            "@copy
+             struct Data { value: i32 }
+             fn main() -> i32 { 0 }",
+        );
+
+        let data_name = sema.interner.get("Data").unwrap();
+        let pool_data = sema.type_pool.get_struct_by_name(data_name).unwrap();
+        let pool_def = sema.type_pool.get_struct_def(pool_data).unwrap();
+
+        assert!(pool_def.is_copy, "Data should be marked as @copy");
+    }
+
+    #[test]
+    fn test_type_pool_stats() {
+        let sema = gather_declarations_for_testing(
+            "struct A {}
+             struct B {}
+             enum E { X }
+             fn main() -> i32 { 0 }",
+        );
+
+        let stats = sema.type_pool.stats();
+
+        // 3 structs: String (builtin) + A + B
+        assert_eq!(stats.struct_count, 3);
+        // 1 enum: E
+        assert_eq!(stats.enum_count, 1);
+        // No arrays in Phase 1
+        assert_eq!(stats.array_count, 0);
+        // Total: 4 composite types
+        assert_eq!(stats.total, 4);
+    }
+
+    #[test]
+    fn test_type_pool_all_registries_match() {
+        // Test with multiple types to verify complete consistency
+        let sema = gather_declarations_for_testing(
+            "struct Point { x: i32, y: i32 }
+             struct Empty {}
+             @copy struct Value { v: bool }
+             enum Status { Ok, Error }
+             enum Direction { Up, Down, Left, Right }
+             fn main() -> i32 { 0 }",
+        );
+
+        // Verify all structs in registry are in pool
+        for (name_spur, &struct_id) in &sema.structs {
+            let registry_def = &sema.struct_defs[struct_id.0 as usize];
+            let pool_type = sema.type_pool.get_struct_by_name(*name_spur);
+
+            assert!(
+                pool_type.is_some(),
+                "Struct '{}' should be in pool",
+                registry_def.name
+            );
+
+            let pool_def = sema.type_pool.get_struct_def(pool_type.unwrap()).unwrap();
+            assert_eq!(
+                pool_def.name, registry_def.name,
+                "Struct names should match"
+            );
+            assert_eq!(
+                pool_def.fields.len(),
+                registry_def.fields.len(),
+                "Field counts should match for {}",
+                registry_def.name
+            );
+            assert_eq!(
+                pool_def.is_copy, registry_def.is_copy,
+                "is_copy should match for {}",
+                registry_def.name
+            );
+        }
+
+        // Verify all enums in registry are in pool
+        for (name_spur, &enum_id) in &sema.enums {
+            let registry_def = &sema.enum_defs[enum_id.0 as usize];
+            let pool_type = sema.type_pool.get_enum_by_name(*name_spur);
+
+            assert!(
+                pool_type.is_some(),
+                "Enum '{}' should be in pool",
+                registry_def.name
+            );
+
+            let pool_def = sema.type_pool.get_enum_def(pool_type.unwrap()).unwrap();
+            assert_eq!(pool_def.name, registry_def.name, "Enum names should match");
+            assert_eq!(
+                pool_def.variants.len(),
+                registry_def.variants.len(),
+                "Variant counts should match for {}",
+                registry_def.name
+            );
+        }
+
+        // Verify counts match
+        let stats = sema.type_pool.stats();
+        assert_eq!(stats.struct_count, sema.struct_defs.len());
+        assert_eq!(stats.enum_count, sema.enum_defs.len());
+    }
 }

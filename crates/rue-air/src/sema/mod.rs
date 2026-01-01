@@ -36,6 +36,7 @@ use lasso::{Spur, ThreadedRodeo};
 use rue_error::{CompileErrors, MultiErrorResult, PreviewFeatures};
 use rue_rir::Rir;
 
+use crate::intern_pool::TypeInternPool;
 use crate::sema_context::{
     ArrayTypeRegistry, InferenceContext as SemaContextInferenceContext, SemaContext,
 };
@@ -102,6 +103,8 @@ pub struct GatherOutput<'a> {
     pub preview_features: PreviewFeatures,
     /// StructId of the synthetic String type.
     pub builtin_string_id: Option<StructId>,
+    /// Type intern pool (ADR-0024 Phase 1).
+    pub type_pool: TypeInternPool,
 }
 
 impl<'a> GatherOutput<'a> {
@@ -124,6 +127,7 @@ impl<'a> GatherOutput<'a> {
             preview_features: self.preview_features,
             builtin_string_id: self.builtin_string_id,
             known: KnownSymbols::new(self.interner),
+            type_pool: self.type_pool,
         }
     }
 
@@ -171,6 +175,8 @@ pub struct SemaOutput {
     pub strings: Vec<String>,
     /// Warnings collected during analysis.
     pub warnings: Vec<rue_error::CompileWarning>,
+    /// Type intern pool (Phase 1: coexists with existing type system).
+    pub type_pool: TypeInternPool,
 }
 
 /// Pre-computed type information for constraint generation.
@@ -256,6 +262,12 @@ pub struct Sema<'a> {
     pub(crate) builtin_string_id: Option<StructId>,
     /// Pre-interned known symbols for fast comparison.
     pub(crate) known: KnownSymbols,
+    /// Type intern pool for unified type representation (ADR-0024 Phase 1).
+    ///
+    /// During Phase 1, the pool coexists with the existing type registries.
+    /// It is populated during declaration collection but not yet used for
+    /// type operations. Later phases will migrate to using the pool exclusively.
+    pub(crate) type_pool: TypeInternPool,
 }
 
 impl<'a> Sema<'a> {
@@ -279,6 +291,7 @@ impl<'a> Sema<'a> {
             preview_features,
             builtin_string_id: None,
             known: KnownSymbols::new(interner),
+            type_pool: TypeInternPool::new(),
         }
     }
 
@@ -391,6 +404,7 @@ impl<'a> Sema<'a> {
             methods: self.methods,
             preview_features: self.preview_features,
             builtin_string_id: self.builtin_string_id,
+            type_pool: self.type_pool,
         };
 
         Ok((type_ctx, output))
@@ -444,6 +458,7 @@ impl<'a> Sema<'a> {
             builtin_string_id: self.builtin_string_id,
             inference_ctx,
             known: KnownSymbols::new(self.interner),
+            type_pool: self.type_pool.clone(),
         }
     }
 

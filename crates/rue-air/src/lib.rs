@@ -14,6 +14,7 @@ mod analysis_state;
 mod function_analyzer;
 mod inference;
 mod inst;
+mod intern_pool;
 mod scope;
 mod sema;
 mod sema_context;
@@ -31,6 +32,9 @@ pub use inference::{
 };
 pub use inst::{
     Air, AirArgMode, AirCallArg, AirInst, AirInstData, AirParamMode, AirPattern, AirRef,
+};
+pub use intern_pool::{
+    EnumData, InternedType, StructData, TypeData, TypeInternPool, TypeInternPoolStats,
 };
 pub use sema::{AnalyzedFunction, FunctionInfo, GatherOutput, MethodInfo, Sema, SemaOutput};
 // Note: FunctionInfo and MethodInfo are defined in sema and re-exported by sema_context.

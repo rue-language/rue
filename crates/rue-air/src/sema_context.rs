@@ -36,6 +36,7 @@ use rue_error::PreviewFeatures;
 use rue_rir::Rir;
 
 use crate::inference::{FunctionSig, InferType, MethodSig};
+use crate::intern_pool::TypeInternPool;
 // Import FunctionInfo, MethodInfo, and KnownSymbols from sema module to avoid duplication.
 // FunctionInfo and MethodInfo are the canonical definitions; we re-export them for convenience.
 pub use crate::sema::{FunctionInfo, KnownSymbols, MethodInfo};
@@ -224,11 +225,19 @@ pub struct SemaContext<'a> {
     pub inference_ctx: InferenceContext,
     /// Pre-interned known symbols for fast comparison.
     pub known: KnownSymbols,
+    /// Type intern pool for unified type representation (ADR-0024 Phase 1).
+    ///
+    /// During Phase 1, the pool coexists with the existing type registries.
+    /// It can be used for lookups but the canonical type representation
+    /// remains the old `Type` enum. Later phases will migrate to using
+    /// the pool exclusively.
+    pub type_pool: TypeInternPool,
 }
 
 // SAFETY: SemaContext is Send + Sync because:
 // - Immutable fields (struct_defs, enum_defs, structs, enums, etc.) are trivially thread-safe
 // - ArrayTypeRegistry uses RwLock for interior mutability
+// - TypeInternPool uses RwLock for interior mutability
 // - References to RIR and ThreadedRodeo are shared immutably
 // - References to functions/methods HashMaps are shared immutably (read-only after declaration gathering)
 // - ThreadedRodeo is designed to be thread-safe

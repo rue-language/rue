@@ -299,6 +299,7 @@ fn analyze_all_function_bodies_sequential(sema: &mut Sema<'_>) -> MultiErrorResu
         array_types: std::mem::take(&mut sema.array_type_defs),
         strings: global_strings,
         warnings: all_warnings,
+        type_pool: sema.type_pool.clone(),
     })
 }
 
@@ -325,7 +326,13 @@ fn analyze_all_function_bodies_parallel(sema: Sema<'_>) -> MultiErrorResult<Sema
     let array_type_defs = ctx.array_registry.into_defs();
 
     // Merge results
-    merge_function_results(results, sema.struct_defs, sema.enum_defs, array_type_defs)
+    merge_function_results(
+        results,
+        sema.struct_defs,
+        sema.enum_defs,
+        array_type_defs,
+        sema.type_pool,
+    )
 }
 
 /// Collect all functions to be analyzed from the RIR.
@@ -1508,6 +1515,7 @@ fn merge_function_results(
     struct_defs: Vec<crate::types::StructDef>,
     enum_defs: Vec<crate::types::EnumDef>,
     array_type_defs: Vec<crate::types::ArrayTypeDef>,
+    type_pool: crate::intern_pool::TypeInternPool,
 ) -> MultiErrorResult<SemaOutput> {
     let mut errors = CompileErrors::new();
     let mut functions_with_strings: Vec<(AnalyzedFunction, Vec<String>)> = Vec::new();
@@ -1558,6 +1566,7 @@ fn merge_function_results(
         array_types: array_type_defs,
         strings: global_strings,
         warnings: all_warnings,
+        type_pool,
     })
 }
 

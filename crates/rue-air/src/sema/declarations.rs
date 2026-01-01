@@ -312,7 +312,38 @@ impl<'a> Sema<'a> {
     /// body analysis.
     pub(crate) fn resolve_declarations(&mut self) -> CompileResult<()> {
         self.resolve_struct_fields()?;
-        self.resolve_remaining_declarations()
+        self.resolve_remaining_declarations()?;
+
+        // Populate the type intern pool (ADR-0024 Phase 1).
+        // This runs after all type definitions are complete so we have
+        // full struct/enum definitions with resolved fields and variants.
+        self.populate_type_pool();
+
+        Ok(())
+    }
+
+    /// Populate the type intern pool with all registered types.
+    ///
+    /// This is part of ADR-0024 Phase 1: the pool coexists with the existing
+    /// type registries and is populated after declarations are complete.
+    /// The pool can be used for verification but is not yet the canonical
+    /// source for type information.
+    pub(crate) fn populate_type_pool(&mut self) {
+        // Register all structs in the pool
+        for (name_spur, &struct_id) in &self.structs {
+            let def = &self.struct_defs[struct_id.0 as usize];
+            self.type_pool.register_struct(*name_spur, def.clone());
+        }
+
+        // Register all enums in the pool
+        for (name_spur, &enum_id) in &self.enums {
+            let def = &self.enum_defs[enum_id.0 as usize];
+            self.type_pool.register_enum(*name_spur, def.clone());
+        }
+
+        // Note: Array types are not populated here during Phase 1.
+        // They are created on-demand during function body analysis via the
+        // ArrayTypeRegistry, and will be migrated to the pool in Phase 2.
     }
 
     /// Resolve struct field types. Must run before @copy validation.
