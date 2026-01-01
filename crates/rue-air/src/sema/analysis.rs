@@ -5,10 +5,19 @@
 //! - Hindley-Milner type inference (run_type_inference)
 //! - RIR to AIR instruction lowering (analyze_inst)
 //! - Helper functions for expression analysis
+//!
+//! # Parallel Analysis
+//!
+//! Function body analysis is parallelized using rayon. The architecture:
+//! 1. Declaration gathering (sequential) builds an immutable `SemaContext`
+//! 2. Function jobs are collected describing each function to analyze
+//! 3. Jobs are processed in parallel using `par_iter`
+//! 4. Results are merged (strings deduplicated, warnings collected)
 
 use std::collections::{HashMap, HashSet};
 
 use lasso::Spur;
+use rayon::prelude::*;
 use rue_builtins::BuiltinTypeDef;
 use rue_error::{
     CompileError, CompileErrors, CompileResult, CompileWarning, ErrorKind,
@@ -21,23 +30,80 @@ use super::context::{
     AnalysisContext, AnalysisResult, ConstValue, FieldPath, ParamInfo, StringReceiverStorage,
 };
 use super::{AnalyzedFunction, InferenceContext, Sema, SemaOutput};
+// Note: FunctionAnalyzer types available for future parallel merging
+#[allow(unused_imports)]
+use crate::function_analyzer::{FunctionAnalyzerOutput, MergedFunctionOutput};
 use crate::inference::{
     Constraint, ConstraintContext, ConstraintGenerator, InferType, ParamVarInfo, Unifier,
     UnifyResult,
 };
-use crate::inst::{Air, AirArgMode, AirCallArg, AirInst, AirInstData, AirRef};
-use crate::types::{StructId, Type};
+use crate::inst::{Air, AirArgMode, AirCallArg, AirInst, AirInstData, AirPattern, AirRef};
+use crate::sema_context::SemaContext;
+use crate::types::{EnumId, StructId, Type};
+
+/// A description of a function to analyze.
+///
+/// This is collected before parallel analysis so each function can be
+/// processed independently without shared mutable state.
+#[derive(Debug)]
+enum FunctionJob {
+    /// Regular function (not a method).
+    Function {
+        name: String,
+        return_type: Spur,
+        params_start: u32,
+        params_len: u32,
+        body: InstRef,
+        span: Span,
+    },
+    /// Method from an impl block.
+    Method {
+        full_name: String,
+        return_type: Spur,
+        params_start: u32,
+        params_len: u32,
+        body: InstRef,
+        span: Span,
+        struct_type: Type,
+        has_self: bool,
+    },
+    /// Destructor function.
+    Destructor {
+        full_name: String,
+        body: InstRef,
+        span: Span,
+        struct_type: Type,
+    },
+}
+
+/// Result of analyzing a single function.
+type FunctionResult = Result<(AnalyzedFunction, Vec<CompileWarning>, Vec<String>), CompileError>;
 
 /// Main entry point for analyzing all function bodies.
 ///
 /// Called from Sema::analyze_all after declarations are collected.
+/// Currently uses the sequential analysis path while the parallel infrastructure
+/// is being completed.
+///
+/// # Parallel Analysis Infrastructure
+///
+/// The parallel analysis infrastructure is ready but not all instruction types
+/// are implemented in `analyze_inst_with_context` yet. Once complete:
+/// 1. Build `SemaContext` from `Sema`
+/// 2. Collect function jobs with `collect_function_jobs`
+/// 3. Process with `par_iter` using `analyze_function_job`
+/// 4. Merge with `merge_function_results`
 pub(crate) fn analyze_all_function_bodies(mut sema: Sema<'_>) -> MultiErrorResult<SemaOutput> {
+    // Use sequential analysis path
+    analyze_all_function_bodies_sequential(&mut sema)
+}
+
+/// Sequential analysis path (current implementation).
+fn analyze_all_function_bodies_sequential(sema: &mut Sema<'_>) -> MultiErrorResult<SemaOutput> {
     // Build inference context once
     let infer_ctx = sema.build_inference_context();
 
     // Collect analyzed functions with their local strings.
-    // Each function collects strings independently (enabling future parallelization),
-    // then we merge and deduplicate globally, remapping string IDs in the AIR.
     let mut functions_with_strings: Vec<(AnalyzedFunction, Vec<String>)> = Vec::new();
     let mut errors = CompileErrors::new();
     let mut all_warnings = Vec::new();
@@ -198,15 +264,12 @@ pub(crate) fn analyze_all_function_bodies(mut sema: Sema<'_>) -> MultiErrorResul
     }
 
     // Merge strings from all functions into a global table with deduplication.
-    // Build a mapping from (local_strings_vec, local_id) -> global_id for remapping.
     let mut global_string_table: HashMap<String, u32> = HashMap::new();
     let mut global_strings: Vec<String> = Vec::new();
 
-    // For each function, build a mapping from local string ID to global string ID
     let mut functions: Vec<AnalyzedFunction> = Vec::new();
     for (mut analyzed, local_strings) in functions_with_strings {
         if !local_strings.is_empty() {
-            // Build mapping from local IDs to global IDs
             let local_to_global: Vec<u32> = local_strings
                 .into_iter()
                 .map(|s| {
@@ -218,7 +281,6 @@ pub(crate) fn analyze_all_function_bodies(mut sema: Sema<'_>) -> MultiErrorResul
                 })
                 .collect();
 
-            // Remap string IDs in the AIR
             analyzed
                 .air
                 .remap_string_ids(|local_id| local_to_global[local_id as usize]);
@@ -230,9 +292,931 @@ pub(crate) fn analyze_all_function_bodies(mut sema: Sema<'_>) -> MultiErrorResul
 
     errors.into_result_with(SemaOutput {
         functions,
-        struct_defs: sema.struct_defs,
-        enum_defs: sema.enum_defs,
-        array_types: sema.array_type_defs,
+        struct_defs: std::mem::take(&mut sema.struct_defs),
+        enum_defs: std::mem::take(&mut sema.enum_defs),
+        array_types: std::mem::take(&mut sema.array_type_defs),
+        strings: global_strings,
+        warnings: all_warnings,
+    })
+}
+
+/// Parallel analysis path (work in progress).
+///
+/// This will be enabled once all instruction types are implemented in
+/// `analyze_inst_with_context`.
+#[allow(dead_code)]
+fn analyze_all_function_bodies_parallel(sema: Sema<'_>) -> MultiErrorResult<SemaOutput> {
+    // Build immutable SemaContext for sharing across threads
+    let ctx = sema.build_sema_context();
+
+    // Collect all function jobs
+    let jobs = collect_function_jobs(&ctx);
+
+    // Analyze functions in parallel
+    let results: Vec<FunctionResult> = jobs
+        .into_par_iter()
+        .map(|job| analyze_function_job(&ctx, job))
+        .collect();
+
+    // Merge results
+    merge_function_results(
+        results,
+        sema.struct_defs,
+        sema.enum_defs,
+        sema.array_type_defs,
+    )
+}
+
+/// Collect all functions to be analyzed from the RIR.
+fn collect_function_jobs(ctx: &SemaContext<'_>) -> Vec<FunctionJob> {
+    let mut jobs = Vec::new();
+
+    // Collect method refs from impl blocks to skip them in the regular function pass
+    let mut method_refs: HashSet<InstRef> = HashSet::new();
+    for (_, inst) in ctx.rir.iter() {
+        if let InstData::ImplDecl {
+            methods_start,
+            methods_len,
+            ..
+        } = &inst.data
+        {
+            let methods = ctx.rir.get_inst_refs(*methods_start, *methods_len);
+            for method_ref in methods {
+                method_refs.insert(method_ref);
+            }
+        }
+    }
+
+    // Collect regular functions
+    for (inst_ref, inst) in ctx.rir.iter() {
+        if let InstData::FnDecl {
+            name,
+            params_start,
+            params_len,
+            return_type,
+            body,
+            has_self: _,
+            ..
+        } = &inst.data
+        {
+            if method_refs.contains(&inst_ref) {
+                continue;
+            }
+
+            let fn_name = ctx.interner.resolve(&*name).to_string();
+            jobs.push(FunctionJob::Function {
+                name: fn_name,
+                return_type: *return_type,
+                params_start: *params_start,
+                params_len: *params_len,
+                body: *body,
+                span: inst.span,
+            });
+        }
+    }
+
+    // Collect methods from impl blocks
+    for (_, inst) in ctx.rir.iter() {
+        if let InstData::ImplDecl {
+            type_name,
+            methods_start,
+            methods_len,
+        } = &inst.data
+        {
+            let type_name_str = ctx.interner.resolve(&*type_name).to_string();
+            let struct_id = match ctx.structs.get(type_name) {
+                Some(id) => *id,
+                None => continue, // Error will be caught elsewhere
+            };
+            let struct_type = Type::Struct(struct_id);
+
+            let methods = ctx.rir.get_inst_refs(*methods_start, *methods_len);
+            for method_ref in methods {
+                let method_inst = ctx.rir.get(method_ref);
+                if let InstData::FnDecl {
+                    name: method_name,
+                    params_start,
+                    params_len,
+                    return_type,
+                    body,
+                    has_self,
+                    ..
+                } = &method_inst.data
+                {
+                    let method_name_str = ctx.interner.resolve(&*method_name).to_string();
+                    let full_name = if *has_self {
+                        format!("{}.{}", type_name_str, method_name_str)
+                    } else {
+                        format!("{}::{}", type_name_str, method_name_str)
+                    };
+
+                    jobs.push(FunctionJob::Method {
+                        full_name,
+                        return_type: *return_type,
+                        params_start: *params_start,
+                        params_len: *params_len,
+                        body: *body,
+                        span: method_inst.span,
+                        struct_type,
+                        has_self: *has_self,
+                    });
+                }
+            }
+        }
+    }
+
+    // Collect destructors
+    for (_, inst) in ctx.rir.iter() {
+        if let InstData::DropFnDecl { type_name, body } = &inst.data {
+            let type_name_str = ctx.interner.resolve(&*type_name).to_string();
+            let struct_id = match ctx.structs.get(type_name) {
+                Some(id) => *id,
+                None => continue, // Error will be caught elsewhere
+            };
+            let struct_type = Type::Struct(struct_id);
+            let full_name = format!("{}.__drop", type_name_str);
+
+            jobs.push(FunctionJob::Destructor {
+                full_name,
+                body: *body,
+                span: inst.span,
+                struct_type,
+            });
+        }
+    }
+
+    jobs
+}
+
+/// Analyze a single function job using the shared context.
+fn analyze_function_job(ctx: &SemaContext<'_>, job: FunctionJob) -> FunctionResult {
+    match job {
+        FunctionJob::Function {
+            name,
+            return_type,
+            params_start,
+            params_len,
+            body,
+            span,
+        } => {
+            let params = ctx.rir.get_params(params_start, params_len);
+            analyze_regular_function(ctx, &name, return_type, &params, body, span)
+        }
+        FunctionJob::Method {
+            full_name,
+            return_type,
+            params_start,
+            params_len,
+            body,
+            span,
+            struct_type,
+            has_self,
+        } => {
+            let params = ctx.rir.get_params(params_start, params_len);
+            analyze_method_function_parallel(
+                ctx,
+                &full_name,
+                return_type,
+                &params,
+                body,
+                span,
+                struct_type,
+                has_self,
+            )
+        }
+        FunctionJob::Destructor {
+            full_name,
+            body,
+            span,
+            struct_type,
+        } => analyze_destructor_function_parallel(ctx, &full_name, body, span, struct_type),
+    }
+}
+
+/// Analyze a regular function using the shared context.
+fn analyze_regular_function(
+    ctx: &SemaContext<'_>,
+    fn_name: &str,
+    return_type: Spur,
+    params: &[rue_rir::RirParam],
+    body: InstRef,
+    span: Span,
+) -> FunctionResult {
+    // Resolve return type
+    let ret_type = resolve_type_from_ctx(ctx, return_type, span)?;
+
+    // Resolve parameter types and modes
+    let param_info: Vec<(Spur, Type, RirParamMode)> = params
+        .iter()
+        .map(|p| {
+            let ty = resolve_type_from_ctx(ctx, p.ty, span)?;
+            Ok((p.name, ty, p.mode))
+        })
+        .collect::<CompileResult<Vec<_>>>()?;
+
+    analyze_function_with_context(ctx, fn_name, ret_type, &param_info, body)
+}
+
+/// Analyze a method function using the shared context.
+fn analyze_method_function_parallel(
+    ctx: &SemaContext<'_>,
+    full_name: &str,
+    return_type: Spur,
+    params: &[rue_rir::RirParam],
+    body: InstRef,
+    span: Span,
+    struct_type: Type,
+    has_self: bool,
+) -> FunctionResult {
+    let ret_type = resolve_type_from_ctx(ctx, return_type, span)?;
+
+    // Build parameter list, adding self as first parameter for methods
+    let mut param_info: Vec<(Spur, Type, RirParamMode)> = Vec::new();
+
+    if has_self {
+        // Add self parameter (Normal mode - passed by value)
+        let self_sym = ctx.interner.get_or_intern("self");
+        param_info.push((self_sym, struct_type, RirParamMode::Normal));
+    }
+
+    // Add regular parameters with their modes
+    for p in params.iter() {
+        let ty = resolve_type_from_ctx(ctx, p.ty, span)?;
+        param_info.push((p.name, ty, p.mode));
+    }
+
+    analyze_function_with_context(ctx, full_name, ret_type, &param_info, body)
+}
+
+/// Analyze a destructor function using the shared context.
+fn analyze_destructor_function_parallel(
+    ctx: &SemaContext<'_>,
+    full_name: &str,
+    body: InstRef,
+    _span: Span,
+    struct_type: Type,
+) -> FunctionResult {
+    // Destructors take self parameter and return unit
+    let self_sym = ctx.interner.get_or_intern("self");
+    let param_info: Vec<(Spur, Type, RirParamMode)> =
+        vec![(self_sym, struct_type, RirParamMode::Normal)];
+
+    analyze_function_with_context(ctx, full_name, Type::Unit, &param_info, body)
+}
+
+/// Resolve a type symbol using the shared context.
+fn resolve_type_from_ctx(ctx: &SemaContext<'_>, type_sym: Spur, span: Span) -> CompileResult<Type> {
+    let type_name = ctx.interner.resolve(&type_sym);
+
+    // Check primitive types first
+    match type_name {
+        "i8" => return Ok(Type::I8),
+        "i16" => return Ok(Type::I16),
+        "i32" => return Ok(Type::I32),
+        "i64" => return Ok(Type::I64),
+        "u8" => return Ok(Type::U8),
+        "u16" => return Ok(Type::U16),
+        "u32" => return Ok(Type::U32),
+        "u64" => return Ok(Type::U64),
+        "bool" => return Ok(Type::Bool),
+        "()" => return Ok(Type::Unit),
+        "!" => return Ok(Type::Never),
+        _ => {}
+    }
+
+    if let Some(struct_id) = ctx.get_struct(type_sym) {
+        Ok(Type::Struct(struct_id))
+    } else if let Some(enum_id) = ctx.get_enum(type_sym) {
+        Ok(Type::Enum(enum_id))
+    } else {
+        // Check for array type syntax: [T; N]
+        if let Some((element_type, length)) = crate::types::parse_array_type_syntax(type_name) {
+            // Resolve the element type first
+            let element_sym = ctx.interner.get_or_intern(&element_type);
+            let element_ty = resolve_type_from_ctx(ctx, element_sym, span)?;
+            // Get the array type (must exist from declaration gathering)
+            if let Some(array_type_id) = ctx.get_array_type(element_ty, length) {
+                Ok(Type::Array(array_type_id))
+            } else {
+                Err(CompileError::new(
+                    ErrorKind::UnknownType(type_name.to_string()),
+                    span,
+                ))
+            }
+        } else {
+            Err(CompileError::new(
+                ErrorKind::UnknownType(type_name.to_string()),
+                span,
+            ))
+        }
+    }
+}
+
+/// Core function analysis using the shared immutable context.
+///
+/// This is called from the parallel analysis path and works with SemaContext
+/// instead of the mutable Sema.
+fn analyze_function_with_context(
+    ctx: &SemaContext<'_>,
+    fn_name: &str,
+    return_type: Type,
+    params: &[(Spur, Type, RirParamMode)],
+    body: InstRef,
+) -> FunctionResult {
+    let mut air = Air::new(return_type);
+    let mut param_map: HashMap<Spur, ParamInfo> = HashMap::new();
+    let mut param_modes: Vec<bool> = Vec::new();
+
+    // Add parameters to the param map, tracking ABI slot offsets.
+    let mut next_abi_slot: u32 = 0;
+    for (pname, ptype, mode) in params.iter() {
+        param_map.insert(
+            *pname,
+            ParamInfo {
+                abi_slot: next_abi_slot,
+                ty: *ptype,
+                mode: *mode,
+            },
+        );
+        let is_by_ref = *mode != RirParamMode::Normal;
+        let slot_count = if is_by_ref {
+            1
+        } else {
+            ctx.abi_slot_count(*ptype)
+        };
+        for _ in 0..slot_count {
+            param_modes.push(is_by_ref);
+        }
+        next_abi_slot += slot_count;
+    }
+    let num_param_slots = next_abi_slot;
+
+    // Run Hindley-Milner type inference
+    let resolved_types = run_type_inference_with_context(ctx, return_type, params, body)?;
+
+    // Create analysis context with resolved types
+    let mut analysis_ctx = AnalysisContext {
+        locals: HashMap::new(),
+        params: &param_map,
+        next_slot: 0,
+        loop_depth: 0,
+        used_locals: HashSet::new(),
+        return_type,
+        scope_stack: Vec::new(),
+        resolved_types: &resolved_types,
+        moved_vars: HashMap::new(),
+        warnings: Vec::new(),
+        local_string_table: HashMap::new(),
+        local_strings: Vec::new(),
+    };
+
+    // Analyze the body expression
+    let body_result = analyze_inst_with_context(ctx, &mut air, body, &mut analysis_ctx)?;
+
+    // Add implicit return only if body doesn't already diverge
+    if body_result.ty != Type::Never {
+        air.add_inst(AirInst {
+            data: AirInstData::Ret(Some(body_result.air_ref)),
+            ty: return_type,
+            span: ctx.rir.get(body).span,
+        });
+    }
+
+    Ok((
+        AnalyzedFunction {
+            name: fn_name.to_string(),
+            air,
+            num_locals: analysis_ctx.next_slot,
+            num_param_slots,
+            param_modes,
+        },
+        analysis_ctx.warnings,
+        analysis_ctx.local_strings,
+    ))
+}
+
+/// Run type inference using the shared context.
+fn run_type_inference_with_context(
+    ctx: &SemaContext<'_>,
+    return_type: Type,
+    params: &[(Spur, Type, RirParamMode)],
+    body: InstRef,
+) -> CompileResult<HashMap<InstRef, Type>> {
+    // Create constraint generator using pre-computed inference context
+    let mut cgen = ConstraintGenerator::new(
+        ctx.rir,
+        ctx.interner,
+        &ctx.inference_ctx.func_sigs,
+        &ctx.inference_ctx.struct_types,
+        &ctx.inference_ctx.enum_types,
+        &ctx.inference_ctx.method_sigs,
+    );
+
+    // Build parameter map for constraint context.
+    // Convert Type to InferType so arrays are represented structurally.
+    let param_vars: HashMap<Spur, ParamVarInfo> = params
+        .iter()
+        .map(|(name, ty, _mode)| {
+            (
+                *name,
+                ParamVarInfo {
+                    ty: ctx.type_to_infer_type(*ty),
+                },
+            )
+        })
+        .collect();
+
+    // Create constraint context
+    let mut cgen_ctx = ConstraintContext::new(&param_vars, return_type);
+
+    // Phase 1: Generate constraints
+    let body_info = cgen.generate(body, &mut cgen_ctx);
+
+    // The function body's type must match the return type.
+    cgen.add_constraint(Constraint::equal(
+        body_info.ty,
+        InferType::Concrete(return_type),
+        body_info.span,
+    ));
+
+    // Consume the constraint generator to release borrows
+    let (constraints, int_literal_vars, expr_types, type_var_count) = cgen.into_parts();
+
+    // Phase 2: Solve constraints via unification
+    let mut unifier = Unifier::with_capacity(type_var_count);
+    let errors = unifier.solve_constraints(&constraints);
+
+    // Convert unification errors to compile errors
+    if let Some(err) = errors.first() {
+        let error_kind = match &err.kind {
+            UnifyResult::Ok => unreachable!("UnificationError should never contain Ok"),
+            UnifyResult::TypeMismatch { expected, found } => ErrorKind::TypeMismatch {
+                expected: expected.to_string(),
+                found: found.to_string(),
+            },
+            UnifyResult::IntLiteralNonInteger { found } => ErrorKind::TypeMismatch {
+                expected: "integer type".to_string(),
+                found: found.name().to_string(),
+            },
+            UnifyResult::OccursCheck { var, ty } => ErrorKind::TypeMismatch {
+                expected: "non-recursive type".to_string(),
+                found: format!("{var} = {ty} (infinite type)"),
+            },
+            UnifyResult::NotSigned { ty } => ErrorKind::CannotNegateUnsigned(ty.name().to_string()),
+            UnifyResult::NotInteger { ty } => ErrorKind::TypeMismatch {
+                expected: "integer type".to_string(),
+                found: ty.name().to_string(),
+            },
+            UnifyResult::NotUnsigned { ty } => ErrorKind::TypeMismatch {
+                expected: "unsigned integer type".to_string(),
+                found: ty.name().to_string(),
+            },
+            UnifyResult::ArrayLengthMismatch { expected, found } => {
+                ErrorKind::ArrayLengthMismatch {
+                    expected: *expected,
+                    found: *found,
+                }
+            }
+        };
+
+        let mut compile_error = CompileError::new(error_kind, err.span);
+        if matches!(err.kind, UnifyResult::NotSigned { .. }) {
+            compile_error = compile_error.with_note("unsigned values cannot be negated");
+        }
+        return Err(compile_error);
+    }
+
+    // Default any unconstrained integer literals to i32
+    unifier.default_int_literal_vars(&int_literal_vars);
+
+    // Build the resolved types map, converting InferType to Type.
+    // Note: Array types should already be created during declaration gathering.
+    // If new array types appear in function bodies (e.g., array literals), they
+    // won't be found and will result in Type::Error.
+    let mut resolved_types = HashMap::new();
+    for (inst_ref, infer_ty) in &expr_types {
+        let resolved = unifier.resolve_infer_type(infer_ty);
+        let concrete_ty = infer_type_to_type_standalone(&resolved, ctx);
+        resolved_types.insert(*inst_ref, concrete_ty);
+    }
+
+    Ok(resolved_types)
+}
+
+/// Convert an InferType to a concrete Type using the context.
+fn infer_type_to_type_standalone(ty: &InferType, ctx: &SemaContext<'_>) -> Type {
+    match ty {
+        InferType::Concrete(t) => *t,
+        InferType::Var(_) => Type::Error,
+        InferType::IntLiteral => Type::I32,
+        InferType::Array { element, length } => {
+            let elem_ty = infer_type_to_type_standalone(element, ctx);
+            if elem_ty == Type::Error {
+                return Type::Error;
+            }
+            if let Some(id) = ctx.get_array_type(elem_ty, *length) {
+                Type::Array(id)
+            } else {
+                Type::Error
+            }
+        }
+    }
+}
+
+/// Analyze an RIR instruction using the shared context.
+///
+/// This is the parallel-compatible version of `Sema::analyze_inst`. It uses
+/// `SemaContext` (immutable, shared) instead of `&mut Sema`.
+fn analyze_inst_with_context(
+    ctx: &SemaContext<'_>,
+    air: &mut Air,
+    inst_ref: InstRef,
+    analysis_ctx: &mut AnalysisContext,
+) -> CompileResult<AnalysisResult> {
+    let inst = ctx.rir.get(inst_ref);
+
+    match &inst.data {
+        InstData::IntConst(value) => {
+            // Get the type from HM inference
+            let ty = get_resolved_type_ctx(analysis_ctx, inst_ref, inst.span, "integer literal")?;
+
+            // Check if the literal value fits in the target type's range
+            if !ty.literal_fits(*value) {
+                return Err(CompileError::new(
+                    ErrorKind::LiteralOutOfRange {
+                        value: *value,
+                        ty: ty.name().to_string(),
+                    },
+                    inst.span,
+                ));
+            }
+
+            let air_ref = air.add_inst(AirInst {
+                data: AirInstData::Const(*value),
+                ty,
+                span: inst.span,
+            });
+            Ok(AnalysisResult::new(air_ref, ty))
+        }
+
+        InstData::BoolConst(value) => {
+            let ty = Type::Bool;
+            let air_ref = air.add_inst(AirInst {
+                data: AirInstData::BoolConst(*value),
+                ty,
+                span: inst.span,
+            });
+            Ok(AnalysisResult::new(air_ref, ty))
+        }
+
+        InstData::StringConst(symbol) => {
+            let ty = ctx.builtin_string_type();
+            let string_content = ctx.interner.resolve(&*symbol).to_string();
+            let local_string_id = analysis_ctx.add_local_string(string_content);
+
+            let air_ref = air.add_inst(AirInst {
+                data: AirInstData::StringConst(local_string_id),
+                ty,
+                span: inst.span,
+            });
+            Ok(AnalysisResult::new(air_ref, ty))
+        }
+
+        InstData::UnitConst => {
+            let ty = Type::Unit;
+            let air_ref = air.add_inst(AirInst {
+                data: AirInstData::UnitConst,
+                ty,
+                span: inst.span,
+            });
+            Ok(AnalysisResult::new(air_ref, ty))
+        }
+
+        InstData::Add { lhs, rhs } => analyze_binary_arith_ctx(
+            ctx,
+            air,
+            *lhs,
+            *rhs,
+            AirInstData::Add,
+            inst.span,
+            analysis_ctx,
+        ),
+
+        InstData::Sub { lhs, rhs } => analyze_binary_arith_ctx(
+            ctx,
+            air,
+            *lhs,
+            *rhs,
+            AirInstData::Sub,
+            inst.span,
+            analysis_ctx,
+        ),
+
+        InstData::Mul { lhs, rhs } => analyze_binary_arith_ctx(
+            ctx,
+            air,
+            *lhs,
+            *rhs,
+            AirInstData::Mul,
+            inst.span,
+            analysis_ctx,
+        ),
+
+        InstData::Div { lhs, rhs } => analyze_binary_arith_ctx(
+            ctx,
+            air,
+            *lhs,
+            *rhs,
+            AirInstData::Div,
+            inst.span,
+            analysis_ctx,
+        ),
+
+        InstData::Mod { lhs, rhs } => analyze_binary_arith_ctx(
+            ctx,
+            air,
+            *lhs,
+            *rhs,
+            AirInstData::Mod,
+            inst.span,
+            analysis_ctx,
+        ),
+
+        InstData::Eq { lhs, rhs } => analyze_comparison_ctx(
+            ctx,
+            air,
+            *lhs,
+            *rhs,
+            true,
+            AirInstData::Eq,
+            inst.span,
+            analysis_ctx,
+        ),
+
+        InstData::Ne { lhs, rhs } => analyze_comparison_ctx(
+            ctx,
+            air,
+            *lhs,
+            *rhs,
+            true,
+            AirInstData::Ne,
+            inst.span,
+            analysis_ctx,
+        ),
+
+        InstData::Lt { lhs, rhs } => analyze_comparison_ctx(
+            ctx,
+            air,
+            *lhs,
+            *rhs,
+            false,
+            AirInstData::Lt,
+            inst.span,
+            analysis_ctx,
+        ),
+
+        InstData::Gt { lhs, rhs } => analyze_comparison_ctx(
+            ctx,
+            air,
+            *lhs,
+            *rhs,
+            false,
+            AirInstData::Gt,
+            inst.span,
+            analysis_ctx,
+        ),
+
+        InstData::Le { lhs, rhs } => analyze_comparison_ctx(
+            ctx,
+            air,
+            *lhs,
+            *rhs,
+            false,
+            AirInstData::Le,
+            inst.span,
+            analysis_ctx,
+        ),
+
+        InstData::Ge { lhs, rhs } => analyze_comparison_ctx(
+            ctx,
+            air,
+            *lhs,
+            *rhs,
+            false,
+            AirInstData::Ge,
+            inst.span,
+            analysis_ctx,
+        ),
+
+        InstData::And { lhs, rhs } => {
+            let lhs_result = analyze_inst_with_context(ctx, air, *lhs, analysis_ctx)?;
+            let rhs_result = analyze_inst_with_context(ctx, air, *rhs, analysis_ctx)?;
+
+            let air_ref = air.add_inst(AirInst {
+                data: AirInstData::And(lhs_result.air_ref, rhs_result.air_ref),
+                ty: Type::Bool,
+                span: inst.span,
+            });
+            Ok(AnalysisResult::new(air_ref, Type::Bool))
+        }
+
+        InstData::Or { lhs, rhs } => {
+            let lhs_result = analyze_inst_with_context(ctx, air, *lhs, analysis_ctx)?;
+            let rhs_result = analyze_inst_with_context(ctx, air, *rhs, analysis_ctx)?;
+
+            let air_ref = air.add_inst(AirInst {
+                data: AirInstData::Or(lhs_result.air_ref, rhs_result.air_ref),
+                ty: Type::Bool,
+                span: inst.span,
+            });
+            Ok(AnalysisResult::new(air_ref, Type::Bool))
+        }
+
+        InstData::BitAnd { lhs, rhs } => analyze_binary_arith_ctx(
+            ctx,
+            air,
+            *lhs,
+            *rhs,
+            AirInstData::BitAnd,
+            inst.span,
+            analysis_ctx,
+        ),
+
+        InstData::BitOr { lhs, rhs } => analyze_binary_arith_ctx(
+            ctx,
+            air,
+            *lhs,
+            *rhs,
+            AirInstData::BitOr,
+            inst.span,
+            analysis_ctx,
+        ),
+
+        InstData::BitXor { lhs, rhs } => analyze_binary_arith_ctx(
+            ctx,
+            air,
+            *lhs,
+            *rhs,
+            AirInstData::BitXor,
+            inst.span,
+            analysis_ctx,
+        ),
+
+        InstData::Shl { lhs, rhs } => analyze_binary_arith_ctx(
+            ctx,
+            air,
+            *lhs,
+            *rhs,
+            AirInstData::Shl,
+            inst.span,
+            analysis_ctx,
+        ),
+
+        InstData::Shr { lhs, rhs } => analyze_binary_arith_ctx(
+            ctx,
+            air,
+            *lhs,
+            *rhs,
+            AirInstData::Shr,
+            inst.span,
+            analysis_ctx,
+        ),
+
+        // For other instruction types, we delegate to a full implementation
+        // This is a gradual migration - complex cases are handled separately
+        _ => {
+            // TODO: Implement remaining cases for full parallel support
+            // For now, return an error indicating this path isn't ready
+            Err(CompileError::new(
+                ErrorKind::InternalError(format!(
+                    "parallel analysis not yet implemented for {:?}",
+                    std::mem::discriminant(&inst.data)
+                )),
+                inst.span,
+            ))
+        }
+    }
+}
+
+/// Get resolved type from the analysis context (parallel version).
+fn get_resolved_type_ctx(
+    ctx: &AnalysisContext,
+    inst_ref: InstRef,
+    span: Span,
+    what: &str,
+) -> CompileResult<Type> {
+    ctx.resolved_types.get(&inst_ref).copied().ok_or_else(|| {
+        CompileError::new(
+            ErrorKind::InternalError(format!("no resolved type for {} at {:?}", what, inst_ref)),
+            span,
+        )
+    })
+}
+
+/// Analyze binary arithmetic operation (parallel version).
+fn analyze_binary_arith_ctx<F>(
+    ctx: &SemaContext<'_>,
+    air: &mut Air,
+    lhs: InstRef,
+    rhs: InstRef,
+    make_inst: F,
+    span: Span,
+    analysis_ctx: &mut AnalysisContext,
+) -> CompileResult<AnalysisResult>
+where
+    F: FnOnce(AirRef, AirRef) -> AirInstData,
+{
+    let lhs_result = analyze_inst_with_context(ctx, air, lhs, analysis_ctx)?;
+    let rhs_result = analyze_inst_with_context(ctx, air, rhs, analysis_ctx)?;
+    let ty = lhs_result.ty;
+
+    let air_ref = air.add_inst(AirInst {
+        data: make_inst(lhs_result.air_ref, rhs_result.air_ref),
+        ty,
+        span,
+    });
+    Ok(AnalysisResult::new(air_ref, ty))
+}
+
+/// Analyze comparison operation (parallel version).
+fn analyze_comparison_ctx<F>(
+    ctx: &SemaContext<'_>,
+    air: &mut Air,
+    lhs: InstRef,
+    rhs: InstRef,
+    _allows_bool: bool,
+    make_inst: F,
+    span: Span,
+    analysis_ctx: &mut AnalysisContext,
+) -> CompileResult<AnalysisResult>
+where
+    F: FnOnce(AirRef, AirRef) -> AirInstData,
+{
+    let lhs_result = analyze_inst_with_context(ctx, air, lhs, analysis_ctx)?;
+    let rhs_result = analyze_inst_with_context(ctx, air, rhs, analysis_ctx)?;
+
+    let air_ref = air.add_inst(AirInst {
+        data: make_inst(lhs_result.air_ref, rhs_result.air_ref),
+        ty: Type::Bool,
+        span,
+    });
+    Ok(AnalysisResult::new(air_ref, Type::Bool))
+}
+
+/// Merge results from parallel function analysis.
+fn merge_function_results(
+    results: Vec<FunctionResult>,
+    struct_defs: Vec<crate::types::StructDef>,
+    enum_defs: Vec<crate::types::EnumDef>,
+    array_type_defs: Vec<crate::types::ArrayTypeDef>,
+) -> MultiErrorResult<SemaOutput> {
+    let mut errors = CompileErrors::new();
+    let mut functions_with_strings: Vec<(AnalyzedFunction, Vec<String>)> = Vec::new();
+    let mut all_warnings = Vec::new();
+
+    // Collect successes and errors
+    for result in results {
+        match result {
+            Ok((analyzed, warnings, local_strings)) => {
+                functions_with_strings.push((analyzed, local_strings));
+                all_warnings.extend(warnings);
+            }
+            Err(e) => errors.push(e),
+        }
+    }
+
+    // Merge strings from all functions into a global table with deduplication
+    let mut global_string_table: HashMap<String, u32> = HashMap::new();
+    let mut global_strings: Vec<String> = Vec::new();
+
+    let mut functions: Vec<AnalyzedFunction> = Vec::new();
+    for (mut analyzed, local_strings) in functions_with_strings {
+        if !local_strings.is_empty() {
+            let local_to_global: Vec<u32> = local_strings
+                .into_iter()
+                .map(|s| {
+                    *global_string_table.entry(s.clone()).or_insert_with(|| {
+                        let id = global_strings.len() as u32;
+                        global_strings.push(s);
+                        id
+                    })
+                })
+                .collect();
+
+            analyzed
+                .air
+                .remap_string_ids(|local_id| local_to_global[local_id as usize]);
+        }
+        functions.push(analyzed);
+    }
+
+    all_warnings.sort_by_key(|w| w.span().map(|s| s.start));
+
+    errors.into_result_with(SemaOutput {
+        functions,
+        struct_defs,
+        enum_defs,
+        array_types: array_type_defs,
         strings: global_strings,
         warnings: all_warnings,
     })

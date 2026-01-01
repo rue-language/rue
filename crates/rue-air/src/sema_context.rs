@@ -295,6 +295,61 @@ impl<'a> SemaContext<'a> {
             _ => InferType::Concrete(ty),
         }
     }
+
+    // ========================================================================
+    // Builtin type helpers (duplicated from Sema for parallel analysis)
+    // ========================================================================
+
+    /// Check if a type is the builtin String type.
+    pub fn is_builtin_string(&self, ty: Type) -> bool {
+        match ty {
+            Type::Struct(struct_id) => Some(struct_id) == self.builtin_string_id,
+            _ => false,
+        }
+    }
+
+    /// Get the builtin type definition for a struct if it's a builtin type.
+    pub fn get_builtin_type_def(
+        &self,
+        struct_id: StructId,
+    ) -> Option<&'static rue_builtins::BuiltinTypeDef> {
+        let struct_def = &self.struct_defs[struct_id.0 as usize];
+        if struct_def.is_builtin {
+            rue_builtins::get_builtin_type(&struct_def.name)
+        } else {
+            None
+        }
+    }
+
+    /// Check if a method name is a builtin mutation method.
+    pub fn is_builtin_mutation_method(&self, method_name: &str) -> bool {
+        use rue_builtins::{BUILTIN_TYPES, ReceiverMode};
+
+        for builtin in BUILTIN_TYPES {
+            if let Some(method) = builtin.find_method(method_name) {
+                if method.receiver_mode == ReceiverMode::ByMutRef {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    /// Get the AIR output type for a builtin struct.
+    pub fn builtin_air_type(&self, struct_id: StructId) -> Type {
+        Type::Struct(struct_id)
+    }
+
+    /// Check if a type is a linear type.
+    pub fn is_type_linear(&self, ty: Type) -> bool {
+        match ty {
+            Type::Struct(struct_id) => {
+                let struct_def = &self.struct_defs[struct_id.0 as usize];
+                struct_def.is_linear
+            }
+            _ => false,
+        }
+    }
 }
 
 #[cfg(test)]

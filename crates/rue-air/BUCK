@@ -9,6 +9,7 @@ rust_library(
         "//crates/rue-parser:rue-parser",
         "//crates/rue-rir:rue-rir",
         "//crates/rue-span:rue-span",
+        "//third-party:rayon",
     ],
     visibility = ["PUBLIC"],
 )
@@ -24,5 +25,6 @@ rust_test(
         "//crates/rue-parser:rue-parser",
         "//crates/rue-rir:rue-rir",
         "//crates/rue-span:rue-span",
+        "//third-party:rayon",
     ],
 )
