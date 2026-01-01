@@ -360,7 +360,8 @@ impl From<LogosTokenKind> for TokenKind {
             LogosTokenKind::Comma => TokenKind::Comma,
             LogosTokenKind::Dot => TokenKind::Dot,
             LogosTokenKind::At => TokenKind::At,
-            LogosTokenKind::AtImport => TokenKind::AtImport,
+            // AtImport is handled specially in tokenize() to provide the interned "import" Spur
+            LogosTokenKind::AtImport => unreachable!("AtImport should be handled specially"),
         }
     }
 }
@@ -428,8 +429,16 @@ impl<'a> LogosLexer<'a> {
                     let span = lexer.span();
                     match result {
                         Ok(logos_kind) => {
+                            // Convert LogosTokenKind to TokenKind, handling @import specially
+                            // because it needs to carry the interned "import" symbol
+                            let token_kind = if matches!(logos_kind, LogosTokenKind::AtImport) {
+                                let import_spur = lexer.extras.get_or_intern("import");
+                                TokenKind::AtImport(import_spur)
+                            } else {
+                                logos_kind.into()
+                            };
                             tokens.push(Token {
-                                kind: logos_kind.into(),
+                                kind: token_kind,
                                 span: Span::with_file(
                                     self.file_id,
                                     span.start as u32,
@@ -535,10 +544,14 @@ mod tests {
 
     #[test]
     fn test_logos_at_import_token() {
-        // @import should be recognized as a single token
+        // @import should be recognized as a single token with interned "import" Spur
         let lexer = LogosLexer::new("@import");
-        let (tokens, _) = lexer.tokenize().unwrap();
-        assert!(matches!(tokens[0].kind, TokenKind::AtImport));
+        let (tokens, interner) = lexer.tokenize().unwrap();
+        if let TokenKind::AtImport(spur) = tokens[0].kind {
+            assert_eq!(interner.resolve(&spur), "import");
+        } else {
+            panic!("Expected AtImport token");
+        }
         assert!(matches!(tokens[1].kind, TokenKind::Eof));
     }
 
@@ -547,7 +560,7 @@ mod tests {
         // @import as single token vs @other (At + Ident)
         let lexer = LogosLexer::new("@import @other");
         let (tokens, interner) = lexer.tokenize().unwrap();
-        assert!(matches!(tokens[0].kind, TokenKind::AtImport));
+        assert!(matches!(tokens[0].kind, TokenKind::AtImport(_)));
         assert!(matches!(tokens[1].kind, TokenKind::At));
         assert_eq!(get_ident_str(&tokens[2].kind, &interner), Some("other"));
     }
@@ -565,7 +578,7 @@ mod tests {
         // @import("path.rue") pattern
         let lexer = LogosLexer::new(r#"@import("math.rue")"#);
         let (tokens, interner) = lexer.tokenize().unwrap();
-        assert!(matches!(tokens[0].kind, TokenKind::AtImport));
+        assert!(matches!(tokens[0].kind, TokenKind::AtImport(_)));
         assert!(matches!(tokens[1].kind, TokenKind::LParen));
         assert_eq!(get_string_str(&tokens[2].kind, &interner), Some("math.rue"));
         assert!(matches!(tokens[3].kind, TokenKind::RParen));

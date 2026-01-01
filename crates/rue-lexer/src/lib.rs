@@ -104,7 +104,7 @@ pub enum TokenKind {
     At,  // @
 
     // Builtins
-    AtImport, // @import
+    AtImport(Spur), // @import - contains interned "import" string
 
     // Special
     Eof,
@@ -185,7 +185,7 @@ impl TokenKind {
             TokenKind::Comma => "','",
             TokenKind::Dot => "'.'",
             TokenKind::At => "'@'",
-            TokenKind::AtImport => "'@import'",
+            TokenKind::AtImport(_) => "'@import'",
             TokenKind::Eof => "end of file",
         }
     }
@@ -282,7 +282,7 @@ impl std::fmt::Display for TokenKind {
             TokenKind::Comma => write!(f, "COMMA"),
             TokenKind::Dot => write!(f, "DOT"),
             TokenKind::At => write!(f, "AT"),
-            TokenKind::AtImport => write!(f, "AT_IMPORT"),
+            TokenKind::AtImport(_) => write!(f, "AT_IMPORT"),
             TokenKind::Eof => write!(f, "EOF"),
         }
     }

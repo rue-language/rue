@@ -466,6 +466,34 @@ impl<'a> SemaContext<'a> {
             _ => false,
         }
     }
+
+    /// Check that a preview feature is enabled.
+    ///
+    /// This is used to gate experimental features behind the `--preview` flag.
+    /// Returns an error with a helpful message if the feature is not enabled.
+    pub fn require_preview(
+        &self,
+        feature: rue_error::PreviewFeature,
+        what: &str,
+        span: rue_span::Span,
+    ) -> rue_error::CompileResult<()> {
+        if self.preview_features.contains(&feature) {
+            Ok(())
+        } else {
+            Err(rue_error::CompileError::new(
+                rue_error::ErrorKind::PreviewFeatureRequired {
+                    feature,
+                    what: what.to_string(),
+                },
+                span,
+            )
+            .with_help(format!(
+                "use `--preview {}` to enable this feature ({})",
+                feature.name(),
+                feature.adr()
+            )))
+        }
+    }
 }
 
 #[cfg(test)]

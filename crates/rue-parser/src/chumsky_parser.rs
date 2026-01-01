@@ -1062,11 +1062,13 @@ where
     // Try unambiguous type syntax first, then fall back to expression
     let intrinsic_arg = unambiguous_type.or(expr.clone().map(IntrinsicArg::Expr));
 
-    // Intrinsic call: @name(args)
+    // Intrinsic call: @name(args) or @import(args)
+    // The lexer tokenizes @import specially, so we need to handle both cases
     let intrinsic_call = just(TokenKind::At)
         .ignore_then(ident_parser())
         .then(
             intrinsic_arg
+                .clone()
                 .separated_by(just(TokenKind::Comma))
                 .allow_trailing()
                 .collect::<Vec<_>>()
@@ -1079,6 +1081,31 @@ where
                 span: to_rue_span(e.span()),
             })
         });
+
+    // @import(args) - lexer tokenizes @import as a single token with interned "import" Spur
+    let import_call = select! {
+        TokenKind::AtImport(import_spur) = e => (import_spur, to_rue_span(e.span())),
+    }
+    .then(
+        intrinsic_arg
+            .separated_by(just(TokenKind::Comma))
+            .allow_trailing()
+            .collect::<Vec<_>>()
+            .delimited_by(just(TokenKind::LParen), just(TokenKind::RParen)),
+    )
+    .map_with(|((import_spur, import_span), args), e| {
+        Expr::IntrinsicCall(IntrinsicCallExpr {
+            name: Ident {
+                name: import_spur,
+                span: import_span,
+            },
+            args,
+            span: to_rue_span(e.span()),
+        })
+    });
+
+    // Combined intrinsic parser: try @import first, then general @name pattern
+    let any_intrinsic_call = import_call.or(intrinsic_call);
 
     // Array literal: [expr, expr, ...]
     let array_lit = args_parser(expr.clone())
@@ -1099,7 +1126,7 @@ where
         literal_parser(),
         control_flow_parser(expr.clone()),
         self_expr,
-        intrinsic_call,
+        any_intrinsic_call,
         array_lit,
         call_and_access_parser(expr.clone()),
         paren_expr,

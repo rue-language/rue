@@ -4,32 +4,30 @@ name = "Import Expressions"
 description = "The @import builtin for importing modules (Phase 1 of module system). Spec chapter pending ADR-0026 finalization."
 
 # =============================================================================
-# @import Parsing (verified at parse stage, before semantic analysis)
+# @import Syntax Verification
 # =============================================================================
 
-# Note: These tests verify that @import parses correctly as an intrinsic call.
-# The actual module resolution and semantic behavior is covered by rue-u0li.
-# Until semantic analysis for @import is implemented, these tests use
-# compile_fail with "unknown intrinsic" since the parser correctly accepts
-# the syntax but sema doesn't know what to do with it yet.
+# These tests verify that @import is correctly gated behind the modules preview
+# feature and accepts valid syntax. Actual module resolution is not yet implemented,
+# so these tests only verify the placeholder behavior (returns Unit).
 
 [[case]]
 name = "import_basic_syntax"
 preview = "modules"
-description = "@import with string argument parses as intrinsic call"
+preview_should_pass = true
+description = "@import with string argument is accepted (returns Unit placeholder)"
 source = """
 fn main() -> i32 {
     let m = @import("foo.rue");
     0
 }
 """
-# Parser accepts this; sema rejects until module resolution is implemented
-compile_fail = true
-error_contains = "unknown intrinsic"
+exit_code = 0
 
 [[case]]
 name = "import_used_in_const"
 preview = "modules"
+preview_should_pass = true
 description = "@import can be used in a const binding (typical pattern)"
 source = """
 fn main() -> i32 {
@@ -37,13 +35,12 @@ fn main() -> i32 {
     0
 }
 """
-# Parser accepts this; sema rejects until module resolution is implemented
-compile_fail = true
-error_contains = "unknown intrinsic"
+exit_code = 0
 
 [[case]]
 name = "import_multiple_files"
 preview = "modules"
+preview_should_pass = true
 description = "Multiple @import calls in same file"
 source = """
 fn main() -> i32 {
@@ -52,13 +49,12 @@ fn main() -> i32 {
     0
 }
 """
-# Parser accepts this; sema rejects until module resolution is implemented
-compile_fail = true
-error_contains = "unknown intrinsic"
+exit_code = 0
 
 [[case]]
 name = "import_nested_path"
 preview = "modules"
+preview_should_pass = true
 description = "@import with nested path"
 source = """
 fn main() -> i32 {
@@ -66,18 +62,33 @@ fn main() -> i32 {
     0
 }
 """
-# Parser accepts this; sema rejects until module resolution is implemented
-compile_fail = true
-error_contains = "unknown intrinsic"
+exit_code = 0
 
 # =============================================================================
-# @import Parse Errors (invalid syntax should fail at parse stage)
+# Preview Feature Gate Tests
+# =============================================================================
+
+[[case]]
+name = "import_requires_preview"
+description = "@import without --preview modules should fail"
+source = """
+fn main() -> i32 {
+    let m = @import("foo.rue");
+    0
+}
+"""
+compile_fail = true
+error_contains = "requires preview feature"
+
+# =============================================================================
+# @import Argument Validation Errors
 # =============================================================================
 
 [[case]]
 name = "import_no_args_error"
 preview = "modules"
-description = "@import with no arguments is a parse/sema error"
+preview_should_pass = true
+description = "@import with no arguments is an error"
 source = """
 fn main() -> i32 {
     let m = @import();
@@ -85,11 +96,13 @@ fn main() -> i32 {
 }
 """
 compile_fail = true
+error_contains = "expects 1 argument"
 
 [[case]]
 name = "import_integer_arg_error"
 preview = "modules"
-description = "@import with integer argument should fail type checking"
+preview_should_pass = true
+description = "@import with integer argument should fail"
 source = """
 fn main() -> i32 {
     let m = @import(42);
@@ -97,10 +110,12 @@ fn main() -> i32 {
 }
 """
 compile_fail = true
+error_contains = "requires a string literal"
 
 [[case]]
 name = "import_multiple_args_error"
 preview = "modules"
+preview_should_pass = true
 description = "@import with multiple arguments should fail"
 source = """
 fn main() -> i32 {
@@ -109,3 +124,4 @@ fn main() -> i32 {
 }
 """
 compile_fail = true
+error_contains = "expects 1 argument"

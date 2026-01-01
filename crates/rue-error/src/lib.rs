@@ -137,6 +137,7 @@ impl ErrorCode {
     pub const UNKNOWN_INTRINSIC: Self = Self(700);
     pub const INTRINSIC_WRONG_ARG_COUNT: Self = Self(701);
     pub const INTRINSIC_TYPE_MISMATCH: Self = Self(702);
+    pub const IMPORT_REQUIRES_STRING_LITERAL: Self = Self(703);
 
     // ========================================================================
     // Literal/operator errors (E0800-E0899)
@@ -946,6 +947,10 @@ pub enum ErrorKind {
     #[error("intrinsic '@{name}' expects {expected}, found {found}", name = .0.name, expected = .0.expected, found = .0.found)]
     IntrinsicTypeMismatch(Box<IntrinsicTypeMismatchError>),
 
+    // Module errors
+    #[error("@import requires a string literal argument")]
+    ImportRequiresStringLiteral,
+
     // Literal errors
     #[error("literal value {value} is out of range for type '{ty}'")]
     LiteralOutOfRange { value: u64, ty: String },
@@ -1077,6 +1082,7 @@ impl ErrorKind {
             ErrorKind::UnknownIntrinsic(_) => ErrorCode::UNKNOWN_INTRINSIC,
             ErrorKind::IntrinsicWrongArgCount { .. } => ErrorCode::INTRINSIC_WRONG_ARG_COUNT,
             ErrorKind::IntrinsicTypeMismatch(_) => ErrorCode::INTRINSIC_TYPE_MISMATCH,
+            ErrorKind::ImportRequiresStringLiteral => ErrorCode::IMPORT_REQUIRES_STRING_LITERAL,
 
             // Literal/operator errors (E0800-E0899)
             ErrorKind::LiteralOutOfRange { .. } => ErrorCode::LITERAL_OUT_OF_RANGE,

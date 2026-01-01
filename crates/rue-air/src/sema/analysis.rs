@@ -4635,6 +4635,54 @@ fn analyze_intrinsic_ctx(
             span,
         });
         Ok(AnalysisResult::new(air_ref, Type::Unit))
+    } else if name == known.import {
+        // @import requires the modules preview feature
+        ctx.require_preview(rue_error::PreviewFeature::Modules, "@import builtin", span)?;
+
+        // @import takes exactly one string literal argument
+        if args.len() != 1 {
+            return Err(CompileError::new(
+                ErrorKind::IntrinsicWrongArgCount {
+                    name: "import".to_string(),
+                    expected: 1,
+                    found: args.len(),
+                },
+                span,
+            ));
+        }
+
+        // Get the argument instruction - it must be a string literal
+        let arg_inst = ctx.rir.get(args[0].value);
+        let import_path = match &arg_inst.data {
+            rue_rir::InstData::StringConst(path_spur) => {
+                ctx.interner.resolve(path_spur).to_string()
+            }
+            _ => {
+                return Err(CompileError::new(
+                    ErrorKind::ImportRequiresStringLiteral,
+                    arg_inst.span,
+                ));
+            }
+        };
+
+        // TODO: Actually resolve and load the imported module.
+        // For now, return a placeholder that allows us to gate the feature.
+        // The actual module loading will be implemented in a follow-up task.
+        //
+        // When implemented, this should:
+        // 1. Resolve import_path relative to the current file
+        // 2. Load and parse the target file
+        // 3. Create a synthetic struct type containing pub declarations
+        // 4. Return that struct type
+        let _ = import_path; // Silence unused warning for now
+
+        // Return Unit for now - this will change when module loading is implemented
+        let air_ref = air.add_inst(AirInst {
+            data: AirInstData::UnitConst,
+            ty: Type::Unit,
+            span,
+        });
+        Ok(AnalysisResult::new(air_ref, Type::Unit))
     } else {
         // Unknown intrinsic - resolve name for error message
         let intrinsic_name = ctx.interner.resolve(&name);
@@ -6207,6 +6255,8 @@ impl<'a> Sema<'a> {
             self.analyze_panic_intrinsic(air, &args, span, ctx)
         } else if name == known.assert {
             self.analyze_assert_intrinsic(air, &args, span, ctx)
+        } else if name == known.import {
+            self.analyze_import_intrinsic(air, &args, span)
         } else {
             // Unknown intrinsic - resolve name for error message
             let intrinsic_name_str = self.interner.resolve(&name);
@@ -6628,6 +6678,75 @@ impl<'a> Sema<'a> {
             span,
         });
         Ok(AnalysisResult::new(air_ref, return_type))
+    }
+
+    /// Analyze @import intrinsic.
+    ///
+    /// This requires the `modules` preview feature and takes a single string literal
+    /// argument specifying the module path to import.
+    fn analyze_import_intrinsic(
+        &mut self,
+        air: &mut Air,
+        args: &[RirCallArg],
+        span: Span,
+    ) -> CompileResult<AnalysisResult> {
+        // @import requires the modules preview feature
+        if !self
+            .preview_features
+            .contains(&rue_error::PreviewFeature::Modules)
+        {
+            return Err(CompileError::new(
+                ErrorKind::PreviewFeatureRequired {
+                    feature: rue_error::PreviewFeature::Modules,
+                    what: "@import builtin".to_string(),
+                },
+                span,
+            )
+            .with_help(format!(
+                "use `--preview {}` to enable this feature ({})",
+                rue_error::PreviewFeature::Modules.name(),
+                rue_error::PreviewFeature::Modules.adr()
+            )));
+        }
+
+        // @import takes exactly one argument
+        if args.len() != 1 {
+            return Err(CompileError::new(
+                ErrorKind::IntrinsicWrongArgCount {
+                    name: "import".to_string(),
+                    expected: 1,
+                    found: args.len(),
+                },
+                span,
+            ));
+        }
+
+        // Get the argument instruction - it must be a string literal
+        let arg_inst = self.rir.get(args[0].value);
+        let import_path = match &arg_inst.data {
+            rue_rir::InstData::StringConst(path_spur) => {
+                self.interner.resolve(path_spur).to_string()
+            }
+            _ => {
+                return Err(CompileError::new(
+                    ErrorKind::ImportRequiresStringLiteral,
+                    arg_inst.span,
+                ));
+            }
+        };
+
+        // TODO: Actually resolve and load the imported module.
+        // For now, return a placeholder that allows us to gate the feature.
+        // The actual module loading will be implemented in a follow-up task.
+        let _ = import_path; // Silence unused warning for now
+
+        // Return Unit for now - this will change when module loading is implemented
+        let air_ref = air.add_inst(AirInst {
+            data: AirInstData::UnitConst,
+            ty: Type::Unit,
+            span,
+        });
+        Ok(AnalysisResult::new(air_ref, Type::Unit))
     }
 
     // Note: The old analyze_inst body from here onwards is now handled by the
