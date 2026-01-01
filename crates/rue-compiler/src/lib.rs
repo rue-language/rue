@@ -33,7 +33,7 @@ use tracing::{info, info_span};
 
 pub use diagnostic::{
     ColorChoice, DiagnosticFormatter, JsonDiagnostic, JsonDiagnosticFormatter, JsonSpan,
-    JsonSuggestion, SourceInfo,
+    JsonSuggestion, MultiFileFormatter, MultiFileJsonFormatter, SourceInfo,
 };
 
 use std::io::Write;

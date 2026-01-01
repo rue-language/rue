@@ -12,8 +12,8 @@ use tracing_subscriber::{EnvFilter, fmt};
 mod timing;
 
 use rue_compiler::{
-    CompileOptions, DiagnosticFormatter, FileId, Lexer, LinkerMode, OptLevel, ParsedProgram,
-    PreviewFeature, PreviewFeatures, SourceFile, SourceInfo,
+    CompileOptions, DiagnosticFormatter, FileId, Lexer, LinkerMode, MultiFileFormatter, OptLevel,
+    ParsedProgram, PreviewFeature, PreviewFeatures, SourceFile, SourceInfo,
     compile_frontend_from_ast_with_options, compile_multi_file_with_options, generate_emitted_asm,
     generate_liveness_info, generate_lowering_info, generate_mir, generate_regalloc_info,
     generate_stack_frame_info, merge_symbols, parse_all_files,
@@ -748,13 +748,21 @@ fn main() {
         })
         .collect();
 
-    // For diagnostic formatting, we use the first file as primary
-    // (multi-file diagnostics include file paths in error messages)
-    let (primary_path, primary_source) = &sources[0];
+    // Create multi-file formatter for diagnostics that may span multiple files
+    let source_infos: Vec<_> = sources
+        .iter()
+        .enumerate()
+        .map(|(i, (path, content))| {
+            (
+                FileId::new((i + 1) as u32),
+                SourceInfo::new(content.as_str(), path.as_str()),
+            )
+        })
+        .collect();
+    let formatter = MultiFileFormatter::new(source_infos);
 
-    // Create source info for diagnostic formatting
-    let source_info = SourceInfo::new(primary_source, primary_path);
-    let formatter = DiagnosticFormatter::new(&source_info);
+    // Also keep a single-file formatter for the primary file (for source metrics)
+    let (primary_path, primary_source) = &sources[0];
 
     // Compute source metrics if benchmark JSON is requested
     let source_metrics = if options.benchmark_json {
@@ -873,7 +881,7 @@ fn main() {
 fn handle_emit_multi_file(
     sources: &[SourceFile<'_>],
     options: &Options,
-    formatter: &DiagnosticFormatter,
+    formatter: &MultiFileFormatter,
 ) -> Result<(), ()> {
     // Determine which stages we need
     let needs_tokens = options.emit_stages.contains(&EmitStage::Tokens);
