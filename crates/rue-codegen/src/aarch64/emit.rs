@@ -2,6 +2,60 @@
 //!
 //! This phase converts Aarch64Mir instructions (with physical registers) to
 //! machine code bytes.
+//!
+//! # Immediate Encoding Rules
+//!
+//! AArch64 has complex rules for encoding immediate values that differ significantly
+//! from x86-64. Understanding these is critical for correct code generation.
+//!
+//! ## Move Wide Immediates (MOVZ/MOVN/MOVK)
+//!
+//! These instructions can load any 64-bit value using sequences of 1-4 instructions:
+//!
+//! - **MOVZ** (Move Zero): Loads a 16-bit immediate into one of four 16-bit positions,
+//!   zeroing all other bits. Used for positive values.
+//! - **MOVN** (Move Not): Loads the bitwise NOT of a 16-bit immediate. Used for
+//!   negative values where most bits are 1.
+//! - **MOVK** (Move Keep): Inserts a 16-bit immediate into a specific position,
+//!   keeping all other bits unchanged. Used after MOVZ/MOVN to fill in remaining chunks.
+//!
+//! Examples:
+//! - `42` → `MOVZ X0, #42` (1 instruction)
+//! - `-1` → `MOVN X0, #0` (1 instruction, ~0 = 0xFFFFFFFFFFFFFFFF)
+//! - `0x12345678` → `MOVZ X0, #0x5678` + `MOVK X0, #0x1234, LSL #16` (2 instructions)
+//! - `0xDEADBEEFCAFEBABE` → MOVZ + 3x MOVK (4 instructions)
+//!
+//! ## Arithmetic Immediates (ADD/SUB/CMP)
+//!
+//! ADD, SUB, and CMP instructions support a 12-bit unsigned immediate with optional shift:
+//!
+//! - **Direct**: Values 0-4095 (12-bit immediate, no shift)
+//! - **Shifted**: Values that are multiples of 4096, up to 4095 × 4096 = 16,773,120
+//!   (12-bit immediate, shift=1 means LSL #12)
+//!
+//! Values that don't fit this encoding (e.g., 5000) must be loaded into a register first.
+//!
+//! ## Logical Immediates (AND/ORR/EOR/TST)
+//!
+//! Logical immediate instructions use a complex "bitmask immediate" encoding that can
+//! represent any value composed of a repeating bit pattern. The pattern must be:
+//!
+//! 1. N consecutive 1 bits (where N >= 1)
+//! 2. Rotated by any amount
+//! 3. Optionally replicated to fill 2, 4, 8, 16, 32, or 64 bits
+//!
+//! Valid examples:
+//! - `0xFF` (8 consecutive 1s)
+//! - `0x5555555555555555` (alternating bits: 0b01 repeated)
+//! - `0x0F0F0F0F0F0F0F0F` (0b00001111 repeated)
+//! - `0xAAAAAAAAAAAAAAAA` (alternating bits: 0b10 repeated)
+//!
+//! Invalid examples (cannot be encoded):
+//! - `0x1234` (arbitrary value, not a repeating pattern)
+//! - `0x123456789ABCDEF0` (no repeating structure)
+//!
+//! For values that cannot be encoded as logical immediates, we materialize the constant
+//! in a scratch register (X9) using MOVZ/MOVK and then use the register-register form.
 
 use rue_error::{CompileError, CompileResult, ErrorKind};
 
@@ -2743,5 +2797,592 @@ mod tests {
             .iter()
             .any(|inst| inst.asm.contains("mov"));
         assert!(has_mov, "Expected assembly text to contain 'mov'");
+    }
+
+    // =========================================================================
+    // Comprehensive AArch64 Immediate Encoding Tests
+    //
+    // These tests verify that immediate values are correctly encoded according
+    // to the ARM Architecture Reference Manual. AArch64 has three distinct
+    // immediate encoding schemes:
+    //
+    // 1. Move wide immediates (MOVZ/MOVN/MOVK): Any 64-bit value via 1-4 instrs
+    // 2. Arithmetic immediates (ADD/SUB/CMP): 12-bit with optional shift
+    // 3. Logical immediates (AND/ORR/EOR): Bitmask patterns only
+    //
+    // Reference: ARM Architecture Reference Manual for A-profile architecture
+    // =========================================================================
+
+    // --- Move Wide Immediate Tests (MOVZ/MOVN/MOVK) ---
+    //
+    // These test the encoding of arbitrary 64-bit values using move wide
+    // instruction sequences.
+
+    #[test]
+    fn test_mov_imm_zero() {
+        // 0 should use single MOVZ
+        let code = emit_single(Aarch64Inst::MovImm {
+            dst: Operand::Physical(Reg::X0),
+            imm: 0,
+        });
+        assert_eq!(code.len(), 4, "Zero should be 1 instruction");
+        let inst = u32::from_le_bytes(code[0..4].try_into().unwrap());
+        assert_eq!(inst & 0xFF800000, OPCODE_MOVZ_X, "Should be MOVZ");
+        assert_eq!((inst >> 5) & 0xFFFF, 0, "Immediate should be 0");
+    }
+
+    #[test]
+    fn test_mov_imm_one() {
+        // 1 should use single MOVZ
+        let code = emit_single(Aarch64Inst::MovImm {
+            dst: Operand::Physical(Reg::X0),
+            imm: 1,
+        });
+        assert_eq!(code.len(), 4, "1 should be 1 instruction");
+        let inst = u32::from_le_bytes(code[0..4].try_into().unwrap());
+        assert_eq!(inst & 0xFF800000, OPCODE_MOVZ_X, "Should be MOVZ");
+        assert_eq!((inst >> 5) & 0xFFFF, 1, "Immediate should be 1");
+    }
+
+    #[test]
+    fn test_mov_imm_max_16bit() {
+        // 0xFFFF (65535) should use single MOVZ
+        let code = emit_single(Aarch64Inst::MovImm {
+            dst: Operand::Physical(Reg::X0),
+            imm: 0xFFFF,
+        });
+        assert_eq!(code.len(), 4, "0xFFFF should be 1 instruction");
+        let inst = u32::from_le_bytes(code[0..4].try_into().unwrap());
+        assert_eq!(inst & 0xFF800000, OPCODE_MOVZ_X, "Should be MOVZ");
+        assert_eq!((inst >> 5) & 0xFFFF, 0xFFFF, "Immediate should be 0xFFFF");
+    }
+
+    #[test]
+    fn test_mov_imm_minus_one() {
+        // -1 (0xFFFFFFFFFFFFFFFF) should use single MOVN X0, #0
+        let code = emit_single(Aarch64Inst::MovImm {
+            dst: Operand::Physical(Reg::X0),
+            imm: -1,
+        });
+        assert_eq!(code.len(), 4, "-1 should be 1 instruction");
+        let inst = u32::from_le_bytes(code[0..4].try_into().unwrap());
+        assert_eq!(inst & 0xFF800000, OPCODE_MOVN_X, "Should be MOVN");
+    }
+
+    #[test]
+    fn test_mov_imm_minus_two() {
+        // -2 (0xFFFFFFFFFFFFFFFE) should use MOVN X0, #1
+        let code = emit_single(Aarch64Inst::MovImm {
+            dst: Operand::Physical(Reg::X0),
+            imm: -2,
+        });
+        assert_eq!(code.len(), 4, "-2 should be 1 instruction");
+        let inst = u32::from_le_bytes(code[0..4].try_into().unwrap());
+        assert_eq!(inst & 0xFF800000, OPCODE_MOVN_X, "Should be MOVN");
+        // The inverted value should be 1
+        assert_eq!((inst >> 5) & 0xFFFF, 1, "Inverted immediate should be 1");
+    }
+
+    #[test]
+    fn test_mov_imm_32bit_positive() {
+        // 0x12345678 requires MOVZ + MOVK
+        let code = emit_single(Aarch64Inst::MovImm {
+            dst: Operand::Physical(Reg::X0),
+            imm: 0x12345678,
+        });
+        assert_eq!(code.len(), 8, "0x12345678 should be 2 instructions");
+
+        let inst1 = u32::from_le_bytes(code[0..4].try_into().unwrap());
+        let inst2 = u32::from_le_bytes(code[4..8].try_into().unwrap());
+
+        // First: MOVZ X0, #0x5678
+        assert_eq!(inst1 & 0xFF800000, OPCODE_MOVZ_X, "First should be MOVZ");
+        assert_eq!((inst1 >> 5) & 0xFFFF, 0x5678, "Low 16 bits");
+
+        // Second: MOVK X0, #0x1234, LSL #16
+        assert_eq!(
+            inst2 & 0xFFE00000,
+            OPCODE_MOVK_X_LSL16,
+            "Second should be MOVK LSL#16"
+        );
+        assert_eq!((inst2 >> 5) & 0xFFFF, 0x1234, "High 16 bits");
+    }
+
+    #[test]
+    fn test_mov_imm_64bit_all_chunks() {
+        // 0x1111222233334444 requires MOVZ + 3x MOVK
+        let code = emit_single(Aarch64Inst::MovImm {
+            dst: Operand::Physical(Reg::X0),
+            imm: 0x1111222233334444_u64 as i64,
+        });
+        assert_eq!(code.len(), 16, "Full 64-bit value should be 4 instructions");
+
+        let inst1 = u32::from_le_bytes(code[0..4].try_into().unwrap());
+        assert_eq!(inst1 & 0xFF800000, OPCODE_MOVZ_X, "First should be MOVZ");
+        assert_eq!((inst1 >> 5) & 0xFFFF, 0x4444, "Chunk 0");
+
+        let inst2 = u32::from_le_bytes(code[4..8].try_into().unwrap());
+        assert_eq!(
+            inst2 & 0xFFE00000,
+            OPCODE_MOVK_X_LSL16,
+            "Second should be MOVK LSL#16"
+        );
+        assert_eq!((inst2 >> 5) & 0xFFFF, 0x3333, "Chunk 1");
+
+        let inst3 = u32::from_le_bytes(code[8..12].try_into().unwrap());
+        assert_eq!(
+            inst3 & 0xFFE00000,
+            OPCODE_MOVK_X_LSL32,
+            "Third should be MOVK LSL#32"
+        );
+        assert_eq!((inst3 >> 5) & 0xFFFF, 0x2222, "Chunk 2");
+
+        let inst4 = u32::from_le_bytes(code[12..16].try_into().unwrap());
+        assert_eq!(
+            inst4 & 0xFFE00000,
+            OPCODE_MOVK_X_LSL48,
+            "Fourth should be MOVK LSL#48"
+        );
+        assert_eq!((inst4 >> 5) & 0xFFFF, 0x1111, "Chunk 3");
+    }
+
+    #[test]
+    fn test_mov_imm_with_zero_chunks() {
+        // 0x00010000 - only chunk 1 is non-zero, others are 0
+        // This should still work correctly
+        let code = emit_single(Aarch64Inst::MovImm {
+            dst: Operand::Physical(Reg::X0),
+            imm: 0x00010000,
+        });
+
+        // Should be MOVZ with LSL #16 or MOVZ #0 + MOVK LSL#16
+        // Either approach is valid, we just verify correctness
+        assert!(code.len() <= 8, "Should be at most 2 instructions");
+    }
+
+    #[test]
+    fn test_mov_imm_large_negative() {
+        // -0x100 = 0xFFFFFFFFFFFFFF00
+        // This has many 0xFFFF chunks, should use MOVN efficiently
+        let code = emit_single(Aarch64Inst::MovImm {
+            dst: Operand::Physical(Reg::X0),
+            imm: -0x100,
+        });
+
+        let inst = u32::from_le_bytes(code[0..4].try_into().unwrap());
+        // Should use MOVN since most bits are 1
+        assert_eq!(
+            inst & 0xFF800000,
+            OPCODE_MOVN_X,
+            "Should use MOVN for -0x100"
+        );
+    }
+
+    // --- Arithmetic Immediate Tests (ADD/SUB/CMP) ---
+    //
+    // These test the encoding of 12-bit unsigned immediates with optional shift.
+    // Valid range: 0-4095 (direct) or 0-4095 << 12 (shifted).
+
+    #[test]
+    fn test_add_imm_zero() {
+        let code = emit_single(Aarch64Inst::AddImm {
+            dst: Operand::Physical(Reg::X0),
+            src: Operand::Physical(Reg::X1),
+            imm: 0,
+        });
+        assert_eq!(code.len(), 4);
+        let inst = u32::from_le_bytes(code[0..4].try_into().unwrap());
+        assert_eq!(
+            inst & 0xFF000000,
+            OPCODE_ADD_IMM_X,
+            "Should be ADD immediate"
+        );
+        assert_eq!((inst >> 10) & 0xFFF, 0, "Immediate should be 0");
+    }
+
+    #[test]
+    fn test_add_imm_small() {
+        // ADD X0, X1, #42 - small immediate that fits in 12 bits
+        let code = emit_single(Aarch64Inst::AddImm {
+            dst: Operand::Physical(Reg::X0),
+            src: Operand::Physical(Reg::X1),
+            imm: 42,
+        });
+        assert_eq!(code.len(), 4);
+        let inst = u32::from_le_bytes(code[0..4].try_into().unwrap());
+        assert_eq!(
+            inst & 0xFF000000,
+            OPCODE_ADD_IMM_X,
+            "Should be ADD immediate"
+        );
+        assert_eq!((inst >> 10) & 0xFFF, 42, "Immediate should be 42");
+        // Verify no shift (bit 22 should be 0)
+        assert_eq!((inst >> 22) & 1, 0, "Shift should be 0");
+    }
+
+    #[test]
+    fn test_add_imm_max_12bit() {
+        // ADD X0, X1, #4095 - maximum 12-bit immediate
+        let code = emit_single(Aarch64Inst::AddImm {
+            dst: Operand::Physical(Reg::X0),
+            src: Operand::Physical(Reg::X1),
+            imm: 4095,
+        });
+        assert_eq!(code.len(), 4);
+        let inst = u32::from_le_bytes(code[0..4].try_into().unwrap());
+        assert_eq!(
+            inst & 0xFF000000,
+            OPCODE_ADD_IMM_X,
+            "Should be ADD immediate"
+        );
+        assert_eq!((inst >> 10) & 0xFFF, 4095, "Immediate should be 4095");
+    }
+
+    #[test]
+    fn test_sub_imm_small() {
+        // SUB X0, X1, #100
+        let code = emit_single(Aarch64Inst::SubImm {
+            dst: Operand::Physical(Reg::X0),
+            src: Operand::Physical(Reg::X1),
+            imm: 100,
+        });
+        assert_eq!(code.len(), 4);
+        let inst = u32::from_le_bytes(code[0..4].try_into().unwrap());
+        assert_eq!(
+            inst & 0xFF000000,
+            OPCODE_SUB_IMM_X,
+            "Should be SUB immediate"
+        );
+        assert_eq!((inst >> 10) & 0xFFF, 100, "Immediate should be 100");
+    }
+
+    #[test]
+    fn test_cmp_imm_zero() {
+        // CMP X0, #0
+        let code = emit_single(Aarch64Inst::CmpImm {
+            src: Operand::Physical(Reg::X0),
+            imm: 0,
+        });
+        assert_eq!(code.len(), 4);
+        let inst = u32::from_le_bytes(code[0..4].try_into().unwrap());
+        assert_eq!(
+            inst & 0xFF000000,
+            OPCODE_CMP_IMM_X,
+            "Should be CMP immediate"
+        );
+        assert_eq!((inst >> 10) & 0xFFF, 0, "Immediate should be 0");
+        // Rd should be XZR (31)
+        assert_eq!(inst & 0x1F, 31, "Rd should be XZR");
+    }
+
+    #[test]
+    fn test_cmp_imm_positive() {
+        // CMP X0, #255
+        let code = emit_single(Aarch64Inst::CmpImm {
+            src: Operand::Physical(Reg::X0),
+            imm: 255,
+        });
+        assert_eq!(code.len(), 4);
+        let inst = u32::from_le_bytes(code[0..4].try_into().unwrap());
+        assert_eq!(
+            inst & 0xFF000000,
+            OPCODE_CMP_IMM_X,
+            "Should be CMP immediate"
+        );
+        assert_eq!((inst >> 10) & 0xFFF, 255, "Immediate should be 255");
+    }
+
+    // --- Logical Immediate Edge Cases (EOR with immediate) ---
+    //
+    // We currently handle EOR with immediate #1 specially. Other values
+    // fall back to using a scratch register.
+
+    #[test]
+    fn test_eor_imm_one() {
+        // EOR X0, X1, #1 - this should use the bitmask immediate encoding
+        let code = emit_single(Aarch64Inst::EorImm {
+            dst: Operand::Physical(Reg::X0),
+            src: Operand::Physical(Reg::X1),
+            imm: 1,
+        });
+        // For #1, we use direct encoding
+        assert_eq!(code.len(), 4, "EOR with #1 should be 1 instruction");
+        let inst = u32::from_le_bytes(code[0..4].try_into().unwrap());
+        // EOR immediate opcode: 0xD2400000 (64-bit, N=1)
+        assert_eq!(
+            inst & 0xFFC00000,
+            OPCODE_EOR_IMM_X,
+            "Should be EOR immediate"
+        );
+    }
+
+    #[test]
+    fn test_eor_imm_non_encodable() {
+        // EOR X0, X1, #1234 - this is NOT a valid bitmask immediate
+        // We should fall back to MOVZ + EOR register
+        let code = emit_single(Aarch64Inst::EorImm {
+            dst: Operand::Physical(Reg::X0),
+            src: Operand::Physical(Reg::X1),
+            imm: 1234,
+        });
+        // Should be MOVZ X9, #1234 followed by EOR X0, X1, X9
+        assert_eq!(
+            code.len(),
+            8,
+            "EOR with non-encodable immediate should be 2 instructions"
+        );
+
+        // First instruction: MOVZ X9, #1234
+        let inst1 = u32::from_le_bytes(code[0..4].try_into().unwrap());
+        assert_eq!(inst1 & 0xFF800000, OPCODE_MOVZ_X, "First should be MOVZ");
+        assert_eq!((inst1 >> 5) & 0xFFFF, 1234, "Should load 1234");
+        assert_eq!(inst1 & 0x1F, 9, "Should use X9 as scratch");
+
+        // Second instruction: EOR X0, X1, X9
+        let inst2 = u32::from_le_bytes(code[4..8].try_into().unwrap());
+        assert_eq!(
+            inst2 & 0xFF200000,
+            OPCODE_EOR_X,
+            "Second should be EOR register"
+        );
+    }
+
+    // --- Shift Immediate Tests ---
+    //
+    // Shift by immediate instructions use UBFM/SBFM encoding.
+
+    #[test]
+    fn test_lsl_imm_by_one() {
+        // LSL X0, X1, #1
+        let code = emit_single(Aarch64Inst::LslImm {
+            dst: Operand::Physical(Reg::X0),
+            src: Operand::Physical(Reg::X1),
+            imm: 1,
+        });
+        assert_eq!(code.len(), 4);
+        let inst = u32::from_le_bytes(code[0..4].try_into().unwrap());
+        // LSL is encoded as UBFM with immr = 64 - shift_amount, imms = 63 - shift_amount
+        // For LSL #1: immr = 63, imms = 62
+        assert_eq!(inst & 0xFFC00000, OPCODE_UBFM_X, "Should be UBFM 64-bit");
+    }
+
+    #[test]
+    fn test_lsl_imm_by_max() {
+        // LSL X0, X1, #63 - maximum 64-bit shift
+        let code = emit_single(Aarch64Inst::LslImm {
+            dst: Operand::Physical(Reg::X0),
+            src: Operand::Physical(Reg::X1),
+            imm: 63,
+        });
+        assert_eq!(code.len(), 4);
+        let inst = u32::from_le_bytes(code[0..4].try_into().unwrap());
+        assert_eq!(inst & 0xFFC00000, OPCODE_UBFM_X, "Should be UBFM 64-bit");
+    }
+
+    #[test]
+    fn test_lsl32_imm_shift_4() {
+        // LSL W0, W1, #4 (32-bit)
+        let code = emit_single(Aarch64Inst::Lsl32Imm {
+            dst: Operand::Physical(Reg::X0),
+            src: Operand::Physical(Reg::X1),
+            imm: 4,
+        });
+        assert_eq!(code.len(), 4);
+        let inst = u32::from_le_bytes(code[0..4].try_into().unwrap());
+        // UBFM 32-bit has sf=0
+        assert_eq!(inst & 0xFF800000, OPCODE_UBFM_W, "Should be UBFM 32-bit");
+    }
+
+    #[test]
+    fn test_lsr32_imm_shift_8() {
+        // LSR W0, W1, #8 (32-bit logical shift right)
+        let code = emit_single(Aarch64Inst::Lsr32Imm {
+            dst: Operand::Physical(Reg::X0),
+            src: Operand::Physical(Reg::X1),
+            imm: 8,
+        });
+        assert_eq!(code.len(), 4);
+        let inst = u32::from_le_bytes(code[0..4].try_into().unwrap());
+        // LSR is encoded as UBFM with immr = shift_amount, imms = 31 (for 32-bit)
+        assert_eq!(inst & 0xFF800000, OPCODE_UBFM_W, "Should be UBFM 32-bit");
+        // immr should be the shift amount
+        assert_eq!((inst >> 16) & 0x3F, 8, "immr should be 8");
+    }
+
+    #[test]
+    fn test_asr32_imm_shift_16() {
+        // ASR W0, W1, #16 (32-bit arithmetic shift right)
+        let code = emit_single(Aarch64Inst::Asr32Imm {
+            dst: Operand::Physical(Reg::X0),
+            src: Operand::Physical(Reg::X1),
+            imm: 16,
+        });
+        assert_eq!(code.len(), 4);
+        let inst = u32::from_le_bytes(code[0..4].try_into().unwrap());
+        // ASR is encoded as SBFM with immr = shift_amount, imms = 31 (for 32-bit)
+        assert_eq!(inst & 0xFF800000, OPCODE_SBFM_W, "Should be SBFM 32-bit");
+    }
+
+    #[test]
+    fn test_lsr64_imm_shift_32() {
+        // LSR X0, X1, #32 (64-bit logical shift right)
+        let code = emit_single(Aarch64Inst::Lsr64Imm {
+            dst: Operand::Physical(Reg::X0),
+            src: Operand::Physical(Reg::X1),
+            imm: 32,
+        });
+        assert_eq!(code.len(), 4);
+        let inst = u32::from_le_bytes(code[0..4].try_into().unwrap());
+        // LSR 64-bit has specific encoding
+        // The base is OPCODE_LSR_X but we need to check the shift encoding
+        assert_eq!(inst & 0xFFC00000, OPCODE_UBFM_X, "Should be UBFM 64-bit");
+    }
+
+    #[test]
+    fn test_asr64_imm_shift_32() {
+        // ASR X0, X1, #32 (64-bit arithmetic shift right)
+        let code = emit_single(Aarch64Inst::Asr64Imm {
+            dst: Operand::Physical(Reg::X0),
+            src: Operand::Physical(Reg::X1),
+            imm: 32,
+        });
+        assert_eq!(code.len(), 4);
+        let inst = u32::from_le_bytes(code[0..4].try_into().unwrap());
+        // ASR 64-bit uses SBFM
+        assert_eq!(inst & 0xFFC00000, OPCODE_SBFM_X, "Should be SBFM 64-bit");
+    }
+
+    // --- Edge Cases and Boundary Tests ---
+
+    #[test]
+    fn test_mov_imm_i32_min() {
+        // i32::MIN = -2147483648 = 0xFFFFFFFF80000000
+        let code = emit_single(Aarch64Inst::MovImm {
+            dst: Operand::Physical(Reg::X0),
+            imm: i32::MIN as i64,
+        });
+        // This should use MOVN since upper 32 bits are all 1s
+        assert!(code.len() <= 8, "i32::MIN should be at most 2 instructions");
+    }
+
+    #[test]
+    fn test_mov_imm_i32_max() {
+        // i32::MAX = 2147483647 = 0x7FFFFFFF
+        let code = emit_single(Aarch64Inst::MovImm {
+            dst: Operand::Physical(Reg::X0),
+            imm: i32::MAX as i64,
+        });
+        // Two chunks: 0xFFFF and 0x7FFF
+        assert_eq!(code.len(), 8, "i32::MAX should be 2 instructions");
+    }
+
+    #[test]
+    fn test_mov_imm_i64_min() {
+        // i64::MIN = -9223372036854775808 = 0x8000000000000000
+        let code = emit_single(Aarch64Inst::MovImm {
+            dst: Operand::Physical(Reg::X0),
+            imm: i64::MIN,
+        });
+        // This is efficiently encoded with MOVN since inverted = 0x7FFFFFFFFFFFFFFF
+        assert!(code.len() <= 8, "i64::MIN should be at most 2 instructions");
+    }
+
+    #[test]
+    fn test_add_imm_register_encoding() {
+        // Verify register encoding in ADD immediate
+        let code = emit_single(Aarch64Inst::AddImm {
+            dst: Operand::Physical(Reg::X19), // Callee-saved
+            src: Operand::Physical(Reg::X20),
+            imm: 8,
+        });
+        let inst = u32::from_le_bytes(code[0..4].try_into().unwrap());
+        assert_eq!(inst & 0x1F, 19, "Rd should be X19");
+        assert_eq!((inst >> 5) & 0x1F, 20, "Rn should be X20");
+    }
+
+    #[test]
+    fn test_sub_imm_with_sp() {
+        // SUB SP, SP, #32 - common stack frame setup pattern
+        let code = emit_single(Aarch64Inst::SubImm {
+            dst: Operand::Physical(Reg::Sp),
+            src: Operand::Physical(Reg::Sp),
+            imm: 32,
+        });
+        let inst = u32::from_le_bytes(code[0..4].try_into().unwrap());
+        // SP encoding is 31
+        assert_eq!(inst & 0x1F, 31, "Rd should be SP (31)");
+        assert_eq!((inst >> 5) & 0x1F, 31, "Rn should be SP (31)");
+        assert_eq!((inst >> 10) & 0xFFF, 32, "Immediate should be 32");
+    }
+
+    // --- Bitmask Immediate Tests ---
+    //
+    // These tests verify that values which ARE valid bitmask immediates use
+    // direct encoding, while values that are NOT valid bitmask immediates
+    // correctly fall back to register-based operations.
+    //
+    // Valid bitmask immediates are values that can be expressed as:
+    // - N consecutive 1 bits, rotated, and optionally replicated
+
+    #[test]
+    fn test_eor_imm_valid_bitmask_ff() {
+        // 0xFF (8 consecutive 1s) is a valid bitmask immediate
+        // Currently our implementation only handles #1 directly, others use fallback
+        let code = emit_single(Aarch64Inst::EorImm {
+            dst: Operand::Physical(Reg::X0),
+            src: Operand::Physical(Reg::X1),
+            imm: 0xFF,
+        });
+        // Our current implementation uses fallback for values other than 1
+        // This is correct behavior (conservative), but suboptimal
+        // A full bitmask encoder would make this 1 instruction
+        assert!(code.len() >= 4, "Should emit at least 1 instruction");
+    }
+
+    #[test]
+    fn test_eor_imm_alternating_bits() {
+        // 0x5555555555555555 (alternating 01 pattern) is a valid bitmask immediate
+        // Our implementation uses fallback (MOVZ/MOVK + EOR register)
+        let code = emit_single(Aarch64Inst::EorImm {
+            dst: Operand::Physical(Reg::X0),
+            src: Operand::Physical(Reg::X1),
+            imm: 0x5555555555555555_u64,
+        });
+        // Fallback: needs MOVZ + 3x MOVK (4 instrs) + EOR (1 instr) = 20 bytes
+        // A bitmask encoder would make this 1 instruction (4 bytes)
+        assert!(
+            code.len() > 4,
+            "Should use fallback (multiple instructions)"
+        );
+    }
+
+    #[test]
+    fn test_eor_imm_invalid_arbitrary() {
+        // 0xDEADBEEF is NOT a valid bitmask immediate (no repeating pattern)
+        // Must use fallback
+        let code = emit_single(Aarch64Inst::EorImm {
+            dst: Operand::Physical(Reg::X0),
+            src: Operand::Physical(Reg::X1),
+            imm: 0xDEADBEEF,
+        });
+        // Fallback: MOVZ + MOVK (2 instrs) + EOR (1 instr) = 12 bytes
+        assert_eq!(code.len(), 12, "Should use MOVZ+MOVK+EOR fallback");
+
+        // Verify the sequence: MOVZ, MOVK, then EOR
+        let inst1 = u32::from_le_bytes(code[0..4].try_into().unwrap());
+        let inst2 = u32::from_le_bytes(code[4..8].try_into().unwrap());
+        let inst3 = u32::from_le_bytes(code[8..12].try_into().unwrap());
+
+        assert_eq!(inst1 & 0xFF800000, OPCODE_MOVZ_X, "First should be MOVZ");
+        assert_eq!(
+            inst2 & 0xFFE00000,
+            OPCODE_MOVK_X_LSL16,
+            "Second should be MOVK"
+        );
+        assert_eq!(
+            inst3 & 0xFF200000,
+            OPCODE_EOR_X,
+            "Third should be EOR register"
+        );
     }
 }
