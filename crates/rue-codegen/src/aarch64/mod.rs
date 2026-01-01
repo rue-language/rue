@@ -17,6 +17,7 @@ pub mod liveness;
 mod mir;
 mod peephole;
 mod regalloc;
+mod schedule;
 
 pub use cfg_lower::CfgLower;
 pub use emit::Emitter;
@@ -58,6 +59,9 @@ pub fn generate(
     // Apply peephole optimizations after register allocation
     peephole::optimize(mir.instructions_vec_mut());
 
+    // Schedule instructions for better performance
+    schedule::schedule(&mut mir);
+
     // Emit machine code bytes
     let total_locals = num_locals + num_spills;
     let (code, relocations) =
@@ -94,6 +98,9 @@ pub fn generate_with_asm(
 
     // Apply peephole optimizations after register allocation
     peephole::optimize(mir.instructions_vec_mut());
+
+    // Schedule instructions for better performance
+    schedule::schedule(&mut mir);
 
     // Emit machine code bytes with assembly text
     let total_locals = num_locals + num_spills;
