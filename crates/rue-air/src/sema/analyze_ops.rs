@@ -33,6 +33,7 @@ use rue_span::Span;
 use super::Sema;
 use super::context::{AnalysisContext, AnalysisResult, LocalVar};
 use crate::inst::{Air, AirInst, AirInstData, AirPattern, AirRef};
+use crate::scope::ScopedContext;
 use crate::types::Type;
 
 impl<'a> Sema<'a> {

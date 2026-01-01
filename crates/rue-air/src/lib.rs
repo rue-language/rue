@@ -14,6 +14,7 @@ mod analysis_state;
 mod function_analyzer;
 mod inference;
 mod inst;
+mod scope;
 mod sema;
 mod sema_context;
 mod type_context;

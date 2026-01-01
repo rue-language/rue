@@ -39,6 +39,7 @@ use crate::inference::{
     UnifyResult,
 };
 use crate::inst::{Air, AirArgMode, AirCallArg, AirInst, AirInstData, AirPattern, AirRef};
+use crate::scope::ScopedContext;
 use crate::sema_context::SemaContext;
 use crate::types::{EnumId, StructId, Type};
 

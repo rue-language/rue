@@ -12,6 +12,7 @@ use rue_error::CompileWarning;
 use rue_rir::RirParamMode;
 use rue_span::Span;
 
+use crate::scope::ScopedContext;
 use crate::types::{StructId, Type};
 
 /// Information about a local variable.
@@ -196,46 +197,42 @@ pub(crate) struct AnalysisContext<'a> {
 // Import InstRef for use in resolved_types
 use rue_rir::InstRef;
 
-impl AnalysisContext<'_> {
-    /// Push a new scope onto the stack.
-    pub fn push_scope(&mut self) {
-        // Preallocate for a small number of variables. Most scopes (loop bodies,
-        // if/match arms) have 0-2 variables; function bodies have more but are
-        // less frequent. 2 is a conservative choice until we have real metrics.
-        self.scope_stack.push(Vec::with_capacity(2));
+impl ScopedContext for AnalysisContext<'_> {
+    type VarInfo = LocalVar;
+
+    fn locals(&self) -> &HashMap<Spur, Self::VarInfo> {
+        &self.locals
     }
 
-    /// Pop the current scope, restoring any shadowed variables and removing new ones.
-    pub fn pop_scope(&mut self) {
-        if let Some(scope_entries) = self.scope_stack.pop() {
-            for (symbol, old_value) in scope_entries {
-                match old_value {
-                    Some(old_var) => {
-                        // Restore the shadowed variable
-                        self.locals.insert(symbol, old_var);
-                    }
-                    None => {
-                        // Remove the variable that was added in this scope
-                        self.locals.remove(&symbol);
-                    }
-                }
-            }
-        }
+    fn locals_mut(&mut self) -> &mut HashMap<Spur, Self::VarInfo> {
+        &mut self.locals
+    }
+
+    fn scope_stack(&self) -> &[Vec<(Spur, Option<Self::VarInfo>)>] {
+        &self.scope_stack
+    }
+
+    fn scope_stack_mut(&mut self) -> &mut Vec<Vec<(Spur, Option<Self::VarInfo>)>> {
+        &mut self.scope_stack
     }
 
     /// Insert a local variable, tracking it in the current scope for later cleanup.
-    pub fn insert_local(&mut self, symbol: Spur, var: LocalVar) {
+    ///
+    /// This override also clears any moved state for the variable, which handles
+    /// shadowing: `let x = moved_val; let x = new_val;`
+    /// The new `x` is a fresh binding and shouldn't carry the old moved state.
+    fn insert_local(&mut self, symbol: Spur, var: LocalVar) {
         let old_value = self.locals.insert(symbol, var);
         // Track in the current scope (if any) for cleanup on pop
         if let Some(current_scope) = self.scope_stack.last_mut() {
             current_scope.push((symbol, old_value));
         }
         // When a variable is (re)declared, clear any moved state for it.
-        // This handles shadowing: `let x = moved_val; let x = new_val;`
-        // The new `x` is a fresh binding and shouldn't carry the old moved state.
         self.moved_vars.remove(&symbol);
     }
+}
 
+impl AnalysisContext<'_> {
     /// Merge move states from two branches.
     ///
     /// For if-else expressions, a variable is considered moved after the expression

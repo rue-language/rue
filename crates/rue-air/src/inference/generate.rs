@@ -9,6 +9,7 @@
 use super::constraint::Constraint;
 use super::types::{InferType, TypeVarAllocator, TypeVarId};
 use crate::Type;
+use crate::scope::ScopedContext;
 use crate::types::parse_array_type_syntax;
 use lasso::{Spur, ThreadedRodeo};
 use rue_rir::{InstData, InstRef, Rir};
@@ -86,35 +87,25 @@ impl<'a> ConstraintContext<'a> {
             scope_stack: Vec::new(),
         }
     }
+}
 
-    /// Push a new scope onto the stack.
-    pub fn push_scope(&mut self) {
-        // Pre-allocate for 2 variables since most scopes introduce few bindings
-        self.scope_stack.push(Vec::with_capacity(2));
+impl ScopedContext for ConstraintContext<'_> {
+    type VarInfo = LocalVarInfo;
+
+    fn locals(&self) -> &HashMap<Spur, Self::VarInfo> {
+        &self.locals
     }
 
-    /// Pop the current scope, restoring any shadowed variables.
-    pub fn pop_scope(&mut self) {
-        if let Some(scope_entries) = self.scope_stack.pop() {
-            for (symbol, old_value) in scope_entries {
-                match old_value {
-                    Some(old_var) => {
-                        self.locals.insert(symbol, old_var);
-                    }
-                    None => {
-                        self.locals.remove(&symbol);
-                    }
-                }
-            }
-        }
+    fn locals_mut(&mut self) -> &mut HashMap<Spur, Self::VarInfo> {
+        &mut self.locals
     }
 
-    /// Insert a local variable, tracking it in the current scope.
-    pub fn insert_local(&mut self, symbol: Spur, var: LocalVarInfo) {
-        let old_value = self.locals.insert(symbol, var);
-        if let Some(current_scope) = self.scope_stack.last_mut() {
-            current_scope.push((symbol, old_value));
-        }
+    fn scope_stack(&self) -> &[Vec<(Spur, Option<Self::VarInfo>)>] {
+        &self.scope_stack
+    }
+
+    fn scope_stack_mut(&mut self) -> &mut Vec<Vec<(Spur, Option<Self::VarInfo>)>> {
+        &mut self.scope_stack
     }
 }
 
