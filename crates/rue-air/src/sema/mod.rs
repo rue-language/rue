@@ -25,7 +25,10 @@ mod analyze_ops;
 mod builtins;
 mod context;
 mod declarations;
+mod known_symbols;
 mod typeck;
+
+pub use known_symbols::KnownSymbols;
 
 use std::collections::HashMap;
 
@@ -122,6 +125,7 @@ impl<'a> GatherOutput<'a> {
             methods: self.methods,
             preview_features: self.preview_features,
             builtin_string_id: self.builtin_string_id,
+            known: KnownSymbols::new(self.interner),
         }
     }
 
@@ -252,6 +256,8 @@ pub struct Sema<'a> {
     /// StructId of the synthetic String type.
     /// This is populated during `inject_builtin_types()` and used for quick lookups.
     pub(crate) builtin_string_id: Option<StructId>,
+    /// Pre-interned known symbols for fast comparison.
+    pub(crate) known: KnownSymbols,
 }
 
 impl<'a> Sema<'a> {
@@ -274,6 +280,7 @@ impl<'a> Sema<'a> {
             methods: HashMap::new(),
             preview_features,
             builtin_string_id: None,
+            known: KnownSymbols::new(interner),
         }
     }
 
@@ -457,6 +464,7 @@ impl<'a> Sema<'a> {
             preview_features: self.preview_features.clone(),
             builtin_string_id: self.builtin_string_id,
             inference_ctx,
+            known: KnownSymbols::new(self.interner),
         }
     }
 

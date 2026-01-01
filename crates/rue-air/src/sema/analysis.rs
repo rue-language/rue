@@ -4179,179 +4179,177 @@ fn analyze_intrinsic_ctx(
             mode: RirArgMode::Normal,
         })
         .collect();
-    let intrinsic_name = ctx.interner.resolve(&name);
+    let known = &ctx.known;
 
-    match intrinsic_name {
-        "dbg" => {
-            if args.len() != 1 {
-                return Err(CompileError::new(
-                    ErrorKind::IntrinsicWrongArgCount {
-                        name: "dbg".to_string(),
-                        expected: 1,
-                        found: args.len(),
-                    },
-                    span,
-                ));
-            }
-
-            let arg_result = analyze_inst_with_context(ctx, air, args[0].value, analysis_ctx)?;
-            let arg_type = arg_result.ty;
-
-            // Validate type
-            if !arg_type.is_integer()
-                && arg_type != Type::Bool
-                && !arg_type.is_struct()
-                && !arg_type.is_enum()
-                && !arg_type.is_array()
-                && !arg_type.is_error()
-                && !arg_type.is_never()
-            {
-                return Err(CompileError::new(
-                    ErrorKind::IntrinsicTypeMismatch(Box::new(IntrinsicTypeMismatchError {
-                        name: "dbg".to_string(),
-                        expected: "integer, bool, struct, enum, or array".to_string(),
-                        found: arg_type.name().to_string(),
-                    })),
-                    span,
-                ));
-            }
-
-            let air_args_start = air.add_extra(&[arg_result.air_ref.as_u32()]);
-            let air_ref = air.add_inst(AirInst {
-                data: AirInstData::Intrinsic {
-                    name: ctx.interner.get_or_intern("dbg"),
-                    args_start: air_args_start,
-                    args_len: 1,
+    // Use pre-interned symbol comparison instead of string comparison
+    if name == known.dbg {
+        if args.len() != 1 {
+            return Err(CompileError::new(
+                ErrorKind::IntrinsicWrongArgCount {
+                    name: "dbg".to_string(),
+                    expected: 1,
+                    found: args.len(),
                 },
-                ty: Type::Unit,
                 span,
-            });
-            Ok(AnalysisResult::new(air_ref, Type::Unit))
+            ));
         }
-        "cast" => {
-            if args.len() != 1 {
-                return Err(CompileError::new(
-                    ErrorKind::IntrinsicWrongArgCount {
-                        name: "cast".to_string(),
-                        expected: 1,
-                        found: args.len(),
-                    },
-                    span,
-                ));
-            }
 
-            // Get target type from HM inference
-            let target_type =
-                get_resolved_type_ctx(analysis_ctx, inst_ref, span, "@cast intrinsic")?;
+        let arg_result = analyze_inst_with_context(ctx, air, args[0].value, analysis_ctx)?;
+        let arg_type = arg_result.ty;
 
-            let arg_result = analyze_inst_with_context(ctx, air, args[0].value, analysis_ctx)?;
-            let source_type = arg_result.ty;
-
-            // Validate types
-            if !source_type.is_integer() && !source_type.is_error() && !source_type.is_never() {
-                return Err(CompileError::new(
-                    ErrorKind::IntrinsicTypeMismatch(Box::new(IntrinsicTypeMismatchError {
-                        name: "cast".to_string(),
-                        expected: "integer type".to_string(),
-                        found: source_type.name().to_string(),
-                    })),
-                    span,
-                ));
-            }
-            if !target_type.is_integer() && !target_type.is_error() && !target_type.is_never() {
-                return Err(CompileError::new(
-                    ErrorKind::IntrinsicTypeMismatch(Box::new(IntrinsicTypeMismatchError {
-                        name: "cast".to_string(),
-                        expected: "integer target type".to_string(),
-                        found: target_type.name().to_string(),
-                    })),
-                    span,
-                ));
-            }
-
-            // Skip cast if types are the same
-            if source_type == target_type || source_type.is_error() || source_type.is_never() {
-                return Ok(arg_result);
-            }
-
-            let air_ref = air.add_inst(AirInst {
-                data: AirInstData::IntCast {
-                    value: arg_result.air_ref,
-                    from_ty: source_type,
-                },
-                ty: target_type,
+        // Validate type
+        if !arg_type.is_integer()
+            && arg_type != Type::Bool
+            && !arg_type.is_struct()
+            && !arg_type.is_enum()
+            && !arg_type.is_array()
+            && !arg_type.is_error()
+            && !arg_type.is_never()
+        {
+            return Err(CompileError::new(
+                ErrorKind::IntrinsicTypeMismatch(Box::new(IntrinsicTypeMismatchError {
+                    name: "dbg".to_string(),
+                    expected: "integer, bool, struct, enum, or array".to_string(),
+                    found: arg_type.name().to_string(),
+                })),
                 span,
-            });
-            Ok(AnalysisResult::new(air_ref, target_type))
+            ));
         }
-        "panic" => {
-            // @panic takes an optional string message
-            if args.len() > 1 {
-                return Err(CompileError::new(
-                    ErrorKind::IntrinsicWrongArgCount {
-                        name: "panic".to_string(),
-                        expected: 1,
-                        found: args.len(),
-                    },
-                    span,
-                ));
-            }
 
-            if args.is_empty() {
-                // Panic with no message
-                let air_ref = air.add_inst(AirInst {
-                    data: AirInstData::UnitConst,
-                    ty: Type::Never,
-                    span,
-                });
-                return Ok(AnalysisResult::new(air_ref, Type::Never));
-            }
-
-            // Analyze the message argument
-            let arg_result = analyze_inst_with_context(ctx, air, args[0].value, analysis_ctx)?;
-
-            let air_args_start = air.add_extra(&[arg_result.air_ref.as_u32()]);
-            let air_ref = air.add_inst(AirInst {
-                data: AirInstData::Intrinsic {
-                    name: ctx.interner.get_or_intern("panic"),
-                    args_start: air_args_start,
-                    args_len: 1,
+        let air_args_start = air.add_extra(&[arg_result.air_ref.as_u32()]);
+        let air_ref = air.add_inst(AirInst {
+            data: AirInstData::Intrinsic {
+                name: known.dbg,
+                args_start: air_args_start,
+                args_len: 1,
+            },
+            ty: Type::Unit,
+            span,
+        });
+        Ok(AnalysisResult::new(air_ref, Type::Unit))
+    } else if name == known.cast {
+        if args.len() != 1 {
+            return Err(CompileError::new(
+                ErrorKind::IntrinsicWrongArgCount {
+                    name: "cast".to_string(),
+                    expected: 1,
+                    found: args.len(),
                 },
+                span,
+            ));
+        }
+
+        // Get target type from HM inference
+        let target_type = get_resolved_type_ctx(analysis_ctx, inst_ref, span, "@cast intrinsic")?;
+
+        let arg_result = analyze_inst_with_context(ctx, air, args[0].value, analysis_ctx)?;
+        let source_type = arg_result.ty;
+
+        // Validate types
+        if !source_type.is_integer() && !source_type.is_error() && !source_type.is_never() {
+            return Err(CompileError::new(
+                ErrorKind::IntrinsicTypeMismatch(Box::new(IntrinsicTypeMismatchError {
+                    name: "cast".to_string(),
+                    expected: "integer type".to_string(),
+                    found: source_type.name().to_string(),
+                })),
+                span,
+            ));
+        }
+        if !target_type.is_integer() && !target_type.is_error() && !target_type.is_never() {
+            return Err(CompileError::new(
+                ErrorKind::IntrinsicTypeMismatch(Box::new(IntrinsicTypeMismatchError {
+                    name: "cast".to_string(),
+                    expected: "integer target type".to_string(),
+                    found: target_type.name().to_string(),
+                })),
+                span,
+            ));
+        }
+
+        // Skip cast if types are the same
+        if source_type == target_type || source_type.is_error() || source_type.is_never() {
+            return Ok(arg_result);
+        }
+
+        let air_ref = air.add_inst(AirInst {
+            data: AirInstData::IntCast {
+                value: arg_result.air_ref,
+                from_ty: source_type,
+            },
+            ty: target_type,
+            span,
+        });
+        Ok(AnalysisResult::new(air_ref, target_type))
+    } else if name == known.panic {
+        // @panic takes an optional string message
+        if args.len() > 1 {
+            return Err(CompileError::new(
+                ErrorKind::IntrinsicWrongArgCount {
+                    name: "panic".to_string(),
+                    expected: 1,
+                    found: args.len(),
+                },
+                span,
+            ));
+        }
+
+        if args.is_empty() {
+            // Panic with no message
+            let air_ref = air.add_inst(AirInst {
+                data: AirInstData::UnitConst,
                 ty: Type::Never,
                 span,
             });
-            Ok(AnalysisResult::new(air_ref, Type::Never))
+            return Ok(AnalysisResult::new(air_ref, Type::Never));
         }
-        "assert" => {
-            if args.len() != 1 {
-                return Err(CompileError::new(
-                    ErrorKind::IntrinsicWrongArgCount {
-                        name: "assert".to_string(),
-                        expected: 1,
-                        found: args.len(),
-                    },
-                    span,
-                ));
-            }
 
-            let arg_result = analyze_inst_with_context(ctx, air, args[0].value, analysis_ctx)?;
+        // Analyze the message argument
+        let arg_result = analyze_inst_with_context(ctx, air, args[0].value, analysis_ctx)?;
 
-            let air_args_start = air.add_extra(&[arg_result.air_ref.as_u32()]);
-            let air_ref = air.add_inst(AirInst {
-                data: AirInstData::Intrinsic {
-                    name: ctx.interner.get_or_intern("assert"),
-                    args_start: air_args_start,
-                    args_len: 1,
+        let air_args_start = air.add_extra(&[arg_result.air_ref.as_u32()]);
+        let air_ref = air.add_inst(AirInst {
+            data: AirInstData::Intrinsic {
+                name: known.panic,
+                args_start: air_args_start,
+                args_len: 1,
+            },
+            ty: Type::Never,
+            span,
+        });
+        Ok(AnalysisResult::new(air_ref, Type::Never))
+    } else if name == known.assert {
+        if args.len() != 1 {
+            return Err(CompileError::new(
+                ErrorKind::IntrinsicWrongArgCount {
+                    name: "assert".to_string(),
+                    expected: 1,
+                    found: args.len(),
                 },
-                ty: Type::Unit,
                 span,
-            });
-            Ok(AnalysisResult::new(air_ref, Type::Unit))
+            ));
         }
-        _ => Err(CompileError::new(
+
+        let arg_result = analyze_inst_with_context(ctx, air, args[0].value, analysis_ctx)?;
+
+        let air_args_start = air.add_extra(&[arg_result.air_ref.as_u32()]);
+        let air_ref = air.add_inst(AirInst {
+            data: AirInstData::Intrinsic {
+                name: known.assert,
+                args_start: air_args_start,
+                args_len: 1,
+            },
+            ty: Type::Unit,
+            span,
+        });
+        Ok(AnalysisResult::new(air_ref, Type::Unit))
+    } else {
+        // Unknown intrinsic - resolve name for error message
+        let intrinsic_name = ctx.interner.resolve(&name);
+        Err(CompileError::new(
             ErrorKind::UnknownIntrinsic(intrinsic_name.to_string()),
             span,
-        )),
+        ))
     }
 }
 
@@ -4363,27 +4361,24 @@ fn analyze_type_intrinsic_ctx(
     type_arg: Spur,
     span: Span,
 ) -> CompileResult<AnalysisResult> {
-    let intrinsic_name = ctx.interner.resolve(&name);
+    let known = &ctx.known;
     let ty = resolve_type_from_ctx(ctx, type_arg, span)?;
 
-    // Calculate the value based on which intrinsic
-    let value: u64 = match intrinsic_name {
-        "size_of" => {
-            // Calculate size in bytes (slot count * 8)
-            let slot_count = ctx.abi_slot_count(ty);
-            (slot_count * 8) as u64
-        }
-        "align_of" => {
-            // Zero-sized types have 1-byte alignment, others have 8-byte
-            let slot_count = ctx.abi_slot_count(ty);
-            if slot_count == 0 { 1u64 } else { 8u64 }
-        }
-        _ => {
-            return Err(CompileError::new(
-                ErrorKind::UnknownIntrinsic(intrinsic_name.to_string()),
-                span,
-            ));
-        }
+    // Calculate the value based on which intrinsic (using symbol comparison)
+    let value: u64 = if name == known.size_of {
+        // Calculate size in bytes (slot count * 8)
+        let slot_count = ctx.abi_slot_count(ty);
+        (slot_count * 8) as u64
+    } else if name == known.align_of {
+        // Zero-sized types have 1-byte alignment, others have 8-byte
+        let slot_count = ctx.abi_slot_count(ty);
+        if slot_count == 0 { 1u64 } else { 8u64 }
+    } else {
+        let intrinsic_name = ctx.interner.resolve(&name);
+        return Err(CompileError::new(
+            ErrorKind::UnknownIntrinsic(intrinsic_name.to_string()),
+            span,
+        ));
     };
 
     let air_ref = air.add_inst(AirInst {
@@ -5840,23 +5835,32 @@ impl<'a> Sema<'a> {
                 mode: RirArgMode::Normal,
             })
             .collect();
-        let intrinsic_name_str = self.interner.resolve(&name);
+        let known = &self.known;
 
-        match intrinsic_name_str {
-            "dbg" => self.analyze_dbg_intrinsic(air, inst_ref, &args, span, ctx),
-            "intCast" => self.analyze_intcast_intrinsic(air, inst_ref, &args, span, ctx),
-            "test_preview_gate" => self.analyze_test_preview_gate_intrinsic(air, &args, span),
-            "read_line" => self.analyze_read_line_intrinsic(air, name, &args, span),
-            "parse_i32" | "parse_i64" | "parse_u32" | "parse_u64" => {
-                self.analyze_parse_intrinsic(air, name, intrinsic_name_str, &args, span, ctx)
-            }
-            "cast" => self.analyze_cast_intrinsic(air, inst_ref, &args, span, ctx),
-            "panic" => self.analyze_panic_intrinsic(air, &args, span, ctx),
-            "assert" => self.analyze_assert_intrinsic(air, &args, span, ctx),
-            _ => Err(CompileError::new(
+        // Use pre-interned symbol comparison instead of string comparison
+        if name == known.dbg {
+            self.analyze_dbg_intrinsic(air, inst_ref, &args, span, ctx)
+        } else if name == known.int_cast {
+            self.analyze_intcast_intrinsic(air, inst_ref, &args, span, ctx)
+        } else if name == known.test_preview_gate {
+            self.analyze_test_preview_gate_intrinsic(air, &args, span)
+        } else if name == known.read_line {
+            self.analyze_read_line_intrinsic(air, name, &args, span)
+        } else if let Some(intrinsic_name_str) = known.get_parse_intrinsic_name(name) {
+            self.analyze_parse_intrinsic(air, name, intrinsic_name_str, &args, span, ctx)
+        } else if name == known.cast {
+            self.analyze_cast_intrinsic(air, inst_ref, &args, span, ctx)
+        } else if name == known.panic {
+            self.analyze_panic_intrinsic(air, &args, span, ctx)
+        } else if name == known.assert {
+            self.analyze_assert_intrinsic(air, &args, span, ctx)
+        } else {
+            // Unknown intrinsic - resolve name for error message
+            let intrinsic_name_str = self.interner.resolve(&name);
+            Err(CompileError::new(
                 ErrorKind::UnknownIntrinsic(intrinsic_name_str.to_string()),
                 span,
-            )),
+            ))
         }
     }
 
@@ -5906,7 +5910,7 @@ impl<'a> Sema<'a> {
         let args_start = air.add_extra(&[arg_result.air_ref.as_u32()]);
         let air_ref = air.add_inst(AirInst {
             data: AirInstData::Intrinsic {
-                name: self.interner.get_or_intern("dbg"),
+                name: self.known.dbg,
                 args_start,
                 args_len: 1,
             },
@@ -6014,7 +6018,7 @@ impl<'a> Sema<'a> {
         let args_start = air.add_extra(&[arg_result.air_ref.as_u32()]);
         let air_ref = air.add_inst(AirInst {
             data: AirInstData::Intrinsic {
-                name: self.interner.get_or_intern("panic"),
+                name: self.known.panic,
                 args_start,
                 args_len: 1,
             },
@@ -6056,7 +6060,7 @@ impl<'a> Sema<'a> {
         let args_start = air.add_extra(&extra_data);
         let air_ref = air.add_inst(AirInst {
             data: AirInstData::Intrinsic {
-                name: self.interner.get_or_intern("assert"),
+                name: self.known.assert,
                 args_start,
                 args_len,
             },

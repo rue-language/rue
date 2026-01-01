@@ -36,6 +36,7 @@ use rue_error::PreviewFeatures;
 use rue_rir::{Rir, RirParamMode};
 
 use crate::inference::{FunctionSig, InferType, MethodSig};
+use crate::sema::KnownSymbols;
 use crate::types::{ArrayTypeDef, ArrayTypeId, EnumDef, EnumId, StructDef, StructId, Type};
 
 /// Thread-safe registry for array types.
@@ -248,6 +249,8 @@ pub struct SemaContext<'a> {
     pub builtin_string_id: Option<StructId>,
     /// Pre-computed inference context for HM type inference.
     pub inference_ctx: InferenceContext,
+    /// Pre-interned known symbols for fast comparison.
+    pub known: KnownSymbols,
 }
 
 // SAFETY: SemaContext is Send + Sync because:
