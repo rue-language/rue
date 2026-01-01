@@ -169,7 +169,7 @@ pub use rue_codegen::{
     aarch64::Aarch64Mir, generate_stack_frame_info,
 };
 pub use rue_error::{
-    CompileError, CompileErrors, CompileResult, CompileWarning, Diagnostic, ErrorKind,
+    CompileError, CompileErrors, CompileResult, CompileWarning, Diagnostic, ErrorCode, ErrorKind,
     MultiErrorResult, PreviewFeature, PreviewFeatures, WarningKind,
 };
 pub use rue_lexer::{Lexer, Token, TokenKind};

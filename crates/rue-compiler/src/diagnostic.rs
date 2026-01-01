@@ -64,10 +64,15 @@ impl<'a> DiagnosticFormatter<'a> {
     }
 
     /// Format a compilation error into a string.
+    ///
+    /// The error is formatted with its error code, e.g.:
+    /// `error[E0206]: type mismatch: expected i32, found bool`
     pub fn format_error(&self, error: &CompileError) -> String {
+        // Format with error code: error[E0XXX]: message
+        let message_with_code = format!("[{}]: {}", error.kind.code(), error.kind);
         self.format_diagnostic_impl(
             Level::Error,
-            &error.to_string(),
+            &message_with_code,
             error.span(),
             error.diagnostic(),
         )
@@ -234,6 +239,8 @@ mod tests {
         );
 
         let output = formatter.format_error(&error);
+        // Should include error code
+        assert!(output.contains("[E0206]"));
         assert!(output.contains("type mismatch"));
         assert!(output.contains("expected i32"));
         assert!(output.contains("found bool"));
@@ -249,6 +256,8 @@ mod tests {
         let error = CompileError::without_span(ErrorKind::NoMainFunction);
 
         let output = formatter.format_error(&error);
+        // Should include error code
+        assert!(output.contains("[E0200]"));
         assert!(output.contains("no main function"));
     }
 

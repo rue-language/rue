@@ -24,6 +24,161 @@ use std::fmt;
 use thiserror::Error;
 
 // ============================================================================
+// Error Codes
+// ============================================================================
+//
+// Every error kind has a unique, stable error code for searchability.
+// Codes are assigned by category and must never change once assigned.
+// See issue rue-0c9y for the design rationale.
+
+/// A unique error code for each error type.
+///
+/// Error codes are formatted as `E` followed by a 4-digit zero-padded number
+/// (e.g., `E0001`, `E0042`). They are assigned by category:
+///
+/// - **E0001-E0099**: Lexer errors (tokenization)
+/// - **E0100-E0199**: Parser errors (syntax)
+/// - **E0200-E0399**: Semantic errors (types, names, scopes)
+/// - **E0400-E0499**: Struct/enum errors
+/// - **E0500-E0599**: Control flow errors
+/// - **E0600-E0699**: Match errors
+/// - **E0700-E0799**: Intrinsic errors
+/// - **E0800-E0899**: Literal/operator errors
+/// - **E0900-E0999**: Array errors
+/// - **E1000-E1099**: Linker/target errors
+/// - **E1100-E1199**: Preview feature errors
+/// - **E9000-E9999**: Internal compiler errors
+///
+/// Once assigned, error codes must never change to maintain stability for
+/// documentation, search engines, and user bookmarks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ErrorCode(pub u16);
+
+impl ErrorCode {
+    // ========================================================================
+    // Lexer errors (E0001-E0099)
+    // ========================================================================
+    pub const UNEXPECTED_CHARACTER: Self = Self(1);
+    pub const INVALID_INTEGER: Self = Self(2);
+    pub const INVALID_STRING_ESCAPE: Self = Self(3);
+    pub const UNTERMINATED_STRING: Self = Self(4);
+
+    // ========================================================================
+    // Parser errors (E0100-E0199)
+    // ========================================================================
+    pub const UNEXPECTED_TOKEN: Self = Self(100);
+    pub const UNEXPECTED_EOF: Self = Self(101);
+    pub const PARSE_ERROR: Self = Self(102);
+
+    // ========================================================================
+    // Semantic errors (E0200-E0399)
+    // ========================================================================
+    pub const NO_MAIN_FUNCTION: Self = Self(200);
+    pub const UNDEFINED_VARIABLE: Self = Self(201);
+    pub const UNDEFINED_FUNCTION: Self = Self(202);
+    pub const ASSIGN_TO_IMMUTABLE: Self = Self(203);
+    pub const UNKNOWN_TYPE: Self = Self(204);
+    pub const USE_AFTER_MOVE: Self = Self(205);
+    pub const TYPE_MISMATCH: Self = Self(206);
+    pub const WRONG_ARGUMENT_COUNT: Self = Self(207);
+
+    // ========================================================================
+    // Struct/enum errors (E0400-E0499)
+    // ========================================================================
+    pub const MISSING_FIELDS: Self = Self(400);
+    pub const UNKNOWN_FIELD: Self = Self(401);
+    pub const DUPLICATE_FIELD: Self = Self(402);
+    pub const COPY_STRUCT_NON_COPY_FIELD: Self = Self(403);
+    pub const RESERVED_TYPE_NAME: Self = Self(404);
+    pub const DUPLICATE_TYPE_DEFINITION: Self = Self(405);
+    pub const LINEAR_VALUE_NOT_CONSUMED: Self = Self(406);
+    pub const LINEAR_STRUCT_COPY: Self = Self(407);
+    pub const HANDLE_STRUCT_MISSING_METHOD: Self = Self(408);
+    pub const HANDLE_METHOD_WRONG_SIGNATURE: Self = Self(409);
+    pub const DUPLICATE_METHOD: Self = Self(410);
+    pub const UNDEFINED_METHOD: Self = Self(411);
+    pub const UNDEFINED_ASSOC_FN: Self = Self(412);
+    pub const METHOD_CALL_ON_NON_STRUCT: Self = Self(413);
+    pub const METHOD_CALLED_AS_ASSOC_FN: Self = Self(414);
+    pub const ASSOC_FN_CALLED_AS_METHOD: Self = Self(415);
+    pub const DUPLICATE_DESTRUCTOR: Self = Self(416);
+    pub const DESTRUCTOR_UNKNOWN_TYPE: Self = Self(417);
+    pub const DUPLICATE_VARIANT: Self = Self(418);
+    pub const UNKNOWN_VARIANT: Self = Self(419);
+    pub const UNKNOWN_ENUM_TYPE: Self = Self(420);
+    pub const FIELD_WRONG_ORDER: Self = Self(421);
+    pub const FIELD_ACCESS_ON_NON_STRUCT: Self = Self(422);
+    pub const INVALID_ASSIGNMENT_TARGET: Self = Self(423);
+    pub const INOUT_NON_LVALUE: Self = Self(424);
+    pub const INOUT_EXCLUSIVE_ACCESS: Self = Self(425);
+    pub const BORROW_NON_LVALUE: Self = Self(426);
+    pub const MUTATE_BORROWED_VALUE: Self = Self(427);
+    pub const MOVE_OUT_OF_BORROW: Self = Self(428);
+    pub const BORROW_INOUT_CONFLICT: Self = Self(429);
+    pub const INOUT_KEYWORD_MISSING: Self = Self(430);
+    pub const BORROW_KEYWORD_MISSING: Self = Self(431);
+
+    // ========================================================================
+    // Control flow errors (E0500-E0599)
+    // ========================================================================
+    pub const BREAK_OUTSIDE_LOOP: Self = Self(500);
+    pub const CONTINUE_OUTSIDE_LOOP: Self = Self(501);
+
+    // ========================================================================
+    // Match errors (E0600-E0699)
+    // ========================================================================
+    pub const NON_EXHAUSTIVE_MATCH: Self = Self(600);
+    pub const EMPTY_MATCH: Self = Self(601);
+    pub const INVALID_MATCH_TYPE: Self = Self(602);
+
+    // ========================================================================
+    // Intrinsic errors (E0700-E0799)
+    // ========================================================================
+    pub const UNKNOWN_INTRINSIC: Self = Self(700);
+    pub const INTRINSIC_WRONG_ARG_COUNT: Self = Self(701);
+    pub const INTRINSIC_TYPE_MISMATCH: Self = Self(702);
+
+    // ========================================================================
+    // Literal/operator errors (E0800-E0899)
+    // ========================================================================
+    pub const LITERAL_OUT_OF_RANGE: Self = Self(800);
+    pub const CANNOT_NEGATE_UNSIGNED: Self = Self(801);
+    pub const CHAINED_COMPARISON: Self = Self(802);
+
+    // ========================================================================
+    // Array errors (E0900-E0999)
+    // ========================================================================
+    pub const INDEX_ON_NON_ARRAY: Self = Self(900);
+    pub const ARRAY_LENGTH_MISMATCH: Self = Self(901);
+    pub const INDEX_OUT_OF_BOUNDS: Self = Self(902);
+    pub const TYPE_ANNOTATION_REQUIRED: Self = Self(903);
+    pub const MOVE_OUT_OF_INDEX: Self = Self(904);
+
+    // ========================================================================
+    // Linker/target errors (E1000-E1099)
+    // ========================================================================
+    pub const LINK_ERROR: Self = Self(1000);
+    pub const UNSUPPORTED_TARGET: Self = Self(1001);
+
+    // ========================================================================
+    // Preview feature errors (E1100-E1199)
+    // ========================================================================
+    pub const PREVIEW_FEATURE_REQUIRED: Self = Self(1100);
+
+    // ========================================================================
+    // Internal compiler errors (E9000-E9999)
+    // ========================================================================
+    pub const INTERNAL_ERROR: Self = Self(9000);
+    pub const INTERNAL_CODEGEN_ERROR: Self = Self(9001);
+}
+
+impl fmt::Display for ErrorCode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "E{:04}", self.0)
+    }
+}
+
+// ============================================================================
 // Boxed Error Payloads
 // ============================================================================
 //
@@ -676,6 +831,110 @@ pub enum ErrorKind {
     // Codegen internal errors (compiler bugs)
     #[error("internal codegen error: {0}")]
     InternalCodegenError(String),
+}
+
+impl ErrorKind {
+    /// Get the error code for this error kind.
+    ///
+    /// Every error kind has a unique, stable error code that can be used
+    /// for documentation lookup and searchability.
+    pub fn code(&self) -> ErrorCode {
+        match self {
+            // Lexer errors (E0001-E0099)
+            ErrorKind::UnexpectedCharacter(_) => ErrorCode::UNEXPECTED_CHARACTER,
+            ErrorKind::InvalidInteger => ErrorCode::INVALID_INTEGER,
+            ErrorKind::InvalidStringEscape(_) => ErrorCode::INVALID_STRING_ESCAPE,
+            ErrorKind::UnterminatedString => ErrorCode::UNTERMINATED_STRING,
+
+            // Parser errors (E0100-E0199)
+            ErrorKind::UnexpectedToken { .. } => ErrorCode::UNEXPECTED_TOKEN,
+            ErrorKind::UnexpectedEof { .. } => ErrorCode::UNEXPECTED_EOF,
+            ErrorKind::ParseError(_) => ErrorCode::PARSE_ERROR,
+
+            // Semantic errors (E0200-E0399)
+            ErrorKind::NoMainFunction => ErrorCode::NO_MAIN_FUNCTION,
+            ErrorKind::UndefinedVariable(_) => ErrorCode::UNDEFINED_VARIABLE,
+            ErrorKind::UndefinedFunction(_) => ErrorCode::UNDEFINED_FUNCTION,
+            ErrorKind::AssignToImmutable(_) => ErrorCode::ASSIGN_TO_IMMUTABLE,
+            ErrorKind::UnknownType(_) => ErrorCode::UNKNOWN_TYPE,
+            ErrorKind::UseAfterMove(_) => ErrorCode::USE_AFTER_MOVE,
+            ErrorKind::TypeMismatch { .. } => ErrorCode::TYPE_MISMATCH,
+            ErrorKind::WrongArgumentCount { .. } => ErrorCode::WRONG_ARGUMENT_COUNT,
+
+            // Struct/enum errors (E0400-E0499)
+            ErrorKind::MissingFields(_) => ErrorCode::MISSING_FIELDS,
+            ErrorKind::UnknownField { .. } => ErrorCode::UNKNOWN_FIELD,
+            ErrorKind::DuplicateField { .. } => ErrorCode::DUPLICATE_FIELD,
+            ErrorKind::CopyStructNonCopyField(_) => ErrorCode::COPY_STRUCT_NON_COPY_FIELD,
+            ErrorKind::ReservedTypeName { .. } => ErrorCode::RESERVED_TYPE_NAME,
+            ErrorKind::DuplicateTypeDefinition { .. } => ErrorCode::DUPLICATE_TYPE_DEFINITION,
+            ErrorKind::LinearValueNotConsumed(_) => ErrorCode::LINEAR_VALUE_NOT_CONSUMED,
+            ErrorKind::LinearStructCopy(_) => ErrorCode::LINEAR_STRUCT_COPY,
+            ErrorKind::HandleStructMissingMethod { .. } => ErrorCode::HANDLE_STRUCT_MISSING_METHOD,
+            ErrorKind::HandleMethodWrongSignature { .. } => {
+                ErrorCode::HANDLE_METHOD_WRONG_SIGNATURE
+            }
+            ErrorKind::DuplicateMethod { .. } => ErrorCode::DUPLICATE_METHOD,
+            ErrorKind::UndefinedMethod { .. } => ErrorCode::UNDEFINED_METHOD,
+            ErrorKind::UndefinedAssocFn { .. } => ErrorCode::UNDEFINED_ASSOC_FN,
+            ErrorKind::MethodCallOnNonStruct { .. } => ErrorCode::METHOD_CALL_ON_NON_STRUCT,
+            ErrorKind::MethodCalledAsAssocFn { .. } => ErrorCode::METHOD_CALLED_AS_ASSOC_FN,
+            ErrorKind::AssocFnCalledAsMethod { .. } => ErrorCode::ASSOC_FN_CALLED_AS_METHOD,
+            ErrorKind::DuplicateDestructor { .. } => ErrorCode::DUPLICATE_DESTRUCTOR,
+            ErrorKind::DestructorUnknownType { .. } => ErrorCode::DESTRUCTOR_UNKNOWN_TYPE,
+            ErrorKind::DuplicateVariant { .. } => ErrorCode::DUPLICATE_VARIANT,
+            ErrorKind::UnknownVariant { .. } => ErrorCode::UNKNOWN_VARIANT,
+            ErrorKind::UnknownEnumType(_) => ErrorCode::UNKNOWN_ENUM_TYPE,
+            ErrorKind::FieldWrongOrder(_) => ErrorCode::FIELD_WRONG_ORDER,
+            ErrorKind::FieldAccessOnNonStruct { .. } => ErrorCode::FIELD_ACCESS_ON_NON_STRUCT,
+            ErrorKind::InvalidAssignmentTarget => ErrorCode::INVALID_ASSIGNMENT_TARGET,
+            ErrorKind::InoutNonLvalue => ErrorCode::INOUT_NON_LVALUE,
+            ErrorKind::InoutExclusiveAccess { .. } => ErrorCode::INOUT_EXCLUSIVE_ACCESS,
+            ErrorKind::BorrowNonLvalue => ErrorCode::BORROW_NON_LVALUE,
+            ErrorKind::MutateBorrowedValue { .. } => ErrorCode::MUTATE_BORROWED_VALUE,
+            ErrorKind::MoveOutOfBorrow { .. } => ErrorCode::MOVE_OUT_OF_BORROW,
+            ErrorKind::BorrowInoutConflict { .. } => ErrorCode::BORROW_INOUT_CONFLICT,
+            ErrorKind::InoutKeywordMissing => ErrorCode::INOUT_KEYWORD_MISSING,
+            ErrorKind::BorrowKeywordMissing => ErrorCode::BORROW_KEYWORD_MISSING,
+
+            // Control flow errors (E0500-E0599)
+            ErrorKind::BreakOutsideLoop => ErrorCode::BREAK_OUTSIDE_LOOP,
+            ErrorKind::ContinueOutsideLoop => ErrorCode::CONTINUE_OUTSIDE_LOOP,
+
+            // Match errors (E0600-E0699)
+            ErrorKind::NonExhaustiveMatch => ErrorCode::NON_EXHAUSTIVE_MATCH,
+            ErrorKind::EmptyMatch => ErrorCode::EMPTY_MATCH,
+            ErrorKind::InvalidMatchType(_) => ErrorCode::INVALID_MATCH_TYPE,
+
+            // Intrinsic errors (E0700-E0799)
+            ErrorKind::UnknownIntrinsic(_) => ErrorCode::UNKNOWN_INTRINSIC,
+            ErrorKind::IntrinsicWrongArgCount { .. } => ErrorCode::INTRINSIC_WRONG_ARG_COUNT,
+            ErrorKind::IntrinsicTypeMismatch(_) => ErrorCode::INTRINSIC_TYPE_MISMATCH,
+
+            // Literal/operator errors (E0800-E0899)
+            ErrorKind::LiteralOutOfRange { .. } => ErrorCode::LITERAL_OUT_OF_RANGE,
+            ErrorKind::CannotNegateUnsigned(_) => ErrorCode::CANNOT_NEGATE_UNSIGNED,
+            ErrorKind::ChainedComparison => ErrorCode::CHAINED_COMPARISON,
+
+            // Array errors (E0900-E0999)
+            ErrorKind::IndexOnNonArray { .. } => ErrorCode::INDEX_ON_NON_ARRAY,
+            ErrorKind::ArrayLengthMismatch { .. } => ErrorCode::ARRAY_LENGTH_MISMATCH,
+            ErrorKind::IndexOutOfBounds { .. } => ErrorCode::INDEX_OUT_OF_BOUNDS,
+            ErrorKind::TypeAnnotationRequired => ErrorCode::TYPE_ANNOTATION_REQUIRED,
+            ErrorKind::MoveOutOfIndex { .. } => ErrorCode::MOVE_OUT_OF_INDEX,
+
+            // Linker/target errors (E1000-E1099)
+            ErrorKind::LinkError(_) => ErrorCode::LINK_ERROR,
+            ErrorKind::UnsupportedTarget(_) => ErrorCode::UNSUPPORTED_TARGET,
+
+            // Preview feature errors (E1100-E1199)
+            ErrorKind::PreviewFeatureRequired { .. } => ErrorCode::PREVIEW_FEATURE_REQUIRED,
+
+            // Internal compiler errors (E9000-E9999)
+            ErrorKind::InternalError(_) => ErrorCode::INTERNAL_ERROR,
+            ErrorKind::InternalCodegenError(_) => ErrorCode::INTERNAL_CODEGEN_ERROR,
+        }
+    }
 }
 
 impl CompileError {
@@ -1472,5 +1731,123 @@ mod tests {
             errors.to_string(),
             "invalid integer literal (and 2 more errors)"
         );
+    }
+
+    // ========================================================================
+    // Error code tests
+    // ========================================================================
+
+    #[test]
+    fn test_error_code_display() {
+        assert_eq!(ErrorCode::TYPE_MISMATCH.to_string(), "E0206");
+        assert_eq!(ErrorCode::UNDEFINED_VARIABLE.to_string(), "E0201");
+        assert_eq!(ErrorCode::INTERNAL_ERROR.to_string(), "E9000");
+        assert_eq!(ErrorCode(1).to_string(), "E0001");
+        assert_eq!(ErrorCode(42).to_string(), "E0042");
+        assert_eq!(ErrorCode(1234).to_string(), "E1234");
+    }
+
+    #[test]
+    fn test_error_kind_code_lexer() {
+        assert_eq!(
+            ErrorKind::UnexpectedCharacter('@').code(),
+            ErrorCode::UNEXPECTED_CHARACTER
+        );
+        assert_eq!(ErrorKind::InvalidInteger.code(), ErrorCode::INVALID_INTEGER);
+        assert_eq!(
+            ErrorKind::InvalidStringEscape('n').code(),
+            ErrorCode::INVALID_STRING_ESCAPE
+        );
+        assert_eq!(
+            ErrorKind::UnterminatedString.code(),
+            ErrorCode::UNTERMINATED_STRING
+        );
+    }
+
+    #[test]
+    fn test_error_kind_code_parser() {
+        assert_eq!(
+            ErrorKind::UnexpectedToken {
+                expected: "identifier".into(),
+                found: "+".into()
+            }
+            .code(),
+            ErrorCode::UNEXPECTED_TOKEN
+        );
+        assert_eq!(
+            ErrorKind::UnexpectedEof {
+                expected: "}".into()
+            }
+            .code(),
+            ErrorCode::UNEXPECTED_EOF
+        );
+        assert_eq!(
+            ErrorKind::ParseError("custom error".into()).code(),
+            ErrorCode::PARSE_ERROR
+        );
+    }
+
+    #[test]
+    fn test_error_kind_code_semantic() {
+        assert_eq!(
+            ErrorKind::NoMainFunction.code(),
+            ErrorCode::NO_MAIN_FUNCTION
+        );
+        assert_eq!(
+            ErrorKind::UndefinedVariable("x".into()).code(),
+            ErrorCode::UNDEFINED_VARIABLE
+        );
+        assert_eq!(
+            ErrorKind::UndefinedFunction("foo".into()).code(),
+            ErrorCode::UNDEFINED_FUNCTION
+        );
+        assert_eq!(
+            ErrorKind::TypeMismatch {
+                expected: "i32".into(),
+                found: "bool".into()
+            }
+            .code(),
+            ErrorCode::TYPE_MISMATCH
+        );
+    }
+
+    #[test]
+    fn test_error_kind_code_control_flow() {
+        assert_eq!(
+            ErrorKind::BreakOutsideLoop.code(),
+            ErrorCode::BREAK_OUTSIDE_LOOP
+        );
+        assert_eq!(
+            ErrorKind::ContinueOutsideLoop.code(),
+            ErrorCode::CONTINUE_OUTSIDE_LOOP
+        );
+    }
+
+    #[test]
+    fn test_error_kind_code_internal() {
+        assert_eq!(
+            ErrorKind::InternalError("bug".into()).code(),
+            ErrorCode::INTERNAL_ERROR
+        );
+        assert_eq!(
+            ErrorKind::InternalCodegenError("codegen bug".into()).code(),
+            ErrorCode::INTERNAL_CODEGEN_ERROR
+        );
+    }
+
+    #[test]
+    fn test_error_code_equality() {
+        assert_eq!(ErrorCode::TYPE_MISMATCH, ErrorCode(206));
+        assert_ne!(ErrorCode::TYPE_MISMATCH, ErrorCode::UNDEFINED_VARIABLE);
+    }
+
+    #[test]
+    fn test_error_code_hash() {
+        use std::collections::HashSet;
+        let mut set = HashSet::new();
+        set.insert(ErrorCode::TYPE_MISMATCH);
+        set.insert(ErrorCode::UNDEFINED_VARIABLE);
+        assert_eq!(set.len(), 2);
+        assert!(set.contains(&ErrorCode::TYPE_MISMATCH));
     }
 }
