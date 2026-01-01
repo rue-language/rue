@@ -9,12 +9,55 @@ use std::collections::HashMap;
 
 use crate::vreg::VReg;
 
+/// Extract the ArrayTypeId from a Type::Array.
+/// Returns None if the type is not an array type.
+#[inline]
+pub fn extract_array_type_id(ty: Type) -> Option<ArrayTypeId> {
+    match ty {
+        Type::Array(id) => Some(id),
+        _ => None,
+    }
+}
+
 /// Get the array type definition for an array type ID.
 pub fn array_type_def<'a>(
     array_types: &'a [ArrayTypeDef],
     array_type_id: ArrayTypeId,
 ) -> Option<&'a ArrayTypeDef> {
     array_types.get(array_type_id.0 as usize)
+}
+
+/// Get the array type definition from a Type.
+/// Returns None if the type is not an array type or if the ID is out of bounds.
+#[inline]
+pub fn array_type_def_from_type<'a>(
+    array_types: &'a [ArrayTypeDef],
+    ty: Type,
+) -> Option<&'a ArrayTypeDef> {
+    extract_array_type_id(ty).and_then(|id| array_type_def(array_types, id))
+}
+
+/// Get the length of an array from its Type.
+/// Returns 0 if the type is not an array or the ID is invalid.
+#[inline]
+pub fn array_length_from_type(array_types: &[ArrayTypeDef], ty: Type) -> u64 {
+    array_type_def_from_type(array_types, ty)
+        .map(|def| def.length)
+        .unwrap_or(0)
+}
+
+/// Calculate the slot count for a single element of an array from its Type.
+#[inline]
+pub fn array_element_slot_count_from_type(
+    struct_defs: &[StructDef],
+    array_types: &[ArrayTypeDef],
+    ty: Type,
+) -> u32 {
+    if let Some(def) = array_type_def_from_type(array_types, ty) {
+        type_slot_count(struct_defs, array_types, def.element_type)
+    } else {
+        1
+    }
 }
 
 /// Calculate the total number of slots needed to store a type.

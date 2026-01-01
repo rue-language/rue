@@ -1693,7 +1693,6 @@ impl<'a> Sema<'a> {
 
         let air_ref = air.add_inst(AirInst {
             data: AirInstData::ArrayInit {
-                array_type_id,
                 elems_start,
                 elems_len,
             },
@@ -1764,7 +1763,7 @@ impl<'a> Sema<'a> {
         let air_ref = air.add_inst(AirInst {
             data: AirInstData::IndexGet {
                 base: base_result.air_ref,
-                array_type_id,
+                array_type: base_type,
                 index: index_result.air_ref,
             },
             ty: elem_type,

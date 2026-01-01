@@ -3,12 +3,17 @@
 //! This module contains state that is mutated during function analysis.
 //! Each function can have its own `FunctionAnalysisState`, which is then
 //! merged after parallel analysis completes.
+//!
+//! # Array Type Handling (Phase 2 - ADR-0024)
+//!
+//! Array types are now handled by the shared `ArrayTypeRegistry` in `SemaContext`,
+//! which is thread-safe and handles deduplication automatically. Per-function
+//! array tracking has been removed - array types created during function analysis
+//! go directly to the shared registry.
 
 use std::collections::HashMap;
 
 use rue_error::CompileWarning;
-
-use crate::types::{ArrayTypeDef, ArrayTypeId, Type};
 
 /// Per-function mutable state during semantic analysis.
 ///
@@ -18,23 +23,21 @@ use crate::types::{ArrayTypeDef, ArrayTypeId, Type};
 ///
 /// # Contents
 ///
-/// - Array types created during analysis
 /// - String literals encountered
 /// - Warnings generated
+///
+/// # Note on Array Types
+///
+/// Array types are handled by the shared `ArrayTypeRegistry` in `SemaContext`.
+/// They are no longer tracked per-function as of ADR-0024 Phase 2.
 ///
 /// # Merging
 ///
 /// After parallel analysis, use `merge_into` to combine results:
-/// - Array types are deduplicated
 /// - Strings are deduplicated
 /// - Warnings are concatenated
 #[derive(Debug, Default)]
 pub struct FunctionAnalysisState {
-    /// Array types created during this function's analysis.
-    /// Key is (element_type, length), value is the ArrayTypeId assigned.
-    pub array_types: HashMap<(Type, u64), ArrayTypeId>,
-    /// Array type definitions in order of creation.
-    pub array_type_defs: Vec<ArrayTypeDef>,
     /// String table for deduplication.
     pub string_table: HashMap<String, u32>,
     /// String literals in order of creation.
@@ -64,22 +67,6 @@ impl FunctionAnalysisState {
         }
     }
 
-    /// Get or create an array type, returning its ID.
-    pub fn get_or_create_array_type(&mut self, element_type: Type, length: u64) -> ArrayTypeId {
-        let key = (element_type, length);
-        if let Some(&id) = self.array_types.get(&key) {
-            return id;
-        }
-
-        let id = ArrayTypeId(self.array_type_defs.len() as u32);
-        self.array_type_defs.push(ArrayTypeDef {
-            element_type,
-            length,
-        });
-        self.array_types.insert(key, id);
-        id
-    }
-
     /// Add a warning.
     pub fn add_warning(&mut self, warning: CompileWarning) {
         self.warnings.push(warning);
@@ -90,12 +77,13 @@ impl FunctionAnalysisState {
 ///
 /// This is the result of merging all `FunctionAnalysisState` instances
 /// after parallel analysis completes.
+///
+/// # Note on Array Types
+///
+/// Array types are handled by the shared `ArrayTypeRegistry` in `SemaContext`.
+/// They are no longer merged here as of ADR-0024 Phase 2.
 #[derive(Debug, Default)]
 pub struct MergedAnalysisState {
-    /// All array type definitions (deduplicated).
-    pub array_type_defs: Vec<ArrayTypeDef>,
-    /// Mapping from original (element_type, length) to final ArrayTypeId.
-    pub array_type_map: HashMap<(Type, u64), ArrayTypeId>,
     /// All string literals (deduplicated).
     pub strings: Vec<String>,
     /// Mapping from string content to final index.
@@ -112,29 +100,15 @@ impl MergedAnalysisState {
 
     /// Merge a function's analysis state into this merged state.
     ///
-    /// Returns a remapping for array type IDs so the function's AIR
+    /// Returns a remapping for string indices so the function's AIR
     /// can be updated with the final IDs.
+    ///
+    /// # Note
+    ///
+    /// Array type merging is no longer needed (ADR-0024 Phase 2).
+    /// Array types go directly to the shared `ArrayTypeRegistry`.
     pub fn merge_function_state(&mut self, state: FunctionAnalysisState) -> AnalysisStateRemapping {
-        let mut array_remap = HashMap::new();
         let mut string_remap = HashMap::new();
-
-        // Merge array types (deduplicate by (element_type, length))
-        for (key, old_id) in state.array_types {
-            let new_id = if let Some(&id) = self.array_type_map.get(&key) {
-                id
-            } else {
-                let id = ArrayTypeId(self.array_type_defs.len() as u32);
-                self.array_type_defs.push(ArrayTypeDef {
-                    element_type: key.0,
-                    length: key.1,
-                });
-                self.array_type_map.insert(key, id);
-                id
-            };
-            if old_id != new_id {
-                array_remap.insert(old_id, new_id);
-            }
-        }
 
         // Merge strings (deduplicate by content)
         for (content, old_id) in state.string_table {
@@ -154,10 +128,7 @@ impl MergedAnalysisState {
         // Merge warnings (no deduplication needed)
         self.warnings.extend(state.warnings);
 
-        AnalysisStateRemapping {
-            array_remap,
-            string_remap,
-        }
+        AnalysisStateRemapping { string_remap }
     }
 }
 
@@ -165,11 +136,13 @@ impl MergedAnalysisState {
 ///
 /// When function analysis states are merged, IDs may change due to
 /// deduplication. This struct provides the mapping from old to new IDs.
+///
+/// # Note
+///
+/// Array type remapping is no longer needed (ADR-0024 Phase 2).
+/// Array types use the shared `ArrayTypeRegistry` which handles deduplication.
 #[derive(Debug, Default)]
 pub struct AnalysisStateRemapping {
-    /// Mapping from old ArrayTypeId to new ArrayTypeId.
-    /// Only contains entries where the ID changed.
-    pub array_remap: HashMap<ArrayTypeId, ArrayTypeId>,
     /// Mapping from old string index to new string index.
     /// Only contains entries where the index changed.
     pub string_remap: HashMap<u32, u32>,
@@ -178,12 +151,7 @@ pub struct AnalysisStateRemapping {
 impl AnalysisStateRemapping {
     /// Check if any remapping is needed.
     pub fn is_empty(&self) -> bool {
-        self.array_remap.is_empty() && self.string_remap.is_empty()
-    }
-
-    /// Remap an array type ID if needed.
-    pub fn remap_array_type(&self, id: ArrayTypeId) -> ArrayTypeId {
-        self.array_remap.get(&id).copied().unwrap_or(id)
+        self.string_remap.is_empty()
     }
 
     /// Remap a string index if needed.

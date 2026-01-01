@@ -1451,7 +1451,6 @@ impl<'a> CfgBuilder<'a> {
             }
 
             AirInstData::ArrayInit {
-                array_type_id,
                 elems_start,
                 elems_len,
             } => {
@@ -1466,7 +1465,6 @@ impl<'a> CfgBuilder<'a> {
                 let (elements_start, elements_len) = self.cfg.push_extra(element_vals);
                 let value = self.emit(
                     CfgInstData::ArrayInit {
-                        array_type_id: *array_type_id,
                         elements_start,
                         elements_len,
                     },
@@ -1482,7 +1480,7 @@ impl<'a> CfgBuilder<'a> {
 
             AirInstData::IndexGet {
                 base,
-                array_type_id,
+                array_type,
                 index,
             } => {
                 let Some(base_val) = self.lower_value(*base) else {
@@ -1494,7 +1492,7 @@ impl<'a> CfgBuilder<'a> {
                 let value = self.emit(
                     CfgInstData::IndexGet {
                         base: base_val,
-                        array_type_id: *array_type_id,
+                        array_type: *array_type,
                         index: index_val,
                     },
                     ty,
@@ -1509,7 +1507,7 @@ impl<'a> CfgBuilder<'a> {
 
             AirInstData::IndexSet {
                 slot,
-                array_type_id,
+                array_type,
                 index,
                 value,
             } => {
@@ -1522,7 +1520,7 @@ impl<'a> CfgBuilder<'a> {
                 self.emit(
                     CfgInstData::IndexSet {
                         slot: *slot,
-                        array_type_id: *array_type_id,
+                        array_type: *array_type,
                         index: index_val,
                         value: val,
                     },
@@ -1537,7 +1535,7 @@ impl<'a> CfgBuilder<'a> {
 
             AirInstData::ParamIndexSet {
                 param_slot,
-                array_type_id,
+                array_type,
                 index,
                 value,
             } => {
@@ -1550,7 +1548,7 @@ impl<'a> CfgBuilder<'a> {
                 self.emit(
                     CfgInstData::ParamIndexSet {
                         param_slot: *param_slot,
-                        array_type_id: *array_type_id,
+                        array_type: *array_type,
                         index: index_val,
                         value: val,
                     },

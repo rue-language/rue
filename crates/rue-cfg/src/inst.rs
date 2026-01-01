@@ -16,7 +16,7 @@ const _: () = assert!(std::mem::size_of::<CfgInst>() <= 48);
 const _: () = assert!(std::mem::size_of::<CfgInstData>() <= 32);
 
 use lasso::{Key, Spur};
-use rue_air::{ArrayTypeId, EnumId, StructId, Type};
+use rue_air::{EnumId, StructId, Type};
 use rue_span::Span;
 
 /// A basic block identifier.
@@ -245,21 +245,26 @@ pub enum CfgInstData {
     // Array operations
     /// Array initialization. Element values are stored in the Cfg's extra array.
     /// Use `Cfg::get_extra(elements_start, elements_len)` to retrieve them.
+    /// The array type is stored in `CfgInst.ty`.
     ArrayInit {
-        array_type_id: ArrayTypeId,
         /// Start index into Cfg's extra array
         elements_start: u32,
         /// Number of elements
         elements_len: u32,
     },
+    /// Load an element from an array.
+    /// The result type is the element type.
     IndexGet {
         base: CfgValue,
-        array_type_id: ArrayTypeId,
+        /// The array type (for bounds checking and element size)
+        array_type: Type,
         index: CfgValue,
     },
+    /// Store a value to an array element.
     IndexSet {
         slot: u32,
-        array_type_id: ArrayTypeId,
+        /// The array type (for bounds checking and element size)
+        array_type: Type,
         index: CfgValue,
         value: CfgValue,
     },
@@ -267,8 +272,8 @@ pub enum CfgInstData {
     ParamIndexSet {
         /// The parameter's ABI slot (relative to params, not locals)
         param_slot: u32,
-        /// The array type
-        array_type_id: ArrayTypeId,
+        /// The array type (for bounds checking and element size)
+        array_type: Type,
         /// Index expression
         index: CfgValue,
         /// Value to store
@@ -978,11 +983,10 @@ impl Cfg {
                 )
             }
             CfgInstData::ArrayInit {
-                array_type_id,
                 elements_start,
                 elements_len,
             } => {
-                write!(f, "array_init @{} [", array_type_id.0)?;
+                write!(f, "array_init [")?;
                 let elements = self.get_extra(*elements_start, *elements_len);
                 for (i, elem) in elements.iter().enumerate() {
                     if i > 0 {
@@ -994,33 +998,39 @@ impl Cfg {
             }
             CfgInstData::IndexGet {
                 base,
-                array_type_id,
+                array_type,
                 index,
             } => {
-                write!(f, "index_get {}(@{})[{}]", base, array_type_id.0, index)
+                write!(f, "index_get {}({})[{}]", base, array_type.name(), index)
             }
             CfgInstData::IndexSet {
                 slot,
-                array_type_id,
+                array_type,
                 index,
                 value,
             } => {
                 write!(
                     f,
-                    "index_set ${}(@{})[{}] = {}",
-                    slot, array_type_id.0, index, value
+                    "index_set ${}({})[{}] = {}",
+                    slot,
+                    array_type.name(),
+                    index,
+                    value
                 )
             }
             CfgInstData::ParamIndexSet {
                 param_slot,
-                array_type_id,
+                array_type,
                 index,
                 value,
             } => {
                 write!(
                     f,
-                    "param_index_set %{}(@{})[{}] = {}",
-                    param_slot, array_type_id.0, index, value
+                    "param_index_set %{}({})[{}] = {}",
+                    param_slot,
+                    array_type.name(),
+                    index,
+                    value
                 )
             }
             CfgInstData::EnumVariant {

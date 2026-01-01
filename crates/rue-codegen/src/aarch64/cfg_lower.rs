@@ -6,7 +6,7 @@
 use std::collections::HashMap;
 
 use lasso::ThreadedRodeo;
-use rue_air::{ArrayTypeDef, ArrayTypeId};
+use rue_air::ArrayTypeDef;
 use rue_cfg::{
     BasicBlock, BlockId, Cfg, CfgInstData, CfgValue, StructDef, StructId, Terminator, Type,
 };
@@ -115,21 +115,13 @@ impl<'a> CfgLower<'a> {
     }
 
     /// Get the length of an array type.
-    fn array_length(&self, array_type_id: ArrayTypeId) -> u64 {
-        debug_assert!(
-            (array_type_id.0 as usize) < self.array_types.len(),
-            "invalid array type ID: {:?}",
-            array_type_id
-        );
-        self.array_types
-            .get(array_type_id.0 as usize)
-            .map(|def| def.length)
-            .unwrap_or(0)
+    fn array_length(&self, array_type: Type) -> u64 {
+        types::array_length_from_type(self.array_types, array_type)
     }
 
     /// Get the array type definition.
-    fn array_type_def(&self, array_type_id: ArrayTypeId) -> Option<&ArrayTypeDef> {
-        types::array_type_def(self.array_types, array_type_id)
+    fn array_type_def(&self, array_type: Type) -> Option<&ArrayTypeDef> {
+        types::array_type_def_from_type(self.array_types, array_type)
     }
 
     /// Calculate the total number of slots needed to store a type.
@@ -138,8 +130,8 @@ impl<'a> CfgLower<'a> {
     }
 
     /// Calculate the slot count for a single element of an array type.
-    fn array_element_slot_count(&self, array_type_id: ArrayTypeId) -> u32 {
-        types::array_element_slot_count(self.struct_defs, self.array_types, array_type_id)
+    fn array_element_slot_count(&self, array_type: Type) -> u32 {
+        types::array_element_slot_count_from_type(self.struct_defs, self.array_types, array_type)
     }
 
     /// Calculate the slot offset for a field within a struct.
@@ -169,17 +161,17 @@ impl<'a> CfgLower<'a> {
             }
             CfgInstData::IndexGet {
                 base: array_base,
-                array_type_id,
+                array_type,
                 index,
             } => {
                 // Array of structs case: the field's base is an IndexGet
                 // Try to trace the array base to find the original Load/Param
                 if let Some((index_base, mut levels)) = self.trace_index_chain(*array_base) {
-                    let elem_slot_count = self.array_element_slot_count(*array_type_id);
+                    let elem_slot_count = self.array_element_slot_count(*array_type);
                     levels.push(IndexLevel {
                         index: *index,
                         elem_slot_count,
-                        array_type_id: *array_type_id,
+                        array_type: *array_type,
                     });
                     Some((
                         FieldChainBase::IndexGet {
@@ -228,16 +220,16 @@ impl<'a> CfgLower<'a> {
             }
             CfgInstData::IndexGet {
                 base,
-                array_type_id,
+                array_type,
                 index,
             } => {
                 // Recursively trace the base
                 if let Some((base_kind, mut levels)) = self.trace_index_chain(*base) {
-                    let elem_slot_count = self.array_element_slot_count(*array_type_id);
+                    let elem_slot_count = self.array_element_slot_count(*array_type);
                     levels.push(IndexLevel {
                         index: *index,
                         elem_slot_count,
-                        array_type_id: *array_type_id,
+                        array_type: *array_type,
                     });
                     Some((base_kind, levels))
                 } else {
@@ -1805,9 +1797,9 @@ impl<'a> CfgLower<'a> {
                                 }
                             }
                         }
-                        Type::Array(array_type_id) => {
+                        Type::Array(_) => {
                             let arg_data = &self.cfg.get_inst(arg_value).data;
-                            let array_len = self.array_length(array_type_id) as u32;
+                            let array_len = self.array_length(arg_type) as u32;
                             match arg_data {
                                 CfgInstData::Load { slot } => {
                                     for elem_idx in 0..array_len {
@@ -2279,7 +2271,7 @@ impl<'a> CfgLower<'a> {
                             // Emit bounds check for the innermost index
                             if let Some(innermost) = index_levels.last() {
                                 let innermost_index_vreg = self.get_vreg(innermost.index);
-                                let array_length = self.array_length(innermost.array_type_id);
+                                let array_length = self.array_length(innermost.array_type);
                                 self.emit_bounds_check(innermost_index_vreg, array_length);
                             }
 
@@ -2487,7 +2479,6 @@ impl<'a> CfgLower<'a> {
             }
 
             CfgInstData::ArrayInit {
-                array_type_id: _,
                 elements_start,
                 elements_len,
             } => {
@@ -2509,14 +2500,14 @@ impl<'a> CfgLower<'a> {
 
             CfgInstData::IndexGet {
                 base,
-                array_type_id,
+                array_type,
                 index,
             } => {
                 let vreg = self.mir.alloc_vreg();
                 self.value_map.insert(value, vreg);
 
                 // Calculate the slot stride for this array's elements
-                let elem_slot_count = self.array_element_slot_count(*array_type_id);
+                let elem_slot_count = self.array_element_slot_count(*array_type);
 
                 // First, check if base is an ArrayInit (constant index case)
                 let base_data = &self.cfg.get_inst(*base).data.clone();
@@ -2548,12 +2539,12 @@ impl<'a> CfgLower<'a> {
                     levels.push(IndexLevel {
                         index: *index,
                         elem_slot_count,
-                        array_type_id: *array_type_id,
+                        array_type: *array_type,
                     });
 
                     // Emit bounds check for the innermost index
                     let innermost_index_vreg = self.get_vreg(*index);
-                    let array_length = self.array_length(*array_type_id);
+                    let array_length = self.array_length(*array_type);
                     self.emit_bounds_check(innermost_index_vreg, array_length);
 
                     // Calculate total offset by summing index * stride for each level
@@ -2679,7 +2670,7 @@ impl<'a> CfgLower<'a> {
 
             CfgInstData::IndexSet {
                 slot,
-                array_type_id,
+                array_type,
                 index,
                 value: val,
             } => {
@@ -2687,7 +2678,7 @@ impl<'a> CfgLower<'a> {
                 let index_vreg = self.get_vreg(*index);
 
                 // Emit runtime bounds check
-                let array_length = self.array_length(*array_type_id);
+                let array_length = self.array_length(*array_type);
                 self.emit_bounds_check(index_vreg, array_length);
 
                 // Shift left by 3 (multiply by 8)
@@ -2724,7 +2715,7 @@ impl<'a> CfgLower<'a> {
 
             CfgInstData::ParamIndexSet {
                 param_slot,
-                array_type_id,
+                array_type,
                 index,
                 value: val,
             } => {
@@ -2732,7 +2723,7 @@ impl<'a> CfgLower<'a> {
                 let index_vreg = self.get_vreg(*index);
 
                 // Emit runtime bounds check
-                let array_length = self.array_length(*array_type_id);
+                let array_length = self.array_length(*array_type);
                 self.emit_bounds_check(index_vreg, array_length);
 
                 // Shift left by 3 (multiply by 8)

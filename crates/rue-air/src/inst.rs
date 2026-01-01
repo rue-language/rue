@@ -14,7 +14,7 @@ use std::fmt;
 const _: () = assert!(std::mem::size_of::<AirInst>() <= 48);
 const _: () = assert!(std::mem::size_of::<AirInstData>() <= 32);
 
-use crate::types::{ArrayTypeId, StructId, Type};
+use crate::types::{StructId, Type};
 use lasso::{Key, Spur};
 use rue_span::Span;
 
@@ -611,44 +611,46 @@ pub enum AirInstData {
     },
 
     // Array operations
-    /// Create a new array with initialized elements
+    /// Create a new array with initialized elements.
+    /// The array type is stored in `AirInst.ty` as `Type::Array(...)`.
     ArrayInit {
-        /// The array type
-        array_type_id: ArrayTypeId,
         /// Start index into extra array for element refs
         elems_start: u32,
         /// Number of elements
         elems_len: u32,
     },
 
-    /// Load an element from an array
+    /// Load an element from an array.
+    /// The array type is stored in `AirInst.ty`.
     IndexGet {
         /// The array value
         base: AirRef,
-        /// The array type
-        array_type_id: ArrayTypeId,
+        /// The array type (for bounds checking and element size)
+        array_type: Type,
         /// Index expression
         index: AirRef,
     },
 
-    /// Store a value to an array element
+    /// Store a value to an array element.
+    /// The array type is stored in `AirInst.ty`.
     IndexSet {
         /// The array variable slot
         slot: u32,
-        /// The array type
-        array_type_id: ArrayTypeId,
+        /// The array type (for bounds checking and element size)
+        array_type: Type,
         /// Index expression
         index: AirRef,
         /// Value to store
         value: AirRef,
     },
 
-    /// Store a value to an array element of an inout parameter
+    /// Store a value to an array element of an inout parameter.
+    /// The array type is stored in `AirInst.ty`.
     ParamIndexSet {
         /// The parameter's ABI slot (relative to params, not locals)
         param_slot: u32,
-        /// The array type
-        array_type_id: ArrayTypeId,
+        /// The array type (for bounds checking and element size)
+        array_type: Type,
         /// Index expression
         index: AirRef,
         /// Value to store
@@ -893,11 +895,10 @@ impl fmt::Display for Air {
                     )?;
                 }
                 AirInstData::ArrayInit {
-                    array_type_id,
                     elems_start,
                     elems_len,
                 } => {
-                    write!(f, "array_init @{} [", array_type_id.0)?;
+                    write!(f, "array_init [")?;
                     for (i, elem) in self.get_air_refs(*elems_start, *elems_len).enumerate() {
                         if i > 0 {
                             write!(f, ", ")?;
@@ -908,33 +909,39 @@ impl fmt::Display for Air {
                 }
                 AirInstData::IndexGet {
                     base,
-                    array_type_id,
+                    array_type,
                     index,
                 } => {
-                    writeln!(f, "index_get {}(@{})[{}]", base, array_type_id.0, index)?;
+                    writeln!(f, "index_get {}({})[{}]", base, array_type.name(), index)?;
                 }
                 AirInstData::IndexSet {
                     slot,
-                    array_type_id,
+                    array_type,
                     index,
                     value,
                 } => {
                     writeln!(
                         f,
-                        "index_set ${}(@{})[{}] = {}",
-                        slot, array_type_id.0, index, value
+                        "index_set ${}({})[{}] = {}",
+                        slot,
+                        array_type.name(),
+                        index,
+                        value
                     )?;
                 }
                 AirInstData::ParamIndexSet {
                     param_slot,
-                    array_type_id,
+                    array_type,
                     index,
                     value,
                 } => {
                     writeln!(
                         f,
-                        "param_index_set param{}(@{})[{}] = {}",
-                        param_slot, array_type_id.0, index, value
+                        "param_index_set param{}({})[{}] = {}",
+                        param_slot,
+                        array_type.name(),
+                        index,
+                        value
                     )?;
                 }
                 AirInstData::EnumVariant {

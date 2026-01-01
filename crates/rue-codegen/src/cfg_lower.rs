@@ -6,8 +6,7 @@
 use std::fmt;
 
 use lasso::Key;
-use rue_air::ArrayTypeId;
-use rue_cfg::{BlockId, CfgValue};
+use rue_cfg::{BlockId, CfgValue, Type};
 
 /// A single lowering decision: maps one CFG instruction to its MIR expansion.
 #[derive(Debug, Clone)]
@@ -177,32 +176,38 @@ pub fn format_cfg_inst_data(data: &rue_cfg::CfgInstData) -> String {
             "param_field_set %{}+{}.#{}.{} = {}",
             param_slot, inner_offset, struct_id.0, field_index, value
         ),
-        CfgInstData::ArrayInit { array_type_id, .. } => {
-            // Note: Can't show elements without Cfg access; just show array_type_id
-            format!("array_init @{} [...]", array_type_id.0)
+        CfgInstData::ArrayInit { .. } => {
+            // Note: Can't show elements without Cfg access
+            "array_init [...]".to_string()
         }
         CfgInstData::IndexGet {
             base,
-            array_type_id,
+            array_type,
             index,
-        } => format!("index_get {}[@{}][{}]", base, array_type_id.0, index),
+        } => format!("index_get {}[{}][{}]", base, array_type.name(), index),
         CfgInstData::IndexSet {
             slot,
-            array_type_id,
+            array_type,
             index,
             value,
         } => format!(
-            "index_set ${}[@{}][{}] = {}",
-            slot, array_type_id.0, index, value
+            "index_set ${}[{}][{}] = {}",
+            slot,
+            array_type.name(),
+            index,
+            value
         ),
         CfgInstData::ParamIndexSet {
             param_slot,
-            array_type_id,
+            array_type,
             index,
             value,
         } => format!(
-            "param_index_set %{}[@{}][{}] = {}",
-            param_slot, array_type_id.0, index, value
+            "param_index_set %{}[{}][{}] = {}",
+            param_slot,
+            array_type.name(),
+            index,
+            value
         ),
         CfgInstData::EnumVariant {
             enum_id,
@@ -334,5 +339,6 @@ pub enum IndexChainBase {
 pub struct IndexLevel {
     pub index: CfgValue,
     pub elem_slot_count: u32,
-    pub array_type_id: ArrayTypeId,
+    /// The array type (Type::Array(...)) for bounds checking.
+    pub array_type: Type,
 }
