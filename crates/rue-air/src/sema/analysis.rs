@@ -18,7 +18,8 @@ use rue_rir::{InstData, InstRef, RirArgMode, RirCallArg, RirDirective, RirParamM
 use rue_span::Span;
 
 use super::context::{
-    AnalysisContext, AnalysisResult, ConstValue, FieldPath, ParamInfo, StringReceiverStorage,
+    AnalysisContext, AnalysisResult, BuiltinMethodContext, ConstValue, FieldPath, ParamInfo,
+    ReceiverInfo, StringReceiverStorage,
 };
 use super::{AnalyzedFunction, InferenceContext, Sema, SemaOutput};
 use crate::inference::{
@@ -1473,18 +1474,18 @@ impl<'a> Sema<'a> {
 
         // Check if this is a builtin type and handle its methods
         if let Some(builtin_def) = self.get_builtin_type_def(struct_id) {
-            return self.analyze_builtin_method(
-                air,
-                ctx,
+            let method_ctx = BuiltinMethodContext {
                 struct_id,
                 builtin_def,
-                receiver_result,
-                receiver_var,
-                receiver_storage,
-                &method_name_str,
-                &args,
+                method_name: &method_name_str,
                 span,
-            );
+            };
+            let receiver_info = ReceiverInfo {
+                result: receiver_result,
+                var: receiver_var,
+                storage: receiver_storage,
+            };
+            return self.analyze_builtin_method(air, ctx, &method_ctx, receiver_info, &args);
         }
 
         // Look up the struct name by its ID
@@ -2557,44 +2558,41 @@ impl<'a> Sema<'a> {
     /// Dispatches to the appropriate runtime function based on the builtin registry.
     /// Handles borrow semantics (for query methods) and mutation semantics (for
     /// methods that modify the receiver).
-    #[allow(clippy::too_many_arguments)]
     fn analyze_builtin_method(
         &mut self,
         air: &mut Air,
         ctx: &mut AnalysisContext,
-        struct_id: StructId,
-        builtin_def: &'static BuiltinTypeDef,
-        receiver: AnalysisResult,
-        receiver_var: Option<Spur>,
-        receiver_storage: Option<StringReceiverStorage>,
-        method_name: &str,
+        method_ctx: &BuiltinMethodContext<'_>,
+        receiver: ReceiverInfo,
         args: &[RirCallArg],
-        span: Span,
     ) -> CompileResult<AnalysisResult> {
         use rue_builtins::{BuiltinParamType, BuiltinReturnType, ReceiverMode};
 
         // Look up the method in the registry
-        let method = builtin_def.find_method(method_name).ok_or_else(|| {
-            CompileError::new(
-                ErrorKind::UndefinedMethod {
-                    type_name: builtin_def.name.to_string(),
-                    method_name: method_name.to_string(),
-                },
-                span,
-            )
-        })?;
+        let method = method_ctx
+            .builtin_def
+            .find_method(method_ctx.method_name)
+            .ok_or_else(|| {
+                CompileError::new(
+                    ErrorKind::UndefinedMethod {
+                        type_name: method_ctx.builtin_def.name.to_string(),
+                        method_name: method_ctx.method_name.to_string(),
+                    },
+                    method_ctx.span,
+                )
+            })?;
 
         // Handle receiver mode (borrow vs mutation vs consume)
         match method.receiver_mode {
             ReceiverMode::ByRef => {
                 // Borrow semantics - "unmove" the variable since it's not consumed
-                if let Some(var_symbol) = receiver_var {
+                if let Some(var_symbol) = receiver.var {
                     ctx.moved_vars.remove(&var_symbol);
                 }
             }
             ReceiverMode::ByMutRef => {
                 // Mutation semantics - variable remains valid after
-                if let Some(var_symbol) = receiver_var {
+                if let Some(var_symbol) = receiver.var {
                     ctx.moved_vars.remove(&var_symbol);
                 }
             }
@@ -2610,7 +2608,7 @@ impl<'a> Sema<'a> {
                     expected: method.params.len(),
                     found: args.len(),
                 },
-                span,
+                method_ctx.span,
             ));
         }
 
@@ -2618,7 +2616,7 @@ impl<'a> Sema<'a> {
         let mut air_args: Vec<(AirRef, AirArgMode)> = Vec::with_capacity(args.len() + 1);
 
         // Add receiver as first argument
-        air_args.push((receiver.air_ref, AirArgMode::Normal));
+        air_args.push((receiver.result.air_ref, AirArgMode::Normal));
 
         // Analyze and add other arguments
         for (i, arg) in args.iter().enumerate() {
@@ -2629,7 +2627,7 @@ impl<'a> Sema<'a> {
                 BuiltinParamType::U64 => Type::U64,
                 BuiltinParamType::U8 => Type::U8,
                 BuiltinParamType::Bool => Type::Bool,
-                BuiltinParamType::SelfType => Type::Struct(struct_id),
+                BuiltinParamType::SelfType => Type::Struct(method_ctx.struct_id),
             };
 
             // Type check
@@ -2643,7 +2641,7 @@ impl<'a> Sema<'a> {
                         expected: expected_ty.name().to_string(),
                         found: arg_result.ty.name().to_string(),
                     },
-                    span,
+                    method_ctx.span,
                 ));
             }
 
@@ -2657,7 +2655,7 @@ impl<'a> Sema<'a> {
             BuiltinReturnType::U64 => Type::U64,
             BuiltinReturnType::U8 => Type::U8,
             BuiltinReturnType::Bool => Type::Bool,
-            BuiltinReturnType::SelfType => self.builtin_air_type(struct_id),
+            BuiltinReturnType::SelfType => self.builtin_air_type(method_ctx.struct_id),
         };
 
         // Generate runtime function call
@@ -2678,14 +2676,15 @@ impl<'a> Sema<'a> {
                 args_len: air_args.len() as u32,
             },
             ty: return_ty,
-            span,
+            span: method_ctx.span,
         });
 
         // For mutation methods, store the result back to the receiver
         if method.receiver_mode == ReceiverMode::ByMutRef {
-            let storage = receiver_storage
-                .ok_or_else(|| CompileError::new(ErrorKind::InvalidAssignmentTarget, span))?;
-            return self.store_string_result(air, call_ref, storage, span);
+            let storage = receiver.storage.ok_or_else(|| {
+                CompileError::new(ErrorKind::InvalidAssignmentTarget, method_ctx.span)
+            })?;
+            return self.store_string_result(air, call_ref, storage, method_ctx.span);
         }
 
         Ok(AnalysisResult::new(call_ref, return_ty))

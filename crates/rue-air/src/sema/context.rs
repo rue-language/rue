@@ -7,11 +7,12 @@
 use std::collections::{HashMap, HashSet};
 
 use lasso::Spur;
+use rue_builtins::BuiltinTypeDef;
 use rue_error::CompileWarning;
 use rue_rir::RirParamMode;
 use rue_span::Span;
 
-use crate::types::Type;
+use crate::types::{StructId, Type};
 
 /// Information about a local variable.
 #[derive(Debug, Clone)]
@@ -386,4 +387,35 @@ pub(crate) enum StringReceiverStorage {
     Local { slot: u32 },
     /// The receiver is a parameter with the given ABI slot.
     Param { abi_slot: u32 },
+}
+
+/// Context for analyzing a method call on a builtin type.
+///
+/// Groups together the parameters that describe which builtin method is being
+/// called, reducing the number of parameters to `analyze_builtin_method`.
+pub(crate) struct BuiltinMethodContext<'a> {
+    /// The struct ID of the builtin type (e.g., String).
+    pub struct_id: StructId,
+    /// The builtin type definition containing method metadata.
+    pub builtin_def: &'static BuiltinTypeDef,
+    /// The name of the method being called.
+    pub method_name: &'a str,
+    /// The source span for error reporting.
+    pub span: Span,
+}
+
+/// Information about the receiver of a method call.
+///
+/// Groups together the receiver-related parameters for `analyze_builtin_method`,
+/// including the analyzed receiver expression, the original variable (if any),
+/// and the storage location for mutation methods.
+pub(crate) struct ReceiverInfo {
+    /// The analysis result of the receiver expression.
+    pub result: AnalysisResult,
+    /// The root variable symbol if the receiver is a variable reference.
+    /// Used to track moves and "unmove" for borrow semantics.
+    pub var: Option<Spur>,
+    /// Storage location for mutation methods that need to write back.
+    /// Only set when the receiver is a mutable lvalue and the method mutates.
+    pub storage: Option<StringReceiverStorage>,
 }
