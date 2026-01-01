@@ -999,6 +999,9 @@ impl<'a> ConstraintGenerator<'a> {
             rhs_info.span,
         ));
 
+        // Result must be an integer type (catches errors like `true + 1` early)
+        self.add_constraint(Constraint::is_integer(result_ty.clone(), lhs_info.span));
+
         result_ty
     }
 
@@ -1161,8 +1164,13 @@ mod tests {
 
         // Result should be a type variable
         assert!(info.ty.is_var());
-        // Should generate 2 constraints: lhs = result, rhs = result
-        assert_eq!(cgen.constraints().len(), 2);
+        // Should generate 3 constraints: lhs = result, rhs = result, IsInteger(result)
+        assert_eq!(cgen.constraints().len(), 3);
+        // Verify the third constraint is IsInteger
+        match &cgen.constraints()[2] {
+            Constraint::IsInteger(_, _) => {}
+            _ => panic!("Expected IsInteger constraint for arithmetic result"),
+        }
     }
 
     #[test]

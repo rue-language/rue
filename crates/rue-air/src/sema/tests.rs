@@ -182,4 +182,91 @@ mod tests {
             .any(|(_, inst)| matches!(inst.data, AirInstData::UnitConst));
         assert!(has_unit_const, "Empty block should produce UnitConst");
     }
+
+    // =========================================================================
+    // Error recovery tests
+    // =========================================================================
+    // These tests verify that one type error does not cause cascading errors.
+    // The issue rue-wqyw tracks the implementation of better error recovery.
+
+    #[test]
+    fn test_single_error_no_cascade_simple() {
+        // A simple case where adding an integer and boolean should report exactly one error
+        let result = compile_to_air("fn main() -> i32 { 1 + true }");
+        assert!(result.is_err());
+        let errors = result.unwrap_err();
+        assert_eq!(
+            errors.len(),
+            1,
+            "Should have exactly 1 error, not cascading errors"
+        );
+
+        // Verify the error is about type mismatch (integer vs bool)
+        let error = errors.iter().next().unwrap();
+        assert!(
+            matches!(&error.kind, ErrorKind::TypeMismatch { expected, found }
+                if expected.contains("integer") && found.contains("bool")),
+            "Error should mention integer and bool, got: {:?}",
+            error.kind
+        );
+    }
+
+    #[test]
+    fn test_single_error_no_cascade_with_function_call() {
+        // The error-typed variable is used in a function call - should not cascade
+        let result = compile_to_air(
+            "fn foo(a: i32, b: i32) -> i32 { a + b }
+             fn main() -> i32 {
+                 let x = 1 + true;
+                 foo(x, 1)
+             }",
+        );
+        assert!(result.is_err());
+        let errors = result.unwrap_err();
+        assert_eq!(
+            errors.len(),
+            1,
+            "Should have exactly 1 error for the original type mismatch"
+        );
+    }
+
+    #[test]
+    fn test_single_error_no_cascade_deep_chain() {
+        // Deep chain of operations using error-typed value - should not cascade
+        let result = compile_to_air(
+            "fn main() -> i32 {
+                 let x = 1 + true;
+                 let y = x + 1;
+                 let z = y * 2;
+                 let w = z - 3;
+                 let v = w / 4;
+                 v
+             }",
+        );
+        assert!(result.is_err());
+        let errors = result.unwrap_err();
+        assert_eq!(
+            errors.len(),
+            1,
+            "Should have exactly 1 error, not 5 cascading errors"
+        );
+    }
+
+    #[test]
+    fn test_bool_plus_int_error() {
+        // Reversed order: bool + int should also give one error
+        let result = compile_to_air("fn main() -> i32 { true + 1 }");
+        assert!(result.is_err());
+        let errors = result.unwrap_err();
+        assert_eq!(errors.len(), 1);
+    }
+
+    #[test]
+    fn test_arithmetic_on_bool_type_error() {
+        // Using bool in any arithmetic should be an error
+        let result = compile_to_air("fn main() -> i32 { true * true }");
+        assert!(result.is_err());
+        let errors = result.unwrap_err();
+        assert_eq!(errors.len(), 1);
+    }
 }
