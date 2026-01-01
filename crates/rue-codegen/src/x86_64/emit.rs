@@ -101,22 +101,24 @@ use super::mir::{LabelId, Reg, X86Inst, X86Mir};
 use crate::vreg::BLOCK_LABEL_BASE;
 use crate::{EmittedCode, EmittedInst, EmittedRelocation, end_inst, format_offset};
 
-/// Kind of jump fixup (rel8 or rel32).
+/// Kind of jump fixup.
+///
+/// We always use rel32 encoding to support jumps of any size within a function.
+/// While rel8 would save 3-5 bytes per jump for small functions, the simplicity
+/// of always using rel32 avoids needing a two-pass encoding or relaxation loop.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum FixupKind {
-    /// 1-byte relative offset (-128 to +127)
-    Rel8,
-    /// 4-byte relative offset
+    /// 4-byte relative offset (supports jumps up to ±2GB)
     Rel32,
 }
 
 /// A pending fixup for a forward jump.
 struct Fixup {
-    /// Offset of the rel8/rel32 displacement in the code.
+    /// Offset of the rel32 displacement in the code.
     offset: usize,
     /// Target label ID.
     label: LabelId,
-    /// Kind of fixup (rel8 or rel32).
+    /// Kind of fixup.
     kind: FixupKind,
 }
 
@@ -515,25 +517,6 @@ impl<'a> Emitter<'a> {
             })?;
 
             match fixup.kind {
-                FixupKind::Rel8 => {
-                    // Calculate relative offset from the end of the jump instruction
-                    // The fixup offset points to the rel8, which is the last byte of the instruction
-                    let jump_end = fixup.offset + 1; // rel8 is 1 byte
-                    let relative = target_offset as i64 - jump_end as i64;
-
-                    // rel8 encoding only supports -128 to +127 byte offsets
-                    if relative < -128 || relative > 127 {
-                        return Err(CompileError::without_span(ErrorKind::InternalCodegenError(
-                            format!(
-                                "jump offset {} exceeds rel8 range (-128..127) for label '{}'; \
-                                 consider implementing rel32 fallback",
-                                relative, fixup.label
-                            ),
-                        )));
-                    }
-
-                    self.code[fixup.offset] = relative as u8;
-                }
                 FixupKind::Rel32 => {
                     // Calculate relative offset from the end of the jump instruction
                     // The fixup offset points to the first byte of the 4-byte rel32

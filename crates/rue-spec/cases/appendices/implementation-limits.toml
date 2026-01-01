@@ -235,3 +235,86 @@ fn main() -> i32 {
 }
 """
 exit_code = 14
+
+# =============================================================================
+# Code Generation Limits (C.8)
+# =============================================================================
+#
+# These tests verify that the compiler correctly handles jumps that exceed
+# the 127-byte limit of rel8 encoding. The x86-64 backend uses rel32 encoding
+# for all conditional jumps to support functions of any size.
+
+[[case]]
+name = "large_forward_jump_if"
+spec = ["C.8:1"]
+description = "Test forward jump over many instructions (exceeds rel8 range)"
+source = """
+fn main() -> i32 {
+    let x: i32 = 1;
+    // This if-else generates a forward jump. The else branch contains
+    // enough instructions to push the target well beyond 127 bytes.
+    if x == 1 {
+        // Branch taken - jumps over the large else block
+        42
+    } else {
+        // Generate enough code to exceed rel8 range (~200+ bytes)
+        let a: i32 = 1; let b: i32 = 2; let c: i32 = 3; let d: i32 = 4;
+        let e: i32 = 5; let f: i32 = 6; let g: i32 = 7; let h: i32 = 8;
+        let i: i32 = 9; let j: i32 = 10; let k: i32 = 11; let l: i32 = 12;
+        let m: i32 = 13; let n: i32 = 14; let o: i32 = 15; let p: i32 = 16;
+        let q: i32 = 17; let r: i32 = 18; let s: i32 = 19; let t: i32 = 20;
+        let u: i32 = 21; let v: i32 = 22; let w: i32 = 23; let y: i32 = 24;
+        // Sum them all to prevent dead code elimination
+        a + b + c + d + e + f + g + h + i + j + k + l + m + n + o + p + q + r + s + t + u + v + w + y
+    }
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "large_forward_jump_while"
+spec = ["C.8:1"]
+description = "Test loop with large body (conditional jump to loop exit)"
+source = """
+fn main() -> i32 {
+    let mut result: i32 = 0;
+    let mut count: i32 = 3;
+    // The while loop generates a conditional jump forward to the exit.
+    // The loop body is large enough to exceed rel8 range.
+    while count > 0 {
+        // Large loop body
+        let a: i32 = 1; let b: i32 = 2; let c: i32 = 3; let d: i32 = 4;
+        let e: i32 = 5; let f: i32 = 6; let g: i32 = 7; let h: i32 = 8;
+        let i: i32 = 9; let j: i32 = 10; let k: i32 = 11; let l: i32 = 12;
+        let m: i32 = 13; let n: i32 = 14; let o: i32 = 15; let p: i32 = 16;
+        result = result + a + b + c + d + e + f + g + h + i + j + k + l + m + n + o + p;
+        count = count - 1;
+    }
+    // Return something recognizable
+    result / 100  // 136 * 3 = 408, 408 / 100 = 4
+}
+"""
+exit_code = 4
+
+[[case]]
+name = "large_backward_jump_loop"
+spec = ["C.8:1"]
+description = "Test backward jump from loop end to start (over large body)"
+source = """
+fn main() -> i32 {
+    let mut sum: i32 = 0;
+    let mut i: i32 = 0;
+    // This loop has a large body. At the end of each iteration,
+    // there's a backward jump to the loop header that exceeds 127 bytes.
+    while i < 2 {
+        let a: i32 = 1; let b: i32 = 2; let c: i32 = 3; let d: i32 = 4;
+        let e: i32 = 5; let f: i32 = 6; let g: i32 = 7; let h: i32 = 8;
+        let j: i32 = 9; let k: i32 = 10; let l: i32 = 11; let m: i32 = 12;
+        let n: i32 = 13; let o: i32 = 14; let p: i32 = 15; let q: i32 = 16;
+        sum = sum + a + b + c + d + e + f + g + h + j + k + l + m + n + o + p + q;
+        i = i + 1;
+    }
+    sum / 100  // (136 * 2) / 100 = 272 / 100 = 2
+}
+"""
+exit_code = 2

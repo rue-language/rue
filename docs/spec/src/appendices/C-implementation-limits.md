@@ -94,3 +94,16 @@ While the language specification does not impose limits on recursion depth or st
 {{ rule(id="C.7:2", cat="informative") }}
 
 Programs requiring deep recursion or large stack allocations **SHOULD** be designed with these platform constraints in mind.
+
+## Code Generation Limits
+
+{{ rule(id="C.8:1", cat="normative") }}
+
+Function size is limited by the target architecture's addressing modes:
+
+- On x86-64, functions **MUST** fit within the ±2 GiB range addressable by 32-bit relative offsets
+- Jump instructions within a function use 32-bit relative addressing to support functions of any reasonable size
+
+{{ rule(id="C.8:2", cat="informative") }}
+
+The compiler uses 32-bit relative (rel32) encoding for all conditional and unconditional jumps, avoiding the 127-byte limit of 8-bit relative (rel8) encoding. This ensures functions with large basic blocks compile correctly without requiring multi-pass relaxation.
