@@ -21,6 +21,7 @@
 
 mod airgen;
 mod analysis;
+mod analyze_ops;
 mod builtins;
 mod context;
 mod declarations;
