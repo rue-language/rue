@@ -31,7 +31,10 @@ mod drop_glue;
 use rayon::prelude::*;
 use tracing::{info, info_span};
 
-pub use diagnostic::{DiagnosticFormatter, SourceInfo};
+pub use diagnostic::{
+    ColorChoice, DiagnosticFormatter, JsonDiagnostic, JsonDiagnosticFormatter, JsonSpan,
+    JsonSuggestion, SourceInfo,
+};
 
 use std::io::Write;
 use std::path::PathBuf;
@@ -169,8 +172,9 @@ pub use rue_codegen::{
     aarch64::Aarch64Mir, generate_stack_frame_info,
 };
 pub use rue_error::{
-    CompileError, CompileErrors, CompileResult, CompileWarning, Diagnostic, ErrorCode, ErrorKind,
-    MultiErrorResult, PreviewFeature, PreviewFeatures, WarningKind,
+    Applicability, CompileError, CompileErrors, CompileResult, CompileWarning, Diagnostic,
+    ErrorCode, ErrorKind, MultiErrorResult, PreviewFeature, PreviewFeatures, Suggestion,
+    WarningKind,
 };
 pub use rue_lexer::{Lexer, Token, TokenKind};
 pub use rue_linker::{Archive, CodeRelocation, Linker, ObjectBuilder, ObjectFile, RelocationType};

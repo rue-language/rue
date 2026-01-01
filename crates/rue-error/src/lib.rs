@@ -380,6 +380,129 @@ impl std::fmt::Display for Help {
     }
 }
 
+/// How confident we are that a suggested fix is correct.
+///
+/// This follows rustc's conventions for suggestion applicability levels.
+/// IDEs and tools can use this to decide whether to auto-apply suggestions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Applicability {
+    /// The suggestion is definitely correct and can be safely auto-applied.
+    ///
+    /// Use this when the fix is guaranteed to compile and preserve semantics.
+    MachineApplicable,
+
+    /// The suggestion might be correct but should be reviewed by a human.
+    ///
+    /// Use this when the fix will likely work but may change behavior in
+    /// edge cases, or when there are multiple equally valid options.
+    MaybeIncorrect,
+
+    /// The suggestion contains placeholders that the user must fill in.
+    ///
+    /// Use this when the fix shows the general shape but needs specific
+    /// values like variable names or types.
+    HasPlaceholders,
+
+    /// The suggestion is just a hint and may not even compile.
+    ///
+    /// Use this for illustrative suggestions that show concepts rather
+    /// than working code.
+    Unspecified,
+}
+
+impl Default for Applicability {
+    fn default() -> Self {
+        Self::Unspecified
+    }
+}
+
+impl std::fmt::Display for Applicability {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Applicability::MachineApplicable => write!(f, "MachineApplicable"),
+            Applicability::MaybeIncorrect => write!(f, "MaybeIncorrect"),
+            Applicability::HasPlaceholders => write!(f, "HasPlaceholders"),
+            Applicability::Unspecified => write!(f, "Unspecified"),
+        }
+    }
+}
+
+/// A suggested code fix that can be applied to resolve a diagnostic.
+///
+/// Suggestions provide machine-readable fix information that IDEs and
+/// tools can use to offer quick-fix actions.
+#[derive(Debug, Clone)]
+pub struct Suggestion {
+    /// Human-readable description of what the suggestion does.
+    pub message: String,
+    /// The span of code to replace.
+    pub span: Span,
+    /// The replacement text.
+    pub replacement: String,
+    /// How confident we are that this fix is correct.
+    pub applicability: Applicability,
+}
+
+impl Suggestion {
+    /// Create a new suggestion with unspecified applicability.
+    pub fn new(message: impl Into<String>, span: Span, replacement: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            span,
+            replacement: replacement.into(),
+            applicability: Applicability::Unspecified,
+        }
+    }
+
+    /// Create a suggestion that is safe to auto-apply.
+    pub fn machine_applicable(
+        message: impl Into<String>,
+        span: Span,
+        replacement: impl Into<String>,
+    ) -> Self {
+        Self {
+            message: message.into(),
+            span,
+            replacement: replacement.into(),
+            applicability: Applicability::MachineApplicable,
+        }
+    }
+
+    /// Create a suggestion that may need human review.
+    pub fn maybe_incorrect(
+        message: impl Into<String>,
+        span: Span,
+        replacement: impl Into<String>,
+    ) -> Self {
+        Self {
+            message: message.into(),
+            span,
+            replacement: replacement.into(),
+            applicability: Applicability::MaybeIncorrect,
+        }
+    }
+
+    /// Create a suggestion with placeholders.
+    pub fn with_placeholders(
+        message: impl Into<String>,
+        span: Span,
+        replacement: impl Into<String>,
+    ) -> Self {
+        Self {
+            message: message.into(),
+            span,
+            replacement: replacement.into(),
+            applicability: Applicability::HasPlaceholders,
+        }
+    }
+
+    /// Set the applicability of this suggestion.
+    pub fn with_applicability(mut self, applicability: Applicability) -> Self {
+        self.applicability = applicability;
+        self
+    }
+}
+
 /// Rich diagnostic information for errors and warnings.
 ///
 /// This struct collects all supplementary information that can be
@@ -392,6 +515,8 @@ pub struct Diagnostic {
     pub notes: Vec<Note>,
     /// Actionable help suggestions.
     pub helps: Vec<Help>,
+    /// Code suggestions that can be applied to fix the issue.
+    pub suggestions: Vec<Suggestion>,
 }
 
 impl Diagnostic {
@@ -402,7 +527,10 @@ impl Diagnostic {
 
     /// Check if this diagnostic has any content.
     pub fn is_empty(&self) -> bool {
-        self.labels.is_empty() && self.notes.is_empty() && self.helps.is_empty()
+        self.labels.is_empty()
+            && self.notes.is_empty()
+            && self.helps.is_empty()
+            && self.suggestions.is_empty()
     }
 }
 
@@ -500,6 +628,15 @@ impl<K> DiagnosticWrapper<K> {
     #[inline]
     pub fn with_help(mut self, message: impl Into<String>) -> Self {
         self.diagnostic.helps.push(Help::new(message));
+        self
+    }
+
+    /// Add a code suggestion that can be applied to fix the issue.
+    ///
+    /// Suggestions provide machine-readable fix information for IDEs and tools.
+    #[inline]
+    pub fn with_suggestion(mut self, suggestion: Suggestion) -> Self {
+        self.diagnostic.suggestions.push(suggestion);
         self
     }
 }
@@ -1347,6 +1484,7 @@ mod tests {
         assert!(diag.labels.is_empty());
         assert!(diag.notes.is_empty());
         assert!(diag.helps.is_empty());
+        assert!(diag.suggestions.is_empty());
     }
 
     #[test]
@@ -1371,6 +1509,14 @@ mod tests {
     }
 
     #[test]
+    fn test_diagnostic_not_empty_with_suggestion() {
+        let mut diag = Diagnostic::new();
+        diag.suggestions
+            .push(Suggestion::new("try this", Span::new(0, 10), "replacement"));
+        assert!(!diag.is_empty());
+    }
+
+    #[test]
     fn test_label_creation() {
         let span = Span::new(10, 20);
         let label = Label::new("expected type here", span);
@@ -1388,6 +1534,82 @@ mod tests {
     fn test_help_display() {
         let help = Help::new("consider adding a type annotation");
         assert_eq!(help.to_string(), "consider adding a type annotation");
+    }
+
+    #[test]
+    fn test_suggestion_creation() {
+        let span = Span::new(10, 20);
+        let suggestion = Suggestion::new("try this fix", span, "new_code");
+        assert_eq!(suggestion.message, "try this fix");
+        assert_eq!(suggestion.span, span);
+        assert_eq!(suggestion.replacement, "new_code");
+        assert_eq!(suggestion.applicability, Applicability::Unspecified);
+    }
+
+    #[test]
+    fn test_suggestion_machine_applicable() {
+        let span = Span::new(0, 5);
+        let suggestion = Suggestion::machine_applicable("rename variable", span, "new_name");
+        assert_eq!(suggestion.applicability, Applicability::MachineApplicable);
+    }
+
+    #[test]
+    fn test_suggestion_maybe_incorrect() {
+        let span = Span::new(0, 5);
+        let suggestion = Suggestion::maybe_incorrect("try adding mut", span, "mut x");
+        assert_eq!(suggestion.applicability, Applicability::MaybeIncorrect);
+    }
+
+    #[test]
+    fn test_suggestion_with_placeholders() {
+        let span = Span::new(0, 5);
+        let suggestion = Suggestion::with_placeholders("add type annotation", span, ": <type>");
+        assert_eq!(suggestion.applicability, Applicability::HasPlaceholders);
+    }
+
+    #[test]
+    fn test_suggestion_with_applicability() {
+        let span = Span::new(0, 5);
+        let suggestion = Suggestion::new("fix", span, "new_code")
+            .with_applicability(Applicability::MachineApplicable);
+        assert_eq!(suggestion.applicability, Applicability::MachineApplicable);
+    }
+
+    #[test]
+    fn test_applicability_display() {
+        assert_eq!(
+            Applicability::MachineApplicable.to_string(),
+            "MachineApplicable"
+        );
+        assert_eq!(Applicability::MaybeIncorrect.to_string(), "MaybeIncorrect");
+        assert_eq!(
+            Applicability::HasPlaceholders.to_string(),
+            "HasPlaceholders"
+        );
+        assert_eq!(Applicability::Unspecified.to_string(), "Unspecified");
+    }
+
+    #[test]
+    fn test_applicability_default() {
+        assert_eq!(Applicability::default(), Applicability::Unspecified);
+    }
+
+    #[test]
+    fn test_error_with_suggestion() {
+        let span = Span::new(10, 20);
+        let error =
+            CompileError::new(ErrorKind::AssignToImmutable("x".to_string()), span).with_suggestion(
+                Suggestion::machine_applicable("add mut", Span::new(4, 5), "mut x"),
+            );
+
+        let diag = error.diagnostic();
+        assert_eq!(diag.suggestions.len(), 1);
+        assert_eq!(diag.suggestions[0].message, "add mut");
+        assert_eq!(diag.suggestions[0].replacement, "mut x");
+        assert_eq!(
+            diag.suggestions[0].applicability,
+            Applicability::MachineApplicable
+        );
     }
 
     #[test]

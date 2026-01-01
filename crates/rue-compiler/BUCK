@@ -19,6 +19,7 @@ rust_library(
         "//crates/rue-target:rue-target",
         "//third-party:annotate-snippets",
         "//third-party:rayon",
+        "//third-party:serde_json",
         "//third-party:tracing",
     ],
     visibility = ["PUBLIC"],
@@ -44,6 +45,7 @@ rust_test(
         "//crates/rue-target:rue-target",
         "//third-party:annotate-snippets",
         "//third-party:rayon",
+        "//third-party:serde_json",
         "//third-party:tracing",
     ],
 )
