@@ -66,16 +66,30 @@ def save_json(path: Path, data: dict) -> None:
 
 
 def validate_result(result: dict) -> bool:
-    """Validate that a result has the required fields."""
+    """Validate that a result has the required fields and non-empty data."""
     required_fields = ["timestamp", "benchmarks"]
     for field in required_fields:
         if field not in result:
-            print(f"Warning: Result missing required field: {field}", file=sys.stderr)
+            print(f"Error: Result missing required field: {field}", file=sys.stderr)
             return False
 
     if not isinstance(result["benchmarks"], list):
-        print("Warning: benchmarks field must be an array", file=sys.stderr)
+        print("Error: benchmarks field must be an array", file=sys.stderr)
         return False
+
+    if len(result["benchmarks"]) == 0:
+        print("Error: benchmarks array is empty - no data to record", file=sys.stderr)
+        print("This usually means all benchmark iterations failed.", file=sys.stderr)
+        return False
+
+    # Validate each benchmark has required fields
+    for i, bench in enumerate(result["benchmarks"]):
+        if "name" not in bench:
+            print(f"Error: benchmark[{i}] missing 'name' field", file=sys.stderr)
+            return False
+        if "mean_ms" not in bench:
+            print(f"Error: benchmark[{i}] ({bench.get('name', '?')}) missing 'mean_ms' field", file=sys.stderr)
+            return False
 
     return True
 

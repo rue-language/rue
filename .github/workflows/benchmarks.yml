@@ -100,6 +100,36 @@ jobs:
             echo "See [Performance Dashboard](https://rue-lang.dev/performance/) for visualization." >> README.md
           fi
 
+      - name: Validate benchmark results
+        run: |
+          echo "=== Benchmark Results ==="
+          cat /tmp/results.json
+          echo ""
+          echo "=== Validation ==="
+          python3 -c "
+          import json
+          import sys
+
+          with open('/tmp/results.json') as f:
+              data = json.load(f)
+
+          benchmarks = data.get('benchmarks', [])
+          print(f'Platform: ${{ matrix.platform }}')
+          print(f'Commit: {data.get(\"commit\", \"unknown\")}')
+          print(f'Benchmarks collected: {len(benchmarks)}')
+
+          if not benchmarks:
+              print('::error::No benchmark results collected! All benchmarks failed.')
+              sys.exit(1)
+
+          for b in benchmarks:
+              name = b.get('name', 'unknown')
+              mean = b.get('mean_ms', 0)
+              print(f'  - {name}: {mean:.2f}ms')
+
+          print('Validation passed!')
+          "
+
       - name: Append to history
         run: |
           # Create platform-specific history file if it doesn't exist
@@ -108,7 +138,13 @@ jobs:
             mkdir -p perf-branch/benchmarks
             echo '{"version": 1, "runs": []}' > "$history_file"
           fi
-          python3 scripts/append-benchmark.py /tmp/results.json "$history_file"
+
+          # Run append with explicit error checking
+          if ! python3 scripts/append-benchmark.py /tmp/results.json "$history_file"; then
+            echo "::error::Failed to append benchmark results for ${{ matrix.platform }}"
+            echo "See validation step above for details"
+            exit 1
+          fi
 
       - name: Commit and push to perf branch
         run: |

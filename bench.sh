@@ -342,6 +342,15 @@ print(json.dumps(result))
     all_results+=("{$(IFS=,; echo "${result_parts[*]}")}")
 done
 
+# Fail early if no benchmarks were collected
+if [[ ${#all_results[@]} -eq 0 ]]; then
+    log_error "No benchmark results collected! All benchmarks failed."
+    log_error "Check the benchmark programs and compiler output above for errors."
+    exit 1
+fi
+
+log_info "Successfully collected ${#all_results[@]} benchmark(s)"
+
 # Get metadata
 timestamp=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 # Get commit hash - try jj first (for local dev), fall back to git (for CI)
