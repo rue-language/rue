@@ -158,9 +158,6 @@ utils.strings.format("hello")
 
 // Access re-exported function directly
 utils.helper()
-
-// Can also import submodules directly if needed
-const internal = @import("utils/internal.rue");
 ```
 
 **Why `_` prefix?**
@@ -178,12 +175,12 @@ Only two visibility levels:
 
 | Modifier | Meaning |
 |----------|---------|
-| `pub` | Visible to importers |
-| (none) | Private to this file |
+| `pub` | Visible to all importers |
+| (none) | Private to this module (directory) |
 
 **Rationale:** Rust's `pub(crate)`, `pub(super)`, `pub(in path)` are rarely used and add cognitive overhead. If we later need package-level visibility, we can add `pub(pkg)` without breaking existing code.
 
-**Intra-directory visibility:** Files within the same directory can access each other's non-pub items. This matches Hylo's model where `pub` only affects cross-module (cross-directory) visibility.
+**Intra-module visibility:** Files within the same directory can access each other's non-pub items. This matches Hylo's model where `pub` only affects cross-module (cross-directory) visibility.
 
 ```rue
 // utils/strings.rue
