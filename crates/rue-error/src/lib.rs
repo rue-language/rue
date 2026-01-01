@@ -166,6 +166,11 @@ impl ErrorCode {
     pub const PREVIEW_FEATURE_REQUIRED: Self = Self(1100);
 
     // ========================================================================
+    // Comptime errors (E1200-E1299)
+    // ========================================================================
+    pub const COMPTIME_EVALUATION_FAILED: Self = Self(1200);
+
+    // ========================================================================
     // Internal compiler errors (E9000-E9999)
     // ========================================================================
     pub const INTERNAL_ERROR: Self = Self(9000);
@@ -241,6 +246,9 @@ pub enum PreviewFeature {
     /// Affine types and mutable value semantics.
     /// See ADR-0008 for the full design.
     AffineMvs,
+    /// Compile-time execution (comptime).
+    /// See ADR-0025 for the full design.
+    Comptime,
 }
 
 /// Error returned when parsing a preview feature name fails.
@@ -262,6 +270,7 @@ impl PreviewFeature {
         match *self {
             PreviewFeature::TestInfra => "test_infra",
             PreviewFeature::AffineMvs => "affine_mvs",
+            PreviewFeature::Comptime => "comptime",
         }
     }
 
@@ -271,12 +280,17 @@ impl PreviewFeature {
         match *self {
             PreviewFeature::TestInfra => "ADR-0005",
             PreviewFeature::AffineMvs => "ADR-0008",
+            PreviewFeature::Comptime => "ADR-0025",
         }
     }
 
     /// Get all available preview features.
     pub fn all() -> &'static [PreviewFeature] {
-        &[PreviewFeature::TestInfra, PreviewFeature::AffineMvs]
+        &[
+            PreviewFeature::TestInfra,
+            PreviewFeature::AffineMvs,
+            PreviewFeature::Comptime,
+        ]
     }
 
     /// Get a comma-separated list of all feature names (for help text).
@@ -300,6 +314,7 @@ impl std::str::FromStr for PreviewFeature {
         match s {
             "test_infra" => Ok(PreviewFeature::TestInfra),
             "affine_mvs" => Ok(PreviewFeature::AffineMvs),
+            "comptime" => Ok(PreviewFeature::Comptime),
             _ => Err(ParsePreviewFeatureError(s.to_string())),
         }
     }
@@ -961,6 +976,10 @@ pub enum ErrorKind {
         what: String,
     },
 
+    // Comptime errors
+    #[error("comptime evaluation failed: {reason}")]
+    ComptimeEvaluationFailed { reason: String },
+
     // Internal compiler errors (bugs in the compiler itself)
     #[error("internal compiler error: {0}")]
     InternalError(String),
@@ -1066,6 +1085,9 @@ impl ErrorKind {
 
             // Preview feature errors (E1100-E1199)
             ErrorKind::PreviewFeatureRequired { .. } => ErrorCode::PREVIEW_FEATURE_REQUIRED,
+
+            // Comptime errors (E1200-E1299)
+            ErrorKind::ComptimeEvaluationFailed { .. } => ErrorCode::COMPTIME_EVALUATION_FAILED,
 
             // Internal compiler errors (E9000-E9999)
             ErrorKind::InternalError(_) => ErrorCode::INTERNAL_ERROR,
@@ -1764,7 +1786,7 @@ mod tests {
     #[test]
     fn test_preview_feature_all_names() {
         let names = PreviewFeature::all_names();
-        assert_eq!(names, "test_infra, affine_mvs");
+        assert_eq!(names, "test_infra, affine_mvs, comptime");
     }
 
     // ========================================================================

@@ -43,6 +43,173 @@ use crate::scope::ScopedContext;
 use crate::sema_context::SemaContext;
 use crate::types::{EnumId, StructId, Type};
 
+/// Try to evaluate an RIR expression as a compile-time constant.
+///
+/// This is a standalone function that can be used from both `Sema` methods
+/// and parallel analysis code. It only requires a reference to the RIR.
+///
+/// Returns `Some(value)` if the expression can be fully evaluated at compile time,
+/// or `None` if evaluation requires runtime information (e.g., variable values,
+/// function calls) or would cause overflow/panic.
+fn try_evaluate_const_in_rir(rir: &rue_rir::Rir, inst_ref: InstRef) -> Option<ConstValue> {
+    let inst = rir.get(inst_ref);
+    match &inst.data {
+        // Integer literals
+        InstData::IntConst(value) => i64::try_from(*value).ok().map(ConstValue::Integer),
+
+        // Boolean literals
+        InstData::BoolConst(value) => Some(ConstValue::Bool(*value)),
+
+        // Unary negation: -expr
+        InstData::Neg { operand } => {
+            match try_evaluate_const_in_rir(rir, *operand)? {
+                ConstValue::Integer(n) => n.checked_neg().map(ConstValue::Integer),
+                ConstValue::Bool(_) => None, // Can't negate a boolean
+            }
+        }
+
+        // Logical NOT: !expr
+        InstData::Not { operand } => {
+            match try_evaluate_const_in_rir(rir, *operand)? {
+                ConstValue::Bool(b) => Some(ConstValue::Bool(!b)),
+                ConstValue::Integer(_) => None, // Can't logical-NOT an integer
+            }
+        }
+
+        // Binary arithmetic operations
+        InstData::Add { lhs, rhs } => {
+            let l = try_evaluate_const_in_rir(rir, *lhs)?.as_integer()?;
+            let r = try_evaluate_const_in_rir(rir, *rhs)?.as_integer()?;
+            l.checked_add(r).map(ConstValue::Integer)
+        }
+        InstData::Sub { lhs, rhs } => {
+            let l = try_evaluate_const_in_rir(rir, *lhs)?.as_integer()?;
+            let r = try_evaluate_const_in_rir(rir, *rhs)?.as_integer()?;
+            l.checked_sub(r).map(ConstValue::Integer)
+        }
+        InstData::Mul { lhs, rhs } => {
+            let l = try_evaluate_const_in_rir(rir, *lhs)?.as_integer()?;
+            let r = try_evaluate_const_in_rir(rir, *rhs)?.as_integer()?;
+            l.checked_mul(r).map(ConstValue::Integer)
+        }
+        InstData::Div { lhs, rhs } => {
+            let l = try_evaluate_const_in_rir(rir, *lhs)?.as_integer()?;
+            let r = try_evaluate_const_in_rir(rir, *rhs)?.as_integer()?;
+            if r == 0 {
+                None // Division by zero - defer to runtime
+            } else {
+                l.checked_div(r).map(ConstValue::Integer)
+            }
+        }
+        InstData::Mod { lhs, rhs } => {
+            let l = try_evaluate_const_in_rir(rir, *lhs)?.as_integer()?;
+            let r = try_evaluate_const_in_rir(rir, *rhs)?.as_integer()?;
+            if r == 0 {
+                None // Modulo by zero - defer to runtime
+            } else {
+                l.checked_rem(r).map(ConstValue::Integer)
+            }
+        }
+
+        // Comparison operations
+        InstData::Eq { lhs, rhs } => {
+            let l = try_evaluate_const_in_rir(rir, *lhs)?;
+            let r = try_evaluate_const_in_rir(rir, *rhs)?;
+            match (l, r) {
+                (ConstValue::Integer(a), ConstValue::Integer(b)) => Some(ConstValue::Bool(a == b)),
+                (ConstValue::Bool(a), ConstValue::Bool(b)) => Some(ConstValue::Bool(a == b)),
+                _ => None, // Mixed types
+            }
+        }
+        InstData::Ne { lhs, rhs } => {
+            let l = try_evaluate_const_in_rir(rir, *lhs)?;
+            let r = try_evaluate_const_in_rir(rir, *rhs)?;
+            match (l, r) {
+                (ConstValue::Integer(a), ConstValue::Integer(b)) => Some(ConstValue::Bool(a != b)),
+                (ConstValue::Bool(a), ConstValue::Bool(b)) => Some(ConstValue::Bool(a != b)),
+                _ => None,
+            }
+        }
+        InstData::Lt { lhs, rhs } => {
+            let l = try_evaluate_const_in_rir(rir, *lhs)?.as_integer()?;
+            let r = try_evaluate_const_in_rir(rir, *rhs)?.as_integer()?;
+            Some(ConstValue::Bool(l < r))
+        }
+        InstData::Gt { lhs, rhs } => {
+            let l = try_evaluate_const_in_rir(rir, *lhs)?.as_integer()?;
+            let r = try_evaluate_const_in_rir(rir, *rhs)?.as_integer()?;
+            Some(ConstValue::Bool(l > r))
+        }
+        InstData::Le { lhs, rhs } => {
+            let l = try_evaluate_const_in_rir(rir, *lhs)?.as_integer()?;
+            let r = try_evaluate_const_in_rir(rir, *rhs)?.as_integer()?;
+            Some(ConstValue::Bool(l <= r))
+        }
+        InstData::Ge { lhs, rhs } => {
+            let l = try_evaluate_const_in_rir(rir, *lhs)?.as_integer()?;
+            let r = try_evaluate_const_in_rir(rir, *rhs)?.as_integer()?;
+            Some(ConstValue::Bool(l >= r))
+        }
+
+        // Logical operations
+        InstData::And { lhs, rhs } => {
+            let l = try_evaluate_const_in_rir(rir, *lhs)?.as_bool()?;
+            let r = try_evaluate_const_in_rir(rir, *rhs)?.as_bool()?;
+            Some(ConstValue::Bool(l && r))
+        }
+        InstData::Or { lhs, rhs } => {
+            let l = try_evaluate_const_in_rir(rir, *lhs)?.as_bool()?;
+            let r = try_evaluate_const_in_rir(rir, *rhs)?.as_bool()?;
+            Some(ConstValue::Bool(l || r))
+        }
+
+        // Bitwise operations
+        InstData::BitAnd { lhs, rhs } => {
+            let l = try_evaluate_const_in_rir(rir, *lhs)?.as_integer()?;
+            let r = try_evaluate_const_in_rir(rir, *rhs)?.as_integer()?;
+            Some(ConstValue::Integer(l & r))
+        }
+        InstData::BitOr { lhs, rhs } => {
+            let l = try_evaluate_const_in_rir(rir, *lhs)?.as_integer()?;
+            let r = try_evaluate_const_in_rir(rir, *rhs)?.as_integer()?;
+            Some(ConstValue::Integer(l | r))
+        }
+        InstData::BitXor { lhs, rhs } => {
+            let l = try_evaluate_const_in_rir(rir, *lhs)?.as_integer()?;
+            let r = try_evaluate_const_in_rir(rir, *rhs)?.as_integer()?;
+            Some(ConstValue::Integer(l ^ r))
+        }
+        InstData::Shl { lhs, rhs } => {
+            let l = try_evaluate_const_in_rir(rir, *lhs)?.as_integer()?;
+            let r = try_evaluate_const_in_rir(rir, *rhs)?.as_integer()?;
+            // Only constant-fold small shift amounts to avoid type-width issues.
+            if r < 0 || r >= 8 {
+                return None;
+            }
+            Some(ConstValue::Integer(l << r))
+        }
+        InstData::Shr { lhs, rhs } => {
+            let l = try_evaluate_const_in_rir(rir, *lhs)?.as_integer()?;
+            let r = try_evaluate_const_in_rir(rir, *rhs)?.as_integer()?;
+            // Only constant-fold small shift amounts to avoid type-width issues.
+            if r < 0 || r >= 8 {
+                return None;
+            }
+            Some(ConstValue::Integer(l >> r))
+        }
+        InstData::BitNot { operand } => {
+            let n = try_evaluate_const_in_rir(rir, *operand)?.as_integer()?;
+            Some(ConstValue::Integer(!n))
+        }
+
+        // Comptime blocks: evaluate the inner expression
+        InstData::Comptime { expr } => try_evaluate_const_in_rir(rir, *expr),
+
+        // Everything else requires runtime evaluation
+        _ => None,
+    }
+}
+
 /// A description of a function to analyze.
 ///
 /// This is collected before parallel analysis so each function can be
@@ -1440,6 +1607,83 @@ fn analyze_inst_with_context(
                 ),
                 inst.span,
             ))
+        }
+
+        InstData::Comptime { expr } => {
+            // Gate the comptime feature
+            if !ctx.preview_features.contains(&PreviewFeature::Comptime) {
+                return Err(CompileError::new(
+                    ErrorKind::PreviewFeatureRequired {
+                        feature: PreviewFeature::Comptime,
+                        what: "comptime blocks".to_string(),
+                    },
+                    inst.span,
+                )
+                .with_help(format!(
+                    "use `--preview {}` to enable this feature ({})",
+                    PreviewFeature::Comptime.name(),
+                    PreviewFeature::Comptime.adr()
+                )));
+            }
+
+            // Try to evaluate the inner expression at compile time
+            match try_evaluate_const_in_rir(ctx.rir, *expr) {
+                Some(ConstValue::Integer(value)) => {
+                    // Get the expected type from HM inference
+                    let ty =
+                        get_resolved_type_ctx(analysis_ctx, inst_ref, inst.span, "comptime block")?;
+
+                    // Check if the value fits in the target type
+                    if value < 0 {
+                        // Can't represent negative values as u64 directly
+                        // For now, we only support non-negative integer values
+                        return Err(CompileError::new(
+                            ErrorKind::ComptimeEvaluationFailed {
+                                reason: "negative values not yet supported in comptime".to_string(),
+                            },
+                            inst.span,
+                        ));
+                    }
+
+                    let unsigned_value = value as u64;
+                    if !ty.literal_fits(unsigned_value) {
+                        return Err(CompileError::new(
+                            ErrorKind::LiteralOutOfRange {
+                                value: unsigned_value,
+                                ty: ty.name().to_string(),
+                            },
+                            inst.span,
+                        ));
+                    }
+
+                    let air_ref = air.add_inst(AirInst {
+                        data: AirInstData::Const(unsigned_value),
+                        ty,
+                        span: inst.span,
+                    });
+                    Ok(AnalysisResult::new(air_ref, ty))
+                }
+                Some(ConstValue::Bool(value)) => {
+                    let ty = Type::Bool;
+                    let air_ref = air.add_inst(AirInst {
+                        data: AirInstData::BoolConst(value),
+                        ty,
+                        span: inst.span,
+                    });
+                    Ok(AnalysisResult::new(air_ref, ty))
+                }
+                None => {
+                    // The expression couldn't be evaluated at compile time
+                    Err(CompileError::new(
+                        ErrorKind::ComptimeEvaluationFailed {
+                            reason:
+                                "expression contains values that cannot be known at compile time"
+                                    .to_string(),
+                        },
+                        inst.span,
+                    ))
+                }
+            }
         }
     }
 }
@@ -5148,6 +5392,67 @@ impl<'a> Sema<'a> {
             // Declaration no-ops (produce Unit in expression context)
             InstData::ImplDecl { .. } | InstData::DropFnDecl { .. } | InstData::FnDecl { .. } => {
                 self.analyze_decl_noop(air, inst_ref, ctx)
+            }
+
+            // Comptime block expression
+            InstData::Comptime { expr } => {
+                // Gate the comptime feature
+                self.require_preview(PreviewFeature::Comptime, "comptime blocks", inst.span)?;
+
+                // Try to evaluate the inner expression at compile time
+                match self.try_evaluate_const(*expr) {
+                    Some(ConstValue::Integer(value)) => {
+                        // Get the expected type from resolved types
+                        let ty =
+                            Self::get_resolved_type(ctx, inst_ref, inst.span, "comptime block")?;
+
+                        // Check if the value fits in the target type
+                        if value < 0 {
+                            return Err(CompileError::new(
+                                ErrorKind::ComptimeEvaluationFailed {
+                                    reason: "negative values not yet supported in comptime"
+                                        .to_string(),
+                                },
+                                inst.span,
+                            ));
+                        }
+
+                        let unsigned_value = value as u64;
+                        if !ty.literal_fits(unsigned_value) {
+                            return Err(CompileError::new(
+                                ErrorKind::LiteralOutOfRange {
+                                    value: unsigned_value,
+                                    ty: ty.name().to_string(),
+                                },
+                                inst.span,
+                            ));
+                        }
+
+                        let air_ref = air.add_inst(AirInst {
+                            data: AirInstData::Const(unsigned_value),
+                            ty,
+                            span: inst.span,
+                        });
+                        Ok(AnalysisResult::new(air_ref, ty))
+                    }
+                    Some(ConstValue::Bool(value)) => {
+                        let ty = Type::Bool;
+                        let air_ref = air.add_inst(AirInst {
+                            data: AirInstData::BoolConst(value),
+                            ty,
+                            span: inst.span,
+                        });
+                        Ok(AnalysisResult::new(air_ref, ty))
+                    }
+                    None => Err(CompileError::new(
+                        ErrorKind::ComptimeEvaluationFailed {
+                            reason:
+                                "expression contains values that cannot be known at compile time"
+                                    .to_string(),
+                        },
+                        inst.span,
+                    )),
+                }
             }
         }
     }

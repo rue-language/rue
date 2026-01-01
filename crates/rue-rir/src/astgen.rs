@@ -633,6 +633,15 @@ impl<'a> AstGen<'a> {
                     span: self_expr.span,
                 })
             }
+            Expr::Comptime(comptime_block) => {
+                // Generate the inner expression, wrapped in a Comptime instruction
+                // The semantic analyzer will evaluate this at compile time
+                let inner_expr = self.gen_expr(&comptime_block.expr);
+                self.rir.add_inst(Inst {
+                    data: InstData::Comptime { expr: inner_expr },
+                    span: comptime_block.span,
+                })
+            }
         }
     }
 

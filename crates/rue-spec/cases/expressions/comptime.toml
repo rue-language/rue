@@ -1,0 +1,265 @@
+# Compile-Time Execution (comptime) Tests
+#
+# Tests for the comptime block expression feature (ADR-0025, Phase 1).
+# This is a preview feature that must be enabled with --preview comptime.
+
+[section]
+id = "expressions.comptime"
+spec_chapter = "4.13"
+name = "Compile-Time Execution"
+description = "Comptime blocks evaluate expressions at compile time."
+
+# =============================================================================
+# Preview Feature Gating
+# =============================================================================
+
+[[case]]
+name = "comptime_requires_preview_flag"
+spec = ["4.13:1"]
+source = """
+fn main() -> i32 {
+    comptime { 42 }
+}
+"""
+compile_fail = true
+error_contains = "requires preview feature"
+
+[[case]]
+name = "comptime_error_includes_help"
+spec = ["4.13:1"]
+source = """
+fn main() -> i32 {
+    comptime { 1 + 2 }
+}
+"""
+compile_fail = true
+error_contains = "--preview comptime"
+
+# =============================================================================
+# Basic Comptime Expressions
+# =============================================================================
+
+[[case]]
+name = "comptime_integer_literal"
+spec = ["4.13:2"]
+preview = "comptime"
+preview_should_pass = true
+source = """
+fn main() -> i32 {
+    comptime { 42 }
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "comptime_addition"
+spec = ["4.13:2"]
+preview = "comptime"
+preview_should_pass = true
+source = """
+fn main() -> i32 {
+    comptime { 1 + 2 + 3 }
+}
+"""
+exit_code = 6
+
+[[case]]
+name = "comptime_complex_arithmetic"
+spec = ["4.13:2"]
+preview = "comptime"
+preview_should_pass = true
+source = """
+fn main() -> i32 {
+    comptime { 1 + 2 * 3 }
+}
+"""
+exit_code = 7
+
+[[case]]
+name = "comptime_subtraction"
+spec = ["4.13:2"]
+preview = "comptime"
+preview_should_pass = true
+source = """
+fn main() -> i32 {
+    comptime { 10 - 3 }
+}
+"""
+exit_code = 7
+
+[[case]]
+name = "comptime_multiplication"
+spec = ["4.13:2"]
+preview = "comptime"
+preview_should_pass = true
+source = """
+fn main() -> i32 {
+    comptime { 6 * 7 }
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "comptime_division"
+spec = ["4.13:2"]
+preview = "comptime"
+preview_should_pass = true
+source = """
+fn main() -> i32 {
+    comptime { 84 / 2 }
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "comptime_modulo"
+spec = ["4.13:2"]
+preview = "comptime"
+preview_should_pass = true
+source = """
+fn main() -> i32 {
+    comptime { 47 % 5 }
+}
+"""
+exit_code = 2
+
+[[case]]
+name = "comptime_boolean_true"
+spec = ["4.13:2"]
+preview = "comptime"
+preview_should_pass = true
+source = """
+fn main() -> i32 {
+    if comptime { true } { 42 } else { 0 }
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "comptime_boolean_false"
+spec = ["4.13:2"]
+preview = "comptime"
+preview_should_pass = true
+source = """
+fn main() -> i32 {
+    if comptime { false } { 0 } else { 42 }
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "comptime_comparison"
+spec = ["4.13:2"]
+preview = "comptime"
+preview_should_pass = true
+source = """
+fn main() -> i32 {
+    if comptime { 10 > 5 } { 42 } else { 0 }
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "comptime_equality"
+spec = ["4.13:2"]
+preview = "comptime"
+preview_should_pass = true
+source = """
+fn main() -> i32 {
+    if comptime { 5 == 5 } { 42 } else { 0 }
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "comptime_logical_and"
+spec = ["4.13:2"]
+preview = "comptime"
+preview_should_pass = true
+source = """
+fn main() -> i32 {
+    if comptime { true && true } { 42 } else { 0 }
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "comptime_logical_or"
+spec = ["4.13:2"]
+preview = "comptime"
+preview_should_pass = true
+source = """
+fn main() -> i32 {
+    if comptime { false || true } { 42 } else { 0 }
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "comptime_bitwise_and"
+spec = ["4.13:2"]
+preview = "comptime"
+preview_should_pass = true
+source = """
+fn main() -> i32 {
+    comptime { 255 & 15 }
+}
+"""
+exit_code = 15
+
+[[case]]
+name = "comptime_bitwise_or"
+spec = ["4.13:2"]
+preview = "comptime"
+preview_should_pass = true
+source = """
+fn main() -> i32 {
+    comptime { 240 | 15 }
+}
+"""
+exit_code = 255
+
+[[case]]
+name = "comptime_in_let_binding"
+spec = ["4.13:3"]
+preview = "comptime"
+preview_should_pass = true
+source = """
+fn main() -> i32 {
+    let x: i32 = comptime { 21 * 2 };
+    x
+}
+"""
+exit_code = 42
+
+# =============================================================================
+# Comptime Evaluation Failures
+# =============================================================================
+
+[[case]]
+name = "comptime_cannot_use_runtime_variable"
+spec = ["4.13:4"]
+preview = "comptime"
+preview_should_pass = true
+source = """
+fn main() -> i32 {
+    let x = 10;
+    comptime { x + 1 }
+}
+"""
+compile_fail = true
+error_contains = "cannot be known at compile time"
+
+[[case]]
+name = "comptime_cannot_call_function"
+spec = ["4.13:4"]
+preview = "comptime"
+preview_should_pass = true
+source = """
+fn add(a: i32, b: i32) -> i32 { a + b }
+fn main() -> i32 {
+    comptime { add(1, 2) }
+}
+"""
+compile_fail = true
+error_contains = "cannot be known at compile time"

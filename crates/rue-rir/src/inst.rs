@@ -1071,6 +1071,9 @@ impl Rir {
                 type_name: *type_name,
                 body: renumber(*body),
             },
+            InstData::Comptime { expr } => InstData::Comptime {
+                expr: renumber(*expr),
+            },
         };
 
         Inst {
@@ -1245,7 +1248,8 @@ impl Rir {
                 | InstData::IndexGet { .. }
                 | InstData::IndexSet { .. }
                 | InstData::TypeIntrinsic { .. }
-                | InstData::DropFnDecl { .. } => {}
+                | InstData::DropFnDecl { .. }
+                | InstData::Comptime { .. } => {}
             }
         }
     }
@@ -1599,6 +1603,13 @@ pub enum InstData {
         type_name: Spur,
         /// Destructor body instruction ref
         body: InstRef,
+    },
+
+    /// Comptime block expression: comptime { expr }
+    /// The inner expression must be evaluable at compile time.
+    Comptime {
+        /// The expression to evaluate at compile time
+        expr: InstRef,
     },
 }
 
@@ -2004,6 +2015,11 @@ impl<'a, 'b> RirPrinter<'a, 'b> {
                     .unwrap();
                     writeln!(out, "    {}", body).unwrap();
                     writeln!(out, "}}").unwrap();
+                }
+
+                // Comptime block
+                InstData::Comptime { expr } => {
+                    writeln!(out, "comptime {{ {} }}", expr).unwrap();
                 }
             }
         }

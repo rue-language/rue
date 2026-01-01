@@ -957,6 +957,23 @@ impl<'a> ConstraintGenerator<'a> {
                     InferType::Concrete(Type::Error)
                 }
             }
+
+            // Comptime block: the type depends on whether evaluation succeeds at compile time.
+            // For type inference, we use a fresh type variable that can unify with
+            // whatever type is expected from the context (e.g., a let binding's type annotation).
+            // Similar to integer literals, comptime blocks can adapt to their context.
+            InstData::Comptime { expr } => {
+                // Generate constraints for the inner expression
+                let inner_info = self.generate(*expr, ctx);
+
+                // Use a fresh variable so comptime can unify with expected type from context.
+                // The actual evaluation happens in sema where we know the final type.
+                let var = self.fresh_var();
+                self.int_literal_vars.push(var);
+                // Add constraint that this var equals the inner expression's type
+                self.add_constraint(Constraint::equal(InferType::Var(var), inner_info.ty, span));
+                InferType::Var(var)
+            }
         };
 
         // Record the type for this expression

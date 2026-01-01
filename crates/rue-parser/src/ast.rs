@@ -326,6 +326,8 @@ pub enum Expr {
     AssocFnCall(AssocFnCallExpr),
     /// Self expression (e.g., `self` in method bodies)
     SelfExpr(SelfExpr),
+    /// Comptime block expression (e.g., `comptime { 1 + 2 }`)
+    Comptime(ComptimeBlockExpr),
 }
 
 /// An integer literal.
@@ -755,6 +757,15 @@ pub struct SelfExpr {
     pub span: Span,
 }
 
+/// A comptime block expression (e.g., `comptime { 1 + 2 }`).
+/// The expression inside must be evaluable at compile time.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ComptimeBlockExpr {
+    /// The expression to evaluate at compile time
+    pub expr: Box<Expr>,
+    pub span: Span,
+}
+
 impl Expr {
     /// Get the span of this expression.
     pub fn span(&self) -> Span {
@@ -785,6 +796,7 @@ impl Expr {
             Expr::Path(path_expr) => path_expr.span,
             Expr::AssocFnCall(assoc_fn_call) => assoc_fn_call.span,
             Expr::SelfExpr(self_expr) => self_expr.span,
+            Expr::Comptime(comptime_expr) => comptime_expr.span,
         }
     }
 }
@@ -1100,6 +1112,10 @@ fn fmt_expr(f: &mut fmt::Formatter<'_>, expr: &Expr, level: usize) -> fmt::Resul
         }
         Expr::SelfExpr(_) => {
             writeln!(f, "SelfExpr")
+        }
+        Expr::Comptime(comptime) => {
+            writeln!(f, "Comptime")?;
+            fmt_expr(f, &comptime.expr, level + 1)
         }
     }
 }

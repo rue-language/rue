@@ -5,13 +5,13 @@
 
 use crate::ast::{
     ArgMode, ArrayLitExpr, AssignStatement, AssignTarget, AssocFnCallExpr, Ast, BinaryExpr,
-    BinaryOp, BlockExpr, BoolLit, BreakExpr, CallArg, CallExpr, ContinueExpr, Directive,
-    DirectiveArg, Directives, DropFn, EnumDecl, EnumVariant, Expr, FieldDecl, FieldExpr, FieldInit,
-    Function, Ident, IfExpr, ImplBlock, IndexExpr, IntLit, IntrinsicArg, IntrinsicCallExpr, Item,
-    LetPattern, LetStatement, LoopExpr, MatchArm, MatchExpr, Method, MethodCallExpr, NegIntLit,
-    Param, ParamMode, ParenExpr, PathExpr, PathPattern, Pattern, ReturnExpr, SelfExpr, SelfParam,
-    Statement, StringLit, StructDecl, StructLitExpr, TypeExpr, UnaryExpr, UnaryOp, UnitLit,
-    WhileExpr,
+    BinaryOp, BlockExpr, BoolLit, BreakExpr, CallArg, CallExpr, ComptimeBlockExpr, ContinueExpr,
+    Directive, DirectiveArg, Directives, DropFn, EnumDecl, EnumVariant, Expr, FieldDecl, FieldExpr,
+    FieldInit, Function, Ident, IfExpr, ImplBlock, IndexExpr, IntLit, IntrinsicArg,
+    IntrinsicCallExpr, Item, LetPattern, LetStatement, LoopExpr, MatchArm, MatchExpr, Method,
+    MethodCallExpr, NegIntLit, Param, ParamMode, ParenExpr, PathExpr, PathPattern, Pattern,
+    ReturnExpr, SelfExpr, SelfParam, Statement, StringLit, StructDecl, StructLitExpr, TypeExpr,
+    UnaryExpr, UnaryOp, UnitLit, WhileExpr,
 };
 use chumsky::input::{Input as ChumskyInput, MapExtra, Stream, ValueInput};
 use chumsky::pratt::{infix, left, prefix};
@@ -1012,6 +1012,16 @@ where
     // Block expression
     let block_expr = block_parser(expr.clone());
 
+    // Comptime block expression: comptime { expr }
+    let comptime_expr = just(TokenKind::Comptime)
+        .ignore_then(block_parser(expr.clone()))
+        .map_with(|inner_expr, e| {
+            Expr::Comptime(ComptimeBlockExpr {
+                expr: Box::new(inner_expr),
+                span: to_rue_span(e.span()),
+            })
+        });
+
     // Intrinsic argument: can be either a type or an expression
     // We parse as type only for unambiguous type syntax (primitives, (), !, [T;N])
     // Bare identifiers are parsed as expressions since they could be variables
@@ -1082,6 +1092,7 @@ where
     // Note: literal_parser() includes unit_lit which must come before paren_expr
     // so () is parsed as unit, not empty parens
     // Note: self_expr must come before call_and_access_parser since self is a keyword
+    // Note: comptime_expr must come before block_expr since comptime starts with a keyword
     let primary = choice((
         literal_parser(),
         control_flow_parser(expr.clone()),
@@ -1090,6 +1101,7 @@ where
         array_lit,
         call_and_access_parser(expr.clone()),
         paren_expr,
+        comptime_expr,
         block_expr,
     ));
 
