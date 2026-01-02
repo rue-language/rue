@@ -36,11 +36,12 @@ use lasso::{Spur, ThreadedRodeo};
 use rue_error::{CompileErrors, MultiErrorResult, PreviewFeatures};
 use rue_rir::Rir;
 
-use crate::intern_pool::TypeInternPool;
+// StructDef, EnumDef are in intern_pool
+use crate::intern_pool::{EnumDef, StructDef, TypeInternPool};
 use crate::sema_context::{
     ArrayTypeRegistry, InferenceContext as SemaContextInferenceContext, SemaContext,
 };
-use crate::types::{ArrayTypeDef, ArrayTypeId, EnumDef, EnumId, StructDef, StructId, Type};
+use crate::types::{ArrayTypeDef, ArrayTypeId, EnumId, StructId, Type};
 // Import new Type from intern pool explicitly when needed for inference context
 use crate::Type as NewType;
 

@@ -9,7 +9,9 @@ use std::collections::HashMap;
 use lasso::Spur;
 use rue_rir::RirParamMode;
 
-use crate::types::{EnumDef, EnumId, StructDef, StructId, Type};
+// StructDef, EnumDef are in intern_pool
+use crate::intern_pool::{EnumDef, StructDef};
+use crate::types::{EnumId, StructId, Type};
 
 /// Immutable type context for semantic analysis.
 ///

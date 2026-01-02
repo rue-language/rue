@@ -21,9 +21,10 @@ use rue_span::Span;
 
 use super::{FunctionInfo, InferenceContext, MethodInfo, Sema};
 use crate::inference::{FunctionSig, MethodSig};
+// StructDef, StructField, EnumDef are in intern_pool, re-exported at crate root
+use crate::intern_pool::{EnumDef, StructDef, StructField};
 use crate::type_context::{FunctionSignature, MethodSignature, TypeContext};
-// OldType is the legacy Type enum for pattern matching
-use crate::types::{EnumDef, EnumId, StructDef, StructField, StructId, Type as OldType};
+use crate::types::{EnumId, StructId, Type as OldType};
 // NewType is the intern pool Type for InferenceContext
 use crate::Type as NewType;
 
@@ -251,7 +252,9 @@ impl<'a> Sema<'a> {
 
                     // Convert Type to EnumId for backwards compatibility during migration
                     let enum_id = EnumId::from_pool_index(
-                        enum_type.pool_index().expect("enum type should have pool index"),
+                        enum_type
+                            .pool_index()
+                            .expect("enum type should have pool index"),
                     );
 
                     // Keep in enum_defs for backwards compatibility during migration
@@ -328,11 +331,14 @@ impl<'a> Sema<'a> {
                     };
 
                     // Register in type pool and get pool-based Type
-                    let (struct_type, _) = self.type_pool.register_struct(*name, struct_def.clone());
+                    let (struct_type, _) =
+                        self.type_pool.register_struct(*name, struct_def.clone());
 
                     // Convert Type to StructId for backwards compatibility during migration
                     let struct_id = StructId::from_pool_index(
-                        struct_type.pool_index().expect("struct type should have pool index"),
+                        struct_type
+                            .pool_index()
+                            .expect("struct type should have pool index"),
                     );
 
                     // Keep in struct_defs for backwards compatibility during migration

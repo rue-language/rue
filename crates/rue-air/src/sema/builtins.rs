@@ -7,7 +7,10 @@
 use rue_builtins::{BUILTIN_TYPES, BuiltinFieldType, BuiltinTypeDef};
 
 use super::Sema;
-use crate::types::{StructDef, StructField, StructId, Type};
+// StructDef and StructField are in intern_pool
+use crate::intern_pool::{StructDef, StructField};
+// Old Type enum - used for StructField.ty since arrays haven't been migrated
+use crate::types::{StructId, Type};
 
 impl<'a> Sema<'a> {
     /// Phase 0: Inject built-in types as synthetic structs.
@@ -21,7 +24,8 @@ impl<'a> Sema<'a> {
     /// destructor, and copy status derived from the `rue-builtins` registry.
     pub(crate) fn inject_builtin_types(&mut self) {
         for builtin in BUILTIN_TYPES {
-            // Convert builtin field types to our Type enum
+            // Convert builtin field types to the old Type enum
+            // (StructField.ty still uses old Type since arrays haven't been migrated)
             let fields: Vec<StructField> = builtin
                 .fields
                 .iter()
@@ -54,7 +58,9 @@ impl<'a> Sema<'a> {
 
             // Convert Type to StructId for backwards compatibility during migration
             let struct_id = StructId::from_pool_index(
-                struct_type.pool_index().expect("struct type should have pool index"),
+                struct_type
+                    .pool_index()
+                    .expect("struct type should have pool index"),
             );
 
             // Keep in struct_defs for backwards compatibility during migration

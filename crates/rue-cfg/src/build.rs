@@ -5,7 +5,12 @@
 
 use lasso::ThreadedRodeo;
 use rue_air::{
-    Air, AirArgMode, AirInstData, AirPattern, AirRef, ArrayTypeDef,
+    Air,
+    AirArgMode,
+    AirInstData,
+    AirPattern,
+    AirRef,
+    ArrayTypeDef,
     // Use OldType (legacy Type enum) for pattern matching on type variants
     OldType as Type,
     TypeInternPool,

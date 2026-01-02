@@ -37,6 +37,8 @@ use rue_rir::Rir;
 
 use crate::inference::{FunctionSig, InferType, MethodSig};
 use crate::intern_pool::TypeInternPool;
+// StructDef, EnumDef are in intern_pool
+use crate::intern_pool::{EnumDef, StructDef};
 // Use the new Type from intern pool for InferenceContext
 use crate::Type;
 // Import FunctionInfo, MethodInfo, and KnownSymbols from sema module to avoid duplication.
@@ -44,7 +46,7 @@ use crate::Type;
 pub use crate::sema::{FunctionInfo, KnownSymbols, MethodInfo};
 // OldType for ArrayTypeRegistry and pattern matching in format_type_name, is_type_copy, etc.
 use crate::types::Type as OldType;
-use crate::types::{ArrayTypeDef, ArrayTypeId, EnumDef, EnumId, StructDef, StructId};
+use crate::types::{ArrayTypeDef, ArrayTypeId, EnumId, StructId};
 
 /// Thread-safe registry for array types.
 ///

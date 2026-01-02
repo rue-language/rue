@@ -42,10 +42,8 @@ use crate::inst::{Air, AirArgMode, AirCallArg, AirInst, AirInstData, AirPattern,
 use crate::scope::ScopedContext;
 use crate::sema_context::SemaContext;
 // OldType is the legacy Type enum, used for pattern matching
-use crate::types::{EnumId, StructId};
 use crate::OldType;
-// Type is the new intern pool type for inference engine
-use crate::Type;
+use crate::types::{EnumId, StructId};
 
 /// Try to evaluate an RIR expression as a compile-time constant.
 ///
@@ -744,7 +742,11 @@ fn analyze_destructor_function_parallel(
 }
 
 /// Resolve a type symbol using the shared context.
-fn resolve_type_from_ctx(ctx: &SemaContext<'_>, type_sym: Spur, span: Span) -> CompileResult<OldType> {
+fn resolve_type_from_ctx(
+    ctx: &SemaContext<'_>,
+    type_sym: Spur,
+    span: Span,
+) -> CompileResult<OldType> {
     let type_name = ctx.interner.resolve(&type_sym);
 
     // Check primitive types first
@@ -1762,8 +1764,8 @@ where
 /// Merge results from parallel function analysis.
 fn merge_function_results(
     results: Vec<FunctionResult>,
-    struct_defs: Vec<crate::types::StructDef>,
-    enum_defs: Vec<crate::types::EnumDef>,
+    struct_defs: Vec<crate::intern_pool::StructDef>,
+    enum_defs: Vec<crate::intern_pool::EnumDef>,
     array_type_defs: Vec<crate::types::ArrayTypeDef>,
     type_pool: crate::intern_pool::TypeInternPool,
 ) -> MultiErrorResult<SemaOutput> {
@@ -2542,7 +2544,8 @@ fn analyze_match_ctx(
     let scrutinee_type = scrutinee_result.ty;
 
     // Validate that we can match on this type (integers, booleans, and enums)
-    if !scrutinee_type.is_integer() && scrutinee_type != OldType::Bool && !scrutinee_type.is_enum() {
+    if !scrutinee_type.is_integer() && scrutinee_type != OldType::Bool && !scrutinee_type.is_enum()
+    {
         return Err(CompileError::new(
             ErrorKind::InvalidMatchType(scrutinee_type.name().to_string()),
             span,

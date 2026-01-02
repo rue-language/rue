@@ -100,48 +100,8 @@ pub enum Type {
     Never,
 }
 
-/// Definition of a struct type.
-#[derive(Debug, Clone)]
-pub struct StructDef {
-    /// Struct name
-    pub name: String,
-    /// Fields in declaration order
-    pub fields: Vec<StructField>,
-    /// Whether this struct is marked with @copy (can be implicitly duplicated)
-    pub is_copy: bool,
-    /// Whether this struct is marked with @handle (can be explicitly duplicated via .handle())
-    pub is_handle: bool,
-    /// Whether this struct is a linear type (must be consumed, cannot be dropped)
-    pub is_linear: bool,
-    /// User-defined destructor function name, if any (e.g., "Data.__drop")
-    pub destructor: Option<String>,
-    /// Whether this is a built-in type (e.g., String) injected by the compiler.
-    ///
-    /// Built-in types behave like regular structs but have runtime implementations
-    /// for their methods rather than generated code.
-    pub is_builtin: bool,
-}
-
-/// A field in a struct definition.
-#[derive(Debug, Clone)]
-pub struct StructField {
-    /// Field name
-    pub name: String,
-    /// Field type
-    pub ty: Type,
-}
-
-impl StructDef {
-    /// Find a field by name and return its index and definition.
-    pub fn find_field(&self, name: &str) -> Option<(usize, &StructField)> {
-        self.fields.iter().enumerate().find(|(_, f)| f.name == name)
-    }
-
-    /// Get the number of fields in this struct.
-    pub fn field_count(&self) -> usize {
-        self.fields.len()
-    }
-}
+// StructDef and StructField are now defined in intern_pool.rs
+// They are re-exported from crate root for backwards compatibility
 
 /// Definition of an array type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -164,43 +124,8 @@ impl ArrayTypeDef {
     }
 }
 
-/// Definition of an enum type.
-#[derive(Debug, Clone)]
-pub struct EnumDef {
-    /// Enum name
-    pub name: String,
-    /// Variant names in declaration order
-    pub variants: Vec<String>,
-}
-
-impl EnumDef {
-    /// Get the number of variants in this enum.
-    pub fn variant_count(&self) -> usize {
-        self.variants.len()
-    }
-
-    /// Find a variant by name and return its index.
-    pub fn find_variant(&self, name: &str) -> Option<usize> {
-        self.variants.iter().position(|v| v == name)
-    }
-
-    /// Get the discriminant type for this enum.
-    /// Returns the smallest unsigned integer type that can hold all variant indices.
-    pub fn discriminant_type(&self) -> Type {
-        let count = self.variants.len();
-        if count == 0 {
-            Type::Never // Zero-variant enum is uninhabited
-        } else if count <= 256 {
-            Type::U8
-        } else if count <= 65536 {
-            Type::U16
-        } else if count <= 4_294_967_296 {
-            Type::U32
-        } else {
-            Type::U64
-        }
-    }
-}
+// EnumDef is now defined in intern_pool.rs
+// It is re-exported from crate root for backwards compatibility
 
 impl Type {
     /// Get a human-readable name for this type.
@@ -437,6 +362,10 @@ pub fn parse_array_type_syntax(type_name: &str) -> Option<(String, u64)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    // StructDef, StructField, and EnumDef are now in intern_pool
+    use crate::intern_pool::{EnumDef, StructDef, StructField};
+    // The intern pool Type is used for EnumDef.discriminant_type()
+    use crate::intern_pool::Type as NewType;
 
     // ========== Type ID tests ==========
 
@@ -965,7 +894,7 @@ mod tests {
             name: "Empty".to_string(),
             variants: vec![],
         };
-        assert_eq!(empty.discriminant_type(), Type::Never);
+        assert_eq!(empty.discriminant_type(), NewType::NEVER);
     }
 
     #[test]
@@ -975,13 +904,13 @@ mod tests {
             name: "Small".to_string(),
             variants: vec!["A".to_string()],
         };
-        assert_eq!(small.discriminant_type(), Type::U8);
+        assert_eq!(small.discriminant_type(), NewType::U8);
 
         let max_u8 = EnumDef {
             name: "MaxU8".to_string(),
             variants: (0..256).map(|i| format!("V{}", i)).collect(),
         };
-        assert_eq!(max_u8.discriminant_type(), Type::U8);
+        assert_eq!(max_u8.discriminant_type(), NewType::U8);
     }
 
     #[test]
@@ -991,6 +920,6 @@ mod tests {
             name: "Medium".to_string(),
             variants: (0..257).map(|i| format!("V{}", i)).collect(),
         };
-        assert_eq!(medium.discriminant_type(), Type::U16);
+        assert_eq!(medium.discriminant_type(), NewType::U16);
     }
 }

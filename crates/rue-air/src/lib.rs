@@ -34,18 +34,16 @@ pub use inst::{
     Air, AirArgMode, AirCallArg, AirInst, AirInstData, AirParamMode, AirPattern, AirRef,
 };
 pub use intern_pool::{
-    EnumData, StructData, Type, TypeData, TypeInternPool, TypeInternPoolStats,
+    EnumData, EnumDef, StructData, StructDef, StructField, Type, TypeData, TypeInternPool,
+    TypeInternPoolStats,
 };
 pub use sema::{AnalyzedFunction, FunctionInfo, GatherOutput, MethodInfo, Sema, SemaOutput};
 // Note: FunctionInfo and MethodInfo are defined in sema and re-exported by sema_context.
 // We export InferenceContext and SemaContext from sema_context.
 pub use sema_context::{InferenceContext as SemaContextInferenceContext, SemaContext};
 pub use type_context::{FunctionSignature, MethodSignature, TypeContext};
-// Re-export type definitions (but not the old Type enum which is now replaced by intern_pool::Type)
-pub use types::{
-    ArrayTypeDef, ArrayTypeId, EnumDef, EnumId, StructDef, StructField, StructId,
-    parse_array_type_syntax,
-};
+// Re-export ID types and array definitions from types.rs
+pub use types::{ArrayTypeDef, ArrayTypeId, EnumId, StructId, parse_array_type_syntax};
 // Re-export old Type enum under a different name for migration purposes
 pub use types::Type as OldType;
 

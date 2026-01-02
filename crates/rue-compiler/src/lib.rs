@@ -166,10 +166,15 @@ pub fn validate_runtime() -> Result<(), String> {
 // Re-export commonly used types
 pub use lasso::{Spur, ThreadedRodeo};
 pub use rue_air::{
-    Air, AnalyzedFunction, ArrayTypeDef,
+    Air,
+    AnalyzedFunction,
+    ArrayTypeDef,
     // Re-export OldType as Type for backwards compatibility
     OldType as Type,
-    Sema, SemaOutput, StructDef, TypeInternPool,
+    Sema,
+    SemaOutput,
+    StructDef,
+    TypeInternPool,
 };
 pub use rue_cfg::{Cfg, CfgBuilder, CfgOutput, OptLevel};
 pub use rue_codegen::{

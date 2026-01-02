@@ -28,10 +28,94 @@ use std::sync::RwLock;
 
 use lasso::Spur;
 
-// Import type definitions but NOT the old Type enum - we're replacing it
-use crate::types::{EnumDef, EnumId, StructDef, StructId, ArrayTypeId};
+// Import ID types from types.rs
+use crate::types::{ArrayTypeId, EnumId, StructId};
 // Import old Type with alias for conversion helpers during migration
 use crate::types::Type as OldType;
+
+/// Definition of a struct type.
+///
+/// This is the canonical definition - `StructField.ty` uses the new interned `Type`.
+#[derive(Debug, Clone)]
+pub struct StructDef {
+    /// Struct name
+    pub name: String,
+    /// Fields in declaration order
+    pub fields: Vec<StructField>,
+    /// Whether this struct is marked with @copy (can be implicitly duplicated)
+    pub is_copy: bool,
+    /// Whether this struct is marked with @handle (can be explicitly duplicated via .handle())
+    pub is_handle: bool,
+    /// Whether this struct is a linear type (must be consumed, cannot be dropped)
+    pub is_linear: bool,
+    /// User-defined destructor function name, if any (e.g., "Data.__drop")
+    pub destructor: Option<String>,
+    /// Whether this is a built-in type (e.g., String) injected by the compiler.
+    ///
+    /// Built-in types behave like regular structs but have runtime implementations
+    /// for their methods rather than generated code.
+    pub is_builtin: bool,
+}
+
+/// A field in a struct definition.
+#[derive(Debug, Clone)]
+pub struct StructField {
+    /// Field name
+    pub name: String,
+    /// Field type - uses the old Type enum for now since arrays haven't been
+    /// migrated to the pool yet. Will be changed to new interned Type in a future phase.
+    pub ty: OldType,
+}
+
+impl StructDef {
+    /// Find a field by name and return its index and definition.
+    pub fn find_field(&self, name: &str) -> Option<(usize, &StructField)> {
+        self.fields.iter().enumerate().find(|(_, f)| f.name == name)
+    }
+
+    /// Get the number of fields in this struct.
+    pub fn field_count(&self) -> usize {
+        self.fields.len()
+    }
+}
+
+/// Definition of an enum type.
+#[derive(Debug, Clone)]
+pub struct EnumDef {
+    /// Enum name
+    pub name: String,
+    /// Variant names in declaration order
+    pub variants: Vec<String>,
+}
+
+impl EnumDef {
+    /// Get the number of variants in this enum.
+    pub fn variant_count(&self) -> usize {
+        self.variants.len()
+    }
+
+    /// Find a variant by name and return its index.
+    pub fn find_variant(&self, name: &str) -> Option<usize> {
+        self.variants.iter().position(|v| v == name)
+    }
+
+    /// Get the discriminant type for this enum.
+    /// Returns the smallest unsigned integer type that can hold all variant indices.
+    pub fn discriminant_type(&self) -> Type {
+        let count = self.variants.len();
+        if count == 0 {
+            Type::NEVER // Zero-variant enum is uninhabited
+        } else if count <= 256 {
+            Type::U8
+        } else if count <= 65536 {
+            Type::U16
+        } else if count <= 4_294_967_296 {
+            Type::U32
+        } else {
+            Type::U64
+        }
+    }
+}
 
 /// A type in the Rue type system.
 ///
@@ -257,14 +341,14 @@ impl Type {
     #[must_use]
     pub fn literal_fits(self, value: u64) -> bool {
         match self.0 {
-            0 => value <= i8::MAX as u64,   // i8
-            1 => value <= i16::MAX as u64,  // i16
-            2 => value <= i32::MAX as u64,  // i32
-            3 => value <= i64::MAX as u64,  // i64
-            4 => value <= u8::MAX as u64,   // u8
-            5 => value <= u16::MAX as u64,  // u16
-            6 => value <= u32::MAX as u64,  // u32
-            7 => true,                      // u64 - any value fits
+            0 => value <= i8::MAX as u64,  // i8
+            1 => value <= i16::MAX as u64, // i16
+            2 => value <= i32::MAX as u64, // i32
+            3 => value <= i64::MAX as u64, // i64
+            4 => value <= u8::MAX as u64,  // u8
+            5 => value <= u16::MAX as u64, // u16
+            6 => value <= u32::MAX as u64, // u32
+            7 => true,                     // u64 - any value fits
             _ => false,
         }
     }
@@ -276,10 +360,10 @@ impl Type {
     #[must_use]
     pub fn negated_literal_fits(self, value: u64) -> bool {
         match self.0 {
-            0 => value <= (i8::MIN as i64).unsigned_abs(),   // i8
-            1 => value <= (i16::MIN as i64).unsigned_abs(),  // i16
-            2 => value <= (i32::MIN as i64).unsigned_abs(),  // i32
-            3 => value <= (i64::MIN).unsigned_abs(),         // i64
+            0 => value <= (i8::MIN as i64).unsigned_abs(),  // i8
+            1 => value <= (i16::MIN as i64).unsigned_abs(), // i16
+            2 => value <= (i32::MIN as i64).unsigned_abs(), // i32
+            3 => value <= (i64::MIN).unsigned_abs(),        // i64
             _ => false,
         }
     }

@@ -21,10 +21,15 @@
 //! 2. Drops each element in index order (element 0 first, then 1, etc.)
 
 use rue_air::{
-    Air, AirInst, AirInstData, AnalyzedFunction, ArrayTypeDef,
+    Air,
+    AirInst,
+    AirInstData,
+    AnalyzedFunction,
+    ArrayTypeDef,
     // Use OldType (legacy Type enum) for pattern matching on type variants
     OldType as Type,
-    StructDef, TypeInternPool,
+    StructDef,
+    TypeInternPool,
 };
 use rue_span::Span;
 
@@ -125,7 +130,9 @@ pub fn synthesize_drop_glue(
     for struct_type in type_pool.all_struct_types() {
         // Convert new Type to StructId for struct_def lookup
         let struct_id = rue_air::StructId::from_pool_index(
-            struct_type.pool_index().expect("struct type should have pool index"),
+            struct_type
+                .pool_index()
+                .expect("struct type should have pool index"),
         );
         let struct_def = type_pool.struct_def(struct_id);
         // Skip structs that don't need drop

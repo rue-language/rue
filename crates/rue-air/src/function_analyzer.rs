@@ -23,8 +23,9 @@ use rue_span::Span;
 
 use crate::inference::InferType;
 use crate::sema_context::SemaContext;
-use crate::types::{ArrayTypeId, Type};
+use crate::types::{ArrayTypeId, Type as OldType};
 // New Type from intern pool (used by InferType::Concrete)
+#[allow(unused_imports)]
 use crate::Type as NewType;
 
 /// Per-function mutable state during semantic analysis.
@@ -106,7 +107,8 @@ impl<'a, 'ctx> FunctionAnalyzer<'a, 'ctx> {
     /// Get or create an array type, returning its ID.
     ///
     /// Delegates to the thread-safe `ArrayTypeRegistry` in `SemaContext`.
-    pub fn get_or_create_array_type(&self, element_type: Type, length: u64) -> ArrayTypeId {
+    /// Takes old Type since the array registry still uses old Type.
+    pub fn get_or_create_array_type(&self, element_type: OldType, length: u64) -> ArrayTypeId {
         self.ctx.get_or_create_array_type(element_type, length)
     }
 
@@ -131,9 +133,9 @@ impl<'a, 'ctx> FunctionAnalyzer<'a, 'ctx> {
                 // First recursively process nested array types
                 self.pre_create_array_types_from_infer_type(element);
 
-                // Convert the element type to get the concrete Type
+                // Convert the element type to get the concrete Type (old Type)
                 let elem_ty = self.infer_type_to_type(element);
-                if elem_ty != Type::Error {
+                if elem_ty != OldType::Error {
                     // Pre-create this array type
                     self.get_or_create_array_type(elem_ty, *length);
                 }
@@ -144,27 +146,29 @@ impl<'a, 'ctx> FunctionAnalyzer<'a, 'ctx> {
         }
     }
 
-    /// Convert a fully-resolved InferType to a concrete Type.
+    /// Convert a fully-resolved InferType to a concrete old Type.
     ///
     /// This converts from the new `intern_pool::Type` (used in `InferType::Concrete`)
     /// to the old `types::Type` enum. During the Type Intern Pool migration (ADR-0024),
     /// this conversion layer bridges the two type representations.
-    pub fn infer_type_to_type(&self, ty: &InferType) -> Type {
+    ///
+    /// Returns the old Type for use in AIR instructions.
+    pub fn infer_type_to_type(&self, ty: &InferType) -> OldType {
         match ty {
             InferType::Concrete(t) => {
                 // Convert from new Type to old Type using the pool
                 self.ctx.type_pool.to_old_type(*t)
             }
-            InferType::Var(_) => Type::Error,
-            InferType::IntLiteral => Type::I32,
+            InferType::Var(_) => OldType::Error,
+            InferType::IntLiteral => OldType::I32,
             InferType::Array { element, length } => {
                 let elem_ty = self.infer_type_to_type(element);
-                if elem_ty == Type::Error {
-                    return Type::Error;
+                if elem_ty == OldType::Error {
+                    return OldType::Error;
                 }
                 // Use the thread-safe registry to get or create the array type
                 let id = self.get_or_create_array_type(elem_ty, *length);
-                Type::Array(id)
+                OldType::Array(id)
             }
         }
     }
@@ -194,11 +198,11 @@ impl<'a, 'ctx> FunctionAnalyzer<'a, 'ctx> {
         }
     }
 
-    /// Get a human-readable name for a type.
+    /// Get a human-readable name for a type (old Type).
     /// Delegates to context for most types but handles local array types.
-    pub fn format_type_name(&self, ty: Type) -> String {
+    pub fn format_type_name(&self, ty: OldType) -> String {
         match ty {
-            Type::Array(array_id) => {
+            OldType::Array(array_id) => {
                 let array_def = self.get_array_type_def(array_id);
                 format!(
                     "[{}; {}]",
@@ -210,11 +214,11 @@ impl<'a, 'ctx> FunctionAnalyzer<'a, 'ctx> {
         }
     }
 
-    /// Check if a type is a Copy type.
+    /// Check if a type is a Copy type (old Type).
     /// Delegates to context for most types but handles local array types.
-    pub fn is_type_copy(&self, ty: Type) -> bool {
+    pub fn is_type_copy(&self, ty: OldType) -> bool {
         match ty {
-            Type::Array(array_id) => {
+            OldType::Array(array_id) => {
                 let array_def = self.get_array_type_def(array_id);
                 self.is_type_copy(array_def.element_type)
             }
@@ -222,11 +226,11 @@ impl<'a, 'ctx> FunctionAnalyzer<'a, 'ctx> {
         }
     }
 
-    /// Get the number of ABI slots required for a type.
+    /// Get the number of ABI slots required for a type (old Type).
     /// Delegates to context for most types but handles local array types.
-    pub fn abi_slot_count(&self, ty: Type) -> u32 {
+    pub fn abi_slot_count(&self, ty: OldType) -> u32 {
         match ty {
-            Type::Array(array_id) => {
+            OldType::Array(array_id) => {
                 let array_def = self.get_array_type_def(array_id);
                 let element_slots = self.abi_slot_count(array_def.element_type);
                 element_slots * array_def.length as u32
@@ -235,30 +239,30 @@ impl<'a, 'ctx> FunctionAnalyzer<'a, 'ctx> {
         }
     }
 
-    /// Resolve a type symbol to a Type.
-    pub fn resolve_type(&mut self, type_sym: Spur, span: Span) -> CompileResult<Type> {
+    /// Resolve a type symbol to an old Type.
+    pub fn resolve_type(&mut self, type_sym: Spur, span: Span) -> CompileResult<OldType> {
         let type_name = self.ctx.interner.resolve(&type_sym);
 
         // Check primitive types first
         match type_name {
-            "i8" => return Ok(Type::I8),
-            "i16" => return Ok(Type::I16),
-            "i32" => return Ok(Type::I32),
-            "i64" => return Ok(Type::I64),
-            "u8" => return Ok(Type::U8),
-            "u16" => return Ok(Type::U16),
-            "u32" => return Ok(Type::U32),
-            "u64" => return Ok(Type::U64),
-            "bool" => return Ok(Type::Bool),
-            "()" => return Ok(Type::Unit),
-            "!" => return Ok(Type::Never),
+            "i8" => return Ok(OldType::I8),
+            "i16" => return Ok(OldType::I16),
+            "i32" => return Ok(OldType::I32),
+            "i64" => return Ok(OldType::I64),
+            "u8" => return Ok(OldType::U8),
+            "u16" => return Ok(OldType::U16),
+            "u32" => return Ok(OldType::U32),
+            "u64" => return Ok(OldType::U64),
+            "bool" => return Ok(OldType::Bool),
+            "()" => return Ok(OldType::Unit),
+            "!" => return Ok(OldType::Never),
             _ => {}
         }
 
         if let Some(struct_id) = self.ctx.get_struct(type_sym) {
-            Ok(Type::Struct(struct_id))
+            Ok(OldType::Struct(struct_id))
         } else if let Some(enum_id) = self.ctx.get_enum(type_sym) {
-            Ok(Type::Enum(enum_id))
+            Ok(OldType::Enum(enum_id))
         } else {
             // Check for array type syntax: [T; N]
             if let Some((element_type, length)) = crate::types::parse_array_type_syntax(type_name) {
@@ -267,7 +271,7 @@ impl<'a, 'ctx> FunctionAnalyzer<'a, 'ctx> {
                 let element_ty = self.resolve_type(element_sym, span)?;
                 // Get or create the array type
                 let array_type_id = self.get_or_create_array_type(element_ty, length);
-                Ok(Type::Array(array_type_id))
+                Ok(OldType::Array(array_type_id))
             } else {
                 Err(CompileError::new(
                     ErrorKind::UnknownType(type_name.to_string()),
