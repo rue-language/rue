@@ -839,7 +839,10 @@ fn analyze_function_with_context(
                 mode: *mode,
             },
         );
-        let is_by_ref = *mode != RirParamMode::Normal;
+        // Inout and Borrow parameters are passed by reference.
+        // Comptime parameters are VALUE params (like `comptime n: i32`), passed by value.
+        // Normal parameters are passed by value.
+        let is_by_ref = *mode == RirParamMode::Inout || *mode == RirParamMode::Borrow;
         let slot_count = if is_by_ref {
             1
         } else {
@@ -5050,8 +5053,10 @@ impl<'a> Sema<'a> {
                     mode: *mode,
                 },
             );
-            // Both inout and borrow are passed by reference (as a pointer = 1 slot)
-            let is_by_ref = *mode != RirParamMode::Normal;
+            // Inout and Borrow parameters are passed by reference.
+            // Comptime parameters are VALUE params (like `comptime n: i32`), passed by value.
+            // Normal parameters are passed by value.
+            let is_by_ref = *mode == RirParamMode::Inout || *mode == RirParamMode::Borrow;
             let slot_count = if is_by_ref {
                 // By-ref parameters are always 1 slot (pointer)
                 1
