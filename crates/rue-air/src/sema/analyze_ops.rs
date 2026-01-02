@@ -2029,7 +2029,8 @@ impl<'a> Sema<'a> {
 
         // Extract info before mutable borrow
         let is_generic = fn_info.is_generic;
-        let param_modes = fn_info.param_modes.clone();
+        let param_types = fn_info.param_types.clone();
+        let param_comptime = fn_info.param_comptime.clone();
         let param_names = fn_info.param_names.clone();
         let return_type_sym = fn_info.return_type_sym;
         let base_return_type = fn_info.return_type;
@@ -2045,23 +2046,35 @@ impl<'a> Sema<'a> {
             let mut type_subst: std::collections::HashMap<Spur, Type> =
                 std::collections::HashMap::new();
 
-            for (i, (air_arg, param_mode)) in air_args.iter().zip(param_modes.iter()).enumerate() {
-                if *param_mode == RirParamMode::Comptime {
-                    // This should be a TypeConst instruction - extract the type
-                    let inst = air.get(air_arg.value);
-                    if let AirInstData::TypeConst(ty) = &inst.data {
-                        type_args.push(*ty);
-                        // Record the substitution: param_name -> concrete_type
-                        type_subst.insert(param_names[i], *ty);
+            for (i, (air_arg, is_comptime)) in
+                air_args.iter().zip(param_comptime.iter()).enumerate()
+            {
+                if *is_comptime {
+                    // Check if this is a type parameter (param type is ComptimeType)
+                    // vs a value parameter (param type is i32, bool, etc.)
+                    if param_types[i] == Type::ComptimeType {
+                        // This is a TYPE parameter - expect a TypeConst instruction
+                        let inst = air.get(air_arg.value);
+                        if let AirInstData::TypeConst(ty) = &inst.data {
+                            type_args.push(*ty);
+                            // Record the substitution: param_name -> concrete_type
+                            type_subst.insert(param_names[i], *ty);
+                        } else {
+                            // Not a type - this is an error for type parameters
+                            return Err(CompileError::new(
+                                ErrorKind::ComptimeEvaluationFailed {
+                                    reason: "comptime type parameter must be a type literal"
+                                        .to_string(),
+                                },
+                                span,
+                            ));
+                        }
                     } else {
-                        // Not a type - this is an error
-                        return Err(CompileError::new(
-                            ErrorKind::ComptimeEvaluationFailed {
-                                reason: "comptime type parameter must be a type literal"
-                                    .to_string(),
-                            },
-                            span,
-                        ));
+                        // This is a VALUE parameter (e.g., comptime n: i32)
+                        // It's still passed at runtime but must be a compile-time constant.
+                        // The constant-ness has already been validated above.
+                        // We don't erase value parameters - they're passed normally.
+                        runtime_args.push(air_arg.clone());
                     }
                 } else {
                     runtime_args.push(air_arg.clone());

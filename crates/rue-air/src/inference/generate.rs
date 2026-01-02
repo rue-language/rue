@@ -50,8 +50,11 @@ pub struct FunctionSig {
     /// they'll be checked during specialization.
     pub is_generic: bool,
     /// Parameter modes (Normal, Inout, Borrow, Comptime).
-    /// Used to identify which parameters are comptime type parameters.
     pub param_modes: Vec<rue_rir::RirParamMode>,
+    /// Which parameters are comptime (declared with `comptime` keyword).
+    /// This is separate from param_modes because `comptime T: type` sets
+    /// is_comptime=true but mode=Normal.
+    pub param_comptime: Vec<bool>,
     /// Parameter names, needed for type substitution in generic returns.
     pub param_names: Vec<lasso::Spur>,
     /// The return type as a symbol (used for substitution lookup).
@@ -490,9 +493,7 @@ impl<'a> ConstraintGenerator<'a> {
                             let arg_info = self.generate(arg.value, ctx);
 
                             // If this is a comptime parameter, extract the type for substitution
-                            if i < func.param_modes.len()
-                                && func.param_modes[i] == rue_rir::RirParamMode::Comptime
-                            {
+                            if i < func.param_comptime.len() && func.param_comptime[i] {
                                 // The argument should be a TypeConst - extract the concrete type
                                 if let InferType::Concrete(Type::ComptimeType) = &arg_info.ty {
                                     // This is a type value - get the actual type from the RIR
@@ -1538,6 +1539,7 @@ mod tests {
             return_type,
             is_generic: false,
             param_modes: vec![rue_rir::RirParamMode::Normal; num_params],
+            param_comptime: vec![false; num_params],
             param_names: vec![],
             return_type_sym: lasso::Spur::default(),
         }

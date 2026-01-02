@@ -207,6 +207,18 @@ fn try_evaluate_const_in_rir(rir: &rue_rir::Rir, inst_ref: InstRef) -> Option<Co
         // Comptime blocks: evaluate the inner expression
         InstData::Comptime { expr } => try_evaluate_const_in_rir(rir, *expr),
 
+        // TypeConst: a type used as a value (e.g., `i32` in `identity(i32, 42)`)
+        // Note: This only handles primitive types. Struct/enum types need the
+        // full try_evaluate_const method which has access to the type maps.
+        InstData::TypeConst { type_name: _ } => {
+            // We can't resolve type_name here since we don't have an interner.
+            // Return a placeholder - the actual type resolution happens in
+            // the Sema::try_evaluate_const method which has full context.
+            // For primitive type checks, this is good enough since the
+            // argument is validated at the call site.
+            Some(ConstValue::Type(Type::ComptimeType))
+        }
+
         // Everything else requires runtime evaluation
         _ => None,
     }
@@ -7497,6 +7509,35 @@ impl<'a> Sema<'a> {
 
             // Comptime block: comptime { expr } is compile-time evaluable if its inner expr is
             InstData::Comptime { expr } => self.try_evaluate_const(*expr),
+
+            // TypeConst: a type used as a value (e.g., `i32` in `identity(i32, 42)`)
+            InstData::TypeConst { type_name } => {
+                let type_name_str = self.interner.resolve(type_name);
+                let ty = match type_name_str {
+                    "i8" => Type::I8,
+                    "i16" => Type::I16,
+                    "i32" => Type::I32,
+                    "i64" => Type::I64,
+                    "u8" => Type::U8,
+                    "u16" => Type::U16,
+                    "u32" => Type::U32,
+                    "u64" => Type::U64,
+                    "bool" => Type::Bool,
+                    "()" => Type::Unit,
+                    "!" => Type::Never,
+                    _ => {
+                        // Check for struct types
+                        if let Some(&struct_id) = self.structs.get(type_name) {
+                            Type::Struct(struct_id)
+                        } else if let Some(&enum_id) = self.enums.get(type_name) {
+                            Type::Enum(enum_id)
+                        } else {
+                            return None; // Unknown type
+                        }
+                    }
+                };
+                Some(ConstValue::Type(ty))
+            }
 
             // Everything else requires runtime evaluation
             _ => None,

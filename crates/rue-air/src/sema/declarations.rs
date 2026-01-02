@@ -99,6 +99,7 @@ impl<'a> Sema<'a> {
                         return_type: self.type_to_infer_type(info.return_type),
                         is_generic: info.is_generic,
                         param_modes: info.param_modes.clone(),
+                        param_comptime: info.param_comptime.clone(),
                         param_names: info.param_names.clone(),
                         return_type_sym: info.return_type_sym,
                     },
@@ -755,13 +756,17 @@ impl<'a> Sema<'a> {
         let param_names: Vec<Spur> = params.iter().map(|p| p.name).collect();
         let param_modes: Vec<RirParamMode> = params.iter().map(|p| p.mode).collect();
 
-        // Check if this function has any comptime type parameters
-        let is_generic = params.iter().any(|p| p.mode == RirParamMode::Comptime);
+        // Check if this function has any comptime TYPE parameters (not value parameters).
+        // A type parameter is a comptime param where the type is `type`.
+        // - `comptime T: type` -> type parameter (is_generic = true)
+        // - `comptime n: i32` -> value parameter (is_generic = false)
+        let type_sym = self.interner.get_or_intern("type");
+        let is_generic = params.iter().any(|p| p.is_comptime && p.ty == type_sym);
 
         // Collect type parameter names (comptime parameters whose type is `type`)
         let type_param_names: Vec<Spur> = params
             .iter()
-            .filter(|p| p.mode == RirParamMode::Comptime)
+            .filter(|p| p.is_comptime && p.ty == type_sym)
             .map(|p| p.name)
             .collect();
 
@@ -770,14 +775,15 @@ impl<'a> Sema<'a> {
         let param_types: Vec<Type> = params
             .iter()
             .map(|p| {
-                if p.mode == RirParamMode::Comptime {
-                    // For comptime type parameters, the type is `type` (represented by ComptimeType)
+                if p.is_comptime && p.ty == type_sym {
+                    // For comptime TYPE parameters (comptime T: type), the type is `type`
                     Ok(Type::ComptimeType)
                 } else if type_param_names.contains(&p.ty) {
                     // This parameter's type is a type parameter (e.g., `x: T` where T is comptime)
                     // Use ComptimeType as a placeholder - actual type determined at specialization
                     Ok(Type::ComptimeType)
                 } else {
+                    // Regular params OR comptime VALUE params (comptime n: i32)
                     self.resolve_type(p.ty, span)
                 }
             })

@@ -449,6 +449,7 @@ impl<'a> Sema<'a> {
                         return_type: self.type_to_infer_type(info.return_type),
                         is_generic: info.is_generic,
                         param_modes: info.param_modes.clone(),
+                        param_comptime: info.param_comptime.clone(),
                         param_names: info.param_names.clone(),
                         return_type_sym: info.return_type_sym,
                     },

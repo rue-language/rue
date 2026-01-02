@@ -188,8 +188,8 @@ fn create_specialized_function(
     // Build the type substitution map: comptime param name -> concrete Type
     let mut type_subst: HashMap<Spur, Type> = HashMap::new();
     let mut type_arg_idx = 0;
-    for (i, param_mode) in base_info.param_modes.iter().enumerate() {
-        if *param_mode == RirParamMode::Comptime {
+    for (i, is_comptime) in base_info.param_comptime.iter().enumerate() {
+        if *is_comptime {
             if type_arg_idx < key.type_args.len() {
                 type_subst.insert(base_info.param_names[i], key.type_args[type_arg_idx]);
                 type_arg_idx += 1;
@@ -216,8 +216,9 @@ fn create_specialized_function(
         .iter()
         .zip(base_info.param_types.iter())
         .zip(base_info.param_modes.iter())
-        .filter(|((_, _), mode)| **mode != RirParamMode::Comptime)
-        .map(|((name, ty), mode)| {
+        .zip(base_info.param_comptime.iter())
+        .filter(|(((_, _), _), is_comptime)| !*is_comptime)
+        .map(|(((name, ty), mode), _)| {
             // If the type is ComptimeType, look it up in the substitution map
             // The param name's type symbol is stored in param_types as ComptimeType,
             // but we need to find which type param it references.
