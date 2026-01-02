@@ -28,6 +28,8 @@ use rue_error::{
     PreviewFeature, WarningKind,
 };
 use rue_rir::{InstData, InstRef, RirArgMode, RirParamMode, RirPattern};
+
+use crate::sema::context::ConstValue;
 use rue_span::Span;
 
 use super::Sema;
@@ -1042,6 +1044,37 @@ impl<'a> Sema<'a> {
             return Ok(AnalysisResult::new(init_result.air_ref, Type::Unit));
         };
 
+        // Special case: comptime type variables
+        // When a variable is assigned a comptime type value (e.g., `let P = make_type()`),
+        // we store the type in comptime_type_vars instead of creating a runtime variable.
+        // This allows the variable to be used as a type annotation later (e.g., `let p: P = ...`).
+        if var_type == Type::ComptimeType {
+            // Extract the type value from the TypeConst instruction
+            let inst = air.get(init_result.air_ref);
+            if let AirInstData::TypeConst(ty) = &inst.data {
+                ctx.comptime_type_vars.insert(name, *ty);
+                // Return Unit - no runtime code is generated for comptime type bindings
+                let nop_ref = air.add_inst(AirInst {
+                    data: AirInstData::UnitConst,
+                    ty: Type::Unit,
+                    span,
+                });
+                return Ok(AnalysisResult::new(nop_ref, Type::Unit));
+            }
+            // If it's not a TypeConst, fall through to error (can't store types at runtime)
+            let name_str = self.interner.resolve(&name);
+            return Err(CompileError::new(
+                ErrorKind::ComptimeEvaluationFailed {
+                    reason: format!(
+                        "cannot store type value in variable '{}' at runtime; \
+                         type values only exist at compile time",
+                        name_str
+                    ),
+                },
+                span,
+            ));
+        }
+
         // Check if @allow(unused_variable) directive is present
         let directives = self.rir.get_directives(directives_start, directives_len);
         let allow_unused = self.has_allow_directive(&directives, "unused_variable");
@@ -1409,11 +1442,28 @@ impl<'a> Sema<'a> {
     ) -> CompileResult<AnalysisResult> {
         let field_inits = self.rir.get_field_inits(fields_start, fields_len);
         // Look up the struct type
+        // First check if it's a comptime type variable (e.g., `let Point = make_point(); Point { ... }`)
         let type_name_str = self.interner.resolve(&type_name);
-        let struct_id = *self
-            .structs
-            .get(&type_name)
-            .ok_or_compile_error(ErrorKind::UnknownType(type_name_str.to_string()), span)?;
+        let struct_id = if let Some(&ty) = ctx.comptime_type_vars.get(&type_name) {
+            // Extract struct ID from the comptime type
+            match ty.kind() {
+                TypeKind::Struct(id) => id,
+                _ => {
+                    return Err(CompileError::new(
+                        ErrorKind::TypeMismatch {
+                            expected: "struct type".to_string(),
+                            found: ty.name().to_string(),
+                        },
+                        span,
+                    ));
+                }
+            }
+        } else {
+            *self
+                .structs
+                .get(&type_name)
+                .ok_or_compile_error(ErrorKind::UnknownType(type_name_str.to_string()), span)?
+        };
 
         // Get struct def (returns owned copy from pool)
         let struct_def = self.type_pool.struct_def(struct_id);
@@ -1477,8 +1527,44 @@ impl<'a> Sema<'a> {
         for (init_field_name, field_value) in field_inits.iter() {
             let init_name = self.interner.resolve(&*init_field_name);
             let field_idx = field_index_map[init_name];
+            let expected_field_type = struct_def.fields[field_idx].ty;
 
-            let field_result = self.analyze_inst(air, *field_value, ctx)?;
+            // Check if this is an integer literal that needs type coercion
+            // This handles the case where HM inference couldn't resolve the type
+            // (e.g., when the struct comes from a comptime type variable)
+            let field_inst = self.rir.get(*field_value);
+            let field_result = if let InstData::IntConst(value) = &field_inst.data {
+                // Integer literal - use the expected field type directly
+                let air_ref = air.add_inst(AirInst {
+                    data: AirInstData::Const(*value),
+                    ty: expected_field_type,
+                    span: field_inst.span,
+                });
+                AnalysisResult::new(air_ref, expected_field_type)
+            } else {
+                // Not an integer literal - analyze normally
+                self.analyze_inst(air, *field_value, ctx)?
+            };
+
+            // Type check the field value against the expected type
+            if field_result.ty != expected_field_type {
+                return Err(CompileError::new(
+                    ErrorKind::TypeMismatch {
+                        expected: expected_field_type.name().to_string(),
+                        found: field_result.ty.name().to_string(),
+                    },
+                    span,
+                )
+                .with_label(
+                    format!(
+                        "field '{}' expects type {}",
+                        init_name,
+                        expected_field_type.name()
+                    ),
+                    span,
+                ));
+            }
+
             analyzed_fields[field_idx] = Some(field_result.air_ref);
             source_order.push(field_idx);
         }
@@ -1998,20 +2084,44 @@ impl<'a> Sema<'a> {
             }
         }
 
+        // Extract info before any mutable borrow
+        let is_generic = fn_info.is_generic;
+        let param_types = fn_info.param_types.clone();
+        let param_comptime = fn_info.param_comptime.clone();
+        let param_names = fn_info.param_names.clone();
+        let return_type_sym = fn_info.return_type_sym;
+        let base_return_type = fn_info.return_type;
+        let fn_body = fn_info.body;
+
+        // Special case: functions that return `type` with no parameters are implicitly comptime
+        // and should be evaluated at compile time.
+        if base_return_type == Type::ComptimeType && args.is_empty() {
+            // Try to evaluate the function body at compile time
+            if let Some(ConstValue::Type(ty)) = self.try_evaluate_const(fn_body) {
+                // Success! Return a TypeConst instruction instead of a runtime call
+                let air_ref = air.add_inst(AirInst {
+                    data: AirInstData::TypeConst(ty),
+                    ty: Type::ComptimeType,
+                    span,
+                });
+                return Ok(AnalysisResult::new(air_ref, Type::ComptimeType));
+            }
+            // If we can't evaluate at compile time, fall through to runtime call
+            // (which will fail at link time, but gives a better error experience)
+        }
+
         // Check that comptime parameters receive compile-time constant values
-        let has_comptime_params = fn_info.param_comptime.iter().any(|&c| c);
+        let has_comptime_params = param_comptime.iter().any(|&c| c);
         if has_comptime_params {
             // Gate behind comptime preview feature
             self.require_preview(PreviewFeature::Comptime, "comptime parameters", span)?;
 
             // Validate each comptime parameter receives a compile-time constant
-            for (i, (&is_comptime, arg)) in
-                fn_info.param_comptime.iter().zip(args.iter()).enumerate()
-            {
+            for (i, (&is_comptime, arg)) in param_comptime.iter().zip(args.iter()).enumerate() {
                 if is_comptime {
                     // Try to evaluate the argument at compile time
                     if self.try_evaluate_const(arg.value).is_none() {
-                        let param_name = self.interner.resolve(&fn_info.param_names[i]).to_string();
+                        let param_name = self.interner.resolve(&param_names[i]).to_string();
                         return Err(CompileError::new(
                             ErrorKind::ComptimeArgNotConst {
                                 param_name: param_name.clone(),
@@ -2026,14 +2136,6 @@ impl<'a> Sema<'a> {
                 }
             }
         }
-
-        // Extract info before mutable borrow
-        let is_generic = fn_info.is_generic;
-        let param_types = fn_info.param_types.clone();
-        let param_comptime = fn_info.param_comptime.clone();
-        let param_names = fn_info.param_names.clone();
-        let return_type_sym = fn_info.return_type_sym;
-        let base_return_type = fn_info.return_type;
 
         // Analyze all arguments
         let air_args = self.analyze_call_args(air, &args, ctx)?;

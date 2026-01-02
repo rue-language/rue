@@ -181,14 +181,18 @@ impl<'a> CfgBuilder<'a> {
             }
 
             AirInstData::TypeConst(_) => {
-                // TypeConst instructions are compile-time-only and should be erased
-                // during specialization. If we reach here, it means a TypeConst
-                // was not properly substituted - this is a compiler bug.
-                panic!(
-                    "TypeConst instruction reached CFG building - this is a compiler bug. \
-                     TypeConst should only appear as arguments to generic functions and \
-                     be erased during specialization."
-                );
+                // TypeConst instructions are compile-time-only. They can appear in the AIR
+                // in several valid scenarios:
+                // 1. As arguments to generic functions (substituted during specialization)
+                // 2. As the result of comptime type-returning functions (stored in comptime_type_vars)
+                //
+                // At CFG building time, any TypeConst that remains is simply a no-op -
+                // type values don't exist at runtime. We return Unit with no value to indicate
+                // this instruction doesn't produce runtime code.
+                ExprResult {
+                    value: None,
+                    continuation: Continuation::Continues,
+                }
             }
 
             AirInstData::CallGeneric { .. } => {

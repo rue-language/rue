@@ -192,6 +192,11 @@ pub(crate) struct AnalysisContext<'a> {
     /// Local string data indexed by local string table index.
     /// After analysis, these are merged into the global string table with ID remapping.
     pub local_strings: Vec<String>,
+    /// Comptime type variables: maps variable symbols to their compile-time type values.
+    /// When a variable is bound to a comptime type (e.g., `let P = make_point()` where
+    /// `make_point() -> type`), this map stores the resolved type so it can be used
+    /// as a type annotation (e.g., `let p: P = ...`).
+    pub comptime_type_vars: HashMap<Spur, Type>,
 }
 
 // Import InstRef for use in resolved_types

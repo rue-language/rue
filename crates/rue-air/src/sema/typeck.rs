@@ -167,6 +167,45 @@ impl<'a> Sema<'a> {
         }
     }
 
+    /// Resolve a type symbol to a Type, returning None if the type is unknown.
+    ///
+    /// This is used in comptime evaluation where we can't produce a compile error.
+    pub(crate) fn resolve_type_for_comptime(&mut self, type_sym: Spur) -> Option<Type> {
+        let type_name = self.interner.resolve(&type_sym);
+
+        // Check primitive types first
+        match type_name {
+            "i8" => return Some(Type::I8),
+            "i16" => return Some(Type::I16),
+            "i32" => return Some(Type::I32),
+            "i64" => return Some(Type::I64),
+            "u8" => return Some(Type::U8),
+            "u16" => return Some(Type::U16),
+            "u32" => return Some(Type::U32),
+            "u64" => return Some(Type::U64),
+            "bool" => return Some(Type::Bool),
+            "()" => return Some(Type::Unit),
+            "!" => return Some(Type::Never),
+            "type" => return Some(Type::ComptimeType),
+            _ => {}
+        }
+
+        if let Some(&struct_id) = self.structs.get(&type_sym) {
+            Some(Type::Struct(struct_id))
+        } else if let Some(&enum_id) = self.enums.get(&type_sym) {
+            Some(Type::Enum(enum_id))
+        } else if let Some((element_type, length)) = parse_array_type_syntax(type_name) {
+            // Resolve the element type first
+            let element_sym = self.interner.get_or_intern(&element_type);
+            let element_ty = self.resolve_type_for_comptime(element_sym)?;
+            // Get or create the array type
+            let array_type_id = self.get_or_create_array_type(element_ty, length);
+            Some(Type::Array(array_type_id))
+        } else {
+            None // Unknown type
+        }
+    }
+
     /// Get or create an array type for the given element type and length.
     pub(crate) fn get_or_create_array_type(
         &mut self,

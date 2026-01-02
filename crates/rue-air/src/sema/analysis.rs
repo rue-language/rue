@@ -872,6 +872,7 @@ fn analyze_function_with_context(
         warnings: Vec::new(),
         local_string_table: HashMap::new(),
         local_strings: Vec::new(),
+        comptime_type_vars: HashMap::new(),
     };
 
     // Analyze the body expression
@@ -1423,7 +1424,7 @@ fn analyze_inst_with_context(
             directives_len,
             name,
             is_mut,
-            ty: _,
+            ty,
             init,
         } => analyze_alloc_ctx(
             ctx,
@@ -1432,6 +1433,7 @@ fn analyze_inst_with_context(
             *directives_len,
             *name,
             *is_mut,
+            *ty,
             *init,
             inst.span,
             analysis_ctx,
@@ -2227,20 +2229,87 @@ fn analyze_alloc_ctx(
     directives_len: u32,
     name: Option<Spur>,
     is_mut: bool,
+    type_annotation: Option<Spur>,
     init: InstRef,
     span: Span,
     analysis_ctx: &mut AnalysisContext,
 ) -> CompileResult<AnalysisResult> {
     use super::context::LocalVar;
 
+    // Check if the type annotation is a comptime type variable
+    // If so, resolve it to the actual type before analyzing the initializer
+    let resolved_type_annotation = if let Some(type_sym) = type_annotation {
+        // Check comptime_type_vars first
+        if let Some(&ty) = analysis_ctx.comptime_type_vars.get(&type_sym) {
+            Some(ty)
+        } else {
+            None // Will be resolved later via normal type resolution
+        }
+    } else {
+        None
+    };
+
     // Analyze the initializer
     let init_result = analyze_inst_with_context(ctx, air, init, analysis_ctx)?;
-    let var_type = init_result.ty;
+    let var_type = if let Some(ty) = resolved_type_annotation {
+        // Type annotation came from a comptime type variable
+        // Verify the initializer type matches
+        if init_result.ty != ty {
+            let type_name = type_annotation
+                .map(|s| ctx.interner.resolve(&s).to_string())
+                .unwrap_or_else(|| "unknown".to_string());
+            return Err(CompileError::new(
+                ErrorKind::TypeMismatch {
+                    expected: ty.name().to_string(),
+                    found: init_result.ty.name().to_string(),
+                },
+                span,
+            )
+            .with_label(
+                format!("type annotation '{}' resolved to {}", type_name, ty.name()),
+                span,
+            ));
+        }
+        ty
+    } else {
+        init_result.ty
+    };
 
     // If name is None, this is a wildcard pattern `_` that discards the value
     let Some(name) = name else {
         return Ok(AnalysisResult::new(init_result.air_ref, Type::Unit));
     };
+
+    // Special case: comptime type variables
+    // When a variable is assigned a comptime type value (e.g., `let P = make_type()`),
+    // we store the type in comptime_type_vars instead of creating a runtime variable.
+    // This allows the variable to be used as a type annotation later (e.g., `let p: P = ...`).
+    if var_type == Type::ComptimeType {
+        // Extract the type value from the TypeConst instruction
+        let inst = air.get(init_result.air_ref);
+        if let AirInstData::TypeConst(ty) = &inst.data {
+            analysis_ctx.comptime_type_vars.insert(name, *ty);
+            // Return Unit - no runtime code is generated for comptime type bindings
+            let nop_ref = air.add_inst(AirInst {
+                data: AirInstData::UnitConst,
+                ty: Type::Unit,
+                span,
+            });
+            return Ok(AnalysisResult::new(nop_ref, Type::Unit));
+        }
+        // If it's not a TypeConst, fall through to error (can't store types at runtime)
+        let name_str = ctx.interner.resolve(&name);
+        return Err(CompileError::new(
+            ErrorKind::ComptimeEvaluationFailed {
+                reason: format!(
+                    "cannot store type value in variable '{}' at runtime; \
+                     type values only exist at compile time",
+                    name_str
+                ),
+            },
+            span,
+        ));
+    }
 
     // Check if @allow(unused_variable) directive is present
     let directives = ctx.rir.get_directives(directives_start, directives_len);
@@ -5225,6 +5294,7 @@ impl<'a> Sema<'a> {
             warnings: Vec::new(),
             local_string_table: HashMap::new(),
             local_strings: Vec::new(),
+            comptime_type_vars: HashMap::new(),
         };
 
         // ======================================================================
@@ -7347,7 +7417,7 @@ impl<'a> Sema<'a> {
     ///
     /// This is the foundation for compile-time bounds checking and can be extended
     /// for future `comptime` features.
-    pub(crate) fn try_evaluate_const(&self, inst_ref: InstRef) -> Option<ConstValue> {
+    pub(crate) fn try_evaluate_const(&mut self, inst_ref: InstRef) -> Option<ConstValue> {
         let inst = self.rir.get(inst_ref);
         match &inst.data {
             // Integer literals
@@ -7510,6 +7580,48 @@ impl<'a> Sema<'a> {
             // Comptime block: comptime { expr } is compile-time evaluable if its inner expr is
             InstData::Comptime { expr } => self.try_evaluate_const(*expr),
 
+            // Block: evaluate the result expression (last expression in the block)
+            InstData::Block { extra_start, len } => {
+                // A block is comptime-evaluable if it has a single instruction
+                // (which is the result expression) OR if all statements are
+                // side-effect-free and the result is comptime-evaluable.
+                // For now, only handle the single-instruction case (common for
+                // simple type-returning functions like `fn make_type() -> type { i32 }`).
+                if *len == 1 {
+                    let inst_refs = self.rir.get_extra(*extra_start, *len);
+                    let result_ref = InstRef::from_raw(inst_refs[0]);
+                    self.try_evaluate_const(result_ref)
+                } else {
+                    None // Blocks with multiple instructions need full interpreter support
+                }
+            }
+
+            // Anonymous struct type: evaluate to a comptime type value
+            InstData::AnonStructType {
+                fields_start,
+                fields_len,
+            } => {
+                // Get the field declarations from the RIR
+                let field_decls = self.rir.get_field_decls(*fields_start, *fields_len);
+
+                // Resolve each field type and build the struct fields
+                let mut struct_fields = Vec::with_capacity(field_decls.len());
+                for (name_sym, type_sym) in field_decls {
+                    let name_str = self.interner.resolve(&name_sym).to_string();
+                    // Try to resolve the type - for anonymous structs in comptime context,
+                    // we need to be able to resolve the field types
+                    let field_ty = self.resolve_type_for_comptime(type_sym)?;
+                    struct_fields.push(StructField {
+                        name: name_str,
+                        ty: field_ty,
+                    });
+                }
+
+                // Find or create the anonymous struct type
+                let struct_ty = self.find_or_create_anon_struct(&struct_fields);
+                Some(ConstValue::Type(struct_ty))
+            }
+
             // TypeConst: a type used as a value (e.g., `i32` in `identity(i32, 42)`)
             InstData::TypeConst { type_name } => {
                 let type_name_str = self.interner.resolve(type_name);
@@ -7539,6 +7651,36 @@ impl<'a> Sema<'a> {
                 Some(ConstValue::Type(ty))
             }
 
+            // VarRef: when a variable reference is actually a type name (e.g., `Point` in `fn make_type() -> type { Point }`)
+            InstData::VarRef { name } => {
+                // Try to resolve as a type - if it's a type name, return the type
+                let name_str = self.interner.resolve(name);
+                let ty = match name_str {
+                    "i8" => Type::I8,
+                    "i16" => Type::I16,
+                    "i32" => Type::I32,
+                    "i64" => Type::I64,
+                    "u8" => Type::U8,
+                    "u16" => Type::U16,
+                    "u32" => Type::U32,
+                    "u64" => Type::U64,
+                    "bool" => Type::Bool,
+                    "()" => Type::Unit,
+                    "!" => Type::Never,
+                    _ => {
+                        // Check for struct types
+                        if let Some(&struct_id) = self.structs.get(name) {
+                            Type::Struct(struct_id)
+                        } else if let Some(&enum_id) = self.enums.get(name) {
+                            Type::Enum(enum_id)
+                        } else {
+                            return None; // Not a type name - can't evaluate at compile time
+                        }
+                    }
+                };
+                Some(ConstValue::Type(ty))
+            }
+
             // Everything else requires runtime evaluation
             _ => None,
         }
@@ -7548,7 +7690,7 @@ impl<'a> Sema<'a> {
     ///
     /// This is used for compile-time bounds checking. Returns `Some(value)` if
     /// the index can be evaluated to an integer constant at compile time.
-    pub(crate) fn try_get_const_index(&self, inst_ref: InstRef) -> Option<i64> {
+    pub(crate) fn try_get_const_index(&mut self, inst_ref: InstRef) -> Option<i64> {
         self.try_evaluate_const(inst_ref)?.as_integer()
     }
 
