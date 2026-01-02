@@ -1442,13 +1442,15 @@ impl<'a> CfgBuilder<'a> {
             AirInstData::Ret(value) => {
                 let val = match value {
                     Some(v) => {
-                        let Some(val) = self.lower_value(*v) else {
+                        let result = self.lower_inst(*v);
+                        if matches!(result.continuation, Continuation::Diverged) {
                             // The return value expression itself diverged (e.g., a block
                             // containing an earlier return). The terminator was already set
                             // by the inner diverging expression, so just propagate divergence.
                             return Self::diverged();
-                        };
-                        Some(val)
+                        }
+                        // result.value may be None for Unit-typed expressions - that's OK
+                        result.value
                     }
                     None => None,
                 };

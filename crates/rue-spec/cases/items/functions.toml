@@ -278,6 +278,19 @@ params = [
   { variant = "with_statements", source = "fn main() {\n    let x = 42;\n}" },
 ]
 
+[[case]]
+name = "unit_return_with_if_{variant}"
+spec = ["6.1:6"]
+description = "Unit-returning functions with if statements (regression test for CFG terminator bug)"
+source = "{source}"
+exit_code = 0
+params = [
+  { variant = "simple", source = "fn unit_fn(x: i32) {\n    if x > 0 {\n        let y = 1;\n    }\n}\nfn main() -> i32 { unit_fn(5); 0 }" },
+  { variant = "with_else", source = "fn unit_fn(x: i32) {\n    if x > 0 {\n        let y = 1;\n    } else {\n        let y = 2;\n    }\n}\nfn main() -> i32 { unit_fn(5); 0 }" },
+  { variant = "nested", source = "fn unit_fn(x: i32) {\n    if x > 0 {\n        if x > 5 {\n            let y = 1;\n        }\n    }\n}\nfn main() -> i32 { unit_fn(7); 0 }" },
+  { variant = "with_intrinsic", source = "fn unit_fn(x: i32) {\n    if x > 0 {\n        @dbg(x);\n    }\n}\nfn main() -> i32 { unit_fn(5); 0 }" },
+]
+
 # =============================================================================
 # Struct parameters
 # =============================================================================
