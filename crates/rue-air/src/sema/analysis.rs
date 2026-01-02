@@ -4172,6 +4172,19 @@ fn analyze_method_call_ctx(
     let receiver_result = analyze_inst_with_context(ctx, air, receiver, analysis_ctx)?;
     let receiver_type = receiver_result.ty;
 
+    // Handle module member access: module.function() becomes a direct function call
+    if let Type::Module(_module_id) = receiver_type {
+        return analyze_module_member_call_ctx(
+            ctx,
+            air,
+            method,
+            args_start,
+            args_len,
+            span,
+            analysis_ctx,
+        );
+    }
+
     // Get the type name for method lookup
     let type_name = match receiver_type {
         Type::Struct(struct_id) => {
@@ -4251,6 +4264,99 @@ fn analyze_method_call_ctx(
             name: full_name_sym,
             args_start,
             args_len,
+        },
+        ty: return_type,
+        span,
+    });
+    Ok(AnalysisResult::new(air_ref, return_type))
+}
+
+/// Analyze a module member call: `module.function(args)` becomes a direct function call.
+///
+/// In Phase 1 of the module system, modules are virtual namespaces. When you import
+/// a module with `@import("foo.rue")`, all of foo.rue's functions are already in the
+/// global function table (via multi-file compilation). The module just provides a
+/// namespace at the source level.
+///
+/// This function looks up the function by name in the global function table and
+/// generates a direct call to it.
+fn analyze_module_member_call_ctx(
+    ctx: &SemaContext<'_>,
+    air: &mut Air,
+    function_name: Spur,
+    args_start: u32,
+    args_len: u32,
+    span: Span,
+    analysis_ctx: &mut AnalysisContext,
+) -> CompileResult<AnalysisResult> {
+    // Look up the function in the global function table
+    let fn_name_str = ctx.interner.resolve(&function_name).to_string();
+    let fn_info = ctx
+        .get_function(function_name)
+        .ok_or_compile_error(ErrorKind::UndefinedFunction(fn_name_str.clone()), span)?;
+
+    let args = ctx.rir.get_call_args(args_start, args_len);
+
+    // Check argument count
+    if args.len() != fn_info.param_types.len() {
+        let expected = fn_info.param_types.len();
+        let found = args.len();
+        return Err(CompileError::new(
+            ErrorKind::WrongArgumentCount { expected, found },
+            span,
+        ));
+    }
+
+    // Check for exclusive access violation
+    check_exclusive_access_ctx(ctx, &args, span)?;
+
+    // Check that call-site argument modes match function parameter modes
+    for (i, (arg, expected_mode)) in args.iter().zip(fn_info.param_modes.iter()).enumerate() {
+        match expected_mode {
+            RirParamMode::Inout => {
+                if arg.mode != RirArgMode::Inout {
+                    return Err(CompileError::new(
+                        ErrorKind::InoutKeywordMissing,
+                        ctx.rir.get(args[i].value).span,
+                    ));
+                }
+            }
+            RirParamMode::Borrow => {
+                if arg.mode != RirArgMode::Borrow {
+                    return Err(CompileError::new(
+                        ErrorKind::BorrowKeywordMissing,
+                        ctx.rir.get(args[i].value).span,
+                    ));
+                }
+            }
+            RirParamMode::Normal => {
+                // Normal params accept any mode
+            }
+            RirParamMode::Comptime => {
+                // Comptime params - handled elsewhere
+            }
+        }
+    }
+
+    // Analyze arguments
+    let air_args = analyze_call_args_ctx(ctx, air, &args, analysis_ctx)?;
+
+    let return_type = fn_info.return_type;
+
+    // Encode call args
+    let mut extra_data = Vec::with_capacity(air_args.len() * 2);
+    for arg in &air_args {
+        extra_data.push(arg.value.as_u32());
+        extra_data.push(arg.mode.as_u32());
+    }
+    let call_args_start = air.add_extra(&extra_data);
+    let call_args_len = air_args.len() as u32;
+
+    let air_ref = air.add_inst(AirInst {
+        data: AirInstData::Call {
+            name: function_name,
+            args_start: call_args_start,
+            args_len: call_args_len,
         },
         ty: return_type,
         span,
@@ -4810,24 +4916,47 @@ fn analyze_intrinsic_ctx(
             }
         };
 
-        // TODO: Actually resolve and load the imported module.
-        // For now, return a placeholder that allows us to gate the feature.
-        // The actual module loading will be implemented in a follow-up task.
-        //
-        // When implemented, this should:
-        // 1. Resolve import_path relative to the current file
-        // 2. Load and parse the target file
-        // 3. Create a synthetic struct type containing pub declarations
-        // 4. Return that struct type
-        let _ = import_path; // Silence unused warning for now
+        // Resolve the import path relative to the current source file
+        let resolved_path = if import_path.starts_with("./") || import_path.starts_with("../") {
+            // Relative path - resolve against current file's directory
+            match &ctx.source_file_path {
+                Some(source_path) => {
+                    let source_dir = std::path::Path::new(source_path)
+                        .parent()
+                        .unwrap_or(std::path::Path::new("."));
+                    source_dir.join(&import_path).to_string_lossy().to_string()
+                }
+                None => {
+                    // No source file path set - treat as relative to current directory
+                    import_path.clone()
+                }
+            }
+        } else {
+            // Assume it's a relative path from current directory or same directory
+            match &ctx.source_file_path {
+                Some(source_path) => {
+                    let source_dir = std::path::Path::new(source_path)
+                        .parent()
+                        .unwrap_or(std::path::Path::new("."));
+                    source_dir.join(&import_path).to_string_lossy().to_string()
+                }
+                None => import_path.clone(),
+            }
+        };
 
-        // Return Unit for now - this will change when module loading is implemented
+        // Get or create the module in the registry
+        // The module will be populated lazily when member access is performed
+        let (module_id, _is_new) = ctx.get_or_create_module(import_path.clone(), resolved_path);
+
+        // Return a module type
+        // AIR doesn't have a ModuleConst instruction, so we use UnitConst as a placeholder
+        // The type is what matters for subsequent member access resolution
         let air_ref = air.add_inst(AirInst {
-            data: AirInstData::UnitConst,
-            ty: Type::Unit,
+            data: AirInstData::UnitConst, // Placeholder - module values are compile-time only
+            ty: Type::Module(module_id),
             span,
         });
-        Ok(AnalysisResult::new(air_ref, Type::Unit))
+        Ok(AnalysisResult::new(air_ref, Type::Module(module_id)))
     } else {
         // Unknown intrinsic - resolve name for error message
         let intrinsic_name = ctx.interner.resolve(&name);
@@ -6237,6 +6366,12 @@ impl<'a> Sema<'a> {
         let receiver_result = self.analyze_inst(air, receiver, ctx)?;
         let receiver_type = receiver_result.ty;
 
+        // Handle module member access: module.function() becomes a direct function call
+        if let Type::Module(_module_id) = receiver_type {
+            return self
+                .analyze_module_member_call_impl(air, method, args_start, args_len, span, ctx);
+        }
+
         // Check that receiver is a struct type
         let struct_id = match receiver_type {
             Type::Struct(id) => id,
@@ -6337,6 +6472,95 @@ impl<'a> Sema<'a> {
                 name: call_name_sym,
                 args_start,
                 args_len,
+            },
+            ty: return_type,
+            span,
+        });
+        Ok(AnalysisResult::new(air_ref, return_type))
+    }
+
+    /// Analyze a module member call: `module.function(args)` becomes a direct function call.
+    ///
+    /// In Phase 1 of the module system, modules are virtual namespaces. When you import
+    /// a module with `@import("foo.rue")`, all of foo.rue's functions are already in the
+    /// global function table (via multi-file compilation). The module just provides a
+    /// namespace at the source level.
+    fn analyze_module_member_call_impl(
+        &mut self,
+        air: &mut Air,
+        function_name: Spur,
+        args_start: u32,
+        args_len: u32,
+        span: Span,
+        ctx: &mut AnalysisContext,
+    ) -> CompileResult<AnalysisResult> {
+        // Look up the function in the global function table
+        let fn_name_str = self.interner.resolve(&function_name).to_string();
+        let fn_info = self
+            .functions
+            .get(&function_name)
+            .ok_or_compile_error(ErrorKind::UndefinedFunction(fn_name_str.clone()), span)?
+            .clone();
+
+        let args = self.rir.get_call_args(args_start, args_len);
+
+        // Check argument count
+        if args.len() != fn_info.param_types.len() {
+            let expected = fn_info.param_types.len();
+            let found = args.len();
+            return Err(CompileError::new(
+                ErrorKind::WrongArgumentCount { expected, found },
+                span,
+            ));
+        }
+
+        // Check that call-site argument modes match function parameter modes
+        for (i, (arg, expected_mode)) in args.iter().zip(fn_info.param_modes.iter()).enumerate() {
+            match expected_mode {
+                RirParamMode::Inout => {
+                    if arg.mode != RirArgMode::Inout {
+                        return Err(CompileError::new(
+                            ErrorKind::InoutKeywordMissing,
+                            self.rir.get(args[i].value).span,
+                        ));
+                    }
+                }
+                RirParamMode::Borrow => {
+                    if arg.mode != RirArgMode::Borrow {
+                        return Err(CompileError::new(
+                            ErrorKind::BorrowKeywordMissing,
+                            self.rir.get(args[i].value).span,
+                        ));
+                    }
+                }
+                RirParamMode::Normal => {
+                    // Normal params accept any mode
+                }
+                RirParamMode::Comptime => {
+                    // Comptime params - handled elsewhere
+                }
+            }
+        }
+
+        // Analyze arguments
+        let air_args = self.analyze_call_args(air, &args, ctx)?;
+
+        let return_type = fn_info.return_type;
+
+        // Encode call args
+        let mut extra_data = Vec::with_capacity(air_args.len() * 2);
+        for arg in &air_args {
+            extra_data.push(arg.value.as_u32());
+            extra_data.push(arg.mode.as_u32());
+        }
+        let call_args_start = air.add_extra(&extra_data);
+        let call_args_len = air_args.len() as u32;
+
+        let air_ref = air.add_inst(AirInst {
+            data: AirInstData::Call {
+                name: function_name,
+                args_start: call_args_start,
+                args_len: call_args_len,
             },
             ty: return_type,
             span,
@@ -6963,18 +7187,25 @@ impl<'a> Sema<'a> {
             }
         };
 
-        // TODO: Actually resolve and load the imported module.
-        // For now, return a placeholder that allows us to gate the feature.
-        // The actual module loading will be implemented in a follow-up task.
-        let _ = import_path; // Silence unused warning for now
+        // Resolve the import path relative to the current source file
+        // For now, we just use the import_path as-is since module resolution is simple
+        let resolved_path = import_path.clone();
 
-        // Return Unit for now - this will change when module loading is implemented
+        // Get or create the module in the registry
+        // The module will be populated lazily when member access is performed
+        let (module_id, _is_new) = self
+            .module_registry
+            .get_or_create(import_path.clone(), resolved_path);
+
+        // Return a module type
+        // AIR doesn't have a ModuleConst instruction, so we use UnitConst as a placeholder
+        // The type is what matters for subsequent member access resolution
         let air_ref = air.add_inst(AirInst {
-            data: AirInstData::UnitConst,
-            ty: Type::Unit,
+            data: AirInstData::UnitConst, // Placeholder - module values are compile-time only
+            ty: Type::Module(module_id),
             span,
         });
-        Ok(AnalysisResult::new(air_ref, Type::Unit))
+        Ok(AnalysisResult::new(air_ref, Type::Module(module_id)))
     }
 
     // Note: The old analyze_inst body from here onwards is now handled by the

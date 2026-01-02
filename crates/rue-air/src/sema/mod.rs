@@ -130,6 +130,7 @@ impl<'a> GatherOutput<'a> {
             builtin_string_id: self.builtin_string_id,
             known: KnownSymbols::new(self.interner),
             type_pool: self.type_pool,
+            module_registry: crate::sema_context::ModuleRegistry::new(),
         }
     }
 
@@ -282,6 +283,8 @@ pub struct Sema<'a> {
     /// It is populated during declaration collection but not yet used for
     /// type operations. Later phases will migrate to using the pool exclusively.
     pub(crate) type_pool: TypeInternPool,
+    /// Module registry for tracking imported modules (Phase 1 modules).
+    pub(crate) module_registry: crate::sema_context::ModuleRegistry,
 }
 
 impl<'a> Sema<'a> {
@@ -306,6 +309,7 @@ impl<'a> Sema<'a> {
             builtin_string_id: None,
             known: KnownSymbols::new(interner),
             type_pool: TypeInternPool::new(),
+            module_registry: crate::sema_context::ModuleRegistry::new(),
         }
     }
 
@@ -473,6 +477,8 @@ impl<'a> Sema<'a> {
             inference_ctx,
             known: KnownSymbols::new(self.interner),
             type_pool: self.type_pool.clone(),
+            module_registry: crate::sema_context::ModuleRegistry::new(),
+            source_file_path: None, // Will be set when analyzing specific files
         }
     }
 

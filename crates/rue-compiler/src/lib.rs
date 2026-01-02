@@ -2592,6 +2592,104 @@ mod tests {
             result.err()
         );
     }
+
+    // ========================================================================
+    // Module Import Tests
+    // ========================================================================
+
+    #[test]
+    fn test_module_member_access() {
+        // Test that @import returns a module type and member access works
+        // Note: In Phase 1, all files are merged into the same namespace,
+        // so math.add() looks up "add" in the global function table.
+        let sources = vec![
+            SourceFile::new(
+                "main.rue",
+                r#"fn main() -> i32 {
+                    let math = @import("math.rue");
+                    math.add(1, 2)
+                }"#,
+                FileId::new(1),
+            ),
+            SourceFile::new(
+                "math.rue",
+                "fn add(a: i32, b: i32) -> i32 { a + b }",
+                FileId::new(2),
+            ),
+        ];
+        let mut options = CompileOptions::default();
+        options.preview_features.insert(PreviewFeature::Modules);
+        let result = compile_multi_file_with_options(&sources, &options);
+        assert!(
+            result.is_ok(),
+            "module member access should compile: {:?}",
+            result.err()
+        );
+    }
+
+    #[test]
+    fn test_module_member_access_multiple_functions() {
+        // Test accessing multiple functions from an imported module
+        let sources = vec![
+            SourceFile::new(
+                "main.rue",
+                r#"fn main() -> i32 {
+                    let math = @import("math.rue");
+                    let sum = math.add(10, 20);
+                    let diff = math.sub(sum, 5);
+                    diff
+                }"#,
+                FileId::new(1),
+            ),
+            SourceFile::new(
+                "math.rue",
+                r#"fn add(a: i32, b: i32) -> i32 { a + b }
+                fn sub(a: i32, b: i32) -> i32 { a - b }"#,
+                FileId::new(2),
+            ),
+        ];
+        let mut options = CompileOptions::default();
+        options.preview_features.insert(PreviewFeature::Modules);
+        let result = compile_multi_file_with_options(&sources, &options);
+        assert!(
+            result.is_ok(),
+            "module with multiple functions should compile: {:?}",
+            result.err()
+        );
+    }
+
+    #[test]
+    fn test_module_undefined_function_error() {
+        // Test that accessing an undefined function in a module produces an error
+        let sources = vec![
+            SourceFile::new(
+                "main.rue",
+                r#"fn main() -> i32 {
+                    let math = @import("math.rue");
+                    math.nonexistent(1, 2)
+                }"#,
+                FileId::new(1),
+            ),
+            SourceFile::new(
+                "math.rue",
+                "fn add(a: i32, b: i32) -> i32 { a + b }",
+                FileId::new(2),
+            ),
+        ];
+        let mut options = CompileOptions::default();
+        options.preview_features.insert(PreviewFeature::Modules);
+        let result = compile_multi_file_with_options(&sources, &options);
+        assert!(
+            result.is_err(),
+            "undefined module function should fail to compile"
+        );
+        let err = result.err().unwrap().to_string();
+        assert!(
+            err.contains("undefined function") || err.contains("nonexistent"),
+            "error should mention undefined function: {}",
+            err
+        );
+    }
 }
 
 // ============================================================================

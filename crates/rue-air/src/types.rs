@@ -59,6 +59,27 @@ impl EnumId {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ArrayTypeId(pub u32);
 
+/// A unique identifier for a module (imported file).
+///
+/// Modules are created by `@import("path.rue")` and represent the public
+/// declarations of an imported file.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ModuleId(pub u32);
+
+impl ModuleId {
+    /// Create a ModuleId from an index.
+    #[inline]
+    pub fn new(index: u32) -> Self {
+        ModuleId(index)
+    }
+
+    /// Get the index for this module.
+    #[inline]
+    pub fn index(self) -> u32 {
+        self.0
+    }
+}
+
 /// A type in the Rue type system.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum Type {
@@ -89,6 +110,11 @@ pub enum Type {
     Enum(EnumId),
     /// Fixed-size array type: [T; N]
     Array(ArrayTypeId),
+    /// A module type (from @import)
+    ///
+    /// Module types represent imported files. Accessing members on a module
+    /// type resolves to the module's public declarations.
+    Module(ModuleId),
     /// An error type (used during type checking to continue after errors)
     Error,
     /// The never type - represents computations that don't return (e.g., break, continue).
@@ -202,6 +228,45 @@ impl EnumDef {
     }
 }
 
+/// Definition of a module (imported file).
+///
+/// A module contains the public declarations from an imported file.
+/// When code accesses `math.add()`, the module definition is consulted
+/// to find the corresponding function.
+#[derive(Debug, Clone)]
+pub struct ModuleDef {
+    /// The path used in @import (e.g., "math.rue")
+    pub import_path: String,
+    /// The resolved absolute file path
+    pub file_path: String,
+    /// Public functions in this module: name -> mangled name
+    /// The mangled name includes the module path (e.g., "math::add")
+    pub functions: std::collections::HashMap<String, String>,
+    /// Public structs in this module
+    pub structs: Vec<String>,
+    /// Public enums in this module
+    pub enums: Vec<String>,
+}
+
+impl ModuleDef {
+    /// Create a new empty module definition.
+    pub fn new(import_path: String, file_path: String) -> Self {
+        Self {
+            import_path,
+            file_path,
+            functions: std::collections::HashMap::new(),
+            structs: Vec::new(),
+            enums: Vec::new(),
+        }
+    }
+
+    /// Find a function by name in this module.
+    /// Returns the mangled function name if found.
+    pub fn find_function(&self, name: &str) -> Option<&str> {
+        self.functions.get(name).map(|s| s.as_str())
+    }
+}
+
 impl Type {
     /// Get a human-readable name for this type.
     /// Note: For struct and array types, this returns a placeholder.
@@ -221,6 +286,7 @@ impl Type {
             Type::Struct(_) => "<struct>",
             Type::Enum(_) => "<enum>",
             Type::Array(_) => "<array>",
+            Type::Module(_) => "<module>",
             Type::Error => "<error>",
             Type::Never => "!",
             Type::ComptimeType => "type",
@@ -296,6 +362,19 @@ impl Type {
         }
     }
 
+    /// Check if this is a module type.
+    pub fn is_module(&self) -> bool {
+        matches!(self, Type::Module(_))
+    }
+
+    /// Get the module ID if this is a module type.
+    pub fn as_module(&self) -> Option<ModuleId> {
+        match self {
+            Type::Module(id) => Some(*id),
+            _ => None,
+        }
+    }
+
     /// Check if this is a signed integer type.
     pub fn is_signed(&self) -> bool {
         matches!(self, Type::I8 | Type::I16 | Type::I32 | Type::I64)
@@ -339,6 +418,8 @@ impl Type {
             Type::Struct(_) => false,
             // Arrays may be Copy if element type is Copy (need ArrayTypeDef to check)
             Type::Array(_) => false,
+            // Module types are Copy (they're just compile-time namespace references)
+            Type::Module(_) => true,
         }
     }
 
@@ -448,6 +529,7 @@ impl Type {
             Type::Struct(id) => 100 | ((id.0 as u32) << 8),
             Type::Enum(id) => 101 | ((id.0 as u32) << 8),
             Type::Array(id) => 102 | ((id.0 as u32) << 8),
+            Type::Module(id) => 103 | ((id.index() as u32) << 8),
         }
     }
 
@@ -474,6 +556,7 @@ impl Type {
             100 => Type::Struct(StructId(id)),
             101 => Type::Enum(EnumId(id)),
             102 => Type::Array(ArrayTypeId(id)),
+            103 => Type::Module(ModuleId::new(id)),
             _ => panic!("invalid Type encoding: {}", v),
         }
     }

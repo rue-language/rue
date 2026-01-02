@@ -69,6 +69,9 @@ fn type_needs_drop(ty: Type, type_pool: &TypeInternPool, array_types: &[ArrayTyp
             let array_def = &array_types[array_id.0 as usize];
             type_needs_drop(array_def.element_type, type_pool, array_types)
         }
+
+        // Module types don't need drop (compile-time only)
+        Type::Module(_) => false,
     }
 }
 
@@ -110,6 +113,9 @@ fn type_slot_count(ty: Type, type_pool: &TypeInternPool, array_types: &[ArrayTyp
             type_slot_count(array_def.element_type, type_pool, array_types)
                 * array_def.length as u32
         }
+
+        // Module types don't take ABI slots (compile-time only)
+        Type::Module(_) => 0,
     }
 }
 
@@ -432,5 +438,7 @@ fn type_name(ty: Type, type_pool: &TypeInternPool, array_types: &[ArrayTypeDef])
             let elem_name = type_name(array_def.element_type, type_pool, array_types);
             format!("array_{}_{}", elem_name, array_def.length)
         }
+        // Module types should never reach drop glue (compile-time only)
+        Type::Module(_) => "module".to_string(),
     }
 }

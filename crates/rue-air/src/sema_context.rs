@@ -40,7 +40,9 @@ use crate::intern_pool::TypeInternPool;
 // Import FunctionInfo, MethodInfo, and KnownSymbols from sema module to avoid duplication.
 // FunctionInfo and MethodInfo are the canonical definitions; we re-export them for convenience.
 pub use crate::sema::{FunctionInfo, KnownSymbols, MethodInfo};
-use crate::types::{ArrayTypeDef, ArrayTypeId, EnumDef, EnumId, StructDef, StructId, Type};
+use crate::types::{
+    ArrayTypeDef, ArrayTypeId, EnumDef, EnumId, ModuleDef, ModuleId, StructDef, StructId, Type,
+};
 
 /// Thread-safe registry for array types.
 ///
@@ -156,6 +158,105 @@ impl Default for ArrayTypeRegistry {
     }
 }
 
+/// Thread-safe registry for modules.
+///
+/// This registry allows concurrent lookups and insertions of imported modules during
+/// parallel function analysis. It uses double-checked locking to minimize contention.
+#[derive(Debug)]
+pub struct ModuleRegistry {
+    /// Maps import path (e.g., "math.rue") to ModuleId.
+    paths: RwLock<HashMap<String, ModuleId>>,
+    /// Module definitions indexed by ModuleId.
+    defs: RwLock<Vec<ModuleDef>>,
+}
+
+impl ModuleRegistry {
+    /// Create a new empty registry.
+    pub fn new() -> Self {
+        Self {
+            paths: RwLock::new(HashMap::new()),
+            defs: RwLock::new(Vec::new()),
+        }
+    }
+
+    /// Look up a module by import path.
+    pub fn get(&self, import_path: &str) -> Option<ModuleId> {
+        self.paths
+            .read()
+            .expect("ModuleRegistry lock poisoned")
+            .get(import_path)
+            .copied()
+    }
+
+    /// Get or create a module for the given import path and resolved file path.
+    ///
+    /// Returns the ModuleId and whether it was newly created.
+    pub fn get_or_create(&self, import_path: String, file_path: String) -> (ModuleId, bool) {
+        // Fast path: check if already exists
+        {
+            let paths = self.paths.read().expect("ModuleRegistry lock poisoned");
+            if let Some(id) = paths.get(&import_path) {
+                return (*id, false);
+            }
+        }
+
+        // Slow path: acquire write lock and insert
+        let mut paths = self.paths.write().expect("ModuleRegistry lock poisoned");
+        // Double-check after acquiring write lock
+        if let Some(id) = paths.get(&import_path) {
+            return (*id, false);
+        }
+
+        let mut defs = self.defs.write().expect("ModuleRegistry lock poisoned");
+        let id = ModuleId::new(defs.len() as u32);
+        defs.push(ModuleDef::new(import_path.clone(), file_path));
+        paths.insert(import_path, id);
+        (id, true)
+    }
+
+    /// Get a module definition by ID.
+    pub fn get_def(&self, id: ModuleId) -> ModuleDef {
+        self.defs
+            .read()
+            .expect("ModuleRegistry lock poisoned")
+            .get(id.index() as usize)
+            .cloned()
+            .expect("Invalid ModuleId")
+    }
+
+    /// Update a module definition.
+    pub fn update_def(&self, id: ModuleId, def: ModuleDef) {
+        let mut defs = self.defs.write().expect("ModuleRegistry lock poisoned");
+        defs[id.index() as usize] = def;
+    }
+
+    /// Get the number of modules in the registry.
+    pub fn len(&self) -> usize {
+        self.defs
+            .read()
+            .expect("ModuleRegistry lock poisoned")
+            .len()
+    }
+
+    /// Check if the registry is empty.
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// Extract the module definitions (consumes the registry).
+    pub fn into_defs(self) -> Vec<ModuleDef> {
+        self.defs
+            .into_inner()
+            .expect("ModuleRegistry lock poisoned")
+    }
+}
+
+impl Default for ModuleRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// Pre-computed type information for constraint generation.
 ///
 /// This struct holds the function, struct, enum, and method signature maps
@@ -232,11 +333,18 @@ pub struct SemaContext<'a> {
     /// remains the old `Type` enum. Later phases will migrate to using
     /// the pool exclusively.
     pub type_pool: TypeInternPool,
+    /// Thread-safe module registry.
+    /// Supports concurrent lookups and insertions during parallel analysis.
+    pub module_registry: ModuleRegistry,
+    /// Path to the current source file being compiled.
+    /// Used for resolving relative imports.
+    pub source_file_path: Option<String>,
 }
 
 // SAFETY: SemaContext is Send + Sync because:
 // - Immutable fields (struct_defs, enum_defs, structs, enums, etc.) are trivially thread-safe
 // - ArrayTypeRegistry uses RwLock for interior mutability
+// - ModuleRegistry uses RwLock for interior mutability
 // - TypeInternPool uses RwLock for interior mutability
 // - References to RIR and ThreadedRodeo are shared immutably
 // - References to functions/methods HashMaps are shared immutably (read-only after declaration gathering)
@@ -298,6 +406,28 @@ impl<'a> SemaContext<'a> {
         self.array_registry.get_or_create(element_type, length)
     }
 
+    /// Look up a module by import path.
+    pub fn get_module(&self, import_path: &str) -> Option<ModuleId> {
+        self.module_registry.get(import_path)
+    }
+
+    /// Get a module definition by ID.
+    pub fn get_module_def(&self, id: ModuleId) -> ModuleDef {
+        self.module_registry.get_def(id)
+    }
+
+    /// Get or create a module for the given import path and file path. Thread-safe.
+    ///
+    /// Returns the ModuleId and whether it was newly created.
+    pub fn get_or_create_module(&self, import_path: String, file_path: String) -> (ModuleId, bool) {
+        self.module_registry.get_or_create(import_path, file_path)
+    }
+
+    /// Update a module definition with populated declarations.
+    pub fn update_module_def(&self, id: ModuleId, def: ModuleDef) {
+        self.module_registry.update_def(id, def);
+    }
+
     /// Get a human-readable name for a type.
     pub fn format_type_name(&self, ty: Type) -> String {
         match ty {
@@ -323,6 +453,7 @@ impl<'a> SemaContext<'a> {
                     array_def.length
                 )
             }
+            Type::Module(_) => "<module>".to_string(),
             Type::ComptimeType => "type".to_string(),
         }
     }
@@ -355,6 +486,8 @@ impl<'a> SemaContext<'a> {
                 let array_def = self.array_registry.get_def(array_id);
                 self.is_type_copy(array_def.element_type)
             }
+            // Module types are Copy (they're just compile-time namespace references)
+            Type::Module(_) => true,
         }
     }
 
@@ -387,6 +520,8 @@ impl<'a> SemaContext<'a> {
                 let element_slots = self.abi_slot_count(array_def.element_type);
                 element_slots * array_def.length as u32
             }
+            // Module types don't take ABI slots (they're compile-time only)
+            Type::Module(_) => 0,
         }
     }
 

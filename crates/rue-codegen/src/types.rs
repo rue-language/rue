@@ -233,6 +233,8 @@ fn type_name(ty: Type, type_pool: &TypeInternPool, array_types: &[ArrayTypeDef])
             let elem_name = type_name(array_def.element_type, type_pool, array_types);
             format!("array_{}_{}", elem_name, array_def.length)
         }
+        // Module types should never reach codegen (compile-time only)
+        Type::Module(_) => "module".to_string(),
     }
 }
 

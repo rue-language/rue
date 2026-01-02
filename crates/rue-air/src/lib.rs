@@ -40,11 +40,13 @@ pub use intern_pool::{
 pub use sema::{AnalyzedFunction, FunctionInfo, GatherOutput, MethodInfo, Sema, SemaOutput};
 // Note: FunctionInfo and MethodInfo are defined in sema and re-exported by sema_context.
 // We export InferenceContext and SemaContext from sema_context.
-pub use sema_context::{InferenceContext as SemaContextInferenceContext, SemaContext};
+pub use sema_context::{
+    InferenceContext as SemaContextInferenceContext, ModuleRegistry, SemaContext,
+};
 pub use type_context::{FunctionSignature, MethodSignature, TypeContext};
 pub use types::{
-    ArrayTypeDef, ArrayTypeId, EnumDef, EnumId, StructDef, StructField, StructId, Type,
-    parse_array_type_syntax,
+    ArrayTypeDef, ArrayTypeId, EnumDef, EnumId, ModuleDef, ModuleId, StructDef, StructField,
+    StructId, Type, parse_array_type_syntax,
 };
 
 /// Sentinel value used to encode parameter slots in AIR instructions.

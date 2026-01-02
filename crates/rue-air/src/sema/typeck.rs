@@ -41,6 +41,7 @@ impl<'a> Sema<'a> {
                     array_def.length
                 )
             }
+            Type::Module(_) => "<module>".to_string(),
             Type::ComptimeType => "type".to_string(),
         }
     }
@@ -76,6 +77,8 @@ impl<'a> Sema<'a> {
                 let array_def = &self.array_type_defs[array_id.0 as usize];
                 self.is_type_copy(array_def.element_type)
             }
+            // Module types are Copy (they're just compile-time namespace references)
+            Type::Module(_) => true,
             // ComptimeType is Copy (only exists at comptime anyway)
             Type::ComptimeType => true,
         }
@@ -285,6 +288,8 @@ impl<'a> Sema<'a> {
                 let element_slots = self.abi_slot_count(array_def.element_type);
                 element_slots * array_def.length as u32
             }
+            // Module types don't take ABI slots (they're compile-time only)
+            Type::Module(_) => 0,
         }
     }
 

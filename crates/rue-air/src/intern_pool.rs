@@ -675,10 +675,10 @@ impl TypeInternPool {
             Type::Unit => Some(InternedType::UNIT),
             Type::Never => Some(InternedType::NEVER),
             Type::Error => Some(InternedType::ERROR),
-            // Struct and enum require pool lookup by ID - we need the name
+            // Struct, enum, array, and module require pool lookup by ID - we need the name
             // to find the interned type. This conversion is not straightforward
             // without additional context. Return None to indicate we can't convert.
-            Type::Struct(_) | Type::Enum(_) | Type::Array(_) => None,
+            Type::Struct(_) | Type::Enum(_) | Type::Array(_) | Type::Module(_) => None,
             // ComptimeType is a comptime-only type, cannot be interned for runtime
             Type::ComptimeType => None,
         }

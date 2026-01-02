@@ -1759,6 +1759,9 @@ impl<'a> CfgBuilder<'a> {
                 let array_def = &self.array_types[array_id.0 as usize];
                 self.type_needs_drop(array_def.element_type)
             }
+
+            // Module types don't need drop (compile-time only)
+            Type::Module(_) => false,
         }
     }
 
