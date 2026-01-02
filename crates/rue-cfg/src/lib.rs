@@ -29,7 +29,7 @@ pub use inst::{
 pub use opt::OptLevel;
 
 // Re-export types from rue-air that we use
-pub use rue_air::{StructDef, StructId, Type};
+pub use rue_air::{StructDef, StructId, Type, TypeKind};
 
 /// Output from CFG construction.
 ///

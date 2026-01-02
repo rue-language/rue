@@ -59,6 +59,25 @@ impl EnumId {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ArrayTypeId(pub u32);
 
+impl ArrayTypeId {
+    /// Create an ArrayTypeId from a pool index.
+    ///
+    /// This is used during Phase 2B to create ArrayTypeIds from pool indices.
+    /// The pool index is the raw index into `TypeInternPool.types`.
+    #[inline]
+    pub fn from_pool_index(pool_index: u32) -> Self {
+        ArrayTypeId(pool_index)
+    }
+
+    /// Get the pool index for this array type.
+    ///
+    /// Returns the raw index into the TypeInternPool.
+    #[inline]
+    pub fn pool_index(self) -> u32 {
+        self.0
+    }
+}
+
 /// A unique identifier for a module (imported file).
 ///
 /// Modules are created by `@import("path.rue")` and represent the public
@@ -80,9 +99,17 @@ impl ModuleId {
     }
 }
 
-/// A type in the Rue type system.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
-pub enum Type {
+/// The kind of a type - used for pattern matching.
+///
+/// This enum mirrors the structure of the `Type` enum but is designed for
+/// pattern matching. During the migration to `Type(InternedType)`, code that
+/// pattern matches on types will use `ty.kind()` to get a `TypeKind`.
+///
+/// This separation allows incremental migration: all pattern matches can be
+/// updated to use `.kind()` while `Type` is still an enum, then `Type` can be
+/// replaced with `Type(InternedType)` without breaking existing code.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TypeKind {
     /// 8-bit signed integer
     I8,
     /// 16-bit signed integer
@@ -102,7 +129,6 @@ pub enum Type {
     /// Boolean
     Bool,
     /// The unit type (for functions that don't return a value)
-    #[default]
     Unit,
     /// User-defined struct type
     Struct(StructId),
@@ -111,19 +137,137 @@ pub enum Type {
     /// Fixed-size array type: [T; N]
     Array(ArrayTypeId),
     /// A module type (from @import)
-    ///
-    /// Module types represent imported files. Accessing members on a module
-    /// type resolves to the module's public declarations.
     Module(ModuleId),
     /// An error type (used during type checking to continue after errors)
     Error,
-    /// The never type - represents computations that don't return (e.g., break, continue).
-    /// Can coerce to any other type.
+    /// The never type - represents computations that don't return
     Never,
-    /// The comptime type - the type of types themselves.
-    /// Values of this type are types (e.g., `i32`, `bool`, `MyStruct`).
-    /// This is a comptime-only type; it cannot exist at runtime.
+    /// The comptime type - the type of types themselves
     ComptimeType,
+}
+
+/// A type in the Rue type system.
+///
+/// After Phase 4.1 of ADR-0024, `Type` is a newtype wrapping a u32 index.
+/// This enables O(1) type equality via u32 comparison.
+///
+/// # Encoding
+///
+/// The u32 value uses a tag-based encoding:
+/// - Primitives (0-12): I8=0, I16=1, I32=2, I64=3, U8=4, U16=5, U32=6, U64=7,
+///   Bool=8, Unit=9, Error=10, Never=11, ComptimeType=12
+/// - Composites: low byte is tag (100=Struct, 101=Enum, 102=Array, 103=Module),
+///   high 24 bits are the ID
+///
+/// # Usage
+///
+/// Use the associated constants for primitive types:
+/// ```ignore
+/// let ty = Type::I32;
+/// ```
+///
+/// Use constructor methods for composite types:
+/// ```ignore
+/// let ty = Type::Struct(struct_id);
+/// ```
+///
+/// Use `kind()` for pattern matching:
+/// ```ignore
+/// match ty.kind() {
+///     TypeKind::I32 => { /* ... */ }
+///     TypeKind::Struct(id) => { /* ... */ }
+///     _ => { /* ... */ }
+/// }
+/// ```
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub struct Type(u32);
+
+impl Default for Type {
+    fn default() -> Self {
+        Type::Unit
+    }
+}
+
+impl std::fmt::Debug for Type {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Provide a readable debug format
+        match self.kind() {
+            TypeKind::I8 => write!(f, "Type::I8"),
+            TypeKind::I16 => write!(f, "Type::I16"),
+            TypeKind::I32 => write!(f, "Type::I32"),
+            TypeKind::I64 => write!(f, "Type::I64"),
+            TypeKind::U8 => write!(f, "Type::U8"),
+            TypeKind::U16 => write!(f, "Type::U16"),
+            TypeKind::U32 => write!(f, "Type::U32"),
+            TypeKind::U64 => write!(f, "Type::U64"),
+            TypeKind::Bool => write!(f, "Type::Bool"),
+            TypeKind::Unit => write!(f, "Type::Unit"),
+            TypeKind::Error => write!(f, "Type::Error"),
+            TypeKind::Never => write!(f, "Type::Never"),
+            TypeKind::ComptimeType => write!(f, "Type::ComptimeType"),
+            TypeKind::Struct(id) => write!(f, "Type::Struct(StructId({}))", id.0),
+            TypeKind::Enum(id) => write!(f, "Type::Enum(EnumId({}))", id.0),
+            TypeKind::Array(id) => write!(f, "Type::Array(ArrayTypeId({}))", id.0),
+            TypeKind::Module(id) => write!(f, "Type::Module(ModuleId({}))", id.0),
+        }
+    }
+}
+
+// Primitive type constants
+impl Type {
+    /// 8-bit signed integer
+    pub const I8: Type = Type(0);
+    /// 16-bit signed integer
+    pub const I16: Type = Type(1);
+    /// 32-bit signed integer
+    pub const I32: Type = Type(2);
+    /// 64-bit signed integer
+    pub const I64: Type = Type(3);
+    /// 8-bit unsigned integer
+    pub const U8: Type = Type(4);
+    /// 16-bit unsigned integer
+    pub const U16: Type = Type(5);
+    /// 32-bit unsigned integer
+    pub const U32: Type = Type(6);
+    /// 64-bit unsigned integer
+    pub const U64: Type = Type(7);
+    /// Boolean
+    pub const Bool: Type = Type(8);
+    /// The unit type (for functions that don't return a value)
+    pub const Unit: Type = Type(9);
+    /// An error type (used during type checking to continue after errors)
+    pub const Error: Type = Type(10);
+    /// The never type - represents computations that don't return
+    pub const Never: Type = Type(11);
+    /// The comptime type - the type of types themselves
+    pub const ComptimeType: Type = Type(12);
+}
+
+// Composite type constructors
+impl Type {
+    /// Create a struct type from a StructId.
+    #[inline]
+    pub const fn Struct(id: StructId) -> Type {
+        Type(100 | ((id.0 as u32) << 8))
+    }
+
+    /// Create an enum type from an EnumId.
+    #[inline]
+    pub const fn Enum(id: EnumId) -> Type {
+        Type(101 | ((id.0 as u32) << 8))
+    }
+
+    /// Create an array type from an ArrayTypeId.
+    #[inline]
+    pub const fn Array(id: ArrayTypeId) -> Type {
+        Type(102 | ((id.0 as u32) << 8))
+    }
+
+    /// Create a module type from a ModuleId.
+    #[inline]
+    pub const fn Module(id: ModuleId) -> Type {
+        Type(103 | ((id.0 as u32) << 8))
+    }
 }
 
 /// Definition of a struct type.
@@ -166,27 +310,6 @@ impl StructDef {
     /// Get the number of fields in this struct.
     pub fn field_count(&self) -> usize {
         self.fields.len()
-    }
-}
-
-/// Definition of an array type.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct ArrayTypeDef {
-    /// Element type
-    pub element_type: Type,
-    /// Fixed array length
-    pub length: u64,
-}
-
-impl ArrayTypeDef {
-    /// Get the total number of elements in this array.
-    pub fn len(&self) -> u64 {
-        self.length
-    }
-
-    /// Check if this array has zero length.
-    pub fn is_empty(&self) -> bool {
-        self.length == 0
     }
 }
 
@@ -268,116 +391,164 @@ impl ModuleDef {
 }
 
 impl Type {
+    /// Get the kind of this type for pattern matching.
+    ///
+    /// This method decodes the u32 representation back to a `TypeKind` for pattern matching.
+    /// Primitive types (0-12) decode directly; composite types decode the tag and ID.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// match ty.kind() {
+    ///     TypeKind::I32 | TypeKind::I64 => { /* handle integers */ }
+    ///     TypeKind::Struct(id) => { /* handle struct */ }
+    ///     _ => { /* other types */ }
+    /// }
+    /// ```
+    #[inline]
+    pub fn kind(&self) -> TypeKind {
+        let tag = self.0 & 0xFF;
+        match tag {
+            0 => TypeKind::I8,
+            1 => TypeKind::I16,
+            2 => TypeKind::I32,
+            3 => TypeKind::I64,
+            4 => TypeKind::U8,
+            5 => TypeKind::U16,
+            6 => TypeKind::U32,
+            7 => TypeKind::U64,
+            8 => TypeKind::Bool,
+            9 => TypeKind::Unit,
+            10 => TypeKind::Error,
+            11 => TypeKind::Never,
+            12 => TypeKind::ComptimeType,
+            100 => TypeKind::Struct(StructId(self.0 >> 8)),
+            101 => TypeKind::Enum(EnumId(self.0 >> 8)),
+            102 => TypeKind::Array(ArrayTypeId(self.0 >> 8)),
+            103 => TypeKind::Module(ModuleId(self.0 >> 8)),
+            _ => panic!("invalid Type encoding: {}", self.0),
+        }
+    }
+
     /// Get a human-readable name for this type.
     /// Note: For struct and array types, this returns a placeholder.
     /// Use `type_name_with_structs` for proper struct/array names.
     pub fn name(&self) -> &'static str {
-        match self {
-            Type::I8 => "i8",
-            Type::I16 => "i16",
-            Type::I32 => "i32",
-            Type::I64 => "i64",
-            Type::U8 => "u8",
-            Type::U16 => "u16",
-            Type::U32 => "u32",
-            Type::U64 => "u64",
-            Type::Bool => "bool",
-            Type::Unit => "()",
-            Type::Struct(_) => "<struct>",
-            Type::Enum(_) => "<enum>",
-            Type::Array(_) => "<array>",
-            Type::Module(_) => "<module>",
-            Type::Error => "<error>",
-            Type::Never => "!",
-            Type::ComptimeType => "type",
+        match self.kind() {
+            TypeKind::I8 => "i8",
+            TypeKind::I16 => "i16",
+            TypeKind::I32 => "i32",
+            TypeKind::I64 => "i64",
+            TypeKind::U8 => "u8",
+            TypeKind::U16 => "u16",
+            TypeKind::U32 => "u32",
+            TypeKind::U64 => "u64",
+            TypeKind::Bool => "bool",
+            TypeKind::Unit => "()",
+            TypeKind::Struct(_) => "<struct>",
+            TypeKind::Enum(_) => "<enum>",
+            TypeKind::Array(_) => "<array>",
+            TypeKind::Module(_) => "<module>",
+            TypeKind::Error => "<error>",
+            TypeKind::Never => "!",
+            TypeKind::ComptimeType => "type",
         }
     }
 
     /// Check if this type is an integer type.
+    /// Optimized: checks tag range directly (0-7 are integer types).
+    #[inline]
     pub fn is_integer(&self) -> bool {
-        matches!(
-            self,
-            Type::I8
-                | Type::I16
-                | Type::I32
-                | Type::I64
-                | Type::U8
-                | Type::U16
-                | Type::U32
-                | Type::U64
-        )
+        self.0 <= 7
     }
 
     /// Check if this is an error type.
+    #[inline]
     pub fn is_error(&self) -> bool {
-        matches!(self, Type::Error)
+        *self == Type::Error
     }
 
     /// Check if this is the never type.
+    #[inline]
     pub fn is_never(&self) -> bool {
-        matches!(self, Type::Never)
+        *self == Type::Never
     }
 
     /// Check if this is the comptime type (the type of types).
+    #[inline]
     pub fn is_comptime_type(&self) -> bool {
-        matches!(self, Type::ComptimeType)
+        *self == Type::ComptimeType
     }
 
     /// Check if this is a struct type.
+    #[inline]
     pub fn is_struct(&self) -> bool {
-        matches!(self, Type::Struct(_))
+        (self.0 & 0xFF) == 100
     }
 
     /// Get the struct ID if this is a struct type.
+    #[inline]
     pub fn as_struct(&self) -> Option<StructId> {
-        match self {
-            Type::Struct(id) => Some(*id),
-            _ => None,
+        if self.is_struct() {
+            Some(StructId(self.0 >> 8))
+        } else {
+            None
         }
     }
 
     /// Check if this is an array type.
+    #[inline]
     pub fn is_array(&self) -> bool {
-        matches!(self, Type::Array(_))
+        (self.0 & 0xFF) == 102
     }
 
     /// Get the array type ID if this is an array type.
+    #[inline]
     pub fn as_array(&self) -> Option<ArrayTypeId> {
-        match self {
-            Type::Array(id) => Some(*id),
-            _ => None,
+        if self.is_array() {
+            Some(ArrayTypeId(self.0 >> 8))
+        } else {
+            None
         }
     }
 
     /// Check if this is an enum type.
+    #[inline]
     pub fn is_enum(&self) -> bool {
-        matches!(self, Type::Enum(_))
+        (self.0 & 0xFF) == 101
     }
 
     /// Get the enum ID if this is an enum type.
+    #[inline]
     pub fn as_enum(&self) -> Option<EnumId> {
-        match self {
-            Type::Enum(id) => Some(*id),
-            _ => None,
+        if self.is_enum() {
+            Some(EnumId(self.0 >> 8))
+        } else {
+            None
         }
     }
 
     /// Check if this is a module type.
+    #[inline]
     pub fn is_module(&self) -> bool {
-        matches!(self, Type::Module(_))
+        (self.0 & 0xFF) == 103
     }
 
     /// Get the module ID if this is a module type.
+    #[inline]
     pub fn as_module(&self) -> Option<ModuleId> {
-        match self {
-            Type::Module(id) => Some(*id),
-            _ => None,
+        if self.is_module() {
+            Some(ModuleId(self.0 >> 8))
+        } else {
+            None
         }
     }
 
     /// Check if this is a signed integer type.
+    /// Optimized: checks tag range directly (0-3 are signed integers).
+    #[inline]
     pub fn is_signed(&self) -> bool {
-        matches!(self, Type::I8 | Type::I16 | Type::I32 | Type::I64)
+        self.0 <= 3
     }
 
     /// Check if this is a Copy type (can be implicitly duplicated).
@@ -394,32 +565,24 @@ impl Type {
     /// - Array types (unless element type is Copy, checked via Sema.is_type_copy)
     ///
     /// Note: This method can't check struct's is_copy attribute or array element
-    /// types since it doesn't have access to StructDefs or ArrayTypeDefs.
+    /// types since it doesn't have access to StructDefs or array type information.
     /// Use Sema.is_type_copy() for full checking.
     pub fn is_copy(&self) -> bool {
-        match self {
-            // Primitive Copy types
-            Type::I8
-            | Type::I16
-            | Type::I32
-            | Type::I64
-            | Type::U8
-            | Type::U16
-            | Type::U32
-            | Type::U64
-            | Type::Bool
-            | Type::Unit => true,
+        let tag = self.0 & 0xFF;
+        match tag {
+            // Primitive Copy types (I8..Unit = 0..9)
+            0..=9 => true,
+            // Error, Never, ComptimeType are Copy for convenience
+            10..=12 => true,
             // Enum types are Copy (they're small discriminant values)
-            Type::Enum(_) => true,
-            // Never, Error, and ComptimeType are Copy for convenience
-            // (ComptimeType only exists at comptime anyway)
-            Type::Never | Type::Error | Type::ComptimeType => true,
-            // Struct types are move types by default (may be @copy, but need StructDef to check)
-            Type::Struct(_) => false,
-            // Arrays may be Copy if element type is Copy (need ArrayTypeDef to check)
-            Type::Array(_) => false,
+            101 => true,
             // Module types are Copy (they're just compile-time namespace references)
-            Type::Module(_) => true,
+            103 => true,
+            // Struct types are move types by default
+            100 => false,
+            // Arrays may be Copy if element type is Copy (need ArrayTypeDef to check)
+            102 => false,
+            _ => false,
         }
     }
 
@@ -428,23 +591,35 @@ impl Type {
     /// This is used during anonymous struct creation to determine if the new struct
     /// should be Copy based on its field types.
     pub fn is_copy_in_sema(&self, struct_defs: &[StructDef]) -> bool {
-        match self {
-            Type::Struct(struct_id) => {
-                let idx = struct_id.0 as usize;
-                if idx < struct_defs.len() {
-                    struct_defs[idx].is_copy
-                } else {
-                    false
-                }
+        if let Some(struct_id) = self.as_struct() {
+            let idx = struct_id.0 as usize;
+            if idx < struct_defs.len() {
+                struct_defs[idx].is_copy
+            } else {
+                false
             }
-            // For non-struct types, delegate to is_copy()
-            _ => self.is_copy(),
+        } else {
+            self.is_copy()
+        }
+    }
+
+    /// Check if this type is Copy, with access to TypeInternPool for struct checking.
+    ///
+    /// This is used during anonymous struct creation to determine if the new struct
+    /// should be Copy based on its field types.
+    pub fn is_copy_in_pool(&self, type_pool: &crate::intern_pool::TypeInternPool) -> bool {
+        if let Some(struct_id) = self.as_struct() {
+            type_pool.struct_def(struct_id).is_copy
+        } else {
+            self.is_copy()
         }
     }
 
     /// Check if this is a 64-bit type (uses 64-bit operations).
+    /// Optimized: checks for I64 (3) or U64 (7).
+    #[inline]
     pub fn is_64_bit(&self) -> bool {
-        matches!(self, Type::I64 | Type::U64)
+        self.0 == 3 || self.0 == 7
     }
 
     /// Check if this type can coerce to the target type.
@@ -458,9 +633,11 @@ impl Type {
     }
 
     /// Check if this is an unsigned integer type.
+    /// Optimized: checks tag range directly (4-7 are unsigned integers).
+    #[inline]
     #[must_use]
     pub fn is_unsigned(&self) -> bool {
-        matches!(self, Type::U8 | Type::U16 | Type::U32 | Type::U64)
+        self.0 >= 4 && self.0 <= 7
     }
 
     /// Check if a u64 value fits within the range of this integer type.
@@ -472,15 +649,15 @@ impl Type {
     /// For non-integer types, returns `false`.
     #[must_use]
     pub fn literal_fits(&self, value: u64) -> bool {
-        match self {
-            Type::I8 => value <= i8::MAX as u64,
-            Type::I16 => value <= i16::MAX as u64,
-            Type::I32 => value <= i32::MAX as u64,
-            Type::I64 => value <= i64::MAX as u64,
-            Type::U8 => value <= u8::MAX as u64,
-            Type::U16 => value <= u16::MAX as u64,
-            Type::U32 => value <= u32::MAX as u64,
-            Type::U64 => true, // Any u64 value fits in u64
+        match self.0 {
+            0 => value <= i8::MAX as u64,  // I8
+            1 => value <= i16::MAX as u64, // I16
+            2 => value <= i32::MAX as u64, // I32
+            3 => value <= i64::MAX as u64, // I64
+            4 => value <= u8::MAX as u64,  // U8
+            5 => value <= u16::MAX as u64, // U16
+            6 => value <= u32::MAX as u64, // U32
+            7 => true,                     // U64 - Any u64 value fits
             _ => false,
         }
     }
@@ -491,74 +668,30 @@ impl Type {
     /// Returns `true` if the negated value fits, `false` otherwise.
     #[must_use]
     pub fn negated_literal_fits(&self, value: u64) -> bool {
-        match self {
-            Type::I8 => value <= (i8::MIN as i64).unsigned_abs(),
-            Type::I16 => value <= (i16::MIN as i64).unsigned_abs(),
-            Type::I32 => value <= (i32::MIN as i64).unsigned_abs(),
-            Type::I64 => value <= (i64::MIN).unsigned_abs(),
+        match self.0 {
+            0 => value <= (i8::MIN as i64).unsigned_abs(),  // I8
+            1 => value <= (i16::MIN as i64).unsigned_abs(), // I16
+            2 => value <= (i32::MIN as i64).unsigned_abs(), // I32
+            3 => value <= (i64::MIN).unsigned_abs(),        // I64
             _ => false,
         }
     }
 
     /// Encode this type as a u32 for storage in extra arrays.
     ///
-    /// This uses a tag-value encoding:
-    /// - Primitive types (I8..ComptimeType): tag = discriminant, no additional data
-    /// - Struct(id): tag = 100, followed by id
-    /// - Enum(id): tag = 101, followed by id
-    /// - Array(id): tag = 102, followed by id
-    ///
-    /// Note: For compound types, caller must encode additional data separately.
-    /// This method returns the tag only.
+    /// Since Type is now a u32 newtype, this simply returns the inner value.
+    #[inline]
     pub fn as_u32(&self) -> u32 {
-        match self {
-            Type::I8 => 0,
-            Type::I16 => 1,
-            Type::I32 => 2,
-            Type::I64 => 3,
-            Type::U8 => 4,
-            Type::U16 => 5,
-            Type::U32 => 6,
-            Type::U64 => 7,
-            Type::Bool => 8,
-            Type::Unit => 9,
-            Type::Error => 10,
-            Type::Never => 11,
-            Type::ComptimeType => 12,
-            // Compound types need special handling - store ID in high bits
-            Type::Struct(id) => 100 | ((id.0 as u32) << 8),
-            Type::Enum(id) => 101 | ((id.0 as u32) << 8),
-            Type::Array(id) => 102 | ((id.0 as u32) << 8),
-            Type::Module(id) => 103 | ((id.index() as u32) << 8),
-        }
+        self.0
     }
 
     /// Decode a type from a u32 value.
     ///
-    /// This reverses the encoding done by `as_u32`.
+    /// Since Type is now a u32 newtype, this simply wraps the value.
+    /// Note: This does not validate the encoding - use with values from `as_u32()`.
+    #[inline]
     pub fn from_u32(v: u32) -> Self {
-        let tag = v & 0xFF;
-        let id = (v >> 8) as u32;
-        match tag {
-            0 => Type::I8,
-            1 => Type::I16,
-            2 => Type::I32,
-            3 => Type::I64,
-            4 => Type::U8,
-            5 => Type::U16,
-            6 => Type::U32,
-            7 => Type::U64,
-            8 => Type::Bool,
-            9 => Type::Unit,
-            10 => Type::Error,
-            11 => Type::Never,
-            12 => Type::ComptimeType,
-            100 => Type::Struct(StructId(id)),
-            101 => Type::Enum(EnumId(id)),
-            102 => Type::Array(ArrayTypeId(id)),
-            103 => Type::Module(ModuleId::new(id)),
-            _ => panic!("invalid Type encoding: {}", v),
-        }
+        Type(v)
     }
 }
 
@@ -1069,32 +1202,6 @@ mod tests {
             is_builtin: false,
         };
         assert_eq!(with_fields.field_count(), 3);
-    }
-
-    // ========== ArrayTypeDef tests ==========
-
-    #[test]
-    fn test_array_type_def_len() {
-        let arr = ArrayTypeDef {
-            element_type: Type::I32,
-            length: 10,
-        };
-        assert_eq!(arr.len(), 10);
-    }
-
-    #[test]
-    fn test_array_type_def_is_empty() {
-        let empty = ArrayTypeDef {
-            element_type: Type::I32,
-            length: 0,
-        };
-        assert!(empty.is_empty());
-
-        let non_empty = ArrayTypeDef {
-            element_type: Type::I32,
-            length: 1,
-        };
-        assert!(!non_empty.is_empty());
     }
 
     // ========== EnumDef tests ==========

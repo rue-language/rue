@@ -40,7 +40,7 @@ use std::sync::RwLock;
 
 use lasso::Spur;
 
-use crate::types::{EnumDef, EnumId, StructDef, StructId, Type};
+use crate::types::{ArrayTypeId, EnumDef, EnumId, StructDef, StructId, Type, TypeKind};
 
 /// Interned type index - 32 bits, Copy, cheap comparison.
 ///
@@ -581,6 +581,131 @@ impl TypeInternPool {
         InternedType::from_pool_index(enum_id.0)
     }
 
+    /// Get an array type definition by ArrayTypeId.
+    ///
+    /// The ArrayTypeId contains a pool index. This method looks up the array
+    /// in the pool and returns its element type and length as a tuple.
+    ///
+    /// # Returns
+    ///
+    /// Returns `(element_type, length)` where `element_type` is the array's element type
+    /// and `length` is the array's fixed size.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the ArrayTypeId doesn't correspond to an array in the pool.
+    pub fn array_def(&self, array_id: ArrayTypeId) -> (Type, u64) {
+        let inner = self.inner.read().expect("TypeInternPool lock poisoned");
+        let pool_index = array_id.0 as usize;
+        match &inner.types[pool_index] {
+            TypeData::Array { element, len } => {
+                // Convert InternedType back to Type
+                let element_type = Self::interned_to_type_recursive(*element, &inner);
+                (element_type, *len)
+            }
+            other => panic!(
+                "Expected array at pool index {}, got {:?}",
+                pool_index, other
+            ),
+        }
+    }
+
+    /// Intern an array type from a Type element (for Phase 2B migration).
+    ///
+    /// This is a helper method that converts the Type to InternedType
+    /// and then interns the array. Used during migration from ArrayTypeRegistry.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the element type contains a struct/enum that isn't in the pool.
+    pub fn intern_array_from_type(&self, element_type: Type, len: u64) -> ArrayTypeId {
+        let element_interned = Self::type_to_interned_recursive(element_type);
+        let array_interned = self.intern_array(element_interned, len);
+        ArrayTypeId::from_pool_index(
+            array_interned
+                .pool_index()
+                .expect("array must have pool index"),
+        )
+    }
+
+    /// Look up an array type by Type element and length (for Phase 2B migration).
+    ///
+    /// Returns None if no such array exists in the pool.
+    pub fn get_array_by_type(&self, element_type: Type, len: u64) -> Option<ArrayTypeId> {
+        let inner = self.inner.read().expect("TypeInternPool lock poisoned");
+        let element_interned = Self::type_to_interned_recursive(element_type);
+        let array_interned = inner.array_map.get(&(element_interned, len))?;
+        Some(ArrayTypeId::from_pool_index(
+            array_interned
+                .pool_index()
+                .expect("array must have pool index"),
+        ))
+    }
+
+    /// Convert InternedType to Type recursively (handles composite types).
+    ///
+    /// This is used to convert array element types from InternedType back to Type.
+    fn interned_to_type_recursive(ty: InternedType, inner: &TypeInternPoolInner) -> Type {
+        if ty.is_primitive() {
+            return match ty.0 {
+                0 => Type::I8,
+                1 => Type::I16,
+                2 => Type::I32,
+                3 => Type::I64,
+                4 => Type::U8,
+                5 => Type::U16,
+                6 => Type::U32,
+                7 => Type::U64,
+                8 => Type::Bool,
+                9 => Type::Unit,
+                10 => Type::Never,
+                11 => Type::Error,
+                _ => panic!("Unknown primitive index: {}", ty.0),
+            };
+        }
+
+        let pool_index = ty.pool_index().expect("non-primitive must have pool index");
+        match &inner.types[pool_index as usize] {
+            TypeData::Struct(_) => Type::Struct(StructId::from_pool_index(pool_index)),
+            TypeData::Enum(_) => Type::Enum(EnumId::from_pool_index(pool_index)),
+            TypeData::Array { .. } => Type::Array(ArrayTypeId::from_pool_index(pool_index)),
+        }
+    }
+
+    /// Convert Type to InternedType recursively (handles composite types).
+    ///
+    /// This is used during Phase 2B migration to convert Type to InternedType
+    /// for array interning.
+    fn type_to_interned_recursive(ty: Type) -> InternedType {
+        match ty.kind() {
+            TypeKind::I8 => InternedType::I8,
+            TypeKind::I16 => InternedType::I16,
+            TypeKind::I32 => InternedType::I32,
+            TypeKind::I64 => InternedType::I64,
+            TypeKind::U8 => InternedType::U8,
+            TypeKind::U16 => InternedType::U16,
+            TypeKind::U32 => InternedType::U32,
+            TypeKind::U64 => InternedType::U64,
+            TypeKind::Bool => InternedType::BOOL,
+            TypeKind::Unit => InternedType::UNIT,
+            TypeKind::Never => InternedType::NEVER,
+            TypeKind::Error => InternedType::ERROR,
+            TypeKind::Struct(id) => InternedType::from_pool_index(id.pool_index()),
+            TypeKind::Enum(id) => InternedType::from_pool_index(id.pool_index()),
+            TypeKind::Array(id) => InternedType::from_pool_index(id.pool_index()),
+            TypeKind::Module(_) => panic!("Cannot intern module types"),
+            TypeKind::ComptimeType => panic!("Cannot intern comptime types"),
+        }
+    }
+
+    /// Convert an ArrayTypeId to an InternedType.
+    ///
+    /// Since ArrayTypeId now contains a pool index, we just add the primitive offset.
+    #[inline]
+    pub fn array_id_to_interned(&self, array_id: ArrayTypeId) -> InternedType {
+        InternedType::from_pool_index(array_id.0)
+    }
+
     /// Get all struct IDs registered in the pool.
     ///
     /// Returns a vector of all StructId values, useful for iterating over all
@@ -609,6 +734,23 @@ impl TypeInternPool {
             .map(|interned| {
                 let pool_index = interned.pool_index().expect("enum must have pool index");
                 EnumId::from_pool_index(pool_index)
+            })
+            .collect()
+    }
+
+    /// Get all array IDs registered in the pool.
+    ///
+    /// Returns a vector of all ArrayTypeId values, useful for iterating over all
+    /// arrays (e.g., for drop glue synthesis).
+    pub fn all_array_ids(&self) -> Vec<ArrayTypeId> {
+        let inner = self.inner.read().expect("TypeInternPool lock poisoned");
+        inner
+            .types
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, data)| match data {
+                TypeData::Array { .. } => Some(ArrayTypeId(idx as u32)),
+                _ => None,
             })
             .collect()
     }
@@ -662,25 +804,27 @@ impl TypeInternPool {
     /// in the pool. For array types, this returns an error since array interning
     /// requires the pool to already have the element type interned.
     pub fn type_to_interned(&self, ty: Type) -> Option<InternedType> {
-        match ty {
-            Type::I8 => Some(InternedType::I8),
-            Type::I16 => Some(InternedType::I16),
-            Type::I32 => Some(InternedType::I32),
-            Type::I64 => Some(InternedType::I64),
-            Type::U8 => Some(InternedType::U8),
-            Type::U16 => Some(InternedType::U16),
-            Type::U32 => Some(InternedType::U32),
-            Type::U64 => Some(InternedType::U64),
-            Type::Bool => Some(InternedType::BOOL),
-            Type::Unit => Some(InternedType::UNIT),
-            Type::Never => Some(InternedType::NEVER),
-            Type::Error => Some(InternedType::ERROR),
+        match ty.kind() {
+            TypeKind::I8 => Some(InternedType::I8),
+            TypeKind::I16 => Some(InternedType::I16),
+            TypeKind::I32 => Some(InternedType::I32),
+            TypeKind::I64 => Some(InternedType::I64),
+            TypeKind::U8 => Some(InternedType::U8),
+            TypeKind::U16 => Some(InternedType::U16),
+            TypeKind::U32 => Some(InternedType::U32),
+            TypeKind::U64 => Some(InternedType::U64),
+            TypeKind::Bool => Some(InternedType::BOOL),
+            TypeKind::Unit => Some(InternedType::UNIT),
+            TypeKind::Never => Some(InternedType::NEVER),
+            TypeKind::Error => Some(InternedType::ERROR),
             // Struct, enum, array, and module require pool lookup by ID - we need the name
             // to find the interned type. This conversion is not straightforward
             // without additional context. Return None to indicate we can't convert.
-            Type::Struct(_) | Type::Enum(_) | Type::Array(_) | Type::Module(_) => None,
+            TypeKind::Struct(_) | TypeKind::Enum(_) | TypeKind::Array(_) | TypeKind::Module(_) => {
+                None
+            }
             // ComptimeType is a comptime-only type, cannot be interned for runtime
-            Type::ComptimeType => None,
+            TypeKind::ComptimeType => None,
         }
     }
 

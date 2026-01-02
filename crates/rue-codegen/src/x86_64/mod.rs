@@ -29,7 +29,7 @@ pub use regalloc::RegAlloc;
 use crate::regalloc::RegAllocDebugInfo;
 
 use lasso::ThreadedRodeo;
-use rue_air::{ArrayTypeDef, TypeInternPool};
+use rue_air::TypeInternPool;
 use rue_cfg::Cfg;
 use rue_error::CompileResult;
 
@@ -43,7 +43,6 @@ pub use super::{EmittedCode, EmittedRelocation, MachineCode};
 pub fn generate(
     cfg: &Cfg,
     type_pool: &TypeInternPool,
-    array_types: &[ArrayTypeDef],
     strings: &[String],
     interner: &ThreadedRodeo,
 ) -> CompileResult<MachineCode> {
@@ -51,7 +50,7 @@ pub fn generate(
     let num_params = cfg.num_params();
 
     // Lower CFG to X86Mir with virtual registers
-    let mir = CfgLower::new(cfg, type_pool, array_types, strings, interner).lower();
+    let mir = CfgLower::new(cfg, type_pool, strings, interner).lower();
 
     // Allocate physical registers (may add spill slots)
     // Spill slots go after both locals AND parameters to avoid conflicts
@@ -98,7 +97,6 @@ pub fn generate(
 pub fn generate_with_asm(
     cfg: &Cfg,
     type_pool: &TypeInternPool,
-    array_types: &[ArrayTypeDef],
     strings: &[String],
     interner: &ThreadedRodeo,
 ) -> CompileResult<(MachineCode, String)> {
@@ -106,7 +104,7 @@ pub fn generate_with_asm(
     let num_params = cfg.num_params();
 
     // Lower CFG to X86Mir with virtual registers
-    let mir = CfgLower::new(cfg, type_pool, array_types, strings, interner).lower();
+    let mir = CfgLower::new(cfg, type_pool, strings, interner).lower();
 
     // Allocate physical registers (may add spill slots)
     let existing_slots = num_locals + num_params;
@@ -152,7 +150,6 @@ pub fn generate_with_asm(
 pub fn generate_regalloc_info(
     cfg: &Cfg,
     type_pool: &TypeInternPool,
-    array_types: &[ArrayTypeDef],
     strings: &[String],
     interner: &ThreadedRodeo,
 ) -> CompileResult<RegAllocDebugInfo<Reg>> {
@@ -160,7 +157,7 @@ pub fn generate_regalloc_info(
     let num_params = cfg.num_params();
 
     // Lower CFG to X86Mir with virtual registers
-    let mir = CfgLower::new(cfg, type_pool, array_types, strings, interner).lower();
+    let mir = CfgLower::new(cfg, type_pool, strings, interner).lower();
 
     // Allocate physical registers with debug info
     let existing_slots = num_locals + num_params;

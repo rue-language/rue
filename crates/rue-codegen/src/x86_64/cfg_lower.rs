@@ -28,7 +28,7 @@
 use std::collections::HashMap;
 
 use lasso::ThreadedRodeo;
-use rue_air::{ArrayTypeDef, StructId, TypeInternPool};
+use rue_air::{StructId, TypeInternPool, TypeKind};
 use rue_builtins::{BinOp, get_builtin_type};
 use rue_cfg::{BasicBlock, BlockId, Cfg, CfgInstData, CfgValue, Terminator, Type};
 
@@ -46,10 +46,8 @@ const RET_REGS: [Reg; 6] = [Reg::Rax, Reg::Rdx, Reg::Rcx, Reg::R8, Reg::R9, Reg:
 /// CFG to X86Mir lowering.
 pub struct CfgLower<'a> {
     cfg: &'a Cfg,
-    /// Type intern pool for struct/enum lookups (Phase 3 ADR-0024).
+    /// Type intern pool for struct/enum/array lookups (Phase 2B ADR-0024).
     type_pool: &'a TypeInternPool,
-    /// Array type definitions for bounds checking.
-    array_types: &'a [ArrayTypeDef],
     /// String table from semantic analysis (indexed by StringId).
     strings: &'a [String],
     /// Interner for resolving Spur to string
@@ -83,7 +81,6 @@ impl<'a> CfgLower<'a> {
     pub fn new(
         cfg: &'a Cfg,
         type_pool: &'a TypeInternPool,
-        array_types: &'a [ArrayTypeDef],
         strings: &'a [String],
         interner: &'a ThreadedRodeo,
     ) -> Self {
@@ -103,7 +100,6 @@ impl<'a> CfgLower<'a> {
         Self {
             cfg,
             type_pool,
-            array_types,
             strings,
             interner,
             mir: X86Mir::new(),
@@ -127,12 +123,14 @@ impl<'a> CfgLower<'a> {
 
     /// Get the length of an array type.
     fn array_length(&self, array_type: Type) -> u64 {
-        types::array_length_from_type(self.array_types, array_type)
+        types::array_length_from_type(self.type_pool, array_type)
     }
 
     /// Get the array type definition.
-    fn array_type_def(&self, array_type: Type) -> Option<&ArrayTypeDef> {
-        types::array_type_def_from_type(self.array_types, array_type)
+    ///
+    /// Returns `Some((element_type, length))` for array types, `None` otherwise.
+    fn array_type_def(&self, array_type: Type) -> Option<(Type, u64)> {
+        types::array_type_def_from_type(self.type_pool, array_type)
     }
 
     // ========================================================================
@@ -143,8 +141,8 @@ impl<'a> CfgLower<'a> {
     ///
     /// Returns true if the type is a struct that is marked as builtin with name "String".
     fn is_builtin_string(&self, ty: Type) -> bool {
-        match ty {
-            Type::Struct(struct_id) => {
+        match ty.kind() {
+            TypeKind::Struct(struct_id) => {
                 let struct_def = self.type_pool.struct_def(struct_id);
                 struct_def.is_builtin && struct_def.name == "String"
             }
@@ -157,8 +155,8 @@ impl<'a> CfgLower<'a> {
     /// Returns `Some((runtime_fn, invert_result))` if the type has a builtin
     /// operator implementation, `None` otherwise.
     fn get_builtin_operator(&self, ty: Type, op: BinOp) -> Option<(&'static str, bool)> {
-        let builtin = match ty {
-            Type::Struct(struct_id) => {
+        let builtin = match ty.kind() {
+            TypeKind::Struct(struct_id) => {
                 let struct_def = self.type_pool.struct_def(struct_id);
                 if struct_def.is_builtin {
                     get_builtin_type(&struct_def.name)?
@@ -175,17 +173,17 @@ impl<'a> CfgLower<'a> {
 
     /// Calculate the total number of slots needed to store a type.
     fn type_slot_count(&self, ty: Type) -> u32 {
-        types::type_slot_count(self.type_pool, self.array_types, ty)
+        types::type_slot_count(self.type_pool, ty)
     }
 
     /// Calculate the slot count for a single element of an array type.
     fn array_element_slot_count(&self, array_type: Type) -> u32 {
-        types::array_element_slot_count_from_type(self.type_pool, self.array_types, array_type)
+        types::array_element_slot_count_from_type(self.type_pool, array_type)
     }
 
     /// Calculate the slot offset for a field within a struct.
     fn struct_field_slot_offset(&self, struct_id: StructId, field_index: u32) -> u32 {
-        types::struct_field_slot_offset(self.type_pool, self.array_types, struct_id, field_index)
+        types::struct_field_slot_offset(self.type_pool, struct_id, field_index)
     }
 
     /// Trace back through a chain of FieldGet instructions to find the original
@@ -427,8 +425,8 @@ impl<'a> CfgLower<'a> {
         }
 
         let inst = self.cfg.get_inst(value);
-        let struct_id = match inst.ty {
-            Type::Struct(id) => id,
+        let struct_id = match inst.ty.kind() {
+            TypeKind::Struct(id) => id,
             _ => return None,
         };
 
@@ -521,8 +519,8 @@ impl<'a> CfgLower<'a> {
                 self.value_map.insert(*param_val, vreg);
 
                 // For struct types, also allocate vregs for each slot
-                if let Type::Struct(struct_id) = ty {
-                    let slot_count = self.type_slot_count(Type::Struct(*struct_id));
+                if let TypeKind::Struct(struct_id) = ty.kind() {
+                    let slot_count = self.type_slot_count(Type::Struct(struct_id));
                     let mut slot_vregs = vec![vreg]; // First slot uses main vreg
                     for _ in 1..slot_count {
                         slot_vregs.push(self.mir.alloc_vreg());
@@ -564,8 +562,8 @@ impl<'a> CfgLower<'a> {
                     .insert((block.id, param_idx as u32), vreg);
                 self.value_map.insert(*param_val, vreg);
 
-                if let Type::Struct(struct_id) = ty {
-                    let slot_count = self.type_slot_count(Type::Struct(*struct_id));
+                if let TypeKind::Struct(struct_id) = ty.kind() {
+                    let slot_count = self.type_slot_count(Type::Struct(struct_id));
                     let mut slot_vregs = vec![vreg];
                     for _ in 1..slot_count {
                         slot_vregs.push(self.mir.alloc_vreg());
@@ -653,11 +651,16 @@ impl<'a> CfgLower<'a> {
     fn get_lowering_rationale(&self, data: &CfgInstData, ty: Type) -> Option<String> {
         match data {
             CfgInstData::Add(_, _) | CfgInstData::Sub(_, _) | CfgInstData::Mul(_, _) => {
-                if matches!(ty, Type::I64 | Type::U64) {
+                if matches!(ty.kind(), TypeKind::I64 | TypeKind::U64) {
                     Some("64-bit operation with 64-bit overflow check".to_string())
                 } else if matches!(
-                    ty,
-                    Type::I8 | Type::I16 | Type::I32 | Type::U8 | Type::U16 | Type::U32
+                    ty.kind(),
+                    TypeKind::I8
+                        | TypeKind::I16
+                        | TypeKind::I32
+                        | TypeKind::U8
+                        | TypeKind::U16
+                        | TypeKind::U32
                 ) {
                     Some("32-bit operation with overflow check".to_string())
                 } else {
@@ -665,14 +668,20 @@ impl<'a> CfgLower<'a> {
                 }
             }
             CfgInstData::Div(_, _) | CfgInstData::Mod(_, _) => {
-                if matches!(ty, Type::I8 | Type::I16 | Type::I32 | Type::I64) {
+                if matches!(
+                    ty.kind(),
+                    TypeKind::I8 | TypeKind::I16 | TypeKind::I32 | TypeKind::I64
+                ) {
                     Some("Signed division: uses CDQ/IDIV sequence".to_string())
                 } else {
                     Some("Unsigned division: uses XOR/DIV sequence".to_string())
                 }
             }
             CfgInstData::Shr(_, _) => {
-                if matches!(ty, Type::I8 | Type::I16 | Type::I32 | Type::I64) {
+                if matches!(
+                    ty.kind(),
+                    TypeKind::I8 | TypeKind::I16 | TypeKind::I32 | TypeKind::I64
+                ) {
                     Some("Signed shift right (SAR) preserves sign bit".to_string())
                 } else {
                     Some("Unsigned shift right (SHR) zero-extends".to_string())
@@ -909,7 +918,7 @@ impl<'a> CfgLower<'a> {
                 });
 
                 // Use 64-bit add for 64-bit types to get correct overflow detection
-                if matches!(ty, Type::I64 | Type::U64) {
+                if matches!(ty.kind(), TypeKind::I64 | TypeKind::U64) {
                     self.mir.push(X86Inst::AddRR64 {
                         dst: Operand::Virtual(vreg),
                         src: Operand::Virtual(rhs_vreg),
@@ -938,7 +947,7 @@ impl<'a> CfgLower<'a> {
                 });
 
                 // Use 64-bit sub for 64-bit types to get correct overflow detection
-                if matches!(ty, Type::I64 | Type::U64) {
+                if matches!(ty.kind(), TypeKind::I64 | TypeKind::U64) {
                     self.mir.push(X86Inst::SubRR64 {
                         dst: Operand::Virtual(vreg),
                         src: Operand::Virtual(rhs_vreg),
@@ -968,7 +977,10 @@ impl<'a> CfgLower<'a> {
                 //
                 // Future optimization: x * 2 could use `add x, x` instead of `shl x, 1`
                 // (same latency but potentially better for some microarchitectures).
-                let is_word_or_larger = matches!(ty, Type::I32 | Type::I64 | Type::U32 | Type::U64);
+                let is_word_or_larger = matches!(
+                    ty.kind(),
+                    TypeKind::I32 | TypeKind::I64 | TypeKind::U32 | TypeKind::U64
+                );
                 let shift_amount = if is_word_or_larger {
                     self.try_power_of_two_shift(*rhs)
                         .or_else(|| self.try_power_of_two_shift(*lhs))
@@ -1067,7 +1079,7 @@ impl<'a> CfgLower<'a> {
                     });
 
                     // Use 64-bit mul for 64-bit types to get correct overflow detection
-                    if matches!(ty, Type::I64 | Type::U64) {
+                    if matches!(ty.kind(), TypeKind::I64 | TypeKind::U64) {
                         self.mir.push(X86Inst::ImulRR64 {
                             dst: Operand::Virtual(vreg),
                             src: Operand::Virtual(rhs_vreg),
@@ -1161,7 +1173,7 @@ impl<'a> CfgLower<'a> {
                 });
 
                 // Use 64-bit neg for 64-bit types to get correct overflow detection
-                if matches!(ty, Type::I64 | Type::U64) {
+                if matches!(ty.kind(), TypeKind::I64 | TypeKind::U64) {
                     self.mir.push(X86Inst::Neg64 {
                         dst: Operand::Virtual(vreg),
                     });
@@ -1411,7 +1423,7 @@ impl<'a> CfgLower<'a> {
                         dst: Operand::Virtual(vreg),
                         imm: 1,
                     });
-                } else if let Type::Struct(struct_id) = lhs_ty {
+                } else if let TypeKind::Struct(struct_id) = lhs_ty.kind() {
                     // Struct equality: compare all fields
                     self.emit_struct_equality(value, *lhs, *rhs, struct_id, false);
                 } else {
@@ -1445,7 +1457,7 @@ impl<'a> CfgLower<'a> {
                         dst: Operand::Virtual(vreg),
                         imm: 0,
                     });
-                } else if let Type::Struct(struct_id) = lhs_ty {
+                } else if let TypeKind::Struct(struct_id) = lhs_ty.kind() {
                     // Struct inequality: compare all fields, invert result
                     self.emit_struct_equality(value, *lhs, *rhs, struct_id, true);
                 } else {
@@ -1519,7 +1531,7 @@ impl<'a> CfgLower<'a> {
 
             CfgInstData::Alloc { slot, init } => {
                 let init_type = self.cfg.get_inst(*init).ty;
-                if matches!(init_type, Type::Array(_)) {
+                if matches!(init_type.kind(), TypeKind::Array(_)) {
                     // Array: recursively flatten nested arrays and store scalar elements
                     let scalar_vregs = self.collect_array_scalar_vregs(*init);
                     for (i, scalar_vreg) in scalar_vregs.iter().enumerate() {
@@ -1572,7 +1584,7 @@ impl<'a> CfgLower<'a> {
                         offset: cap_offset,
                         src: Operand::Virtual(cap_vreg),
                     });
-                } else if matches!(init_type, Type::Struct(_)) {
+                } else if matches!(init_type.kind(), TypeKind::Struct(_)) {
                     // Struct: recursively flatten struct fields (including array fields) to scalars
                     let scalar_vregs = self.collect_struct_scalar_vregs(*init);
                     for (i, scalar_vreg) in scalar_vregs.iter().enumerate() {
@@ -1633,7 +1645,7 @@ impl<'a> CfgLower<'a> {
                     self.struct_slot_vregs
                         .insert(value, vec![ptr_vreg, len_vreg, cap_vreg]);
                     self.value_map.insert(value, ptr_vreg);
-                } else if let Type::Array(_) = load_type {
+                } else if let TypeKind::Array(_) = load_type.kind() {
                     // Array: load all element slots (recursively flattened)
                     let slot_count = self.type_slot_count(load_type);
                     let mut slot_vregs = Vec::with_capacity(slot_count as usize);
@@ -1659,7 +1671,7 @@ impl<'a> CfgLower<'a> {
                         let vreg = self.mir.alloc_vreg();
                         self.value_map.insert(value, vreg);
                     }
-                } else if let Type::Struct(struct_id) = load_type {
+                } else if let TypeKind::Struct(struct_id) = load_type.kind() {
                     // Struct: load all field slots (recursively flattened)
                     let slot_count = self.type_slot_count(Type::Struct(struct_id));
                     let mut slot_vregs = Vec::with_capacity(slot_count as usize);
@@ -1877,8 +1889,8 @@ impl<'a> CfgLower<'a> {
                         continue;
                     }
 
-                    match arg_type {
-                        Type::Struct(struct_id) => {
+                    match arg_type.kind() {
+                        TypeKind::Struct(struct_id) => {
                             let arg_data = &self.cfg.get_inst(arg_value).data;
                             let slot_count = self.type_slot_count(Type::Struct(struct_id));
                             match arg_data {
@@ -1925,7 +1937,7 @@ impl<'a> CfgLower<'a> {
                                 }
                             }
                         }
-                        Type::Array(_) => {
+                        TypeKind::Array(_) => {
                             let arg_data = &self.cfg.get_inst(arg_value).data;
                             let array_len = self.array_length(arg_type) as u32;
                             match arg_data {
@@ -2061,7 +2073,7 @@ impl<'a> CfgLower<'a> {
                         dst: Operand::Virtual(result_vreg),
                         src: Operand::Virtual(slot_vregs[0]),
                     });
-                } else if let Type::Struct(struct_id) = ty {
+                } else if let TypeKind::Struct(struct_id) = ty.kind() {
                     // Non-builtin structs return in registers
                     let slot_count = self.type_slot_count(Type::Struct(struct_id));
                     let mut slot_vregs = Vec::new();
@@ -2187,16 +2199,20 @@ impl<'a> CfgLower<'a> {
                         // Existing scalar handling
                         let arg_vreg = self.get_vreg(arg_val);
 
-                        let runtime_fn = match arg_type {
-                            Type::Bool => "__rue_dbg_bool",
-                            Type::I8 | Type::I16 | Type::I32 | Type::I64 => "__rue_dbg_i64",
-                            Type::U8 | Type::U16 | Type::U32 | Type::U64 => "__rue_dbg_u64",
+                        let runtime_fn = match arg_type.kind() {
+                            TypeKind::Bool => "__rue_dbg_bool",
+                            TypeKind::I8 | TypeKind::I16 | TypeKind::I32 | TypeKind::I64 => {
+                                "__rue_dbg_i64"
+                            }
+                            TypeKind::U8 | TypeKind::U16 | TypeKind::U32 | TypeKind::U64 => {
+                                "__rue_dbg_u64"
+                            }
                             _ => unreachable!("@dbg only supports scalars and strings"),
                         };
 
                         // Handle type extensions
-                        match arg_type {
-                            Type::I8 => {
+                        match arg_type.kind() {
+                            TypeKind::I8 => {
                                 self.mir.push(X86Inst::MovRR {
                                     dst: Operand::Physical(Reg::Rax),
                                     src: Operand::Virtual(arg_vreg),
@@ -2206,7 +2222,7 @@ impl<'a> CfgLower<'a> {
                                     src: Operand::Physical(Reg::Rax),
                                 });
                             }
-                            Type::I16 => {
+                            TypeKind::I16 => {
                                 self.mir.push(X86Inst::MovRR {
                                     dst: Operand::Physical(Reg::Rax),
                                     src: Operand::Virtual(arg_vreg),
@@ -2216,7 +2232,7 @@ impl<'a> CfgLower<'a> {
                                     src: Operand::Physical(Reg::Rax),
                                 });
                             }
-                            Type::I32 => {
+                            TypeKind::I32 => {
                                 self.mir.push(X86Inst::MovRR {
                                     dst: Operand::Physical(Reg::Rax),
                                     src: Operand::Virtual(arg_vreg),
@@ -2226,7 +2242,7 @@ impl<'a> CfgLower<'a> {
                                     src: Operand::Physical(Reg::Rax),
                                 });
                             }
-                            Type::U8 => {
+                            TypeKind::U8 => {
                                 self.mir.push(X86Inst::MovRR {
                                     dst: Operand::Physical(Reg::Rax),
                                     src: Operand::Virtual(arg_vreg),
@@ -2236,7 +2252,7 @@ impl<'a> CfgLower<'a> {
                                     src: Operand::Physical(Reg::Rax),
                                 });
                             }
-                            Type::U16 => {
+                            TypeKind::U16 => {
                                 self.mir.push(X86Inst::MovRR {
                                     dst: Operand::Physical(Reg::Rax),
                                     src: Operand::Virtual(arg_vreg),
@@ -2246,7 +2262,7 @@ impl<'a> CfgLower<'a> {
                                     src: Operand::Physical(Reg::Rax),
                                 });
                             }
-                            Type::U32 | Type::I64 | Type::U64 | Type::Bool => {
+                            TypeKind::U32 | TypeKind::I64 | TypeKind::U64 | TypeKind::Bool => {
                                 self.mir.push(X86Inst::MovRR {
                                     dst: Operand::Physical(Reg::Rdi),
                                     src: Operand::Virtual(arg_vreg),
@@ -2331,7 +2347,7 @@ impl<'a> CfgLower<'a> {
                 let fields = self.cfg.get_extra(*fields_start, *fields_len).to_vec();
                 for field in &fields {
                     let field_inst = self.cfg.get_inst(*field);
-                    if let Type::Struct(_) = field_inst.ty {
+                    if let TypeKind::Struct(_) = field_inst.ty.kind() {
                         // Nested struct - get all its slot vregs
                         let nested_vregs = self
                             .struct_slot_vregs
@@ -3127,7 +3143,7 @@ impl<'a> CfgLower<'a> {
                 }
 
                 // Handle struct drops - need to pass all flattened field values
-                if let Type::Struct(struct_id) = dropped_ty {
+                if let TypeKind::Struct(struct_id) = dropped_ty.kind() {
                     let struct_def = self.type_pool.struct_def(struct_id);
 
                     // Collect all scalar vregs for this struct (flattened)
@@ -3188,7 +3204,7 @@ impl<'a> CfgLower<'a> {
                 }
 
                 // Handle array drops - need to pass all element values
-                if let Type::Array(array_id) = dropped_ty {
+                if let TypeKind::Array(array_id) = dropped_ty.kind() {
                     // Collect all scalar vregs for this array (flattened)
                     let element_vregs = self.collect_array_scalar_vregs(*dropped_value);
 
@@ -3208,8 +3224,7 @@ impl<'a> CfgLower<'a> {
                         });
                     }
 
-                    let drop_fn_name =
-                        types::array_drop_glue_name(array_id, self.array_types, self.type_pool);
+                    let drop_fn_name = types::array_drop_glue_name(array_id, self.type_pool);
                     let symbol_id = self.intern_symbol(&drop_fn_name);
                     self.mir.push(X86Inst::CallRel { symbol_id });
                     return;
@@ -3278,17 +3293,17 @@ impl<'a> CfgLower<'a> {
     fn emit_overflow_check(&mut self, ty: Type, result_vreg: VReg) {
         let ok_label = self.new_label();
 
-        match ty {
+        match ty.kind() {
             // 32-bit and 64-bit unsigned: check carry flag
-            Type::U32 | Type::U64 => {
+            TypeKind::U32 | TypeKind::U64 => {
                 self.mir.push(X86Inst::Jae { label: ok_label });
             }
             // 32-bit and 64-bit signed: check overflow flag
-            Type::I32 | Type::I64 => {
+            TypeKind::I32 | TypeKind::I64 => {
                 self.mir.push(X86Inst::Jno { label: ok_label });
             }
             // Sub-word unsigned types: check if result fits in range [0, max]
-            Type::U8 => {
+            TypeKind::U8 => {
                 // Result must be <= 255
                 self.mir.push(X86Inst::CmpRI {
                     src: Operand::Virtual(result_vreg),
@@ -3297,7 +3312,7 @@ impl<'a> CfgLower<'a> {
                 // Jump if below or equal (unsigned)
                 self.mir.push(X86Inst::Jbe { label: ok_label });
             }
-            Type::U16 => {
+            TypeKind::U16 => {
                 // Result must be <= 65535
                 let max_vreg = self.mir.alloc_vreg();
                 self.mir.push(X86Inst::MovRI32 {
@@ -3312,7 +3327,7 @@ impl<'a> CfgLower<'a> {
                 self.mir.push(X86Inst::Jbe { label: ok_label });
             }
             // Sub-word signed types: check if result fits in range [min, max]
-            Type::I8 => {
+            TypeKind::I8 => {
                 // For i8: result must be in [-128, 127]
                 // Sign-extend to 64-bit and compare with original
                 // If they differ, overflow occurred
@@ -3328,7 +3343,7 @@ impl<'a> CfgLower<'a> {
                 });
                 self.mir.push(X86Inst::Jz { label: ok_label });
             }
-            Type::I16 => {
+            TypeKind::I16 => {
                 // For i16: result must be in [-32768, 32767]
                 // Sign-extend to 64-bit and compare with original
                 let sext_vreg = self.mir.alloc_vreg();
@@ -3553,26 +3568,26 @@ impl<'a> CfgLower<'a> {
 
     /// Get the bit width of an integer type.
     fn type_bits(ty: Type) -> u32 {
-        match ty {
-            Type::I8 | Type::U8 => 8,
-            Type::I16 | Type::U16 => 16,
-            Type::I32 | Type::U32 => 32,
-            Type::I64 | Type::U64 => 64,
+        match ty.kind() {
+            TypeKind::I8 | TypeKind::U8 => 8,
+            TypeKind::I16 | TypeKind::U16 => 16,
+            TypeKind::I32 | TypeKind::U32 => 32,
+            TypeKind::I64 | TypeKind::U64 => 64,
             _ => panic!("type_bits called on non-integer type: {:?}", ty),
         }
     }
 
     /// Get the min and max values for an integer type.
     fn type_range(ty: Type) -> (i64, i64) {
-        match ty {
-            Type::I8 => (i8::MIN as i64, i8::MAX as i64),
-            Type::I16 => (i16::MIN as i64, i16::MAX as i64),
-            Type::I32 => (i32::MIN as i64, i32::MAX as i64),
-            Type::I64 => (i64::MIN, i64::MAX),
-            Type::U8 => (0, u8::MAX as i64),
-            Type::U16 => (0, u16::MAX as i64),
-            Type::U32 => (0, u32::MAX as i64),
-            Type::U64 => (0, i64::MAX), // Can't represent u64::MAX in i64, but we use unsigned compare
+        match ty.kind() {
+            TypeKind::I8 => (i8::MIN as i64, i8::MAX as i64),
+            TypeKind::I16 => (i16::MIN as i64, i16::MAX as i64),
+            TypeKind::I32 => (i32::MIN as i64, i32::MAX as i64),
+            TypeKind::I64 => (i64::MIN, i64::MAX),
+            TypeKind::U8 => (0, u8::MAX as i64),
+            TypeKind::U16 => (0, u16::MAX as i64),
+            TypeKind::U32 => (0, u32::MAX as i64),
+            TypeKind::U64 => (0, i64::MAX), // Can't represent u64::MAX in i64, but we use unsigned compare
             _ => panic!("type_range called on non-integer type: {:?}", ty),
         }
     }
@@ -3590,7 +3605,7 @@ impl<'a> CfgLower<'a> {
 
         // Use 64-bit compare for i64/u64 types
         let lhs_ty = self.cfg.get_inst(lhs).ty;
-        if matches!(lhs_ty, Type::I64 | Type::U64) {
+        if matches!(lhs_ty.kind(), TypeKind::I64 | TypeKind::U64) {
             self.mir.push(X86Inst::Cmp64RR {
                 src1: Operand::Virtual(lhs_vreg),
                 src2: Operand::Virtual(rhs_vreg),
@@ -3664,7 +3679,7 @@ impl<'a> CfgLower<'a> {
             let cmp_vreg = self.mir.alloc_vreg();
 
             // Use 64-bit compare for i64/u64 types
-            if matches!(field.ty, Type::I64 | Type::U64) {
+            if matches!(field.ty.kind(), TypeKind::I64 | TypeKind::U64) {
                 self.mir.push(X86Inst::Cmp64RR {
                     src1: Operand::Virtual(lhs_field_vreg),
                     src2: Operand::Virtual(rhs_field_vreg),
@@ -3779,7 +3794,7 @@ impl<'a> CfgLower<'a> {
                 let args = self.cfg.get_extra(*args_start, *args_len);
                 for (i, &arg) in args.iter().enumerate() {
                     let arg_type = self.cfg.get_inst(arg).ty;
-                    if matches!(arg_type, Type::Struct(_)) {
+                    if matches!(arg_type.kind(), TypeKind::Struct(_)) {
                         // For struct args, copy all field vregs
                         self.copy_struct_to_block_param(arg, *target, i as u32);
                     } else {
@@ -3831,7 +3846,7 @@ impl<'a> CfgLower<'a> {
                 let then_args = self.cfg.get_extra(*then_args_start, *then_args_len);
                 for (i, &arg) in then_args.iter().enumerate() {
                     let arg_type = self.cfg.get_inst(arg).ty;
-                    if matches!(arg_type, Type::Struct(_)) {
+                    if matches!(arg_type.kind(), TypeKind::Struct(_)) {
                         // For struct args, copy all field vregs
                         self.copy_struct_to_block_param(arg, *then_block, i as u32);
                     } else {
@@ -3857,7 +3872,7 @@ impl<'a> CfgLower<'a> {
                 let else_args = self.cfg.get_extra(*else_args_start, *else_args_len);
                 for (i, &arg) in else_args.iter().enumerate() {
                     let arg_type = self.cfg.get_inst(arg).ty;
-                    if matches!(arg_type, Type::Struct(_)) {
+                    if matches!(arg_type.kind(), TypeKind::Struct(_)) {
                         // For struct args, copy all field vregs
                         self.copy_struct_to_block_param(arg, *else_block, i as u32);
                     } else {
@@ -3933,7 +3948,7 @@ impl<'a> CfgLower<'a> {
                     // it 0 mod 16 at callee entry, violating SysV ABI).
                     let symbol_id = self.intern_symbol("__rue_exit");
                     self.mir.push(X86Inst::CallRel { symbol_id });
-                } else if let Type::Struct(struct_id) = return_type {
+                } else if let Some(struct_id) = return_type.as_struct() {
                     // Return struct in registers
                     let slot_count = self.type_slot_count(Type::Struct(struct_id));
                     let value_data = &self.cfg.get_inst(*value).data;
@@ -4030,7 +4045,7 @@ impl<'a> CfgLower<'a> {
 mod tests {
     use super::*;
     use lasso::ThreadedRodeo;
-    use rue_air::Sema;
+    use rue_air::{ArrayTypeId, Sema};
     use rue_cfg::CfgBuilder;
     use rue_error::PreviewFeatures;
     use rue_lexer::Lexer;
@@ -4051,7 +4066,6 @@ mod tests {
 
         let func = &output.functions[0];
         let type_pool = &output.type_pool;
-        let array_types = &output.array_types;
         let strings = &output.strings;
         let cfg_output = CfgBuilder::build(
             &func.air,
@@ -4059,12 +4073,11 @@ mod tests {
             func.num_param_slots,
             &func.name,
             type_pool,
-            array_types,
             func.param_modes.clone(),
             &interner,
         );
 
-        CfgLower::new(&cfg_output.cfg, type_pool, array_types, strings, &interner).lower()
+        CfgLower::new(&cfg_output.cfg, type_pool, strings, &interner).lower()
     }
 
     #[test]

@@ -41,7 +41,7 @@ use crate::inference::{
 use crate::inst::{Air, AirArgMode, AirCallArg, AirInst, AirInstData, AirPattern, AirRef};
 use crate::scope::ScopedContext;
 use crate::sema_context::SemaContext;
-use crate::types::{EnumId, StructDef, StructField, StructId, Type};
+use crate::types::{EnumId, StructDef, StructField, StructId, Type, TypeKind};
 
 /// Try to evaluate an RIR expression as a compile-time constant.
 ///
@@ -470,9 +470,6 @@ fn analyze_all_function_bodies_sequential(sema: &mut Sema<'_>) -> MultiErrorResu
 
     let mut output = SemaOutput {
         functions,
-        struct_defs: std::mem::take(&mut sema.struct_defs),
-        enum_defs: std::mem::take(&mut sema.enum_defs),
-        array_types: std::mem::take(&mut sema.array_type_defs),
         strings: global_strings,
         warnings: all_warnings,
         type_pool: sema.type_pool.clone(),
@@ -506,17 +503,8 @@ fn analyze_all_function_bodies_parallel(sema: Sema<'_>) -> MultiErrorResult<Sema
         .map(|job| analyze_function_job(&ctx, job))
         .collect();
 
-    // Extract array types from the thread-safe registry
-    let array_type_defs = ctx.array_registry.into_defs();
-
-    // Merge results
-    merge_function_results(
-        results,
-        sema.struct_defs,
-        sema.enum_defs,
-        array_type_defs,
-        sema.type_pool,
-    )
+    // Merge results (array types are now in the type pool)
+    merge_function_results(results, sema.type_pool)
 }
 
 /// Collect all functions to be analyzed from the RIR.
@@ -1307,11 +1295,11 @@ fn analyze_inst_with_context(
                 // Check if this value, when negated, fits in the target signed type
                 if ty.negated_literal_fits(*value) && !ty.literal_fits(*value) {
                     // This is the MIN value case - store the MIN value directly.
-                    let neg_value = match ty {
-                        Type::I8 => (i8::MIN as i64) as u64,
-                        Type::I16 => (i16::MIN as i64) as u64,
-                        Type::I32 => (i32::MIN as i64) as u64,
-                        Type::I64 => i64::MIN as u64,
+                    let neg_value = match ty.kind() {
+                        TypeKind::I8 => (i8::MIN as i64) as u64,
+                        TypeKind::I16 => (i16::MIN as i64) as u64,
+                        TypeKind::I32 => (i32::MIN as i64) as u64,
+                        TypeKind::I64 => i64::MIN as u64,
                         _ => unreachable!(),
                     };
                     let air_ref = air.add_inst(AirInst {
@@ -1827,9 +1815,6 @@ where
 /// Merge results from parallel function analysis.
 fn merge_function_results(
     results: Vec<FunctionResult>,
-    struct_defs: Vec<crate::types::StructDef>,
-    enum_defs: Vec<crate::types::EnumDef>,
-    array_type_defs: Vec<crate::types::ArrayTypeDef>,
     type_pool: crate::intern_pool::TypeInternPool,
 ) -> MultiErrorResult<SemaOutput> {
     let mut errors = CompileErrors::new();
@@ -1876,9 +1861,6 @@ fn merge_function_results(
 
     errors.into_result_with(SemaOutput {
         functions,
-        struct_defs,
-        enum_defs,
-        array_types: array_type_defs,
         strings: global_strings,
         warnings: all_warnings,
         type_pool,
@@ -3084,8 +3066,8 @@ fn analyze_inst_for_projection_ctx(
             let base_result = analyze_inst_for_projection_ctx(ctx, air, *base, analysis_ctx)?;
             let base_type = base_result.ty;
 
-            let struct_id = match base_type {
-                Type::Struct(id) => id,
+            let struct_id = match base_type.kind() {
+                TypeKind::Struct(id) => id,
                 _ => {
                     return Err(CompileError::new(
                         ErrorKind::FieldAccessOnNonStruct {
@@ -3129,10 +3111,10 @@ fn analyze_inst_for_projection_ctx(
             let index_result = analyze_inst_with_context(ctx, air, *index, analysis_ctx)?;
 
             // Verify base is an array
-            let (array_type_id, elem_type, _array_len) = match base_type {
-                Type::Array(type_id) => {
-                    let array_def = ctx.get_array_type_def(type_id);
-                    (type_id, array_def.element_type, array_def.length)
+            let (array_type_id, elem_type, _array_len) = match base_type.kind() {
+                TypeKind::Array(type_id) => {
+                    let (element_type, length) = ctx.get_array_type_def(type_id);
+                    (type_id, element_type, length)
                 }
                 _ => {
                     return Err(CompileError::new(
@@ -3201,8 +3183,8 @@ fn analyze_field_get_ctx(
     let base_result = analyze_inst_for_projection_ctx(ctx, air, base, analysis_ctx)?;
     let base_type = base_result.ty;
 
-    let struct_id = match base_type {
-        Type::Struct(id) => id,
+    let struct_id = match base_type.kind() {
+        TypeKind::Struct(id) => id,
         _ => {
             return Err(CompileError::new(
                 ErrorKind::FieldAccessOnNonStruct {
@@ -3433,8 +3415,8 @@ fn analyze_field_set_ctx(
     let mut slot_offset: u32 = 0;
 
     for field_sym in field_symbols.iter().rev() {
-        let struct_id = match current_type {
-            Type::Struct(id) => id,
+        let struct_id = match current_type.kind() {
+            TypeKind::Struct(id) => id,
             _ => {
                 return Err(CompileError::new(
                     ErrorKind::FieldAccessOnNonStruct {
@@ -3462,8 +3444,8 @@ fn analyze_field_set_ctx(
     }
 
     // Now handle the final field being assigned
-    let struct_id = match current_type {
-        Type::Struct(id) => id,
+    let struct_id = match current_type.kind() {
+        TypeKind::Struct(id) => id,
         _ => {
             return Err(CompileError::new(
                 ErrorKind::FieldAccessOnNonStruct {
@@ -3533,10 +3515,10 @@ fn analyze_array_init_ctx(
     // Get the array type from HM inference
     let array_type = get_resolved_type_ctx(analysis_ctx, inst_ref, span, "array literal")?;
 
-    let (array_type_id, _elem_type, expected_len) = match array_type {
-        Type::Array(type_id) => {
-            let array_def = ctx.get_array_type_def(type_id);
-            (type_id, array_def.element_type, array_def.length)
+    let (array_type_id, _elem_type, expected_len) = match array_type.kind() {
+        TypeKind::Array(type_id) => {
+            let (element_type, length) = ctx.get_array_type_def(type_id);
+            (type_id, element_type, length)
         }
         _ => {
             return Err(CompileError::new(
@@ -3616,10 +3598,10 @@ fn analyze_index_get_ctx(
     let index_result = analyze_inst_with_context(ctx, air, index, analysis_ctx)?;
 
     // Verify base is an array
-    let (array_type_id, elem_type, array_len) = match base_type {
-        Type::Array(type_id) => {
-            let array_def = ctx.get_array_type_def(type_id);
-            (type_id, array_def.element_type, array_def.length)
+    let (array_type_id, elem_type, array_len) = match base_type.kind() {
+        TypeKind::Array(type_id) => {
+            let (element_type, length) = ctx.get_array_type_def(type_id);
+            (type_id, element_type, length)
         }
         _ => {
             return Err(CompileError::new(
@@ -3797,10 +3779,10 @@ fn analyze_index_set_ctx(
     };
 
     // Verify base is an array and get its element type
-    let (array_type_id, _elem_type, array_len) = match base_type {
-        Type::Array(type_id) => {
-            let array_def = ctx.get_array_type_def(type_id);
-            (type_id, array_def.element_type, array_def.length)
+    let (array_type_id, _elem_type, array_len) = match base_type.kind() {
+        TypeKind::Array(type_id) => {
+            let (element_type, length) = ctx.get_array_type_def(type_id);
+            (type_id, element_type, length)
         }
         _ => {
             return Err(CompileError::new(
@@ -4176,7 +4158,7 @@ fn analyze_method_call_ctx(
     let receiver_type = receiver_result.ty;
 
     // Handle module member access: module.function() becomes a direct function call
-    if let Type::Module(_module_id) = receiver_type {
+    if receiver_type.is_module() {
         return analyze_module_member_call_ctx(
             ctx,
             air,
@@ -4189,8 +4171,8 @@ fn analyze_method_call_ctx(
     }
 
     // Get the type name for method lookup
-    let type_name = match receiver_type {
-        Type::Struct(struct_id) => {
+    let type_name = match receiver_type.kind() {
+        TypeKind::Struct(struct_id) => {
             let struct_def = ctx.get_struct_def(struct_id);
             ctx.interner.get_or_intern(&struct_def.name)
         }
@@ -4207,7 +4189,7 @@ fn analyze_method_call_ctx(
     };
 
     // Check if this is a builtin type with builtin methods
-    if let Type::Struct(struct_id) = receiver_type {
+    if let Some(struct_id) = receiver_type.as_struct() {
         if let Some(builtin_def) = ctx.get_builtin_type_def(struct_id) {
             let method_name = ctx.interner.resolve(&method);
             if let Some(builtin_method) = builtin_def.find_method(method_name) {
@@ -4399,8 +4381,8 @@ fn analyze_builtin_method_ctx(
     let air_args = analyze_call_args_ctx(ctx, air, &args, analysis_ctx)?;
 
     // Get the struct ID for builtin type
-    let struct_id = match receiver_type {
-        Type::Struct(id) => id,
+    let struct_id = match receiver_type.kind() {
+        TypeKind::Struct(id) => id,
         _ => unreachable!("builtin method called on non-struct type"),
     };
 
@@ -5501,8 +5483,8 @@ impl<'a> Sema<'a> {
             let base_result = self.analyze_inst_for_projection(air, *base, ctx)?;
             let base_type = base_result.ty;
 
-            let struct_id = match base_type {
-                Type::Struct(id) => id,
+            let struct_id = match base_type.kind() {
+                TypeKind::Struct(id) => id,
                 _ => {
                     return Err(CompileError::new(
                         ErrorKind::FieldAccessOnNonStruct {
@@ -5547,8 +5529,8 @@ impl<'a> Sema<'a> {
             let base_result = self.analyze_inst_for_projection(air, *base, ctx)?;
             let base_type = base_result.ty;
 
-            let array_type_id = match base_type {
-                Type::Array(id) => id,
+            let array_type_id = match base_type.kind() {
+                TypeKind::Array(id) => id,
                 _ => {
                     return Err(CompileError::new(
                         ErrorKind::IndexOnNonArray {
@@ -5558,6 +5540,8 @@ impl<'a> Sema<'a> {
                     ));
                 }
             };
+
+            let (element_type, length) = self.type_pool.array_def(array_type_id);
 
             // Index must be an unsigned integer
             let index_result = self.analyze_inst(air, *index, ctx)?;
@@ -5571,9 +5555,7 @@ impl<'a> Sema<'a> {
                 ));
             }
 
-            let array_def = &self.array_type_defs[array_type_id.0 as usize];
-            let element_type = array_def.element_type;
-            let array_length = array_def.length;
+            let array_length = length;
 
             // Compile-time bounds check for constant indices
             if let Some(const_index) = self.try_get_const_index(*index) {
@@ -6068,8 +6050,8 @@ impl<'a> Sema<'a> {
         let mut slot_offset: u32 = 0;
 
         for field_sym in field_symbols.iter().rev() {
-            let struct_id = match current_type {
-                Type::Struct(id) => id,
+            let struct_id = match current_type.kind() {
+                TypeKind::Struct(id) => id,
                 _ => {
                     return Err(CompileError::new(
                         ErrorKind::FieldAccessOnNonStruct {
@@ -6097,8 +6079,8 @@ impl<'a> Sema<'a> {
         }
 
         // Now handle the final field being assigned
-        let struct_id = match current_type {
-            Type::Struct(id) => id,
+        let struct_id = match current_type.kind() {
+            TypeKind::Struct(id) => id,
             _ => {
                 return Err(CompileError::new(
                     ErrorKind::FieldAccessOnNonStruct {
@@ -6271,8 +6253,8 @@ impl<'a> Sema<'a> {
             }
         };
 
-        let array_type_id = match base_type {
-            Type::Array(id) => id,
+        let array_type_id = match base_type.kind() {
+            TypeKind::Array(id) => id,
             _ => {
                 return Err(CompileError::new(
                     ErrorKind::IndexOnNonArray {
@@ -6282,6 +6264,8 @@ impl<'a> Sema<'a> {
                 ));
             }
         };
+
+        let (element_type, length) = self.type_pool.array_def(array_type_id);
 
         // Index must be an unsigned integer
         let index_result = self.analyze_inst(air, index, ctx)?;
@@ -6295,9 +6279,7 @@ impl<'a> Sema<'a> {
             ));
         }
 
-        let array_def = &self.array_type_defs[array_type_id.0 as usize];
-        let element_type = array_def.element_type;
-        let array_length = array_def.length;
+        let array_length = length;
 
         // Compile-time bounds check for constant indices
         if let Some(const_index) = self.try_get_const_index(index) {
@@ -6372,14 +6354,14 @@ impl<'a> Sema<'a> {
         let receiver_type = receiver_result.ty;
 
         // Handle module member access: module.function() becomes a direct function call
-        if let Type::Module(_module_id) = receiver_type {
+        if receiver_type.is_module() {
             return self
                 .analyze_module_member_call_impl(air, method, args_start, args_len, span, ctx);
         }
 
         // Check that receiver is a struct type
-        let struct_id = match receiver_type {
-            Type::Struct(id) => id,
+        let struct_id = match receiver_type.kind() {
+            TypeKind::Struct(id) => id,
             _ => {
                 return Err(CompileError::new(
                     ErrorKind::MethodCallOnNonStruct {

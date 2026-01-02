@@ -12,37 +12,33 @@ use rue_span::Span;
 
 use super::Sema;
 use crate::inference::InferType;
-use crate::types::{ArrayTypeDef, ArrayTypeId, StructId, Type, parse_array_type_syntax};
+use crate::types::{ArrayTypeId, StructId, Type, TypeKind, parse_array_type_syntax};
 
 impl<'a> Sema<'a> {
     /// Get a human-readable name for a type.
     pub(crate) fn format_type_name(&self, ty: Type) -> String {
-        match ty {
-            Type::I8 => "i8".to_string(),
-            Type::I16 => "i16".to_string(),
-            Type::I32 => "i32".to_string(),
-            Type::I64 => "i64".to_string(),
-            Type::U8 => "u8".to_string(),
-            Type::U16 => "u16".to_string(),
-            Type::U32 => "u32".to_string(),
-            Type::U64 => "u64".to_string(),
-            Type::Bool => "bool".to_string(),
-            Type::Unit => "()".to_string(),
-            Type::Never => "!".to_string(),
-            Type::Error => "<error>".to_string(),
-            // Note: String is now handled via Type::Struct with builtin_string_id
-            Type::Struct(struct_id) => self.type_pool.struct_def(struct_id).name.clone(),
-            Type::Enum(enum_id) => self.type_pool.enum_def(enum_id).name.clone(),
-            Type::Array(array_id) => {
-                let array_def = &self.array_type_defs[array_id.0 as usize];
-                format!(
-                    "[{}; {}]",
-                    self.format_type_name(array_def.element_type),
-                    array_def.length
-                )
+        match ty.kind() {
+            TypeKind::I8 => "i8".to_string(),
+            TypeKind::I16 => "i16".to_string(),
+            TypeKind::I32 => "i32".to_string(),
+            TypeKind::I64 => "i64".to_string(),
+            TypeKind::U8 => "u8".to_string(),
+            TypeKind::U16 => "u16".to_string(),
+            TypeKind::U32 => "u32".to_string(),
+            TypeKind::U64 => "u64".to_string(),
+            TypeKind::Bool => "bool".to_string(),
+            TypeKind::Unit => "()".to_string(),
+            TypeKind::Never => "!".to_string(),
+            TypeKind::Error => "<error>".to_string(),
+            // Note: String is now handled via TypeKind::Struct with builtin_string_id
+            TypeKind::Struct(struct_id) => self.type_pool.struct_def(struct_id).name.clone(),
+            TypeKind::Enum(enum_id) => self.type_pool.enum_def(enum_id).name.clone(),
+            TypeKind::Array(array_id) => {
+                let (element_type, length) = self.type_pool.array_def(array_id);
+                format!("[{}; {}]", self.format_type_name(element_type), length)
             }
-            Type::Module(_) => "<module>".to_string(),
-            Type::ComptimeType => "type".to_string(),
+            TypeKind::Module(_) => "<module>".to_string(),
+            TypeKind::ComptimeType => "type".to_string(),
         }
     }
 
@@ -50,37 +46,37 @@ impl<'a> Sema<'a> {
     /// This differs from Type::is_copy() because it can look up struct definitions
     /// to check if a struct is marked with @copy.
     pub(crate) fn is_type_copy(&self, ty: Type) -> bool {
-        match ty {
+        match ty.kind() {
             // Primitive Copy types
-            Type::I8
-            | Type::I16
-            | Type::I32
-            | Type::I64
-            | Type::U8
-            | Type::U16
-            | Type::U32
-            | Type::U64
-            | Type::Bool
-            | Type::Unit => true,
+            TypeKind::I8
+            | TypeKind::I16
+            | TypeKind::I32
+            | TypeKind::I64
+            | TypeKind::U8
+            | TypeKind::U16
+            | TypeKind::U32
+            | TypeKind::U64
+            | TypeKind::Bool
+            | TypeKind::Unit => true,
             // Enum types are Copy (they're small discriminant values)
-            Type::Enum(_) => true,
+            TypeKind::Enum(_) => true,
             // Never and Error are Copy for convenience
-            Type::Never | Type::Error => true,
+            TypeKind::Never | TypeKind::Error => true,
             // Struct types: check if marked with @copy
-            Type::Struct(struct_id) => {
+            TypeKind::Struct(struct_id) => {
                 let struct_def = self.type_pool.struct_def(struct_id);
                 struct_def.is_copy
             }
-            // Note: String is now handled via Type::Struct with is_builtin
+            // Note: String is now handled via TypeKind::Struct with is_builtin
             // Arrays are Copy if their element type is Copy
-            Type::Array(array_id) => {
-                let array_def = &self.array_type_defs[array_id.0 as usize];
-                self.is_type_copy(array_def.element_type)
+            TypeKind::Array(array_id) => {
+                let (element_type, _length) = self.type_pool.array_def(array_id);
+                self.is_type_copy(element_type)
             }
             // Module types are Copy (they're just compile-time namespace references)
-            Type::Module(_) => true,
+            TypeKind::Module(_) => true,
             // ComptimeType is Copy (only exists at comptime anyway)
-            Type::ComptimeType => true,
+            TypeKind::ComptimeType => true,
         }
     }
 
@@ -111,13 +107,13 @@ impl<'a> Sema<'a> {
     /// This handles the conversion of Type::Array(id) to InferType::Array
     /// by looking up the array definition to get element type and length.
     pub(crate) fn type_to_infer_type(&self, ty: Type) -> InferType {
-        match ty {
-            Type::Array(array_id) => {
-                let array_def = &self.array_type_defs[array_id.0 as usize];
-                let element_infer = self.type_to_infer_type(array_def.element_type);
+        match ty.kind() {
+            TypeKind::Array(array_id) => {
+                let (element_type, length) = self.type_pool.array_def(array_id);
+                let element_infer = self.type_to_infer_type(element_type);
                 InferType::Array {
                     element: Box::new(element_infer),
-                    length: array_def.length,
+                    length,
                 }
             }
             // All other types wrap directly
@@ -177,18 +173,7 @@ impl<'a> Sema<'a> {
         element_type: Type,
         length: u64,
     ) -> ArrayTypeId {
-        let key = (element_type, length);
-        if let Some(&id) = self.array_types.get(&key) {
-            return id;
-        }
-
-        let id = ArrayTypeId(self.array_type_defs.len() as u32);
-        self.array_type_defs.push(ArrayTypeDef {
-            element_type,
-            length,
-        });
-        self.array_types.insert(key, id);
-        id
+        self.type_pool.intern_array_from_type(element_type, length)
     }
 
     /// Pre-create array types from a resolved InferType.
@@ -228,24 +213,14 @@ impl<'a> Sema<'a> {
             InferType::Var(_) => Type::Error,   // Unbound variable
             InferType::IntLiteral => Type::I32, // Default
             InferType::Array { element, length } => {
-                // For nested arrays, look up the already-created array type
+                // For nested arrays, look up or create the array type
                 let elem_ty = self.infer_type_to_concrete_type_for_key(element);
                 if elem_ty == Type::Error {
                     return Type::Error;
                 }
-                // The array type should already exist from the recursive call
-                let key = (elem_ty, *length);
-                if let Some(&id) = self.array_types.get(&key) {
-                    Type::Array(id)
-                } else {
-                    // This shouldn't happen if we process depth-first, but handle gracefully
-                    debug_assert!(
-                        false,
-                        "Array type not found during pre-creation: ({:?}, {})",
-                        elem_ty, length
-                    );
-                    Type::Error
-                }
+                // Get or create the array type in the pool
+                let id = self.type_pool.intern_array_from_type(elem_ty, *length);
+                Type::Array(id)
             }
         }
     }
@@ -255,24 +230,24 @@ impl<'a> Sema<'a> {
     /// structs use 1 slot per field, arrays use 1 slot per element.
     /// Zero-sized types (unit, never, empty structs, zero-length arrays) use 0 slots.
     pub(crate) fn abi_slot_count(&self, ty: Type) -> u32 {
-        match ty {
-            Type::I8
-            | Type::I16
-            | Type::I32
-            | Type::I64
-            | Type::U8
-            | Type::U16
-            | Type::U32
-            | Type::U64
-            | Type::Bool
-            | Type::Error => 1,
+        match ty.kind() {
+            TypeKind::I8
+            | TypeKind::I16
+            | TypeKind::I32
+            | TypeKind::I64
+            | TypeKind::U8
+            | TypeKind::U16
+            | TypeKind::U32
+            | TypeKind::U64
+            | TypeKind::Bool
+            | TypeKind::Error => 1,
             // Zero-sized types use 0 slots
             // ComptimeType is comptime-only and uses 0 runtime slots
-            Type::Unit | Type::Never | Type::ComptimeType => 0,
+            TypeKind::Unit | TypeKind::Never | TypeKind::ComptimeType => 0,
             // Enums are represented as their discriminant type (a scalar), so 1 slot
-            Type::Enum(_) => 1,
+            TypeKind::Enum(_) => 1,
             // Struct uses sum of all field slots (includes builtin String with 3 fields)
-            Type::Struct(struct_id) => {
+            TypeKind::Struct(struct_id) => {
                 // Sum the slot counts of all fields (handles arrays, nested structs, and builtins)
                 // Empty structs naturally get 0 slots here
                 let struct_def = self.type_pool.struct_def(struct_id);
@@ -282,14 +257,14 @@ impl<'a> Sema<'a> {
                     .map(|f| self.abi_slot_count(f.ty))
                     .sum()
             }
-            Type::Array(array_type_id) => {
+            TypeKind::Array(array_type_id) => {
                 // Zero-length arrays naturally get 0 slots (0 * element_slots)
-                let array_def = &self.array_type_defs[array_type_id.0 as usize];
-                let element_slots = self.abi_slot_count(array_def.element_type);
-                element_slots * array_def.length as u32
+                let (element_type, length) = self.type_pool.array_def(array_type_id);
+                let element_slots = self.abi_slot_count(element_type);
+                element_slots * length as u32
             }
             // Module types don't take ABI slots (they're compile-time only)
-            Type::Module(_) => 0,
+            TypeKind::Module(_) => 0,
         }
     }
 

@@ -37,12 +37,8 @@ use rue_error::{CompileErrors, MultiErrorResult, PreviewFeatures};
 use rue_rir::Rir;
 
 use crate::intern_pool::TypeInternPool;
-use crate::sema_context::{
-    ArrayTypeRegistry, InferenceContext as SemaContextInferenceContext, SemaContext,
-};
-use crate::types::{
-    ArrayTypeDef, ArrayTypeId, EnumDef, EnumId, StructDef, StructField, StructId, Type,
-};
+use crate::sema_context::{InferenceContext as SemaContextInferenceContext, SemaContext};
+use crate::types::{ArrayTypeId, EnumDef, EnumId, StructDef, StructField, StructId, Type};
 
 // Internal types are used via pub(crate) within submodules
 // No re-exports needed for context types as they're internal
@@ -84,15 +80,6 @@ pub struct GatherOutput<'a> {
     pub rir: &'a Rir,
     /// Reference to the string interner.
     pub interner: &'a ThreadedRodeo,
-    /// Struct definitions indexed by StructId.
-    pub struct_defs: Vec<StructDef>,
-    /// Enum definitions indexed by EnumId.
-    pub enum_defs: Vec<EnumDef>,
-    /// Array type table: maps (element_type, length) to ArrayTypeId.
-    /// Pre-populated during declaration gathering for array types in signatures.
-    pub array_types: HashMap<(Type, u64), ArrayTypeId>,
-    /// Array type definitions indexed by ArrayTypeId.
-    pub array_type_defs: Vec<ArrayTypeDef>,
     /// Struct lookup: maps struct name symbol to StructId.
     pub structs: HashMap<Spur, StructId>,
     /// Enum lookup: maps enum name symbol to EnumId.
@@ -120,11 +107,7 @@ impl<'a> GatherOutput<'a> {
             interner: self.interner,
             functions: self.functions,
             structs: self.structs,
-            struct_defs: self.struct_defs,
             enums: self.enums,
-            enum_defs: self.enum_defs,
-            array_types: self.array_types,
-            array_type_defs: self.array_type_defs,
             methods: self.methods,
             preview_features: self.preview_features,
             builtin_string_id: self.builtin_string_id,
@@ -132,14 +115,6 @@ impl<'a> GatherOutput<'a> {
             type_pool: self.type_pool,
             module_registry: crate::sema_context::ModuleRegistry::new(),
         }
-    }
-
-    /// Consume the gather output and return ownership of struct and enum definitions.
-    ///
-    /// This is used after all function analysis is complete to build the final
-    /// `SemaOutput`.
-    pub fn into_type_defs(self) -> (Vec<StructDef>, Vec<EnumDef>) {
-        (self.struct_defs, self.enum_defs)
     }
 }
 
@@ -168,17 +143,11 @@ pub struct AnalyzedFunction {
 pub struct SemaOutput {
     /// Analyzed functions with typed IR.
     pub functions: Vec<AnalyzedFunction>,
-    /// Struct definitions.
-    pub struct_defs: Vec<StructDef>,
-    /// Enum definitions.
-    pub enum_defs: Vec<EnumDef>,
-    /// Array type definitions.
-    pub array_types: Vec<ArrayTypeDef>,
     /// String literals indexed by their AIR string_const index.
     pub strings: Vec<String>,
     /// Warnings collected during analysis.
     pub warnings: Vec<rue_error::CompileWarning>,
-    /// Type intern pool (Phase 1: coexists with existing type system).
+    /// Type intern pool (contains all types including arrays).
     pub type_pool: TypeInternPool,
 }
 
@@ -256,16 +225,8 @@ pub struct Sema<'a> {
     pub(crate) functions: HashMap<Spur, FunctionInfo>,
     /// Struct table: maps struct name symbols to their StructId
     pub(crate) structs: HashMap<Spur, StructId>,
-    /// Struct definitions indexed by StructId
-    pub(crate) struct_defs: Vec<StructDef>,
     /// Enum table: maps enum name symbols to their EnumId
     pub(crate) enums: HashMap<Spur, EnumId>,
-    /// Enum definitions indexed by EnumId
-    pub(crate) enum_defs: Vec<EnumDef>,
-    /// Array type table: maps (element_type, length) to ArrayTypeId
-    pub(crate) array_types: HashMap<(Type, u64), ArrayTypeId>,
-    /// Array type definitions indexed by ArrayTypeId
-    pub(crate) array_type_defs: Vec<ArrayTypeDef>,
     /// Method table: maps (struct_name, method_name) to method info
     /// Used for resolving method calls (receiver.method()) and associated
     /// function calls (Type::function())
@@ -299,11 +260,7 @@ impl<'a> Sema<'a> {
             interner,
             functions: HashMap::new(),
             structs: HashMap::new(),
-            struct_defs: Vec::new(),
             enums: HashMap::new(),
-            enum_defs: Vec::new(),
-            array_types: HashMap::new(),
-            array_type_defs: Vec::new(),
             methods: HashMap::new(),
             preview_features,
             builtin_string_id: None,
@@ -412,10 +369,6 @@ impl<'a> Sema<'a> {
         let output = GatherOutput {
             rir: self.rir,
             interner: self.interner,
-            struct_defs: self.struct_defs,
-            enum_defs: self.enum_defs,
-            array_types: self.array_types,
-            array_type_defs: self.array_type_defs,
             structs: self.structs,
             enums: self.enums,
             functions: self.functions,
@@ -460,12 +413,6 @@ impl<'a> Sema<'a> {
         SemaContext {
             rir: self.rir,
             interner: self.interner,
-            struct_defs: self.struct_defs.clone(),
-            enum_defs: self.enum_defs.clone(),
-            array_registry: ArrayTypeRegistry::from_existing(
-                self.array_types.clone(),
-                self.array_type_defs.clone(),
-            ),
             structs: self.structs.clone(),
             enums: self.enums.clone(),
             // Pass references to functions/methods instead of cloning.
@@ -559,7 +506,8 @@ impl<'a> Sema<'a> {
     pub(crate) fn find_or_create_anon_struct(&mut self, fields: &[StructField]) -> Type {
         // Check if an equivalent anonymous struct already exists
         // Anonymous structs have names starting with "__anon_struct_"
-        for (i, struct_def) in self.struct_defs.iter().enumerate() {
+        for struct_id in self.type_pool.all_struct_ids() {
+            let struct_def = self.type_pool.struct_def(struct_id);
             if struct_def.name.starts_with("__anon_struct_") {
                 if struct_def.fields.len() == fields.len() {
                     let mut all_match = true;
@@ -570,23 +518,21 @@ impl<'a> Sema<'a> {
                         }
                     }
                     if all_match {
-                        return Type::Struct(StructId(i as u32));
+                        return Type::Struct(struct_id);
                     }
                 }
             }
         }
 
         // No matching struct found - create a new one
-        let struct_id = StructId(self.struct_defs.len() as u32);
-        let anon_name = format!("__anon_struct_{}", struct_id.0);
+        let anon_name_temp = format!("__anon_struct_temp_{}", self.type_pool.len());
+        let name_spur = self.interner.get_or_intern(&anon_name_temp);
 
         // Determine if the struct is Copy (all fields are Copy)
-        let is_copy = fields
-            .iter()
-            .all(|f| f.ty.is_copy_in_sema(&self.struct_defs));
+        let is_copy = fields.iter().all(|f| f.ty.is_copy_in_pool(&self.type_pool));
 
         let struct_def = StructDef {
-            name: anon_name.clone(),
+            name: anon_name_temp.clone(),
             fields: fields.to_vec(),
             is_copy,
             is_handle: false,
@@ -595,11 +541,23 @@ impl<'a> Sema<'a> {
             is_builtin: false,
         };
 
-        self.struct_defs.push(struct_def);
+        let (struct_id, _) = self.type_pool.register_struct(name_spur, struct_def);
 
         // Register in struct lookup
-        let name_spur = self.interner.get_or_intern(&anon_name);
         self.structs.insert(name_spur, struct_id);
+
+        // Update the name now that we have the ID
+        let final_name = format!("__anon_struct_{}", struct_id.0);
+        let final_name_spur = self.interner.get_or_intern(&final_name);
+
+        // Update the struct definition with the correct name
+        let mut updated_def = self.type_pool.struct_def(struct_id);
+        updated_def.name = final_name.clone();
+        self.type_pool.update_struct_def(struct_id, updated_def);
+
+        // Update the struct lookup
+        self.structs.remove(&name_spur);
+        self.structs.insert(final_name_spur, struct_id);
 
         Type::Struct(struct_id)
     }

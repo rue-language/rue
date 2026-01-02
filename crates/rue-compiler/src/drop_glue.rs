@@ -21,35 +21,35 @@
 //! 2. Drops each element in index order (element 0 first, then 1, etc.)
 
 use rue_air::{
-    Air, AirInst, AirInstData, AnalyzedFunction, ArrayTypeDef, StructDef, Type, TypeInternPool,
+    Air, AirInst, AirInstData, AnalyzedFunction, StructDef, Type, TypeInternPool, TypeKind,
 };
 use rue_span::Span;
 
 /// Check if a type needs drop.
-fn type_needs_drop(ty: Type, type_pool: &TypeInternPool, array_types: &[ArrayTypeDef]) -> bool {
-    match ty {
+fn type_needs_drop(ty: Type, type_pool: &TypeInternPool) -> bool {
+    match ty.kind() {
         // Primitive types are trivially droppable
         // ComptimeType is comptime-only, no runtime representation
-        Type::I8
-        | Type::I16
-        | Type::I32
-        | Type::I64
-        | Type::U8
-        | Type::U16
-        | Type::U32
-        | Type::U64
-        | Type::Bool
-        | Type::Unit
-        | Type::Never
-        | Type::Error
-        | Type::ComptimeType => false,
+        TypeKind::I8
+        | TypeKind::I16
+        | TypeKind::I32
+        | TypeKind::I64
+        | TypeKind::U8
+        | TypeKind::U16
+        | TypeKind::U32
+        | TypeKind::U64
+        | TypeKind::Bool
+        | TypeKind::Unit
+        | TypeKind::Never
+        | TypeKind::Error
+        | TypeKind::ComptimeType => false,
 
         // Enum types are trivially droppable (just discriminant values)
-        Type::Enum(_) => false,
+        TypeKind::Enum(_) => false,
 
         // Struct types need drop if they have a destructor (e.g., builtin String)
         // or if any field needs drop
-        Type::Struct(struct_id) => {
+        TypeKind::Struct(struct_id) => {
             let struct_def = type_pool.struct_def(struct_id);
             // Builtins with destructors (like String) need drop
             if struct_def.destructor.is_some() {
@@ -59,73 +59,69 @@ fn type_needs_drop(ty: Type, type_pool: &TypeInternPool, array_types: &[ArrayTyp
             struct_def
                 .fields
                 .iter()
-                .any(|f| type_needs_drop(f.ty, type_pool, array_types))
+                .any(|f| type_needs_drop(f.ty, type_pool))
         }
 
         // Note: String is now Type::Struct with is_builtin=true, handled above
 
         // Array types need drop if element type needs drop
-        Type::Array(array_id) => {
-            let array_def = &array_types[array_id.0 as usize];
-            type_needs_drop(array_def.element_type, type_pool, array_types)
+        TypeKind::Array(array_id) => {
+            let (element_type, _length) = type_pool.array_def(array_id);
+            type_needs_drop(element_type, type_pool)
         }
 
         // Module types don't need drop (compile-time only)
-        Type::Module(_) => false,
+        TypeKind::Module(_) => false,
     }
 }
 
 /// Count the number of ABI slots a type uses (flattened).
-fn type_slot_count(ty: Type, type_pool: &TypeInternPool, array_types: &[ArrayTypeDef]) -> u32 {
-    match ty {
+fn type_slot_count(ty: Type, type_pool: &TypeInternPool) -> u32 {
+    match ty.kind() {
         // Primitives use 1 slot
         // ComptimeType uses 0 slots (comptime-only, no runtime representation)
-        Type::I8
-        | Type::I16
-        | Type::I32
-        | Type::I64
-        | Type::U8
-        | Type::U16
-        | Type::U32
-        | Type::U64
-        | Type::Bool
-        | Type::Unit
-        | Type::Never
-        | Type::Error
-        | Type::Enum(_) => 1,
-        Type::ComptimeType => 0,
+        TypeKind::I8
+        | TypeKind::I16
+        | TypeKind::I32
+        | TypeKind::I64
+        | TypeKind::U8
+        | TypeKind::U16
+        | TypeKind::U32
+        | TypeKind::U64
+        | TypeKind::Bool
+        | TypeKind::Unit
+        | TypeKind::Never
+        | TypeKind::Error
+        | TypeKind::Enum(_) => 1,
+        TypeKind::ComptimeType => 0,
 
         // Struct uses sum of all field slots (including builtin String with 3 fields)
-        Type::Struct(struct_id) => {
+        TypeKind::Struct(struct_id) => {
             let struct_def = type_pool.struct_def(struct_id);
             struct_def
                 .fields
                 .iter()
-                .map(|f| type_slot_count(f.ty, type_pool, array_types))
+                .map(|f| type_slot_count(f.ty, type_pool))
                 .sum()
         }
 
         // Note: String is now Type::Struct with is_builtin=true, handled above
 
         // Array uses element slots * length
-        Type::Array(array_id) => {
-            let array_def = &array_types[array_id.0 as usize];
-            type_slot_count(array_def.element_type, type_pool, array_types)
-                * array_def.length as u32
+        TypeKind::Array(array_id) => {
+            let (element_type, length) = type_pool.array_def(array_id);
+            type_slot_count(element_type, type_pool) * length as u32
         }
 
         // Module types don't take ABI slots (compile-time only)
-        Type::Module(_) => 0,
+        TypeKind::Module(_) => 0,
     }
 }
 
 /// Synthesize drop glue functions for all structs and arrays that need them.
 ///
 /// Returns a list of synthesized functions that should be added to the compilation.
-pub fn synthesize_drop_glue(
-    type_pool: &TypeInternPool,
-    array_types: &[ArrayTypeDef],
-) -> Vec<AnalyzedFunction> {
+pub fn synthesize_drop_glue(type_pool: &TypeInternPool) -> Vec<AnalyzedFunction> {
     let mut drop_glue_functions = Vec::new();
 
     // Create drop glue for structs
@@ -133,7 +129,7 @@ pub fn synthesize_drop_glue(
         let struct_def = type_pool.struct_def(struct_id);
         // Skip structs that don't need drop
         let struct_ty = Type::Struct(struct_id);
-        if !type_needs_drop(struct_ty, type_pool, array_types) {
+        if !type_needs_drop(struct_ty, type_pool) {
             continue;
         }
 
@@ -145,21 +141,20 @@ pub fn synthesize_drop_glue(
         }
 
         // Create drop glue function for struct
-        let func = create_struct_drop_glue_function(&struct_def, struct_id, type_pool, array_types);
+        let func = create_struct_drop_glue_function(&struct_def, struct_id, type_pool);
         drop_glue_functions.push(func);
     }
 
     // Create drop glue for arrays
-    for (array_idx, array_def) in array_types.iter().enumerate() {
+    for array_id in type_pool.all_array_ids() {
         // Skip arrays that don't need drop
-        let array_id = rue_air::ArrayTypeId(array_idx as u32);
         let array_ty = Type::Array(array_id);
-        if !type_needs_drop(array_ty, type_pool, array_types) {
+        if !type_needs_drop(array_ty, type_pool) {
             continue;
         }
 
         // Create drop glue function for array
-        let func = create_array_drop_glue_function(array_def, array_id, type_pool, array_types);
+        let func = create_array_drop_glue_function(array_id, type_pool);
         drop_glue_functions.push(func);
     }
 
@@ -171,7 +166,6 @@ fn create_struct_drop_glue_function(
     struct_def: &StructDef,
     _struct_id: rue_air::StructId,
     type_pool: &TypeInternPool,
-    array_types: &[ArrayTypeDef],
 ) -> AnalyzedFunction {
     let fn_name = format!("__rue_drop_{}", struct_def.name);
     let span = Span::new(0, 0); // Synthetic span
@@ -182,7 +176,7 @@ fn create_struct_drop_glue_function(
     // Calculate total parameter slots
     let mut num_param_slots = 0u32;
     for field in &struct_def.fields {
-        num_param_slots += type_slot_count(field.ty, type_pool, array_types);
+        num_param_slots += type_slot_count(field.ty, type_pool);
     }
 
     // Collect drop statements - these are side-effects that must be executed
@@ -193,13 +187,13 @@ fn create_struct_drop_glue_function(
     let mut current_param_slot = 0u32;
 
     for field in &struct_def.fields {
-        let field_slot_count = type_slot_count(field.ty, type_pool, array_types);
+        let field_slot_count = type_slot_count(field.ty, type_pool);
 
-        if type_needs_drop(field.ty, type_pool, array_types) {
+        if type_needs_drop(field.ty, type_pool) {
             // Emit Drop for this field.
             // Type::Struct handles both user-defined structs and builtin String.
-            match field.ty {
-                Type::Struct(nested_struct_id) => {
+            match field.ty.kind() {
+                TypeKind::Struct(nested_struct_id) => {
                     // Nested struct - load it and drop it
                     // The recursive drop glue will handle its fields
                     let param_ref = air.add_inst(AirInst {
@@ -216,7 +210,7 @@ fn create_struct_drop_glue_function(
                     });
                     drop_statements.push(drop_ref);
                 }
-                Type::Array(array_id) => {
+                TypeKind::Array(array_id) => {
                     // Array field - load it and drop it
                     // The array drop glue will handle dropping each element
                     let param_ref = air.add_inst(AirInst {
@@ -293,32 +287,33 @@ fn create_struct_drop_glue_function(
 /// The function receives all element slots as parameters (flattened) and drops
 /// each element in index order.
 fn create_array_drop_glue_function(
-    array_def: &ArrayTypeDef,
     array_id: rue_air::ArrayTypeId,
     type_pool: &TypeInternPool,
-    array_types: &[ArrayTypeDef],
 ) -> AnalyzedFunction {
-    let fn_name = array_drop_glue_name(array_id, array_types, type_pool);
+    let fn_name = array_drop_glue_name(array_id, type_pool);
     let span = Span::new(0, 0); // Synthetic span
+
+    // Get array element type and length
+    let (element_type, length) = type_pool.array_def(array_id);
 
     // Create AIR for the drop glue function
     let mut air = Air::new(Type::Unit);
 
     // Calculate total parameter slots (element slots * length)
-    let element_slot_count = type_slot_count(array_def.element_type, type_pool, array_types);
-    let num_param_slots = element_slot_count * array_def.length as u32;
+    let element_slot_count = type_slot_count(element_type, type_pool);
+    let num_param_slots = element_slot_count * length as u32;
 
     // Collect drop statements for each element
     let mut drop_statements = Vec::new();
 
     // For each element, emit a Drop instruction.
     // Type::Struct handles both user-defined structs and builtin String.
-    for elem_idx in 0..array_def.length {
+    for elem_idx in 0..length {
         let current_param_slot = elem_idx as u32 * element_slot_count;
 
         // Emit Drop for this element
-        match array_def.element_type {
-            Type::Struct(struct_id) => {
+        match element_type.kind() {
+            TypeKind::Struct(struct_id) => {
                 let param_ref = air.add_inst(AirInst {
                     data: AirInstData::Param {
                         index: current_param_slot,
@@ -333,7 +328,7 @@ fn create_array_drop_glue_function(
                 });
                 drop_statements.push(drop_ref);
             }
-            Type::Array(nested_array_id) => {
+            TypeKind::Array(nested_array_id) => {
                 let param_ref = air.add_inst(AirInst {
                     data: AirInstData::Param {
                         index: current_param_slot,
@@ -400,45 +395,38 @@ fn create_array_drop_glue_function(
 /// Generate the drop glue function name for an array type.
 ///
 /// The name encodes the element type and length, e.g., `__rue_drop_array_String_3`
-pub fn array_drop_glue_name(
-    array_id: rue_air::ArrayTypeId,
-    array_types: &[ArrayTypeDef],
-    type_pool: &TypeInternPool,
-) -> String {
-    let array_def = &array_types[array_id.0 as usize];
-    let element_type_name = type_name(array_def.element_type, type_pool, array_types);
-    format!(
-        "__rue_drop_array_{}_{}",
-        element_type_name, array_def.length
-    )
+pub fn array_drop_glue_name(array_id: rue_air::ArrayTypeId, type_pool: &TypeInternPool) -> String {
+    let (element_type, length) = type_pool.array_def(array_id);
+    let element_type_name = type_name(element_type, type_pool);
+    format!("__rue_drop_array_{}_{}", element_type_name, length)
 }
 
 /// Get a name for a type (used for generating drop glue function names).
-fn type_name(ty: Type, type_pool: &TypeInternPool, array_types: &[ArrayTypeDef]) -> String {
-    match ty {
-        Type::I8 => "i8".to_string(),
-        Type::I16 => "i16".to_string(),
-        Type::I32 => "i32".to_string(),
-        Type::I64 => "i64".to_string(),
-        Type::U8 => "u8".to_string(),
-        Type::U16 => "u16".to_string(),
-        Type::U32 => "u32".to_string(),
-        Type::U64 => "u64".to_string(),
-        Type::Bool => "bool".to_string(),
-        Type::Unit => "unit".to_string(),
-        Type::Never => "never".to_string(),
-        Type::Error => "error".to_string(),
+fn type_name(ty: Type, type_pool: &TypeInternPool) -> String {
+    match ty.kind() {
+        TypeKind::I8 => "i8".to_string(),
+        TypeKind::I16 => "i16".to_string(),
+        TypeKind::I32 => "i32".to_string(),
+        TypeKind::I64 => "i64".to_string(),
+        TypeKind::U8 => "u8".to_string(),
+        TypeKind::U16 => "u16".to_string(),
+        TypeKind::U32 => "u32".to_string(),
+        TypeKind::U64 => "u64".to_string(),
+        TypeKind::Bool => "bool".to_string(),
+        TypeKind::Unit => "unit".to_string(),
+        TypeKind::Never => "never".to_string(),
+        TypeKind::Error => "error".to_string(),
         // ComptimeType only exists at compile time
-        Type::ComptimeType => "comptime_type".to_string(),
-        Type::Enum(enum_id) => format!("enum{}", enum_id.0),
+        TypeKind::ComptimeType => "comptime_type".to_string(),
+        TypeKind::Enum(enum_id) => format!("enum{}", enum_id.0),
         // Struct types include builtin types like String
-        Type::Struct(struct_id) => type_pool.struct_def(struct_id).name.clone(),
-        Type::Array(array_id) => {
-            let array_def = &array_types[array_id.0 as usize];
-            let elem_name = type_name(array_def.element_type, type_pool, array_types);
-            format!("array_{}_{}", elem_name, array_def.length)
+        TypeKind::Struct(struct_id) => type_pool.struct_def(struct_id).name.clone(),
+        TypeKind::Array(array_id) => {
+            let (element_type, length) = type_pool.array_def(array_id);
+            let elem_name = type_name(element_type, type_pool);
+            format!("array_{}_{}", elem_name, length)
         }
         // Module types should never reach drop glue (compile-time only)
-        Type::Module(_) => "module".to_string(),
+        TypeKind::Module(_) => "module".to_string(),
     }
 }

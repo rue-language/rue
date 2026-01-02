@@ -7,7 +7,7 @@
 use rue_builtins::{BUILTIN_TYPES, BuiltinFieldType, BuiltinTypeDef};
 
 use super::Sema;
-use crate::types::{StructDef, StructField, StructId, Type};
+use crate::types::{StructDef, StructField, StructId, Type, TypeKind};
 
 impl<'a> Sema<'a> {
     /// Phase 0: Inject built-in types as synthetic structs.
@@ -48,12 +48,7 @@ impl<'a> Sema<'a> {
 
             // Register in type pool and get pool-based StructId
             let name_spur = self.interner.get_or_intern(builtin.name);
-            let (struct_id, _) = self
-                .type_pool
-                .register_struct(name_spur, struct_def.clone());
-
-            // Keep in struct_defs for backwards compatibility during migration
-            self.struct_defs.push(struct_def);
+            let (struct_id, _) = self.type_pool.register_struct(name_spur, struct_def);
 
             // Register in struct lookup with pool-based StructId
             self.structs.insert(name_spur, struct_id);
@@ -77,8 +72,8 @@ impl<'a> Sema<'a> {
     ///
     /// Uses the stored `builtin_string_id` for fast comparison.
     pub(crate) fn is_builtin_string(&self, ty: Type) -> bool {
-        match ty {
-            Type::Struct(struct_id) => Some(struct_id) == self.builtin_string_id,
+        match ty.kind() {
+            TypeKind::Struct(struct_id) => Some(struct_id) == self.builtin_string_id,
             _ => false,
         }
     }
@@ -138,8 +133,8 @@ impl<'a> Sema<'a> {
     /// Check if a type is a linear type.
     /// Only struct types can be linear - primitives and other types are not linear.
     pub(crate) fn is_type_linear(&self, ty: Type) -> bool {
-        match ty {
-            Type::Struct(struct_id) => {
+        match ty.kind() {
+            TypeKind::Struct(struct_id) => {
                 let struct_def = self.type_pool.struct_def(struct_id);
                 struct_def.is_linear
             }

@@ -948,47 +948,54 @@ impl<'a> ConstraintGenerator<'a> {
                 // Get struct name from receiver type if it's a struct
                 // If we can't determine the struct type, we still generate constraints
                 // for the arguments and return a type variable (actual error is in sema)
-                let result_type = if let InferType::Concrete(Type::Struct(struct_id)) =
-                    &receiver_info.ty
-                {
-                    // Find the struct name symbol
-                    let struct_name = self
-                        .structs
-                        .iter()
-                        .find(|(_, ty)| **ty == Type::Struct(*struct_id))
-                        .map(|(name, _)| *name);
+                let result_type = if let InferType::Concrete(ty) = &receiver_info.ty {
+                    if let Some(struct_id) = ty.as_struct() {
+                        // Find the struct name symbol
+                        let struct_name = self
+                            .structs
+                            .iter()
+                            .find(|(_, t)| t.as_struct() == Some(struct_id))
+                            .map(|(name, _)| *name);
 
-                    if let Some(struct_name) = struct_name {
-                        let method_key = (struct_name, *method);
-                        if let Some(method_sig) = self.methods.get(&method_key) {
-                            // Generate constraints for arguments
-                            for (arg, param_type) in args.iter().zip(method_sig.param_types.iter())
-                            {
-                                let arg_info = self.generate(arg.value, ctx);
-                                self.add_constraint(Constraint::equal(
-                                    arg_info.ty,
-                                    param_type.clone(),
-                                    arg_info.span,
-                                ));
+                        if let Some(struct_name) = struct_name {
+                            let method_key = (struct_name, *method);
+                            if let Some(method_sig) = self.methods.get(&method_key) {
+                                // Generate constraints for arguments
+                                for (arg, param_type) in
+                                    args.iter().zip(method_sig.param_types.iter())
+                                {
+                                    let arg_info = self.generate(arg.value, ctx);
+                                    self.add_constraint(Constraint::equal(
+                                        arg_info.ty,
+                                        param_type.clone(),
+                                        arg_info.span,
+                                    ));
+                                }
+                                method_sig.return_type.clone()
+                            } else {
+                                // Method not found - sema will report the error
+                                // Still generate arg types to catch errors in arguments
+                                for arg in args.iter() {
+                                    self.generate(arg.value, ctx);
+                                }
+                                InferType::Concrete(Type::Error)
                             }
-                            method_sig.return_type.clone()
                         } else {
-                            // Method not found - sema will report the error
-                            // Still generate arg types to catch errors in arguments
+                            // Couldn't find struct name - shouldn't happen but handle gracefully
                             for arg in args.iter() {
                                 self.generate(arg.value, ctx);
                             }
                             InferType::Concrete(Type::Error)
                         }
                     } else {
-                        // Couldn't find struct name - shouldn't happen but handle gracefully
+                        // Non-struct receiver - sema will report the error
                         for arg in args.iter() {
                             self.generate(arg.value, ctx);
                         }
                         InferType::Concrete(Type::Error)
                     }
                 } else {
-                    // Non-struct receiver - sema will report the error
+                    // Non-concrete type - generate args and return error
                     for arg in args.iter() {
                         self.generate(arg.value, ctx);
                     }

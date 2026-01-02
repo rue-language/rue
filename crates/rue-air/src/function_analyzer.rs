@@ -110,8 +110,8 @@ impl<'a, 'ctx> FunctionAnalyzer<'a, 'ctx> {
 
     /// Get an array type definition by ID.
     ///
-    /// Delegates to the `ArrayTypeRegistry` in `SemaContext`.
-    pub fn get_array_type_def(&self, id: ArrayTypeId) -> crate::types::ArrayTypeDef {
+    /// Returns `(element_type, length)` for the array.
+    pub fn get_array_type_def(&self, id: ArrayTypeId) -> (Type, u64) {
         self.ctx.get_array_type_def(id)
     }
 
@@ -188,41 +188,34 @@ impl<'a, 'ctx> FunctionAnalyzer<'a, 'ctx> {
     /// Get a human-readable name for a type.
     /// Delegates to context for most types but handles local array types.
     pub fn format_type_name(&self, ty: Type) -> String {
-        match ty {
-            Type::Array(array_id) => {
-                let array_def = self.get_array_type_def(array_id);
-                format!(
-                    "[{}; {}]",
-                    self.format_type_name(array_def.element_type),
-                    array_def.length
-                )
-            }
-            _ => self.ctx.format_type_name(ty),
+        if let Some(array_id) = ty.as_array() {
+            let (element_type, length) = self.get_array_type_def(array_id);
+            format!("[{}; {}]", self.format_type_name(element_type), length)
+        } else {
+            self.ctx.format_type_name(ty)
         }
     }
 
     /// Check if a type is a Copy type.
     /// Delegates to context for most types but handles local array types.
     pub fn is_type_copy(&self, ty: Type) -> bool {
-        match ty {
-            Type::Array(array_id) => {
-                let array_def = self.get_array_type_def(array_id);
-                self.is_type_copy(array_def.element_type)
-            }
-            _ => self.ctx.is_type_copy(ty),
+        if let Some(array_id) = ty.as_array() {
+            let (element_type, _length) = self.get_array_type_def(array_id);
+            self.is_type_copy(element_type)
+        } else {
+            self.ctx.is_type_copy(ty)
         }
     }
 
     /// Get the number of ABI slots required for a type.
     /// Delegates to context for most types but handles local array types.
     pub fn abi_slot_count(&self, ty: Type) -> u32 {
-        match ty {
-            Type::Array(array_id) => {
-                let array_def = self.get_array_type_def(array_id);
-                let element_slots = self.abi_slot_count(array_def.element_type);
-                element_slots * array_def.length as u32
-            }
-            _ => self.ctx.abi_slot_count(ty),
+        if let Some(array_id) = ty.as_array() {
+            let (element_type, length) = self.get_array_type_def(array_id);
+            let element_slots = self.abi_slot_count(element_type);
+            element_slots * length as u32
+        } else {
+            self.ctx.abi_slot_count(ty)
         }
     }
 

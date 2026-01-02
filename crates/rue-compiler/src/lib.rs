@@ -165,9 +165,7 @@ pub fn validate_runtime() -> Result<(), String> {
 
 // Re-export commonly used types
 pub use lasso::{Spur, ThreadedRodeo};
-pub use rue_air::{
-    Air, AnalyzedFunction, ArrayTypeDef, Sema, SemaOutput, StructDef, Type, TypeInternPool,
-};
+pub use rue_air::{Air, AnalyzedFunction, Sema, SemaOutput, StructDef, Type, TypeInternPool};
 pub use rue_cfg::{Cfg, CfgBuilder, CfgOutput, OptLevel};
 pub use rue_codegen::{
     LoweringDebugInfo, RegAllocDebugInfo, RelocationKind, StackFrameInfo, X86Mir,
@@ -774,8 +772,6 @@ pub struct CompileState {
     pub functions: Vec<FunctionWithCfg>,
     /// Type intern pool containing all struct and enum definitions.
     pub type_pool: TypeInternPool,
-    /// Array type definitions (element type and length).
-    pub array_types: Vec<ArrayTypeDef>,
     /// String literals indexed by their string_const index.
     pub strings: Vec<String>,
     /// Warnings collected during compilation.
@@ -894,15 +890,14 @@ pub fn compile_frontend_from_ast_with_options(
         let output = sema.analyze_all()?;
         info!(
             function_count = output.functions.len(),
-            struct_count = output.struct_defs.len(),
+            struct_count = output.type_pool.stats().struct_count,
             "semantic analysis complete"
         );
         output
     };
 
     // Synthesize drop glue functions for structs that need them
-    let drop_glue_functions =
-        drop_glue::synthesize_drop_glue(&sema_output.type_pool, &sema_output.array_types);
+    let drop_glue_functions = drop_glue::synthesize_drop_glue(&sema_output.type_pool);
 
     // Combine user functions with synthesized drop glue functions
     // Filter out comptime-only functions (those returning `type`) as they don't generate runtime code
@@ -927,7 +922,6 @@ pub fn compile_frontend_from_ast_with_options(
                     func.num_param_slots,
                     &func.name,
                     &sema_output.type_pool,
-                    &sema_output.array_types,
                     func.param_modes.clone(),
                     &interner,
                 );
@@ -967,7 +961,6 @@ pub fn compile_frontend_from_ast_with_options(
         rir,
         functions,
         type_pool: sema_output.type_pool,
-        array_types: sema_output.array_types,
         strings: sema_output.strings,
         warnings,
     })
@@ -1002,15 +995,14 @@ pub fn compile_frontend_from_rir_with_options(
         let output = sema.analyze_all()?;
         info!(
             function_count = output.functions.len(),
-            struct_count = output.struct_defs.len(),
+            struct_count = output.type_pool.stats().struct_count,
             "semantic analysis complete"
         );
         output
     };
 
     // Synthesize drop glue functions for structs that need them
-    let drop_glue_functions =
-        drop_glue::synthesize_drop_glue(&sema_output.type_pool, &sema_output.array_types);
+    let drop_glue_functions = drop_glue::synthesize_drop_glue(&sema_output.type_pool);
 
     // Combine user functions with synthesized drop glue functions
     // Filter out comptime-only functions (those returning `type`) as they don't generate runtime code
@@ -1035,7 +1027,6 @@ pub fn compile_frontend_from_rir_with_options(
                     func.num_param_slots,
                     &func.name,
                     &sema_output.type_pool,
-                    &sema_output.array_types,
                     func.param_modes.clone(),
                     &interner,
                 );
@@ -1074,7 +1065,6 @@ pub fn compile_frontend_from_rir_with_options(
         rir,
         functions,
         type_pool: sema_output.type_pool,
-        array_types: sema_output.array_types,
         strings: sema_output.strings,
         warnings,
     })
@@ -1093,8 +1083,6 @@ pub struct CompileStateFromRir {
     pub functions: Vec<FunctionWithCfg>,
     /// Type intern pool containing all struct and enum definitions.
     pub type_pool: TypeInternPool,
-    /// Array type definitions (element type and length).
-    pub array_types: Vec<ArrayTypeDef>,
     /// String literals indexed by their string_const index.
     pub strings: Vec<String>,
     /// Warnings collected during compilation.
@@ -1233,7 +1221,6 @@ fn compile_x86_64(
                 let machine_code = rue_codegen::x86_64::generate(
                     &func.cfg,
                     &state.type_pool,
-                    &state.array_types,
                     &state.strings,
                     &state.interner,
                 )?;
@@ -1481,7 +1468,6 @@ fn compile_aarch64(
                 let machine_code = rue_codegen::aarch64::generate(
                     &func.cfg,
                     &state.type_pool,
-                    &state.array_types,
                     &state.strings,
                     &state.interner,
                 )?;
@@ -1563,7 +1549,6 @@ fn compile_x86_64_from_rir(
                 let machine_code = rue_codegen::x86_64::generate(
                     &func.cfg,
                     &state.type_pool,
-                    &state.array_types,
                     &state.strings,
                     &state.interner,
                 )?;
@@ -1646,7 +1631,6 @@ fn compile_aarch64_from_rir(
                 let machine_code = rue_codegen::aarch64::generate(
                     &func.cfg,
                     &state.type_pool,
-                    &state.array_types,
                     &state.strings,
                     &state.interner,
                 )?;
@@ -1782,22 +1766,18 @@ impl Mir {
 pub fn generate_mir(
     cfg: &Cfg,
     type_pool: &TypeInternPool,
-    array_types: &[ArrayTypeDef],
     strings: &[String],
     interner: &ThreadedRodeo,
     target: Target,
 ) -> Mir {
     match target.arch() {
         Arch::X86_64 => {
-            let mir =
-                rue_codegen::x86_64::CfgLower::new(cfg, type_pool, array_types, strings, interner)
-                    .lower();
+            let mir = rue_codegen::x86_64::CfgLower::new(cfg, type_pool, strings, interner).lower();
             Mir::X86_64(mir)
         }
         Arch::Aarch64 => {
             let mir =
-                rue_codegen::aarch64::CfgLower::new(cfg, type_pool, array_types, strings, interner)
-                    .lower();
+                rue_codegen::aarch64::CfgLower::new(cfg, type_pool, strings, interner).lower();
             Mir::Aarch64(mir)
         }
     }
@@ -1810,7 +1790,6 @@ pub fn generate_mir(
 pub fn generate_allocated_mir(
     cfg: &Cfg,
     type_pool: &TypeInternPool,
-    array_types: &[ArrayTypeDef],
     strings: &[String],
     interner: &ThreadedRodeo,
     target: Target,
@@ -1822,9 +1801,7 @@ pub fn generate_allocated_mir(
     match target.arch() {
         Arch::X86_64 => {
             // Lower CFG to X86Mir with virtual registers
-            let mir =
-                rue_codegen::x86_64::CfgLower::new(cfg, type_pool, array_types, strings, interner)
-                    .lower();
+            let mir = rue_codegen::x86_64::CfgLower::new(cfg, type_pool, strings, interner).lower();
 
             // Allocate physical registers
             let (mir, _num_spills, _used_callee_saved) =
@@ -1835,8 +1812,7 @@ pub fn generate_allocated_mir(
         Arch::Aarch64 => {
             // Lower CFG to Aarch64Mir with virtual registers
             let mir =
-                rue_codegen::aarch64::CfgLower::new(cfg, type_pool, array_types, strings, interner)
-                    .lower();
+                rue_codegen::aarch64::CfgLower::new(cfg, type_pool, strings, interner).lower();
 
             // Allocate physical registers
             let (mir, _num_spills, _used_callee_saved) =
@@ -1856,22 +1832,18 @@ pub fn generate_allocated_mir(
 pub fn generate_liveness_info(
     cfg: &Cfg,
     type_pool: &TypeInternPool,
-    array_types: &[ArrayTypeDef],
     strings: &[String],
     interner: &ThreadedRodeo,
     target: Target,
 ) -> rue_codegen::LivenessDebugInfo {
     match target.arch() {
         Arch::X86_64 => {
-            let mir =
-                rue_codegen::x86_64::CfgLower::new(cfg, type_pool, array_types, strings, interner)
-                    .lower();
+            let mir = rue_codegen::x86_64::CfgLower::new(cfg, type_pool, strings, interner).lower();
             rue_codegen::x86_64::liveness::analyze_debug(&mir)
         }
         Arch::Aarch64 => {
             let mir =
-                rue_codegen::aarch64::CfgLower::new(cfg, type_pool, array_types, strings, interner)
-                    .lower();
+                rue_codegen::aarch64::CfgLower::new(cfg, type_pool, strings, interner).lower();
             rue_codegen::aarch64::liveness::analyze_debug(&mir)
         }
     }
@@ -1886,7 +1858,6 @@ pub fn generate_liveness_info(
 pub fn generate_lowering_info(
     cfg: &Cfg,
     type_pool: &TypeInternPool,
-    array_types: &[ArrayTypeDef],
     strings: &[String],
     interner: &ThreadedRodeo,
     target: Target,
@@ -1894,13 +1865,13 @@ pub fn generate_lowering_info(
     match target.arch() {
         Arch::X86_64 => {
             let (_mir, debug_info) =
-                rue_codegen::x86_64::CfgLower::new(cfg, type_pool, array_types, strings, interner)
+                rue_codegen::x86_64::CfgLower::new(cfg, type_pool, strings, interner)
                     .lower_with_debug();
             debug_info
         }
         Arch::Aarch64 => {
             let (_mir, debug_info) =
-                rue_codegen::aarch64::CfgLower::new(cfg, type_pool, array_types, strings, interner)
+                rue_codegen::aarch64::CfgLower::new(cfg, type_pool, strings, interner)
                     .lower_with_debug();
             debug_info
         }
@@ -1918,30 +1889,19 @@ pub fn generate_lowering_info(
 pub fn generate_emitted_asm(
     cfg: &Cfg,
     type_pool: &TypeInternPool,
-    array_types: &[ArrayTypeDef],
     strings: &[String],
     interner: &ThreadedRodeo,
     target: Target,
 ) -> CompileResult<String> {
     match target.arch() {
         Arch::X86_64 => {
-            let (_machine_code, asm) = rue_codegen::x86_64::generate_with_asm(
-                cfg,
-                type_pool,
-                array_types,
-                strings,
-                interner,
-            )?;
+            let (_machine_code, asm) =
+                rue_codegen::x86_64::generate_with_asm(cfg, type_pool, strings, interner)?;
             Ok(asm)
         }
         Arch::Aarch64 => {
-            let (_machine_code, asm) = rue_codegen::aarch64::generate_with_asm(
-                cfg,
-                type_pool,
-                array_types,
-                strings,
-                interner,
-            )?;
+            let (_machine_code, asm) =
+                rue_codegen::aarch64::generate_with_asm(cfg, type_pool, strings, interner)?;
             Ok(asm)
         }
     }
@@ -1955,30 +1915,19 @@ pub fn generate_emitted_asm(
 pub fn generate_regalloc_info(
     cfg: &Cfg,
     type_pool: &TypeInternPool,
-    array_types: &[ArrayTypeDef],
     strings: &[String],
     interner: &ThreadedRodeo,
     target: Target,
 ) -> CompileResult<String> {
     match target.arch() {
         Arch::X86_64 => {
-            let debug_info = rue_codegen::x86_64::generate_regalloc_info(
-                cfg,
-                type_pool,
-                array_types,
-                strings,
-                interner,
-            )?;
+            let debug_info =
+                rue_codegen::x86_64::generate_regalloc_info(cfg, type_pool, strings, interner)?;
             Ok(debug_info.to_string())
         }
         Arch::Aarch64 => {
-            let debug_info = rue_codegen::aarch64::generate_regalloc_info(
-                cfg,
-                type_pool,
-                array_types,
-                strings,
-                interner,
-            )?;
+            let debug_info =
+                rue_codegen::aarch64::generate_regalloc_info(cfg, type_pool, strings, interner)?;
             Ok(debug_info.to_string())
         }
     }
@@ -2004,8 +1953,6 @@ pub struct AirOutput {
     pub functions: Vec<AnalyzedFunction>,
     /// Type intern pool containing all struct and enum definitions.
     pub type_pool: TypeInternPool,
-    /// Array type definitions.
-    pub array_types: Vec<ArrayTypeDef>,
     /// String literals.
     pub strings: Vec<String>,
     /// Warnings collected during analysis.
@@ -2049,7 +1996,6 @@ pub fn compile_to_air(source: &str) -> MultiErrorResult<AirOutput> {
         rir,
         functions: sema_output.functions,
         type_pool: sema_output.type_pool,
-        array_types: sema_output.array_types,
         strings: sema_output.strings,
         warnings: sema_output.warnings,
     })

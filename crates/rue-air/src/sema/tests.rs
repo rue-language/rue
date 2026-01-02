@@ -506,7 +506,7 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(output.struct_defs.len(), 3); // Inner, Outer, and String (builtin)
+        assert_eq!(output.type_pool.stats().struct_count, 3); // Inner, Outer, and String (builtin)
     }
 
     #[test]
@@ -524,8 +524,10 @@ mod tests {
 
         assert!(
             output
-                .struct_defs
+                .type_pool
+                .all_struct_ids()
                 .iter()
+                .map(|id| output.type_pool.struct_def(*id))
                 .any(|s| s.name == "Point" && s.is_copy)
         );
     }
@@ -588,8 +590,15 @@ mod tests {
         )
         .unwrap();
 
-        // String struct should exist in struct_defs
-        assert!(output.struct_defs.iter().any(|s| s.name == "String"));
+        // String struct should exist in the pool
+        assert!(
+            output
+                .type_pool
+                .all_struct_ids()
+                .iter()
+                .map(|id| output.type_pool.struct_def(*id))
+                .any(|s| s.name == "String")
+        );
     }
 
     #[test]
@@ -853,19 +862,17 @@ mod tests {
 
         assert!(pool_string.is_some(), "String should be in the type pool");
 
-        // Verify the pool and existing registry agree
+        // Verify the struct lookup has it
         let registry_string = sema.structs.get(&string_name);
         assert!(
             registry_string.is_some(),
             "String should be in struct registry"
         );
 
-        // Check that the definitions match
+        // Check the pool definition
         let pool_def = sema.type_pool.get_struct_def(pool_string.unwrap()).unwrap();
-        let registry_def = &sema.struct_defs[registry_string.unwrap().0 as usize];
 
-        assert_eq!(pool_def.name, registry_def.name);
-        assert_eq!(pool_def.is_builtin, registry_def.is_builtin);
+        assert_eq!(pool_def.name, "String");
         assert!(pool_def.is_builtin, "String should be marked as builtin");
     }
 
@@ -882,23 +889,20 @@ mod tests {
         let pool_point = sema.type_pool.get_struct_by_name(point_name);
         assert!(pool_point.is_some(), "Point should be in the type pool");
 
-        // Verify pool and registry agree
+        // Verify struct lookup has it
         let registry_point = sema.structs.get(&point_name);
         assert!(
             registry_point.is_some(),
             "Point should be in struct registry"
         );
 
-        // Check that definitions match
+        // Check the pool definition
         let pool_def = sema.type_pool.get_struct_def(pool_point.unwrap()).unwrap();
-        let registry_def = &sema.struct_defs[registry_point.unwrap().0 as usize];
 
-        assert_eq!(pool_def.name, registry_def.name);
-        assert_eq!(pool_def.fields.len(), registry_def.fields.len());
+        assert_eq!(pool_def.name, "Point");
         assert_eq!(pool_def.fields.len(), 2);
         assert_eq!(pool_def.fields[0].name, "x");
         assert_eq!(pool_def.fields[1].name, "y");
-        assert_eq!(pool_def.is_copy, registry_def.is_copy);
         assert!(
             !pool_def.is_builtin,
             "Point should not be marked as builtin"
@@ -1009,9 +1013,9 @@ mod tests {
             );
         }
 
-        // Verify counts match
+        // Verify stats are available
         let stats = sema.type_pool.stats();
-        assert_eq!(stats.struct_count, sema.struct_defs.len());
-        assert_eq!(stats.enum_count, sema.enum_defs.len());
+        assert!(stats.struct_count > 0); // At least String builtin
+        assert!(stats.enum_count > 0); // The enum we added
     }
 }

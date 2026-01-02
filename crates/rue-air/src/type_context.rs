@@ -39,12 +39,10 @@ pub struct TypeContext {
     pub method_sigs: HashMap<(Spur, Spur), MethodSignature>,
     /// Struct lookup: maps struct name symbol to StructId.
     pub struct_by_name: HashMap<Spur, StructId>,
-    /// Struct definitions indexed by StructId.
-    pub struct_defs: Vec<StructDef>,
     /// Enum lookup: maps enum name symbol to EnumId.
     pub enum_by_name: HashMap<Spur, EnumId>,
-    /// Enum definitions indexed by EnumId.
-    pub enum_defs: Vec<EnumDef>,
+    /// Type intern pool for struct/enum definitions.
+    pub type_pool: crate::intern_pool::TypeInternPool,
 }
 
 /// Signature information for a function.
@@ -82,9 +80,8 @@ impl TypeContext {
             func_sigs: HashMap::new(),
             method_sigs: HashMap::new(),
             struct_by_name: HashMap::new(),
-            struct_defs: Vec::new(),
             enum_by_name: HashMap::new(),
-            enum_defs: Vec::new(),
+            type_pool: crate::intern_pool::TypeInternPool::new(),
         }
     }
 
@@ -94,8 +91,8 @@ impl TypeContext {
     }
 
     /// Get a struct definition by ID.
-    pub fn get_struct_def(&self, id: StructId) -> &StructDef {
-        &self.struct_defs[id.0 as usize]
+    pub fn get_struct_def(&self, id: StructId) -> StructDef {
+        self.type_pool.struct_def(id)
     }
 
     /// Look up an enum by name.
@@ -104,8 +101,8 @@ impl TypeContext {
     }
 
     /// Get an enum definition by ID.
-    pub fn get_enum_def(&self, id: EnumId) -> &EnumDef {
-        &self.enum_defs[id.0 as usize]
+    pub fn get_enum_def(&self, id: EnumId) -> EnumDef {
+        self.type_pool.enum_def(id)
     }
 
     /// Look up a function signature by name.

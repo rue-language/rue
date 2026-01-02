@@ -5,7 +5,7 @@
 //! calling convention bugs, and understanding how values are laid out on the stack.
 
 use lasso::ThreadedRodeo;
-use rue_air::{ArrayTypeDef, TypeInternPool};
+use rue_air::TypeInternPool;
 use rue_cfg::Cfg;
 use rue_error::CompileResult;
 use rue_target::{Arch, Target};
@@ -255,30 +255,17 @@ pub fn generate_stack_frame_info(
     cfg: &Cfg,
     function_name: &str,
     type_pool: &TypeInternPool,
-    array_types: &[ArrayTypeDef],
     strings: &[String],
     interner: &ThreadedRodeo,
     target: Target,
 ) -> CompileResult<StackFrameInfo> {
     match target.arch() {
-        Arch::X86_64 => generate_x86_64_stack_frame(
-            cfg,
-            function_name,
-            type_pool,
-            array_types,
-            strings,
-            interner,
-            target,
-        ),
-        Arch::Aarch64 => generate_aarch64_stack_frame(
-            cfg,
-            function_name,
-            type_pool,
-            array_types,
-            strings,
-            interner,
-            target,
-        ),
+        Arch::X86_64 => {
+            generate_x86_64_stack_frame(cfg, function_name, type_pool, strings, interner, target)
+        }
+        Arch::Aarch64 => {
+            generate_aarch64_stack_frame(cfg, function_name, type_pool, strings, interner, target)
+        }
     }
 }
 
@@ -287,7 +274,6 @@ fn generate_x86_64_stack_frame(
     cfg: &Cfg,
     function_name: &str,
     type_pool: &TypeInternPool,
-    array_types: &[ArrayTypeDef],
     strings: &[String],
     interner: &ThreadedRodeo,
     target: Target,
@@ -298,7 +284,7 @@ fn generate_x86_64_stack_frame(
     let num_params = cfg.num_params();
 
     // Lower CFG to X86Mir with virtual registers
-    let mir = CfgLower::new(cfg, type_pool, array_types, strings, interner).lower();
+    let mir = CfgLower::new(cfg, type_pool, strings, interner).lower();
 
     // Allocate physical registers (may add spill slots)
     let existing_slots = num_locals + num_params;
@@ -411,7 +397,6 @@ fn generate_aarch64_stack_frame(
     cfg: &Cfg,
     function_name: &str,
     type_pool: &TypeInternPool,
-    array_types: &[ArrayTypeDef],
     strings: &[String],
     interner: &ThreadedRodeo,
     target: Target,
@@ -422,7 +407,7 @@ fn generate_aarch64_stack_frame(
     let num_params = cfg.num_params();
 
     // Lower CFG to Aarch64Mir with virtual registers
-    let mir = CfgLower::new(cfg, type_pool, array_types, strings, interner).lower();
+    let mir = CfgLower::new(cfg, type_pool, strings, interner).lower();
 
     // Allocate physical registers (may add spill slots)
     let existing_slots = num_locals + num_params;
@@ -564,12 +549,7 @@ mod tests {
     use rue_cfg::CfgBuilder;
     use rue_span::Span;
 
-    fn create_simple_cfg() -> (
-        rue_cfg::Cfg,
-        TypeInternPool,
-        Vec<ArrayTypeDef>,
-        ThreadedRodeo,
-    ) {
+    fn create_simple_cfg() -> (rue_cfg::Cfg, TypeInternPool, ThreadedRodeo) {
         let mut air = Air::new(Type::I32);
 
         let const_ref = air.add_inst(AirInst {
@@ -586,25 +566,17 @@ mod tests {
 
         let interner = ThreadedRodeo::new();
         let type_pool = TypeInternPool::new();
-        let cfg_output = CfgBuilder::build(&air, 0, 0, "test", &type_pool, &[], vec![], &interner);
-        (cfg_output.cfg, type_pool, vec![], interner)
+        let cfg_output = CfgBuilder::build(&air, 0, 0, "test", &type_pool, vec![], &interner);
+        (cfg_output.cfg, type_pool, interner)
     }
 
     #[test]
     fn test_generate_stack_frame_info_x86_64() {
-        let (cfg, type_pool, array_types, interner) = create_simple_cfg();
+        let (cfg, type_pool, interner) = create_simple_cfg();
         let target = Target::X86_64Linux;
 
-        let info = generate_stack_frame_info(
-            &cfg,
-            "test",
-            &type_pool,
-            &array_types,
-            &[],
-            &interner,
-            target,
-        )
-        .unwrap();
+        let info =
+            generate_stack_frame_info(&cfg, "test", &type_pool, &[], &interner, target).unwrap();
 
         assert_eq!(info.function_name, "test");
         assert_eq!(info.alignment, 16);

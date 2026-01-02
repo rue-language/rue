@@ -41,122 +41,8 @@ use crate::intern_pool::TypeInternPool;
 // FunctionInfo and MethodInfo are the canonical definitions; we re-export them for convenience.
 pub use crate::sema::{FunctionInfo, KnownSymbols, MethodInfo};
 use crate::types::{
-    ArrayTypeDef, ArrayTypeId, EnumDef, EnumId, ModuleDef, ModuleId, StructDef, StructId, Type,
+    ArrayTypeId, EnumDef, EnumId, ModuleDef, ModuleId, StructDef, StructId, Type, TypeKind,
 };
-
-/// Thread-safe registry for array types.
-///
-/// This registry allows concurrent lookups and insertions of array types during
-/// parallel function analysis. It uses double-checked locking to minimize
-/// contention: most operations only need a read lock.
-#[derive(Debug)]
-pub struct ArrayTypeRegistry {
-    /// Maps (element_type, length) to ArrayTypeId.
-    types: RwLock<HashMap<(Type, u64), ArrayTypeId>>,
-    /// Array type definitions indexed by ArrayTypeId.
-    defs: RwLock<Vec<ArrayTypeDef>>,
-}
-
-impl ArrayTypeRegistry {
-    /// Create a new empty registry.
-    pub fn new() -> Self {
-        Self {
-            types: RwLock::new(HashMap::new()),
-            defs: RwLock::new(Vec::new()),
-        }
-    }
-
-    /// Create a registry pre-populated with existing types.
-    pub fn from_existing(
-        types: HashMap<(Type, u64), ArrayTypeId>,
-        defs: Vec<ArrayTypeDef>,
-    ) -> Self {
-        Self {
-            types: RwLock::new(types),
-            defs: RwLock::new(defs),
-        }
-    }
-
-    /// Look up an array type by element type and length.
-    pub fn get(&self, element_type: Type, length: u64) -> Option<ArrayTypeId> {
-        self.types
-            .read()
-            .expect("ArrayTypeRegistry lock poisoned")
-            .get(&(element_type, length))
-            .copied()
-    }
-
-    /// Get or create an array type. Thread-safe with double-checked locking.
-    pub fn get_or_create(&self, element_type: Type, length: u64) -> ArrayTypeId {
-        let key = (element_type, length);
-
-        // Fast path: check with read lock
-        {
-            let types = self.types.read().expect("ArrayTypeRegistry lock poisoned");
-            if let Some(&id) = types.get(&key) {
-                return id;
-            }
-        }
-
-        // Slow path: acquire write lock and double-check
-        let mut types = self.types.write().expect("ArrayTypeRegistry lock poisoned");
-
-        // Double-check after acquiring write lock (another thread may have inserted)
-        if let Some(&id) = types.get(&key) {
-            return id;
-        }
-
-        // Create new array type
-        let mut defs = self.defs.write().expect("ArrayTypeRegistry lock poisoned");
-        let id = ArrayTypeId(defs.len() as u32);
-        defs.push(ArrayTypeDef {
-            element_type,
-            length,
-        });
-        types.insert(key, id);
-        id
-    }
-
-    /// Get an array type definition by ID.
-    pub fn get_def(&self, id: ArrayTypeId) -> ArrayTypeDef {
-        self.defs.read().expect("ArrayTypeRegistry lock poisoned")[id.0 as usize]
-    }
-
-    /// Get the number of registered array types.
-    pub fn len(&self) -> usize {
-        self.defs
-            .read()
-            .expect("ArrayTypeRegistry lock poisoned")
-            .len()
-    }
-
-    /// Check if the registry is empty.
-    pub fn is_empty(&self) -> bool {
-        self.len() == 0
-    }
-
-    /// Extract the array type definitions (consumes the registry).
-    /// Used when building the final SemaOutput.
-    pub fn into_defs(self) -> Vec<ArrayTypeDef> {
-        self.defs
-            .into_inner()
-            .expect("ArrayTypeRegistry lock poisoned")
-    }
-
-    /// Get a snapshot of all array type definitions.
-    pub fn snapshot_defs(&self) -> Vec<ArrayTypeDef> {
-        self.defs
-            .read()
-            .expect("ArrayTypeRegistry lock poisoned")
-            .clone()
-    }
-}
-
-impl Default for ArrayTypeRegistry {
-    fn default() -> Self {
-        Self::new()
-    }
-}
 
 /// Thread-safe registry for modules.
 ///
@@ -285,7 +171,7 @@ pub struct InferenceContext {
 ///
 /// - Struct and enum definitions (immutable)
 /// - Function and method signatures (references to immutable data in Sema)
-/// - Array type registry (thread-safe, allows concurrent insertions)
+/// - Type intern pool (thread-safe, allows concurrent array interning)
 /// - Pre-computed inference context (immutable)
 /// - Built-in type IDs (immutable)
 ///
@@ -293,7 +179,7 @@ pub struct InferenceContext {
 ///
 /// `SemaContext` is `Send + Sync` because:
 /// - Most fields are immutable after construction
-/// - The array type registry uses `RwLock` for thread-safe mutations
+/// - The type intern pool uses `RwLock` for thread-safe mutations
 /// - References to RIR and interner are shared immutably
 /// - References to functions/methods HashMaps are immutable after declaration gathering
 /// - ThreadedRodeo is designed to be thread-safe
@@ -303,13 +189,6 @@ pub struct SemaContext<'a> {
     pub rir: &'a Rir,
     /// Reference to the string interner.
     pub interner: &'a ThreadedRodeo,
-    /// Struct definitions indexed by StructId.
-    pub struct_defs: Vec<StructDef>,
-    /// Enum definitions indexed by EnumId.
-    pub enum_defs: Vec<EnumDef>,
-    /// Thread-safe array type registry.
-    /// Supports concurrent lookups and insertions during parallel analysis.
-    pub array_registry: ArrayTypeRegistry,
     /// Struct lookup: maps struct name symbol to StructId.
     pub structs: HashMap<Spur, StructId>,
     /// Enum lookup: maps enum name symbol to EnumId.
@@ -342,10 +221,9 @@ pub struct SemaContext<'a> {
 }
 
 // SAFETY: SemaContext is Send + Sync because:
-// - Immutable fields (struct_defs, enum_defs, structs, enums, etc.) are trivially thread-safe
-// - ArrayTypeRegistry uses RwLock for interior mutability
+// - Immutable fields (structs, enums, etc.) are trivially thread-safe
 // - ModuleRegistry uses RwLock for interior mutability
-// - TypeInternPool uses RwLock for interior mutability
+// - TypeInternPool uses RwLock for interior mutability (including array interning)
 // - References to RIR and ThreadedRodeo are shared immutably
 // - References to functions/methods HashMaps are shared immutably (read-only after declaration gathering)
 // - ThreadedRodeo is designed to be thread-safe
@@ -392,18 +270,20 @@ impl<'a> SemaContext<'a> {
     }
 
     /// Get an array type definition by ID.
-    pub fn get_array_type_def(&self, id: ArrayTypeId) -> ArrayTypeDef {
-        self.array_registry.get_def(id)
+    ///
+    /// Returns `(element_type, length)` for the array.
+    pub fn get_array_type_def(&self, id: ArrayTypeId) -> (Type, u64) {
+        self.type_pool.array_def(id)
     }
 
     /// Look up an array type by element type and length.
     pub fn get_array_type(&self, element_type: Type, length: u64) -> Option<ArrayTypeId> {
-        self.array_registry.get(element_type, length)
+        self.type_pool.get_array_by_type(element_type, length)
     }
 
     /// Get or create an array type. Thread-safe.
     pub fn get_or_create_array_type(&self, element_type: Type, length: u64) -> ArrayTypeId {
-        self.array_registry.get_or_create(element_type, length)
+        self.type_pool.intern_array_from_type(element_type, length)
     }
 
     /// Look up a module by import path.
@@ -430,84 +310,80 @@ impl<'a> SemaContext<'a> {
 
     /// Get a human-readable name for a type.
     pub fn format_type_name(&self, ty: Type) -> String {
-        match ty {
-            Type::I8 => "i8".to_string(),
-            Type::I16 => "i16".to_string(),
-            Type::I32 => "i32".to_string(),
-            Type::I64 => "i64".to_string(),
-            Type::U8 => "u8".to_string(),
-            Type::U16 => "u16".to_string(),
-            Type::U32 => "u32".to_string(),
-            Type::U64 => "u64".to_string(),
-            Type::Bool => "bool".to_string(),
-            Type::Unit => "()".to_string(),
-            Type::Never => "!".to_string(),
-            Type::Error => "<error>".to_string(),
-            Type::Struct(struct_id) => self.type_pool.struct_def(struct_id).name.clone(),
-            Type::Enum(enum_id) => self.type_pool.enum_def(enum_id).name.clone(),
-            Type::Array(array_id) => {
-                let array_def = self.array_registry.get_def(array_id);
-                format!(
-                    "[{}; {}]",
-                    self.format_type_name(array_def.element_type),
-                    array_def.length
-                )
+        match ty.kind() {
+            TypeKind::I8 => "i8".to_string(),
+            TypeKind::I16 => "i16".to_string(),
+            TypeKind::I32 => "i32".to_string(),
+            TypeKind::I64 => "i64".to_string(),
+            TypeKind::U8 => "u8".to_string(),
+            TypeKind::U16 => "u16".to_string(),
+            TypeKind::U32 => "u32".to_string(),
+            TypeKind::U64 => "u64".to_string(),
+            TypeKind::Bool => "bool".to_string(),
+            TypeKind::Unit => "()".to_string(),
+            TypeKind::Never => "!".to_string(),
+            TypeKind::Error => "<error>".to_string(),
+            TypeKind::Struct(struct_id) => self.type_pool.struct_def(struct_id).name.clone(),
+            TypeKind::Enum(enum_id) => self.type_pool.enum_def(enum_id).name.clone(),
+            TypeKind::Array(array_id) => {
+                let (element_type, length) = self.type_pool.array_def(array_id);
+                format!("[{}; {}]", self.format_type_name(element_type), length)
             }
-            Type::Module(_) => "<module>".to_string(),
-            Type::ComptimeType => "type".to_string(),
+            TypeKind::Module(_) => "<module>".to_string(),
+            TypeKind::ComptimeType => "type".to_string(),
         }
     }
 
     /// Check if a type is a Copy type.
     pub fn is_type_copy(&self, ty: Type) -> bool {
-        match ty {
+        match ty.kind() {
             // Primitive Copy types
-            Type::I8
-            | Type::I16
-            | Type::I32
-            | Type::I64
-            | Type::U8
-            | Type::U16
-            | Type::U32
-            | Type::U64
-            | Type::Bool
-            | Type::Unit => true,
+            TypeKind::I8
+            | TypeKind::I16
+            | TypeKind::I32
+            | TypeKind::I64
+            | TypeKind::U8
+            | TypeKind::U16
+            | TypeKind::U32
+            | TypeKind::U64
+            | TypeKind::Bool
+            | TypeKind::Unit => true,
             // Enum types are Copy (they're small discriminant values)
-            Type::Enum(_) => true,
+            TypeKind::Enum(_) => true,
             // Never, Error, and ComptimeType are Copy for convenience
-            Type::Never | Type::Error | Type::ComptimeType => true,
+            TypeKind::Never | TypeKind::Error | TypeKind::ComptimeType => true,
             // Struct types: check if marked with @copy
-            Type::Struct(struct_id) => {
+            TypeKind::Struct(struct_id) => {
                 let struct_def = self.type_pool.struct_def(struct_id);
                 struct_def.is_copy
             }
             // Arrays are Copy if their element type is Copy
-            Type::Array(array_id) => {
-                let array_def = self.array_registry.get_def(array_id);
-                self.is_type_copy(array_def.element_type)
+            TypeKind::Array(array_id) => {
+                let (element_type, _length) = self.type_pool.array_def(array_id);
+                self.is_type_copy(element_type)
             }
             // Module types are Copy (they're just compile-time namespace references)
-            Type::Module(_) => true,
+            TypeKind::Module(_) => true,
         }
     }
 
     /// Get the number of ABI slots required for a type.
     pub fn abi_slot_count(&self, ty: Type) -> u32 {
-        match ty {
-            Type::I8
-            | Type::I16
-            | Type::I32
-            | Type::I64
-            | Type::U8
-            | Type::U16
-            | Type::U32
-            | Type::U64
-            | Type::Bool
-            | Type::Error => 1,
+        match ty.kind() {
+            TypeKind::I8
+            | TypeKind::I16
+            | TypeKind::I32
+            | TypeKind::I64
+            | TypeKind::U8
+            | TypeKind::U16
+            | TypeKind::U32
+            | TypeKind::U64
+            | TypeKind::Bool
+            | TypeKind::Error => 1,
             // Zero-sized types (including comptime-only)
-            Type::Unit | Type::Never | Type::ComptimeType => 0,
-            Type::Enum(_) => 1,
-            Type::Struct(struct_id) => {
+            TypeKind::Unit | TypeKind::Never | TypeKind::ComptimeType => 0,
+            TypeKind::Enum(_) => 1,
+            TypeKind::Struct(struct_id) => {
                 let struct_def = self.type_pool.struct_def(struct_id);
                 struct_def
                     .fields
@@ -515,13 +391,13 @@ impl<'a> SemaContext<'a> {
                     .map(|f| self.abi_slot_count(f.ty))
                     .sum()
             }
-            Type::Array(array_type_id) => {
-                let array_def = self.array_registry.get_def(array_type_id);
-                let element_slots = self.abi_slot_count(array_def.element_type);
-                element_slots * array_def.length as u32
+            TypeKind::Array(array_type_id) => {
+                let (element_type, length) = self.type_pool.array_def(array_type_id);
+                let element_slots = self.abi_slot_count(element_type);
+                element_slots * length as u32
             }
             // Module types don't take ABI slots (they're compile-time only)
-            Type::Module(_) => 0,
+            TypeKind::Module(_) => 0,
         }
     }
 
@@ -536,13 +412,13 @@ impl<'a> SemaContext<'a> {
 
     /// Convert a concrete Type to InferType for use in constraint generation.
     pub fn type_to_infer_type(&self, ty: Type) -> InferType {
-        match ty {
-            Type::Array(array_id) => {
-                let array_def = self.array_registry.get_def(array_id);
-                let element_infer = self.type_to_infer_type(array_def.element_type);
+        match ty.kind() {
+            TypeKind::Array(array_id) => {
+                let (element_type, length) = self.type_pool.array_def(array_id);
+                let element_infer = self.type_to_infer_type(element_type);
                 InferType::Array {
                     element: Box::new(element_infer),
-                    length: array_def.length,
+                    length,
                 }
             }
             _ => InferType::Concrete(ty),
@@ -555,8 +431,8 @@ impl<'a> SemaContext<'a> {
 
     /// Check if a type is the builtin String type.
     pub fn is_builtin_string(&self, ty: Type) -> bool {
-        match ty {
-            Type::Struct(struct_id) => Some(struct_id) == self.builtin_string_id,
+        match ty.kind() {
+            TypeKind::Struct(struct_id) => Some(struct_id) == self.builtin_string_id,
             _ => false,
         }
     }
@@ -595,8 +471,8 @@ impl<'a> SemaContext<'a> {
 
     /// Check if a type is a linear type.
     pub fn is_type_linear(&self, ty: Type) -> bool {
-        match ty {
-            Type::Struct(struct_id) => {
+        match ty.kind() {
+            TypeKind::Struct(struct_id) => {
                 let struct_def = self.type_pool.struct_def(struct_id);
                 struct_def.is_linear
             }

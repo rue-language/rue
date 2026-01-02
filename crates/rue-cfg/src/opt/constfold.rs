@@ -18,7 +18,7 @@
 //! This ensures the runtime panic behavior is preserved.
 
 use crate::{Cfg, CfgInstData, CfgValue};
-use rue_air::Type;
+use rue_air::{Type, TypeKind};
 
 /// Run constant folding on the CFG.
 ///
@@ -234,28 +234,31 @@ fn get_const_bool(cfg: &Cfg, value: CfgValue) -> Option<bool> {
 
 /// Check if a type is signed.
 fn is_signed(ty: Type) -> bool {
-    matches!(ty, Type::I8 | Type::I16 | Type::I32 | Type::I64)
+    matches!(
+        ty.kind(),
+        TypeKind::I8 | TypeKind::I16 | TypeKind::I32 | TypeKind::I64
+    )
 }
 
 /// Get the bit width of a type.
 fn type_bits(ty: Type) -> u32 {
-    match ty {
-        Type::I8 | Type::U8 => 8,
-        Type::I16 | Type::U16 => 16,
-        Type::I32 | Type::U32 => 32,
-        Type::I64 | Type::U64 => 64,
-        Type::Bool => 1,
+    match ty.kind() {
+        TypeKind::I8 | TypeKind::U8 => 8,
+        TypeKind::I16 | TypeKind::U16 => 16,
+        TypeKind::I32 | TypeKind::U32 => 32,
+        TypeKind::I64 | TypeKind::U64 => 64,
+        TypeKind::Bool => 1,
         _ => 64, // Default for other types
     }
 }
 
 /// Mask a value to the bit width of a type.
 fn mask_to_type(val: u64, ty: Type) -> u64 {
-    match ty {
-        Type::I8 | Type::U8 => val & 0xFF,
-        Type::I16 | Type::U16 => val & 0xFFFF,
-        Type::I32 | Type::U32 => val & 0xFFFF_FFFF,
-        Type::I64 | Type::U64 => val,
+    match ty.kind() {
+        TypeKind::I8 | TypeKind::U8 => val & 0xFF,
+        TypeKind::I16 | TypeKind::U16 => val & 0xFFFF,
+        TypeKind::I32 | TypeKind::U32 => val & 0xFFFF_FFFF,
+        TypeKind::I64 | TypeKind::U64 => val,
         _ => val,
     }
 }
@@ -361,11 +364,11 @@ fn checked_neg(a: u64, ty: Type) -> Option<u64> {
 
 /// Sign-extend a value based on its type.
 fn sign_extend(val: u64, ty: Type) -> u64 {
-    match ty {
-        Type::I8 => (val as i8) as i64 as u64,
-        Type::I16 => (val as i16) as i64 as u64,
-        Type::I32 => (val as i32) as i64 as u64,
-        Type::I64 => val,
+    match ty.kind() {
+        TypeKind::I8 => (val as i8) as i64 as u64,
+        TypeKind::I16 => (val as i16) as i64 as u64,
+        TypeKind::I32 => (val as i32) as i64 as u64,
+        TypeKind::I64 => val,
         _ => val,
     }
 }
@@ -377,22 +380,22 @@ fn sign_extend_operands(a: u64, b: u64, ty: Type) -> (u64, u64) {
 
 /// Check if a signed result fits in the target type.
 fn fits_in_signed_type(val: i64, ty: Type) -> bool {
-    match ty {
-        Type::I8 => val >= i8::MIN as i64 && val <= i8::MAX as i64,
-        Type::I16 => val >= i16::MIN as i64 && val <= i16::MAX as i64,
-        Type::I32 => val >= i32::MIN as i64 && val <= i32::MAX as i64,
-        Type::I64 => true, // i64 can hold any i64
+    match ty.kind() {
+        TypeKind::I8 => val >= i8::MIN as i64 && val <= i8::MAX as i64,
+        TypeKind::I16 => val >= i16::MIN as i64 && val <= i16::MAX as i64,
+        TypeKind::I32 => val >= i32::MIN as i64 && val <= i32::MAX as i64,
+        TypeKind::I64 => true, // i64 can hold any i64
         _ => true,
     }
 }
 
 /// Check if an unsigned result fits in the target type.
 fn fits_in_unsigned_type(val: u64, ty: Type) -> bool {
-    match ty {
-        Type::U8 => val <= u8::MAX as u64,
-        Type::U16 => val <= u16::MAX as u64,
-        Type::U32 => val <= u32::MAX as u64,
-        Type::U64 => true,
+    match ty.kind() {
+        TypeKind::U8 => val <= u8::MAX as u64,
+        TypeKind::U16 => val <= u16::MAX as u64,
+        TypeKind::U32 => val <= u32::MAX as u64,
+        TypeKind::U64 => true,
         _ => true,
     }
 }

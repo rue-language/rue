@@ -6,7 +6,7 @@
 //! As of Phase 3 (ADR-0024), all struct/enum lookups go through `TypeInternPool`
 //! instead of separate `&[StructDef]` slices.
 
-use rue_air::{ArrayTypeDef, ArrayTypeId, StructId, TypeInternPool};
+use rue_air::{ArrayTypeId, StructId, TypeInternPool, TypeKind};
 use rue_cfg::{Cfg, CfgInstData, CfgValue, Type};
 use std::collections::HashMap;
 
@@ -16,48 +16,41 @@ use crate::vreg::VReg;
 /// Returns None if the type is not an array type.
 #[inline]
 pub fn extract_array_type_id(ty: Type) -> Option<ArrayTypeId> {
-    match ty {
-        Type::Array(id) => Some(id),
+    match ty.kind() {
+        TypeKind::Array(id) => Some(id),
         _ => None,
     }
 }
 
 /// Get the array type definition for an array type ID.
-pub fn array_type_def<'a>(
-    array_types: &'a [ArrayTypeDef],
-    array_type_id: ArrayTypeId,
-) -> Option<&'a ArrayTypeDef> {
-    array_types.get(array_type_id.0 as usize)
+///
+/// Returns `(element_type, length)`.
+pub fn array_type_def(type_pool: &TypeInternPool, array_type_id: ArrayTypeId) -> (Type, u64) {
+    type_pool.array_def(array_type_id)
 }
 
 /// Get the array type definition from a Type.
-/// Returns None if the type is not an array type or if the ID is out of bounds.
+///
+/// Returns `Some((element_type, length))` if the type is an array type, `None` otherwise.
 #[inline]
-pub fn array_type_def_from_type<'a>(
-    array_types: &'a [ArrayTypeDef],
-    ty: Type,
-) -> Option<&'a ArrayTypeDef> {
-    extract_array_type_id(ty).and_then(|id| array_type_def(array_types, id))
+pub fn array_type_def_from_type(type_pool: &TypeInternPool, ty: Type) -> Option<(Type, u64)> {
+    extract_array_type_id(ty).map(|id| array_type_def(type_pool, id))
 }
 
 /// Get the length of an array from its Type.
-/// Returns 0 if the type is not an array or the ID is invalid.
+/// Returns 0 if the type is not an array.
 #[inline]
-pub fn array_length_from_type(array_types: &[ArrayTypeDef], ty: Type) -> u64 {
-    array_type_def_from_type(array_types, ty)
-        .map(|def| def.length)
+pub fn array_length_from_type(type_pool: &TypeInternPool, ty: Type) -> u64 {
+    array_type_def_from_type(type_pool, ty)
+        .map(|(_element_type, length)| length)
         .unwrap_or(0)
 }
 
 /// Calculate the slot count for a single element of an array from its Type.
 #[inline]
-pub fn array_element_slot_count_from_type(
-    type_pool: &TypeInternPool,
-    array_types: &[ArrayTypeDef],
-    ty: Type,
-) -> u32 {
-    if let Some(def) = array_type_def_from_type(array_types, ty) {
-        type_slot_count(type_pool, array_types, def.element_type)
+pub fn array_element_slot_count_from_type(type_pool: &TypeInternPool, ty: Type) -> u32 {
+    if let Some((element_type, _length)) = array_type_def_from_type(type_pool, ty) {
+        type_slot_count(type_pool, element_type)
     } else {
         1
     }
@@ -69,26 +62,23 @@ pub fn array_element_slot_count_from_type(
 /// For structs, this is the sum of slot counts for all fields.
 /// For nested types, this recursively calculates.
 /// Zero-sized types (unit, never, empty structs, zero-length arrays) return 0.
-pub fn type_slot_count(type_pool: &TypeInternPool, array_types: &[ArrayTypeDef], ty: Type) -> u32 {
-    match ty {
+pub fn type_slot_count(type_pool: &TypeInternPool, ty: Type) -> u32 {
+    match ty.kind() {
         // Zero-sized types
-        Type::Unit | Type::Never => 0,
-        Type::Array(array_type_id) => {
+        TypeKind::Unit | TypeKind::Never => 0,
+        TypeKind::Array(array_type_id) => {
             // Zero-length arrays naturally get 0 slots (0 * element_slots)
-            if let Some(def) = array_type_def(array_types, array_type_id) {
-                let elem_slots = type_slot_count(type_pool, array_types, def.element_type);
-                (def.length as u32) * elem_slots
-            } else {
-                1
-            }
+            let (element_type, length) = type_pool.array_def(array_type_id);
+            let elem_slots = type_slot_count(type_pool, element_type);
+            (length as u32) * elem_slots
         }
-        Type::Struct(struct_id) => {
+        TypeKind::Struct(struct_id) => {
             // Sum the slot counts of all fields
             // Empty structs naturally get 0 slots here
             let struct_def = type_pool.struct_def(struct_id);
             let mut total = 0u32;
             for field in &struct_def.fields {
-                total += type_slot_count(type_pool, array_types, field.ty);
+                total += type_slot_count(type_pool, field.ty);
             }
             total
         }
@@ -98,16 +88,9 @@ pub fn type_slot_count(type_pool: &TypeInternPool, array_types: &[ArrayTypeDef],
 }
 
 /// Calculate the slot count for a single element of an array type.
-pub fn array_element_slot_count(
-    type_pool: &TypeInternPool,
-    array_types: &[ArrayTypeDef],
-    array_type_id: ArrayTypeId,
-) -> u32 {
-    if let Some(def) = array_type_def(array_types, array_type_id) {
-        type_slot_count(type_pool, array_types, def.element_type)
-    } else {
-        1
-    }
+pub fn array_element_slot_count(type_pool: &TypeInternPool, array_type_id: ArrayTypeId) -> u32 {
+    let (element_type, _length) = type_pool.array_def(array_type_id);
+    type_slot_count(type_pool, element_type)
 }
 
 /// Calculate the slot offset for a field within a struct.
@@ -115,7 +98,6 @@ pub fn array_element_slot_count(
 /// This accounts for the sizes of all preceding fields.
 pub fn struct_field_slot_offset(
     type_pool: &TypeInternPool,
-    array_types: &[ArrayTypeDef],
     struct_id: StructId,
     field_index: u32,
 ) -> u32 {
@@ -123,7 +105,7 @@ pub fn struct_field_slot_offset(
     let mut offset = 0u32;
     for i in 0..(field_index as usize) {
         if let Some(field) = struct_def.fields.get(i) {
-            offset += type_slot_count(type_pool, array_types, field.ty);
+            offset += type_slot_count(type_pool, field.ty);
         }
     }
     offset
@@ -157,7 +139,7 @@ pub fn collect_array_scalar_vregs(
             let mut result = Vec::new();
             for elem in elements {
                 let elem_inst = cfg.get_inst(*elem);
-                if matches!(elem_inst.ty, Type::Array(_)) {
+                if elem_inst.ty.is_array() {
                     // Recursively collect from nested array
                     result.extend(collect_array_scalar_vregs(
                         cfg,
@@ -165,7 +147,7 @@ pub fn collect_array_scalar_vregs(
                         *elem,
                         get_vreg,
                     ));
-                } else if matches!(elem_inst.ty, Type::Struct(_)) {
+                } else if elem_inst.ty.is_struct() {
                     // Recursively collect from struct element (includes builtin String)
                     result.extend(collect_struct_scalar_vregs(
                         cfg,
@@ -195,46 +177,39 @@ pub fn collect_array_scalar_vregs(
 ///
 /// The name encodes the element type and length, e.g., `__rue_drop_array_String_3`.
 /// This must match the name generated by `rue_compiler::drop_glue::array_drop_glue_name`.
-pub fn array_drop_glue_name(
-    array_id: ArrayTypeId,
-    array_types: &[ArrayTypeDef],
-    type_pool: &TypeInternPool,
-) -> String {
-    let array_def = &array_types[array_id.0 as usize];
-    let element_type_name = type_name(array_def.element_type, type_pool, array_types);
-    format!(
-        "__rue_drop_array_{}_{}",
-        element_type_name, array_def.length
-    )
+pub fn array_drop_glue_name(array_id: ArrayTypeId, type_pool: &TypeInternPool) -> String {
+    let (element_type, length) = type_pool.array_def(array_id);
+    let element_type_name = type_name(element_type, type_pool);
+    format!("__rue_drop_array_{}_{}", element_type_name, length)
 }
 
 /// Get a name for a type (used for generating drop glue function names).
-fn type_name(ty: Type, type_pool: &TypeInternPool, array_types: &[ArrayTypeDef]) -> String {
-    match ty {
-        Type::I8 => "i8".to_string(),
-        Type::I16 => "i16".to_string(),
-        Type::I32 => "i32".to_string(),
-        Type::I64 => "i64".to_string(),
-        Type::U8 => "u8".to_string(),
-        Type::U16 => "u16".to_string(),
-        Type::U32 => "u32".to_string(),
-        Type::U64 => "u64".to_string(),
-        Type::Bool => "bool".to_string(),
-        Type::Unit => "unit".to_string(),
-        Type::Never => "never".to_string(),
-        Type::Error => "error".to_string(),
+fn type_name(ty: Type, type_pool: &TypeInternPool) -> String {
+    match ty.kind() {
+        TypeKind::I8 => "i8".to_string(),
+        TypeKind::I16 => "i16".to_string(),
+        TypeKind::I32 => "i32".to_string(),
+        TypeKind::I64 => "i64".to_string(),
+        TypeKind::U8 => "u8".to_string(),
+        TypeKind::U16 => "u16".to_string(),
+        TypeKind::U32 => "u32".to_string(),
+        TypeKind::U64 => "u64".to_string(),
+        TypeKind::Bool => "bool".to_string(),
+        TypeKind::Unit => "unit".to_string(),
+        TypeKind::Never => "never".to_string(),
+        TypeKind::Error => "error".to_string(),
         // ComptimeType only exists at compile time, no runtime representation
-        Type::ComptimeType => "comptime_type".to_string(),
-        Type::Enum(enum_id) => format!("enum{}", enum_id.0),
+        TypeKind::ComptimeType => "comptime_type".to_string(),
+        TypeKind::Enum(enum_id) => format!("enum{}", enum_id.0),
         // Struct types include builtin types like String
-        Type::Struct(struct_id) => type_pool.struct_def(struct_id).name.clone(),
-        Type::Array(array_id) => {
-            let array_def = &array_types[array_id.0 as usize];
-            let elem_name = type_name(array_def.element_type, type_pool, array_types);
-            format!("array_{}_{}", elem_name, array_def.length)
+        TypeKind::Struct(struct_id) => type_pool.struct_def(struct_id).name.clone(),
+        TypeKind::Array(array_id) => {
+            let (element_type, length) = type_pool.array_def(array_id);
+            let elem_name = type_name(element_type, type_pool);
+            format!("array_{}_{}", elem_name, length)
         }
         // Module types should never reach codegen (compile-time only)
-        Type::Module(_) => "module".to_string(),
+        TypeKind::Module(_) => "module".to_string(),
     }
 }
 
@@ -266,7 +241,7 @@ pub fn collect_struct_scalar_vregs(
             let mut result = Vec::new();
             for field in fields {
                 let field_inst = cfg.get_inst(*field);
-                if matches!(field_inst.ty, Type::Array(_)) {
+                if field_inst.ty.is_array() {
                     // Recursively collect from array field
                     result.extend(collect_array_scalar_vregs(
                         cfg,
@@ -274,7 +249,7 @@ pub fn collect_struct_scalar_vregs(
                         *field,
                         get_vreg,
                     ));
-                } else if matches!(field_inst.ty, Type::Struct(_)) {
+                } else if field_inst.ty.is_struct() {
                     // Recursively collect from nested struct field (includes builtin String)
                     result.extend(collect_struct_scalar_vregs(
                         cfg,

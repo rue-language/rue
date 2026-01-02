@@ -4,9 +4,7 @@
 //! into explicit basic blocks with terminators.
 
 use lasso::ThreadedRodeo;
-use rue_air::{
-    Air, AirArgMode, AirInstData, AirPattern, AirRef, ArrayTypeDef, Type, TypeInternPool,
-};
+use rue_air::{Air, AirArgMode, AirInstData, AirPattern, AirRef, Type, TypeInternPool, TypeKind};
 use rue_error::{CompileWarning, WarningKind};
 
 use crate::CfgOutput;
@@ -59,10 +57,8 @@ struct LiveSlot {
 pub struct CfgBuilder<'a> {
     air: &'a Air,
     cfg: Cfg,
-    /// Type intern pool for struct/enum lookups (Phase 3 ADR-0024)
+    /// Type intern pool for struct/enum/array lookups (Phase 2B ADR-0024)
     type_pool: &'a TypeInternPool,
-    /// Array type definitions for type queries
-    array_types: &'a [ArrayTypeDef],
     /// Interner for resolving symbols to strings
     interner: &'a ThreadedRodeo,
     /// Current block we're building
@@ -82,16 +78,14 @@ pub struct CfgBuilder<'a> {
 impl<'a> CfgBuilder<'a> {
     /// Build a CFG from AIR, returning the CFG and any warnings.
     ///
-    /// The `type_pool` provides struct/enum definitions needed for queries like
-    /// `type_needs_drop`. The `array_types` provides array type definitions.
-    /// The `interner` is used to resolve Symbol values to strings for the CFG.
+    /// The `type_pool` provides struct/enum/array definitions needed for queries like
+    /// `type_needs_drop`. The `interner` is used to resolve Symbol values to strings for the CFG.
     pub fn build(
         air: &'a Air,
         num_locals: u32,
         num_params: u32,
         fn_name: &str,
         type_pool: &'a TypeInternPool,
-        array_types: &'a [ArrayTypeDef],
         param_modes: Vec<bool>,
         interner: &'a ThreadedRodeo,
     ) -> CfgOutput {
@@ -105,7 +99,6 @@ impl<'a> CfgBuilder<'a> {
                 param_modes,
             ),
             type_pool,
-            array_types,
             interner,
             current_block: BlockId(0),
             loop_stack: Vec::new(),
@@ -1720,29 +1713,29 @@ impl<'a> CfgBuilder<'a> {
     /// - Struct: needs drop if any field needs drop
     /// - Array: needs drop if element type needs drop
     fn type_needs_drop(&self, ty: Type) -> bool {
-        match ty {
+        match ty.kind() {
             // Primitive types are trivially droppable
             // ComptimeType is a comptime-only type and has no runtime representation
-            Type::I8
-            | Type::I16
-            | Type::I32
-            | Type::I64
-            | Type::U8
-            | Type::U16
-            | Type::U32
-            | Type::U64
-            | Type::Bool
-            | Type::Unit
-            | Type::Never
-            | Type::Error
-            | Type::ComptimeType => false,
+            TypeKind::I8
+            | TypeKind::I16
+            | TypeKind::I32
+            | TypeKind::I64
+            | TypeKind::U8
+            | TypeKind::U16
+            | TypeKind::U32
+            | TypeKind::U64
+            | TypeKind::Bool
+            | TypeKind::Unit
+            | TypeKind::Never
+            | TypeKind::Error
+            | TypeKind::ComptimeType => false,
 
             // Enum types are trivially droppable (just discriminant values)
-            Type::Enum(_) => false,
+            TypeKind::Enum(_) => false,
 
             // Struct types need drop if they have a destructor (e.g., builtin String)
             // or if any field needs drop
-            Type::Struct(struct_id) => {
+            TypeKind::Struct(struct_id) => {
                 let struct_def = self.type_pool.struct_def(struct_id);
                 // Builtins with destructors (like String) need drop
                 if struct_def.destructor.is_some() {
@@ -1755,13 +1748,13 @@ impl<'a> CfgBuilder<'a> {
             // Note: String is now Type::Struct with is_builtin=true, handled above
 
             // Array types need drop if element type needs drop
-            Type::Array(array_id) => {
-                let array_def = &self.array_types[array_id.0 as usize];
-                self.type_needs_drop(array_def.element_type)
+            TypeKind::Array(array_id) => {
+                let (element_type, _length) = self.type_pool.array_def(array_id);
+                self.type_needs_drop(element_type)
             }
 
             // Module types don't need drop (compile-time only)
-            Type::Module(_) => false,
+            TypeKind::Module(_) => false,
         }
     }
 
@@ -1861,7 +1854,6 @@ mod tests {
             func.num_param_slots,
             &func.name,
             &output.type_pool,
-            &output.array_types,
             func.param_modes.clone(),
             &interner,
         )

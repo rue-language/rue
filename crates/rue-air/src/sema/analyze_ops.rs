@@ -34,7 +34,7 @@ use super::Sema;
 use super::context::{AnalysisContext, AnalysisResult, LocalVar};
 use crate::inst::{Air, AirCallArg, AirInst, AirInstData, AirPattern, AirRef};
 use crate::scope::ScopedContext;
-use crate::types::Type;
+use crate::types::{Type, TypeKind};
 
 impl<'a> Sema<'a> {
     // ========================================================================
@@ -156,11 +156,11 @@ impl<'a> Sema<'a> {
                     // Check if this value, when negated, fits in the target signed type
                     if ty.negated_literal_fits(*value) && !ty.literal_fits(*value) {
                         // This is the MIN value case - store the MIN value directly.
-                        let neg_value = match ty {
-                            Type::I8 => (i8::MIN as i64) as u64,
-                            Type::I16 => (i16::MIN as i64) as u64,
-                            Type::I32 => (i32::MIN as i64) as u64,
-                            Type::I64 => i64::MIN as u64,
+                        let neg_value = match ty.kind() {
+                            TypeKind::I8 => (i8::MIN as i64) as u64,
+                            TypeKind::I16 => (i16::MIN as i64) as u64,
+                            TypeKind::I32 => (i32::MIN as i64) as u64,
+                            TypeKind::I64 => i64::MIN as u64,
                             _ => unreachable!(),
                         };
                         let air_ref = air.add_inst(AirInst {
@@ -1523,9 +1523,9 @@ impl<'a> Sema<'a> {
         let base_result = self.analyze_inst_for_projection(air, base, ctx)?;
         let base_type = base_result.ty;
 
-        let struct_id = match base_type {
-            Type::Struct(id) => id,
-            _ => {
+        let struct_id = match base_type.as_struct() {
+            Some(id) => id,
+            None => {
                 return Err(CompileError::new(
                     ErrorKind::FieldAccessOnNonStruct {
                         found: base_type.name().to_string(),
@@ -1673,12 +1673,12 @@ impl<'a> Sema<'a> {
         // Get the array type from HM inference
         let array_type = Self::get_resolved_type(ctx, inst_ref, span, "array literal")?;
 
-        let (array_type_id, _elem_type, expected_len) = match array_type {
-            Type::Array(type_id) => {
-                let array_def = &self.array_type_defs[type_id.0 as usize];
-                (type_id, array_def.element_type, array_def.length)
+        let (array_type_id, _elem_type, expected_len) = match array_type.as_array() {
+            Some(type_id) => {
+                let (element_type, length) = self.type_pool.array_def(type_id);
+                (type_id, element_type, length)
             }
-            _ => {
+            None => {
                 return Err(CompileError::new(
                     ErrorKind::InternalError(format!(
                         "Array literal inferred as non-array type: {}",
@@ -1739,12 +1739,12 @@ impl<'a> Sema<'a> {
         let index_result = self.analyze_inst(air, index, ctx)?;
 
         // Verify base is an array
-        let (array_type_id, elem_type, array_len) = match base_type {
-            Type::Array(type_id) => {
-                let array_def = &self.array_type_defs[type_id.0 as usize];
-                (type_id, array_def.element_type, array_def.length)
+        let (array_type_id, elem_type, array_len) = match base_type.as_array() {
+            Some(type_id) => {
+                let (element_type, length) = self.type_pool.array_def(type_id);
+                (type_id, element_type, length)
             }
-            _ => {
+            None => {
                 return Err(CompileError::new(
                     ErrorKind::IndexOnNonArray {
                         found: base_type.name().to_string(),
