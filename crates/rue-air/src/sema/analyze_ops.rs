@@ -1229,6 +1229,18 @@ impl<'a> Sema<'a> {
             return Ok(AnalysisResult::new(air_ref, ty));
         }
 
+        // Check if it's a comptime type variable (e.g., `let P = Point();`)
+        // These are stored in comptime_type_vars, not in locals
+        if let Some(&ty) = ctx.comptime_type_vars.get(&name) {
+            // Comptime type vars produce TypeConst instructions
+            let air_ref = air.add_inst(AirInst {
+                data: AirInstData::TypeConst(ty),
+                ty: Type::ComptimeType,
+                span,
+            });
+            return Ok(AnalysisResult::new(air_ref, Type::ComptimeType));
+        }
+
         // Check if this is a type name (for comptime type parameters)
         // Try to resolve it as a type - if successful, emit a TypeConst instruction
         if let Ok(resolved_type) = self.resolve_type(name, span) {
@@ -2113,14 +2125,13 @@ impl<'a> Sema<'a> {
         // Check that comptime parameters receive compile-time constant values
         let has_comptime_params = param_comptime.iter().any(|&c| c);
         if has_comptime_params {
-            // Gate behind comptime preview feature
-            self.require_preview(PreviewFeature::Comptime, "comptime parameters", span)?;
-
             // Validate each comptime parameter receives a compile-time constant
             for (i, (&is_comptime, arg)) in param_comptime.iter().zip(args.iter()).enumerate() {
                 if is_comptime {
                     // Try to evaluate the argument at compile time
-                    if self.try_evaluate_const(arg.value).is_none() {
+                    let is_comptime_known = self.try_evaluate_const(arg.value).is_some()
+                        || self.is_comptime_type_var(arg.value, ctx);
+                    if !is_comptime_known {
                         let param_name = self.interner.resolve(&param_names[i]).to_string();
                         return Err(CompileError::new(
                             ErrorKind::ComptimeArgNotConst {
@@ -2192,6 +2203,27 @@ impl<'a> Sema<'a> {
             } else {
                 base_return_type
             };
+
+            // Special case: functions that return `type` (not a type parameter) with no runtime args
+            // can be fully evaluated at compile time to produce a concrete anonymous struct type.
+            // This handles cases like: `fn Pair(comptime T: type) -> type { struct { first: T, second: T } }`
+            if return_type == Type::ComptimeType && runtime_args.is_empty() {
+                // The return type is literally `type`, not a type parameter that was substituted.
+                // Try to evaluate the function body at compile time with type substitutions.
+                if let Some(ConstValue::Type(ty)) =
+                    self.try_evaluate_const_with_subst(fn_body, &type_subst)
+                {
+                    // Success! Return a TypeConst instruction instead of a runtime call
+                    let air_ref = air.add_inst(AirInst {
+                        data: AirInstData::TypeConst(ty),
+                        ty: Type::ComptimeType,
+                        span,
+                    });
+                    return Ok(AnalysisResult::new(air_ref, Type::ComptimeType));
+                }
+                // If we can't evaluate at compile time, fall through to the error below
+                // (we can't have a runtime call that returns `type`)
+            }
 
             // Encode type arguments into extra array (as raw Type discriminants)
             let mut type_extra = Vec::with_capacity(type_args.len());

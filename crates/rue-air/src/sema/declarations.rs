@@ -747,12 +747,6 @@ impl<'a> Sema<'a> {
     ) -> CompileResult<()> {
         let params = self.rir.get_params(params_start, params_len);
 
-        // Check if any parameter is comptime and gate behind preview feature
-        let has_comptime_params = params.iter().any(|p| p.is_comptime);
-        if has_comptime_params {
-            self.require_preview(PreviewFeature::Comptime, "comptime parameters", span)?;
-        }
-
         let param_names: Vec<Spur> = params.iter().map(|p| p.name).collect();
         let param_modes: Vec<RirParamMode> = params.iter().map(|p| p.mode).collect();
 

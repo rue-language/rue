@@ -171,6 +171,25 @@ impl<'a> Sema<'a> {
     ///
     /// This is used in comptime evaluation where we can't produce a compile error.
     pub(crate) fn resolve_type_for_comptime(&mut self, type_sym: Spur) -> Option<Type> {
+        self.resolve_type_for_comptime_with_subst(type_sym, &std::collections::HashMap::new())
+    }
+
+    /// Resolve a type symbol to a Type with type parameter substitution.
+    ///
+    /// This is used in comptime evaluation of generic functions where type parameters
+    /// need to be substituted with their concrete types. For example, when evaluating
+    /// `fn Pair(comptime T: type) -> type { struct { first: T, second: T } }` with T=i32,
+    /// we need to resolve `T` to `i32`.
+    pub(crate) fn resolve_type_for_comptime_with_subst(
+        &mut self,
+        type_sym: Spur,
+        type_subst: &std::collections::HashMap<Spur, Type>,
+    ) -> Option<Type> {
+        // First check the substitution map for type parameters
+        if let Some(&ty) = type_subst.get(&type_sym) {
+            return Some(ty);
+        }
+
         let type_name = self.interner.resolve(&type_sym);
 
         // Check primitive types first
@@ -197,7 +216,7 @@ impl<'a> Sema<'a> {
         } else if let Some((element_type, length)) = parse_array_type_syntax(type_name) {
             // Resolve the element type first
             let element_sym = self.interner.get_or_intern(&element_type);
-            let element_ty = self.resolve_type_for_comptime(element_sym)?;
+            let element_ty = self.resolve_type_for_comptime_with_subst(element_sym, type_subst)?;
             // Get or create the array type
             let array_type_id = self.get_or_create_array_type(element_ty, length);
             Some(Type::Array(array_type_id))

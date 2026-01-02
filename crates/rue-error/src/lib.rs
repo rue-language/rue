@@ -117,6 +117,7 @@ impl ErrorCode {
     pub const BORROW_INOUT_CONFLICT: Self = Self(429);
     pub const INOUT_KEYWORD_MISSING: Self = Self(430);
     pub const BORROW_KEYWORD_MISSING: Self = Self(431);
+    pub const EMPTY_STRUCT: Self = Self(432);
 
     // ========================================================================
     // Control flow errors (E0500-E0599)
@@ -248,9 +249,6 @@ pub enum PreviewFeature {
     /// Affine types and mutable value semantics.
     /// See ADR-0008 for the full design.
     AffineMvs,
-    /// Compile-time execution (comptime).
-    /// See ADR-0025 for the full design.
-    Comptime,
     /// Module system with @import and pub visibility.
     /// See ADR-0026 for the full design.
     Modules,
@@ -275,7 +273,6 @@ impl PreviewFeature {
         match *self {
             PreviewFeature::TestInfra => "test_infra",
             PreviewFeature::AffineMvs => "affine_mvs",
-            PreviewFeature::Comptime => "comptime",
             PreviewFeature::Modules => "modules",
         }
     }
@@ -286,7 +283,6 @@ impl PreviewFeature {
         match *self {
             PreviewFeature::TestInfra => "ADR-0005",
             PreviewFeature::AffineMvs => "ADR-0008",
-            PreviewFeature::Comptime => "ADR-0025",
             PreviewFeature::Modules => "ADR-0026",
         }
     }
@@ -296,7 +292,6 @@ impl PreviewFeature {
         &[
             PreviewFeature::TestInfra,
             PreviewFeature::AffineMvs,
-            PreviewFeature::Comptime,
             PreviewFeature::Modules,
         ]
     }
@@ -322,7 +317,6 @@ impl std::str::FromStr for PreviewFeature {
         match s {
             "test_infra" => Ok(PreviewFeature::TestInfra),
             "affine_mvs" => Ok(PreviewFeature::AffineMvs),
-            "comptime" => Ok(PreviewFeature::Comptime),
             "modules" => Ok(PreviewFeature::Modules),
             _ => Err(ParsePreviewFeatureError(s.to_string())),
         }
@@ -805,6 +799,9 @@ pub enum ErrorKind {
         struct_name: String,
         field_name: String,
     },
+    /// Anonymous struct with no fields is not allowed
+    #[error("empty struct is not allowed")]
+    EmptyStruct,
     /// @copy struct contains a field with non-Copy type
     #[error("@copy struct '{struct_name}' has field '{field_name}' with non-Copy type '{field_type}'", struct_name = .0.struct_name, field_name = .0.field_name, field_type = .0.field_type)]
     CopyStructNonCopyField(Box<CopyStructNonCopyFieldError>),
@@ -1037,6 +1034,7 @@ impl ErrorKind {
             ErrorKind::MissingFields(_) => ErrorCode::MISSING_FIELDS,
             ErrorKind::UnknownField { .. } => ErrorCode::UNKNOWN_FIELD,
             ErrorKind::DuplicateField { .. } => ErrorCode::DUPLICATE_FIELD,
+            ErrorKind::EmptyStruct => ErrorCode::EMPTY_STRUCT,
             ErrorKind::CopyStructNonCopyField(_) => ErrorCode::COPY_STRUCT_NON_COPY_FIELD,
             ErrorKind::ReservedTypeName { .. } => ErrorCode::RESERVED_TYPE_NAME,
             ErrorKind::DuplicateTypeDefinition { .. } => ErrorCode::DUPLICATE_TYPE_DEFINITION,
@@ -1804,7 +1802,7 @@ mod tests {
     #[test]
     fn test_preview_feature_all_names() {
         let names = PreviewFeature::all_names();
-        assert_eq!(names, "test_infra, affine_mvs, comptime, modules");
+        assert_eq!(names, "test_infra, affine_mvs, modules");
     }
 
     // ========================================================================
