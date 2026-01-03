@@ -488,9 +488,10 @@ pub fn merge_symbols(program: ParsedProgram) -> MultiErrorResult<MergedProgram> 
                         );
                     }
                 }
-                Item::Impl(_) | Item::DropFn(_) => {
-                    // Impl blocks and drop fns are validated in Sema, not here.
+                Item::Impl(_) | Item::DropFn(_) | Item::Const(_) => {
+                    // Impl blocks, drop fns, and const declarations are validated in Sema, not here.
                     // They can have multiple impl blocks for the same type (with different methods).
+                    // Const declarations are checked for duplicates in the declarations phase.
                 }
             }
             all_items.push(item.clone());
@@ -652,7 +653,7 @@ pub fn validate_and_generate_rir_parallel(
                         );
                     }
                 }
-                Item::Impl(_) | Item::DropFn(_) => {
+                Item::Impl(_) | Item::DropFn(_) | Item::Const(_) => {
                     // Validated in Sema
                 }
             }

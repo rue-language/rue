@@ -19,7 +19,7 @@ use rue_error::{
 use rue_rir::{InstData, InstRef, RirDirective, RirParamMode};
 use rue_span::Span;
 
-use super::{FunctionInfo, InferenceContext, MethodInfo, Sema};
+use super::{ConstInfo, FunctionInfo, InferenceContext, MethodInfo, Sema};
 use crate::inference::{FunctionSig, MethodSig};
 use crate::type_context::{FunctionSignature, MethodSignature, TypeContext};
 use crate::types::{EnumDef, EnumId, StructDef, StructField, StructId, Type};
@@ -502,6 +502,21 @@ impl<'a> Sema<'a> {
                     self.collect_impl_methods(*type_name, *methods_start, *methods_len, inst.span)?;
                 }
 
+                InstData::ConstDecl {
+                    is_pub, name, init, ..
+                } => {
+                    // pub const requires preview feature
+                    if *is_pub {
+                        self.require_preview(
+                            PreviewFeature::Modules,
+                            "pub const declaration",
+                            inst.span,
+                        )?;
+                    }
+
+                    self.collect_const_declaration(*name, *is_pub, *init, inst.span)?;
+                }
+
                 _ => {}
             }
         }
@@ -878,6 +893,68 @@ impl<'a> Sema<'a> {
                 );
             }
         }
+        Ok(())
+    }
+
+    /// Collect a constant declaration.
+    ///
+    /// Constants are compile-time values. In the module system, they're primarily
+    /// used for re-exports:
+    /// ```rue
+    /// pub const strings = @import("utils/strings.rue");
+    /// ```
+    ///
+    /// For now, we store the constant info but don't fully evaluate it.
+    /// The type will be determined when the init expression is analyzed.
+    fn collect_const_declaration(
+        &mut self,
+        name: Spur,
+        is_pub: bool,
+        init: InstRef,
+        span: Span,
+    ) -> CompileResult<()> {
+        let name_str = self.interner.resolve(&name).to_string();
+
+        // Check for duplicate constant names
+        if self.constants.contains_key(&name) {
+            return Err(CompileError::new(
+                ErrorKind::DuplicateConstant {
+                    name: name_str,
+                    kind: "constant".to_string(),
+                },
+                span,
+            ));
+        }
+
+        // Check for collision with function names
+        if self.functions.contains_key(&name) {
+            return Err(CompileError::new(
+                ErrorKind::DuplicateConstant {
+                    name: name_str.clone(),
+                    kind: "constant (conflicts with function)".to_string(),
+                },
+                span,
+            ));
+        }
+
+        // For now, store with Type::Error as a placeholder - the actual type will be determined
+        // when the init expression is analyzed during module population phase.
+        // This is Phase 2 of the module system where we'll walk the init expression
+        // to determine if it's an @import (making it Type::Module).
+        //
+        // Note: Type::Error here is a placeholder indicating "not yet resolved".
+        // This is fine because const types are determined lazily when the module
+        // is populated with re-exports.
+        self.constants.insert(
+            name,
+            ConstInfo {
+                is_pub,
+                ty: Type::Error,
+                init,
+                span,
+            },
+        );
+
         Ok(())
     }
 }

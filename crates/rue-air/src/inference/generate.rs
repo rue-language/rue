@@ -933,7 +933,8 @@ impl<'a> ConstraintGenerator<'a> {
             | InstData::StructDecl { .. }
             | InstData::EnumDecl { .. }
             | InstData::ImplDecl { .. }
-            | InstData::DropFnDecl { .. } => InferType::Concrete(Type::Unit),
+            | InstData::DropFnDecl { .. }
+            | InstData::ConstDecl { .. } => InferType::Concrete(Type::Unit),
 
             // Method call: receiver.method(args)
             InstData::MethodCall {

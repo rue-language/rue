@@ -963,6 +963,23 @@ impl Rir {
                 has_self: *has_self,
             },
 
+            // Constant declaration - init is an InstRef
+            InstData::ConstDecl {
+                directives_start,
+                directives_len,
+                is_pub,
+                name,
+                ty,
+                init,
+            } => InstData::ConstDecl {
+                directives_start: *directives_start + extra_offset,
+                directives_len: *directives_len,
+                is_pub: *is_pub,
+                name: *name,
+                ty: *ty,
+                init: renumber(*init),
+            },
+
             // Function call - args in extra
             InstData::Call {
                 name,
@@ -1268,6 +1285,7 @@ impl Rir {
                 | InstData::Alloc { .. }
                 | InstData::Assign { .. }
                 | InstData::FnDecl { .. }
+                | InstData::ConstDecl { .. }
                 | InstData::FieldGet { .. }
                 | InstData::FieldSet { .. }
                 | InstData::StructDecl { .. }
@@ -1411,6 +1429,25 @@ pub enum InstData {
         /// Only true for methods in impl blocks that have a self parameter.
         /// Used by sema to know to add the implicit self parameter.
         has_self: bool,
+    },
+
+    /// Constant declaration
+    /// Contains: name symbol, optional type, initializer expression ref
+    /// Directives are stored in the extra array.
+    /// Used for module re-exports: `pub const strings = @import("utils/strings.rue");`
+    ConstDecl {
+        /// Index into extra data where directives start
+        directives_start: u32,
+        /// Number of directives
+        directives_len: u32,
+        /// Whether this constant is public (requires --preview modules)
+        is_pub: bool,
+        /// Constant name
+        name: Spur,
+        /// Optional type annotation (interned string, None if inferred)
+        ty: Option<Spur>,
+        /// Initializer expression
+        init: InstRef,
     },
 
     /// Function call
@@ -1835,6 +1872,21 @@ impl<'a, 'b> RirPrinter<'a, 'b> {
                     .unwrap();
                     writeln!(out, "    {}", body).unwrap();
                     writeln!(out, "}}").unwrap();
+                }
+                InstData::ConstDecl {
+                    directives_start: _,
+                    directives_len: _,
+                    is_pub,
+                    name,
+                    ty,
+                    init,
+                } => {
+                    let pub_str = if *is_pub { "pub " } else { "" };
+                    let name_str = self.interner.resolve(&*name);
+                    let ty_str = ty
+                        .map(|t| format!(": {}", self.interner.resolve(&t)))
+                        .unwrap_or_default();
+                    writeln!(out, "{}const {}{} = {}", pub_str, name_str, ty_str, init).unwrap();
                 }
                 InstData::Ret(inner) => {
                     if let Some(inner) = inner {

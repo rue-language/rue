@@ -103,21 +103,22 @@ impl ErrorCode {
     pub const ASSOC_FN_CALLED_AS_METHOD: Self = Self(415);
     pub const DUPLICATE_DESTRUCTOR: Self = Self(416);
     pub const DESTRUCTOR_UNKNOWN_TYPE: Self = Self(417);
-    pub const DUPLICATE_VARIANT: Self = Self(418);
-    pub const UNKNOWN_VARIANT: Self = Self(419);
-    pub const UNKNOWN_ENUM_TYPE: Self = Self(420);
-    pub const FIELD_WRONG_ORDER: Self = Self(421);
-    pub const FIELD_ACCESS_ON_NON_STRUCT: Self = Self(422);
-    pub const INVALID_ASSIGNMENT_TARGET: Self = Self(423);
-    pub const INOUT_NON_LVALUE: Self = Self(424);
-    pub const INOUT_EXCLUSIVE_ACCESS: Self = Self(425);
-    pub const BORROW_NON_LVALUE: Self = Self(426);
-    pub const MUTATE_BORROWED_VALUE: Self = Self(427);
-    pub const MOVE_OUT_OF_BORROW: Self = Self(428);
-    pub const BORROW_INOUT_CONFLICT: Self = Self(429);
-    pub const INOUT_KEYWORD_MISSING: Self = Self(430);
-    pub const BORROW_KEYWORD_MISSING: Self = Self(431);
-    pub const EMPTY_STRUCT: Self = Self(432);
+    pub const DUPLICATE_CONSTANT: Self = Self(418);
+    pub const DUPLICATE_VARIANT: Self = Self(419);
+    pub const UNKNOWN_VARIANT: Self = Self(420);
+    pub const UNKNOWN_ENUM_TYPE: Self = Self(421);
+    pub const FIELD_WRONG_ORDER: Self = Self(422);
+    pub const FIELD_ACCESS_ON_NON_STRUCT: Self = Self(423);
+    pub const INVALID_ASSIGNMENT_TARGET: Self = Self(424);
+    pub const INOUT_NON_LVALUE: Self = Self(425);
+    pub const INOUT_EXCLUSIVE_ACCESS: Self = Self(426);
+    pub const BORROW_NON_LVALUE: Self = Self(427);
+    pub const MUTATE_BORROWED_VALUE: Self = Self(428);
+    pub const MOVE_OUT_OF_BORROW: Self = Self(429);
+    pub const BORROW_INOUT_CONFLICT: Self = Self(430);
+    pub const INOUT_KEYWORD_MISSING: Self = Self(431);
+    pub const BORROW_KEYWORD_MISSING: Self = Self(432);
+    pub const EMPTY_STRUCT: Self = Self(433);
 
     // ========================================================================
     // Control flow errors (E0500-E0599)
@@ -882,6 +883,11 @@ pub enum ErrorKind {
     #[error("unknown type '{type_name}' in destructor")]
     DestructorUnknownType { type_name: String },
 
+    // Constant errors
+    /// Duplicate constant declaration
+    #[error("duplicate {kind} '{name}'")]
+    DuplicateConstant { name: String, kind: String },
+
     // Enum errors
     #[error("duplicate variant '{variant_name}' in enum '{enum_name}'")]
     DuplicateVariant {
@@ -1066,6 +1072,7 @@ impl ErrorKind {
             ErrorKind::AssocFnCalledAsMethod { .. } => ErrorCode::ASSOC_FN_CALLED_AS_METHOD,
             ErrorKind::DuplicateDestructor { .. } => ErrorCode::DUPLICATE_DESTRUCTOR,
             ErrorKind::DestructorUnknownType { .. } => ErrorCode::DESTRUCTOR_UNKNOWN_TYPE,
+            ErrorKind::DuplicateConstant { .. } => ErrorCode::DUPLICATE_CONSTANT,
             ErrorKind::DuplicateVariant { .. } => ErrorCode::DUPLICATE_VARIANT,
             ErrorKind::UnknownVariant { .. } => ErrorCode::UNKNOWN_VARIANT,
             ErrorKind::UnknownEnumType(_) => ErrorCode::UNKNOWN_ENUM_TYPE,

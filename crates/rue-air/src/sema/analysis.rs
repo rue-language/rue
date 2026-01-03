@@ -1620,7 +1620,7 @@ fn analyze_inst_with_context(
         }
 
         // Declaration no-ops (produce Unit in expression context)
-        InstData::ImplDecl { .. } | InstData::DropFnDecl { .. } => {
+        InstData::ImplDecl { .. } | InstData::DropFnDecl { .. } | InstData::ConstDecl { .. } => {
             // These are processed during collection phase, just return Unit
             let air_ref = air.add_inst(AirInst {
                 data: AirInstData::UnitConst,
@@ -5841,9 +5841,10 @@ impl<'a> Sema<'a> {
             }
 
             // Declaration no-ops (produce Unit in expression context)
-            InstData::ImplDecl { .. } | InstData::DropFnDecl { .. } | InstData::FnDecl { .. } => {
-                self.analyze_decl_noop(air, inst_ref, ctx)
-            }
+            InstData::ImplDecl { .. }
+            | InstData::DropFnDecl { .. }
+            | InstData::FnDecl { .. }
+            | InstData::ConstDecl { .. } => self.analyze_decl_noop(air, inst_ref, ctx),
 
             // Comptime block expression
             InstData::Comptime { expr } => {

@@ -89,6 +89,8 @@ pub struct GatherOutput<'a> {
     pub functions: HashMap<Spur, FunctionInfo>,
     /// Method lookup: maps (struct_name, method_name) to info.
     pub methods: HashMap<(Spur, Spur), MethodInfo>,
+    /// Constant lookup: maps const name to info.
+    pub constants: HashMap<Spur, ConstInfo>,
     /// Enabled preview features.
     pub preview_features: PreviewFeatures,
     /// StructId of the synthetic String type.
@@ -110,6 +112,7 @@ impl<'a> GatherOutput<'a> {
             structs: self.structs,
             enums: self.enums,
             methods: self.methods,
+            constants: self.constants,
             preview_features: self.preview_features,
             builtin_string_id: self.builtin_string_id,
             known: KnownSymbols::new(self.interner),
@@ -219,6 +222,26 @@ pub struct MethodInfo {
     pub span: rue_span::Span,
 }
 
+/// Information about a constant declaration.
+///
+/// Constants are compile-time values. In the module system, they're primarily
+/// used for re-exports:
+/// ```rue
+/// pub const strings = @import("utils/strings.rue");
+/// pub const helper = @import("utils/internal.rue").helper;
+/// ```
+#[derive(Debug, Clone)]
+pub struct ConstInfo {
+    /// Whether this constant is public
+    pub is_pub: bool,
+    /// The type of the constant value (e.g., Type::Module for imports)
+    pub ty: Type,
+    /// The RIR instruction ref for the initializer
+    pub init: rue_rir::InstRef,
+    /// Span of the const declaration
+    pub span: rue_span::Span,
+}
+
 /// Semantic analyzer that converts RIR to AIR.
 pub struct Sema<'a> {
     pub(crate) rir: &'a Rir,
@@ -233,6 +256,9 @@ pub struct Sema<'a> {
     /// Used for resolving method calls (receiver.method()) and associated
     /// function calls (Type::function())
     pub(crate) methods: HashMap<(Spur, Spur), MethodInfo>,
+    /// Constant table: maps const name symbol to const info
+    /// Used for module re-exports: `pub const strings = @import("utils/strings");`
+    pub(crate) constants: HashMap<Spur, ConstInfo>,
     /// Enabled preview features
     pub(crate) preview_features: PreviewFeatures,
     /// StructId of the synthetic String type.
@@ -267,6 +293,7 @@ impl<'a> Sema<'a> {
             structs: HashMap::new(),
             enums: HashMap::new(),
             methods: HashMap::new(),
+            constants: HashMap::new(),
             preview_features,
             builtin_string_id: None,
             known: KnownSymbols::new(interner),
@@ -394,6 +421,7 @@ impl<'a> Sema<'a> {
             enums: self.enums,
             functions: self.functions,
             methods: self.methods,
+            constants: self.constants,
             preview_features: self.preview_features,
             builtin_string_id: self.builtin_string_id,
             type_pool: self.type_pool,

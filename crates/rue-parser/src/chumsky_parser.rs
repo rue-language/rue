@@ -6,8 +6,8 @@
 use crate::ast::{
     AnonStructField, ArgMode, ArrayLitExpr, AssignStatement, AssignTarget, AssocFnCallExpr, Ast,
     BinaryExpr, BinaryOp, BlockExpr, BoolLit, BreakExpr, CallArg, CallExpr, ComptimeBlockExpr,
-    ContinueExpr, Directive, DirectiveArg, Directives, DropFn, EnumDecl, EnumVariant, Expr,
-    FieldDecl, FieldExpr, FieldInit, Function, Ident, IfExpr, ImplBlock, IndexExpr, IntLit,
+    ConstDecl, ContinueExpr, Directive, DirectiveArg, Directives, DropFn, EnumDecl, EnumVariant,
+    Expr, FieldDecl, FieldExpr, FieldInit, Function, Ident, IfExpr, ImplBlock, IndexExpr, IntLit,
     IntrinsicArg, IntrinsicCallExpr, Item, LetPattern, LetStatement, LoopExpr, MatchArm, MatchExpr,
     Method, MethodCallExpr, NegIntLit, Param, ParamMode, ParenExpr, PathExpr, PathPattern, Pattern,
     ReturnExpr, SelfExpr, SelfParam, Statement, StringLit, StructDecl, StructLitExpr, TypeExpr,
@@ -1849,7 +1849,50 @@ where
         })
 }
 
-/// Parser for top-level items (functions, structs, enums, impl blocks, and drop fns)
+/// Parser for const declarations: [pub] const name [: Type] = expr;
+///
+/// Used for module re-exports:
+/// ```rue
+/// pub const strings = @import("utils/strings.rue");
+/// pub const helper = @import("utils/internal.rue").helper;
+/// ```
+fn const_parser<'src, I>() -> impl Parser<'src, I, ConstDecl, ParserExtras<'src>> + Clone
+where
+    I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
+{
+    let expr = expr_parser();
+
+    // Parse optional visibility (pub keyword)
+    let visibility = just(TokenKind::Pub).or_not().map(|opt| {
+        if opt.is_some() {
+            Visibility::Public
+        } else {
+            Visibility::Private
+        }
+    });
+
+    // Optional type annotation
+    let type_annotation = just(TokenKind::Colon).ignore_then(type_parser()).or_not();
+
+    directives_parser()
+        .then(visibility)
+        .then(just(TokenKind::Const).ignore_then(ident_parser()))
+        .then(type_annotation)
+        .then(just(TokenKind::Eq).ignore_then(expr))
+        .then_ignore(just(TokenKind::Semi))
+        .map_with(
+            |((((directives, visibility), name), ty), init), e| ConstDecl {
+                directives,
+                visibility,
+                name,
+                ty,
+                init: Box::new(init),
+                span: span_from_extra(e),
+            },
+        )
+}
+
+/// Parser for top-level items (functions, structs, enums, impl blocks, drop fns, and consts)
 fn item_parser<'src, I>() -> impl Parser<'src, I, Item, ParserExtras<'src>> + Clone
 where
     I: ValueInput<'src, Token = TokenKind, Span = SimpleSpan>,
@@ -1860,6 +1903,7 @@ where
         enum_parser().map(Item::Enum),
         impl_parser().map(Item::Impl),
         drop_fn_parser().map(Item::DropFn),
+        const_parser().map(Item::Const),
     ))
 }
 
@@ -2057,6 +2101,7 @@ mod tests {
             Item::Enum(_) => panic!("parse_expr helper should only be used with functions"),
             Item::Impl(_) => panic!("parse_expr helper should only be used with functions"),
             Item::DropFn(_) => panic!("parse_expr helper should only be used with functions"),
+            Item::Const(_) => panic!("parse_expr helper should only be used with functions"),
         };
         Ok(ExprResult { expr, interner })
     }
@@ -2085,6 +2130,7 @@ mod tests {
             Item::Enum(_) => panic!("expected Function"),
             Item::Impl(_) => panic!("expected Function"),
             Item::DropFn(_) => panic!("expected Function"),
+            Item::Const(_) => panic!("expected Function"),
         }
     }
 
@@ -2154,6 +2200,7 @@ mod tests {
             Item::Enum(_) => panic!("expected Function"),
             Item::Impl(_) => panic!("expected Function"),
             Item::DropFn(_) => panic!("expected Function"),
+            Item::Const(_) => panic!("expected Function"),
         }
     }
 

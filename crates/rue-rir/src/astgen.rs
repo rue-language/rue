@@ -8,7 +8,7 @@ use lasso::{Spur, ThreadedRodeo};
 /// Known type intrinsics that take a type argument rather than an expression.
 /// These intrinsics operate on types at compile time (e.g., @size_of(i32)).
 const TYPE_INTRINSICS: &[&str] = &["size_of", "align_of"];
-use rue_parser::ast::DropFn;
+use rue_parser::ast::{ConstDecl, DropFn};
 use rue_parser::{
     ArgMode, AssignTarget, Ast, BinaryOp, CallArg, Directive, DirectiveArg, EnumDecl, Expr,
     Function, ImplBlock, IntrinsicArg, Item, LetPattern, Method, ParamMode, Pattern, Statement,
@@ -66,6 +66,9 @@ impl<'a> AstGen<'a> {
             }
             Item::DropFn(drop_fn) => {
                 self.gen_drop_fn(drop_fn);
+            }
+            Item::Const(const_decl) => {
+                self.gen_const(const_decl);
             }
         }
     }
@@ -153,6 +156,26 @@ impl<'a> AstGen<'a> {
                 variants_len,
             },
             span: enum_decl.span,
+        })
+    }
+
+    fn gen_const(&mut self, const_decl: &ConstDecl) -> InstRef {
+        let directives = self.convert_directives(&const_decl.directives);
+        let (directives_start, directives_len) = self.rir.add_directives(&directives);
+        let name = const_decl.name.name; // Already a Spur
+        let ty = const_decl.ty.as_ref().map(|t| self.intern_type(t));
+        let init = self.gen_expr(&const_decl.init);
+
+        self.rir.add_inst(Inst {
+            data: InstData::ConstDecl {
+                directives_start,
+                directives_len,
+                is_pub: const_decl.visibility == Visibility::Public,
+                name,
+                ty,
+                init,
+            },
+            span: const_decl.span,
         })
     }
 

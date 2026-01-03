@@ -42,6 +42,7 @@ pub enum TokenKind {
     SelfValue, // self (value, not type)
     Comptime,  // comptime (compile-time evaluation)
     Pub,       // pub visibility modifier (module system)
+    Const,     // const declaration (module system re-exports)
 
     // Type keywords
     I8,
@@ -137,6 +138,7 @@ impl TokenKind {
             TokenKind::SelfValue => "'self'",
             TokenKind::Comptime => "'comptime'",
             TokenKind::Pub => "'pub'",
+            TokenKind::Const => "'const'",
             TokenKind::I8 => "type 'i8'",
             TokenKind::I16 => "type 'i16'",
             TokenKind::I32 => "type 'i32'",
@@ -234,6 +236,7 @@ impl std::fmt::Display for TokenKind {
             TokenKind::SelfValue => write!(f, "SELF"),
             TokenKind::Comptime => write!(f, "COMPTIME"),
             TokenKind::Pub => write!(f, "PUB"),
+            TokenKind::Const => write!(f, "CONST"),
             TokenKind::I8 => write!(f, "TYPE(i8)"),
             TokenKind::I16 => write!(f, "TYPE(i16)"),
             TokenKind::I32 => write!(f, "TYPE(i32)"),

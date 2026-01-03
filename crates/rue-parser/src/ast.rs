@@ -69,6 +69,33 @@ pub enum Item {
     Enum(EnumDecl),
     Impl(ImplBlock),
     DropFn(DropFn),
+    /// Constant declaration (e.g., `const math = @import("math");`)
+    Const(ConstDecl),
+}
+
+/// A constant declaration.
+///
+/// Constants are compile-time values. In the context of the module system,
+/// they're used for re-exports:
+/// ```rue
+/// // _utils.rue (directory module root)
+/// pub const strings = @import("utils/strings.rue");
+/// pub const helper = @import("utils/internal.rue").helper;
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConstDecl {
+    /// Directives applied to this const
+    pub directives: Directives,
+    /// Visibility of this constant
+    pub visibility: Visibility,
+    /// Constant name
+    pub name: Ident,
+    /// Optional type annotation (usually inferred)
+    pub ty: Option<TypeExpr>,
+    /// Initializer expression
+    pub init: Box<Expr>,
+    /// Span covering the entire const declaration
+    pub span: Span,
 }
 
 /// A struct declaration.
@@ -874,6 +901,7 @@ impl fmt::Display for Ast {
                 Item::Enum(e) => fmt_enum(f, e, 0)?,
                 Item::Impl(impl_block) => fmt_impl_block(f, impl_block, 0)?,
                 Item::DropFn(drop_fn) => fmt_drop_fn(f, drop_fn, 0)?,
+                Item::Const(c) => fmt_const(f, c, 0)?,
             }
         }
         Ok(())
@@ -915,6 +943,23 @@ fn fmt_enum(f: &mut fmt::Formatter<'_>, e: &EnumDecl, level: usize) -> fmt::Resu
         indent(f, level + 1)?;
         writeln!(f, "Variant sym:{}", variant.name.name.into_usize())?;
     }
+    Ok(())
+}
+
+fn fmt_const(f: &mut fmt::Formatter<'_>, c: &ConstDecl, level: usize) -> fmt::Result {
+    indent(f, level)?;
+    for directive in &c.directives {
+        write!(f, "@sym:{} ", directive.name.name.into_usize())?;
+    }
+    if c.visibility == Visibility::Public {
+        write!(f, "pub ")?;
+    }
+    write!(f, "Const sym:{}", c.name.name.into_usize())?;
+    if let Some(ref ty) = c.ty {
+        write!(f, ": {}", ty)?;
+    }
+    writeln!(f)?;
+    fmt_expr(f, &c.init, level + 1)?;
     Ok(())
 }
 

@@ -1,0 +1,112 @@
+[section]
+id = "modules.constants"
+name = "Constants"
+description = "Constant declarations for module re-exports (Phase 2 of module system). Spec chapter pending ADR-0026 finalization."
+
+# =============================================================================
+# Basic Const Declarations
+# =============================================================================
+
+[[case]]
+name = "const_basic_integer"
+preview = "modules"
+preview_should_pass = true
+description = "Basic const declaration with integer value"
+source = """
+const VALUE: i32 = 42;
+fn main() -> i32 { 0 }
+"""
+exit_code = 0
+
+[[case]]
+name = "const_without_type"
+preview = "modules"
+preview_should_pass = true
+description = "Const declaration without explicit type annotation"
+source = """
+const VALUE = 42;
+fn main() -> i32 { 0 }
+"""
+exit_code = 0
+
+# =============================================================================
+# Public Const Declarations
+# =============================================================================
+
+[[case]]
+name = "pub_const_basic"
+preview = "modules"
+preview_should_pass = true
+description = "Public const declaration is allowed with preview flag"
+source = """
+pub const VALUE: i32 = 42;
+fn main() -> i32 { 0 }
+"""
+exit_code = 0
+
+[[case]]
+name = "pub_const_without_preview_error"
+description = "Pub const without preview flag gives helpful error"
+source = """
+pub const VALUE: i32 = 42;
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = "preview"
+
+# =============================================================================
+# Const with Import (Module Re-exports)
+# =============================================================================
+
+# Note: These tests verify the syntax is accepted. Full re-export behavior
+# will be tested once module population is implemented.
+
+[[case]]
+name = "const_import_syntax"
+preview = "modules"
+description = "Const with @import syntax parses correctly"
+source = """
+const math = @import("nonexistent");
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = "module 'nonexistent' not found"
+
+[[case]]
+name = "pub_const_import_syntax"
+preview = "modules"
+description = "Pub const with @import syntax parses correctly"
+source = """
+pub const math = @import("nonexistent");
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = "module 'nonexistent' not found"
+
+# =============================================================================
+# Duplicate Detection
+# =============================================================================
+
+[[case]]
+name = "duplicate_const_error"
+preview = "modules"
+description = "Duplicate const declarations cause error"
+source = """
+const X: i32 = 1;
+const X: i32 = 2;
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = "duplicate"
+
+[[case]]
+name = "const_function_conflict"
+preview = "modules"
+description = "Const with same name as function causes error"
+source = """
+fn foo() -> i32 { 42 }
+const foo: i32 = 1;
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = "duplicate"
