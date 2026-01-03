@@ -208,10 +208,10 @@ The return type of `@random_u64` is `u64`.
   - Implement for aarch64 Linux
   - Handle error cases (no entropy source)
 
-- [ ] **Phase 4: Codegen** - rue-2h42
+- [x] **Phase 4: Codegen** - rue-2h42
   - Add call generation for x86-64 backend
   - Add call generation for aarch64 backend
-  - Integration testing with example programs
+  - Integration testing with example programs (spec tests)
 
 ## Consequences
 

@@ -2168,6 +2168,28 @@ impl<'a> CfgLower<'a> {
                     } else {
                         unreachable!("String fat pointer not found in struct_slot_vregs");
                     }
+                } else if name_str == "random_u32" || name_str == "random_u64" {
+                    // @random_u32() and @random_u64() intrinsics - generate random numbers
+                    // These intrinsics take no arguments and return u32/u64 respectively
+                    // Call __rue_random_u32 or __rue_random_u64 from the runtime
+
+                    let runtime_fn = match name_str {
+                        "random_u32" => "__rue_random_u32",
+                        "random_u64" => "__rue_random_u64",
+                        _ => unreachable!(),
+                    };
+
+                    // Call the runtime function (no arguments)
+                    let symbol_id = self.intern_symbol(runtime_fn);
+                    self.mir.push(Aarch64Inst::Bl { symbol_id });
+
+                    // Result is in X0, move to a vreg
+                    let result_vreg = self.mir.alloc_vreg();
+                    self.mir.push(Aarch64Inst::MovRR {
+                        dst: Operand::Virtual(result_vreg),
+                        src: Operand::Physical(Reg::X0),
+                    });
+                    self.value_map.insert(value, result_vreg);
                 }
             }
 
