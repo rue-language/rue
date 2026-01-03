@@ -652,28 +652,38 @@ impl<'a> SemaContext<'a> {
     ///
     /// Used for qualified enum paths like `module.EnumName::Variant`.
     /// The `module_ref` is an InstRef pointing to the result of an @import.
+    /// Checks visibility: private enums are only accessible from the same directory.
     pub fn resolve_enum_through_module(
         &self,
-        module_ref: rue_rir::InstRef,
+        _module_ref: rue_rir::InstRef,
         type_name: lasso::Spur,
         span: rue_span::Span,
     ) -> rue_error::CompileResult<EnumId> {
         use rue_error::{CompileError, ErrorKind};
 
-        // Same simplified approach as resolve_struct_through_module
         let type_name_str = self.interner.resolve(&type_name);
 
         // Try to find the enum globally
-        self.get_enum(type_name).ok_or_else(|| {
-            CompileError::new(
-                ErrorKind::UnknownEnumType(format!(
-                    "{} (through module %{})",
-                    type_name_str,
-                    module_ref.as_u32()
-                )),
+        let enum_id = self.get_enum(type_name).ok_or_else(|| {
+            CompileError::new(ErrorKind::UnknownEnumType(type_name_str.to_string()), span)
+        })?;
+
+        // Check visibility
+        let enum_def = self.get_enum_def(enum_id);
+        let accessing_file_id = span.file_id;
+        let target_file_id = enum_def.file_id;
+
+        if !self.is_accessible(accessing_file_id, target_file_id, enum_def.is_pub) {
+            return Err(CompileError::new(
+                ErrorKind::PrivateMemberAccess {
+                    item_kind: "enum".to_string(),
+                    name: type_name_str.to_string(),
+                },
                 span,
-            )
-        })
+            ));
+        }
+
+        Ok(enum_id)
     }
 }
 

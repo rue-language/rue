@@ -2135,14 +2135,22 @@ impl<'a> Sema<'a> {
             }
 
             InstData::EnumVariant {
-                type_name, variant, ..
+                module,
+                type_name,
+                variant,
             } => {
-                // Look up the enum type
-                let enum_id = self.enums.get(type_name).ok_or_compile_error(
-                    ErrorKind::UnknownEnumType(self.interner.resolve(&*type_name).to_string()),
-                    inst.span,
-                )?;
-                let enum_def = self.type_pool.enum_def(*enum_id);
+                // Look up the enum type, potentially through a module
+                let enum_id = if let Some(module_ref) = module {
+                    // Qualified access: module.EnumName::Variant
+                    self.resolve_enum_through_module(*module_ref, *type_name, inst.span)?
+                } else {
+                    // Unqualified access: EnumName::Variant
+                    *self.enums.get(type_name).ok_or_compile_error(
+                        ErrorKind::UnknownEnumType(self.interner.resolve(&*type_name).to_string()),
+                        inst.span,
+                    )?
+                };
+                let enum_def = self.type_pool.enum_def(enum_id);
 
                 // Find the variant index
                 let variant_name = self.interner.resolve(&*variant);
@@ -2154,11 +2162,11 @@ impl<'a> Sema<'a> {
                     inst.span,
                 )?;
 
-                let ty = Type::Enum(*enum_id);
+                let ty = Type::Enum(enum_id);
 
                 let air_ref = air.add_inst(AirInst {
                     data: AirInstData::EnumVariant {
-                        enum_id: *enum_id,
+                        enum_id,
                         variant_index: variant_index as u32,
                     },
                     ty,

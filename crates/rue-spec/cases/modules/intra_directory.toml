@@ -161,8 +161,8 @@ error_contains = "private"
 [[case]]
 name = "cross_dir_access_pub_enum"
 description = "Files in different directories can access public enums"
-# TODO: Needs parser support for module.EnumName::Variant in match patterns
 preview = "module_types"
+preview_should_pass = true
 source = """
 fn main() -> i32 {
     let utils = @import("subdir/utils");
@@ -182,8 +182,8 @@ exit_code = 42
 [[case]]
 name = "cross_dir_access_private_enum_error"
 description = "Files in different directories cannot access private enums"
-# TODO: Needs parser support for module.EnumName::Variant in expressions
 preview = "module_types"
+preview_should_pass = true
 source = """
 fn main() -> i32 {
     let utils = @import("subdir/utils");

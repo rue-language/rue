@@ -649,29 +649,38 @@ impl<'a> Sema<'a> {
     /// Resolve an enum type through a module reference.
     ///
     /// Used for qualified enum paths like `module.EnumName::Variant` in match patterns.
-    /// Currently uses a simplified approach that looks up the enum globally.
+    /// Checks visibility: private enums are only accessible from the same directory.
     pub fn resolve_enum_through_module(
         &self,
-        module_ref: rue_rir::InstRef,
+        _module_ref: rue_rir::InstRef,
         type_name: lasso::Spur,
         span: rue_span::Span,
     ) -> rue_error::CompileResult<EnumId> {
         use rue_error::{CompileError, ErrorKind};
 
-        // Same simplified approach as SemaContext::resolve_enum_through_module
         let type_name_str = self.interner.resolve(&type_name);
 
         // Try to find the enum globally
-        self.enums.get(&type_name).copied().ok_or_else(|| {
-            CompileError::new(
-                ErrorKind::UnknownEnumType(format!(
-                    "{} (through module %{})",
-                    type_name_str,
-                    module_ref.as_u32()
-                )),
+        let enum_id = self.enums.get(&type_name).copied().ok_or_else(|| {
+            CompileError::new(ErrorKind::UnknownEnumType(type_name_str.to_string()), span)
+        })?;
+
+        // Check visibility
+        let enum_def = self.type_pool.enum_def(enum_id);
+        let accessing_file_id = span.file_id;
+        let target_file_id = enum_def.file_id;
+
+        if !self.is_accessible(accessing_file_id, target_file_id, enum_def.is_pub) {
+            return Err(CompileError::new(
+                ErrorKind::PrivateMemberAccess {
+                    item_kind: "enum".to_string(),
+                    name: type_name_str.to_string(),
+                },
                 span,
-            )
-        })
+            ));
+        }
+
+        Ok(enum_id)
     }
 
     /// Evaluate const initializers to determine their types.
